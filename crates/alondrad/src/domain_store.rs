@@ -4,7 +4,7 @@ mod canonical;
 mod connection;
 mod repository;
 
-use alondra_core::domain_v2::*;
+use alondra_core::domain::*;
 use anyhow::{Context, Result, ensure};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};

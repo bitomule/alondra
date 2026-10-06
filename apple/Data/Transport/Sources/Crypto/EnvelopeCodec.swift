@@ -33,11 +33,11 @@ public struct EnvelopeCodec: Sendable {
         return Data(HMAC<SHA256>.authenticationCode(for: try requestBytes(method: method, path: path, body: body), using: key))
     }
 
-    public func sealRequest(requestID: String, method: String, path: String, body: Data?) throws -> EnvelopeV1 {
+    public func sealRequest(requestID: String, method: String, path: String, body: Data?) throws -> Envelope {
         let plaintext = try requestBytes(method: method, path: path, body: body)
         let timestamp = now()
         guard timestamp <= UInt64.max - 120_000 else { throw EnvelopeError.invalidRequest }
-        return try EnvelopeV1.seal(route: macID, sender: deviceID,
+        return try Envelope.seal(route: macID, sender: deviceID,
             recipient: macID, requestID: requestID, kind: "request",
             expiresAtMilliseconds: timestamp + 120_000, plaintext: plaintext,
             senderKey: signing, recipientKey: macAgreement)

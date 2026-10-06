@@ -5,7 +5,7 @@ use crate::auth::Auth;
 use crate::domain_authority::Principal;
 use axum::http::StatusCode;
 use std::net::SocketAddr;
-use alondra_core::domain_v2::{Actor, Command, CommandEnvelope, PROTOCOL_VERSION, TaskState};
+use alondra_core::domain::{Actor, Command, CommandEnvelope, PROTOCOL_VERSION, TaskState};
 use base64::{
     Engine as _,
     engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
@@ -42,7 +42,7 @@ struct Fixture {
     agent: String,
     next_id: u64,
     github: Arc<crate::domain_github::FakeObserver>,
-    pr_view: Arc<crate::v2_client_routes::FakePrView>,
+    pr_view: Arc<crate::client_routes::FakePrView>,
     // Dropped after the runtime, including when an assertion panics.
     _cleanup: Cleanup,
 }
@@ -68,9 +68,9 @@ impl Fixture {
             )
             .unwrap();
         let github = Arc::new(crate::domain_github::FakeObserver::new());
-        let state = V2Only::open_with(&home, Box::new(github.clone())).unwrap();
+        let state = DomainDaemon::open_with(&home, Box::new(github.clone())).unwrap();
         let domain = state.domain();
-        let pr_view = Arc::new(crate::v2_client_routes::FakePrView::default());
+        let pr_view = Arc::new(crate::client_routes::FakePrView::default());
         state.client().use_pr_view(pr_view.clone());
         let registration = CommandEnvelope {
             protocol_version: PROTOCOL_VERSION,
@@ -134,7 +134,7 @@ impl Fixture {
     }
 
     fn envelope(&mut self, mut command: Value) -> Value {
-        if let Some(command) = command.as_object_mut() { alondra_core::domain_v2::derive_wire_card(command); }
+        if let Some(command) = command.as_object_mut() { alondra_core::domain::derive_wire_card(command); }
         self.next_id += 1;
         let state = self.domain.state().unwrap();
         json!({"protocol_version":PROTOCOL_VERSION,"data_epoch":state.data_epoch,
@@ -453,7 +453,7 @@ async fn http_presenting_a_pr_github_cannot_report_still_creates_the_card() {
 #[tokio::test]
 async fn http_merge_claim_is_admitted_only_with_github_confirmation_and_the_merge_is_observed() {
     use crate::domain_github::PrFacts;
-    use alondra_core::domain_v2::{MergeAttemptState, PrState};
+    use alondra_core::domain::{MergeAttemptState, PrState};
     let mut fixture = Fixture::start().await;
     fixture.task("claim-task", true).await;
     let head = "0123456789abcdef0123456789abcdef01234567";

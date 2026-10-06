@@ -5,13 +5,13 @@ import Testing
 
 private actor LostResponseTransport: RelayRequestTransport {
     private(set) var postCount = 0
-    private let response: EnvelopeV1?
+    private let response: Envelope?
 
-    init(response: EnvelopeV1? = nil) {
+    init(response: Envelope? = nil) {
         self.response = response
     }
 
-    func submitRequest(_ envelope: EnvelopeV1) async throws -> RelayReceipt {
+    func submitRequest(_ envelope: Envelope) async throws -> RelayReceipt {
         postCount += 1
         throw URLError(.timedOut)
     }
@@ -27,7 +27,7 @@ private actor DelayedStatusTransport: RelayRequestTransport {
     private var startedWaiters: [CheckedContinuation<Void, Never>] = []
     private var olderWaiter: CheckedContinuation<RelayReceipt, Never>?
 
-    func submitRequest(_ envelope: EnvelopeV1) async throws -> RelayReceipt {
+    func submitRequest(_ envelope: Envelope) async throws -> RelayReceipt {
         throw URLError(.timedOut)
     }
 
@@ -59,7 +59,7 @@ private actor DelayedPostTransport: RelayRequestTransport {
     private var startedWaiters: [CheckedContinuation<Void, Never>] = []
     private var postWaiter: CheckedContinuation<Void, Never>?
 
-    func submitRequest(_ envelope: EnvelopeV1) async throws -> RelayReceipt {
+    func submitRequest(_ envelope: Envelope) async throws -> RelayReceipt {
         started = true
         for waiter in startedWaiters { waiter.resume() }
         startedWaiters.removeAll()
@@ -88,17 +88,17 @@ private actor DelayedPostTransport: RelayRequestTransport {
         credentialRevision: "account-session-1"
     )
 
-    private func envelope(_ id: String) throws -> EnvelopeV1 {
+    private func envelope(_ id: String) throws -> Envelope {
         let phone = P256.Signing.PrivateKey()
         let mac = P256.KeyAgreement.PrivateKey()
-        return try EnvelopeV1.seal(
+        return try Envelope.seal(
             route: "mac-1", sender: "phone-1", recipient: "mac-1", requestID: id,
             kind: "request", expiresAtMilliseconds: UInt64(Date().timeIntervalSince1970 * 1000) + 60_000,
             plaintext: Data("private report".utf8), senderKey: phone, recipientKey: mac.publicKey
         )
     }
 
-    private func attempt(_ outbox: RelayOutbox, envelope: EnvelopeV1) async -> Result<RelaySubmission, Error> {
+    private func attempt(_ outbox: RelayOutbox, envelope: Envelope) async -> Result<RelaySubmission, Error> {
         do { return .success(try await outbox.submitNew(envelope)) }
         catch { return .failure(error) }
     }
@@ -172,7 +172,7 @@ private actor DelayedPostTransport: RelayRequestTransport {
         let transport = LostResponseTransport()
         let outbox = RelayOutbox(scope: scope, transport: transport)
 
-        let wrongKind = EnvelopeV1(
+        let wrongKind = Envelope(
             route: valid.route, sender: valid.sender, recipient: valid.recipient,
             requestID: id, kind: "response", expiresAtMilliseconds: valid.expiresAtMilliseconds,
             ephemeralKey: valid.ephemeralKey, nonce: valid.nonce,
@@ -180,7 +180,7 @@ private actor DelayedPostTransport: RelayRequestTransport {
         await #expect(throws: RelayOutboxError.invalidEnvelope) {
             try await outbox.submitNew(wrongKind)
         }
-        let oversized = EnvelopeV1(
+        let oversized = Envelope(
             route: valid.route, sender: valid.sender, recipient: valid.recipient,
             requestID: id, kind: "request", expiresAtMilliseconds: valid.expiresAtMilliseconds,
             ephemeralKey: valid.ephemeralKey, nonce: valid.nonce,

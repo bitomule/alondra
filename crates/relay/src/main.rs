@@ -8,7 +8,7 @@ mod state;
 mod web_session;
 mod web_assets;
 
-use alondra_e2e::EnvelopeV1;
+use alondra_e2e::Envelope;
 use auth::{Auth, Config, MacRegistration, PhoneDevice, PushRegistration};
 use axum::{
     Json, Router,
@@ -369,7 +369,7 @@ async fn register_push(
 #[serde(deny_unknown_fields)]
 struct PushRequest {
     device_id: String,
-    envelope: EnvelopeV1,
+    envelope: Envelope,
     #[serde(default)]
     collapse_id: Option<String>,
     #[serde(default)]
@@ -481,11 +481,11 @@ fn apns_failure_response(failure: &anyhow::Error) -> (StatusCode, Json<Value>) {
 fn parse_envelope(
     body: &[u8],
     max: usize,
-) -> Result<(EnvelopeV1, Value), (StatusCode, Json<Value>)> {
+) -> Result<(Envelope, Value), (StatusCode, Json<Value>)> {
     if body.len() > max {
         return Err(error(StatusCode::PAYLOAD_TOO_LARGE, "envelope_too_large"));
     }
-    let fields: EnvelopeV1 = serde_json::from_slice(body)
+    let fields: Envelope = serde_json::from_slice(body)
         .map_err(|_| error(StatusCode::BAD_REQUEST, "invalid_envelope"))?;
     if fields.request_id.is_empty()
         || fields.request_id.len() > 128
@@ -888,7 +888,7 @@ async fn main() -> anyhow::Result<()> {
 mod http_tests {
     include!("pg_fault_tests.rs");
     use super::*;
-    use alondra_e2e::{Context, EnvelopeV1, sign_http_challenge};
+    use alondra_e2e::{Context, Envelope, sign_http_challenge};
     use auth::PhoneDevice;
     use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
     use p256::elliptic_curve::sec1::ToSec1Point;
@@ -905,7 +905,7 @@ mod http_tests {
     fn response_envelopes_accept_near_one_mib_and_reject_larger_bodies() {
         let signing = SigningKey::from_slice(&[1u8; 32]).unwrap();
         let recipient = SecretKey::from_slice(&[2u8; 32]).unwrap();
-        let envelope = EnvelopeV1::seal_random(
+        let envelope = Envelope::seal_random(
             Context {
                 route: "mac-1", sender: "mac-1", recipient: "phone-1",
                 request_id: "request-1", kind: "response", expires_at_ms: now_ms() + 60_000,
@@ -1597,7 +1597,7 @@ mod http_tests {
         let plaintext = serde_json::to_vec(&json!({"device_id":"client-a","signing_key":phone_key,
             "agreement_key":URL_SAFE_NO_PAD.encode(phone_agreement.public_key().to_sec1_point(false).as_bytes()),
             "display_name":"iPhone","owner_sub":"owner","session_id":session_id})).unwrap();
-        let envelope = EnvelopeV1::seal_random(Context { route: "mac-1", sender: "client-a",
+        let envelope = Envelope::seal_random(Context { route: "mac-1", sender: "client-a",
             recipient: "mac-1", request_id: session_id, kind: "pairing", expires_at_ms: expires },
             &plaintext, &phone_sign, &mac_agreement.public_key()).unwrap();
         let candidate = serde_json::to_vec(&pairing::CandidateRequest {
@@ -1870,7 +1870,7 @@ mod http_tests {
         .unwrap();
         assert_eq!(stored["push"]["phone-push"]["push_binding"], binding);
 
-        let envelope = EnvelopeV1::seal_random(
+        let envelope = Envelope::seal_random(
             Context {
                 route: "mac-1",
                 sender: "mac-1",
@@ -1936,7 +1936,7 @@ mod http_tests {
         let too_large_for_apns = (2500..3100)
             .step_by(20)
             .find_map(|length| {
-                let envelope = EnvelopeV1::seal_random(
+                let envelope = Envelope::seal_random(
                     Context {
                         route: "mac-1",
                         sender: "mac-1",
@@ -2060,7 +2060,7 @@ mod http_tests {
         delivered.lock().unwrap().truncate(1);
         delivered_headers.lock().unwrap().truncate(1);
 
-        let rejected_envelope = EnvelopeV1::seal_random(
+        let rejected_envelope = Envelope::seal_random(
             Context {
                 route: "mac-1",
                 sender: "mac-1",
@@ -2099,7 +2099,7 @@ mod http_tests {
         );
         assert_eq!(rejected.json::<Value>().await.unwrap()["error"], "apns_delivery_failed");
 
-        let gone_envelope = EnvelopeV1::seal_random(
+        let gone_envelope = Envelope::seal_random(
             Context {
                 route: "mac-1",
                 sender: "mac-1",
@@ -2235,7 +2235,7 @@ mod http_tests {
                 .send().await.unwrap().status(), StatusCode::NO_CONTENT);
         }
         let envelope = |i: usize, m: usize, rid: &str| {
-            let sealed = EnvelopeV1::seal_random(Context { route: mac_ids[m], sender: links[i].0,
+            let sealed = Envelope::seal_random(Context { route: mac_ids[m], sender: links[i].0,
                 recipient: mac_ids[m], request_id: rid, kind: "request", expires_at_ms: now_ms() + 120_000 },
                 br#"{"method":"GET","path":"/v1/tasks"}"#, &client_keys[i], &mac_agreements[m].public_key()).unwrap();
             serde_json::to_vec(&sealed).unwrap()
@@ -2279,7 +2279,7 @@ mod http_tests {
         // Nor may another Mac use a surviving link's registration, even in the same account.
         for (link, mac) in [(0, 0), (1, 0)] {
             let id = links[link].0;
-            let push = EnvelopeV1::seal_random(Context { route: mac_ids[mac], sender: mac_ids[mac], recipient: id,
+            let push = Envelope::seal_random(Context { route: mac_ids[mac], sender: mac_ids[mac], recipient: id,
                 request_id: &format!("denied-push-{link}"), kind: "push", expires_at_ms: now_ms() + 120_000 },
                 br#"{"payload":{"aps":{"alert":"must not arrive"},"alondra":{}}}"#,
                 &mac_keys[mac], &client_agreements[link].public_key()).unwrap();
@@ -2296,7 +2296,7 @@ mod http_tests {
             assert_eq!(registration.push_binding, URL_SAFE_NO_PAD.encode([i as u8 + 1;32]));
             let plaintext = serde_json::to_vec(&json!({"push_binding":registration.push_binding,
                 "payload":{"aps":{"alert":"private"},"alondra":{}},"with_sound":false})).unwrap();
-            let push = EnvelopeV1::seal_random(Context { route: mac_ids[*m], sender: mac_ids[*m], recipient: id,
+            let push = Envelope::seal_random(Context { route: mac_ids[*m], sender: mac_ids[*m], recipient: id,
                 request_id: &format!("push-{i}"), kind: "push", expires_at_ms: now_ms() + 120_000 },
                 &plaintext, &mac_keys[*m], &client_agreements[i].public_key()).unwrap();
             let body = serde_json::to_vec(&json!({"device_id":id,"envelope":push})).unwrap();
@@ -2307,7 +2307,7 @@ mod http_tests {
         assert_eq!(delivered.len(), links.len() - 1);
         for (i, (body, (id, m))) in delivered.iter().zip(links.iter().skip(1)).enumerate() {
             let link = i + 1;
-            let envelope: EnvelopeV1 = serde_json::from_value(body["alondra"]["envelope"].clone()).unwrap();
+            let envelope: Envelope = serde_json::from_value(body["alondra"]["envelope"].clone()).unwrap();
             let plaintext = envelope.open(mac_keys[*m].verifying_key(), &client_agreements[link],
                 mac_ids[*m], id, mac_ids[*m], now_ms()).unwrap();
             let content: Value = serde_json::from_slice(&plaintext).unwrap();
@@ -2352,7 +2352,7 @@ mod http_tests {
         assert_eq!(response.status(), StatusCode::CREATED);
 
         let now = now_ms();
-        let request = EnvelopeV1::seal_random(
+        let request = Envelope::seal_random(
             Context {
                 route: "mac-1",
                 sender: "phone-1",
@@ -2493,7 +2493,7 @@ mod http_tests {
         .unwrap();
         assert_eq!(work.status(), StatusCode::OK);
         let work: Value = work.json().await.unwrap();
-        let forwarded: EnvelopeV1 = serde_json::from_value(work["envelope"].clone()).unwrap();
+        let forwarded: Envelope = serde_json::from_value(work["envelope"].clone()).unwrap();
         let plaintext = forwarded
             .open(
                 phone_sign.verifying_key(),
@@ -2506,7 +2506,7 @@ mod http_tests {
             .unwrap();
         assert!(String::from_utf8(plaintext).unwrap().contains("private"));
 
-        let result = EnvelopeV1::seal_random(
+        let result = Envelope::seal_random(
             Context {
                 route: "mac-1",
                 sender: "mac-1",
@@ -2591,7 +2591,7 @@ mod http_tests {
         assert_eq!(status.status(), StatusCode::OK);
         let status: Value = status.json().await.unwrap();
         assert_eq!(status["status"], "completed");
-        let opaque: EnvelopeV1 = serde_json::from_value(status["response"].clone()).unwrap();
+        let opaque: Envelope = serde_json::from_value(status["response"].clone()).unwrap();
         assert_eq!(
             opaque
                 .open(
@@ -3150,7 +3150,7 @@ mod http_tests {
             "mac-1"
         );
         let now = now_ms();
-        let rerouted = EnvelopeV1::seal_random(
+        let rerouted = Envelope::seal_random(
             Context {
                 route: "mac-stolen",
                 sender: "phone-pilot",

@@ -4,7 +4,7 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-use alondra_core::domain_v2::{AgentId, Command, DomainProjection, InboxItem, InputKind, InputValue, Interaction, InteractionId, InteractionPayload, QuestionOption, Revision, TaskId};
+use alondra_core::domain::{AgentId, Command, DomainProjection, InboxItem, InputKind, InputValue, Interaction, InteractionId, InteractionPayload, QuestionOption, Revision, TaskId};
 use alondra_core::views::{Action, Item, Link, View};
 use anyhow::{Context, Result, anyhow, bail};
 use serde_json::Value;
@@ -78,7 +78,7 @@ pub fn agent(d: &DomainProjection, runtime: Option<&Runtime>, name: &str) -> Res
 }
 
 fn inbox_item<'a>(d: &'a DomainProjection, id: &InteractionId) -> Option<&'a InboxItem> {
-    d.inbox.iter().find(|i| matches!(&i.subject, alondra_core::domain_v2::InboxSubject::Interaction { interaction_id } if interaction_id == id))
+    d.inbox.iter().find(|i| matches!(&i.subject, alondra_core::domain::InboxSubject::Interaction { interaction_id } if interaction_id == id))
 }
 
 fn options_text(options: &[QuestionOption]) -> String {
@@ -286,7 +286,7 @@ pub fn recover(action: Recovery, run_id: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alondra_core::domain_v2::*;
+    use alondra_core::domain::*;
 
     fn world() -> DomainState {
         let mut s = DomainState::new("e");
@@ -303,7 +303,7 @@ mod tests {
             QuestionOption { id: "yes".into(), label: "Yes".into(), description: None, inputs: vec![] },
             QuestionOption { id: "other".into(), label: "Other".into(), description: None, inputs: vec![InputSpec { id: "why".into(), kind: InputKind::Text, required: true }] },
         ];
-        run(Actor::Agent { agent_id: "agent-a".into() }, Command::AskQuestion { attachments: vec![], interaction_id: "q".into(), scope: Scope::Task { task_id: "t".into() }, recipient: Recipient::User, body: "Name?".into(), blocking: true, options, card: alondra_core::domain_v2::CardSpec::derived(alondra_core::domain_v2::CardKind::Provide, "Answer the question") });
+        run(Actor::Agent { agent_id: "agent-a".into() }, Command::AskQuestion { attachments: vec![], interaction_id: "q".into(), scope: Scope::Task { task_id: "t".into() }, recipient: Recipient::User, body: "Name?".into(), blocking: true, options, card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Provide, "Answer the question") });
         s
     }
 

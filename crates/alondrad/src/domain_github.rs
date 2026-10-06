@@ -3,7 +3,7 @@
 //! it never accepts a delivery or completes a Task.
 use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::StoreError;
-use alondra_core::domain_v2::{
+use alondra_core::domain::{
     Actor, AuthorizationId, Command, CommandEnvelope, DomainState, MergeAttemptState,
     clip, CardSpec, PrId, PrState, PullRequest, Scope, PROTOCOL_VERSION,
 };
@@ -56,7 +56,7 @@ impl GhCli {
 impl PrObserver for GhCli {
     fn observe<'a>(&'a self, host: &'a str, repository: &'a str, number: u64) -> Observed<'a> {
         Box::pin(async move {
-            let url = format!("https://{}/{repository}/pull/{number}", alondra_core::domain_v2::normalize_pr_host(host));
+            let url = format!("https://{}/{repository}/pull/{number}", alondra_core::domain::normalize_pr_host(host));
             let run = tokio::process::Command::new(&self.program)
                 .args(["pr", "view", &url, "--json", "state,headRefOid,baseRefName"])
                 .kill_on_drop(true)
@@ -260,11 +260,11 @@ pub(crate) async fn verify_claim(
     let state = domain.state().map_err(StoreError::Storage)?;
     let facts = observed_authorization(&state, authorization_id, observer).await?;
     if !base_verified || facts.base != *remote_base {
-        return Err(alondra_core::domain_v2::DomainError::new("stack_not_ready",
+        return Err(alondra_core::domain::DomainError::new("stack_not_ready",
             "GitHub reports a different base than the claim").into());
     }
     if facts.state != PrState::Open || facts.head != *remote_head {
-        return Err(alondra_core::domain_v2::DomainError::new("stale_head",
+        return Err(alondra_core::domain::DomainError::new("stale_head",
             "GitHub reports a different head than the claim").into());
     }
     Ok(())
@@ -274,11 +274,11 @@ async fn observed_authorization(
     state: &DomainState, authorization_id: &AuthorizationId, observer: &dyn PrObserver,
 ) -> Result<PrFacts, StoreError> {
     let authorization = state.merge_authorizations.get(authorization_id)
-        .ok_or_else(|| alondra_core::domain_v2::DomainError::new("not_found", "Authorization missing"))?;
+        .ok_or_else(|| alondra_core::domain::DomainError::new("not_found", "Authorization missing"))?;
     let pr = state.pull_requests.get(&authorization.pr_id)
-        .ok_or_else(|| alondra_core::domain_v2::DomainError::new("not_found", "PR missing"))?;
+        .ok_or_else(|| alondra_core::domain::DomainError::new("not_found", "PR missing"))?;
     observer.observe(&pr.host, &pr.repository, pr.number).await.map_err(|reason| {
-        alondra_core::domain_v2::DomainError::new("external_read_failed",
+        alondra_core::domain::DomainError::new("external_read_failed",
             format!("could not verify the PR on GitHub: {reason}")).into()
     })
 }
@@ -306,7 +306,7 @@ impl PrObserver for FakeObserver {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alondra_core::domain_v2::*;
+    use alondra_core::domain::*;
     use std::collections::BTreeSet;
     use std::os::unix::fs::PermissionsExt;
 
@@ -347,7 +347,7 @@ mod tests {
         });
         command(domain, Actor::Agent { agent_id: "a".into() }, "present", Command::PresentResult {
             attachments: vec![], task_id: "t".into(), interaction_id: "d".into(), body: "Ready".into(),
-            targets: vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: HEAD.into() }], is_final: true, card: alondra_core::domain_v2::CardSpec::delivery("Review the result", &[], true),
+            targets: vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: HEAD.into() }], is_final: true, card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
         });
         command(domain, Actor::User { user_id: "u".into() }, "authorize", Command::AuthorizeMerge {
             authorization_id: "auth".into(), presentation_id: "d".into(), pr_id: "pr".into(),
@@ -370,7 +370,7 @@ mod tests {
         assert_eq!(crate::domain_api::auto_merge_notice(domain, &register).is_some(), auto_merge);
         command(domain, Actor::Agent { agent_id: "a".into() }, "present", Command::PresentResult {
             attachments: vec![], task_id: "t".into(), interaction_id: "d".into(), body: "Ready".into(),
-            targets: vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: HEAD.into() }], is_final: true, card: alondra_core::domain_v2::CardSpec::delivery("Review the result", &[], true),
+            targets: vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: HEAD.into() }], is_final: true, card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
         });
     }
 
@@ -656,7 +656,7 @@ mod tests {
         observer.set(7, Err("error connecting to github".into()));
         let mut failures = ObservationFailures::default();
         let problems = |domain: &DomainRuntime| domain.state().unwrap().interactions.into_values()
-            .filter(|card| card.card.kind == alondra_core::domain_v2::CardKind::Problem)
+            .filter(|card| card.card.kind == alondra_core::domain::CardKind::Problem)
             .collect::<Vec<_>>();
         for _ in 0..4 {
             reconcile(&domain, &observer, &mut failures).await.unwrap();

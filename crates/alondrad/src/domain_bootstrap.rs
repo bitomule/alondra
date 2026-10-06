@@ -2,7 +2,7 @@
 //! the routes are the shared domain handlers with a committed host.
 use crate::auth::{Signed, is_local};
 use crate::domain_runtime::DomainRuntime;
-use alondra_core::domain_v2::{AttachmentRef, DomainError};
+use alondra_core::domain::{AttachmentRef, DomainError};
 use anyhow::{Context, Result, ensure};
 use axum::extract::{ConnectInfo, Path as RoutePath, Query, State, rejection::JsonRejection};
 use axum::http::{HeaderMap, StatusCode};
@@ -15,18 +15,18 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-pub(crate) struct V2Only {
+pub(crate) struct DomainDaemon {
     domain: Arc<DomainRuntime>,
     home: PathBuf,
     observer: Box<dyn crate::domain_github::PrObserver>,
     gauges: crate::machine::Gauges,
     /// The one approval list the guard verifies against and the pairing routes extend.
     auth: Arc<crate::auth::Auth>,
-    client: Arc<crate::v2_client_routes::Client>,
+    client: Arc<crate::client_routes::Client>,
     service: std::sync::OnceLock<Arc<crate::service::Service>>,
 }
 
-impl V2Only {
+impl DomainDaemon {
     pub(crate) fn open(home: &Path) -> Result<Arc<Self>> {
         Self::open_with(home, Box::new(crate::domain_github::GhCli::new()))
     }
@@ -48,7 +48,7 @@ impl V2Only {
         Ok(Arc::new(Self {
             home: home.to_owned(),
             observer,
-            client: crate::v2_client_routes::Client::open(domain.clone(), home, gauges.clone()),
+            client: crate::client_routes::Client::open(domain.clone(), home, gauges.clone()),
             domain,
             gauges,
             auth: Arc::new(crate::auth::Auth::open(home)?),
@@ -76,12 +76,12 @@ impl V2Only {
         self.gauges.clone()
     }
 
-    pub(crate) fn client(&self) -> Arc<crate::v2_client_routes::Client> {
+    pub(crate) fn client(&self) -> Arc<crate::client_routes::Client> {
         self.client.clone()
     }
 }
 
-impl crate::domain_api::DomainHost for V2Only {
+impl crate::domain_api::DomainHost for DomainDaemon {
     fn domain(&self) -> &DomainRuntime {
         &self.domain
     }
@@ -94,12 +94,12 @@ impl crate::domain_api::DomainHost for V2Only {
     fn pr_observer(&self) -> &dyn crate::domain_github::PrObserver {
         &*self.observer
     }
-    fn new_work_client(&self) -> Option<&crate::v2_client_routes::Client> {
+    fn new_work_client(&self) -> Option<&crate::client_routes::Client> {
         Some(&self.client)
     }
 }
 
-pub(crate) fn router(state: Arc<V2Only>) -> Router {
+pub(crate) fn router(state: Arc<DomainDaemon>) -> Router {
     let client = state.client();
     Router::new()
         .route("/daemon", get(daemon))
@@ -134,7 +134,7 @@ pub(crate) fn router(state: Arc<V2Only>) -> Router {
         .merge(crate::domain_api::routes())
         .merge(crate::views::routes::router())
         .with_state(state)
-        .merge(crate::v2_client_routes::router(client))
+        .merge(crate::client_routes::router(client))
 }
 
 fn forbidden(message: &str) -> Response {
@@ -158,7 +158,7 @@ pub(crate) fn signed_device(home: &Path, signed: &Option<Extension<Signed>>) -> 
 /// The running version, update state and machine gauges, for `alondra update`,
 /// `alondra doctor` and the TUI header on this Mac.
 async fn daemon(
-    State(state): State<Arc<V2Only>>,
+    State(state): State<Arc<DomainDaemon>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
 ) -> Response {
@@ -179,7 +179,7 @@ async fn daemon(
 
 /// The challenge `alondra pair` signs to approve a phone through the service; local only.
 async fn service_bootstrap(
-    State(state): State<Arc<V2Only>>,
+    State(state): State<Arc<DomainDaemon>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
 ) -> Response {
@@ -199,7 +199,7 @@ struct ServiceApproveBody {
 
 /// A phone the service paired, approved by `alondra pair` signing with this Mac's key.
 async fn service_approve_device(
-    State(state): State<Arc<V2Only>>,
+    State(state): State<Arc<DomainDaemon>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     body: axum::body::Bytes,
@@ -233,7 +233,7 @@ async fn service_approve_device(
 
 /// A one-time code for a device on this Mac's network; only a local caller may mint one.
 async fn new_pairing(
-    State(state): State<Arc<V2Only>>,
+    State(state): State<Arc<DomainDaemon>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
 ) -> Response {
@@ -256,7 +256,7 @@ struct PairBody {
 }
 
 async fn pair(
-    State(state): State<Arc<V2Only>>,
+    State(state): State<Arc<DomainDaemon>>,
     body: Result<Json<PairBody>, JsonRejection>,
 ) -> Response {
     let Ok(Json(body)) = body else {
@@ -282,7 +282,7 @@ async fn pair(
 }
 
 async fn devices(
-    State(state): State<Arc<V2Only>>,
+    State(state): State<Arc<DomainDaemon>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
 ) -> Response {
@@ -296,7 +296,7 @@ async fn devices(
 }
 
 async fn revoke_device(
-    State(state): State<Arc<V2Only>>,
+    State(state): State<Arc<DomainDaemon>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     RoutePath(id): RoutePath<String>,
@@ -327,7 +327,7 @@ struct UploadQuery {
 /// The file itself is the body. The reply is the `AttachmentRef` a v2 command
 /// carries: the stored copy's digest and its reference under this HOME.
 async fn upload(
-    State(state): State<Arc<V2Only>>,
+    State(state): State<Arc<DomainDaemon>>,
     signed: Option<Extension<Signed>>,
     Query(query): Query<UploadQuery>,
     body: axum::body::Bytes,
@@ -346,7 +346,7 @@ async fn upload(
 }
 
 async fn agent_message(
-    State(state): State<Arc<V2Only>>,
+    State(state): State<Arc<DomainDaemon>>,
     signed: Option<Extension<Signed>>,
     RoutePath(id): RoutePath<String>,
     body: Result<Json<crate::domain_messages::MessageBody>, JsonRejection>,
@@ -360,7 +360,7 @@ async fn agent_message(
             "invalid message",
         ));
     };
-    let user = alondra_core::domain_v2::Actor::User {
+    let user = alondra_core::domain::Actor::User {
         user_id: format!("device:{}", device.device_id),
     };
     match crate::domain_messages::deliver(
@@ -380,7 +380,7 @@ async fn agent_message(
 }
 
 async fn orchestrator_decision(
-    State(state): State<Arc<V2Only>>,
+    State(state): State<Arc<DomainDaemon>>,
     signed: Option<Extension<Signed>>,
     uri: axum::http::Uri,
     body: Option<Json<Value>>,
@@ -416,7 +416,7 @@ pub(crate) async fn send_agent_message(
     domain: &DomainRuntime,
     home: &Path,
     sender: &str,
-    agent: &alondra_core::domain_v2::AgentId,
+    agent: &alondra_core::domain::AgentId,
     body: Value,
 ) -> Value {
     crate::domain_messages::relayed(domain, home, sender, agent.clone(), Some(&body)).await
@@ -434,10 +434,10 @@ pub(crate) fn apply_orchestrator_decision(
 
 /// The orchestrator execution calling a tool route: local, with its current bearer.
 fn tool_caller(
-    state: &V2Only,
+    state: &DomainDaemon,
     peer: &SocketAddr,
     headers: &HeaderMap,
-) -> Result<alondra_core::domain_v2::Actor, Response> {
+) -> Result<alondra_core::domain::Actor, Response> {
     if let Some(refused) = local_only(peer, headers) {
         return Err(refused);
     }
@@ -457,7 +457,7 @@ fn tool_answer(answer: Result<Value, DomainError>) -> Response {
 }
 
 async fn orchestrator_launch(
-    State(state): State<Arc<V2Only>>,
+    State(state): State<Arc<DomainDaemon>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     body: Result<Json<crate::domain_orchestrator_tools::LaunchBody>, JsonRejection>,
@@ -473,7 +473,7 @@ async fn orchestrator_launch(
         ));
     };
     let domain = state.domain();
-    let choices = |request: &alondra_core::domain_v2::RequestId| {
+    let choices = |request: &alondra_core::domain::RequestId| {
         crate::domain_orchestrator_tools::request_choices(&domain, request)
             .ok()
             .flatten()
@@ -492,7 +492,7 @@ async fn orchestrator_launch(
 }
 
 async fn orchestrator_send(
-    State(state): State<Arc<V2Only>>,
+    State(state): State<Arc<DomainDaemon>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     body: Result<Json<crate::domain_orchestrator_tools::SendBody>, JsonRejection>,
@@ -520,7 +520,7 @@ async fn orchestrator_send(
 
 /// Lets a sandbox's operator interrupt a probe node, which has no orchestrator to ask.
 async fn sandbox_interrupt(
-    State(state): State<Arc<V2Only>>,
+    State(state): State<Arc<DomainDaemon>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     axum::extract::Path(session): axum::extract::Path<String>,
@@ -538,7 +538,7 @@ async fn sandbox_interrupt(
 }
 
 async fn orchestrator_interrupt(
-    State(state): State<Arc<V2Only>>,
+    State(state): State<Arc<DomainDaemon>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     body: Result<Json<crate::domain_orchestrator_tools::NodeBody>, JsonRejection>,
@@ -557,7 +557,7 @@ async fn orchestrator_interrupt(
 
 /// A Schedule the orchestrator creates for the user, materialized as the user's own drafts are.
 async fn orchestrator_schedule(
-    State(state): State<Arc<V2Only>>,
+    State(state): State<Arc<DomainDaemon>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     body: Result<Json<Value>, JsonRejection>,
@@ -591,7 +591,7 @@ async fn orchestrator_schedule(
     }
 }
 
-fn gauges_json(state: &V2Only) -> (Value, Value) {
+fn gauges_json(state: &DomainDaemon) -> (Value, Value) {
     match &*state.gauges.lock().expect("machine gauges poisoned") {
         Some((machine, usage)) => (json!(machine), json!(usage)),
         None => (Value::Null, Value::Null),
@@ -599,7 +599,7 @@ fn gauges_json(state: &V2Only) -> (Value, Value) {
 }
 
 async fn orchestrator_fleet(
-    State(state): State<Arc<V2Only>>,
+    State(state): State<Arc<DomainDaemon>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
 ) -> Response {
@@ -620,7 +620,7 @@ struct NodeQuery {
 }
 
 async fn orchestrator_node(
-    State(state): State<Arc<V2Only>>,
+    State(state): State<Arc<DomainDaemon>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     Query(query): Query<NodeQuery>,
@@ -641,7 +641,7 @@ struct CandidatesQuery {
 }
 
 async fn orchestrator_candidates(
-    State(state): State<Arc<V2Only>>,
+    State(state): State<Arc<DomainDaemon>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     Query(query): Query<CandidatesQuery>,
@@ -664,7 +664,7 @@ struct WaitingBody {
 /// An Agent declares it is stopped waiting for the machine, as 8ccd131's `wait_for_machine` did:
 /// its live state says so until its next turn.
 async fn agent_waiting_machine(
-    State(state): State<Arc<V2Only>>,
+    State(state): State<Arc<DomainDaemon>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     body: Result<Json<WaitingBody>, JsonRejection>,
@@ -698,7 +698,7 @@ async fn agent_waiting_machine(
 
 /// Machine capacity and the subscription's usage, as the `/daemon` gauges hold them.
 async fn orchestrator_machine(
-    State(state): State<Arc<V2Only>>,
+    State(state): State<Arc<DomainDaemon>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
 ) -> Response {
@@ -724,7 +724,7 @@ struct LogQuery {
 /// The end of the daemon's own log. The orchestrator reads it through this route because its
 /// file tools never reach Alondra's home, which holds keys and the nodes' capabilities.
 async fn orchestrator_log(
-    State(state): State<Arc<V2Only>>,
+    State(state): State<Arc<DomainDaemon>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     Query(query): Query<LogQuery>,
@@ -774,7 +774,7 @@ struct FileQuery {
 
 /// A stored copy under this HOME's `files`, by the reference a command or attachment carries.
 async fn file(
-    State(state): State<Arc<V2Only>>,
+    State(state): State<Arc<DomainDaemon>>,
     signed: Option<Extension<Signed>>,
     Query(query): Query<FileQuery>,
 ) -> Response {
@@ -837,7 +837,7 @@ mod tests {
         std::fs::write(home.join("service-keys/public.json"), json!({"mac_id": "mac-test",
             "signing_key": URL_SAFE_NO_PAD.encode(mac.verifying_key().to_sec1_bytes())}).to_string()).unwrap();
         drop(DomainRuntime::open(&home).unwrap());
-        let state = V2Only::open(&home).unwrap();
+        let state = DomainDaemon::open(&home).unwrap();
         let auth = state.auth();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
@@ -890,7 +890,7 @@ mod tests {
         );
         std::fs::write(home.join("service.toml"), config("devices = []\n")).unwrap();
         drop(DomainRuntime::open(&home).unwrap());
-        let state = V2Only::open(&home).unwrap();
+        let state = DomainDaemon::open(&home).unwrap();
         let auth = state.auth();
         let service = Arc::new(crate::service::Service::open(&home, 0, auth.clone()).unwrap().unwrap());
         state.attach_service(service.clone());
@@ -946,7 +946,7 @@ mod tests {
             .unwrap()
             .pragma_update(None, "user_version", 99)
             .unwrap();
-        let state = V2Only::open(&home).unwrap();
+        let state = DomainDaemon::open(&home).unwrap();
         assert_eq!(state.domain().state().unwrap().revision, 0);
         std::fs::remove_dir_all(&home).unwrap();
     }
@@ -971,7 +971,7 @@ mod tests {
                 &STANDARD.encode(key.verifying_key().to_sec1_bytes()),
             )
             .unwrap();
-        let state = V2Only::open(&home).unwrap();
+        let state = DomainDaemon::open(&home).unwrap();
         let domain = state.domain();
         let auth = state.auth();
         let capability = domain
@@ -1439,7 +1439,7 @@ mod tests {
             )
             .unwrap();
         let stranger = SigningKey::from_slice(&[22u8; 32]).unwrap();
-        let state = V2Only::open(&home).unwrap();
+        let state = DomainDaemon::open(&home).unwrap();
         let domain = state.domain();
         let gauges = state.gauges();
         let auth = state.auth();
@@ -1766,7 +1766,7 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(uploaded.status(), StatusCode::OK);
-        let reference: alondra_core::domain_v2::AttachmentRef = uploaded.json().await.unwrap();
+        let reference: alondra_core::domain::AttachmentRef = uploaded.json().await.unwrap();
         let expected: String = <sha2::Sha256 as sha2::Digest>::digest(&bytes)
             .iter()
             .map(|b| format!("{b:02x}"))
@@ -1979,7 +1979,7 @@ mod tests {
             crate::auth::random_hex(8)
         ));
         std::fs::create_dir(&home).unwrap();
-        assert!(V2Only::open(&home).is_err());
+        assert!(DomainDaemon::open(&home).is_err());
         assert!(
             !home.join("domain.db").exists(),
             "must not create an empty authority on missing stage"

@@ -110,7 +110,7 @@ struct PairingCandidate: Codable {
     let secret: String
     let deviceID: String
     let signingKey: String
-    let envelope: EnvelopeV1
+    let envelope: Envelope
 
     enum CodingKeys: String, CodingKey {
         case secret, envelope

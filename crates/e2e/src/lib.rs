@@ -81,7 +81,7 @@ impl std::error::Error for Error {}
 /// `route` is the target Mac ID, including on responses and pushes.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-pub struct EnvelopeV1 {
+pub struct Envelope {
     pub v: u8,
     pub route: String,
     pub sender: String,
@@ -130,7 +130,7 @@ fn validate_text(value: &str) -> Result<(), Error> {
     Ok(())
 }
 
-impl EnvelopeV1 {
+impl Envelope {
     fn validate_shape(&self) -> Result<(), Error> {
         if self.v != 1
             || !matches!(self.kind.as_str(), "request" | "response" | "push" | "pairing")
@@ -525,9 +525,9 @@ mod tests {
         )
     }
 
-    fn fixture() -> EnvelopeV1 {
+    fn fixture() -> Envelope {
         let (sender, recipient, ephemeral) = keys();
-        EnvelopeV1::seal_with_material(
+        Envelope::seal_with_material(
             Context {
                 route: "mac-1",
                 sender: "phone-1",
@@ -599,7 +599,7 @@ mod tests {
     fn every_routing_field_and_ciphertext_is_signed() {
         let (sender, _, _) = keys();
         let original = fixture();
-        let check = |e: EnvelopeV1| {
+        let check = |e: Envelope| {
             e.verify_signature(
                 sender.verifying_key(),
                 &e.sender.clone(),
@@ -951,9 +951,9 @@ mod tests {
             expires_at_ms: 1_800_000_000_000,
         };
         let first =
-            EnvelopeV1::seal_random(context(), b"hello", &sender, &recipient.public_key()).unwrap();
+            Envelope::seal_random(context(), b"hello", &sender, &recipient.public_key()).unwrap();
         let second =
-            EnvelopeV1::seal_random(context(), b"hello", &sender, &recipient.public_key()).unwrap();
+            Envelope::seal_random(context(), b"hello", &sender, &recipient.public_key()).unwrap();
         assert_ne!(first.ephemeral_key, second.ephemeral_key);
         assert_ne!(first.ciphertext, second.ciphertext);
         assert_eq!(

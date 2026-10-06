@@ -296,8 +296,8 @@ pub(crate) fn next_local_midnight(now: Millis) -> Millis {
     local_at(now, 1, 0, 0)
 }
 
-fn option(id: &str, label: &str) -> alondra_core::domain_v2::QuestionOption {
-    alondra_core::domain_v2::QuestionOption { id: id.into(), label: label.into(), description: None, inputs: vec![] }
+fn option(id: &str, label: &str) -> alondra_core::domain::QuestionOption {
+    alondra_core::domain::QuestionOption { id: id.into(), label: label.into(), description: None, inputs: vec![] }
 }
 
 /// A launch going ahead over today's slice of the week puts a card in front of the user, once
@@ -314,7 +314,7 @@ pub(crate) fn raise_over_pace_card(domain: &crate::domain_runtime::DomainRuntime
     log_unless_repeated(raised, "the usage pace");
 }
 
-fn log_unless_repeated(result: Result<alondra_core::domain_v2::CommandOutcome, crate::domain_store::StoreError>, what: &str) {
+fn log_unless_repeated(result: Result<alondra_core::domain::CommandOutcome, crate::domain_store::StoreError>, what: &str) {
     if let Err(error) = result
         && !matches!(&error, crate::domain_store::StoreError::Domain(domain) if domain.code == "invalid_input")
     {
@@ -326,7 +326,7 @@ fn log_unless_repeated(result: Result<alondra_core::domain_v2::CommandOutcome, c
 /// until the next local midnight and offers to resume early, "Resume now" ends that pause. A
 /// resume card that no longer has a pause behind it is withdrawn.
 pub(crate) fn settle_pace_cards(domain: &crate::domain_runtime::DomainRuntime, now: Millis) {
-    use alondra_core::domain_v2::InteractionPayload;
+    use alondra_core::domain::InteractionPayload;
     use alondra_core::usage::{OVER_PACE_PAUSE_OPTION, OVER_PACE_PREFIX, PACE_RESUME_OPTION, PACE_RESUME_PREFIX, PACE_STAY_OPTION};
     let Ok(state) = domain.state() else { return };
     let pause = &domain.live.usage_pause;
@@ -377,7 +377,7 @@ pub(crate) struct PushAlerts {
     pub domain: std::sync::Arc<crate::domain_runtime::DomainRuntime>,
     pub push: std::sync::Arc<crate::push::Push>,
     pub service: Option<std::sync::Arc<crate::service::Service>>,
-    pub client: std::sync::Arc<crate::v2_client_routes::Client>,
+    pub client: std::sync::Arc<crate::client_routes::Client>,
 }
 
 impl Alerts for PushAlerts {
@@ -688,18 +688,18 @@ mod tests {
         (domain, home)
     }
 
-    fn the_card(domain: &DomainRuntime, prefix: &str) -> Option<alondra_core::domain_v2::Interaction> {
+    fn the_card(domain: &DomainRuntime, prefix: &str) -> Option<alondra_core::domain::Interaction> {
         domain.state().unwrap().interactions.values().find(|card| card.id.0.starts_with(prefix) && !card.withdrawn).cloned()
     }
 
     fn answer(domain: &DomainRuntime, card: &str, option: &str) {
         let state = domain.state().unwrap();
-        domain.execute(&alondra_core::domain_v2::Actor::User { user_id: "device:phone".into() }, &alondra_core::domain_v2::CommandEnvelope {
-            protocol_version: alondra_core::domain_v2::PROTOCOL_VERSION,
+        domain.execute(&alondra_core::domain::Actor::User { user_id: "device:phone".into() }, &alondra_core::domain::CommandEnvelope {
+            protocol_version: alondra_core::domain::PROTOCOL_VERSION,
             data_epoch: state.data_epoch,
             command_id: format!("answer-{card}-{option}").into(),
             expected_revision: state.revision,
-            command: alondra_core::domain_v2::Command::AnswerQuestion {
+            command: alondra_core::domain::Command::AnswerQuestion {
                 attachments: vec![], interaction_id: card.into(), option_id: option.into(), inputs: Default::default(),
             },
         }, None, || Ok(())).unwrap();
@@ -712,11 +712,11 @@ mod tests {
         raise_over_pace_card(&domain, now_millis());
         let card = the_card(&domain, "over-pace-").expect("a card for the day");
         assert_eq!(card.id.0, format!("over-pace-{}", crate::node_reports::local_day(now_millis())));
-        assert_eq!(card.card.kind, alondra_core::domain_v2::CardKind::Decide);
-        assert_eq!(card.author, alondra_core::domain_v2::Author::System);
+        assert_eq!(card.card.kind, alondra_core::domain::CardKind::Decide);
+        assert_eq!(card.author, alondra_core::domain::Author::System);
         assert!(!card.blocking);
         assert_eq!(card.card.recommended.as_deref(), Some("keep_going"));
-        let alondra_core::domain_v2::InteractionPayload::Question { options, .. } = &card.payload else { panic!("a question") };
+        let alondra_core::domain::InteractionPayload::Question { options, .. } = &card.payload else { panic!("a question") };
         assert_eq!(options.iter().map(|option| option.id.as_str()).collect::<Vec<_>>(), ["pause_until_tomorrow", "keep_going"]);
 
         let state = domain.state().unwrap();

@@ -87,7 +87,7 @@ use std::io::stdout;
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::time::Duration;
 
-use alondra_core::domain_v2::{
+use alondra_core::domain::{
     AgentId, AttachmentRef, AvailableAction, Command, DeliveryTarget, Interaction, InteractionId,
     PrId, Revision, TaskId,
 };

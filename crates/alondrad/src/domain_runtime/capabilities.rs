@@ -98,7 +98,7 @@ fn decode_digest(text: &str) -> Result<[u8; 32]> {
 mod tests {
     use super::*;
     use crate::domain_runtime::DomainRuntime;
-    use alondra_core::domain_v2::*;
+    use alondra_core::domain::*;
 
     struct Fixture(std::path::PathBuf);
     impl Fixture {

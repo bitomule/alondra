@@ -249,7 +249,7 @@ impl Transfers {
 impl Transfers {
     /// A step of an upload as the v2 routes name it. What `finish` answers is the attachment
     /// a v2 command carries.
-    pub fn dispatch_v2(&self, home: &Path, sender: &str, route: &str, body: Value) -> Result<Value> {
+    pub fn dispatch_domain(&self, home: &Path, sender: &str, route: &str, body: Value) -> Result<Value> {
         let finished = self.dispatch(home, sender, route, body)?;
         let (Some(id), Some(name), Some(stored)) = (finished.get("id").and_then(Value::as_str),
             finished.get("name").and_then(Value::as_str), finished.get("path").and_then(Value::as_str)) else {
@@ -297,7 +297,7 @@ pub(crate) fn read_stored_chunk(home: &Path, reference: &str, offset: u64, versi
 
 /// The attachment a v2 command carries, for a file the daemon stored: its digest is
 /// computed from the stored copy and its reference is relative to this HOME.
-pub(crate) fn attachment_ref(home: &Path, id: String, name: String, stored: &Path) -> Result<alondra_core::domain_v2::AttachmentRef> {
+pub(crate) fn attachment_ref(home: &Path, id: String, name: String, stored: &Path) -> Result<alondra_core::domain::AttachmentRef> {
     let mut file = open_stored_file(home, stored)?;
     let mut hasher = Sha256::new();
     let mut buffer = [0u8; 64 * 1024];
@@ -311,7 +311,7 @@ pub(crate) fn attachment_ref(home: &Path, id: String, name: String, stored: &Pat
         total += count as u64;
     }
     let reference = stored.strip_prefix(home).unwrap_or(stored);
-    Ok(alondra_core::domain_v2::AttachmentRef {
+    Ok(alondra_core::domain::AttachmentRef {
         id,
         name,
         content_digest: hex_digest(hasher.finalize().as_slice()),

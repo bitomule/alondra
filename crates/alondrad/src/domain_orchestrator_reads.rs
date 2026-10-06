@@ -2,7 +2,7 @@
 //! sessions the daemon observes next to the domain's Requests, Tasks, questions, results and
 //! undelivered messages. Each answer has the shape the MCP's summaries already read.
 use crate::domain_runtime::DomainRuntime;
-use alondra_core::domain_v2::{AgentId, Author, DomainError, DomainState, Interaction, InteractionPayload, PrState, Recipient, TaskId};
+use alondra_core::domain::{AgentId, Author, DomainError, DomainState, Interaction, InteractionPayload, PrState, Recipient, TaskId};
 use alondra_core::{Node, NodeStatus};
 use serde_json::{Value, json};
 

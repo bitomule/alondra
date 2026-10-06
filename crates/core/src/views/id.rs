@@ -37,7 +37,7 @@ fn hosted_pr(id: &str) -> bool {
         && segment(name)
         && !number.is_empty()
         && number.bytes().all(|b| b.is_ascii_digit())
-        && number.parse::<u64>().is_ok_and(|number| number > 0 && number <= crate::domain_v2::MAX_REVISION)
+        && number.parse::<u64>().is_ok_and(|number| number > 0 && number <= crate::domain::MAX_REVISION)
 }
 
 /// Encode an opaque ID as exactly one URL path segment.

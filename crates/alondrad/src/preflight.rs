@@ -31,7 +31,7 @@ fn start(config: &Config) -> Result<String> {
     crate::retire_empty_older_sidecar(&config.home)?;
     crate::ensure_domain_protocol(&config.home)?;
     let _domain = crate::domain_runtime::DomainRuntime::open(&config.home)?;
-    crate::domain_bootstrap::V2Only::open(&config.home)?;
+    crate::domain_bootstrap::DomainDaemon::open(&config.home)?;
     Ok("canonical domain state starts".into())
 }
 

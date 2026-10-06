@@ -4,7 +4,7 @@
 //! every submission is checked against the current domain snapshot and then committed through
 //! the same command path as the resource API.
 
-use alondra_core::domain_v2::{
+use alondra_core::domain::{
     Actor, AuthorizationId, Command, CommandEnvelope, CommandId, DataEpoch, DomainError, Hold, Instruction,
     InteractionId, InteractionPayload, MergeMethod, Revision, TaskId,
 };
@@ -58,7 +58,7 @@ pub(crate) fn approved_path(method: &str, path: &str) -> bool {
 /// Local paired-device route. The relay calls `execute` after its own receipt and approval
 /// checks, preserving the same domain command and response contract.
 pub(crate) async fn local(
-    State(state): State<std::sync::Arc<crate::domain_bootstrap::V2Only>>,
+    State(state): State<std::sync::Arc<crate::domain_bootstrap::DomainDaemon>>,
     signed: Option<Extension<crate::auth::Signed>>,
     body: Result<Json<ActionRequest>, JsonRejection>,
 ) -> Response {
@@ -77,7 +77,7 @@ pub(crate) async fn local(
 }
 
 pub(crate) async fn relay(
-    client: &crate::v2_client_routes::Client,
+    client: &crate::client_routes::Client,
     sender: &str,
     body: &Value,
     identity: (&str, &str, &[u8; 32]),
@@ -98,7 +98,7 @@ pub(crate) async fn relay(
 
 async fn execute(
     domain: &crate::domain_runtime::DomainRuntime,
-    client: &crate::v2_client_routes::Client,
+    client: &crate::client_routes::Client,
     home: &std::path::Path,
     device: &str,
     request: ActionRequest,
@@ -161,7 +161,7 @@ fn is_external(verb: Verb) -> bool {
 
 async fn execute_action(
     domain: &crate::domain_runtime::DomainRuntime,
-    client: &crate::v2_client_routes::Client,
+    client: &crate::client_routes::Client,
     home: &std::path::Path,
     device: &str,
     request: ActionRequest,
@@ -211,18 +211,18 @@ async fn execute_action(
 
 async fn execute_external(
     domain: &crate::domain_runtime::DomainRuntime,
-    client: &crate::v2_client_routes::Client,
+    client: &crate::client_routes::Client,
     home: &std::path::Path,
     device: &str,
     request: &ActionRequest,
-    attachments: &[alondra_core::domain_v2::AttachmentRef],
+    attachments: &[alondra_core::domain::AttachmentRef],
     action: &ActionId,
     identity: Option<(&str, &str, &[u8; 32])>,
     authorize: impl Fn() -> anyhow::Result<()> + Sync,
     lang: Lang,
 ) -> anyhow::Result<Value> {
-    use crate::v2_client_routes::Write;
-    use alondra_core::domain_v2::{AgentId, PrId, Scope};
+    use crate::client_routes::Write;
+    use alondra_core::domain::{AgentId, PrId, Scope};
 
     let state = domain.state()?;
     if authorize().is_err() {
@@ -289,7 +289,7 @@ async fn execute_external(
         }
         Verb::AskPr => {
             let pr_id = PrId(action.subject.clone());
-            let Some(pr) = state.pull_requests.get(&pr_id).filter(|pr| pr.state == alondra_core::domain_v2::PrState::Open) else {
+            let Some(pr) = state.pull_requests.get(&pr_id).filter(|pr| pr.state == alondra_core::domain::PrState::Open) else {
                 return Ok(no_longer_available(lang, "This pull request is no longer open"));
             };
             let Some(task) = state.tasks.get(&pr.task_id) else { return Ok(no_longer_available(lang, "This pull request is no longer available")); };
@@ -305,7 +305,7 @@ async fn execute_external(
         }
         Verb::Conflicts => {
             let pr_id = PrId(action.subject.clone());
-            let Some(_pr) = state.pull_requests.get(&pr_id).filter(|pr| pr.state == alondra_core::domain_v2::PrState::Open) else {
+            let Some(_pr) = state.pull_requests.get(&pr_id).filter(|pr| pr.state == alondra_core::domain::PrState::Open) else {
                 return Ok(no_longer_available(lang, "This pull request is no longer open"));
             };
             let reply = client.write(&user_id, Write::ResolveConflicts(pr_id.0), &json!({}), transport, &authorize).await?;
@@ -433,7 +433,7 @@ async fn schedule_action(
     lang: Lang,
     stamp: &str,
 ) -> anyhow::Result<Value> {
-    use alondra_core::domain_v2::ScheduleId;
+    use alondra_core::domain::ScheduleId;
     let state = domain.state()?;
     if action.verb == Verb::SchedSave && action.subject == "view" {
         let options = schedule_option_specs(home, &request.input.fields, None);
@@ -477,7 +477,7 @@ async fn schedule_action(
     Ok(schedule_reply(result, lang, stamp, state.revision))
 }
 
-fn schedule_option_specs(home: &std::path::Path, fields: &serde_json::Map<String, Value>, schedule: Option<&alondra_core::domain_v2::Schedule>) -> Vec<alondra_core::options::Spec> {
+fn schedule_option_specs(home: &std::path::Path, fields: &serde_json::Map<String, Value>, schedule: Option<&alondra_core::domain::Schedule>) -> Vec<alondra_core::options::Spec> {
     let project = fields.get("project").and_then(Value::as_str)
         .or_else(|| schedule.and_then(|schedule| schedule.project.as_deref()))
         .filter(|project| !project.is_empty());
@@ -487,7 +487,7 @@ fn schedule_option_specs(home: &std::path::Path, fields: &serde_json::Map<String
     file.catalog(project)
 }
 
-fn schedule_draft(fields: &serde_json::Map<String, Value>, schedule: Option<&alondra_core::domain_v2::Schedule>, option_specs: &[alondra_core::options::Spec]) -> Value {
+fn schedule_draft(fields: &serde_json::Map<String, Value>, schedule: Option<&alondra_core::domain::Schedule>, option_specs: &[alondra_core::options::Spec]) -> Value {
     let text = |key: &str, fallback: &str| -> String {
         fields.get(key).and_then(Value::as_str).unwrap_or(fallback).to_owned()
     };
@@ -633,7 +633,7 @@ fn execute_value(
     domain: &crate::domain_runtime::DomainRuntime,
     device: &str,
     request: ActionRequest,
-    attachments: &[alondra_core::domain_v2::AttachmentRef],
+    attachments: &[alondra_core::domain::AttachmentRef],
     identity: Option<(&str, &str, &[u8; 32])>,
     authorize: impl Fn() -> anyhow::Result<()> + Sync,
 ) -> anyhow::Result<Value> {
@@ -666,7 +666,7 @@ fn execute_value(
         return Ok(no_longer_available(lang, "This action is no longer available"));
     };
     let conflicts = (action.verb == Verb::Conflicts)
-        .then(|| state.pull_requests.get(&alondra_core::domain_v2::PrId(action.subject.clone())))
+        .then(|| state.pull_requests.get(&alondra_core::domain::PrId(action.subject.clone())))
         .flatten();
     let (actor, command_id) = match conflicts {
         Some(pr) => (Actor::System, conflicts_command_id(pr)),
@@ -702,7 +702,7 @@ fn archive_done(
     device: &str,
     request: &ActionRequest,
     action: &ActionId,
-    state: &alondra_core::domain_v2::DomainState,
+    state: &alondra_core::domain::DomainState,
     lang: Lang,
     authorize: impl Fn() -> anyhow::Result<()> + Sync,
 ) -> anyhow::Result<Value> {
@@ -717,7 +717,7 @@ fn archive_done(
     for task_id in tasks {
         let current = domain.state()?;
         let Some(task) = current.tasks.get(&task_id).filter(|task| {
-            task.state == alondra_core::domain_v2::TaskState::Done
+            task.state == alondra_core::domain::TaskState::Done
                 && !task.archived
                 && task.revision <= action.revision
         }) else {
@@ -748,11 +748,11 @@ fn archive_done(
 }
 
 fn archive_targets(
-    state: &alondra_core::domain_v2::DomainState,
+    state: &alondra_core::domain::DomainState,
     action_revision: u64,
-) -> Vec<&alondra_core::domain_v2::Task> {
+) -> Vec<&alondra_core::domain::Task> {
     state.tasks.values()
-        .filter(|task| task.state == alondra_core::domain_v2::TaskState::Done
+        .filter(|task| task.state == alondra_core::domain::TaskState::Done
             && !task.archived && task.revision <= action_revision)
         .collect()
 }
@@ -765,10 +765,10 @@ fn archive_command_id(parent: &str, task: &TaskId) -> CommandId {
 }
 
 fn map_domain_action(
-    state: &alondra_core::domain_v2::DomainState,
+    state: &alondra_core::domain::DomainState,
     action: &ActionId,
     request: &ActionRequest,
-    attachments: &[alondra_core::domain_v2::AttachmentRef],
+    attachments: &[alondra_core::domain::AttachmentRef],
     lang: Lang,
 ) -> Option<(Command, String)> {
     let stamp = |en: &str, es: &str| if lang == Lang::Es { es } else { en }.to_owned();
@@ -782,11 +782,11 @@ fn map_domain_action(
             if option_id.is_empty() {
                 let text = request.input.text.as_ref()?.trim();
                 if text.is_empty() { return None; }
-                inputs.insert("text".into(), alondra_core::domain_v2::InputValue::Text(text.into()));
+                inputs.insert("text".into(), alondra_core::domain::InputValue::Text(text.into()));
             } else if let Some(text) = request.input.text.as_ref() {
                 let option = option?;
-                let input = option.inputs.iter().find(|input| input.kind == alondra_core::domain_v2::InputKind::Text)?;
-                inputs.insert(input.id.clone(), alondra_core::domain_v2::InputValue::Text(text.clone()));
+                let input = option.inputs.iter().find(|input| input.kind == alondra_core::domain::InputKind::Text)?;
+                inputs.insert(input.id.clone(), alondra_core::domain::InputValue::Text(text.clone()));
             } else if option.is_none() {
                 return None;
             }
@@ -803,7 +803,7 @@ fn map_domain_action(
             let (InteractionPayload::Question { answer: None, .. } | InteractionPayload::ActionRequest { answer: None, .. }) = &interaction.payload else { return None; };
             if state.holds.contains_key(&interaction.id) { return None; }
             let note = request.input.text.as_deref().unwrap_or_default().trim();
-            let inputs = std::collections::BTreeMap::from([("text".to_owned(), alondra_core::domain_v2::InputValue::Text(context_request(note)))]);
+            let inputs = std::collections::BTreeMap::from([("text".to_owned(), alondra_core::domain::InputValue::Text(context_request(note)))]);
             Some((Command::AnswerQuestion { interaction_id: interaction.id.clone(), option_id: String::new(),
                 inputs, attachments: vec![] }, stamp("Context requested", "Contexto solicitado")))
         }
@@ -819,7 +819,7 @@ fn map_domain_action(
                 stamp("Reply sent", "Respuesta enviada")))
         }
         Verb::AskPr | Verb::Conflicts => {
-            let pr = state.pull_requests.get(&alondra_core::domain_v2::PrId(action.subject.clone()))?;
+            let pr = state.pull_requests.get(&alondra_core::domain::PrId(action.subject.clone()))?;
             let presentation = pr_presentation(state, pr)?;
             let InteractionPayload::Delivery { targets, .. } = &presentation.payload else { return None; };
             let (body, attachments, instruction, stamp) = if action.verb == Verb::AskPr {
@@ -845,7 +845,7 @@ fn map_domain_action(
             let interaction = state.interactions.get(&InteractionId(action.subject.clone()))?;
             let reason = match request.option_id.as_deref().filter(|id| !id.is_empty()) {
                 Some(name) => alondra_core::views::action_id::clarification_reason(name)?,
-                None => alondra_core::domain_v2::ClarificationReason::Unclear,
+                None => alondra_core::domain::ClarificationReason::Unclear,
             };
             let text = request.input.text.as_deref().map(str::trim).filter(|text| !text.is_empty()).map(str::to_owned);
             Some((Command::RequestClarification { interaction_id: interaction.id.clone(), reason, text },
@@ -865,8 +865,8 @@ fn map_domain_action(
             Some((Command::AcceptDelivery { presentation_id: interaction.id.clone(), targets: targets.clone() }, stamp("Accepted", "Aceptada")))
         }
         Verb::Changes => {
-            let (interaction, pr_head) = if state.pull_requests.contains_key(&alondra_core::domain_v2::PrId(action.subject.clone())) {
-                let pr = state.pull_requests.get(&alondra_core::domain_v2::PrId(action.subject.clone()))?;
+            let (interaction, pr_head) = if state.pull_requests.contains_key(&alondra_core::domain::PrId(action.subject.clone())) {
+                let pr = state.pull_requests.get(&alondra_core::domain::PrId(action.subject.clone()))?;
                 let head = action.extra.as_deref()?;
                 if head != head_prefix(&pr.head) {
                     return None;
@@ -874,7 +874,7 @@ fn map_domain_action(
                 let presentation = state.interactions.values().find(|interaction| {
                     matches!(&interaction.payload, InteractionPayload::Delivery { targets, .. }
                         if targets.iter().any(|target| matches!(target,
-                            alondra_core::domain_v2::DeliveryTarget::PullRequest { pr_id, head }
+                            alondra_core::domain::DeliveryTarget::PullRequest { pr_id, head }
                                 if pr_id == &pr.id && head == &pr.head)))
                 })?;
                 (presentation, Some(pr.head.clone()))
@@ -888,18 +888,18 @@ fn map_domain_action(
             if let InteractionPayload::Question { answer: None, .. } | InteractionPayload::ActionRequest { answer: None, .. } = &interaction.payload {
                 let option_id = if held_plan(state, interaction) {
                     Hold::REQUEST_CHANGES.to_owned()
-                } else if matches!(interaction.subject, Some(alondra_core::domain_v2::InteractionSubject::DocumentReview { .. })) {
+                } else if matches!(interaction.subject, Some(alondra_core::domain::InteractionSubject::DocumentReview { .. })) {
                     String::new()
                 } else {
                     return None;
                 };
-                let inputs = std::collections::BTreeMap::from([(Hold::NOTE.to_owned(), alondra_core::domain_v2::InputValue::Text(body))]);
+                let inputs = std::collections::BTreeMap::from([(Hold::NOTE.to_owned(), alondra_core::domain::InputValue::Text(body))]);
                 return Some((Command::AnswerQuestion { interaction_id: interaction.id.clone(), option_id,
                     inputs, attachments: attachments.to_vec() }, stamp("Changes requested", "Cambios solicitados")));
             }
             let InteractionPayload::Delivery { targets, .. } = &interaction.payload else { return None; };
             if let Some(head) = pr_head.as_deref() {
-                if !targets.iter().any(|target| matches!(target, alondra_core::domain_v2::DeliveryTarget::PullRequest { head: target_head, .. } if target_head == head)) {
+                if !targets.iter().any(|target| matches!(target, alondra_core::domain::DeliveryTarget::PullRequest { head: target_head, .. } if target_head == head)) {
                     return None;
                 }
             }
@@ -907,9 +907,9 @@ fn map_domain_action(
                 attachments: attachments.to_vec(), instruction: Instruction::Changes }, stamp("Changes requested", "Cambios solicitados")))
         }
         Verb::Merge => {
-            let (interaction, target_pr) = if state.pull_requests.contains_key(&alondra_core::domain_v2::PrId(action.subject.clone())) {
+            let (interaction, target_pr) = if state.pull_requests.contains_key(&alondra_core::domain::PrId(action.subject.clone())) {
                 let (head, presentation_id) = action.extra.as_deref()?.split_once('-')?;
-                let pr = state.pull_requests.get(&alondra_core::domain_v2::PrId(action.subject.clone()))?;
+                let pr = state.pull_requests.get(&alondra_core::domain::PrId(action.subject.clone()))?;
                 if head != head_prefix(&pr.head) { return None; }
                 let presentation = state.interactions.get(&InteractionId(presentation_id.to_owned()))?;
                 (presentation, Some(pr.id.clone()))
@@ -918,15 +918,15 @@ fn map_domain_action(
             };
             let InteractionPayload::Delivery { targets, .. } = &interaction.payload else { return None; };
             let (pr_id, head) = targets.iter().find_map(|target| match target {
-                alondra_core::domain_v2::DeliveryTarget::PullRequest { pr_id, head } => Some((pr_id, head)),
+                alondra_core::domain::DeliveryTarget::PullRequest { pr_id, head } => Some((pr_id, head)),
                 _ => None,
             }).filter(|(pr_id, _)| target_pr.as_ref().is_none_or(|expected| expected == *pr_id))?;
             let (prefix, expected_presentation) = action.extra.as_deref()?.split_once('-')?;
             if expected_presentation != interaction.id.0 || prefix != head_prefix(head) { return None; }
             let pr = state.pull_requests.get(pr_id)?;
-            if pr.head != *head || pr.state != alondra_core::domain_v2::PrState::Open { return None; }
+            if pr.head != *head || pr.state != alondra_core::domain::PrState::Open { return None; }
             if state.pull_requests.values().any(|upstream| upstream.id != pr.id
-                && upstream.state == alondra_core::domain_v2::PrState::Open
+                && upstream.state == alondra_core::domain::PrState::Open
                 && upstream.repository == pr.repository && upstream.head == pr.base) {
                 return None;
             }
@@ -944,7 +944,7 @@ fn map_domain_action(
             }, stamp("Merge authorized", "Integración autorizada")))
         }
         Verb::Withdraw => {
-            if !state.requests.get(&alondra_core::domain_v2::RequestId(action.subject.clone()))?.closed {
+            if !state.requests.get(&alondra_core::domain::RequestId(action.subject.clone()))?.closed {
                 Some((Command::CloseRequest { request_id: action.subject.clone().into(), answer: None, withdrawn: true, title: None }, stamp("Withdrawn", "Retirada")))
             } else { None }
         }
@@ -967,11 +967,11 @@ fn map_domain_action(
 /// A reply to a delivery, a question about a presented PR or a request to resolve its conflicts
 /// is feedback on that delivery, so its card leaves the queue; with no delivery to hold it is
 /// only typed to the node.
-fn handed_back_in_domain(state: &alondra_core::domain_v2::DomainState, action: &ActionId) -> bool {
+fn handed_back_in_domain(state: &alondra_core::domain::DomainState, action: &ActionId) -> bool {
     match action.verb {
         Verb::Reply => state.interactions.get(&InteractionId(action.subject.clone()))
             .is_some_and(|interaction| matches!(interaction.payload, InteractionPayload::Delivery { .. })),
-        Verb::AskPr | Verb::Conflicts => state.pull_requests.get(&alondra_core::domain_v2::PrId(action.subject.clone()))
+        Verb::AskPr | Verb::Conflicts => state.pull_requests.get(&alondra_core::domain::PrId(action.subject.clone()))
             .is_some_and(|pr| pr_presentation(state, pr).is_some()),
         _ => false,
     }
@@ -979,47 +979,47 @@ fn handed_back_in_domain(state: &alondra_core::domain_v2::DomainState, action: &
 
 /// Resolve conflicts is Alondra's own request, whether the user tapped it or Alondra noticed:
 /// one per PR head, so a second one for the same head changes nothing.
-pub(crate) fn conflicts_command_id(pr: &alondra_core::domain_v2::PullRequest) -> CommandId {
+pub(crate) fn conflicts_command_id(pr: &alondra_core::domain::PullRequest) -> CommandId {
     CommandId(format!("conflicts-{}-{}", pr.id, pr.head))
 }
 
 /// The open PR's current final delivery, presented at the PR's head.
 pub(crate) fn pr_presentation<'a>(
-    state: &'a alondra_core::domain_v2::DomainState,
-    pr: &alondra_core::domain_v2::PullRequest,
-) -> Option<&'a alondra_core::domain_v2::Interaction> {
-    if pr.state != alondra_core::domain_v2::PrState::Open { return None; }
+    state: &'a alondra_core::domain::DomainState,
+    pr: &alondra_core::domain::PullRequest,
+) -> Option<&'a alondra_core::domain::Interaction> {
+    if pr.state != alondra_core::domain::PrState::Open { return None; }
     let task = state.tasks.get(&pr.task_id).filter(|task| !task.state.terminal())?;
     let presentation = state.interactions.get(task.final_presentation.as_ref()?)?;
     let InteractionPayload::Delivery { targets, .. } = &presentation.payload else { return None; };
-    targets.iter().any(|target| matches!(target, alondra_core::domain_v2::DeliveryTarget::PullRequest { pr_id, head }
+    targets.iter().any(|target| matches!(target, alondra_core::domain::DeliveryTarget::PullRequest { pr_id, head }
         if pr_id == &pr.id && head == &pr.head)).then_some(presentation)
 }
 
-fn held_plan(state: &alondra_core::domain_v2::DomainState, interaction: &alondra_core::domain_v2::Interaction) -> bool {
+fn held_plan(state: &alondra_core::domain::DomainState, interaction: &alondra_core::domain::Interaction) -> bool {
     state.holds.get(&interaction.id) == Some(&Hold::Plan)
 }
 
 fn changed_pr_head(
-    state: &alondra_core::domain_v2::DomainState,
+    state: &alondra_core::domain::DomainState,
     action: &ActionId,
     lang: Lang,
 ) -> Option<Value> {
     let (pr_id, presentation_id, old_prefix) = match action.verb {
-        Verb::Changes if state.pull_requests.contains_key(&alondra_core::domain_v2::PrId(action.subject.clone())) => (
-            alondra_core::domain_v2::PrId(action.subject.clone()),
+        Verb::Changes if state.pull_requests.contains_key(&alondra_core::domain::PrId(action.subject.clone())) => (
+            alondra_core::domain::PrId(action.subject.clone()),
             None,
             action.extra.as_deref()?,
         ),
         Verb::Merge => {
             let (prefix, presentation_id) = action.extra.as_deref()?.split_once('-')?;
-            let pr_id = if state.pull_requests.contains_key(&alondra_core::domain_v2::PrId(action.subject.clone())) {
-                alondra_core::domain_v2::PrId(action.subject.clone())
+            let pr_id = if state.pull_requests.contains_key(&alondra_core::domain::PrId(action.subject.clone())) {
+                alondra_core::domain::PrId(action.subject.clone())
             } else {
                 let interaction = state.interactions.get(&InteractionId(action.subject.clone()))?;
                 let InteractionPayload::Delivery { targets, .. } = &interaction.payload else { return None; };
                 targets.iter().find_map(|target| match target {
-                    alondra_core::domain_v2::DeliveryTarget::PullRequest { pr_id, .. } => Some(pr_id.clone()),
+                    alondra_core::domain::DeliveryTarget::PullRequest { pr_id, .. } => Some(pr_id.clone()),
                     _ => None,
                 })?
             };
@@ -1034,7 +1034,7 @@ fn changed_pr_head(
         Verb::Changes => (Verb::Changes, pr_id.0.clone(), state.revision, new_prefix.to_owned()),
         Verb::Merge => {
             let presentation = presentation_id?;
-            let id = if state.pull_requests.contains_key(&alondra_core::domain_v2::PrId(action.subject.clone())) { presentation } else { action.subject.as_str() };
+            let id = if state.pull_requests.contains_key(&alondra_core::domain::PrId(action.subject.clone())) { presentation } else { action.subject.as_str() };
             let revision = state.interactions.get(&InteractionId(id.to_owned())).map_or(state.revision, |interaction| interaction.revision);
             (Verb::Merge, action.subject.clone(), revision, format!("{new_prefix}-{presentation}"))
         }
@@ -1061,7 +1061,7 @@ fn no_longer_available(lang: Lang, message: &str) -> Value {
 fn resolve_attachments(
     home: &std::path::Path,
     ids: &[String],
-) -> anyhow::Result<Vec<alondra_core::domain_v2::AttachmentRef>> {
+) -> anyhow::Result<Vec<alondra_core::domain::AttachmentRef>> {
     let plain_ids: Vec<String> = ids.iter()
         .map(|id| id.strip_prefix("att:").unwrap_or(id).to_owned())
         .collect();
@@ -1228,7 +1228,7 @@ mod tests {
 
     #[test]
     fn schedule_draft_drops_old_project_options_when_project_changes() {
-        let schedule: alondra_core::domain_v2::Schedule = serde_json::from_value(json!({
+        let schedule: alondra_core::domain::Schedule = serde_json::from_value(json!({
             "id":"schedule-1", "title":"Morning", "text":"Review work",
             "project":"Old", "options":{"old_option":"old_value"},
             "disallowed_tools":[], "frequency":"daily", "hour":9, "minute":0,
@@ -1268,7 +1268,7 @@ mod tests {
 
     #[tokio::test]
     async fn archive_done_is_idempotent() {
-        use alondra_core::domain_v2::DeliveryTarget;
+        use alondra_core::domain::DeliveryTarget;
         use std::{fs, path::PathBuf};
 
         struct TestHome(PathBuf);
@@ -1280,7 +1280,7 @@ mod tests {
         fs::create_dir(&home).unwrap();
         let _home = TestHome(home.clone());
         let domain = std::sync::Arc::new(crate::domain_runtime::DomainRuntime::open(&home).unwrap());
-        let client = crate::v2_client_routes::Client::open(domain.clone(), &home, Default::default());
+        let client = crate::client_routes::Client::open(domain.clone(), &home, Default::default());
         apply_seed_command(&domain, Actor::System, "register-agent", Command::RegisterAgent {
             agent_id: "agent-a".into(), name: "Agent A".into(),
         });
@@ -1300,7 +1300,7 @@ mod tests {
             apply_seed_command(&domain, Actor::Agent { agent_id: "agent-a".into() }, &format!("present-{task_id}"), Command::PresentResult {
                 attachments: vec![], task_id: task_id.into(), interaction_id: delivery_id.clone().into(),
                 body: "Complete".into(), targets: vec![DeliveryTarget::Text { text: "Complete".into() }],
-                is_final: true, card: alondra_core::domain_v2::CardSpec::delivery("Review the result", &[], true),
+                is_final: true, card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
             });
             apply_seed_command(&domain, Actor::User { user_id: "user".into() }, &format!("accept-{task_id}"), Command::AcceptDelivery {
                 presentation_id: delivery_id.clone().into(),
@@ -1437,8 +1437,8 @@ mod tests {
 
     #[test]
     fn free_text_question_maps_to_empty_option_and_text_input() {
-        use alondra_core::domain_v2::{Author, Interaction, InteractionPayload, Recipient, Scope, InputValue, QuestionOption};
-        let mut state = alondra_core::domain_v2::DomainState::new("epoch");
+        use alondra_core::domain::{Author, Interaction, InteractionPayload, Recipient, Scope, InputValue, QuestionOption};
+        let mut state = alondra_core::domain::DomainState::new("epoch");
         state.interactions.insert("q-1".into(), Interaction {
             attachments: vec![], id: "q-1".into(), scope: Scope::Task { task_id: "t-1".into() },
             author: Author::System, recipient: Recipient::User, body: "Pick one or explain".into(),
@@ -1446,7 +1446,7 @@ mod tests {
                 options: vec![QuestionOption {
                     id: "yes".into(), label: "Yes".into(), description: None, inputs: vec![],
                 }], answer: None,
-            }, revision: 1, order: 1, withdrawn: false, card: alondra_core::domain_v2::CardSpec::derived(alondra_core::domain_v2::CardKind::Know, "Read the update"), clarification: None,
+            }, revision: 1, order: 1, withdrawn: false, card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Know, "Read the update"), clarification: None,
         });
         let request = ActionRequest {
             protocol: VIEWS_PROTOCOL, command_id: "5f0c2d9e-8d0b-4c71-9b0e-2b6f5d8f1a10".into(),
@@ -1472,8 +1472,8 @@ mod tests {
 
     #[test]
     fn requesting_changes_on_a_document_question_answers_it_with_the_block_comments() {
-        use alondra_core::domain_v2::{Author, InputValue, Interaction, InteractionSubject, QuestionOption, Recipient, Scope};
-        let mut state = alondra_core::domain_v2::DomainState::new("epoch");
+        use alondra_core::domain::{Author, InputValue, Interaction, InteractionSubject, QuestionOption, Recipient, Scope};
+        let mut state = alondra_core::domain::DomainState::new("epoch");
         state.interactions.insert("q-1".into(), Interaction {
             attachments: vec![], id: "q-1".into(), scope: Scope::Task { task_id: "t-1".into() },
             author: Author::Agent { agent_id: "a-1".into() }, recipient: Recipient::User, body: "Approve the plan?".into(),
@@ -1482,7 +1482,7 @@ mod tests {
             payload: InteractionPayload::Question {
                 options: vec![QuestionOption { id: "approve".into(), label: "Approve".into(), description: None, inputs: vec![] }],
                 answer: None,
-            }, revision: 1, order: 1, withdrawn: false, card: alondra_core::domain_v2::CardSpec::derived(alondra_core::domain_v2::CardKind::Know, "Read the update"), clarification: None,
+            }, revision: 1, order: 1, withdrawn: false, card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Know, "Read the update"), clarification: None,
         });
         let request = ActionRequest {
             protocol: VIEWS_PROTOCOL, command_id: "5f0c2d9e-8d0b-4c71-9b0e-2b6f5d8f1a10".into(),
@@ -1505,14 +1505,14 @@ mod tests {
 
     #[test]
     fn a_held_plan_is_approved_or_sent_back_with_the_comments_on_its_blocks() {
-        use alondra_core::domain_v2::{Author, InputValue, Interaction, Recipient, Scope};
-        let mut state = alondra_core::domain_v2::DomainState::new("epoch");
+        use alondra_core::domain::{Author, InputValue, Interaction, Recipient, Scope};
+        let mut state = alondra_core::domain::DomainState::new("epoch");
         state.interactions.insert("hold-1".into(), Interaction {
             attachments: vec![], id: "hold-1".into(), scope: Scope::Task { task_id: "t-1".into() },
             author: Author::System, recipient: Recipient::User, body: "# Plan\n\n1. Split the lexer".into(),
             blocking: true, subject: None,
             payload: InteractionPayload::Question { options: Hold::Plan.options(), answer: None },
-            revision: 1, order: 1, withdrawn: false, card: alondra_core::domain_v2::CardSpec::derived(alondra_core::domain_v2::CardKind::Know, "Read the update"), clarification: None,
+            revision: 1, order: 1, withdrawn: false, card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Know, "Read the update"), clarification: None,
         });
         state.holds.insert("hold-1".into(), Hold::Plan);
         let request = ActionRequest {
@@ -1547,10 +1547,10 @@ mod tests {
 
     #[test]
     fn canonical_pr_subject_maps_changes_merge_and_stale_head() {
-        use alondra_core::domain_v2::{Author, DeliveryTarget, Interaction, PrState, PullRequest,
+        use alondra_core::domain::{Author, DeliveryTarget, Interaction, PrState, PullRequest,
             Recipient, Scope};
         let id = "github.com/bitomule/alondra#154";
-        let mut state = alondra_core::domain_v2::DomainState::new("epoch");
+        let mut state = alondra_core::domain::DomainState::new("epoch");
         state.pull_requests.insert(id.into(), PullRequest {
             id: id.into(), task_id: "t-1".into(), host: "github.com".into(),
             repository: "bitomule/alondra".into(), number: 154,
@@ -1564,7 +1564,7 @@ mod tests {
             payload: InteractionPayload::Delivery {
                 targets: vec![DeliveryTarget::PullRequest { pr_id: id.into(), head: "abcdef123456".into() }],
                 is_final: false, acceptance: None, feedback: vec![],
-            }, revision: 1, order: 1, withdrawn: false, card: alondra_core::domain_v2::CardSpec::derived(alondra_core::domain_v2::CardKind::Know, "Read the update"), clarification: None,
+            }, revision: 1, order: 1, withdrawn: false, card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Know, "Read the update"), clarification: None,
         });
         let request = ActionRequest {
             protocol: VIEWS_PROTOCOL, command_id: "5f0c2d9e-8d0b-4c71-9b0e-2b6f5d8f1a10".into(),
@@ -1595,11 +1595,11 @@ mod tests {
         fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); }
     }
 
-    fn action_home() -> (ActionHome, std::sync::Arc<crate::domain_runtime::DomainRuntime>, std::sync::Arc<crate::v2_client_routes::Client>) {
+    fn action_home() -> (ActionHome, std::sync::Arc<crate::domain_runtime::DomainRuntime>, std::sync::Arc<crate::client_routes::Client>) {
         let home = std::env::temp_dir().join(format!("alondra-view-actions-{}", crate::auth::random_hex(8)));
         std::fs::create_dir(&home).unwrap();
         let domain = std::sync::Arc::new(crate::domain_runtime::DomainRuntime::open(&home).unwrap());
-        let client = crate::v2_client_routes::Client::open(domain.clone(), &home, Default::default());
+        let client = crate::client_routes::Client::open(domain.clone(), &home, Default::default());
         (ActionHome(home), domain, client)
     }
 
@@ -1622,7 +1622,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_answered_question_is_no_longer_available() {
-        use alondra_core::domain_v2::{Recipient, Scope, QuestionOption};
+        use alondra_core::domain::{Recipient, Scope, QuestionOption};
         let (home, domain, client) = action_home();
         let user = Actor::User { user_id: "user".into() };
         apply_seed_command(&domain, Actor::System, "register-agent", Command::RegisterAgent {
@@ -1638,7 +1638,7 @@ mod tests {
         apply_seed_command(&domain, Actor::Agent { agent_id: "agent-a".into() }, "ask", Command::AskQuestion {
             attachments: vec![], interaction_id: "question".into(), scope: Scope::Task { task_id: "task".into() },
             recipient: Recipient::User, body: "Ship it?".into(), blocking: true,
-            options: vec![QuestionOption { id: "yes".into(), label: "Yes".into(), description: None, inputs: vec![] }], card: alondra_core::domain_v2::CardSpec::derived(alondra_core::domain_v2::CardKind::Provide, "Answer the question"),
+            options: vec![QuestionOption { id: "yes".into(), label: "Yes".into(), description: None, inputs: vec![] }], card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Provide, "Answer the question"),
         });
         let state = domain.state().unwrap();
         let revision = state.interactions[&"question".into()].revision;
@@ -1654,7 +1654,7 @@ mod tests {
     }
 
     fn presented_pr(domain: &crate::domain_runtime::DomainRuntime) {
-        use alondra_core::domain_v2::DeliveryTarget;
+        use alondra_core::domain::DeliveryTarget;
         let user = Actor::User { user_id: "user".into() };
         let agent = Actor::Agent { agent_id: "agent-a".into() };
         apply_seed_command(domain, Actor::System, "register-agent", Command::RegisterAgent {
@@ -1674,7 +1674,7 @@ mod tests {
         apply_seed_command(domain, agent, "present", Command::PresentResult {
             attachments: vec![], task_id: "task".into(), interaction_id: "result".into(), body: "Ready".into(),
             targets: vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: "0123456789abcdef".into() }],
-            is_final: true, card: alondra_core::domain_v2::CardSpec::delivery("Review the result", &[], true),
+            is_final: true, card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
         });
     }
 
@@ -1704,7 +1704,7 @@ mod tests {
 
     #[tokio::test]
     async fn resolving_conflicts_or_asking_about_a_presented_pr_hands_it_back_to_its_node() {
-        use alondra_core::domain_v2::{Feedback, Instruction};
+        use alondra_core::domain::{Feedback, Instruction};
         for (verb, text, author, instruction) in [(Verb::Conflicts, None, Feedback::ALONDRA, Instruction::Conflicts),
             (Verb::AskPr, Some("Why a new table?"), "device:test-device", Instruction::Question)] {
             let (home, domain, client) = action_home();
@@ -1725,13 +1725,13 @@ mod tests {
 
     #[tokio::test]
     async fn asking_for_more_context_answers_the_question_so_its_card_leaves() {
-        use alondra_core::domain_v2::{Recipient, Scope, QuestionOption};
+        use alondra_core::domain::{Recipient, Scope, QuestionOption};
         let (home, domain, client) = action_home();
         presented_pr(&domain);
         apply_seed_command(&domain, Actor::Agent { agent_id: "agent-a".into() }, "ask", Command::AskQuestion {
             attachments: vec![], interaction_id: "question".into(), scope: Scope::Task { task_id: "task".into() },
             recipient: Recipient::User, body: "Which API?".into(), blocking: true,
-            options: vec![QuestionOption { id: "new".into(), label: "New".into(), description: None, inputs: vec![] }], card: alondra_core::domain_v2::CardSpec::derived(alondra_core::domain_v2::CardKind::Provide, "Answer the question"),
+            options: vec![QuestionOption { id: "new".into(), label: "New".into(), description: None, inputs: vec![] }], card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Provide, "Answer the question"),
         });
         let revision = domain.state().unwrap().interactions[&"question".into()].revision;
         let action = ActionId::new(Verb::Ctx, "question", revision, None).unwrap().to_string();
@@ -1741,15 +1741,15 @@ mod tests {
         assert_eq!((applied["outcome"].as_str(), applied["stamp"].as_str()), (Some("applied"), Some("Context requested")), "{applied}");
         let state = domain.state().unwrap();
         let InteractionPayload::Question { answer: Some(answer), .. } = &state.interactions[&"question".into()].payload else { unreachable!() };
-        assert_eq!(answer.inputs["text"], alondra_core::domain_v2::InputValue::Text(context_request("the cost")));
+        assert_eq!(answer.inputs["text"], alondra_core::domain::InputValue::Text(context_request("the cost")));
         assert!(!state.projection().inbox.iter().any(|item| item.id == "interaction:question" && item.pending));
     }
 
     #[test]
     fn a_moved_pr_head_answers_changed_with_a_fresh_id() {
-        use alondra_core::domain_v2::{PrState, PullRequest};
+        use alondra_core::domain::{PrState, PullRequest};
         let id = "github.com/bitomule/alondra#154";
-        let mut state = alondra_core::domain_v2::DomainState::new("epoch");
+        let mut state = alondra_core::domain::DomainState::new("epoch");
         state.pull_requests.insert(id.into(), PullRequest {
             id: id.into(), task_id: "t-1".into(), host: "github.com".into(),
             repository: "bitomule/alondra".into(), number: 154,

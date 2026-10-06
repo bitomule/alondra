@@ -1,4 +1,4 @@
-use alondra_core::domain_v2::DomainError;
+use alondra_core::domain::DomainError;
 use alondra_core::views::{BuildError, Client, Lang, Transport, VIEWS_PROTOCOL};
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
@@ -9,17 +9,17 @@ use serde_json::json;
 use std::sync::Arc;
 
 use crate::auth::Signed;
-use crate::domain_bootstrap::V2Only;
-use crate::v2_client_routes;
+use crate::domain_bootstrap::DomainDaemon;
+use crate::client_routes;
 
-pub(crate) fn router() -> Router<Arc<V2Only>> {
+pub(crate) fn router() -> Router<Arc<DomainDaemon>> {
     Router::new()
         .route("/views/{key}", get(local))
         .route("/actions", post(super::actions::local))
 }
 
 async fn local(
-    State(state): State<Arc<V2Only>>,
+    State(state): State<Arc<DomainDaemon>>,
     signed: Option<Extension<Signed>>,
     Path(key): Path<String>,
     uri: axum::http::Uri,
@@ -41,7 +41,7 @@ async fn local(
     response
 }
 
-pub(crate) async fn relay(client: &v2_client_routes::Client, device: &str, path_and_query: &str) -> Response {
+pub(crate) async fn relay(client: &client_routes::Client, device: &str, path_and_query: &str) -> Response {
     let Some((raw_key, query)) = path_and_query
         .strip_prefix("/views/")
         .and_then(|rest| rest.split_once('?'))
@@ -55,7 +55,7 @@ pub(crate) async fn relay(client: &v2_client_routes::Client, device: &str, path_
 }
 
 pub(crate) async fn relay_feed(
-    client: &v2_client_routes::Client,
+    client: &client_routes::Client,
     device: &str,
     path_and_query: &str,
 ) -> Response {
@@ -66,7 +66,7 @@ pub(crate) async fn relay_feed(
 }
 
 async fn respond(
-    client: &v2_client_routes::Client,
+    client: &client_routes::Client,
     path_key: &str,
     query: &str,
     transport: Transport,
@@ -478,14 +478,14 @@ fn error_lang(lang: Lang, code: &str, message: &'static str) -> Response {
 mod tests {
     use super::*;
 
-    fn fixture() -> (std::path::PathBuf, Arc<V2Only>) {
+    fn fixture() -> (std::path::PathBuf, Arc<DomainDaemon>) {
         let home = std::env::temp_dir().join(format!(
             "alondra-views-route-{}",
             crate::auth::random_hex(8)
         ));
         std::fs::create_dir_all(&home).unwrap();
         drop(crate::domain_runtime::DomainRuntime::open(&home).unwrap());
-        let state = V2Only::open(&home).unwrap();
+        let state = DomainDaemon::open(&home).unwrap();
         (home, state)
     }
 
@@ -669,7 +669,7 @@ mod tests {
         assert_eq!(client.language_for_device("phone-b"), Lang::En);
         drop(client);
         drop(state);
-        let reopened = V2Only::open(&home).unwrap();
+        let reopened = DomainDaemon::open(&home).unwrap();
         let reopened_client = reopened.client();
         assert_eq!(reopened_client.language_for_device("phone-a"), Lang::Es,
             "pushes after a daemon restart use the device's persisted language");
@@ -678,7 +678,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         drop(reopened_client);
         drop(reopened);
-        let reopened = V2Only::open(&home).unwrap();
+        let reopened = DomainDaemon::open(&home).unwrap();
         assert_eq!(reopened.client().language_for_device("phone-a"), Lang::En,
             "the last language survives a second restart");
         drop(reopened);

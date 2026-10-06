@@ -2,7 +2,7 @@
 //! for the terminal, the way the owner sees them.
 
 use super::*;
-use alondra_core::domain_v2::{Agent, DomainState, Request, Task, TaskState};
+use alondra_core::domain::{Agent, DomainState, Request, Task, TaskState};
 use alondra_core::views::{self, Client, Lang, LiveNode, LiveSnapshot, RenderContext, Transport};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -326,8 +326,8 @@ fn edited(name: &str, change: impl FnOnce(&mut serde_json::Value)) -> views::Vie
     serde_json::from_value(value).unwrap()
 }
 
-fn held_card(hold: alondra_core::domain_v2::Hold, spec: alondra_core::domain_v2::CardSpec) -> views::View {
-    use alondra_core::domain_v2::*;
+fn held_card(hold: alondra_core::domain::Hold, spec: alondra_core::domain::CardSpec) -> views::View {
+    use alondra_core::domain::*;
     let mut state = DomainState::new("e");
     let mut run = |actor: Actor, command: Command| {
         let envelope = CommandEnvelope {
@@ -384,7 +384,7 @@ fn inbox_lists_one_row_per_card_with_its_kind_glyph_and_meta_on_the_right() {
 
 #[test]
 fn list_glyphs_are_coloured_by_card_type() {
-    use alondra_core::domain_v2::CardKind::*;
+    use alondra_core::domain::CardKind::*;
     let kinds = [Decide, Review, Authorize, Know, Provide, Test, Do, Problem, Propose];
     let colors: Vec<_> = kinds.into_iter().map(view_render::kind_color).collect();
     assert_eq!(colors[1], colors[5], "Review and Test share the green of the board");
@@ -422,7 +422,7 @@ fn decide_detail_shows_header_content_context_then_numbered_buttons() {
 
 #[test]
 fn authorize_detail_has_a_risk_button_and_the_command_to_run() {
-    use alondra_core::domain_v2::{CardKind, CardSpec, ContentKind, Hold};
+    use alondra_core::domain::{CardKind, CardSpec, ContentKind, Hold};
     let spec = CardSpec::new(CardKind::Authorize, "Allow publishing Brew 0.2.36")
         .why("Restarts the daemon for a few seconds.")
         .content(ContentKind::Command, "alondra update");

@@ -1,5 +1,5 @@
 //! Managed, content-addressed copies of domain document revisions.
-use alondra_core::domain_v2::{Command, CommandEnvelope, DomainError};
+use alondra_core::domain::{Command, CommandEnvelope, DomainError};
 use anyhow::{Context, Result, ensure};
 use sha2::{Digest, Sha256};
 use std::ffi::CString;
@@ -247,7 +247,7 @@ fn hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alondra_core::domain_v2::{CommandId, DataEpoch};
+    use alondra_core::domain::{CommandId, DataEpoch};
     use std::sync::mpsc;
     use std::time::Duration;
 

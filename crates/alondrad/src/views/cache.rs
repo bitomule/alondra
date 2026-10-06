@@ -1,4 +1,4 @@
-use alondra_core::domain_v2::DomainState;
+use alondra_core::domain::DomainState;
 use alondra_core::views::{
     self, BuildError, Client, Lang, LiveSnapshot, RenderContext, Transport, View,
 };

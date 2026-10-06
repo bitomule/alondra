@@ -2,7 +2,7 @@ use super::{
     BuildError, Confirm, Fact, Facts, Icon, Item, Link, LocalLink, Markdown, Notice, RenderContext,
     Style, Tone, Trailing, View, action_id::Verb, common, text::{t, tf},
 };
-use crate::domain_v2::{DomainState, Request, RequestId, Task, TaskId, TaskState};
+use crate::domain::{DomainState, Request, RequestId, Task, TaskId, TaskState};
 use std::collections::{BTreeMap, BTreeSet};
 
 fn state(task: &Task, context: &RenderContext<'_>) -> &'static str {
@@ -836,7 +836,7 @@ pub(super) fn request(id: &str, context: &RenderContext<'_>) -> Result<View, Bui
     let request = context
         .domain
         .requests
-        .get(&crate::domain_v2::RequestId(id.into()))
+        .get(&crate::domain::RequestId(id.into()))
         .ok_or(BuildError::NotFound)?;
     let mut view = common::view(
         "request",

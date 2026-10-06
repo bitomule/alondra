@@ -210,7 +210,7 @@ fn named_tools_construct_commands_and_publish_separate_catalogs() {
 }
 
 #[test]
-fn v2_mcp_without_a_producer_capability_fails_closed() {
+fn mcp_without_a_producer_capability_fails_closed() {
     let mut child = Command::new(env!("CARGO_BIN_EXE_alondra"))
         .arg("mcp-node")
         .env(

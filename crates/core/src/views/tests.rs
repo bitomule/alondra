@@ -1,5 +1,5 @@
 use super::*;
-use crate::domain_v2::{
+use crate::domain::{
     Agent, Author, Document, DocumentRevision, DomainState, Interaction, InteractionPayload,
     InteractionSubject, MergeAttemptState, MergeAuthorization, MergeMethod, PrState, PullRequest, QuestionOption, Recipient, Request, Scope, Task,
     TaskState,
@@ -78,7 +78,7 @@ fn fixture() -> DomainState {
                 payload,
                 revision: 1,
                 order: index as u64 + 1,
-                withdrawn: false, card: crate::domain_v2::CardSpec::derived(crate::domain_v2::CardKind::Know, "Read the update"), clarification: None,
+                withdrawn: false, card: crate::domain::CardSpec::derived(crate::domain::CardKind::Know, "Read the update"), clarification: None,
             },
         );
     }
@@ -99,7 +99,7 @@ fn fixture() -> DomainState {
             },
             revision: 1,
             order: 4,
-            withdrawn: false, card: crate::domain_v2::CardSpec::derived(crate::domain_v2::CardKind::Know, "Read the update"), clarification: None,
+            withdrawn: false, card: crate::domain::CardSpec::derived(crate::domain::CardKind::Know, "Read the update"), clarification: None,
         },
     );
     state
@@ -107,7 +107,7 @@ fn fixture() -> DomainState {
 /// The placeholder card these fixtures were written with becomes the card its payload would
 /// carry, so a question reads as a decision and a final delivery as a review.
 fn with_cards(domain: &DomainState) -> DomainState {
-    use crate::domain_v2::{CardKind, CardSpec, Hold};
+    use crate::domain::{CardKind, CardSpec, Hold};
     let mut state = domain.clone();
     let holds = state.holds.clone();
     for interaction in state.interactions.values_mut() {
@@ -210,7 +210,7 @@ fn a_huge_inbox_stays_under_the_budget_and_reports_more() {
                 },
                 revision: 1,
                 order: index + 10,
-                withdrawn: false, card: crate::domain_v2::CardSpec::derived(crate::domain_v2::CardKind::Know, "Read the update"), clarification: None,
+                withdrawn: false, card: crate::domain::CardSpec::derived(crate::domain::CardKind::Know, "Read the update"), clarification: None,
             },
         );
     }
@@ -335,7 +335,7 @@ fn a_question_about_a_pr_is_its_own_card_and_no_card_holds_another() {
             },
             revision: 1,
             order: 5,
-            withdrawn: false, card: crate::domain_v2::CardSpec::derived(crate::domain_v2::CardKind::Know, "Read the update"), clarification: None,
+            withdrawn: false, card: crate::domain::CardSpec::derived(crate::domain::CardKind::Know, "Read the update"), clarification: None,
         },
     );
     let live = LiveSnapshot::default();
@@ -368,7 +368,7 @@ fn a_question_about_a_pr_is_its_own_card_and_no_card_holds_another() {
 fn deliver_pr(state: &mut DomainState, pr_id: &str) {
     let head = state.pull_requests[&pr_id.into()].head.clone();
     if let InteractionPayload::Delivery { targets, .. } = &mut state.interactions.get_mut(&"i-3".into()).unwrap().payload {
-        *targets = vec![crate::domain_v2::DeliveryTarget::PullRequest { pr_id: pr_id.into(), head }];
+        *targets = vec![crate::domain::DeliveryTarget::PullRequest { pr_id: pr_id.into(), head }];
     }
 }
 
@@ -411,7 +411,7 @@ fn pr_fixture() -> DomainState {
             },
             revision: 1,
             order: 5,
-            withdrawn: false, card: crate::domain_v2::CardSpec::derived(crate::domain_v2::CardKind::Know, "Read the update"), clarification: None,
+            withdrawn: false, card: crate::domain::CardSpec::derived(crate::domain::CardKind::Know, "Read the update"), clarification: None,
         },
     );
     state.interactions.insert(
@@ -436,7 +436,7 @@ fn pr_fixture() -> DomainState {
             },
             revision: 1,
             order: 6,
-            withdrawn: false, card: crate::domain_v2::CardSpec::derived(crate::domain_v2::CardKind::Know, "Read the update"), clarification: None,
+            withdrawn: false, card: crate::domain::CardSpec::derived(crate::domain::CardKind::Know, "Read the update"), clarification: None,
         },
     );
     deliver_pr(&mut state, "pr-1");
@@ -512,7 +512,7 @@ fn golden_fixture() -> DomainState {
         }
         if let InteractionPayload::Delivery { targets, .. } = &mut interaction.payload {
             for target in targets {
-                if let crate::domain_v2::DeliveryTarget::PullRequest { pr_id: id, .. } = target {
+                if let crate::domain::DeliveryTarget::PullRequest { pr_id: id, .. } = target {
                     if id.0 == "pr-1" { *id = pr_id.into(); }
                 }
             }
@@ -556,11 +556,11 @@ fn golden_fixture() -> DomainState {
         .max()
         .unwrap_or(state.revision);
     if let Some(pr) = state.pull_requests.get_mut(&pr_id.into()) {
-        pr.allowed_methods = vec![crate::domain_v2::MergeMethod::Squash, crate::domain_v2::MergeMethod::Merge];
+        pr.allowed_methods = vec![crate::domain::MergeMethod::Squash, crate::domain::MergeMethod::Merge];
     }
     {
-        use crate::domain_v2::{CardKind, CardTarget, ContentKind as Content};
-        let mut card = |id: &str, card: crate::domain_v2::CardSpec| {
+        use crate::domain::{CardKind, CardTarget, ContentKind as Content};
+        let mut card = |id: &str, card: crate::domain::CardSpec| {
             state.interactions.get_mut(&id.into()).unwrap().card = card;
         };
         let mut welcome = spec(CardKind::Decide, "Choose the welcome copy",
@@ -653,7 +653,7 @@ fn tasks_fixture() -> (DomainState, LiveSnapshot) {
 }
 
 fn scheduled_run(state: &mut DomainState, request: &str, task: &str) {
-    use crate::domain_v2::{ScheduleRun, ScheduleRunOrigin, ScheduleRunState};
+    use crate::domain::{ScheduleRun, ScheduleRunOrigin, ScheduleRunState};
     let id = format!("run-{task}");
     state.schedule.runs.insert(id.clone().into(), ScheduleRun {
         id: id.into(), schedule_id: "0789f185-0000".into(), origin: ScheduleRunOrigin::Due,
@@ -724,7 +724,7 @@ const NODE_CLOSED_TASK: &str = "t-651c38484cd2f34e74d5107ba05f7f15";
 /// The golden task after its node was closed by the user: freed, with nothing left open.
 fn node_closed_fixture() -> (DomainState, LiveSnapshot) {
     let mut state = golden_fixture();
-    let id: crate::domain_v2::TaskId = NODE_CLOSED_TASK.into();
+    let id: crate::domain::TaskId = NODE_CLOSED_TASK.into();
     state.interactions.retain(|_, interaction| interaction.scope != Scope::Task { task_id: id.clone() });
     state.holds.retain(|interaction, _| state.interactions.contains_key(interaction));
     let task = state.tasks.get_mut(&id).unwrap();
@@ -973,7 +973,7 @@ fn document_review_card_exposes_revision_content_and_review_actions() {
     });
     let interaction = state.interactions.get_mut(&"i-3".into()).unwrap();
     if let InteractionPayload::Delivery { targets, .. } = &mut interaction.payload {
-        *targets = vec![crate::domain_v2::DeliveryTarget::DocumentRevision {
+        *targets = vec![crate::domain::DeliveryTarget::DocumentRevision {
             document_id: "document-1".into(), revision_id: "revision-1".into(),
         }];
     } else { panic!("delivery fixture") }
@@ -1068,7 +1068,7 @@ fn attach_document(state: &mut DomainState) {
         content_digest: "b".repeat(64), content_reference: "stored/design".into(),
     });
     if let InteractionPayload::Delivery { targets, .. } = &mut state.interactions.get_mut(&"i-3".into()).unwrap().payload {
-        *targets = vec![crate::domain_v2::DeliveryTarget::DocumentRevision {
+        *targets = vec![crate::domain::DeliveryTarget::DocumentRevision {
             document_id: "document-1".into(), revision_id: "revision-1".into(),
         }];
     }
@@ -1079,7 +1079,7 @@ fn plain_delivery_offers_accept_and_request_changes_with_a_reply_to_the_node() {
     let mut state = fixture();
     state.interactions.get_mut(&"i-3".into()).unwrap().author = Author::Agent { agent_id: "a-1".into() };
     let card = delivery_card(&state, Lang::En, "card:i-3");
-    assert_eq!(card.kind, Some(crate::domain_v2::CardKind::Review));
+    assert_eq!(card.kind, Some(crate::domain::CardKind::Review));
     let accept = card.actions.iter().find(|action| action.label == "Accept").expect("accept");
     assert_eq!((accept.style, accept.role), (Style::Primary, Some(Role::Advance)));
     let changes = card.actions.iter().find(|action| action.label == "Request changes").expect("request changes");
@@ -1183,7 +1183,7 @@ fn a_question_without_options_is_answered_in_text_and_one_with_options_offers_it
     let view = render(&golden_fixture(), &LiveSnapshot::default(), Client::Ios, Lang::En,
         "card:a98d034b-249e-4487-a89b-57de38c26372", "");
     let Item::Card(card) = &view.sections[0].items[0] else { panic!("decision card") };
-    assert_eq!(card.kind, Some(crate::domain_v2::CardKind::Decide));
+    assert_eq!(card.kind, Some(crate::domain::CardKind::Decide));
     assert_eq!(card.actions.iter().map(|a| a.option_id.as_deref()).collect::<Vec<_>>(), [Some("clear"), Some("warm")]);
     assert!(card.more.iter().any(|action| action.label == "Write my own answer"
         && matches!(&action.input, Input::Text { required: true, .. })));
@@ -1624,7 +1624,7 @@ fn only_the_iphone_gets_no_link_to_the_request_view() {
 #[test]
 fn schedule_editor_resets_old_options_when_project_changes() {
     let mut state = fixture();
-    let schedule: crate::domain_v2::Schedule = serde_json::from_value(serde_json::json!({
+    let schedule: crate::domain::Schedule = serde_json::from_value(serde_json::json!({
         "id":"schedule-1", "title":"Morning", "text":"Review work",
         "project":"Old", "options":{"run_checks":false},
         "disallowed_tools":[], "frequency":"daily", "hour":9, "minute":0,
@@ -2098,7 +2098,7 @@ fn orchestrator_waiting(can_retry: bool) -> LiveSnapshot {
 
 #[test]
 fn an_orchestrator_problem_is_a_card_like_any_other_and_comes_first() {
-    use crate::domain_v2::{CardKind, ContentKind as Content};
+    use crate::domain::{CardKind, ContentKind as Content};
     let mut state = fixture();
     let option = |id: &str, label: &str| QuestionOption { id: id.into(), label: label.into(), description: None, inputs: vec![] };
     state.interactions.insert("problem-orchestrator-run-1".into(), Interaction {
@@ -2238,7 +2238,7 @@ fn request_clarification_is_behind_more_and_allows_a_blank_note() {
 
 #[test]
 fn stacked_pr_merge_names_upstream_number_and_keeps_canonical_link() {
-    use crate::domain_v2::{DeliveryTarget, MergeMethod};
+    use crate::domain::{DeliveryTarget, MergeMethod};
     let mut state = pr_fixture();
     state.pull_requests.get_mut(&"pr-1".into()).unwrap().base = "upstream-head".into();
     state
@@ -2728,7 +2728,7 @@ fn scheduled_run_fixture(with_run: bool) -> DomainState {
     state.agents.get_mut(&"a-1".into()).unwrap().name = raw.into();
     state.tasks.get_mut(&"t-1".into()).unwrap().agent_id = Some("a-1".into());
     if with_run {
-        let run: crate::domain_v2::ScheduleRun = serde_json::from_value(serde_json::json!({
+        let run: crate::domain::ScheduleRun = serde_json::from_value(serde_json::json!({
             "id":"run-7e2035e8e1d7c5e3f9431b9087d457e3", "schedule_id":"0789f185-0000",
             "origin":"due", "due_at":100, "claimed_at":105, "claim_revision":2,
             "finished_at":110, "state":"sent", "request_id":"r-1", "task_id":"t-1",
@@ -2805,7 +2805,7 @@ fn a_pull_request_delivery_carries_checks_branch_and_change_size_in_its_detail()
     let state = golden_fixture();
     let view = render(&state, &golden_live(), Client::Ios, Lang::En, card_key, "");
     let card = card_of(&view);
-    assert_eq!(card.kind, Some(crate::domain_v2::CardKind::Review));
+    assert_eq!(card.kind, Some(crate::domain::CardKind::Review));
     assert_eq!(card.eyebrow.as_ref().unwrap().text, "Review · PR #12");
     assert_eq!(card.icon, Icon::PullRequest);
     assert_eq!(card.need.as_deref(), Some("Review the beta candidate"));
@@ -2858,8 +2858,8 @@ fn a_pull_request_description_repeats_neither_the_report_nor_the_link_to_the_pr(
     let report = "PR: https://github.com/example/repo/pull/12 (rebased)\n\nReplaces the long schedule form with a compact editor.";
     for interaction in state.interactions.values_mut() {
         if interaction.card.need == "Review the beta candidate" {
-            interaction.card.content = Some(crate::domain_v2::CardContent {
-                kind: crate::domain_v2::ContentKind::Report,
+            interaction.card.content = Some(crate::domain::CardContent {
+                kind: crate::domain::ContentKind::Report,
                 summary: None,
                 body: report.into(),
             });
@@ -2929,7 +2929,7 @@ fn merge_is_disabled_with_its_reason_until_the_card_that_blocks_it_is_answered()
     assert_eq!((chip.id.as_str(), chip.label.as_str()), ("hf-weekly-2026-09-30", "blocks PR #12"));
 
     if let InteractionPayload::Question { answer, .. } = &mut state.interactions.get_mut(&question.into()).unwrap().payload {
-        *answer = Some(crate::domain_v2::Answer {
+        *answer = Some(crate::domain::Answer {
             attachments: vec![], option_id: "ship".into(), inputs: BTreeMap::new(), responder: "u".into(), at_revision: 1,
         });
     }
@@ -2942,7 +2942,7 @@ fn merge_is_disabled_with_its_reason_until_the_card_that_blocks_it_is_answered()
 
 #[test]
 fn every_content_kind_has_a_one_line_row_and_the_card_has_no_body() {
-    use crate::domain_v2::{CardKind, ContentKind as Content};
+    use crate::domain::{CardKind, ContentKind as Content};
     let row = |content: Option<(Content, &str)>, attachments: usize, options: usize| {
         let mut state = fixture();
         let interaction = state.interactions.get_mut(&"i-1".into()).unwrap();
@@ -2955,7 +2955,7 @@ fn every_content_kind_has_a_one_line_row_and_the_card_has_no_body() {
             card = card.content(kind, body);
         }
         interaction.card = card;
-        interaction.attachments = (0..attachments).map(|n| crate::domain_v2::AttachmentRef {
+        interaction.attachments = (0..attachments).map(|n| crate::domain::AttachmentRef {
             id: format!("a{n}"), name: format!("shot{n}.png"), content_digest: "d".repeat(64), content_reference: format!("stored/{n}"), bytes: 10,
         }).collect();
         let view = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::En, "card:i-1", "");
@@ -3007,7 +3007,7 @@ fn card_node_line_carries_the_node_state_next_to_the_project() {
 
 #[test]
 fn a_command_is_a_code_block_in_the_detail_that_survives_backticks() {
-    use crate::domain_v2::{CardKind, ContentKind as Content};
+    use crate::domain::{CardKind, ContentKind as Content};
     let mut state = fixture();
     let interaction = state.interactions.get_mut(&"i-1".into()).unwrap();
     interaction.payload = InteractionPayload::ActionRequest { options: vec![], answer: None };
@@ -3087,7 +3087,7 @@ fn fleet_rows_offer_close_node_with_a_confirmation() {
     assert_eq!(bar.actions.iter().find(|action| action.label == "Close Node").map(|action| &action.id), Some(&close.id));
 }
 
-fn held_fixture(hold: crate::domain_v2::Hold, card: crate::domain_v2::CardSpec) -> DomainState {
+fn held_fixture(hold: crate::domain::Hold, card: crate::domain::CardSpec) -> DomainState {
     let mut state = fixture();
     let interaction = state.interactions.get_mut(&"i-1".into()).unwrap();
     interaction.payload = InteractionPayload::Question { options: hold.options(), answer: None };
@@ -3097,8 +3097,8 @@ fn held_fixture(hold: crate::domain_v2::Hold, card: crate::domain_v2::CardSpec) 
     state
 }
 
-fn spec(kind: crate::domain_v2::CardKind, need: &str, why: &str) -> crate::domain_v2::CardSpec {
-    crate::domain_v2::CardSpec::new(kind, need).why(why)
+fn spec(kind: crate::domain::CardKind, need: &str, why: &str) -> crate::domain::CardSpec {
+    crate::domain::CardSpec::new(kind, need).why(why)
 }
 
 fn answers(card: &Card) -> Vec<&Action> {
@@ -3107,7 +3107,7 @@ fn answers(card: &Card) -> Vec<&Action> {
 
 #[test]
 fn a_held_permission_card_shows_what_it_would_run_with_allow_and_deny() {
-    use crate::domain_v2::{CardKind, ContentKind as Content, Hold};
+    use crate::domain::{CardKind, ContentKind as Content, Hold};
     let card_spec = spec(CardKind::Authorize, "Allow cleaning the build", "Deletes the build folder.")
         .content(Content::Command, "rm -rf build\nls");
     let state = held_fixture(Hold::Permission, card_spec);
@@ -3132,7 +3132,7 @@ fn a_held_permission_card_shows_what_it_would_run_with_allow_and_deny() {
 
 #[test]
 fn a_held_plan_card_shows_the_plan_with_approve_and_request_changes() {
-    use crate::domain_v2::{CardKind, ContentKind as Content, Hold};
+    use crate::domain::{CardKind, ContentKind as Content, Hold};
     let card_spec = spec(CardKind::Review, "Ship the parser", "Two steps, tests first.")
         .content(Content::Plan, "1. Split the lexer\n2. Add tests");
     let state = held_fixture(Hold::Plan, card_spec);
@@ -3164,7 +3164,7 @@ fn fixed_options() -> Vec<(&'static str, Vec<(&'static str, &'static str)>)> {
 
 fn proposal_options(options: &[(&str, &str)]) -> InteractionPayload {
     InteractionPayload::Question {
-        options: options.iter().map(|(id, label)| crate::domain_v2::QuestionOption { id: (*id).into(), label: (*label).into(), description: None, inputs: vec![] }).collect(),
+        options: options.iter().map(|(id, label)| crate::domain::QuestionOption { id: (*id).into(), label: (*label).into(), description: None, inputs: vec![] }).collect(),
         answer: None,
     }
 }
@@ -3173,7 +3173,7 @@ fn option_labels(options: &[(&str, &str)], lang: Lang) -> Vec<String> {
     let mut state = fixture();
     let interaction = state.interactions.get_mut(&"i-1".into()).unwrap();
     interaction.payload = proposal_options(options);
-    interaction.card = spec(crate::domain_v2::CardKind::Propose, "Fix it", "Because.");
+    interaction.card = spec(crate::domain::CardKind::Propose, "Fix it", "Because.");
     let view = render(&state, &LiveSnapshot::default(), Client::Ios, lang, "card:i-1", "");
     answers(card_of(&view)).iter().map(|action| action.label.clone()).collect()
 }
@@ -3196,7 +3196,7 @@ fn a_proposal_whose_task_ended_is_still_answerable_in_the_card() {
     state.tasks.get_mut(&"t-1".into()).unwrap().state = TaskState::Done;
     let interaction = state.interactions.get_mut(&"i-1".into()).unwrap();
     interaction.payload = proposal_options(&[("do_it", "Do it"), ("not_now", "Not now")]);
-    interaction.card = spec(crate::domain_v2::CardKind::Propose, "Fix it", "Because.");
+    interaction.card = spec(crate::domain::CardKind::Propose, "Fix it", "Because.");
     let view = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::Es, "card:i-1", "");
     let buttons = answers(card_of(&view));
     assert_eq!(buttons.iter().map(|a| (a.label.as_str(), a.enabled, a.disabled_reason.clone())).collect::<Vec<_>>(),
@@ -3210,7 +3210,7 @@ fn markdown_items(view: &View) -> Vec<&Markdown> {
 
 #[test]
 fn the_text_of_a_held_plan_can_be_commented_block_by_block_and_other_text_cannot() {
-    use crate::domain_v2::{CardKind, ContentKind as Content, Hold};
+    use crate::domain::{CardKind, ContentKind as Content, Hold};
     let plan = "1. Split the lexer\n2. Add tests";
     let held = held_fixture(Hold::Plan, spec(CardKind::Review, "Ship the parser", "Two steps.").content(Content::Report, plan));
     let view = render(&held, &LiveSnapshot::default(), Client::Ios, Lang::En, "card:i-1", "");
@@ -3222,7 +3222,7 @@ fn the_text_of_a_held_plan_can_be_commented_block_by_block_and_other_text_cannot
 
 #[test]
 fn a_held_plan_is_reviewed_with_block_comments_request_changes_and_approve() {
-    use crate::domain_v2::{CardKind, Hold};
+    use crate::domain::{CardKind, Hold};
     let state = held_fixture(Hold::Plan, spec(CardKind::Review, "Ship the parser", "Two steps."));
     let view = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::Es, "card:i-1", "");
     let card = card_of(&view);
@@ -3240,7 +3240,7 @@ fn a_held_plan_is_reviewed_with_block_comments_request_changes_and_approve() {
 
 #[test]
 fn a_permission_card_with_a_suggestion_offers_yes_always_and_no_in_that_order() {
-    use crate::domain_v2::{CardKind, Hold};
+    use crate::domain::{CardKind, Hold};
     let mut state = held_fixture(Hold::Permission, spec(CardKind::Authorize, "Allow cleaning the build", ""));
     state.interactions.get_mut(&"i-1".into()).unwrap().payload =
         InteractionPayload::Question { options: Hold::Permission.options_offering(true), answer: None };
@@ -3253,7 +3253,7 @@ fn a_permission_card_with_a_suggestion_offers_yes_always_and_no_in_that_order() 
 
 #[test]
 fn a_held_ask_user_question_card_shows_the_question_and_its_options() {
-    use crate::domain_v2::{CardKind, Hold};
+    use crate::domain::{CardKind, Hold};
     let mut state = held_fixture(Hold::Question, spec(CardKind::Decide, "Which database?", "The migration depends on it."));
     let options = ["Postgres", "SQLite"].iter().enumerate().map(|(index, label)| QuestionOption {
         id: format!("o{index}"), label: (*label).into(), description: None, inputs: vec![] }).collect();
@@ -3272,7 +3272,7 @@ fn a_held_ask_user_question_card_shows_the_question_and_its_options() {
 
 #[test]
 fn a_held_elicitation_card_accepts_with_the_form_values_or_declines() {
-    use crate::domain_v2::{CardKind, Hold};
+    use crate::domain::{CardKind, Hold};
     let mut state = held_fixture(Hold::Elicitation, spec(CardKind::Provide, "Which repository?", "The server asks."));
     if let InteractionPayload::Question { options, .. } = &mut state.interactions.get_mut(&"i-1".into()).unwrap().payload {
         options[0].description = Some("Write the Repository".into());
@@ -3300,7 +3300,7 @@ fn status_names_the_node_count_fleet() {
 }
 
 fn presented_pr() -> DomainState {
-    use crate::domain_v2::{Actor, Command, DeliveryTarget, MergeMethod};
+    use crate::domain::{Actor, Command, DeliveryTarget, MergeMethod};
     let mut state = DomainState::new("test-epoch");
     let agent = Actor::Agent { agent_id: "a".into() };
     let user = Actor::User { user_id: "u".into() };
@@ -3314,15 +3314,15 @@ fn presented_pr() -> DomainState {
             allowed_methods: vec![MergeMethod::Squash] }),
         (agent, Command::PresentResult { attachments: vec![], task_id: "t".into(), interaction_id: "d".into(),
             body: "Ready".into(), targets: vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: "head1".into() }],
-            is_final: true, card: crate::domain_v2::CardSpec::delivery("Review the result", &[], true) }),
+            is_final: true, card: crate::domain::CardSpec::delivery("Review the result", &[], true) }),
     ] {
         execute(&mut state, actor, command);
     }
     state
 }
 
-fn execute(state: &mut DomainState, actor: crate::domain_v2::Actor, command: crate::domain_v2::Command) {
-    let envelope = crate::domain_v2::CommandEnvelope {
+fn execute(state: &mut DomainState, actor: crate::domain::Actor, command: crate::domain::Command) {
+    let envelope = crate::domain::CommandEnvelope {
         protocol_version: 2, data_epoch: state.data_epoch.clone(),
         command_id: format!("c-{}", state.revision).into(), expected_revision: state.revision, command,
     };
@@ -3331,7 +3331,7 @@ fn execute(state: &mut DomainState, actor: crate::domain_v2::Actor, command: cra
 
 #[test]
 fn a_pr_sent_back_leaves_waiting_for_you_and_its_task_says_what_alondra_asked() {
-    use crate::domain_v2::{Actor, Command, DeliveryTarget, Instruction};
+    use crate::domain::{Actor, Command, DeliveryTarget, Instruction};
     let live = LiveSnapshot::default();
     let home = |state: &DomainState| render(state, &live, Client::Ios, Lang::En, "home", "").sections[0].card_ids.clone();
     let task = |state: &DomainState, lang| serde_json::to_string(&render(state, &live, Client::Tui, lang, "task:t", "")).unwrap();
@@ -3386,7 +3386,7 @@ fn a_node_reads_merging_from_the_claim_of_its_merge_authorization_until_the_merg
 
 #[test]
 fn a_push_shows_what_the_card_needs_over_why() {
-    use crate::domain_v2::{CardKind, Hold};
+    use crate::domain::{CardKind, Hold};
     let alert = |state: &DomainState| push_content(state, "i-1", Lang::En).unwrap().alert.unwrap();
     let state = held_fixture(Hold::Permission, spec(CardKind::Authorize, "Allow publishing Brew 0.2.36", "Restarts the daemon for a few seconds."));
     assert_eq!(alert(&state), PushAlert {
@@ -3406,7 +3406,7 @@ fn a_push_shows_what_the_card_needs_over_why() {
 
 #[test]
 fn a_push_interrupts_by_what_the_card_holds_back_and_groups_by_task_then_request() {
-    use crate::domain_v2::{CardKind::*, Hold};
+    use crate::domain::{CardKind::*, Hold};
     let level = |kind, blocking: bool| {
         let mut state = held_fixture(Hold::Permission, spec(kind, "Do it", "Because."));
         state.interactions.get_mut(&"i-1".into()).unwrap().blocking = blocking;
@@ -3484,7 +3484,7 @@ fn every_tui_action_a_screen_offers_has_its_own_key() {
 /// Task t-1 of a scheduled run whose launch failed, reached through the domain's own commands so
 /// the state is one the daemon could hold.
 fn failed_launch_fixture(error: &str) -> DomainState {
-    use crate::domain_v2::{
+    use crate::domain::{
         Actor, Command, CommandEnvelope, Schedule, ScheduleFrequency, ScheduleLaunchIntent, ScheduleRunOrigin,
     };
     let mut state = fixture();
@@ -3492,7 +3492,7 @@ fn failed_launch_fixture(error: &str) -> DomainState {
     state.tasks.clear();
     state.requests.clear();
     let run = |state: &mut DomainState, command| {
-        state.execute(&Actor::System, &crate::domain_v2::CommandEnvelope {
+        state.execute(&Actor::System, &crate::domain::CommandEnvelope {
             protocol_version: 2,
             data_epoch: state.data_epoch.clone(),
             command_id: format!("c-{}", state.revision).into(),
@@ -3605,9 +3605,9 @@ fn the_tui_cancels_a_task_with_x() {
     assert_eq!(cancel.key.as_deref(), Some("x"));
 }
 fn answered_and_closed_request() -> DomainState {
-    use crate::domain_v2::{Actor, Command, CommandEnvelope, DomainEffect, PROTOCOL_VERSION};
+    use crate::domain::{Actor, Command, CommandEnvelope, DomainEffect, PROTOCOL_VERSION};
     let run = |state: &mut DomainState, actor: Actor, command: Command| {
-        state.execute(&actor, &crate::domain_v2::CommandEnvelope {
+        state.execute(&actor, &crate::domain::CommandEnvelope {
             protocol_version: PROTOCOL_VERSION,
             data_epoch: state.data_epoch.clone(),
             command_id: format!("c-{}", state.revision).into(),
@@ -3625,7 +3625,7 @@ fn answered_and_closed_request() -> DomainState {
         interaction_id: "a7efd99d-answer-1".into(),
         scope: Scope::Orchestrator { request_id: Some("a7efd99d".into()) },
         recipient: Recipient::User,
-        body: "Sí. Para el cifrado una imagen son bytes como cualquier otro.".into(), card: crate::domain_v2::CardSpec::derived(crate::domain_v2::CardKind::Know, "Read the update"),
+        body: "Sí. Para el cifrado una imagen son bytes como cualquier otro.".into(), card: crate::domain::CardSpec::derived(crate::domain::CardKind::Know, "Read the update"),
     });
     assert_eq!(published.effects, vec![DomainEffect::NotifyUser {
         task_id: None, interaction_id: "a7efd99d-answer-1".into(),
@@ -3669,7 +3669,7 @@ fn an_orchestrator_answer_waits_in_every_inbox_after_its_request_closes() {
 
 /// Three questions asked together, the ones listed in `answered` (0-based) already answered.
 fn group_state(answered: &[usize]) -> DomainState {
-    use crate::domain_v2::{CardKind, QuestionGroup};
+    use crate::domain::{CardKind, QuestionGroup};
     let mut state = fixture();
     let base = state.interactions.remove(&"i-1".into()).unwrap();
     for (at, need) in ["Which name?", "Ship it today?", "Which channel?"].into_iter().enumerate() {
@@ -3684,7 +3684,7 @@ fn group_state(answered: &[usize]) -> DomainState {
             QuestionOption { id: "o0".into(), label: "First".into(), description: None, inputs: vec![] },
             QuestionOption { id: "o1".into(), label: "Second".into(), description: None, inputs: vec![] },
         ];
-        let answer = answered.contains(&at).then(|| crate::domain_v2::Answer {
+        let answer = answered.contains(&at).then(|| crate::domain::Answer {
             attachments: vec![], option_id: "o1".into(), inputs: BTreeMap::new(), responder: "u".into(), at_revision: 1,
         });
         one.payload = InteractionPayload::Question { options, answer };

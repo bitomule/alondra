@@ -549,7 +549,7 @@
           "value": 1
         }
       ],
-      "cs_evidence": ["domain_store::tests::two_connections_compete_by_revision_and_domain_rejection_writes_nothing", "service::domain_v2_parity_tests::signed_loopback_and_sealed_service_share_reads_errors_and_command_receipts", "domain_v2::tests::revision_checks_are_per_subject_and_invalidation_dates_decisions"],
+      "cs_evidence": ["domain_store::tests::two_connections_compete_by_revision_and_domain_rejection_writes_nothing", "service::domain_parity_tests::signed_loopback_and_sealed_service_share_reads_errors_and_command_receipts", "domain::tests::revision_checks_are_per_subject_and_invalidation_dates_decisions"],
       "cs_evidence_status": "passed",
       "execution_status": "test_evidence"
     },
@@ -1096,7 +1096,7 @@
           "value": true
         }
       ],
-      "cs_evidence": ["domain_v2::tests::lifetime_pr_survives_cancel_reopen_and_register_is_noop", "domain_store::tests::lifetime_pr_sql_constraints_reject_second_pr_reparent_delete_and_bad_targets"],
+      "cs_evidence": ["domain::tests::lifetime_pr_survives_cancel_reopen_and_register_is_noop", "domain_store::tests::lifetime_pr_sql_constraints_reject_second_pr_reparent_delete_and_bad_targets"],
       "cs_evidence_status": "passed",
       "execution_status": "test_evidence"
     },
@@ -1210,7 +1210,7 @@
           "value": false
         }
       ],
-      "cs_evidence": ["domain_v2::tests::review_off_does_not_authorize_and_external_merge_does_not_complete"],
+      "cs_evidence": ["domain::tests::review_off_does_not_authorize_and_external_merge_does_not_complete"],
       "cs_evidence_status": "passed",
       "execution_status": "test_evidence"
     },
@@ -1485,7 +1485,7 @@
           "value": false
         }
       ],
-      "cs_evidence": ["domain_v2::tests::authorization_merge_and_completion_are_three_distinct_steps"],
+      "cs_evidence": ["domain::tests::authorization_merge_and_completion_are_three_distinct_steps"],
       "cs_evidence_status": "passed",
       "execution_status": "test_evidence"
     },
@@ -1645,7 +1645,7 @@
           "value": false
         }
       ],
-      "cs_evidence": ["domain_v2::tests::explicit_acceptance_completes_the_task_and_feedback_revokes_it_first"],
+      "cs_evidence": ["domain::tests::explicit_acceptance_completes_the_task_and_feedback_revokes_it_first"],
       "cs_evidence_status": "passed",
       "execution_status": "test_evidence"
     },
@@ -1886,7 +1886,7 @@
           "value": 1
         }
       ],
-      "cs_evidence": ["domain_v2::tests::recipient_scope_and_generation_preserve_logical_coordination"],
+      "cs_evidence": ["domain::tests::recipient_scope_and_generation_preserve_logical_coordination"],
       "cs_evidence_status": "passed",
       "execution_status": "test_evidence"
     },
@@ -2056,7 +2056,7 @@
           }
         }
       ],
-      "cs_evidence": ["domain_v2::tests::cross_task_delivery_and_dependency_cycle_roll_back"],
+      "cs_evidence": ["domain::tests::cross_task_delivery_and_dependency_cycle_roll_back"],
       "cs_evidence_status": "passed",
       "execution_status": "test_evidence"
     },
@@ -2133,7 +2133,7 @@
           ]
         }
       ],
-      "cs_evidence": ["domain_v2::tests::stack_readiness_is_explicit_and_merge_requires_upstream_merge_and_retarget"],
+      "cs_evidence": ["domain::tests::stack_readiness_is_explicit_and_merge_requires_upstream_merge_and_retarget"],
       "cs_evidence_status": "passed",
       "execution_status": "test_evidence"
     },
@@ -2466,7 +2466,7 @@
           "value": 0
         }
       ],
-      "cs_evidence": ["domain_v2::tests::old_epoch_revision_generation_and_actor_rejected", "domain_v2::tests::recipient_scope_and_generation_preserve_logical_coordination"],
+      "cs_evidence": ["domain::tests::old_epoch_revision_generation_and_actor_rejected", "domain::tests::recipient_scope_and_generation_preserve_logical_coordination"],
       "cs_evidence_status": "passed",
       "execution_status": "test_evidence"
     },
@@ -2737,7 +2737,7 @@
           "value": true
         }
       ],
-      "cs_evidence": ["service::domain_v2_parity_tests::signed_loopback_and_sealed_service_share_reads_errors_and_command_receipts"],
+      "cs_evidence": ["service::domain_parity_tests::signed_loopback_and_sealed_service_share_reads_errors_and_command_receipts"],
       "cs_evidence_status": "passed",
       "execution_status": "test_evidence"
     },
@@ -2798,7 +2798,7 @@
           "value": false
         }
       ],
-      "cs_evidence": ["domain_v2::tests::old_epoch_revision_generation_and_actor_rejected", "domain_store::tests::a_legacy_writer_is_rejected_and_a_current_store_keeps_its_rows", "domain_store::tests::a_store_with_another_schema_version_is_moved_aside_and_replaced_by_an_empty_one"],
+      "cs_evidence": ["domain::tests::old_epoch_revision_generation_and_actor_rejected", "domain_store::tests::a_legacy_writer_is_rejected_and_a_current_store_keeps_its_rows", "domain_store::tests::a_store_with_another_schema_version_is_moved_aside_and_replaced_by_an_empty_one"],
       "cs_evidence_status": "passed",
       "execution_status": "test_evidence"
     },
@@ -2847,7 +2847,7 @@
           "value": false
         }
       ],
-      "cs_evidence": ["domain_v2::tests::free_text_response_with_or_without_options_and_attachment_bounds", "domain_api::tests::serialized_diff_fits_encrypted_relay_budget_and_reports_truncation"],
+      "cs_evidence": ["domain::tests::free_text_response_with_or_without_options_and_attachment_bounds", "domain_api::tests::serialized_diff_fits_encrypted_relay_budget_and_reports_truncation"],
       "cs_evidence_status": "passed",
       "execution_status": "test_evidence"
     },
@@ -2860,7 +2860,7 @@
       "cs_expected": {"schema_created_once": true, "cards_lost": 0, "partial_state_published": false, "foreign_key_check": [], "integrity_check": ["ok"], "imported_rows": 0, "legacy_archived": true},
       "cs_evidence_status": "passed",
       "remaining": ["rehearsal of the live HOME at cutover"],
-      "cs_evidence": ["domain_cutover::tests::the_cutover_starts_v2_empty_and_archives_the_legacy_data_without_importing_it", "domain_cutover::tests::rollback_restores_the_legacy_home_and_sets_the_empty_v2_store_aside"],
+      "cs_evidence": ["domain_cutover::tests::the_cutover_starts_the_domain_store_empty_and_archives_the_legacy_data_without_importing_it", "domain_cutover::tests::rollback_restores_the_legacy_home_and_sets_the_empty_domain_store_aside"],
       "cs_evidence_status": "passed",
       "execution_status": "test_evidence"
     },
@@ -3017,7 +3017,7 @@
           "value": true
         }
       ],
-      "cs_evidence": ["domain_v2::tests::typed_option_ids_and_open_question_guard"],
+      "cs_evidence": ["domain::tests::typed_option_ids_and_open_question_guard"],
       "cs_evidence_status": "passed",
       "execution_status": "test_evidence"
     },
@@ -3088,7 +3088,7 @@
           "value": "stale_generation"
         }
       ],
-      "cs_evidence": ["domain_authority::tests::epoch_restart_and_execution_revocation_fence_old_tokens", "domain_v2::tests::recipient_scope_and_generation_preserve_logical_coordination"],
+      "cs_evidence": ["domain_authority::tests::epoch_restart_and_execution_revocation_fence_old_tokens", "domain::tests::recipient_scope_and_generation_preserve_logical_coordination"],
       "cs_evidence_status": "passed",
       "execution_status": "test_evidence"
     },
@@ -3152,7 +3152,7 @@
           "value": "in_review"
         }
       ],
-      "cs_evidence": ["domain_v2::tests::authorization_merge_and_completion_are_three_distinct_steps"],
+      "cs_evidence": ["domain::tests::authorization_merge_and_completion_are_three_distinct_steps"],
       "cs_evidence_status": "passed",
       "execution_status": "test_evidence"
     },
@@ -3214,7 +3214,7 @@
           "value": false
         }
       ],
-      "cs_evidence": ["domain_v2::tests::cancellation_during_merge_preserves_observation_without_completion"],
+      "cs_evidence": ["domain::tests::cancellation_during_merge_preserves_observation_without_completion"],
       "cs_evidence_status": "passed",
       "execution_status": "test_evidence"
     },
@@ -3328,7 +3328,7 @@
           "value": "running"
         }
       ],
-      "cs_evidence": ["domain_v2::tests::only_a_manager_can_link_another_tasks_document"],
+      "cs_evidence": ["domain::tests::only_a_manager_can_link_another_tasks_document"],
       "cs_evidence_status": "passed",
       "execution_status": "test_evidence"
     },
@@ -3482,7 +3482,7 @@
           "value": []
         }
       ],
-      "cs_evidence": ["domain_v2::tests::typed_option_ids_and_open_question_guard", "domain_v2::tests::partial_delivery_and_unread_information_do_not_replace_final_or_block"],
+      "cs_evidence": ["domain::tests::typed_option_ids_and_open_question_guard", "domain::tests::partial_delivery_and_unread_information_do_not_replace_final_or_block"],
       "cs_evidence_status": "passed",
       "execution_status": "test_evidence"
     },

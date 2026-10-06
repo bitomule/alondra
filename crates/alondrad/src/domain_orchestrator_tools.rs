@@ -3,7 +3,7 @@
 //! machine. Each call carries the orchestrator execution's bearer; the domain changes a call
 //! implies (the new Agent, an assignment, a reopened Task) are that orchestrator's commands.
 use crate::domain_runtime::DomainRuntime;
-use alondra_core::domain_v2::{Actor, AgentId, Command, CommandEnvelope, DomainError, DomainState, RequestId, TaskId, PROTOCOL_VERSION};
+use alondra_core::domain::{Actor, AgentId, Command, CommandEnvelope, DomainError, DomainState, RequestId, TaskId, PROTOCOL_VERSION};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::path::Path;
@@ -185,7 +185,7 @@ pub(crate) async fn launch(domain: &DomainRuntime, home: &Path, actor: &Actor, b
 pub(crate) async fn relaunch(domain: &DomainRuntime, home: &Path, actor: &Actor, task_id: &TaskId, launcher: &impl crate::orchestrate::Launcher) -> Result<Value, DomainError> {
     let current = state(domain)?;
     let waiting = current.tasks.get(task_id)
-        .filter(|task| task.state == alondra_core::domain_v2::TaskState::NotStarted && task.agent_id.is_none() && !task.archived);
+        .filter(|task| task.state == alondra_core::domain::TaskState::NotStarted && task.agent_id.is_none() && !task.archived);
     let (Some(task), Some(closed)) = (waiting, domain.live.closed_task(&task_id.0)) else {
         return Err(DomainError::new("conflict", "This task is not waiting for a relaunch"));
     };

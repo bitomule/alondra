@@ -385,7 +385,7 @@ async fn encrypted_roundtrip_on_work(
     parked: Option<(ParkedWork, Arc<Mutex<Latency>>, Instant)>,
 ) -> Result<()> {
     let plain = serde_json::to_vec(&json!({"synthetic":true,"owner":link.owner,"request":id}))?;
-    let envelope = EnvelopeV1::seal_random(
+    let envelope = Envelope::seal_random(
         Context {
             route: &link.mac,
             sender: &link.phone,
@@ -479,7 +479,7 @@ async fn encrypted_roundtrip_on_work(
         work["request_id"] == id,
         "load work crossed request identity"
     );
-    let incoming: EnvelopeV1 = serde_json::from_value(work["envelope"].clone())?;
+    let incoming: Envelope = serde_json::from_value(work["envelope"].clone())?;
     ensure!(
         incoming.open(
             key(link.phone_key).verifying_key(),
@@ -502,7 +502,7 @@ async fn encrypted_roundtrip_on_work(
         200,
     )
     .await?;
-    let reply = EnvelopeV1::seal_random(
+    let reply = Envelope::seal_random(
         Context {
             route: &link.mac,
             sender: &link.mac,
@@ -537,7 +537,7 @@ async fn encrypted_roundtrip_on_work(
         200,
     )
     .await?;
-    let returned: EnvelopeV1 = serde_json::from_value(result["response"].clone())?;
+    let returned: Envelope = serde_json::from_value(result["response"].clone())?;
     ensure!(
         returned.open(
             key(link.mac_key).verifying_key(),
@@ -629,7 +629,7 @@ async fn restart_probe(driver: Arc<Driver>, links: &[Link]) -> Result<Value> {
     let pending = &links[4];
     let id = "system-load-restart-pending";
     let plain = serde_json::to_vec(&json!({"synthetic":true,"owner":pending.owner,"request":id}))?;
-    let body = serde_json::to_vec(&EnvelopeV1::seal_random(
+    let body = serde_json::to_vec(&Envelope::seal_random(
         Context {
             route: &pending.mac,
             sender: &pending.phone,

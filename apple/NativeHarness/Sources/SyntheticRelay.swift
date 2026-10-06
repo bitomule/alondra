@@ -53,7 +53,7 @@ actor SyntheticRelayHTTP: HTTPTransport {
         guard url.path == "/v1/requests", request.httpMethod == "POST", let data = request.httpBody else {
             throw RelayWireError.invalidField
         }
-        let envelope = try JSONDecoder().decode(EnvelopeV1.self, from: data)
+        let envelope = try JSONDecoder().decode(Envelope.self, from: data)
         let plaintext = try envelope.open(senderKey: phoneSign, recipientKey: macAgreement,
             sender: "phone-test", recipient: "mac-test", route: "mac-test", nowMilliseconds: 1000)
         struct Operation: Decodable { let path: String; let method: String }
@@ -90,7 +90,7 @@ actor SyntheticRelayHTTP: HTTPTransport {
         default:
             throw RelayWireError.invalidField
         }
-        let response = try EnvelopeV1.seal(route: "mac-test", sender: "mac-test", recipient: "phone-test",
+        let response = try Envelope.seal(route: "mac-test", sender: "mac-test", recipient: "phone-test",
             requestID: envelope.requestID, kind: "response", expiresAtMilliseconds: 5000,
             plaintext: JSONSerialization.data(withJSONObject: payload), senderKey: macSign, recipientKey: phoneAgreement)
         let receipt = try JSONSerialization.data(withJSONObject: ["request_id": envelope.requestID,

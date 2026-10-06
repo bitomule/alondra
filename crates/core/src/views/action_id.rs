@@ -205,16 +205,16 @@ mod tests {
 }
 
 /// The option id that carries why the user asks a card's author to say it again.
-pub fn clarification_name(reason: crate::domain_v2::ClarificationReason) -> &'static str {
-    use crate::domain_v2::ClarificationReason::*;
+pub fn clarification_name(reason: crate::domain::ClarificationReason) -> &'static str {
+    use crate::domain::ClarificationReason::*;
     match reason {
         Unclear => "unclear",
         Contradicts => "contradicts",
         MissingContext => "missing_context",
     }
 }
-pub fn clarification_reason(name: &str) -> Option<crate::domain_v2::ClarificationReason> {
-    use crate::domain_v2::ClarificationReason::*;
+pub fn clarification_reason(name: &str) -> Option<crate::domain::ClarificationReason> {
+    use crate::domain::ClarificationReason::*;
     match name {
         "unclear" => Some(Unclear),
         "contradicts" => Some(Contradicts),

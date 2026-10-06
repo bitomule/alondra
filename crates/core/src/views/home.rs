@@ -3,7 +3,7 @@ use super::{
     card::{from_item, plain_id, public_id},
     text::t,
 };
-use crate::domain_v2::{DomainProjection, InboxItem};
+use crate::domain::{DomainProjection, InboxItem};
 
 pub(super) fn build(key: &str, context: &RenderContext<'_>) -> Result<View, BuildError> {
     if !matches!(context.client, Client::Ios | Client::Tui) {

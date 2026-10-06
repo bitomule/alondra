@@ -286,7 +286,7 @@ fn setup_base(store: &mut DomainStore, base: &Value) {
                 interaction_id: id.into(),
                 scope,
                 recipient,
-                body, card: alondra_core::domain_v2::CardSpec::derived(alondra_core::domain_v2::CardKind::Know, "Read the update"),
+                body, card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Know, "Read the update"),
             },
             "question" => {
                 let options = field(interaction, "options")
@@ -316,7 +316,7 @@ fn setup_base(store: &mut DomainStore, base: &Value) {
                     recipient,
                     body,
                     blocking: field(interaction, "blocking") == true,
-                    options, card: alondra_core::domain_v2::CardSpec::derived(alondra_core::domain_v2::CardKind::Provide, "Answer the question"),
+                    options, card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Provide, "Answer the question"),
                 }
             }
             other => panic!("unsupported base Interaction: {other}"),
@@ -359,7 +359,7 @@ fn setup_variant(store: &mut DomainStore, variants: &Value, name: &str) {
                 interaction_id: string(field(variant, "presentation_id")).into(),
                 body: "Synthetic pull request".into(),
                 targets,
-                is_final: field(variant, "final") == true, card: alondra_core::domain_v2::CardSpec::delivery("Review the result", &[], true),
+                is_final: field(variant, "final") == true, card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
             },
         );
     } else if name == "authorized-pr" {
@@ -450,7 +450,7 @@ fn setup_variant(store: &mut DomainStore, variants: &Value, name: &str) {
                 }
                 .into(),
                 targets,
-                is_final: variant_field(variants, name, "final") == true, card: alondra_core::domain_v2::CardSpec::delivery("Review the result", &[], true),
+                is_final: variant_field(variants, name, "final") == true, card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
             },
         );
     } else if name == "unaccepted-text-final" {
@@ -466,7 +466,7 @@ fn setup_variant(store: &mut DomainStore, variants: &Value, name: &str) {
                 interaction_id: string(field(variant, "presentation_id")).into(),
                 body: "Synthetic answer".into(),
                 targets,
-                is_final: field(variant, "final") == true, card: alondra_core::domain_v2::CardSpec::delivery("Review the result", &[], true),
+                is_final: field(variant, "final") == true, card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
             },
         );
     } else {
@@ -703,7 +703,7 @@ fn shared_catalog_domain_and_sql_cases() {
                 "command" => {
                     let mut wire = field(step, "command").clone();
                     realize_digests(&mut wire);
-                    alondra_core::domain_v2::derive_wire_card(wire.as_object_mut().unwrap());
+                    alondra_core::domain::derive_wire_card(wire.as_object_mut().unwrap());
                     let command: Command = serde_json::from_value(wire).unwrap();
                     match &command {
                         Command::LinkInteractionSubject { interaction_id, .. }
@@ -820,8 +820,8 @@ fn catalog_execution_status_is_explicit_and_evidenced() {
         include_str!("../domain_cutover.rs"),
         include_str!("../domain_authority.rs"),
         include_str!("../domain_api.rs"),
-        include_str!("../service/domain_v2_parity_tests.rs"),
-        include_str!("../../../core/src/domain_v2/tests.rs"),
+        include_str!("../service/domain_parity_tests.rs"),
+        include_str!("../../../core/src/domain/tests.rs"),
     ];
     let mut runner = BTreeSet::new();
     let mut schedule_runner = BTreeSet::new();

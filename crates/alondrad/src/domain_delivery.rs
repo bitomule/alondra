@@ -9,7 +9,7 @@ use alondra_core::Event;
 use alondra_core::delivery::State;
 use alondra_core::views::{self, Lang};
 use anyhow::Result;
-use alondra_core::domain_v2::{DomainState, InteractionId, InteractionPayload};
+use alondra_core::domain::{DomainState, InteractionId, InteractionPayload};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::path::Path;
@@ -18,14 +18,14 @@ use std::time::{Duration, Instant};
 
 const RETRY_BACKOFF: Duration = Duration::from_secs(120);
 
-/// V2-only dispatcher: all receipts live in the active domain database. User hints are sent
+/// Domain dispatcher: all receipts live in the active domain database. User hints are sent
 /// here; the orchestrator executor and producer transport own producer messages.
-pub async fn run_v2(
+pub async fn run(
     domain: Arc<DomainRuntime>,
     home: std::path::PathBuf,
     push: Arc<Push>,
     service: Option<Arc<Service>>,
-    client: Arc<crate::v2_client_routes::Client>,
+    client: Arc<crate::client_routes::Client>,
 ) -> Result<()> {
     let mut changed = domain.subscribe();
     let mut retry_after: HashMap<i64, Instant> = HashMap::new();
@@ -43,10 +43,10 @@ pub async fn run_v2(
         first_seen.retain(|id, _| pending.iter().any(|message| message.id == *id));
         // SQLite errors stop this worker. The daemon supervisor then fails the
         // committed process instead of silently serving a dead outbox.
-        for message in ready_messages_v2(pending, &retry_after) {
+        for message in ready_by_recipient(pending, &retry_after) {
             let id = message.id;
             let waited = first_seen.entry(id).or_insert_with(Instant::now).elapsed();
-            deliver_one_v2(&domain, &home, &push, service.as_deref(), &client, message, waited).await?;
+            deliver_from_runtime(&domain, &home, &push, service.as_deref(), &client, message, waited).await?;
             retry_after.insert(id, Instant::now());
         }
         tokio::select! {
@@ -56,12 +56,12 @@ pub async fn run_v2(
     }
 }
 
-async fn deliver_one_v2(
+async fn deliver_from_runtime(
     domain: &DomainRuntime,
     home: &Path,
     push: &Push,
     service: Option<&Service>,
-    client: &crate::v2_client_routes::Client,
+    client: &crate::client_routes::Client,
     message: OutboxMessage,
     waited: Duration,
 ) -> Result<()> {
@@ -91,7 +91,7 @@ async fn deliver_one_v2(
 
 /// User hints and producer messages are limited separately, so a backlog of
 /// one kind never hides the other and a retryable producer message is retried.
-fn ready_messages_v2(
+fn ready_by_recipient(
     messages: Vec<OutboxMessage>,
     retry_after: &HashMap<i64, Instant>,
 ) -> Vec<OutboxMessage> {
@@ -191,7 +191,7 @@ async fn deliver_user_runtime(
     home: &Path,
     push: &Push,
     service: Option<&Service>,
-    client: Option<&crate::v2_client_routes::Client>,
+    client: Option<&crate::client_routes::Client>,
     message: &OutboxMessage,
     waited: Duration,
 ) -> std::result::Result<(), (State, &'static str)> {
@@ -287,7 +287,7 @@ fn user_push_payload(state: &DomainState, interaction_id: Option<&str>, lang: La
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alondra_core::domain_v2::*;
+    use alondra_core::domain::*;
     use std::collections::BTreeSet;
 
     #[test]
@@ -312,7 +312,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn v2_only_outbox_exits_on_sql_failure() {
+    async fn domain_outbox_exits_on_sql_failure() {
         let home = std::env::temp_dir().join(format!(
             "alondra-v2-outbox-failure-{}",
             crate::auth::random_hex(8)
@@ -324,10 +324,10 @@ mod tests {
             .execute_batch("DROP TABLE domain_outbox")
             .unwrap();
         let push = Arc::new(Push::open(&home).unwrap());
-        let client = crate::v2_client_routes::Client::open(domain.clone(), &home, Default::default());
+        let client = crate::client_routes::Client::open(domain.clone(), &home, Default::default());
         let result = tokio::time::timeout(
             Duration::from_secs(2),
-            run_v2(domain.clone(), home.clone(), push, None, client),
+            run(domain.clone(), home.clone(), push, None, client),
         )
         .await
         .unwrap();
@@ -340,7 +340,7 @@ mod tests {
     }
 
     #[test]
-    fn v2_only_retryable_producers_never_starve_later_user_hints() {
+    fn retryable_producers_never_starve_later_user_hints() {
         let mut messages: Vec<_> = (1..=65)
             .map(|id| OutboxMessage {
                 id,
@@ -361,7 +361,7 @@ mod tests {
             message: String::new(),
             state: "pending".into(),
         });
-        let ready = ready_messages_v2(messages, &HashMap::new());
+        let ready = ready_by_recipient(messages, &HashMap::new());
         let ids: Vec<_> = ready.iter().map(|message| message.id).collect();
         assert_eq!(
             ids[0], 66,
@@ -374,7 +374,7 @@ mod tests {
         );
     }
 
-    fn v2_command(domain: &DomainRuntime, actor: Actor, id: &str, command: Command) {
+    fn apply_command(domain: &DomainRuntime, actor: Actor, id: &str, command: Command) {
         let state = domain.state().unwrap();
         domain
             .execute(
@@ -393,19 +393,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn v2_only_outbox_hands_user_hint_and_leaves_producer_pending_without_transport() {
+    async fn domain_outbox_hands_user_hint_and_leaves_producer_pending_without_transport() {
         let home = std::env::temp_dir().join(format!(
             "alondra-v2-only-outbox-{}",
             crate::auth::random_hex(8)
         ));
         std::fs::create_dir_all(&home).unwrap();
         let domain = Arc::new(DomainRuntime::open(&home).unwrap());
-        let client = crate::v2_client_routes::Client::open(
+        let client = crate::client_routes::Client::open(
             domain.clone(),
             &home,
             Default::default(),
         );
-        v2_command(
+        apply_command(
             &domain,
             Actor::System,
             "agent",
@@ -414,7 +414,7 @@ mod tests {
                 name: "A".into(),
             },
         );
-        v2_command(
+        apply_command(
             &domain,
             Actor::User {
                 user_id: "u".into(),
@@ -426,7 +426,7 @@ mod tests {
                 auto_merge: false,
             },
         );
-        v2_command(
+        apply_command(
             &domain,
             Actor::User {
                 user_id: "u".into(),
@@ -442,7 +442,7 @@ mod tests {
                 stack: None,
             },
         );
-        v2_command(
+        apply_command(
             &domain,
             Actor::Agent {
                 agent_id: "agent-a".into(),
@@ -462,7 +462,7 @@ mod tests {
                     label: "Yes".into(),
                     description: None,
                     inputs: vec![],
-                }], card: alondra_core::domain_v2::CardSpec::derived(alondra_core::domain_v2::CardKind::Provide, "Answer the question"),
+                }], card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Provide, "Answer the question"),
             },
         );
         let push = Push::open(&home).unwrap();
@@ -475,7 +475,7 @@ mod tests {
             .into_iter()
             .find(|message| message.recipient_kind == "user")
             .unwrap();
-        deliver_one_v2(&domain, &home, &push, None, &client, user.clone(), Duration::ZERO)
+        deliver_from_runtime(&domain, &home, &push, None, &client, user.clone(), Duration::ZERO)
             .await
             .unwrap();
         assert!(
@@ -492,7 +492,7 @@ mod tests {
             domain.state().unwrap().interactions[&"question-a".into()].payload,
             InteractionPayload::Question { .. }
         ));
-        v2_command(
+        apply_command(
             &domain,
             Actor::User {
                 user_id: "u".into(),
@@ -514,7 +514,7 @@ mod tests {
             .into_iter()
             .find(|message| message.recipient_kind == "agent")
             .unwrap();
-        deliver_one_v2(&domain, &home, &push, None, &client, producer.clone(), Duration::ZERO)
+        deliver_from_runtime(&domain, &home, &push, None, &client, producer.clone(), Duration::ZERO)
             .await
             .unwrap();
         let evidence = domain
@@ -662,7 +662,7 @@ mod tests {
                     task_id: "task-a".into(),
                 },
                 recipient: Recipient::User,
-                body: "Information".into(), card: alondra_core::domain_v2::CardSpec::derived(alondra_core::domain_v2::CardKind::Know, "Read the update"),
+                body: "Information".into(), card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Know, "Read the update"),
             },
         );
         let message = hub
@@ -714,7 +714,7 @@ mod tests {
                     label: "Yes".into(),
                     description: None,
                     inputs: vec![],
-                }], card: alondra_core::domain_v2::CardSpec::derived(alondra_core::domain_v2::CardKind::Provide, "Answer the question"),
+                }], card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Provide, "Answer the question"),
             },
         );
         command(
@@ -774,7 +774,7 @@ mod tests {
                     task_id: "task-a".into(),
                 },
                 recipient: Recipient::User,
-                body: "Another update".into(), card: alondra_core::domain_v2::CardSpec::derived(alondra_core::domain_v2::CardKind::Know, "Read the update"),
+                body: "Another update".into(), card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Know, "Read the update"),
             },
         );
         std::fs::write(home.join("service.toml"), "service unavailable").unwrap();
@@ -896,19 +896,19 @@ mod tests {
             assert_eq!(fixture[key], generated[key], "{stale} ({key})");
         }
         let mut outer = fixture["apns"].clone();
-        let envelope: alondra_e2e::EnvelopeV1 =
+        let envelope: alondra_e2e::Envelope =
             serde_json::from_value(outer["alondra"]["envelope"].take()).unwrap();
         let mut expected_outer = generated["apns"].clone();
         expected_outer["alondra"]["envelope"].take();
         assert_eq!(outer, expected_outer, "{stale} (APNs wrapper)");
-        let current: alondra_e2e::EnvelopeV1 =
+        let current: alondra_e2e::Envelope =
             serde_json::from_value(body["envelope"].clone()).unwrap();
         assert_eq!(
             (&envelope.v, &envelope.route, &envelope.sender, &envelope.recipient, &envelope.kind),
             (&current.v, &current.route, &current.sender, &current.recipient, &current.kind),
             "{stale} (envelope context)"
         );
-        let open = |envelope: &alondra_e2e::EnvelopeV1| -> Value {
+        let open = |envelope: &alondra_e2e::Envelope| -> Value {
             let plaintext = envelope
                 .open(mac_signing.verifying_key(), &phone_agreement, mac_id, device_id, mac_id,
                     envelope.expires_at_ms)
@@ -1099,7 +1099,7 @@ mod tests {
                 attachments: vec![], id: id.into(), scope, author: Author::System,
                 recipient: Recipient::User, body: "Hecho".into(), blocking: false, subject: None,
                 payload: InteractionPayload::Information { read_by: Default::default() },
-                revision: 1, order: 1, withdrawn: false, card: alondra_core::domain_v2::CardSpec::derived(alondra_core::domain_v2::CardKind::Know, "Read the update"), clarification: None,
+                revision: 1, order: 1, withdrawn: false, card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Know, "Read the update"), clarification: None,
             });
         }
         assert_eq!(user_push_payload(&state, Some("info-2"), Lang::En)["aps"]["badge"], 3);
@@ -1116,12 +1116,12 @@ mod tests {
         let home = std::env::temp_dir().join(format!("alondra-orchestrator-answer-{}", crate::auth::random_hex(8)));
         std::fs::create_dir_all(&home).unwrap();
         let domain = Arc::new(DomainRuntime::open(&home).unwrap());
-        let client = crate::v2_client_routes::Client::open(domain.clone(), &home, Default::default());
+        let client = crate::client_routes::Client::open(domain.clone(), &home, Default::default());
         let orchestrator = Actor::Orchestrator { generation: 0 };
-        v2_command(&domain, Actor::User { user_id: "u".into() }, "request", Command::CreateRequest {
+        apply_command(&domain, Actor::User { user_id: "u".into() }, "request", Command::CreateRequest {
             request_id: "a7efd99d".into(), body: "can we encrypt images via R2".into(), auto_merge: false,
         });
-        v2_command(&domain, orchestrator.clone(), "answer", Command::PublishInformation {
+        apply_command(&domain, orchestrator.clone(), "answer", Command::PublishInformation {
             attachments: vec![],
             interaction_id: "a7efd99d-answer-1".into(),
             scope: Scope::Orchestrator { request_id: Some("a7efd99d".into()) },
@@ -1129,7 +1129,7 @@ mod tests {
             body: "Sí. Para el cifrado una imagen son bytes como cualquier otro.".into(),
             card: CardSpec::new(CardKind::Know, "Cifrar imágenes con R2 es posible").why("Una imagen son bytes como cualquier otro."),
         });
-        v2_command(&domain, orchestrator, "close", Command::CloseRequest {
+        apply_command(&domain, orchestrator, "close", Command::CloseRequest {
             request_id: "a7efd99d".into(),
             answer: Some("Sí: se cifran en el cliente antes de subirlas a R2".into()),
             withdrawn: false,
@@ -1149,7 +1149,7 @@ mod tests {
         assert_eq!(payload["aps"]["thread-id"], "a7efd99d", "the answer groups with its Request");
         assert_eq!(payload["aps"]["badge"], 1, "the answer waits in the inbox the badge counts");
         let push = Push::open(&home).unwrap();
-        deliver_one_v2(&domain, &home, &push, None, &client, user[0].clone(), Duration::ZERO).await.unwrap();
+        deliver_from_runtime(&domain, &home, &push, None, &client, user[0].clone(), Duration::ZERO).await.unwrap();
         assert!(domain.store.lock().unwrap().delivery_evidence_page(0).unwrap()
             .iter().any(|item| item.message_id == user[0].id && item.state == "handed"));
     }
@@ -1159,26 +1159,26 @@ mod tests {
         let home = std::env::temp_dir().join(format!("alondra-withdrawn-push-{}", crate::auth::random_hex(8)));
         std::fs::create_dir_all(&home).unwrap();
         let domain = Arc::new(DomainRuntime::open(&home).unwrap());
-        let client = crate::v2_client_routes::Client::open(domain.clone(), &home, Default::default());
+        let client = crate::client_routes::Client::open(domain.clone(), &home, Default::default());
         let agent = Actor::Agent { agent_id: "agent-a".into() };
-        v2_command(&domain, Actor::System, "agent", Command::RegisterAgent { agent_id: "agent-a".into(), name: "A".into() });
-        v2_command(&domain, Actor::User { user_id: "u".into() }, "request", Command::CreateRequest {
+        apply_command(&domain, Actor::System, "agent", Command::RegisterAgent { agent_id: "agent-a".into(), name: "A".into() });
+        apply_command(&domain, Actor::User { user_id: "u".into() }, "request", Command::CreateRequest {
             request_id: "request".into(), body: "Work".into(), auto_merge: false });
-        v2_command(&domain, Actor::User { user_id: "u".into() }, "task", Command::CreateTask {
+        apply_command(&domain, Actor::User { user_id: "u".into() }, "task", Command::CreateTask {
             task_id: "task-a".into(), request_id: "request".into(), title: "Task".into(), agent_id: Some("agent-a".into()),
             review_prs: false, dependencies: Default::default(), stack: None });
-        v2_command(&domain, agent.clone(), "question", Command::AskQuestion {
+        apply_command(&domain, agent.clone(), "question", Command::AskQuestion {
             attachments: vec![], interaction_id: "question-a".into(), scope: Scope::Task { task_id: "task-a".into() },
             recipient: Recipient::User, body: "Choose".into(), blocking: true,
             options: vec![QuestionOption { id: "yes".into(), label: "Yes".into(), description: None, inputs: vec![] }],
             card: CardSpec::derived(CardKind::Provide, "Answer the question"),
         });
-        v2_command(&domain, agent, "withdraw", Command::Withdraw { interaction_id: "question-a".into() });
+        apply_command(&domain, agent, "withdraw", Command::Withdraw { interaction_id: "question-a".into() });
         let user = domain.store.lock().unwrap().pending_messages().unwrap().into_iter()
             .find(|message| message.interaction_id.as_deref() == Some("question-a") && message.recipient_kind == "user")
             .unwrap();
         let push = Push::open(&home).unwrap();
-        deliver_one_v2(&domain, &home, &push, None, &client, user.clone(), Duration::ZERO).await.unwrap();
+        deliver_from_runtime(&domain, &home, &push, None, &client, user.clone(), Duration::ZERO).await.unwrap();
         assert!(domain.store.lock().unwrap().delivery_evidence_page(0).unwrap()
             .iter().any(|item| item.message_id == user.id && item.state == "discarded"),
             "a card that is gone is never announced");
@@ -1195,10 +1195,10 @@ mod tests {
         std::fs::create_dir_all(&home).unwrap();
         let open = || Arc::new(DomainRuntime::open(&home).unwrap());
         let domain = open();
-        v2_command(&domain, Actor::System, "agent", Command::RegisterAgent { agent_id: "agent-a".into(), name: "A".into() });
-        v2_command(&domain, Actor::User { user_id: "u".into() }, "request", Command::CreateRequest {
+        apply_command(&domain, Actor::System, "agent", Command::RegisterAgent { agent_id: "agent-a".into(), name: "A".into() });
+        apply_command(&domain, Actor::User { user_id: "u".into() }, "request", Command::CreateRequest {
             request_id: "request".into(), body: "Work".into(), auto_merge: false });
-        v2_command(&domain, Actor::User { user_id: "u".into() }, "task", Command::CreateTask {
+        apply_command(&domain, Actor::User { user_id: "u".into() }, "task", Command::CreateTask {
             task_id: "task-a".into(), request_id: "request".into(), title: "Task".into(), agent_id: Some("agent-a".into()),
             review_prs: false, dependencies: Default::default(), stack: None });
         let plan = |domain: &DomainRuntime, call: &str, text: &str| {
@@ -1211,11 +1211,11 @@ mod tests {
         let push = |domain: Arc<DomainRuntime>, card: InteractionId| {
             let home = home.clone();
             async move {
-                let client = crate::v2_client_routes::Client::open(domain.clone(), &home, Default::default());
+                let client = crate::client_routes::Client::open(domain.clone(), &home, Default::default());
                 let message = domain.store.lock().unwrap().pending_messages().unwrap().into_iter()
                     .find(|message| message.interaction_id.as_deref() == Some(card.0.as_str()) && message.recipient_kind == "user")
                     .unwrap();
-                deliver_one_v2(&domain, &home, &Push::open(&home).unwrap(), None, &client, message.clone(), Duration::ZERO).await.unwrap();
+                deliver_from_runtime(&domain, &home, &Push::open(&home).unwrap(), None, &client, message.clone(), Duration::ZERO).await.unwrap();
                 let evidence = domain.store.lock().unwrap().delivery_evidence_page(0).unwrap();
                 let item = evidence.iter().find(|item| item.message_id == message.id).unwrap();
                 (item.state.clone(), item.reason.clone())
@@ -1240,7 +1240,7 @@ mod tests {
         let changed = plan(&domain, "call-3", "Ship the parser and its tests");
         assert_eq!(push(domain.clone(), changed.clone()).await, handed, "a plan that changed is a new notice");
 
-        v2_command(&domain, Actor::User { user_id: "u".into() }, "answer", Command::AnswerQuestion {
+        apply_command(&domain, Actor::User { user_id: "u".into() }, "answer", Command::AnswerQuestion {
             attachments: vec![], interaction_id: changed, option_id: Hold::REQUEST_CHANGES.into(), inputs: Default::default() });
         let asked_again = plan(&domain, "call-4", "Ship the parser and its tests");
         assert_eq!(push(domain.clone(), asked_again).await, handed, "asked again after an answer: told again");

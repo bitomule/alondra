@@ -10,7 +10,7 @@ use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::OutboxMessage;
 use crate::node_reports::Report;
 use alondra_core::delivery::State;
-use alondra_core::domain_v2::{
+use alondra_core::domain::{
     Actor, AgentId, Author, Command, CommandEnvelope, DomainState, InputValue, InteractionId, InteractionPayload,
     PROTOCOL_VERSION, Recipient, Scope, ScheduleLaunchState, TaskId, TaskState,
 };
@@ -306,7 +306,7 @@ enum Reply {
 }
 
 /// The reply to a held hook; a card that can no longer be answered lets Claude Code ask in its terminal.
-fn answered(held: &crate::domain_holds::Held, answer: Option<alondra_core::domain_v2::Answer>) -> Value {
+fn answered(held: &crate::domain_holds::Held, answer: Option<alondra_core::domain::Answer>) -> Value {
     answer.map_or_else(|| json!({}), |answer| crate::domain_holds::elicitation_decision(held, &answer))
 }
 
@@ -487,7 +487,7 @@ fn question_label(question: &str) -> String {
 
 /// What the user answered to each of the questions asked together, in the order asked: the node
 /// is given them all at once, when the last is in.
-fn grouped_answers(state: &DomainState, interaction: &alondra_core::domain_v2::Interaction) -> String {
+fn grouped_answers(state: &DomainState, interaction: &alondra_core::domain::Interaction) -> String {
     let lines: Vec<String> = state.group_members(interaction).into_iter().enumerate().map(|(index, member)| {
         let said = match &member.payload {
             InteractionPayload::Question { options, answer: Some(answer) } => options.iter()
@@ -516,7 +516,7 @@ pub(crate) fn render(state: &DomainState, message: &OutboxMessage) -> String {
             let mut text = message.message.clone();
             if state.merge_authorizations.values().any(|authorization| {
                 authorization.presentation_id == interaction.id && authorization.valid
-                    && authorization.attempt == alondra_core::domain_v2::MergeAttemptState::Unclaimed
+                    && authorization.attempt == alondra_core::domain::MergeAttemptState::Unclaimed
             }) && !text.contains("The user authorized merging the presented pull request.") {
                 text.push_str("\n\nThe user authorized merging the presented pull request.");
             }
@@ -586,7 +586,7 @@ pub(crate) fn render(state: &DomainState, message: &OutboxMessage) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alondra_core::domain_v2::*;
+    use alondra_core::domain::*;
     use std::collections::BTreeMap;
 
     struct Fixture(PathBuf);
@@ -630,7 +630,7 @@ mod tests {
             attachments: vec![], interaction_id: format!("question-{agent}").into(),
             scope: Scope::Task { task_id: format!("task-{agent}").into() }, recipient: Recipient::User,
             body: "Choose".into(), blocking: true,
-            options: vec![QuestionOption { id: "yes".into(), label: "Yes".into(), description: None, inputs: vec![] }], card: alondra_core::domain_v2::CardSpec::derived(alondra_core::domain_v2::CardKind::Provide, "Answer the question"),
+            options: vec![QuestionOption { id: "yes".into(), label: "Yes".into(), description: None, inputs: vec![] }], card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Provide, "Answer the question"),
         });
         command(domain, Actor::User { user_id: "u".into() }, &format!("answer-{agent}"), Command::AnswerQuestion {
             attachments: vec![], interaction_id: format!("question-{agent}").into(),
@@ -676,7 +676,7 @@ mod tests {
         command(&domain, Actor::Agent { agent_id: "agent-a".into() }, "question", Command::AskQuestion {
             attachments: vec![], interaction_id: "question-1".into(), scope: Scope::Task { task_id: "task".into() },
             recipient: Recipient::Orchestrator, body: "Which API should I use?".into(), blocking: true,
-            options: vec![QuestionOption { id: "new_api".into(), label: "New API".into(), description: None, inputs: vec![] }], card: alondra_core::domain_v2::CardSpec::derived(alondra_core::domain_v2::CardKind::Provide, "Answer the question"),
+            options: vec![QuestionOption { id: "new_api".into(), label: "New API".into(), description: None, inputs: vec![] }], card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Provide, "Answer the question"),
         });
         let state = domain.state().unwrap();
         let message = domain.store.lock().unwrap().pending_messages().unwrap().into_iter()
@@ -708,7 +708,7 @@ mod tests {
             attachments: vec![], interaction_id: "another-question".into(),
             scope: Scope::Task { task_id: "task-agent-a".into() }, recipient: Recipient::User,
             body: "Second choice?".into(), blocking: true,
-            options: vec![QuestionOption { id: "yes".into(), label: "Yes".into(), description: None, inputs: vec![] }], card: alondra_core::domain_v2::CardSpec::derived(alondra_core::domain_v2::CardKind::Provide, "Answer the question"),
+            options: vec![QuestionOption { id: "yes".into(), label: "Yes".into(), description: None, inputs: vec![] }], card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Provide, "Answer the question"),
         });
         let state = domain.state().unwrap();
         let message = domain.store.lock().unwrap().pending_messages().unwrap().into_iter()
@@ -719,7 +719,7 @@ mod tests {
             attachments: vec![], interaction_id: "orchestrator-question".into(),
             scope: Scope::Orchestrator { request_id: Some("request-agent-a".into()) },
             recipient: Recipient::User, body: "Ship this?".into(), blocking: true,
-            options: vec![QuestionOption { id: "yes".into(), label: "Yes".into(), description: None, inputs: vec![] }], card: alondra_core::domain_v2::CardSpec::derived(alondra_core::domain_v2::CardKind::Provide, "Answer the question"),
+            options: vec![QuestionOption { id: "yes".into(), label: "Yes".into(), description: None, inputs: vec![] }], card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Provide, "Answer the question"),
         });
         command(&domain, Actor::User { user_id: "u".into() }, "orchestrator-answer", Command::AnswerQuestion {
             attachments: vec![], interaction_id: "orchestrator-question".into(),
@@ -750,7 +750,7 @@ mod tests {
             attachments: vec![], interaction_id: "question".into(), scope: Scope::Task { task_id: "task".into() },
             recipient: Recipient::User, body: "Which approach?".into(), blocking: true,
             options: vec![QuestionOption { id: "new".into(), label: "New API".into(), description: None,
-                inputs: vec![InputSpec { id: "details".into(), kind: InputKind::Text, required: true }] }], card: alondra_core::domain_v2::CardSpec::derived(alondra_core::domain_v2::CardKind::Provide, "Answer the question"),
+                inputs: vec![InputSpec { id: "details".into(), kind: InputKind::Text, required: true }] }], card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Provide, "Answer the question"),
         });
         command(&domain, Actor::User { user_id: "u".into() }, "answer", Command::AnswerQuestion {
             attachments: vec![], interaction_id: "question".into(), option_id: "new".into(),
@@ -766,7 +766,7 @@ mod tests {
     fn free_text_question(domain: &DomainRuntime, id: &str, actor: Actor, scope: Scope, recipient: Recipient, body: &str) {
         command(domain, actor, &format!("ask-{id}"), Command::AskQuestion {
             attachments: vec![], interaction_id: id.into(), scope, recipient,
-            body: body.into(), blocking: false, options: vec![], card: alondra_core::domain_v2::CardSpec::derived(alondra_core::domain_v2::CardKind::Provide, "Answer the question"),
+            body: body.into(), blocking: false, options: vec![], card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Provide, "Answer the question"),
         });
     }
 
@@ -974,7 +974,7 @@ mod tests {
         command(&domain, Actor::Agent { agent_id: "session-a".into() }, "present", Command::PresentResult {
             attachments: vec![], task_id: "task-session-a".into(), interaction_id: "delivery".into(),
             body: "Ready".into(), targets: vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: head.into() }],
-            is_final: true, card: alondra_core::domain_v2::CardSpec::delivery("Review the result", &[], true),
+            is_final: true, card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
         });
         command(&domain, Actor::User { user_id: "u".into() }, "authorize", Command::AuthorizeMerge {
             authorization_id: "auth".into(), presentation_id: "delivery".into(), pr_id: "pr".into(),
@@ -1134,7 +1134,7 @@ mod tests {
         assert_eq!(reply, json!({}));
         command(&domain, agent_actor(), "present", Command::PresentResult {
             attachments: vec![], task_id: "task".into(), interaction_id: "delivery".into(),
-            body: "Done".into(), targets: vec![DeliveryTarget::Text { text: "The answer".into() }], is_final: true, card: alondra_core::domain_v2::CardSpec::delivery("Review the result", &[], true),
+            body: "Done".into(), targets: vec![DeliveryTarget::Text { text: "The answer".into() }], is_final: true, card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
         });
         let (reply, _) = hook(&domain, json!({"session_id": "agent-a", "hook_event_name": "Stop"}), Some(6)).await;
         assert_eq!(reply, json!({}), "a presented result already tells the user");

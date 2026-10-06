@@ -3,12 +3,12 @@
 //! a technical launch claim can call Claude.
 use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::StoreError;
-use alondra_core::domain_v2::{
+use alondra_core::domain::{
     Actor, AgentId, Command, CommandEnvelope, CommandOutcome, DomainState, PROTOCOL_VERSION,
     Request, RequestId, ScheduleLaunchState, ScheduleRunOrigin, ScheduleRunState, Task,
     TaskId, TaskState,
 };
-use alondra_core::domain_v2::{
+use alondra_core::domain::{
     ScheduleDefinitionSnapshot, ScheduleFrequency, ScheduleId, ScheduleLaunchIntent, ScheduleRunId,
 };
 use alondra_core::options::Resolved;
@@ -19,7 +19,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-pub(crate) fn next_after(schedule: &alondra_core::domain_v2::Schedule, now: i64) -> Option<i64> {
+pub(crate) fn next_after(schedule: &alondra_core::domain::Schedule, now: i64) -> Option<i64> {
     if !schedule.enabled {
         return None;
     }
@@ -182,7 +182,7 @@ async fn invoke_claimed(
 }
 
 fn execute_system(domain: &DomainRuntime, command: Command) -> Result<CommandOutcome, StoreError> {
-    let command_id: alondra_core::domain_v2::CommandId =
+    let command_id: alondra_core::domain::CommandId =
         format!("schedule-worker-{}", crate::auth::random_hex(16)).into();
     for _ in 0..5 {
         let state = domain.state().map_err(StoreError::Storage)?;
@@ -198,7 +198,7 @@ fn execute_system(domain: &DomainRuntime, command: Command) -> Result<CommandOut
             result => return result,
         }
     }
-    Err(alondra_core::domain_v2::DomainError::new(
+    Err(alondra_core::domain::DomainError::new(
         "stale_revision",
         "Schedule writer remained busy",
     )
@@ -511,7 +511,7 @@ async fn recover_uncertain(
 /// once more (the retry's run id derives from the failed one, so answering twice launches once);
 /// either way the failed run's Task never started and is cancelled, so it does not wait forever.
 fn answer_failed_launches(domain: &DomainRuntime, home: &Path) -> Result<()> {
-    use alondra_core::domain_v2::{InteractionPayload, LAUNCH_PROBLEM_PREFIX, LAUNCH_RETRY_OPTION};
+    use alondra_core::domain::{InteractionPayload, LAUNCH_PROBLEM_PREFIX, LAUNCH_RETRY_OPTION};
     let state = domain.state()?;
     for (id, interaction) in &state.interactions {
         let Some(failed) = id.0.strip_prefix(LAUNCH_PROBLEM_PREFIX) else { continue };
@@ -545,7 +545,7 @@ fn retry_launch(
     home: &Path,
     state: &DomainState,
     failed: &str,
-    run: &alondra_core::domain_v2::ScheduleRun,
+    run: &alondra_core::domain::ScheduleRun,
 ) -> bool {
     let retry: ScheduleRunId = format!("retry-{failed}").into();
     if state.schedule.runs.contains_key(&retry) {
@@ -714,7 +714,7 @@ fn rebased_schedules(
     launching: &BTreeSet<ScheduleId>,
     now: i64,
     include_due: bool,
-) -> Vec<alondra_core::domain_v2::Schedule> {
+) -> Vec<alondra_core::domain::Schedule> {
     state
         .schedule
         .schedules
@@ -748,7 +748,7 @@ enum WakeReason {
 
 async fn wait_for_next_run(
     deadline: Option<i64>,
-    schedules: &mut tokio::sync::watch::Receiver<alondra_core::domain_v2::Revision>,
+    schedules: &mut tokio::sync::watch::Receiver<alondra_core::domain::Revision>,
     usage: &mut tokio::sync::watch::Receiver<Option<crate::usage_pause::Exhausted>>,
     clock_changes: &mut tokio::sync::watch::Receiver<crate::schedule_clock::ClockChange>,
 ) -> WakeReason {
@@ -805,7 +805,7 @@ pub(crate) async fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alondra_core::domain_v2::{InteractionId, InteractionPayload, Schedule, ScheduleFrequency};
+    use alondra_core::domain::{InteractionId, InteractionPayload, Schedule, ScheduleFrequency};
     use std::collections::BTreeMap;
     use std::sync::Mutex;
 
@@ -1455,13 +1455,13 @@ mod tests {
         let original = state.schedule.runs[&ScheduleRunId::from("lost")].task_id.as_ref().unwrap();
         assert_eq!(
             state.tasks[original].state,
-            alondra_core::domain_v2::TaskState::Cancelled,
+            alondra_core::domain::TaskState::Cancelled,
             "the failed run's never-started Task does not wait forever"
         );
         assert_ne!(retried.task_id.as_ref(), Some(original));
         assert_ne!(
             state.tasks[retried.task_id.as_ref().unwrap()].state,
-            alondra_core::domain_v2::TaskState::Cancelled
+            alondra_core::domain::TaskState::Cancelled
         );
     }
 

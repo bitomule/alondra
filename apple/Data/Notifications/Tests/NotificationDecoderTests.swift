@@ -17,7 +17,7 @@ final class NotificationDecoderTests: XCTestCase {
             "payload": ["aps": ["alert": ["title": "Question", "body": "Approve?"], "sound": "default"],
                         "alondra": ["protocol": 1, "kind": "question", "card": "q-42", "data_epoch": "e", "actions": [["id": "ans:q-42@1", "option": "yes", "label": "Yes"]]]]
         ])
-        let envelope = try EnvelopeV1.seal(route: "mac-1", sender: "mac-1", recipient: "client-1",
+        let envelope = try Envelope.seal(route: "mac-1", sender: "mac-1", recipient: "client-1",
             requestID: "push-123", kind: "push", expiresAtMilliseconds: 2000, plaintext: plaintext,
             senderKey: signer, recipientKey: recipient.publicKey)
         let wireEnvelope = try JSONSerialization.jsonObject(with: JSONEncoder().encode(envelope))

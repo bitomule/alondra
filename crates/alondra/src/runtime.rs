@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 
-use alondra_core::domain_v2::{AgentId, TaskState};
+use alondra_core::domain::{AgentId, TaskState};
 use alondra_core::{Machine, Node};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer};

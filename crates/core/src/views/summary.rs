@@ -4,7 +4,7 @@ use super::{
     Lang,
     text::{t, tf},
 };
-use crate::domain_v2::{ContentKind, CardContent, clip};
+use crate::domain::{ContentKind, CardContent, clip};
 
 fn items(count: usize, one: &str, many: &str) -> String {
     if count == 1 { format!("1 {one}") } else { format!("{count} {many}") }

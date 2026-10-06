@@ -1,6 +1,6 @@
 use super::reset_time;
 use alondra_core::Millis;
-use alondra_core::domain_v2::{DomainState, PrState, PullRequest, TaskId, TaskState};
+use alondra_core::domain::{DomainState, PrState, PullRequest, TaskId, TaskState};
 use alondra_core::views::{
     Gauge, InboxTime, Lang, Level, LiveActivity, LiveBackground, LiveHistoryStep, LiveNode, LiveOrchestrator,
     LiveCheck, LivePullRequest, LiveSnapshot, Notice, Tone,
@@ -31,8 +31,8 @@ impl LiveReadCache {
 /// project its name starts with.
 fn launched_project(
     state: &DomainState,
-    agent: &alondra_core::domain_v2::Agent,
-    launches: &BTreeMap<alondra_core::domain_v2::RequestId, (Option<String>, Option<String>)>,
+    agent: &alondra_core::domain::Agent,
+    launches: &BTreeMap<alondra_core::domain::RequestId, (Option<String>, Option<String>)>,
 ) -> Option<String> {
     state.tasks.values()
         .filter(|task| task.agent_id.as_ref() == Some(&agent.id) && !task.archived)
@@ -56,7 +56,7 @@ fn node_label(key: &str, lang: Lang) -> String {
 }
 
 pub(crate) async fn gather(
-    client: &crate::v2_client_routes::Client,
+    client: &crate::client_routes::Client,
     state: &DomainState,
     lang: Lang,
     keys: &[String],
@@ -450,7 +450,7 @@ fn stacked_below<'a>(pr: &PullRequest, state: &'a DomainState) -> Option<&'a Pul
     }
 }
 
-async fn read_json(client: &crate::v2_client_routes::Client, path: &str) -> Option<Value> {
+async fn read_json(client: &crate::client_routes::Client, path: &str) -> Option<Value> {
     let response = client.read(path).await?;
     if !response.status().is_success() {
         return None;
@@ -462,7 +462,7 @@ async fn read_json(client: &crate::v2_client_routes::Client, path: &str) -> Opti
 }
 
 async fn read_live_json(
-    client: &crate::v2_client_routes::Client,
+    client: &crate::client_routes::Client,
     path: &str,
     domain_revision: u64,
     source_revision: &str,
@@ -475,7 +475,7 @@ async fn read_live_json(
     Some(value)
 }
 
-fn search_source_revision(client: &crate::v2_client_routes::Client, state: &DomainState) -> String {
+fn search_source_revision(client: &crate::client_routes::Client, state: &DomainState) -> String {
     let nodes = client.domain.live.nodes();
     let candidates: Vec<_> = state.agents.values().map(|agent| {
         let node = nodes.iter().find(|node| node.session_id == agent.id.0);
@@ -490,7 +490,7 @@ fn search_source_revision(client: &crate::v2_client_routes::Client, state: &Doma
     digest_hex(&bytes)
 }
 
-fn activity_source_revision(client: &crate::v2_client_routes::Client, id: &str) -> String {
+fn activity_source_revision(client: &crate::client_routes::Client, id: &str) -> String {
     client.domain.live.threads(id)
         .and_then(|activity| serde_json::to_vec(&activity).ok())
         .map(|bytes| digest_hex(&bytes))
@@ -526,7 +526,7 @@ fn digest_hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod cache_tests {
     use super::*;
-    use alondra_core::domain_v2::{Actor, Command, CommandEnvelope};
+    use alondra_core::domain::{Actor, Command, CommandEnvelope};
     use std::{fs, sync::Arc};
 
     #[test]
@@ -557,7 +557,7 @@ mod cache_tests {
         let home = std::env::temp_dir().join(format!("alondra-live-cache-{}", crate::auth::random_hex(8)));
         fs::create_dir(&home).unwrap();
         let domain = Arc::new(crate::domain_runtime::DomainRuntime::open(&home).unwrap());
-        let client = crate::v2_client_routes::Client::open(domain.clone(), &home, Arc::new(std::sync::Mutex::new(None)));
+        let client = crate::client_routes::Client::open(domain.clone(), &home, Arc::new(std::sync::Mutex::new(None)));
         for id in ["a", "b"] {
             let state = domain.state().unwrap();
             domain.execute(&Actor::System, &CommandEnvelope {
@@ -806,7 +806,7 @@ mod tests {
 
     fn pr(id: &str, number: u64, head: &str, base: &str) -> PullRequest {
         PullRequest {
-            id: alondra_core::domain_v2::PrId(id.into()),
+            id: alondra_core::domain::PrId(id.into()),
             task_id: TaskId("task".into()),
             host: "github.com".into(),
             repository: "bitomule/alondra".into(),

@@ -23,7 +23,7 @@ pub use live::*;
 pub use text::Lang;
 pub const VIEWS_PROTOCOL: u32 = 1;
 
-use crate::domain_v2::DomainState;
+use crate::domain::DomainState;
 use sha2::{Digest, Sha256};
 
 #[derive(Clone, Copy, Debug)]
@@ -44,11 +44,11 @@ pub enum BuildError {
     UnsupportedClient,
 }
 /// The app icon badge: the same count as the Waiting for You queue and `Status::badge`.
-pub fn inbox_badge(domain: &crate::domain_v2::DomainState) -> u32 {
+pub fn inbox_badge(domain: &crate::domain::DomainState) -> u32 {
     home::waiting(&domain.projection()).len() as u32
 }
 /// The cards of the Waiting for You queue, by the id a push names them with (`alondra.card`).
-pub fn waiting_cards(domain: &crate::domain_v2::DomainState) -> Vec<String> {
+pub fn waiting_cards(domain: &crate::domain::DomainState) -> Vec<String> {
     home::waiting(&domain.projection()).into_iter().map(|item| card::public_id(item).to_owned()).collect()
 }
 pub fn build(key: &str, context: RenderContext<'_>) -> Result<View, BuildError> {
@@ -138,8 +138,8 @@ pub fn push_actions(
 
 /// How loudly a card interrupts: a problem, or a blocking permission or manual step, now; a
 /// decision, review, test or input when the user looks; a notice or a proposal quietly.
-fn push_level(kind: crate::domain_v2::CardKind, blocking: bool) -> &'static str {
-    use crate::domain_v2::CardKind::*;
+fn push_level(kind: crate::domain::CardKind, blocking: bool) -> &'static str {
+    use crate::domain::CardKind::*;
     match kind {
         Problem => "time-sensitive",
         Authorize | Do if blocking => "time-sensitive",
@@ -158,15 +158,15 @@ pub fn push_content(
         domain, live: &live, client: Client::Ios, lang, transport: Transport::Relay,
         cursor: "push", rendered_at: "",
     })?;
-    let interaction = domain.interactions.get(&crate::domain_v2::InteractionId(card_id.into()));
+    let interaction = domain.interactions.get(&crate::domain::InteractionId(card_id.into()));
     let interruption_level = interaction.map_or("active", |i| {
-        let quiet = i.author == crate::domain_v2::Author::System && !i.blocking && i.card.kind == crate::domain_v2::CardKind::Decide;
+        let quiet = i.author == crate::domain::Author::System && !i.blocking && i.card.kind == crate::domain::CardKind::Decide;
         if quiet { "passive" } else { push_level(i.card.kind, i.blocking) }
     });
     let thread = interaction.map(|i| match &i.scope {
-        crate::domain_v2::Scope::Task { task_id } => task_id.0.clone(),
-        crate::domain_v2::Scope::Orchestrator { request_id: Some(request_id) } => request_id.0.clone(),
-        crate::domain_v2::Scope::Orchestrator { request_id: None } => "orchestrator".to_owned(),
+        crate::domain::Scope::Task { task_id } => task_id.0.clone(),
+        crate::domain::Scope::Orchestrator { request_id: Some(request_id) } => request_id.0.clone(),
+        crate::domain::Scope::Orchestrator { request_id: None } => "orchestrator".to_owned(),
     });
     let Some(card) = view.sections.iter().flat_map(|section| &section.items).find_map(|item| {
         if let Item::Card(card) = item { Some(card) } else { None }
@@ -213,7 +213,7 @@ fn one_line(text: &str, limit: usize) -> Option<String> {
 
 /// Only answers that need no more than one line of text can be given from a notification.
 fn push_supported_option(domain: &DomainState, action: &Action) -> bool {
-    use crate::domain_v2::{InputKind, InteractionId, InteractionPayload};
+    use crate::domain::{InputKind, InteractionId, InteractionPayload};
     let Ok(id) = action_id::ActionId::parse(&action.id) else { return false };
     if id.verb != action_id::Verb::Ans { return true; }
     let Some(option_id) = action.option_id.as_deref() else { return false };

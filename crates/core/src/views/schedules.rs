@@ -2,7 +2,7 @@ use super::{
     BuildError, ChoiceItem, Confirm, Field, FieldKind, Form, Icon, Item, Notice, RenderContext,
     Style, Tone, Trailing, View, action_id::Verb, common, text::t,
 };
-use crate::domain_v2::{ScheduleFrequency, ScheduleId, ScheduleRunState};
+use crate::domain::{ScheduleFrequency, ScheduleId, ScheduleRunState};
 use serde_json::{Value, json};
 
 fn frequency(f: ScheduleFrequency) -> &'static str {
@@ -416,7 +416,7 @@ pub(super) fn editor(key: &str, context: &RenderContext<'_>) -> Result<View, Bui
 #[cfg(test)]
 mod tests {
     use super::super::{Client, Item, Lang, LiveSnapshot, RenderContext, Transport};
-    use crate::domain_v2::DomainState;
+    use crate::domain::DomainState;
 
     #[test]
     fn schedule_instants_are_absolute_utc() {
