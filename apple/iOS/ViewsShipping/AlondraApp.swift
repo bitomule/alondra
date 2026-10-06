@@ -30,6 +30,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
             try await owner.selectMac(id)
         }
         notifications.installDelegate()
+        notifications.drainUnregistrations()
         return true
     }
     func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {

@@ -235,14 +235,21 @@ private final class MemoryStorage: RefreshTokenStorage, @unchecked Sendable {
     private let lock = NSLock()
     private var token: RefreshCredential?
     private var refusesWrites: Bool
-    init(_ token: String? = nil, status: RefreshCredential.Status = .active, refusesWrites: Bool = false) {
+    private let refusesDeletes: Bool
+    init(_ token: String? = nil, status: RefreshCredential.Status = .active, refusesWrites: Bool = false,
+         refusesDeletes: Bool = false) {
         self.token = token.map { RefreshCredential(token: $0, status: status) }
         self.refusesWrites = refusesWrites
+        self.refusesDeletes = refusesDeletes
     }
     func setRefusesWrites(_ value: Bool) { lock.lock(); defer { lock.unlock() }; refusesWrites = value }
     func read() throws -> RefreshCredential? { lock.lock(); defer { lock.unlock() }; return token }
     func write(_ token: RefreshCredential) throws { lock.lock(); defer { lock.unlock() }; if refusesWrites { throw AuthError.keychain(-25293) }; self.token = token }
-    func delete() throws { lock.lock(); defer { lock.unlock() }; token = nil }
+    func delete() throws {
+        lock.lock(); defer { lock.unlock() }
+        if refusesDeletes { throw AuthError.keychain(-25293) }
+        token = nil
+    }
 }
 
 private final class FlowEvidence: @unchecked Sendable {
@@ -565,6 +572,34 @@ final class AuthSessionTests: XCTestCase {
             }
             XCTAssertEqual(try storage.read(), code == "invalid_grant" ? nil : RefreshCredential(token: "saved"))
         }
+    }
+
+    func testOnlyAnIssuerRejectionReportsTheSessionLost() async throws {
+        let browser = FixtureBrowser { _ in XCTFail("Should not open"); return URL(string: "https://invalid.example")! }
+        let replies: [(String, @Sendable (URLRequest) throws -> AuthHTTPResponse, Bool)] = [
+            ("invalid_grant", { _ in AuthHTTPResponse(status: 400, body: Data("{\"error\":\"invalid_grant\"}".utf8)) }, true),
+            ("invalid_client", { _ in AuthHTTPResponse(status: 400, body: Data("{\"error\":\"invalid_client\"}".utf8)) }, false),
+            ("offline", { _ in throw URLError(.notConnectedToInternet) }, false),
+        ]
+        for (name, reply, reported) in replies {
+            let lost = expectation(description: name)
+            lost.isInverted = !reported
+            let session = AuthSession(transport: FixtureTransport(tokenResponse: reply), browser: browser,
+                                      storage: MemoryStorage("saved"), sessionLost: { lost.fulfill() })
+            _ = try? await session.bearerToken()
+            await fulfillment(of: [lost], timeout: reported ? 1 : 0.1)
+        }
+    }
+
+    func testARejectedSessionIsReportedLostEvenWhenEndingItLocallyFails() async throws {
+        let browser = FixtureBrowser { _ in XCTFail("Should not open"); return URL(string: "https://invalid.example")! }
+        let lost = expectation(description: "lost")
+        let session = AuthSession(transport: FixtureTransport(tokenResponse: { _ in
+            AuthHTTPResponse(status: 400, body: Data("{\"error\":\"invalid_grant\"}".utf8))
+        }), browser: browser, storage: MemoryStorage("saved", refusesDeletes: true), sessionLost: { lost.fulfill() })
+        do { _ = try await session.bearerToken(); XCTFail("Rejected") }
+        catch { XCTAssertEqual(error as? AuthError, .keychain(-25293)) }
+        await fulfillment(of: [lost], timeout: 1)
     }
 
     func testLostRefreshResponseNeverBecomesSuccessfulLogoutOrAutomaticReplay() async throws {

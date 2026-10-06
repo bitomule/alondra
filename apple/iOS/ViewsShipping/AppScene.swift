@@ -135,6 +135,7 @@ private struct ApprovedServiceScene: View {
                 notifications.push.reregisterOnReturn()
             }
             if phase == .active {
+                notifications.drainUnregistrations()
                 showIconBadge(context.store?.triage.iconBadge)
                 reconcileNotifications()
             }

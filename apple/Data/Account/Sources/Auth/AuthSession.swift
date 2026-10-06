@@ -64,6 +64,7 @@ public actor AuthSession {
     // A successful issuer response can outlive a failed Keychain write. Keep its
     // successor until it is durable; logout must never fall back to the old token.
     private var unpersistedCredential: RefreshCredential?
+    private let sessionLost: @Sendable () -> Void
     private var mutationLocked = false
     private var mutationWaiters: [AsyncStream<Void>.Continuation] = []
 
@@ -96,8 +97,10 @@ public actor AuthSession {
                 browser: any AuthBrowser,
                 storage: any RefreshTokenStorage = KeychainRefreshTokenStorage(),
                 now: @escaping @Sendable () -> Date = { Date() },
-                refreshGrant: @escaping RefreshGrant = { _ in { } }) {
+                refreshGrant: @escaping RefreshGrant = { _ in { } },
+                sessionLost: @escaping @Sendable () -> Void = {}) {
         self.configuration = configuration
+        self.sessionLost = sessionLost
         self.transport = transport
         self.browser = browser
         self.storage = storage
@@ -356,6 +359,7 @@ public actor AuthSession {
         } catch AuthError.oauth(let status, let code) {
             Self.log.error("refresh rejected status=\(status, privacy: .public) code=\(code, privacy: .public) replaying=\(uncertain, privacy: .public)")
             if code == "invalid_grant" {
+                sessionLost()
                 try await endRejectedSession(uncertain: uncertain)
                 throw AuthError.noSession
             }

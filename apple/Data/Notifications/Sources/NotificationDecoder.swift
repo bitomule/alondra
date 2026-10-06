@@ -75,6 +75,23 @@ public enum NotificationDecoder {
         return payload
     }
 
+    public enum Failure: Equatable, Sendable {
+        /// The Keychain could not be read, as before the first unlock after a restart.
+        case locked
+        /// The Keychain was readable and holds no keys for this binding: its session ended.
+        case noKeys(NotificationPayload.Binding)
+        case invalid
+    }
+
+    /// Why `open` returned nil, so a push to an ended session can say so.
+    public static func failure(userInfo: [AnyHashable: Any], store: NotificationDecryptionStore) -> Failure {
+        guard let raw = try? JSONSerialization.data(withJSONObject: userInfo),
+              let hint = try? bindingHint(raw) else { return .invalid }
+        do { return try store.load(binding: hint) == nil ? .noKeys(hint) : .invalid }
+        catch NotificationDecryptionError.keychain { return .locked }
+        catch { return .invalid }
+    }
+
     private struct Outer: Decodable {
         let alondra: Encrypted
         struct Encrypted: Decodable {
