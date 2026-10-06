@@ -3257,7 +3257,7 @@ fn request_option_values_keep_their_description_in_both_languages() {
         })
     };
     let [pr, effort] = descriptions(Lang::En);
-    assert_eq!(pr[1].as_deref(), Some("The node merges its own PR once its checks pass"));
+    assert_eq!(pr[1].as_deref(), Some("Alondra merges the PR once its checks pass"));
     assert!(effort.iter().all(Option::is_some));
     let [pr, effort] = descriptions(Lang::Es);
     assert_eq!(pr[1].as_deref(), Some("El nodo fusiona su propia PR cuando pasan las comprobaciones"));
@@ -3548,6 +3548,18 @@ fn a_pr_sent_back_leaves_waiting_for_you_and_its_task_says_what_alondra_asked() 
         assert!(task(&state, Lang::En).contains(english), "{instruction:?}");
         assert!(task(&state, Lang::Es).contains(spanish), "{instruction:?}");
     }
+    let mut state = presented.clone();
+    execute(&mut state, Actor::System, Command::SubmitFeedback {
+        attachments: vec![], presentation_id: "d".into(), instruction: Instruction::Conflicts,
+        body: crate::domain::merge_failed_text(12, "https://github.com/example/repo/pull/12", "main", "its checks failed (lint)"),
+        targets: vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: "head1".into() }],
+    });
+    let english = task(&state, Lang::En);
+    assert!(english.contains("Alondra couldn't merge it") && !english.contains("Resolving conflicts"), "{english}");
+    assert!(task(&state, Lang::Es).contains("Alondra no pudo fusionarla"));
+    let card = serde_json::to_string(&render(&state, &live, Client::Tui, Lang::En, "card:d", "")).unwrap();
+    assert!(card.contains("Alondra couldn't merge #12") && card.contains("its checks failed (lint)")
+        && !card.contains("Conflicts were reported"), "{card}");
 }
 
 #[test]

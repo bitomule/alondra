@@ -447,9 +447,9 @@ async fn http_presenting_a_pr_github_cannot_report_still_creates_the_card() {
 
 #[tokio::test]
 async fn http_an_accepted_pr_is_merged_by_alondra_and_a_node_can_neither_claim_nor_complete() {
-    use crate::domain_github::PrFacts;
-    use crate::domain_merges::{FakeGithub, merge_due};
-    use alondra_core::domain::{MergeAttemptState, PrState};
+    use crate::domain_merges::{Checks, FakeGithub, Merger};
+    use alondra_core::domain::MergeAttemptState;
+    use std::time::Duration;
     let mut fixture = Fixture::start().await;
     fixture.task("merge-task", true).await;
     let head = "0123456789abcdef0123456789abcdef01234567";
@@ -468,8 +468,8 @@ async fn http_an_accepted_pr_is_merged_by_alondra_and_a_node_can_neither_claim_n
     fixture.user(json!({"kind":"accept_delivery", "presentation_id":"delivery-7",
         "targets":[{"kind":"pull_request", "pr_id":"pr-7", "head":head}]}));
     let github = FakeGithub::new();
-    github.observer.set(7, Ok(PrFacts { head: head.into(), base: "main".into(), state: PrState::Open, merged_head: None }));
-    merge_due(&fixture.domain, &github, &mut Default::default()).await.unwrap();
+    github.open(7, head, Checks::Passed);
+    Merger::with(Duration::ZERO, Duration::ZERO, Duration::from_secs(60)).merge_due(&fixture.domain, &github).await.unwrap();
     assert_eq!(github.merged.lock().unwrap().len(), 1);
     let state = fixture.domain.state().unwrap();
     assert_eq!(state.merge_authorizations.values().next().unwrap().attempt, MergeAttemptState::Confirmed);

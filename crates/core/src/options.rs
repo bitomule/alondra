@@ -166,8 +166,8 @@ fn builtins() -> [Spec; 2] {
             label: "PR handling".into(),
             kind: Kind::Choice,
             values: vec![
-                v(REVIEW, "review each PR", "Each PR the node opens is a card for you; the node waits for your merge"),
-                v(AUTO_MERGE, "auto-merge", "The node merges its own PR once its checks pass"),
+                v(REVIEW, "review each PR", "Each PR the node opens is a card for you; Alondra merges it when you accept it"),
+                v(AUTO_MERGE, "auto-merge", "Alondra merges the PR once its checks pass"),
             ],
             default: Choice::Value(REVIEW.into()),
             builtin: true,

@@ -104,7 +104,7 @@ pub(crate) fn pr_url(host: &str, repository: &str, number: u64) -> String {
     format!("https://{}/{repository}/pull/{number}", alondra_core::domain::normalize_pr_host(host))
 }
 
-fn parse(value: &Value) -> Result<PrFacts, String> {
+pub(crate) fn parse(value: &Value) -> Result<PrFacts, String> {
     let head = value["headRefOid"].as_str()
         .filter(|head| head.len() == 40 && head.bytes().all(|byte| byte.is_ascii_hexdigit()))
         .ok_or("gh reported no PR head")?;

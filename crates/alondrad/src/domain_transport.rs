@@ -464,14 +464,18 @@ fn start_assigned(domain: &DomainRuntime, agent_id: &AgentId) -> Result<()> {
 /// Turn ends Alondra holds back in a row for one Task before it stops trying and tells the user.
 pub(crate) const STOP_BLOCKS: u32 = 3;
 
-/// A turn may not end while the Agent's Task is open with neither a result for the user nor a
-/// question from it: Claude Code goes on with the reason. A turn a Stop hook already continued,
-/// one with work still running in the background, or a node stopped by the machine ends. After
-/// `STOP_BLOCKS` such turn ends in a row the user gets a Problem card and the node may stop; a
-/// delivery or a question starts the count again. The count is kept in the domain store, so a
-/// restart does not reset it.
+/// A turn of a node Alondra launched may not end while its Task is open with neither a result
+/// for the user nor a question from it: Claude Code goes on with the reason. A turn the block
+/// itself continued (`stop_hook_active`) counts too, so the cap, not the flag, ends the loop:
+/// after `STOP_BLOCKS` turn ends in a row the user gets a Problem card and the node may stop. A
+/// delivery or a question starts the count again; the count is kept in the domain store, so a
+/// restart does not reset it. A session the user drives (not a background node, or one whose
+/// terminal they attached to), work running in the background and a node stopped by the machine
+/// are never held.
 fn undelivered(domain: &DomainRuntime, agent_id: &AgentId, payload: &Value) -> Result<Option<String>> {
-    if payload.get("stop_hook_active") == Some(&Value::Bool(true))
+    let driven_by_user = !domain.live.mods.is_node(&agent_id.0)
+        || domain.live.node(&agent_id.0).is_some_and(|node| node.attached);
+    if driven_by_user
         || payload.get("background_tasks").and_then(Value::as_array).is_some_and(|tasks| !tasks.is_empty())
         || domain.live.node(&agent_id.0).is_some_and(|node| node.status == alondra_core::NodeStatus::WaitingMachine
             || node.turn_signal == Some(alondra_core::TurnSignal::WaitingMachine))
@@ -705,6 +709,7 @@ mod tests {
 
     /// An Agent with a Task, a question and the User's answer queued for it.
     fn answered_question(domain: &DomainRuntime, agent: &str) {
+        domain.live.mods.loaded_in(agent);
         command(domain, Actor::System, &format!("register-{agent}"), Command::RegisterAgent {
             agent_id: agent.into(), name: agent.into(),
         });
@@ -918,6 +923,7 @@ mod tests {
     }
 
     fn node_with_task(domain: &DomainRuntime) {
+        domain.live.mods.loaded_in("agent-a");
         command(domain, Actor::System, "register", Command::RegisterAgent {
             agent_id: "agent-a".into(), name: "Agent A".into(),
         });
@@ -1231,6 +1237,7 @@ mod tests {
             }
         }
         let domain = fixture.open();
+        domain.live.mods.loaded_in("agent-a");
         assert!(reminder_only(&hook(&domain, stop.clone(), Some(6)).await.0), "the count survives a restart");
         assert!(problems(&domain).is_empty());
         assert_eq!(hook(&domain, stop.clone(), Some(6)).await.0, json!({}), "the fourth turn end is let through");
@@ -1246,6 +1253,38 @@ mod tests {
         free_text_answer(&domain, user_actor(), "q", "Atlas");
         assert!(reminder_only(&hook(&domain, stop.clone(), Some(6)).await.0), "asking started the count again");
         assert!(problems(&domain).iter().all(|card| card.withdrawn), "the card went once the node asked");
+    }
+
+    /// What Claude Code sends: the Stop after a block carries `stop_hook_active`, and those turn
+    /// ends count until the cap lets the node stop.
+    #[tokio::test]
+    async fn turns_a_block_continued_are_held_until_the_cap_then_the_user_is_told() {
+        let fixture = Fixture::new();
+        let domain = fixture.open();
+        node_with_task(&domain);
+        let first = json!({"session_id": "agent-a", "hook_event_name": "Stop"});
+        let continued = json!({"session_id": "agent-a", "hook_event_name": "Stop", "stop_hook_active": true});
+        assert!(reminder_only(&hook(&domain, first, Some(6)).await.0));
+        assert!(reminder_only(&hook(&domain, continued.clone(), Some(6)).await.0));
+        assert!(reminder_only(&hook(&domain, continued.clone(), Some(6)).await.0));
+        assert!(problems(&domain).is_empty());
+        assert_eq!(hook(&domain, continued, Some(6)).await.0, json!({}), "the cap lets it stop");
+        assert_eq!(problems(&domain).len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_session_the_user_drives_is_never_held() {
+        let fixture = Fixture::new();
+        let domain = fixture.open();
+        node_with_task(&domain);
+        hook(&domain, json!({"session_id": "agent-a", "hook_event_name": "PreToolUse", "tool_name": "Bash"}), Some(6)).await.1.unwrap();
+        domain.live.apply(&alondra_core::Event::AttachChanged { session_id: "agent-a".into(), attached: true });
+        assert!(domain.live.node("agent-a").is_some_and(|node| node.attached));
+        assert_eq!(hook(&domain, json!({"session_id": "agent-a", "hook_event_name": "Stop"}), Some(6)).await.0, json!({}),
+            "the user attached to its terminal");
+        working_agent_without_mod(&domain, "agent-z");
+        assert_eq!(hook(&domain, json!({"session_id": "agent-z", "hook_event_name": "Stop"}), Some(6)).await.0, json!({}),
+            "not a node Alondra launched");
     }
 
     #[tokio::test]
@@ -1296,12 +1335,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_turn_continued_by_a_stop_hook_or_ending_after_a_result_is_not_reminded() {
+    async fn a_turn_ending_after_a_result_is_not_held() {
         let fixture = Fixture::new();
         let domain = fixture.open();
         node_with_task(&domain);
-        let (reply, _) = hook(&domain, json!({"session_id": "agent-a", "hook_event_name": "Stop", "stop_hook_active": true}), Some(6)).await;
-        assert_eq!(reply, json!({}));
         command(&domain, agent_actor(), "present", Command::PresentResult {
             attachments: vec![], task_id: "task".into(), interaction_id: "delivery".into(),
             body: "Done".into(), targets: vec![DeliveryTarget::Text { text: "The answer".into() }], is_final: true, card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),

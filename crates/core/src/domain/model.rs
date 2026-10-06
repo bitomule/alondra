@@ -71,7 +71,8 @@ pub struct Request {
     /// Closed because the user withdrew it.
     #[serde(default)]
     pub withdrawn: bool,
-    /// The user chose that the Agent merges its own PR once it can, without waiting for them.
+    /// The user chose that Alondra merges the PR of the final delivery once its checks pass,
+    /// without waiting for their acceptance.
     #[serde(default)]
     pub auto_merge: bool,
 }

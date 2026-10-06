@@ -624,6 +624,10 @@ impl DomainStore {
             params![task_id.0, blocks, marker])?;
         Ok(())
     }
+    #[cfg(test)]
+    pub(crate) fn conn_for_test(&self) -> &Connection {
+        &self.conn
+    }
     /// A merge attempt a node claimed under the flow where nodes merged their own PRs.
     #[cfg(test)]
     pub(crate) fn claim_as_node(&mut self, authorization: &str, agent: &str) {

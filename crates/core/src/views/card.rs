@@ -904,7 +904,7 @@ fn delivery_actions(
             merge.presentation = Presentation::Menu;
             merge.options = methods;
             merge.confirm = Some(merge_confirm(pr, context));
-            merge.stamp = Some(t!(lang, "Merged", "Fusionada").into());
+            merge.stamp = Some(t!(lang, "Merging…", "Fusionando…").into());
             merge.enabled = available.enabled && stacked.is_none();
             merge.disabled_reason = stacked
                 .map(|id| {
@@ -1279,6 +1279,12 @@ fn history_rows(item: &InboxItem, context: &RenderContext<'_>) -> Vec<Item> {
         InteractionPayload::Delivery { acceptance, feedback, .. } => {
             for (index, feedback) in feedback.iter().enumerate() {
                 use crate::domain::Instruction;
+                if let Some((number, reason)) = crate::domain::merge_failure(&feedback.body) {
+                    row(format!("feedback-{index}"), Icon::History,
+                        tf!(lang, "Alondra couldn't merge #{number}", "Alondra no pudo fusionar la #{number}", number = number),
+                        Some(clip(reason, 240)));
+                    continue;
+                }
                 let title = match feedback.instruction {
                     Instruction::Changes => t!(lang, "You asked for changes", "Pediste cambios"),
                     Instruction::Question => t!(lang, "You asked a question", "Hiciste una pregunta"),

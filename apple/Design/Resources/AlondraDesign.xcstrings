@@ -1302,22 +1302,22 @@
         }
       }
     },
-    "Each PR is a card for you; the node waits for your merge": {
+    "Each PR is a card for you; Alondra merges it when you accept it": {
       "localizations": {
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Cada PR es una tarjeta para ti; el nodo espera a que hagas merge"
+            "value": "Cada PR es una tarjeta para ti; Alondra la fusiona cuando la aceptas"
           }
         }
       }
     },
-    "Alondra merges the node’s PR once its checks pass": {
+    "Alondra merges the PR once its checks pass": {
       "localizations": {
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Alondra hace merge del PR del nodo cuando pasan los checks"
+            "value": "Alondra fusiona la PR cuando pasan las comprobaciones"
           }
         }
       }

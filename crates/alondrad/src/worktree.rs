@@ -52,20 +52,79 @@ pub async fn unmerged_in(dir: &Path) -> Option<String> {
     (!merged).then(|| format!("its work in {} is not on {default}", dir.display()))
 }
 
-/// Why a node's final delivery cannot be taken yet: its worktree holds work no remote has, or
-/// work that is neither on the default branch nor in the PR registered for its Task. Nothing
-/// when the node has no worktree of its own.
+/// The remote's default branch as `origin/<name>`: origin/HEAD, else what GitHub names it.
+async fn default_branch(dir: &Path) -> Option<String> {
+    if let Some(head) = git(dir, &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]).await {
+        return Some(head);
+    }
+    let gh = Command::new("gh").current_dir(dir).args(["repo", "view", "--json", "defaultBranchRef", "--jq", ".defaultBranchRef.name"])
+        .kill_on_drop(true).output();
+    let out = tokio::time::timeout(std::time::Duration::from_secs(20), gh).await.ok()?.ok()?;
+    let name = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+    (out.status.success() && !name.is_empty()).then(|| format!("origin/{name}"))
+}
+
+/// Whether the worktree's HEAD is on the remote's default branch, after fetching it; `None` when
+/// that cannot be told (no origin, no default branch, a fetch or check that fails).
+async fn on_default_branch(dir: &Path) -> Option<(bool, String)> {
+    let default = default_branch(dir).await?;
+    let branch = default.strip_prefix("origin/").unwrap_or(&default).to_owned();
+    let fetch = Command::new("git").arg("-C").arg(dir).args(["fetch", "--quiet", "origin", &branch]).kill_on_drop(true).output();
+    if !tokio::time::timeout(std::time::Duration::from_secs(60), fetch).await.ok()?.ok()?.status.success() {
+        return None;
+    }
+    let check = Command::new("git").arg("-C").arg(dir).args(["merge-base", "--is-ancestor", "HEAD", &default]).output().await.ok()?;
+    match check.status.code() {
+        Some(0) => Some((true, default)),
+        Some(1) => Some((false, default)),
+        _ => None,
+    }
+}
+
+const LISTED_FILES: usize = 20;
+
+fn listed(files: &[String]) -> String {
+    let mut list = files.iter().take(LISTED_FILES).map(|file| format!("`{file}`")).collect::<Vec<_>>().join(", ");
+    if files.len() > LISTED_FILES {
+        list.push_str(&format!(" and {} more", files.len() - LISTED_FILES));
+    }
+    list
+}
+
+/// Why a node's final delivery cannot be taken yet: files it did not commit, commits no remote
+/// has, or work that is neither on the default branch nor in the PR registered for its Task.
+/// Nothing when the node has no worktree of its own, or when git cannot tell.
 pub(crate) async fn final_refusal(state: &DomainState, session_id: &str, task: &TaskId, targets: &[DeliveryTarget]) -> Option<DomainError> {
     final_refusal_in(state, &worktree_of(session_id)?, task, targets).await
 }
 
 pub(crate) async fn final_refusal_in(state: &DomainState, dir: &Path, task: &TaskId, targets: &[DeliveryTarget]) -> Option<DomainError> {
     let user = crate::domain_messages::user_name();
-    if let Some(left) = leftovers_in(dir).await {
+    let status = git(dir, &["status", "--porcelain", "--untracked-files=all"]).await.unwrap_or_default();
+    let (untracked, changed): (Vec<String>, Vec<String>) = status.lines().filter(|line| line.len() > 3)
+        .map(|line| (line.starts_with("??"), line[3..].to_owned()))
+        .fold((vec![], vec![]), |(mut untracked, mut changed), (new, file)| {
+            if new { untracked.push(file) } else { changed.push(file) }
+            (untracked, changed)
+        });
+    let unpushed: usize = git(dir, &["rev-list", "--count", "HEAD", "--not", "--remotes"]).await
+        .and_then(|count| count.parse().ok()).unwrap_or(0);
+    let mut left = vec![];
+    if !changed.is_empty() {
+        left.push(format!("uncommitted changes to {}", listed(&changed)));
+    }
+    if !untracked.is_empty() {
+        left.push(format!("files git does not track: {}", listed(&untracked)));
+    }
+    if unpushed > 0 {
+        left.push(format!("{unpushed} commit(s) not pushed"));
+    }
+    if !left.is_empty() {
         return Some(DomainError::new("worktree_not_clean", format!(
-            "Nothing was presented: your worktree has {left}. Commit and push your work (open a PR and register it with \
-             register_pr if the work belongs in the code), then present the final result again. If some of it should be thrown \
-             away, ask {user} with ask before discarding anything."
+            "Nothing was presented: your worktree in {} has {}. Commit each of these files, or delete it if it should not be \
+             kept (build outputs, scratch files), push, and present the final result again. If you are unsure whether something \
+             can go, ask {user} with ask before deleting it.",
+            dir.display(), left.join("; ")
         )));
     }
     let in_pr = targets.iter().any(|target| matches!(target, DeliveryTarget::PullRequest { .. }))
@@ -73,11 +132,18 @@ pub(crate) async fn final_refusal_in(state: &DomainState, dir: &Path, task: &Tas
     if in_pr {
         return None;
     }
-    let unmerged = unmerged_in(dir).await?;
-    Some(DomainError::new("work_not_delivered", format!(
-        "Nothing was presented: {unmerged} and this task has no registered pull request. Open a pull request for your branch, \
-         register it with register_pr, and present the final result again with that pull request in targets."
-    )))
+    match on_default_branch(dir).await {
+        Some((true, _)) => None,
+        Some((false, default)) => Some(DomainError::new("work_not_delivered", format!(
+            "Nothing was presented: your work in {} is not on {default} and this task has no registered pull request. Open a \
+             pull request for your branch, register it with register_pr, and present the final result again with that pull \
+             request in targets.", dir.display()
+        ))),
+        None => {
+            log!("could not tell whether the work in {} is on its default branch; taking the final result", dir.display());
+            None
+        }
+    }
 }
 
 /// Deletes the node's worktree with whatever it holds, so `claude rm` closes the node: its
@@ -198,10 +264,12 @@ mod tests {
         let code = |refusal: Option<DomainError>| refusal.map(|error| (error.code, error.message));
         assert_eq!(code(final_refusal_in(&state, &clone, &task, &text).await), None, "nothing left, nothing to merge");
 
-        std::fs::write(clone.join("notes.txt"), "draft").unwrap();
+        std::fs::create_dir(clone.join("out")).unwrap();
+        std::fs::write(clone.join("out/notes.txt"), "draft").unwrap();
         let (refused, message) = code(final_refusal_in(&state, &clone, &task, &pr).await).unwrap();
         assert_eq!(refused, "worktree_not_clean");
-        assert!(message.starts_with("Nothing was presented: your worktree has 1 uncommitted file(s)"), "{message}");
+        assert!(message.contains("files git does not track: `out/notes.txt`") && message.contains("or delete it"), "{message}");
+        std::fs::rename(clone.join("out/notes.txt"), clone.join("notes.txt")).unwrap();
 
         run(&clone, &["checkout", "-q", "-b", "feature"]);
         run(&clone, &["add", "notes.txt"]);
@@ -215,6 +283,11 @@ mod tests {
         let (refused, message) = code(final_refusal_in(&state, &clone, &task, &text).await).unwrap();
         assert_eq!(refused, "work_not_delivered");
         assert!(message.contains("is not on origin/main") && message.contains("register_pr"), "{message}");
+
+        run(&clone, &["remote", "set-url", "origin", root.join("gone.git").to_str().unwrap()]);
+        run(&clone, &["remote", "set-head", "origin", "-d"]);
+        assert_eq!(code(final_refusal_in(&state, &clone, &task, &text).await), None,
+            "when it cannot be told where the default branch is, the result is taken");
         std::fs::remove_dir_all(root).unwrap();
     }
 }

@@ -854,6 +854,48 @@ fn a_node_claim_left_from_before_is_taken_over_by_alondra() {
     reject_unchanged(&mut s, Actor::System, claim, "delivery_uncertain");
 }
 #[test]
+fn alondra_authorizes_its_own_merge_only_for_an_untouched_auto_merge_delivery() {
+    let auto = |id: &str| Command::AuthorizeMerge { authorization_id: id.into(), presentation_id: "d".into(),
+        pr_id: "pr".into(), expected_head: "head1".into(), method: MergeMethod::Squash };
+    let mut s = fixture();
+    register(&mut s);
+    present(&mut s, "d", pr_targets());
+    reject_unchanged(&mut s, Actor::System, auto("auto-1"), "forbidden");
+    let mut s = fixture();
+    s.requests.get_mut(&"r".into()).unwrap().auto_merge = true;
+    register(&mut s);
+    present(&mut s, "d", pr_targets());
+    let out = exec(&mut s, Actor::System, auto("auto-1")).unwrap();
+    assert!(out.effects.is_empty(), "nothing to tell anyone before the merge");
+    let authorization = &s.merge_authorizations[&"auto-1".into()];
+    assert_eq!((authorization.user_id.as_str(), authorization.valid), (Feedback::ALONDRA, true));
+    assert!(s.pull_requests[&"pr".into()].review.as_ref().unwrap().decisions.is_empty(), "no review decision is made up");
+    assert_eq!(s.tasks[&"t".into()].state, TaskState::InReview, "no acceptance is made up");
+    exec(&mut s, user(), Command::SubmitFeedback { attachments: vec![], presentation_id: "d".into(), targets: pr_targets(),
+        body: "Wait".into(), instruction: Instruction::Changes }).unwrap();
+    assert!(!s.merge_authorizations[&"auto-1".into()].valid, "the user's feedback stops Alondra's merge");
+}
+#[test]
+fn alondra_takes_over_an_uncertain_node_attempt() {
+    let mut s = fixture();
+    register(&mut s);
+    present(&mut s, "d", pr_targets());
+    authorize(&mut s);
+    let a = s.merge_authorizations.get_mut(&"auth".into()).unwrap();
+    a.attempt = MergeAttemptState::Uncertain;
+    a.claimed_by = Some("a".into());
+    exec(&mut s, Actor::System, Command::ClaimMergeAuthorization { authorization_id: "auth".into(), remote_head: "head1".into(),
+        remote_base: "main".into(), base_verified: true }).unwrap();
+    let a = &s.merge_authorizations[&"auth".into()];
+    assert_eq!((a.attempt, a.claimed_by.as_ref()), (MergeAttemptState::Claimed, None));
+}
+#[test]
+fn a_merge_failure_reads_back_its_number_and_reason() {
+    let body = merge_failed_text(7, "https://github.com/o/r/pull/7", "main", "its checks failed (lint).");
+    assert_eq!(merge_failure(&body), Some((7, "its checks failed (lint)")));
+    assert_eq!(merge_failure("The user asks you to resolve the conflicts"), None);
+}
+#[test]
 fn a_claimed_attempt_of_a_superseded_delivery_does_not_hold_back_the_new_merge() {
     let mut s = fixture();
     register(&mut s);

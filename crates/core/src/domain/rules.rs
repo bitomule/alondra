@@ -191,6 +191,23 @@ fn system(actor: &Actor) -> Result<()> {
 /// What a node that tries to merge or complete its own Task is told.
 pub const ALONDRA_MERGES: &str = "Alondra merges pull requests and completes tasks itself: deliver with present_result, and Alondra tells you when the pull request is merged.";
 const MERGE_ACCEPTED: &str = "The user accepted your result. Alondra is merging its pull request now and tells you when it is merged; there is nothing for you to merge.";
+const MERGE_FAILED: &str = "Alondra could not merge pull request #";
+const MERGE_FAILED_FIX: &str = ". Fix what stops the merge";
+/// What a node is told when Alondra cannot merge its PR, which the task also shows.
+pub fn merge_failed_text(number: u64, url: &str, base: &str, reason: &str) -> String {
+    format!(
+        "{MERGE_FAILED}{number} ({url}): {reason}{MERGE_FAILED_FIX} (conflicts with {base}, failing checks, or a review GitHub \
+         requires), push, and present the result again with present_result and the new head. If only the user can unblock it, ask them.",
+        reason = reason.trim().trim_end_matches('.'),
+    )
+}
+/// The PR number and GitHub's reason in a hand-back `merge_failed_text` wrote.
+pub fn merge_failure(body: &str) -> Option<(u64, &str)> {
+    let rest = body.strip_prefix(MERGE_FAILED)?;
+    let (number, rest) = rest.split_once(' ')?;
+    let reason = rest.split_once("): ")?.1;
+    Some((number.parse().ok()?, reason.split_once(MERGE_FAILED_FIX).map_or(reason, |(reason, _)| reason)))
+}
 fn one_pr_per_task(number: u64) -> String {
     format!("This task already has PR #{number}, and a task owns one PR: nothing was registered. Put more work for this task on PR #{number}; for work that needs another PR, ask the orchestrator for a new task (ask with recipient orchestrator).")
 }
@@ -2573,7 +2590,7 @@ impl DomainState {
                             return fail("invalid_input", "Merge methods required");
                         };
                         let authorization = AuthorizationId(format!("accept-{}-{}", self.revision + 1, pr_id.0));
-                        self.authorize_merge(&authorization, presentation_id, pr_id, head, method, &u)?;
+                        self.authorize_merge(&authorization, presentation_id, pr_id, head, method, &u, true)?;
                         created.push(authorization.0);
                         authorized = true;
                     }
@@ -2591,11 +2608,20 @@ impl DomainState {
                 expected_head,
                 method,
             } => {
-                let u = user(actor)?;
                 id(&authorization_id.0)?;
-                let task = self.authorize_merge(authorization_id, presentation_id, pr_id, expected_head, *method, &u)?;
-                self.settle(presentation_id, &u);
-                self.notify(&task, Some(presentation_id.clone()), MERGE_ACCEPTED, effects)?;
+                if matches!(actor, Actor::System) {
+                    let (p, t, _) = self.presentation(presentation_id)?;
+                    let untouched = matches!(&p.payload, InteractionPayload::Delivery { acceptance: None, feedback, .. } if feedback.is_empty());
+                    if !self.requests.get(&t.request_id).is_some_and(|r| r.auto_merge) || !untouched {
+                        return fail("forbidden", "Alondra merges on its own only an untouched delivery of an auto-merge Request");
+                    }
+                    self.authorize_merge(authorization_id, presentation_id, pr_id, expected_head, *method, Feedback::ALONDRA, false)?;
+                } else {
+                    let u = user(actor)?;
+                    let task = self.authorize_merge(authorization_id, presentation_id, pr_id, expected_head, *method, &u, true)?;
+                    self.settle(presentation_id, &u);
+                    self.notify(&task, Some(presentation_id.clone()), MERGE_ACCEPTED, effects)?;
+                }
                 created.push(authorization_id.0.clone());
             }
             Command::ClaimMergeAuthorization {
@@ -2618,7 +2644,7 @@ impl DomainState {
                 if !a.valid {
                     return fail("acceptance_stale", "Authorization was invalidated");
                 };
-                let node_claim = a.attempt == MergeAttemptState::Claimed && a.claimed_by.is_some();
+                let node_claim = matches!(a.attempt, MergeAttemptState::Claimed | MergeAttemptState::Uncertain) && a.claimed_by.is_some();
                 if a.attempt != MergeAttemptState::Unclaimed && !node_claim {
                     return fail(
                         "delivery_uncertain",
@@ -2910,6 +2936,7 @@ impl DomainState {
         expected_head: &str,
         method: MergeMethod,
         u: &str,
+        consent: bool,
     ) -> Result<TaskId> {
         let (_, t, targets) = self.presentation(presentation_id)?;
         self.unblocked(presentation_id)?;
@@ -2956,7 +2983,7 @@ impl DomainState {
                 at_revision: self.revision + 1,
             },
         );
-        if let Some(r) = &mut self.pull_requests.get_mut(pr_id).unwrap().review {
+        if let Some(r) = self.pull_requests.get_mut(pr_id).unwrap().review.as_mut().filter(|_| consent) {
             r.decisions.push(PrDecision {
                 presentation_id: presentation_id.clone(),
                 head: expected_head.to_owned(),
