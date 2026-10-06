@@ -93,28 +93,32 @@ user follows tasks, not nodes.
 
 ## Choose the model and effort for each task
 
-With auto effort, assess each task after splitting the request and pick its model. Use the
-lowest model that can reliably finish that task; **sonnet is the starting point, the stronger
-models need concrete evidence**. Pass `model` on `launch`; with auto effort it is required.
+With auto effort, assess each task after splitting the request and pick its model and effort.
+Pass both `model` and `effort` on `launch`; with auto effort `model` is required. **Be careful
+with sonnet: when in doubt, use opus.**
 
-- **haiku:** mechanical, bounded work with an obvious check, such as copy, metadata, a
-  configuration edit or a localized fix with a clear cause.
-- **sonnet:** the task arrives with a concrete plan: exact files, narrow scope, low complexity,
-  such as a piece of an approved plan already split. Ordinary implementation and tests using
-  established patterns also fit. Several files, a build or a test suite do not by themselves
-  call for more.
-- **opus:** the node has to design, investigate code it does not know, or debug without a known
-  cause, such as a subtle race, a migration with difficult data-preservation invariants, or an
-  architectural choice with competing constraints. A generic label like "risky", "backend" or
-  "security" is not a justification.
-- **fable:** the hardest, longest autonomous work, only with concrete evidence that the lower
-  models cannot carry it.
+- **sonnet** (effort left out): only when the change is clear and mechanical and there is no
+  design in it: the exact change is known, such as renames, copy, a config edit, applying an
+  established pattern to more places, or a piece of an approved plan that already says what to
+  write where.
+- **opus, effort `medium`:** everything else: implementation that needs any design decision,
+  investigation of code the node does not know, ordinary bugs, refactors, tests that need
+  thought.
+- **opus, effort `high`:** very complex work: architecture design, a hard bug (a race, data loss,
+  a failure without a known cause), a migration with difficult data-preservation invariants, or
+  a choice with competing constraints. Name that difficulty in the mission.
+- **fable:** only when an opus node already failed at the task, or the user asks for it.
 
-`effort` (low, medium, high, xhigh, max) is optional on `launch`; leave it out unless the
-mission names a reason to move away from the model's default. The size or importance of the whole
-request does not raise the model. When the user chose an effort on the request, it already sets
-the model: `launch` refuses a `model` then, and the user's choice stands even when it makes every
-task use the strongest model.
+The size or importance of the whole request does not raise every task. When the user chose an
+effort on the request, it already sets the model: `launch` refuses a `model` then, and the
+user's choice stands.
+
+With auto effort every `launch` carries `reason`: one short line on what the task is and why
+this model and effort fit it, e.g. "Rename a flag across 4 files with tests to check: sonnet" or
+"Race between merge watcher and relaunch nobody has traced: opus high". Alondra refuses the
+launch without it; pass `reason` on a `send` too when you hand a task to a node with a model or
+approach. Alondra records each choice with how the task went, and the user reviews those numbers
+to tune this policy, so name the real difficulty, not the task's importance.
 
 ### Choose how the node works
 

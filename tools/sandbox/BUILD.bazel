@@ -1,0 +1,21 @@
+load("@rules_rust//rust:defs.bzl", "rust_binary")
+
+rust_binary(
+    name = "alondra-sandbox",
+    srcs = glob(["src/**/*.rs"]),
+    crate_name = "alondra_sandbox",
+    edition = "2024",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//crates/e2e:alondra_e2e",
+        "@crates//:anyhow",
+        "@crates//:base64",
+        "@crates//:clap",
+        "@crates//:p256",
+        "@crates//:ring",
+        "@crates//:serde",
+        "@crates//:serde_json",
+        "@crates//:toml",
+        "@crates//:ureq",
+    ],
+)

@@ -1,5 +1,13 @@
 exports_files(["Cargo.toml", "Cargo.lock"])
 
+exports_files(
+    [
+        "tools/e2e-sandbox.sh",
+        "tools/e2e-sandbox-stop.sh",
+    ],
+    visibility = ["//tests/sandbox:__pkg__"],
+)
+
 # What Claude Code writes beside a mod it loads with --plugin-dir: never part of the plugin.
 MOD_TYPES = [
     "plugin/.gitignore",
@@ -17,7 +25,10 @@ filegroup(
         ],
         exclude = ["plugin-orchestrator/bin/**"] + MOD_TYPES,
     ),
-    visibility = ["//deploy/brew:__pkg__"],
+    visibility = [
+        "//deploy/brew:__pkg__",
+        "//tests/sandbox:__pkg__",
+    ],
 )
 
 sh_test(

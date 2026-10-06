@@ -158,15 +158,22 @@ pub(crate) async fn gather(
                     since: timestamp(agent.started_at),
                     ran_secs: agent.finished_at.map(|end| end.saturating_sub(agent.started_at).max(0) as u64 / 1000),
                     suspect: agent.finished_at.is_none() && suspect(&agent.id),
+                    workflow: None,
                 }).collect(),
-                workflows: reported.work.workflows.iter().map(|workflow| LiveRun {
-                    label: workflow.name.clone(),
-                    kind: None,
-                    model: None,
-                    agents: workflow.transcript_dir.as_deref().and_then(crate::node_work::workflow_agents),
-                    since: timestamp(workflow.started_at),
-                    ran_secs: workflow.finished_at.map(|end| end.saturating_sub(workflow.started_at).max(0) as u64 / 1000),
-                    suspect: workflow.finished_at.is_none() && suspect(&workflow.id),
+                workflows: reported.work.workflows.iter().map(|workflow| {
+                    let state = workflow.transcript_dir.as_deref()
+                        .and_then(|dir| crate::workflow_state::read(dir, workflow.finished_at.is_some()));
+                    LiveRun {
+                        label: workflow.name.clone(),
+                        kind: None,
+                        model: None,
+                        agents: state.as_ref().map(|state| state.running + state.done)
+                            .or_else(|| workflow.transcript_dir.as_deref().and_then(crate::node_work::workflow_agents)),
+                        since: timestamp(workflow.started_at),
+                        ran_secs: workflow.finished_at.map(|end| end.saturating_sub(workflow.started_at).max(0) as u64 / 1000),
+                        suspect: workflow.finished_at.is_none() && suspect(&workflow.id),
+                        workflow: state,
+                    }
                 }).collect(),
                 steps: reported.work.steps.iter().map(|step| LiveStep {
                     subject: step.subject.clone(),

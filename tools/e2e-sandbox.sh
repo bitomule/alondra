@@ -1,52 +1,145 @@
 #!/bin/sh
-# Usage: tools/e2e-sandbox.sh <alondrad binary> <alondra binary>
-# Starts a throwaway alondrad (own data dir and port, sandbox mode, wake off) in the foreground
-# and a copy of the node plugin that talks only to it. Ctrl-C stops it.
+# Usage: tools/e2e-sandbox.sh <alondrad> <alondra> <alondra-relay> <alondra-sandbox>
+# Starts MACS throwaway alondrad daemons in the background, each with its own HOME, local port
+# and Mac service keys, plus a loopback relay and token issuer they and the synthetic phone use.
+# Sandbox mode: test/ nodes allowed, wake off. Stop everything with tools/e2e-sandbox-stop.sh.
 set -eu
 
 daemon=$1
 cli=$2
-port=${SANDBOX_PORT:-47891}
-dir=${SANDBOX_DIR:-/tmp/alondra-sandbox-$$}
+relay_bin=$3
+tool_bin=$4
+macs=${MACS:-1}
+dir=${SANDBOX_DIR:-/tmp/alondra-sandbox}
+base=${SANDBOX_PORT:-47890}
 repo=$(cd "$(dirname "$0")/.." && pwd)
+issuer_port=$((base - 1))
+relay_port=$base
 
-if [ "$port" = 47800 ]; then
-	echo "47800 is the real alondrad's port; pick another SANDBOX_PORT." >&2
+case $macs in '' | *[!0-9]* | 0) echo "MACS must be a number from 1." >&2; exit 1 ;; esac
+
+if [ -e "$dir" ]; then
+	echo "$dir already exists; stop that sandbox with make e2e-sandbox-stop, remove it, or pick another SANDBOX_DIR." >&2
 	exit 1
 fi
-if curl -s --max-time 2 "http://127.0.0.1:$port/v1/health" >/dev/null 2>&1; then
-	echo "Something already answers on port $port; stop it or pick another SANDBOX_PORT." >&2
-	exit 1
-fi
 
-# Binaries are replaced by rename, never over a running one. The daemon itself keeps $dir/plugin
-# up to date from this checkout's plugin, in place, as it does from the marketplace in production.
-mkdir -p "$dir/bin"
-for bin in alondrad alondra; do
-	source_bin=$daemon
-	[ "$bin" = alondra ] && source_bin=$cli
-	cp "$source_bin" "$dir/bin/$bin.next"
-	chmod 755 "$dir/bin/$bin.next"
-	mv -f "$dir/bin/$bin.next" "$dir/bin/$bin"
+port_free() {
+	case $1 in
+	47800 | 47810)
+		echo "$1 belongs to the real alondrad; pick another SANDBOX_PORT." >&2
+		return 1
+		;;
+	esac
+	if curl -s --max-time 2 "http://127.0.0.1:$1/daemon" 2>/dev/null | grep -q '"version"'; then
+		echo "An alondrad already answers on port $1; stop it or pick another SANDBOX_PORT." >&2
+		return 1
+	fi
+	if nc -z 127.0.0.1 "$1" 2>/dev/null; then
+		echo "Something already listens on port $1; stop it or pick another SANDBOX_PORT." >&2
+		return 1
+	fi
+}
+
+local_port() { echo $((base + $1)); }
+direct_port() { echo $((base + 20 + $1)); }
+
+for port in "$issuer_port" "$relay_port"; do port_free "$port"; done
+i=1
+while [ "$i" -le "$macs" ]; do
+	port_free "$(local_port "$i")"
+	port_free "$(direct_port "$i")"
+	i=$((i + 1))
 done
-printf 'port = %s\n' "$port" >"$dir/config.toml"
-printf '{"enabledPlugins": {"alondra@alondra": false, "alondra-orchestrator@alondra": false}, "env": {"ALONDRA_LAUNCHED": "1"}}\n' >"$dir/settings.json"
-printf 'export ALONDRA_HOME="%s"\nexport ALONDRA_PORT="%s"\n' "$dir" "$port" >"$dir/env"
 
-cat <<EOF
-Alondra sandbox on http://127.0.0.1:$port, data in $dir (sandbox mode: test/ nodes allowed, wake off).
+trap 'KEEP=1 "$repo/tools/e2e-sandbox-stop.sh" "$dir"; echo "Logs kept; remove $dir before the next start." >&2' EXIT
 
-Launch a probe node against it (any installed plugin is switched off for that session, the
-sandbox copy of the plugin takes its place, and the probe carries the mark Alondra's own
-launches carry, without which the sandbox would leave it out):
+wait_until() {
+	tries=0
+	until eval "$2" >/dev/null 2>&1; do
+		tries=$((tries + 1))
+		if [ "$tries" -ge 120 ]; then
+			echo "$1 did not start; see $3" >&2
+			exit 1
+		fi
+		sleep 0.5
+	done
+}
 
-  claude --bg --name test/<probe> --plugin-dir $dir/plugin --settings $dir/settings.json -- "<prompt>"
+# Each daemon keeps its own plugin copy up to date from this checkout's plugin, in place, as it
+# does from the marketplace in production.
+mkdir -p "$dir/bin" "$dir/issuer/public"
+: >"$dir/.alondra-sandbox"
+for pair in "alondrad:$daemon" "alondra:$cli" "alondra-relay:$relay_bin" "alondra-sandbox:$tool_bin"; do
+	cp "${pair#*:}" "$dir/bin/${pair%%:*}"
+	chmod 755 "$dir/bin/${pair%%:*}"
+done
+tool="$dir/bin/alondra-sandbox"
+issuer="http://127.0.0.1:$issuer_port"
+relay="http://127.0.0.1:$relay_port/"
 
-See its inbox, or run the CLI against it:
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -outform DER -out "$dir/issuer/key.der" 2>/dev/null
+chmod 600 "$dir/issuer/key.der"
+"$tool" jwks "$dir/issuer/key.der" "$dir/issuer/public/jwks.json"
+nohup python3 -m http.server "$issuer_port" --bind 127.0.0.1 --directory "$dir/issuer/public" >"$dir/issuer.log" 2>&1 &
+echo $! >"$dir/issuer.pid"
+wait_until "The token issuer" "curl -sf $issuer/jwks.json" "$dir/issuer.log"
 
-  . $dir/env && $dir/bin/alondra
+"$tool" relay-config --listen "127.0.0.1:$relay_port" --issuer "$issuer" --registry "$dir/relay-devices.json" "$dir/relay.json"
+ALONDRA_RELAY_CONFIG="$dir/relay.json" nohup "$dir/bin/alondra-relay" >"$dir/relay.log" 2>&1 &
+echo $! >"$dir/relay.pid"
+wait_until "The relay" "curl -sf ${relay}v1/bootstrap" "$dir/relay.log"
 
-Close the probe with 'claude rm <id>' when done, then Ctrl-C here.
+macs_json=
+i=1
+while [ "$i" -le "$macs" ]; do
+	home="$dir/mac-$i"
+	port=$(local_port "$i")
+	mkdir -p "$home"
+	mac_id=$("$tool" provision-mac "$home" --relay "$relay")
+	"$tool" enroll-mac "$home" --relay "$relay" --issuer "$issuer" --key "$dir/issuer/key.der"
+	printf 'port = %s\n' "$port" >"$home/config.toml"
+	printf '{"enabledPlugins": {"alondra@alondra": false, "alondra-orchestrator@alondra": false}, "env": {"ALONDRA_LAUNCHED": "1"}}\n' >"$home/settings.json"
+	printf 'export ALONDRA_HOME="%s"\nexport ALONDRA_PORT="%s"\n' "$home" "$port" >"$home/env"
+	ALONDRA_HOME="$home" ALONDRA_PORT="$port" ALONDRA_SANDBOX=1 ALONDRA_WAKE=0 ALONDRA_PLUGIN_SOURCE="$repo/plugin" \
+		nohup "$dir/bin/alondrad" >"$home/alondrad.log" 2>&1 &
+	echo $! >"$home/alondrad.pid"
+	wait_until "Mac $i's alondrad" "curl -sf http://127.0.0.1:$port/daemon" "$home/alondrad.log"
+	[ -n "$macs_json" ] && macs_json="$macs_json,"
+	macs_json="$macs_json
+    {\"number\": $i, \"mac_id\": \"$mac_id\", \"home\": \"$home\", \"port\": $port, \"direct_port\": $(direct_port "$i")}"
+	i=$((i + 1))
+done
+
+trap - EXIT
+cat >"$dir/sandbox.json" <<EOF
+{
+  "relay": "$relay",
+  "issuer": "$issuer",
+  "macs": [$macs_json
+  ]
+}
 EOF
 
-ALONDRA_HOME="$dir" ALONDRA_PORT="$port" ALONDRA_SANDBOX=1 ALONDRA_WAKE=0 ALONDRA_PLUGIN_SOURCE="$repo/plugin" exec "$dir/bin/alondrad"
+cat <<EOF
+Alondra sandbox in $dir: $macs Mac(s) in service mode, relay on $relay, all on loopback.
+
+EOF
+i=1
+while [ "$i" -le "$macs" ]; do
+	home="$dir/mac-$i"
+	cat <<EOF
+Mac $i on http://127.0.0.1:$(local_port "$i") (log: make e2e-sandbox-logs MAC=$i)
+  Probe node:  claude --bg --name test/<probe> --plugin-dir $home/plugin --settings $home/settings.json -- "<prompt>"
+  Its CLI:     . $home/env && $dir/bin/alondra
+
+EOF
+	i=$((i + 1))
+done
+cat <<EOF
+Synthetic phone (state in $dir/phones):
+  $tool --sandbox $dir phone --mac 1 pair
+  $tool --sandbox $dir phone --mac 1 request GET /capabilities
+  $tool --sandbox $dir phone --mac 1 revoke
+
+Close probes with 'claude rm <id>' when done, then: make e2e-sandbox-stop
+EOF
