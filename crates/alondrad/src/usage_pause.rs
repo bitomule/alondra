@@ -397,7 +397,7 @@ impl Alerts for PushAlerts {
                 payload(self.client.language_for_device(device) == alondra_core::views::Lang::Es)
             }).await;
             if let Err(error) = sent {
-                log!("could not push the usage notice: {error:#}");
+                log!("could not push the notice: {error:#}");
             }
         } else if self.push.enabled() {
             self.push.broadcast(&payload(false), !passive).await;

@@ -36,6 +36,7 @@ mod issues;
 mod job_state;
 mod keeper;
 mod machine;
+mod machine_watch;
 mod managed_orchestrator;
 mod markdown;
 mod mods_check;
@@ -432,6 +433,11 @@ async fn run_domain(config: &Config) -> Result<()> {
     .into_future();
     tokio::spawn(usage_pause::run(
         domain.clone(),
+        usage_pause::PushAlerts { domain: domain.clone(), push: push.clone(), service: service.clone(), client: client.clone() },
+    ));
+    tokio::spawn(machine_watch::run(
+        domain.clone(),
+        gauges.clone(),
         usage_pause::PushAlerts { domain: domain.clone(), push: push.clone(), service: service.clone(), client: client.clone() },
     ));
     let outbox = tokio::spawn(domain_delivery::run_v2(

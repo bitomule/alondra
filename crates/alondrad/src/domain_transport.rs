@@ -522,6 +522,7 @@ pub(crate) fn render(state: &DomainState, message: &OutboxMessage) -> String {
             }
             return text;
         }
+        InteractionPayload::Information { .. } if matches!(interaction.recipient, Recipient::Orchestrator) => return interaction.body.clone(),
         InteractionPayload::Information { .. } => return message.message.clone(),
     };
     let Some(answer) = answer else {

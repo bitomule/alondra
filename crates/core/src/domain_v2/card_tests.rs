@@ -792,3 +792,19 @@ fn a_recommended_mark_in_a_label_is_taken_off_it() {
     assert_eq!(without_recommended_suffix("(Recommended)"), None, "a label cannot be only the mark");
     assert_eq!(without_recommended_suffix("é(Recommended"), None);
 }
+
+#[test]
+fn only_alondra_wakes_the_orchestrator_with_information() {
+    let mut s = fixture();
+    let to_orchestrator = |id: &str, scope: Scope| {
+        let mut command = inform(id, scope, "Machine at its limit");
+        if let Command::PublishInformation { recipient, .. } = &mut command {
+            *recipient = Recipient::Orchestrator;
+        }
+        command
+    };
+    let from_node = ok(&mut s, agent(), to_orchestrator("progress", scope("t")));
+    assert!(!from_node.effects.iter().any(|e| matches!(e, DomainEffect::NotifyOrchestrator { .. })), "a node's progress does not wake it");
+    let from_alondra = ok(&mut s, Actor::System, to_orchestrator("machine", Scope::Orchestrator { request_id: None }));
+    assert!(matches!(&from_alondra.effects[..], [DomainEffect::NotifyOrchestrator { interaction_id: Some(id), request_id: None }] if id.0 == "machine"));
+}

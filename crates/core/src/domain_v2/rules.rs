@@ -1771,6 +1771,12 @@ impl DomainState {
                         interaction_id: interaction_id.clone(),
                     });
                 }
+                if matches!(actor, Actor::System) && matches!(recipient, Recipient::Orchestrator) {
+                    effects.push(DomainEffect::NotifyOrchestrator {
+                        interaction_id: Some(interaction_id.clone()),
+                        request_id: None,
+                    });
+                }
             }
             Command::AskQuestion {
                 attachments,
