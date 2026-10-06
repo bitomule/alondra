@@ -513,8 +513,8 @@ impl Approach {
         ];
         match self {
             Approach::Solo => {}
-            Approach::Subagents => lines.push("Split independent parts across subagents (the Agent tool) and work on them in parallel. Give each subagent a precise brief: the files, the change and how to check it. Pass model sonnet when the brief is that precise, narrow and low in complexity; pass model opus when the subagent has to design, trace code it does not know, or debug. Review what each subagent returns before you rely on it.".into()),
-            Approach::Workflow => lines.push("Use a workflow (the Workflow tool) to run this: its parts can run in parallel and each has a check. Name a model for each stage: sonnet for stages with a precise, narrow brief; opus for stages that design, trace unfamiliar code or debug. Try it on a small slice first.".into()),
+            Approach::Subagents => lines.push("Split independent parts across subagents (the Agent tool) and work on them in parallel. Give each subagent a precise brief: the files, the change and how to check it. Pass model sonnet only when the subagent's change is clear and mechanical, with no design in it; otherwise pass model opus. Review what each subagent returns before you rely on it.".into()),
+            Approach::Workflow => lines.push("Use a workflow (the Workflow tool) to run this: its parts can run in parallel and each has a check. Name a model for each stage: sonnet only for stages whose change is clear and mechanical, with no design in it; opus for every other stage. Try it on a small slice first.".into()),
         }
         lines
     }
@@ -597,7 +597,7 @@ impl Resolved {
     /// What the orchestrator is told about effort alongside the request.
     pub fn effort_note(&self, user: &str) -> String {
         if self.effort == AUTO {
-            "Effort is auto: choose the model and effort per task after splitting. Pass model in launch (haiku for mechanical, bounded work with an obvious check; sonnet for ordinary implementation, investigation, refactors and tests, the starting point; opus only for a specific unresolved reasoning difficulty the mission names; fable only for the hardest, longest autonomous work with concrete evidence) and, optionally, effort (low, medium, high, xhigh, max). Use the lowest model that can reliably finish; request size or importance does not raise it.".into()
+            "Effort is auto: choose the model and effort per task after splitting. Sonnet only when the change is clear and mechanical, with no design in it; opus with effort medium for everything else; opus with effort high for architecture design, a hard bug or a migration with difficult invariants; fable only after an opus node failed at the task. When in doubt, use opus. Request size or importance does not raise every task.".into()
         } else {
             format!("Effort {} was chosen by {user} and is binding: do not pass model or effort.", self.effort)
         }
