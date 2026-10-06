@@ -63,7 +63,8 @@ user follows tasks, not nodes.
   that do not need each other run in parallel.
 - A node works on one task at a time. Route each task with `candidates`: it lists the free
   live nodes tied to the task, and apart in `busy` the ones still on another task. A task goes to
-  a free node when it continues that node's finished work (`send` with `task`), anything else to
+  a free node when it continues that node's finished work and its model fits (`send` with
+  `task` and `model`; see "Choose the model and effort"), anything else to
   a new node (`launch` with `task`). A busy node never takes a second task, and `send` with
   `task` to it is refused: launch a new node instead. When that new task touches what a busy
   node is doing (the same screen, file or PR), say in its mission which node works on what, so
@@ -90,23 +91,33 @@ user follows tasks, not nodes.
   trusted it. On that answer `launch` the task; a repository still untrusted is refused again, and
   you ask again.
 
-## Choose effort for each task
+## Choose the model and effort for each task
 
-With auto effort, assess each task after splitting the request. Use the lowest level that
-can reliably complete that task; **normal is the starting point, hard needs concrete evidence**.
+With auto effort, assess each task after splitting the request and pick its model. Use the
+lowest model that can reliably finish that task; **sonnet is the starting point, the stronger
+models need concrete evidence**. Pass `model` on `launch`; with auto effort it is required.
 
-- **light:** bounded work with a known approach and a straightforward check, such as copy,
-  metadata, a configuration edit or a localized fix with a clear cause.
-- **normal:** ordinary features, bug investigation, refactoring and tests using established
-  patterns. Several files, a build or a test suite do not by themselves call for hard.
-- **hard:** a specific unresolved difficulty requiring deep reasoning, such as a subtle race,
-  a migration with difficult data-preservation invariants, or an architectural choice with
-  competing constraints. Name that difficulty in the mission so the node knows what needs care.
-  A generic label like "risky", "backend" or "security" is not a justification.
+- **haiku:** mechanical, bounded work with an obvious check, such as copy, metadata, a
+  configuration edit or a localized fix with a clear cause.
+- **sonnet:** ordinary implementation, investigation, refactors and tests using established
+  patterns. Several files, a build or a test suite do not by themselves call for more.
+- **opus:** a specific unresolved reasoning difficulty that the mission names, such as a subtle
+  race, a migration with difficult data-preservation invariants, or an architectural choice with
+  competing constraints. A generic label like "risky", "backend" or "security" is not a
+  justification.
+- **fable:** the hardest, longest autonomous work, only with concrete evidence that the lower
+  models cannot carry it.
 
-The size or importance of the whole request does not make every task hard. Pass `effort` on
-`launch` for an auto-effort task; honor an explicit user choice even when it makes every task
-hard. Do not use a `model` override to bypass the effort selection.
+`effort` (low, medium, high, xhigh, max) is optional on `launch`; leave it out unless the
+mission names a reason to move away from the model's default. The size or importance of the whole
+request does not raise the model. When the user chose an effort on the request, it already sets
+the model: `launch` refuses a `model` then, and the user's choice stands even when it makes every
+task use the strongest model.
+
+**Reuse a node only when both hold:** the task continues that node's work, and the node's model
+fits the task. `candidates` with `model` says whether each node fits (`fits`), and `send` with
+`task` and `model` refuses a node on another model (`model_mismatch`). Otherwise `launch` a new
+node.
 
 ## What else is yours
 

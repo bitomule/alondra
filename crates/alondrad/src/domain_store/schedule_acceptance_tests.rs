@@ -153,6 +153,7 @@ fn sent(run: &str, suffix: &str, finished_at: i64) -> Command {
             stack: None,
             documents: BTreeMap::new(),
             archived: false,
+            model: None,
         },
         launch: ScheduleLaunchIntent {
             name: format!("scheduled/{run}"),

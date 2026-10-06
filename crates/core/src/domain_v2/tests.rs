@@ -104,6 +104,7 @@ fn scheduled_request_task(request_id: &str, task_id: &str) -> (Request, Task) {
         stack: None,
         documents: BTreeMap::new(),
         archived: false,
+        model: None,
     };
     (request, task)
 }
@@ -218,7 +219,7 @@ fn schedule_commands_preserve_claim_and_result_history() {
     )
     .unwrap();
     reject_unchanged(&mut state, user(), Command::AssignTask {
-        task_id: "scheduled-task".into(), agent_id: "a".into(),
+        task_id: "scheduled-task".into(), agent_id: "a".into(), model: None
     }, "conflict");
     reject_unchanged(&mut state, user(), Command::SetDependencies {
         task_id: "scheduled-task".into(), dependencies: ["t".into()].into_iter().collect(), stack: None,
@@ -535,7 +536,7 @@ fn reassigning_a_task_waiting_for_its_merge_needs_fresh_acceptance() {
         user(),
         Command::AssignTask {
             task_id: "t".into(),
-            agent_id: "b".into(),
+            agent_id: "b".into(), model: None
         },
     )
     .unwrap();
@@ -1297,9 +1298,9 @@ fn an_agent_works_on_one_task_until_it_ends() {
     let mut s = fixture();
     reject_unchanged(&mut s, user(), second(Some("a")), "agent_busy");
     exec(&mut s, user(), second(None)).unwrap();
-    let take = Command::AssignTask { task_id: "t2".into(), agent_id: "a".into() };
+    let take = Command::AssignTask { task_id: "t2".into(), agent_id: "a".into(), model: None };
     reject_unchanged(&mut s, user(), take.clone(), "agent_busy");
-    exec(&mut s, user(), Command::AssignTask { task_id: "t".into(), agent_id: "a".into() }).unwrap();
+    exec(&mut s, user(), Command::AssignTask { task_id: "t".into(), agent_id: "a".into(), model: None }).unwrap();
     exec(&mut s, user(), Command::CancelTask { task_id: "t".into() }).unwrap();
     exec(&mut s, user(), take).unwrap();
     assert_eq!(s.tasks[&"t2".into()].agent_id, Some("a".into()), "a node whose task ended takes the next one");
@@ -1312,6 +1313,27 @@ fn an_agent_works_on_one_task_until_it_ends() {
     assert_eq!(s.busy_with(&"a".into(), &"t".into()).map(|t| t.id.0.as_str()), Some("t2"));
 }
 #[test]
+fn an_assignment_records_the_model_and_who_chose_it_and_old_records_still_load() {
+    let mut s = fixture();
+    let launched = TaskModel { model: "opus".into(), chosen_by: ModelChooser::Orchestrator };
+    exec(&mut s, user(), Command::AssignTask { task_id: "t".into(), agent_id: "a".into(), model: Some(launched.clone()) }).unwrap();
+    assert_eq!(s.tasks[&"t".into()].model, Some(launched.clone()));
+    exec(&mut s, user(), Command::AssignTask { task_id: "t".into(), agent_id: "a".into(), model: None }).unwrap();
+    assert_eq!(s.tasks[&"t".into()].model, Some(launched.clone()), "an assignment that names no model keeps the one recorded");
+
+    let saved = serde_json::to_value(&s).unwrap();
+    assert_eq!(saved["tasks"]["t"]["model"], serde_json::json!({"model": "opus", "chosen_by": "orchestrator"}));
+    let mut old = saved.clone();
+    old["tasks"]["t"].as_object_mut().unwrap().remove("model");
+    let loaded: DomainState = serde_json::from_value(old).unwrap();
+    assert_eq!(loaded.tasks[&"t".into()].model, None, "state saved before models were recorded loads without one");
+    assert_eq!(serde_json::from_value::<DomainState>(saved).unwrap().tasks[&"t".into()].model, Some(launched));
+
+    let old_event = serde_json::json!({"kind": "assign_task", "task_id": "t", "agent_id": "a"});
+    let command: Command = serde_json::from_value(old_event).unwrap();
+    assert_eq!(command, Command::AssignTask { task_id: "t".into(), agent_id: "a".into(), model: None });
+}
+#[test]
 fn state_saved_with_several_open_tasks_on_one_agent_still_loads() {
     let mut s = fixture();
     exec(&mut s, user(), second(None)).unwrap();
@@ -1320,7 +1342,7 @@ fn state_saved_with_several_open_tasks_on_one_agent_still_loads() {
     exec(&mut s, agent(), Command::StartTask { task_id: "t2".into() }).unwrap();
     exec(&mut s, user(), Command::CreateTask { task_id: "t3".into(), request_id: "r".into(), title: "Third".into(),
         agent_id: None, review_prs: false, dependencies: BTreeSet::new(), stack: None }).unwrap();
-    reject_unchanged(&mut s, user(), Command::AssignTask { task_id: "t3".into(), agent_id: "a".into() }, "agent_busy");
+    reject_unchanged(&mut s, user(), Command::AssignTask { task_id: "t3".into(), agent_id: "a".into(), model: None }, "agent_busy");
 }
 #[test]
 fn old_epoch_revision_generation_and_actor_rejected() {
@@ -1693,7 +1715,7 @@ fn reassign_fences_old_agent_and_preserves_historical_author() {
         user(),
         Command::AssignTask {
             task_id: "t".into(),
-            agent_id: "b".into(),
+            agent_id: "b".into(), model: None
         },
     )
     .unwrap();
@@ -2485,7 +2507,7 @@ fn answer_reaches_the_current_assignee_after_reassignment() {
         user(),
         Command::AssignTask {
             task_id: "t".into(),
-            agent_id: "b".into(),
+            agent_id: "b".into(), model: None
         },
     )
     .unwrap();
@@ -2631,9 +2653,9 @@ fn revision_checks_are_per_subject_and_invalidation_dates_decisions() {
         exec(&mut s, Actor::System, Command::RegisterAgent { agent_id: id.into(), name: id.into() }).unwrap();
     }
     let seen = s.revision;
-    run(&mut s, user(), "assign-b", seen, Command::AssignTask { task_id: "t".into(), agent_id: "b".into() }).unwrap();
+    run(&mut s, user(), "assign-b", seen, Command::AssignTask { task_id: "t".into(), agent_id: "b".into(), model: None }).unwrap();
     assert_eq!(
-        run(&mut s, user(), "assign-c", seen, Command::AssignTask { task_id: "t".into(), agent_id: "c".into() })
+        run(&mut s, user(), "assign-c", seen, Command::AssignTask { task_id: "t".into(), agent_id: "c".into(), model: None })
             .unwrap_err()
             .code,
         "stale_revision"
@@ -2756,7 +2778,7 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
             title: "Fresh".into(), agent_id: Some(ids.agent.into()), review_prs: false,
             dependencies: BTreeSet::new(), stack: None }, false),
         (Command::TitleRequest { request_id: ids.request.into(), title: "Named".into() }, false),
-        (Command::AssignTask { task_id: ids.task.into(), agent_id: ids.agent.into() }, false),
+        (Command::AssignTask { task_id: ids.task.into(), agent_id: ids.agent.into(), model: None }, false),
         (Command::RetitleTask { task_id: ids.task.into(), title: "Renamed".into() }, false),
         (Command::SetDependencies { task_id: ids.task.into(), dependencies: BTreeSet::new(), stack: None }, false),
         (Command::StartTask { task_id: ids.task.into() }, false),
@@ -3171,7 +3193,7 @@ fn releasing_a_task_whose_node_the_user_closed_puts_it_back_to_not_started_with_
     assert!(s.agents.contains_key(&"a".into()), "the closed agent stays on record");
     reject_unchanged(&mut s, Actor::System, release, "conflict");
     register_b(&mut s);
-    exec(&mut s, user(), Command::AssignTask { task_id: "t".into(), agent_id: "b".into() }).unwrap();
+    exec(&mut s, user(), Command::AssignTask { task_id: "t".into(), agent_id: "b".into(), model: None }).unwrap();
     exec(&mut s, agent_b(), Command::StartTask { task_id: "t".into() }).unwrap();
     assert_eq!(s.tasks[&"t".into()].state, TaskState::Running, "a new node takes the freed task up again");
 }

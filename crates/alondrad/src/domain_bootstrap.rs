@@ -638,6 +638,7 @@ async fn orchestrator_node(
 struct CandidatesQuery {
     task: Option<String>,
     repo: Option<String>,
+    model: Option<String>,
 }
 
 async fn orchestrator_candidates(
@@ -651,8 +652,10 @@ async fn orchestrator_candidates(
     }
     tool_answer(crate::domain_orchestrator_reads::candidates(
         &state.domain,
+        &state.home,
         query.task.as_deref(),
         query.repo.as_deref(),
+        query.model.as_deref(),
     ))
 }
 

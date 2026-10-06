@@ -8,6 +8,9 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use std::path::Path;
 
+/// The orchestrator's starting model, for a relaunch of a task that never recorded one.
+const DEFAULT_MODEL: &str = "sonnet";
+
 /// What the user chose when asking for a Request: its project, options, issue and files.
 pub(crate) type Choices = crate::domain_store::RequestLaunch;
 
@@ -82,6 +85,9 @@ pub(crate) struct LaunchBody {
     model: Option<String>,
     #[serde(default)]
     effort: Option<String>,
+    /// What a relaunch passes when the orchestrator chose the model: the one the task had.
+    #[serde(skip)]
+    relaunch_model: Option<String>,
     /// Orchestrators written when going over pace needed the user's word still send it.
     #[serde(default, rename = "over_pace_ok")]
     _over_pace_ok: bool,
@@ -118,10 +124,13 @@ pub(crate) async fn launch(domain: &DomainRuntime, home: &Path, actor: &Actor, b
     let file = crate::domain_schedule_runner::options_at(home).map_err(|error| DomainError::new("invalid_input", format!("options.toml: {error}")))?;
     let request = current.requests.get(&task.request_id);
     let choices = choices(&task.request_id);
-    let resolved = match &choices {
-        Some(choices) => choices.options.clone().with_orchestrator_effort(&file, body.effort.as_deref()),
-        None => file.orchestrator_defaults(crate::options::project_of(&file, Path::new(&body.cwd)).as_deref(), body.effort.as_deref()),
+    let requested = match &choices {
+        Some(choices) => choices.options.clone(),
+        None => file.orchestrator_defaults(crate::options::project_of(&file, Path::new(&body.cwd)).as_deref(), None),
     };
+    let model = body.model.as_deref().or(body.relaunch_model.as_deref().filter(|_| requested.effort == alondra_core::options::AUTO));
+    let resolved = requested.with_orchestrator_model(&file, model, body.effort.as_deref())
+        .map_err(|reason| DomainError::new("invalid_input", reason))?;
     let mission = body.prompt.clone().unwrap_or_else(|| {
         let mut text = format!("{}\n\n{}", task.title, request.map(|r| r.body.as_str()).unwrap_or_default());
         if let Some(choices) = &choices {
@@ -139,7 +148,7 @@ pub(crate) async fn launch(domain: &DomainRuntime, home: &Path, actor: &Actor, b
     let settings = crate::domain_sessions::prepare(home, &key)
         .map_err(|error| DomainError::new("storage_unavailable", format!("could not write the session's settings: {error}")))?;
     let mut args: Vec<String> = ["--bg", "--name", &body.name, "--permission-mode", "auto"].map(String::from).into();
-    args.extend(resolved.launch_flags(body.model.as_deref()));
+    args.extend(resolved.launch_flags(None));
     args.extend(crate::domain_sessions::flags(&[plugin.as_path()], &settings));
     let denied = domain.schedule_request_tools(&task.request_id).ok().flatten().unwrap_or_default();
     if !denied.is_empty() {
@@ -171,7 +180,7 @@ pub(crate) async fn launch(domain: &DomainRuntime, home: &Path, actor: &Actor, b
         let _ = domain.revoke_agent(&session);
         return Err(discard(DomainError::new("storage_unavailable", format!("could not issue the session's capability: {error}"))));
     }
-    if let Err(error) = run(domain, actor, Command::AssignTask { task_id: task.id.clone(), agent_id: agent_id.clone() }) {
+    if let Err(error) = run(domain, actor, Command::AssignTask { task_id: task.id.clone(), agent_id: agent_id.clone(), model: resolved.launch_model() }) {
         let _ = domain.revoke_agent(&session);
         return Err(discard(error));
     }
@@ -197,8 +206,9 @@ pub(crate) async fn relaunch(domain: &DomainRuntime, home: &Path, actor: &Actor,
         .or(root)
         .and_then(|dir| dir.to_str().map(str::to_owned))
         .ok_or_else(|| DomainError::new("invalid_input", "no folder to launch the node in"))?;
-    let body = serde_json::from_value(json!({"name": closed.name, "cwd": cwd, "task": task_id}))
+    let mut body: LaunchBody = serde_json::from_value(json!({"name": closed.name, "cwd": cwd, "task": task_id}))
         .map_err(|error| DomainError::new("invalid_input", error.to_string()))?;
+    body.relaunch_model = Some(task.model.as_ref().map_or(DEFAULT_MODEL, |m| m.model.as_str()).to_owned());
     launch(domain, home, actor, body, |request| request_choices(domain, request).ok().flatten(), launcher).await
 }
 
@@ -209,6 +219,8 @@ pub(crate) struct SendBody {
     text: String,
     #[serde(default)]
     task: Option<TaskId>,
+    #[serde(default)]
+    model: Option<String>,
 }
 
 /// Sends the orchestrator's text to an Agent's session. With a Task, the Agent is told which
@@ -219,11 +231,20 @@ pub(crate) async fn send(domain: &DomainRuntime, home: &Path, actor: &Actor, bod
     let agent_id = agent(&current, &body.node)?;
     if let Some(task_id) = &body.task {
         let task = current.tasks.get(task_id).ok_or_else(|| DomainError::new("not_found", "task does not exist"))?;
+        if let Some(wanted) = &body.model {
+            let file = crate::domain_schedule_runner::options_at(home).map_err(|error| DomainError::new("invalid_input", format!("options.toml: {error}")))?;
+            let family = file.model_family(wanted).ok_or_else(|| DomainError::new("invalid_input", format!("{wanted} is not a model; use one of {}", file.model_aliases().join(", "))))?;
+            let node = domain.live.mods.session(&agent_id.0).and_then(|reported| reported.model);
+            if node.as_deref().map(alondra_core::model_label::model_family).as_deref() != Some(family.as_str()) {
+                let has = node.as_deref().map_or("an unknown model".to_owned(), alondra_core::model_label::launched_model_label);
+                return Err(DomainError::new("model_mismatch", format!("{} runs {has}, not {wanted}: launch a new node for {task_id}", body.node)));
+            }
+        }
         if let Some(other) = current.busy_with(&agent_id, task_id) {
             return Err(DomainError::new("agent_busy", format!("{} works on {} until it ends: launch a new node for {task_id}, and tell it what {} is doing if they touch the same thing", body.node, other.id.0, body.node)));
         }
         match &task.agent_id {
-            None => run(domain, actor, Command::AssignTask { task_id: task_id.clone(), agent_id: agent_id.clone() })?,
+            None => run(domain, actor, Command::AssignTask { task_id: task_id.clone(), agent_id: agent_id.clone(), model: None })?,
             Some(other) if other != &agent_id => return Err(DomainError::new("conflict", format!("{task_id} belongs to another agent"))),
             Some(_) => (),
         }

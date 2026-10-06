@@ -1663,12 +1663,13 @@ impl DomainState {
                         stack: stack.clone(),
                         documents: BTreeMap::new(),
                         archived: false,
+                        model: None,
                     },
                 );
                 self.dependency_graph()?;
                 created.push(task_id.0.clone());
             }
-            Command::AssignTask { task_id, agent_id } => {
+            Command::AssignTask { task_id, agent_id, model } => {
                 self.manager(actor)?;
                 self.active(task_id)?;
                 if self.schedule.runs.values().any(|run| run.task_id.as_ref() == Some(task_id)
@@ -1683,6 +1684,9 @@ impl DomainState {
                     self.free(agent_id, task_id)?;
                     self.invalidate(task_id);
                     self.tasks.get_mut(task_id).unwrap().agent_id = Some(agent_id.clone());
+                }
+                if model.is_some() {
+                    self.tasks.get_mut(task_id).unwrap().model = model.clone();
                 }
             }
             Command::TitleRequest { request_id, title } => {

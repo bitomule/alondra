@@ -299,7 +299,7 @@ fn changed<'a, K: Ord, V: PartialEq>(
 }
 fn task_row(t: &Task) -> Result<Map<String, Value>> {
     let mut row = object(t)?;
-    strip(&mut row, &["dependencies", "stack", "documents"]);
+    strip(&mut row, &["dependencies", "stack", "documents", "model"]);
     Ok(row)
 }
 /// Dependencies and document links; stacks follow the interactions they reference.
@@ -653,8 +653,13 @@ pub(super) fn save_changes(c: &Connection, before: &DomainState, after: &DomainS
         upsert(c, "agents", &["id"], object(x)?)?;
     }
     let tasks: Vec<_> = changed(&before.tasks, &after.tasks).collect();
-    for (x, _) in &tasks {
+    for (x, prior) in &tasks {
         upsert(c, "tasks", &["id"], task_row(x)?)?;
+        if let Some(model) = x.model.as_ref().filter(|_| prior.is_none_or(|p| p.model != x.model)) {
+            let mut row = object(model)?;
+            row.insert("task_id".into(), json!(x.id));
+            upsert(c, "task_models", &["task_id"], row)?;
+        }
     }
     for (x, _) in changed(&before.documents, &after.documents) {
         upsert(c, "documents", &["id"], object(x)?)?;
@@ -935,6 +940,14 @@ pub(super) fn load(c: &Connection) -> Result<DomainState> {
         let x: MergeAuthorization = decode(row)?;
         state.merge_authorizations.insert(x.id.clone(), x);
     }
+    let mut models = c.prepare("SELECT task_id, model, chosen_by FROM task_models")?;
+    let mut stored = models.query([])?;
+    while let Some(row) = stored.next()? {
+        let id: String = row.get(0)?;
+        let model = json!({"model": row.get::<_, String>(1)?, "chosen_by": row.get::<_, String>(2)?});
+        state.tasks.get_mut(&TaskId::from(id)).context("model task missing")?.model = Some(decode(model)?);
+    }
+    drop(stored);
     for mut row in rows(c, "task_stacks", &[], &[])? {
         let id = take(&mut row, "task_id");
         state

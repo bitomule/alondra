@@ -158,8 +158,16 @@ fn repo_name(repo: &str) -> &str {
 /// 8ccd131 ranked them. An Agent works on one Task at a time, so only the free ones are candidates;
 /// the busy ones tied to the work come apart in `busy`, with the Task they are on, so the
 /// orchestrator can tell the node it launches what they are doing.
-pub(crate) fn candidates(domain: &DomainRuntime, task: Option<&str>, repo: Option<&str>) -> Result<Value, DomainError> {
+pub(crate) fn candidates(domain: &DomainRuntime, home: &std::path::Path, task: Option<&str>, repo: Option<&str>, model: Option<&str>) -> Result<Value, DomainError> {
     let state = state(domain)?;
+    let wanted = match model.map(str::trim).filter(|m| !m.is_empty()) {
+        Some(alias) => {
+            let file = crate::domain_schedule_runner::options_at(home).map_err(|error| DomainError::new("invalid_input", format!("options.toml: {error}")))?;
+            let family = file.model_family(alias).ok_or_else(|| DomainError::new("invalid_input", format!("{alias} is not a model; use one of {}", file.model_aliases().join(", "))))?;
+            Some(family)
+        }
+        None => None,
+    };
     let task = match task.map(str::trim).filter(|t| !t.is_empty()) {
         Some(id) => Some(state.tasks.get(&TaskId::from(id)).ok_or_else(|| DomainError::new("not_found", format!("task {id} does not exist")))?),
         None => None,
@@ -207,6 +215,10 @@ pub(crate) fn candidates(domain: &DomainRuntime, task: Option<&str>, repo: Optio
         let name = n.name.clone().unwrap_or_else(|| agent.name.clone());
         let mut row = json!({"node": name, "session_id": agent.id, "short_id": n.short_id, "project": n.project(),
             "status": wire(&n.status), "model": model_of(domain, &n.session_id), "why": why});
+        if let Some(family) = &wanted {
+            let reported = domain.live.mods.session(&n.session_id).and_then(|reported| reported.model);
+            row["fits"] = json!(reported.as_deref().map(alondra_core::model_label::model_family).as_deref() == Some(family.as_str()));
+        }
         let key = (why.len(), n.status != NodeStatus::Free, name);
         match state.busy_with(&agent.id, task.map_or(&none, |t| &t.id)) {
             Some(current) => {
