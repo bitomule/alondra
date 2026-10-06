@@ -10,6 +10,8 @@ public extension ConnectionProblem {
         case .alondraNotRunning: "Alondra isn’t running on this Mac"
         case .sessionExpired: "Your session has expired"
         case .deviceRevoked: "This device was disconnected from your Mac"
+        case .macNotOnNetwork: "Your Mac isn’t on this network"
+        case .macIdentityChanged: "This Mac’s identity has changed"
         case .unexpected: "Can’t connect right now"
         }
     }
@@ -22,6 +24,8 @@ public extension ConnectionProblem {
         case .alondraNotRunning: "Run `alondra setup` in Terminal to start it. This window connects as soon as it answers."
         case .sessionExpired: "Sign in again to reconnect. Your pairing and saved work are kept."
         case .deviceRevoked: "Your Mac no longer accepts this device. Open Settings and link your Mac again."
+        case .macNotOnNetwork: "Connect to the same Wi-Fi as your Mac, or turn on Tailscale on both. Alondra reconnects as soon as it answers."
+        case .macIdentityChanged: "A Mac answered with this Mac’s name but different keys, so Alondra stopped. If you reinstalled Alondra on it, forget it in Settings and pair it again."
         case .unexpected: "Something unexpected went wrong. Alondra keeps trying."
         }
     }
@@ -34,6 +38,8 @@ public extension ConnectionProblem {
         case .alondraNotRunning: "bolt.horizontal.circle"
         case .sessionExpired: "person.crop.circle.badge.exclamationmark"
         case .deviceRevoked: "lock.slash"
+        case .macNotOnNetwork: "wifi.exclamationmark"
+        case .macIdentityChanged: "exclamationmark.shield"
         case .unexpected: "exclamationmark.triangle"
         }
     }

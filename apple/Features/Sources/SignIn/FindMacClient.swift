@@ -1,0 +1,66 @@
+import ComposableArchitecture
+import Foundation
+
+/// A Mac advertising Alondra on this network, as the Find your Mac list shows it.
+public struct FoundMac: Identifiable, Equatable, Sendable {
+    public let id: String
+    public let name: String
+    public let paired: Bool
+
+    public init(id: String, name: String, paired: Bool) {
+        self.id = id
+        self.name = name
+        self.paired = paired
+    }
+}
+
+/// What both screens show while the Mac decides.
+public struct DirectPairingCode: Equatable, Sendable {
+    public let code: String
+    public let macName: String
+
+    public init(code: String, macName: String) {
+        self.code = code
+        self.macName = macName
+    }
+}
+
+public enum FindMacTarget: Equatable, Sendable {
+    case found(String)
+    case address(String)
+}
+
+/// Pairing with a Mac on the same network, without an account.
+public struct FindMacClient: Sendable {
+    public var browse: @Sendable () -> AsyncStream<[FoundMac]>
+    public var pair: @Sendable (FindMacTarget) async throws -> DirectPairingCode
+    public var approve: @Sendable () async throws -> Void
+    public var cancel: @Sendable () async -> Void
+    /// A sentence the person can act on; never an error's type or raw description.
+    public var describe: @Sendable (any Error) -> String
+
+    public init(browse: @escaping @Sendable () -> AsyncStream<[FoundMac]>,
+                pair: @escaping @Sendable (FindMacTarget) async throws -> DirectPairingCode,
+                approve: @escaping @Sendable () async throws -> Void,
+                cancel: @escaping @Sendable () async -> Void,
+                describe: @escaping @Sendable (any Error) -> String) {
+        self.browse = browse
+        self.pair = pair
+        self.approve = approve
+        self.cancel = cancel
+        self.describe = describe
+    }
+}
+
+private enum FindMacKey: DependencyKey {
+    static let liveValue = FindMacClient(browse: { AsyncStream { $0.finish() } }, pair: { _ in throw CancellationError() },
+        approve: { throw CancellationError() }, cancel: {},
+        describe: { _ in String(localized: "Alondra couldn’t pair with that Mac. Try again.") })
+}
+
+public extension DependencyValues {
+    var findMac: FindMacClient {
+        get { self[FindMacKey.self] }
+        set { self[FindMacKey.self] = newValue }
+    }
+}

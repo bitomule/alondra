@@ -11,9 +11,18 @@ public enum PairingError: LocalizedError, Equatable, Sendable {
     case invalidResponse
     case missingAttempt
     case alreadyLinked
+    case denied
+    case busy
+    case macUnreachable
     public var errorDescription: String? {
-        if case .alreadyLinked = self { return String(localized: "This Mac is already linked. Select it in Settings.") }
-        return nil
+        switch self {
+        case .alreadyLinked: String(localized: "This Mac is already linked. Select it in Settings.")
+        case .denied: String(localized: "The Mac didn’t allow this device.")
+        case .expired: String(localized: "The request expired before the Mac answered. Try again.")
+        case .busy: String(localized: "The Mac has too many requests right now. Try again in a few minutes.")
+        case .macUnreachable: String(localized: "Can’t reach that Mac. Check that it’s on and on this network.")
+        default: nil
+        }
     }
 }
 
@@ -84,16 +93,26 @@ public struct PairingPending: Sendable {
 }
 
 /// One verified, approved pairing. The private keys are stored in this-device-only Keychain data.
+/// A pairing made on the local network has no relay and no account owner.
 public struct ApprovedServicePairing: Codable, Sendable {
-    public let relayURL: URL
+    public let relayURL: URL?
     public let macID: String
     public let deviceID: String
-    public let ownerSub: String
+    public let ownerSub: String?
     public let macSigningKey: String
     public let macAgreementKey: String
     public let signingPrivateKey: Data
     public let agreementPrivateKey: Data
     public let approvedAtMs: UInt64
+    public var name: String? = nil
+    /// Direct addresses learned from Bonjour, the pairing itself and the Mac's `/routes`.
+    public var routes: [DirectEndpoint]? = nil
+
+    public var hasRelay: Bool { relayURL != nil && ownerSub != nil }
+
+    public var pinnedIdentity: DirectMacIdentity {
+        DirectMacIdentity(macID: macID, name: name ?? "", signingKey: macSigningKey, agreementKey: macAgreementKey)
+    }
 
     public func macSigningPublicKey() throws -> P256.Signing.PublicKey {
         guard let bytes = PairingWire.decode(macSigningKey) else { throw PairingError.invalidIdentity }

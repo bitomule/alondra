@@ -13,7 +13,11 @@ public enum LoopbackOutcome: Sendable, Equatable {
 /// deduplication locally, so a mutation whose response is lost is reported as unknown and never
 /// sent again.
 public actor LoopbackSession: OperationAPI {
-    public static let defaultBase = URL(string: "http://127.0.0.1:47800")!
+    /// `ALONDRA_PORT` points the app at a sandbox daemon from `make e2e-sandbox`.
+    public static let defaultBase: URL = {
+        let port = ProcessInfo.processInfo.environment["ALONDRA_PORT"].flatMap(UInt16.init) ?? 47800
+        return URL(string: "http://127.0.0.1:\(port)")!
+    }()
 
     public nonisolated let base: URL
     let urlSession: URLSession

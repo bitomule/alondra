@@ -29,13 +29,14 @@ struct MacServiceRoot: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             case .local:
                 if let services = owner.services {
-                    MacServiceWindow(services: services, account: nil, notices: notices)
+                    MacServiceWindow(services: services, account: owner.showsThisMac ? nil : account,
+                                     workspace: owner, notices: notices)
                         .id(ObjectIdentifier(services))
                 }
             case .remote:
                 LaunchGate(store: account.store, hasServices: account.services != nil) {
                     if let services = account.services {
-                        MacServiceWindow(services: services, account: account, notices: notices)
+                        MacServiceWindow(services: services, account: account, workspace: owner, notices: notices)
                             .id(ObjectIdentifier(services))
                     }
                 } restoring: {
@@ -56,6 +57,13 @@ struct MacServiceRoot: View {
         }
         .task { await owner.run() }
         .onAppear { notices.openWindow = openWindow }
+        .sheet(item: Binding(get: { notices.shownPairing }, set: { shown in
+            if shown == nil, let id = notices.shownPairing?.id { notices.dismissedPairings.insert(id) }
+        })) { request in
+            MacPairingRequestSheet(request: request, error: notices.pairingError) { allow in
+                Task { await notices.decide(request.id, allow: allow) }
+            }
+        }
     }
 
     private var demoButton: some View {
@@ -118,12 +126,14 @@ private final class MacServiceWindowContext {
 private struct MacServiceWindow: View {
     let services: Connection
     let account: AccountSession?
+    let workspace: MacWorkspaceOwner
     let notices: MacLocalNotices
     @State private var context = MacServiceWindowContext()
     var body: some View {
         Group {
             if let store = context.store {
-                MacServiceWorkspace(store: store, accountContent: MacServiceSettingsScene(services: services, owner: account))
+                MacServiceWorkspace(store: store, accountContent: MacServiceSettingsScene(services: services, owner: account,
+                                                                                         workspace: workspace))
                     .connectionLostOverlay(store: store, retry: retry,
                                            signIn: account.map { account in { account.store.send(.reauthenticate) } })
                     .onChange(of: notices.openedCard, initial: true) { _, card in

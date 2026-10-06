@@ -15,11 +15,26 @@ public struct SignInView: View {
     }
 
     public var body: some View {
+        if showsFindMac {
+            FindMacView(store: store, demo: demo)
+        } else {
+            switch store.phase {
+            case .scanning, .submitting, .pending, .approved:
+                PairingView(store: store)
+            case .restoring, .signedOut, .signingOut, .loggingIn, .cancelling:
+                signIn
+            }
+        }
+    }
+
+    /// Pairing on this network comes first; the account flow only after the person asks for it.
+    private var showsFindMac: Bool {
+        guard !store.showsAccount else { return false }
         switch store.phase {
-        case .scanning, .submitting, .pending, .approved:
-            PairingView(store: store)
-        case .restoring, .signedOut, .signingOut, .loggingIn, .cancelling:
-            signIn
+        case .signedOut: return true
+        case .scanning: return store.additionalMac
+        case .approved: return store.findMac.step == .approved
+        default: return false
         }
     }
 
@@ -51,12 +66,12 @@ public struct SignInView: View {
                 }
             }
         } footer: {
-            if store.phase == .signedOut, let demo {
-                Button("Explore the demo", systemImage: "sparkles", action: demo)
+            if store.phase == .signedOut {
+                Button("Find a Mac on this network", systemImage: "wifi") { store.send(.showAccount(false)) }
                     .buttonStyle(.glass)
                     .controlSize(.large)
                     .frame(maxWidth: .infinity)
-                    .accessibilityIdentifier("demo.enter")
+                    .accessibilityIdentifier("pairing.findMac")
             }
         }
     }

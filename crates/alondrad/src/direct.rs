@@ -78,6 +78,33 @@ impl Direct {
     }
 }
 
+const DIRECT_DEVICES: &str = "direct-devices.json";
+
+/// The devices paired on the local network, kept beside `service.toml` and not inside it, so a
+/// daemon that predates the list still reads its config.
+pub(crate) fn paired_directly(home: &std::path::Path, device_id: &str) -> bool {
+    std::fs::read(home.join(DIRECT_DEVICES))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Vec<String>>(&bytes).ok())
+        .is_some_and(|ids| ids.iter().any(|id| id == device_id))
+}
+
+/// Called while the caller holds the service config lock.
+pub(crate) fn remember_direct(home: &std::path::Path, device_id: &str) -> std::io::Result<()> {
+    let path = home.join(DIRECT_DEVICES);
+    let mut ids: Vec<String> = std::fs::read(&path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default();
+    if ids.iter().any(|id| id == device_id) {
+        return Ok(());
+    }
+    ids.push(device_id.to_owned());
+    let temp = path.with_extension(format!("json.{}", std::process::id()));
+    std::fs::write(&temp, serde_json::to_vec(&ids)?)?;
+    std::fs::rename(temp, path)
+}
+
 fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

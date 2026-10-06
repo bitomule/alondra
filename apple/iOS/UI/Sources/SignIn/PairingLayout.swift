@@ -9,6 +9,7 @@ struct PairingLayout<Title: View, Subtitle: View, Content: View, Footer: View>: 
     let store: StoreOf<SignInFeature>
     let glow: Color
     let step: Int
+    let stepLabels: [LocalizedStringKey]
     @ViewBuilder let title: Title
     @ViewBuilder let subtitle: Subtitle
     @ViewBuilder let content: Content
@@ -16,12 +17,14 @@ struct PairingLayout<Title: View, Subtitle: View, Content: View, Footer: View>: 
 
     init(
         store: StoreOf<SignInFeature>, glow: Color, step: Int,
+        steps: [LocalizedStringKey] = ["Account", "Your Mac", "Confirm"],
         @ViewBuilder title: () -> Title, @ViewBuilder subtitle: () -> Subtitle,
         @ViewBuilder content: () -> Content, @ViewBuilder footer: () -> Footer = { EmptyView() }
     ) {
         self.store = store
         self.glow = glow
         self.step = step
+        self.stepLabels = steps
         self.title = title()
         self.subtitle = subtitle()
         self.content = content()
@@ -82,7 +85,7 @@ struct PairingLayout<Title: View, Subtitle: View, Content: View, Footer: View>: 
 
     private var steps: some View {
         HStack(spacing: 8) {
-            ForEach(Array([LocalizedStringKey("Account"), "Your Mac", "Confirm"].enumerated()), id: \.offset) { index, label in
+            ForEach(Array(stepLabels.enumerated()), id: \.offset) { index, label in
                 VStack(spacing: 8) {
                     Image(systemName: index < step ? "checkmark.circle.fill" : "\(index + 1).circle.fill")
                     Text(label).font(.caption.weight(.medium)).lineLimit(1)

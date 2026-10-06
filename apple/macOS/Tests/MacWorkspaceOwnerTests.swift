@@ -6,7 +6,7 @@ import Testing
 @MainActor
 struct MacWorkspaceOwnerTests {
     @Test
-    func localDaemonIsUsedWithoutTouchingTheAccount() async throws {
+    func localDaemonIsShownAndTheOtherSavedMacsAreRestoredOnce() async throws {
         let remoteStarts = Recorder()
         let owner = try makeOwner(probes: [true], remoteStarts: remoteStarts)
 
@@ -14,7 +14,20 @@ struct MacWorkspaceOwnerTests {
 
         #expect(owner.route == .local)
         #expect(owner.services != nil)
-        #expect(remoteStarts.count == 0)
+        #expect(owner.services === owner.thisMac)
+        #expect(remoteStarts.count == 1)
+        #expect(owner.macChoices.map(\.id) == [owner.thisMacChoiceID])
+        #expect(owner.selectedChoiceID == owner.thisMacChoiceID)
+    }
+
+    @Test
+    func choosingAPairedMacWithoutOneOpenKeepsThisMac() async throws {
+        let owner = try makeOwner(probes: [true], remoteStarts: Recorder())
+        await owner.run()
+
+        await #expect(throws: CancellationError.self) { try await owner.select(choice: UUID()) }
+        #expect(owner.showsThisMac)
+        #expect(owner.services === owner.thisMac)
     }
 
     @Test

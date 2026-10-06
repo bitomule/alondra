@@ -16,11 +16,15 @@ public enum ConnectionProblem: Equatable, Sendable {
     case sessionExpired
     /// The Mac or relay no longer accepts this device; it has to be paired again.
     case deviceRevoked
+    /// A Mac paired without an account answers on none of its direct routes from this network.
+    case macNotOnNetwork
+    /// A Mac answers with its ID but other keys: never trusted silently, it has to be paired again.
+    case macIdentityChanged
     case unexpected
 
     /// Problems only the person can fix. Automatic retries continue, but they cannot succeed.
     public var needsAction: Bool {
-        self == .sessionExpired || self == .deviceRevoked
+        self == .sessionExpired || self == .deviceRevoked || self == .macIdentityChanged
     }
 }
 

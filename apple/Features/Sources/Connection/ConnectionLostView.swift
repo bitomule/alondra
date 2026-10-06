@@ -70,7 +70,7 @@ public struct ConnectionLostView: View {
                     .buttonStyle(.glassProminent)
                     .controlSize(.large)
                     .tint(Palette.dawn)
-            } else if problem == .deviceRevoked, let settings {
+            } else if problem == .deviceRevoked || problem == .macIdentityChanged, let settings {
                 Button("Open Settings", systemImage: "gearshape", action: settings)
                     .buttonStyle(.glassProminent)
                     .controlSize(.large)
@@ -86,7 +86,7 @@ public struct ConnectionLostView: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
-            if let settings, problem != .deviceRevoked {
+            if let settings, problem != .deviceRevoked, problem != .macIdentityChanged {
                 Button("Settings", systemImage: "gearshape", action: settings)
                     .buttonStyle(.borderless)
                     .font(.footnote)

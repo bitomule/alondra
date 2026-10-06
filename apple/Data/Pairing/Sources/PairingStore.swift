@@ -10,6 +10,8 @@ public protocol ApprovedPairingStore: Sendable {
     func save(_ pairing: ApprovedServicePairing) throws
     /// Explicit logout removes every locally retained pairing, not only selection.
     func delete() throws
+    /// One read-modify-write of the whole collection; nothing is written when `change` throws.
+    func modify(_ change: (inout ApprovedPairingCollection) throws -> Void) throws
 }
 
 /// Synchronous storage avoids adding a suspension between approval and persistence.
@@ -65,6 +67,14 @@ public struct KeychainApprovedPairingStore: ApprovedPairingStore {
 
     public func delete() throws {
         try Self.transaction.withLock { _ in try item.delete() }
+    }
+
+    public func modify(_ change: (inout ApprovedPairingCollection) throws -> Void) throws {
+        try Self.transaction.withLock { _ in
+            var collection = try readCollection()
+            try change(&collection)
+            try item.write(JSONEncoder().encode(collection))
+        }
     }
 
     private func readCollection() throws -> ApprovedPairingCollection {

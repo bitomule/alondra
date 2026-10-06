@@ -806,6 +806,15 @@ impl Service {
         self.devices.get(id).is_some()
     }
 
+    /// How a paired device was paired, for the Mac app's device list: on the local network, or
+    /// through the relay with an account. Unknown IDs are this Mac's own clients.
+    pub(crate) fn device_origin(&self, id: &str) -> &'static str {
+        if self.devices.get(id).is_none() {
+            return "mac";
+        }
+        if crate::direct::paired_directly(&self.home, id) { "direct" } else { "relay" }
+    }
+
     fn prepare_work(&self, work: &Work, transport: Transport) -> Result<Option<PreparedWork>> {
         let e = &work.envelope;
         if e.request_id != work.request_id

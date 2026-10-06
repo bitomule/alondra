@@ -27,6 +27,8 @@ public final class ApprovedSessionRegistry<Session: AnyObject> {
     private var pending: [ApprovedPairingID: Entry] = [:]
     private var selectedID: ApprovedPairingID?
     public var snapshot: Snapshot { Snapshot(entries: Array(entries.values), selectedID: selectedID) }
+    /// The account subject the running relay sessions were verified for, if any.
+    public var ownerSubject: String? { owner }
 
     public init(make: @escaping @MainActor (ApprovedServicePairing) throws -> Session,
                 stop: @escaping @MainActor (Session) async -> Void,
@@ -36,10 +38,11 @@ public final class ApprovedSessionRegistry<Session: AnyObject> {
     }
 
     /// Same-account reconciliation retains sessions; another account first loses every
-    /// previous capability. The caller provides a subject freshly verified by OIDC.
-    public func reconcile(_ pairings: [ApprovedServicePairing], verifiedSubject: String,
+    /// previous capability. The caller provides a subject freshly verified by OIDC, or nil
+    /// with no account: then only pairings made on the local network, which have no owner, run.
+    public func reconcile(_ pairings: [ApprovedServicePairing], verifiedSubject: String?,
                           preferred: ApprovedPairingID?) async throws {
-        if let owner, owner != verifiedSubject {
+        if let owner, let verifiedSubject, owner != verifiedSubject {
             let clearedGeneration = generation + 1
             try await clear()
             guard generation == clearedGeneration, !Task.isCancelled else { throw CancellationError() }
@@ -50,8 +53,8 @@ public final class ApprovedSessionRegistry<Session: AnyObject> {
         defer { if transition == operation { transition = nil } }
         generation += 1
         let current = generation
-        let authorized = pairings.filter { $0.ownerSub == verifiedSubject }
-        guard !verifiedSubject.isEmpty, Set(authorized.map(ApprovedPairingID.init)).count == authorized.count else {
+        let authorized = pairings.filter { $0.ownerSub == nil || $0.ownerSub == verifiedSubject }
+        guard verifiedSubject?.isEmpty != true, Set(authorized.map(ApprovedPairingID.init)).count == authorized.count else {
             throw PairingStoreError.invalidCollection
         }
         var next: [ApprovedPairingID: Entry] = [:]
@@ -82,7 +85,7 @@ public final class ApprovedSessionRegistry<Session: AnyObject> {
             guard current == generation, !Task.isCancelled else { throw CancellationError() }
             let removed = entries.filter { next[$0.key] == nil }.map(\.value)
             try commit()
-            entries = next; pending = [:]; selectedID = selection; owner = verifiedSubject
+            entries = next; pending = [:]; selectedID = selection; owner = verifiedSubject ?? owner
             for entry in removed { await stop(entry.session) }
         } catch {
             // clear() may already have stopped these; stop is intentionally idempotent.
@@ -95,8 +98,9 @@ public final class ApprovedSessionRegistry<Session: AnyObject> {
     }
 
     /// Selection changes neither credentials nor the life of another approved session.
-    public func select(_ id: ApprovedPairingID, verifiedSubject: String) async throws {
-        guard owner == verifiedSubject, id.ownerSub == verifiedSubject, entries[id] != nil else {
+    public func select(_ id: ApprovedPairingID, verifiedSubject: String?) async throws {
+        let allowed = id.ownerSub == nil || verifiedSubject != nil && owner == verifiedSubject && id.ownerSub == verifiedSubject
+        guard allowed, entries[id] != nil else {
             throw PairingStoreError.invalidCollection
         }
         guard transition == nil else { throw CancellationError() }

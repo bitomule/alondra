@@ -22,13 +22,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Alondra connects to the server on your Mac to show you the fleet."
+            "value": "Alondra finds the Macs running Alondra on this network and connects to them directly."
           }
         },
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Alondra se conecta al servidor de tu Mac para mostrarte la flota."
+            "value": "Alondra busca los Mac de esta red que usan Alondra y se conecta a ellos directamente."
           }
         }
       }

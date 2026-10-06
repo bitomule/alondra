@@ -10,7 +10,9 @@ struct MacServicePairingScreen: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
                 MacServicePairingHeader()
-                MacServicePairingStep(store: store)
+                Group {
+                    if showsFindMac { MacFindMacStep(store: store) } else { MacServicePairingStep(store: store) }
+                }
                     .padding(28)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(.background, in: .rect(cornerRadius: 20))
@@ -30,6 +32,17 @@ struct MacServicePairingScreen: View {
         .tint(.orange)
         .navigationTitle("Alondra")
         .task { store.send(.appeared) }
+    }
+
+    /// Another Mac on this network comes first; the account flow only after the person asks.
+    private var showsFindMac: Bool {
+        guard !store.showsAccount else { return false }
+        switch store.phase {
+        case .signedOut: return true
+        case .scanning: return store.additionalMac
+        case .approved: return store.findMac.step == .approved
+        default: return false
+        }
     }
 }
 
@@ -72,6 +85,7 @@ private struct MacServicePairingStep: View {
                     .buttonStyle(.borderedProminent)
                     .controlSize(.large)
                     .accessibilityIdentifier("pairing.signIn")
+                Button("Find a Mac on this network") { store.send(.showAccount(false)) }
             case .scanning:
                 Label("Connect your workspace", systemImage: "laptopcomputer").font(.title2.bold())
                 Text("On the Mac running Alondra, run this command in Terminal and copy the connection invitation.")
@@ -92,7 +106,11 @@ private struct MacServicePairingStep: View {
                             .accessibilityIdentifier("pairing.submit")
                     }.padding(.top, 10)
                 }
-                if !store.additionalMac { Button("Use another account") { store.send(.logout) } }
+                if store.additionalMac {
+                    Button("Find a Mac on this network instead") { store.send(.showAccount(false)) }
+                } else {
+                    Button("Use another account") { store.send(.logout) }
+                }
             case .pending(let code):
                 Text("Approve this Mac in Alondra setup").font(.headline)
                 Text(verbatim: code)

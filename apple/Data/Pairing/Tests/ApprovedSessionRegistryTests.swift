@@ -94,3 +94,24 @@ private func sessionPairing(_ mac: String, owner: String = "owner-a", key: UInt8
     #expect(made[0].stopped)
     #expect(registry.snapshot.entries.isEmpty)
 }
+
+private func localPairing(_ mac: String) -> ApprovedServicePairing {
+    ApprovedServicePairing(relayURL: nil, macID: mac, deviceID: "phone-" + mac, ownerSub: nil,
+        macSigningKey: "pin-" + mac, macAgreementKey: "agreement-" + mac, signingPrivateKey: Data([1]),
+        agreementPrivateKey: Data([2]), approvedAtMs: 100)
+}
+
+@Test @MainActor func withoutAnAccountOnlyLocalPairingsRunAndSurviveSigningIn() async throws {
+    let local = localPairing("home"), relay = sessionPairing("remote")
+    var created: [SessionProbe] = []
+    let registry = ApprovedSessionRegistry<SessionProbe>(make: { let value = SessionProbe($0); created.append(value); return value },
+        stop: { $0.stopped = true }, publish: { _ in {} }, clearPlatform: {})
+    try await registry.reconcile([local, relay], verifiedSubject: nil, preferred: nil)
+    #expect(registry.snapshot.entries.map(\.approved.macID) == ["home"])
+    try await registry.select(ApprovedPairingID(local), verifiedSubject: nil)
+    await #expect(throws: (any Error).self) { try await registry.select(ApprovedPairingID(relay), verifiedSubject: nil) }
+    try await registry.reconcile([local, relay], verifiedSubject: "owner-a", preferred: ApprovedPairingID(relay))
+    #expect(Set(registry.snapshot.entries.map(\.approved.macID)) == ["home", "remote"])
+    #expect(created.count == 2)
+    #expect(created.allSatisfy { !$0.stopped })
+}

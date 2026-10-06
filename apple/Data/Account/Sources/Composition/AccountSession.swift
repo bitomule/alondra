@@ -1,4 +1,5 @@
 import AlondraNetworkReachability
+import AlondraTransport
 import AlondraPairing
 import AlondraFeatures
 import ComposableArchitecture
@@ -32,6 +33,15 @@ public final class AccountSession {
             }, clearPlatform: { [weak self] in try await self?.willDeactivate() })
     }
     private let pairing = PairingClient()
+    #if os(macOS)
+    @ObservationIgnored private let directPairing = DirectPairingClient(devicePrefix: "client")
+    #else
+    @ObservationIgnored private let directPairing = DirectPairingClient(devicePrefix: "phone")
+    #endif
+    @ObservationIgnored private var discovered: [String: DiscoveredMac] = [:]
+    @ObservationIgnored private var directAttempt: UUID?
+    @ObservationIgnored private var discovery: Task<Void, Never>?
+    @ObservationIgnored private var offeredServices: Set<String> = []
     private var restoreTask: Task<Bool, Error>?
     private var restoreTaskID: UUID?
     private var attempt: UUID?
@@ -48,6 +58,7 @@ public final class AccountSession {
             begin: { [self] payload in try await begin(payload) }, approve: { [self] in try await approve() },
             cancel: { [self] in await cancel() }, logout: { [self] in try await logout() })
         $0.cloudPairing.prepareCamera = self.prepareCamera
+        $0.findMac = self.findMacClient
         $0.cloudPairing.classify = {
             ConnectionClassifier.problem(for: $0, local: false, networkOffline: NetworkReachability.shared.isOffline)
         }
@@ -83,9 +94,148 @@ public final class AccountSession {
         return service
     }
 
+    /// Pairing with a Mac on this network, for the first screen and for Settings' Add a Mac.
+    public nonisolated var findMacClient: FindMacClient {
+        FindMacClient(browse: { [self] in
+            AsyncStream { continuation in
+                let task = Task { @MainActor in
+                    for await macs in MacBrowser.browse() { continuation.yield(self.found(macs)) }
+                    continuation.finish()
+                }
+                continuation.onTermination = { _ in task.cancel() }
+            }
+        }, pair: { [self] target in try await pairDirect(target) },
+        approve: { [self] in try await approveDirect() },
+        cancel: { [self] in await cancelDirect() },
+        describe: { error in
+            if error is CancellationError { return String(localized: "Pairing was cancelled.") }
+            return (error as? PairingError)?.errorDescription
+                ?? String(localized: "Alondra couldn’t pair with that Mac. Try again.")
+        })
+    }
+
+    private func found(_ macs: [DiscoveredMac]) -> [FoundMac] {
+        for mac in macs { discovered[mac.id] = mac }
+        let paired = Set(registry.snapshot.entries.map(\.approved.macID))
+        return macs.map { FoundMac(id: $0.id, name: $0.name, paired: $0.macID.map(paired.contains) ?? false) }
+    }
+
+    private func pairDirect(_ target: FindMacTarget) async throws -> DirectPairingCode {
+        await cancelDirect()
+        let endpoint: DirectEndpoint
+        switch target {
+        case .found(let id):
+            guard let mac = discovered[id] else { throw PairingError.macUnreachable }
+            endpoint = try await MacBrowser.resolve(mac)
+        case .address(let text):
+            guard let parsed = Self.endpoint(address: text) else { throw PairingError.macUnreachable }
+            endpoint = parsed
+        }
+        let attempt = try await directPairing.begin(at: endpoint, displayName: displayName)
+        directAttempt = attempt.id
+        return DirectPairingCode(code: attempt.code, macName: attempt.macName)
+    }
+
+    private func approveDirect() async throws {
+        guard let id = directAttempt else { throw PairingError.missingAttempt }
+        let current = generation
+        let approved = try await directPairing.waitForApproval(id)
+        if directAttempt == id { directAttempt = nil }
+        guard current == generation else { throw CancellationError() }
+        let collection = try await pairing.approvedPairings()
+        try await reconcile(collection, subject: registry.ownerSubject, preferred: ApprovedPairingID(approved), generation: current)
+    }
+
+    private func cancelDirect() async {
+        guard let directAttempt else { return }
+        self.directAttempt = nil
+        await directPairing.discard(directAttempt)
+    }
+
+    /// "host" or "host:port" typed by the person; the direct port is 47810 unless they say otherwise.
+    static func endpoint(address text: String) -> DirectEndpoint? {
+        var host = text.trimmingCharacters(in: .whitespaces)
+        var port: UInt16 = 47810
+        if host.hasPrefix("["), let close = host.firstIndex(of: "]") {
+            let rest = host[host.index(after: close)...]
+            if rest.hasPrefix(":") { guard let parsed = UInt16(rest.dropFirst()) else { return nil }; port = parsed }
+            else if !rest.isEmpty { return nil }
+            host = String(host[host.index(after: host.startIndex)..<close])
+        } else if host.filter({ $0 == ":" }).count == 1, let colon = host.lastIndex(of: ":") {
+            guard let parsed = UInt16(host[host.index(after: colon)...]) else { return nil }
+            port = parsed
+            host = String(host[..<colon])
+        }
+        let octets = host.split(separator: ".").compactMap { UInt8($0) }
+        let tailnet = octets.count == 4 && octets[0] == 100 && (64..<128).contains(octets[1])
+            || host.lowercased().hasSuffix(".ts.net")
+        let endpoint = DirectEndpoint(host: host, port: port, kind: tailnet ? .tailscale : .localNetwork)
+        return host.isEmpty || port == 0 ? nil : endpoint
+    }
+
+    /// Forgets a Mac paired on the local network. Its keys leave this device; the Mac keeps
+    /// listing the device until someone revokes it there.
+    public func forgetMac(choice id: UUID) async throws {
+        guard let pairingID = choiceIDs.first(where: { $0.value == id })?.key, pairingID.ownerSub == nil else {
+            throw CancellationError()
+        }
+        let current = generation
+        try await pairing.removePairing(pairingID)
+        let collection = try await pairing.approvedPairings()
+        try await reconcile(collection, subject: registry.ownerSubject, preferred: collection.selectedID, generation: current)
+    }
+
+    /// How every paired Mac answers now: one signed round trip each, all at once.
+    public func macStatuses() async -> [UUID: MacStatus] {
+        let entries = registry.snapshot.entries.compactMap { entry in choiceIDs[entry.id].map { ($0, entry.session) } }
+        return await withTaskGroup(of: (UUID, MacStatus).self) { group in
+            for (id, session) in entries {
+                group.addTask {
+                    do {
+                        try await session.checkSettingsConnection()
+                        return (id, await session.route().map(MacStatus.route) ?? .problem(.unexpected))
+                    } catch { return (id, .problem(session.connectionProblem(for: error))) }
+                }
+            }
+            var statuses: [UUID: MacStatus] = [:]
+            for await (id, status) in group { statuses[id] = status }
+            return statuses
+        }
+    }
+
+    /// Every paired Mac says where it answers directly, and Bonjour adds what this network sees.
+    /// A relay pairing gains the direct path this way, without pairing again.
+    private func learnRoutes(generation current: Int) {
+        for entry in registry.snapshot.entries {
+            let id = entry.id, session = entry.session, pairing = pairing
+            Task { [weak self] in
+                guard let endpoints = try? await session.learnRoutes(), self?.generation == current else { return }
+                try? await pairing.updateRoutes(id, routes: endpoints, name: nil)
+            }
+        }
+        guard discovery == nil, !registry.snapshot.entries.isEmpty else { return }
+        discovery = Task { [weak self] in
+            for await macs in MacBrowser.browse() {
+                guard let self else { return }
+                await self.offerDiscovered(macs)
+            }
+        }
+    }
+
+    private func offerDiscovered(_ macs: [DiscoveredMac]) async {
+        for mac in macs {
+            guard let macID = mac.macID, !offeredServices.contains(mac.id + macID),
+                  let entry = registry.snapshot.entries.first(where: { $0.approved.macID == macID }) else { continue }
+            offeredServices.insert(mac.id + macID)
+            guard let endpoint = try? await MacBrowser.resolve(mac) else { offeredServices.remove(mac.id + macID); continue }
+            await entry.session.offer([endpoint])
+            try? await pairing.updateRoutes(entry.id, routes: [endpoint], name: nil)
+        }
+    }
+
     /// A QR may name the relay but cannot authorize a destination for the account bearer.
-    private static func validateRelay(_ url: URL) throws {
-        guard url.scheme == "https", url.host()?.lowercased() == "alondra-api.davidcollado.dev",
+    private static func validateRelay(_ url: URL?) throws {
+        guard let url, url.scheme == "https", url.host()?.lowercased() == "alondra-api.davidcollado.dev",
               url.port == nil || url.port == 443, url.user == nil, url.password == nil,
               url.query == nil, url.fragment == nil, url.path.isEmpty || url.path == "/" else {
             throw PairingError.invalidInvitation
@@ -104,28 +254,41 @@ public final class AccountSession {
         defer { if restoreTaskID == id { restoreTask = nil; restoreTaskID = nil } }
         return try await task.value
     }
+    /// Macs paired on the local network come back without an account. The account is checked
+    /// only for relay pairings, and its failure stops the restore only when nothing else is saved.
     private func restoreApprovedPairing() async throws -> Bool {
         let current = generation
+        let collection = try await pairing.approvedPairings()
+        let hasLocal = collection.pairings.contains { !$0.hasRelay }
+        let subject: String?
+        do { subject = try await relaySubject(collection) }
+        catch where hasLocal && !(error is CancellationError) { subject = nil }
+        guard !collection.pairings.isEmpty else { return false }
+        try Task.checkCancellation()
+        guard current == generation else { throw CancellationError() }
+        try await reconcile(collection, subject: subject, preferred: collection.selectedID, generation: current)
+        return true
+    }
+
+    private func relaySubject(_ collection: ApprovedPairingCollection) async throws -> String? {
+        let relayPairings = collection.pairings.filter(\.hasRelay)
+        guard collection.pairings.isEmpty || !relayPairings.isEmpty else { return nil }
         do { _ = try await auth.hasSession() }
         catch AuthError.pendingRevocation {
             throw RestoreError.revocationRequired(AuthError.pendingRevocation.localizedDescription)
         } catch AuthError.rotationUncertain {
             throw RestoreError.revocationRequired(AuthError.rotationUncertain.localizedDescription)
         }
-        let collection = try await pairing.approvedPairings()
-        guard !collection.pairings.isEmpty else { return false }
+        guard !relayPairings.isEmpty else { return nil }
         let subject: String
         do { subject = try await auth.verifiedSubject() }
         catch AuthError.noSession { throw RestoreError.reauthenticationRequired("Sign in again to reconnect your saved workspace.") }
-        let authorized = collection.pairings.filter { $0.ownerSub == subject }
+        let authorized = relayPairings.filter { $0.ownerSub == subject }
         guard !authorized.isEmpty else {
             throw RestoreError.reauthenticationRequired("Sign in with the account that paired this workspace.")
         }
         for approved in authorized { try Self.validateRelay(approved.relayURL) }
-        try Task.checkCancellation()
-        guard current == generation else { throw CancellationError() }
-        try await reconcile(collection, subject: subject, preferred: collection.selectedID, generation: current)
-        return true
+        return subject
     }
     private func login() async throws {
         try await deactivate()
@@ -195,9 +358,12 @@ public final class AccountSession {
         selection = operation
         defer { if selection == operation { selection = nil } }
         let current = generation
-        let subject = try await auth.verifiedSubject()
-        guard current == generation, id.ownerSub == subject else { throw CancellationError() }
-        try Self.validateRelay(id.relayURL)
+        var subject: String?
+        if id.ownerSub != nil {
+            subject = try await auth.verifiedSubject()
+            guard current == generation, id.ownerSub == subject else { throw CancellationError() }
+            try Self.validateRelay(id.relayURL)
+        }
         let saved = try await pairing.approvedPairings()
         guard current == generation,
               let entry = registry.snapshot.entries.first(where: { $0.id == id }),
@@ -233,22 +399,25 @@ public final class AccountSession {
         }
     }
 
-    private func reconcile(_ collection: ApprovedPairingCollection, subject: String,
+    private func reconcile(_ collection: ApprovedPairingCollection, subject: String?,
                            preferred: ApprovedPairingID?, generation current: Int) async throws {
-        let authorized = collection.pairings.filter { $0.ownerSub == subject }
-        for approved in authorized { try Self.validateRelay(approved.relayURL) }
+        let authorized = collection.pairings.filter { !$0.hasRelay || $0.ownerSub == subject }
+        for approved in authorized where approved.hasRelay { try Self.validateRelay(approved.relayURL) }
         guard current == generation, !Task.isCancelled else { throw CancellationError() }
         try await registry.reconcile(authorized, verifiedSubject: subject, preferred: preferred)
         guard current == generation, !Task.isCancelled else { throw CancellationError() }
         publishChoices()
+        learnRoutes(generation: current)
     }
 
     private func publishChoices() {
         let snapshot = registry.snapshot
         choiceIDs = Dictionary(uniqueKeysWithValues: snapshot.entries.map { ($0.id, choiceIDs[$0.id] ?? UUID()) })
         macs = snapshot.entries.compactMap { entry in
-            choiceIDs[entry.id].map { MacChoice(id: $0, macID: entry.id.macID) }
-        }.sorted { $0.macID < $1.macID }
+            choiceIDs[entry.id].map {
+                MacChoice(id: $0, macID: entry.id.macID, name: entry.approved.name, local: !entry.approved.hasRelay)
+            }
+        }.sorted { ($0.name ?? $0.macID, $0.macID) < ($1.name ?? $1.macID, $1.macID) }
         selectedMacID = snapshot.selectedID.flatMap { choiceIDs[$0] }
         services = snapshot.selected?.session
     }
@@ -262,6 +431,8 @@ public final class AccountSession {
         attempts.clear()
         services = nil
         macs = []; selectedMacID = nil; choiceIDs = [:]; selection = nil
+        discovery?.cancel(); discovery = nil; offeredServices = []
+        await cancelDirect()
         await pairing.discardAllAttempts()
         try await registry.clear()
     }
@@ -271,9 +442,11 @@ public final class AccountSession {
         do { try await deactivate() } catch { failures.append(error.localizedDescription) }
         do {
             try await auth.logout()
-            try await pairing.removeApprovedPairing()
+            try await pairing.removeRelayPairings()
         } catch { failures.append(error.localizedDescription) }
         if !failures.isEmpty { throw CleanupFailure(details: failures.joined(separator: "\n")) }
+        // Macs paired on the local network never depended on the account.
+        _ = try? await restore()
     }
     private struct CleanupFailure: LocalizedError {
         let details: String

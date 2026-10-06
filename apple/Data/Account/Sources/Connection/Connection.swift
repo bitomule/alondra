@@ -11,7 +11,7 @@ private protocol FeedOperations: OperationAPI {
     func deactivate() async
 }
 
-extension RelaySession: FeedOperations {}
+extension RoutedSession: FeedOperations {}
 extension LoopbackSession: FeedOperations {}
 
 /// One approved service identity. Shipping presentation reads only server Views.
@@ -22,18 +22,31 @@ public actor Connection {
     private let operations: any FeedOperations
     private var active = true
 
+    /// A Mac paired on the local network talks only directly; one paired with an account also
+    /// keeps the relay for when no direct route answers.
     public init(approved: ApprovedServicePairing, auth: AuthSession) throws {
         let signing = try P256.Signing.PrivateKey(rawRepresentation: approved.signingPrivateKey)
         let agreement = try P256.KeyAgreement.PrivateKey(rawRepresentation: approved.agreementPrivateKey)
-        let revision = SHA256.hash(data: signing.publicKey.rawRepresentation + Data(approved.macSigningKey.utf8)
-            + Data(approved.ownerSub.utf8) + Data(String(approved.approvedAtMs).utf8))
-            .map { String(format: "%02x", $0) }.joined()
-        let relay = try RelaySession(
-            scope: RelayOutboxScope(relay: approved.relayURL, macID: approved.macID,
-                                   deviceID: approved.deviceID, credentialRevision: revision),
-            bearer: { try await auth.bearerToken() }, signing: signing, agreement: agreement,
-            macSigning: approved.macSigningPublicKey(), macAgreement: approved.macAgreementPublicKey())
-        self.init(operations: relay, server: approved.relayURL, deviceID: approved.deviceID)
+        let macSigning = try approved.macSigningPublicKey()
+        let macAgreement = try approved.macAgreementPublicKey()
+        let http = DirectHTTP(transport: AlondraAPIClient.makeHTTPTransport())
+        let router = DirectRouter(pinned: approved.pinnedIdentity, candidates: approved.routes ?? [], http: http)
+        let direct = DirectSession(macID: approved.macID, deviceID: approved.deviceID, signing: signing,
+            agreement: agreement, macSigning: macSigning, macAgreement: macAgreement, router: router, http: http)
+        var relay: RelaySession?
+        if let relayURL = approved.relayURL, let ownerSub = approved.ownerSub {
+            let revision = SHA256.hash(data: signing.publicKey.rawRepresentation + Data(approved.macSigningKey.utf8)
+                + Data(ownerSub.utf8) + Data(String(approved.approvedAtMs).utf8))
+                .map { String(format: "%02x", $0) }.joined()
+            relay = try RelaySession(
+                scope: RelayOutboxScope(relay: relayURL, macID: approved.macID,
+                                       deviceID: approved.deviceID, credentialRevision: revision),
+                bearer: { try await auth.bearerToken() }, signing: signing, agreement: agreement,
+                macSigning: macSigning, macAgreement: macAgreement)
+        }
+        let routed = RoutedSession(direct: direct, router: router, relay: relay)
+        self.init(operations: routed, server: approved.relayURL ?? URL(string: "alondra-direct://\(approved.macID)")!,
+                  deviceID: approved.deviceID)
     }
 
     public static func local(_ session: LoopbackSession, identity: LoopbackIdentityStore) async throws -> Connection {
@@ -42,6 +55,43 @@ public actor Connection {
     }
 
     public nonisolated var isLocal: Bool { operations is LoopbackSession }
+
+    /// A route only the daemon on this Mac answers. Any other connection refuses it.
+    public func local(_ route: LoopbackLocalRoute) async throws -> Data {
+        guard let loopback = operations as? LoopbackSession else { throw OperationError.invalidConfiguration }
+        try checkActive()
+        return try await loopback.local(route)
+    }
+
+    /// No relay behind it: a Mac paired on the local network.
+    public nonisolated var isDirectOnly: Bool { (operations as? RoutedSession)?.hasRelay == false }
+
+    /// The path the last answered request took: this Mac, the LAN, the tailnet or the relay.
+    public func route() async -> ConnectionRoute? {
+        if isLocal { return .thisMac }
+        return await (operations as? RoutedSession)?.route
+    }
+
+    /// Asks the Mac where it answers directly and starts using what it says. Every address is
+    /// still checked against the pinned keys before use.
+    public func learnRoutes() async throws -> [DirectEndpoint] {
+        guard let routed = operations as? RoutedSession else { return [] }
+        try checkActive()
+        let reply = try await api.send(.data(.get, path: ["routes"]))
+        let endpoints = try JSONDecoder().decode(DirectRoutesReply.self, from: reply).endpoints
+        await routed.offer(endpoints)
+        return await routed.knownEndpoints()
+    }
+
+    /// An address Bonjour found for this Mac on the current network.
+    public func offer(_ endpoints: [DirectEndpoint]) async {
+        await (operations as? RoutedSession)?.offer(endpoints)
+    }
+
+    /// The network changed or the app came back to the foreground.
+    public func networkChanged() async {
+        await (operations as? RoutedSession)?.networkChanged()
+    }
 
     private init(operations: any FeedOperations, server: URL, deviceID: String) {
         self.operations = operations
@@ -64,6 +114,7 @@ public actor Connection {
 
     public func retryViewsConnection() async {
         guard active else { return }
+        await networkChanged()
         await viewsFeed.reconnect()
     }
 

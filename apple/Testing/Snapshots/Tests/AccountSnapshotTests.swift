@@ -35,13 +35,52 @@ final class AccountSnapshotTests: XCTestCase {
     // MARK: Sign in
 
     func test_signIn() {
-        let store = signIn()
+        let store = signIn { $0.showsAccount = true }
         assertScreen([.light, .dark], inWindow: true) { ScreenFrame(height: 852) { SignInView(store: store, demo: {}) } }
     }
 
     func test_signIn_spanish() {
-        let store = signIn()
+        let store = signIn { $0.showsAccount = true }
         assertScreen([.light], language: .spanish, inWindow: true) { ScreenFrame(height: 852) { SignInView(store: store, demo: {}) } }
+    }
+
+    // MARK: Find your Mac
+
+    private let studio = FoundMac(id: "Studio", name: "Studio de David", paired: false)
+    private let mini = FoundMac(id: "Mini", name: "Mac mini", paired: true)
+
+
+    func test_findMac_twoMacs() {
+        let store = signIn { $0.findMac.macs = [studio, mini] }
+        assertScreen([.light, .dark], inWindow: true) { ScreenFrame(height: 852) { SignInView(store: store, demo: {}) } }
+    }
+
+    func test_findMac_twoMacs_spanish() {
+        let store = signIn { $0.findMac.macs = [studio, mini] }
+        assertScreen([.light], language: .spanish, inWindow: true) { ScreenFrame(height: 852) { SignInView(store: store, demo: {}) } }
+    }
+
+    func test_findMac_aDeniedRequestStaysOnTheList() {
+        let store = signIn {
+            $0.findMac.macs = [studio]
+            $0.findMac.error = "The Mac didn’t allow this device."
+        }
+        assertScreen([.light], inWindow: true) { ScreenFrame(height: 852) { SignInView(store: store, demo: {}) } }
+    }
+
+    func test_findMac_comparingTheCode() {
+        let store = signIn { $0.findMac.step = .comparing(DirectPairingCode(code: "4F2A91", macName: "Studio de David")) }
+        assertScreen([.light, .dark], inWindow: true) { ScreenFrame(height: 852) { SignInView(store: store, demo: {}) } }
+    }
+
+    func test_findMac_comparingTheCode_spanish() {
+        let store = signIn { $0.findMac.step = .comparing(DirectPairingCode(code: "4F2A91", macName: "Studio de David")) }
+        assertScreen([.light], language: .spanish, inWindow: true) { ScreenFrame(height: 852) { SignInView(store: store, demo: {}) } }
+    }
+
+    func test_findMac_fromSettings() {
+        let store = signIn({ $0.findMac.macs = [studio, mini] }, additionalMac: true)
+        assertScreen([.light], inWindow: true) { ScreenFrame(height: 852) { SignInView(store: store) } }
     }
 
     // MARK: Pairing
@@ -83,6 +122,31 @@ final class AccountSnapshotTests: XCTestCase {
         assertScreen([.light], inWindow: true) { ScreenFrame(height: 1000) { SettingsView(store: store) } }
     }
 
+    /// Paired on the local network: no account, no notifications, each Mac with how it answers.
+    private func localSettings() -> StoreOf<SettingsFeature> {
+        var state = SettingsFeature.State(service: "mac-9c1e44aa", device: "phone-7f3a91c2d4e5", supportsNotifications: false,
+                                          usesAccount: false)
+        let ids = (1...3).map { UUID(uuidString: "00000000-0000-0000-0000-00000000000\($0)")! }
+        state.macs = [
+            MacChoice(id: ids[0], macID: "mac-9c1e44aa", name: "Studio de David", local: true),
+            MacChoice(id: ids[1], macID: "mac-b27f03d9", name: "Mac mini", local: true),
+            MacChoice(id: ids[2], macID: "mac-c55e10aa", name: "MacBook Pro", local: true),
+        ]
+        state.selectedMacID = ids[0]
+        state.macStatuses = [ids[0]: .route(.localNetwork), ids[1]: .route(.tailscale), ids[2]: .problem(.macNotOnNetwork)]
+        return Store(initialState: state) { EmptyReducer<SettingsFeature.State, SettingsFeature.Action>() }
+    }
+
+    func test_settings_macsPairedOnTheLocalNetwork() {
+        let store = localSettings()
+        assertScreen([.light, .dark], inWindow: true) { ScreenFrame(height: 1000) { SettingsView(store: store) } }
+    }
+
+    func test_settings_macsPairedOnTheLocalNetwork_spanish() {
+        let store = localSettings()
+        assertScreen([.light], language: .spanish, inWindow: true) { ScreenFrame(height: 1000) { SettingsView(store: store) } }
+    }
+
     func test_settings_accessibilitySize() {
         let store = settings()
         assertScreen([.ax3], inWindow: true) { ScreenFrame(height: 1000) { SettingsView(store: store) } }
@@ -107,5 +171,15 @@ final class AccountSnapshotTests: XCTestCase {
 
     func test_connectionLost_deviceDisconnected() {
         assertScreen([.light], inWindow: true) { lost(.deviceRevoked) }
+    }
+
+
+
+    func test_connectionLost_macIdentityChanged() {
+        assertScreen([.light], inWindow: true) { lost(.macIdentityChanged) }
+    }
+
+    func test_connectionLost_macIdentityChanged_spanish() {
+        assertScreen([.light], language: .spanish, inWindow: true) { lost(.macIdentityChanged) }
     }
 }

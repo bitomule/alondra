@@ -379,8 +379,12 @@ async fn devices(
     if let Some(refused) = local_only(&peer, &headers) {
         return refused;
     }
+    let service = state.service.get();
     let list: Vec<Value> = state.auth.list().into_iter()
-        .map(|d| json!({"id": d.id, "name": d.name, "created_at": d.created_at, "last_seen": d.last_seen}))
+        .map(|d| {
+            let origin = service.map_or("mac", |service| service.device_origin(&d.id));
+            json!({"id": d.id, "name": d.name, "created_at": d.created_at, "last_seen": d.last_seen, "origin": origin})
+        })
         .collect();
     Json(json!({"devices": list})).into_response()
 }

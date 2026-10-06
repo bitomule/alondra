@@ -52,6 +52,9 @@ public struct SignInFeature: Sendable {
         public var payload = ""
         public var error: String?
         public var generation = 0
+        /// Pairing on this network comes first; the account and QR flow is the alternative.
+        public var findMac = FindMacFeature.State()
+        public var showsAccount = false
         public init(additionalMac: Bool = false) {
             self.additionalMac = additionalMac
             if additionalMac { configuration = .saved; phase = .scanning }
@@ -65,6 +68,7 @@ public struct SignInFeature: Sendable {
         case revocationRequired(Int, String)
         case cancelled(Int)
         case restored(Int, Bool), loggedOut(Int), loggedIn(Int), pending(Int, String), approved(Int), failed(Int, String)
+        case findMac(FindMacFeature.Action), showAccount(Bool)
     }
     @Dependency(\.cloudPairing) var service
     @Dependency(\.continuousClock) var clock
@@ -73,9 +77,20 @@ public struct SignInFeature: Sendable {
     public init() {}
     public var body: some ReducerOf<Self> {
         BindingReducer()
+        Scope(state: \.findMac, action: \.findMac) { FindMacFeature() }
         Reduce { state, action in
             switch action {
             case .binding: return .none
+            case .findMac(.delegate(.paired)):
+                state.phase = .approved
+                state.configuration = .saved
+                return .none
+            case .findMac: return .none
+            case .showAccount(let shows):
+                guard state.findMac.step == .browsing else { return .none }
+                state.showsAccount = shows
+                state.error = nil
+                return .none
             case .camera:
                 guard state.phase == .scanning else { return .none }
                 return .run { send in await send(.cameraReady(await service.prepareCamera())) }
