@@ -148,6 +148,8 @@ struct Facts {
     changes: HashMap<String, Vec<Millis>>,
     /// Session → (Task, cost).
     costs: HashMap<String, (Option<String>, Option<f64>)>,
+    /// The role each Task's launch plan names: design, implementation or review.
+    roles: HashMap<String, String>,
 }
 
 impl Facts {
@@ -170,6 +172,11 @@ impl Facts {
         for row in statement.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Millis>(1)?)))? {
             let (task, at) = row?;
             facts.changes.entry(task).or_default().push(at);
+        }
+        let mut statement = c.prepare("SELECT task_id,role FROM task_launch_plans WHERE role IS NOT NULL")?;
+        for row in statement.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))? {
+            let (task, role) = row?;
+            facts.roles.insert(task, role);
         }
         let mut statement = c.prepare("SELECT session_id,task_id,cost_usd FROM node_costs")?;
         for row in statement.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?, r.get::<_, Option<f64>>(2)?)))? {
@@ -307,12 +314,16 @@ fn report(facts: &Facts, since: Option<Millis>, until: Millis) -> ModelReport {
     };
     let by_model = grouped(&|run| (run.attempt.model.clone(), run.attempt.effort.clone(), None));
     let by_approach = grouped(&|run| (None, None, Some(run.approach.clone().unwrap_or_else(|| "unknown".into()))));
+    let by_role = ["design", "implementation", "review"].into_iter().filter_map(|role| {
+        let of_role: Vec<&Run> = runs.iter().filter(|run| facts.roles.get(&run.attempt.task_id).map(String::as_str) == Some(role)).collect();
+        (!of_role.is_empty()).then(|| Group { role: Some(role.to_owned()), ..group(&of_role) })
+    }).collect();
     let mut sonnet_trouble: Vec<Attempt> = runs.iter()
         .filter(|run| run.attempt.model.as_deref() == Some("sonnet") && !run.attempt.outcomes.is_empty())
         .map(|run| run.attempt.clone())
         .collect();
     sonnet_trouble.sort_by(|a, b| b.at.cmp(&a.at));
-    ModelReport { since, until, by_model, by_approach, sonnet_trouble }
+    ModelReport { since, until, by_model, by_approach, by_role, sonnet_trouble }
 }
 
 #[cfg(test)]

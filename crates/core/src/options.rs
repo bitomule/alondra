@@ -553,7 +553,7 @@ impl Resolved {
         lines.push(String::new());
         lines.extend(approach.how_to_work());
         lines.push(String::new());
-        lines.push("When you reach this point, deliver with `present_result` and is_final true: the orchestrator closes you.".into());
+        lines.push("When you reach this point, deliver with `present_result` and is_final true: Alondra closes this session when the task is done.".into());
         lines.join("\n")
     }
 
@@ -772,7 +772,7 @@ on = "Run /review-loop before the merge."
             "",
             "If this work has more than two steps, write them as tasks in Claude Code's task list (TaskCreate) before starting, mark each one in progress when you start it and completed when it is done (TaskUpdate), so the user can follow your progress.",
             "",
-            "When you reach this point, deliver with `present_result` and is_final true: the orchestrator closes you.",
+            "When you reach this point, deliver with `present_result` and is_final true: Alondra closes this session when the task is done.",
         ];
         assert_eq!(s, expected.join("\n"));
         let off = file().resolve(None, &chosen(&[("how_far", val("merge"))])).unwrap().mission_section(None, Approach::Solo);

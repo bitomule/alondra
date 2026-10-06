@@ -559,7 +559,7 @@
         "R03",
         "R13"
       ],
-      "title": "Accepting a final text completes its task",
+      "title": "Accepting a final text moves its task to closing while its node cleans up",
       "layers": [
         "C",
         "A",
@@ -609,7 +609,7 @@
         {
           "path": "tasks.task-1.status",
           "op": "eq",
-          "value": "done"
+          "value": "closing"
         },
         {
           "path": "pull_requests.count",
@@ -897,7 +897,7 @@
         {
           "path": "tasks.task-1.status",
           "op": "eq",
-          "value": "done"
+          "value": "closing"
         }
       ],
       "execution_status": "store_runner"
@@ -1526,7 +1526,7 @@
         {
           "path": "tasks.task-1.status",
           "op": "eq",
-          "value": "done"
+          "value": "closing"
         }
       ],
       "execution_status": "store_runner"
@@ -1588,12 +1588,12 @@
         {
           "path": "last_error.code",
           "op": "eq",
-          "value": "task_not_active"
+          "value": "acceptance_missing"
         },
         {
           "path": "tasks.task-1.status",
           "op": "eq",
-          "value": "done"
+          "value": "closing"
         }
       ],
       "execution_status": "store_runner"
@@ -1637,7 +1637,7 @@
         {
           "path": "tasks.task-1.status",
           "op": "eq",
-          "value": "done"
+          "value": "closing"
         },
         {
           "path": "agents.agent-a.connected",
@@ -1732,6 +1732,15 @@
                 "text": "Synthetic answer"
               }
             ]
+          }
+        },
+        {
+          "type": "command",
+          "actor": "system",
+          "command": {
+            "kind": "record_node_end",
+            "task_id": "task-1",
+            "end": "closed"
           }
         },
         {
@@ -3250,7 +3259,7 @@
         {
           "path": "tasks.task-1.status",
           "op": "eq",
-          "value": "done"
+          "value": "closing"
         },
         {
           "path": "delta.presentations",
@@ -3474,7 +3483,7 @@
         {
           "path": "tasks.task-1.status",
           "op": "eq",
-          "value": "done"
+          "value": "closing"
         },
         {
           "path": "interactions.info-1.read_by",

@@ -239,6 +239,7 @@ fn request_task(snapshot: &ScheduleDefinitionSnapshot) -> (Request, Task) {
         documents: BTreeMap::new(),
         archived: false,
         model: None,
+        wrap_up: Default::default(),
     };
     (request, task)
 }

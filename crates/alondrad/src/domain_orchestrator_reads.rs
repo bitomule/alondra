@@ -1,9 +1,9 @@
-//! The orchestrator's reads, as 8ccd131's `fleet`, `node` and `candidates` gave them: the live
+//! The orchestrator's reads, as 8ccd131's `fleet` and `node` gave them: the live
 //! sessions the daemon observes next to the domain's Requests, Tasks, questions, results and
 //! undelivered messages. Each answer has the shape the MCP's summaries already read.
 use crate::domain_runtime::DomainRuntime;
-use alondra_core::domain::{AgentId, Author, DomainError, DomainState, Interaction, InteractionPayload, PrState, Recipient, TaskId};
-use alondra_core::{Node, NodeStatus};
+use alondra_core::domain::{AgentId, Author, DomainError, DomainState, Interaction, InteractionPayload, Recipient, TaskId};
+use alondra_core::Node;
 use serde_json::{Value, json};
 
 fn state(domain: &DomainRuntime) -> Result<DomainState, DomainError> {
@@ -144,95 +144,6 @@ pub(crate) fn node(domain: &DomainRuntime, key: &str) -> Result<Value, DomainErr
         "reports": mine().filter_map(|i| report(i, &state)).collect::<Vec<_>>(), "messages": messages,
         "messages_held_for_turn_end": domain.held.lock().expect("held messages poisoned").get(&agent).map_or(0, Vec::len),
         "timeline": []}))
-}
-
-fn same(a: &str, b: &str) -> bool {
-    a.eq_ignore_ascii_case(b)
-}
-
-fn repo_name(repo: &str) -> &str {
-    repo.rsplit('/').next().unwrap_or(repo)
-}
-
-/// `candidates`: the live Agents a Task, or work in a project or repo, could go to, with why, as
-/// 8ccd131 ranked them. An Agent works on one Task at a time, so only the free ones are candidates;
-/// the busy ones tied to the work come apart in `busy`, with the Task they are on, so the
-/// orchestrator can tell the node it launches what they are doing.
-pub(crate) fn candidates(domain: &DomainRuntime, home: &std::path::Path, task: Option<&str>, repo: Option<&str>, model: Option<&str>) -> Result<Value, DomainError> {
-    let state = state(domain)?;
-    let wanted = match model.map(str::trim).filter(|m| !m.is_empty()) {
-        Some(alias) => {
-            let file = crate::domain_schedule_runner::options_at(home).map_err(|error| DomainError::new("invalid_input", format!("options.toml: {error}")))?;
-            let family = file.model_family(alias).ok_or_else(|| DomainError::new("invalid_input", format!("{alias} is not a model; use one of {}", file.model_aliases().join(", "))))?;
-            Some(family)
-        }
-        None => None,
-    };
-    let task = match task.map(str::trim).filter(|t| !t.is_empty()) {
-        Some(id) => Some(state.tasks.get(&TaskId::from(id)).ok_or_else(|| DomainError::new("not_found", format!("task {id} does not exist")))?),
-        None => None,
-    };
-    let repo = repo.map(str::trim).filter(|r| !r.is_empty());
-    if task.is_none() && repo.is_none() {
-        return Err(DomainError::new("invalid_input", "pass a task id or a repo"));
-    }
-    let asked = task.and_then(|t| domain.request_launch(&t.request_id).ok().flatten()).and_then(|launch| launch.project);
-    let project = repo.map(repo_name).map(str::to_owned).or(asked);
-    let none = TaskId::from("");
-    let mut free: Vec<(usize, bool, String, Value)> = vec![];
-    let mut busy: Vec<(usize, bool, String, Value)> = vec![];
-    for n in domain.live.nodes().iter().filter(|n| !n.is_orchestrator && (n.alive || n.in_daemon)) {
-        let Some(agent) = state.agents.get(&AgentId(n.session_id.clone())) else { continue };
-        let mine: Vec<_> = state.tasks.values().filter(|t| t.agent_id.as_ref() == Some(&agent.id)).collect();
-        let mut why = vec![];
-        if let Some(p) = project.as_deref().filter(|p| same(p, &n.project())) {
-            why.push(format!("works in project {p}"));
-        }
-        if let Some(p) = project.as_deref() {
-            for pr in state.pull_requests.values().filter(|pr| pr.state == PrState::Open && same(repo_name(&pr.repository), p)
-                && mine.iter().any(|t| t.id == pr.task_id)) {
-                why.push(format!("has PR #{} open in {}", pr.number, pr.repository));
-            }
-        }
-        if let Some(t) = task {
-            if t.agent_id.as_ref() == Some(&agent.id) {
-                why.push(format!("works on {} itself", t.id));
-            }
-            for m in mine.iter().filter(|m| m.id != t.id) {
-                let did = if m.state.terminal() { "worked on" } else { "works on" };
-                if t.dependencies.contains(&m.id) {
-                    why.push(format!("{did} {} “{}”, which {} builds on", m.id, m.title, t.id));
-                } else if m.dependencies.contains(&t.id) {
-                    why.push(format!("{did} {} “{}”, which builds on {}", m.id, m.title, t.id));
-                } else if m.request_id == t.request_id {
-                    why.push(format!("{did} {} “{}” of the same request", m.id, m.title));
-                }
-            }
-        }
-        if why.is_empty() {
-            continue;
-        }
-        let name = n.name.clone().unwrap_or_else(|| agent.name.clone());
-        let mut row = json!({"node": name, "session_id": agent.id, "short_id": n.short_id, "project": n.project(),
-            "status": wire(&n.status), "model": model_of(domain, &n.session_id), "why": why});
-        if let Some(family) = &wanted {
-            let reported = domain.live.mods.session(&n.session_id).and_then(|reported| reported.model);
-            row["fits"] = json!(reported.as_deref().map(alondra_core::model_label::model_family).as_deref() == Some(family.as_str()));
-        }
-        let key = (why.len(), n.status != NodeStatus::Free, name);
-        match state.busy_with(&agent.id, task.map_or(&none, |t| &t.id)) {
-            Some(current) => {
-                row["task"] = json!({"id": current.id, "title": current.title, "state": wire(&current.state)});
-                busy.push((key.0, key.1, key.2, row));
-            }
-            None => free.push((key.0, key.1, key.2, row)),
-        }
-    }
-    let ranked = |mut rows: Vec<(usize, bool, String, Value)>| {
-        rows.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)).then(a.2.cmp(&b.2)));
-        rows.into_iter().map(|(_, _, _, row)| row).collect::<Vec<_>>()
-    };
-    Ok(json!({"candidates": ranked(free), "busy": ranked(busy)}))
 }
 
 #[cfg(test)]

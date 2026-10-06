@@ -574,6 +574,8 @@ pub fn refusal(error: &DomainError) -> String {
         "not_found" => tr!("Alondra no longer has it", "Alondra ya no lo tiene").into(),
         "task_not_active" => tr!("The task is no longer active", "La tarea ya no está activa").into(),
         "agent_busy" => tr!("That node is on another task until it ends: launch a new node for this one", "Ese nodo está en otra tarea hasta que acabe: lanza un nodo nuevo para esta").into(),
+        "agent_used" => tr!("That node already worked on another task: launch a new node for this one", "Ese nodo ya trabajó en otra tarea: lanza un nodo nuevo para esta").into(),
+        "task_closing" => tr!("This task's pull request is already merged and the task is closing: ask for more work as a new request", "El PR de esta tarea ya está fusionado y la tarea se está cerrando: pide más trabajo como una petición nueva").into(),
         "incompatible_protocol" => tr!("This alondrad does not accept this domain request", "Este alondrad no acepta esta petición del dominio").into(),
         _ => {
             let (code, why) = (&error.code, &error.message);

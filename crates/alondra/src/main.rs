@@ -6,6 +6,7 @@ mod cli;
 mod client;
 mod direct_client;
 mod claude_auth;
+mod cleanup;
 mod doctor;
 mod delivery;
 mod mcp;
@@ -68,6 +69,13 @@ enum Cmd {
     Models {
         #[arg(long, help = tr!("Only launches in this period, like 7d, 12h or 2w", "Solo los lanzamientos de este periodo, como 7d, 12h o 2w"))]
         since: Option<String>,
+        #[arg(long, help = tr!("Machine-readable output", "Salida para máquinas"))]
+        json: bool,
+    },
+    #[command(about = tr!("Close the sessions of finished tasks and the ones stopped without a task", "Cierra las sesiones de tareas terminadas y las paradas sin tarea"))]
+    Cleanup {
+        #[arg(long, help = tr!("Only show what it would close", "Solo enseña lo que cerraría"))]
+        dry_run: bool,
         #[arg(long, help = tr!("Machine-readable output", "Salida para máquinas"))]
         json: bool,
     },
@@ -202,6 +210,7 @@ fn main() -> Result<()> {
         Some(Cmd::Logout) => account::logout(),
         Some(Cmd::Status) => status(),
         Some(Cmd::Models { since, json }) => models::run(since.as_deref(), json),
+        Some(Cmd::Cleanup { dry_run, json }) => cleanup::run(dry_run, json),
         Some(Cmd::OrchestratorCancel { run_id }) => cli::recover(ops::Recovery::Cancel, &run_id),
         Some(Cmd::OrchestratorAcknowledge { run_id, confirm: _ }) => cli::recover(ops::Recovery::Acknowledge, &run_id),
         Some(Cmd::OrchestratorRetry { run_id, confirm: _ }) => cli::recover(ops::Recovery::Retry, &run_id),

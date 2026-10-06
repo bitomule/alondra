@@ -299,8 +299,23 @@ fn changed<'a, K: Ord, V: PartialEq>(
 }
 fn task_row(t: &Task) -> Result<Map<String, Value>> {
     let mut row = object(t)?;
-    strip(&mut row, &["dependencies", "stack", "documents", "model"]);
+    strip(&mut row, &["dependencies", "stack", "documents", "model", "wrap_up"]);
     Ok(row)
+}
+fn save_wrap_up(c: &Connection, t: &Task) -> Result<()> {
+    let w = &t.wrap_up;
+    let node_end = match w.node {
+        Some(end) => Some(serde_json::to_value(end)?.as_str().context("node end is a string")?.to_owned()),
+        None => None,
+    };
+    exec(
+        c,
+        "INSERT INTO task_wrap_ups(task_id,asked_at,cleaned_at,close_cancelled,node_end) VALUES(?1,?2,?3,?4,?5) \
+         ON CONFLICT(task_id) DO UPDATE SET asked_at=excluded.asked_at,cleaned_at=excluded.cleaned_at,\
+         close_cancelled=excluded.close_cancelled,node_end=excluded.node_end",
+        params![t.id.0, w.asked_at.map(|r| r as i64), w.cleaned_at.map(|r| r as i64), w.close_cancelled as i64, node_end],
+    )?;
+    Ok(())
 }
 /// Dependencies and document links; stacks follow the interactions they reference.
 fn save_task_links(c: &Connection, t: &Task, before: Option<&Task>) -> Result<()> {
@@ -660,6 +675,9 @@ pub(super) fn save_changes(c: &Connection, before: &DomainState, after: &DomainS
             row.insert("task_id".into(), json!(x.id));
             upsert(c, "task_models", &["task_id"], row)?;
         }
+        if prior.is_none_or(|p| p.wrap_up != x.wrap_up) {
+            save_wrap_up(c, x)?;
+        }
     }
     for (x, _) in changed(&before.documents, &after.documents) {
         upsert(c, "documents", &["id"], object(x)?)?;
@@ -946,6 +964,20 @@ pub(super) fn load(c: &Connection) -> Result<DomainState> {
         let id: String = row.get(0)?;
         let model = json!({"model": row.get::<_, String>(1)?, "chosen_by": row.get::<_, String>(2)?});
         state.tasks.get_mut(&TaskId::from(id)).context("model task missing")?.model = Some(decode(model)?);
+    }
+    drop(stored);
+    let mut wrap_ups = c.prepare("SELECT task_id, asked_at, cleaned_at, close_cancelled, node_end FROM task_wrap_ups")?;
+    let mut stored = wrap_ups.query([])?;
+    while let Some(row) = stored.next()? {
+        let id: String = row.get(0)?;
+        let node: Option<String> = row.get(4)?;
+        let wrap_up = WrapUp {
+            asked_at: row.get::<_, Option<i64>>(1)?.map(|r| r as u64),
+            cleaned_at: row.get::<_, Option<i64>>(2)?.map(|r| r as u64),
+            close_cancelled: row.get::<_, i64>(3)? != 0,
+            node: node.map(|n| decode(Value::String(n))).transpose()?,
+        };
+        state.tasks.get_mut(&TaskId::from(id)).context("wrap-up task missing")?.wrap_up = wrap_up;
     }
     drop(stored);
     for mut row in rows(c, "task_stacks", &[], &[])? {

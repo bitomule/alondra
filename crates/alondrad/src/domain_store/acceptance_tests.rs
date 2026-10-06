@@ -21,7 +21,7 @@ fn expected_rejection(case_id: &str, step: usize) -> Option<&'static str> {
         ("V07", 1) => Some("acceptance_missing"),
         ("V10", 0) => Some("acceptance_stale"),
         ("V18", 1) => Some("stale_head"),
-        ("V21", 1) => Some("task_not_active"),
+        ("V21", 1) => Some("acceptance_missing"),
         ("V23", 0) => Some("forbidden"),
         ("V24", 0) => Some("agent_busy"),
         ("V45", 1) => Some("acceptance_missing"),

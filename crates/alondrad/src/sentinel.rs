@@ -686,7 +686,7 @@ mod tests {
     async fn a_node_idle_for_the_set_time_is_closed_only_with_its_work_merged_and_otherwise_the_user_is_asked() {
         let home = std::env::temp_dir().join(format!("alondra-sentinel-idle-{}-{}", std::process::id(), now_millis()));
         let config = alondra_core::config::Config::resolve(home, &alondra_core::config::FileConfig::default(), |_| None, || Some("Ana".into()));
-        assert_eq!(config.close_free_nodes_after, Some(Duration::from_secs(7 * 86_400)), "a week unless set");
+        assert_eq!(config.close_free_nodes_after, Some(Duration::from_secs(30 * 60)), "30 minutes unless set");
         let hub = Hub::open(config).unwrap();
         for sid in ["clean", "unpushed", "tasked", "orch"] {
             hub.append(seen(sid)).unwrap();

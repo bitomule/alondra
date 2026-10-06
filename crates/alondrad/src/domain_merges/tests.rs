@@ -20,6 +20,12 @@ fn command(domain: &DomainRuntime, actor: Actor, id: &str, command: Command) {
     }, None, || Ok(())).unwrap();
 }
 
+/// The task waits in Closing for its node; Alondra records it closed and the task is done.
+fn end_node(domain: &DomainRuntime) {
+    assert_eq!(task(domain), TaskState::Closing);
+    command(domain, Actor::System, "node-end", Command::RecordNodeEnd { task_id: "t".into(), end: NodeEnd::Closed, agent_id: None });
+}
+
 fn user() -> Actor {
     Actor::User { user_id: "u".into() }
 }
@@ -99,10 +105,11 @@ async fn an_accepted_delivery_is_merged_by_alondra_and_the_node_is_told() {
     let state = domain.state().unwrap();
     assert_eq!(state.pull_requests[&PrId::from("pr")].merged_head.as_deref(), Some(HEAD));
     assert_eq!(state.merge_authorizations.values().next().unwrap().attempt, MergeAttemptState::Confirmed);
+    end_node(&domain);
     assert_eq!(task(&domain), TaskState::Done);
     let told = told(&domain);
     assert!(told[0].contains("Alondra is merging its pull request"), "{told:?}");
-    assert_eq!(told.last().unwrap(), &merged_notice(7, 0));
+    assert_eq!(told[told.len() - 2..], [merged_notice(7, 0), cleanup_request("Task", &"t".into())]);
     merger.merge_due(&domain, &github).await.unwrap();
     assert_eq!(github.merged.lock().unwrap().len(), 1, "a merged PR is not merged again");
 }
@@ -114,6 +121,7 @@ async fn the_users_merge_button_is_merged_with_the_method_they_chose() {
         presentation_id: "d".into(), pr_id: "pr".into(), expected_head: HEAD.into(), method: MergeMethod::Merge });
     now().merge_due(&domain, &github).await.unwrap();
     assert_eq!(*github.merged.lock().unwrap(), vec![(7, HEAD.to_owned(), MergeMethod::Merge)]);
+    end_node(&domain);
     assert_eq!(task(&domain), TaskState::Done);
 }
 
@@ -133,8 +141,9 @@ async fn auto_merge_waits_for_the_checks_then_claims_durably_and_merges() {
     let authorization = state.merge_authorizations.values().next().unwrap();
     assert_eq!((authorization.user_id.as_str(), authorization.attempt), (Feedback::ALONDRA, MergeAttemptState::Confirmed));
     assert!(state.pull_requests[&PrId::from("pr")].review.as_ref().unwrap().decisions.is_empty(), "no review is made up");
+    end_node(&domain);
     assert_eq!(task(&domain), TaskState::Done);
-    assert_eq!(told(&domain), vec![merged_notice(7, 0)]);
+    assert_eq!(told(&domain), vec![merged_notice(7, 0), cleanup_request("Task", &"t".into())]);
 }
 
 #[tokio::test]
@@ -197,6 +206,7 @@ async fn github_waiting_for_required_checks_keeps_the_acceptance() {
     assert_eq!(task(&domain), TaskState::Closing);
     github.merges.lock().unwrap().remove(&7);
     merger.merge_due(&domain, &github).await.unwrap();
+    end_node(&domain);
     assert_eq!(task(&domain), TaskState::Done, "Alondra's own claim carries on after a restart-free wait");
 }
 
@@ -213,6 +223,7 @@ async fn a_merge_queue_is_waited_on_and_only_githubs_merged_counts() {
     assert_eq!(github.merged.lock().unwrap().len(), 1, "a queued PR is not merged again");
     github.statuses.lock().unwrap().get_mut(&7).unwrap().as_mut().unwrap().state = PrState::Merged;
     merger.merge_due(&domain, &github).await.unwrap();
+    end_node(&domain);
     assert_eq!(task(&domain), TaskState::Done);
 }
 
@@ -239,6 +250,7 @@ async fn a_pr_the_queue_merges_while_alondra_checks_it_is_recorded_not_handed_ba
     github.merged_by_queue.lock().unwrap().insert(7);
     merger.merge_due(&domain, &github).await.unwrap();
     assert!(feedback(&domain).is_empty(), "{:?}", feedback(&domain));
+    end_node(&domain);
     assert_eq!(task(&domain), TaskState::Done);
 }
 
@@ -262,6 +274,7 @@ async fn a_merge_refused_for_access_raises_one_card_while_reads_work_until_a_mer
     github.merges.lock().unwrap().remove(&7);
     merger.merge_due(&domain, &github).await.unwrap();
     assert!(problems(&domain).iter().all(|card| card.withdrawn));
+    end_node(&domain);
     assert_eq!(task(&domain), TaskState::Done);
 }
 
@@ -324,6 +337,7 @@ async fn checks_that_need_someone_on_github_raise_one_card_and_wait() {
     github.open(7, HEAD, Checks::Passed);
     merger.merge_due(&domain, &github).await.unwrap();
     assert!(problems(&domain).iter().all(|card| card.withdrawn));
+    end_node(&domain);
     assert_eq!(task(&domain), TaskState::Done);
 }
 
@@ -353,6 +367,7 @@ async fn a_pr_github_says_is_already_merged_is_recorded_not_handed_back() {
     github.statuses.lock().unwrap().get_mut(&7).unwrap().as_mut().unwrap().state = PrState::Merged;
     merger.merge_due(&domain, &github).await.unwrap();
     assert!(feedback(&domain).is_empty());
+    end_node(&domain);
     assert_eq!(task(&domain), TaskState::Done);
 }
 
@@ -390,6 +405,7 @@ async fn gh_that_cannot_work_raises_one_card_until_it_works_again() {
     github.open(7, HEAD, Checks::Passed);
     merger.merge_due(&domain, &github).await.unwrap();
     assert!(problems(&domain).iter().all(|card| card.withdrawn));
+    end_node(&domain);
     assert_eq!(task(&domain), TaskState::Done);
 }
 
