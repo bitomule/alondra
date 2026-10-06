@@ -35,3 +35,13 @@ final class APIRequestTests: XCTestCase {
         XCTAssertThrowsError(try request("home", extra: [("focus", "../secret")]))
     }
 }
+
+final class OperationErrorTests: XCTestCase {
+    func testEveryCaseReadsAsASentenceNotATypeName() {
+        let cases: [OperationError] = [.operationIdentityRequired, .invalidConfiguration, .invalidEndpoint, .outcomeUnknown]
+        for error in cases {
+            XCTAssertFalse(error.localizedDescription.contains("OperationError"), "\(error)")
+            XCTAssertTrue(error.localizedDescription.hasSuffix("."), "\(error)")
+        }
+    }
+}
