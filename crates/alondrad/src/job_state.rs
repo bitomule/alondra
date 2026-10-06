@@ -13,6 +13,9 @@ pub(crate) enum Phase {
     Blocked,
     Done,
     Failed,
+    /// The user stopped or killed the session in Claude agents (`claude stop`). A crash is
+    /// `crashed`, which this does not read: Claude Code restarts such a session itself.
+    Stopped,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -40,6 +43,7 @@ pub(crate) fn parse(text: &str, session: &str) -> Option<Job> {
         "blocked" => Phase::Blocked,
         "done" => Phase::Done,
         "failed" => Phase::Failed,
+        "stopped" => Phase::Stopped,
         _ => return None,
     };
     let updated_at = crate::watcher::parse_rfc3339_millis(value["updatedAt"].as_str()?)?;
@@ -84,7 +88,7 @@ mod tests {
 
     #[test]
     fn every_state_claude_code_writes_is_read() {
-        for (text, phase) in [("working", Phase::Working), ("idle", Phase::Idle), ("blocked", Phase::Blocked), ("done", Phase::Done), ("failed", Phase::Failed)] {
+        for (text, phase) in [("working", Phase::Working), ("idle", Phase::Idle), ("blocked", Phase::Blocked), ("done", Phase::Done), ("failed", Phase::Failed), ("stopped", Phase::Stopped)] {
             assert_eq!(parse(&file(text, ""), SESSION).unwrap().phase, phase, "{text}");
         }
     }
@@ -109,6 +113,7 @@ mod tests {
     fn a_file_that_is_missing_unparsable_or_lacks_the_fields_is_no_job_state() {
         assert_eq!(parse("{not json", SESSION), None);
         assert_eq!(parse(&file("somethingnew", ""), SESSION), None, "an unknown state");
+        assert_eq!(parse(&file("crashed", ""), SESSION), None, "a crash is not a stop");
         assert_eq!(parse(&file("working", "").replace("\"updatedAt\"", "\"touchedAt\""), SESSION), None, "no update time");
         assert_eq!(parse(&file("working", "").replace(SESSION, "another-session"), SESSION), None, "another session's file");
         let home = std::env::temp_dir().join(format!("alondra-jobs-{}", crate::auth::random_hex(8)));

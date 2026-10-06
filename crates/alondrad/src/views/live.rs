@@ -396,6 +396,7 @@ pub(crate) async fn gather(
     }
     LiveSnapshot {
         closed_nodes: client.domain.live.closed_sessions(),
+        closed_tasks: client.domain.live.closed_task_ids(),
         nodes,
         pull_requests,
         orchestrator,

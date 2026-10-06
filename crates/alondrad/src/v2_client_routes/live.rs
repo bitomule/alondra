@@ -7,6 +7,24 @@ use std::collections::HashMap;
 use std::sync::{Mutex, atomic::{AtomicU64, Ordering}};
 
 const CLOSED_FILE: &str = "closed-sessions.json";
+const CLOSED_TASKS_FILE: &str = "closed-task-nodes.json";
+
+/// What a relaunch needs of the node the user closed while it worked on a task.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct ClosedNode {
+    pub name: String,
+    pub cwd: Option<String>,
+}
+
+fn save<T: serde::Serialize>(file: &std::path::Path, value: &T) {
+    let next = file.with_extension("next");
+    let written = serde_json::to_vec(value).map_err(std::io::Error::from)
+        .and_then(|bytes| std::fs::write(&next, bytes))
+        .and_then(|()| std::fs::rename(&next, file));
+    if let Err(error) = written {
+        log!("could not save {}: {error}", file.display());
+    }
+}
 
 #[derive(Default)]
 pub(crate) struct Live {
@@ -24,13 +42,19 @@ pub(crate) struct Live {
     reconnecting: Mutex<std::collections::HashSet<String>>,
     closed: Mutex<std::collections::BTreeSet<String>>,
     closed_file: Option<std::path::PathBuf>,
+    closed_tasks: Mutex<std::collections::BTreeMap<String, ClosedNode>>,
+    closed_tasks_file: Option<std::path::PathBuf>,
 }
 
 impl Live {
     pub(crate) fn persisted_in(home: &std::path::Path) -> Self {
         let file = home.join(CLOSED_FILE);
         let closed = std::fs::read(&file).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default();
+        let closed_tasks_file = home.join(CLOSED_TASKS_FILE);
+        let closed_tasks = std::fs::read(&closed_tasks_file).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default();
         Self {
+            closed_tasks: Mutex::new(closed_tasks),
+            closed_tasks_file: Some(closed_tasks_file),
             mods: crate::node_reports::Reports::persisted_in(home),
             usage_pause: crate::usage_pause::UsagePause::persisted_in(home),
             closed: Mutex::new(closed),
@@ -43,14 +67,35 @@ impl Live {
     pub(crate) fn mark_closed(&self, session_id: &str) {
         let mut closed = self.closed.lock().expect("revivals poisoned");
         closed.insert(session_id.to_owned());
-        let Some(file) = &self.closed_file else { return };
-        let next = file.with_extension("next");
-        let written = serde_json::to_vec(&*closed).map_err(std::io::Error::from)
-            .and_then(|bytes| std::fs::write(&next, bytes))
-            .and_then(|()| std::fs::rename(&next, file));
-        if let Err(error) = written {
-            log!("could not save {}: {error}", file.display());
+        if let Some(file) = &self.closed_file {
+            save(file, &*closed);
         }
+    }
+
+    /// The task the user's closed node worked on waits for a relaunch, which needs this.
+    pub(crate) fn remember_closed_task(&self, task_id: &str, node: ClosedNode) {
+        let mut tasks = self.closed_tasks.lock().expect("revivals poisoned");
+        tasks.insert(task_id.to_owned(), node);
+        if let Some(file) = &self.closed_tasks_file {
+            save(file, &*tasks);
+        }
+    }
+
+    pub(crate) fn closed_task(&self, task_id: &str) -> Option<ClosedNode> {
+        self.closed_tasks.lock().expect("revivals poisoned").get(task_id).cloned()
+    }
+
+    pub(crate) fn forget_closed_task(&self, task_id: &str) {
+        let mut tasks = self.closed_tasks.lock().expect("revivals poisoned");
+        if tasks.remove(task_id).is_some()
+            && let Some(file) = &self.closed_tasks_file
+        {
+            save(file, &*tasks);
+        }
+    }
+
+    pub(crate) fn closed_task_ids(&self) -> Vec<String> {
+        self.closed_tasks.lock().expect("revivals poisoned").keys().cloned().collect()
     }
 
     pub(crate) fn closed_sessions(&self) -> Vec<String> {

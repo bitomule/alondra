@@ -718,6 +718,35 @@ fn tasks_views_match_goldens() {
     }
 }
 
+const NODE_CLOSED_GOLDENS: [(&str, Lang); 2] = [("task-closed-ios.json", Lang::En), ("task-closed-ios-es.json", Lang::Es)];
+const NODE_CLOSED_TASK: &str = "t-651c38484cd2f34e74d5107ba05f7f15";
+
+/// The golden task after its node was closed by the user: freed, with nothing left open.
+fn node_closed_fixture() -> (DomainState, LiveSnapshot) {
+    let mut state = golden_fixture();
+    let id: crate::domain_v2::TaskId = NODE_CLOSED_TASK.into();
+    state.interactions.retain(|_, interaction| interaction.scope != Scope::Task { task_id: id.clone() });
+    state.holds.retain(|interaction, _| state.interactions.contains_key(interaction));
+    let task = state.tasks.get_mut(&id).unwrap();
+    (task.state, task.started, task.agent_id, task.final_presentation) = (TaskState::NotStarted, false, None, None);
+    let mut live = golden_live();
+    live.closed_tasks.push(id.0);
+    (state, live)
+}
+
+#[test]
+fn a_task_whose_node_was_closed_matches_goldens() {
+    let (state, live) = node_closed_fixture();
+    for (filename, lang) in NODE_CLOSED_GOLDENS {
+        let expected = match filename {
+            "task-closed-ios.json" => include_str!("../../../../fixtures/views/cards/task-closed-ios.json"),
+            _ => include_str!("../../../../fixtures/views/cards/task-closed-ios-es.json"),
+        };
+        let actual = render(&state, &live, Client::Ios, lang, &format!("task:{NODE_CLOSED_TASK}"), "2026-09-30T10:00:00Z");
+        assert_golden(filename, &actual, expected);
+    }
+}
+
 fn golden_live() -> LiveSnapshot {
     let mut live = LiveSnapshot::default();
     live.nodes.push(LiveNode {
@@ -1877,6 +1906,15 @@ fn generate_goldens() {
     let (tasks_state, tasks_live) = tasks_fixture();
     for (filename, client, lang) in TASKS_GOLDENS {
         let view = render(&tasks_state, &tasks_live, client, lang, "tasks", "2026-09-30T10:00:00Z");
+        std::fs::write(
+            format!("{dir}/{filename}"),
+            format!("{}\n", serde_json::to_string_pretty(&view).unwrap()),
+        )
+        .unwrap();
+    }
+    let (closed_state, closed_live) = node_closed_fixture();
+    for (filename, lang) in NODE_CLOSED_GOLDENS {
+        let view = render(&closed_state, &closed_live, Client::Ios, lang, &format!("task:{NODE_CLOSED_TASK}"), "2026-09-30T10:00:00Z");
         std::fs::write(
             format!("{dir}/{filename}"),
             format!("{}\n", serde_json::to_string_pretty(&view).unwrap()),
@@ -3509,6 +3547,51 @@ fn a_task_without_a_failed_launch_is_still_not_started() {
     state.schedule.runs.clear();
     let detail = serde_json::to_string(&render(&state, &LiveSnapshot::default(), Client::Tui, Lang::En, "task:t-1", "")).unwrap();
     assert!(detail.contains("Not started") && !detail.contains("Did not start"), "{detail}");
+}
+
+fn waiting_for_a_relaunch(live: &LiveSnapshot, client: Client, lang: Lang, key: &str) -> (String, Option<Action>) {
+    let mut state = failed_launch_fixture("boom");
+    state.schedule.runs.clear();
+    let view = render(&state, live, client, lang, key, "");
+    let relaunch = view.sections.iter().flat_map(|section| &section.items).find_map(|item| match item {
+        Item::Actions(bar) => bar.actions.iter().find(|action| action.id.starts_with("relaunch:")).cloned(),
+        _ => None,
+    });
+    (serde_json::to_string(&view).unwrap(), relaunch)
+}
+
+#[test]
+fn a_task_whose_node_the_user_closed_reads_node_closed_and_offers_relaunch_in_its_actions_and_its_row() {
+    let live = LiveSnapshot { closed_tasks: vec!["t-1".into()], ..LiveSnapshot::default() };
+    let (detail, relaunch) = waiting_for_a_relaunch(&live, Client::Tui, Lang::En, "task:t-1");
+    let relaunch = relaunch.expect("the task offers Relaunch");
+    assert_eq!((relaunch.label.as_str(), relaunch.key.as_deref(), relaunch.style), ("Relaunch", Some("l"), Style::Primary));
+    assert!(relaunch.id.starts_with("relaunch:t-1@"), "{}", relaunch.id);
+    assert!(detail.contains("Node closed") && !detail.contains("Not started"), "{detail}");
+    let (spanish, relaunch) = waiting_for_a_relaunch(&live, Client::Ios, Lang::Es, "task:t-1");
+    assert_eq!(relaunch.unwrap().label, "Relanzar");
+    assert!(spanish.contains("Nodo cerrado"), "{spanish}");
+    for (client, lang) in [(Client::Ios, Lang::En), (Client::Mac, Lang::Es), (Client::Tui, Lang::En)] {
+        let (list, _) = waiting_for_a_relaunch(&live, client, lang, "tasks");
+        assert!(list.contains("\"id\":\"relaunch:t-1@"), "{client:?}: the row carries the action: {list}");
+        assert!(list.contains(if lang == Lang::En { "Node closed" } else { "Nodo cerrado" }), "{client:?}: {list}");
+    }
+}
+
+#[test]
+fn a_task_is_not_offered_a_relaunch_unless_it_is_not_started_with_no_node_and_its_node_was_closed() {
+    let (detail, relaunch) = waiting_for_a_relaunch(&LiveSnapshot::default(), Client::Tui, Lang::En, "task:t-1");
+    assert!(relaunch.is_none() && detail.contains("Not started"), "a task nobody closed: {detail}");
+    let closed = LiveSnapshot { closed_tasks: vec!["t-1".into()], ..LiveSnapshot::default() };
+    let mut state = failed_launch_fixture("boom");
+    state.schedule.runs.clear();
+    state.tasks.get_mut(&"t-1".into()).unwrap().agent_id = Some("a-1".into());
+    let detail = serde_json::to_string(&render(&state, &closed, Client::Tui, Lang::En, "task:t-1", "")).unwrap();
+    assert!(!detail.contains("relaunch:") && !detail.contains("Node closed"), "a task a new node took: {detail}");
+    state.tasks.get_mut(&"t-1".into()).unwrap().agent_id = None;
+    state.tasks.get_mut(&"t-1".into()).unwrap().state = TaskState::Cancelled;
+    let detail = serde_json::to_string(&render(&state, &closed, Client::Tui, Lang::En, "task:t-1", "")).unwrap();
+    assert!(!detail.contains("relaunch:"), "a cancelled task: {detail}");
 }
 
 #[test]

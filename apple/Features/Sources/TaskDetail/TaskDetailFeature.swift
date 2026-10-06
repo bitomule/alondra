@@ -3,7 +3,7 @@ import ComposableArchitecture
 import Foundation
 
 /// One task: its state, what it waits for from you, its request, pull requests, dependencies,
-/// documents, options and history, with cancel, reopen and archive. A tapped action leaves the bar
+/// documents, options and history, with relaunch, cancel, reopen and archive. A tapped action leaves the bar
 /// at once and returns if the daemon does not apply it.
 @Reducer
 public struct TaskDetailFeature: Sendable {

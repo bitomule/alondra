@@ -4,9 +4,14 @@
 //! --help`, Claude Code 2.1.287), a bounded number of times, and its mod's `session.start`
 //! reconnects it. Fleet shows the node's last state throughout, and "Reconnecting" only while a
 //! restart runs. When restarts keep failing the user gets a card with the error, not a node state.
+//!
+//! A session the user stops, kills or deletes in Claude agents is not a crash: Claude Code writes
+//! the state `stopped` into its job file (`crashed` for a signal), or removes the job folder, and
+//! restarting it would undo what the user chose. Such a node leaves Fleet and its task goes back
+//! to not started, waiting for a relaunch.
 use crate::domain_runtime::DomainRuntime;
 use crate::orchestrate::Launcher;
-use alondra_core::domain_v2::{AgentId, QuestionOption};
+use alondra_core::domain_v2::{Actor, AgentId, Command, CommandEnvelope, QuestionOption, PROTOCOL_VERSION};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -99,8 +104,17 @@ fn look_at_job(domain: &DomainRuntime, session: &str) {
     let Some(reported) = domain.live.mods.session(session) else { return };
     let dir = reported.job_dir.clone().or_else(|| crate::job_state::locate(&crate::watcher::claude_home(), session));
     let job = dir.as_deref().and_then(|dir| crate::job_state::read_in(dir, session));
-    let dir = dir.filter(|_| job.is_some());
+    let dir = dir.filter(|dir| job.is_some() || reported.job_dir.as_ref() == Some(dir));
     domain.live.mods.set_job(session, job, dir);
+}
+
+/// Whether the user stopped, killed or deleted the session in Claude agents: its job file says
+/// `stopped`, or the job folder Alondra last saw is gone. A session whose job was never seen is
+/// not known to be closed.
+fn closed_by_user(domain: &DomainRuntime, session: &str) -> bool {
+    let known = domain.live.mods.session(session).and_then(|reported| reported.job_dir);
+    let Some(dir) = known.or_else(|| crate::job_state::locate(&crate::watcher::claude_home(), session)) else { return false };
+    !dir.exists() || crate::job_state::read_in(&dir, session).is_some_and(|job| job.phase == crate::job_state::Phase::Stopped)
 }
 
 /// The sessions whose agent works on an open task and whose mod is connected, yet shows no
@@ -212,6 +226,12 @@ async fn restart_until_back(domain: &DomainRuntime, session: &str, launcher: &im
             if !needed(domain, session) {
                 return;
             }
+            if closed_by_user(domain, session) {
+                if let Err(failure) = user_closed(domain, session) {
+                    log!("could not record that {session} was closed by the user: {failure:#}");
+                }
+                return;
+            }
             domain.live.set_reconnecting(session, true);
             match launcher.respawn(&short).await {
                 Ok(()) if domain.live.mods.wait_connected(session, timing.settle).await => return,
@@ -224,6 +244,44 @@ async fn restart_until_back(domain: &DomainRuntime, session: &str, launcher: &im
             return;
         }
     }
+}
+
+/// The user closed the session: the node leaves Fleet, is not brought back, and the tasks it had
+/// open go back to not started with no node, to be relaunched. What a relaunch needs of the node
+/// is kept.
+pub(crate) fn user_closed(domain: &DomainRuntime, session: &str) -> anyhow::Result<()> {
+    let agent = AgentId(session.to_owned());
+    let state = domain.state()?;
+    let node = state.agents.get(&agent).map(|known| crate::v2_client_routes::ClosedNode {
+        name: known.name.clone(),
+        cwd: domain.live.mods.session(session).and_then(|reported| reported.cwd),
+    });
+    let released: Vec<_> = state.tasks.values()
+        .filter(|task| task.agent_id.as_ref() == Some(&agent) && !task.state.terminal() && !task.archived && task.final_presentation.is_none())
+        .map(|task| task.id.clone())
+        .collect();
+    for task_id in released {
+        let state = domain.state()?;
+        let envelope = CommandEnvelope {
+            protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch, command_id: format!("release-{}-{}", task_id.0, crate::auth::random_hex(8)).into(),
+            expected_revision: state.revision, command: Command::ReleaseTask { task_id: task_id.clone(), reason: "node closed by the user".into() },
+        };
+        match domain.execute(&Actor::System, &envelope, None, || Ok(())) {
+            Ok(_) => {
+                if let Some(node) = &node {
+                    domain.live.remember_closed_task(&task_id.0, node.clone());
+                }
+            }
+            Err(failure) => log!("could not free {task_id} after its node was closed: {failure:?}"),
+        }
+    }
+    let event_id = format!("close-{session}-{}", crate::auth::random_hex(8));
+    let event = crate::domain_agent_lifecycle::prepare_event(domain, &event_id).map_err(|failure| anyhow::anyhow!("{failure}"))?;
+    crate::domain_agent_lifecycle::observe_instance(domain, &agent, false, &event).map_err(|failure| anyhow::anyhow!("{failure}"))?;
+    crate::domain_transport::session_ended(domain, &agent)?;
+    domain.live.mark_closed(session);
+    domain.live.apply(&alondra_core::Event::NodeRemoved { session_id: session.to_owned() });
+    Ok(())
 }
 
 /// The card for the user once restarts keep failing; true when they ask for another round.
@@ -533,5 +591,78 @@ mod tests {
         watching.await.unwrap();
         assert_eq!(claude.calls(), 1, "back: the session is restarted once");
         assert!(domain.live.mods.connected(SESSION));
+    }
+
+    /// The job folder Claude Code keeps for the session, as Alondra last saw it.
+    fn job_folder(home: &Home, domain: &DomainRuntime, state: &str) -> std::path::PathBuf {
+        let dir = home.0.join("jobs/ab1234cd");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("state.json"), format!(
+            r#"{{"state":"{state}","detail":"d","sessionId":"{SESSION}","resumeSessionId":"{SESSION}","updatedAt":"2026-10-06T08:01:28.241Z"}}"#)).unwrap();
+        domain.live.mods.set_job(SESSION, None, Some(dir.clone()));
+        dir
+    }
+
+    fn working(domain: &DomainRuntime) {
+        command(domain, Actor::Agent { agent_id: SESSION.into() }, "start", Command::StartTask { task_id: "t".into() });
+        assert_eq!(domain.state().unwrap().tasks[&"t".into()].state, alondra_core::domain_v2::TaskState::Running);
+    }
+
+    fn freed(domain: &DomainRuntime) {
+        let state = domain.state().unwrap();
+        let task = &state.tasks[&"t".into()];
+        assert_eq!((task.state, task.agent_id.clone(), task.started), (alondra_core::domain_v2::TaskState::NotStarted, None, false), "the task waits for a new node");
+        assert!(domain.live.is_closed(SESSION) && domain.live.closed_sessions() == [SESSION], "the node leaves Fleet");
+        let closed = domain.live.closed_task("t").expect("the relaunch knows the node that was closed");
+        assert_eq!(closed.name, "alondra/probe");
+        assert!(state.interactions.is_empty(), "no card asks whether to retry");
+    }
+
+    #[tokio::test]
+    async fn a_node_the_user_stopped_in_claude_agents_is_not_restarted_and_its_task_is_freed() {
+        let (home, domain) = world(true);
+        working(&domain);
+        job_folder(&home, &domain, "stopped");
+        let claude = Respawner::new(&domain, 1);
+        revive(&domain, SESSION, &claude, &FAST).await;
+        assert_eq!(claude.calls(), 0, "no `claude respawn`");
+        freed(&domain);
+        assert!(!domain.live.mods.connected(SESSION) && !domain.live.is_reconnecting(SESSION));
+    }
+
+    #[tokio::test]
+    async fn a_node_the_user_deleted_from_claude_agents_is_not_restarted_and_its_task_is_freed() {
+        let (home, domain) = world(true);
+        working(&domain);
+        let dir = job_folder(&home, &domain, "idle");
+        std::fs::remove_dir_all(dir).unwrap();
+        let claude = Respawner::new(&domain, 1);
+        revive(&domain, SESSION, &claude, &FAST).await;
+        assert_eq!(claude.calls(), 0);
+        freed(&domain);
+    }
+
+    #[tokio::test]
+    async fn a_node_that_crashed_is_still_restarted_and_keeps_its_task() {
+        let (home, domain) = world(true);
+        working(&domain);
+        job_folder(&home, &domain, "crashed");
+        let claude = Respawner::new(&domain, 1);
+        revive(&domain, SESSION, &claude, &FAST).await;
+        assert_eq!(claude.calls(), 1, "a signal is not the user's choice");
+        let state = domain.state().unwrap();
+        assert_eq!(state.tasks[&"t".into()].agent_id, Some(SESSION.into()));
+        assert!(!domain.live.is_closed(SESSION) && domain.live.closed_task("t").is_none());
+        assert!(domain.live.mods.connected(SESSION));
+    }
+
+    #[tokio::test]
+    async fn a_stopped_node_with_no_open_task_just_drops_out_as_before() {
+        let (home, domain) = world(false);
+        job_folder(&home, &domain, "stopped");
+        let claude = Respawner::new(&domain, 1);
+        revive(&domain, SESSION, &claude, &FAST).await;
+        assert_eq!(claude.calls(), 0);
+        assert!(!domain.live.is_closed(SESSION) && domain.live.closed_task_ids().is_empty(), "nothing is marked or kept for it");
     }
 }

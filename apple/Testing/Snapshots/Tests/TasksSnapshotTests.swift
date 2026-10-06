@@ -114,6 +114,16 @@ final class TasksSnapshotTests: XCTestCase {
         assertScreen(lightAndDark) { ScreenFrame(height: 1100) { TaskDetailView(store: task(document)) } }
     }
 
+    func test_taskDetail_nodeClosed_offersRelaunch() throws {
+        let document = try SampleViews.document("task-closed-ios")
+        assertScreen([.light], inWindow: true) { ScreenFrame(height: 1000) { TaskDetailView(store: task(document)) } }
+    }
+
+    func test_taskDetail_nodeClosed_offersRelaunch_spanish() throws {
+        let document = try SampleViews.document("task-closed-ios-es")
+        assertScreen([.light], language: .spanish, inWindow: true) { ScreenFrame(height: 1000) { TaskDetailView(store: task(document)) } }
+    }
+
     func test_taskDetail_gone() {
         var state = TaskDetailFeature.State(key: ViewKey(rawValue: "task:t-gone"))
         state.screen.phase = .missing

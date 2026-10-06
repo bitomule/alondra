@@ -10,6 +10,9 @@ use std::collections::BTreeMap;
 pub struct LiveSnapshot {
     #[serde(default)]
     pub closed_nodes: Vec<String>,
+    /// Tasks whose node the user closed, waiting for a relaunch.
+    #[serde(default)]
+    pub closed_tasks: Vec<String>,
     #[serde(default)]
     pub nodes: Vec<LiveNode>,
     #[serde(default)]

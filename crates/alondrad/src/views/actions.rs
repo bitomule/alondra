@@ -154,7 +154,7 @@ fn action_receipts() -> &'static tokio::sync::Mutex<std::collections::HashMap<(S
 }
 
 fn is_external(verb: Verb) -> bool {
-    matches!(verb, Verb::Reply | Verb::AskPr | Verb::Conflicts | Verb::Msg | Verb::Close | Verb::Interrupt |
+    matches!(verb, Verb::Reply | Verb::AskPr | Verb::Conflicts | Verb::Msg | Verb::Relaunch | Verb::Close | Verb::Interrupt |
         Verb::OrchRetry | Verb::OrchAck | Verb::OrchStop | Verb::SchedRun | Verb::SchedToggle |
         Verb::SchedDelete | Verb::SchedSave | Verb::NewRequest)
 }
@@ -235,6 +235,7 @@ async fn execute_external(
         Verb::AskPr => "Question sent",
         Verb::Conflicts => "Conflicts requested",
         Verb::Msg => "Message sent",
+        Verb::Relaunch => "Relaunched",
         Verb::Close => "Closed",
         Verb::Interrupt => "Interrupted",
         Verb::OrchRetry => "Retried",
@@ -250,7 +251,7 @@ async fn execute_external(
     let stamp = if lang == Lang::Es { match action.verb {
         Verb::Reply => "Respuesta enviada",
         Verb::AskPr => "Pregunta enviada", Verb::Conflicts => "Conflictos comunicados",
-        Verb::Msg => "Mensaje enviado", Verb::Close => "Cerrado", Verb::Interrupt => "Interrumpido",
+        Verb::Msg => "Mensaje enviado", Verb::Relaunch => "Relanzada", Verb::Close => "Cerrado", Verb::Interrupt => "Interrumpido",
         Verb::OrchRetry => "Reintentado", Verb::OrchAck => "Confirmado", Verb::OrchStop => "Detenido",
         Verb::SchedRun => "Ejecución iniciada", Verb::SchedToggle => "Tarea actualizada",
         Verb::SchedDelete => "Tarea eliminada", Verb::SchedSave => "Tarea guardada",
@@ -332,6 +333,12 @@ async fn execute_external(
             let reply = crate::domain_bootstrap::send_agent_message(domain, home, device, &agent, body).await;
             Ok(to_applied(reply["status"].as_u64().unwrap_or(500) as u16, reply["body"].clone()))
         }
+        Verb::Relaunch => {
+            let actor = Actor::User { user_id: user_id.clone() };
+            let launched = crate::domain_orchestrator_tools::relaunch(domain, home, &actor, &TaskId(action.subject.clone()), &crate::orchestrate::ClaudeCli).await;
+            let (status, body) = relaunch_reply(launched);
+            Ok(to_applied(status, body))
+        }
         Verb::Close => {
             let agent = AgentId(action.subject.clone());
             if !state.agents.contains_key(&agent) { return Ok(no_longer_available(lang, "This node is no longer available")); }
@@ -378,6 +385,20 @@ async fn execute_external(
             Ok(to_applied(reply.status.as_u16(), reply.body))
         }
         _ => Ok(no_longer_available(lang, "This action is no longer available")),
+    }
+}
+
+fn relaunch_reply(result: Result<Value, DomainError>) -> (u16, Value) {
+    match result {
+        Ok(launched) => (200, launched),
+        Err(error) => {
+            let status = match error.code.as_str() {
+                "not_found" => 404,
+                "conflict" | "agent_busy" => 409,
+                _ => 422,
+            };
+            (status, json!({"code": error.code, "message": error.message}))
+        }
     }
 }
 

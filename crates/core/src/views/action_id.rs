@@ -19,6 +19,7 @@ pub enum Verb {
     AskPr,
     Conflicts,
     Msg,
+    Relaunch,
     Close,
     Interrupt,
     OrchRetry,
@@ -33,7 +34,7 @@ pub enum Verb {
     Retake,
 }
 impl Verb {
-    pub const ALL: [Self; 28] = [
+    pub const ALL: [Self; 29] = [
         Self::Ans,
         Self::Read,
         Self::Accept,
@@ -51,6 +52,7 @@ impl Verb {
         Self::AskPr,
         Self::Conflicts,
         Self::Msg,
+        Self::Relaunch,
         Self::Close,
         Self::Interrupt,
         Self::OrchRetry,
@@ -82,6 +84,7 @@ impl Verb {
             Self::AskPr => "ask_pr",
             Self::Conflicts => "conflicts",
             Self::Msg => "msg",
+            Self::Relaunch => "relaunch",
             Self::Close => "close",
             Self::Interrupt => "interrupt",
             Self::OrchRetry => "orch_retry",

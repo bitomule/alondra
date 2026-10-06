@@ -126,6 +126,16 @@ pub(super) fn scheduled_mark(task: &crate::domain_v2::Task, domain: &crate::doma
     })
 }
 
+/// A task whose node the user closed and nobody took over yet.
+pub(super) fn node_closed(task: &crate::domain_v2::Task, context: &super::RenderContext<'_>) -> bool {
+    task.state == crate::domain_v2::TaskState::NotStarted && task.agent_id.is_none() && !task.archived
+        && context.live.closed_tasks.contains(&task.id.0)
+}
+
+pub(super) fn node_closed_label(lang: super::Lang) -> &'static str {
+    super::text::t!(lang, "Node closed", "Nodo cerrado")
+}
+
 pub(super) fn launch_failed_label(lang: super::Lang) -> &'static str {
     super::text::t!(lang, "Did not start", "No arrancó")
 }

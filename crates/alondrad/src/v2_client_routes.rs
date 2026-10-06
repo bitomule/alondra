@@ -25,7 +25,7 @@ use std::time::Duration;
 
 pub(crate) use close::Sessions;
 pub(crate) use new_work::Github;
-pub(crate) use live::Live;
+pub(crate) use live::{ClosedNode, Live};
 pub(crate) use pr_details::{hand_back_conflicts, GhView, Merge, PrView};
 #[cfg(test)]
 pub(crate) use pr_details::FakePrView;

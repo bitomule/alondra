@@ -2712,9 +2712,10 @@ fn variant_index(c: &Command) -> usize {
         Command::AskQuestions { .. } => 47,
         Command::HoldQuestions { .. } => 48,
         Command::ReopenAnswer { .. } => 49,
+        Command::ReleaseTask { .. } => 50,
     }
 }
-const COMMAND_KINDS: usize = 50;
+const COMMAND_KINDS: usize = 51;
 /// Every command kind naming the given ids. The flag marks commands that only
 /// create a fresh entity and therefore may succeed with an unknown id.
 fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
@@ -2821,6 +2822,7 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
         (Command::HoldQuestions { interaction_id: "fresh-hold-group".into(), task_id: ids.task.into(),
             agent_id: "a".into(), questions: vec![] }, true),
         (Command::ReopenAnswer { interaction_id: ids.interaction.into() }, false),
+        (Command::ReleaseTask { task_id: ids.task.into(), reason: "node closed by the user".into() }, false),
     ];
     let mut covered = vec![false; COMMAND_KINDS];
     for (command, _) in &list {
@@ -3154,4 +3156,29 @@ fn a_node_cannot_send_the_user_a_notice_but_alondra_and_the_orchestrator_can() {
     reject_unchanged(&mut s, agent(), notice("n", Recipient::User), "forbidden");
     exec(&mut s, Actor::System, notice("system", Recipient::User)).unwrap();
     exec(&mut s, orchestrator(), notice("orchestrator", Recipient::User)).unwrap();
+}
+#[test]
+fn releasing_a_task_whose_node_the_user_closed_puts_it_back_to_not_started_with_no_agent() {
+    let mut s = fixture();
+    exec(&mut s, agent(), Command::StartTask { task_id: "t".into() }).unwrap();
+    assert_eq!(s.tasks[&"t".into()].state, TaskState::Running);
+    let release = Command::ReleaseTask { task_id: "t".into(), reason: "node closed by the user".into() };
+    reject_unchanged(&mut s, user(), release.clone(), "forbidden");
+    reject_unchanged(&mut s, agent(), release.clone(), "forbidden");
+    exec(&mut s, Actor::System, release.clone()).unwrap();
+    let task = &s.tasks[&"t".into()];
+    assert_eq!((task.state, task.agent_id.clone(), task.started), (TaskState::NotStarted, None, false));
+    assert!(s.agents.contains_key(&"a".into()), "the closed agent stays on record");
+    reject_unchanged(&mut s, Actor::System, release, "conflict");
+    register_b(&mut s);
+    exec(&mut s, user(), Command::AssignTask { task_id: "t".into(), agent_id: "b".into() }).unwrap();
+    exec(&mut s, agent_b(), Command::StartTask { task_id: "t".into() }).unwrap();
+    assert_eq!(s.tasks[&"t".into()].state, TaskState::Running, "a new node takes the freed task up again");
+}
+
+#[test]
+fn a_finished_task_is_not_released() {
+    let mut s = fixture();
+    exec(&mut s, user(), Command::CancelTask { task_id: "t".into() }).unwrap();
+    reject_unchanged(&mut s, Actor::System, Command::ReleaseTask { task_id: "t".into(), reason: "node closed by the user".into() }, "task_not_active");
 }

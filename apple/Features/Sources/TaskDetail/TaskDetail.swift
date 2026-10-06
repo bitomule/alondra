@@ -37,6 +37,7 @@ public struct TaskDetail: Equatable, Sendable {
     public let history: Section<Step>
     public let actions: [WireAction]
 
+    public var relaunch: WireAction? { action("relaunch") }
     public var cancel: WireAction? { action("cancel") }
     public var reopen: WireAction? { action("reopen") }
     public var archive: WireAction? { action("archive") ?? action("unarchive") }
