@@ -53,19 +53,19 @@ final class MachineBadgeSnapshotTests: XCTestCase {
     }
 
     func test_proMax_showsEveryFigure() throws {
-        assertAppSnapshot(of: try navigationBar(width: 440), as: .image(precision: 0.99, perceptualPrecision: 0.97))
+        assertAppSnapshot(of: try navigationBar(width: 440), as: Snapshotting<UIImage, UIImage>.image(precision: 0.99, perceptualPrecision: 0.97).asRecorded)
     }
 
     func test_pro_keepsTheClaudeFiguresAndSettings() throws {
-        assertAppSnapshot(of: try navigationBar(width: 402), as: .image(precision: 0.99, perceptualPrecision: 0.97))
+        assertAppSnapshot(of: try navigationBar(width: 402), as: Snapshotting<UIImage, UIImage>.image(precision: 0.99, perceptualPrecision: 0.97).asRecorded)
     }
 
     func test_narrow_keepsEveryBarAndSettings() throws {
-        assertAppSnapshot(of: try navigationBar(width: 375), as: .image(precision: 0.99, perceptualPrecision: 0.97))
+        assertAppSnapshot(of: try navigationBar(width: 375), as: Snapshotting<UIImage, UIImage>.image(precision: 0.99, perceptualPrecision: 0.97).asRecorded)
     }
 
     func test_fullDisk_takesOverTheMachineReading() throws {
-        assertAppSnapshot(of: try navigationBar(width: 440, status: Self.fullDiskStatus), as: .image(precision: 0.99, perceptualPrecision: 0.97))
+        assertAppSnapshot(of: try navigationBar(width: 440, status: Self.fullDiskStatus), as: Snapshotting<UIImage, UIImage>.image(precision: 0.99, perceptualPrecision: 0.97).asRecorded)
     }
 
     func test_popover_breaksTheMachineDownIntoRamAndCpu() throws {

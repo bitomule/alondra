@@ -54,12 +54,12 @@ func assertScreenVariants<Content: View>(
             )
             assertAppSnapshot(
                 of: screen,
-                as: .image(
+                as: Snapshotting<AnyView, UIImage>.image(
                     drawHierarchyInKeyWindow: true,
                     perceptualPrecision: 0.98,
                     layout: .fixed(width: 393, height: 852),
                     traits: .init(userInterfaceStyle: variant.style)
-                ),
+                ).asRecorded,
                 named: suffix,
                 file: file,
                 testName: testName,
