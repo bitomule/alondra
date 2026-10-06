@@ -23,6 +23,8 @@ public struct TriageFeature: Sendable {
         public var swipe: Swipe?
         public var skips = 0
         public var optimistic = Optimistic()
+        /// Cards the daemon applied an answer to. They stay out of the queue until a view no longer lists them or `answeredTimeToLive` passes.
+        public var answered: Set<String> = []
 
         public var currentID: String? { orderedIDs.indices.contains(index) ? orderedIDs[index] : nil }
         public var currentCard: Card? { currentID.flatMap { cards[id: $0]?.card } }
@@ -86,6 +88,8 @@ public struct TriageFeature: Sendable {
         /// A screen opened from a card sent its answer and left; the app delivers it.
         case handedOff(ActionRequest, cardID: String)
         case handOffSettled(ActionRequest, applied: Bool)
+        case sendTimedOut(ActionRequest)
+        case answeredExpired(String)
         case delegate(Delegate)
 
         @CasePathable
@@ -98,12 +102,16 @@ public struct TriageFeature: Sendable {
     /// The front card and the two drawn behind it, so the next card already has its content.
     public static let depth = 3
     public static let leaveDuration = Duration.milliseconds(160)
-    public static let stampDuration = Duration.milliseconds(650)
+    public static let stampDuration = Duration.milliseconds(900)
+    /// How long an answered card stays hidden when no view ever stops listing it; then the daemon's word rules.
+    public static let answeredTimeToLive = Duration.seconds(120)
+    /// An answer the daemon has not acknowledged by then is rolled back with an error.
+    public static let sendDeadline = loadDeadline
     /// Past the transport's own request timeouts: a queue still not here by then shows an error with retry.
     public static let loadDeadline = Duration.seconds(20)
 
     @Dependency(\.continuousClock) var clock
-    private enum CancelID { case stamp, swipe, loadDeadline }
+    private enum CancelID: Hashable { case stamp, swipe, loadDeadline, sendDeadline(String), answered(String) }
     public static var loadFailure: String { String(localized: "Couldn’t load this from your Mac. Try again.") }
 
     public static func commits(translation: Double, predicted: Double) -> Bool {
@@ -151,11 +159,15 @@ public struct TriageFeature: Sendable {
             case .screen(.loaded(let document)):
                 guard document.key == state.screen.key.rawValue else { return .none }
                 state.optimistic.reconcile(document.version)
+                let listed = Set(document.sections.first { $0.id == "queue" }?.cardIds ?? [])
+                let gone = state.answered.subtracting(listed)
+                state.answered.subtract(gone)
+                let forgotten: Effect<Action> = .merge(gone.map { .cancel(id: CancelID.answered($0)) })
                 if state.stampShowing {
                     state.newerQueueWaiting = true
-                    return .cancel(id: CancelID.loadDeadline)
+                    return .merge(.cancel(id: CancelID.loadDeadline), forgotten)
                 }
-                return .merge(.cancel(id: CancelID.loadDeadline), showQueue(&state))
+                return .merge(.cancel(id: CancelID.loadDeadline), forgotten, showQueue(&state))
             case .screen:
                 return .none
             case .next:
@@ -190,19 +202,31 @@ public struct TriageFeature: Sendable {
                 return .send(.delegate(.open(key)))
             case .cards(.element(id: let id, action: .actions(.sent(let request)))):
                 state.optimistic.begin(id, request)
-                return stampTimer()
+                return .merge(stampTimer(), sendDeadline(request))
             case .cards(.element(id: _, action: .actions(.settled(let request, let applied)))),
                  .handOffSettled(let request, let applied):
-                guard let id = state.optimistic.settle(request, applied: applied, shown: state.screen.document?.version)
-                else { return .none }
-                return bringBack(id, &state)
+                return settle(request, applied: applied, &state)
+            case .sendTimedOut(let request):
+                guard let id = state.optimistic.target(of: request) else { return .none }
+                let rolledBack = settle(request, applied: false, &state)
+                guard state.cards[id: id] != nil else { return rolledBack }
+                return .merge(
+                    .cancel(id: ActionFeature.DeliveryID(commandID: request.commandId)),
+                    rolledBack,
+                    .send(.cards(.element(id: id, action: .actions(.failed(ActionFeature.sendFailure)))))
+                )
+            case .answeredExpired(let id):
+                guard state.answered.remove(id) != nil else { return .none }
+                let queue = showQueue(&state)
+                guard state.cards[id: id] != nil else { return queue }
+                return .merge(queue, .send(.cards(.element(id: id, action: .actions(.dismiss)))))
             case .handedOff(let request, let cardID):
                 state.optimistic.begin(cardID, request)
                 guard !state.stampShowing else {
                     state.newerQueueWaiting = true
-                    return .none
+                    return sendDeadline(request)
                 }
-                return showQueue(&state)
+                return .merge(showQueue(&state), sendDeadline(request))
             case .stampElapsed:
                 state.newerQueueWaiting = false
                 let queue = showQueue(&state)
@@ -220,7 +244,7 @@ public struct TriageFeature: Sendable {
     private func showQueue(_ state: inout State) -> Effect<Action> {
         guard let document = state.screen.document else { return .none }
         let previousID = state.currentID
-        let ids = (document.sections.first { $0.id == "queue" }?.cardIds ?? []).filter { !state.optimistic.hides($0) }
+        let ids = (document.sections.first { $0.id == "queue" }?.cardIds ?? []).filter { !state.optimistic.hides($0) && !state.answered.contains($0) }
         state.orderedIDs = ids
         state.index = previousID.flatMap(ids.firstIndex(of:)) ?? min(state.index, max(ids.count - 1, 0))
         var effects = [keepWindowObserved(&state)]
@@ -239,6 +263,34 @@ public struct TriageFeature: Sendable {
         let queue = showQueue(&state)
         if let index = state.orderedIDs.firstIndex(of: id) { state.index = index }
         return .merge(queue, keepWindowObserved(&state))
+    }
+
+    /// The answer is final once the daemon applied it: the card stays out, the queue is pulled again
+    /// even when no push comes, and a card no view ever stops listing returns after the time to live.
+    private func settle(_ request: ActionRequest, applied: Bool, _ state: inout State) -> Effect<Action> {
+        let target = state.optimistic.target(of: request)
+        let returned = state.optimistic.settle(request, applied: applied, shown: state.screen.document?.version)
+        let deadline: Effect<Action> = .cancel(id: CancelID.sendDeadline(request.commandId))
+        if let returned { return .merge(deadline, bringBack(returned, &state)) }
+        guard applied, let target else { return deadline }
+        state.answered.insert(target)
+        return .merge(deadline, .send(.screen(.retry)), answeredTimer(target))
+    }
+
+    private func sendDeadline(_ request: ActionRequest) -> Effect<Action> {
+        .run { [clock] send in
+            try await clock.sleep(for: Self.sendDeadline)
+            await send(.sendTimedOut(request))
+        }
+        .cancellable(id: CancelID.sendDeadline(request.commandId), cancelInFlight: true)
+    }
+
+    private func answeredTimer(_ id: String) -> Effect<Action> {
+        .run { [clock] send in
+            try await clock.sleep(for: Self.answeredTimeToLive)
+            await send(.answeredExpired(id))
+        }
+        .cancellable(id: CancelID.answered(id), cancelInFlight: true)
     }
 
     private func stampTimer() -> Effect<Action> {

@@ -19,6 +19,8 @@ public struct Optimistic: Equatable, Sendable {
 
     public func isSending(_ id: String) -> Bool { sending.values.contains(id) }
 
+    public func target(of request: ActionRequest) -> String? { sending[request.commandId] }
+
     public mutating func begin(_ id: String, _ request: ActionRequest) {
         sending[request.commandId] = id
     }

@@ -453,7 +453,7 @@ final class TriageFeatureTests: XCTestCase {
         XCTAssertTrue(store.state.newerQueueWaiting)
 
         await Task.megaYield()
-        await clock.advance(by: .milliseconds(649))
+        await clock.advance(by: .milliseconds(899))
         XCTAssertEqual(store.state.orderedIDs, queue)
         await clock.advance(by: .milliseconds(1))
         await store.receive(\.stampElapsed)
@@ -463,22 +463,48 @@ final class TriageFeatureTests: XCTestCase {
     }
 
     @MainActor
-    func testACardANewerQueueStillListsComesBackWithoutItsStamp() async throws {
+    func testAnAnsweredCardStaysOutWhileLaterViewsStillListIt() async throws {
         let clock = TestClock<Duration>()
         let store = store(try fullFeed(), clock: clock)
         await store.send(.task)
         await store.skipReceivedActions()
 
         _ = try await answer(store, id: ids.question)
-        XCTAssertNotNil(store.state.cards[id: ids.question]?.stamp)
         await Task.megaYield()
-        await clock.advance(by: .milliseconds(650))
+        await clock.advance(by: TriageFeature.stampDuration)
         await store.receive(\.stampElapsed)
         await store.skipReceivedActions()
-        XCTAssertFalse(store.state.orderedIDs.contains(ids.question), "the same view cannot bring an applied answer back")
+        XCTAssertFalse(store.state.orderedIDs.contains(ids.question))
 
         await store.send(.screen(.loaded(try Fixtures.home(queue: queue, version: "vq2"))))
-        XCTAssertEqual(store.state.orderedIDs, queue, "a newer view rules")
+        XCTAssertFalse(store.state.orderedIDs.contains(ids.question), "a view the daemon has not caught up with cannot bring it back")
+        await store.send(.screen(.loaded(try Fixtures.home(queue: queue, version: "vq3"))))
+        XCTAssertFalse(store.state.orderedIDs.contains(ids.question))
+
+        let moved = [ids.information, ids.delivery, ids.pullRequest]
+        await store.send(.screen(.loaded(try Fixtures.home(queue: moved, version: "vq4"))))
+        XCTAssertTrue(store.state.answered.isEmpty, "a view without the card ends the wait")
+        XCTAssertEqual(store.state.orderedIDs, moved)
+    }
+
+    @MainActor
+    func testACardTheServerStillListsAfterTheTimeToLiveComesBackWithoutItsStamp() async throws {
+        let clock = TestClock<Duration>()
+        let store = store(try fullFeed(), clock: clock)
+        await store.send(.task)
+        await store.skipReceivedActions()
+
+        _ = try await answer(store, id: ids.question)
+        await Task.megaYield()
+        await clock.advance(by: TriageFeature.stampDuration)
+        await store.receive(\.stampElapsed)
+        await store.skipReceivedActions()
+        await store.send(.screen(.loaded(try Fixtures.home(queue: queue, version: "vq2"))))
+        XCTAssertFalse(store.state.orderedIDs.contains(ids.question))
+
+        await clock.advance(by: TriageFeature.answeredTimeToLive)
+        await store.receive(\.answeredExpired)
+        XCTAssertEqual(store.state.orderedIDs, queue)
         XCTAssertNil(store.state.cards[id: ids.question]?.stamp)
     }
 
@@ -574,6 +600,46 @@ final class TriageFeatureTests: XCTestCase {
         XCTAssertNil(store.state.cards[id: ids.question]?.stamp)
         XCTAssertEqual(store.state.cards[id: ids.question]?.actions.error, "It already moved on")
         await store.receive(\.cards[id: ids.question].actions.delegate.failed)
+    }
+
+    @MainActor
+    func testAnAnswerThatNeverGetsAnAnswerIsRolledBackWithAnError() async throws {
+        let clock = TestClock<Duration>()
+        let store = gated(try fullFeed(), clock: clock, gate: Gate())
+        await store.send(.task)
+        await store.skipReceivedActions()
+
+        _ = try await answer(store, id: ids.question)
+        await Task.megaYield()
+        await clock.advance(by: TriageFeature.stampDuration)
+        await store.receive(\.stampElapsed)
+        XCTAssertFalse(store.state.orderedIDs.contains(ids.question))
+
+        await clock.advance(by: TriageFeature.sendDeadline)
+        await store.receive(\.sendTimedOut)
+        await store.skipReceivedActions()
+        XCTAssertEqual(store.state.orderedIDs, queue)
+        XCTAssertEqual(store.state.currentID, ids.question)
+        XCTAssertNil(store.state.cards[id: ids.question]?.stamp)
+        XCTAssertEqual(store.state.cards[id: ids.question]?.actions.error, ActionFeature.sendFailure)
+        XCTAssertTrue(store.state.answered.isEmpty)
+    }
+
+    @MainActor
+    func testAnAnswerThatCannotBeDeliveredBringsTheCardBackWithAnError() async throws {
+        let store = TestStore(initialState: TriageFeature.State()) { TriageFeature() } withDependencies: {
+            $0.continuousClock = TestClock()
+            $0.viewsClient.observe = try! fullFeed().observe
+            $0.viewsClient.perform = { _ in throw URLError(.notConnectedToInternet) }
+        }
+        store.exhaustivity = .off
+        await store.send(.task)
+        await store.skipReceivedActions()
+
+        _ = try await answer(store, id: ids.question)
+        XCTAssertEqual(store.state.orderedIDs, queue)
+        XCTAssertNil(store.state.cards[id: ids.question]?.stamp)
+        XCTAssertEqual(store.state.cards[id: ids.question]?.actions.error, ActionFeature.sendFailure)
     }
 
     @MainActor
