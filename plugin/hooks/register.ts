@@ -174,8 +174,71 @@ async function connect($: EngineInterface): Promise<void> {
   })
 }
 
+let reportedModel: string | undefined
+const subagentModels = new Map<string, string | undefined>()
+
+type Fields = Record<string, unknown>
+
+function text(value: unknown): string | undefined {
+  return typeof value === 'string' && value !== '' ? value.slice(0, SUMMARY_LIMIT) : undefined
+}
+
+function step(id: unknown, fields: Fields): Fields | undefined {
+  if (typeof id !== 'string' && typeof id !== 'number') return undefined
+  return {
+    id: String(id),
+    subject: text(fields.subject ?? fields.content),
+    status: text(fields.status),
+    active_form: text(fields.activeForm),
+  }
+}
+
+function steps(list: unknown, id: (entry: Fields, index: number) => unknown): Fields[] {
+  if (!Array.isArray(list)) return []
+  return list.flatMap((entry: Fields, index) => step(id(entry, index), entry) ?? [])
+}
+
+function progress(call: Fields, result: Fields): Fields | undefined {
+  switch (call.tool) {
+    case 'TaskCreate': {
+      const created = step((result.task as Fields | undefined)?.id, call)
+      return created && { event: 'step.create', ...created }
+    }
+    case 'TaskUpdate': {
+      const updated = result.success === false ? undefined : step(call.taskId, call)
+      return updated && { event: 'step.update', ...updated }
+    }
+    case 'TaskList':
+      return Array.isArray(result.tasks) ? { event: 'steps', steps: steps(result.tasks, (entry) => entry.id) } : undefined
+    case 'TodoWrite':
+      return call.agentId === undefined ? { event: 'steps', steps: steps(call.todos, (_, index) => index + 1) } : undefined
+    case 'Workflow': {
+      const id = text(result.taskId)
+      if (!id || call.agentId !== undefined) return undefined
+      const name = text(result.workflowName) ?? text(call.name) ?? 'workflow'
+      return { event: 'workflow.start', id, name, transcript_dir: text(result.transcriptDir) }
+    }
+  }
+  return undefined
+}
+
+const PROGRESS_TOOLS = ['TaskCreate', 'TaskUpdate', 'TaskList', 'TodoWrite', 'Workflow'] as const
+
 export const register: Register = (on) => {
+  on('turn.step', async function* ($, e, next) {
+    if (e.agentId === undefined && e.model !== reportedModel) {
+      reportedModel = e.model
+      queue($, { event: 'model', model: e.model })
+    } else if (e.agentId !== undefined && subagentModels.has(e.agentId) && subagentModels.get(e.agentId) !== e.model) {
+      subagentModels.set(e.agentId, e.model)
+      queue($, { event: 'model', model: e.model, agent_id: e.agentId })
+    }
+    return yield* next(e)
+  })
+
   on('session.start', async ($, e, next) => {
+    reportedModel = undefined
+    subagentModels.clear()
     const started = await next(e)
     const { version } = await $.session.version()
     const id = await $.session.id()
@@ -224,6 +287,7 @@ export const register: Register = (on) => {
         aborted: e.isAborted,
       })
     } else {
+      subagentModels.delete(e.agentId)
       queue($, { event: 'subagent.end', id: e.agentId })
     }
     return next(e)
@@ -232,7 +296,14 @@ export const register: Register = (on) => {
   on('agent.spawn', async ($, e, next) => {
     const started = await next(e)
     if (started.agentId !== undefined) {
-      queue($, { event: 'subagent.start', id: started.agentId, description: e.description })
+      subagentModels.set(started.agentId, started.model)
+      queue($, {
+        event: 'subagent.start',
+        id: started.agentId,
+        description: e.description,
+        type: e.subagentType,
+        model: started.model,
+      })
     }
     return started
   })
@@ -245,6 +316,8 @@ export const register: Register = (on) => {
         type: task.type,
         description: task.description,
         command: task.command,
+        agent_type: task.agent_type,
+        name: task.name,
       })),
     })
     return next(e)
@@ -263,6 +336,17 @@ export const register: Register = (on) => {
       queue($, { event: 'tool.end', tool_use_id: e.tool_use_id })
     }
   })
+
+  for (const tool of PROGRESS_TOOLS) {
+    on('tool.call', { tool }, async ($, e, next) => {
+      const done = await next(e)
+      if (done.deny === undefined && !done.isError && typeof done.result === 'object' && done.result !== null) {
+        const report = progress(e as Fields, done.result as Fields)
+        if (report) queue($, report)
+      }
+      return done
+    })
+  }
 
   on('tool.call', { tool: 'AskUserQuestion' }, async ($, e, next) => {
     if (e.agentId !== undefined) return next(e)

@@ -2,7 +2,7 @@ use super::*;
 use crate::domain::{
     Agent, Author, Document, DocumentRevision, DomainState, Interaction, InteractionPayload,
     InteractionSubject, MergeAttemptState, MergeAuthorization, MergeMethod, PrState, PullRequest, QuestionOption, Recipient, Request, Scope, Task,
-    TaskState,
+    TaskState, ModelChooser, TaskModel,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -37,6 +37,7 @@ fn fixture() -> DomainState {
             stack: None,
             documents: BTreeMap::new(),
             archived: false,
+            model: None,
         },
     );
     for (index, kind) in ["question", "information", "delivery"].iter().enumerate() {
@@ -2364,6 +2365,200 @@ fn node_last_message_keeps_its_time_next_to_the_message() {
     let search = render(&state, &live, Client::Ios, Lang::En, "search?q=Node", "");
     let Item::Row(result) = &search.sections[0].items[0] else { panic!("search result") };
     assert!(result.children.iter().any(|child| child.id == "activity"));
+}
+
+#[test]
+fn a_node_shows_the_model_it_runs_on_in_its_row_and_its_detail() {
+    let mut state = fixture();
+    state.interactions.clear();
+    state.tasks.get_mut(&"t-1".into()).unwrap().agent_id = Some("a-1".into());
+    let mut live = LiveSnapshot::default();
+    live.nodes.push(LiveNode { agent_id: "a-1".into(), name: "Build a feature".into(), model: Some("claude-opus-5-5[1m]".into()), ..Default::default() });
+    let fleet = render(&state, &live, Client::Ios, Lang::En, "fleet", "");
+    let row = fleet.sections.iter().flat_map(|section| &section.items)
+        .find_map(|item| if let Item::Row(row) = item && row.id == "a-1" { Some(row.clone()) } else { None }).unwrap();
+    assert!(row.badges.iter().any(|badge| badge.text == "Opus 5.5"));
+    let detail = render(&state, &live, Client::Ios, Lang::Es, "node:a-1", "");
+    let facts: Vec<_> = detail.sections.iter().flat_map(|section| &section.items)
+        .flat_map(|item| match item { Item::Facts(facts) => facts.items.clone(), _ => vec![] }).collect();
+    assert!(facts.iter().any(|fact| fact.label == "Modelo" && fact.value == "Opus 5.5"));
+}
+
+fn working_node() -> LiveNode {
+    LiveNode {
+        agent_id: "a-1".into(), name: "Build a feature".into(), working: true,
+        steps: vec![
+            LiveStep { subject: "Read the code".into(), state: StepState::Completed, active_form: None },
+            LiveStep { subject: "Write the fix".into(), state: StepState::Completed, active_form: None },
+            LiveStep { subject: "Run the tests".into(), state: StepState::InProgress, active_form: Some("Running the tests".into()) },
+            LiveStep { subject: "Open the PR".into(), state: StepState::Pending, active_form: None },
+            LiveStep { subject: "Reply".into(), state: StepState::Pending, active_form: None },
+        ],
+        subagents: vec![
+            LiveRun { label: "Explore the parser".into(), kind: Some("Explore".into()), model: Some("claude-haiku-4-5".into()),
+                since: "2026-09-30T09:58:00Z".into(), ..Default::default() },
+            LiveRun { label: "Review the diff".into(), kind: Some("general-purpose".into()), since: "2026-09-30T09:40:00Z".into(),
+                ran_secs: Some(125), ..Default::default() },
+        ],
+        workflows: vec![LiveRun { label: "review-loop".into(), agents: Some(4), since: "2026-09-30T09:50:00Z".into(), suspect: true, ..Default::default() }],
+        ..Default::default()
+    }
+}
+
+fn node_work_rows<'a>(view: &'a View, id: &str) -> Vec<&'a Row> {
+    view.sections.iter().filter(|section| section.id == id).flat_map(|section| &section.items)
+        .filter_map(|item| if let Item::Row(row) = item { Some(row) } else { None }).collect()
+}
+
+fn section_facts(view: &View, id: &str) -> Vec<(String, String)> {
+    view.sections.iter().filter(|section| section.id == id).flat_map(|section| &section.items)
+        .flat_map(|item| match item { Item::Facts(facts) => facts.items.clone(), _ => vec![] })
+        .map(|fact| (fact.label, fact.value)).collect()
+}
+
+fn badges(row: &Row) -> Vec<&str> {
+    row.badges.iter().map(|badge| badge.text.as_str()).collect()
+}
+
+#[test]
+fn a_node_detail_shows_its_task_list_its_subagents_and_its_workflows() {
+    let mut state = fixture();
+    state.tasks.get_mut(&"t-1".into()).unwrap().agent_id = Some("a-1".into());
+    let mut live = LiveSnapshot::default();
+    live.nodes.push(working_node());
+    let view = render(&state, &live, Client::Ios, Lang::En, "node:a-1", "");
+    assert_eq!(section_facts(&view, "steps"), [("Progress".into(), "2 of 5".into()), ("Now".into(), "Running the tests".into())]);
+    let steps = node_work_rows(&view, "steps");
+    assert_eq!(steps.iter().map(|row| (row.title.as_str(), row.struck)).collect::<Vec<_>>(),
+        [("Read the code", true), ("Write the fix", true), ("Run the tests", false), ("Open the PR", false), ("Reply", false)]);
+    assert_eq!(badges(steps[2]), ["In progress"]);
+    assert!(badges(steps[3]).is_empty());
+
+    let subagents = node_work_rows(&view, "subagents");
+    assert_eq!(subagents[0].subtitle.as_deref(), Some("Explore · Haiku 4.5"));
+    assert_eq!(badges(subagents[0]), ["Running"]);
+    assert!(matches!(&subagents[0].trailing, Some(Trailing::Time { at, .. }) if at == "2026-09-30T09:58:00Z"));
+    assert_eq!(subagents[1].subtitle.as_deref(), Some("general-purpose"));
+    assert_eq!(badges(subagents[1]), ["Finished"]);
+    assert!(matches!(&subagents[1].trailing, Some(Trailing::Text { text }) if text == "2m 05s"));
+
+    let workflows = node_work_rows(&view, "workflows");
+    assert_eq!((workflows[0].title.as_str(), workflows[0].subtitle.as_deref()), ("review-loop", Some("4 agents")));
+    assert_eq!(badges(workflows[0]), ["Running", "Possibly hung"]);
+
+    let spanish = render(&state, &live, Client::Ios, Lang::Es, "node:a-1", "");
+    assert_eq!(section_facts(&spanish, "steps"), [("Progreso".into(), "2 de 5".into()), ("Ahora".into(), "Running the tests".into())]);
+    assert_eq!(spanish.sections.iter().filter_map(|section| section.title.as_deref())
+        .filter(|title| ["Pasos", "Subagentes", "Flujos de trabajo"].contains(title)).count(), 3);
+    assert_eq!(badges(node_work_rows(&spanish, "steps")[2]), ["En curso"]);
+    assert_eq!(badges(node_work_rows(&spanish, "subagents")[1]), ["Terminado"]);
+    assert_eq!(node_work_rows(&spanish, "workflows")[0].subtitle.as_deref(), Some("4 agentes"));
+
+    let quiet = render(&state, &LiveSnapshot { nodes: vec![LiveNode { agent_id: "a-1".into(), ..Default::default() }], ..Default::default() },
+        Client::Ios, Lang::En, "node:a-1", "");
+    assert!(quiet.sections.iter().all(|section| !["steps", "subagents", "workflows"].contains(&section.id.as_str())));
+}
+
+#[test]
+fn the_task_a_node_works_shows_the_nodes_progress_and_a_finished_task_does_not() {
+    let mut state = fixture();
+    state.tasks.get_mut(&"t-1".into()).unwrap().agent_id = Some("a-1".into());
+    state.tasks.get_mut(&"t-1".into()).unwrap().state = TaskState::Running;
+    let mut live = LiveSnapshot::default();
+    live.nodes.push(working_node());
+    let view = render(&state, &live, Client::Ios, Lang::Es, "task:t-1", "");
+    assert_eq!(section_facts(&view, "steps")[0], ("Progreso".into(), "2 de 5".into()));
+    assert_eq!(node_work_rows(&view, "subagents").len(), 2);
+    assert_eq!(node_work_rows(&view, "workflows").len(), 1);
+    state.tasks.get_mut(&"t-1".into()).unwrap().state = TaskState::Done;
+    let done = render(&state, &live, Client::Ios, Lang::Es, "task:t-1", "");
+    assert!(done.sections.iter().all(|section| section.id != "steps"));
+}
+
+fn workflow_agent(label: &str, phase: &str, model: Option<&str>, running: bool) -> LiveWorkflowAgent {
+    LiveWorkflowAgent { label: label.into(), phase: Some(phase.into()), model: model.map(Into::into), running }
+}
+
+#[test]
+fn a_running_workflow_shows_its_phase_its_agents_and_how_many_more_there_are() {
+    let mut state = fixture();
+    state.tasks.get_mut(&"t-1".into()).unwrap().agent_id = Some("a-1".into());
+    state.tasks.get_mut(&"t-1".into()).unwrap().state = TaskState::Running;
+    let mut node = working_node();
+    let mut agents = vec![workflow_agent("review-auth", "Review", Some("haiku"), true),
+        workflow_agent("review-db", "Review", Some("claude-sonnet-5-5"), false)];
+    agents.extend((0..6).map(|index| workflow_agent(&format!("scan-{index}"), "Scan", None, false)));
+    node.workflows[0].agents = Some(10);
+    node.workflows[0].workflow = Some(LiveWorkflow {
+        phase: Some("Review".into()), phase_index: Some(2), phase_count: Some(4), running: 1, done: 9, agents, ..Default::default()
+    });
+    let live = LiveSnapshot { nodes: vec![node], ..Default::default() };
+    for view in ["node:a-1", "task:t-1"] {
+        let english = render(&state, &live, Client::Ios, Lang::En, view, "");
+        assert_eq!(section_facts(&english, "workflows"), [("Phase".into(), "Review (2 of 4)".into()), ("Agents".into(), "1 running · 9 done".into())]);
+        let rows = node_work_rows(&english, "workflows");
+        assert_eq!(rows.len(), 1 + 8 + 1, "{view}");
+        assert_eq!((rows[1].title.as_str(), rows[1].subtitle.as_deref(), badges(rows[1])), ("review-auth", Some("Review · Haiku"), vec!["Running"]));
+        assert_eq!((rows[2].subtitle.as_deref(), badges(rows[2])), (Some("Review · Sonnet 5.5"), vec!["Done"]));
+        assert_eq!(rows[3].subtitle.as_deref(), Some("Scan"));
+        assert_eq!(rows[9].title, "+2 more");
+        assert!(rows.iter().all(|row| row.link.is_none()));
+    }
+
+    let spanish = render(&state, &live, Client::Ios, Lang::Es, "node:a-1", "");
+    assert_eq!(section_facts(&spanish, "workflows"), [("Fase".into(), "Review (2 de 4)".into()), ("Agentes".into(), "1 en marcha · 9 terminados".into())]);
+    let rows = node_work_rows(&spanish, "workflows");
+    assert_eq!((badges(rows[1]), badges(rows[2]), rows[9].title.as_str()), (vec!["En marcha"], vec!["Hecho"], "+2 más"));
+
+    let mut finished = live.clone();
+    let workflow = finished.nodes[0].workflows[0].workflow.as_mut().unwrap();
+    *workflow = LiveWorkflow { phase: Some("Second".into()), running: 0, done: 3, total_tokens: Some(88_896),
+        agents: vec![workflow_agent("count-c", "Second", Some("claude-haiku-4-5-20251001"), false)], ..Default::default() };
+    let view = render(&state, &finished, Client::Ios, Lang::En, "node:a-1", "");
+    assert_eq!(section_facts(&view, "workflows"), [("Phase".into(), "Second".into()), ("Agents".into(), "0 running · 3 done".into()), ("Tokens".into(), "88K".into())]);
+    assert_eq!(node_work_rows(&view, "workflows").last().unwrap().title, "+2 more");
+}
+
+#[test]
+fn a_fleet_row_shows_how_far_the_task_list_has_got_until_every_step_is_done() {
+    let mut state = fixture();
+    state.interactions.clear();
+    state.tasks.get_mut(&"t-1".into()).unwrap().agent_id = Some("a-1".into());
+    let mut live = LiveSnapshot::default();
+    live.nodes.push(working_node());
+    for (client, lang) in [(Client::Ios, Lang::En), (Client::Tui, Lang::Es)] {
+        let fleet = render(&state, &live, client, lang, "fleet", "");
+        let row = fleet.sections.iter().flat_map(|section| &section.items)
+            .find_map(|item| if let Item::Row(row) = item && row.id == "a-1" { Some(row.clone()) } else { None }).unwrap();
+        assert!(row.badges.iter().any(|badge| badge.text == "2/5"), "{:?}", row.badges);
+    }
+    for step in &mut live.nodes[0].steps { step.state = StepState::Completed; }
+    let fleet = render(&state, &live, Client::Ios, Lang::En, "fleet", "");
+    let row = fleet.sections.iter().flat_map(|section| &section.items)
+        .find_map(|item| if let Item::Row(row) = item && row.id == "a-1" { Some(row.clone()) } else { None }).unwrap();
+    assert!(row.badges.iter().all(|badge| !badge.text.contains('/')));
+}
+
+#[test]
+fn a_task_detail_says_the_model_it_was_launched_with_and_who_chose_it() {
+    let mut state = fixture();
+    let model = |state: &DomainState, lang| {
+        let view = render(state, &LiveSnapshot::default(), Client::Ios, lang, "task:t-1", "");
+        view.sections.iter().flat_map(|section| &section.items)
+            .flat_map(|item| match item { Item::Facts(facts) => facts.items.clone(), _ => vec![] })
+            .find(|fact| fact.label == "Model" || fact.label == "Modelo").map(|fact| (fact.label, fact.value))
+    };
+    assert_eq!(model(&state, Lang::En), None, "a task launched before models were recorded shows none");
+    for (chosen_by, en, es) in [
+        (ModelChooser::Orchestrator, "Sonnet · chosen by the orchestrator", "Sonnet · elegido por el orquestador"),
+        (ModelChooser::User, "Sonnet · from your Effort choice", "Sonnet · por tu elección de esfuerzo"),
+    ] {
+        state.tasks.get_mut(&"t-1".into()).unwrap().model = Some(TaskModel { model: "sonnet".into(), chosen_by });
+        assert_eq!(model(&state, Lang::En), Some(("Model".into(), en.into())));
+        assert_eq!(model(&state, Lang::Es), Some(("Modelo".into(), es.into())));
+    }
+    state.tasks.get_mut(&"t-1".into()).unwrap().model = Some(TaskModel { model: "claude-opus-5-5".into(), chosen_by: ModelChooser::User });
+    assert_eq!(model(&state, Lang::En).unwrap().1, "Opus 5.5 · from your Effort choice");
 }
 
 #[test]

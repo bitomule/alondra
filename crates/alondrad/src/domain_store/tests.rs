@@ -1344,3 +1344,22 @@ fn a_request_and_what_the_user_chose_for_its_launch_commit_together_or_not_at_al
     assert_eq!(reopened.load().unwrap(), expected);
     assert_eq!(reopened.request_launch(&"request-1".into()).unwrap().as_ref(), Some(&launch), "the launch survives a restart");
 }
+
+#[test]
+fn a_tasks_model_survives_restart_and_a_store_made_before_models_still_opens() {
+    let fixture = Fixture::new();
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    seeded(&mut store);
+    let launched = alondra_core::domain::TaskModel { model: "opus".into(), chosen_by: alondra_core::domain::ModelChooser::Orchestrator };
+    execute(&mut store, &user(), "model", Command::AssignTask { task_id: "task-1".into(), agent_id: "agent-1".into(), model: Some(launched.clone()) });
+    drop(store);
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    assert_eq!(store.load().unwrap().tasks[&"task-1".into()].model, Some(launched));
+
+    store.conn.execute_batch("DROP TABLE task_models").unwrap();
+    drop(store);
+    let mut before_models = DomainStore::open(&fixture.path()).unwrap();
+    assert_eq!(before_models.load().unwrap().tasks[&"task-1".into()].model, None, "the old store opens with the task as it was");
+    assert_eq!(before_models.conn.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), SCHEMA_VERSION);
+    assert!(!fixture.0.read_dir().unwrap().any(|e| e.unwrap().file_name().to_string_lossy().contains(".old-")), "nothing was moved aside");
+}

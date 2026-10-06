@@ -1,0 +1,5 @@
+filegroup(
+    name = "workflow",
+    srcs = glob(["*.json", "*.jsonl", "*.js"]),
+    visibility = ["//visibility:public"],
+)

@@ -24,8 +24,13 @@ fn wire<T: serde::Serialize>(value: &T) -> Value {
 }
 
 /// A live session as the legacy overview listed it, named after its Agent.
-fn node_row(node: &Node, state: &DomainState) -> Value {
+fn model_of(domain: &DomainRuntime, session_id: &str) -> Value {
+    json!(domain.live.mods.session(session_id).and_then(|reported| reported.model))
+}
+
+fn node_row(node: &Node, state: &DomainState, domain: &DomainRuntime) -> Value {
     let mut row = wire(node);
+    row["model"] = model_of(domain, &node.session_id);
     if node.name.is_none() {
         row["name"] = json!(state.agents.get(&AgentId(node.session_id.clone())).map(|a| a.name.clone()));
     }
@@ -94,7 +99,7 @@ pub(crate) fn fleet(domain: &DomainRuntime, machine: Value, usage: Value) -> Res
     let state = state(domain)?;
     let nodes: Vec<Value> = domain.live.nodes().iter()
         .filter(|n| state.agents.contains_key(&AgentId(n.session_id.clone())))
-        .map(|n| node_row(n, &state)).collect();
+        .map(|n| node_row(n, &state, domain)).collect();
     let interactions = || state.interactions.values().filter(|i| matches!(i.recipient, Recipient::User | Recipient::Orchestrator));
     let open_questions: Vec<Value> = interactions().filter_map(|i| question(i, &state))
         .filter(|q| q["status"] == "open").collect();
@@ -126,7 +131,7 @@ pub(crate) fn node(domain: &DomainRuntime, key: &str) -> Result<Value, DomainErr
     let state = state(domain)?;
     let agent = agent_named(domain, &state, key)?;
     let live = domain.live.node(&agent.0);
-    let mut node = live.as_ref().map_or_else(|| json!({"session_id": agent.0, "alive": false}), |n| node_row(n, &state));
+    let mut node = live.as_ref().map_or_else(|| json!({"session_id": agent.0, "alive": false}), |n| node_row(n, &state, domain));
     if node["name"].is_null() {
         node["name"] = json!(state.agents[&agent].name);
     }
@@ -153,8 +158,16 @@ fn repo_name(repo: &str) -> &str {
 /// 8ccd131 ranked them. An Agent works on one Task at a time, so only the free ones are candidates;
 /// the busy ones tied to the work come apart in `busy`, with the Task they are on, so the
 /// orchestrator can tell the node it launches what they are doing.
-pub(crate) fn candidates(domain: &DomainRuntime, task: Option<&str>, repo: Option<&str>) -> Result<Value, DomainError> {
+pub(crate) fn candidates(domain: &DomainRuntime, home: &std::path::Path, task: Option<&str>, repo: Option<&str>, model: Option<&str>) -> Result<Value, DomainError> {
     let state = state(domain)?;
+    let wanted = match model.map(str::trim).filter(|m| !m.is_empty()) {
+        Some(alias) => {
+            let file = crate::domain_schedule_runner::options_at(home).map_err(|error| DomainError::new("invalid_input", format!("options.toml: {error}")))?;
+            let family = file.model_family(alias).ok_or_else(|| DomainError::new("invalid_input", format!("{alias} is not a model; use one of {}", file.model_aliases().join(", "))))?;
+            Some(family)
+        }
+        None => None,
+    };
     let task = match task.map(str::trim).filter(|t| !t.is_empty()) {
         Some(id) => Some(state.tasks.get(&TaskId::from(id)).ok_or_else(|| DomainError::new("not_found", format!("task {id} does not exist")))?),
         None => None,
@@ -201,7 +214,11 @@ pub(crate) fn candidates(domain: &DomainRuntime, task: Option<&str>, repo: Optio
         }
         let name = n.name.clone().unwrap_or_else(|| agent.name.clone());
         let mut row = json!({"node": name, "session_id": agent.id, "short_id": n.short_id, "project": n.project(),
-            "status": wire(&n.status), "why": why});
+            "status": wire(&n.status), "model": model_of(domain, &n.session_id), "why": why});
+        if let Some(family) = &wanted {
+            let reported = domain.live.mods.session(&n.session_id).and_then(|reported| reported.model);
+            row["fits"] = json!(reported.as_deref().map(alondra_core::model_label::model_family).as_deref() == Some(family.as_str()));
+        }
         let key = (why.len(), n.status != NodeStatus::Free, name);
         match state.busy_with(&agent.id, task.map_or(&none, |t| &t.id)) {
             Some(current) => {

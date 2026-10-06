@@ -7,6 +7,7 @@ rust_binary(
     compile_data = [
         "src/domain_store/schema.sql",
         "src/domain_store/schedule_launch_transition.sql",
+        "src/domain_store/model_metrics.sql",
     ],
     edition = "2024",
     version = "0.1.0",
@@ -22,6 +23,7 @@ rust_test(
         "//crates/core:src/domain/tests.rs",
         "//fixtures/client-v2",
         "//fixtures/push",
+        "//fixtures/workflow",
         "//fixtures/views:all",
         "//fixtures/domain-v2:acceptance.json",
     ],

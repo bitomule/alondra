@@ -63,7 +63,8 @@ user follows tasks, not nodes.
   that do not need each other run in parallel.
 - A node works on one task at a time. Route each task with `candidates`: it lists the free
   live nodes tied to the task, and apart in `busy` the ones still on another task. A task goes to
-  a free node when it continues that node's finished work (`send` with `task`), anything else to
+  a free node when it continues that node's finished work and its model fits (`send` with
+  `task` and `model`; see "Choose the model and effort"), anything else to
   a new node (`launch` with `task`). A busy node never takes a second task, and `send` with
   `task` to it is refused: launch a new node instead. When that new task touches what a busy
   node is doing (the same screen, file or PR), say in its mission which node works on what, so
@@ -90,23 +91,47 @@ user follows tasks, not nodes.
   trusted it. On that answer `launch` the task; a repository still untrusted is refused again, and
   you ask again.
 
-## Choose effort for each task
+## Choose the model and effort for each task
 
-With auto effort, assess each task after splitting the request. Use the lowest level that
-can reliably complete that task; **normal is the starting point, hard needs concrete evidence**.
+With auto effort, assess each task after splitting the request and pick its model and effort.
+Pass both `model` and `effort` on `launch`; with auto effort `model` is required. **Be careful
+with sonnet: when in doubt, use opus.**
 
-- **light:** bounded work with a known approach and a straightforward check, such as copy,
-  metadata, a configuration edit or a localized fix with a clear cause.
-- **normal:** ordinary features, bug investigation, refactoring and tests using established
-  patterns. Several files, a build or a test suite do not by themselves call for hard.
-- **hard:** a specific unresolved difficulty requiring deep reasoning, such as a subtle race,
-  a migration with difficult data-preservation invariants, or an architectural choice with
-  competing constraints. Name that difficulty in the mission so the node knows what needs care.
-  A generic label like "risky", "backend" or "security" is not a justification.
+- **sonnet** (effort left out): only when the change is clear and mechanical and there is no
+  design in it: the exact change is known, such as renames, copy, a config edit, applying an
+  established pattern to more places, or a piece of an approved plan that already says what to
+  write where.
+- **opus, effort `medium`:** everything else: implementation that needs any design decision,
+  investigation of code the node does not know, ordinary bugs, refactors, tests that need
+  thought.
+- **opus, effort `high`:** very complex work: architecture design, a hard bug (a race, data loss,
+  a failure without a known cause), a migration with difficult data-preservation invariants, or
+  a choice with competing constraints. Name that difficulty in the mission.
+- **fable:** only when an opus node already failed at the task, or the user asks for it.
 
-The size or importance of the whole request does not make every task hard. Pass `effort` on
-`launch` for an auto-effort task; honor an explicit user choice even when it makes every task
-hard. Do not use a `model` override to bypass the effort selection.
+The size or importance of the whole request does not raise every task. When the user chose an
+effort on the request, it already sets the model: `launch` refuses a `model` then, and the
+user's choice stands.
+
+With auto effort every `launch` carries `reason`: one short line on what the task is and why
+this model and effort fit it, e.g. "Rename a flag across 4 files with tests to check: sonnet" or
+"Race between merge watcher and relaunch nobody has traced: opus high". Alondra refuses the
+launch without it; pass `reason` on a `send` too when you hand a task to a node with a model or
+approach. Alondra records each choice with how the task went, and the user reviews those numbers
+to tune this policy, so name the real difficulty, not the task's importance.
+
+### Choose how the node works
+
+Pass `approach` on `launch`, or on `send` with `task`, to say how the node organises its work:
+`subagents` when the task has independent parts a single node can hand off and review;
+`workflow` when it is large, parallel and each part is checkable (many files of the same change,
+broad audits); otherwise leave it out and the node works solo. Alondra writes the instructions
+into the mission; never write tool instructions yourself.
+
+**Reuse a node only when both hold:** the task continues that node's work, and the node's model
+fits the task. `candidates` with `model` says whether each node fits (`fits`), and `send` with
+`task` and `model` refuses a node on another model (`model_mismatch`). Otherwise `launch` a new
+node.
 
 ## What else is yours
 

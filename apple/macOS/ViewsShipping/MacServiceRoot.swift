@@ -12,6 +12,8 @@ import SwiftUI
 
 struct MacServiceRoot: View {
     let owner: MacWorkspaceOwner
+    let notices: MacLocalNotices
+    @Environment(\.openWindow) private var openWindow
     @State private var connectingRemote = false
     @State private var demoSession: UUID?
     private var account: AccountSession { owner.account }
@@ -27,13 +29,13 @@ struct MacServiceRoot: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             case .local:
                 if let services = owner.services {
-                    MacServiceWindow(services: services, account: nil)
+                    MacServiceWindow(services: services, account: nil, notices: notices)
                         .id(ObjectIdentifier(services))
                 }
             case .remote:
                 LaunchGate(store: account.store, hasServices: account.services != nil) {
                     if let services = account.services {
-                        MacServiceWindow(services: services, account: account)
+                        MacServiceWindow(services: services, account: account, notices: notices)
                             .id(ObjectIdentifier(services))
                     }
                 } restoring: {
@@ -51,7 +53,9 @@ struct MacServiceRoot: View {
                 }
             }
             }
-        }.task { await owner.run() }
+        }
+        .task { await owner.run() }
+        .onAppear { notices.openWindow = openWindow }
     }
 
     private var demoButton: some View {
@@ -114,6 +118,7 @@ private final class MacServiceWindowContext {
 private struct MacServiceWindow: View {
     let services: Connection
     let account: AccountSession?
+    let notices: MacLocalNotices
     @State private var context = MacServiceWindowContext()
     var body: some View {
         Group {
@@ -121,6 +126,11 @@ private struct MacServiceWindow: View {
                 MacServiceWorkspace(store: store, accountContent: MacServiceSettingsScene(services: services, owner: account))
                     .connectionLostOverlay(store: store, retry: retry,
                                            signIn: account.map { account in { account.store.send(.reauthenticate) } })
+                    .onChange(of: notices.openedCard, initial: true) { _, card in
+                        guard let card else { return }
+                        store.send(.macPresentation(.select(.viewKey("card:\(card)"))))
+                        notices.openedCard = nil
+                    }
             } else {
                 ProgressView("Opening workspace…")
             }

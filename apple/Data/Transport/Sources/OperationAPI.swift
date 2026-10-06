@@ -11,9 +11,17 @@ public enum APIResponse: Sendable, Equatable {
     case unknown
 }
 
-public enum OperationError: Error, Sendable, Equatable {
+public enum OperationError: LocalizedError, Sendable, Equatable {
     case operationIdentityRequired, invalidConfiguration, invalidEndpoint
     case outcomeUnknown
+
+    public var errorDescription: String? {
+        switch self {
+        case .outcomeUnknown: String(localized: "The Mac didn’t confirm it. Try again.")
+        case .operationIdentityRequired, .invalidConfiguration, .invalidEndpoint:
+            String(localized: "Alondra couldn’t prepare this request.")
+        }
+    }
 }
 
 public struct APIRequest: Sendable, Equatable {

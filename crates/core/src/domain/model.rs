@@ -119,6 +119,21 @@ pub struct Task {
     pub stack: Option<StackDependency>,
     pub documents: BTreeMap<DocumentId, String>,
     pub archived: bool,
+    /// The model its node was last launched with; absent for Tasks launched before it was recorded
+    /// and for launches that left Claude's default model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<TaskModel>,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelChooser {
+    Orchestrator,
+    User,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskModel {
+    pub model: String,
+    pub chosen_by: ModelChooser,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StackDependency {

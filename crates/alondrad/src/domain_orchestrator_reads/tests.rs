@@ -46,6 +46,7 @@ fn world() -> Fixture {
     run(&domain, user(), task("t1", Some("agent-a"), &[]));
     run(&domain, user(), task("t2", None, &["t1"]));
     domain.live.observe(&json!({"session_id": "agent-a", "hook_event_name": "UserPromptSubmit", "cwd": "/Users/me/Projects/App", "prompt": "go"}));
+    domain.live.mods.apply(serde_json::from_value(json!({"session_id": "agent-a", "event": "model", "model": "claude-sonnet-5-5"})).unwrap(), 1);
     domain.live.observe(&json!({"session_id": "stranger", "hook_event_name": "UserPromptSubmit", "cwd": "/Users/me/Projects/App", "prompt": "go"}));
     Fixture(home, domain)
 }
@@ -64,6 +65,7 @@ fn the_fleet_lists_live_agents_what_waits_on_someone_and_the_requests() {
     let nodes = fleet["nodes"].as_array().unwrap();
     assert_eq!(nodes.len(), 1, "only sessions the domain knows as Agents: {nodes:?}");
     assert_eq!((nodes[0]["name"].as_str(), nodes[0]["project"].as_str()), (Some("Instance A"), Some("App")));
+    assert_eq!(nodes[0]["model"], "claude-sonnet-5-5");
     let open: Vec<&str> = fleet["open_questions"].as_array().unwrap().iter().map(|q| q["id"].as_str().unwrap()).collect();
     assert_eq!(open, ["q-open", "q-orch"], "a withdrawn question waits on nobody");
     assert_eq!(fleet["open_questions"][1]["to_orchestrator"], true);
@@ -86,6 +88,7 @@ fn a_node_is_found_by_name_or_id_with_its_questions_results_and_undelivered_mess
     let by_name = node(&f.1, "Instance A").unwrap();
     assert_eq!(by_name, node(&f.1, "agent-a").unwrap());
     assert_eq!(by_name["node"]["name"], "Instance A");
+    assert_eq!(by_name["node"]["model"], "claude-sonnet-5-5");
     assert_eq!(by_name["questions"][0]["status"], "answered");
     assert_eq!(by_name["messages"].as_array().unwrap().len(), 1, "the answer waits for its next turn");
     assert_eq!(by_name["messages_held_for_turn_end"], 1);
@@ -95,23 +98,38 @@ fn a_node_is_found_by_name_or_id_with_its_questions_results_and_undelivered_mess
 }
 
 #[test]
+fn candidates_say_whether_each_node_runs_the_model_the_task_needs() {
+    let f = world();
+    run(&f.1, user(), Command::CancelTask { task_id: "t1".into() });
+    let fits = |model: &str| candidates(&f.1, &f.0, Some("t2"), None, Some(model)).unwrap()["candidates"][0]["fits"].clone();
+    assert_eq!((fits("sonnet"), fits("opus"), fits("haiku")), (json!(true), json!(false), json!(false)));
+    assert!(candidates(&f.1, &f.0, Some("t2"), None, None).unwrap()["candidates"][0].get("fits").is_none(), "no model asked, nothing to judge");
+    assert_eq!(candidates(&f.1, &f.0, Some("t2"), None, Some("gpt")).unwrap_err().code, "invalid_input");
+    std::fs::write(f.0.join("options.toml"), "[models]\nbig = \"claude-sonnet-5-5[1m]\"\n").unwrap();
+    assert_eq!(fits("big"), json!(true), "a configured alias fits by the family it stands for");
+    f.1.live.mods.apply(serde_json::from_value(json!({"session_id": "agent-a", "event": "model", "model": "claude-opus-5-5"})).unwrap(), 2);
+    assert_eq!((fits("opus"), fits("sonnet")), (json!(true), json!(false)), "the node's reported model is what counts");
+}
+
+#[test]
 fn candidates_are_the_free_live_agents_tied_to_the_task_or_its_project() {
     let f = world();
-    let for_t2 = candidates(&f.1, Some("t2"), None).unwrap();
+    let for_t2 = candidates(&f.1, &f.0, Some("t2"), None, None).unwrap();
     assert_eq!(for_t2["candidates"], json!([]), "Instance A is on t1 until it ends");
     let busy = for_t2["busy"].as_array().unwrap();
     assert_eq!((busy.len(), busy[0]["node"].as_str()), (1, Some("Instance A")));
     assert_eq!(busy[0]["why"], json!(["works on t1 “Title t1”, which t2 builds on"]));
     assert_eq!(busy[0]["task"]["id"], "t1");
-    assert_eq!(candidates(&f.1, Some("t1"), None).unwrap()["candidates"][0]["node"], "Instance A", "its own Task does not make it busy");
-    let by_repo = candidates(&f.1, None, Some("me/App")).unwrap();
+    assert_eq!(busy[0]["model"], "claude-sonnet-5-5");
+    assert_eq!(candidates(&f.1, &f.0, Some("t1"), None, None).unwrap()["candidates"][0]["node"], "Instance A", "its own Task does not make it busy");
+    let by_repo = candidates(&f.1, &f.0, None, Some("me/App"), None).unwrap();
     assert_eq!((by_repo["candidates"].clone(), by_repo["busy"][0]["why"].clone()), (json!([]), json!(["works in project App"])));
     run(&f.1, user(), Command::CancelTask { task_id: "t1".into() });
-    let free = candidates(&f.1, Some("t2"), None).unwrap();
+    let free = candidates(&f.1, &f.0, Some("t2"), None, None).unwrap();
     assert_eq!(free["busy"], json!([]));
     assert_eq!(free["candidates"][0]["node"], "Instance A", "a node whose Task ended takes the next one");
     assert_eq!(free["candidates"][0]["why"], json!(["worked on t1 “Title t1”, which t2 builds on"]));
-    assert!(candidates(&f.1, None, Some("Web")).unwrap()["candidates"].as_array().unwrap().is_empty());
-    assert_eq!(candidates(&f.1, Some("missing"), None).unwrap_err().code, "not_found");
-    assert_eq!(candidates(&f.1, None, None).unwrap_err().code, "invalid_input");
+    assert!(candidates(&f.1, &f.0, None, Some("Web"), None).unwrap()["candidates"].as_array().unwrap().is_empty());
+    assert_eq!(candidates(&f.1, &f.0, Some("missing"), None, None).unwrap_err().code, "not_found");
+    assert_eq!(candidates(&f.1, &f.0, None, None, None).unwrap_err().code, "invalid_input");
 }

@@ -8,6 +8,7 @@ mod claude_auth;
 mod doctor;
 mod delivery;
 mod mcp;
+mod models;
 mod ops;
 mod service_setup;
 mod service_pair;
@@ -53,6 +54,13 @@ enum Cmd {
     Logout,
     #[command(about = tr!("Text summary: open questions, fleet and machine", "Resumen en texto: preguntas abiertas, flota y máquina"))]
     Status,
+    #[command(about = tr!("How each model the orchestrator chose did: outcomes, questions, time and cost", "Cómo le fue a cada modelo que eligió el orquestador: resultados, preguntas, tiempo y coste"))]
+    Models {
+        #[arg(long, help = tr!("Only launches in this period, like 7d, 12h or 2w", "Solo los lanzamientos de este periodo, como 7d, 12h o 2w"))]
+        since: Option<String>,
+        #[arg(long, help = tr!("Machine-readable output", "Salida para máquinas"))]
+        json: bool,
+    },
     #[command(about = "Stop the active orchestrator execution; inspect partial effects before retrying")]
     OrchestratorCancel { run_id: String },
     #[command(about = "Continue without replaying the interrupted batch after checking its effects")]
@@ -175,6 +183,7 @@ fn main() -> Result<()> {
         Some(Cmd::Account) => account::status(),
         Some(Cmd::Logout) => account::logout(),
         Some(Cmd::Status) => status(),
+        Some(Cmd::Models { since, json }) => models::run(since.as_deref(), json),
         Some(Cmd::OrchestratorCancel { run_id }) => cli::recover(ops::Recovery::Cancel, &run_id),
         Some(Cmd::OrchestratorAcknowledge { run_id, confirm: _ }) => cli::recover(ops::Recovery::Acknowledge, &run_id),
         Some(Cmd::OrchestratorRetry { run_id, confirm: _ }) => cli::recover(ops::Recovery::Retry, &run_id),

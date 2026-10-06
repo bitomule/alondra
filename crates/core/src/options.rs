@@ -6,6 +6,8 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::domain::{ModelChooser, TaskModel};
+
 pub const FILE_NAME: &str = "options.toml";
 pub const PR: &str = "pr";
 pub const EFFORT: &str = "effort";
@@ -14,6 +16,7 @@ pub const AUTO_MERGE: &str = "auto_merge";
 pub const AUTO: &str = "auto";
 const MAPPED: [&str; 3] = ["light", "normal", "hard"];
 const EFFORT_LEVELS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
+const MODEL_ALIASES: [&str; 4] = ["haiku", "sonnet", "opus", "fable"];
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(untagged)]
@@ -78,6 +81,9 @@ pub struct ProjectOptions {
 pub struct OptionsFile {
     pub projects_root: Option<String>,
     pub effort: BTreeMap<String, EffortFlags>,
+    /// Extra model aliases the orchestrator may pick, and what `--model` receives for any alias
+    /// (the built-in ones pass themselves).
+    pub models: BTreeMap<String, String>,
     pub defaults: BTreeMap<String, Choice>,
     pub option: Vec<UserOption>,
     pub projects: BTreeMap<String, ProjectOptions>,
@@ -290,6 +296,14 @@ impl OptionsFile {
                 return Err(format!("effort {level}: {e} is not one of {}", EFFORT_LEVELS.join(", ")));
             }
         }
+        for (alias, model) in &self.models {
+            if alias.is_empty() || !alias.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-') {
+                return Err(format!("models {alias}: an alias is lowercase letters, digits and dashes"));
+            }
+            if model.trim().is_empty() {
+                return Err(format!("models {alias}: name the model it stands for"));
+            }
+        }
         let check_all = |options: &[&UserOption]| -> Result<(), String> {
             let mut seen: BTreeSet<&str> = [PR, EFFORT].into();
             for o in options {
@@ -343,6 +357,25 @@ impl OptionsFile {
                 s
             })
             .collect()
+    }
+
+    pub fn model_aliases(&self) -> Vec<String> {
+        let mut aliases: Vec<String> = MODEL_ALIASES.iter().map(|a| a.to_string()).collect();
+        aliases.extend(self.models.keys().filter(|k| !MODEL_ALIASES.contains(&k.as_str())).cloned());
+        aliases
+    }
+
+    /// What `--model` receives for an alias the orchestrator may pick; none for any other word.
+    pub fn model_flag(&self, alias: &str) -> Option<String> {
+        match self.models.get(alias) {
+            Some(model) => Some(model.trim().to_string()),
+            None => MODEL_ALIASES.contains(&alias).then(|| alias.to_string()),
+        }
+    }
+
+    /// The family a node's reported model has to belong to for it to be the alias's model.
+    pub fn model_family(&self, alias: &str) -> Option<String> {
+        self.model_flag(alias).map(|model| crate::model_label::model_family(&model))
     }
 
     pub fn effort_flags(&self, level: &str) -> EffortFlags {
@@ -460,6 +493,33 @@ pub fn filter_projects(ranked: &[String], query: &str, suggested: Option<&str>) 
     out
 }
 
+/// How a launched node is told to organise its work.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Approach {
+    #[default]
+    Solo,
+    Subagents,
+    Workflow,
+}
+
+impl Approach {
+    /// The `## How to work` section of a node's mission.
+    pub fn how_to_work(self) -> Vec<String> {
+        let mut lines = vec![
+            "## How to work".to_string(),
+            String::new(),
+            "If this work has more than two steps, write them as tasks in Claude Code's task list (TaskCreate) before starting, mark each one in progress when you start it and completed when it is done (TaskUpdate), so the user can follow your progress.".into(),
+        ];
+        match self {
+            Approach::Solo => {}
+            Approach::Subagents => lines.push("Split independent parts across subagents (the Agent tool) and work on them in parallel. Give each subagent a precise brief: the files, the change and how to check it. Pass model sonnet only when the subagent's change is clear and mechanical, with no design in it; otherwise pass model opus. Review what each subagent returns before you rely on it.".into()),
+            Approach::Workflow => lines.push("Use a workflow (the Workflow tool) to run this: its parts can run in parallel and each has a check. Name a model for each stage: sonnet only for stages whose change is clear and mechanical, with no design in it; opus for every other stage. Try it on a small slice first.".into()),
+        }
+        lines
+    }
+}
+
 impl Resolved {
     /// One line for the orchestrator: what the user chose, and that Alondra writes the rules.
     pub fn summary(&self) -> String {
@@ -470,7 +530,7 @@ impl Resolved {
 
     /// The section alondrad appends to a launched node's prompt, so no rule depends on the
     /// orchestrator copying it.
-    pub fn mission_section(&self, request_id: Option<&str>) -> String {
+    pub fn mission_section(&self, request_id: Option<&str>, approach: Approach) -> String {
         let who = match request_id {
             Some(id) => format!("The user chose these for this work (request {id}):"),
             None => "No user request is behind this launch, so these are the defaults:".into(),
@@ -491,6 +551,8 @@ impl Resolved {
             lines.push(format!("- This work comes from issue {issue}: write `Fixes {issue}` in the body of the PR that solves it."));
         }
         lines.push(String::new());
+        lines.extend(approach.how_to_work());
+        lines.push(String::new());
         lines.push("When you reach this point, deliver with `present_result` and is_final true: the orchestrator closes you.".into());
         lines.join("\n")
     }
@@ -506,12 +568,38 @@ impl Resolved {
         self
     }
 
+    /// With effort auto the orchestrator picks the model (and optionally the effort) per launch; an
+    /// effort the user chose already sets the model and refuses the orchestrator's.
+    pub fn with_orchestrator_model(mut self, file: &OptionsFile, model: Option<&str>, effort: Option<&str>) -> Result<Resolved, String> {
+        if self.effort != AUTO {
+            return match model {
+                Some(m) => Err(format!("the user chose effort {} for this request, which sets the model: do not pass model ({m})", self.effort)),
+                None => Ok(self),
+            };
+        }
+        let aliases = file.model_aliases().join(", ");
+        let alias = model.ok_or_else(|| format!("effort is auto for this request: pass model, one of {aliases}"))?;
+        let flag = file.model_flag(alias).ok_or_else(|| format!("{alias} is not a model; use one of {aliases}"))?;
+        if let Some(e) = effort.filter(|e| !EFFORT_LEVELS.contains(e)) {
+            return Err(format!("{e} is not an effort; use one of {}", EFFORT_LEVELS.join(", ")));
+        }
+        self.flags = EffortFlags { model: Some(flag), effort: effort.map(str::to_string) };
+        Ok(self)
+    }
+
+    /// The model the launch passes to Claude and who chose it; none when Claude's default stays.
+    pub fn launch_model(&self) -> Option<TaskModel> {
+        let model = self.flags.model.clone()?;
+        let chosen_by = if self.effort == AUTO { ModelChooser::Orchestrator } else { ModelChooser::User };
+        Some(TaskModel { model, chosen_by })
+    }
+
     /// What the orchestrator is told about effort alongside the request.
     pub fn effort_note(&self, user: &str) -> String {
         if self.effort == AUTO {
-            "Effort is auto: choose per task after splitting. Use light for bounded work with a known approach, normal for ordinary implementation and investigation, and hard only for a concrete unresolved difficulty named in the brief. Normal is the starting point; request size or importance does not make every task hard. Set options.effort in define or effort in launch.".into()
+            "Effort is auto: choose the model and effort per task after splitting. Sonnet only when the change is clear and mechanical, with no design in it; opus with effort medium for everything else; opus with effort high for architecture design, a hard bug or a migration with difficult invariants; fable only after an opus node failed at the task. When in doubt, use opus. Request size or importance does not raise every task.".into()
         } else {
-            format!("Effort {} was chosen by {user} and is binding: do not pass effort.", self.effort)
+            format!("Effort {} was chosen by {user} and is binding: do not pass model or effort.", self.effort)
         }
     }
 
@@ -638,6 +726,22 @@ on = "Run /review-loop before the merge."
     }
 
     #[test]
+    fn the_mission_says_how_to_work_for_each_approach() {
+        let r = file().resolve(None, &chosen(&[])).unwrap();
+        let section = |a| r.mission_section(None, a);
+        let always = "write them as tasks in Claude Code's task list (TaskCreate)";
+        for approach in [Approach::Solo, Approach::Subagents, Approach::Workflow] {
+            let text = section(approach);
+            assert!(text.contains("## How to work") && text.contains(always), "{approach:?}");
+            assert!(text.find("## How to work") < text.find("`present_result`"), "{approach:?}");
+        }
+        assert!(!section(Approach::Solo).contains("subagents") && !section(Approach::Solo).contains("the Workflow tool"));
+        assert!(section(Approach::Subagents).contains("Split independent parts across subagents (the Agent tool)"));
+        assert!(section(Approach::Workflow).contains("Use a workflow (the Workflow tool)"));
+        assert!(!section(Approach::Workflow).contains("subagents (the Agent tool)"));
+    }
+
+    #[test]
     fn a_request_naming_an_unknown_option_or_value_is_refused() {
         let f = file();
         for (what, c, needle) in [
@@ -654,7 +758,7 @@ on = "Run /review-loop before the merge."
     #[test]
     fn options_become_mission_lines_in_file_order() {
         let r = file().resolve(Some("App"), &chosen(&[("device", Choice::Toggle(true))])).unwrap();
-        let s = r.mission_section(Some("r-7"));
+        let s = r.mission_section(Some("r-7"), Approach::Solo);
         let expected = [
             "## Launch options",
             "",
@@ -664,10 +768,14 @@ on = "Run /review-loop before the merge."
             "- Try on device: yes. Ask the user to try it on a device.",
             "- Adversarial review: yes. Run /review-loop before the merge.",
             "",
+            "## How to work",
+            "",
+            "If this work has more than two steps, write them as tasks in Claude Code's task list (TaskCreate) before starting, mark each one in progress when you start it and completed when it is done (TaskUpdate), so the user can follow your progress.",
+            "",
             "When you reach this point, deliver with `present_result` and is_final true: the orchestrator closes you.",
         ];
         assert_eq!(s, expected.join("\n"));
-        let off = file().resolve(None, &chosen(&[("how_far", val("merge"))])).unwrap().mission_section(None);
+        let off = file().resolve(None, &chosen(&[("how_far", val("merge"))])).unwrap().mission_section(None, Approach::Solo);
         assert!(off.contains("- PR handling: review each PR."), "{off}");
         assert!(off.contains("- How far: merge.\n"), "an empty mission text adds no sentence: {off}");
         assert!(off.contains("- Try on device: no.\n"), "a toggle off without text adds none: {off}");
@@ -723,8 +831,49 @@ on = "Run /review-loop before the merge."
             assert_eq!((r.effort.as_str(), r.launch_flags(None)), (effort, flags.iter().map(|s| s.to_string()).collect::<Vec<_>>()), "{what}");
         }
         assert!(f.resolve(None, &BTreeMap::new()).unwrap().effort_note("Ana").starts_with("Effort is auto"));
-        assert_eq!(f.resolve(None, &chosen(&[(EFFORT, val("hard"))])).unwrap().effort_note("Ana"), "Effort hard was chosen by Ana and is binding: do not pass effort.");
+        assert_eq!(f.resolve(None, &chosen(&[(EFFORT, val("hard"))])).unwrap().effort_note("Ana"), "Effort hard was chosen by Ana and is binding: do not pass model or effort.");
         assert!(OptionsFile::parse("[effort]\nauto = { model = \"m\" }\n").unwrap_err().contains("auto leaves the choice"));
+    }
+
+    #[test]
+    fn with_effort_auto_the_orchestrator_names_the_model_and_a_users_effort_refuses_it() {
+        let f = OptionsFile::parse("[models]\nbig = \"claude-opus-5-5[1m]\"\n[effort]\nhard = { model = \"big\", effort = \"max\" }\n").unwrap();
+        let auto = || f.resolve(None, &BTreeMap::new()).unwrap();
+        let flags = |r: Resolved| r.launch_flags(None).join(" ");
+
+        assert_eq!(flags(auto().with_orchestrator_model(&f, Some("sonnet"), None).unwrap()), "--model sonnet");
+        assert_eq!(flags(auto().with_orchestrator_model(&f, Some("haiku"), Some("low")).unwrap()), "--model haiku --effort low");
+        assert_eq!(flags(auto().with_orchestrator_model(&f, Some("big"), Some("xhigh")).unwrap()), "--model claude-opus-5-5[1m] --effort xhigh");
+
+        let missing = auto().with_orchestrator_model(&f, None, Some("high")).unwrap_err();
+        assert!(missing.contains("effort is auto") && missing.contains("pass model") && missing.contains("haiku, sonnet, opus, fable, big"), "{missing}");
+        assert!(auto().with_orchestrator_model(&f, Some("gpt"), None).unwrap_err().contains("gpt is not a model"));
+        assert!(auto().with_orchestrator_model(&f, Some("sonnet"), Some("light")).unwrap_err().contains("light is not an effort"));
+
+        let chosen = f.resolve(None, &chosen(&[(EFFORT, val("hard"))])).unwrap();
+        let refused = chosen.clone().with_orchestrator_model(&f, Some("haiku"), None).unwrap_err();
+        assert!(refused.contains("the user chose effort hard") && refused.contains("haiku"), "{refused}");
+        assert_eq!(flags(chosen.with_orchestrator_model(&f, None, Some("low")).unwrap()), "--model big --effort max", "the user's mapping applies as before");
+    }
+
+    #[test]
+    fn the_launch_model_says_who_chose_it() {
+        let f = OptionsFile::default();
+        let by_orchestrator = f.resolve(None, &BTreeMap::new()).unwrap().with_orchestrator_model(&f, Some("opus"), None).unwrap();
+        assert_eq!(by_orchestrator.launch_model(), Some(TaskModel { model: "opus".into(), chosen_by: ModelChooser::Orchestrator }));
+        let by_user = f.resolve(None, &chosen(&[(EFFORT, val("light"))])).unwrap();
+        assert_eq!(by_user.launch_model(), Some(TaskModel { model: "sonnet".into(), chosen_by: ModelChooser::User }));
+        assert_eq!(f.resolve(None, &chosen(&[(EFFORT, val("normal"))])).unwrap().launch_model(), None, "Claude's default model is nothing to record");
+    }
+
+    #[test]
+    fn model_aliases_come_from_the_file_and_fit_by_family() {
+        let f = OptionsFile::parse("[models]\nbig = \"claude-opus-5-5\"\nfable = \"claude-fable-5-1\"\n").unwrap();
+        assert_eq!(f.model_aliases(), ["haiku", "sonnet", "opus", "fable", "big"]);
+        assert_eq!((f.model_flag("fable").as_deref(), f.model_flag("opus").as_deref(), f.model_flag("nope")), (Some("claude-fable-5-1"), Some("opus"), None));
+        assert_eq!((f.model_family("big").as_deref(), f.model_family("sonnet").as_deref()), (Some("opus"), Some("sonnet")));
+        assert!(OptionsFile::parse("[models]\n\"Big Model\" = \"x\"\n").unwrap_err().contains("lowercase"));
+        assert!(OptionsFile::parse("[models]\nbig = \" \"\n").unwrap_err().contains("name the model"));
     }
 
     #[test]

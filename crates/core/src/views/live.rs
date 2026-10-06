@@ -98,11 +98,93 @@ pub struct LiveNode {
     pub context_window: Option<u64>,
     #[serde(default)]
     pub cost_cents: Option<u64>,
+    /// The model id the node's main thread runs on.
+    #[serde(default)]
+    pub model: Option<String>,
     #[serde(default)]
     pub reconnecting: bool,
     /// A node stopped by the usage limit waits for the machine until this local ISO time.
     #[serde(default)]
     pub waiting_until: Option<String>,
+    /// The subagents it runs and the last few it ran.
+    #[serde(default)]
+    pub subagents: Vec<LiveRun>,
+    #[serde(default)]
+    pub workflows: Vec<LiveRun>,
+    /// Its Claude Code task list, in order.
+    #[serde(default)]
+    pub steps: Vec<LiveStep>,
+}
+/// A subagent or a workflow a node started.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LiveRun {
+    pub label: String,
+    /// The subagent's type (`general-purpose`, `Explore`).
+    #[serde(default)]
+    pub kind: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+    /// How many agents a workflow has started, when known.
+    #[serde(default)]
+    pub agents: Option<u32>,
+    pub since: String,
+    /// How long it ran, once it finished.
+    #[serde(default)]
+    pub ran_secs: Option<u64>,
+    #[serde(default)]
+    pub suspect: bool,
+    /// What a workflow's own files say about it: its phase and the agents it runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow: Option<LiveWorkflow>,
+}
+/// The most agent rows a workflow carries; the rest are only counted.
+pub const WORKFLOW_AGENT_ROWS: usize = 8;
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LiveWorkflow {
+    #[serde(default)]
+    pub phase: Option<String>,
+    /// The phase's place in the script's phase list, from 1, and how many phases it lists.
+    #[serde(default)]
+    pub phase_index: Option<u32>,
+    #[serde(default)]
+    pub phase_count: Option<u32>,
+    #[serde(default)]
+    pub running: u32,
+    #[serde(default)]
+    pub done: u32,
+    /// The most recently started agents first, at most `WORKFLOW_AGENT_ROWS`.
+    #[serde(default)]
+    pub agents: Vec<LiveWorkflowAgent>,
+    #[serde(default)]
+    pub duration_ms: Option<u64>,
+    #[serde(default)]
+    pub total_tokens: Option<u64>,
+}
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LiveWorkflowAgent {
+    pub label: String,
+    #[serde(default)]
+    pub phase: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub running: bool,
+}
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StepState {
+    #[default]
+    Pending,
+    InProgress,
+    Completed,
+}
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LiveStep {
+    pub subject: String,
+    pub state: StepState,
+    /// What the spinner says while it runs ("Running tests").
+    #[serde(default)]
+    pub active_form: Option<String>,
 }
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LivePullRequest {

@@ -90,6 +90,7 @@ pub(crate) fn producer_prompt(
     text: &str,
     resolved: &Resolved,
     task: &TaskId,
+    approach: alondra_core::options::Approach,
 ) -> String {
     let user = crate::domain_messages::user_name();
     let mut lines = vec![
@@ -119,6 +120,8 @@ pub(crate) fn producer_prompt(
     if let Some(issue) = &resolved.issue {
         lines.push(format!("- This work comes from issue {issue}: write `Fixes {issue}` in the body of the PR that solves it."));
     }
+    lines.push(String::new());
+    lines.extend(approach.how_to_work());
     lines.join("\n")
 }
 
@@ -171,7 +174,7 @@ async fn invoke_claimed(
         args.extend(["--disallowedTools".into(), disallowed_tools.join(" ")]);
     }
     args.push("--".into());
-    args.push(producer_prompt(&launch.prompt, &resolved, task));
+    args.push(producer_prompt(&launch.prompt, &resolved, task, alondra_core::options::Approach::Solo));
     match launcher.run(&launch.cwd, &args).await {
         Ok(output) => Ok((output, settings)),
         Err(refusal) => {
@@ -235,6 +238,7 @@ fn request_task(snapshot: &ScheduleDefinitionSnapshot) -> (Request, Task) {
         stack: None,
         documents: BTreeMap::new(),
         archived: false,
+        model: None,
     };
     (request, task)
 }
@@ -849,17 +853,17 @@ mod tests {
             )
             .unwrap()
         };
-        let auto = producer_prompt("Fix it", &chosen("auto_merge"), &TaskId::from("t-1"));
+        let auto = producer_prompt("Fix it", &chosen("auto_merge"), &TaskId::from("t-1"), alondra_core::options::Approach::Solo);
         assert!(auto.contains("Once its checks pass") && auto.contains("merge the pull request you registered"), "{auto}");
         assert!(!auto.contains("gh pr merge") && !auto.contains("authorization"), "{auto}");
-        let review = producer_prompt("Fix it", &chosen("review"), &TaskId::from("t-1"));
+        let review = producer_prompt("Fix it", &chosen("review"), &TaskId::from("t-1"), alondra_core::options::Approach::Solo);
         assert!(!review.contains("auto-merge"), "{review}");
     }
 
     #[test]
     fn the_mission_names_the_task_and_how_to_deliver_through_alondra() {
         let resolved = OptionsFile::default().resolve(None, &BTreeMap::new()).unwrap();
-        let prompt = producer_prompt("Analyse the mods", &resolved, &TaskId::from("t-mods"));
+        let prompt = producer_prompt("Analyse the mods", &resolved, &TaskId::from("t-mods"), alondra_core::options::Approach::Solo);
         assert!(prompt.starts_with("Analyse the mods\n"), "{prompt}");
         assert!(prompt.contains("This work is Alondra task t-mods; pass it as task_id"), "{prompt}");
         assert!(prompt.contains("`present_result` and is_final true") && prompt.contains("`ask`")

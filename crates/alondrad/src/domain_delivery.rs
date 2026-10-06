@@ -56,7 +56,7 @@ pub async fn run(
     }
 }
 
-async fn deliver_from_runtime(
+pub(crate) async fn deliver_from_runtime(
     domain: &DomainRuntime,
     home: &Path,
     push: &Push,
@@ -924,7 +924,7 @@ mod tests {
             id: "task-a".into(), request_id: "request-a".into(), agent_id: None,
             title: "Split the parser".into(), state: TaskState::NeedsYou, revision: 1,
             started: true, review_prs: false, final_presentation: None, pr_id: None,
-            dependencies: BTreeSet::new(), stack: None, documents: Default::default(), archived: false,
+            dependencies: BTreeSet::new(), stack: None, documents: Default::default(), archived: false, model: None,
         });
         let options = vec![
             QuestionOption {

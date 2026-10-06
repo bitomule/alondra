@@ -5032,7 +5032,7 @@ mod issue_tests {
             let id = said["request_id"].as_str().unwrap().to_string();
             let kept = hub.read(|v| v.requests[&id].clone());
             assert_eq!(kept.issue.as_deref(), Some("me/App#1"), "{what}");
-            assert!(kept.mission_section(Some(&id)).contains("write `Fixes me/App#1` in the body of the PR"), "{what}");
+            assert!(kept.mission_section(Some(&id), alondra_core::options::Approach::Solo).contains("write `Fixes me/App#1` in the body of the PR"), "{what}");
         }
     }
 

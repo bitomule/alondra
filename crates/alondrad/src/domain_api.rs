@@ -1488,7 +1488,7 @@ mod tests {
         let mut assign = meta.clone();
         assign["agent_id"] = json!("node-1");
         let adapted = resource_envelope_from_path("PUT", "/tasks/task-1/assignee", assign).unwrap();
-        assert_eq!(adapted.command, Command::AssignTask { task_id: "task-1".into(), agent_id: "node-1".into() });
+        assert_eq!(adapted.command, Command::AssignTask { task_id: "task-1".into(), agent_id: "node-1".into(), model: None });
         let mut mismatched = meta.clone();
         mismatched["task_id"] = json!("other-task");
         mismatched["title"] = json!("Build");

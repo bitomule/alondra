@@ -3,8 +3,9 @@ use alondra_core::Millis;
 use alondra_core::domain::{DomainState, PrState, PullRequest, TaskId, TaskState};
 use alondra_core::views::{
     Gauge, InboxTime, Lang, Level, LiveActivity, LiveBackground, LiveHistoryStep, LiveNode, LiveOrchestrator,
-    LiveCheck, LivePullRequest, LiveSnapshot, Notice, Tone,
+    LiveCheck, LivePullRequest, LiveRun, LiveSnapshot, LiveStep, Notice, StepState, Tone,
 };
+use crate::node_work::StepStatus;
 use crate::node_reports::Activity;
 use serde_json::Value;
 use sha2::Digest;
@@ -113,10 +114,14 @@ pub(crate) async fn gather(
                 .or_else(|| node.daemon_detail.clone())
                 .or_else(|| answer.map(|answer| answer.text.clone()))
                 .map(|summary| summary.lines().next().unwrap_or("").chars().take(141).collect());
-            let background = reported.background_at(now);
+            let background: Vec<(&str, alondra_core::BackgroundItem)> = reported.background.iter()
+                .map(|(id, _)| id.as_str()).zip(reported.background_at(now)).collect();
+            let suspect = |id: &str| background.iter().any(|(known, item)| *known == id && item.suspect);
+            let shown_as_run = |id: &str| reported.work.agents.iter().any(|agent| agent.id == id && agent.finished_at.is_none())
+                || reported.work.workflows.iter().any(|workflow| workflow.id == id && workflow.finished_at.is_none());
             let counts = [alondra_core::BackgroundKind::Agent, alondra_core::BackgroundKind::Shell,
                 alondra_core::BackgroundKind::Other].into_iter().filter_map(|kind| {
-                    let count = background.iter().filter(|item| item.kind == kind).count();
+                    let count = background.iter().filter(|(_, item)| item.kind == kind).count();
                     (count > 0).then(|| {
                         let noun = match (lang, kind) {
                             (Lang::En, alondra_core::BackgroundKind::Agent) => "subagents",
@@ -129,7 +134,7 @@ pub(crate) async fn gather(
                         format!("{count} {noun}")
                     })
                 }).collect::<Vec<_>>();
-            let background_suspect = background.iter().any(|item| item.suspect);
+            let background_suspect = background.iter().any(|(_, item)| item.suspect);
             let background_badge = (!counts.is_empty()).then(|| {
                 let mut text = counts.join(" · ");
                 if background_suspect { text.push_str(match lang { Lang::En => " · hung?", Lang::Es => " · ¿colgado?" }); }
@@ -145,7 +150,41 @@ pub(crate) async fn gather(
                 state_label: Some(state_label),
                 summary,
                 needs: node.daemon_needs.clone(),
-                background: background.iter().map(|item| LiveBackground {
+                subagents: reported.work.agents.iter().map(|agent| LiveRun {
+                    label: agent.description.clone(),
+                    kind: agent.kind.clone(),
+                    model: agent.model.clone(),
+                    agents: None,
+                    since: timestamp(agent.started_at),
+                    ran_secs: agent.finished_at.map(|end| end.saturating_sub(agent.started_at).max(0) as u64 / 1000),
+                    suspect: agent.finished_at.is_none() && suspect(&agent.id),
+                    workflow: None,
+                }).collect(),
+                workflows: reported.work.workflows.iter().map(|workflow| {
+                    let state = workflow.transcript_dir.as_deref()
+                        .and_then(|dir| crate::workflow_state::read(dir, workflow.finished_at.is_some()));
+                    LiveRun {
+                        label: workflow.name.clone(),
+                        kind: None,
+                        model: None,
+                        agents: state.as_ref().map(|state| state.running + state.done)
+                            .or_else(|| workflow.transcript_dir.as_deref().and_then(crate::node_work::workflow_agents)),
+                        since: timestamp(workflow.started_at),
+                        ran_secs: workflow.finished_at.map(|end| end.saturating_sub(workflow.started_at).max(0) as u64 / 1000),
+                        suspect: workflow.finished_at.is_none() && suspect(&workflow.id),
+                        workflow: state,
+                    }
+                }).collect(),
+                steps: reported.work.steps.iter().map(|step| LiveStep {
+                    subject: step.subject.clone(),
+                    state: match step.status {
+                        StepStatus::InProgress => StepState::InProgress,
+                        StepStatus::Completed => StepState::Completed,
+                        StepStatus::Pending | StepStatus::Deleted | StepStatus::Unknown => StepState::Pending,
+                    },
+                    active_form: step.active_form.clone(),
+                }).collect(),
+                background: background.iter().filter(|(id, _)| !shown_as_run(id)).map(|(_, item)| LiveBackground {
                     kind: serde_json::to_value(item.kind).ok().and_then(|value| value.as_str().map(str::to_owned)).unwrap_or_else(|| "other".into()),
                     label: item.label.clone(),
                     since: timestamp(item.started_at),
@@ -165,6 +204,7 @@ pub(crate) async fn gather(
                 context_percent: reported.context.as_ref().and_then(|context| context.percent).map(|percent| percent.round().clamp(0.0, 999.0) as u32),
                 context_window: reported.context.as_ref().map(|context| context.window),
                 cost_cents: reported.cost_usd.map(|usd| (usd * 100.0).round().max(0.0) as u64),
+                model: reported.model.clone(),
                 reconnecting,
                 waiting_until: exhausted.as_ref().filter(|_| node.usage_limited).map(|exhausted| timestamp(exhausted.until)),
             })
