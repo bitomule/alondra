@@ -865,6 +865,40 @@ mod tests {
     use std::net::SocketAddr;
 
     #[tokio::test]
+    async fn cleanup_needs_a_local_paired_device() {
+        use crate::node_close::{Answer, Sessions};
+        struct Untouchable(std::sync::atomic::AtomicUsize);
+        impl Sessions for Untouchable {
+            fn claude<'a>(&'a self, _: Vec<String>) -> Answer<'a, Result<String, String>> {
+                self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Box::pin(async { Ok("[]".into()) })
+            }
+            fn leftovers<'a>(&'a self, _: &'a str) -> Answer<'a, Option<String>> {
+                Box::pin(async { None })
+            }
+        }
+        let home = std::env::temp_dir().join(format!("alondra-cleanup-route-{}", crate::auth::random_hex(8)));
+        std::fs::create_dir_all(&home).unwrap();
+        drop(DomainRuntime::open(&home).unwrap());
+        let state = DomainDaemon::open(&home).unwrap();
+        let sessions = Arc::new(Untouchable(Default::default()));
+        state.client().use_sessions(sessions.clone());
+        let ask = |peer: &str| cleanup(
+            State(state.clone()),
+            ConnectInfo(peer.parse::<SocketAddr>().unwrap()),
+            HeaderMap::new(),
+            None,
+            Ok(Json(CleanupBody { dry_run: true })),
+        );
+        let remote = ask("203.0.113.9:4000").await;
+        assert_eq!(remote.status(), StatusCode::FORBIDDEN, "a request from another machine");
+        let unsigned = ask("127.0.0.1:4000").await;
+        assert_eq!(unsigned.status(), StatusCode::FORBIDDEN, "a local request without a paired device");
+        assert_eq!(sessions.0.load(std::sync::atomic::Ordering::SeqCst), 0, "nothing was asked of claude");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[tokio::test]
     async fn pair_approves_a_service_phone_with_the_macs_signature() {
         use base64::engine::general_purpose::URL_SAFE_NO_PAD;
         let home = std::env::temp_dir().join(format!(

@@ -144,8 +144,8 @@ service) is three tasks, each depending on the one before:
    its tests. Its mission says: when the document does not cover something, ask instead of
    deciding.
 3. **Adversarial review** (`role: review`, opus). It tries to break the implementation against
-   the document and against how the service really behaves. What it finds goes back to the
-   implementation task's node as a new task that depends on the review.
+   the document and against how the service really behaves. What it finds becomes a new implementation task that
+   depends on the review, with its own node.
 
 Create the three at once: the first with `launch`, the other two with their launch plan on
 `create_task` (`dependencies` on the one before), so Alondra starts each as soon as the one

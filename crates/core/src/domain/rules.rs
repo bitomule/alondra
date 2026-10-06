@@ -2930,6 +2930,11 @@ impl DomainState {
                 }
                 self.active(task_id)?;
                 self.invalidate(task_id);
+                for card in self.interactions.values_mut().filter(|i| {
+                    i.id.0.starts_with("problem-close-") && i.scope == (Scope::Task { task_id: task_id.clone() }) && matches!(&i.payload, InteractionPayload::Question { answer: None, .. })
+                }) {
+                    card.withdrawn = true;
+                }
                 let t = self.tasks.get_mut(task_id).unwrap();
                 t.state = TaskState::Cancelled;
                 if let Some(agent_id) = t.agent_id.clone() {
@@ -2987,6 +2992,14 @@ impl DomainState {
                 }
                 let closing = self.in_cleanup(t) && self.wraps_up(t);
                 if !closing && !t.state.terminal() {
+                    // The node was removed while the task went back to work: the task keeps working
+                    // without it and is relaunched clean.
+                    if matches!(end, NodeEnd::Closed | NodeEnd::Gone) && t.agent_id.is_some() {
+                        let t = self.tasks.get_mut(task_id).unwrap();
+                        t.agent_id = None;
+                        t.wrap_up = WrapUp::default();
+                        return Ok(());
+                    }
                     return fail("not_closing", &format!("Task {} is not closing", task_id.0));
                 }
                 self.tasks.get_mut(task_id).unwrap().wrap_up.node = Some(*end);

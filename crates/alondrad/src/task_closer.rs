@@ -171,7 +171,12 @@ async fn close_one(domain: &DomainRuntime, sessions: &dyn Sessions, timing: &Tim
         return Ok(());
     }
     if node.as_ref().is_some_and(|node| node.busy) {
-        if now - row.since > millis(timing.wait.unwrap_or(BUSY_FALLBACK)) {
+        let first = row.ready_since.is_none();
+        let waiting_since = *row.ready_since.get_or_insert(now);
+        if first {
+            domain.store.lock().expect("domain store poisoned").save_task_closing(&row)?;
+        }
+        if now - waiting_since > millis(timing.wait.unwrap_or(BUSY_FALLBACK)) {
             return failure(domain, timing, now, task, &agent, row, "it is still working", matches!(kind, Due::Cleanup));
         }
         return Ok(());
@@ -187,7 +192,15 @@ async fn close_one(domain: &DomainRuntime, sessions: &dyn Sessions, timing: &Tim
         Err(error) => Err(error),
     };
     domain.live.end_watch(&agent.0);
-    match outcome? {
+    let outcome = match outcome {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            row.rm_started_at = None;
+            domain.store.lock().expect("domain store poisoned").save_task_closing(&row)?;
+            return Err(error);
+        }
+    };
+    match outcome {
         CloseOutcome::Closed { .. } => finish(domain, &row, NodeEnd::Closed),
         CloseOutcome::NotListed => {
             crate::node_revival::user_closed(domain, &agent.0)?;

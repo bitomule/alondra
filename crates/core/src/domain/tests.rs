@@ -3359,9 +3359,21 @@ fn only_alondra_records_a_node_end() {
 #[test]
 fn a_node_end_needs_a_closing_or_terminal_task() {
     let mut s = fixture();
-    reject_unchanged(&mut s, Actor::System, Command::RecordNodeEnd { task_id: "t".into(), end: NodeEnd::Closed }, "not_closing");
+    reject_unchanged(&mut s, Actor::System, Command::RecordNodeEnd { task_id: "t".into(), end: NodeEnd::KeptByUser }, "not_closing");
     present(&mut s, "final", text());
-    reject_unchanged(&mut s, Actor::System, Command::RecordNodeEnd { task_id: "t".into(), end: NodeEnd::Closed }, "not_closing");
+    reject_unchanged(&mut s, Actor::System, Command::RecordNodeEnd { task_id: "t".into(), end: NodeEnd::UsersOwn }, "not_closing");
+}
+#[test]
+fn a_node_removed_while_its_task_went_back_to_work_leaves_the_task_without_a_node() {
+    let mut s = fixture();
+    accept_text(&mut s);
+    exec(&mut s, user(), Command::SubmitFeedback { attachments: vec![], presentation_id: "final".into(),
+        targets: text(), body: "One more thing".into(), instruction: Instruction::Changes }).unwrap();
+    assert_eq!(s.tasks[&"t".into()].state, TaskState::Running);
+    exec(&mut s, Actor::System, Command::RecordNodeEnd { task_id: "t".into(), end: NodeEnd::Closed }).unwrap();
+    let t = &s.tasks[&"t".into()];
+    assert_eq!((t.state, t.agent_id.clone()), (TaskState::Running, None));
+    assert!(t.wrap_up.is_default(), "a new node closes with its own cleanup");
 }
 #[test]
 fn the_same_node_end_twice_changes_nothing_and_another_is_a_conflict() {

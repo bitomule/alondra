@@ -257,3 +257,61 @@ async fn when_claude_agents_cannot_run_nothing_is_closed() {
     let refused = run(&rig.domain, &Broken, &rig.claude_home, false, now()).await.unwrap_err();
     assert_eq!((refused.0, refused.1.as_str()), (StatusCode::BAD_GATEWAY, "claude is not installed"));
 }
+
+impl Rig {
+    /// A session registered and listed, with a cancelled task given to it the way `launch` did before
+    /// decisions were kept: no `model_decisions` row at all.
+    fn old_session(&mut self, assign_as: Option<Actor>, launch_key: Option<&str>) -> String {
+        self.count += 1;
+        let n = self.count;
+        let session = format!("a{n:07}-0000-4000-8000-000000000000");
+        let short = format!("a{n:07}");
+        command(&self.domain, Actor::System, Command::RegisterAgent { agent_id: session.clone().into(), name: format!("Node {n}") });
+        self.domain.live.apply(&Event::DaemonSeen(DaemonObservation {
+            session_id: session.clone(), short_id: short.clone(), name: Some(format!("Node {n}")), ..Default::default()
+        }));
+        self.domain.live.observe(&serde_json::json!({"session_id": session, "hook_event_name": "SessionStart"}));
+        self.domain.live.observe(&serde_json::json!({"session_id": session, "hook_event_name": "Stop"}));
+        if let Some(key) = launch_key {
+            self.domain.live.mods.loaded_for(&session, Some(key));
+        }
+        self.sessions.listed.lock().unwrap().push(short);
+        let id = format!("t{n}");
+        let given = assign_as.is_some();
+        command(&self.domain, user(), Command::CreateTask { task_id: id.clone().into(), request_id: "r".into(), title: format!("Task {n}"),
+            agent_id: (!given).then(|| session.clone().into()), review_prs: false, dependencies: Default::default(), stack: None });
+        if let Some(actor) = assign_as {
+            command(&self.domain, actor, Command::AssignTask { task_id: id.clone().into(), agent_id: session.clone().into(), model: None });
+        }
+        command(&self.domain, user(), Command::CancelTask { task_id: id.clone().into() });
+        self.forget_wrap_up(&id);
+        session
+    }
+}
+
+#[tokio::test]
+async fn sessions_from_before_launch_decisions_were_kept_still_count_as_alondras() {
+    let mut rig = Rig::new();
+    rig.old_session(Some(Actor::Orchestrator { generation: 0 }), None);
+    rig.old_session(Some(Actor::System), None);
+    rig.old_session(None, Some("launch-1"));
+    rig.old_session(None, None);
+    rig.old_session(Some(user()), None);
+    assert!(rig.domain.store.lock().unwrap().model_decision_rows().unwrap().is_empty(), "no decision was ever recorded");
+    let report = rig.run(true).await;
+    assert_eq!(names(&report["close"]), ["Node 1", "Node 2", "Node 3"], "the user's own sessions are not listed: {report}");
+}
+
+#[tokio::test]
+async fn a_node_the_user_left_open_and_a_task_in_progress_are_not_closed() {
+    let mut rig = Rig::new();
+    let kept = rig.session(Task::Cancelled, true);
+    let open = rig.session(Task::Open, true);
+    let _ = (&kept, &open);
+    rig.domain.store.lock().unwrap().conn_for_test().execute("INSERT OR REPLACE INTO task_wrap_ups(task_id,close_cancelled,node_end) VALUES('t1',0,'kept_by_user')", []).unwrap();
+    rig.domain.state().unwrap();
+    let report = rig.run(true).await;
+    for list in ["close", "kept", "failed"] {
+        assert!(report[list].as_array().unwrap().is_empty(), "{list}: {report}");
+    }
+}

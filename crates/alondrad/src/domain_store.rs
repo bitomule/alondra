@@ -44,9 +44,10 @@ const TASK_CLOSINGS: &str = "CREATE TABLE IF NOT EXISTS task_closings(\
  next_attempt INTEGER NOT NULL DEFAULT 0,\
  attempted_cleaned_at INTEGER,\
  rm_started_at INTEGER,\
+ ready_since INTEGER,\
  problem_id TEXT);";
-const TASK_CLOSING_SELECT_ONE: &str = "SELECT task_id,since,failures,last_error,next_attempt,attempted_cleaned_at,rm_started_at,problem_id FROM task_closings WHERE task_id=?1";
-const TASK_CLOSING_SELECT_ALL: &str = "SELECT task_id,since,failures,last_error,next_attempt,attempted_cleaned_at,rm_started_at,problem_id FROM task_closings ORDER BY task_id";
+const TASK_CLOSING_SELECT_ONE: &str = "SELECT task_id,since,failures,last_error,next_attempt,attempted_cleaned_at,rm_started_at,problem_id,ready_since FROM task_closings WHERE task_id=?1";
+const TASK_CLOSING_SELECT_ALL: &str = "SELECT task_id,since,failures,last_error,next_attempt,attempted_cleaned_at,rm_started_at,problem_id,ready_since FROM task_closings ORDER BY task_id";
 /// What the closer remembers about closing one task's node, across restarts.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct TaskClosing {
@@ -61,6 +62,8 @@ pub(crate) struct TaskClosing {
     pub attempted_cleaned_at: Option<i64>,
     /// Milliseconds: `claude rm` was started and its result not recorded.
     pub rm_started_at: Option<i64>,
+    /// Milliseconds: when the closer first found the node ready to close but still working.
+    pub ready_since: Option<i64>,
     /// The Problem card raised after three failures.
     pub problem_id: Option<String>,
 }
@@ -74,6 +77,7 @@ impl TaskClosing {
             next_attempt: row.get(4)?,
             attempted_cleaned_at: row.get(5)?,
             rm_started_at: row.get(6)?,
+            ready_since: row.get(8)?,
             problem_id: row.get(7)?,
         })
     }
@@ -847,10 +851,13 @@ impl DomainStore {
     pub(crate) fn task_was_launched(&self, task_id: &TaskId) -> Result<bool> {
         Ok(self.conn.query_row("SELECT EXISTS(SELECT 1 FROM model_decisions WHERE task_id=?1 AND kind IN('launch','relaunch'))", [&task_id.0], |row| row.get(0))?)
     }
-    /// Whether Alondra launched this session: a launch or relaunch of it was recorded.
+    /// Whether Alondra launched this session: a launch of it was recorded, or the orchestrator or
+    /// Alondra itself assigned a task to its agent (what launches did before decisions were kept).
     pub(crate) fn launched_by_alondra(&self, agent_id: &str) -> Result<bool> {
         Ok(self.conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM model_decisions WHERE agent_id=?1 AND kind IN('launch','relaunch'))",
+            "SELECT EXISTS(SELECT 1 FROM model_decisions WHERE agent_id=?1 AND kind IN('launch','relaunch'))
+                 OR EXISTS(SELECT 1 FROM command_audit WHERE json_extract(command,'$.kind')='assign_task' AND json_extract(command,'$.agent_id')=?1
+                   AND json_extract(actor,'$.kind') IN('orchestrator','system'))",
             [agent_id], |row| row.get(0))?)
     }
     pub(crate) fn task_closing(&self, task_id: &TaskId) -> Result<Option<TaskClosing>> {
@@ -868,8 +875,8 @@ impl DomainStore {
     }
     pub(crate) fn save_task_closing(&mut self, row: &TaskClosing) -> Result<()> {
         self.conn.execute(
-            "UPDATE task_closings SET since=?2,failures=?3,last_error=?4,next_attempt=?5,attempted_cleaned_at=?6,rm_started_at=?7,problem_id=?8 WHERE task_id=?1",
-            params![row.task_id.0, row.since, row.failures, row.last_error, row.next_attempt, row.attempted_cleaned_at, row.rm_started_at, row.problem_id])?;
+            "UPDATE task_closings SET since=?2,failures=?3,last_error=?4,next_attempt=?5,attempted_cleaned_at=?6,rm_started_at=?7,problem_id=?8,ready_since=?9 WHERE task_id=?1",
+            params![row.task_id.0, row.since, row.failures, row.last_error, row.next_attempt, row.attempted_cleaned_at, row.rm_started_at, row.problem_id, row.ready_since])?;
         self.note_side_write();
         Ok(())
     }

@@ -1,7 +1,7 @@
 //! `alondra cleanup`: closes the sessions Alondra launched whose tasks ended before tasks closed
 //! their own node, and the ones stopped without a task for more than a day. It looks only at
 //! sessions Alondra launched and `claude agents` lists, and never closes one that works, waits for
-//! a permission or has work that is not saved.
+//! a permission, has work that is not saved or that the user chose to leave open.
 use crate::domain_runtime::DomainRuntime;
 use crate::domain_github::execute_system;
 use crate::node_close::{CloseOutcome, Sessions, close_node, listed};
@@ -50,9 +50,9 @@ fn kept(candidate: &Candidate, reason: &str, detail: Option<&str>) -> Value {
 
 fn why(state: &DomainState, domain: &DomainRuntime, claude_home: &Path, agent: &AgentId, now: i64) -> Option<(Why, Option<String>)> {
     let tasks: Vec<&Task> = state.tasks.values().filter(|task| task.agent_id.as_ref() == Some(agent)).collect();
-    let ended = |task: &&Task| task.state.terminal() || task.archived;
+    let ended = |task: &&Task| task.state.terminal();
     if !tasks.is_empty() {
-        if !tasks.iter().all(ended) {
+        if !tasks.iter().all(ended) || tasks.iter().any(|task| task.wrap_up.node == Some(NodeEnd::KeptByUser)) {
             return None;
         }
         let title = tasks.first().map(|task| task.title.clone());

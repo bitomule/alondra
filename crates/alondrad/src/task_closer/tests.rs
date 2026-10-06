@@ -19,6 +19,7 @@ struct FakeSessions {
     leftovers: Mutex<Option<String>>,
     calls: Mutex<Vec<Vec<String>>>,
     watch_while_removing: Mutex<Option<(Arc<DomainRuntime>, Option<bool>)>>,
+    during_rm: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 
 impl FakeSessions {
@@ -28,6 +29,7 @@ impl FakeSessions {
             leftovers: Mutex::new(None),
             calls: Default::default(),
             watch_while_removing: Mutex::new(None),
+            during_rm: Mutex::new(None),
         })
     }
     fn removals(&self) -> usize {
@@ -42,6 +44,9 @@ impl Sessions for FakeSessions {
             match args[0].as_str() {
                 "agents" => Ok(json!(self.listed.lock().unwrap().iter().map(|id| json!({"id": id})).collect::<Vec<_>>()).to_string()),
                 "rm" => {
+                    if let Some(hook) = self.during_rm.lock().unwrap().take() {
+                        hook();
+                    }
                     if let Some((domain, seen)) = self.watch_while_removing.lock().unwrap().as_mut() {
                         *seen = Some(domain.live.begin_watch(SESSION));
                     }
@@ -426,4 +431,53 @@ async fn closing_holds_the_sessions_watch() {
     rig.pass(T0).await;
     let seen = rig.sessions.watch_while_removing.lock().unwrap().as_ref().unwrap().1;
     assert_eq!(seen, Some(false), "a revival cannot take the watch while claude rm runs");
+}
+
+#[tokio::test]
+async fn a_node_that_is_busy_gets_the_margin_from_when_it_was_ready_not_from_when_the_task_was_seen() {
+    let rig = Rig::new(thirty_minutes());
+    rig.pass(T0).await;
+    rig.domain.live.observe(&hook("UserPromptSubmit"));
+    rig.pass(T0 + 40 * MINUTE).await;
+    assert_eq!(rig.closing().unwrap().failures, 0, "ready and busy for the first time: the margin starts now");
+    rig.pass(T0 + 69 * MINUTE).await;
+    assert_eq!(rig.closing().unwrap().failures, 0);
+    assert_eq!(rig.sessions.removals(), 0);
+    rig.pass(T0 + 71 * MINUTE).await;
+    let row = rig.closing().unwrap();
+    assert_eq!((row.failures, row.last_error.as_deref()), (1, Some("it is still working")));
+    assert!(rig.told().last().unwrap().contains("it is still working"));
+}
+
+#[tokio::test]
+async fn cancelling_a_task_withdraws_the_card_of_three_failed_closes_and_the_node_is_closed() {
+    let rig = Rig::new(thirty_minutes());
+    failed_three_times(&rig).await;
+    let card = rig.cards()[0].id.clone();
+    command(&rig.domain, user(), "cancel", Command::CancelTask { task_id: "t".into() });
+    assert!(rig.domain.state().unwrap().interactions[&card].withdrawn, "the card no longer waits for an answer");
+    *rig.sessions.leftovers.lock().unwrap() = None;
+    rig.pass(T0 + 20 * MINUTE).await;
+    assert_eq!(rig.sessions.removals(), 1, "the closer does not wait for a withdrawn card");
+    let task = rig.task();
+    assert_eq!((task.state, task.wrap_up.node), (TaskState::Cancelled, Some(NodeEnd::Closed)));
+}
+
+#[tokio::test]
+async fn a_task_that_goes_back_to_work_while_its_session_is_removed_is_released_to_be_relaunched() {
+    let rig = Rig::new(thirty_minutes());
+    rig.confirm();
+    let domain = rig.domain.clone();
+    *rig.sessions.during_rm.lock().unwrap() = Some(Box::new(move || {
+        command(&domain, user(), "feedback", Command::SubmitFeedback {
+            attachments: vec![], presentation_id: "final".into(), targets: text(), body: "One more thing".into(),
+            instruction: Instruction::Changes,
+        });
+    }));
+    rig.pass(T0).await;
+    assert_eq!(rig.sessions.removals(), 1);
+    let task = rig.task();
+    assert_eq!((task.state, task.agent_id.clone()), (TaskState::Running, None), "no node is left to work on it");
+    assert!(task.wrap_up.is_default());
+    assert_eq!(rig.closing(), None);
 }

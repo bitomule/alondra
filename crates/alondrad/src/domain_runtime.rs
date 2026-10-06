@@ -167,7 +167,7 @@ impl DomainRuntime {
 
     /// Whether Alondra launched this session: a recorded launch, or a scheduled run it started.
     pub(crate) fn launched_by_alondra(&self, agent: &AgentId) -> Result<bool> {
-        if self.store.lock().expect("domain store poisoned").launched_by_alondra(&agent.0)? {
+        if self.store.lock().expect("domain store poisoned").launched_by_alondra(&agent.0)? || self.live.mods.started_with_a_launch_key(&agent.0) {
             return Ok(true);
         }
         Ok(self.state()?.schedule.runs.values().any(|run| run.launch.as_ref().is_some_and(|launch| launch.agent_id.as_ref() == Some(agent))))

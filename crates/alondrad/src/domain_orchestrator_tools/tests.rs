@@ -666,3 +666,16 @@ async fn a_refused_assignment_after_a_launch_stops_and_removes_the_new_session()
     assert!(settings_files(&f.home).is_empty(), "its settings are released");
     assert_eq!(f.domain.state().unwrap().tasks[&TaskId::from("t")].agent_id, None);
 }
+
+#[tokio::test]
+async fn a_task_in_progress_whose_node_died_is_relaunched_and_assigned_to_the_new_node() {
+    let f = world();
+    let actor = the_orchestrator(&f.domain);
+    give(&f, "t", "agent-b");
+    command(&f.domain, Actor::Agent { agent_id: "agent-b".into() }, Command::StartTask { task_id: "t".into() });
+    command(&f.domain, Actor::System, Command::ObserveAgent { agent_id: "agent-b".into(), connected: false });
+    let claude = FakeClaude::loading(&f.domain);
+    launch(&f.domain, &f.home, &actor, launch_body(&f, json!({"model": "sonnet"})), |_| None, &claude).await.unwrap();
+    assert_eq!(f.domain.state().unwrap().tasks[&TaskId::from("t")].agent_id, Some(AgentId::from(SESSION)));
+    assert!(claude.removed.lock().unwrap().is_empty(), "the new session is kept");
+}

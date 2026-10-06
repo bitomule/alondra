@@ -169,6 +169,7 @@ async fn launch_guarded(domain: &DomainRuntime, home: &Path, actor: &Actor, body
     let conflict = |message: String| DomainError::new("conflict", message);
     let current = state(domain)?;
     let task = current.tasks.get(&body.task).ok_or_else(|| DomainError::new("not_found", "task does not exist"))?;
+    let assigned_before = task.agent_id.clone();
     let plan = domain.launch_plan(&task.id).map_err(|_| DomainError::new("storage_unavailable", "domain state unavailable"))?;
     let body = body.with_plan(plan.as_ref());
     let (Some(name), Some(cwd)) = (body.name.clone(), body.cwd.clone()) else {
@@ -261,7 +262,7 @@ async fn launch_guarded(domain: &DomainRuntime, home: &Path, actor: &Actor, body
         return Err(discard(DomainError::new("storage_unavailable", format!("could not issue the session's capability: {error}"))));
     }
     let short = alondra_core::sessions::launched_short(&output).unwrap_or_else(|| session.chars().take(8).collect());
-    let taken = state(domain).map(|now| now.tasks.get(&task.id).is_none_or(|t| t.state.terminal() || t.agent_id.as_ref().is_some_and(|other| other != &agent_id)));
+    let taken = state(domain).map(|now| now.tasks.get(&task.id).is_none_or(|t| t.state.terminal() || t.agent_id != assigned_before));
     let assigned = match taken {
         Ok(false) => run(domain, actor, Command::AssignTask { task_id: task.id.clone(), agent_id: agent_id.clone(), model: resolved.launch_model() }),
         Ok(true) => Err(conflict(format!("{} was closed or taken while its node started", task.id))),

@@ -257,3 +257,16 @@ fn a_retried_card_is_the_first_card_and_not_a_second_one() {
         .filter(|i| i.card.need == "Pick a name").count();
     assert_eq!(cards, 1);
 }
+
+#[test]
+fn the_orchestrator_gives_a_task_to_a_fresh_node_and_cannot_hand_the_same_node_a_second_one() {
+    let mut fixture = Fixture::new();
+    fixture.manager(json!({"kind":"create_request", "request_id":"request-o", "body":"Work"})).unwrap();
+    fixture.manager(json!({"kind":"title_request", "request_id":"request-o", "title":"Work"})).unwrap();
+    let create = |id: &str| json!({"kind":"create_task", "task_id":id, "request_id":"request-o", "title":id,
+        "agent_id":"agent-a", "review_prs":false, "dependencies":[], "stack":null});
+    fixture.manager(create("first")).unwrap();
+    assert_eq!(domain_code(fixture.manager(create("second")).unwrap_err()), "agent_busy", "still on its first task");
+    fixture.manager(json!({"kind":"cancel_task", "task_id":"first"})).unwrap();
+    assert_eq!(domain_code(fixture.manager(create("second")).unwrap_err()), "agent_used", "a node works on one task for its whole life");
+}
