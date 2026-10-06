@@ -2832,6 +2832,17 @@ impl DomainState {
                     t.agent_id = None;
                 }
             }
+            Command::ReleaseTask { task_id, reason } => {
+                system(actor)?;
+                nonempty(reason)?;
+                let task = self.active(task_id)?;
+                if task.agent_id.is_none() || task.final_presentation.is_some() {
+                    return fail("conflict", "Task has no working Agent to release");
+                }
+                let t = self.tasks.get_mut(task_id).unwrap();
+                t.agent_id = None;
+                t.started = false;
+            }
             Command::ArchiveTask { task_id, archived } => {
                 user(actor)?;
                 let task = self.task(task_id)?;

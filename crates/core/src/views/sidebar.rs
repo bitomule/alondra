@@ -10,6 +10,7 @@ fn task_subtitle(task: &Task, context: &RenderContext<'_>, group: Option<&str>) 
         .find(|node| node.agent_id == id.0).and_then(|node| node.project.as_deref()));
     let state = common::instruction_label(task, context.domain, context.lang)
         .or_else(|| common::failed_launch(task, context.domain).map(|_| common::launch_failed_label(context.lang)))
+        .or_else(|| common::node_closed(task, context).then(|| common::node_closed_label(context.lang)))
         .unwrap_or_else(|| task_state_label(task.state, context.lang));
     let project = project.filter(|project| !project.is_empty() && *project != "others");
     let state = (group != Some(state)).then_some(state);

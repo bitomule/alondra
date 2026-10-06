@@ -175,8 +175,31 @@ pub(crate) async fn launch(domain: &DomainRuntime, home: &Path, actor: &Actor, b
         let _ = domain.revoke_agent(&session);
         return Err(discard(error));
     }
+    domain.live.forget_closed_task(&task.id.0);
     crate::usage_pause::raise_over_pace_card(domain, alondra_core::now_millis());
     Ok(json!({"agent_id": agent_id, "short_id": session.chars().take(8).collect::<String>(), "task": task.id}))
+}
+
+/// A new node for a task whose node the user closed, launched with the task's mission in the
+/// folder the closed node worked in, else the project its request was asked for.
+pub(crate) async fn relaunch(domain: &DomainRuntime, home: &Path, actor: &Actor, task_id: &TaskId, launcher: &impl crate::orchestrate::Launcher) -> Result<Value, DomainError> {
+    let current = state(domain)?;
+    let waiting = current.tasks.get(task_id)
+        .filter(|task| task.state == alondra_core::domain_v2::TaskState::NotStarted && task.agent_id.is_none() && !task.archived);
+    let (Some(task), Some(closed)) = (waiting, domain.live.closed_task(&task_id.0)) else {
+        return Err(DomainError::new("conflict", "This task is not waiting for a relaunch"));
+    };
+    let asked = request_choices(domain, &task.request_id).ok().flatten();
+    let root = crate::domain_schedule_runner::options_at(home).ok().map(|file| file.projects_root(&crate::options::user_home()));
+    let project_dir = asked.as_ref().and_then(|choices| choices.project.as_ref()).zip(root.as_ref()).map(|(project, root)| root.join(project));
+    let cwd = closed.cwd.map(std::path::PathBuf::from).filter(|dir| dir.is_dir())
+        .or(project_dir.filter(|dir| dir.is_dir()))
+        .or(root)
+        .and_then(|dir| dir.to_str().map(str::to_owned))
+        .ok_or_else(|| DomainError::new("invalid_input", "no folder to launch the node in"))?;
+    let body = serde_json::from_value(json!({"name": closed.name, "cwd": cwd, "task": task_id}))
+        .map_err(|error| DomainError::new("invalid_input", error.to_string()))?;
+    launch(domain, home, actor, body, |request| request_choices(domain, request).ok().flatten(), launcher).await
 }
 
 #[derive(Deserialize)]

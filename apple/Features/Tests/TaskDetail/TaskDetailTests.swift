@@ -46,6 +46,16 @@ final class TaskDetailTests: XCTestCase {
         XCTAssertNil(detail.archive, "an older daemon still sends it switched off")
     }
 
+    func testATaskWhoseNodeTheUserClosedOffersRelaunchBeforeCancel() throws {
+        let detail = TaskDetail(document: try Fixtures.document("task-closed-ios"))
+
+        XCTAssertEqual(detail.state, "Node closed")
+        XCTAssertEqual(detail.relaunch?.label, "Relaunch")
+        XCTAssertEqual(detail.relaunch?.enabled, true)
+        XCTAssertEqual(detail.actions.map(\.command), ["relaunch", "cancel"])
+        XCTAssertNil(TaskDetail(document: try Fixtures.document("task-ios")).relaunch, "a task with a node offers none")
+    }
+
     func testTheDaemonsOwnFixtureProjectsToo() throws {
         let detail = TaskDetail(document: try Fixtures.document("task-ios"))
 

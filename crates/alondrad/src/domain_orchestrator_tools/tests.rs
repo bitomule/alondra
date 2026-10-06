@@ -354,3 +354,35 @@ async fn a_launch_is_refused_while_usage_is_exhausted_and_goes_ahead_once_it_is_
     launch(&f.domain, &f.home, &actor, launch_body(&f, json!({})), |_| None, &claude).await.unwrap();
     assert_eq!(claude.calls.lock().unwrap().len(), 1);
 }
+
+#[tokio::test]
+async fn a_task_whose_node_the_user_closed_is_relaunched_for_that_task_in_the_closed_nodes_folder() {
+    let f = world();
+    command(&f.domain, user(), Command::AssignTask { task_id: "t".into(), agent_id: "agent-b".into() });
+    command(&f.domain, Actor::Agent { agent_id: "agent-b".into() }, Command::StartTask { task_id: "t".into() });
+    f.domain.live.mods.connect(serde_json::from_value(json!({"session_id": "agent-b", "version": "2.1.287", "cwd": f.project.to_str().unwrap()})).unwrap(), 1);
+    let claude = FakeClaude::loading(&f.domain);
+    let refused = relaunch(&f.domain, &f.home, &user(), &"t".into(), &claude).await.unwrap_err();
+    assert_eq!(refused.code, "conflict", "a task whose node was not closed is not relaunched");
+    assert!(claude.calls.lock().unwrap().is_empty());
+
+    crate::node_revival::user_closed(&f.domain, "agent-b").unwrap();
+    let state = f.domain.state().unwrap();
+    assert_eq!((state.tasks[&"t".into()].state, state.tasks[&"t".into()].agent_id.clone()), (TaskState::NotStarted, None));
+    assert_eq!(f.domain.live.closed_task_ids(), ["t"]);
+
+    let answer = relaunch(&f.domain, &f.home, &user(), &"t".into(), &claude).await.unwrap();
+    assert_eq!(answer["agent_id"], SESSION);
+    let calls = claude.calls.lock().unwrap();
+    let (cwd, args) = &calls[0];
+    assert_eq!(cwd, f.project.to_str().unwrap(), "the new node starts where the closed one worked");
+    assert!(args.windows(2).any(|pair| pair == ["--name", "Instance B"]), "{args:?}");
+    let prompt = args.last().unwrap();
+    assert!(prompt.contains("Editor colours") && prompt.contains("Make the editor readable"), "the mission comes with it: {prompt}");
+    let state = f.domain.state().unwrap();
+    assert_eq!(state.tasks[&"t".into()].agent_id, Some(SESSION.into()));
+    assert!(f.domain.live.closed_task_ids().is_empty(), "the task no longer waits for a relaunch");
+    drop(calls);
+    let again = relaunch(&f.domain, &f.home, &user(), &"t".into(), &claude).await.unwrap_err();
+    assert_eq!(again.code, "conflict");
+}

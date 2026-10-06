@@ -326,6 +326,12 @@ pub enum Command {
         task_id: TaskId,
         archived: bool,
     },
+    /// The Agent working on the Task was closed by the user: the Task goes back to not started with
+    /// no Agent, and stays open for a new one.
+    ReleaseTask {
+        task_id: TaskId,
+        reason: String,
+    },
 }
 /// A wire command written before cards existed gets the card its own fields describe; the
 /// optional `need` and `why` fields override what is read from its body.

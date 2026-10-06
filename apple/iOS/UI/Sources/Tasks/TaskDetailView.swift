@@ -5,7 +5,7 @@ import ComposableArchitecture
 import SwiftUI
 
 /// One task: its state and what it is doing now, what it waits for from you, its request, pull
-/// requests, dependencies, documents, options and history, with cancel, reopen and archive.
+/// requests, dependencies, documents, options and history, with relaunch, cancel, reopen and archive.
 public struct TaskDetailView: View {
     @Bindable var store: StoreOf<TaskDetailFeature>
 
@@ -248,7 +248,7 @@ public struct TaskDetailView: View {
     }
 
     @ViewBuilder private func actions(_ detail: TaskDetail) -> some View {
-        let shown = [detail.cancel, detail.reopen, detail.archive].compactMap(\.self).filter { !store.optimistic.hides($0.id) }
+        let shown = [detail.relaunch, detail.cancel, detail.reopen, detail.archive].compactMap(\.self).filter { !store.optimistic.hides($0.id) }
         if !shown.isEmpty {
             VStack(spacing: 10) {
                 ForEach(shown, id: \.id) { action in
@@ -262,6 +262,7 @@ public struct TaskDetailView: View {
 
     private static func symbol(for action: WireAction) -> String {
         switch action.command {
+        case "relaunch": "arrow.triangle.2.circlepath"
         case "cancel": "xmark.circle"
         case "reopen": "arrow.clockwise"
         default: "archivebox"
@@ -270,6 +271,7 @@ public struct TaskDetailView: View {
 
     private static func tint(for action: WireAction) -> Color {
         switch action.command {
+        case "relaunch": Palette.sage
         case "cancel": Palette.rose
         case "reopen": Palette.sky
         default: Palette.slate

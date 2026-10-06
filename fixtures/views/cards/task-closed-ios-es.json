@@ -1,0 +1,225 @@
+{
+  "protocol": 1,
+  "data_epoch": "test-epoch",
+  "view": "task",
+  "key": "task:t-651c38484cd2f34e74d5107ba05f7f15",
+  "client": "ios",
+  "version": "v940cf4905a14a248",
+  "cursor": "cursor-1",
+  "title": "Restore the native review experience",
+  "status": {
+    "version": "vf588abc87345ff89",
+    "summary": "0 nodos trabajando",
+    "badge": 0,
+    "counts": [
+      {
+        "id": "inbox",
+        "label": "Bandeja",
+        "value": 0
+      },
+      {
+        "id": "tasks",
+        "label": "Tareas",
+        "value": 1
+      },
+      {
+        "id": "agents",
+        "label": "Flota",
+        "value": 1
+      },
+      {
+        "id": "working",
+        "label": "trabajando",
+        "value": 0
+      },
+      {
+        "id": "waiting",
+        "label": "esperando",
+        "value": 1
+      }
+    ],
+    "gauges": [
+      {
+        "id": "memory",
+        "label": "Memory",
+        "value": 0.38,
+        "text": "6.1 GB of 16 GB",
+        "level": "calm"
+      },
+      {
+        "id": "disk",
+        "label": "Disk available",
+        "value": 0.72,
+        "text": "120 GB",
+        "level": "calm"
+      }
+    ],
+    "orchestrator": {
+      "text": "inactivo",
+      "tone": "neutral"
+    }
+  },
+  "sections": [
+    {
+      "id": "header",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "facts",
+          "items": [
+            {
+              "label": "Estado",
+              "value": "Nodo cerrado",
+              "tone": "neutral"
+            },
+            {
+              "label": "Solicitud",
+              "value": "Polish the Alondra beta"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "since",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "since",
+          "icon": "history",
+          "title": "Desde",
+          "trailing": {
+            "kind": "time",
+            "at": "2026-09-30T09:30:00Z",
+            "format": "relative"
+          },
+          "depth": 0,
+          "struck": false
+        }
+      ]
+    },
+    {
+      "id": "history",
+      "title": "Historial",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "2026-09-30T08:00:00Z",
+          "icon": "history",
+          "title": "Trabajando",
+          "subtitle": "Started",
+          "trailing": {
+            "kind": "time",
+            "at": "2026-09-30T08:00:00Z",
+            "format": "relative"
+          },
+          "depth": 0,
+          "struck": false
+        },
+        {
+          "type": "row",
+          "id": "2026-09-30T09:30:00Z",
+          "icon": "history",
+          "title": "Te necesita",
+          "subtitle": "Waiting for a decision",
+          "trailing": {
+            "kind": "time",
+            "at": "2026-09-30T09:30:00Z",
+            "format": "relative"
+          },
+          "depth": 0,
+          "struck": false
+        }
+      ]
+    },
+    {
+      "id": "request",
+      "title": "Solicitud",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "markdown",
+          "text": "Prepare the next Alondra beta: restore the established review experience, verify the simulator build, and keep the release notes concise.",
+          "truncated": false,
+          "commentable": false
+        }
+      ]
+    },
+    {
+      "id": "pull_requests",
+      "title": "Solicitudes de cambios",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "github.com/example/repo#12",
+          "link": {
+            "kind": "view",
+            "key": "pull_request:github.com/example/repo#12"
+          },
+          "icon": "pull_request",
+          "title": "1 · Add the compact schedule editor",
+          "subtitle": "feature/compact-schedule-editor → main",
+          "depth": 0,
+          "struck": false
+        }
+      ]
+    },
+    {
+      "id": "options",
+      "title": "Opciones",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "facts",
+          "items": [
+            {
+              "label": "Gestión de PR",
+              "value": "Sin revisión de PR; fusionar sigue requiriendo tu autorización"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "actions",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "actions",
+          "actions": [
+            {
+              "id": "relaunch:t-651c38484cd2f34e74d5107ba05f7f15@6",
+              "label": "Relanzar",
+              "style": "primary",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true
+            },
+            {
+              "id": "cancel:t-651c38484cd2f34e74d5107ba05f7f15@6",
+              "label": "Cancelar tarea",
+              "style": "destructive",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "confirm": {
+                "title": "Cancelar tarea",
+                "message": "¿Cancelar esta tarea?",
+                "button": "Cancelar tarea"
+              },
+              "enabled": true
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

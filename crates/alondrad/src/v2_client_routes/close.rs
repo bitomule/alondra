@@ -3,7 +3,6 @@
 //! session is not a job `claude rm` knows: it only leaves the fleet and its terminal stays open.
 use super::{Client, Reply};
 use alondra_core::domain_v2::{AgentId, DomainError};
-use alondra_core::Event;
 use axum::http::StatusCode;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -156,15 +155,10 @@ impl Client {
     }
 
     /// The session is gone from the fleet: the domain sees it disconnected, its capability is
-    /// revoked and what the daemon observed of it is forgotten, as when its session ends.
+    /// revoked, the tasks it had open wait for a new node and what the daemon observed of it is
+    /// forgotten, as when its session ends.
     fn leave_fleet(&self, agent: &AgentId) -> anyhow::Result<()> {
-        let event_id = format!("close-{}-{}", agent.0, crate::auth::random_hex(8));
-        let event = crate::domain_agent_lifecycle::prepare_event(&self.domain, &event_id).map_err(|e| anyhow::anyhow!("{e}"))?;
-        crate::domain_agent_lifecycle::observe_instance(&self.domain, agent, false, &event).map_err(|e| anyhow::anyhow!("{e}"))?;
-        self.domain.revoke_agent(&agent.0)?;
-        self.domain.live.mark_closed(&agent.0);
-        self.domain.live.apply(&Event::NodeRemoved { session_id: agent.0.clone() });
-        Ok(())
+        crate::node_revival::user_closed(&self.domain, &agent.0)
     }
 }
 

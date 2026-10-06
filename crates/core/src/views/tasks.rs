@@ -5,12 +5,16 @@ use super::{
 use crate::domain_v2::{DomainState, Request, RequestId, Task, TaskId, TaskState};
 use std::collections::{BTreeMap, BTreeSet};
 
-fn state(task: &Task, domain: &DomainState, lang: super::Lang) -> &'static str {
+fn state(task: &Task, context: &RenderContext<'_>) -> &'static str {
+    let (domain, lang) = (context.domain, context.lang);
     if let Some(label) = common::instruction_label(task, domain, lang) {
         return label;
     }
     if common::failed_launch(task, domain).is_some() {
         return common::launch_failed_label(lang);
+    }
+    if common::node_closed(task, context) {
+        return common::node_closed_label(lang);
     }
     match task.state {
         TaskState::NotStarted => t!(lang, "Not started", "Sin empezar"),
@@ -28,6 +32,16 @@ fn effort_label(effort: &str, lang: super::Lang) -> String {
     common::effort_label(effort, lang).unwrap_or(effort).into()
 }
 
+fn relaunch_action(task: &Task, context: &RenderContext<'_>) -> Option<super::Action> {
+    if !common::node_closed(task, context) {
+        return None;
+    }
+    let label = t!(context.lang, "Relaunch", "Relanzar");
+    let mut action = common::action(Verb::Relaunch, &task.id.0, context.domain.revision, label, Style::Primary)?;
+    action.key = (context.client == super::Client::Tui).then(|| "l".into());
+    Some(action)
+}
+
 pub(super) fn task_row(task: &Task, context: &RenderContext<'_>) -> super::Row {
     let (icon, tone) = common::task_presentation(task.state);
     let mut row = common::row(
@@ -35,11 +49,12 @@ pub(super) fn task_row(task: &Task, context: &RenderContext<'_>) -> super::Row {
         &format!("task:{}", task.id),
         icon,
         task.title.clone(),
-        Some(state(task, context.domain, context.lang).into()),
+        Some(state(task, context).into()),
     );
     row.struck = task.state == TaskState::Cancelled;
-    row.badges.push(super::Label { text: state(task, context.domain, context.lang).into(), tone });
+    row.badges.push(super::Label { text: state(task, context).into(), tone });
     row.badges.extend(common::scheduled_mark(task, context.domain, context.lang));
+    row.actions.extend(relaunch_action(task, context));
     if context.client == super::Client::Tui {
         row.subtitle = None;
         row.trailing = context.live.task_history.get(&task.id.0)
@@ -203,8 +218,9 @@ fn request_row(request: &Request, forest: &Forest<'_>, context: &RenderContext<'
                 row.icon = icon;
                 row.struck = task.state == TaskState::Cancelled;
                 row.subtitle = None;
-                row.badges.insert(0, super::Label { text: state(task, context.domain, context.lang).into(), tone });
+                row.badges.insert(0, super::Label { text: state(task, context).into(), tone });
                 row.badges.extend(common::scheduled_mark(task, context.domain, context.lang));
+                row.actions.extend(relaunch_action(task, context));
                 row.children = match children.as_mut_slice() {
                     [only] if only.id == task.id.0 => std::mem::take(&mut only.children),
                     _ => children,
@@ -507,7 +523,7 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
     let request = context.domain.requests.get(&task.request_id);
     let mut facts = vec![Fact {
         label: t!(context.lang, "State", "Estado").into(),
-        value: state(task, context.domain, context.lang).into(),
+        value: state(task, context).into(),
         tone: Some(common::task_presentation(task.state).1),
         link: None,
     }];
@@ -761,6 +777,7 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
             }
         }
     }
+    actions.extend(relaunch_action(task, context));
     for available in context.domain.task_actions(&task.id).unwrap_or_default() {
         if !available.enabled {
             continue;
