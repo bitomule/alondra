@@ -106,6 +106,7 @@ pub(crate) fn router(state: Arc<V2Only>) -> Router {
         .route("/pairing", post(new_pairing))
         .route("/pair", post(pair))
         .route("/devices", get(devices))
+        .route("/models", get(models))
         .route("/devices/{id}", axum::routing::delete(revoke_device))
         .route("/service/bootstrap", get(service_bootstrap))
         .route("/service/approve-device", post(service_approve_device))
@@ -294,6 +295,28 @@ async fn devices(
         .map(|d| json!({"id": d.id, "name": d.name, "created_at": d.created_at, "last_seen": d.last_seen}))
         .collect();
     Json(json!({"devices": list})).into_response()
+}
+
+#[derive(Deserialize)]
+struct ModelsQuery {
+    since: Option<i64>,
+}
+
+/// How each model the orchestrator chose did, for `alondra models`; local only.
+async fn models(
+    State(state): State<Arc<V2Only>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Query(query): Query<ModelsQuery>,
+) -> Response {
+    if let Some(refused) = local_only(&peer, &headers) {
+        return refused;
+    }
+    let domain = state.domain();
+    match tokio::task::spawn_blocking(move || domain.model_report(query.since, alondra_core::now_millis())).await {
+        Ok(Ok(report)) => Json(report).into_response(),
+        _ => crate::domain_api::domain_error(DomainError::new("storage_unavailable", "the model report could not be read")),
+    }
 }
 
 async fn revoke_device(
@@ -1011,6 +1034,11 @@ mod tests {
             .unwrap();
         assert_eq!(daemon["version"], env!("CARGO_PKG_VERSION"));
         assert_eq!(daemon["update"]["current"], env!("CARGO_PKG_VERSION"));
+        for path in ["/models", "/models?since=0"] {
+            let report: alondra_core::model_report::ModelReport =
+                client.get(format!("{base}{path}")).send().await.unwrap().json().await.unwrap();
+            assert!(report.by_model.is_empty() && report.sonnet_trouble.is_empty(), "{path}");
+        }
         for (method, path) in [
             ("POST", "/v1/nodes/n/messages"),
             ("PUT", "/v1"),

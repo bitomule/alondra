@@ -137,6 +137,12 @@ pub(crate) struct ContextReading {
     pub window: u64,
 }
 
+impl ContextReading {
+    pub(crate) fn full_percent(&self) -> Option<f64> {
+        self.percent.or_else(|| self.tokens.filter(|_| self.window > 0).map(|tokens| tokens as f64 * 100.0 / self.window as f64))
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Answer {
     pub text: String,
@@ -172,6 +178,8 @@ pub(crate) struct Reported {
     pub tool: Option<ToolInFlight>,
     pub answer: Option<Answer>,
     pub context: Option<ContextReading>,
+    /// The fullest the context has been while the daemon watched, in percent.
+    pub context_peak: Option<f64>,
     pub cost_usd: Option<f64>,
     /// The model id the main thread last sent a request with.
     pub model: Option<String>,
@@ -355,7 +363,11 @@ impl Reports {
             }
             Report::Measure { context, cost_usd, .. } => {
                 if let Some(context) = context {
-                    session.context = Some(ContextReading { percent: context.percent, tokens: context.tokens, window: context.window });
+                    let reading = ContextReading { percent: context.percent, tokens: context.tokens, window: context.window };
+                    if let Some(percent) = reading.full_percent() {
+                        session.context_peak = Some(session.context_peak.map_or(percent, |peak| peak.max(percent)));
+                    }
+                    session.context = Some(reading);
                 }
                 session.cost_usd = cost_usd.or(session.cost_usd);
             }
