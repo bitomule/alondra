@@ -174,8 +174,19 @@ async function connect($: EngineInterface): Promise<void> {
   })
 }
 
+let reportedModel: string | undefined
+
 export const register: Register = (on) => {
+  on('turn.step', async function* ($, e, next) {
+    if (e.agentId === undefined && e.model !== reportedModel) {
+      reportedModel = e.model
+      queue($, { event: 'model', model: e.model })
+    }
+    return yield* next(e)
+  })
+
   on('session.start', async ($, e, next) => {
+    reportedModel = undefined
     const started = await next(e)
     const { version } = await $.session.version()
     const id = await $.session.id()

@@ -46,6 +46,7 @@ fn world() -> Fixture {
     run(&domain, user(), task("t1", Some("agent-a"), &[]));
     run(&domain, user(), task("t2", None, &["t1"]));
     domain.live.observe(&json!({"session_id": "agent-a", "hook_event_name": "UserPromptSubmit", "cwd": "/Users/me/Projects/App", "prompt": "go"}));
+    domain.live.mods.apply(serde_json::from_value(json!({"session_id": "agent-a", "event": "model", "model": "claude-sonnet-5-5"})).unwrap(), 1);
     domain.live.observe(&json!({"session_id": "stranger", "hook_event_name": "UserPromptSubmit", "cwd": "/Users/me/Projects/App", "prompt": "go"}));
     Fixture(home, domain)
 }
@@ -64,6 +65,7 @@ fn the_fleet_lists_live_agents_what_waits_on_someone_and_the_requests() {
     let nodes = fleet["nodes"].as_array().unwrap();
     assert_eq!(nodes.len(), 1, "only sessions the domain knows as Agents: {nodes:?}");
     assert_eq!((nodes[0]["name"].as_str(), nodes[0]["project"].as_str()), (Some("Instance A"), Some("App")));
+    assert_eq!(nodes[0]["model"], "claude-sonnet-5-5");
     let open: Vec<&str> = fleet["open_questions"].as_array().unwrap().iter().map(|q| q["id"].as_str().unwrap()).collect();
     assert_eq!(open, ["q-open", "q-orch"], "a withdrawn question waits on nobody");
     assert_eq!(fleet["open_questions"][1]["to_orchestrator"], true);
@@ -86,6 +88,7 @@ fn a_node_is_found_by_name_or_id_with_its_questions_results_and_undelivered_mess
     let by_name = node(&f.1, "Instance A").unwrap();
     assert_eq!(by_name, node(&f.1, "agent-a").unwrap());
     assert_eq!(by_name["node"]["name"], "Instance A");
+    assert_eq!(by_name["node"]["model"], "claude-sonnet-5-5");
     assert_eq!(by_name["questions"][0]["status"], "answered");
     assert_eq!(by_name["messages"].as_array().unwrap().len(), 1, "the answer waits for its next turn");
     assert_eq!(by_name["messages_held_for_turn_end"], 1);
@@ -103,6 +106,7 @@ fn candidates_are_the_free_live_agents_tied_to_the_task_or_its_project() {
     assert_eq!((busy.len(), busy[0]["node"].as_str()), (1, Some("Instance A")));
     assert_eq!(busy[0]["why"], json!(["works on t1 “Title t1”, which t2 builds on"]));
     assert_eq!(busy[0]["task"]["id"], "t1");
+    assert_eq!(busy[0]["model"], "claude-sonnet-5-5");
     assert_eq!(candidates(&f.1, Some("t1"), None).unwrap()["candidates"][0]["node"], "Instance A", "its own Task does not make it busy");
     let by_repo = candidates(&f.1, None, Some("me/App")).unwrap();
     assert_eq!((by_repo["candidates"].clone(), by_repo["busy"][0]["why"].clone()), (json!([]), json!(["works in project App"])));

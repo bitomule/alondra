@@ -1090,7 +1090,7 @@ fn fleet_summary(o: &Value, all: bool) -> Value {
         } else if !all && !present {
             gone += 1;
         } else {
-            let mut row = pick(&n, &["name", "short_id", "project", "state", "state_since", "daemon_needs", "waiting_permission", "alive", "in_daemon", "undeliverable_messages"]);
+            let mut row = pick(&n, &["name", "short_id", "project", "state", "state_since", "model", "daemon_needs", "waiting_permission", "alive", "in_daemon", "undeliverable_messages"]);
             if let Some(b) = running(&n) {
                 row["background"] = b;
             }
@@ -1258,7 +1258,7 @@ fn node_view(d: &Value, page: Page) -> Value {
     let history = page != Page::Recent;
     let mut node = pick(
         d.get("node").unwrap_or(&Value::Null),
-        &["name", "short_id", "cwd", "state", "state_since", "alive", "in_daemon", "is_orchestrator", "busy", "tool", "waiting_permission",
+        &["name", "short_id", "cwd", "model", "state", "state_since", "alive", "in_daemon", "is_orchestrator", "busy", "tool", "waiting_permission",
           "menu_waiting", "mission", "daemon_needs", "usage_limited", "evidence", "last_prompt", "last_prompt_at", "last_message", "last_message_at"],
     );
     if let Some(b) = d.get("node").and_then(running) {

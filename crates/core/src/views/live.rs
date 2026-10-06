@@ -98,6 +98,9 @@ pub struct LiveNode {
     pub context_window: Option<u64>,
     #[serde(default)]
     pub cost_cents: Option<u64>,
+    /// The model id the node's main thread runs on.
+    #[serde(default)]
+    pub model: Option<String>,
     #[serde(default)]
     pub reconnecting: bool,
     /// A node stopped by the usage limit waits for the machine until this local ISO time.

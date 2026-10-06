@@ -208,6 +208,9 @@ pub(super) fn node_row(agent: &crate::domain_v2::Agent, context: &RenderContext<
     {
         row.badges.push(super::Label { text: text.clone(), tone: if live.background_suspect { Tone::Warning } else { Tone::Neutral } });
     }
+    if let Some(model) = live.and_then(|live| live.model.as_deref()) {
+        row.badges.push(super::Label { text: crate::model_label::model_label(model), tone: Tone::Neutral });
+    }
     row
 }
 
@@ -358,6 +361,9 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
         if node.last_turn_aborted && !node.working {
             readings.push(Fact { label: t!(lang, "Last turn", "Último turno").into(),
                 value: t!(lang, "Interrupted", "Interrumpido").into(), tone: Some(Tone::Warning), link: None });
+        }
+        if let Some(model) = &node.model {
+            readings.push(Fact { label: t!(lang, "Model", "Modelo").into(), value: crate::model_label::model_label(model), tone: None, link: None });
         }
         if let Some(percent) = node.context_percent {
             let label = context_label(percent, lang);
