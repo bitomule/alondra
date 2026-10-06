@@ -16,6 +16,7 @@ public final class AccountSession {
     private let prepareCamera: @Sendable () async -> Bool
     private let didReconcile: @MainActor (ApprovedSessionRegistry<Connection>.Snapshot) async throws -> (@MainActor () throws -> Void)
     private let willDeactivate: @MainActor () async throws -> Void
+    private let pushBinding: @MainActor (ApprovedServicePairing) -> String?
     @ObservationIgnored private var storedRegistry: ApprovedSessionRegistry<Connection>?
     private var registry: ApprovedSessionRegistry<Connection> {
         if let storedRegistry { return storedRegistry }
@@ -62,6 +63,12 @@ public final class AccountSession {
         $0.cloudPairing.classify = {
             ConnectionClassifier.problem(for: $0, local: false, networkOffline: NetworkReachability.shared.isOffline)
         }
+        $0.cloudPairing.describe = { error in
+            if let error = error as? PairingError, let message = error.errorDescription { return message }
+            if let error = error as? AuthError, let message = error.errorDescription { return message }
+            let problem = ConnectionClassifier.problem(for: error, local: false, networkOffline: NetworkReachability.shared.isOffline)
+            return String(localized: problem.title)
+        }
         $0.cloudPairing.hasSavedConfiguration = { [self] in
             if try await auth.requiresRevocation() { return true }
             return try await pairing.approvedPairing() != nil
@@ -70,8 +77,10 @@ public final class AccountSession {
     public init(auth: AuthSession, displayName: String, storageDirectory: URL,
                 prepareCamera: @escaping @Sendable () async -> Bool = { false },
                 didReconcile: @escaping @MainActor (ApprovedSessionRegistry<Connection>.Snapshot) async throws -> (@MainActor () throws -> Void) = { _ in {} },
-                willDeactivate: @escaping @MainActor () async throws -> Void = {}) {
+                willDeactivate: @escaping @MainActor () async throws -> Void = {},
+                pushBinding: @escaping @MainActor (ApprovedServicePairing) -> String? = { _ in nil }) {
         self.auth = auth
+        self.pushBinding = pushBinding
         self.displayName = displayName
         self.storageDirectory = storageDirectory
         self.prepareCamera = prepareCamera
@@ -109,8 +118,11 @@ public final class AccountSession {
         cancel: { [self] in await cancelDirect() },
         describe: { error in
             if error is CancellationError { return String(localized: "Pairing was cancelled.") }
-            return (error as? PairingError)?.errorDescription
-                ?? String(localized: "Alondra couldn’t pair with that Mac. Try again.")
+            // The other pairing errors speak about the QR code, which this path never shows.
+            if let error = error as? PairingError,
+               [.alreadyLinked, .denied, .busy, .macUnreachable, .requestExpired].contains(error),
+               let sentence = error.errorDescription { return sentence }
+            return String(localized: "Alondra couldn’t pair with that Mac. Try again.")
         })
     }
 
@@ -274,18 +286,16 @@ public final class AccountSession {
         let relayPairings = collection.pairings.filter(\.hasRelay)
         guard collection.pairings.isEmpty || !relayPairings.isEmpty else { return nil }
         do { _ = try await auth.hasSession() }
-        catch AuthError.pendingRevocation {
-            throw RestoreError.revocationRequired(AuthError.pendingRevocation.localizedDescription)
-        } catch AuthError.rotationUncertain {
-            throw RestoreError.revocationRequired(AuthError.rotationUncertain.localizedDescription)
+        catch AuthError.pendingRevocation, AuthError.rotationUncertain {
+            throw RestoreError.revocationRequired
         }
         guard !relayPairings.isEmpty else { return nil }
         let subject: String
         do { subject = try await auth.verifiedSubject() }
-        catch AuthError.noSession { throw RestoreError.reauthenticationRequired("Sign in again to reconnect your saved workspace.") }
+        catch AuthError.noSession { throw RestoreError.reauthenticationRequired }
         let authorized = relayPairings.filter { $0.ownerSub == subject }
         guard !authorized.isEmpty else {
-            throw RestoreError.reauthenticationRequired("Sign in with the account that paired this workspace.")
+            throw RestoreError.reauthenticationRequired
         }
         for approved in authorized { try Self.validateRelay(approved.relayURL) }
         return subject
@@ -439,6 +449,7 @@ public final class AccountSession {
     private func logout() async throws {
         // Attempt every revocation even when notification/keychain cleanup fails.
         var failures: [String] = []
+        await removePushBindings()
         do { try await deactivate() } catch { failures.append(error.localizedDescription) }
         do {
             try await auth.logout()
@@ -447,6 +458,29 @@ public final class AccountSession {
         if !failures.isEmpty { throw CleanupFailure(details: failures.joined(separator: "\n")) }
         // Macs paired on the local network never depended on the account.
         _ = try? await restore()
+    }
+    /// Best effort while the sessions can still reach each Mac; the relay unregistration
+    /// queued by the notification cleanup covers a Mac that does not answer in time.
+    private func removePushBindings() async {
+        guard let storedRegistry else { return }
+        let removals = storedRegistry.snapshot.entries.compactMap { entry in
+            pushBinding(entry.approved).map { (entry.session.api, $0) }
+        }
+        guard !removals.isEmpty else { return }
+        let (settled, settle) = AsyncStream<Void>.makeStream()
+        let removal = Task {
+            await withTaskGroup(of: Void.self) { group in
+                for (api, binding) in removals { group.addTask { try? await api.removeServicePushBinding(binding) } }
+            }
+            settle.yield()
+        }
+        let deadline = Task {
+            try? await Task.sleep(for: .seconds(3))
+            settle.yield()
+        }
+        for await _ in settled { break }
+        removal.cancel()
+        deadline.cancel()
     }
     private struct CleanupFailure: LocalizedError {
         let details: String

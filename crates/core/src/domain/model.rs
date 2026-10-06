@@ -124,6 +124,42 @@ pub struct Task {
     /// and for launches that left Claude's default model.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<TaskModel>,
+    /// How the task's end reaches its node: the cleanup request, the node's confirmation and what
+    /// became of the node.
+    #[serde(default, skip_serializing_if = "WrapUp::is_default")]
+    pub wrap_up: WrapUp,
+}
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WrapUp {
+    /// The revision at which Alondra asked the node to clean up.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asked_at: Option<Revision>,
+    /// The revision of the node's last `cleanup_done`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cleaned_at: Option<Revision>,
+    /// The task was cancelled while it had a node, so Alondra closes that node.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub close_cancelled: bool,
+    /// What became of the node.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node: Option<NodeEnd>,
+}
+impl WrapUp {
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NodeEnd {
+    /// Alondra closed it with `claude rm` and its worktree is gone.
+    Closed,
+    /// It was already gone from `claude agents` when Alondra came to close it.
+    Gone,
+    /// Alondra could not close it and the user chose to leave it open.
+    KeptByUser,
+    /// It is not a session Alondra launched (the user's own, or the orchestrator): never closed.
+    UsersOwn,
 }
 impl Task {
     /// Still under way or waiting on something: what every client counts as a Task in progress.

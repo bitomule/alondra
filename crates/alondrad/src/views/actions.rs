@@ -394,7 +394,7 @@ fn relaunch_reply(result: Result<Value, DomainError>) -> (u16, Value) {
         Err(error) => {
             let status = match error.code.as_str() {
                 "not_found" => 404,
-                "conflict" | "agent_busy" => 409,
+                "conflict" | "agent_busy" | "agent_used" | "task_closing" => 409,
                 _ => 422,
             };
             (status, json!({"code": error.code, "message": error.message}))
@@ -1123,6 +1123,8 @@ fn rejection_message(lang: Lang, code: &str, english: &str) -> String {
         "dependency_not_done" => "Completa primero la tarea dependiente",
         "not_assigned" => "La tarea ya no está asignada a este nodo",
         "agent_busy" => "Ese nodo está en otra tarea hasta que acabe: lanza un nodo nuevo para esta",
+        "agent_used" => "Ese nodo ya trabajó en otra tarea: lanza un nodo nuevo para esta",
+        "task_closing" => "El PR de esta tarea ya está fusionado y la tarea se está cerrando: pide más trabajo como una petición nueva",
         "invalid_action_for_kind" => "Esta acción no se puede aplicar a este elemento",
         "acceptance_missing" => "Autoriza primero la fusión de la PR presentada",
         "subject_already_linked" => "Este elemento ya está vinculado a otra tarea",
@@ -1305,6 +1307,9 @@ mod tests {
             apply_seed_command(&domain, Actor::User { user_id: "user".into() }, &format!("accept-{task_id}"), Command::AcceptDelivery {
                 presentation_id: delivery_id.clone().into(),
                 targets: vec![DeliveryTarget::Text { text: "Complete".into() }],
+            });
+            apply_seed_command(&domain, Actor::System, &format!("end-{task_id}"), Command::RecordNodeEnd {
+                task_id: task_id.into(), end: alondra_core::domain::NodeEnd::Closed, agent_id: None,
             });
         }
 

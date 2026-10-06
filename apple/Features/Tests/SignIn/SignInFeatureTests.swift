@@ -34,11 +34,15 @@ struct SignInFeatureTests {
         let store = TestStore(initialState: state) { SignInFeature() } withDependencies: {
             $0.cloudPairing = SignInClient(restore: { false }, login: {}, begin: { _ in throw Refused() },
                 approve: {}, cancel: {}, logout: {})
+            $0.cloudPairing.describe = { error in
+                #expect(error is Refused)
+                return "Linking didn’t finish."
+            }
         }
         await store.send(.scanned("QR")) { $0.payload = "QR" }
         await store.receive(\.submit) { $0.payload = ""; $0.phase = .submitting }
         await store.receive(\.failed) {
-            $0.phase = .scanning; $0.cameraReady = false; $0.error = "Pairing refused (409)"
+            $0.phase = .scanning; $0.cameraReady = false; $0.error = "Linking didn’t finish."
         }
         await store.finish()
     }

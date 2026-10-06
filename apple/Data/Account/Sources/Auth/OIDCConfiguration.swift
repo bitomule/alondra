@@ -6,19 +6,27 @@ public struct OIDCConfiguration: Sendable {
         /// Requires a verified issuer contract: revoking a predecessor invalidates its successor.
         case offlineSession
     }
+    public enum RefreshReplay: Sendable {
+        /// Refreshing may consume the old token; a lost response leaves its successor unknown.
+        case singleUse
+        /// Requires a verified issuer contract: refreshing never invalidates the predecessor.
+        case predecessorStaysValid
+    }
     public let issuer: URL
     public let clientID: String
     public let redirectURI: URL
     public let scopes: [String]
     public let revocationScope: RevocationScope
+    public let refreshReplay: RefreshReplay
 
     public init(issuer: URL, clientID: String, redirectURI: URL, scopes: [String],
-                revocationScope: RevocationScope = .credential) {
+                revocationScope: RevocationScope = .credential, refreshReplay: RefreshReplay = .singleUse) {
         self.issuer = issuer
         self.clientID = clientID
         self.redirectURI = redirectURI
         self.scopes = scopes
         self.revocationScope = revocationScope
+        self.refreshReplay = refreshReplay
     }
 
     public static let alondra = OIDCConfiguration(
@@ -26,9 +34,12 @@ public struct OIDCConfiguration: Sendable {
         clientID: "alondra-ios",
         redirectURI: URL(string: "com.bitomule.alondra:/oauth2redirect/keycloak")!,
         scopes: ["openid", "profile", "offline_access"],
-        // Keycloak 26.7.4, revokeRefreshToken=false: deploy/pi smoke verifies
-        // predecessor revocation invalidates both tokens. Recheck on issuer drift.
-        revocationScope: .offlineSession
+        // Keycloak 26.7.4, revokeRefreshToken=false. deploy/pi/smoke-refresh-revocation.py
+        // checks that revoking a predecessor rejects every token it led to (passed 2026-09-26)
+        // and that a refreshed predecessor still refreshes (added 2026-10-06, not yet run on
+        // the Pi; Keycloak documents it under "Revoke Refresh Token"). Rerun on issuer drift.
+        revocationScope: .offlineSession,
+        refreshReplay: .predecessorStaysValid
     )
 }
 
@@ -94,17 +105,14 @@ public protocol RefreshTokenStorage: Sendable {
 extension AuthError: LocalizedError {
     public var errorDescription: String? {
         switch self {
-        case .pendingRevocation: "Sign out is incomplete. Retry to revoke the saved session."
-        case .rotationUncertain: "The refresh response was lost. Revoke this session from your account before reconnecting; local sign out cannot confirm revocation."
-        case .operationInProgress: "An account operation is already in progress."
-        case .noSession: "Sign in again to reconnect your saved workspace."
-        case .oauth(_, let code) where code == "invalid_client": "The authentication client configuration was rejected."
-        case .oauth: "The authentication service rejected the request."
-        case .httpStatus(let status): "The authentication service returned HTTP \(status)."
-        case .keychain(let status): "The secure credential store is unavailable (\(status))."
-        case .invalidDiscovery: "The authentication service configuration is invalid."
-        case .invalidRedirect, .stateMismatch: "The sign-in callback could not be verified."
-        case .invalidToken: "The authentication credential could not be verified."
+        case .pendingRevocation: String(localized: "Signing out didn’t finish. Finish signing out to continue.")
+        case .rotationUncertain: String(localized: "Your session couldn’t be renewed. Sign out and sign in again to reconnect.")
+        case .operationInProgress: String(localized: "Your account is busy with another step. Try again in a moment.")
+        case .noSession: String(localized: "Sign in again to reconnect. Your pairing and saved work are kept.")
+        case .oauth, .invalidDiscovery: String(localized: "The sign-in service isn’t working right now. Try again later.")
+        case .httpStatus: String(localized: "The sign-in service isn’t answering. Alondra keeps trying.")
+        case .keychain: String(localized: "This device couldn’t read its saved sign-in. Restart the app and try again.")
+        case .invalidRedirect, .stateMismatch, .invalidToken: String(localized: "Sign-in couldn’t be completed. Try again.")
         }
     }
 }

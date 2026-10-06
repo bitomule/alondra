@@ -69,6 +69,28 @@ public final class PushBindingStore {
     /// Explicit logout still removes every retained scope. Selection is not logout.
     public func clear() { defaults.removeObject(forKey: key) }
 
+    public var live: Set<NotificationPayload.Binding> {
+        Set((read()?.records ?? []).compactMap { NotificationPayload.Binding($0.binding) })
+    }
+
+    /// The binding a pairing registered, whichever credential revision it was made with.
+    public func registered(relayURL: URL, ownerSub: String, macID: String, deviceID: String) -> String? {
+        read()?.records.last {
+            $0.scope.relayURL == relayURL && $0.scope.ownerSub == ownerSub
+                && $0.scope.macID == macID && $0.scope.deviceID == deviceID
+        }?.binding
+    }
+
+    public var relayURL: URL? { read()?.records.last?.scope.relayURL }
+
+    /// Queues every scoped binding for the relay to forget before the scopes are dropped.
+    /// Legacy records name no relay and are only dropped.
+    public func retire(into ledger: PushUnregistrationLedger) {
+        let records = read()?.records ?? []
+        try? ledger.enqueue(records.map { PushUnregistrationLedger.Entry(relayURL: $0.scope.relayURL, pushBinding: $0.binding) })
+        clear()
+    }
+
     private func read() -> Collection? {
         guard let data = defaults.data(forKey: key) else { return Collection(version: 1, records: [], legacy: nil) }
         guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }

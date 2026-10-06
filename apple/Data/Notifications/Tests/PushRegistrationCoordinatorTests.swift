@@ -1,4 +1,5 @@
 import AlondraNotifications
+import AlondraTransport
 import Foundation
 import Testing
 @testable import AlondraNotifications
@@ -110,4 +111,40 @@ private func registrationClient(_ n: UInt8, recorder: RegistrationRecorder) -> N
     await coordinator.waitForPendingRegistration()
     #expect(await recorder.calls.map(\.mac) == ["mac-1", "mac-2"])
     guard case .failed = coordinator.state else { Issue.record("offline registration must remain visible"); return }
+}
+
+@Test @MainActor func failedRegistrationShowsItsOwnMessageNotTheErrorText() async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let coordinator = PushRegistrationCoordinator(preferences: PushPreferencesLedger(file: directory.appendingPathComponent("ledger.json")))
+    let recorder = RegistrationRecorder()
+    await recorder.fail("mac-1")
+    try coordinator.update(clients: [registrationClient(1, recorder: recorder)],
+        token: "token", environment: "sandbox", quietStart: nil, quietEnd: nil)
+    await coordinator.waitForPendingRegistration()
+    #expect(coordinator.state == .failed("Your Mac didn’t accept this device’s alerts. Alondra tries again when you reopen the app."))
+}
+
+@Test(arguments: [
+    (URLError(.timedOut) as any Error, "Your Mac couldn’t be reached to turn on alerts. Alondra tries again when you reopen the app."),
+    (RelayWireError.unauthorized as any Error, "Your Mac no longer accepts this device. Link it again in Settings."),
+    (APIError.unauthorized as any Error, "Your Mac no longer accepts this device. Link it again in Settings."),
+    (RelaySessionError.outcomeUnknown as any Error, "Your Mac couldn’t be reached to turn on alerts. Alondra tries again when you reopen the app."),
+    (CocoaError(.fileReadCorruptFile) as any Error, "Your Mac didn’t accept this device’s alerts. Alondra tries again when you reopen the app."),
+])
+func everyRegistrationFailureHasItsOwnMessage(error: any Error, message: String) {
+    #expect(PushRegistrationCoordinator.failureMessage(error) == message)
+}
+
+@Test @MainActor func duplicateMacsAreRejectedWithAReadableReason() throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let coordinator = PushRegistrationCoordinator(preferences: PushPreferencesLedger(file: directory.appendingPathComponent("ledger.json")))
+    let recorder = RegistrationRecorder()
+    #expect(throws: PushRegistrationCoordinator.Failure.duplicateIdentity) {
+        try coordinator.update(clients: [registrationClient(1, recorder: recorder), registrationClient(1, recorder: recorder)],
+            token: "token", environment: "sandbox", quietStart: nil, quietEnd: nil)
+    }
+    #expect(PushRegistrationCoordinator.Failure.duplicateIdentity.errorDescription
+        == "Two linked Macs look like the same Mac. Remove one in Settings and link it again.")
 }

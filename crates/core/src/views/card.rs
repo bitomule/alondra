@@ -1397,6 +1397,8 @@ pub(super) fn disabled_reason(code: &str, lang: Lang) -> &'static str {
         "not_found" => t!(lang, "This was deleted", "Esto se ha borrado"),
         "not_assigned" => t!(lang, "Another node works on this task now", "Ahora otro nodo trabaja en esta tarea"),
         "agent_busy" => t!(lang, "That node is busy with another task", "Ese nodo está ocupado con otra tarea"),
+        "agent_used" => t!(lang, "That node already worked on another task", "Ese nodo ya trabajó en otra tarea"),
+        "task_closing" => t!(lang, "This task's pull request is already merged and the task is closing", "El PR de esta tarea ya está fusionado y la tarea se está cerrando"),
         "question_already_answered" | "already_answered" => t!(lang, "Already answered", "Ya respondida"),
         "already_withdrawn" => t!(lang, "Withdrawn", "Retirada"),
         "ask_already_open" => t!(lang, "Another question of this node is still open", "Otra pregunta de este nodo sigue abierta"),

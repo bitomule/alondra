@@ -13,12 +13,15 @@ final class NotificationRuntime {
     let push: PushCenter
     private let bindings = PushBindingStore()
     private let vault: NotificationDecryptionStore?
+    private let orphans: OrphanBindingStore?
+    private let unregistrar = PushUnregistrar(ledger: PushUnregistrationLedger(
+        file: AppStorageLocation.applicationSupport(bundleID: "com.bitomule.alondra").appendingPathComponent("push-unregistration.json")))
     @ObservationIgnored var selectSession: (@MainActor (ApprovedPairingID) async throws -> Void)?
     @ObservationIgnored var prepareSession: (@MainActor () async throws -> Void)?
     @ObservationIgnored private lazy var responder = NotificationResponder(push: push, prepare: { [weak self] in
         guard let self else { return }
         do { try await prepareSession?() }
-        catch { self.error = error.localizedDescription }
+        catch { self.error = String(localized: "Alondra couldn’t reconnect to answer this alert. Open the app to reconnect.") }
     })
     private var identity: ObjectIdentifier?
     private var generation = 0
@@ -28,7 +31,9 @@ final class NotificationRuntime {
         let group = Bundle.main.object(forInfoDictionaryKey: "AlondraPushKeychainAccessGroup") as? String
         let store = group.flatMap { $0.isEmpty || $0.contains("$(") ? nil : NotificationDecryptionStore(accessGroup: $0) }
         vault = store
+        orphans = store == nil ? nil : group.map(OrphanBindingStore.init(accessGroup:))
         push = PushCenter()
+        push.onRegistered = { [weak self] in self?.drainUnregistrations() }
     }
 
     func owns(_ services: Connection) -> Bool { identity == ObjectIdentifier(services) }
@@ -88,7 +93,7 @@ final class NotificationRuntime {
                 if push.authorization == .authorized { push.registerWithAPNs() }
             }
         } catch {
-            if current == generation { self.error = error.localizedDescription }
+            if current == generation { self.error = String(localized: "Alerts for this Mac couldn’t be set up. Alondra tries again when you reopen the app.") }
             throw error
         }
     }
@@ -98,7 +103,8 @@ final class NotificationRuntime {
         let current = generation
         identity = nil
         push.clear()
-        bindings.clear()
+        bindings.retire(into: unregistrar.ledger)
+        drainUnregistrations()
         UNUserNotificationCenter.current().removeAllDeliveredNotifications()
         UNUserNotificationCenter.current().removeAllPendingNotificationRequests()
         do {
@@ -106,9 +112,27 @@ final class NotificationRuntime {
             try vault.clear()
             if current == generation { error = nil }
         } catch {
-            if current == generation { self.error = error.localizedDescription }
+            if current == generation { self.error = String(localized: "This iPhone couldn’t remove its saved alert keys. Sign out again to retry.") }
             throw error
         }
+    }
+
+    /// The account session ended without a sign-out: its bindings stop receiving pushes.
+    func retireBindings() {
+        bindings.retire(into: unregistrar.ledger)
+        drainUnregistrations()
+    }
+
+    /// A Mac paired on the local network has no relay, so it never has a push binding.
+    func pushBinding(for approved: ApprovedServicePairing) -> String? {
+        guard let relayURL = approved.relayURL, let ownerSub = approved.ownerSub else { return nil }
+        return bindings.registered(relayURL: relayURL, ownerSub: ownerSub, macID: approved.macID, deviceID: approved.deviceID)
+    }
+
+    func drainUnregistrations() {
+        let live = bindings.live
+        if let orphans { try? PushUnregistrar.promote(orphans, into: unregistrar.ledger, live: live, relay: bindings.relayURL) }
+        Task { [unregistrar, orphans] in await unregistrar.drain(live: live, orphans: orphans) }
     }
 
     /// A Mac's silent push saying which of its cards still wait: their notifications stay, the

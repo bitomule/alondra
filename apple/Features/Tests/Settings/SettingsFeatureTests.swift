@@ -47,12 +47,27 @@ import Foundation
                 #expect(id == b)
                 throw Failure.offline
             }
+            $0.serviceSettings.problem = { _ in .macNotAnswering }
         }
         await store.send(.selectMac(UUID()))
         await store.send(.selectMac(a))
         await store.send(.selectMac(b)) { $0.selectingMacID = b }
-        await store.receive(\.macSelectionFailed) { $0.selectingMacID = nil; $0.macError = "The Mac is offline." }
+        await store.receive(\.macSelectionFailed) { $0.selectingMacID = nil; $0.macError = .macNotAnswering }
         #expect(store.state.selectedMacID == a)
+    }
+
+    @Test func cancelledMacSelectionShowsNoError() async {
+        let a = UUID(), b = UUID()
+        var state = SettingsFeature.State(service: "service", device: "phone", supportsNotifications: false)
+        state.macs = [.init(id: a, macID: "mac-a"), .init(id: b, macID: "mac-b")]
+        state.selectedMacID = a
+        let store = TestStore(initialState: state) { SettingsFeature() } withDependencies: {
+            $0.serviceSettings.selectMac = { _ in throw CancellationError() }
+            $0.serviceSettings.problem = { _ in Issue.record("Cancellation is not a problem"); return .unexpected }
+        }
+        await store.send(.selectMac(b)) { $0.selectingMacID = b }
+        await store.receive(\.macSelectionFailed) { $0.selectingMacID = nil }
+        #expect(store.state.macError == nil)
     }
     @Test func completionAfterClosingCannotSelectAnotherMac() async {
         let a = UUID(), b = UUID()
@@ -62,7 +77,7 @@ import Foundation
         let store = TestStore(initialState: state) { SettingsFeature() }
         await store.send(.disappeared) { $0.generation = 1; $0.selectingMacID = nil }
         await store.send(.macSelected(b, 0))
-        await store.send(.macSelectionFailed("stale", 0))
+        await store.send(.macSelectionFailed(.macNotAnswering, 0))
         #expect(store.state.selectedMacID == a)
         #expect(store.state.macError == nil)
     }

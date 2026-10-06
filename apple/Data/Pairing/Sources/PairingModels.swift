@@ -14,14 +14,18 @@ public enum PairingError: LocalizedError, Equatable, Sendable {
     case denied
     case busy
     case macUnreachable
+    case requestExpired
     public var errorDescription: String? {
         switch self {
         case .alreadyLinked: String(localized: "This Mac is already linked. Select it in Settings.")
         case .denied: String(localized: "The Mac didn’t allow this device.")
-        case .expired: String(localized: "The request expired before the Mac answered. Try again.")
         case .busy: String(localized: "The Mac has too many requests right now. Try again in a few minutes.")
         case .macUnreachable: String(localized: "Can’t reach that Mac. Check that it’s on and on this network.")
-        default: nil
+        case .requestExpired: String(localized: "The request expired before the Mac answered. Try again.")
+        case .invalidInvitation: String(localized: "This QR code isn’t from Alondra. Scan the code your Mac shows.")
+        case .expired: String(localized: "This QR code has expired. Show a new one on your Mac and scan it.")
+        case .invalidApproval, .invalidIdentity, .invalidResponse, .missingAttempt, .unexpectedStatus:
+            String(localized: "Linking didn’t finish. Show a new QR code on your Mac and scan it again.")
         }
     }
 }

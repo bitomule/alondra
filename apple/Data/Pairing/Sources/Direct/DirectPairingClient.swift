@@ -102,7 +102,7 @@ public actor DirectPairingClient {
         let path = "/direct/pairing/\(attempt.transcript.pairingID)"
         while true {
             try Task.checkCancellation()
-            guard now() < attempt.expiresAtMs else { throw PairingError.expired }
+            guard now() < attempt.expiresAtMs else { throw PairingError.requestExpired }
             let reply: HTTPReply
             do { reply = try await http.get(attempt.endpoint, path: path, timeout: .seconds(5)) }
             catch is URLError { try await pause(); continue }
@@ -123,7 +123,7 @@ public actor DirectPairingClient {
                 try store.save(approved)
                 return approved
             case "denied": throw PairingError.denied
-            case "expired": throw PairingError.expired
+            case "expired": throw PairingError.requestExpired
             default: try await pause()
             }
         }
@@ -151,7 +151,7 @@ public actor DirectPairingClient {
         switch reply.status {
         case 200: return reply.body
         case 403: throw PairingError.denied
-        case 410: throw PairingError.expired
+        case 410: throw PairingError.requestExpired
         case 429: throw PairingError.busy
         default: throw PairingError.unexpectedStatus(reply.status)
         }

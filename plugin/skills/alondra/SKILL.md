@@ -80,8 +80,12 @@ Pick the tool by what you need:
   this session is not a delivery. Commit and push everything first: Alondra refuses a final result
   while your worktree has uncommitted files, unpushed commits, or work that is neither on the
   default branch nor in your registered PR, and says what is left.
-- When the user accepts your final result, Alondra closes the task itself; for a PR it merges it
-  first and tells you. There is nothing left to call.
+- When the user accepts your final result (for a PR, once Alondra has merged it) the task is
+  closing: Alondra asks you to delete what you generated that git does not track (build outputs,
+  caches, temporary files), with the project's own tools, and to call `cleanup_done`. Change
+  nothing else. Alondra then closes this session and its worktree; if you do not answer, it
+  closes it after a while anyway. If it tells you something stops it from closing the session,
+  fix it and call `cleanup_done` again.
 - Do not end your turn while your task is open with no result and no question: Alondra sends you
   back to work with the reason, and after three times it tells the user you cannot deliver.
 - `create_document` / `revise_document`: a file the user reviews. Copy it into Alondra's files
@@ -139,9 +143,12 @@ Pick the tool by what you need:
 
 ## One task at a time
 
-Your subagents work on your task; they need no task of their own. Something new the user asks
+You work on one task for your whole life: Alondra closes this session with it. Your subagents work on your task; they need no task of their own. Something new the user asks
 for that is not part of your task goes to the orchestrator (`ask` with kind `orchestrator`): it
 launches another node for it.
+
+When Alondra tells you your task was cancelled, stop: do not commit, push or deliver anything;
+delete what you generated that git does not track, and end your turn.
 
 ## Probes and end-to-end tests
 

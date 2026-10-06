@@ -3,6 +3,7 @@ mod log;
 mod approval_lease;
 mod auth;
 mod classify;
+mod cleanup;
 mod claude_trust;
 mod delivery;
 mod direct;
@@ -42,9 +43,13 @@ mod machine_watch;
 mod managed_orchestrator;
 mod markdown;
 mod mods_check;
+mod auto_launch;
+mod launch_plans;
+mod node_close;
 mod node_push;
 mod node_reports;
 mod node_work;
+mod task_closer;
 mod workflow_state;
 mod node_revival;
 mod notices;
@@ -494,6 +499,9 @@ async fn run_domain(config: &Config) -> Result<()> {
         config.home.clone(),
         config.wake,
     ));
+    if config.wake {
+        tokio::spawn(auto_launch::run(domain.clone(), config.home.clone(), orchestrate::ClaudeCli));
+    }
     let transport = tokio::spawn(domain_transport::run(hooks, domain.clone()));
     match plugins::node_source(&watcher::claude_home()).zip(plugins::own_cli()) {
         Some((source, cli)) => match plugins::install_node(&config.home, &source, &cli) {
@@ -504,6 +512,7 @@ async fn run_domain(config: &Config) -> Result<()> {
     }
     tokio::spawn(mods_check::run(plugins::node()));
     tokio::spawn(node_revival::run(state_domain.clone()));
+    tokio::spawn(task_closer::run(state_domain.clone(), client.sessions(), task_closer::Timing::new(config.close_free_nodes_after)));
     let merges_domain = domain.clone();
     tokio::spawn(domain_merges::run(merges_domain, Arc::new(domain_github::GhCli::new())));
     let github = tokio::spawn(domain_github::run(

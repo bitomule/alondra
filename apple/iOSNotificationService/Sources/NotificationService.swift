@@ -16,16 +16,27 @@ final class NotificationService: UNNotificationServiceExtension {
         self.delivery = delivery
         // A service push is opaque until the Mac signature, recipient, expiry and
         // current binding have all been verified. No plaintext push may create actions.
-        guard let group = Bundle.main.object(forInfoDictionaryKey: "AlondraPushKeychainAccessGroup") as? String,
-              var payload = NotificationDecoder.open(userInfo: content.userInfo,
-                                                     store: NotificationDecryptionStore(accessGroup: group)),
+        let group = Bundle.main.object(forInfoDictionaryKey: "AlondraPushKeychainAccessGroup") as? String
+        let store = group.map(NotificationDecryptionStore.init(accessGroup:))
+        guard let store, var payload = NotificationDecoder.open(userInfo: content.userInfo, store: store),
               let binding = NotificationPayload.Binding(userInfo: payload),
               let aps = payload["aps"] as? [String: Any] else {
+            let ended: Bool
+            if let group, let store, case .noKeys(let orphan) = NotificationDecoder.failure(userInfo: content.userInfo, store: store) {
+                try? OrphanBindingStore(accessGroup: group).append(orphan)
+                ended = true
+            } else { ended = false }
             delivery.update { content in
                 content.categoryIdentifier = ""
                 content.title = "Alondra"
-                content.body = String(localized: "Open Alondra to view activity")
                 content.userInfo = [:]
+                if ended {
+                    content.body = String(localized: "Your Alondra session on this iPhone has ended. Open Alondra to sign in again.")
+                    content.interruptionLevel = .passive
+                    content.threadIdentifier = "alondra.session-ended"
+                } else {
+                    content.body = String(localized: "Open Alondra to view activity")
+                }
             }
             delivery.finish(category: nil)
             return

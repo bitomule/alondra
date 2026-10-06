@@ -110,7 +110,7 @@ public enum DirectPairingProtocol {
                   deviceID == expected.deviceID, clientSigningKey == expected.clientSigningKey,
                   clientAgreementKey == expected.clientAgreementKey,
                   transcript == (try expected.digest()) else { throw PairingError.invalidApproval }
-            guard nowMs < expiresAtMs else { throw PairingError.expired }
+            guard nowMs < expiresAtMs else { throw PairingError.requestExpired }
         }
     }
 }

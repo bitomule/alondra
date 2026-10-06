@@ -75,7 +75,7 @@ pub fn routes<H: DomainHost>() -> Router<Arc<H>> {
         ("/tasks/{id}/results", "POST"), ("/tasks/{id}/stack-readiness", "POST"),
         ("/tasks/{id}/completion", "POST"), ("/tasks/{id}/cancellation", "POST"),
         ("/tasks/{id}/reopening", "POST"),
-        ("/tasks/{id}/archival", "POST"),
+        ("/tasks/{id}/archival", "POST"), ("/tasks/{id}/cleanup", "POST"),
         ("/interactions/{id}/answers", "POST"),
         ("/interactions/{id}/withdrawal", "POST"), ("/interactions/{id}/clarification", "POST"),
         ("/interactions/{id}/subject", "PUT"),
@@ -714,13 +714,30 @@ async fn resource_command<H: DomainHost>(
     Path(params): Path<HashMap<String, String>>,
     body: Result<Json<Value>, JsonRejection>,
 ) -> Response {
-    let Ok(Json(body)) = body else {
+    let Ok(Json(mut body)) = body else {
         return domain_error(DomainError::new("invalid_input", "invalid resource command body"));
+    };
+    let plan = match take_launch_plan(method.as_str(), uri.path(), &mut body) {
+        Ok(plan) => plan,
+        Err(error) => return domain_error(error),
     };
     let Some(envelope) = resource_envelope(method.as_str(), uri.path(), &params, body) else {
         return domain_error(DomainError::new("invalid_input", "unsupported resource operation"));
     };
-    execute_command(host, peer, signed, headers, envelope).await
+    execute_command(host, peer, signed, headers, envelope, plan).await
+}
+
+/// The launch plan a new Task carries beside its typed command, taken out of the body so the
+/// command stays strict.
+pub(crate) fn take_launch_plan(method: &str, path: &str, body: &mut Value) -> Result<Option<crate::launch_plans::LaunchPlan>, DomainError> {
+    let creates_task = method == "POST" && path.starts_with("/requests/") && path.ends_with("/tasks");
+    let Some(launch) = creates_task.then(|| body.as_object_mut().and_then(|object| object.remove("launch"))).flatten() else {
+        return Ok(None);
+    };
+    if launch.is_null() {
+        return Ok(None);
+    }
+    serde_json::from_value(launch).map(Some).map_err(|error| DomainError::new("invalid_input", format!("launch: {error}")))
 }
 
 /// `POST /requests` accepts the resource form for producers and the established
@@ -765,7 +782,7 @@ async fn request_resource<H: DomainHost>(
     let Some(envelope) = resource_envelope(method.as_str(), uri.path(), &params, body) else {
         return domain_error(DomainError::new("invalid_input", "invalid Request resource"));
     };
-    execute_command(host, peer, signed, headers, envelope).await
+    execute_command(host, peer, signed, headers, envelope, None).await
 }
 
 pub(crate) fn resource_envelope(
@@ -815,6 +832,7 @@ pub(crate) fn resource_envelope(
         ("POST", p) if p.starts_with("/tasks/") && p.ends_with("/cancellation") => ("cancel_task", Some(("task_id", task?))),
         ("POST", p) if p.starts_with("/tasks/") && p.ends_with("/reopening") => ("reopen_task", Some(("task_id", task?))),
         ("POST", p) if p.starts_with("/tasks/") && p.ends_with("/archival") => ("archive_task", Some(("task_id", task?))),
+        ("POST", p) if p.starts_with("/tasks/") && p.ends_with("/cleanup") => ("confirm_cleanup", Some(("task_id", task?))),
         ("POST", p) if p.starts_with("/interactions/") && p.ends_with("/answers") => ("answer_question", Some(("interaction_id", interaction?))),
         ("POST", p) if p.starts_with("/interactions/") && p.ends_with("/withdrawal") => ("withdraw", Some(("interaction_id", interaction?))),
         ("POST", p) if p.starts_with("/interactions/") && p.ends_with("/clarification") => ("request_clarification", Some(("interaction_id", interaction?))),
@@ -876,7 +894,7 @@ pub(crate) fn is_resource_mutation_path(method: &str, path: &str) -> bool {
         | ("POST", ["requests", _, "close"] | ["requests", _, "title"] | ["requests", _, "tasks"])
         | ("POST", ["tasks", _, "start"] | ["tasks", _, "documents"] | ["tasks", _, "document-links"]
             | ["tasks", _, "pull-requests"] | ["tasks", _, "results"] | ["tasks", _, "stack-readiness"]
-            | ["tasks", _, "completion"] | ["tasks", _, "cancellation"] | ["tasks", _, "reopening"] | ["tasks", _, "archival"]
+            | ["tasks", _, "completion"] | ["tasks", _, "cancellation"] | ["tasks", _, "reopening"] | ["tasks", _, "archival"] | ["tasks", _, "cleanup"]
             | ["interactions", _, "answers"] | ["interactions", _, "withdrawal"] | ["interactions", _, "clarification"]
             | ["interactions", _, "feedback"] | ["interactions", _, "acceptance"] | ["interactions", _, "merge-authorizations"]) => true,
         ("PUT", ["tasks", _, "assignee"] | ["tasks", _, "dependencies"]
@@ -927,7 +945,7 @@ fn decode_path_id(value: &str) -> Option<String> {
 
 async fn execute_command<H: DomainHost>(
     host: Arc<H>, peer: SocketAddr, signed: Option<Extension<Signed>>, headers: HeaderMap,
-    envelope: CommandEnvelope,
+    envelope: CommandEnvelope, plan: Option<crate::launch_plans::LaunchPlan>,
 ) -> Response {
     if let Some(header) = headers.get("authorization") {
         if signed.is_some() || !is_local(&peer, &headers) {
@@ -959,7 +977,10 @@ async fn execute_command<H: DomainHost>(
         {
             return domain_error(refusal);
         }
-        return match host.domain().execute_bearer(token, &envelope) {
+        if let Err(error) = check_launch_plan(host.domain(), host.home(), &principal, &envelope.command, plan.as_ref()) {
+            return domain_error(error);
+        }
+        return match host.domain().execute_bearer_planned(token, &envelope, plan.as_ref()) {
             Ok(outcome) => {
                 let mut answer = json!(outcome);
                 if let Some(notice) = auto_merge_notice(host.domain(), &envelope.command) {
@@ -1097,7 +1118,7 @@ pub(crate) fn status_for(error: &DomainError) -> StatusCode {
     match error.code.as_str() {
         "forbidden" | "not_assigned" => StatusCode::FORBIDDEN,
         "not_found" => StatusCode::NOT_FOUND,
-        "invalid_input" | "invalid_action_for_kind" => StatusCode::UNPROCESSABLE_ENTITY,
+        "invalid_input" | "invalid_action_for_kind" | "launch_plan_required" => StatusCode::UNPROCESSABLE_ENTITY,
         "payload_too_large" => StatusCode::PAYLOAD_TOO_LARGE,
         "storage_unavailable" => StatusCode::INTERNAL_SERVER_ERROR,
         _ => StatusCode::CONFLICT,
@@ -1117,6 +1138,21 @@ fn storage_error() -> Response {
         "storage_unavailable",
         "domain transaction could not be completed",
     ))
+}
+/// A task that waits on others is started by Alondra, so the orchestrator that creates one says
+/// how; any plan given must be one a launch would accept.
+pub(crate) fn check_launch_plan(domain: &DomainRuntime, home: &std::path::Path, principal: &Principal, command: &Command, plan: Option<&crate::launch_plans::LaunchPlan>) -> Result<(), DomainError> {
+    let Command::CreateTask { request_id, dependencies, stack, .. } = command else { return Ok(()) };
+    if plan.is_none() && matches!(principal, Principal::Orchestrator { .. }) && (!dependencies.is_empty() || stack.is_some()) {
+        let waits_on: Vec<String> = dependencies.iter().map(|id| id.0.clone()).chain(stack.iter().map(|stack| stack.upstream_task.0.clone())).collect();
+        return Err(DomainError::new("launch_plan_required", format!(
+            "This task depends on {}: pass launch with at least name and cwd (and, with auto effort, model and reason) so Alondra starts it by itself as soon as they are done.",
+            waits_on.join(", "))));
+    }
+    match plan {
+        Some(plan) => crate::launch_plans::validate(domain, home, request_id, plan),
+        None => Ok(()),
+    }
 }
 fn store_error(error: StoreError) -> Response {
     match error {
@@ -1305,7 +1341,7 @@ mod tests {
             ("POST", "/requests"), ("POST", "/requests/r-1/tasks"),
             ("POST", "/questions"), ("POST", "/action-requests"), ("POST", "/messages"), ("POST", "/problems"),
             ("PATCH", "/tasks/t-1"), ("PUT", "/tasks/t-1/assignee"),
-            ("POST", "/tasks/t-1/results"), ("PUT", "/interactions/i-1/subject"),
+            ("POST", "/tasks/t-1/results"), ("PUT", "/interactions/i-1/subject"), ("POST", "/tasks/t-1/cleanup"),
             ("POST", "/schedules"),
         ] {
             let schedule = crate::domain_schedule_api::approved_mutation_path(method, path, true);
@@ -1365,6 +1401,8 @@ mod tests {
         assign["agent_id"] = json!("node-1");
         let adapted = resource_envelope_from_path("PUT", "/tasks/task-1/assignee", assign).unwrap();
         assert_eq!(adapted.command, Command::AssignTask { task_id: "task-1".into(), agent_id: "node-1".into(), model: None });
+        let adapted = resource_envelope_from_path("POST", "/tasks/task-1/cleanup", meta.clone()).unwrap();
+        assert_eq!(adapted.command, Command::ConfirmCleanup { task_id: "task-1".into() });
         let mut mismatched = meta.clone();
         mismatched["task_id"] = json!("other-task");
         mismatched["title"] = json!("Build");

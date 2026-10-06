@@ -120,6 +120,16 @@
           }
         }
       }
+    },
+    "Your Alondra session on this iPhone has ended. Open Alondra to sign in again.": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tu sesión de Alondra en este iPhone ha caducado. Abre Alondra para volver a entrar."
+          }
+        }
+      }
     }
   },
   "version": "1.0"

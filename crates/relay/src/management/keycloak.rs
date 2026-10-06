@@ -417,6 +417,74 @@ impl Keycloak {
         }
         Ok(())
     }
+    /// The account's live offline sessions for one client. Reading consents first needs only
+    /// `manage-users`: looking the client up by its id would need `view-clients` as well. No
+    /// offline grant for the client means no live offline session.
+    pub async fn offline_session_ids(
+        &self,
+        subject: &str,
+        client_id: &str,
+    ) -> Result<std::collections::HashSet<String>> {
+        let token = self.token().await?;
+        let mut user = self.admin_realm.join("users/")?;
+        user.path_segments_mut()
+            .map_err(|_| DomainError::InvalidInput)?
+            .pop_if_empty()
+            .push(subject);
+        let mut consents = user.clone();
+        consents
+            .path_segments_mut()
+            .map_err(|_| DomainError::InvalidInput)?
+            .push("consents");
+        let response = self
+            .http
+            .get(consents)
+            .bearer_auth(&token.0)
+            .send()
+            .await
+            .map_err(|_| DomainError::ProviderUnavailable)?;
+        ensure!(
+            response.status() == StatusCode::OK,
+            DomainError::ProviderUnavailable
+        );
+        let consents = bounded_json(response).await?;
+        let client = consents
+            .as_array()
+            .context("Keycloak consents are not a list")?
+            .iter()
+            .filter(|consent| consent["clientId"] == client_id)
+            .flat_map(|consent| consent["additionalGrants"].as_array().into_iter().flatten())
+            .find(|grant| grant["key"] == "Offline Token")
+            .and_then(|grant| grant["client"].as_str())
+            .map(str::to_owned);
+        let Some(client) = client else {
+            return Ok(Default::default());
+        };
+        let mut sessions = user;
+        sessions
+            .path_segments_mut()
+            .map_err(|_| DomainError::InvalidInput)?
+            .push("offline-sessions")
+            .push(&client);
+        let response = self
+            .http
+            .get(sessions)
+            .bearer_auth(&token.0)
+            .send()
+            .await
+            .map_err(|_| DomainError::ProviderUnavailable)?;
+        ensure!(
+            response.status() == StatusCode::OK,
+            DomainError::ProviderUnavailable
+        );
+        Ok(bounded_json(response)
+            .await?
+            .as_array()
+            .context("Keycloak offline sessions are not a list")?
+            .iter()
+            .filter_map(|session| session["id"].as_str().map(str::to_owned))
+            .collect())
+    }
     pub async fn delete(&self, job: &Reconciliation) -> Result<()> {
         ensure!(job.issuer == self.issuer, DomainError::Conflict);
         let token = self.token().await?;

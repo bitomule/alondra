@@ -103,7 +103,8 @@ public extension DependencyValues {
         public var macs: [MacChoice] = []
         public var selectedMacID: UUID?
         public var selectingMacID: UUID?
-        public var macError: String?
+        public var macError: ConnectionProblem?
+        public var forgetError: String?
         public var macStatuses: [UUID: MacStatus] = [:]
         public var forgettingMacID: UUID?
         public var confirmForgetMacID: UUID?
@@ -131,7 +132,7 @@ public extension DependencyValues {
         case refreshPermission, requestPermission, openSystemSettings
         case checkConnection, checked(UInt64), checkFailed(ConnectionProblem, UInt64)
         case linkMac, pairingCleanupFinished, pairing(PresentationAction<SignInFeature.Action>)
-        case selectMac(UUID), macSelected(UUID, UInt64), macSelectionFailed(String, UInt64)
+        case selectMac(UUID), macSelected(UUID, UInt64), macSelectionFailed(ConnectionProblem?, UInt64)
         case loadMacStatuses, macStatusesLoaded([UUID: MacStatus])
         case forgetMacTapped(UUID), cancelForgetMac, confirmForgetMac, macForgotten(UUID), macForgetFailed(String)
         case loadDevices, devicesLoaded([TrustedDevice]), devicesFailed(String)
@@ -143,6 +144,11 @@ public extension DependencyValues {
     @Dependency(\.findMac) var findMacService
     private enum StatusesID { case statuses }
     public init() {}
+    static func saveFailure(_ error: any Error) -> String {
+        (error as? LocalizedError)?.errorDescription
+            ?? String(localized: "Your notification settings couldn’t be saved. Try again.")
+    }
+
     public var body: some ReducerOf<Self> {
         Reduce { state, action in
             switch action {
@@ -168,7 +174,7 @@ public extension DependencyValues {
                 guard let id = state.confirmForgetMacID else { return .none }
                 state.confirmForgetMacID = nil
                 state.forgettingMacID = id
-                state.macError = nil
+                state.forgetError = nil
                 return .run { send in
                     do { try await client.forgetMac(id); await send(.macForgotten(id)) }
                     catch { await send(.macForgetFailed(String(localized: "Alondra couldn’t forget this Mac. Try again."))) }
@@ -179,7 +185,7 @@ public extension DependencyValues {
                 return .none
             case .macForgetFailed(let message):
                 state.forgettingMacID = nil
-                state.macError = message
+                state.forgetError = message
                 return .none
             case .loadDevices:
                 guard let devices = client.devices else { return .none }
@@ -258,14 +264,14 @@ public extension DependencyValues {
                     // edit and its queued successor are not lost when the sheet closes.
                     return .run { send in
                         do { try await client.save(submitted, baseline); await send(.autosaveFinished(submitted, revision, nil)) }
-                        catch { await send(.autosaveFinished(submitted, revision, error.localizedDescription)) }
+                        catch { await send(.autosaveFinished(submitted, revision, Self.saveFailure(error))) }
                     }
                 }
                 state.saving = true; state.error = nil
                 let draft = state.draft, baseline = state.baseline, generation = state.generation
                 return .run { send in
                     do { try await client.save(draft, baseline); await send(.saved(generation)) }
-                    catch { await send(.failed(error.localizedDescription, generation)) }
+                    catch { await send(.failed(Self.saveFailure(error), generation)) }
                 }.cancellable(id: state.cancellation)
             case .autosaveFinished(let submitted, let revision, let error):
                 guard state.autosaveRevision == revision, state.autosaveDraft == submitted else { return .none }
@@ -328,15 +334,15 @@ public extension DependencyValues {
                 let generation = state.generation
                 return .run { send in
                     do { try await client.selectMac(id); await send(.macSelected(id, generation)) }
-                    catch { await send(.macSelectionFailed(error.localizedDescription, generation)) }
+                    catch { await send(.macSelectionFailed(error.isCancellation ? nil : client.problem(error), generation)) }
                 }.cancellable(id: state.cancellation)
             case .macSelected(let id, let generation):
                 guard generation == state.generation, state.selectingMacID == id else { return .none }
                 state.selectedMacID = id; state.selectingMacID = nil
                 return .none
-            case .macSelectionFailed(let message, let generation):
+            case .macSelectionFailed(let problem, let generation):
                 guard generation == state.generation, state.selectingMacID != nil else { return .none }
-                state.selectingMacID = nil; state.macError = message
+                state.selectingMacID = nil; state.macError = problem
                 return .none
             case .logoutTapped: state.confirmLogout = true; return .none
             case .cancelLogout: state.confirmLogout = false; return .none

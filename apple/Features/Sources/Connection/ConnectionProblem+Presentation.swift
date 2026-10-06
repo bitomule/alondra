@@ -12,6 +12,7 @@ public extension ConnectionProblem {
         case .deviceRevoked: "This device was disconnected from your Mac"
         case .macNotOnNetwork: "Your Mac isn’t on this network"
         case .macIdentityChanged: "This Mac’s identity has changed"
+        case .signOutIncomplete: "Signing out didn’t finish"
         case .unexpected: "Can’t connect right now"
         }
     }
@@ -26,6 +27,7 @@ public extension ConnectionProblem {
         case .deviceRevoked: "Your Mac no longer accepts this device. Open Settings and link your Mac again."
         case .macNotOnNetwork: "Connect to the same Wi-Fi as your Mac, or turn on Tailscale on both. Alondra reconnects as soon as it answers."
         case .macIdentityChanged: "A Mac answered with this Mac’s name but different keys, so Alondra stopped. If you reinstalled Alondra on it, forget it in Settings and pair it again."
+        case .signOutIncomplete: "Alondra couldn’t finish signing this device out. Finish signing out, then sign in again to reconnect."
         case .unexpected: "Something unexpected went wrong. Alondra keeps trying."
         }
     }
@@ -40,6 +42,7 @@ public extension ConnectionProblem {
         case .deviceRevoked: "lock.slash"
         case .macNotOnNetwork: "wifi.exclamationmark"
         case .macIdentityChanged: "exclamationmark.shield"
+        case .signOutIncomplete: "rectangle.portrait.and.arrow.right"
         case .unexpected: "exclamationmark.triangle"
         }
     }

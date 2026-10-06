@@ -16,9 +16,6 @@ public struct SettingsView: View {
             account
             if store.supportsNotifications { notifications }
             about
-            if let error = store.error {
-                Section { Text(verbatim: error).foregroundStyle(Palette.rose).textSelection(.enabled) }
-            }
         }
         .scrollContentBackground(.hidden)
         .background(DawnBackground())
@@ -101,7 +98,12 @@ public struct SettingsView: View {
                 .accessibilityValue(store.selectedMacID == mac.id ? Text("Selected") : Text(verbatim: ""))
             }
             .task { await store.send(.loadMacStatuses).finish() }
-            if let error = store.macError { Text(verbatim: error).foregroundStyle(Palette.rose) }
+            if let problem = store.macError {
+                Label { Text(problem.title) } icon: { Image(systemName: problem.systemImage) }
+                    .foregroundStyle(Palette.rose)
+                    .accessibilityIdentifier("settings.macError")
+            }
+            if let error = store.forgetError { Text(verbatim: error).foregroundStyle(Palette.rose) }
             Button("Add a Mac", systemImage: "plus") { store.send(.linkMac) }
                 .disabled(store.selectingMacID != nil || store.pairingCleanup)
                 .accessibilityIdentifier("settings.addMac")
@@ -144,6 +146,11 @@ public struct SettingsView: View {
                 if store.conflict {
                     Text("Notification settings changed in another window. Your draft has been kept.")
                     Button("Use Current Settings") { store.send(.useCurrent) }.disabled(store.saving)
+                }
+                if let error = store.error {
+                    Label { Text(verbatim: error) } icon: { Image(systemName: "exclamationmark.triangle") }
+                        .foregroundStyle(Palette.rose)
+                        .accessibilityIdentifier("settings.notificationsError")
                 }
             } else {
                 ProgressView()

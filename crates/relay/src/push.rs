@@ -52,11 +52,16 @@ pub fn validate_registration(reg: &PushRegistration) -> Result<()> {
     if !matches!(reg.environment.as_str(), "sandbox" | "production") {
         bail!("invalid APNs environment");
     }
-    let binding = URL_SAFE_NO_PAD.decode(&reg.push_binding)?;
-    if binding.len() != 32 || URL_SAFE_NO_PAD.encode(binding) != reg.push_binding {
+    if !valid_binding(&reg.push_binding) {
         bail!("push binding must be 32 canonical base64url bytes");
     }
     Ok(())
+}
+
+pub fn valid_binding(binding: &str) -> bool {
+    URL_SAFE_NO_PAD
+        .decode(binding)
+        .is_ok_and(|bytes| bytes.len() == 32 && URL_SAFE_NO_PAD.encode(bytes) == binding)
 }
 
 /// How APNs hands the push to the phone: an alert the notification service extension

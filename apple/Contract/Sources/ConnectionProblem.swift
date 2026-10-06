@@ -20,11 +20,13 @@ public enum ConnectionProblem: Equatable, Sendable {
     case macNotOnNetwork
     /// A Mac answers with its ID but other keys: never trusted silently, it has to be paired again.
     case macIdentityChanged
+    /// An earlier sign-out could not reach the server; it has to finish before signing in again.
+    case signOutIncomplete
     case unexpected
 
     /// Problems only the person can fix. Automatic retries continue, but they cannot succeed.
     public var needsAction: Bool {
-        self == .sessionExpired || self == .deviceRevoked || self == .macIdentityChanged
+        self == .sessionExpired || self == .deviceRevoked || self == .signOutIncomplete || self == .macIdentityChanged
     }
 }
 

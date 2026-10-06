@@ -53,8 +53,8 @@ conversation runs in Alondra's internal runtime directory. An idle orchestrator 
 it does not need a background process or an attachable terminal. Worker nodes still use
 Claude background sessions.
 
-The plugins provide `fleet`, `node`, `machine`, `send`, `interrupt`, `launch`, `define`,
-`candidates`, `cancel` and `reopen`. User questions always use Alondra `ask`; terminal permission
+The plugins provide `fleet`, `node`, `machine`, `send`, `interrupt`, `launch`, `set_launch_plan`, `define`,
+`cancel` and `reopen`. User questions always use Alondra `ask`; terminal permission
 and question prompts are disabled. Auto mode can deny an operation, which becomes a visible
 failure instead of an invisible prompt.
 

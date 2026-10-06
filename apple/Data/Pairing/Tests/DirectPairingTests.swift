@@ -81,7 +81,7 @@ private func sign(_ approval: DirectPairingProtocol.Approval, with key: P256.Sig
         let mac = try P256.Signing.PrivateKey(rawRepresentation: Data(repeating: 1, count: 32))
         let transcript = try fixedTranscript()
         let signed = try approval(for: transcript)
-        #expect(throws: PairingError.expired) {
+        #expect(throws: PairingError.requestExpired) {
             try signed.verify(signature: try sign(signed, with: mac), macKey: mac.publicKey, expected: transcript, nowMs: 2_000)
         }
     }
