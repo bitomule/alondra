@@ -1,7 +1,11 @@
 {
   "sourceLanguage": "en",
   "strings": {
-    "Signing out didn’t finish. Alondra will try again.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "No se pudo terminar de cerrar sesión. Alondra lo volverá a intentar."}}}},
+    "Your Mac no longer accepts this device. Link it again in Settings.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Tu Mac ya no acepta este dispositivo. Vuelve a vincularlo en Ajustes."}}}},
+    "Your Mac couldn’t be reached to turn on alerts. Alondra tries again when you reopen the app.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "No se pudo contactar con tu Mac para activar los avisos. Alondra lo vuelve a intentar cuando abras la app de nuevo."}}}},
+    "Your Mac didn’t accept this device’s alerts. Alondra tries again when you reopen the app.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Tu Mac no aceptó los avisos de este dispositivo. Alondra lo vuelve a intentar cuando abras la app de nuevo."}}}},
+    "Two linked Macs look like the same Mac. Remove one in Settings and link it again.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Dos Macs vinculados parecen el mismo Mac. Quita uno en Ajustes y vuelve a vincularlo."}}}},
+    "Signing out didn’t finish. Finish signing out to continue.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "No se pudo terminar de cerrar sesión. Termina de cerrar sesión para continuar."}}}},
     "Your session couldn’t be renewed. Sign out and sign in again to reconnect.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "No se pudo renovar tu sesión. Cierra sesión y vuelve a iniciarla para reconectar."}}}},
     "Your account is busy with another step. Try again in a moment.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Tu cuenta está terminando otro paso. Inténtalo de nuevo en un momento."}}}},
     "The sign-in service isn’t working right now. Try again later.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "El servicio de inicio de sesión no funciona ahora mismo. Inténtalo más tarde."}}}},

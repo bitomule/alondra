@@ -34,9 +34,10 @@ public struct OIDCConfiguration: Sendable {
         clientID: "alondra-ios",
         redirectURI: URL(string: "com.bitomule.alondra:/oauth2redirect/keycloak")!,
         scopes: ["openid", "profile", "offline_access"],
-        // Keycloak 26.7.4, revokeRefreshToken=false: deploy/pi smoke verifies
-        // predecessor revocation invalidates both tokens, and a refresh leaves the
-        // predecessor usable (keycloak.org server_admin, "Revoke Refresh Token"). Recheck on issuer drift.
+        // Keycloak 26.7.4, revokeRefreshToken=false. deploy/pi/smoke-refresh-revocation.py
+        // checks that revoking a predecessor rejects every token it led to (passed 2026-09-26)
+        // and that a refreshed predecessor still refreshes (added 2026-10-06, not yet run on
+        // the Pi; Keycloak documents it under "Revoke Refresh Token"). Rerun on issuer drift.
         revocationScope: .offlineSession,
         refreshReplay: .predecessorStaysValid
     )
@@ -104,7 +105,7 @@ public protocol RefreshTokenStorage: Sendable {
 extension AuthError: LocalizedError {
     public var errorDescription: String? {
         switch self {
-        case .pendingRevocation: String(localized: "Signing out didn’t finish. Alondra will try again.")
+        case .pendingRevocation: String(localized: "Signing out didn’t finish. Finish signing out to continue.")
         case .rotationUncertain: String(localized: "Your session couldn’t be renewed. Sign out and sign in again to reconnect.")
         case .operationInProgress: String(localized: "Your account is busy with another step. Try again in a moment.")
         case .noSession: String(localized: "Sign in again to reconnect. Your pairing and saved work are kept.")

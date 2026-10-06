@@ -24,12 +24,7 @@ func makeAccountSession(notifications: NotificationRuntime) -> AccountSession {
 }
 
 /// A refresh cut off by suspension loses the issuer's answer; finish it in the background.
-@Sendable private func keepRefreshAlive() async -> @Sendable () async -> Void {
-    let task = await MainActor.run { UIApplication.shared.beginBackgroundTask(withName: "alondra.auth-refresh") }
-    return {
-        await MainActor.run {
-            guard task != .invalid else { return }
-            UIApplication.shared.endBackgroundTask(task)
-        }
-    }
-}
+private let keepRefreshAlive = pairedRefreshGrant(begin: { expiration in
+    let task = UIApplication.shared.beginBackgroundTask(withName: "alondra.auth-refresh", expirationHandler: expiration)
+    return task == .invalid ? nil : task
+}, end: { UIApplication.shared.endBackgroundTask($0) })

@@ -161,7 +161,10 @@ final class PushCenter {
         do {
             try registrations.update(clients: clients, token: token, environment: Self.environment.rawValue,
                 quietStart: quietStart, quietEnd: quietEnd)
-        } catch { registration = .failed(String(localized: "This iPhone couldn’t sign up for alerts. Alondra tries again when you reopen the app.")) }
+        } catch {
+            registration = .failed((error as? LocalizedError)?.errorDescription
+                ?? String(localized: "This iPhone couldn’t sign up for alerts. Alondra tries again when you reopen the app."))
+        }
     }
 
     private func currentBinding() -> NotificationPayload.Binding? { client?.binding }
