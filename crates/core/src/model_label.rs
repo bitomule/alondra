@@ -20,9 +20,44 @@ pub fn model_label(id: &str) -> String {
     format!("{name} {}", version.join("."))
 }
 
+/// The family a model id or Claude Code alias belongs to: `sonnet` for `claude-sonnet-5-5`,
+/// `sonnet[1m]` and `sonnet`.
+pub fn model_family(id: &str) -> String {
+    let base = id.split('[').next().unwrap_or(id).trim().to_ascii_lowercase();
+    match base.strip_prefix("claude-") {
+        Some(rest) => rest.split('-').next().unwrap_or(rest).to_owned(),
+        None => base,
+    }
+}
+
+/// A model as the user reads it: a full id as `model_label` shows it, an alias capitalised.
+pub fn launched_model_label(model: &str) -> String {
+    if model.starts_with("claude-") {
+        return model_label(model);
+    }
+    let mut name = model.split('[').next().unwrap_or(model).to_owned();
+    if let Some(first) = name.get_mut(..1) {
+        first.make_ascii_uppercase();
+    }
+    name
+}
+
 #[cfg(test)]
 mod tests {
-    use super::model_label;
+    use super::{launched_model_label, model_family, model_label};
+
+    #[test]
+    fn families_ignore_version_and_context_suffix() {
+        for (id, family) in [("claude-sonnet-5-5", "sonnet"), ("claude-opus-5-5[1m]", "opus"), ("sonnet", "sonnet"), ("Opus[1m]", "opus"), ("gpt-5", "gpt-5")] {
+            assert_eq!(model_family(id), family, "{id}");
+        }
+    }
+
+    #[test]
+    fn launched_models_read_as_names() {
+        assert_eq!(launched_model_label("sonnet"), "Sonnet");
+        assert_eq!(launched_model_label("claude-opus-5-5"), "Opus 5.5");
+    }
 
     #[test]
     fn known_ids_read_as_family_and_version() {

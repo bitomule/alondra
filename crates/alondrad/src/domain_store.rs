@@ -19,6 +19,9 @@ const SCHEMA: &str = concat!(
     include_str!("domain_store/schema.sql"),
     include_str!("domain_store/schedule_launch_transition.sql")
 );
+/// Created on every open instead of with the schema, so a store made before models were recorded
+/// gains it without being moved aside.
+const TASK_MODELS: &str = "CREATE TABLE IF NOT EXISTS task_models(task_id TEXT PRIMARY KEY REFERENCES tasks(id), model TEXT NOT NULL CHECK(length(model)>0), chosen_by TEXT NOT NULL CHECK(chosen_by IN('orchestrator','user')));";
 #[cfg(test)]
 pub(crate) use repository::statement_counts;
 pub(crate) type TransportIdentity<'a> = (&'a str, &'a str, &'a [u8; 32]);
@@ -180,6 +183,7 @@ impl DomainStore {
                 "not an Alondra domain database"
             );
         }
+        tx.execute_batch(TASK_MODELS)?;
         if version != 0 {
             tx.execute_batch("DROP TRIGGER IF EXISTS schedule_launch_transition;")?;
             tx.execute_batch(SCHEDULE_LAUNCH_TRANSITION)?;

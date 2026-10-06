@@ -107,6 +107,8 @@ pub enum Command {
     AssignTask {
         task_id: TaskId,
         agent_id: AgentId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<TaskModel>,
     },
     RetitleTask {
         task_id: TaskId,

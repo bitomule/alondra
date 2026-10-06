@@ -2,7 +2,7 @@ use super::*;
 use crate::domain_v2::{
     Agent, Author, Document, DocumentRevision, DomainState, Interaction, InteractionPayload,
     InteractionSubject, MergeAttemptState, MergeAuthorization, MergeMethod, PrState, PullRequest, QuestionOption, Recipient, Request, Scope, Task,
-    TaskState,
+    TaskState, ModelChooser, TaskModel,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -37,6 +37,7 @@ fn fixture() -> DomainState {
             stack: None,
             documents: BTreeMap::new(),
             archived: false,
+            model: None,
         },
     );
     for (index, kind) in ["question", "information", "delivery"].iter().enumerate() {
@@ -2381,6 +2382,28 @@ fn a_node_shows_the_model_it_runs_on_in_its_row_and_its_detail() {
     let facts: Vec<_> = detail.sections.iter().flat_map(|section| &section.items)
         .flat_map(|item| match item { Item::Facts(facts) => facts.items.clone(), _ => vec![] }).collect();
     assert!(facts.iter().any(|fact| fact.label == "Modelo" && fact.value == "Opus 5.5"));
+}
+
+#[test]
+fn a_task_detail_says_the_model_it_was_launched_with_and_who_chose_it() {
+    let mut state = fixture();
+    let model = |state: &DomainState, lang| {
+        let view = render(state, &LiveSnapshot::default(), Client::Ios, lang, "task:t-1", "");
+        view.sections.iter().flat_map(|section| &section.items)
+            .flat_map(|item| match item { Item::Facts(facts) => facts.items.clone(), _ => vec![] })
+            .find(|fact| fact.label == "Model" || fact.label == "Modelo").map(|fact| (fact.label, fact.value))
+    };
+    assert_eq!(model(&state, Lang::En), None, "a task launched before models were recorded shows none");
+    for (chosen_by, en, es) in [
+        (ModelChooser::Orchestrator, "Sonnet · chosen by the orchestrator", "Sonnet · elegido por el orquestador"),
+        (ModelChooser::User, "Sonnet · from your Effort choice", "Sonnet · por tu elección de esfuerzo"),
+    ] {
+        state.tasks.get_mut(&"t-1".into()).unwrap().model = Some(TaskModel { model: "sonnet".into(), chosen_by });
+        assert_eq!(model(&state, Lang::En), Some(("Model".into(), en.into())));
+        assert_eq!(model(&state, Lang::Es), Some(("Modelo".into(), es.into())));
+    }
+    state.tasks.get_mut(&"t-1".into()).unwrap().model = Some(TaskModel { model: "claude-opus-5-5".into(), chosen_by: ModelChooser::User });
+    assert_eq!(model(&state, Lang::En).unwrap().1, "Opus 5.5 · from your Effort choice");
 }
 
 #[test]

@@ -1,6 +1,6 @@
 use super::*;
 use crate::node_push::testing::Node;
-use alondra_core::domain_v2::{AttachmentRef, TaskState};
+use alondra_core::domain_v2::{AttachmentRef, ModelChooser, TaskModel, TaskState};
 use alondra_core::options::OptionsFile;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -130,6 +130,8 @@ async fn a_launch_carries_the_requests_choices_a_bound_capability_and_takes_the_
     assert!(args.windows(2).any(|pair| pair == ["--model", "opus"]) && args.windows(2).any(|pair| pair == ["--effort", "xhigh"]),
         "an effort the user chose is binding: {args:?}");
     assert!(!args.iter().any(|arg| arg == "--session-id"));
+    let recorded = f.domain.state().unwrap().tasks[&TaskId::from("t")].model.clone();
+    assert_eq!(recorded, Some(TaskModel { model: "opus".into(), chosen_by: ModelChooser::User }), "the user's effort sets the model");
     let prompt = args.last().unwrap();
     for expected in ["Editor colours", "Make the editor readable", "Crash on launch", "shot.png"] {
         assert!(prompt.contains(expected), "{expected} missing from {prompt}");
@@ -157,26 +159,81 @@ async fn a_launch_in_a_repository_claude_does_not_trust_is_refused_before_claude
     let trust = |accepted: bool| std::fs::write(&config, json!({"projects": {project.to_str().unwrap(): {"hasTrustDialogAccepted": accepted}}}).to_string()).unwrap();
 
     trust(false);
-    let refused = launch(&f.domain, &f.home, &actor, launch_body(&f, json!({})), |_| None, &claude).await.unwrap_err();
+    let refused = launch(&f.domain, &f.home, &actor, launch_body(&f, json!({"model": "sonnet"})), |_| None, &claude).await.unwrap_err();
     assert_eq!(refused.code, "workspace_untrusted");
     assert!(refused.message.contains(project.to_str().unwrap()), "{}", refused.message);
     assert!(claude.calls.lock().unwrap().is_empty());
     assert!(f.domain.state().unwrap().tasks[&TaskId::from("t")].agent_id.is_none());
 
     trust(true);
-    launch(&f.domain, &f.home, &actor, launch_body(&f, json!({})), |_| None, &claude).await.unwrap();
+    launch(&f.domain, &f.home, &actor, launch_body(&f, json!({"model": "sonnet"})), |_| None, &claude).await.unwrap();
     assert_eq!(claude.calls.lock().unwrap().len(), 1);
 }
 
 #[tokio::test]
-async fn without_choices_the_orchestrators_effort_applies_and_the_prompt_can_be_given() {
+async fn without_choices_the_orchestrators_model_and_effort_apply_and_the_prompt_can_be_given() {
     let f = world();
     let actor = the_orchestrator(&f.domain);
     let claude = FakeClaude::loading(&f.domain);
-    launch(&f.domain, &f.home, &actor, launch_body(&f, json!({"effort": "light", "prompt": "Only the dark theme"})), |_| None, &claude).await.unwrap();
+    launch(&f.domain, &f.home, &actor, launch_body(&f, json!({"model": "sonnet", "effort": "medium", "prompt": "Only the dark theme"})), |_| None, &claude).await.unwrap();
     let args = claude.calls.lock().unwrap()[0].1.clone();
-    assert!(args.windows(2).any(|pair| pair == ["--model", "sonnet"]), "{args:?}");
+    assert!(args.windows(2).any(|pair| pair == ["--model", "sonnet"]) && args.windows(2).any(|pair| pair == ["--effort", "medium"]), "{args:?}");
+    let recorded = f.domain.state().unwrap().tasks[&TaskId::from("t")].model.clone();
+    assert_eq!(recorded, Some(TaskModel { model: "sonnet".into(), chosen_by: ModelChooser::Orchestrator }));
     assert!(args.last().unwrap().starts_with("Only the dark theme\n"), "{}", args.last().unwrap());
+}
+
+#[tokio::test]
+async fn with_auto_effort_the_launch_needs_a_known_model_and_a_users_effort_refuses_one() {
+    let f = world();
+    let actor = the_orchestrator(&f.domain);
+    let claude = FakeClaude::loading(&f.domain);
+    let refusal = |body: Value, choices: Option<Choices>| {
+        let (f, actor, claude) = (&f, &actor, &claude);
+        async move { launch(&f.domain, &f.home, actor, launch_body(f, body), |_| choices.clone(), claude).await.unwrap_err() }
+    };
+    let missing = refusal(json!({}), None).await;
+    assert_eq!(missing.code, "invalid_input");
+    assert!(missing.message.contains("pass model") && missing.message.contains("haiku, sonnet, opus, fable"), "{}", missing.message);
+    assert!(refusal(json!({"model": "gpt"}), None).await.message.contains("gpt is not a model"));
+    assert!(refusal(json!({"model": "sonnet", "effort": "light"}), None).await.message.contains("light is not an effort"));
+    let overruled = refusal(json!({"model": "opus"}), Some(hard_choices())).await;
+    assert_eq!(overruled.code, "invalid_input");
+    assert!(overruled.message.contains("the user chose effort hard"), "{}", overruled.message);
+    assert!(claude.calls.lock().unwrap().is_empty(), "nothing launched");
+    assert!(f.domain.state().unwrap().tasks[&TaskId::from("t")].model.is_none());
+}
+
+#[tokio::test]
+async fn a_model_alias_from_options_toml_is_launched_as_what_it_stands_for() {
+    let f = world();
+    std::fs::write(f.home.join("options.toml"), "[models]\nbig = \"claude-opus-5-5[1m]\"\n").unwrap();
+    let actor = the_orchestrator(&f.domain);
+    let claude = FakeClaude::loading(&f.domain);
+    launch(&f.domain, &f.home, &actor, launch_body(&f, json!({"model": "big"})), |_| None, &claude).await.unwrap();
+    let args = claude.calls.lock().unwrap()[0].1.clone();
+    assert!(args.windows(2).any(|pair| pair == ["--model", "claude-opus-5-5[1m]"]), "{args:?}");
+    assert!(!args.iter().any(|arg| arg == "--effort"), "no effort unless the orchestrator names one: {args:?}");
+}
+
+#[tokio::test]
+async fn a_message_about_a_task_to_a_node_on_another_model_is_refused() {
+    let f = world();
+    let actor = the_orchestrator(&f.domain);
+    let node = Node::connect(&f.domain, "agent-b");
+    let body = |model: &str| -> SendBody { serde_json::from_value(json!({"node": "Instance B", "text": "Go", "task": "t", "model": model})).unwrap() };
+    let unknown = send(&f.domain, &f.home, &actor, body("opus")).await.unwrap_err();
+    assert_eq!(unknown.code, "model_mismatch", "a node that has not reported its model cannot be vouched for");
+    f.domain.live.mods.apply(serde_json::from_value(json!({"session_id": "agent-b", "event": "model", "model": "claude-sonnet-5-5"})).unwrap(), 1);
+    let mismatch = send(&f.domain, &f.home, &actor, body("opus")).await.unwrap_err();
+    assert_eq!(mismatch.code, "model_mismatch");
+    assert!(mismatch.message.contains("Sonnet 5.5") && mismatch.message.contains("launch a new node for t"), "{}", mismatch.message);
+    assert_eq!(f.domain.state().unwrap().tasks[&TaskId::from("t")].agent_id, None, "a refused send assigns nothing");
+    assert!(node.texts().is_empty());
+    assert_eq!(send(&f.domain, &f.home, &actor, body("fable")).await.unwrap_err().code, "model_mismatch");
+    assert_eq!(send(&f.domain, &f.home, &actor, body("nonsense")).await.unwrap_err().code, "invalid_input");
+    send(&f.domain, &f.home, &actor, body("sonnet")).await.unwrap();
+    assert_eq!(f.domain.state().unwrap().tasks[&TaskId::from("t")].agent_id, Some(AgentId::from("agent-b")));
 }
 
 #[tokio::test]
@@ -184,20 +241,20 @@ async fn a_launch_is_refused_for_a_closed_or_taken_task_and_a_session_without_it
     let f = world();
     let actor = the_orchestrator(&f.domain);
     let unlisted = FakeClaude::without_mod();
-    let error = launch(&f.domain, &f.home, &actor, launch_body(&f, json!({})), |_| None, &unlisted).await.unwrap_err();
+    let error = launch(&f.domain, &f.home, &actor, launch_body(&f, json!({"model": "sonnet"})), |_| None, &unlisted).await.unwrap_err();
     assert_eq!(error.code, "launch_failed");
     assert!(settings_files(&f.home).is_empty());
     assert_eq!(f.domain.state().unwrap().agents.len(), 1);
     assert!(f.domain.state().unwrap().tasks[&TaskId::from("t")].agent_id.is_none());
 
-    command(&f.domain, actor.clone(), Command::AssignTask { task_id: "t".into(), agent_id: "agent-b".into() });
+    command(&f.domain, actor.clone(), Command::AssignTask { task_id: "t".into(), agent_id: "agent-b".into(), model: None });
     crate::domain_agent_lifecycle::observe_instance(&f.domain, &"agent-b".into(), true,
         &crate::domain_agent_lifecycle::prepare_event(&f.domain, "start-b").unwrap()).unwrap();
     let claude = FakeClaude::loading(&f.domain);
-    let taken = launch(&f.domain, &f.home, &actor, launch_body(&f, json!({})), |_| None, &claude).await.unwrap_err();
+    let taken = launch(&f.domain, &f.home, &actor, launch_body(&f, json!({"model": "sonnet"})), |_| None, &claude).await.unwrap_err();
     assert_eq!(taken.code, "conflict");
     command(&f.domain, user(), Command::CancelTask { task_id: "t".into() });
-    let closed = launch(&f.domain, &f.home, &actor, launch_body(&f, json!({})), |_| None, &claude).await.unwrap_err();
+    let closed = launch(&f.domain, &f.home, &actor, launch_body(&f, json!({"model": "sonnet"})), |_| None, &claude).await.unwrap_err();
     assert_eq!(closed.code, "conflict");
     assert!(claude.calls.lock().unwrap().is_empty());
 }
@@ -207,7 +264,7 @@ async fn a_session_whose_mod_never_loads_is_stopped_and_the_launch_fails_without
     let f = world();
     let actor = the_orchestrator(&f.domain);
     let claude = FakeClaude::without_mod();
-    let error = launch(&f.domain, &f.home, &actor, launch_body(&f, json!({})), |_| None, &claude).await.unwrap_err();
+    let error = launch(&f.domain, &f.home, &actor, launch_body(&f, json!({"model": "sonnet"})), |_| None, &claude).await.unwrap_err();
     assert_eq!(error.code, "launch_failed");
     assert!(error.message.contains("mods did not load") && error.message.contains("not trusted"), "{}", error.message);
     assert_eq!(*claude.stopped.lock().unwrap(), ["ab1234"], "the session is stopped, not left working unseen");
@@ -313,7 +370,7 @@ async fn going_over_todays_slice_launches_without_a_warning_and_asks_the_user_on
     assert!(f.domain.live.mods.usage(alondra_core::now_millis()).unwrap().over_pace, "41% spent against a ~18% slice");
     let actor = the_orchestrator(&f.domain);
     let claude = FakeClaude::loading(&f.domain);
-    let answer = launch(&f.domain, &f.home, &actor, launch_body(&f, json!({})), |_| None, &claude).await.unwrap();
+    let answer = launch(&f.domain, &f.home, &actor, launch_body(&f, json!({"model": "sonnet"})), |_| None, &claude).await.unwrap();
     assert_eq!(answer["agent_id"], SESSION, "over pace no longer blocks");
     assert!(answer.get("warning").is_none(), "the orchestrator is not asked to relay it: {answer}");
     assert_eq!(claude.calls.lock().unwrap().len(), 1);
@@ -331,7 +388,7 @@ async fn going_over_todays_slice_launches_without_a_warning_and_asks_the_user_on
     let within = world();
     measured(&within.domain, 12.0);
     measured(&within.domain, 15.0);
-    let answer = launch(&within.domain, &within.home, &the_orchestrator(&within.domain), launch_body(&within, json!({"over_pace_ok": true})),
+    let answer = launch(&within.domain, &within.home, &the_orchestrator(&within.domain), launch_body(&within, json!({"over_pace_ok": true, "model": "sonnet"})),
         |_| None, &FakeClaude::loading(&within.domain)).await.unwrap();
     assert!(answer.get("warning").is_none(), "over_pace_ok is still accepted: {answer}");
     assert!(within.domain.state().unwrap().interactions.keys().all(|id| !id.0.starts_with("over-pace-")), "within its slice: no card");
@@ -344,21 +401,21 @@ async fn a_launch_is_refused_while_usage_is_exhausted_and_goes_ahead_once_it_is_
     let claude = FakeClaude::loading(&f.domain);
     let now = alondra_core::now_millis();
     f.domain.live.usage_pause.exhaust(Some(now + 3_600_000), now);
-    let refused = launch(&f.domain, &f.home, &actor, launch_body(&f, json!({})), |_| None, &claude).await.unwrap_err();
+    let refused = launch(&f.domain, &f.home, &actor, launch_body(&f, json!({"model": "sonnet"})), |_| None, &claude).await.unwrap_err();
     assert_eq!(refused.code, "usage_exhausted");
     assert!(refused.message.contains("Claude usage ran out"), "{}", refused.message);
     assert!(claude.calls.lock().unwrap().is_empty());
     assert!(f.domain.state().unwrap().tasks[&TaskId::from("t")].agent_id.is_none(), "the task is left as it was");
 
     f.domain.live.usage_pause.resume(alondra_core::now_millis());
-    launch(&f.domain, &f.home, &actor, launch_body(&f, json!({})), |_| None, &claude).await.unwrap();
+    launch(&f.domain, &f.home, &actor, launch_body(&f, json!({"model": "sonnet"})), |_| None, &claude).await.unwrap();
     assert_eq!(claude.calls.lock().unwrap().len(), 1);
 }
 
 #[tokio::test]
 async fn a_task_whose_node_the_user_closed_is_relaunched_for_that_task_in_the_closed_nodes_folder() {
     let f = world();
-    command(&f.domain, user(), Command::AssignTask { task_id: "t".into(), agent_id: "agent-b".into() });
+    command(&f.domain, user(), Command::AssignTask { task_id: "t".into(), agent_id: "agent-b".into(), model: None });
     command(&f.domain, Actor::Agent { agent_id: "agent-b".into() }, Command::StartTask { task_id: "t".into() });
     f.domain.live.mods.connect(serde_json::from_value(json!({"session_id": "agent-b", "version": "2.1.287", "cwd": f.project.to_str().unwrap()})).unwrap(), 1);
     let claude = FakeClaude::loading(&f.domain);
@@ -381,6 +438,8 @@ async fn a_task_whose_node_the_user_closed_is_relaunched_for_that_task_in_the_cl
     assert!(prompt.contains("Editor colours") && prompt.contains("Make the editor readable"), "the mission comes with it: {prompt}");
     let state = f.domain.state().unwrap();
     assert_eq!(state.tasks[&"t".into()].agent_id, Some(SESSION.into()));
+    assert_eq!(state.tasks[&"t".into()].model.as_ref().map(|m| (m.model.as_str(), m.chosen_by)), Some(("sonnet", ModelChooser::Orchestrator)),
+        "an auto-effort task that never recorded a model restarts on the starting model");
     assert!(f.domain.live.closed_task_ids().is_empty(), "the task no longer waits for a relaunch");
     drop(calls);
     let again = relaunch(&f.domain, &f.home, &user(), &"t".into(), &claude).await.unwrap_err();

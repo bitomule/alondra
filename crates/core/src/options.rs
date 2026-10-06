@@ -6,6 +6,8 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::domain_v2::{ModelChooser, TaskModel};
+
 pub const FILE_NAME: &str = "options.toml";
 pub const PR: &str = "pr";
 pub const EFFORT: &str = "effort";
@@ -14,6 +16,7 @@ pub const AUTO_MERGE: &str = "auto_merge";
 pub const AUTO: &str = "auto";
 const MAPPED: [&str; 3] = ["light", "normal", "hard"];
 const EFFORT_LEVELS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
+const MODEL_ALIASES: [&str; 4] = ["haiku", "sonnet", "opus", "fable"];
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(untagged)]
@@ -78,6 +81,9 @@ pub struct ProjectOptions {
 pub struct OptionsFile {
     pub projects_root: Option<String>,
     pub effort: BTreeMap<String, EffortFlags>,
+    /// Extra model aliases the orchestrator may pick, and what `--model` receives for any alias
+    /// (the built-in ones pass themselves).
+    pub models: BTreeMap<String, String>,
     pub defaults: BTreeMap<String, Choice>,
     pub option: Vec<UserOption>,
     pub projects: BTreeMap<String, ProjectOptions>,
@@ -290,6 +296,14 @@ impl OptionsFile {
                 return Err(format!("effort {level}: {e} is not one of {}", EFFORT_LEVELS.join(", ")));
             }
         }
+        for (alias, model) in &self.models {
+            if alias.is_empty() || !alias.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-') {
+                return Err(format!("models {alias}: an alias is lowercase letters, digits and dashes"));
+            }
+            if model.trim().is_empty() {
+                return Err(format!("models {alias}: name the model it stands for"));
+            }
+        }
         let check_all = |options: &[&UserOption]| -> Result<(), String> {
             let mut seen: BTreeSet<&str> = [PR, EFFORT].into();
             for o in options {
@@ -343,6 +357,25 @@ impl OptionsFile {
                 s
             })
             .collect()
+    }
+
+    pub fn model_aliases(&self) -> Vec<String> {
+        let mut aliases: Vec<String> = MODEL_ALIASES.iter().map(|a| a.to_string()).collect();
+        aliases.extend(self.models.keys().filter(|k| !MODEL_ALIASES.contains(&k.as_str())).cloned());
+        aliases
+    }
+
+    /// What `--model` receives for an alias the orchestrator may pick; none for any other word.
+    pub fn model_flag(&self, alias: &str) -> Option<String> {
+        match self.models.get(alias) {
+            Some(model) => Some(model.trim().to_string()),
+            None => MODEL_ALIASES.contains(&alias).then(|| alias.to_string()),
+        }
+    }
+
+    /// The family a node's reported model has to belong to for it to be the alias's model.
+    pub fn model_family(&self, alias: &str) -> Option<String> {
+        self.model_flag(alias).map(|model| crate::model_label::model_family(&model))
     }
 
     pub fn effort_flags(&self, level: &str) -> EffortFlags {
@@ -506,12 +539,38 @@ impl Resolved {
         self
     }
 
+    /// With effort auto the orchestrator picks the model (and optionally the effort) per launch; an
+    /// effort the user chose already sets the model and refuses the orchestrator's.
+    pub fn with_orchestrator_model(mut self, file: &OptionsFile, model: Option<&str>, effort: Option<&str>) -> Result<Resolved, String> {
+        if self.effort != AUTO {
+            return match model {
+                Some(m) => Err(format!("the user chose effort {} for this request, which sets the model: do not pass model ({m})", self.effort)),
+                None => Ok(self),
+            };
+        }
+        let aliases = file.model_aliases().join(", ");
+        let alias = model.ok_or_else(|| format!("effort is auto for this request: pass model, one of {aliases}"))?;
+        let flag = file.model_flag(alias).ok_or_else(|| format!("{alias} is not a model; use one of {aliases}"))?;
+        if let Some(e) = effort.filter(|e| !EFFORT_LEVELS.contains(e)) {
+            return Err(format!("{e} is not an effort; use one of {}", EFFORT_LEVELS.join(", ")));
+        }
+        self.flags = EffortFlags { model: Some(flag), effort: effort.map(str::to_string) };
+        Ok(self)
+    }
+
+    /// The model the launch passes to Claude and who chose it; none when Claude's default stays.
+    pub fn launch_model(&self) -> Option<TaskModel> {
+        let model = self.flags.model.clone()?;
+        let chosen_by = if self.effort == AUTO { ModelChooser::Orchestrator } else { ModelChooser::User };
+        Some(TaskModel { model, chosen_by })
+    }
+
     /// What the orchestrator is told about effort alongside the request.
     pub fn effort_note(&self, user: &str) -> String {
         if self.effort == AUTO {
-            "Effort is auto: choose per task after splitting. Use light for bounded work with a known approach, normal for ordinary implementation and investigation, and hard only for a concrete unresolved difficulty named in the brief. Normal is the starting point; request size or importance does not make every task hard. Set options.effort in define or effort in launch.".into()
+            "Effort is auto: choose the model and effort per task after splitting. Pass model in launch (haiku for mechanical, bounded work with an obvious check; sonnet for ordinary implementation, investigation, refactors and tests, the starting point; opus only for a specific unresolved reasoning difficulty the mission names; fable only for the hardest, longest autonomous work with concrete evidence) and, optionally, effort (low, medium, high, xhigh, max). Use the lowest model that can reliably finish; request size or importance does not raise it.".into()
         } else {
-            format!("Effort {} was chosen by {user} and is binding: do not pass effort.", self.effort)
+            format!("Effort {} was chosen by {user} and is binding: do not pass model or effort.", self.effort)
         }
     }
 
@@ -723,8 +782,49 @@ on = "Run /review-loop before the merge."
             assert_eq!((r.effort.as_str(), r.launch_flags(None)), (effort, flags.iter().map(|s| s.to_string()).collect::<Vec<_>>()), "{what}");
         }
         assert!(f.resolve(None, &BTreeMap::new()).unwrap().effort_note("Ana").starts_with("Effort is auto"));
-        assert_eq!(f.resolve(None, &chosen(&[(EFFORT, val("hard"))])).unwrap().effort_note("Ana"), "Effort hard was chosen by Ana and is binding: do not pass effort.");
+        assert_eq!(f.resolve(None, &chosen(&[(EFFORT, val("hard"))])).unwrap().effort_note("Ana"), "Effort hard was chosen by Ana and is binding: do not pass model or effort.");
         assert!(OptionsFile::parse("[effort]\nauto = { model = \"m\" }\n").unwrap_err().contains("auto leaves the choice"));
+    }
+
+    #[test]
+    fn with_effort_auto_the_orchestrator_names_the_model_and_a_users_effort_refuses_it() {
+        let f = OptionsFile::parse("[models]\nbig = \"claude-opus-5-5[1m]\"\n[effort]\nhard = { model = \"big\", effort = \"max\" }\n").unwrap();
+        let auto = || f.resolve(None, &BTreeMap::new()).unwrap();
+        let flags = |r: Resolved| r.launch_flags(None).join(" ");
+
+        assert_eq!(flags(auto().with_orchestrator_model(&f, Some("sonnet"), None).unwrap()), "--model sonnet");
+        assert_eq!(flags(auto().with_orchestrator_model(&f, Some("haiku"), Some("low")).unwrap()), "--model haiku --effort low");
+        assert_eq!(flags(auto().with_orchestrator_model(&f, Some("big"), Some("xhigh")).unwrap()), "--model claude-opus-5-5[1m] --effort xhigh");
+
+        let missing = auto().with_orchestrator_model(&f, None, Some("high")).unwrap_err();
+        assert!(missing.contains("effort is auto") && missing.contains("pass model") && missing.contains("haiku, sonnet, opus, fable, big"), "{missing}");
+        assert!(auto().with_orchestrator_model(&f, Some("gpt"), None).unwrap_err().contains("gpt is not a model"));
+        assert!(auto().with_orchestrator_model(&f, Some("sonnet"), Some("light")).unwrap_err().contains("light is not an effort"));
+
+        let chosen = f.resolve(None, &chosen(&[(EFFORT, val("hard"))])).unwrap();
+        let refused = chosen.clone().with_orchestrator_model(&f, Some("haiku"), None).unwrap_err();
+        assert!(refused.contains("the user chose effort hard") && refused.contains("haiku"), "{refused}");
+        assert_eq!(flags(chosen.with_orchestrator_model(&f, None, Some("low")).unwrap()), "--model big --effort max", "the user's mapping applies as before");
+    }
+
+    #[test]
+    fn the_launch_model_says_who_chose_it() {
+        let f = OptionsFile::default();
+        let by_orchestrator = f.resolve(None, &BTreeMap::new()).unwrap().with_orchestrator_model(&f, Some("opus"), None).unwrap();
+        assert_eq!(by_orchestrator.launch_model(), Some(TaskModel { model: "opus".into(), chosen_by: ModelChooser::Orchestrator }));
+        let by_user = f.resolve(None, &chosen(&[(EFFORT, val("light"))])).unwrap();
+        assert_eq!(by_user.launch_model(), Some(TaskModel { model: "sonnet".into(), chosen_by: ModelChooser::User }));
+        assert_eq!(f.resolve(None, &chosen(&[(EFFORT, val("normal"))])).unwrap().launch_model(), None, "Claude's default model is nothing to record");
+    }
+
+    #[test]
+    fn model_aliases_come_from_the_file_and_fit_by_family() {
+        let f = OptionsFile::parse("[models]\nbig = \"claude-opus-5-5\"\nfable = \"claude-fable-5-1\"\n").unwrap();
+        assert_eq!(f.model_aliases(), ["haiku", "sonnet", "opus", "fable", "big"]);
+        assert_eq!((f.model_flag("fable").as_deref(), f.model_flag("opus").as_deref(), f.model_flag("nope")), (Some("claude-fable-5-1"), Some("opus"), None));
+        assert_eq!((f.model_family("big").as_deref(), f.model_family("sonnet").as_deref()), (Some("opus"), Some("sonnet")));
+        assert!(OptionsFile::parse("[models]\n\"Big Model\" = \"x\"\n").unwrap_err().contains("lowercase"));
+        assert!(OptionsFile::parse("[models]\nbig = \" \"\n").unwrap_err().contains("name the model"));
     }
 
     #[test]
