@@ -1309,7 +1309,7 @@ mod tests {
                 targets: vec![DeliveryTarget::Text { text: "Complete".into() }],
             });
             apply_seed_command(&domain, Actor::System, &format!("end-{task_id}"), Command::RecordNodeEnd {
-                task_id: task_id.into(), end: alondra_core::domain::NodeEnd::Closed,
+                task_id: task_id.into(), end: alondra_core::domain::NodeEnd::Closed, agent_id: None,
             });
         }
 

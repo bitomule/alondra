@@ -332,6 +332,9 @@ pub enum Command {
     RecordNodeEnd {
         task_id: TaskId,
         end: NodeEnd,
+        /// The node the end is of; refused when the task has another by now.
+        #[serde(default)]
+        agent_id: Option<AgentId>,
     },
     ArchiveTask {
         task_id: TaskId,

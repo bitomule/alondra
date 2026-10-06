@@ -1201,7 +1201,7 @@ impl DomainState {
                     } else if self.accepted(p) {
                         TaskState::Closing
                     } else if self.handed_back(p).is_some() {
-                        TaskState::Running
+                        if t.started || t.agent_id.is_some() { TaskState::Running } else { TaskState::NotStarted }
                     } else {
                         TaskState::InReview
                     }
@@ -2930,10 +2930,12 @@ impl DomainState {
                 }
                 self.active(task_id)?;
                 self.invalidate(task_id);
-                for card in self.interactions.values_mut().filter(|i| {
-                    i.id.0.starts_with("problem-close-") && i.scope == (Scope::Task { task_id: task_id.clone() }) && matches!(&i.payload, InteractionPayload::Question { answer: None, .. })
-                }) {
-                    card.withdrawn = true;
+                let closing_cards: Vec<InteractionId> = self.interactions.values().filter(|i| {
+                    i.id.0.starts_with("problem-close-") && i.scope == (Scope::Task { task_id: task_id.clone() })
+                        && !i.withdrawn && matches!(&i.payload, InteractionPayload::Question { answer: None, .. })
+                }).map(|i| i.id.clone()).collect();
+                for card in &closing_cards {
+                    self.retire(card);
                 }
                 let t = self.tasks.get_mut(task_id).unwrap();
                 t.state = TaskState::Cancelled;
@@ -2982,9 +2984,12 @@ impl DomainState {
                 let revision = self.revision + 1;
                 self.tasks.get_mut(task_id).unwrap().wrap_up.cleaned_at = Some(revision);
             }
-            Command::RecordNodeEnd { task_id, end } => {
+            Command::RecordNodeEnd { task_id, end, agent_id } => {
                 system(actor)?;
                 let t = self.task(task_id)?;
+                if agent_id.as_ref().is_some_and(|node| t.agent_id.as_ref() != Some(node)) {
+                    return fail("conflict", "The task has another node by now");
+                }
                 match t.wrap_up.node {
                     Some(recorded) if recorded == *end => return Ok(()),
                     Some(_) => return fail("conflict", "node end already recorded"),
@@ -2992,11 +2997,10 @@ impl DomainState {
                 }
                 let closing = self.in_cleanup(t) && self.wraps_up(t);
                 if !closing && !t.state.terminal() {
-                    // The node was removed while the task went back to work: the task keeps working
-                    // without it and is relaunched clean.
                     if matches!(end, NodeEnd::Closed | NodeEnd::Gone) && t.agent_id.is_some() {
                         let t = self.tasks.get_mut(task_id).unwrap();
                         t.agent_id = None;
+                        t.started = false;
                         t.wrap_up = WrapUp::default();
                         return Ok(());
                     }

@@ -456,6 +456,8 @@ async fn cancelling_a_task_withdraws_the_card_of_three_failed_closes_and_the_nod
     let card = rig.cards()[0].id.clone();
     command(&rig.domain, user(), "cancel", Command::CancelTask { task_id: "t".into() });
     assert!(rig.domain.state().unwrap().interactions[&card].withdrawn, "the card no longer waits for an answer");
+    let state = rig.domain.state().unwrap();
+    assert_eq!(state.interactions[&card].revision, state.revision, "withdrawing it moves its revision, so clients refresh");
     *rig.sessions.leftovers.lock().unwrap() = None;
     rig.pass(T0 + 20 * MINUTE).await;
     assert_eq!(rig.sessions.removals(), 1, "the closer does not wait for a withdrawn card");
@@ -477,7 +479,41 @@ async fn a_task_that_goes_back_to_work_while_its_session_is_removed_is_released_
     rig.pass(T0).await;
     assert_eq!(rig.sessions.removals(), 1);
     let task = rig.task();
-    assert_eq!((task.state, task.agent_id.clone()), (TaskState::Running, None), "no node is left to work on it");
+    assert_eq!((task.state, task.agent_id.clone()), (TaskState::NotStarted, None), "ready to be relaunched, not working without a node");
     assert!(task.wrap_up.is_default());
     assert_eq!(rig.closing(), None);
+    assert!(rig.domain.live.closed_task("t").is_some(), "what a relaunch needs is kept");
+    let told: Vec<_> = rig.domain.state().unwrap().interactions.values().map(|i| i.body.clone()).collect();
+    assert!(told.iter().any(|body| body.contains("closed while the user asked for changes") && body.contains("launch (task t)")), "{told:?}");
+}
+
+#[tokio::test]
+async fn a_node_that_replaces_the_one_being_removed_is_not_unassigned() {
+    let rig = Rig::new(thirty_minutes());
+    rig.confirm();
+    command(&rig.domain, Actor::System, "register-b", Command::RegisterAgent { agent_id: "agent-b".into(), name: "New node".into() });
+    let domain = rig.domain.clone();
+    *rig.sessions.during_rm.lock().unwrap() = Some(Box::new(move || {
+        command(&domain, user(), "feedback", Command::SubmitFeedback {
+            attachments: vec![], presentation_id: "final".into(), targets: text(), body: "One more thing".into(),
+            instruction: Instruction::Changes,
+        });
+        command(&domain, Actor::Orchestrator { generation: 0 }, "assign-b", Command::AssignTask { task_id: "t".into(), agent_id: "agent-b".into(), model: None });
+    }));
+    rig.pass(T0).await;
+    assert_eq!(rig.task().agent_id, Some("agent-b".into()), "the node that arrived during claude rm keeps the task");
+}
+
+#[tokio::test]
+async fn when_closing_the_session_fails_inside_alondra_the_started_remove_is_forgotten() {
+    let rig = Rig::new(thirty_minutes());
+    rig.confirm();
+    let runtime = rig._home.0.join("runtime");
+    std::fs::create_dir_all(&runtime).unwrap();
+    std::fs::write(runtime.join("sessions"), "not a folder").unwrap();
+    let failed = pass(&rig.domain, rig.sessions.as_ref(), &rig.timing, T0).await;
+    assert!(failed.is_err(), "the session's settings could not be looked at");
+    assert_eq!(rig.sessions.removals(), 1, "claude rm did run");
+    let row = rig.closing().unwrap();
+    assert_eq!(row.rm_started_at, None, "nothing is left saying a remove is in flight");
 }

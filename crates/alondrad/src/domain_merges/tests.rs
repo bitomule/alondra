@@ -23,7 +23,7 @@ fn command(domain: &DomainRuntime, actor: Actor, id: &str, command: Command) {
 /// The task waits in Closing for its node; Alondra records it closed and the task is done.
 fn end_node(domain: &DomainRuntime) {
     assert_eq!(task(domain), TaskState::Closing);
-    command(domain, Actor::System, "node-end", Command::RecordNodeEnd { task_id: "t".into(), end: NodeEnd::Closed });
+    command(domain, Actor::System, "node-end", Command::RecordNodeEnd { task_id: "t".into(), end: NodeEnd::Closed, agent_id: None });
 }
 
 fn user() -> Actor {

@@ -117,14 +117,28 @@ fn card(state: &DomainState, id: &str) -> Card {
     }
 }
 
-fn record_end(domain: &DomainRuntime, task_id: &TaskId, end: NodeEnd) {
-    if let Err(error) = execute_system(domain, Command::RecordNodeEnd { task_id: task_id.clone(), end }) {
+/// Records what became of the node. A task that went back to work while its node was removed is
+/// released like one whose node the user closed: what a relaunch needs is kept, the orchestrator
+/// is told, and the changes asked for reach the node that replaces it.
+fn record_end(domain: &DomainRuntime, task_id: &TaskId, end: NodeEnd, agent: Option<&AgentId>) {
+    let before = domain.state().ok();
+    let back_to_work = matches!(end, NodeEnd::Closed | NodeEnd::Gone)
+        && before.as_ref().and_then(|state| state.tasks.get(task_id)).is_some_and(|task| !task.state.terminal() && task.wrap_up.asked_at.is_none());
+    if let Err(error) = execute_system(domain, Command::RecordNodeEnd { task_id: task_id.clone(), end, agent_id: agent.cloned() }) {
         log!("could not record what became of the node of {task_id}: {error:?}");
+        return;
     }
+    let (Some(state), true) = (before, back_to_work) else { return };
+    let (Some(task), Some(agent)) = (state.tasks.get(task_id), agent) else { return };
+    let name = state.agents.get(agent).map_or_else(|| agent.0.clone(), |known| known.name.clone());
+    domain.live.remember_closed_task(&task_id.0, crate::client_routes::ClosedNode { name, cwd: domain.live.mods.session(&agent.0).and_then(|reported| reported.cwd) });
+    let _ = domain.tell_orchestrator(&format!("node-closed-while-working-{task_id}-{}", crate::auth::random_hex(4)), format!(
+        "The node of “{}” ({task_id}) was closed while the user asked for changes on it. The task waits for a new node: start it with launch (task {task_id}); its mission carries the changes asked for.",
+        task.title));
 }
 
-fn finish(domain: &DomainRuntime, row: &TaskClosing, end: NodeEnd) -> Result<()> {
-    record_end(domain, &row.task_id, end);
+fn finish(domain: &DomainRuntime, row: &TaskClosing, agent: Option<&AgentId>, end: NodeEnd) -> Result<()> {
+    record_end(domain, &row.task_id, end, agent);
     if let Some(card) = &row.problem_id {
         let _ = domain.withdraw_problem(&InteractionId(card.clone()));
     }
@@ -137,15 +151,15 @@ async fn close_one(domain: &DomainRuntime, sessions: &dyn Sessions, timing: &Tim
     let Some(task) = state.tasks.get(task_id) else { return Ok(()) };
     let mut row = domain.store.lock().expect("domain store poisoned").begin_task_closing(task_id, now)?;
     let Some(agent) = task.agent_id.clone() else {
-        return finish(domain, &row, NodeEnd::Gone);
+        return finish(domain, &row, None, NodeEnd::Gone);
     };
     let orchestrator = domain.live.node(&agent.0).is_some_and(|node| node.is_orchestrator);
     if orchestrator || !domain.launched_by_alondra(&agent)? {
-        return finish(domain, &row, NodeEnd::UsersOwn);
+        return finish(domain, &row, Some(&agent), NodeEnd::UsersOwn);
     }
     if let Some(card_id) = row.problem_id.clone() {
         match card(&state, &card_id) {
-            Card::Leave => return finish(domain, &row, NodeEnd::KeptByUser),
+            Card::Leave => return finish(domain, &row, Some(&agent), NodeEnd::KeptByUser),
             Card::Retry | Card::Withdrawn => {
                 row.failures = 0;
                 row.problem_id = None;
@@ -201,10 +215,10 @@ async fn close_one(domain: &DomainRuntime, sessions: &dyn Sessions, timing: &Tim
         }
     };
     match outcome {
-        CloseOutcome::Closed { .. } => finish(domain, &row, NodeEnd::Closed),
+        CloseOutcome::Closed { .. } => finish(domain, &row, Some(&agent), NodeEnd::Closed),
         CloseOutcome::NotListed => {
             crate::node_revival::user_closed(domain, &agent.0)?;
-            finish(domain, &row, if interrupted { NodeEnd::Closed } else { NodeEnd::Gone })
+            finish(domain, &row, Some(&agent), if interrupted { NodeEnd::Closed } else { NodeEnd::Gone })
         }
         CloseOutcome::Refused { message, .. } | CloseOutcome::Failed { message, .. } => {
             failure(domain, timing, now, task, &agent, row, &message, matches!(kind, Due::Cleanup))

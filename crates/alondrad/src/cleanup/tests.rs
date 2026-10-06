@@ -63,9 +63,13 @@ fn user() -> Actor {
 }
 
 fn command(domain: &DomainRuntime, actor: Actor, command: Command) {
+    command_as(domain, actor, &format!("c-{}", crate::auth::random_hex(8)), command);
+}
+
+fn command_as(domain: &DomainRuntime, actor: Actor, id: &str, command: Command) {
     let state = domain.state().unwrap();
     domain.execute(&actor, &CommandEnvelope {
-        protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch, command_id: format!("c-{}", crate::auth::random_hex(8)).into(),
+        protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch, command_id: id.into(),
         expected_revision: state.revision, command,
     }, None, || Ok(())).unwrap();
 }
@@ -122,7 +126,7 @@ impl Rig {
                     attachments: vec![], task_id: id.clone().into(), interaction_id: format!("final-{n}").into(), body: "Done".into(),
                     targets: targets.clone(), is_final: true, card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true) });
                 command(&self.domain, user(), Command::AcceptDelivery { presentation_id: format!("final-{n}").into(), targets });
-                command(&self.domain, Actor::System, Command::RecordNodeEnd { task_id: id.clone().into(), end: NodeEnd::Closed });
+                command(&self.domain, Actor::System, Command::RecordNodeEnd { task_id: id.clone().into(), end: NodeEnd::Closed, agent_id: None });
                 self.forget_wrap_up(&id);
             }
             Task::Cancelled => {
@@ -262,6 +266,10 @@ impl Rig {
     /// A session registered and listed, with a cancelled task given to it the way `launch` did before
     /// decisions were kept: no `model_decisions` row at all.
     fn old_session(&mut self, assign_as: Option<Actor>, launch_key: Option<&str>) -> String {
+        self.old_session_with(assign_as, "orchestrator-tool-launch", launch_key)
+    }
+
+    fn old_session_with(&mut self, assign_as: Option<Actor>, assign_id: &str, launch_key: Option<&str>) -> String {
         self.count += 1;
         let n = self.count;
         let session = format!("a{n:07}-0000-4000-8000-000000000000");
@@ -281,7 +289,7 @@ impl Rig {
         command(&self.domain, user(), Command::CreateTask { task_id: id.clone().into(), request_id: "r".into(), title: format!("Task {n}"),
             agent_id: (!given).then(|| session.clone().into()), review_prs: false, dependencies: Default::default(), stack: None });
         if let Some(actor) = assign_as {
-            command(&self.domain, actor, Command::AssignTask { task_id: id.clone().into(), agent_id: session.clone().into(), model: None });
+            command_as(&self.domain, actor, assign_id, Command::AssignTask { task_id: id.clone().into(), agent_id: session.clone().into(), model: None });
         }
         command(&self.domain, user(), Command::CancelTask { task_id: id.clone().into() });
         self.forget_wrap_up(&id);
@@ -314,4 +322,16 @@ async fn a_node_the_user_left_open_and_a_task_in_progress_are_not_closed() {
     for list in ["close", "kept", "failed"] {
         assert!(report[list].as_array().unwrap().is_empty(), "{list}: {report}");
     }
+}
+
+#[tokio::test]
+async fn a_session_of_the_users_that_the_orchestrator_gave_a_task_with_assign_task_is_never_closed() {
+    let mut rig = Rig::new();
+    rig.old_session_with(Some(Actor::Orchestrator { generation: 0 }), "mcp-assign-task", None);
+    rig.old_session_with(Some(Actor::System), "mcp-assign-task", None);
+    let launched = rig.old_session(Some(Actor::Orchestrator { generation: 0 }), None);
+    let dry = rig.run(true).await;
+    assert_eq!(names(&dry["close"]), ["Node 3"], "only Alondra's launch path counts: {dry}");
+    let report = rig.run(false).await;
+    assert_eq!(rig.sessions.removals(), [launched[..8].to_owned()], "the user's sessions got no claude rm: {report}");
 }

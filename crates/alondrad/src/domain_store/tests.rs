@@ -1389,7 +1389,7 @@ fn a_tasks_wrap_up_survives_a_restart() {
     let mut store = DomainStore::open(&fixture.path()).unwrap();
     seeded(&mut store);
     execute(&mut store, &user(), "cancel", Command::CancelTask { task_id: "task-1".into() });
-    execute(&mut store, &Actor::System, "end", Command::RecordNodeEnd { task_id: "task-1".into(), end: NodeEnd::KeptByUser });
+    execute(&mut store, &Actor::System, "end", Command::RecordNodeEnd { task_id: "task-1".into(), end: NodeEnd::KeptByUser, agent_id: None });
     drop(store);
     let mut store = DomainStore::open(&fixture.path()).unwrap();
     let wrap_up = store.load().unwrap().tasks[&"task-1".into()].wrap_up.clone();

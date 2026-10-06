@@ -851,13 +851,15 @@ impl DomainStore {
     pub(crate) fn task_was_launched(&self, task_id: &TaskId) -> Result<bool> {
         Ok(self.conn.query_row("SELECT EXISTS(SELECT 1 FROM model_decisions WHERE task_id=?1 AND kind IN('launch','relaunch'))", [&task_id.0], |row| row.get(0))?)
     }
-    /// Whether Alondra launched this session: a launch of it was recorded, or the orchestrator or
-    /// Alondra itself assigned a task to its agent (what launches did before decisions were kept).
+    /// Whether Alondra launched this session: a launch of it was recorded, or its agent was assigned
+    /// a task by Alondra's own launch path (launch, relaunch, automatic launch), which is what
+    /// launches did before decisions were kept. An `assign_task` the orchestrator sent to a session
+    /// of the user's is not one.
     pub(crate) fn launched_by_alondra(&self, agent_id: &str) -> Result<bool> {
         Ok(self.conn.query_row(
             "SELECT EXISTS(SELECT 1 FROM model_decisions WHERE agent_id=?1 AND kind IN('launch','relaunch'))
                  OR EXISTS(SELECT 1 FROM command_audit WHERE json_extract(command,'$.kind')='assign_task' AND json_extract(command,'$.agent_id')=?1
-                   AND json_extract(actor,'$.kind') IN('orchestrator','system'))",
+                   AND json_extract(actor,'$.kind') IN('orchestrator','system') AND command_id LIKE 'orchestrator-tool-%')",
             [agent_id], |row| row.get(0))?)
     }
     pub(crate) fn task_closing(&self, task_id: &TaskId) -> Result<Option<TaskClosing>> {

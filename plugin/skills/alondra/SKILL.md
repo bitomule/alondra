@@ -143,7 +143,7 @@ Pick the tool by what you need:
 
 ## One task at a time
 
-Your subagents work on your task; they need no task of their own. Something new the user asks
+You work on one task for your whole life: Alondra closes this session with it. Your subagents work on your task; they need no task of their own. Something new the user asks
 for that is not part of your task goes to the orchestrator (`ask` with kind `orchestrator`): it
 launches another node for it.
 

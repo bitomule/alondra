@@ -112,7 +112,7 @@ pub(crate) async fn run(domain: &DomainRuntime, sessions: &dyn Sessions, claude_
         match outcome {
             Ok(CloseOutcome::Closed { .. }) => {
                 for task in state.tasks.values().filter(|task| task.agent_id.as_ref() == Some(&candidate.agent) && task.state.terminal() && task.wrap_up.node.is_none()) {
-                    if let Err(error) = execute_system(domain, Command::RecordNodeEnd { task_id: task.id.clone(), end: NodeEnd::Closed }) {
+                    if let Err(error) = execute_system(domain, Command::RecordNodeEnd { task_id: task.id.clone(), end: NodeEnd::Closed, agent_id: Some(candidate.agent.clone()) }) {
                         log!("could not record that the node of {} was closed: {error:?}", task.id);
                     }
                 }

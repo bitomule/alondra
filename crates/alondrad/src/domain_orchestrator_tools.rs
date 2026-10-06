@@ -223,7 +223,7 @@ async fn launch_guarded(domain: &DomainRuntime, home: &Path, actor: &Actor, body
         }
         text
     });
-    let mission = format!("{mission}{}", prefixed("\n\n", follow_up_context(&current, task)));
+    let mission = format!("{mission}{}{}", prefixed("\n\n", follow_up_context(&current, task)), prefixed("\n\n", asked_changes(&current, task)));
     let prompt = crate::domain_schedule_runner::producer_prompt(&mission, &resolved, &task.id, body.approach.unwrap_or_default());
     let key = format!("launch-{}", crate::auth::random_hex(8));
     let settings = crate::domain_sessions::prepare(home, &key)
@@ -357,6 +357,22 @@ fn follow_up_context(state: &DomainState, task: &alondra_core::domain::Task) -> 
         return String::new();
     }
     clipped(&format!("## Earlier work this task builds on\n\n{}", entries.join("\n\n")), FOLLOW_UP_LIMIT, "")
+}
+
+/// The changes the user asked for on a result the task's earlier node delivered: they go to the
+/// node that takes the task over, since the one they were sent to is gone.
+fn asked_changes(state: &DomainState, task: &alondra_core::domain::Task) -> String {
+    use alondra_core::domain::InteractionPayload;
+    let Some(InteractionPayload::Delivery { feedback, acceptance, .. }) = task.final_presentation.as_ref()
+        .and_then(|id| state.interactions.get(id)).map(|result| &result.payload)
+    else {
+        return String::new();
+    };
+    if feedback.is_empty() || acceptance.as_ref().is_some_and(|accepted| accepted.valid) {
+        return String::new();
+    }
+    let asked: Vec<String> = feedback.iter().map(|change| format!("- {}", change.body.trim())).collect();
+    format!("## Changes the user asked for on the result you take over\n\n{}", asked.join("\n"))
 }
 
 fn given(text: Option<&str>) -> Option<String> {

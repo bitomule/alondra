@@ -596,7 +596,7 @@ async fn a_launch_of_a_follow_up_task_carries_the_earlier_result_and_pull_reques
     command(&f.domain, user(), Command::AcceptDelivery { presentation_id: "final".into(), targets: targets() });
     command(&f.domain, Actor::System, Command::ObservePrState { pr_id: "pr".into(), head: "head1".into(), base: "main".into(),
         state: alondra_core::domain::PrState::Merged, merged_head: Some("head1".into()) });
-    command(&f.domain, Actor::System, Command::RecordNodeEnd { task_id: "t".into(), end: alondra_core::domain::NodeEnd::Closed });
+    command(&f.domain, Actor::System, Command::RecordNodeEnd { task_id: "t".into(), end: alondra_core::domain::NodeEnd::Closed, agent_id: None });
     assert_eq!(f.domain.state().unwrap().tasks[&TaskId::from("t")].state, TaskState::Done);
     command(&f.domain, user(), Command::CreateTask { task_id: "t2".into(), request_id: "r".into(), title: "Editor fonts".into(),
         agent_id: None, review_prs: false, dependencies: ["t".into()].into(), stack: None });
@@ -678,4 +678,24 @@ async fn a_task_in_progress_whose_node_died_is_relaunched_and_assigned_to_the_ne
     launch(&f.domain, &f.home, &actor, launch_body(&f, json!({"model": "sonnet"})), |_| None, &claude).await.unwrap();
     assert_eq!(f.domain.state().unwrap().tasks[&TaskId::from("t")].agent_id, Some(AgentId::from(SESSION)));
     assert!(claude.removed.lock().unwrap().is_empty(), "the new session is kept");
+}
+
+#[tokio::test]
+async fn the_changes_the_user_asked_for_reach_the_node_that_takes_the_task_over() {
+    let f = world();
+    let actor = the_orchestrator(&f.domain);
+    give(&f, "t", "agent-b");
+    let targets = || vec![alondra_core::domain::DeliveryTarget::Text { text: "Result".into() }];
+    command(&f.domain, Actor::Agent { agent_id: "agent-b".into() }, Command::PresentResult { attachments: vec![], task_id: "t".into(),
+        interaction_id: "final".into(), body: "Done".into(), targets: targets(), is_final: true,
+        card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true) });
+    command(&f.domain, user(), Command::SubmitFeedback { attachments: vec![], presentation_id: "final".into(), targets: targets(),
+        body: "  Use the new palette  ".into(), instruction: alondra_core::domain::Instruction::Changes });
+    command(&f.domain, Actor::System, Command::ObserveAgent { agent_id: "agent-b".into(), connected: false });
+    command(&f.domain, Actor::System, Command::RecordNodeEnd { task_id: "t".into(), end: alondra_core::domain::NodeEnd::Closed, agent_id: Some("agent-b".into()) });
+    assert_eq!(f.domain.state().unwrap().tasks[&TaskId::from("t")].state, TaskState::NotStarted);
+    let claude = FakeClaude::loading(&f.domain);
+    launch(&f.domain, &f.home, &actor, launch_body(&f, json!({"model": "sonnet"})), |_| None, &claude).await.unwrap();
+    let prompt = claude.calls.lock().unwrap()[0].1.last().unwrap().clone();
+    assert!(prompt.contains("## Changes the user asked for on the result you take over\n\n- Use the new palette"), "{prompt}");
 }

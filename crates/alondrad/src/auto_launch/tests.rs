@@ -88,7 +88,7 @@ fn finish(f: &Fixture, id: &str, body: &str, pull_request: bool) {
         command(&f.domain, Actor::System, Command::ObservePrState { pr_id: format!("pr-{id}").into(), head: "head1".into(), base: "main".into(),
             state: PrState::Merged, merged_head: Some("head1".into()) });
     }
-    command(&f.domain, Actor::System, Command::RecordNodeEnd { task_id: id.into(), end: NodeEnd::Closed });
+    command(&f.domain, Actor::System, Command::RecordNodeEnd { task_id: id.into(), end: NodeEnd::Closed, agent_id: None });
     assert_eq!(f.domain.state().unwrap().tasks[&TaskId::from(id)].state, TaskState::Done);
 }
 
