@@ -629,8 +629,8 @@
         "bzlTransitiveDigest": "UvQf9r2bSvJv7U+jRyqYj19oBr1RA6pb7W74NQs9Qeg=",
         "usagesDigest": "2g6pxya9RYC7UntLz/yBloEuUrj+sd69Obb6fEWlBHA=",
         "recordedFileInputs": {
-          "@@//Cargo.lock": "afba29571d3ad6a994e56de7e95c8a3eb758f5d3b44564c444e81cb0755289c8",
-          "@@//Cargo.toml": "f745eeae9de0abca996350146cf47efa63efe04b3375cb50529b86fa75efb319",
+          "@@//Cargo.lock": "2aa1fad9b49fbc418dd953e6cc1be8201d41ab64497d9ad4ce7ce8ca412f59b3",
+          "@@//Cargo.toml": "c07ee57641cffef0b47a376ee49968a54485b639865210095acb6a233a5ee5f9",
           "@@//crates/alondra/Cargo.toml": "c54421c9945fe798ec3bd784b9a6952915b9bb21eecc334961138e4e688866f4",
           "@@//crates/alondrad/Cargo.toml": "e6defcacc4c5928d0ed79c02f0b500684edf615e9926241f8e96712b39401136",
           "@@//crates/core/Cargo.toml": "29673379a810edad695f0db7cd71f5eb47cdc72f3ab9d50778e7c6593c70c17e",
