@@ -6,10 +6,6 @@ use alondra_core::domain::{RequestId, TaskId, TaskState};
 pub enum TaskKey {
     Task(TaskId),
     Request(RequestId),
-    /// The header of the finished section, which opens and closes it.
-    Finished,
-    /// The header of the archived section, which opens and closes it.
-    Archived,
 }
 
 pub fn state_label(s: TaskState) -> &'static str {

@@ -538,6 +538,7 @@ fn draw_views_inbox_list(
         if !lines.is_empty() {
             lines.push(Line::default());
         }
+        let folded = super::view_render::folded(home, section, &app.open_sections);
         if let Some(title) = &section.title {
             let count = section.count.unwrap_or_else(|| section.items.len() as u32);
             let (text, color) = match section.id.as_str() {
@@ -546,13 +547,31 @@ fn draw_views_inbox_list(
                 id if id.starts_with("project:") => (title.clone(), Color::Reset),
                 _ => (title.to_uppercase(), ACCENT),
             };
-            lines.push(Line::from(vec![
+            let header = super::view_render::header_key(home, section);
+            let selected = header
+                .as_ref()
+                .is_some_and(|key| app.sel.as_ref().is_some_and(|sel| sel.0 == *key));
+            let mut spans = Vec::new();
+            if header.is_some() {
+                spans.extend([
+                    Span::styled(if selected { "▌" } else { " " }, Style::new().fg(ACCENT)),
+                    Span::styled(if folded { "▸" } else { "▾" }, Style::new().fg(DIM)),
+                ]);
+            }
+            spans.extend([
                 Span::styled(
                     format!(" {text} "),
                     Style::new().fg(color).add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(count.to_string(), Style::new().fg(DIM)),
-            ]));
+            ]);
+            if selected {
+                selected_range = Some((lines.len(), lines.len() + 1));
+            }
+            lines.push(Line::from(spans));
+        }
+        if folded {
+            continue;
         }
         for item in &section.items {
             if let alondra_core::views::Item::Card(card) = item {
@@ -1664,10 +1683,10 @@ pub(super) fn footer_keys(app: &App) -> Vec<(String, String)> {
         ],
         Screen::Tasks => {
             let mut keys = vec![k("j/k", tr!("move", "mover")), k("h/l", tr!("pane", "panel"))];
+            if app.sel.as_ref().is_some_and(|key| super::view_render::header_section(&key.0).is_some()) {
+                keys.push(k("⏎", tr!("show / hide", "mostrar / ocultar")));
+            }
             match app.task_sel.as_ref() {
-                Some(super::tasks::TaskKey::Finished | super::tasks::TaskKey::Archived) => {
-                    keys.push(k("⏎", tr!("show / hide", "mostrar / ocultar")));
-                }
                 Some(super::tasks::TaskKey::Task(id)) => {
                     let key = format!("task:{}", id.0);
                     let view = app.card_view.as_ref().filter(|view| view.key == key);

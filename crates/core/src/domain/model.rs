@@ -124,6 +124,12 @@ pub struct Task {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<TaskModel>,
 }
+impl Task {
+    /// Still under way or waiting on something: what every client counts as a Task in progress.
+    pub fn active(&self) -> bool {
+        !self.state.terminal() && !self.archived
+    }
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ModelChooser {

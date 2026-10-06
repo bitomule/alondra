@@ -705,6 +705,27 @@ fn a_scheduled_run_in_progress_is_an_active_task_marked_scheduled_and_finishes_l
 }
 
 #[test]
+fn the_tasks_counter_counts_only_tasks_still_under_way() {
+    let (mut state, live) = tasks_fixture();
+    let count = |state: &DomainState| {
+        render(state, &live, Client::Tui, Lang::En, "tasks", "").status.counts.iter()
+            .find(|count| count.id == "tasks").unwrap().value
+    };
+    let all = state.tasks.len() as u32;
+    assert!(state.tasks.values().all(|task| task.active()));
+    assert_eq!(count(&state), all);
+    state.tasks.get_mut(&"t-legacy-editor".into()).unwrap().state = TaskState::Done;
+    state.tasks.get_mut(&"t-legacy-notes".into()).unwrap().state = TaskState::Cancelled;
+    let archived = state.tasks.get_mut(&"t-badge-count".into()).unwrap();
+    (archived.state, archived.archived) = (TaskState::Done, true);
+    assert_eq!(count(&state), all - 3);
+    for waiting in [TaskState::WaitingDependency, TaskState::NeedsYou, TaskState::InReview, TaskState::Closing] {
+        state.tasks.get_mut(&"t-legacy-editor".into()).unwrap().state = waiting;
+        assert_eq!(count(&state), all - 2, "{waiting:?}");
+    }
+}
+
+#[test]
 fn tasks_views_match_goldens() {
     let (state, live) = tasks_fixture();
     for (filename, client, lang) in TASKS_GOLDENS {
