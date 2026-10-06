@@ -165,6 +165,16 @@ impl DomainRuntime {
         self.execute_with(actor, envelope, transport, None, authorize)
     }
 
+    /// Whether Alondra launched this session: a recorded launch, or a scheduled run it started.
+    pub(crate) fn launched_by_alondra(&self, agent: &AgentId) -> Result<bool> {
+        if self.store.lock().expect("domain store poisoned").launched_by_alondra(&agent.0)? {
+            return Ok(true);
+        }
+        Ok(self.state()?.schedule.runs.values().any(|run| run.launch.as_ref().is_some_and(|launch| launch.agent_id.as_ref() == Some(agent))))
+    }
+    pub(crate) fn launch_plan(&self, task_id: &TaskId) -> Result<Option<crate::launch_plans::LaunchPlan>> {
+        self.store.lock().expect("domain store poisoned").launch_plan(task_id)
+    }
     pub(crate) fn record_model_decision(&self, decision: &crate::domain_store::model_metrics::Decision) -> Result<()> {
         self.store.lock().expect("domain store poisoned").record_model_decision(decision)
     }
@@ -230,7 +240,18 @@ impl DomainRuntime {
         bearer: &str,
         envelope: &CommandEnvelope,
     ) -> Result<CommandOutcome, StoreError> {
-        let result = self.execute_bearer_once(bearer, envelope);
+        self.execute_bearer_planned(bearer, envelope, None)
+    }
+
+    /// A producer's command; a `CreateTask` may carry how Alondra starts the Task by itself,
+    /// stored in the same transaction.
+    pub(crate) fn execute_bearer_planned(
+        &self,
+        bearer: &str,
+        envelope: &CommandEnvelope,
+        plan: Option<&crate::launch_plans::LaunchPlan>,
+    ) -> Result<CommandOutcome, StoreError> {
+        let result = self.execute_bearer_once(bearer, envelope, plan);
         self.count_rejections(bearer, envelope, &result);
         result
     }
@@ -239,6 +260,7 @@ impl DomainRuntime {
         &self,
         bearer: &str,
         envelope: &CommandEnvelope,
+        plan: Option<&crate::launch_plans::LaunchPlan>,
     ) -> Result<CommandOutcome, StoreError> {
         // Keep the capability lease until commit: concurrent revocation cannot pass this write.
         let authority = self.authority.lock().expect("domain authority poisoned");
@@ -270,7 +292,10 @@ impl DomainRuntime {
             Principal::Orchestrator { generation, .. } => Actor::Orchestrator { generation },
         };
         let prepared = crate::domain_content::prepare(&self.home, envelope)?;
-        let commit = store.execute_filling_revision(&actor, &prepared.envelope);
+        let commit = match plan {
+            Some(plan) => store.execute_planned(&actor, &prepared.envelope, plan),
+            None => store.execute_filling_revision(&actor, &prepared.envelope),
+        };
         if matches!(&commit, Err(StoreError::Domain(_))) {
             prepared.discard_uncommitted(&self.home);
         }
@@ -313,6 +338,8 @@ fn command_task(state: &DomainState, command: &Command) -> Option<TaskId> {
         | Command::CompleteTask { task_id, .. }
         | Command::CancelTask { task_id }
         | Command::ReopenTask { task_id }
+        | Command::ConfirmCleanup { task_id }
+        | Command::RecordNodeEnd { task_id, .. }
         | Command::ArchiveTask { task_id, .. }
         | Command::ReleaseTask { task_id, .. } => Some(task_id.clone()),
         Command::PublishInformation { scope, .. }

@@ -18,6 +18,11 @@ fn agent_b() -> Actor {
 fn register_b(s: &mut DomainState) {
     exec(s, Actor::System, Command::RegisterAgent { agent_id: "b".into(), name: "Instance B".into() }).unwrap();
 }
+/// The task waits in Closing for its node; Alondra records the node closed and the task is done.
+fn end_node(s: &mut DomainState, task: &str) {
+    assert_eq!(s.tasks[&task.into()].state, TaskState::Closing);
+    exec(s, Actor::System, Command::RecordNodeEnd { task_id: task.into(), end: NodeEnd::Closed }).unwrap();
+}
 fn exec(s: &mut DomainState, a: Actor, c: Command) -> Result<CommandOutcome, DomainError> {
     s.execute(
         &a,
@@ -105,6 +110,7 @@ fn scheduled_request_task(request_id: &str, task_id: &str) -> (Request, Task) {
         documents: BTreeMap::new(),
         archived: false,
         model: None,
+        wrap_up: WrapUp::default(),
     };
     (request, task)
 }
@@ -504,6 +510,7 @@ fn explicit_acceptance_completes_the_task_and_feedback_revokes_it_first() {
         },
     )
     .unwrap();
+    end_node(&mut s, "t");
     assert_eq!(s.tasks[&"t".into()].state, TaskState::Done);
     reject_unchanged(
         &mut s,
@@ -543,6 +550,7 @@ fn reassigning_a_task_waiting_for_its_merge_needs_fresh_acceptance() {
     assert_eq!(s.tasks[&"t".into()].state, TaskState::InReview);
     reject_unchanged(&mut s, Actor::System, complete(), "acceptance_missing");
     merged_by_someone_else(&mut s);
+    end_node(&mut s, "t");
     assert_eq!(s.tasks[&"t".into()].state, TaskState::Done, "a merged delivery needs no acceptance");
 }
 #[test]
@@ -655,7 +663,8 @@ fn typed_option_ids_and_open_question_guard() {
         },
     )
     .unwrap();
-    assert_eq!(out.effects.len(), 1);
+    assert_eq!(out.effects.len(), 2);
+    end_node(&mut s, "t");
     assert_eq!(s.tasks[&"t".into()].state, TaskState::Done, "answering the last blocker completes an accepted Task");
 }
 fn register(s: &mut DomainState) {
@@ -795,6 +804,7 @@ fn an_observed_merge_completes_an_auto_merge_task_without_the_users_authorizatio
     reject_unchanged(&mut s, Actor::System, complete(), "merge_not_confirmed");
     merged_by_someone_else(&mut s);
     assert_eq!(s.pull_requests[&"pr".into()].state, PrState::Merged);
+    end_node(&mut s, "t");
     assert_eq!(s.tasks[&"t".into()].state, TaskState::Done, "the merge settles the delivery, no call needed");
 }
 #[test]
@@ -805,9 +815,12 @@ fn a_pr_merged_outside_alondra_while_in_review_closes_the_task_and_tells_the_nod
     assert_eq!(s.tasks[&"t".into()].state, TaskState::InReview);
     let out = exec(&mut s, Actor::System, Command::ObservePrState { pr_id: "pr".into(), head: "head1".into(),
         base: "main".into(), state: PrState::Merged, merged_head: Some("head1".into()) }).unwrap();
+    end_node(&mut s, "t");
     assert_eq!(s.tasks[&"t".into()].state, TaskState::Done, "the user does not have to accept a merged delivery");
-    assert_eq!(out.effects, vec![DomainEffect::NotifyAgent { agent_id: "a".into(), task_id: Some("t".into()),
-        interaction_id: None, message: merged_notice(1, 0) }]);
+    assert_eq!(out.effects, vec![
+        DomainEffect::NotifyAgent { agent_id: "a".into(), task_id: Some("t".into()), interaction_id: None, message: merged_notice(1, 0) },
+        DomainEffect::NotifyAgent { agent_id: "a".into(), task_id: Some("t".into()), interaction_id: None, message: cleanup_request("Result", &"t".into()) },
+    ]);
     assert_eq!(merged_notice(1, 0), "Pull request #1 is merged; no pull request of this task is left to merge.");
 }
 #[test]
@@ -963,6 +976,7 @@ fn authorization_merge_and_completion_are_three_distinct_steps() {
         },
     )
     .unwrap();
+    end_node(&mut s, "t");
     assert_eq!(s.tasks[&"t".into()].state, TaskState::Done, "the observed merge of the authorized head completes it");
 }
 #[test]
@@ -1325,18 +1339,22 @@ fn sole_document_review_accepts_exact_final_delivery() {
         },
     )
     .unwrap();
+    end_node(&mut s, "t");
     assert_eq!(s.tasks[&"t".into()].state, TaskState::Done);
 }
 
 #[test]
-fn accepting_a_final_delivery_completes_the_task_without_asking_the_agent() {
+fn accepting_a_text_delivery_moves_the_task_to_closing_and_asks_its_node_to_clean_up() {
     let mut state = fixture();
     present(&mut state, "final", text());
     let accepted = exec(&mut state, user(), Command::AcceptDelivery {
         presentation_id: "final".into(), targets: text(),
     }).unwrap();
-    assert!(!accepted.effects.iter().any(|effect| matches!(effect, DomainEffect::NotifyAgent { .. })),
-        "the Agent has nothing left to do");
+    assert_eq!(state.tasks[&"t".into()].state, TaskState::Closing);
+    assert_eq!(state.tasks[&"t".into()].wrap_up.asked_at, Some(state.revision));
+    assert_eq!(accepted.effects, vec![DomainEffect::NotifyAgent { agent_id: "a".into(), task_id: Some("t".into()),
+        interaction_id: None, message: cleanup_request("Result", &"t".into()) }]);
+    end_node(&mut state, "t");
     assert_eq!(state.tasks[&"t".into()].state, TaskState::Done);
 }
 #[test]
@@ -1348,6 +1366,7 @@ fn a_task_left_closing_by_an_older_daemon_completes_with_the_next_command() {
     }).unwrap();
     state.tasks.get_mut(&"t".into()).unwrap().state = TaskState::Closing;
     exec(&mut state, Actor::System, Command::ObserveAgent { agent_id: "a".into(), connected: true }).unwrap();
+    end_node(&mut state, "t");
     assert_eq!(state.tasks[&"t".into()].state, TaskState::Done);
 }
 #[test]
@@ -1886,6 +1905,7 @@ fn review_off_records_no_pr_decision_and_an_external_merge_completes() {
     )
     .unwrap();
     assert!(s.pull_requests[&"pr".into()].review.is_none());
+    end_node(&mut s, "t");
     assert_eq!(s.tasks[&"t".into()].state, TaskState::Done);
 }
 
@@ -1930,6 +1950,7 @@ fn partial_delivery_and_unread_information_do_not_replace_final_or_block() {
         },
     )
     .unwrap();
+    end_node(&mut s, "t");
     assert_eq!(s.tasks[&"t".into()].state, TaskState::Done);
 }
 
@@ -2178,6 +2199,7 @@ fn stack_readiness_is_explicit_and_merge_requires_upstream_merge_and_retarget() 
         },
     )
     .unwrap();
+    end_node(&mut s, "t");
     assert_eq!(
         s.tasks[&"t".into()].state,
         TaskState::Done,
@@ -2452,6 +2474,7 @@ fn mixed_package_needs_merge_authorization_and_document_decision() {
         },
     )
     .unwrap();
+    end_node(&mut s, "t");
     assert_eq!(s.tasks[&"t".into()].state, TaskState::Done);
     assert_eq!(complete(&mut s).unwrap_err().code, "task_not_active");
 }
@@ -2577,6 +2600,7 @@ fn complete_task_requires_registered_pr_merged_and_presented_or_closed() {
         },
     )
     .unwrap();
+    end_node(&mut s, "t");
     assert_eq!(s.tasks[&"t".into()].state, TaskState::Done, "closing the unpresented PR completes the accepted Task");
 }
 #[test]
@@ -2658,6 +2682,7 @@ fn unread_count_ignores_archived_tasks_like_the_inbox_does() {
     present(&mut s, "d", text());
     exec(&mut s, user(), Command::AcceptDelivery { presentation_id: "d".into(), targets: text() }).unwrap();
     assert_eq!(s.projection().counts.unread_information, 1);
+    end_node(&mut s, "t");
     exec(&mut s, user(), Command::ArchiveTask { task_id: "t".into(), archived: true }).unwrap();
     let projection = s.projection();
     assert_eq!(projection.counts.unread_information, 0);
@@ -2838,9 +2863,11 @@ fn variant_index(c: &Command) -> usize {
         Command::HoldQuestions { .. } => 48,
         Command::ReopenAnswer { .. } => 49,
         Command::ReleaseTask { .. } => 50,
+        Command::ConfirmCleanup { .. } => 51,
+        Command::RecordNodeEnd { .. } => 52,
     }
 }
-const COMMAND_KINDS: usize = 51;
+const COMMAND_KINDS: usize = 53;
 /// Every command kind naming the given ids. The flag marks commands that only
 /// create a fresh entity and therefore may succeed with an unknown id.
 fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
@@ -2948,6 +2975,8 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
             agent_id: "a".into(), questions: vec![] }, true),
         (Command::ReopenAnswer { interaction_id: ids.interaction.into() }, false),
         (Command::ReleaseTask { task_id: ids.task.into(), reason: "node closed by the user".into() }, false),
+        (Command::ConfirmCleanup { task_id: ids.task.into() }, false),
+        (Command::RecordNodeEnd { task_id: ids.task.into(), end: NodeEnd::Closed }, false),
     ];
     let mut covered = vec![false; COMMAND_KINDS];
     for (command, _) in &list {
@@ -3062,6 +3091,7 @@ fn an_external_merge_settles_the_delivery_without_authorization_or_acceptance() 
     present(&mut s, "d", pr_targets());
     merged_by_someone_else(&mut s);
     assert!(s.merge_authorizations.is_empty());
+    end_node(&mut s, "t");
     assert_eq!(s.tasks[&"t".into()].state, TaskState::Done);
     reject_unchanged(&mut s, user(), Command::AcceptDelivery { presentation_id: "d".into(), targets: pr_targets() },
         "task_not_active");
@@ -3267,4 +3297,235 @@ fn a_finished_task_is_not_released() {
     let mut s = fixture();
     exec(&mut s, user(), Command::CancelTask { task_id: "t".into() }).unwrap();
     reject_unchanged(&mut s, Actor::System, Command::ReleaseTask { task_id: "t".into(), reason: "node closed by the user".into() }, "task_not_active");
+}
+
+fn merge_observed(s: &mut DomainState) -> CommandOutcome {
+    exec(s, Actor::System, Command::ObservePrState { pr_id: "pr".into(), head: "head1".into(),
+        base: "main".into(), state: PrState::Merged, merged_head: Some("head1".into()) }).unwrap()
+}
+fn sent_to_node(out: &CommandOutcome) -> Vec<String> {
+    out.effects.iter().filter_map(|e| match e {
+        DomainEffect::NotifyAgent { message, .. } => Some(message.clone()),
+        _ => None,
+    }).collect()
+}
+fn accept_text(s: &mut DomainState) -> CommandOutcome {
+    present(s, "final", text());
+    exec(s, user(), Command::AcceptDelivery { presentation_id: "final".into(), targets: text() }).unwrap()
+}
+fn second_task(s: &mut DomainState, id: &str, agent_id: Option<&str>) {
+    exec(s, user(), Command::CreateTask { task_id: id.into(), request_id: "r".into(), title: "Second".into(),
+        agent_id: agent_id.map(Into::into), review_prs: false, dependencies: BTreeSet::new(), stack: None }).unwrap();
+}
+#[test]
+fn a_merged_pr_closes_the_task_with_the_merged_notice_before_the_cleanup_request() {
+    let mut s = fixture();
+    register(&mut s);
+    present(&mut s, "d", pr_targets());
+    let accepted = exec(&mut s, user(), Command::AcceptDelivery { presentation_id: "d".into(), targets: pr_targets() }).unwrap();
+    assert_eq!(s.tasks[&"t".into()].state, TaskState::Closing);
+    assert!(s.tasks[&"t".into()].wrap_up.asked_at.is_none(), "merge pending: no cleanup yet");
+    assert!(!sent_to_node(&accepted).iter().any(|m| m.contains("cleanup_done")));
+    let merged = merge_observed(&mut s);
+    assert_eq!(sent_to_node(&merged), vec![merged_notice(1, 0), cleanup_request("Result", &"t".into())]);
+    assert_eq!(s.tasks[&"t".into()].state, TaskState::Closing);
+}
+#[test]
+fn a_pr_merged_on_the_remote_during_review_moves_the_task_to_closing_without_acceptance() {
+    let mut s = fixture();
+    register(&mut s);
+    present(&mut s, "d", pr_targets());
+    merge_observed(&mut s);
+    assert_eq!(s.tasks[&"t".into()].state, TaskState::Closing);
+    assert!(s.tasks[&"t".into()].wrap_up.asked_at.is_some());
+}
+#[test]
+fn recording_the_node_end_makes_a_closing_task_done() {
+    let mut s = fixture();
+    accept_text(&mut s);
+    end_node(&mut s, "t");
+    let t = &s.tasks[&"t".into()];
+    assert_eq!(t.state, TaskState::Done);
+    assert_eq!(t.wrap_up.node, Some(NodeEnd::Closed));
+}
+#[test]
+fn only_alondra_records_a_node_end() {
+    let mut s = fixture();
+    accept_text(&mut s);
+    for actor in [agent(), orchestrator(), user()] {
+        reject_unchanged(&mut s, actor, Command::RecordNodeEnd { task_id: "t".into(), end: NodeEnd::Closed }, "forbidden");
+    }
+}
+#[test]
+fn a_node_end_needs_a_closing_or_terminal_task() {
+    let mut s = fixture();
+    reject_unchanged(&mut s, Actor::System, Command::RecordNodeEnd { task_id: "t".into(), end: NodeEnd::Closed }, "not_closing");
+    present(&mut s, "final", text());
+    reject_unchanged(&mut s, Actor::System, Command::RecordNodeEnd { task_id: "t".into(), end: NodeEnd::Closed }, "not_closing");
+}
+#[test]
+fn the_same_node_end_twice_changes_nothing_and_another_is_a_conflict() {
+    let mut s = fixture();
+    accept_text(&mut s);
+    end_node(&mut s, "t");
+    let again = exec(&mut s, Actor::System, Command::RecordNodeEnd { task_id: "t".into(), end: NodeEnd::Closed }).unwrap();
+    assert!(!again.changed);
+    reject_unchanged(&mut s, Actor::System, Command::RecordNodeEnd { task_id: "t".into(), end: NodeEnd::Gone }, "conflict");
+}
+#[test]
+fn only_the_tasks_node_confirms_its_cleanup_and_only_while_it_closes() {
+    let mut s = fixture();
+    register_b(&mut s);
+    reject_unchanged(&mut s, agent(), Command::ConfirmCleanup { task_id: "t".into() }, "not_closing");
+    accept_text(&mut s);
+    reject_unchanged(&mut s, agent_b(), Command::ConfirmCleanup { task_id: "t".into() }, "not_assigned");
+    exec(&mut s, agent(), Command::ConfirmCleanup { task_id: "t".into() }).unwrap();
+    assert_eq!(s.tasks[&"t".into()].wrap_up.cleaned_at, Some(s.revision));
+    end_node(&mut s, "t");
+    reject_unchanged(&mut s, agent(), Command::ConfirmCleanup { task_id: "t".into() }, "task_not_active");
+}
+#[test]
+fn a_second_cleanup_confirmation_moves_its_revision() {
+    let mut s = fixture();
+    accept_text(&mut s);
+    exec(&mut s, agent(), Command::ConfirmCleanup { task_id: "t".into() }).unwrap();
+    let first = s.tasks[&"t".into()].wrap_up.cleaned_at.unwrap();
+    exec(&mut s, agent(), Command::ConfirmCleanup { task_id: "t".into() }).unwrap();
+    assert!(s.tasks[&"t".into()].wrap_up.cleaned_at.unwrap() > first);
+}
+#[test]
+fn the_cleanup_request_is_sent_once_even_when_a_blocking_question_interrupts_it() {
+    let mut s = fixture();
+    let accepted = accept_text(&mut s);
+    assert_eq!(sent_to_node(&accepted).len(), 1);
+    let asked_at = s.tasks[&"t".into()].wrap_up.asked_at;
+    let question = exec(&mut s, agent(), Command::AskQuestion {
+        attachments: vec![], interaction_id: "q".into(), scope: Scope::Task { task_id: "t".into() },
+        recipient: Recipient::User, body: "Delete the cache?".into(), blocking: true,
+        options: vec![QuestionOption { id: "yes".into(), label: "Yes".into(), description: None, inputs: vec![] }],
+        card: crate::domain::CardSpec::derived(crate::domain::CardKind::Provide, "Answer the question"),
+    }).unwrap();
+    assert_eq!(s.tasks[&"t".into()].state, TaskState::NeedsYou);
+    assert!(!sent_to_node(&question).iter().any(|m| m.contains("cleanup_done")));
+    let answered = exec(&mut s, user(), Command::AnswerQuestion { attachments: vec![], interaction_id: "q".into(),
+        option_id: "yes".into(), inputs: BTreeMap::new() }).unwrap();
+    assert!(!sent_to_node(&answered).iter().any(|m| m.contains("cleanup_done")), "{:?}", sent_to_node(&answered));
+    assert_eq!(s.tasks[&"t".into()].wrap_up.asked_at, asked_at);
+    assert_eq!(s.tasks[&"t".into()].state, TaskState::Closing);
+}
+#[test]
+fn feedback_on_an_accepted_text_delivery_during_cleanup_takes_the_task_back_and_forgets_the_cleanup() {
+    let mut s = fixture();
+    accept_text(&mut s);
+    exec(&mut s, agent(), Command::ConfirmCleanup { task_id: "t".into() }).unwrap();
+    exec(&mut s, user(), Command::SubmitFeedback { attachments: vec![], presentation_id: "final".into(),
+        targets: text(), body: "One more thing".into(), instruction: Instruction::Changes }).unwrap();
+    let t = &s.tasks[&"t".into()];
+    assert_eq!(t.state, TaskState::Running);
+    assert!(t.wrap_up.asked_at.is_none() && t.wrap_up.cleaned_at.is_none());
+    present(&mut s, "final2", text());
+    let again = exec(&mut s, user(), Command::AcceptDelivery { presentation_id: "final2".into(), targets: text() }).unwrap();
+    assert_eq!(sent_to_node(&again), vec![cleanup_request("Result", &"t".into())]);
+}
+#[test]
+fn feedback_on_a_merged_delivery_during_cleanup_is_refused() {
+    let mut s = fixture();
+    register(&mut s);
+    present(&mut s, "d", pr_targets());
+    merge_observed(&mut s);
+    reject_unchanged(&mut s, user(), Command::SubmitFeedback { attachments: vec![], presentation_id: "d".into(),
+        targets: pr_targets(), body: "More".into(), instruction: Instruction::Changes }, "task_closing");
+}
+#[test]
+fn cancelling_a_task_tells_its_node_to_stop_and_marks_it_for_closing() {
+    let mut s = fixture();
+    let out = exec(&mut s, user(), Command::CancelTask { task_id: "t".into() }).unwrap();
+    assert_eq!(sent_to_node(&out), vec![cancelled_notice("Result")]);
+    assert!(s.tasks[&"t".into()].wrap_up.close_cancelled);
+    second_task(&mut s, "u", None);
+    let out = exec(&mut s, user(), Command::CancelTask { task_id: "u".into() }).unwrap();
+    assert!(sent_to_node(&out).is_empty());
+    assert!(!s.tasks[&"u".into()].wrap_up.close_cancelled);
+}
+#[test]
+fn a_settled_task_without_a_node_is_done_at_once() {
+    let mut s = fixture();
+    present(&mut s, "final", text());
+    s.tasks.get_mut(&"t".into()).unwrap().agent_id = None;
+    let out = exec(&mut s, user(), Command::AcceptDelivery { presentation_id: "final".into(), targets: text() }).unwrap();
+    assert!(sent_to_node(&out).is_empty());
+    assert_eq!(s.tasks[&"t".into()].state, TaskState::Done);
+}
+#[test]
+fn complete_task_leaves_a_task_with_a_node_closing() {
+    let mut s = fixture();
+    register(&mut s);
+    present(&mut s, "d", pr_targets());
+    exec(&mut s, user(), Command::AcceptDelivery { presentation_id: "d".into(), targets: pr_targets() }).unwrap();
+    merge_observed(&mut s);
+    let _ = exec(&mut s, Actor::System, Command::CompleteTask { task_id: "t".into(), presentation_id: "d".into() });
+    assert_eq!(s.tasks[&"t".into()].state, TaskState::Closing);
+    end_node(&mut s, "t");
+    assert_eq!(s.tasks[&"t".into()].state, TaskState::Done);
+}
+#[test]
+fn reopening_a_task_whose_node_was_closed_leaves_it_without_a_node() {
+    let mut s = fixture();
+    accept_text(&mut s);
+    end_node(&mut s, "t");
+    exec(&mut s, user(), Command::ReopenTask { task_id: "t".into() }).unwrap();
+    let t = &s.tasks[&"t".into()];
+    assert!(!t.state.terminal());
+    assert!(t.agent_id.is_none());
+    assert!(t.wrap_up.is_default());
+}
+#[test]
+fn the_orchestrator_cannot_give_a_node_a_second_task() {
+    let mut s = fixture();
+    accept_text(&mut s);
+    end_node(&mut s, "t");
+    second_task(&mut s, "u", None);
+    reject_unchanged(&mut s, orchestrator(), Command::AssignTask { task_id: "u".into(), agent_id: "a".into(), model: None }, "agent_used");
+    reject_unchanged(&mut s, orchestrator(), Command::CreateTask { task_id: "v".into(), request_id: "r".into(), title: "Third".into(),
+        agent_id: Some("a".into()), review_prs: false, dependencies: BTreeSet::new(), stack: None }, "agent_used");
+}
+#[test]
+fn the_user_may_still_assign_a_node_whose_task_ended() {
+    let mut s = fixture();
+    accept_text(&mut s);
+    end_node(&mut s, "t");
+    second_task(&mut s, "u", None);
+    exec(&mut s, user(), Command::AssignTask { task_id: "u".into(), agent_id: "a".into(), model: None }).unwrap();
+    assert_eq!(s.tasks[&"u".into()].agent_id, Some("a".into()));
+}
+#[test]
+fn alondra_assigns_a_node_only_to_an_unstarted_task_without_one() {
+    let mut s = fixture();
+    register_b(&mut s);
+    second_task(&mut s, "u", None);
+    exec(&mut s, Actor::System, Command::AssignTask { task_id: "u".into(), agent_id: "b".into(), model: None }).unwrap();
+    assert_eq!(s.tasks[&"u".into()].agent_id, Some("b".into()));
+    reject_unchanged(&mut s, Actor::System, Command::AssignTask { task_id: "u".into(), agent_id: "b".into(), model: None }, "conflict");
+    reject_unchanged(&mut s, Actor::System, Command::AssignTask { task_id: "t".into(), agent_id: "b".into(), model: None }, "conflict");
+}
+#[test]
+fn a_task_from_before_wrap_ups_decodes_with_none() {
+    let mut s = fixture();
+    accept_text(&mut s);
+    let mut json = serde_json::to_value(&s.tasks[&"t".into()]).unwrap();
+    json.as_object_mut().unwrap().remove("wrap_up");
+    let task: Task = serde_json::from_value(json).unwrap();
+    assert!(task.wrap_up.is_default());
+}
+
+#[test]
+fn a_task_waiting_on_another_starts_in_the_step_that_finishes_it() {
+    let mut s = fixture();
+    second_task(&mut s, "u", None);
+    exec(&mut s, user(), Command::SetDependencies { task_id: "u".into(), dependencies: ["t".into()].into(), stack: None }).unwrap();
+    assert_eq!(s.tasks[&"u".into()].state, TaskState::WaitingDependency);
+    accept_text(&mut s);
+    end_node(&mut s, "t");
+    assert_eq!(s.tasks[&"t".into()].state, TaskState::Done);
+    assert_eq!(s.tasks[&"u".into()].state, TaskState::NotStarted, "no later command is needed to release it");
 }

@@ -38,6 +38,7 @@ fn fixture() -> DomainState {
             documents: BTreeMap::new(),
             archived: false,
             model: None,
+            wrap_up: Default::default(),
         },
     );
     for (index, kind) in ["question", "information", "delivery"].iter().enumerate() {
@@ -4154,7 +4155,7 @@ fn every_refusal_a_card_can_meet_has_its_own_words() {
         "already_read", "withdrawn", "forbidden", "task_not_active", "invalid_action_for_kind", "stale_revision",
         "blocked", "clarification_pending", "delivery_uncertain", "stale_head", "acceptance_stale",
         "acceptance_missing", "merge_not_confirmed", "blocking_interaction", "blocking_open", "stack_not_ready",
-        "dependency_not_done", "dependency_cycle", "not_found", "not_assigned", "agent_busy",
+        "dependency_not_done", "dependency_cycle", "not_found", "not_assigned", "agent_busy", "agent_used", "task_closing",
         "question_already_answered", "already_answered", "already_withdrawn", "ask_already_open",
         "subject_already_linked", "pr_mismatch", "pr_owned_by_other_task", "task_already_has_pr", "unknown_target",
         "no_task", "request_title_required", "archive_task", "stale_generation", "stale_epoch", "conflict",
@@ -4167,4 +4168,44 @@ fn every_refusal_a_card_can_meet_has_its_own_words() {
         }
     }
     assert_eq!(card::disabled_reason("delivery_uncertain", Lang::En), "Alondra is already merging this pull request");
+}
+
+fn now_title(state: &DomainState, lang: Lang) -> Option<String> {
+    let view = render(state, &LiveSnapshot::default(), Client::Ios, lang, "task:t-1", "2026-09-30T10:00:00Z");
+    let section = view.sections.iter().find(|section| section.id == "now")?;
+    let Item::Row(row) = &section.items[0] else { panic!("now row") };
+    Some(row.title.clone())
+}
+
+#[test]
+fn a_closing_task_says_whether_it_waits_for_its_merge_or_its_nodes_cleanup() {
+    let mut state = fixture();
+    state.tasks.get_mut(&"t-1".into()).unwrap().state = TaskState::Closing;
+    assert_eq!(now_title(&state, Lang::En).unwrap(), "accepted; Alondra merges its pull request");
+    assert_eq!(now_title(&state, Lang::Es).unwrap(), "aceptada; Alondra fusiona su PR");
+    state.tasks.get_mut(&"t-1".into()).unwrap().wrap_up.asked_at = Some(5);
+    assert_eq!(now_title(&state, Lang::En).unwrap(), "finished; the node cleans up before Alondra closes it");
+    assert_eq!(now_title(&state, Lang::Es).unwrap(), "terminada; el nodo limpia antes de que Alondra lo cierre");
+}
+
+#[test]
+fn a_finished_task_says_what_became_of_its_node() {
+    use crate::domain::NodeEnd;
+    let mut state = fixture();
+    let lines = [
+        (NodeEnd::Closed, "node closed", "nodo cerrado"),
+        (NodeEnd::Gone, "node already closed", "el nodo ya estaba cerrado"),
+        (NodeEnd::KeptByUser, "node left open: you chose to keep it", "nodo abierto: elegiste dejarlo"),
+        (NodeEnd::UsersOwn, "node left open: it is your own session", "nodo abierto: es tu propia sesión"),
+    ];
+    for terminal in [TaskState::Done, TaskState::Cancelled] {
+        state.tasks.get_mut(&"t-1".into()).unwrap().state = terminal;
+        assert_eq!(now_title(&state, Lang::En), None, "old tasks say nothing about a node");
+        for (end, english, spanish) in lines {
+            state.tasks.get_mut(&"t-1".into()).unwrap().wrap_up.node = Some(end);
+            assert_eq!(now_title(&state, Lang::En).unwrap(), english);
+            assert_eq!(now_title(&state, Lang::Es).unwrap(), spanish);
+        }
+        state.tasks.get_mut(&"t-1".into()).unwrap().wrap_up.node = None;
+    }
 }

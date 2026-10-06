@@ -75,8 +75,10 @@ fn agent(state: &DomainState, node: &str) -> Result<AgentId, DomainError> {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct LaunchBody {
-    name: String,
-    cwd: String,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    cwd: Option<String>,
     task: TaskId,
     #[serde(default)]
     prompt: Option<String>,
@@ -99,13 +101,79 @@ pub(crate) struct LaunchBody {
     _over_pace_ok: bool,
 }
 
+impl LaunchBody {
+    /// The launch a stored plan describes.
+    pub(crate) fn from_plan(task: TaskId, plan: &crate::launch_plans::LaunchPlan) -> LaunchBody {
+        LaunchBody {
+            name: Some(plan.name.clone()),
+            cwd: Some(plan.cwd.clone()),
+            task,
+            prompt: plan.mission.clone(),
+            title: None,
+            model: plan.model.clone(),
+            effort: plan.effort.clone(),
+            approach: plan.approach,
+            reason: plan.reason.clone(),
+            relaunch_model: None,
+            _over_pace_ok: false,
+        }
+    }
+
+    /// What the task's stored plan fills in where the call named nothing.
+    fn with_plan(mut self, plan: Option<&crate::launch_plans::LaunchPlan>) -> LaunchBody {
+        let Some(plan) = plan else { return self };
+        self.name = self.name.or_else(|| Some(plan.name.clone()));
+        self.cwd = self.cwd.or_else(|| Some(plan.cwd.clone()));
+        self.prompt = self.prompt.or_else(|| plan.mission.clone());
+        self.approach = self.approach.or(plan.approach);
+        if self.relaunch_model.is_none() {
+            self.model = self.model.or_else(|| plan.model.clone());
+            self.effort = self.effort.or_else(|| plan.effort.clone());
+            self.reason = self.reason.or_else(|| plan.reason.clone());
+        }
+        self
+    }
+}
+
+/// Who starts a launch: the orchestrator, or Alondra itself for a task whose time has come.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Origin {
+    Orchestrator,
+    Auto,
+}
+
 /// Launches a Claude session for a Task with the options its Request was asked for, gives it its
 /// bearer through its settings file and assigns it the Task.
 pub(crate) async fn launch(domain: &DomainRuntime, home: &Path, actor: &Actor, body: LaunchBody,
     choices: impl FnOnce(&RequestId) -> Option<Choices>, launcher: &impl crate::orchestrate::Launcher) -> Result<Value, DomainError> {
+    launch_from(domain, home, actor, body, choices, launcher, Origin::Orchestrator).await
+}
+
+/// `launch`, for either origin. An automatic launch holds the task's launch guard already.
+pub(crate) async fn launch_from(domain: &DomainRuntime, home: &Path, actor: &Actor, body: LaunchBody,
+    choices: impl FnOnce(&RequestId) -> Option<Choices>, launcher: &impl crate::orchestrate::Launcher, origin: Origin) -> Result<Value, DomainError> {
+    if origin == Origin::Orchestrator {
+        if !domain.live.begin_launch(&body.task.0) {
+            return Err(DomainError::new("conflict", format!("{} is being launched already", body.task)));
+        }
+        let task = body.task.clone();
+        let launched = launch_guarded(domain, home, actor, body, choices, launcher, origin).await;
+        domain.live.end_launch(&task.0);
+        return launched;
+    }
+    launch_guarded(domain, home, actor, body, choices, launcher, origin).await
+}
+
+async fn launch_guarded(domain: &DomainRuntime, home: &Path, actor: &Actor, body: LaunchBody,
+    choices: impl FnOnce(&RequestId) -> Option<Choices>, launcher: &impl crate::orchestrate::Launcher, origin: Origin) -> Result<Value, DomainError> {
     let conflict = |message: String| DomainError::new("conflict", message);
     let current = state(domain)?;
     let task = current.tasks.get(&body.task).ok_or_else(|| DomainError::new("not_found", "task does not exist"))?;
+    let plan = domain.launch_plan(&task.id).map_err(|_| DomainError::new("storage_unavailable", "domain state unavailable"))?;
+    let body = body.with_plan(plan.as_ref());
+    let (Some(name), Some(cwd)) = (body.name.clone(), body.cwd.clone()) else {
+        return Err(DomainError::new("invalid_input", "name and cwd are required: this task has no stored launch plan"));
+    };
     if task.state.terminal() {
         return Err(conflict(format!("{} is closed; reopen it first", body.task)));
     }
@@ -118,10 +186,10 @@ pub(crate) async fn launch(domain: &DomainRuntime, home: &Path, actor: &Actor, b
             "{why} until {}: {} stays as it is and can be launched after that",
             crate::usage_pause::clock_text(exhausted.until, alondra_core::now_millis(), false), body.task)));
     }
-    if !Path::new(&body.cwd).is_dir() {
-        return Err(DomainError::new("invalid_input", format!("directory {} does not exist", body.cwd)));
+    if !Path::new(&cwd).is_dir() {
+        return Err(DomainError::new("invalid_input", format!("directory {cwd} does not exist")));
     }
-    if let Some(repository) = crate::claude_trust::check(Path::new(&body.cwd)) {
+    if let Some(repository) = crate::claude_trust::check(Path::new(&cwd)) {
         return Err(DomainError::new("workspace_untrusted", crate::claude_trust::instructions(&repository)));
     }
     let Some(plugin) = launcher.plugin() else {
@@ -132,7 +200,7 @@ pub(crate) async fn launch(domain: &DomainRuntime, home: &Path, actor: &Actor, b
     let choices = choices(&task.request_id);
     let requested = match &choices {
         Some(choices) => choices.options.clone(),
-        None => file.orchestrator_defaults(crate::options::project_of(&file, Path::new(&body.cwd)).as_deref(), None),
+        None => file.orchestrator_defaults(crate::options::project_of(&file, Path::new(&cwd)).as_deref(), None),
     };
     let auto = requested.effort == alondra_core::options::AUTO;
     let model = body.model.as_deref().or(body.relaunch_model.as_deref().filter(|_| auto));
@@ -154,11 +222,12 @@ pub(crate) async fn launch(domain: &DomainRuntime, home: &Path, actor: &Actor, b
         }
         text
     });
+    let mission = format!("{mission}{}", prefixed("\n\n", follow_up_context(&current, task)));
     let prompt = crate::domain_schedule_runner::producer_prompt(&mission, &resolved, &task.id, body.approach.unwrap_or_default());
     let key = format!("launch-{}", crate::auth::random_hex(8));
     let settings = crate::domain_sessions::prepare(home, &key)
         .map_err(|error| DomainError::new("storage_unavailable", format!("could not write the session's settings: {error}")))?;
-    let mut args: Vec<String> = ["--bg", "--name", &body.name, "--permission-mode", "auto"].map(String::from).into();
+    let mut args: Vec<String> = ["--bg", "--name", &name, "--permission-mode", "auto"].map(String::from).into();
     args.extend(resolved.launch_flags(None));
     args.extend(crate::domain_sessions::flags(&[plugin.as_path()], &settings));
     let denied = domain.schedule_request_tools(&task.request_id).ok().flatten().unwrap_or_default();
@@ -171,7 +240,7 @@ pub(crate) async fn launch(domain: &DomainRuntime, home: &Path, actor: &Actor, b
         crate::domain_sessions::release(&settings);
         error
     };
-    let output = launcher.run(&body.cwd, &args).await.map_err(|(_, reason)| discard(DomainError::new("launch_failed", reason)))?;
+    let output = launcher.run(&cwd, &args).await.map_err(|(_, reason)| discard(DomainError::new("launch_failed", reason)))?;
     let Some(session) = domain.live.mods.wait_launched(&key, launcher.mods_deadline()).await else {
         if let Some(short) = alondra_core::sessions::launched_short(&output) {
             launcher.stop(&short).await;
@@ -179,8 +248,8 @@ pub(crate) async fn launch(domain: &DomainRuntime, home: &Path, actor: &Actor, b
         return Err(discard(DomainError::new("launch_failed", crate::node_reports::MODS_NOT_LOADED)));
     };
     let agent_id = AgentId(session.clone());
-    let name = body.title.clone().unwrap_or_else(|| body.name.clone());
-    match run(domain, &Actor::System, Command::RegisterAgent { agent_id: agent_id.clone(), name }) {
+    let agent_name = body.title.clone().unwrap_or_else(|| name.clone());
+    match run(domain, &Actor::System, Command::RegisterAgent { agent_id: agent_id.clone(), name: agent_name }) {
         Ok(()) => (),
         Err(error) if error.code == "invalid_input" => (),
         Err(error) => return Err(discard(error)),
@@ -191,9 +260,22 @@ pub(crate) async fn launch(domain: &DomainRuntime, home: &Path, actor: &Actor, b
         let _ = domain.revoke_agent(&session);
         return Err(discard(DomainError::new("storage_unavailable", format!("could not issue the session's capability: {error}"))));
     }
-    if let Err(error) = run(domain, actor, Command::AssignTask { task_id: task.id.clone(), agent_id: agent_id.clone(), model: resolved.launch_model() }) {
+    let short = alondra_core::sessions::launched_short(&output).unwrap_or_else(|| session.chars().take(8).collect());
+    let taken = state(domain).map(|now| now.tasks.get(&task.id).is_none_or(|t| t.state.terminal() || t.agent_id.as_ref().is_some_and(|other| other != &agent_id)));
+    let assigned = match taken {
+        Ok(false) => run(domain, actor, Command::AssignTask { task_id: task.id.clone(), agent_id: agent_id.clone(), model: resolved.launch_model() }),
+        Ok(true) => Err(conflict(format!("{} was closed or taken while its node started", task.id))),
+        Err(error) => Err(error),
+    };
+    if let Err(error) = assigned {
+        launcher.stop(&short).await;
+        launcher.remove(&short).await;
         let _ = domain.revoke_agent(&session);
         return Err(discard(error));
+    }
+    if origin == Origin::Auto {
+        let _ = domain.store.lock().expect("domain store poisoned")
+            .set_auto_launch(&task.id, crate::domain_store::AutoLaunchState::Launched, None, None, alondra_core::now_millis());
     }
     record(domain, Decision {
         task_id: task.id.0.clone(), request_id: task.request_id.0.clone(), agent_id: Some(session.clone()), at: alondra_core::now_millis(),
@@ -232,6 +314,50 @@ pub(crate) async fn relaunch(domain: &DomainRuntime, home: &Path, actor: &Actor,
     launch(domain, home, actor, body, |request| request_choices(domain, request).ok().flatten(), launcher).await
 }
 
+const RESULT_LIMIT: usize = 4_000;
+const FOLLOW_UP_LIMIT: usize = 12_000;
+
+fn prefixed(prefix: &str, text: String) -> String {
+    if text.is_empty() { text } else { format!("{prefix}{text}") }
+}
+
+fn clipped(text: &str, limit: usize, mark: &str) -> String {
+    if text.chars().count() <= limit {
+        return text.to_owned();
+    }
+    format!("{}{mark}", text.chars().take(limit).collect::<String>())
+}
+
+/// What a task that builds on others starts from: each earlier task's final result and its pull
+/// request, so its node does not need to be told by hand.
+fn follow_up_context(state: &DomainState, task: &alondra_core::domain::Task) -> String {
+    let mut sources: std::collections::BTreeSet<&TaskId> = task.dependencies.iter().collect();
+    if let Some(stack) = &task.stack {
+        sources.insert(&stack.upstream_task);
+    }
+    let entries: Vec<String> = sources.into_iter().filter_map(|id| state.tasks.get(id)).map(|earlier| {
+        let status = if earlier.state == alondra_core::domain::TaskState::Done { "done" } else { "not finished yet" };
+        let body = match earlier.final_presentation.as_ref().and_then(|id| state.interactions.get(id)) {
+            Some(result) => clipped(result.body.trim(), RESULT_LIMIT, "\n[shortened]"),
+            None => "No final result was recorded for it.".to_owned(),
+        };
+        let mut entry = format!("### “{}” ({status})\n{body}", earlier.title);
+        if let Some(pr) = earlier.pr_id.as_ref().and_then(|id| state.pull_requests.get(id)) {
+            let pr_state = match pr.state {
+                alondra_core::domain::PrState::Merged => "merged",
+                alondra_core::domain::PrState::Open => "open",
+                alondra_core::domain::PrState::Closed => "closed",
+            };
+            entry.push_str(&format!("\nPull request: https://{}/{}/pull/{} ({pr_state})", pr.host, pr.repository, pr.number));
+        }
+        entry
+    }).collect();
+    if entries.is_empty() {
+        return String::new();
+    }
+    clipped(&format!("## Earlier work this task builds on\n\n{}", entries.join("\n\n")), FOLLOW_UP_LIMIT, "")
+}
+
 fn given(text: Option<&str>) -> Option<String> {
     text.map(str::trim).filter(|text| !text.is_empty()).map(str::to_owned)
 }
@@ -255,16 +381,14 @@ pub(crate) struct SendBody {
     #[serde(default)]
     task: Option<TaskId>,
     #[serde(default)]
-    model: Option<String>,
-    #[serde(default)]
     approach: Option<alondra_core::options::Approach>,
     #[serde(default)]
     reason: Option<String>,
 }
 
-/// Sends the orchestrator's text to an Agent's session. With a Task, the Agent is told which
-/// one; a Task nobody works on becomes this Agent's, and a closed one is reopened. An Agent works
-/// on one Task at a time, so a Task for an Agent busy with another is refused.
+/// Sends the orchestrator's text to an Agent's session. With a Task, the Agent is told which one;
+/// the Task must be the Agent's own: a node works on one Task for its whole life and closes with
+/// it, so a message never gives a node another Task nor brings a closed one back.
 pub(crate) async fn send(domain: &DomainRuntime, home: &Path, actor: &Actor, body: SendBody) -> Result<Value, DomainError> {
     let current = state(domain)?;
     let agent_id = agent(&current, &body.node)?;
@@ -272,24 +396,11 @@ pub(crate) async fn send(domain: &DomainRuntime, home: &Path, actor: &Actor, bod
     let node_model = node_runs.as_deref().map(alondra_core::model_label::model_family);
     if let Some(task_id) = &body.task {
         let task = current.tasks.get(task_id).ok_or_else(|| DomainError::new("not_found", "task does not exist"))?;
-        if let Some(wanted) = &body.model {
-            let file = crate::domain_schedule_runner::options_at(home).map_err(|error| DomainError::new("invalid_input", format!("options.toml: {error}")))?;
-            let family = file.model_family(wanted).ok_or_else(|| DomainError::new("invalid_input", format!("{wanted} is not a model; use one of {}", file.model_aliases().join(", "))))?;
-            if node_model.as_deref() != Some(family.as_str()) {
-                let has = node_runs.as_deref().map_or("an unknown model".to_owned(), alondra_core::model_label::launched_model_label);
-                return Err(DomainError::new("model_mismatch", format!("{} runs {has}, not {wanted}: launch a new node for {task_id}", body.node)));
-            }
-        }
-        if let Some(other) = current.busy_with(&agent_id, task_id) {
-            return Err(DomainError::new("agent_busy", format!("{} works on {} until it ends: launch a new node for {task_id}, and tell it what {} is doing if they touch the same thing", body.node, other.id.0, body.node)));
-        }
-        match &task.agent_id {
-            None => run(domain, actor, Command::AssignTask { task_id: task_id.clone(), agent_id: agent_id.clone(), model: None })?,
-            Some(other) if other != &agent_id => return Err(DomainError::new("conflict", format!("{task_id} belongs to another agent"))),
-            Some(_) => (),
+        if task.agent_id.as_ref() != Some(&agent_id) {
+            return Err(DomainError::new("not_assigned", format!("{task_id} is not {}'s task: a node works only on the task it was launched for. Launch a new node for {task_id} with launch.", body.node)));
         }
         if task.state.terminal() {
-            run(domain, actor, Command::ReopenTask { task_id: task_id.clone() })?;
+            return Err(DomainError::new("task_closed", format!("{task_id} is closed, and its node closes with it. For more work, create a new task with create_task and dependencies [{task_id}]: its node gets this task's result.")));
         }
     }
     let text = match body.approach {
@@ -300,7 +411,7 @@ pub(crate) async fn send(domain: &DomainRuntime, home: &Path, actor: &Actor, bod
         .map_err(|error| DomainError::new("invalid_input", error.to_string()))?;
     let delivered = crate::domain_messages::deliver(domain, home, actor, "The orchestrator", &agent_id, message, false).await?;
     if let Some(task) = body.task.as_ref().and_then(|id| current.tasks.get(id))
-        && (body.model.is_some() || body.approach.is_some())
+        && body.approach.is_some()
     {
         let auto = request_choices(domain, &task.request_id).ok().flatten().is_none_or(|choices| choices.options.effort == alondra_core::options::AUTO);
         record(domain, Decision {
@@ -310,6 +421,33 @@ pub(crate) async fn send(domain: &DomainRuntime, home: &Path, actor: &Actor, bod
         });
     }
     Ok(delivered)
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct LaunchPlanBody {
+    task_id: TaskId,
+    launch: crate::launch_plans::LaunchPlan,
+}
+
+/// Gives a task the plan Alondra starts it with by itself; a task waiting for one is started at
+/// the next pass.
+pub(crate) fn set_launch_plan(domain: &DomainRuntime, home: &Path, body: LaunchPlanBody) -> Result<Value, DomainError> {
+    let current = state(domain)?;
+    let task = current.tasks.get(&body.task_id).ok_or_else(|| DomainError::new("not_found", "task does not exist"))?;
+    if task.state.terminal() {
+        return Err(DomainError::new("task_not_active", format!("{} is closed", task.id)));
+    }
+    crate::launch_plans::validate(domain, home, &task.request_id, &body.launch)?;
+    let stored = |error: anyhow::Error| { log!("could not store the launch plan of {}: {error:#}", task.id); DomainError::new("storage_unavailable", "the launch plan could not be stored") };
+    let mut store = domain.store.lock().expect("domain store poisoned");
+    store.set_launch_plan(&task.id, &body.launch, alondra_core::now_millis()).map_err(stored)?;
+    let waiting = store.auto_launch(&task.id).map_err(stored)?
+        .is_some_and(|row| row.state == crate::domain_store::AutoLaunchState::Blocked && row.reason == Some(crate::domain_store::AutoLaunchReason::NoPlan));
+    if waiting {
+        store.forget_auto_launch(&task.id).map_err(stored)?;
+    }
+    Ok(json!({"task": task.id, "stored": true}))
 }
 
 #[derive(Deserialize)]

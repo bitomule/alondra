@@ -10,6 +10,9 @@ pub struct ModelReport {
     pub until: Millis,
     pub by_model: Vec<Group>,
     pub by_approach: Vec<Group>,
+    /// Work split into design, implementation and review, measured apart.
+    #[serde(default)]
+    pub by_role: Vec<Group>,
     /// Sonnet attempts that were reopened, relaunched, cancelled or had changes requested.
     pub sonnet_trouble: Vec<Attempt>,
 }
@@ -22,6 +25,8 @@ pub struct Group {
     pub effort: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approach: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
     pub tasks: u32,
     /// Reached done with no reopen, relaunch or cancel.
     pub done_clean: u32,

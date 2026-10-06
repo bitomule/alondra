@@ -64,6 +64,7 @@ fn task(id: &str, request: &str, agent: Option<&str>, title: &str, state: TaskSt
         documents: BTreeMap::new(),
         archived: false,
         model: None,
+        wrap_up: Default::default(),
     }
 }
 

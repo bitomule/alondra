@@ -40,6 +40,7 @@ pub(crate) struct Live {
     pub(crate) usage_pause: crate::usage_pause::UsagePause,
     pub(crate) machine_watch: crate::machine_watch::MachineWatch,
     watching: Mutex<std::collections::HashSet<String>>,
+    launching: Mutex<std::collections::HashSet<String>>,
     reconnecting: Mutex<std::collections::HashSet<String>>,
     closed: Mutex<std::collections::BTreeSet<String>>,
     closed_file: Option<std::path::PathBuf>,
@@ -109,6 +110,15 @@ impl Live {
     }
 
     /// False when something is watching the session's connection back already.
+    /// Takes the right to launch a node for a task; false while another launch of it runs.
+    pub(crate) fn begin_launch(&self, task_id: &str) -> bool {
+        self.launching.lock().expect("launches poisoned").insert(task_id.to_owned())
+    }
+
+    pub(crate) fn end_launch(&self, task_id: &str) {
+        self.launching.lock().expect("launches poisoned").remove(task_id);
+    }
+
     pub(crate) fn begin_watch(&self, session_id: &str) -> bool {
         self.watching.lock().expect("revivals poisoned").insert(session_id.to_owned())
     }

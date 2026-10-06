@@ -95,6 +95,7 @@ pub(crate) fn router(state: Arc<DomainDaemon>) -> Router {
         .route("/pair", post(pair))
         .route("/devices", get(devices))
         .route("/models", get(models))
+        .route("/cleanup", post(cleanup))
         .route("/devices/{id}", axum::routing::delete(revoke_device))
         .route("/service/bootstrap", get(service_bootstrap))
         .route("/service/approve-device", post(service_approve_device))
@@ -110,6 +111,7 @@ pub(crate) fn router(state: Arc<DomainDaemon>) -> Router {
         .route("/orchestrator/acknowledge", post(orchestrator_decision))
         .route("/orchestrator/retry", post(orchestrator_decision))
         .route("/orchestrator/launch", post(orchestrator_launch))
+        .route("/orchestrator/launch-plan", post(orchestrator_launch_plan))
         .route("/orchestrator/send", post(orchestrator_send))
         .route("/orchestrator/interrupt", post(orchestrator_interrupt))
         .route("/sandbox/interrupt/{session}", post(sandbox_interrupt))
@@ -118,7 +120,6 @@ pub(crate) fn router(state: Arc<DomainDaemon>) -> Router {
         .route("/orchestrator/schedules", post(orchestrator_schedule))
         .route("/orchestrator/fleet", get(orchestrator_fleet))
         .route("/orchestrator/node", get(orchestrator_node))
-        .route("/orchestrator/candidates", get(orchestrator_candidates))
         .route("/agents/waiting-machine", post(agent_waiting_machine))
         .merge(crate::domain_api::routes())
         .merge(crate::views::routes::router())
@@ -304,6 +305,38 @@ async fn models(
     match tokio::task::spawn_blocking(move || domain.model_report(query.since, alondra_core::now_millis())).await {
         Ok(Ok(report)) => Json(report).into_response(),
         _ => crate::domain_api::domain_error(DomainError::new("storage_unavailable", "the model report could not be read")),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CleanupBody {
+    #[serde(default)]
+    dry_run: bool,
+}
+
+/// Closes the sessions of finished tasks and the ones stopped without a task, for `alondra
+/// cleanup`: local, and only a paired device may ask since it closes sessions.
+async fn cleanup(
+    State(state): State<Arc<DomainDaemon>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    signed: Option<Extension<Signed>>,
+    body: Result<Json<CleanupBody>, JsonRejection>,
+) -> Response {
+    if let Some(refused) = local_only(&peer, &headers) {
+        return refused;
+    }
+    if signed_device(&state.home, &signed).is_none() {
+        return forbidden("signed user device required");
+    }
+    let Ok(Json(body)) = body else {
+        return crate::domain_api::domain_error(DomainError::new("invalid_input", "invalid cleanup request"));
+    };
+    let sessions = state.client().sessions();
+    match crate::cleanup::run(&state.domain, sessions.as_ref(), &crate::watcher::claude_home(), body.dry_run, alondra_core::now_millis()).await {
+        Ok(report) => Json(report).into_response(),
+        Err((status, error)) => (status, Json(json!({"error": error}))).into_response(),
     }
 }
 
@@ -503,6 +536,22 @@ async fn orchestrator_launch(
     )
 }
 
+async fn orchestrator_launch_plan(
+    State(state): State<Arc<DomainDaemon>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    body: Result<Json<crate::domain_orchestrator_tools::LaunchPlanBody>, JsonRejection>,
+) -> Response {
+    if let Err(refused) = tool_caller(&state, &peer, &headers) {
+        return refused;
+    }
+    let body = match body {
+        Ok(Json(body)) => body,
+        Err(rejection) => return crate::domain_api::domain_error(DomainError::new("invalid_input", format!("invalid launch plan: {}", rejection.body_text()))),
+    };
+    tool_answer(crate::domain_orchestrator_tools::set_launch_plan(&state.domain, &state.home, body))
+}
+
 async fn orchestrator_send(
     State(state): State<Arc<DomainDaemon>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
@@ -643,31 +692,6 @@ async fn orchestrator_node(
     tool_answer(crate::domain_orchestrator_reads::node(
         &state.domain,
         &query.node,
-    ))
-}
-
-#[derive(Deserialize)]
-struct CandidatesQuery {
-    task: Option<String>,
-    repo: Option<String>,
-    model: Option<String>,
-}
-
-async fn orchestrator_candidates(
-    State(state): State<Arc<DomainDaemon>>,
-    ConnectInfo(peer): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
-    Query(query): Query<CandidatesQuery>,
-) -> Response {
-    if let Err(refused) = tool_caller(&state, &peer, &headers) {
-        return refused;
-    }
-    tool_answer(crate::domain_orchestrator_reads::candidates(
-        &state.domain,
-        &state.home,
-        query.task.as_deref(),
-        query.repo.as_deref(),
-        query.model.as_deref(),
     ))
 }
 
@@ -1027,6 +1051,8 @@ mod tests {
                 client.get(format!("{base}{path}")).send().await.unwrap().json().await.unwrap();
             assert!(report.by_model.is_empty() && report.sonnet_trouble.is_empty(), "{path}");
         }
+        let unsigned = client.post(format!("{base}/cleanup")).json(&json!({"dry_run": true})).send().await.unwrap();
+        assert_eq!(unsigned.status(), StatusCode::FORBIDDEN, "cleanup needs a paired device: it closes sessions");
         for (method, path) in [
             ("POST", "/v1/nodes/n/messages"),
             ("PUT", "/v1"),
@@ -1309,13 +1335,6 @@ mod tests {
                 .unwrap()
                 .status(),
             StatusCode::NOT_FOUND
-        );
-        assert_eq!(
-            orchestrator_get("/orchestrator/candidates")
-                .await
-                .unwrap()
-                .status(),
-            StatusCode::UNPROCESSABLE_ENTITY
         );
         domain.live.observe(&json!({"session_id": "test-agent", "hook_event_name": "UserPromptSubmit", "cwd": "/tmp", "prompt": "go"}));
         let waiting = json!({"reason": "the build queue is full"});

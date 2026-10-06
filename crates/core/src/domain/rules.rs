@@ -208,6 +208,22 @@ pub fn merge_failure(body: &str) -> Option<(u64, &str)> {
     let reason = rest.split_once("): ")?.1;
     Some((number.parse().ok()?, reason.split_once(MERGE_FAILED_FIX).map_or(reason, |(reason, _)| reason)))
 }
+/// What a node is told when its task is finished and Alondra is about to close its session.
+pub fn cleanup_request(title: &str, task: &TaskId) -> String {
+    format!("Your task “{title}” is finished and is closing. Before Alondra closes this session and \
+deletes its worktree, delete what you generated for this task that git does not track and that \
+would otherwise stay on this Mac: build outputs, caches and temporary files, including any outside \
+the worktree. Use the project's own tools for it (its clean commands, scripts or build targets). \
+Do not change, commit or push anything else. Then call cleanup_done with task_id {task}. If you do \
+not, Alondra closes the session after a while anyway.", task = task.0)
+}
+/// What a node is told when its task is cancelled.
+pub fn cancelled_notice(title: &str) -> String {
+    format!("Your task “{title}” was cancelled. Stop working on it now and do not start anything new \
+for it: do not commit, push, register a pull request or deliver anything. Before you end your \
+turn, delete what you generated for it that git does not track (build outputs, caches, temporary \
+files) with the project's own tools. Alondra then closes this session.")
+}
 fn one_pr_per_task(number: u64) -> String {
     format!("This task already has PR #{number}, and a task owns one PR: nothing was registered. Put more work for this task on PR #{number}; for work that needs another PR, ask the orchestrator for a new task (ask with recipient orchestrator).")
 }
@@ -264,6 +280,15 @@ impl DomainState {
     /// An Agent works on one Task at a time: the other non-terminal Task it holds, if any.
     pub fn busy_with(&self, agent: &AgentId, except: &TaskId) -> Option<&Task> {
         self.tasks.values().find(|t| &t.id != except && t.agent_id.as_ref() == Some(agent) && !t.state.terminal())
+    }
+    /// A node works on one Task for its whole life: the other Task, open or not, it holds or held.
+    fn used_by_other(&self, agent: &AgentId, except: &TaskId) -> Result<()> {
+        match self.tasks.values().find(|t| &t.id != except && t.agent_id.as_ref() == Some(agent)) {
+            Some(other) => fail("agent_used", &format!(
+                "Node {} already worked on task “{}”, and a node works on one task only: launch a new node for this task with launch.",
+                self.agents.get(agent).map_or(agent.0.as_str(), |a| a.name.as_str()), other.title)),
+            None => Ok(()),
+        }
     }
     fn free(&self, agent: &AgentId, task: &TaskId) -> Result<()> {
         match self.busy_with(agent, task) {
@@ -1056,6 +1081,47 @@ impl DomainState {
                 )
         })
     }
+    fn settled(&self, t: &Task, p: &Interaction) -> bool {
+        self.merged_delivery(p)
+            || (self.accepted(p)
+                && matches!(&p.payload, InteractionPayload::Delivery { targets, .. }
+                    if self.completable(t, targets).is_ok()))
+    }
+    /// The final delivery is settled: every PR merged, or accepted with nothing left to merge.
+    pub fn finished(&self, t: &Task) -> bool {
+        t.final_presentation.as_ref().and_then(|p| self.interactions.get(p)).is_some_and(|p| self.settled(t, p))
+    }
+    /// The task has a node whose end Alondra has not recorded.
+    pub fn wraps_up(&self, t: &Task) -> bool {
+        t.agent_id.is_some() && t.wrap_up.node.is_none()
+    }
+    /// The task waits for its node to clean up and be closed.
+    pub fn in_cleanup(&self, t: &Task) -> bool {
+        !t.state.terminal() && t.wrap_up.asked_at.is_some()
+    }
+    /// Asks the node of every task whose delivery just settled to clean up, and forgets the
+    /// request of one whose delivery is no longer settled.
+    fn wrap_up_step(&mut self, effects: &mut Vec<DomainEffect>) {
+        let revision = self.revision + 1;
+        let ids: Vec<TaskId> = self.tasks.values().filter(|t| !t.state.terminal()).map(|t| t.id.clone()).collect();
+        for id in ids {
+            if self.blockers(&id) {
+                continue;
+            }
+            let t = &self.tasks[&id];
+            let finished = self.finished(t);
+            if finished && self.wraps_up(t) && t.wrap_up.asked_at.is_none() {
+                let agent_id = t.agent_id.clone().expect("a task that wraps up has a node");
+                let message = cleanup_request(&t.title, &t.id);
+                self.tasks.get_mut(&id).unwrap().wrap_up.asked_at = Some(revision);
+                effects.push(DomainEffect::NotifyAgent { agent_id, task_id: Some(id), interaction_id: None, message });
+            } else if !finished && (t.wrap_up.asked_at.is_some() || t.wrap_up.cleaned_at.is_some()) {
+                let wrap_up = &mut self.tasks.get_mut(&id).unwrap().wrap_up;
+                wrap_up.asked_at = None;
+                wrap_up.cleaned_at = None;
+            }
+        }
+    }
     /// What still keeps a Task with a settled final delivery from being done.
     fn completable(&self, t: &Task, targets: &[DeliveryTarget]) -> Result<()> {
         if self.blockers(&t.id) {
@@ -1108,6 +1174,14 @@ impl DomainState {
     /// Waiting and activity states are always recomputed from the facts; an
     /// import runs this once so the first live command never rewrites every Task.
     pub fn derive_states(&mut self) {
+        // A task that becomes done lets the ones waiting on it start in the same step.
+        for _ in 0..=self.tasks.len() {
+            if !self.derive_states_once() {
+                break;
+            }
+        }
+    }
+    fn derive_states_once(&mut self) -> bool {
         let updates: Vec<_> = self
             .tasks
             .values()
@@ -1122,14 +1196,10 @@ impl DomainState {
                     .as_ref()
                     .and_then(|p| self.interactions.get(p))
                 {
-                    if self.merged_delivery(p) {
-                        TaskState::Done
+                    if self.settled(t, p) {
+                        if self.wraps_up(t) { TaskState::Closing } else { TaskState::Done }
                     } else if self.accepted(p) {
-                        match &p.payload {
-                            InteractionPayload::Delivery { targets, .. }
-                                if self.completable(t, targets).is_ok() => TaskState::Done,
-                            _ => TaskState::Closing,
-                        }
+                        TaskState::Closing
                     } else if self.handed_back(p).is_some() {
                         TaskState::Running
                     } else {
@@ -1143,9 +1213,13 @@ impl DomainState {
                 (t.id.clone(), state)
             })
             .collect();
+        let mut changed = false;
         for (id, state) in updates {
-            self.tasks.get_mut(&id).unwrap().state = state;
+            let task = self.tasks.get_mut(&id).unwrap();
+            changed |= task.state != state;
+            task.state = state;
         }
+        changed
     }
     /// Tasks whose revision must move: their row, their decisions and
     /// deliveries, PR, authorizations, stack readiness, reviews or linked
@@ -1238,6 +1312,8 @@ impl DomainState {
             | Command::CompleteTask { task_id, .. }
             | Command::CancelTask { task_id }
             | Command::ReopenTask { task_id }
+            | Command::ConfirmCleanup { task_id }
+            | Command::RecordNodeEnd { task_id, .. }
             | Command::ArchiveTask { task_id, .. }
             | Command::HoldHook { task_id, .. }
             | Command::HoldQuestions { task_id, .. } => task(task_id),
@@ -1329,6 +1405,7 @@ impl DomainState {
         let mut created = vec![];
         next.apply(actor, &envelope.command, &mut effects, &mut created)?;
         next.derive_states();
+        next.wrap_up_step(&mut effects);
         for id in self.touched_tasks(&next) {
             next.tasks.get_mut(&id).unwrap().revision = self.revision + 1;
         }
@@ -1700,6 +1777,9 @@ impl DomainState {
                 };
                 if let Some(agent) = agent_id {
                     self.free(agent, task_id)?;
+                    if matches!(actor, Actor::Orchestrator { .. }) {
+                        self.used_by_other(agent, task_id)?;
+                    }
                 }
                 self.tasks.insert(
                     task_id.clone(),
@@ -1719,13 +1799,21 @@ impl DomainState {
                         documents: BTreeMap::new(),
                         archived: false,
                         model: None,
+                        wrap_up: WrapUp::default(),
                     },
                 );
                 self.dependency_graph()?;
                 created.push(task_id.0.clone());
             }
             Command::AssignTask { task_id, agent_id, model } => {
-                self.manager(actor)?;
+                if matches!(actor, Actor::System) {
+                    let t = self.task(task_id)?;
+                    if t.state != TaskState::NotStarted || t.started || t.agent_id.is_some() {
+                        return fail("conflict", "Task already has a node");
+                    }
+                } else {
+                    self.manager(actor)?;
+                }
                 self.active(task_id)?;
                 if self.schedule.runs.values().any(|run| run.task_id.as_ref() == Some(task_id)
                     && run.launch.as_ref().is_some_and(|launch| matches!(launch.state,
@@ -1736,6 +1824,9 @@ impl DomainState {
                     return fail("not_found", "Agent missing");
                 };
                 if self.task(task_id)?.agent_id.as_ref() != Some(agent_id) {
+                    if matches!(actor, Actor::Orchestrator { .. } | Actor::System) {
+                        self.used_by_other(agent_id, task_id)?;
+                    }
                     self.free(agent_id, task_id)?;
                     self.invalidate(task_id);
                     self.tasks.get_mut(task_id).unwrap().agent_id = Some(agent_id.clone());
@@ -2553,6 +2644,9 @@ impl DomainState {
                     return fail("acceptance_stale", "Feedback targets changed");
                 };
                 let task = t.id.clone();
+                if matches!(actor, Actor::User { .. }) && self.in_cleanup(t) && self.merged_delivery(self.presentation(presentation_id)?.0) {
+                    return fail("task_closing", "This task's pull request is already merged and the task is closing, so it takes no more changes: ask for more work as a new request.");
+                }
                 self.invalidate(&task);
                 let p = self.interactions.get_mut(presentation_id).unwrap();
                 if let InteractionPayload::Delivery { feedback, .. } = &mut p.payload {
@@ -2823,7 +2917,9 @@ impl DomainState {
                     );
                 };
                 self.completable(t, targets)?;
-                self.tasks.get_mut(task_id).unwrap().state = TaskState::Done;
+                if !self.wraps_up(t) {
+                    self.tasks.get_mut(task_id).unwrap().state = TaskState::Done;
+                }
             }
             Command::CancelTask { task_id } => {
                 let unstarted = self.tasks.get(task_id).is_some_and(|task| {
@@ -2834,7 +2930,18 @@ impl DomainState {
                 }
                 self.active(task_id)?;
                 self.invalidate(task_id);
-                self.tasks.get_mut(task_id).unwrap().state = TaskState::Cancelled;
+                let t = self.tasks.get_mut(task_id).unwrap();
+                t.state = TaskState::Cancelled;
+                if let Some(agent_id) = t.agent_id.clone() {
+                    t.wrap_up.close_cancelled = true;
+                    let message = cancelled_notice(&t.title);
+                    effects.push(DomainEffect::NotifyAgent {
+                        agent_id,
+                        task_id: Some(task_id.clone()),
+                        interaction_id: None,
+                        message,
+                    });
+                }
             }
             Command::ReopenTask { task_id } => {
                 self.manager(actor)?;
@@ -2855,9 +2962,34 @@ impl DomainState {
                 t.state = TaskState::Running;
                 t.started = true;
                 t.archived = false;
-                if released {
+                let node_gone = matches!(t.wrap_up.node, Some(NodeEnd::Closed | NodeEnd::Gone));
+                t.wrap_up = WrapUp::default();
+                if released || node_gone {
                     t.agent_id = None;
                 }
+            }
+            Command::ConfirmCleanup { task_id } => {
+                let t = self.assigned(actor, task_id)?;
+                if t.wrap_up.asked_at.is_none() {
+                    return fail("not_closing", &format!(
+                        "Task {} is not closing, so there is nothing to clean up yet: deliver your result with present_result first.", task_id.0));
+                }
+                let revision = self.revision + 1;
+                self.tasks.get_mut(task_id).unwrap().wrap_up.cleaned_at = Some(revision);
+            }
+            Command::RecordNodeEnd { task_id, end } => {
+                system(actor)?;
+                let t = self.task(task_id)?;
+                match t.wrap_up.node {
+                    Some(recorded) if recorded == *end => return Ok(()),
+                    Some(_) => return fail("conflict", "node end already recorded"),
+                    None => {}
+                }
+                let closing = self.in_cleanup(t) && self.wraps_up(t);
+                if !closing && !t.state.terminal() {
+                    return fail("not_closing", &format!("Task {} is not closing", task_id.0));
+                }
+                self.tasks.get_mut(task_id).unwrap().wrap_up.node = Some(*end);
             }
             Command::ReleaseTask { task_id, reason } => {
                 system(actor)?;

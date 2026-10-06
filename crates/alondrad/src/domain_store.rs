@@ -27,6 +27,151 @@ const MODEL_METRICS: &str = include_str!("domain_store/model_metrics.sql");
 /// How many turn ends in a row Alondra held back for a Task, since its node last delivered or
 /// asked (`marker`, the order of that card). Kept outside the domain state, like task_models.
 const STOP_BLOCKS: &str = "CREATE TABLE IF NOT EXISTS stop_blocks(task_id TEXT PRIMARY KEY, blocks INTEGER NOT NULL CHECK(blocks>=0), marker INTEGER NOT NULL);";
+/// What became of a task's node, kept beside the task; created on every open like task_models.
+const TASK_WRAP_UPS: &str = "CREATE TABLE IF NOT EXISTS task_wrap_ups(\
+ task_id TEXT PRIMARY KEY REFERENCES tasks(id),\
+ asked_at INTEGER CHECK(asked_at IS NULL OR asked_at BETWEEN 0 AND 9007199254740991),\
+ cleaned_at INTEGER CHECK(cleaned_at IS NULL OR cleaned_at BETWEEN 0 AND 9007199254740991),\
+ close_cancelled INTEGER NOT NULL CHECK(close_cancelled IN(0,1)),\
+ node_end TEXT CHECK(node_end IS NULL OR node_end IN('closed','gone','kept_by_user','users_own')));";
+/// The closer's own bookkeeping (not domain state): when it first saw a task due for closing, its
+/// failures and the card it raised.
+const TASK_CLOSINGS: &str = "CREATE TABLE IF NOT EXISTS task_closings(\
+ task_id TEXT PRIMARY KEY REFERENCES tasks(id),\
+ since INTEGER NOT NULL,\
+ failures INTEGER NOT NULL DEFAULT 0 CHECK(failures>=0),\
+ last_error TEXT,\
+ next_attempt INTEGER NOT NULL DEFAULT 0,\
+ attempted_cleaned_at INTEGER,\
+ rm_started_at INTEGER,\
+ problem_id TEXT);";
+const TASK_CLOSING_SELECT_ONE: &str = "SELECT task_id,since,failures,last_error,next_attempt,attempted_cleaned_at,rm_started_at,problem_id FROM task_closings WHERE task_id=?1";
+const TASK_CLOSING_SELECT_ALL: &str = "SELECT task_id,since,failures,last_error,next_attempt,attempted_cleaned_at,rm_started_at,problem_id FROM task_closings ORDER BY task_id";
+/// What the closer remembers about closing one task's node, across restarts.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct TaskClosing {
+    pub task_id: TaskId,
+    /// Milliseconds: when the closer first saw the task due for closing.
+    pub since: i64,
+    pub failures: u32,
+    pub last_error: Option<String>,
+    /// Milliseconds: no attempt before this.
+    pub next_attempt: i64,
+    /// The task's `wrap_up.cleaned_at` seen at the last failed attempt.
+    pub attempted_cleaned_at: Option<i64>,
+    /// Milliseconds: `claude rm` was started and its result not recorded.
+    pub rm_started_at: Option<i64>,
+    /// The Problem card raised after three failures.
+    pub problem_id: Option<String>,
+}
+impl TaskClosing {
+    fn from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Self> {
+        Ok(Self {
+            task_id: TaskId(row.get(0)?),
+            since: row.get(1)?,
+            failures: row.get(2)?,
+            last_error: row.get(3)?,
+            next_attempt: row.get(4)?,
+            attempted_cleaned_at: row.get(5)?,
+            rm_started_at: row.get(6)?,
+            problem_id: row.get(7)?,
+        })
+    }
+}
+/// How Alondra starts a task by itself, given with the task and stored with it.
+const TASK_LAUNCH_PLANS: &str = "CREATE TABLE IF NOT EXISTS task_launch_plans(\
+ task_id TEXT PRIMARY KEY REFERENCES tasks(id),\
+ plan TEXT NOT NULL CHECK(json_valid(plan)),\
+ role TEXT CHECK(role IS NULL OR role IN('design','implementation','review')),\
+ at INTEGER NOT NULL);";
+/// One automatic launch per task ever: the row is the claim, written before `claude` runs.
+const AUTO_LAUNCHES: &str = "CREATE TABLE IF NOT EXISTS auto_launches(\
+ task_id TEXT PRIMARY KEY REFERENCES tasks(id),\
+ state TEXT NOT NULL CHECK(state IN('launching','launched','blocked')),\
+ reason TEXT CHECK(reason IS NULL OR reason IN('usage_exhausted','workspace_untrusted','no_plan','launch_failed')),\
+ detail TEXT,\
+ at INTEGER NOT NULL);";
+
+/// What a command carries into the transaction that commits it.
+pub(crate) enum Attached<'a> {
+    None,
+    /// What the user chose for the launch of the Request a `CreateRequest` makes.
+    Request(&'a RequestLaunch),
+    /// How Alondra starts the Task a `CreateTask` makes by itself.
+    Plan(&'a crate::launch_plans::LaunchPlan),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AutoLaunchState {
+    Launching,
+    Launched,
+    Blocked,
+}
+impl AutoLaunchState {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Launching => "launching",
+            Self::Launched => "launched",
+            Self::Blocked => "blocked",
+        }
+    }
+    fn parse(text: &str) -> Self {
+        match text {
+            "launched" => Self::Launched,
+            "blocked" => Self::Blocked,
+            _ => Self::Launching,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AutoLaunchReason {
+    UsageExhausted,
+    WorkspaceUntrusted,
+    NoPlan,
+    LaunchFailed,
+}
+impl AutoLaunchReason {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::UsageExhausted => "usage_exhausted",
+            Self::WorkspaceUntrusted => "workspace_untrusted",
+            Self::NoPlan => "no_plan",
+            Self::LaunchFailed => "launch_failed",
+        }
+    }
+    fn parse(text: &str) -> Option<Self> {
+        Some(match text {
+            "usage_exhausted" => Self::UsageExhausted,
+            "workspace_untrusted" => Self::WorkspaceUntrusted,
+            "no_plan" => Self::NoPlan,
+            "launch_failed" => Self::LaunchFailed,
+            _ => return None,
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct AutoLaunch {
+    pub task_id: TaskId,
+    pub state: AutoLaunchState,
+    pub reason: Option<AutoLaunchReason>,
+    pub detail: Option<String>,
+    pub at: i64,
+}
+impl AutoLaunch {
+    fn from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Self> {
+        let state: String = row.get(1)?;
+        let reason: Option<String> = row.get(2)?;
+        Ok(Self {
+            task_id: TaskId(row.get(0)?),
+            state: AutoLaunchState::parse(&state),
+            reason: reason.as_deref().and_then(AutoLaunchReason::parse),
+            detail: row.get(3)?,
+            at: row.get(4)?,
+        })
+    }
+}
 #[cfg(test)]
 pub(crate) use repository::statement_counts;
 pub(crate) type TransportIdentity<'a> = (&'a str, &'a str, &'a [u8; 32]);
@@ -191,6 +336,10 @@ impl DomainStore {
         tx.execute_batch(TASK_MODELS)?;
         tx.execute_batch(MODEL_METRICS)?;
         tx.execute_batch(STOP_BLOCKS)?;
+        tx.execute_batch(TASK_WRAP_UPS)?;
+        tx.execute_batch(TASK_CLOSINGS)?;
+        tx.execute_batch(TASK_LAUNCH_PLANS)?;
+        tx.execute_batch(AUTO_LAUNCHES)?;
         if version != 0 {
             tx.execute_batch("DROP TRIGGER IF EXISTS schedule_launch_transition;")?;
             tx.execute_batch(SCHEDULE_LAUNCH_TRANSITION)?;
@@ -304,7 +453,7 @@ impl DomainStore {
         envelope: &CommandEnvelope,
         transport: Option<TransportIdentity<'_>>,
     ) -> std::result::Result<Commit, StoreError> {
-        self.execute_envelope(actor, envelope, transport, false, None)
+        self.execute_envelope(actor, envelope, transport, false, Attached::None)
     }
     /// A `CreateRequest` that also records what the user chose for its launch, in the same
     /// transaction.
@@ -318,7 +467,7 @@ impl DomainStore {
         if !matches!(envelope.command, Command::CreateRequest { .. }) {
             return Err(DomainError::new("invalid_input", "only a new Request has a launch").into());
         }
-        self.execute_envelope(actor, envelope, transport, true, Some(launch))
+        self.execute_envelope(actor, envelope, transport, true, Attached::Request(launch))
     }
     /// The project and effort each Request was asked for with, by Request.
     pub(crate) fn request_launch_summaries(&self) -> Result<std::collections::BTreeMap<RequestId, (Option<String>, Option<String>)>> {
@@ -340,7 +489,19 @@ impl DomainStore {
         actor: &Actor,
         envelope: &CommandEnvelope,
     ) -> std::result::Result<Commit, StoreError> {
-        self.execute_envelope(actor, envelope, None, true, None)
+        self.execute_envelope(actor, envelope, None, true, Attached::None)
+    }
+    /// A `CreateTask` that also stores how Alondra starts the Task, in the same transaction.
+    pub(crate) fn execute_planned(
+        &mut self,
+        actor: &Actor,
+        envelope: &CommandEnvelope,
+        plan: &crate::launch_plans::LaunchPlan,
+    ) -> std::result::Result<Commit, StoreError> {
+        if !matches!(envelope.command, Command::CreateTask { .. }) {
+            return Err(DomainError::new("invalid_input", "only a new Task has a launch plan").into());
+        }
+        self.execute_envelope(actor, envelope, None, true, Attached::Plan(plan))
     }
     fn execute_envelope(
         &mut self,
@@ -348,7 +509,7 @@ impl DomainStore {
         envelope: &CommandEnvelope,
         transport: Option<TransportIdentity<'_>>,
         fill_revision: bool,
-        launch: Option<&RequestLaunch>,
+        attached: Attached<'_>,
     ) -> std::result::Result<Commit, StoreError> {
         let actor_key = String::from_utf8(canonical::bytes(&match actor {
             Actor::Orchestrator { .. } => serde_json::json!({"kind":"orchestrator"}),
@@ -445,8 +606,18 @@ impl DomainStore {
             {
                 repository::remember_schedule_failed_launch(&tx, request_id)?;
             }
-            if let (Some(launch), Command::CreateRequest { request_id, .. }) = (launch, &envelope.command) {
-                repository::remember_request_launch(&tx, request_id, launch)?;
+            match (&attached, &envelope.command) {
+                (Attached::Request(launch), Command::CreateRequest { request_id, .. }) => {
+                    repository::remember_request_launch(&tx, request_id, launch)?;
+                }
+                (Attached::Plan(plan), Command::CreateTask { task_id, .. }) => {
+                    repository::exec(
+                        &tx,
+                        "INSERT INTO task_launch_plans(task_id,plan,role,at) VALUES(?1,?2,?3,?4)",
+                        params![task_id.0, serde_json::to_string(plan)?, plan.role.map(|role| role.as_str()), alondra_core::now_millis()],
+                    )?;
+                }
+                _ => {}
             }
             let at = alondra_core::now_millis();
             repository::exec(&tx, "INSERT INTO command_audit(revision,actor,command_id,data_epoch,command,at) VALUES(?1,?2,?3,?4,?5,?6)",params![outcome.revision as i64,actor_key,envelope.command_id.0,envelope.data_epoch.0,String::from_utf8(canonical::bytes(&envelope.command)?).context("command encoding")?,at])?;
@@ -622,6 +793,89 @@ impl DomainStore {
     pub(crate) fn set_stop_blocks(&self, task_id: &TaskId, blocks: u32, marker: i64) -> Result<()> {
         self.conn.execute("INSERT INTO stop_blocks(task_id,blocks,marker) VALUES(?1,?2,?3) ON CONFLICT(task_id) DO UPDATE SET blocks=excluded.blocks,marker=excluded.marker",
             params![task_id.0, blocks, marker])?;
+        Ok(())
+    }
+    pub(crate) fn launch_plan(&self, task_id: &TaskId) -> Result<Option<crate::launch_plans::LaunchPlan>> {
+        let plan: Option<String> = self.conn.query_row("SELECT plan FROM task_launch_plans WHERE task_id=?1", [&task_id.0], |row| row.get(0)).optional()?;
+        plan.map(|plan| serde_json::from_str(&plan).context("stored launch plan")).transpose()
+    }
+    pub(crate) fn set_launch_plan(&mut self, task_id: &TaskId, plan: &crate::launch_plans::LaunchPlan, now: i64) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO task_launch_plans(task_id,plan,role,at) VALUES(?1,?2,?3,?4) ON CONFLICT(task_id) DO UPDATE SET plan=excluded.plan,role=excluded.role,at=excluded.at",
+            params![task_id.0, serde_json::to_string(plan)?, plan.role.map(|role| role.as_str()), now])?;
+        self.note_side_write();
+        Ok(())
+    }
+    /// Every task a launch plan names a role for.
+    pub(crate) fn task_roles(&self) -> Result<std::collections::BTreeMap<TaskId, String>> {
+        let mut query = self.conn.prepare("SELECT task_id,role FROM task_launch_plans WHERE role IS NOT NULL")?;
+        let rows = query.query_map([], |row| Ok((TaskId(row.get(0)?), row.get(1)?)))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+    pub(crate) fn auto_launch(&self, task_id: &TaskId) -> Result<Option<AutoLaunch>> {
+        Ok(self.conn.query_row("SELECT task_id,state,reason,detail,at FROM auto_launches WHERE task_id=?1", [&task_id.0], AutoLaunch::from_row).optional()?)
+    }
+    pub(crate) fn auto_launches(&self) -> Result<Vec<AutoLaunch>> {
+        let mut query = self.conn.prepare("SELECT task_id,state,reason,detail,at FROM auto_launches ORDER BY task_id")?;
+        Ok(query.query_map([], AutoLaunch::from_row)?.collect::<rusqlite::Result<_>>()?)
+    }
+    /// Takes the one automatic launch of a task: false when it was taken before. A blocked row is
+    /// taken again only with `retry`.
+    pub(crate) fn claim_auto_launch(&mut self, task_id: &TaskId, now: i64, retry: bool) -> Result<bool> {
+        let inserted = self.conn.execute(
+            "INSERT INTO auto_launches(task_id,state,at) VALUES(?1,'launching',?2) ON CONFLICT(task_id) DO NOTHING",
+            params![task_id.0, now])?;
+        let claimed = inserted == 1 || (retry && self.conn.execute(
+            "UPDATE auto_launches SET state='launching',reason=NULL,detail=NULL,at=?2 WHERE task_id=?1 AND state='blocked'",
+            params![task_id.0, now])? == 1);
+        self.note_side_write();
+        Ok(claimed)
+    }
+    pub(crate) fn set_auto_launch(&mut self, task_id: &TaskId, state: AutoLaunchState, reason: Option<AutoLaunchReason>, detail: Option<&str>, now: i64) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO auto_launches(task_id,state,reason,detail,at) VALUES(?1,?2,?3,?4,?5) ON CONFLICT(task_id) DO UPDATE SET state=excluded.state,reason=excluded.reason,detail=excluded.detail,at=excluded.at",
+            params![task_id.0, state.as_str(), reason.map(AutoLaunchReason::as_str), detail, now])?;
+        self.note_side_write();
+        Ok(())
+    }
+    pub(crate) fn forget_auto_launch(&mut self, task_id: &TaskId) -> Result<()> {
+        self.conn.execute("DELETE FROM auto_launches WHERE task_id=?1", [&task_id.0])?;
+        self.note_side_write();
+        Ok(())
+    }
+    /// Whether a launch of this task was ever recorded.
+    pub(crate) fn task_was_launched(&self, task_id: &TaskId) -> Result<bool> {
+        Ok(self.conn.query_row("SELECT EXISTS(SELECT 1 FROM model_decisions WHERE task_id=?1 AND kind IN('launch','relaunch'))", [&task_id.0], |row| row.get(0))?)
+    }
+    /// Whether Alondra launched this session: a launch or relaunch of it was recorded.
+    pub(crate) fn launched_by_alondra(&self, agent_id: &str) -> Result<bool> {
+        Ok(self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM model_decisions WHERE agent_id=?1 AND kind IN('launch','relaunch'))",
+            [agent_id], |row| row.get(0))?)
+    }
+    pub(crate) fn task_closing(&self, task_id: &TaskId) -> Result<Option<TaskClosing>> {
+        Ok(self.conn.query_row(TASK_CLOSING_SELECT_ONE, [&task_id.0], TaskClosing::from_row).optional()?)
+    }
+    pub(crate) fn task_closings(&self) -> Result<Vec<TaskClosing>> {
+        let mut query = self.conn.prepare(TASK_CLOSING_SELECT_ALL)?;
+        Ok(query.query_map([], TaskClosing::from_row)?.collect::<rusqlite::Result<_>>()?)
+    }
+    /// The closer's row for a task, created the first time it sees the task due for closing.
+    pub(crate) fn begin_task_closing(&mut self, task_id: &TaskId, now: i64) -> Result<TaskClosing> {
+        self.conn.execute("INSERT OR IGNORE INTO task_closings(task_id,since) VALUES(?1,?2)", params![task_id.0, now])?;
+        self.note_side_write();
+        self.task_closing(task_id)?.context("task closing row missing")
+    }
+    pub(crate) fn save_task_closing(&mut self, row: &TaskClosing) -> Result<()> {
+        self.conn.execute(
+            "UPDATE task_closings SET since=?2,failures=?3,last_error=?4,next_attempt=?5,attempted_cleaned_at=?6,rm_started_at=?7,problem_id=?8 WHERE task_id=?1",
+            params![row.task_id.0, row.since, row.failures, row.last_error, row.next_attempt, row.attempted_cleaned_at, row.rm_started_at, row.problem_id])?;
+        self.note_side_write();
+        Ok(())
+    }
+    pub(crate) fn forget_task_closing(&mut self, task_id: &TaskId) -> Result<()> {
+        self.conn.execute("DELETE FROM task_closings WHERE task_id=?1", [&task_id.0])?;
+        self.note_side_write();
         Ok(())
     }
     #[cfg(test)]

@@ -314,6 +314,12 @@ mod tests {
         }
     }
 
+    /// The task waits in Closing for its node; Alondra records it closed and the task is done.
+    fn end_node(domain: &DomainRuntime) {
+        assert_eq!(domain.state().unwrap().tasks[&"t".into()].state, TaskState::Closing);
+        command(domain, Actor::System, "node-end", Command::RecordNodeEnd { task_id: "t".into(), end: NodeEnd::Closed });
+    }
+
     fn command(domain: &DomainRuntime, actor: Actor, id: &str, command: Command) {
         let state = domain.state().unwrap();
         domain.execute(&actor, &CommandEnvelope {
@@ -381,7 +387,8 @@ mod tests {
             reconcile(&domain, &observer, &mut ObservationFailures::default()).await.unwrap();
             let state = domain.state().unwrap();
             assert_eq!(state.pull_requests[&"pr".into()].state, PrState::Merged);
-            assert_eq!(state.tasks[&"t".into()].state, TaskState::Done, "auto_merge {auto_merge}");
+            end_node(&domain);
+            assert_eq!(domain.state().unwrap().tasks[&"t".into()].state, TaskState::Done, "auto_merge {auto_merge}");
         }
     }
 
@@ -552,7 +559,8 @@ mod tests {
         assert_eq!(pr.state, PrState::Merged);
         assert_eq!(pr.merged_head.as_deref(), Some(HEAD), "the merged head is the PR head, not a merge commit");
         assert_eq!(state.merge_authorizations[&"auth".into()].attempt, MergeAttemptState::Confirmed);
-        assert_eq!(state.tasks[&"t".into()].state, TaskState::Done, "the merge of the authorized head completes the Task");
+        end_node(&domain);
+        assert_eq!(domain.state().unwrap().tasks[&"t".into()].state, TaskState::Done, "the merge of the authorized head completes the Task");
     }
 
     #[tokio::test]
@@ -568,7 +576,7 @@ mod tests {
             let state = domain.state().unwrap();
             assert_eq!(state.pull_requests[&"pr".into()].state, remote.state, "{tag}");
             assert_eq!(state.merge_authorizations[&"auth".into()].attempt, MergeAttemptState::Failed, "{tag}");
-            assert_eq!(state.tasks[&"t".into()].state == TaskState::Done, remote.state == PrState::Merged,
+            assert_eq!(state.tasks[&"t".into()].wrap_up.asked_at.is_some(), remote.state == PrState::Merged,
                 "{tag}: only a merge settles the delivery");
         }
     }

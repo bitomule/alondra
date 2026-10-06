@@ -184,3 +184,30 @@ fn a_store_made_before_model_metrics_opens_in_place_and_keeps_its_rows() {
     let again = DomainStore::open(&fixture.path()).unwrap();
     assert_eq!(again.model_decision_rows().unwrap().len(), 1, "a reopen keeps recorded decisions");
 }
+
+#[test]
+fn tasks_are_grouped_by_the_role_of_their_launch_plan() {
+    let mut f = facts();
+    f.roles = [("t1", "design"), ("t2", "implementation"), ("t3", "implementation"), ("t4", "review")]
+        .into_iter().map(|(task, role)| (task.to_owned(), role.to_owned())).collect();
+    let report = report(&f, None, Millis::MAX);
+    let roles: Vec<(&str, u32)> = report.by_role.iter().map(|g| (g.role.as_deref().unwrap(), g.tasks)).collect();
+    assert_eq!(roles, [("design", 1), ("implementation", 3), ("review", 1)], "in the order design, implementation, review; t5 has no role");
+    assert_eq!(report.by_role[0].done_clean, 1);
+    assert_eq!(report.by_role[2].cancelled, 1);
+    let without = super::report(&facts(), None, Millis::MAX);
+    assert!(without.by_role.is_empty(), "no roles, no section");
+}
+
+#[test]
+fn the_roles_come_from_the_launch_plans_in_the_store() {
+    let (_fixture, mut store) = store();
+    store.record_model_decision(&sonnet_launch()).unwrap();
+    let plan = crate::launch_plans::LaunchPlan {
+        name: "app/review".into(), cwd: "/synthetic".into(), mission: None, model: None, effort: None, approach: None, reason: None,
+        role: Some(crate::launch_plans::TaskRole::Review),
+    };
+    store.set_launch_plan(&"task-1".into(), &plan, 1).unwrap();
+    let report = store.model_report(None, alondra_core::now_millis()).unwrap();
+    assert_eq!(report.by_role.iter().map(|g| (g.role.clone().unwrap(), g.tasks)).collect::<Vec<_>>(), [("review".to_owned(), 1)]);
+}

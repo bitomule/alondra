@@ -62,14 +62,16 @@ struct FakeClaude {
     calls: Mutex<Vec<(String, Vec<String>)>>,
     loads_mod_in: Option<Arc<DomainRuntime>>,
     stopped: Mutex<Vec<String>>,
+    removed: Mutex<Vec<String>>,
+    during_run: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 impl FakeClaude {
     fn loading(domain: &Arc<DomainRuntime>) -> Self {
-        Self { calls: Mutex::new(vec![]), loads_mod_in: Some(domain.clone()), stopped: Mutex::new(vec![]) }
+        Self { calls: Mutex::new(vec![]), loads_mod_in: Some(domain.clone()), stopped: Mutex::new(vec![]), removed: Mutex::new(vec![]), during_run: Mutex::new(None) }
     }
 
     fn without_mod() -> Self {
-        Self { calls: Mutex::new(vec![]), loads_mod_in: None, stopped: Mutex::new(vec![]) }
+        Self { calls: Mutex::new(vec![]), loads_mod_in: None, stopped: Mutex::new(vec![]), removed: Mutex::new(vec![]), during_run: Mutex::new(None) }
     }
 }
 impl crate::orchestrate::Launcher for FakeClaude {
@@ -78,10 +80,16 @@ impl crate::orchestrate::Launcher for FakeClaude {
         if let Some(domain) = &self.loads_mod_in {
             domain.live.mods.loaded_by(SESSION, args);
         }
+        if let Some(hook) = self.during_run.lock().unwrap().take() {
+            hook();
+        }
         Ok("backgrounded · ab1234 · editor".into())
     }
     async fn stop(&self, short: &str) {
         self.stopped.lock().unwrap().push(short.into());
+    }
+    async fn remove(&self, short: &str) {
+        self.removed.lock().unwrap().push(short.into());
     }
     fn mods_deadline(&self) -> std::time::Duration {
         std::time::Duration::from_millis(20)
@@ -217,26 +225,6 @@ async fn a_model_alias_from_options_toml_is_launched_as_what_it_stands_for() {
 }
 
 #[tokio::test]
-async fn a_message_about_a_task_to_a_node_on_another_model_is_refused() {
-    let f = world();
-    let actor = the_orchestrator(&f.domain);
-    let node = Node::connect(&f.domain, "agent-b");
-    let body = |model: &str| -> SendBody { serde_json::from_value(json!({"node": "Instance B", "text": "Go", "task": "t", "model": model})).unwrap() };
-    let unknown = send(&f.domain, &f.home, &actor, body("opus")).await.unwrap_err();
-    assert_eq!(unknown.code, "model_mismatch", "a node that has not reported its model cannot be vouched for");
-    f.domain.live.mods.apply(serde_json::from_value(json!({"session_id": "agent-b", "event": "model", "model": "claude-sonnet-5-5"})).unwrap(), 1);
-    let mismatch = send(&f.domain, &f.home, &actor, body("opus")).await.unwrap_err();
-    assert_eq!(mismatch.code, "model_mismatch");
-    assert!(mismatch.message.contains("Sonnet 5.5") && mismatch.message.contains("launch a new node for t"), "{}", mismatch.message);
-    assert_eq!(f.domain.state().unwrap().tasks[&TaskId::from("t")].agent_id, None, "a refused send assigns nothing");
-    assert!(node.texts().is_empty());
-    assert_eq!(send(&f.domain, &f.home, &actor, body("fable")).await.unwrap_err().code, "model_mismatch");
-    assert_eq!(send(&f.domain, &f.home, &actor, body("nonsense")).await.unwrap_err().code, "invalid_input");
-    send(&f.domain, &f.home, &actor, body("sonnet")).await.unwrap();
-    assert_eq!(f.domain.state().unwrap().tasks[&TaskId::from("t")].agent_id, Some(AgentId::from("agent-b")));
-}
-
-#[tokio::test]
 async fn a_launch_is_refused_for_a_closed_or_taken_task_and_a_session_without_its_mod_leaves_nothing() {
     let f = world();
     let actor = the_orchestrator(&f.domain);
@@ -274,51 +262,73 @@ async fn a_session_whose_mod_never_loads_is_stopped_and_the_launch_fails_without
     assert!(state.tasks[&TaskId::from("t")].agent_id.is_none(), "the task stays free for another launch");
 }
 
-#[tokio::test]
-async fn a_message_about_a_task_nobody_works_on_gives_it_to_that_agent_and_a_cancelled_one_reopens() {
-    let f = world();
-    let actor = the_orchestrator(&f.domain);
-    let node = Node::connect(&f.domain, "agent-b");
-    let body = |text: &str| -> SendBody { serde_json::from_value(json!({"node": "Instance B", "text": text, "task": "t"})).unwrap() };
-    let answer = send(&f.domain, &f.home, &actor, body("Take the editor colours")).await.unwrap();
-    assert_eq!(answer["delivery_state"], "handed");
-    assert_eq!(node.texts()[0], "[Task t “Editor colours”] Take the editor colours");
-    assert_eq!(node.lines.lock().unwrap()[0]["as_user"], false, "the orchestrator's words reach the model as its own");
-    assert_eq!(f.domain.state().unwrap().tasks[&TaskId::from("t")].agent_id, Some(AgentId::from("agent-b")));
-
-    command(&f.domain, user(), Command::CancelTask { task_id: "t".into() });
-    send(&f.domain, &f.home, &actor, body("Carry on after all")).await.unwrap();
-    assert_ne!(f.domain.state().unwrap().tasks[&TaskId::from("t")].state, TaskState::Cancelled);
-
-    command(&f.domain, Actor::System, Command::RegisterAgent { agent_id: "agent-c".into(), name: "Instance C".into() });
-    let foreign: SendBody = serde_json::from_value(json!({"node": "agent-c", "text": "Mine now", "task": "t"})).unwrap();
-    assert_eq!(send(&f.domain, &f.home, &actor, foreign).await.unwrap_err().code, "conflict");
-    assert_eq!(node.texts().len(), 2);
+fn give(f: &Fixture, task: &str, agent: &str) {
+    command(&f.domain, user(), Command::AssignTask { task_id: task.into(), agent_id: agent.into(), model: None });
 }
 
 #[tokio::test]
-async fn a_node_on_a_task_takes_no_other_until_it_ends_but_still_gets_messages() {
+async fn a_message_with_a_task_reaches_only_that_tasks_node() {
     let f = world();
     let actor = the_orchestrator(&f.domain);
     let node = Node::connect(&f.domain, "agent-b");
+    give(&f, "t", "agent-b");
+    command(&f.domain, user(), Command::CreateTask { task_id: "t2".into(), request_id: "r".into(), title: "Editor fonts".into(),
+        agent_id: None, review_prs: false, dependencies: Default::default(), stack: None });
+    let body = |task: &str, text: &str| -> SendBody { serde_json::from_value(json!({"node": "Instance B", "text": text, "task": task})).unwrap() };
+    let answer = send(&f.domain, &f.home, &actor, body("t", "Take the editor colours")).await.unwrap();
+    assert_eq!(answer["delivery_state"], "handed");
+    assert_eq!(node.texts()[0], "[Task t “Editor colours”] Take the editor colours");
+    assert_eq!(node.lines.lock().unwrap()[0]["as_user"], false, "the orchestrator's words reach the model as its own");
+
+    let unassigned = send(&f.domain, &f.home, &actor, body("t2", "Take these too")).await.unwrap_err();
+    assert_eq!(unassigned.code, "not_assigned");
+    assert!(unassigned.message.contains("Launch a new node for t2 with launch"), "{}", unassigned.message);
+    assert_eq!(f.domain.state().unwrap().tasks[&TaskId::from("t2")].agent_id, None, "a message never assigns");
+
+    command(&f.domain, Actor::System, Command::RegisterAgent { agent_id: "agent-c".into(), name: "Instance C".into() });
+    let foreign: SendBody = serde_json::from_value(json!({"node": "agent-c", "text": "Mine now", "task": "t"})).unwrap();
+    assert_eq!(send(&f.domain, &f.home, &actor, foreign).await.unwrap_err().code, "not_assigned");
+    assert_eq!(node.texts().len(), 1, "the refused messages sent nothing");
+}
+
+#[tokio::test]
+async fn a_message_about_a_closed_task_is_refused_as_closed() {
+    let f = world();
+    let actor = the_orchestrator(&f.domain);
+    let node = Node::connect(&f.domain, "agent-b");
+    give(&f, "t", "agent-b");
+    command(&f.domain, user(), Command::CancelTask { task_id: "t".into() });
+    let body: SendBody = serde_json::from_value(json!({"node": "Instance B", "text": "Carry on after all", "task": "t"})).unwrap();
+    let refused = send(&f.domain, &f.home, &actor, body).await.unwrap_err();
+    assert_eq!(refused.code, "task_closed");
+    assert!(refused.message.contains("create_task") && refused.message.contains("dependencies [t]"), "{}", refused.message);
+    assert_eq!(f.domain.state().unwrap().tasks[&TaskId::from("t")].state, TaskState::Cancelled, "a message never reopens");
+    assert!(node.texts().is_empty());
+}
+
+#[tokio::test]
+async fn a_node_on_a_task_takes_no_other_but_still_gets_plain_messages() {
+    let f = world();
+    let actor = the_orchestrator(&f.domain);
+    let node = Node::connect(&f.domain, "agent-b");
+    give(&f, "t", "agent-b");
     command(&f.domain, user(), Command::CreateTask { task_id: "t2".into(), request_id: "r".into(), title: "Editor fonts".into(),
         agent_id: None, review_prs: false, dependencies: Default::default(), stack: None });
     let body = |task: Option<&str>| -> SendBody { serde_json::from_value(json!({"node": "Instance B", "text": "Go", "task": task})).unwrap() };
-    send(&f.domain, &f.home, &actor, body(Some("t"))).await.unwrap();
-
-    let refused = send(&f.domain, &f.home, &actor, body(Some("t2"))).await.unwrap_err();
-    assert_eq!(refused.code, "agent_busy");
-    assert!(refused.message.contains("launch a new node for t2"), "{}", refused.message);
-    assert_eq!(f.domain.state().unwrap().tasks[&TaskId::from("t2")].agent_id, None);
+    assert_eq!(send(&f.domain, &f.home, &actor, body(Some("t2"))).await.unwrap_err().code, "not_assigned");
     send(&f.domain, &f.home, &actor, body(None)).await.unwrap();
     send(&f.domain, &f.home, &actor, body(Some("t"))).await.unwrap();
-    assert_eq!(node.texts().len(), 3, "the refused task sent nothing");
+    assert_eq!(node.texts().len(), 2, "the refused task sent nothing");
 
     command(&f.domain, user(), Command::CancelTask { task_id: "t".into() });
-    send(&f.domain, &f.home, &actor, body(Some("t2"))).await.unwrap();
-    assert_eq!(f.domain.state().unwrap().tasks[&TaskId::from("t2")].agent_id, Some(AgentId::from("agent-b")), "a node whose task ended takes the next one");
-    assert_eq!(send(&f.domain, &f.home, &actor, body(Some("t"))).await.unwrap_err().code, "agent_busy",
-        "reopening its old task would give it two");
+    assert_eq!(send(&f.domain, &f.home, &actor, body(Some("t2"))).await.unwrap_err().code, "not_assigned",
+        "not even when its own task ended");
+}
+
+#[tokio::test]
+async fn send_takes_no_model() {
+    let parsed: Result<SendBody, _> = serde_json::from_value(json!({"node": "Instance B", "text": "Go", "task": "t", "model": "sonnet"}));
+    assert!(parsed.is_err(), "deny_unknown_fields refuses it as invalid_input");
 }
 
 #[tokio::test]
@@ -471,6 +481,7 @@ async fn a_message_with_an_approach_ends_with_how_to_work() {
     let f = world();
     let actor = the_orchestrator(&f.domain);
     let node = Node::connect(&f.domain, "agent-b");
+    give(&f, "t", "agent-b");
     let body: SendBody = serde_json::from_value(json!({"node": "Instance B", "text": "Take it", "task": "t", "approach": "workflow"})).unwrap();
     send(&f.domain, &f.home, &actor, body).await.unwrap();
     let text = &node.texts()[0];
@@ -518,10 +529,11 @@ async fn every_launch_records_the_model_effort_approach_and_reason_the_orchestra
 }
 
 #[tokio::test]
-async fn a_message_handing_a_task_over_with_a_model_or_approach_is_recorded_and_a_plain_one_is_not() {
+async fn a_message_with_an_approach_is_recorded_and_a_plain_one_is_not() {
     let f = world();
     let actor = the_orchestrator(&f.domain);
     let _node = Node::connect(&f.domain, "agent-b");
+    give(&f, "t", "agent-b");
     f.domain.live.mods.apply(serde_json::from_value(json!({"session_id": "agent-b", "event": "model", "model": "claude-sonnet-5-5"})).unwrap(), 1);
     let body = |extra: Value| -> SendBody {
         let mut body = json!({"node": "Instance B", "text": "Go", "task": "t"});
@@ -530,8 +542,8 @@ async fn a_message_handing_a_task_over_with_a_model_or_approach_is_recorded_and_
     };
     send(&f.domain, &f.home, &actor, body(json!({}))).await.unwrap();
     send(&f.domain, &f.home, &actor, body(json!({"task": null, "approach": "solo"}))).await.unwrap();
-    assert!(decisions(&f.domain).is_empty(), "a message without a task, or without model or approach, is no decision");
-    send(&f.domain, &f.home, &actor, body(json!({"model": "sonnet", "approach": "workflow", "reason": "Same files as its last task"}))).await.unwrap();
+    assert!(decisions(&f.domain).is_empty(), "a message without a task, or without an approach, is no decision");
+    send(&f.domain, &f.home, &actor, body(json!({"approach": "workflow", "reason": "Same files as its last task"}))).await.unwrap();
     send(&f.domain, &f.home, &actor, body(json!({"approach": "solo"}))).await.unwrap();
     assert_eq!(decisions(&f.domain), [
         row("send", Some("sonnet"), None, Some("workflow"), Some("Same files as its last task")),
@@ -567,4 +579,90 @@ async fn closing_a_launched_node_keeps_its_cost_and_the_fullest_its_context_got(
     assert_eq!((kept.task_id.as_deref(), kept.model.as_deref(), kept.cost_usd, kept.context_peak_percent),
         (Some("t"), Some("claude-sonnet-5-5"), Some(1.25), Some(62.5)), "the task comes from its launch, though closing freed it");
     assert!(kept.started_at.is_some_and(|started| kept.ended_at >= started));
+}
+
+#[tokio::test]
+async fn a_launch_of_a_follow_up_task_carries_the_earlier_result_and_pull_request() {
+    let f = world();
+    let actor = the_orchestrator(&f.domain);
+    let author = Actor::Agent { agent_id: "agent-b".into() };
+    give(&f, "t", "agent-b");
+    command(&f.domain, author.clone(), Command::RegisterPr { task_id: "t".into(), pr_id: "pr".into(), host: "github.com".into(),
+        repository: "me/app".into(), number: 12, head: "head1".into(), base: "main".into(), allowed_methods: vec![alondra_core::domain::MergeMethod::Squash] });
+    let targets = || vec![alondra_core::domain::DeliveryTarget::PullRequest { pr_id: "pr".into(), head: "head1".into() }];
+    command(&f.domain, author, Command::PresentResult { attachments: vec![], task_id: "t".into(), interaction_id: "final".into(),
+        body: "  The colours live in one file now.  ".into(), targets: targets(), is_final: true,
+        card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true) });
+    command(&f.domain, user(), Command::AcceptDelivery { presentation_id: "final".into(), targets: targets() });
+    command(&f.domain, Actor::System, Command::ObservePrState { pr_id: "pr".into(), head: "head1".into(), base: "main".into(),
+        state: alondra_core::domain::PrState::Merged, merged_head: Some("head1".into()) });
+    command(&f.domain, Actor::System, Command::RecordNodeEnd { task_id: "t".into(), end: alondra_core::domain::NodeEnd::Closed });
+    assert_eq!(f.domain.state().unwrap().tasks[&TaskId::from("t")].state, TaskState::Done);
+    command(&f.domain, user(), Command::CreateTask { task_id: "t2".into(), request_id: "r".into(), title: "Editor fonts".into(),
+        agent_id: None, review_prs: false, dependencies: ["t".into()].into(), stack: None });
+
+    let claude = FakeClaude::loading(&f.domain);
+    launch(&f.domain, &f.home, &actor, launch_body(&f, json!({"task": "t2", "model": "sonnet"})), |_| None, &claude).await.unwrap();
+    let calls = claude.calls.lock().unwrap();
+    let prompt = calls[0].1.last().unwrap();
+    assert!(prompt.contains("\n\n## Earlier work this task builds on\n\n### “Editor colours” (done)\nThe colours live in one file now.\nPull request: https://github.com/me/app/pull/12 (merged)"), "{prompt}");
+}
+
+#[test]
+fn the_follow_up_context_is_empty_without_earlier_work_and_shortens_a_long_result() {
+    let f = world();
+    let state = f.domain.state().unwrap();
+    assert_eq!(follow_up_context(&state, &state.tasks[&TaskId::from("t")]), "");
+    assert_eq!(clipped(&"x".repeat(5), 3, "[shortened]"), "xxx[shortened]");
+    assert_eq!(clipped("short", 10, "[shortened]"), "short");
+}
+
+#[tokio::test]
+async fn a_launch_of_a_task_with_a_plan_needs_no_name_or_cwd() {
+    let f = world();
+    let actor = the_orchestrator(&f.domain);
+    let claude = FakeClaude::loading(&f.domain);
+    let plan = crate::launch_plans::LaunchPlan {
+        name: "app/editor".into(), cwd: f.project.to_str().unwrap().into(), mission: Some("Make the colours tokens".into()),
+        model: Some("sonnet".into()), effort: None, approach: Some(alondra_core::options::Approach::Solo),
+        reason: Some("Colour tokens in one file".into()), role: None,
+    };
+    f.domain.store.lock().unwrap().set_launch_plan(&"t".into(), &plan, 1).unwrap();
+    let body: LaunchBody = serde_json::from_value(json!({"task": "t"})).unwrap();
+    launch(&f.domain, &f.home, &actor, body, |_| None, &claude).await.unwrap();
+    let calls = claude.calls.lock().unwrap();
+    let (cwd, args) = &calls[0];
+    assert_eq!(cwd, f.project.to_str().unwrap());
+    assert!(args.windows(2).any(|pair| pair == ["--name", "app/editor"]), "{args:?}");
+    assert!(args.last().unwrap().contains("Make the colours tokens"), "the plan's mission is the node's mission");
+    assert_eq!(decisions(&f.domain), [row("launch", Some("sonnet"), None, Some("solo"), Some("Colour tokens in one file"))]);
+}
+
+#[tokio::test]
+async fn a_launch_without_a_plan_or_a_name_is_refused() {
+    let f = world();
+    let actor = the_orchestrator(&f.domain);
+    let claude = FakeClaude::loading(&f.domain);
+    let body: LaunchBody = serde_json::from_value(json!({"task": "t", "model": "sonnet", "reason": "x"})).unwrap();
+    let refused = launch(&f.domain, &f.home, &actor, body, |_| None, &claude).await.unwrap_err();
+    assert_eq!(refused.code, "invalid_input");
+    assert!(refused.message.contains("name and cwd are required"), "{}", refused.message);
+    assert!(claude.calls.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_refused_assignment_after_a_launch_stops_and_removes_the_new_session() {
+    let f = world();
+    let actor = the_orchestrator(&f.domain);
+    let claude = FakeClaude::loading(&f.domain);
+    let domain = f.domain.clone();
+    *claude.during_run.lock().unwrap() = Some(Box::new(move || {
+        command(&domain, user(), Command::CancelTask { task_id: "t".into() });
+    }));
+    let refused = launch(&f.domain, &f.home, &actor, launch_body(&f, json!({"model": "sonnet"})), |_| None, &claude).await.unwrap_err();
+    assert_eq!(refused.code, "conflict");
+    assert_eq!(*claude.stopped.lock().unwrap(), ["ab1234"]);
+    assert_eq!(*claude.removed.lock().unwrap(), ["ab1234"]);
+    assert!(settings_files(&f.home).is_empty(), "its settings are released");
+    assert_eq!(f.domain.state().unwrap().tasks[&TaskId::from("t")].agent_id, None);
 }

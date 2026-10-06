@@ -117,6 +117,19 @@ pub fn render(report: &ModelReport, window: Option<i64>) -> String {
     for g in &report.by_approach {
         out.push(group_line(g.approach.as_deref().unwrap_or(unknown), g));
     }
+    if !report.by_role.is_empty() {
+        out.push(String::new());
+        out.push(tr!("By role:", "Por rol:").to_owned());
+        for g in &report.by_role {
+            let role = match g.role.as_deref() {
+                Some("design") => tr!("design", "diseño"),
+                Some("implementation") => tr!("implementation", "implementación"),
+                Some("review") => tr!("review", "revisión"),
+                _ => unknown,
+            };
+            out.push(group_line(role, g));
+        }
+    }
     out.push(String::new());
     if report.sonnet_trouble.is_empty() {
         out.push(tr!("No Sonnet task went badly.", "Ninguna tarea con Sonnet fue mal.").to_owned());
@@ -141,7 +154,8 @@ mod tests {
         ModelReport {
             since: None, until: 0,
             by_model: vec![sonnet.clone()],
-            by_approach: vec![Group { model: None, effort: None, approach: Some("solo".into()), ..sonnet }],
+            by_approach: vec![Group { model: None, effort: None, approach: Some("solo".into()), ..sonnet.clone() }],
+            by_role: vec![Group { model: None, effort: None, role: Some("design".into()), ..sonnet }],
             sonnet_trouble: vec![Attempt { task_id: "t-1".into(), title: "Editor colours".into(), at: 0, model: Some("sonnet".into()),
                 effort: Some("medium".into()), reason: Some("small CSS change".into()), outcomes: vec![Outcome::Reopened, Outcome::Relaunched],
                 relaunched_to: Some("opus".into()) }],
@@ -154,12 +168,12 @@ mod tests {
         let text = render(&report(), Some(7 * 86_400_000));
         for expected in ["last 7 days", "sonnet · medium: 4 tasks · 50% done clean · 25% reopened · 25% relaunched (→ opus 1)",
             "25% cancelled · 3 questions to you · 1 with changes requested · median 42 min to done · mean $1.50 (2 measured)",
-            "By approach:", "  solo: 4 tasks", "t-1  Editor colours (medium) — reopened, relaunched → opus", "why: small CSS change"] {
+            "By approach:", "  solo: 4 tasks", "By role:", "  design: 4 tasks", "t-1  Editor colours (medium) — reopened, relaunched → opus", "why: small CSS change"] {
             assert!(text.contains(expected), "{expected} missing from\n{text}");
         }
         crate::i18n::set_for_this_thread(Lang::Es);
         let text = render(&report(), None);
-        for expected in ["Todas las decisiones", "4 tareas · 50% terminadas a la primera", "Tareas con Sonnet que fueron mal:", "reabierta, relanzada → opus", "por qué: small CSS change"] {
+        for expected in ["Todas las decisiones", "Por rol:", "  diseño: 4 tareas", "4 tareas · 50% terminadas a la primera", "Tareas con Sonnet que fueron mal:", "reabierta, relanzada → opus", "por qué: small CSS change"] {
             assert!(text.contains(expected), "{expected} missing from\n{text}");
         }
         assert!(render(&ModelReport::default(), None).contains("Aún no hay lanzamientos"));

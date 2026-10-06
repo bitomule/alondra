@@ -139,6 +139,13 @@ impl Fixture {
             "command_id":format!("vertical-{}",self.next_id),"command":command})
     }
 
+    /// The task waits in Closing for its node; Alondra records it closed and the task is done.
+    fn end_node(&mut self, task: &str) {
+        assert_eq!(self.domain.state().unwrap().tasks[&task.into()].state, TaskState::Closing);
+        let envelope: CommandEnvelope = serde_json::from_value(self.envelope(json!({"kind":"record_node_end", "task_id":task, "end":"closed"}))).unwrap();
+        self.domain.execute(&Actor::System, &envelope, None, || Ok(())).unwrap();
+    }
+
     async fn post(&self, bearer: &str, envelope: &Value) -> (StatusCode, Value) {
         let command = envelope["command"].as_object().unwrap();
         let kind = command["kind"].as_str().unwrap();
@@ -227,14 +234,10 @@ impl Fixture {
             "body":format!("Work on {id}")}),
         )
         .await;
-        self.producer(
-            true,
-            json!({"kind":"create_task", "task_id":id,
+        self.user(json!({"kind":"create_task", "task_id":id,
             "request_id":format!("request-{id}"), "title":format!("Task {id}"),
             "agent_id":"agent-a", "review_prs":review_prs,
-            "dependencies":[], "stack":null}),
-        )
-        .await;
+            "dependencies":[], "stack":null}));
     }
 
     async fn finish(mut self) {
@@ -279,6 +282,7 @@ async fn http_producer_answer_and_document_are_persisted() {
         json!({"kind":"accept_delivery", "presentation_id":"answer-delivery",
         "targets":[text]}),
     );
+    fixture.end_node("answer-task");
     assert_eq!(
         fixture.domain.state().unwrap().tasks[&"answer-task".into()].state,
         TaskState::Done
@@ -327,6 +331,7 @@ async fn http_producer_answer_and_document_are_persisted() {
         json!({"kind":"decide_document_review", "task_id":"doc-task",
         "document_id":"doc-1", "revision_id":"doc-v1", "accepted":true}),
     );
+    fixture.end_node("doc-task");
     assert_eq!(fixture.domain.state().unwrap().tasks[&"doc-task".into()].state, TaskState::Done);
     let reopened = DomainRuntime::open(&fixture.home).unwrap();
     let persisted = reopened.state().unwrap();
@@ -474,6 +479,7 @@ async fn http_an_accepted_pr_is_merged_by_alondra_and_a_node_can_neither_claim_n
     let state = fixture.domain.state().unwrap();
     assert_eq!(state.merge_authorizations.values().next().unwrap().attempt, MergeAttemptState::Confirmed);
     assert_eq!(state.pull_requests[&"pr-7".into()].merged_head.as_deref(), Some(head));
-    assert_eq!(state.tasks[&"merge-task".into()].state, TaskState::Done);
+    fixture.end_node("merge-task");
+    assert_eq!(fixture.domain.state().unwrap().tasks[&"merge-task".into()].state, TaskState::Done);
     fixture.finish().await;
 }

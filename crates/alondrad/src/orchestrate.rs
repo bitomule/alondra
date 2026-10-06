@@ -41,6 +41,12 @@ pub trait Launcher: Sync {
     /// has no other handle.
     fn stop(&self, short: &str) -> impl Future<Output = ()> + Send;
 
+    /// Removes a launched session that was stopped (`claude rm <id>`), worktree included.
+    fn remove(&self, short: &str) -> impl Future<Output = ()> + Send {
+        let _ = short;
+        async {}
+    }
+
     /// Restarts a background session whose connection to Alondra is gone (`claude respawn <id>`).
     fn respawn(&self, short: &str) -> impl Future<Output = Result<(), String>> + Send {
         let _ = short;
@@ -80,6 +86,17 @@ impl Launcher for ClaudeCli {
 
     async fn respawn(&self, short: &str) -> Result<(), String> {
         Self::respawn_session(short).await
+    }
+
+    async fn remove(&self, short: &str) {
+        let remove = tokio::process::Command::new("claude").args(["rm", short]).kill_on_drop(true)
+            .stdin(std::process::Stdio::null()).output();
+        match tokio::time::timeout(std::time::Duration::from_secs(60), remove).await {
+            Ok(Ok(out)) if out.status.success() => (),
+            Ok(Ok(out)) => log!("claude rm {short} failed: {}", String::from_utf8_lossy(&out.stderr).trim()),
+            Ok(Err(error)) => log!("claude rm {short} failed: {error}"),
+            Err(_) => log!("claude rm {short} did not answer in 60 s"),
+        }
     }
 
     async fn stop(&self, short: &str) {

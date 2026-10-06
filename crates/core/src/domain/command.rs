@@ -324,6 +324,15 @@ pub enum Command {
     ReopenTask {
         task_id: TaskId,
     },
+    /// The node says it deleted what it generated for its closing Task.
+    ConfirmCleanup {
+        task_id: TaskId,
+    },
+    /// Alondra records what became of a Task's node; a closing Task is done with it.
+    RecordNodeEnd {
+        task_id: TaskId,
+        end: NodeEnd,
+    },
     ArchiveTask {
         task_id: TaskId,
         archived: bool,

@@ -82,10 +82,17 @@ impl Fixture {
             &envelope, None, || Ok(()))
     }
 
+    /// The task waits in Closing for its node; Alondra records it closed and the task is done.
+    fn end_node(&mut self, task: &str) {
+        assert_eq!(self.runtime.state().unwrap().tasks[&task.into()].state, TaskState::Closing);
+        let envelope = self.envelope(json!({"kind":"record_node_end", "task_id":task, "end":"closed"}));
+        self.runtime.execute(&Actor::System, &envelope, None, || Ok(())).unwrap();
+    }
+
     fn task(&mut self, id: &str, review_prs: bool) {
         self.manager(json!({"kind":"create_request", "request_id":format!("request-{id}"),
             "body":format!("Work on {id}")})).unwrap();
-        self.manager(json!({"kind":"create_task", "task_id":id,
+        self.user(json!({"kind":"create_task", "task_id":id,
             "request_id":format!("request-{id}"), "title":format!("Task {id}"),
             "agent_id":"agent-a", "review_prs":review_prs,
             "dependencies":[], "stack":null})).unwrap();
@@ -133,6 +140,7 @@ fn existing_mcp_producers_cover_pr_document_and_answer_and_only_the_users_accept
         "targets":[doc_target], "is_final":true})).unwrap();
     fixture.user(json!({"kind":"decide_document_review", "task_id":"doc-task",
         "document_id":"doc-1", "revision_id":"doc-v1", "accepted":true})).unwrap();
+    fixture.end_node("doc-task");
     assert_eq!(fixture.runtime.state().unwrap().tasks[&"doc-task".into()].state, TaskState::Done);
 
     fixture.task("answer-task", false);
@@ -151,6 +159,7 @@ fn existing_mcp_producers_cover_pr_document_and_answer_and_only_the_users_accept
         "forbidden");
     fixture.user(json!({"kind":"accept_delivery", "presentation_id":"answer-delivery",
         "targets":[answer_target]})).unwrap();
+    fixture.end_node("answer-task");
     let state = fixture.runtime.state().unwrap();
     assert_eq!(state.tasks[&"answer-task".into()].state, TaskState::Done);
     assert!(state.interactions.contains_key(&"question-1".into()));

@@ -1363,3 +1363,123 @@ fn a_tasks_model_survives_restart_and_a_store_made_before_models_still_opens() {
     assert_eq!(before_models.conn.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), SCHEMA_VERSION);
     assert!(!fixture.0.read_dir().unwrap().any(|e| e.unwrap().file_name().to_string_lossy().contains(".old-")), "nothing was moved aside");
 }
+
+#[test]
+fn a_store_made_before_wrap_ups_launch_plans_and_closings_opens_in_place() {
+    let fixture = Fixture::new();
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    seeded(&mut store);
+    execute(&mut store, &user(), "cancel", Command::CancelTask { task_id: "task-1".into() });
+    store.begin_task_closing(&"task-1".into(), 5).unwrap();
+    store.conn.execute_batch("DROP TABLE task_wrap_ups; DROP TABLE task_closings; DROP TABLE auto_launches; DROP TABLE task_launch_plans").unwrap();
+    drop(store);
+    let mut reopened = DomainStore::open(&fixture.path()).unwrap();
+    for table in ["task_wrap_ups", "task_closings", "auto_launches", "task_launch_plans"] {
+        let count: i64 = reopened.conn.query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0)).unwrap();
+        assert_eq!(count, 0, "{table} is created empty");
+    }
+    assert!(reopened.load().unwrap().tasks[&"task-1".into()].wrap_up.is_default(), "the task decodes with the default wrap-up");
+    assert_eq!(reopened.conn.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), SCHEMA_VERSION);
+    assert!(!fixture.0.read_dir().unwrap().any(|e| e.unwrap().file_name().to_string_lossy().contains(".old-")), "nothing was moved aside");
+}
+
+#[test]
+fn a_tasks_wrap_up_survives_a_restart() {
+    let fixture = Fixture::new();
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    seeded(&mut store);
+    execute(&mut store, &user(), "cancel", Command::CancelTask { task_id: "task-1".into() });
+    execute(&mut store, &Actor::System, "end", Command::RecordNodeEnd { task_id: "task-1".into(), end: NodeEnd::KeptByUser });
+    drop(store);
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let wrap_up = store.load().unwrap().tasks[&"task-1".into()].wrap_up.clone();
+    assert_eq!(wrap_up, WrapUp { asked_at: None, cleaned_at: None, close_cancelled: true, node: Some(NodeEnd::KeptByUser) });
+
+    execute(&mut store, &user(), "reopen", Command::ReopenTask { task_id: "task-1".into() });
+    drop(store);
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    assert!(store.load().unwrap().tasks[&"task-1".into()].wrap_up.is_default(), "a reset is written back, not left stale");
+}
+
+#[test]
+fn task_closings_keep_their_wait_failures_and_card_across_a_restart() {
+    let fixture = Fixture::new();
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    seeded(&mut store);
+    let mut row = store.begin_task_closing(&"task-1".into(), 100).unwrap();
+    assert_eq!((row.since, row.failures), (100, 0));
+    row.failures = 2;
+    row.last_error = Some("busy".into());
+    row.next_attempt = 900;
+    row.attempted_cleaned_at = Some(7);
+    row.rm_started_at = Some(150);
+    row.problem_id = Some("problem-close-task-1-ab".into());
+    store.save_task_closing(&row).unwrap();
+    drop(store);
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    assert_eq!(store.begin_task_closing(&"task-1".into(), 5_000).unwrap(), row, "the wait is not restarted");
+    assert_eq!(store.task_closings().unwrap(), vec![row]);
+    store.forget_task_closing(&"task-1".into()).unwrap();
+    assert_eq!(store.task_closing(&"task-1".into()).unwrap(), None);
+}
+
+fn plan() -> crate::launch_plans::LaunchPlan {
+    crate::launch_plans::LaunchPlan {
+        name: "app/next".into(), cwd: "/synthetic/App".into(), mission: None, model: Some("sonnet".into()), effort: None,
+        approach: None, reason: Some("clear".into()), role: Some(crate::launch_plans::TaskRole::Implementation),
+    }
+}
+
+fn planned_task(id: &str, request: &str, epoch: &alondra_core::domain::DataEpoch) -> CommandEnvelope {
+    CommandEnvelope {
+        protocol_version: 2, data_epoch: epoch.clone(), command_id: format!("plan-{id}").into(), expected_revision: 0,
+        command: Command::CreateTask { task_id: id.into(), request_id: request.into(), title: "Next".into(), agent_id: None,
+            review_prs: false, dependencies: Default::default(), stack: None },
+    }
+}
+
+#[test]
+fn a_launch_plan_is_stored_with_its_task_in_one_transaction() {
+    let fixture = Fixture::new();
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    seeded(&mut store);
+    execute(&mut store, &user(), "title", Command::TitleRequest { request_id: "request-1".into(), title: "Work".into() });
+    let epoch = store.load().unwrap().data_epoch;
+    let envelope = |id: &str, request: &str| planned_task(id, request, &epoch);
+
+    let refused = store.execute_planned(&user(), &envelope("next-1", "no-such-request"), &plan());
+    assert!(matches!(refused, Err(StoreError::Domain(_))));
+    assert_eq!(store.launch_plan(&"next-1".into()).unwrap(), None, "a refused command stores no plan");
+
+    store.execute_planned(&user(), &envelope("next-1", "request-1"), &plan()).unwrap();
+    assert_eq!(store.launch_plan(&"next-1".into()).unwrap(), Some(plan()));
+    assert_eq!(store.task_roles().unwrap().get(&TaskId::from("next-1")).map(String::as_str), Some("implementation"));
+
+    let other = crate::launch_plans::LaunchPlan { name: "app/other".into(), ..plan() };
+    let replay = store.execute_planned(&user(), &envelope("next-1", "request-1"), &other).unwrap();
+    assert!(replay.replayed);
+    assert_eq!(store.launch_plan(&"next-1".into()).unwrap(), Some(plan()), "a replay does not write the plan again");
+    drop(store);
+    let reopened = DomainStore::open(&fixture.path()).unwrap();
+    assert_eq!(reopened.launch_plan(&"next-1".into()).unwrap(), Some(plan()), "the plan survives a restart");
+}
+
+#[test]
+fn an_automatic_launch_is_claimed_once_per_task() {
+    let fixture = Fixture::new();
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    seeded(&mut store);
+    let task: TaskId = "task-1".into();
+    assert!(store.claim_auto_launch(&task, 1, false).unwrap());
+    assert!(!store.claim_auto_launch(&task, 2, false).unwrap(), "taken");
+    assert!(!store.claim_auto_launch(&task, 3, true).unwrap(), "a launching row is not retaken");
+    store.set_auto_launch(&task, AutoLaunchState::Blocked, Some(AutoLaunchReason::UsageExhausted), Some("later"), 4).unwrap();
+    assert!(!store.claim_auto_launch(&task, 5, false).unwrap(), "blocked stays blocked without a retry");
+    assert!(store.claim_auto_launch(&task, 6, true).unwrap());
+    assert_eq!(store.auto_launch(&task).unwrap().unwrap().state, AutoLaunchState::Launching);
+    drop(store);
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    assert_eq!(store.auto_launches().unwrap().len(), 1, "the claim survives a restart");
+    store.forget_auto_launch(&task).unwrap();
+    assert_eq!(store.auto_launch(&task).unwrap(), None);
+}

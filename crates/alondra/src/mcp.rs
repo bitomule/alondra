@@ -23,10 +23,10 @@ fn instructions(role: Role, user: &str) -> String {
     );
     match role {
         Role::Node => format!(
-            "{common} A node works on one Task at a time: work only on your assigned Task; never install, restart or replace the Alondra daemon or CLI on the user's machine (no make install, brew, launchctl, alondra setup or update): test with the e2e sandbox (make e2e-sandbox), because deployment is the coordinator's job; its id is in your mission, and your subagents work on it too. Your terminal does not reach {user}: these tools do, and Alondra types {user}'s answers into this session. Every card needs `need` (what you need from {user}, imperative, one line, at most 90 characters) and, for ask, request_action, and request_input, `why` (one or two sentences, at most 240, naming tasks and PRs by title or number, never by an internal id like t-foo): long text goes in `content`, never in `why`. Pick the tool by what you need. `ask` puts a decision with 2 to 8 options in front of {user}; prefer a recommendation (`recommended`, never \"(Recommended)\" in a label); several related questions go together in one ask with `questions` (2 to 4, each with its own options): each is its own card, {user} answers them one by one and you get all the answers together. Every question must stand on its own and be clear without your internal context; `why` and `content` are only context (why each option matters), never more questions or options. End your turn after it and the answer arrives here. `request_input` asks for a file, text or secret only {user} has. `request_action` hands {user} something to do outside Alondra and says in `verify` how you will check it. `request_test` asks {user} to try a build or screen. You never send notices: there is no tool for status chatter, findings or notes that you are waiting; report results in `present_result`. You hold one blocking ask at a time: correct or replace a card with `replaces`, and after {user} asks for a clarification settle it with `answer_clarification`. Alondra has no tool to authorize anything: permission prompts reach {user} through Claude Code. A refused card was not sent and is never a permission; fix the field the refusal names and send it again with the same interaction_id (a retry never duplicates), and when a call says it could not reach Alondra, do not proceed: retry it. A plan goes through plan mode: EnterPlanMode, then ExitPlanMode, which {user} approves or sends back with comments; never write a plan as a document or ask about it. For another document {user} must approve, create_document, then ask, then link_interaction_subject on that question with the document_review revision: {user} reviews the whole document with comments there, so never ask a separate question about it. When you are done, deliver with present_result and is_final true: a file or a final message left in this session never reaches {user}. While you work on your own there is nothing to send. Call register_pr with its explicit task_id, canonical host/repository/number, observed head and base. A Task owns exactly one PR for its whole life: more work for the Task goes on that PR, and work that needs another PR is another Task, which you ask the orchestrator for (ask with recipient orchestrator). For a report or answer without code, no PR is required. Before a final result, commit and push everything in your worktree: Alondra refuses a final result while your worktree holds uncommitted files, unpushed commits, or work that is neither on the default branch nor in your registered PR. Deliver with present_result and is_final true; Alondra merges the PR and tells you (once {user} accepts it, or with auto-merge once its checks pass), and a PR merged on GitHub also completes the Task. Never merge a PR yourself and never ask {user} to authorize or re-authorize a merge: describe the change itself in your result. When a merge fails, Alondra sends you the reason: fix it, push, and present again. Ending a Claude turn does not complete a task, and Alondra sends you back to work when you end your turn without a result or a question. Keep stack retarget and dependency checks. Technical permission requests remain separate from task questions. When you stop only because the machine lacks resources (memory, a build queue, a usage limit), say so with wait_for_machine. Withdraw a card of yours that no longer needs an answer with withdraw."
+            "{common} A node works on one Task at a time: work only on your assigned Task; never install, restart or replace the Alondra daemon or CLI on the user's machine (no make install, brew, launchctl, alondra setup or update): test with the e2e sandbox (make e2e-sandbox), because deployment is the coordinator's job; its id is in your mission, and your subagents work on it too. Your terminal does not reach {user}: these tools do, and Alondra types {user}'s answers into this session. Every card needs `need` (what you need from {user}, imperative, one line, at most 90 characters) and, for ask, request_action, and request_input, `why` (one or two sentences, at most 240, naming tasks and PRs by title or number, never by an internal id like t-foo): long text goes in `content`, never in `why`. Pick the tool by what you need. `ask` puts a decision with 2 to 8 options in front of {user}; prefer a recommendation (`recommended`, never \"(Recommended)\" in a label); several related questions go together in one ask with `questions` (2 to 4, each with its own options): each is its own card, {user} answers them one by one and you get all the answers together. Every question must stand on its own and be clear without your internal context; `why` and `content` are only context (why each option matters), never more questions or options. End your turn after it and the answer arrives here. `request_input` asks for a file, text or secret only {user} has. `request_action` hands {user} something to do outside Alondra and says in `verify` how you will check it. `request_test` asks {user} to try a build or screen. You never send notices: there is no tool for status chatter, findings or notes that you are waiting; report results in `present_result`. You hold one blocking ask at a time: correct or replace a card with `replaces`, and after {user} asks for a clarification settle it with `answer_clarification`. Alondra has no tool to authorize anything: permission prompts reach {user} through Claude Code. A refused card was not sent and is never a permission; fix the field the refusal names and send it again with the same interaction_id (a retry never duplicates), and when a call says it could not reach Alondra, do not proceed: retry it. A plan goes through plan mode: EnterPlanMode, then ExitPlanMode, which {user} approves or sends back with comments; never write a plan as a document or ask about it. For another document {user} must approve, create_document, then ask, then link_interaction_subject on that question with the document_review revision: {user} reviews the whole document with comments there, so never ask a separate question about it. When you are done, deliver with present_result and is_final true: a file or a final message left in this session never reaches {user}. While you work on your own there is nothing to send. Call register_pr with its explicit task_id, canonical host/repository/number, observed head and base. A Task owns exactly one PR for its whole life: more work for the Task goes on that PR, and work that needs another PR is another Task, which you ask the orchestrator for (ask with recipient orchestrator). For a report or answer without code, no PR is required. Before a final result, commit and push everything in your worktree: Alondra refuses a final result while your worktree holds uncommitted files, unpushed commits, or work that is neither on the default branch nor in your registered PR. Deliver with present_result and is_final true; Alondra merges the PR and tells you (once {user} accepts it, or with auto-merge once its checks pass), and a PR merged on GitHub also completes the Task. Never merge a PR yourself and never ask {user} to authorize or re-authorize a merge: describe the change itself in your result. When a merge fails, Alondra sends you the reason: fix it, push, and present again. When Alondra tells you the task is closing, delete what you generated for it that git does not track (build outputs, caches, temporary files) with the project's own tools, change nothing else, and call cleanup_done with the task_id: Alondra then closes your session and its worktree. When Alondra tells you the task was cancelled, stop: do not commit, push or deliver anything. Ending a Claude turn does not complete a task, and Alondra sends you back to work when you end your turn without a result or a question. Keep stack retarget and dependency checks. Technical permission requests remain separate from task questions. When you stop only because the machine lacks resources (memory, a build queue, a usage limit), say so with wait_for_machine. Withdraw a card of yours that no longer needs an answer with withdraw."
         ),
         Role::Orchestrator => format!(
-            "{common} Name every Request you split with title_request (a few words, in the user's language, what it is about, never a copy of the prompt) before its second Task: create_task refuses a second Task on an untitled Request (request_title_required). Then define cohesive Tasks under it with create_task. A code Task should fit one PR; reports and answers may have none. Assign each Task and associate its outputs explicitly. A node works on one Task at a time. Start work on a Task with launch (a new node for that Task, with the options its Request was asked for) or with send to a free node whose finished work it continues and whose model fits (candidates with model says so; send refuses another model with model_mismatch). When the Request's effort is auto, launch needs model: the lowest that can reliably finish; a node still on another Task is refused, so launch a new one and tell it in its mission what the busy node is doing when their work touches; interrupt stops a node stuck in one call, and machine shows capacity and usage before a launch. Retitle a Task with retitle_task, withdraw a card you sent that no longer needs an answer with withdraw, and close a Request that needs no Task with close_request (answer: what you told the user in one line; withdrawn: true when the user withdrew it; title: a short name). The user only sees what you put on a card: answer a Request without a Task with publish_information (need: a headline, body: the answer) before close_request, with a headline of your own; if you close with an answer and sent none, Alondra tells the user with the answer as it stands. Every card needs `need` (imperative, one line, at most 90 characters) and, for ask, request_action and request_input, `why`; long text goes in `content`, never in `why`. Use ask for a decision (prefer `recommended`), request_input for a file, text or secret, request_action for something the user does. When a launch fails, a batch cannot be handled or something you cannot fix is stuck, call raise_problem with what failed, the diagnosis in content and the options the user can choose; do not hide it in an ask. A refused card was not sent and is never an answer; fix the field it names and send it again with the same interaction_id. Create durable scheduled work for the user with schedule_create. fleet shows the live nodes and what waits on someone, node one node in detail, and candidates the free live nodes a Task or project could go to, with the busy ones apart. Finish an invocation after handling its durable batch; that is not Task completion. Never infer a Task, PR owner, User acceptance or completion from hook text. Alondra merges a Task's PR itself, when the user accepts the delivery or, with auto-merge, once its checks pass: never merge a PR yourself or ask the user to authorize a merge. A Task owns one PR: work that needs several PRs is several Tasks, with dependencies when one builds on another."
+            "{common} Name every Request you split with title_request (a few words, in the user's language, what it is about, never a copy of the prompt) before its second Task: create_task refuses a second Task on an untitled Request (request_title_required). Then define cohesive Tasks under it with create_task. A code Task should fit one PR; reports and answers may have none. Assign each Task and associate its outputs explicitly. A node works on one Task for its whole life and closes with it: start every Task with launch (a new node), never by sending a Task to another node. A Task that depends on others gets its launch plan in create_task (launch: name, cwd, and with auto effort model and reason), and Alondra starts it by itself as soon as they are done, with their results in its mission; you start the others with launch. When the Request's effort is auto, launch needs model: the lowest that can reliably finish; tell a new node in its mission what other nodes are doing when their work touches (fleet shows them); interrupt stops a node stuck in one call, and machine shows capacity and usage before a launch. Retitle a Task with retitle_task, withdraw a card you sent that no longer needs an answer with withdraw, and close a Request that needs no Task with close_request (answer: what you told the user in one line; withdrawn: true when the user withdrew it; title: a short name). The user only sees what you put on a card: answer a Request without a Task with publish_information (need: a headline, body: the answer) before close_request, with a headline of your own; if you close with an answer and sent none, Alondra tells the user with the answer as it stands. Every card needs `need` (imperative, one line, at most 90 characters) and, for ask, request_action and request_input, `why`; long text goes in `content`, never in `why`. Use ask for a decision (prefer `recommended`), request_input for a file, text or secret, request_action for something the user does. When a launch fails, a batch cannot be handled or something you cannot fix is stuck, call raise_problem with what failed, the diagnosis in content and the options the user can choose; do not hide it in an ask. A refused card was not sent and is never an answer; fix the field it names and send it again with the same interaction_id. Create durable scheduled work for the user with schedule_create. fleet shows the live nodes and what waits on someone, and node one node in detail. Finish an invocation after handling its durable batch; that is not Task completion. Never infer a Task, PR owner, User acceptance or completion from hook text. Alondra merges a Task's PR itself, when the user accepts the delivery or, with auto-merge, once its checks pass: never merge a PR yourself or ask the user to authorize a merge. A Task owns one PR: work that needs several PRs is several Tasks, with dependencies when one builds on another."
         ),
     }
 }
@@ -59,10 +59,10 @@ fn tools(role: Role, user: &str) -> Value {
             json!({"name": "node", "description": "A node's state, tool in progress, last message, open questions and actions, unread reports, pending messages and recent events.", "inputSchema": {"type": "object", "properties": {"node": {"type": "string", "description": "Name, short id or session_id"}, "history": {"type": "boolean", "description": "Add every question, report and message, and 100 events"}, "before": {"type": "integer", "description": "The 100 events before this seq"}}, "required": ["node"]}}),
             json!({"name": "machine", "description": "Machine capacity (memory, load, CPU, disk) and the subscription's usage: the week, today against its slice, and whether today is over pace.", "inputSchema": {"type": "object", "properties": {}}}),
             json!({"name": "daemon_log", "description": "The last lines of Alondra's daemon log (alondrad.log), to find out why something in Alondra failed.", "inputSchema": {"type": "object", "properties": {"lines": {"type": "integer", "description": "How many lines from the end: 200 by default, at most 1000"}}}}),
-            json!({"name": "send", "description": "Send a message to a node; Alondra types it into the node's session (waking it if it is dormant). With task, the message is about that task: the node is told which one, a task no node works on yet becomes this node's, and a done task is reopened. A node works on one task at a time: a task for a node still on another is refused (agent_busy); launch a new node for it.", "inputSchema": {"type": "object", "properties": {"node": {"type": "string"}, "text": {"type": "string"}, "task": {"type": "string", "description": "The id of the task (t-…) the message is about"}, "model": {"type": "string", "description": "With task: the model the task needs (haiku, sonnet, opus, fable). A node running another model is refused (model_mismatch): launch a new node"}, "approach": {"type": "string", "enum": ["solo", "subagents", "workflow"], "default": "solo", "description": "How the node should work: solo (alone), subagents (hands independent parts to subagents and reviews them) or workflow (a parallel, checkable run). Alondra writes the instructions into the mission"}, "reason": {"type": "string", "description": "With task and a model or approach: one short line on what the task is and why this model or approach. Kept to measure how each model does"}}, "required": ["node", "text"]}}),
+            json!({"name": "set_launch_plan", "description": "Give a task the launch plan Alondra starts it with by itself once everything it depends on is done, or replace the one it has. A task Alondra could not start for lack of a plan is started right after.", "inputSchema": {"type": "object", "properties": {"task_id": {"type": "string"}, "launch": launch_plan_schema()}, "required": ["task_id", "launch"]}}),
+            json!({"name": "send", "description": "Send a message to a node; Alondra types it into the node's session (waking it if it is dormant). With task, the message is about that task, which must be the node's own: a node works only on the task it was launched for, and a closed task's node is closed with it.", "inputSchema": {"type": "object", "properties": {"node": {"type": "string"}, "text": {"type": "string"}, "task": {"type": "string", "description": "The id of the task (t-…) the message is about"}, "approach": {"type": "string", "enum": ["solo", "subagents", "workflow"], "default": "solo", "description": "How the node should work: solo (alone), subagents (hands independent parts to subagents and reviews them) or workflow (a parallel, checkable run). Alondra writes the instructions into the mission"}, "reason": {"type": "string", "description": "With task and an approach: one short line on what the task is and why this approach. Kept to measure how each approach does"}}, "required": ["node", "text"]}}),
             json!({"name": "interrupt", "description": "Press Esc in a node's session to stop the call it is stuck in, for when Alondra reports a node inside one call that looks hung; `send` then moves it on.", "inputSchema": {"type": "object", "properties": {"node": {"type": "string", "description": "Name, short id or session_id"}}, "required": ["node"]}}),
-            json!({"name": "launch", "description": format!("Launch a new node with the Alondra plugin. With task, the node is launched for that task (one whose start failed, or whose node is gone) and gets its brief unless you pass a prompt. Over today's slice of the weekly subscription usage (see `machine`) the launch goes ahead and Alondra asks {user} itself whether to pause until tomorrow: do not relay it. While Claude usage has run out, launches are refused until it comes back."), "inputSchema": {"type": "object", "properties": {"name": {"type": "string"}, "cwd": {"type": "string"}, "prompt": {"type": "string", "description": "The node's mission; optional with task"}, "task": {"type": "string", "description": "The id of the task (t-…) the node is launched for"}, "title": {"type": "string", "description": format!("A short name for the task {user} reads (a few words); without it the task goes by the node's name")}, "model": {"type": "string", "description": format!("The model, a Claude Code alias (haiku, sonnet, opus, fable). Required when the request's effort is auto; refused when {user} chose an effort, which already sets the model")}, "request_id": {"type": "string", "description": format!("Without task, the request_id of {user}'s request this launch serves: Alondra adds the options {user} chose to the node's mission")}, "effort": {"type": "string", "enum": ["low", "medium", "high", "xhigh", "max"], "description": "Thinking effort: medium for ordinary opus work, high for architecture design or a hard bug; leave it out for sonnet"}, "approach": {"type": "string", "enum": ["solo", "subagents", "workflow"], "default": "solo", "description": "How the node should work: solo (alone), subagents (hands independent parts to subagents and reviews them) or workflow (a parallel, checkable run). Alondra writes the instructions into the mission"}, "reason": {"type": "string", "description": format!("One short line on what the task is and why this model (and effort) fits it. Required when the request's effort is auto; optional when {user} chose the effort. Kept to measure how each model does")}}, "required": ["name", "cwd"]}}),
-            json!({"name": "candidates", "description": "The live nodes a task, or work in a repo or project, could go to: the ones in that project or repo, or that worked on tasks it depends on, that depend on it, or of the same request, each with why. A node works on one task at a time: `candidates` are the free ones; `busy` lists the ones still on another task, with that task, so a new node's mission can say what they are doing.", "inputSchema": {"type": "object", "properties": {"task": {"type": "string", "description": "A task id (t-…)"}, "repo": {"type": "string", "description": "A project name or owner/repo, when there is no task yet"}, "model": {"type": "string", "description": "The model the task needs (haiku, sonnet, opus, fable): each node then says in `fits` whether it runs that model"}}}}),
+            json!({"name": "launch", "description": format!("Launch a new node with the Alondra plugin. With task, the node is launched for that task (one whose start failed, or whose node is gone) and gets its brief unless you pass a prompt; name and cwd are optional when the task has a launch plan. Over today's slice of the weekly subscription usage (see `machine`) the launch goes ahead and Alondra asks {user} itself whether to pause until tomorrow: do not relay it. While Claude usage has run out, launches are refused until it comes back. name and cwd are optional when the task has a launch plan."), "inputSchema": {"type": "object", "properties": {"name": {"type": "string"}, "cwd": {"type": "string"}, "prompt": {"type": "string", "description": "The node's mission; optional with task"}, "task": {"type": "string", "description": "The id of the task (t-…) the node is launched for"}, "title": {"type": "string", "description": format!("A short name for the task {user} reads (a few words); without it the task goes by the node's name")}, "model": {"type": "string", "description": format!("The model, a Claude Code alias (haiku, sonnet, opus, fable). Required when the request's effort is auto; refused when {user} chose an effort, which already sets the model")}, "request_id": {"type": "string", "description": format!("Without task, the request_id of {user}'s request this launch serves: Alondra adds the options {user} chose to the node's mission")}, "effort": {"type": "string", "enum": ["low", "medium", "high", "xhigh", "max"], "description": "Thinking effort: medium for ordinary opus work, high for architecture design or a hard bug; leave it out for sonnet"}, "approach": {"type": "string", "enum": ["solo", "subagents", "workflow"], "default": "solo", "description": "How the node should work: solo (alone), subagents (hands independent parts to subagents and reviews them) or workflow (a parallel, checkable run). Alondra writes the instructions into the mission"}, "reason": {"type": "string", "description": format!("One short line on what the task is and why this model (and effort) fits it. Required when the request's effort is auto; optional when {user} chose the effort. Kept to measure how each model does")}}, "required": ["task"]}}),
         ]);
     }
     for tool in &mut list {
@@ -74,7 +74,7 @@ fn tools(role: Role, user: &str) -> Value {
                 .as_object_mut()
                 .expect("launch properties");
             properties.remove("request_id");
-            tool["inputSchema"]["required"] = json!(["name", "cwd", "task"]);
+            tool["inputSchema"]["required"] = json!(["task"]);
         }
     }
     Value::Array(list)
@@ -260,6 +260,13 @@ fn node_domain_tools(user: &str) -> Vec<Value> {
             vec!["task_id"],
         ),
         (
+            "cleanup_done",
+            "cleanup_done",
+            "Say that you deleted what you generated for your task, after Alondra told you the task is closing. Alondra then closes this session and its worktree. Call it again after fixing what Alondra said stopped it from closing the session.",
+            json!({"task_id":{"type":"string"}}),
+            vec!["task_id"],
+        ),
+        (
             "answer_question",
             "answer_question",
             "Answer a question addressed to this node.",
@@ -335,6 +342,21 @@ fn node_domain_tools(user: &str) -> Vec<Value> {
     tools
 }
 
+/// How Alondra starts a Task by itself once everything it depends on is done.
+fn launch_plan_schema() -> Value {
+    json!({"type":"object","additionalProperties":false,"required":["name","cwd"],
+        "description":"How Alondra starts this Task by itself once everything it depends on is done: required when dependencies or stack are set",
+        "properties":{
+            "name":{"type":"string","description":"The new node's name, with its hierarchy (lumo/phase-c)"},
+            "cwd":{"type":"string","description":"The folder the node starts in"},
+            "mission":{"type":"string","description":"The node's mission; without it, the task title and the request"},
+            "model":{"type":"string","description":"Required when the request's effort is auto"},
+            "effort":{"type":"string","enum":["low","medium","high","xhigh","max"]},
+            "approach":{"type":"string","enum":["solo","subagents","workflow"]},
+            "reason":{"type":"string","description":"Required when the request's effort is auto"},
+            "role":{"type":"string","enum":["design","implementation","review"],"description":"For work split into design, implementation and review"}}})
+}
+
 fn orchestrator_domain_tools(user: &str) -> Vec<Value> {
     let interaction = interaction_fields();
     let mut tools = card_tools(user, &interaction, false);
@@ -360,7 +382,7 @@ fn orchestrator_domain_tools(user: &str) -> Vec<Value> {
         (
             "create_task",
             "Create a cohesive Task under an open Request and optionally assign a free node (a node works on one Task at a time).",
-            json!({"task_id":{"type":"string"},"request_id":{"type":"string"},"title":{"type":"string"},"agent_id":{"type":["string","null"]},"review_prs":{"type":"boolean"},"dependencies":{"type":"array","items":{"type":"string"}},"stack":{"type":["object","null"],"properties":{"upstream_task":{"type":"string"},"presentation_id":{"type":"string"},"pr_id":{"type":"string"},"head":{"type":"string"}},"required":["upstream_task","presentation_id","pr_id","head"],"additionalProperties":false}}),
+            json!({"task_id":{"type":"string"},"request_id":{"type":"string"},"title":{"type":"string"},"agent_id":{"type":["string","null"]},"review_prs":{"type":"boolean"},"launch":launch_plan_schema(),"dependencies":{"type":"array","items":{"type":"string"}},"stack":{"type":["object","null"],"properties":{"upstream_task":{"type":"string"},"presentation_id":{"type":"string"},"pr_id":{"type":"string"},"head":{"type":"string"}},"required":["upstream_task","presentation_id","pr_id","head"],"additionalProperties":false}}),
             vec![
                 "task_id",
                 "request_id",
@@ -463,6 +485,7 @@ fn call_node(client: &Client, name: &str, args: &Value) -> Result<String> {
         | "link_interaction_subject"
         | "present_result"
         | "publish_stack_readiness"
+        | "cleanup_done"
         | "wait_for_machine" => execute_tool(client, name, args),
         _ => anyhow::bail!("incompatible_protocol: this tool is unavailable to the node MCP"),
     }
@@ -494,12 +517,12 @@ fn call_orchestrator(client: &Client, name: &str, args: &Value) -> Result<String
         | "launch"
         | "send"
         | "interrupt"
+        | "set_launch_plan"
         | "machine"
         | "daemon_log"
         | "schedule_create"
         | "fleet"
-        | "node"
-        | "candidates" => execute_tool(client, name, args),
+        | "node" => execute_tool(client, name, args),
         _ => {
             anyhow::bail!("incompatible_protocol: this tool is unavailable to the orchestrator MCP")
         }
@@ -542,7 +565,8 @@ fn execute_tool(client: &Client, name: &str, args: &Value) -> Result<String> {
         | "present_result"
         | "publish_stack_readiness"
         | "cancel_task"
-        | "reopen_task" => submit(client, &domain_bearer()?, name, args)?,
+        | "reopen_task"
+        | "cleanup_done" => submit(client, &domain_bearer()?, name, args)?,
         "launch" | "send" | "interrupt" => {
             let bearer = domain_bearer()?;
             serde_json::to_string_pretty(&client.domain_post(
@@ -550,6 +574,10 @@ fn execute_tool(client: &Client, name: &str, args: &Value) -> Result<String> {
                 &bearer,
                 args,
             )?)?
+        }
+        "set_launch_plan" => {
+            let bearer = domain_bearer()?;
+            serde_json::to_string_pretty(&client.domain_post("/orchestrator/launch-plan", &bearer, args)?)?
         }
         "schedule_create" => {
             let bearer = domain_bearer()?;
@@ -581,22 +609,6 @@ fn execute_tool(client: &Client, name: &str, args: &Value) -> Result<String> {
                 )?,
                 page,
             ))?
-        }
-        "candidates" => {
-            let bearer = domain_bearer()?;
-            let query: Vec<String> = ["task", "repo", "model"]
-                .iter()
-                .filter_map(|k| {
-                    args.get(*k)
-                        .and_then(Value::as_str)
-                        .filter(|v| !v.trim().is_empty())
-                        .map(|v| format!("{k}={}", urlencode(v)))
-                })
-                .collect();
-            serde_json::to_string_pretty(&client.domain_get(
-                &format!("/orchestrator/candidates?{}", query.join("&")),
-                &bearer,
-            )?)?
         }
         "wait_for_machine" => {
             let bearer = domain_bearer()?;
@@ -630,15 +642,27 @@ fn submit(client: &Client, bearer: &str, name: &str, args: &Value) -> Result<Str
     let capabilities = client.domain_get("/capabilities", bearer)?;
     let data_epoch = capabilities.get("data_epoch").and_then(Value::as_str)
         .ok_or_else(|| anyhow::anyhow!("incompatible_protocol: daemon returned no data epoch"))?;
-    let envelope = domain_envelope(name, args, data_epoch, &command_id(name, args))?;
+    let (method, path, body) = command_request(name, args, data_epoch)?;
+    let response = client.domain_call(method, &path, bearer, Some(&body))?;
+    Ok(response.get("notice").and_then(Value::as_str).unwrap_or("Recorded.").to_owned())
+}
+
+/// The resource call a tool makes: its typed command as the body, with the launch plan of a new
+/// task beside the command rather than inside it.
+fn command_request(name: &str, args: &Value, data_epoch: &str) -> Result<(&'static str, String, Value)> {
+    let mut args = args.clone();
+    let launch = if name == "create_task" { args.as_object_mut().and_then(|object| object.remove("launch")) } else { None };
+    let envelope = domain_envelope(name, &args, data_epoch, &command_id(name, &args))?;
     let (method, path) = resource_target(name, &envelope["command"])?;
     let mut body = envelope["command"].clone();
     body.as_object_mut().expect("typed command object").remove("kind");
     for key in ["data_epoch", "command_id", "expected_revision"] {
         body[key] = envelope[key].clone();
     }
-    let response = client.domain_call(method, &path, bearer, Some(&body))?;
-    Ok(response.get("notice").and_then(Value::as_str).unwrap_or("Recorded.").to_owned())
+    if let Some(launch) = launch.filter(|launch| !launch.is_null()) {
+        body["launch"] = launch;
+    }
+    Ok((method, path, body))
 }
 
 const CARD_COMMANDS: [&str; 9] = [
@@ -733,6 +757,7 @@ pub(crate) fn resource_target(name: &str, command: &Value) -> Result<(&'static s
         "retitle_task" => ("PATCH", format!("/tasks/{}", id("task_id")?)),
         "set_dependencies" => ("PUT", format!("/tasks/{}/dependencies", id("task_id")?)),
         "start_task" => ("POST", format!("/tasks/{}/start", id("task_id")?)),
+        "cleanup_done" => ("POST", format!("/tasks/{}/cleanup", id("task_id")?)),
         "create_document" => ("POST", format!("/tasks/{}/documents", id("task_id")?)),
         "revise_document" => ("PUT", format!("/tasks/{}/documents/{}", id("task_id")?, id("document_id")?)),
         "decide_document_review" => ("PUT", format!("/tasks/{}/documents/{}/review", id("task_id")?, id("document_id")?)),
@@ -766,6 +791,7 @@ fn domain_envelope(name: &str, args: &Value, data_epoch: &str, command_id: &str)
         "retitle_task" => "retitle_task",
         "set_dependencies" => "set_dependencies",
         "start_task" => "start_task",
+        "cleanup_done" => "confirm_cleanup",
         "create_document" => "create_document",
         "revise_document" => "revise_document",
         "link_task_document" => "link_task_document",
@@ -1418,6 +1444,56 @@ mod tests {
     }
 
     #[test]
+    fn the_node_has_cleanup_done_and_the_orchestrator_has_set_launch_plan_and_no_candidates() {
+        fn names(role: Role) -> HashSet<String> { tools(role, "Ana").as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap().to_owned()).collect() }
+        let (node, orchestrator) = (names(Role::Node), names(Role::Orchestrator));
+        assert!(node.contains("cleanup_done") && !orchestrator.contains("cleanup_done"));
+        assert!(orchestrator.contains("set_launch_plan") && !node.contains("set_launch_plan"));
+        assert!(!orchestrator.contains("candidates") && !node.contains("candidates"));
+        let catalog = tools(Role::Node, "Ana");
+        let cleanup = catalog.as_array().unwrap().iter().find(|tool| tool["name"] == "cleanup_done").unwrap();
+        assert_eq!(cleanup["inputSchema"]["required"], json!(["task_id"]));
+        let orchestrator_catalog = tools(Role::Orchestrator, "Ana");
+        let plan = orchestrator_catalog.as_array().unwrap().iter().find(|tool| tool["name"] == "set_launch_plan").unwrap();
+        assert_eq!(plan["inputSchema"]["required"], json!(["task_id", "launch"]));
+        let send = orchestrator_catalog.as_array().unwrap().iter().find(|tool| tool["name"] == "send").unwrap();
+        assert!(send["inputSchema"]["properties"].get("model").is_none(), "send takes no model");
+        let create = orchestrator_catalog.as_array().unwrap().iter().find(|tool| tool["name"] == "create_task").unwrap();
+        assert_eq!(create["inputSchema"]["properties"]["launch"]["required"], json!(["name", "cwd"]));
+        let (method, path, body) = command_request("cleanup_done", &json!({"task_id": "t-1"}), "epoch").unwrap();
+        assert_eq!((method, path.as_str()), ("POST", "/tasks/t-1/cleanup"));
+        assert_eq!(body["data_epoch"], "epoch");
+        let envelope = domain_envelope("cleanup_done", &json!({"task_id": "t-1"}), "epoch", "one").unwrap();
+        assert_eq!(envelope["command"]["kind"], "confirm_cleanup");
+    }
+
+    #[test]
+    fn create_task_sends_its_launch_plan_beside_the_typed_command() {
+        let args = json!({"task_id": "t-2", "request_id": "r-1", "title": "Next", "review_prs": false, "dependencies": ["t-1"], "stack": null,
+            "launch": {"name": "app/next", "cwd": "/tmp", "model": "sonnet", "reason": "clear"}});
+        let (method, path, body) = command_request("create_task", &args, "epoch").unwrap();
+        assert_eq!((method, path.as_str()), ("POST", "/requests/r-1/tasks"));
+        assert_eq!(body["launch"], json!({"name": "app/next", "cwd": "/tmp", "model": "sonnet", "reason": "clear"}));
+        assert!(body.get("kind").is_none() && body["task_id"] == "t-2");
+        let envelope = domain_envelope("create_task", &{ let mut plain = args.clone(); plain.as_object_mut().unwrap().remove("launch"); plain }, "epoch", "one").unwrap();
+        assert!(envelope["command"].get("launch").is_none(), "the typed command stays strict");
+        let (_, _, without) = command_request("create_task", &json!({"task_id": "t-3", "request_id": "r-1", "title": "Alone", "review_prs": false, "dependencies": [], "stack": null}), "epoch").unwrap();
+        assert!(without.get("launch").is_none());
+    }
+
+    #[test]
+    fn the_orchestrator_instructions_say_one_node_per_task_and_never_mention_reuse() {
+        let text = instructions(Role::Orchestrator, "Ana");
+        for old in ["candidates", "model_mismatch", "fits", "free node"] {
+            assert!(!text.contains(old), "{old}");
+        }
+        assert!(text.contains("A node works on one Task for its whole life and closes with it"));
+        assert!(text.contains("launch: name, cwd"));
+        let node = instructions(Role::Node, "Ana");
+        assert!(node.contains("call cleanup_done with the task_id") && node.contains("When Alondra tells you the task was cancelled, stop"));
+    }
+
+    #[test]
     fn domain_producer_capability_has_the_existing_bearer_format() {
         assert!(validate_domain_bearer(&"a".repeat(64)).is_ok());
         for invalid in ["a".repeat(63), "A".repeat(64), "g".repeat(64), " ".repeat(64)] {
@@ -1435,11 +1511,11 @@ mod tests {
         for n in ["create_request","close_request","create_task","assign_task","set_dependencies","link_task_document"] { assert!(orchestrator.contains(n),"{n}"); }
         for n in ["create_task","close_request","link_task_document"] { assert!(!node.contains(n),"{n}"); }
         for n in ["present_result","complete_task","register_pr","claim_merge_authorization"] { assert!(!orchestrator.contains(n),"{n}"); }
-        for n in ["launch","send","interrupt","machine","daemon_log","schedule_create","fleet","node","candidates"] { assert!(orchestrator.contains(n)); assert!(!node.contains(n)); }
+        for n in ["launch","send","interrupt","machine","daemon_log","schedule_create","fleet","node"] { assert!(orchestrator.contains(n)); assert!(!node.contains(n)); }
         assert!(node.contains("wait_for_machine")); assert!(!orchestrator.contains("wait_for_machine"));
         let orchestrator_catalog=tools(Role::Orchestrator,"Ana");
         let launch=orchestrator_catalog.as_array().unwrap().iter().find(|t|t["name"]=="launch").unwrap();
-        assert_eq!(launch["inputSchema"]["required"],json!(["name","cwd","task"])); assert!(launch["inputSchema"]["properties"].get("request_id").is_none());
+        assert_eq!(launch["inputSchema"]["required"],json!(["task"])); assert!(launch["inputSchema"]["properties"].get("request_id").is_none());
         for name in ["launch","send"] {
             let tool=orchestrator_catalog.as_array().unwrap().iter().find(|t|t["name"]==name).unwrap();
             assert_eq!(tool["inputSchema"]["properties"]["approach"]["enum"],json!(["solo","subagents","workflow"]),"{name}");

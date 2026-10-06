@@ -137,7 +137,7 @@ pub(crate) fn has_open_task(domain: &DomainRuntime, session: &str) -> bool {
 
 fn open_task(state: &alondra_core::domain::DomainState, session: &str) -> bool {
     let agent = AgentId(session.to_owned());
-    state.agents.contains_key(&agent) && state.tasks.values().any(|task| task.agent_id.as_ref() == Some(&agent) && !task.state.terminal() && !task.archived)
+    state.agents.contains_key(&agent) && state.tasks.values().any(|task| task.agent_id.as_ref() == Some(&agent) && !task.state.terminal() && !task.archived && task.wrap_up.asked_at.is_none())
 }
 
 /// Restarts a session that holds its connection but stopped processing, and tells it to carry on
@@ -198,7 +198,7 @@ fn needed(domain: &DomainRuntime, session: &str) -> bool {
     let Ok(state) = domain.state() else { return false };
     let agent = AgentId(session.to_owned());
     state.agents.contains_key(&agent)
-        && state.tasks.values().any(|task| task.agent_id.as_ref() == Some(&agent) && !task.state.terminal() && !task.archived)
+        && state.tasks.values().any(|task| task.agent_id.as_ref() == Some(&agent) && !task.state.terminal() && !task.archived && task.wrap_up.asked_at.is_none())
         && !domain.live.is_closed(session)
         && !domain.live.mods.connected(session)
 }
@@ -410,6 +410,25 @@ mod tests {
         assert!(domain.live.mods.connected(SESSION), "the restarted session's mod connected back");
         assert!(!domain.live.is_reconnecting(SESSION), "and nothing says it is reconnecting any more");
         assert!(domain.state().unwrap().interactions.is_empty(), "a restart that works asks the user nothing");
+    }
+
+    #[tokio::test]
+    async fn a_node_whose_task_is_in_cleanup_is_not_restarted() {
+        use alondra_core::domain::DeliveryTarget;
+        let (_home, domain) = world(true);
+        let text = || vec![DeliveryTarget::Text { text: "The result".into() }];
+        command(&domain, Actor::Agent { agent_id: SESSION.into() }, "present", Command::PresentResult {
+            attachments: vec![], task_id: "t".into(), interaction_id: "final".into(), body: "Done".into(), targets: text(),
+            is_final: true, card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
+        });
+        assert!(needed(&domain, SESSION), "a task under review still needs its node");
+        command(&domain, Actor::User { user_id: "u".into() }, "accept", Command::AcceptDelivery { presentation_id: "final".into(), targets: text() });
+        assert!(domain.state().unwrap().tasks[&"t".into()].wrap_up.asked_at.is_some());
+        assert!(!needed(&domain, SESSION));
+        assert!(!has_open_task(&domain, SESSION));
+        let claude = Respawner::new(&domain, 1);
+        revive(&domain, SESSION, &claude, &FAST).await;
+        assert_eq!(claude.calls(), 0, "the closer removes it; nothing restarts it");
     }
 
     const QUIET_FOR: i64 = alondra_core::states::TURN_QUIET_MS + 60_000;
