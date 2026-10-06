@@ -28,7 +28,7 @@ pub(super) fn review_clone_flow(
 impl App {
     pub fn inbox_keys(&self) -> Vec<Key> {
         if let Some(view) = &self.home_view {
-            return super::view_render::entries(view)
+            return super::view_render::entries(view, &self.open_sections)
                 .into_iter()
                 .map(|(id, _, _)| Key(id))
                 .collect();
@@ -38,9 +38,9 @@ impl App {
 
     pub fn inbox_count(&self) -> usize {
         if let Some(view) = &self.home_view {
-            return super::view_render::entries(view)
+            return super::view_render::entries(view, &self.open_sections)
                 .into_iter()
-                .filter(|(_, nested, _)| !nested)
+                .filter(|(id, nested, _)| !nested && super::view_render::header_section(id).is_none())
                 .count();
         }
         0
@@ -67,6 +67,22 @@ impl App {
         self.card_menu = None;
         self.sel = Some(keys[idx].clone());
         self.settle_until = 0;
+    }
+
+    /// Enter or `o` on a folded section's header opens it, and on an open one folds it again.
+    pub(super) fn toggle_selected_section(&mut self) -> bool {
+        let Some(id) = self
+            .sel
+            .as_ref()
+            .and_then(|key| super::view_render::header_section(&key.0))
+            .map(str::to_string)
+        else {
+            return false;
+        };
+        if !self.open_sections.remove(&id) {
+            self.open_sections.insert(id);
+        }
+        true
     }
 
     pub(super) fn inbox_cmd(&mut self, cmd: Cmd) {

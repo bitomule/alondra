@@ -112,7 +112,7 @@ fn existing_mcp_producers_cover_pr_document_and_answer_and_only_the_users_accept
         "interaction_id":"pr-delivery", "body":"Code is ready for review",
         "targets":[pr_target], "is_final":true})).unwrap();
     assert_eq!(domain_code(fixture.agent(json!({"kind":"complete_task", "task_id":"pr-task",
-        "presentation_id":"pr-delivery"})).unwrap_err()), "acceptance_missing");
+        "presentation_id":"pr-delivery"})).unwrap_err()), "forbidden");
     let state = fixture.runtime.state().unwrap();
     assert_eq!(state.tasks[&"pr-task".into()].pr_id.as_ref().unwrap().0, "pr-1");
     assert_ne!(state.tasks[&"pr-task".into()].state, TaskState::Done);
@@ -148,7 +148,7 @@ fn existing_mcp_producers_cover_pr_document_and_answer_and_only_the_users_accept
         "targets":[answer_target.clone()], "is_final":true})).unwrap();
     assert_eq!(domain_code(fixture.agent(json!({"kind":"complete_task",
         "task_id":"answer-task", "presentation_id":"answer-delivery"})).unwrap_err()),
-        "acceptance_missing");
+        "forbidden");
     fixture.user(json!({"kind":"accept_delivery", "presentation_id":"answer-delivery",
         "targets":[answer_target]})).unwrap();
     let state = fixture.runtime.state().unwrap();

@@ -83,6 +83,10 @@ async fn handle(mut stream: UnixStream, domain: &DomainRuntime) -> Result<()> {
             };
             answered(&held, answer?.and_then(|answers| answers.into_iter().next()))
         }
+        Reply::Block { reason, session } => {
+            let unregistered = unregistered_pr(domain, &session).await.unwrap_or_default();
+            json!({"decision": "block", "reason": format!("{reason}{unregistered}")})
+        }
     };
     let bytes = serde_json::to_vec(&body)?;
     stream.write_all(&200u16.to_be_bytes()).await?;
@@ -304,6 +308,8 @@ pub(crate) async fn run(listener: UnixListener, domain: Arc<DomainRuntime>) -> R
 enum Reply {
     Plain(Value),
     Held(crate::domain_holds::Held),
+    /// A turn end Alondra holds back: the node goes on with `reason`.
+    Block { reason: String, session: String },
 }
 
 /// The reply to a held hook; a card that can no longer be answered lets Claude Code ask in its terminal.
@@ -395,15 +401,13 @@ fn respond(domain: &DomainRuntime, payload: &Value) -> Result<Reply> {
         "SessionStart" | "SessionEnd" => Ok(Reply::Plain(json!({}))),
         "Stop" => {
             let held = crate::domain_messages::take_held(domain, &agent_id);
-            let text = if held.is_empty() {
-                match unreported(domain, &agent_id, payload)? {
-                    Some(text) => text,
-                    None => return Ok(Reply::Plain(json!({}))),
-                }
-            } else {
-                held.join("\n\n")
-            };
-            Ok(Reply::Plain(json!({"hookSpecificOutput": {"hookEventName": "Stop", "additionalContext": text}})))
+            if !held.is_empty() {
+                return Ok(Reply::Plain(json!({"hookSpecificOutput": {"hookEventName": "Stop", "additionalContext": held.join("\n\n")}})));
+            }
+            Ok(match undelivered(domain, &agent_id, payload)? {
+                Some(reason) => Reply::Block { reason, session: session_id },
+                None => Reply::Plain(json!({})),
+            })
         }
         _ => Ok(Reply::Plain(json!({}))),
     }
@@ -457,35 +461,110 @@ fn start_assigned(domain: &DomainRuntime, agent_id: &AgentId) -> Result<()> {
     Ok(())
 }
 
-/// A turn that ends while the Agent's Task has neither a result nor a question for anyone gets,
-/// once per Task, the reminder 8ccd131 typed into such a node. A turn the reminder itself
-/// continued is never held again.
-fn unreported(domain: &DomainRuntime, agent_id: &AgentId, payload: &Value) -> Result<Option<String>> {
-    if payload.get("stop_hook_active") == Some(&Value::Bool(true)) {
+/// Turn ends Alondra holds back in a row for one Task before it stops trying and tells the user.
+pub(crate) const STOP_BLOCKS: u32 = 3;
+
+/// A turn of a node Alondra launched may not end while its Task is open with neither a result
+/// for the user nor a question from it: Claude Code goes on with the reason. A turn the block
+/// itself continued (`stop_hook_active`) counts too, so the cap, not the flag, ends the loop:
+/// after `STOP_BLOCKS` turn ends in a row the user gets a Problem card and the node may stop. A
+/// delivery or a question starts the count again; the count is kept in the domain store, so a
+/// restart does not reset it. A session the user drives (not a background node, or one whose
+/// terminal they attached to), work running in the background and a node stopped by the machine
+/// are never held.
+fn undelivered(domain: &DomainRuntime, agent_id: &AgentId, payload: &Value) -> Result<Option<String>> {
+    let driven_by_user = !domain.live.mods.is_node(&agent_id.0)
+        || domain.live.node(&agent_id.0).is_some_and(|node| node.attached);
+    if driven_by_user
+        || payload.get("background_tasks").and_then(Value::as_array).is_some_and(|tasks| !tasks.is_empty())
+        || domain.live.node(&agent_id.0).is_some_and(|node| node.status == alondra_core::NodeStatus::WaitingMachine
+            || node.turn_signal == Some(alondra_core::TurnSignal::WaitingMachine))
+    {
         return Ok(None);
     }
     let state = domain.state()?;
     let Some(task) = state.tasks.values().find(|task| task.agent_id.as_ref() == Some(agent_id)
         && matches!(task.state, TaskState::NotStarted | TaskState::Running)
-        && task.final_presentation.is_none())
+        && (task.final_presentation.is_none() || state.task_handed_back(&task.id).is_some()))
     else {
         return Ok(None);
     };
-    if !domain.nudged.lock().expect("nudged tasks poisoned").insert(task.id.clone()) {
+    let scope = Scope::Task { task_id: task.id.clone() };
+    let author = Author::Agent { agent_id: agent_id.clone() };
+    let mine = || state.interactions.values().filter(|card| card.scope == scope && card.author == author);
+    if mine().any(|card| !card.withdrawn && matches!(card.payload,
+        InteractionPayload::Question { answer: None, .. } | InteractionPayload::ActionRequest { answer: None, .. }))
+    {
         return Ok(None);
     }
-    Ok(Some(nudge_text(&crate::domain_messages::user_name(), &task.id)))
+    let marker = mine().filter(|card| !matches!(card.payload, InteractionPayload::Information { .. }))
+        .map(|card| card.order as i64).max().unwrap_or(0);
+    let stored = domain.store.lock().expect("domain store poisoned").stop_blocks(&task.id)?;
+    let blocks = match stored {
+        Some((blocks, previous)) if previous == marker => blocks,
+        Some((blocks, previous)) => {
+            if blocks > STOP_BLOCKS {
+                let _ = domain.withdraw_problem(&undelivered_problem_id(&task.id, previous).into());
+            }
+            0
+        }
+        None => 0,
+    };
+    let user = crate::domain_messages::user_name();
+    if blocks >= STOP_BLOCKS {
+        if blocks == STOP_BLOCKS {
+            let name = state.agents.get(agent_id).map_or(agent_id.0.as_str(), |agent| agent.name.as_str());
+            if let Err(error) = raise_undelivered(domain, &task.id, marker, name, &task.title) {
+                log!("could not tell {user} that {name} cannot deliver {}: {error:?}", task.id);
+            }
+            domain.store.lock().expect("domain store poisoned").set_stop_blocks(&task.id, blocks + 1, marker)?;
+        }
+        return Ok(None);
+    }
+    domain.store.lock().expect("domain store poisoned").set_stop_blocks(&task.id, blocks + 1, marker)?;
+    Ok(Some(block_text(&user, &task.title)))
 }
 
-pub(crate) fn nudge_text(user: &str, task: &TaskId) -> String {
+fn undelivered_problem_id(task: &TaskId, marker: i64) -> String {
+    format!("problem-undelivered-{task}-{marker}")
+}
+
+fn raise_undelivered(domain: &DomainRuntime, task: &TaskId, marker: i64, name: &str, title: &str) -> Result<(), crate::domain_store::StoreError> {
+    let need = alondra_core::domain::clip(&format!("{name} cannot manage to deliver “{title}”"), alondra_core::domain::CardSpec::NEED_MAX);
+    let why = alondra_core::domain::clip(&format!(
+        "It ended its turn {STOP_BLOCKS} times in a row without a result or a question, and Alondra sent it back each time; now it has stopped."
+    ), alondra_core::domain::CardSpec::WHY_MAX);
+    let diagnosis = format!(
+        "The node working on “{title}” tried to stop {STOP_BLOCKS} times in a row without presenting a result or asking anything. \
+         Alondra sent it back to work each time and now lets it stop. Open the node to see where it is stuck, send it a message, or cancel the task."
+    );
+    domain.raise_problem(&undelivered_problem_id(task, marker), Scope::Task { task_id: task.clone() }, need, why, diagnosis, vec![]).map(|_| ())
+}
+
+pub(crate) fn block_text(user: &str, title: &str) -> String {
     format!(
-        "[Alondra] Your turn ended without telling {user} anything through Alondra, so they cannot tell whether you are \
-         done or waiting on them; your terminal does not reach them. The Alondra tools declare your state for task {task}: \
-         `present_result` with is_final true when you are done (the answer in body, files in attachments), `ask` for a \
-         decision (one question per decision, with options), `request_action` for something {user} does outside Alondra, \
-         `wait_for_machine` when you are waiting for resources. If you are still working on your own (a build, an upload, \
-         a review, a long command), there is nothing to send."
+        "[Alondra] Do not end your turn yet: your task “{title}” is still open and {user} has not heard from you. Your terminal \
+         does not reach {user}; only the Alondra tools do. If the work is done, deliver it with `present_result` and is_final true \
+         (the answer in body, files in attachments, the PR you registered in targets). If you need a decision or something only \
+         {user} can do, use `ask` or `request_action`. If the machine stopped you (memory, a build queue, a usage limit), say so \
+         with `wait_for_machine`. Otherwise keep working until one of these applies."
     )
+}
+
+/// The open PR of the node's branch that no Task registered, which the node should register
+/// and deliver. GitHub gets three seconds: the Stop hook waits on this answer.
+async fn unregistered_pr(domain: &DomainRuntime, session: &str) -> Option<String> {
+    let dir = crate::worktree::worktree_of(session)?;
+    let (repository, number) = crate::domain_github::GhCli::new().branch_pr(&dir, Duration::from_secs(3)).await?;
+    unregistered_pr_text(&domain.state().ok()?, &repository, number)
+}
+
+pub(crate) fn unregistered_pr_text(state: &DomainState, repository: &str, number: u64) -> Option<String> {
+    let known = state.pull_requests.values().any(|pr| pr.repository.eq_ignore_ascii_case(repository) && pr.number == number);
+    (!known).then(|| format!(
+        " Your branch has an open pull request, {repository}#{number}, that Alondra does not know: register it with `register_pr` \
+         and deliver it as a target of `present_result`."
+    ))
 }
 
 /// The user's answer to a card reaches the session as the user's own words, which Claude Code
@@ -536,16 +615,7 @@ pub(crate) fn render(state: &DomainState, message: &OutboxMessage) -> String {
     let Some(interaction) = interaction else { return message.message.clone() };
     let (options, answer) = match &interaction.payload {
         InteractionPayload::Question { options, answer } | InteractionPayload::ActionRequest { options, answer } => (options, answer),
-        InteractionPayload::Delivery { .. } => {
-            let mut text = message.message.clone();
-            if state.merge_authorizations.values().any(|authorization| {
-                authorization.presentation_id == interaction.id && authorization.valid
-                    && authorization.attempt == alondra_core::domain::MergeAttemptState::Unclaimed
-            }) && !text.contains("The user authorized merging the presented pull request.") {
-                text.push_str("\n\nThe user authorized merging the presented pull request.");
-            }
-            return text;
-        }
+        InteractionPayload::Delivery { .. } => return message.message.clone(),
         InteractionPayload::Information { .. } if matches!(interaction.recipient, Recipient::Orchestrator) => return interaction.body.clone(),
         InteractionPayload::Information { .. } => return message.message.clone(),
     };
@@ -641,6 +711,7 @@ mod tests {
 
     /// An Agent with a Task, a question and the User's answer queued for it.
     fn answered_question(domain: &DomainRuntime, agent: &str) {
+        domain.live.mods.loaded_in(agent);
         command(domain, Actor::System, &format!("register-{agent}"), Command::RegisterAgent {
             agent_id: agent.into(), name: agent.into(),
         });
@@ -854,6 +925,7 @@ mod tests {
     }
 
     fn node_with_task(domain: &DomainRuntime) {
+        domain.live.mods.loaded_in("agent-a");
         command(domain, Actor::System, "register", Command::RegisterAgent {
             agent_id: "agent-a".into(), name: "Agent A".into(),
         });
@@ -981,8 +1053,8 @@ mod tests {
     }
 
     fn reminder_only(reply: &Value) -> bool {
-        reply["hookSpecificOutput"]["additionalContext"].as_str()
-            .is_some_and(|text| text.starts_with("[Alondra] Your turn ended") && !text.contains("Yes.") && !text.contains("Only this"))
+        reply["decision"] == "block" && reply["reason"].as_str()
+            .is_some_and(|text| text.starts_with("[Alondra] Do not end your turn yet") && !text.contains("Yes.") && !text.contains("Only this"))
     }
 
     #[tokio::test]
@@ -1011,7 +1083,7 @@ mod tests {
         let notice = node.line().await.unwrap();
         assert_eq!(answer["text"], "Yes.");
         let context = format!("{}\n\n{}", answer["text"].as_str().unwrap(), notice["text"].as_str().unwrap().trim());
-        assert_eq!(context, "Yes.\n\nThe user authorized merging the presented pull request.");
+        assert_eq!(context, "Yes.\n\nThe user accepted your result. Alondra is merging its pull request now and tells you when it is merged; there is nothing for you to merge.");
         assert!(!context.contains("authorization_id") && !context.contains("pr_id")
             && !context.contains("head") && !context.contains("auth-"), "{context}");
     }
@@ -1136,27 +1208,139 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_turn_that_ends_without_a_result_is_reminded_once() {
+    async fn a_turn_that_ends_without_a_result_is_held_back() {
         let fixture = Fixture::new();
         let domain = fixture.open();
         node_with_task(&domain);
-        let stop = json!({"session_id": "agent-a", "hook_event_name": "Stop"});
-        let (reply, result) = hook(&domain, stop.clone(), Some(6)).await;
+        let (reply, result) = hook(&domain, json!({"session_id": "agent-a", "hook_event_name": "Stop"}), Some(6)).await;
         result.unwrap();
-        let context = reply["hookSpecificOutput"]["additionalContext"].as_str().unwrap();
-        assert!(context.starts_with("[Alondra] Your turn ended") && context.contains("`present_result`")
-            && context.contains("task task"), "{context}");
-        let (reply, _) = hook(&domain, stop, Some(6)).await;
-        assert_eq!(reply, json!({}), "the reminder comes once, never in a loop");
+        assert_eq!(reply["decision"], "block");
+        let reason = reply["reason"].as_str().unwrap();
+        assert!(reason.starts_with("[Alondra] Do not end your turn yet: your task “Task” is still open")
+            && reason.contains("`present_result`") && reason.contains("`ask`") && reason.contains("`wait_for_machine`"), "{reason}");
+        assert!(!reason.contains("task-") && !reason.contains("agent-a"), "no internal ids: {reason}");
+    }
+
+    fn problems(domain: &DomainRuntime) -> Vec<alondra_core::domain::Interaction> {
+        domain.state().unwrap().interactions.into_values().filter(|card| card.card.kind == CardKind::Problem).collect()
+    }
+
+    /// Three held-back turn ends in a row, kept across a daemon restart; the fourth tells the
+    /// user and lets the node stop, and a question from the node starts the count again.
+    #[tokio::test]
+    async fn after_three_held_back_turn_ends_the_user_is_told_and_a_question_starts_over() {
+        let fixture = Fixture::new();
+        let stop = json!({"session_id": "agent-a", "hook_event_name": "Stop"});
+        {
+            let domain = fixture.open();
+            node_with_task(&domain);
+            for _ in 0..2 {
+                assert!(reminder_only(&hook(&domain, stop.clone(), Some(6)).await.0));
+            }
+        }
+        let domain = fixture.open();
+        domain.live.mods.loaded_in("agent-a");
+        assert!(reminder_only(&hook(&domain, stop.clone(), Some(6)).await.0), "the count survives a restart");
+        assert!(problems(&domain).is_empty());
+        assert_eq!(hook(&domain, stop.clone(), Some(6)).await.0, json!({}), "the fourth turn end is let through");
+        let raised = problems(&domain);
+        assert_eq!(raised.len(), 1);
+        assert_eq!(raised[0].card.need, "Agent A cannot manage to deliver “Task”");
+        assert_eq!(raised[0].scope, task_scope());
+        assert_eq!(hook(&domain, stop.clone(), Some(6)).await.0, json!({}));
+        assert_eq!(problems(&domain).len(), 1, "one card, however often it stops");
+
+        free_text_question(&domain, "q", agent_actor(), task_scope(), Recipient::User, "Which name?");
+        assert_eq!(hook(&domain, stop.clone(), Some(6)).await.0, json!({}), "a node waiting on its question may stop");
+        free_text_answer(&domain, user_actor(), "q", "Atlas");
+        assert!(reminder_only(&hook(&domain, stop.clone(), Some(6)).await.0), "asking started the count again");
+        assert!(problems(&domain).iter().all(|card| card.withdrawn), "the card went once the node asked");
+    }
+
+    /// What Claude Code sends: the Stop after a block carries `stop_hook_active`, and those turn
+    /// ends count until the cap lets the node stop.
+    #[tokio::test]
+    async fn turns_a_block_continued_are_held_until_the_cap_then_the_user_is_told() {
+        let fixture = Fixture::new();
+        let domain = fixture.open();
+        node_with_task(&domain);
+        let first = json!({"session_id": "agent-a", "hook_event_name": "Stop"});
+        let continued = json!({"session_id": "agent-a", "hook_event_name": "Stop", "stop_hook_active": true});
+        assert!(reminder_only(&hook(&domain, first, Some(6)).await.0));
+        assert!(reminder_only(&hook(&domain, continued.clone(), Some(6)).await.0));
+        assert!(reminder_only(&hook(&domain, continued.clone(), Some(6)).await.0));
+        assert!(problems(&domain).is_empty());
+        assert_eq!(hook(&domain, continued, Some(6)).await.0, json!({}), "the cap lets it stop");
+        assert_eq!(problems(&domain).len(), 1);
     }
 
     #[tokio::test]
-    async fn a_turn_continued_by_a_stop_hook_or_ending_after_a_result_is_not_reminded() {
+    async fn a_session_the_user_drives_is_never_held() {
         let fixture = Fixture::new();
         let domain = fixture.open();
         node_with_task(&domain);
-        let (reply, _) = hook(&domain, json!({"session_id": "agent-a", "hook_event_name": "Stop", "stop_hook_active": true}), Some(6)).await;
+        hook(&domain, json!({"session_id": "agent-a", "hook_event_name": "PreToolUse", "tool_name": "Bash"}), Some(6)).await.1.unwrap();
+        domain.live.apply(&alondra_core::Event::AttachChanged { session_id: "agent-a".into(), attached: true });
+        assert!(domain.live.node("agent-a").is_some_and(|node| node.attached));
+        assert_eq!(hook(&domain, json!({"session_id": "agent-a", "hook_event_name": "Stop"}), Some(6)).await.0, json!({}),
+            "the user attached to its terminal");
+        working_agent_without_mod(&domain, "agent-z");
+        assert_eq!(hook(&domain, json!({"session_id": "agent-z", "hook_event_name": "Stop"}), Some(6)).await.0, json!({}),
+            "not a node Alondra launched");
+    }
+
+    #[tokio::test]
+    async fn work_running_in_the_background_or_a_wait_for_the_machine_lets_the_turn_end() {
+        let fixture = Fixture::new();
+        let domain = fixture.open();
+        node_with_task(&domain);
+        let (reply, _) = hook(&domain, json!({"session_id": "agent-a", "hook_event_name": "Stop",
+            "background_tasks": [{"id": "b1", "type": "shell", "command": "make test"}]}), Some(6)).await;
         assert_eq!(reply, json!({}));
+        assert_eq!(domain.store.lock().unwrap().stop_blocks(&"task".into()).unwrap(), None, "nothing counted");
+    }
+
+    #[tokio::test]
+    async fn a_delivery_handed_back_must_be_presented_again_before_the_turn_ends() {
+        let fixture = Fixture::new();
+        let domain = fixture.open();
+        node_with_task(&domain);
+        command(&domain, agent_actor(), "present", Command::PresentResult {
+            attachments: vec![], task_id: "task".into(), interaction_id: "delivery".into(),
+            body: "Done".into(), targets: vec![DeliveryTarget::Text { text: "The answer".into() }], is_final: true,
+            card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
+        });
+        let stop = json!({"session_id": "agent-a", "hook_event_name": "Stop"});
+        assert_eq!(hook(&domain, stop.clone(), Some(6)).await.0, json!({}), "in review");
+        command(&domain, user_actor(), "changes", Command::SubmitFeedback {
+            attachments: vec![], presentation_id: "delivery".into(),
+            targets: vec![DeliveryTarget::Text { text: "The answer".into() }], body: "Shorter".into(),
+            instruction: Instruction::Changes,
+        });
+        assert!(reminder_only(&hook(&domain, stop, Some(6)).await.0));
+    }
+
+    #[test]
+    fn an_open_pr_of_the_branch_that_alondra_does_not_know_is_named() {
+        let fixture = Fixture::new();
+        let domain = fixture.open();
+        node_with_task(&domain);
+        command(&domain, agent_actor(), "pr", Command::RegisterPr {
+            task_id: "task".into(), pr_id: "pr".into(), host: "github.com".into(), repository: "owner/repo".into(),
+            number: 7, head: "0123456789abcdef0123456789abcdef01234567".into(), base: "main".into(),
+            allowed_methods: vec![MergeMethod::Squash],
+        });
+        let state = domain.state().unwrap();
+        assert_eq!(unregistered_pr_text(&state, "Owner/Repo", 7), None);
+        let text = unregistered_pr_text(&state, "owner/repo", 8).unwrap();
+        assert!(text.contains("owner/repo#8") && text.contains("register_pr"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn a_turn_ending_after_a_result_is_not_held() {
+        let fixture = Fixture::new();
+        let domain = fixture.open();
+        node_with_task(&domain);
         command(&domain, agent_actor(), "present", Command::PresentResult {
             attachments: vec![], task_id: "task".into(), interaction_id: "delivery".into(),
             body: "Done".into(), targets: vec![DeliveryTarget::Text { text: "The answer".into() }], is_final: true, card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),

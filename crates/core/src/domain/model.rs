@@ -71,7 +71,8 @@ pub struct Request {
     /// Closed because the user withdrew it.
     #[serde(default)]
     pub withdrawn: bool,
-    /// The user chose that the Agent merges its own PR once it can, without waiting for them.
+    /// The user chose that Alondra merges the PR of the final delivery once its checks pass,
+    /// without waiting for their acceptance.
     #[serde(default)]
     pub auto_merge: bool,
 }
@@ -123,6 +124,12 @@ pub struct Task {
     /// and for launches that left Claude's default model.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<TaskModel>,
+}
+impl Task {
+    /// Still under way or waiting on something: what every client counts as a Task in progress.
+    pub fn active(&self) -> bool {
+        !self.state.terminal() && !self.archived
+    }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

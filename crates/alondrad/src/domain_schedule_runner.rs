@@ -105,7 +105,7 @@ pub(crate) fn producer_prompt(
         "The user chose these options for this work:".into(),
     ];
     if resolved.auto_merge {
-        lines.push("- PR handling: auto-merge. Register the PR and present it as your result. Once its checks pass and it is mergeable, merge the pull request you registered using an allowed method, then report the result.".into());
+        lines.push("- PR handling: auto-merge. Register the PR and deliver it with present_result as your final result: once its checks pass, Alondra merges it and tells you. Do not merge it yourself.".into());
     }
     for picked in resolved
         .picked
@@ -854,7 +854,7 @@ mod tests {
             .unwrap()
         };
         let auto = producer_prompt("Fix it", &chosen("auto_merge"), &TaskId::from("t-1"), alondra_core::options::Approach::Solo);
-        assert!(auto.contains("Once its checks pass") && auto.contains("merge the pull request you registered"), "{auto}");
+        assert!(auto.contains("once its checks pass, Alondra merges it") && auto.contains("Do not merge it yourself"), "{auto}");
         assert!(!auto.contains("gh pr merge") && !auto.contains("authorization"), "{auto}");
         let review = producer_prompt("Fix it", &chosen("review"), &TaskId::from("t-1"), alondra_core::options::Approach::Solo);
         assert!(!review.contains("auto-merge"), "{review}");

@@ -654,7 +654,7 @@
         },
         {
           "type": "command",
-          "actor": "agent-a",
+          "actor": "system",
           "command": {
             "kind": "complete_task",
             "task_id": "task-1",
@@ -1210,7 +1210,7 @@
           "value": false
         }
       ],
-      "cs_evidence": ["domain::tests::review_off_does_not_authorize_and_external_merge_does_not_complete"],
+      "cs_evidence": ["domain::tests::review_off_records_no_pr_decision_and_an_external_merge_completes"],
       "cs_evidence_status": "passed",
       "execution_status": "test_evidence"
     },
@@ -1393,7 +1393,7 @@
         },
         {
           "type": "command",
-          "actor": "agent-a",
+          "actor": "system",
           "command": {
             "kind": "claim_merge_authorization",
             "authorization_id": "authorization-1",
@@ -1443,7 +1443,7 @@
       "steps": [
         {
           "type": "command",
-          "actor": "agent-a",
+          "actor": "system",
           "command": {
             "kind": "claim_merge_authorization",
             "authorization_id": "authorization-1",
@@ -1537,7 +1537,7 @@
         "R13",
         "R14"
       ],
-      "title": "External merge does not fabricate consent",
+      "title": "An external merge settles the delivery without fabricating consent",
       "layers": [
         "C",
         "S",
@@ -1561,7 +1561,7 @@
         },
         {
           "type": "command",
-          "actor": "agent-a",
+          "actor": "system",
           "command": {
             "kind": "complete_task",
             "task_id": "task-1",
@@ -1588,12 +1588,12 @@
         {
           "path": "last_error.code",
           "op": "eq",
-          "value": "acceptance_missing"
+          "value": "task_not_active"
         },
         {
           "path": "tasks.task-1.status",
           "op": "eq",
-          "value": "in_review"
+          "value": "done"
         }
       ],
       "execution_status": "store_runner"
@@ -1655,7 +1655,7 @@
         "R02",
         "R13"
       ],
-      "title": "Another agent cannot complete a task",
+      "title": "No agent can complete a task",
       "layers": [
         "C",
         "A"
@@ -1681,7 +1681,7 @@
         {
           "path": "last_error.code",
           "op": "eq",
-          "value": "not_assigned"
+          "value": "forbidden"
         },
         {
           "path": "last_rejected.delta.rows",
@@ -2901,7 +2901,7 @@
         },
         {
           "type": "command",
-          "actor": "agent-a",
+          "actor": "system",
           "command": {
             "kind": "complete_task",
             "task_id": "task-1",
@@ -3111,7 +3111,7 @@
       "steps": [
         {
           "type": "command",
-          "actor": "agent-a",
+          "actor": "system",
           "command": {
             "kind": "claim_merge_authorization",
             "authorization_id": "authorization-1",
@@ -3295,7 +3295,7 @@
       "steps": [
         {
           "type": "command",
-          "actor": "agent-a",
+          "actor": "system",
           "command": {
             "kind": "complete_task",
             "task_id": "task-2",

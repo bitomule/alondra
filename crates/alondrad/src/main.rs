@@ -18,6 +18,7 @@ mod domain_delivery;
 #[cfg(test)]
 mod domain_e2e_tests;
 mod domain_github;
+mod domain_merges;
 mod domain_holds;
 mod domain_messages;
 mod domain_orchestrator;
@@ -502,6 +503,8 @@ async fn run_domain(config: &Config) -> Result<()> {
     }
     tokio::spawn(mods_check::run(plugins::node()));
     tokio::spawn(node_revival::run(state_domain.clone()));
+    let merges_domain = domain.clone();
+    tokio::spawn(domain_merges::run(merges_domain, Arc::new(domain_github::GhCli::new())));
     let github = tokio::spawn(domain_github::run(
         domain,
         Arc::new(domain_github::GhCli::new()),

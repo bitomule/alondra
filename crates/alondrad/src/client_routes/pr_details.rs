@@ -210,7 +210,7 @@ pub(crate) fn hand_back_conflicts(domain: &crate::domain_runtime::DomainRuntime,
 fn conflicts_sent(state: &DomainState, pr: &alondra_core::domain::PullRequest) -> bool {
     state.interactions.values().any(|interaction| matches!(&interaction.payload,
         InteractionPayload::Delivery { targets, feedback, .. }
-            if feedback.iter().any(|f| f.instruction == Instruction::Conflicts)
+            if feedback.iter().any(|f| f.instruction == Instruction::Conflicts && alondra_core::domain::merge_failure(&f.body).is_none())
                 && targets.iter().any(|target| matches!(target, DeliveryTarget::PullRequest { pr_id, head }
                     if pr_id == &pr.id && head == &pr.head))))
 }
@@ -304,6 +304,32 @@ mod tests {
         present(&domain, "pushed", "head2");
         hand_back_conflicts(&domain, &details, "Ana");
         assert_eq!(conflicts_told(&domain).iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(), ["first", "pushed"]);
+    }
+
+    #[test]
+    fn a_merge_failure_is_not_a_conflict_already_sent() {
+        let home = Home(std::env::temp_dir().join(format!("alondra-conflicts-merge-{}", crate::auth::random_hex(8))));
+        std::fs::create_dir(&home.0).unwrap();
+        let domain = crate::domain_runtime::DomainRuntime::open(&home.0).unwrap();
+        let user = Actor::User { user_id: "user".into() };
+        run(&domain, Actor::System, "agent", Command::RegisterAgent { agent_id: "agent".into(), name: "Agent".into() });
+        run(&domain, user.clone(), "request", Command::CreateRequest { request_id: "request".into(), body: "Work".into(), auto_merge: false });
+        run(&domain, user, "task", Command::CreateTask { task_id: "task".into(), request_id: "request".into(), title: "Task".into(),
+            agent_id: Some("agent".into()), review_prs: false, dependencies: Default::default(), stack: None });
+        run(&domain, Actor::Agent { agent_id: "agent".into() }, "pr", Command::RegisterPr { task_id: "task".into(),
+            pr_id: "pr".into(), host: "github.com".into(), repository: "me/app".into(), number: 7, head: "head1".into(),
+            base: "main".into(), allowed_methods: vec![MergeMethod::Squash] });
+        present(&domain, "first", "head1");
+        run(&domain, Actor::System, "merge-failed", Command::SubmitFeedback { attachments: vec![], presentation_id: "first".into(),
+            targets: vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: "head1".into() }],
+            body: alondra_core::domain::merge_failed_text(7, "https://github.com/me/app/pull/7", "main", "review required"),
+            instruction: Instruction::Conflicts });
+        present(&domain, "again", "head1");
+        let details = PrDetails::default();
+        details.record("pr", Details { conflicts: true, ..Default::default() });
+        hand_back_conflicts(&domain, &details, "Ana");
+        assert_eq!(conflicts_told(&domain).iter().filter(|(id, _)| id == "again").count(), 1,
+            "a real conflict at the same head still goes back");
     }
 
     #[test]

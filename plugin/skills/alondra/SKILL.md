@@ -1,6 +1,6 @@
 ---
 name: alondra
-description: How a node works on its Alondra task — asking the user, delivering the result, registering a PR, merging one the user authorized, or saying it waits for the machine. Use it when you start on an Alondra task, need a decision, or are done.
+description: How a node works on its Alondra task — asking the user, delivering the result, registering its one PR (Alondra merges it), or saying it waits for the machine. Use it when you start on an Alondra task, need a decision, or are done.
 ---
 
 # Alondra
@@ -36,7 +36,15 @@ characters. Cards that ask for something also have a `why`: one or two sentences
 about why and what it holds up. Name tasks and PRs by their title or number, never by an internal
 id such as `t-foo`: the user reads `why` on the card. Anything longer goes in `content` (`kind`, optional `summary`,
 `body`), never in `why`: the user sees `need` and `why` on the card and `content` in its detail.
-Prefer a recommendation whenever you can make one. Pick the tool by what you need:
+Prefer a recommendation whenever you can make one.
+
+Everything the user reads must be clear on its own: a card's `need`, `why` and `content`, and a
+result's title and summary. Say the work or the decision itself, never process jargon, steps
+Alondra takes itself (merging, authorizing or re-authorizing a merge, retrying) or internal ids.
+A result says what changed ("Fix the crash when the schedule list is empty"), never "authorize the
+merge again" or "conflicts resolved, merge it".
+
+Pick the tool by what you need:
 
 ## The tools
 
@@ -66,14 +74,16 @@ Prefer a recommendation whenever you can make one. Pick the tool by what you nee
   `request_input`, to have the user try something `request_test`; report results in
   `present_result`.
 - `present_result` with `is_final: true`: you are done. `need` says what to review, the report or
-  diff goes in `content`; `targets` names
+  diff goes in `content`, both about the change itself; `targets` names
   what you deliver: `text`, a document revision you created, or the PR you registered with its
   exact head. The user accepts it in Alondra. A file sent another way or a final message left in
-  this session is not a delivery.
-- When the user accepts your final result, Alondra closes the task itself (for a PR, once its
-  merge is confirmed); there is nothing left to call.
-- `complete_task`: only under auto-merge, after you merged the PR yourself, with the final
-  presentation's id.
+  this session is not a delivery. Commit and push everything first: Alondra refuses a final result
+  while your worktree has uncommitted files, unpushed commits, or work that is neither on the
+  default branch nor in your registered PR, and says what is left.
+- When the user accepts your final result, Alondra closes the task itself; for a PR it merges it
+  first and tells you. There is nothing left to call.
+- Do not end your turn while your task is open with no result and no question: Alondra sends you
+  back to work with the reason, and after three times it tells the user you cannot deliver.
 - `create_document` / `revise_document`: a file the user reviews. Copy it into Alondra's files
   folder (`$ALONDRA_HOME/files/`) and pass that path with its
   SHA256; each revision is reviewed as it is. Creating it shows the user nothing by itself.
@@ -108,20 +118,23 @@ Prefer a recommendation whenever you can make one. Pick the tool by what you nee
 
 - Right after opening a PR, call `register_pr` with the task, a short `pr_id` such as `pr-123`
   (letters, digits, `-` and `_` only, never `owner/repo#123`), its host, `owner/repo`, number,
-  head and base, and the merge methods allowed. One task has one PR for its whole life; other
-  work needs another task.
-- Present it with `present_result`, the PR and its head in `targets`. The user decides the merge
-  on its card, so do not ask about merging. When they authorize it, Alondra hands you the
-  authorization: check the PR's head and base, call `claim_merge_authorization`, and only then
-  run the approved method against that PR and head, for example
-  `gh pr merge <number> --match-head-commit <head> --squash`. Never merge without that claim.
+  head and base, and the merge methods allowed. A task owns exactly one PR for its whole life:
+  more work for the task goes on that PR, and work that needs another PR is another task, which
+  you ask the orchestrator for (`ask` with recipient kind `orchestrator`). A second `register_pr`
+  for the task is refused.
+- Present it with `present_result`, the PR and its head in `targets`, as your final result. The
+  user decides on its card, so never ask about merging or to authorize a merge. When they accept
+  it, Alondra merges the PR itself and tells you ("Pull request #N is merged"); a PR merged on
+  GitHub also completes the task. Never merge a PR yourself.
+- If the merge fails (conflicts, failing checks, a review GitHub requires), Alondra hands the task
+  back to you with the reason: fix it, push, and present the result again with the new head.
 - When the user requests changes or asks about the PR, or Alondra asks you to resolve its
   conflicts, its card leaves the user's queue and the task shows what Alondra asked of you. Do
   it (put the answer to a question in the report), then present the result again with
   `present_result`, for a PR with its new head: that is the only thing that brings the card
   back. If you cannot do what was asked, `ask`.
-- With auto-merge chosen for the work, register and present the PR the same way and merge it as
-  your mission says once its checks pass.
+- With auto-merge chosen for the work, register and present the PR the same way: Alondra merges
+  it once its checks pass, without the user's review, and tells you.
 - A task that builds on another names the branch to start from and to open your PR against.
 
 ## One task at a time

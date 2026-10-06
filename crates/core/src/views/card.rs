@@ -912,7 +912,7 @@ fn delivery_actions(
             merge.presentation = Presentation::Menu;
             merge.options = methods;
             merge.confirm = Some(merge_confirm(pr, context));
-            merge.stamp = Some(t!(lang, "Merged", "Fusionada").into());
+            merge.stamp = Some(t!(lang, "Merging…", "Fusionando…").into());
             merge.enabled = available.enabled && stacked.is_none();
             merge.disabled_reason = stacked
                 .map(|id| {
@@ -1287,6 +1287,12 @@ fn history_rows(item: &InboxItem, context: &RenderContext<'_>) -> Vec<Item> {
         InteractionPayload::Delivery { acceptance, feedback, .. } => {
             for (index, feedback) in feedback.iter().enumerate() {
                 use crate::domain::Instruction;
+                if let Some((number, reason)) = crate::domain::merge_failure(&feedback.body) {
+                    row(format!("feedback-{index}"), Icon::History,
+                        tf!(lang, "Alondra couldn't merge #{number}", "Alondra no pudo fusionar la #{number}", number = number),
+                        Some(clip(reason, 240)));
+                    continue;
+                }
                 let title = match feedback.instruction {
                     Instruction::Changes => t!(lang, "You asked for changes", "Pediste cambios"),
                     Instruction::Question => t!(lang, "You asked a question", "Hiciste una pregunta"),
@@ -1373,12 +1379,38 @@ pub(super) fn disabled_reason(code: &str, lang: Lang) -> &'static str {
     match code {
         "already_read" => t!(lang, "Already read", "Ya leído"),
         "withdrawn" => t!(lang, "Withdrawn", "Retirada"),
-        "forbidden" => t!(lang, "Unavailable", "No disponible"),
+        "forbidden" => t!(lang, "Meant for the orchestrator or a node, not for you", "Es para el orquestador o un nodo, no para ti"),
         "task_not_active" => t!(lang, "Task is no longer active", "La tarea ya no está activa"),
         "invalid_action_for_kind" => t!(lang, "Already answered", "Ya respondida"),
         "stale_revision" => t!(lang, "This card has changed", "Esta tarjeta ha cambiado"),
         "blocked" => t!(lang, "Another card holds it back", "Otra tarjeta la retiene"),
         "clarification_pending" => t!(lang, "Waiting for the clarification", "Esperando la aclaración"),
+        "delivery_uncertain" => t!(lang, "Alondra is already merging this pull request", "Alondra ya está fusionando esta PR"),
+        "stale_head" => t!(lang, "The pull request has new commits since this result", "La PR tiene commits nuevos desde este resultado"),
+        "acceptance_stale" => t!(lang, "A newer result replaced this one", "Un resultado más reciente sustituyó a este"),
+        "acceptance_missing" => t!(lang, "The result is not accepted yet", "El resultado aún no está aceptado"),
+        "merge_not_confirmed" => t!(lang, "The pull request is not merged yet", "La PR aún no está fusionada"),
+        "blocking_interaction" | "blocking_open" => t!(lang, "A question of this task is still unanswered", "Una pregunta de esta tarea sigue sin respuesta"),
+        "stack_not_ready" => t!(lang, "The pull request it builds on is not merged yet", "La PR de la que depende aún no está fusionada"),
+        "dependency_not_done" => t!(lang, "A task this one depends on is not done", "Una tarea de la que depende no está hecha"),
+        "dependency_cycle" => t!(lang, "These tasks depend on each other", "Estas tareas dependen unas de otras"),
+        "not_found" => t!(lang, "This was deleted", "Esto se ha borrado"),
+        "not_assigned" => t!(lang, "Another node works on this task now", "Ahora otro nodo trabaja en esta tarea"),
+        "agent_busy" => t!(lang, "That node is busy with another task", "Ese nodo está ocupado con otra tarea"),
+        "question_already_answered" | "already_answered" => t!(lang, "Already answered", "Ya respondida"),
+        "already_withdrawn" => t!(lang, "Withdrawn", "Retirada"),
+        "ask_already_open" => t!(lang, "Another question of this node is still open", "Otra pregunta de este nodo sigue abierta"),
+        "subject_already_linked" => t!(lang, "Already linked to something else", "Ya está vinculada a otra cosa"),
+        "pr_mismatch" | "pr_owned_by_other_task" | "task_already_has_pr" => t!(lang, "The pull request belongs to another task", "La PR pertenece a otra tarea"),
+        "unknown_target" => t!(lang, "What it refers to no longer exists", "Lo que menciona ya no existe"),
+        "no_task" => t!(lang, "It has no task", "No tiene tarea"),
+        "request_title_required" => t!(lang, "The request needs a title first", "La petición necesita antes un título"),
+        "archive_task" => t!(lang, "Only finished tasks can be archived", "Solo se archivan tareas terminadas"),
+        "stale_generation" | "stale_epoch" => t!(lang, "Alondra restarted: refresh to act on it", "Alondra se reinició: actualiza para actuar"),
+        "conflict" | "idempotency_conflict" => t!(lang, "Someone else changed it just now", "Alguien lo acaba de cambiar"),
+        "payload_too_large" => t!(lang, "Too large to send", "Demasiado grande para enviarlo"),
+        "incompatible_protocol" => t!(lang, "Update Alondra to do this", "Actualiza Alondra para hacer esto"),
+        "invalid_input" => t!(lang, "Alondra cannot do this with what the card holds", "Alondra no puede hacerlo con lo que tiene la tarjeta"),
         _ => t!(lang, "No longer available", "Ya no está disponible"),
     }
 }

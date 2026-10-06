@@ -705,6 +705,27 @@ fn a_scheduled_run_in_progress_is_an_active_task_marked_scheduled_and_finishes_l
 }
 
 #[test]
+fn the_tasks_counter_counts_only_tasks_still_under_way() {
+    let (mut state, live) = tasks_fixture();
+    let count = |state: &DomainState| {
+        render(state, &live, Client::Tui, Lang::En, "tasks", "").status.counts.iter()
+            .find(|count| count.id == "tasks").unwrap().value
+    };
+    let all = state.tasks.len() as u32;
+    assert!(state.tasks.values().all(|task| task.active()));
+    assert_eq!(count(&state), all);
+    state.tasks.get_mut(&"t-legacy-editor".into()).unwrap().state = TaskState::Done;
+    state.tasks.get_mut(&"t-legacy-notes".into()).unwrap().state = TaskState::Cancelled;
+    let archived = state.tasks.get_mut(&"t-badge-count".into()).unwrap();
+    (archived.state, archived.archived) = (TaskState::Done, true);
+    assert_eq!(count(&state), all - 3);
+    for waiting in [TaskState::WaitingDependency, TaskState::NeedsYou, TaskState::InReview, TaskState::Closing] {
+        state.tasks.get_mut(&"t-legacy-editor".into()).unwrap().state = waiting;
+        assert_eq!(count(&state), all - 2, "{waiting:?}");
+    }
+}
+
+#[test]
 fn tasks_views_match_goldens() {
     let (state, live) = tasks_fixture();
     for (filename, client, lang) in TASKS_GOLDENS {
@@ -3257,10 +3278,10 @@ fn request_option_values_keep_their_description_in_both_languages() {
         })
     };
     let [pr, effort] = descriptions(Lang::En);
-    assert_eq!(pr[1].as_deref(), Some("The node merges its own PR once its checks pass"));
+    assert_eq!(pr[1].as_deref(), Some("Alondra merges the PR once its checks pass"));
     assert!(effort.iter().all(Option::is_some));
     let [pr, effort] = descriptions(Lang::Es);
-    assert_eq!(pr[1].as_deref(), Some("El nodo fusiona su propia PR cuando pasan las comprobaciones"));
+    assert_eq!(pr[1].as_deref(), Some("Alondra fusiona la PR cuando pasan sus comprobaciones"));
     assert_eq!(effort[2].as_deref(), Some("El modelo y el esfuerzo por defecto de Claude"));
 }
 
@@ -3548,6 +3569,18 @@ fn a_pr_sent_back_leaves_waiting_for_you_and_its_task_says_what_alondra_asked() 
         assert!(task(&state, Lang::En).contains(english), "{instruction:?}");
         assert!(task(&state, Lang::Es).contains(spanish), "{instruction:?}");
     }
+    let mut state = presented.clone();
+    execute(&mut state, Actor::System, Command::SubmitFeedback {
+        attachments: vec![], presentation_id: "d".into(), instruction: Instruction::Conflicts,
+        body: crate::domain::merge_failed_text(12, "https://github.com/example/repo/pull/12", "main", "its checks failed (lint)"),
+        targets: vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: "head1".into() }],
+    });
+    let english = task(&state, Lang::En);
+    assert!(english.contains("Alondra couldn't merge it") && !english.contains("Resolving conflicts"), "{english}");
+    assert!(task(&state, Lang::Es).contains("Alondra no pudo fusionarla"));
+    let card = serde_json::to_string(&render(&state, &live, Client::Tui, Lang::En, "card:d", "")).unwrap();
+    assert!(card.contains("Alondra couldn't merge #12") && card.contains("its checks failed (lint)")
+        && !card.contains("Conflicts were reported"), "{card}");
 }
 
 #[test]
@@ -4113,4 +4146,25 @@ fn a_node_with_an_open_task_never_reads_idle_and_idle_is_only_for_the_bottom_sec
             }
         }
     }
+}
+
+#[test]
+fn every_refusal_a_card_can_meet_has_its_own_words() {
+    let codes = [
+        "already_read", "withdrawn", "forbidden", "task_not_active", "invalid_action_for_kind", "stale_revision",
+        "blocked", "clarification_pending", "delivery_uncertain", "stale_head", "acceptance_stale",
+        "acceptance_missing", "merge_not_confirmed", "blocking_interaction", "blocking_open", "stack_not_ready",
+        "dependency_not_done", "dependency_cycle", "not_found", "not_assigned", "agent_busy",
+        "question_already_answered", "already_answered", "already_withdrawn", "ask_already_open",
+        "subject_already_linked", "pr_mismatch", "pr_owned_by_other_task", "task_already_has_pr", "unknown_target",
+        "no_task", "request_title_required", "archive_task", "stale_generation", "stale_epoch", "conflict",
+        "idempotency_conflict", "payload_too_large", "incompatible_protocol", "invalid_input",
+    ];
+    for lang in [Lang::En, Lang::Es] {
+        let fallback = card::disabled_reason("an unknown code", lang);
+        for code in codes {
+            assert_ne!(card::disabled_reason(code, lang), fallback, "{code} needs its own words");
+        }
+    }
+    assert_eq!(card::disabled_reason("delivery_uncertain", Lang::En), "Alondra is already merging this pull request");
 }

@@ -82,7 +82,7 @@ fn diff_reader_text(diff: crate::client::PullRequestDiff, truncated_notice: &str
     }
 }
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::io::stdout;
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::time::Duration;
@@ -655,8 +655,8 @@ pub struct App {
     pub task_detail_scroll: usize,
     pub task_view: View,
     pub task_zoom: bool,
-    pub archived_open: bool,
-    pub finished_open: bool,
+    /// Sections the daemon sends folded that the user opened.
+    pub open_sections: BTreeSet<String>,
     /// The selected task's controls as the daemon computed them, by the revision they were read at.
     pub task_actions: HashMap<TaskId, (Revision, Vec<AvailableAction>)>,
     task_actions_asked: HashSet<(TaskId, Revision)>,
@@ -1057,8 +1057,7 @@ impl App {
             task_detail_scroll: 0,
             task_view: View::default(),
             task_zoom: false,
-            archived_open: false,
-            finished_open: false,
+            open_sections: BTreeSet::new(),
             task_actions: HashMap::new(),
             task_actions_asked: HashSet::new(),
             interactions: HashMap::new(),
@@ -1216,7 +1215,7 @@ impl App {
             return Some(key.clone());
         }
         if let (Some(selected), Some(view)) = (self.sel.as_ref(), self.home_view.as_ref()) {
-            let entry = view_render::entries(view)
+            let entry = view_render::entries(view, &self.open_sections)
                 .into_iter()
                 .find(|(id, _, _)| *id == selected.0);
             if let Some((_, _, link)) = entry {
@@ -1230,7 +1229,6 @@ impl App {
             return match self.task_sel.as_ref()? {
                 tasks::TaskKey::Task(id) => Some(format!("task:{}", id.0)),
                 tasks::TaskKey::Request(id) => Some(format!("request:{}", id.0)),
-                tasks::TaskKey::Finished | tasks::TaskKey::Archived => None,
             };
         }
         let selected = self.sel.as_ref()?;
@@ -2065,6 +2063,11 @@ impl App {
             self.card_view_asked = None;
             self.load_selected_view();
             self.sync_open_views();
+            return Flow::Go;
+        }
+        let opens = matches!(cmd, Cmd::Expand)
+            || matches!(cmd, Cmd::Other(k) if k.code == KeyCode::Enter);
+        if opens && self.toggle_selected_section() {
             return Flow::Go;
         }
         match cmd {

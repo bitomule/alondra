@@ -12,6 +12,7 @@ const WEEKLY: &str = "Parcel · mejora semanal";
 
 fn task_screen(domain: &DomainState, live: &LiveSnapshot, request: &str, task: &str) -> App {
     let mut app = app_on(Screen::Tasks, build(domain, live, "tasks"));
+    app.open_sections.insert("finished".into());
     app.sel = Some(Key(request.into()));
     app.on_msg(Msg::ViewCard {
         key: format!("task:{task}"),
@@ -189,6 +190,7 @@ fn fleet_lists_each_node_once_with_its_state_and_no_zero_counters() {
 fn tasks_list_one_row_per_single_task_request_with_people_times() {
     let (domain, live) = busy();
     let mut app = app_on(Screen::Tasks, build(&domain, &live, "tasks"));
+    app.open_sections.insert("finished".into());
     let screen = rendered(&mut app, 100, 24);
     dump("tasks", &screen);
     for title in [ODD_STATE, WEEKLY] {
@@ -219,6 +221,28 @@ fn the_tasks_list_nests_a_task_under_the_other_requests_task_it_follows_and_neve
     }
     assert!(screen.contains("New request"), "{screen}");
     assert!(!screen.contains("Look at the schedule editor") && !screen.contains("Import lists from Notes"), "{screen}");
+}
+
+#[test]
+fn finished_and_archived_start_folded_and_enter_on_the_header_opens_and_folds_them() {
+    let (mut domain, live) = busy();
+    domain.tasks.get_mut(&"t-weekly".into()).unwrap().state = TaskState::Done;
+    let mut app = app_on(Screen::Tasks, build(&domain, &live, "tasks"));
+    let folded = rendered(&mut app, 100, 30);
+    dump("tasks (finished folded)", &folded);
+    assert!(folded.contains("▸ TERMINADAS"), "{folded}");
+    assert!(!folded.contains(WEEKLY), "{folded}");
+
+    let header = app.inbox_keys().iter().position(|key| key.0 == "section:finished").unwrap();
+    app.move_inbox(header as isize);
+    press(&mut app, KeyCode::Enter);
+    let open = rendered(&mut app, 100, 30);
+    dump("tasks (finished open)", &open);
+    assert!(open.contains("▾ TERMINADAS") && open.contains(WEEKLY), "{open}");
+
+    press(&mut app, KeyCode::Char('o'));
+    let again = rendered(&mut app, 100, 30);
+    assert!(again.contains("▸ TERMINADAS") && !again.contains(WEEKLY), "{again}");
 }
 
 #[test]

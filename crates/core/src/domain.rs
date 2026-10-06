@@ -13,3 +13,4 @@ pub use command::*;
 pub use model::*;
 pub use projection::*;
 pub use schedule::*;
+pub use rules::{ALONDRA_MERGES, merge_failed_text, merge_failure, merged_notice};
