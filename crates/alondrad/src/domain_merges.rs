@@ -192,7 +192,8 @@ fn transient(reason: &str) -> bool {
 
 /// `gh` itself cannot work here: missing, logged out, or without access.
 fn environment(reason: &str) -> bool {
-    has(reason, &["gh auth login", "not logged", "authentication", "no such file", "command not found", "http 401", "http 403", "bad credentials"])
+    has(reason, &["gh auth login", "not logged", "authentication", "no such file", "command not found", "http 401", "http 403",
+        "bad credentials", "admin rights", "permission", "not authorized", "resource not accessible"])
 }
 
 /// GitHub refuses only because required checks have not reported yet.
@@ -229,6 +230,8 @@ pub(crate) struct Merger {
     waited: BTreeMap<PrId, Instant>,
     transient: BTreeMap<PrId, u32>,
     trouble: BTreeMap<PrId, Trouble>,
+    /// `gh pr merge` refused for lack of access while reads work: cleared only by a merge.
+    merge_trouble: BTreeMap<PrId, Trouble>,
     queued: BTreeSet<PrId>,
     action: BTreeMap<PrId, InteractionId>,
 }
@@ -242,7 +245,7 @@ impl Default for Merger {
 impl Merger {
     pub(crate) fn with(grace: Duration, poll: Duration, give_up: Duration) -> Self {
         Self { grace, poll, give_up, seen: BTreeMap::new(), waited: BTreeMap::new(), transient: BTreeMap::new(),
-            trouble: BTreeMap::new(), queued: BTreeSet::new(), action: BTreeMap::new() }
+            trouble: BTreeMap::new(), merge_trouble: BTreeMap::new(), queued: BTreeSet::new(), action: BTreeMap::new() }
     }
 
     /// Merges what is due. `true` while something waits, so the caller looks again.
@@ -250,8 +253,7 @@ impl Merger {
         let mut waiting = false;
         let due = due(&domain.state()?);
         let open: BTreeSet<_> = due.iter().map(|item| item.pr.id.clone()).collect();
-        self.waited.retain(|pr, _| open.contains(pr));
-        self.transient.retain(|pr, _| open.contains(pr));
+        self.forget_all_but(domain, &open);
         for item in due {
             let now = Instant::now();
             if self.waited.get(&item.pr.id).is_some_and(|at| now.duration_since(*at) < self.poll) {
@@ -285,8 +287,8 @@ impl Merger {
         };
         match status.state {
             PrState::Merged => {
-                self.queued.remove(&pr.id);
                 record_merged(domain, pr, &status)?;
+                self.forget(domain, &pr.id);
                 return Ok(Step::Settled);
             }
             PrState::Closed => return Ok(Step::Settled),
@@ -296,11 +298,23 @@ impl Merger {
         if self.queued.contains(&pr.id) {
             return match github.in_queue(pr).await {
                 Ok(true) => Ok(Step::Wait),
-                Ok(false) => {
-                    self.queued.remove(&pr.id);
-                    self.failed(domain, item, "GitHub's merge queue removed it without merging it")?;
-                    Ok(Step::Settled)
-                }
+                Ok(false) => match github.status(pr).await {
+                    Ok(now) if now.state == PrState::Merged => {
+                        record_merged(domain, pr, &now)?;
+                        self.forget(domain, &pr.id);
+                        Ok(Step::Settled)
+                    }
+                    Ok(now) if now.state == PrState::Open && now.head == item.head => {
+                        self.queued.remove(&pr.id);
+                        self.failed(domain, item, "GitHub's merge queue removed it without merging it")?;
+                        Ok(Step::Settled)
+                    }
+                    Ok(_) => Ok(Step::Settled),
+                    Err(reason) => {
+                        self.troubled(domain, pr, &reason);
+                        Ok(Step::Wait)
+                    }
+                },
                 Err(reason) => {
                     self.troubled(domain, pr, &reason);
                     Ok(Step::Wait)
@@ -350,6 +364,9 @@ impl Merger {
         match github.merge(pr, &item.head, item.method).await {
             Ok(()) => {
                 self.transient.remove(&pr.id);
+                if let Some(Trouble { card: Some(card), .. }) = self.merge_trouble.remove(&pr.id) {
+                    let _ = domain.withdraw_problem(&card);
+                }
                 log!("asked GitHub to merge {} at {}", pr_url(&pr.host, &pr.repository, pr.number), item.head);
                 self.confirm(domain, github, pr).await
             }
@@ -360,7 +377,7 @@ impl Merger {
             }
             Err(reason) if checks_waiting(&reason) => Ok(Step::Wait),
             Err(reason) if environment(&reason) => {
-                self.troubled(domain, pr, &reason);
+                self.merge_troubled(domain, pr, &reason);
                 Ok(Step::Wait)
             }
             Err(reason) => {
@@ -405,29 +422,68 @@ impl Merger {
     }
 
     fn troubled(&mut self, domain: &DomainRuntime, pr: &PullRequest, reason: &str) {
-        log!("cannot merge {}: {reason}", pr.id);
         let trouble = self.trouble.entry(pr.id.clone()).or_insert_with(|| Trouble { count: 0, since: Instant::now(), card: None });
-        if !transient(reason) {
-            trouble.count += 1;
-        }
-        if trouble.card.is_some() || (trouble.count < NON_TRANSIENT_FAILURES_BEFORE_CARD && trouble.since.elapsed() < self.give_up) {
-            return;
-        }
-        let id = format!("problem-merge-{}-{}", pr.id, crate::auth::random_hex(6));
-        let need = clip(&format!("Alondra can't merge PR #{}: {}", pr.number, reason.trim()), CardSpec::NEED_MAX);
-        let why = clip(&format!("GitHub keeps failing when Alondra reads or merges PR #{}, so it stays unmerged until this is fixed.", pr.number),
-            CardSpec::WHY_MAX);
-        let diagnosis = format!(
-            "Alondra uses the GitHub CLI (gh) on this Mac to merge {}. Last error: {}. Check that gh is installed and logged in \
-             (gh auth status) with access to {}. Alondra keeps trying and withdraws this card once it works.",
-            pr_url(&pr.host, &pr.repository, pr.number), reason.trim(), pr.repository
-        );
-        match domain.raise_problem(&id, Scope::Task { task_id: pr.task_id.clone() }, need, why, diagnosis, vec![]) {
-            Ok(_) => trouble.card = Some(id.into()),
-            Err(error) => log!("could not tell the user Alondra cannot merge {}: {error:?}", pr.id),
+        raise_trouble(domain, pr, reason, trouble, self.give_up);
+    }
+
+    fn merge_troubled(&mut self, domain: &DomainRuntime, pr: &PullRequest, reason: &str) {
+        let trouble = self.merge_trouble.entry(pr.id.clone()).or_insert_with(|| Trouble { count: 0, since: Instant::now(), card: None });
+        raise_trouble(domain, pr, reason, trouble, self.give_up);
+    }
+
+    /// Everything kept about a PR that is no longer due, with the cards raised for it.
+    fn forget(&mut self, domain: &DomainRuntime, pr: &PrId) {
+        self.waited.remove(pr);
+        self.transient.remove(pr);
+        self.queued.remove(pr);
+        self.seen.retain(|(seen, _), _| seen != pr);
+        let cards = [self.trouble.remove(pr).and_then(|t| t.card), self.merge_trouble.remove(pr).and_then(|t| t.card),
+            self.action.remove(pr)];
+        for card in cards.into_iter().flatten() {
+            let _ = domain.withdraw_problem(&card);
         }
     }
 
+    fn forget_all_but(&mut self, domain: &DomainRuntime, due: &BTreeSet<PrId>) {
+        let known: BTreeSet<PrId> = self.waited.keys().chain(self.transient.keys()).chain(self.queued.iter())
+            .chain(self.seen.keys().map(|(pr, _)| pr)).chain(self.trouble.keys()).chain(self.merge_trouble.keys())
+            .chain(self.action.keys()).cloned().collect();
+        for pr in known.difference(due) {
+            self.forget(domain, pr);
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn tracked(&self) -> usize {
+        self.waited.len() + self.transient.len() + self.queued.len() + self.seen.len() + self.trouble.len()
+            + self.merge_trouble.len() + self.action.len()
+    }
+}
+
+fn raise_trouble(domain: &DomainRuntime, pr: &PullRequest, reason: &str, trouble: &mut Trouble, give_up: Duration) {
+    log!("cannot merge {}: {reason}", pr.id);
+    if !transient(reason) {
+        trouble.count += 1;
+    }
+    if trouble.card.is_some() || (trouble.count < NON_TRANSIENT_FAILURES_BEFORE_CARD && trouble.since.elapsed() < give_up) {
+        return;
+    }
+    let id = format!("problem-merge-{}-{}", pr.id, crate::auth::random_hex(6));
+    let need = clip(&format!("Alondra can't merge PR #{}: {}", pr.number, reason.trim()), CardSpec::NEED_MAX);
+    let why = clip(&format!("GitHub keeps failing when Alondra reads or merges PR #{}, so it stays unmerged until this is fixed.", pr.number),
+        CardSpec::WHY_MAX);
+    let diagnosis = format!(
+        "Alondra uses the GitHub CLI (gh) on this Mac to merge {}. Last error: {}. Check that gh is installed and logged in \
+         (gh auth status) with access to {}. Alondra keeps trying and withdraws this card once it works.",
+        pr_url(&pr.host, &pr.repository, pr.number), reason.trim(), pr.repository
+    );
+    match domain.raise_problem(&id, Scope::Task { task_id: pr.task_id.clone() }, need, why, diagnosis, vec![]) {
+        Ok(_) => trouble.card = Some(id.into()),
+        Err(error) => log!("could not tell the user Alondra cannot merge {}: {error:?}", pr.id),
+    }
+}
+
+impl Merger {
     fn recovered(&mut self, domain: &DomainRuntime, pr: &PullRequest) {
         if let Some(Trouble { card: Some(card), .. }) = self.trouble.remove(&pr.id) {
             let _ = domain.withdraw_problem(&card);
@@ -532,13 +588,15 @@ pub(crate) struct FakeGithub {
     pub merged: std::sync::Mutex<Vec<(u64, String, MergeMethod)>>,
     pub reads: std::sync::atomic::AtomicUsize,
     pub on_read: std::sync::Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    /// PRs the queue merges between Alondra's status read and its queue check.
+    pub merged_by_queue: std::sync::Mutex<BTreeSet<u64>>,
 }
 
 #[cfg(test)]
 impl FakeGithub {
     pub(crate) fn new() -> Self {
         Self { statuses: Default::default(), merges: Default::default(), queue: Default::default(),
-            merged: Default::default(), reads: Default::default(), on_read: Default::default() }
+            merged: Default::default(), reads: Default::default(), on_read: Default::default(), merged_by_queue: Default::default() }
     }
     pub(crate) fn open(&self, number: u64, head: &str, checks: Checks) {
         self.statuses.lock().unwrap().insert(number, Ok(Status { state: PrState::Open, head: head.into(), base: "main".into(), checks }));
@@ -568,6 +626,12 @@ impl PrMerger for FakeGithub {
         Box::pin(async move { result })
     }
     fn in_queue<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, bool> {
+        if self.merged_by_queue.lock().unwrap().contains(&pr.number)
+            && let Some(Ok(status)) = self.statuses.lock().unwrap().get_mut(&pr.number)
+        {
+            status.state = PrState::Merged;
+            return Box::pin(async { Ok(false) });
+        }
         let queued = self.queue.lock().unwrap().get(&pr.number).copied().unwrap_or(false);
         Box::pin(async move { Ok(queued) })
     }

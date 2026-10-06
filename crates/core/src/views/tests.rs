@@ -3260,7 +3260,7 @@ fn request_option_values_keep_their_description_in_both_languages() {
     assert_eq!(pr[1].as_deref(), Some("Alondra merges the PR once its checks pass"));
     assert!(effort.iter().all(Option::is_some));
     let [pr, effort] = descriptions(Lang::Es);
-    assert_eq!(pr[1].as_deref(), Some("El nodo fusiona su propia PR cuando pasan las comprobaciones"));
+    assert_eq!(pr[1].as_deref(), Some("Alondra fusiona la PR cuando pasan sus comprobaciones"));
     assert_eq!(effort[2].as_deref(), Some("El modelo y el esfuerzo por defecto de Claude"));
 }
 

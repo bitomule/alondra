@@ -230,6 +230,55 @@ async fn a_pr_the_merge_queue_drops_goes_back_to_the_node() {
 }
 
 #[tokio::test]
+async fn a_pr_the_queue_merges_while_alondra_checks_it_is_recorded_not_handed_back() {
+    let (_home, domain, github) = presented("queue-race", false);
+    github.queue.lock().unwrap().insert(7, true);
+    accept(&domain);
+    let mut merger = now();
+    merger.merge_due(&domain, &github).await.unwrap();
+    github.merged_by_queue.lock().unwrap().insert(7);
+    merger.merge_due(&domain, &github).await.unwrap();
+    assert!(feedback(&domain).is_empty(), "{:?}", feedback(&domain));
+    assert_eq!(task(&domain), TaskState::Done);
+}
+
+#[tokio::test]
+async fn a_merge_refused_for_access_raises_one_card_while_reads_work_until_a_merge_succeeds() {
+    let (_home, domain, github) = presented("no-access", false);
+    github.merges.lock().unwrap().insert(7, Err("GraphQL: must have admin rights to Repository. (mergePullRequest)".into()));
+    accept(&domain);
+    let mut merger = now();
+    for _ in 0..2 {
+        merger.merge_due(&domain, &github).await.unwrap();
+    }
+    assert!(problems(&domain).is_empty());
+    merger.merge_due(&domain, &github).await.unwrap();
+    merger.merge_due(&domain, &github).await.unwrap();
+    let raised = problems(&domain);
+    assert_eq!(raised.len(), 1, "the successful reads in between do not clear it");
+    assert!(raised[0].card.need.starts_with("Alondra can't merge PR #7: GraphQL: must have admin rights"), "{}", raised[0].card.need);
+    assert!(!raised[0].withdrawn);
+    assert_eq!(task(&domain), TaskState::Closing, "not handed back: only the user can grant access");
+    github.merges.lock().unwrap().remove(&7);
+    merger.merge_due(&domain, &github).await.unwrap();
+    assert!(problems(&domain).iter().all(|card| card.withdrawn));
+    assert_eq!(task(&domain), TaskState::Done);
+}
+
+#[tokio::test]
+async fn cards_and_state_go_once_the_pr_is_no_longer_due() {
+    let (_home, domain, github) = presented("leaves", true);
+    github.open(7, HEAD, Checks::ActionRequired(vec!["deploy".into()]));
+    let mut merger = now();
+    merger.merge_due(&domain, &github).await.unwrap();
+    assert_eq!(problems(&domain).iter().filter(|card| !card.withdrawn).count(), 1);
+    command(&domain, user(), "cancel", Command::CancelTask { task_id: "t".into() });
+    merger.merge_due(&domain, &github).await.unwrap();
+    assert!(problems(&domain).iter().all(|card| card.withdrawn), "a cancelled task keeps no card");
+    assert_eq!(merger.tracked(), 0);
+}
+
+#[tokio::test]
 async fn failing_checks_go_back_once_and_cancelled_or_skipped_ones_do_not() {
     let (_home, domain, github) = presented("auto-red", true);
     github.open(7, HEAD, Checks::Failed(vec!["lint".into()]));
