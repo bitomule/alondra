@@ -401,7 +401,7 @@ impl Service {
             }
             let code = relay_error_code(&response.bytes().await.unwrap_or_default());
             if registration_ended(status, &code) {
-                self.journal.forget_push_binding(id, Some(binding))?;
+                self.journal.forget_push_binding(id, binding)?;
                 bail!("the relay no longer has a push registration for this device (HTTP {status}, error {code}); stopped pushing to it until it registers again");
             }
             if status == reqwest::StatusCode::BAD_REQUEST && code == "invalid_push" {

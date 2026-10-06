@@ -121,10 +121,15 @@ final class NotificationRuntime {
         drainUnregistrations()
     }
 
+    func pushBinding(for approved: ApprovedServicePairing) -> String? {
+        bindings.registered(relayURL: approved.relayURL, ownerSub: approved.ownerSub,
+                            macID: approved.macID, deviceID: approved.deviceID)
+    }
+
     func drainUnregistrations() {
         let live = bindings.live
         if let orphans { try? PushUnregistrar.promote(orphans, into: unregistrar.ledger, live: live, relay: bindings.relayURL) }
-        Task { [unregistrar] in await unregistrar.drain(live: live) }
+        Task { [unregistrar, orphans] in await unregistrar.drain(live: live, orphans: orphans) }
     }
 
     /// A Mac's silent push saying which of its cards still wait: their notifications stay, the

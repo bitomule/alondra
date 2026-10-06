@@ -35,8 +35,10 @@ public extension AlondraAPIClient {
     }
 
     /// Sign-out tells the Mac to stop pushing to this device before its session is gone.
-    func removeServicePushBinding() async throws {
-        let endpoint = Endpoint<Data>.data(.post, path: ["device", "push-binding", "remove"], body: Data("{}".utf8),
+    /// It names the binding so a Mac re-paired since keeps the newer one.
+    func removeServicePushBinding(_ binding: String) async throws {
+        let body = try JSONSerialization.data(withJSONObject: ["push_binding": binding])
+        let endpoint = Endpoint<Data>.data(.post, path: ["device", "push-binding", "remove"], body: body,
                                            contentType: "application/json")
         let request = try APIRequest(endpoint: endpoint, operationID: UUID().uuidString)
         switch try await operations.perform(request) {

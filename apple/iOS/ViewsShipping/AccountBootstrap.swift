@@ -22,7 +22,7 @@ func makeAccountSession(notifications: NotificationRuntime) -> AccountSession {
         return try await notifications.prepare(snapshot)
     }, willDeactivate: {
         try await notifications.deactivate()
-    })
+    }, pushBinding: { notifications.pushBinding(for: $0) })
 }
 
 /// A refresh cut off by suspension loses the issuer's answer; finish it in the background.

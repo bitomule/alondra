@@ -95,6 +95,7 @@ struct DeviceRegistry {
     revoked_ids: HashSet<String>,
     push: HashMap<String, PushRegistration>,
     push_sessions: HashMap<String, PushSession>,
+    push_ended: HashSet<String>,
     macs: HashMap<String, MacDevice>,
     revoked_mac_ids: HashSet<String>,
 }
@@ -111,6 +112,8 @@ struct StoredDeviceRegistry {
     push: HashMap<String, PushRegistration>,
     #[serde(default)]
     push_sessions: HashMap<String, PushSession>,
+    #[serde(default)]
+    push_ended: Vec<String>,
     #[serde(default)]
     macs: Vec<MacDevice>,
     #[serde(default)]
@@ -228,6 +231,7 @@ impl Auth {
                 revoked_ids,
                 push,
                 mut push_sessions,
+                push_ended,
                 macs,
                 revoked_mac_ids,
             ) = match serde_json::from_slice(&raw)? {
@@ -238,6 +242,7 @@ impl Auth {
                     revoked_ids,
                     push,
                     push_sessions,
+                    push_ended,
                     macs,
                     revoked_mac_ids,
                 }) => (
@@ -247,6 +252,7 @@ impl Auth {
                     revoked_ids,
                     push,
                     push_sessions,
+                    push_ended,
                     macs,
                     revoked_mac_ids,
                 ),
@@ -257,6 +263,7 @@ impl Auth {
                     Vec::new(),
                     HashMap::new(),
                     HashMap::new(),
+                    Vec::new(),
                     Vec::new(),
                     Vec::new(),
                 ),
@@ -329,6 +336,7 @@ impl Auth {
                 revoked_ids,
                 push,
                 push_sessions,
+                push_ended: push_ended.into_iter().collect(),
                 macs,
                 revoked_mac_ids,
             }
@@ -468,8 +476,12 @@ impl Auth {
         let previous_mac = registry.phone_macs.remove(device_id);
         let previous_push = registry.push.remove(device_id);
         registry.revoked_ids.insert(device_id.to_owned());
+        let newly_ended = registry.push_ended.insert(device_id.to_owned());
         if let Err(e) = self.persist_registry(&registry) {
             registry.revoked_ids.remove(device_id);
+            if newly_ended {
+                registry.push_ended.remove(device_id);
+            }
             if let Some(previous) = previous {
                 registry.devices.insert(device_id.to_owned(), previous);
             }
@@ -519,6 +531,7 @@ impl Auth {
             .filter_map(|id| registry.push.remove(&id).map(|old| (id, old)))
             .collect();
         let old = registry.push.insert(device_id.to_owned(), registration);
+        let was_ended = registry.push_ended.remove(device_id);
         let old_session = match session {
             Some(session) => registry.push_sessions.insert(device_id.to_owned(), session),
             None => registry.push_sessions.remove(device_id),
@@ -533,6 +546,9 @@ impl Auth {
                 Some(old) => registry.push_sessions.insert(device_id.to_owned(), old),
                 None => registry.push_sessions.remove(device_id),
             };
+            if was_ended {
+                registry.push_ended.insert(device_id.to_owned());
+            }
             registry.push.extend(removed);
             return Err(e);
         }
@@ -555,14 +571,21 @@ impl Auth {
         else {
             return Ok(());
         };
-        let removed = registry.push.remove(&device_id);
+        let before = registry.clone();
+        registry.push.remove(&device_id);
+        registry.push_ended.insert(device_id);
         if let Err(e) = self.persist_registry(&registry) {
-            if let Some(removed) = removed {
-                registry.push.insert(device_id, removed);
-            }
+            *registry = before;
             return Err(e);
         }
         Ok(())
+    }
+
+    /// The relay ended this phone's registration on purpose, as opposed to never having had
+    /// one: the Mac may forget its binding.
+    pub fn push_ended(&self, device_id: &str) -> bool {
+        self.ensure_registry_ready().is_ok()
+            && self.devices.lock().unwrap().push_ended.contains(device_id)
     }
 
     /// Every push registration made with an offline session, grouped by account and client so
@@ -600,15 +623,12 @@ impl Auth {
         {
             return Ok(());
         }
-        let removed = registry.push.remove(device_id);
-        let session = registry.push_sessions.remove(device_id);
+        let before = registry.clone();
+        registry.push.remove(device_id);
+        registry.push_sessions.remove(device_id);
+        registry.push_ended.insert(device_id.to_owned());
         if let Err(e) = self.persist_registry(&registry) {
-            if let Some(removed) = removed {
-                registry.push.insert(device_id.to_owned(), removed);
-            }
-            if let Some(session) = session {
-                registry.push_sessions.insert(device_id.to_owned(), session);
-            }
+            *registry = before;
             return Err(e);
         }
         Ok(())
@@ -647,11 +667,11 @@ impl Auth {
         if registry.push.get(device_id).is_none_or(|current| current.token != token) {
             return Ok(());
         }
-        let dead = registry.push.remove(device_id);
+        let before = registry.clone();
+        registry.push.remove(device_id);
+        registry.push_ended.insert(device_id.to_owned());
         if let Err(e) = self.persist_registry(&registry) {
-            if let Some(dead) = dead {
-                registry.push.insert(device_id.to_owned(), dead);
-            }
+            *registry = before;
             return Err(e);
         }
         Ok(())
@@ -763,7 +783,7 @@ impl Auth {
             }
         }
         if kind=="mac" {registry.macs.remove(id);registry.revoked_mac_ids.insert(id.to_owned());}
-        for client in clients {registry.devices.remove(&client);registry.phone_macs.remove(&client);registry.push.remove(&client);registry.revoked_ids.insert(client);}
+        for client in clients {registry.devices.remove(&client);registry.phone_macs.remove(&client);registry.push.remove(&client);registry.push_ended.insert(client.clone());registry.revoked_ids.insert(client);}
         if let Err(error)=self.persist_registry(&registry) {*registry=before;return Err(error)}
         Ok(())
     }
@@ -776,7 +796,7 @@ impl Auth {
         let macs:Vec<String>=registry.macs.values().filter(|d|d.owner_sub==owner).map(|d|d.mac_id.clone()).collect();
         if phones.is_empty() && macs.is_empty() {return Ok(())}
         for id in phones {
-            registry.devices.remove(&id);registry.phone_macs.remove(&id);registry.push.remove(&id);registry.revoked_ids.insert(id);
+            registry.devices.remove(&id);registry.phone_macs.remove(&id);registry.push.remove(&id);registry.push_ended.insert(id.clone());registry.revoked_ids.insert(id);
         }
         for id in macs {registry.macs.remove(&id);registry.revoked_mac_ids.insert(id);}
         if let Err(error)=self.persist_registry(&registry) {*registry=before;return Err(error)}
@@ -794,6 +814,7 @@ impl Auth {
             registry.macs.insert(who.device_id.clone(), existing);
             bail!("Mac owner mismatch");
         }
+        let before = registry.clone();
         registry.revoked_mac_ids.insert(who.device_id.clone());
         let phones: Vec<String> = registry
             .phone_macs
@@ -801,14 +822,14 @@ impl Auth {
             .filter(|(_, mac)| **mac == who.device_id)
             .map(|(phone, _)| phone.clone())
             .collect();
-        let silenced: Vec<(String, PushRegistration)> = phones
-            .into_iter()
-            .filter_map(|phone| registry.push.remove(&phone).map(|push| (phone, push)))
-            .collect();
+        for phone in phones {
+            if registry.push.remove(&phone).is_some() {
+                registry.push_ended.insert(phone);
+            }
+        }
         if let Err(err) = self.persist_registry(&registry) {
-            registry.revoked_mac_ids.remove(&who.device_id);
+            *registry = before;
             registry.macs.insert(who.device_id.clone(), existing);
-            registry.push.extend(silenced);
             return Err(err);
         }
         Ok(())
@@ -1320,6 +1341,8 @@ fn persist_registry_at(path: &Path, registry: &DeviceRegistry) -> Result<()> {
     macs.sort_by(|a, b| a.mac_id.cmp(&b.mac_id));
     let mut revoked_mac_ids: Vec<_> = registry.revoked_mac_ids.iter().cloned().collect();
     revoked_mac_ids.sort();
+    let mut push_ended: Vec<_> = registry.push_ended.iter().cloned().collect();
+    push_ended.sort();
     let push_sessions = registry
         .push_sessions
         .iter()
@@ -1335,6 +1358,7 @@ fn persist_registry_at(path: &Path, registry: &DeviceRegistry) -> Result<()> {
             revoked_ids,
             push: registry.push.clone(),
             push_sessions,
+            push_ended,
             macs,
             revoked_mac_ids,
         })?,

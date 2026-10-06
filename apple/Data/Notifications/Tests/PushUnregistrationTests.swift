@@ -89,7 +89,25 @@ private func entry(_ n: UInt8) -> PushUnregistrationLedger.Entry {
         #expect(try orphans.load() == [binding(2)])
         try PushUnregistrar.promote(orphans, into: ledger, live: [], relay: relay)
         #expect(try ledger.pending() == [entry(2)])
+        #expect(try orphans.load() == [binding(2)], "only the relay's answer settles an orphan")
+    }
+
+    @Test func anOrphanLeavesItsStoreOnlyOnceTheRelaySettledIt() async throws {
+        let orphans = OrphanBindingStore(item: MemoryOrphanItem())
+        let ledger = temporaryLedger()
+        try orphans.append(binding(2))
+        try PushUnregistrar.promote(orphans, into: ledger, live: [], relay: relay)
+        let answers = RelayCalls()
+        let unregistrar = PushUnregistrar(ledger: ledger) { entry in
+            await answers.record(entry.pushBinding)
+            return await answers.sent.count == 1 ? .retry : .done
+        }
+        await unregistrar.drain(live: [], orphans: orphans)
+        #expect(try orphans.load() == [binding(2)])
+        #expect(try ledger.pending() == [entry(2)])
+        await unregistrar.drain(live: [], orphans: orphans)
         #expect(try orphans.load().isEmpty)
+        #expect(try ledger.pending().isEmpty)
     }
 
     @Test func orphanPromotionFallsBackToTheLastQueuedRelay() throws {

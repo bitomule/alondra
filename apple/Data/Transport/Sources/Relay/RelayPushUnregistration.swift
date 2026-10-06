@@ -26,10 +26,12 @@ public struct RelayPushUnregistration: Sendable {
         return Self.outcome(status: reply.status)
     }
 
+    /// A relay older than the unregistration route answers 404: keep the entry until it is
+    /// updated rather than lose it.
     static func outcome(status: Int) -> Outcome {
         switch status {
         case 200..<300: .done
-        case 429: .retry
+        case 404, 429: .retry
         case 400..<500: .drop
         default: .retry
         }

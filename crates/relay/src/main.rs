@@ -366,6 +366,16 @@ async fn register_push(
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
+/// Only a registration the relay ended on purpose is gone for good; the Mac may then forget
+/// the phone's binding.
+fn missing_push_registration(ended: bool) -> (StatusCode, Json<Value>) {
+    if ended {
+        error(StatusCode::GONE, "push_registration_gone")
+    } else {
+        error(StatusCode::NOT_FOUND, "push_registration_not_found")
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PushUnregistration {
@@ -489,7 +499,7 @@ async fn send_push(
     let registration = server
         .auth
         .push_registration(&request.device_id)
-        .ok_or_else(|| error(StatusCode::NOT_FOUND, "push_registration_not_found"))?;
+        .ok_or_else(|| missing_push_registration(server.auth.push_ended(&request.device_id)))?;
     server
         .auth
         .phone_for_mac(&request.device_id, &mac)
@@ -1846,6 +1856,8 @@ mod http_tests {
         assert_eq!(unregister(serde_json::to_vec(&mine).unwrap()).await.unwrap().status(), 204);
         assert_eq!(unregister(serde_json::to_vec(&mine).unwrap()).await.unwrap().status(), 204);
         assert!(server.auth.push_registration("phone-1").is_none());
+        assert!(server.auth.push_ended("phone-1"), "the Mac hears 410 and forgets the binding");
+        assert!(!server.auth.push_ended("phone-2"));
         assert_eq!(server.auth.push_registration("phone-2"), Some(push_for(2)));
         let stored: Value = serde_json::from_slice(
             &std::fs::read(&server.auth.config.device_registry_path).unwrap(),
@@ -1853,7 +1865,18 @@ mod http_tests {
         .unwrap();
         assert!(stored["push"].get("phone-1").is_none());
         assert!(stored["push_sessions"].get("phone-1").is_none());
+        assert_eq!(stored["push_ended"], json!(["phone-1"]));
+        server.auth.register_push("phone-1", push_for(1), None).unwrap();
+        assert!(!server.auth.push_ended("phone-1"), "registering again starts over");
         task.abort();
+    }
+
+    #[test]
+    fn only_a_registration_the_relay_ended_is_gone_for_the_mac() {
+        assert_eq!(missing_push_registration(true).0, StatusCode::GONE);
+        assert_eq!(missing_push_registration(true).1.0["error"], "push_registration_gone");
+        assert_eq!(missing_push_registration(false).0, StatusCode::NOT_FOUND);
+        assert_eq!(missing_push_registration(false).1.0["error"], "push_registration_not_found");
     }
 
     #[tokio::test]
@@ -1865,12 +1888,14 @@ mod http_tests {
         server.auth.register_push("phone-2", push_for(2), None).unwrap();
         server.auth.reconcile_device_revocation("owner", "client", "phone-2", "mac-1").unwrap();
         assert!(server.auth.push_registration("phone-2").is_none());
+        assert!(server.auth.push_ended("phone-2"));
         assert!(server.auth.push_registration("phone-1").is_some());
         server
             .auth
             .revoke_mac(&auth::Identity { device_id: "mac-1".into(), owner_sub: "owner".into() })
             .unwrap();
         assert!(server.auth.push_registration("phone-1").is_none());
+        assert!(server.auth.push_ended("phone-1"));
         task.abort();
     }
 
@@ -1959,6 +1984,8 @@ mod http_tests {
         keycloak_task.abort();
         assert_eq!(server.auth.push_registration("phone-live"), Some(push_for(1)));
         assert!(server.auth.push_registration("phone-ended").is_none());
+        assert!(server.auth.push_ended("phone-ended"));
+        assert!(!server.auth.push_ended("phone-live"));
         assert_eq!(server.auth.push_registration("phone-legacy"), Some(push_for(3)));
 
         server.auth.register_push("phone-ended", push_for(4), offline_session("new")).unwrap();
@@ -2411,7 +2438,7 @@ mod http_tests {
         .send()
         .await
         .unwrap();
-        assert_eq!(denied.status(), StatusCode::NOT_FOUND);
+        assert_eq!(denied.status(), StatusCode::GONE, "a revoked phone is gone for the Mac");
         relay_task.abort();
         apns_task.abort();
     }
@@ -2526,7 +2553,7 @@ mod http_tests {
                 &mac_keys[mac], &client_agreements[link].public_key()).unwrap();
             let body = serde_json::to_vec(&json!({"device_id":id,"envelope":push})).unwrap();
             assert_eq!(request(&mac_keys[mac], mac_ids[mac], None, "POST", "/v1/mac/push", body)
-                .send().await.unwrap().status(), StatusCode::NOT_FOUND);
+                .send().await.unwrap().status(), if link == 0 { StatusCode::GONE } else { StatusCode::NOT_FOUND });
             assert!(captured.lock().unwrap().is_empty(), "denied push reached APNs");
         }
         for (i, (id, m)) in links.iter().enumerate().skip(1) {

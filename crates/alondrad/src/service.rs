@@ -333,6 +333,23 @@ fn approval_bound_read_digest(envelope: &[u8], binding: &str) -> [u8; 32] {
 const PUSH_BINDING_ROUTE: &str = "/device/push-binding";
 const PUSH_BINDING_REMOVE_ROUTE: &str = "/device/push-binding/remove";
 
+fn parse_push_binding_removal(request: &LocalRequest) -> Result<String> {
+    let map = request
+        .body
+        .as_ref()
+        .and_then(Value::as_object)
+        .context("push binding removal body required")?;
+    if map.keys().any(|key| key != "push_binding") {
+        bail!("unknown push binding removal field");
+    }
+    Ok(map
+        .get("push_binding")
+        .and_then(Value::as_str)
+        .filter(|value| valid_push_binding(value))
+        .context("invalid push binding")?
+        .to_owned())
+}
+
 fn parse_push_preferences(
     request: &LocalRequest,
 ) -> Result<(String, Option<QuietHours>, Option<i64>)> {
@@ -500,8 +517,14 @@ impl Service {
     ) -> Result<Vec<u8>> {
         self.require_device_approval(&envelope.sender, device, transport)?;
         if self.domain.is_some() && request.path == PUSH_BINDING_REMOVE_ROUTE {
-            self.journal.forget_push_binding(&envelope.sender, None)?;
-            let bytes = self.encode_response(envelope, device, &json!({"status":204}), request)?;
+            let result = match parse_push_binding_removal(request) {
+                Ok(binding) => {
+                    self.journal.forget_push_binding(&envelope.sender, &binding)?;
+                    json!({"status":204})
+                }
+                Err(_) => json!({"status":422,"body":{"error":"invalid push binding removal"}}),
+            };
+            let bytes = self.encode_response(envelope, device, &result, request)?;
             self.journal
                 .complete(&envelope.sender, &envelope.request_id, &bytes)?;
             return Ok(bytes);
@@ -1725,11 +1748,11 @@ fn relay_error_code(body: &[u8]) -> String {
         .unwrap_or_else(|| "unknown".into())
 }
 
-/// The relay dropped the phone's registration: the phone signed out, its session or pairing
-/// ended, or APNs said the token is dead.
+/// The relay confirmed it ended the phone's registration: the phone signed out, its session
+/// or pairing ended, or APNs said the token is dead. A plain "not found" can be a relay that
+/// lost its registry for a while, so it ends nothing.
 fn registration_ended(status: reqwest::StatusCode, code: &str) -> bool {
-    status == reqwest::StatusCode::NOT_FOUND && code == "push_registration_not_found"
-        || status == reqwest::StatusCode::GONE && code == "push_registration_gone"
+    status == reqwest::StatusCode::GONE && code == "push_registration_gone"
 }
 
 fn id(s: &str) -> bool {
@@ -2148,20 +2171,13 @@ impl Journal {
         tx.commit()?;
         Ok(())
     }
-    /// The phone, or the relay on its behalf, said this binding gets no more pushes. With a
-    /// binding, one the phone registered since stays.
-    fn forget_push_binding(&self, id: &str, binding: Option<&str>) -> Result<()> {
-        let c = self.db()?;
-        match binding {
-            Some(binding) => c.execute(
-                "DELETE FROM service_push_bindings WHERE device_id=?1 AND binding=?2",
-                params![id, binding],
-            )?,
-            None => c.execute(
-                "DELETE FROM service_push_bindings WHERE device_id=?1",
-                params![id],
-            )?,
-        };
+    /// The phone, or the relay on its behalf, said this binding gets no more pushes. One the
+    /// phone registered since, after pairing again, stays.
+    fn forget_push_binding(&self, id: &str, binding: &str) -> Result<()> {
+        self.db()?.execute(
+            "DELETE FROM service_push_bindings WHERE device_id=?1 AND binding=?2",
+            params![id, binding],
+        )?;
         Ok(())
     }
     #[cfg(test)]
@@ -4453,8 +4469,8 @@ agreement_key = "{}"
     async fn the_mac_stops_pushing_to_a_phone_the_relay_no_longer_knows() {
         use std::sync::atomic::{AtomicUsize, Ordering};
         for (status, code, ended) in [
-            (StatusCode::NOT_FOUND, "push_registration_not_found", true),
             (StatusCode::GONE, "push_registration_gone", true),
+            (StatusCode::NOT_FOUND, "push_registration_not_found", false),
             (StatusCode::NOT_FOUND, "not_found", false),
             (StatusCode::SERVICE_UNAVAILABLE, "push_registration_failed", false),
         ] {
@@ -4495,9 +4511,9 @@ agreement_key = "{}"
         let old = URL_SAFE_NO_PAD.encode([4u8; 32]);
         let new = URL_SAFE_NO_PAD.encode([5u8; 32]);
         service.journal.set_push_binding("phone-1", &new).unwrap();
-        service.journal.forget_push_binding("phone-1", Some(&old)).unwrap();
-        assert_eq!(service.journal.push_binding("phone-1").unwrap(), Some(new));
-        service.journal.forget_push_binding("phone-1", None).unwrap();
+        service.journal.forget_push_binding("phone-1", &old).unwrap();
+        assert_eq!(service.journal.push_binding("phone-1").unwrap(), Some(new.clone()));
+        service.journal.forget_push_binding("phone-1", &new).unwrap();
         assert_eq!(service.journal.push_binding("phone-1").unwrap(), None);
         std::fs::remove_dir_all(&service.home).unwrap();
     }
@@ -4810,7 +4826,16 @@ agreement_key = "{}"
         )
         .await;
         assert_eq!(refused["status"], 422, "{refused}");
-        let removed = send("remove", PUSH_BINDING_REMOVE_ROUTE, json!({})).await;
+        let unnamed = send("remove-unnamed", PUSH_BINDING_REMOVE_ROUTE, json!({})).await;
+        assert_eq!(unnamed["status"], 422, "{unnamed}");
+        let other = send("remove-other", PUSH_BINDING_REMOVE_ROUTE, json!({"push_binding": URL_SAFE_NO_PAD.encode([9u8; 32])})).await;
+        assert_eq!(other["status"], 204, "{other}");
+        assert_eq!(
+            service.journal.push_binding("phone-1").unwrap().as_deref(),
+            Some(binding.as_str()),
+            "removing an older binding keeps the one registered since"
+        );
+        let removed = send("remove", PUSH_BINDING_REMOVE_ROUTE, json!({"push_binding": binding})).await;
         assert_eq!(removed["status"], 204, "{removed}");
         assert_eq!(service.journal.push_binding("phone-1").unwrap(), None);
         assert_eq!(
@@ -4818,7 +4843,7 @@ agreement_key = "{}"
             Some("23:00"),
             "signing out keeps the phone's quiet hours for when it signs back in"
         );
-        let again = send("remove-again", PUSH_BINDING_REMOVE_ROUTE, json!({})).await;
+        let again = send("remove-again", PUSH_BINDING_REMOVE_ROUTE, json!({"push_binding": binding})).await;
         assert_eq!(again["status"], 204, "{again}");
         assert!(
             approved_method(&LocalRequest {

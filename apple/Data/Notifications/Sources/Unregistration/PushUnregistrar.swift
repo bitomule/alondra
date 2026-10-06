@@ -20,18 +20,21 @@ public actor PushUnregistrar {
         self.init(ledger: ledger) { await relay.unregister(binding: $0.pushBinding, relay: $0.relayURL) }
     }
 
-    public func drain(live: Set<NotificationPayload.Binding>) async {
+    /// An orphan leaves its store only once the relay settled it, so a pass that cannot reach
+    /// the relay finds it again next time.
+    public func drain(live: Set<NotificationPayload.Binding>, orphans: OrphanBindingStore? = nil) async {
         let previous = draining
-        let pass = Task { await previous?.value; await run(live: Set(live.map(\.value))) }
+        let pass = Task { await previous?.value; await run(live: Set(live.map(\.value)), orphans: orphans) }
         draining = pass
         await pass.value
     }
 
-    private func run(live: Set<String>) async {
+    private func run(live: Set<String>, orphans: OrphanBindingStore?) async {
         guard let pending = try? ledger.pending() else { return }
         for entry in pending {
             if !live.contains(entry.pushBinding), await unregister(entry) == .retry { continue }
             try? ledger.remove([entry])
+            if let binding = NotificationPayload.Binding(entry.pushBinding) { try? orphans?.remove([binding]) }
         }
     }
 
@@ -45,9 +48,7 @@ public actor PushUnregistrar {
         let stale = found.filter { !live.contains($0) }
         if let relay {
             try ledger.enqueue(stale.map { PushUnregistrationLedger.Entry(relayURL: relay, pushBinding: $0.value) })
-            try orphans.remove(found)
-        } else {
-            try orphans.remove(found.filter { live.contains($0) })
         }
+        try orphans.remove(found.filter { live.contains($0) })
     }
 }

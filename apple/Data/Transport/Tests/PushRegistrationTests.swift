@@ -49,12 +49,15 @@ import Testing
     @Test func signOutAsksTheMacToDropThisDevicesBinding() async throws {
         let transport = PushTransport()
         let api = AlondraAPIClient(serviceURL: URL(string: "https://example.test")!, deviceID: "client-1", operations: transport)
-        try await api.removeServicePushBinding()
+        let binding = String(repeating: "A", count: 43)
+        try await api.removeServicePushBinding(binding)
         #expect(await transport.events == ["binding"])
         let request = try #require(await transport.request)
         #expect(request.method == "POST")
         #expect(request.path == "/device/push-binding/remove")
-        #expect(request.body == Data("{}".utf8))
+        let data = try #require(request.body)
+        let body = try #require(JSONSerialization.jsonObject(with: data) as? [String: String])
+        #expect(body == ["push_binding": binding])
     }
 
     @Test func authenticatedStalePreferenceResponseExposesRevisionForRecovery() async throws {

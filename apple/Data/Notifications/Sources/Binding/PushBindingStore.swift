@@ -73,6 +73,14 @@ public final class PushBindingStore {
         Set((read()?.records ?? []).compactMap { NotificationPayload.Binding($0.binding) })
     }
 
+    /// The binding a pairing registered, whichever credential revision it was made with.
+    public func registered(relayURL: URL, ownerSub: String, macID: String, deviceID: String) -> String? {
+        read()?.records.last {
+            $0.scope.relayURL == relayURL && $0.scope.ownerSub == ownerSub
+                && $0.scope.macID == macID && $0.scope.deviceID == deviceID
+        }?.binding
+    }
+
     public var relayURL: URL? { read()?.records.last?.scope.relayURL }
 
     /// Queues every scoped binding for the relay to forget before the scopes are dropped.

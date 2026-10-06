@@ -34,6 +34,7 @@ private actor ScriptedHTTP: HTTPTransport {
         (.success(204), .done),
         (.success(400), .drop),
         (.success(413), .drop),
+        (.success(404), .retry),
         (.success(429), .retry),
         (.success(500), .retry),
         (.success(503), .retry),
