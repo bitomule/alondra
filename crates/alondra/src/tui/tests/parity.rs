@@ -1222,7 +1222,7 @@ fn an_empty_fleet_detail_summarises_the_fleet_from_the_servers_counts() {
     app.sel = None;
     app.card_view_asked = None;
     let shown = screen(&mut app, 120, 20);
-    for expected in ["The fleet right now", "0 working", "1 waiting"] {
+    for expected in ["The fleet right now", "1 working", "1 waiting"] {
         assert!(shown.contains(expected), "{expected}: {shown}");
     }
 }

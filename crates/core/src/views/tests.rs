@@ -1742,7 +1742,6 @@ fn mac_views_match_goldens() {
         ("card-information-mac.json", "card:f12d034b-249e-4487-a89b-57de38c26372", include_str!("../../../../fixtures/views/cards/card-information-mac.json")),
         ("pull-request-mac.json", "pull_request:github.com/example/repo#12", include_str!("../../../../fixtures/views/cards/pull-request-mac.json")),
         ("node-mac.json", "node:d887a34b-249e-4487-a89b-57de38c26372", include_str!("../../../../fixtures/views/cards/node-mac.json")),
-        ("fleet-mac.json", "fleet", include_str!("../../../../fixtures/views/cards/fleet-mac.json")),
     ] {
         let actual = render(&state, &live, Client::Mac, Lang::En, key, "2026-09-30T10:00:00Z");
         assert_golden(filename, &actual, expected);
@@ -1803,7 +1802,6 @@ fn generate_goldens() {
         ("card-pr.json", "card:github.com/example/repo#12", Client::Ios, Lang::En),
         ("card-delivery.json", "card:hf-weekly-2026-09-30", Client::Ios, Lang::En),
         ("home-ios-es.json", "home", Client::Ios, Lang::Es),
-        ("fleet-ios.json", "fleet", Client::Ios, Lang::En),
         ("new-request-ios.json", "new_request", Client::Ios, Lang::En),
         ("node-ios.json", "node:d887a34b-249e-4487-a89b-57de38c26372", Client::Ios, Lang::En),
         ("task-ios.json", "task:t-651c38484cd2f34e74d5107ba05f7f15", Client::Ios, Lang::En),
@@ -1818,7 +1816,6 @@ fn generate_goldens() {
         ("card-information-mac.json", "card:f12d034b-249e-4487-a89b-57de38c26372", Client::Mac, Lang::En),
         ("pull-request-mac.json", "pull_request:github.com/example/repo#12", Client::Mac, Lang::En),
         ("node-mac.json", "node:d887a34b-249e-4487-a89b-57de38c26372", Client::Mac, Lang::En),
-        ("fleet-mac.json", "fleet", Client::Mac, Lang::En),
     ];
     let mut with_pending = state.clone();
     let pending = Request::new("r-4b7e2c1d9a0f4e3b8c6d5a4f3e2b1c0d".into(), "Import lists from Notes".into());
@@ -1826,6 +1823,15 @@ fn generate_goldens() {
     let (tasks_state, tasks_live) = tasks_fixture();
     for (filename, client, lang) in TASKS_GOLDENS {
         let view = render(&tasks_state, &tasks_live, client, lang, "tasks", "2026-09-30T10:00:00Z");
+        std::fs::write(
+            format!("{dir}/{filename}"),
+            format!("{}\n", serde_json::to_string_pretty(&view).unwrap()),
+        )
+        .unwrap();
+    }
+    let (fleet_state, fleet_live) = fleet_fixture();
+    for (filename, client, lang) in FLEET_GOLDENS {
+        let view = render(&fleet_state, &fleet_live, client, lang, "fleet", "2026-09-30T10:00:00Z");
         std::fs::write(
             format!("{dir}/{filename}"),
             format!("{}\n", serde_json::to_string_pretty(&view).unwrap()),
@@ -3624,5 +3630,131 @@ fn generate_group_goldens() {
     for (filename, client, lang) in GROUP_CASES {
         let view = render(&state, &LiveSnapshot::default(), client, lang, "card:g-q2", "2026-09-30T10:00:00Z");
         std::fs::write(format!("{dir}/{filename}"), format!("{}\n", serde_json::to_string_pretty(&view).unwrap())).unwrap();
+    }
+}
+
+const FLEET_GOLDENS: [(&str, Client, Lang); 4] = [
+    ("fleet-ios.json", Client::Ios, Lang::En),
+    ("fleet-ios-es.json", Client::Ios, Lang::Es),
+    ("fleet-mac.json", Client::Mac, Lang::En),
+    ("fleet-tui.json", Client::Tui, Lang::En),
+];
+
+/// A fleet where a node needing the user, a queued one with no live entry, a working one and a
+/// waiting one belong to projects, and two nodes with nothing open are idle.
+fn fleet_fixture() -> (DomainState, LiveSnapshot) {
+    let mut state = golden_fixture();
+    let mut live = golden_live();
+    let golden_task = state.tasks.get_mut(&"t-651c38484cd2f34e74d5107ba05f7f15".into()).unwrap();
+    golden_task.agent_id = Some("d887a34b-249e-4487-a89b-57de38c26372".into());
+    let template = golden_task.clone();
+    let golden_request = template.request_id.0.clone();
+    for (agent, request, title, task_state) in [
+        ("queued", golden_request.as_str(), "Wire the badge after the review", TaskState::WaitingDependency),
+        ("zeta-worker", "r-zeta", "Build the importer", TaskState::Running),
+        ("alpha-waiting", "r-alpha", "Plan the migration", TaskState::NotStarted),
+        ("finished-yesterday", golden_request.as_str(), "Ship the compact editor", TaskState::Done),
+        ("finished-today", golden_request.as_str(), "Trim the push payload", TaskState::Done),
+    ] {
+        state.agents.insert(agent.into(), Agent { id: agent.into(), name: agent.into(), connected: true });
+        if !state.requests.contains_key(&request.into()) {
+            state.requests.insert(request.into(), Request::new(request.into(), title.into()));
+        }
+        let mut task = template.clone();
+        task.id = format!("t-{agent}").into();
+        task.request_id = request.into();
+        task.agent_id = Some(agent.into());
+        task.title = title.into();
+        task.state = task_state;
+        task.final_presentation = None;
+        task.pr_id = None;
+        task.dependencies = BTreeSet::new();
+        task.revision = state.revision;
+        state.tasks.insert(task.id.clone(), task);
+    }
+    for (agent, project, working, at) in [
+        ("zeta-worker", Some("Zeta"), true, "2026-09-30T09:57:00Z"),
+        ("alpha-waiting", Some("Alpha"), false, "2026-09-30T09:20:00Z"),
+        ("finished-yesterday", None, false, "2026-09-29T16:00:00Z"),
+        ("finished-today", None, false, "2026-09-30T09:30:00Z"),
+    ] {
+        live.nodes.push(LiveNode {
+            agent_id: agent.into(), name: agent.into(), project: project.map(Into::into), working,
+            state_key: Some(if working { "busy" } else { "free" }.into()),
+            last_message_at: Some(at.into()), ..LiveNode::default()
+        });
+    }
+    (state, live)
+}
+
+fn section_ids(view: &View) -> Vec<&str> {
+    view.sections.iter().map(|section| section.id.as_str()).collect()
+}
+
+fn section_rows<'a>(view: &'a View, id: &str) -> Vec<&'a str> {
+    view.sections.iter().find(|section| section.id == id).unwrap().items.iter()
+        .filter_map(|item| if let Item::Row(row) = item { Some(row.id.as_str()) } else { None }).collect()
+}
+
+#[test]
+fn a_node_without_a_live_entry_takes_the_project_of_its_tasks_request() {
+    let (state, live) = fleet_fixture();
+    let view = render(&state, &live, Client::Ios, Lang::En, "fleet", "");
+    assert!(section_rows(&view, "project:Demo Garden").contains(&"queued"));
+    assert!(!section_ids(&view).contains(&"project:Other"), "{:?}", section_ids(&view));
+}
+
+#[test]
+fn a_node_with_no_project_anywhere_is_in_other_after_the_named_projects() {
+    let (mut state, live) = fleet_fixture();
+    let mut task = state.tasks[&"t-queued".into()].clone();
+    state.requests.insert("r-orphan".into(), Request::new("r-orphan".into(), "Orphan".into()));
+    state.agents.insert("orphan".into(), Agent { id: "orphan".into(), name: "orphan".into(), connected: true });
+    task.id = "t-orphan".into();
+    task.request_id = "r-orphan".into();
+    task.agent_id = Some("orphan".into());
+    task.state = TaskState::NeedsYou;
+    state.tasks.insert(task.id.clone(), task);
+    let view = render(&state, &live, Client::Ios, Lang::En, "fleet", "");
+    let ids = section_ids(&view);
+    assert_eq!(&ids[1..4], ["project:Demo Garden", "project:Other", "project:Zeta"],
+        "Other ties with a named project on urgency and comes after it");
+    let es = render(&state, &live, Client::Ios, Lang::Es, "fleet", "");
+    assert!(section_ids(&es).contains(&"project:Otros"));
+}
+
+#[test]
+fn fleet_projects_come_by_their_most_urgent_node_and_nodes_by_urgency() {
+    let (state, live) = fleet_fixture();
+    let view = render(&state, &live, Client::Ios, Lang::En, "fleet", "");
+    assert_eq!(section_ids(&view), ["orchestrator", "project:Demo Garden", "project:Zeta", "project:Alpha", "idle"]);
+    assert_eq!(section_rows(&view, "project:Demo Garden"), ["d887a34b-249e-4487-a89b-57de38c26372", "queued"],
+        "a node that needs the user comes before one that waits");
+}
+
+#[test]
+fn idle_nodes_are_a_collapsed_last_section_with_the_most_recent_first() {
+    let (state, live) = fleet_fixture();
+    let view = render(&state, &live, Client::Ios, Lang::En, "fleet", "");
+    let idle = view.sections.last().unwrap();
+    assert_eq!((idle.id.as_str(), idle.title.as_deref(), idle.count, idle.collapsed), ("idle", Some("Idle"), Some(2), true));
+    assert_eq!(section_rows(&view, "idle"), ["finished-today", "finished-yesterday"]);
+    assert!(view.sections.iter().filter(|section| section.id != "idle").all(|section| !section.collapsed));
+    let es = render(&state, &live, Client::Ios, Lang::Es, "fleet", "");
+    assert_eq!(es.sections.last().unwrap().title.as_deref(), Some("Inactivos"));
+}
+
+#[test]
+fn fleet_views_match_goldens() {
+    let (state, live) = fleet_fixture();
+    for (filename, client, lang) in FLEET_GOLDENS {
+        let expected = match filename {
+            "fleet-ios.json" => include_str!("../../../../fixtures/views/cards/fleet-ios.json"),
+            "fleet-ios-es.json" => include_str!("../../../../fixtures/views/cards/fleet-ios-es.json"),
+            "fleet-mac.json" => include_str!("../../../../fixtures/views/cards/fleet-mac.json"),
+            _ => include_str!("../../../../fixtures/views/cards/fleet-tui.json"),
+        };
+        let actual = render(&state, &live, client, lang, "fleet", "2026-09-30T10:00:00Z");
+        assert_golden(filename, &actual, expected);
     }
 }

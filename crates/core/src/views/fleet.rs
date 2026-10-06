@@ -217,19 +217,90 @@ pub(super) fn list(context: &RenderContext<'_>) -> View {
         None,
         vec![Item::Row(orchestrator)],
     ));
-    let mut projects: BTreeMap<String, Vec<Item>> = BTreeMap::new();
+    let mut projects: BTreeMap<String, Vec<(u8, Item)>> = BTreeMap::new();
+    let mut idle: Vec<(Recency, Item)> = vec![];
     for agent in context.domain.agents.values().filter(|agent| in_fleet(agent, context)) {
-        let project = context.live.nodes.iter().find(|node| node.agent_id == agent.id.0)
-            .and_then(|node| node.project.as_deref()).filter(|project| *project != "others")
-            .unwrap_or(t!(context.lang, "Other", "Otros"));
-        projects.entry(project.into()).or_default().push(Item::Row(node_row(agent, context)));
+        let row = Item::Row(node_row(agent, context));
+        match urgency(&agent.id, context) {
+            Some(urgency) => projects.entry(project_of(&agent.id, context)).or_default().push((urgency, row)),
+            None => idle.push((recency(&agent.id, context), row)),
+        }
     }
-    for (project, rows) in projects {
-        let mut section = common::section(&format!("project:{project}"), Some(project), rows);
+    let other = t!(context.lang, "Other", "Otros");
+    let mut ordered: Vec<_> = projects.into_iter().map(|(project, mut rows)| {
+        rows.sort_by_key(|(urgency, _)| *urgency);
+        (project, rows)
+    }).collect();
+    ordered.sort_by_key(|(project, rows)| (rows.first().map(|(urgency, _)| *urgency), project.as_str() == other));
+    for (project, rows) in ordered {
+        let items = rows.into_iter().map(|(_, item)| item).collect::<Vec<_>>();
+        let mut section = common::section(&format!("project:{project}"), Some(project), items);
         section.count = Some(section.items.len() as u32);
         view.sections.push(section);
     }
+    if !idle.is_empty() {
+        idle.sort_by(|a, b| b.0.cmp(&a.0));
+        let items = idle.into_iter().map(|(_, item)| item).collect::<Vec<_>>();
+        let mut section = common::section("idle", Some(t!(context.lang, "Idle", "Inactivos").into()), items);
+        section.count = Some(section.items.len() as u32);
+        section.collapsed = true;
+        view.sections.push(section);
+    }
     view
+}
+
+/// Where a node stands in Fleet: 0 when it needs the user, 1 while it works, 2 while it waits;
+/// `None` when it holds no open task, which puts it among the idle ones.
+fn urgency(agent: &AgentId, context: &RenderContext<'_>) -> Option<u8> {
+    let live_working = context.live.nodes.iter().any(|node| node.agent_id == agent.0 && node.working);
+    let open_task = context.domain.tasks.values()
+        .any(|task| task.agent_id.as_ref() == Some(agent) && !task.archived && !task.state.terminal());
+    let owes_user = context.domain.projection().inbox.iter()
+        .any(|item| item.pending && item.agent_id.as_ref() == Some(agent));
+    if !(live_working || open_task || owes_user) {
+        return None;
+    }
+    Some(match node_state(agent, context).tone {
+        Tone::Warning | Tone::Critical | Tone::YourTurn | Tone::Accent => 0,
+        Tone::Info => 1,
+        _ if owes_user => 0,
+        _ => 2,
+    })
+}
+
+type Recency = (Option<String>, u64);
+
+fn recency(agent: &AgentId, context: &RenderContext<'_>) -> Recency {
+    let live = context.live.nodes.iter().find(|node| node.agent_id == agent.0);
+    let at = live.and_then(|node| node.last_message_at.clone().max(node.state_since.clone()));
+    (at, common::current_task(context.domain, agent).map_or(0, |task| task.revision))
+}
+
+/// The live node's project; failing that, the project its task's Request is known by through
+/// another node on it, or the project its pull request's repository is named after.
+fn project_of(agent: &AgentId, context: &RenderContext<'_>) -> String {
+    let named = |id: &AgentId| context.live.nodes.iter().find(|node| node.agent_id == id.0)
+        .and_then(|node| node.project.as_deref()).filter(|project| *project != "others");
+    let from_request = |task: &crate::domain_v2::Task| {
+        context.domain.tasks.values().filter(|sibling| sibling.request_id == task.request_id)
+            .filter_map(|sibling| sibling.agent_id.as_ref()).find_map(named)
+    };
+    let from_repository = |task: &crate::domain_v2::Task| {
+        let pr = context.domain.pull_requests.get(task.pr_id.as_ref()?)?;
+        let name = pr.repository.rsplit('/').next()?;
+        context.live.projects.iter().map(|entry| entry.name.as_str())
+            .find(|project| project.eq_ignore_ascii_case(name))
+    };
+    let current = common::current_task(context.domain, agent);
+    let latest = context.domain.tasks.values()
+        .filter(|task| task.agent_id.as_ref() == Some(agent) && !task.archived)
+        .max_by_key(|task| task.revision);
+    named(agent)
+        .or_else(|| current.and_then(from_request))
+        .or_else(|| latest.and_then(from_request))
+        .or_else(|| current.and_then(from_repository))
+        .unwrap_or(t!(context.lang, "Other", "Otros"))
+        .into()
 }
 
 pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, BuildError> {

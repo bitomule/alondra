@@ -8,9 +8,9 @@ import XCTest
 /// The Fleet tab and a node's screen as the daemon's `fleet` and `node:` views fill them.
 @MainActor
 final class FleetSnapshotTests: XCTestCase {
-    private func fleet(phase: ScreenFeature.State.Phase = .loaded) throws -> some View {
+    private func fleet(document: String = "fleet-ios", phase: ScreenFeature.State.Phase = .loaded) throws -> some View {
         var state = FleetFeature.State()
-        state.screen.document = try ScreenFixtures.document("fleet-ios")
+        state.screen.document = try ScreenFixtures.document(document)
         state.screen.phase = phase
         return FleetView(store: Store(initialState: state) { FleetFeature() } withDependencies: {
             idleViewsClient(&$0.viewsClient)
@@ -32,6 +32,13 @@ final class FleetSnapshotTests: XCTestCase {
     func test_fleet_orchestratorAndProjects() throws {
         let view = try fleet()
         assertScreenVariants { view }
+    }
+
+    func test_fleet_idleNodesSitCollapsedAtTheBottom() throws {
+        let view = try fleet()
+        assertScreen(inWindow: true) { ScreenFrame(height: 1150, growsWithText: false) { view } }
+        let spanish = try fleet(document: "fleet-ios-es")
+        assertScreen(language: .spanish, inWindow: true) { ScreenFrame(height: 1150, growsWithText: false) { spanish } }
     }
 
     private func fleetWithEveryState() throws -> some View {
