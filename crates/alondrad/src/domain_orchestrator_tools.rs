@@ -85,6 +85,8 @@ pub(crate) struct LaunchBody {
     model: Option<String>,
     #[serde(default)]
     effort: Option<String>,
+    #[serde(default)]
+    approach: Option<alondra_core::options::Approach>,
     /// What a relaunch passes when the orchestrator chose the model: the one the task had.
     #[serde(skip)]
     relaunch_model: Option<String>,
@@ -143,7 +145,7 @@ pub(crate) async fn launch(domain: &DomainRuntime, home: &Path, actor: &Actor, b
         }
         text
     });
-    let prompt = crate::domain_schedule_runner::producer_prompt(&mission, &resolved, &task.id);
+    let prompt = crate::domain_schedule_runner::producer_prompt(&mission, &resolved, &task.id, body.approach.unwrap_or_default());
     let key = format!("launch-{}", crate::auth::random_hex(8));
     let settings = crate::domain_sessions::prepare(home, &key)
         .map_err(|error| DomainError::new("storage_unavailable", format!("could not write the session's settings: {error}")))?;
@@ -221,6 +223,8 @@ pub(crate) struct SendBody {
     task: Option<TaskId>,
     #[serde(default)]
     model: Option<String>,
+    #[serde(default)]
+    approach: Option<alondra_core::options::Approach>,
 }
 
 /// Sends the orchestrator's text to an Agent's session. With a Task, the Agent is told which
@@ -252,7 +256,11 @@ pub(crate) async fn send(domain: &DomainRuntime, home: &Path, actor: &Actor, bod
             run(domain, actor, Command::ReopenTask { task_id: task_id.clone() })?;
         }
     }
-    let message = serde_json::from_value(json!({"text": body.text, "task_id": body.task}))
+    let text = match body.approach {
+        Some(approach) => format!("{}\n\n{}", body.text.trim_end(), approach.how_to_work().join("\n")),
+        None => body.text,
+    };
+    let message = serde_json::from_value(json!({"text": text, "task_id": body.task}))
         .map_err(|error| DomainError::new("invalid_input", error.to_string()))?;
     crate::domain_messages::deliver(domain, home, actor, "The orchestrator", &agent_id, message, false).await
 }

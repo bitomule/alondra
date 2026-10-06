@@ -445,3 +445,34 @@ async fn a_task_whose_node_the_user_closed_is_relaunched_for_that_task_in_the_cl
     let again = relaunch(&f.domain, &f.home, &user(), &"t".into(), &claude).await.unwrap_err();
     assert_eq!(again.code, "conflict");
 }
+
+#[tokio::test]
+async fn a_launch_with_an_approach_writes_how_to_work_into_the_mission() {
+    let f = world();
+    let actor = the_orchestrator(&f.domain);
+    let claude = FakeClaude::loading(&f.domain);
+    launch(&f.domain, &f.home, &actor, launch_body(&f, json!({"effort": "light", "approach": "subagents"})), |_| Some(hard_choices()), &claude).await.unwrap();
+    let calls = claude.calls.lock().unwrap();
+    let prompt = calls[0].1.last().unwrap();
+    assert!(prompt.contains("## How to work") && prompt.contains("TaskCreate") && prompt.contains("the Agent tool"), "{prompt}");
+}
+
+#[test]
+fn a_launch_or_send_with_an_unknown_approach_is_refused_naming_the_three() {
+    let launch = serde_json::from_value::<LaunchBody>(json!({"name": "n", "cwd": "/", "task": "t", "approach": "swarm"})).err().unwrap().to_string();
+    let send = serde_json::from_value::<SendBody>(json!({"node": "n", "text": "Go", "approach": "swarm"})).err().unwrap().to_string();
+    for error in [launch, send] {
+        assert!(["solo", "subagents", "workflow"].iter().all(|name| error.contains(name)), "{error}");
+    }
+}
+
+#[tokio::test]
+async fn a_message_with_an_approach_ends_with_how_to_work() {
+    let f = world();
+    let actor = the_orchestrator(&f.domain);
+    let node = Node::connect(&f.domain, "agent-b");
+    let body: SendBody = serde_json::from_value(json!({"node": "Instance B", "text": "Take it", "task": "t", "approach": "workflow"})).unwrap();
+    send(&f.domain, &f.home, &actor, body).await.unwrap();
+    let text = &node.texts()[0];
+    assert!(text.contains("Take it") && text.contains("## How to work") && text.contains("the Workflow tool"), "{text}");
+}

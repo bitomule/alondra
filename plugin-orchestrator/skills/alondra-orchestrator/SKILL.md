@@ -99,12 +99,14 @@ models need concrete evidence**. Pass `model` on `launch`; with auto effort it i
 
 - **haiku:** mechanical, bounded work with an obvious check, such as copy, metadata, a
   configuration edit or a localized fix with a clear cause.
-- **sonnet:** ordinary implementation, investigation, refactors and tests using established
-  patterns. Several files, a build or a test suite do not by themselves call for more.
-- **opus:** a specific unresolved reasoning difficulty that the mission names, such as a subtle
-  race, a migration with difficult data-preservation invariants, or an architectural choice with
-  competing constraints. A generic label like "risky", "backend" or "security" is not a
-  justification.
+- **sonnet:** the task arrives with a concrete plan: exact files, narrow scope, low complexity,
+  such as a piece of an approved plan already split. Ordinary implementation and tests using
+  established patterns also fit. Several files, a build or a test suite do not by themselves
+  call for more.
+- **opus:** the node has to design, investigate code it does not know, or debug without a known
+  cause, such as a subtle race, a migration with difficult data-preservation invariants, or an
+  architectural choice with competing constraints. A generic label like "risky", "backend" or
+  "security" is not a justification.
 - **fable:** the hardest, longest autonomous work, only with concrete evidence that the lower
   models cannot carry it.
 
@@ -113,6 +115,14 @@ mission names a reason to move away from the model's default. The size or import
 request does not raise the model. When the user chose an effort on the request, it already sets
 the model: `launch` refuses a `model` then, and the user's choice stands even when it makes every
 task use the strongest model.
+
+### Choose how the node works
+
+Pass `approach` on `launch`, or on `send` with `task`, to say how the node organises its work:
+`subagents` when the task has independent parts a single node can hand off and review;
+`workflow` when it is large, parallel and each part is checkable (many files of the same change,
+broad audits); otherwise leave it out and the node works solo. Alondra writes the instructions
+into the mission; never write tool instructions yourself.
 
 **Reuse a node only when both hold:** the task continues that node's work, and the node's model
 fits the task. `candidates` with `model` says whether each node fits (`fits`), and `send` with
