@@ -46,6 +46,8 @@ public struct TasksBoard: Equatable, Sendable {
         /// the title, and `dependent` names the waiting task when its request has other tasks.
         public let isWait: Bool
         public let dependent: String?
+        /// What the daemon says about the task beside its state, such as "Scheduled" for a scheduled run.
+        public let marks: [String]
     }
 
     public struct Fold: Equatable, Sendable {
@@ -168,7 +170,8 @@ extension TasksBoard.Line {
                 icon: row.icon, struck: row.struck, waiting: row.trailing?.count ?? 0,
                 activity: activity?.title, activityAt: activityAt,
                 depth: rails.count, rails: rails, isLastSibling: last, hasChildren: !children.isEmpty,
-                link: row.link, origin: origin?.title, isWait: isWait, dependent: isWait ? row.subtitle : nil
+                link: row.link, origin: origin?.title, isWait: isWait, dependent: isWait ? row.subtitle : nil,
+                marks: row.badges.dropFirst().map(\.text)
             )
             return [line] + tree(children, rails: rails + [!last])
         }

@@ -117,6 +117,15 @@ pub(super) fn failed_launch<'a>(task: &crate::domain_v2::Task, domain: &'a crate
         .map(|run| run.error.as_deref().map(str::trim).filter(|error| !error.is_empty()).unwrap_or(""))
 }
 
+/// "Scheduled" on a task a scheduled run created, so it reads apart from the work the user asked for.
+pub(super) fn scheduled_mark(task: &crate::domain_v2::Task, domain: &crate::domain_v2::DomainState,
+    lang: super::Lang) -> Option<super::Label> {
+    domain.schedule.runs.values().any(|run| run.task_id.as_ref() == Some(&task.id)).then(|| super::Label {
+        text: super::text::t!(lang, "Scheduled", "Programada").into(),
+        tone: super::Tone::Neutral,
+    })
+}
+
 pub(super) fn launch_failed_label(lang: super::Lang) -> &'static str {
     super::text::t!(lang, "Did not start", "No arrancó")
 }

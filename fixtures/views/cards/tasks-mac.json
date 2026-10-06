@@ -4,11 +4,11 @@
   "view": "tasks",
   "key": "tasks",
   "client": "mac",
-  "version": "v05c74041fb0f3db6",
+  "version": "ve81d65b9ed285370",
   "cursor": "cursor-1",
   "title": "Tasks",
   "status": {
-    "version": "v275224cee54b15ef",
+    "version": "v716dae2f2714c8bd",
     "summary": "2 questions · 3 to read · 0 nodes working",
     "badge": 5,
     "counts": [
@@ -20,7 +20,7 @@
       {
         "id": "tasks",
         "label": "Tasks",
-        "value": 5
+        "value": 6
       },
       {
         "id": "agents",
@@ -81,7 +81,7 @@
     {
       "id": "active",
       "title": "Active",
-      "count": 4,
+      "count": 5,
       "collapsed": false,
       "items": [
         {
@@ -242,6 +242,28 @@
             "at": "2026-09-30T09:59:00.000Z",
             "format": "relative"
           },
+          "depth": 0,
+          "struck": false
+        },
+        {
+          "type": "row",
+          "id": "r-scheduled",
+          "link": {
+            "kind": "view",
+            "key": "task:t-scheduled-lumo"
+          },
+          "icon": "mission",
+          "title": "Lumo · weekly improvement",
+          "badges": [
+            {
+              "text": "Working",
+              "tone": "accent"
+            },
+            {
+              "text": "Scheduled",
+              "tone": "neutral"
+            }
+          ],
           "depth": 0,
           "struck": false
         }

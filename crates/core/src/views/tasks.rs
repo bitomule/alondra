@@ -39,6 +39,7 @@ pub(super) fn task_row(task: &Task, context: &RenderContext<'_>) -> super::Row {
     );
     row.struck = task.state == TaskState::Cancelled;
     row.badges.push(super::Label { text: state(task, context.domain, context.lang).into(), tone });
+    row.badges.extend(common::scheduled_mark(task, context.domain, context.lang));
     if context.client == super::Client::Tui {
         row.subtitle = None;
         row.trailing = context.live.task_history.get(&task.id.0)
@@ -203,6 +204,7 @@ fn request_row(request: &Request, forest: &Forest<'_>, context: &RenderContext<'
                 row.struck = task.state == TaskState::Cancelled;
                 row.subtitle = None;
                 row.badges.insert(0, super::Label { text: state(task, context.domain, context.lang).into(), tone });
+                row.badges.extend(common::scheduled_mark(task, context.domain, context.lang));
                 row.children = match children.as_mut_slice() {
                     [only] if only.id == task.id.0 => std::mem::take(&mut only.children),
                     _ => children,

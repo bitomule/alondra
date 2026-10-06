@@ -54,6 +54,7 @@ fn task_groups(context: &RenderContext<'_>) -> super::Section {
                     icon, task.title.clone(), task_subtitle(task, context, Some(title)));
                 row.struck = state == TaskState::Cancelled;
                 row.badges.push(Label { text: title.into(), tone });
+                row.badges.extend(common::scheduled_mark(task, context.domain, context.lang));
                 row.depth = 1;
                 row
             }).collect();

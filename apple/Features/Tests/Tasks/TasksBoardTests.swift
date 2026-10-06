@@ -80,7 +80,24 @@ final class TasksBoardTests: XCTestCase {
 
         XCTAssertNil(board.archiveCompleted)
         XCTAssertEqual(board.schedules?.count, 0, "the daemon sends no count when nothing is scheduled")
-        XCTAssertEqual(board.active.requests.count, 5)
+        XCTAssertEqual(board.active.requests.count, 6)
+    }
+
+    func testAScheduledRunInProgressIsAnActiveRequestMarkedScheduled() throws {
+        let board = TasksBoard(document: try Fixtures.document("tasks-ios"))
+        let request = try XCTUnwrap(board.active.requests.first { $0.id == "r-scheduled" })
+        let task = try XCTUnwrap(request.tasks.first)
+
+        XCTAssertTrue(request.isSingleTask)
+        XCTAssertEqual(task.title, "Lumo · weekly improvement")
+        XCTAssertEqual(task.state, "Working")
+        XCTAssertEqual(task.marks, ["Scheduled"])
+        XCTAssertEqual(task.tone, .accent, "the mark never takes the state's place")
+
+        let spanish = TasksBoard(document: try Fixtures.document("tasks-ios-es"))
+        let marks = spanish.active.requests.first { $0.id == "r-scheduled" }?.tasks.first?.marks
+        XCTAssertEqual(marks, ["Programada"])
+        XCTAssertEqual(board.active.requests.first { $0.id == "r-badge" }?.tasks.first?.marks, [])
     }
 
     func testATaskThatWaitsOnAnotherRequestsTaskIsNestedThereAndLeavesAShortRowInItsOwn() throws {

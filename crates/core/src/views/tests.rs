@@ -638,6 +638,9 @@ fn tasks_fixture() -> (DomainState, LiveSnapshot) {
     let answered = state.requests.get_mut(&"r-answer".into()).unwrap();
     answered.closed = true;
     answered.answer = Some("Yes, since Monday".into());
+    add_request(&mut state, "r-scheduled", None, "This run belongs to a scheduled task of Alondra. Run the weekly improvement cycle for Lumo.");
+    add_task(&mut state, "t-scheduled-lumo", "r-scheduled", "Lumo · weekly improvement", TaskState::Running, &[]);
+    scheduled_run(&mut state, "r-scheduled", "t-scheduled-lumo");
     for (id, at) in [
         ("r-9f2156b5a8894e53901f0af576dff6a2", "2026-09-30T09:40:00.000Z"),
         ("r-badge", "2026-09-30T09:52:00.000Z"),
@@ -647,6 +650,57 @@ fn tasks_fixture() -> (DomainState, LiveSnapshot) {
         live.request_times.insert(id.into(), at.into());
     }
     (state, live)
+}
+
+fn scheduled_run(state: &mut DomainState, request: &str, task: &str) {
+    use crate::domain_v2::{ScheduleRun, ScheduleRunOrigin, ScheduleRunState};
+    let id = format!("run-{task}");
+    state.schedule.runs.insert(id.clone().into(), ScheduleRun {
+        id: id.into(), schedule_id: "0789f185-0000".into(), origin: ScheduleRunOrigin::Due,
+        due_at: Some(100), claimed_at: Some(100), claim_revision: Some(1), finished_at: Some(101),
+        state: ScheduleRunState::Sent, request_id: Some(request.into()), task_id: Some(task.into()),
+        error: None, definition_snapshot: None, launch: None,
+    });
+}
+
+fn active_titles(view: &View) -> Vec<String> {
+    fn walk(rows: &[Row], out: &mut Vec<String>) {
+        for row in rows {
+            out.push(row.title.clone());
+            walk(&row.children, out);
+        }
+    }
+    let mut out = Vec::new();
+    for section in view.sections.iter().filter(|section| section.id == "active") {
+        let rows: Vec<Row> = section.items.iter().filter_map(|item| match item {
+            Item::Row(row) => Some(row.clone()),
+            _ => None,
+        }).collect();
+        walk(&rows, &mut out);
+    }
+    out
+}
+
+#[test]
+fn a_scheduled_run_in_progress_is_an_active_task_marked_scheduled_and_finishes_like_any_other() {
+    let (mut state, live) = tasks_fixture();
+    for (client, lang, mark) in [(Client::Ios, Lang::En, "Scheduled"), (Client::Ios, Lang::Es, "Programada"),
+        (Client::Mac, Lang::En, "Scheduled"), (Client::Tui, Lang::Es, "Programada")] {
+        let view = render(&state, &live, client, lang, "tasks", "");
+        assert!(active_titles(&view).iter().any(|title| title == "Lumo · weekly improvement"), "{client:?}: {view:?}");
+        let rows = serde_json::to_string(&view).unwrap();
+        assert!(rows.contains(&format!("\"text\":\"{mark}\"")), "{client:?} {lang:?}: {rows}");
+    }
+    let sidebar = serde_json::to_string(&render(&state, &live, Client::Mac, Lang::En, "sidebar", "")).unwrap();
+    assert!(sidebar.contains("Lumo · weekly improvement") && sidebar.contains("\"text\":\"Scheduled\""), "{sidebar}");
+    let unmarked = serde_json::to_string(&render(&state, &live, Client::Ios, Lang::En, "task:t-badge-count", "")).unwrap();
+    assert!(!unmarked.contains("\"text\":\"Scheduled\""), "{unmarked}");
+
+    state.tasks.get_mut(&"t-scheduled-lumo".into()).unwrap().state = TaskState::Done;
+    let view = render(&state, &live, Client::Ios, Lang::En, "tasks", "");
+    assert!(!active_titles(&view).iter().any(|title| title == "Lumo · weekly improvement"));
+    let finished = view.sections.iter().find(|section| section.id == "finished").unwrap();
+    assert!(serde_json::to_string(finished).unwrap().contains("Lumo · weekly improvement"));
 }
 
 #[test]
