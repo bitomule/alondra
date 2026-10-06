@@ -39,11 +39,14 @@ enum ScreenStores {
         state.orderedIDs = queue
         state.cards = IdentifiedArray(uniqueElements: cards.map(cardState))
         edit(&state)
-        return Store(initialState: state) { TriageFeature() } withDependencies: { quiet(&$0) }
+        return triage(state: state)
     }
 
+    /// Waiting for You starts its timers and reloads its cards from `.task`, and every variant of a
+    /// test draws the same store: a store that ignores its actions keeps each variant on the state
+    /// the test built, however long the previous one took to render.
     static func triage(state: TriageFeature.State) -> StoreOf<TriageFeature> {
-        Store(initialState: state) { TriageFeature() } withDependencies: { quiet(&$0) }
+        Store(initialState: state) { EmptyReducer() }
     }
 
     static func cardDetail(

@@ -63,11 +63,25 @@ func screen<Content: View>(
 
 /// perceptualPrecision 0.98 tolerates Apple Silicon anti-aliasing without hiding a real change.
 func deviceImage(_ variant: SnapshotVariant) -> Snapshotting<AnyView, UIImage> {
-    .image(
+    Snapshotting<AnyView, UIImage>.image(
         perceptualPrecision: 0.98,
         layout: .sizeThatFits,
         traits: .init(userInterfaceStyle: variant.style)
-    )
+    ).asRecorded
+}
+
+extension Snapshotting where Format == UIImage {
+    /// A capture is extended sRGB in 16-bit floats and a reference is the Display P3 PNG it was
+    /// recorded as, and the perceptual comparison reads both without colour management. Comparing
+    /// the capture as the PNG it would be recorded as keeps a one-step difference in a shadow from
+    /// failing every saturated pixel on the screen.
+    var asRecorded: Self {
+        Snapshotting(pathExtension: pathExtension, diffing: diffing) { value in
+            snapshot(value).map { image in
+                image.pngData().flatMap { UIImage(data: $0, scale: image.scale) } ?? image
+            }
+        }
+    }
 }
 
 /// Captures one view in light, dark and accessibility size 3. The baselines are named after the

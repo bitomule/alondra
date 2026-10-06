@@ -72,7 +72,7 @@ func assertScreen<Content: View>(
         let suffix = language == .english ? variant.suffix : "\(variant.suffix)_\(language.rawValue.prefix(2))"
         assertAppSnapshot(
             of: screen(variant, language: language, content),
-            as: .image(
+            as: Snapshotting<AnyView, UIImage>.image(
                 drawHierarchyInKeyWindow: inWindow,
                 perceptualPrecision: 0.98,
                 layout: .sizeThatFits,
@@ -80,7 +80,7 @@ func assertScreen<Content: View>(
                     UITraitCollection(userInterfaceStyle: variant.style),
                     UITraitCollection(displayScale: 1),
                 ])
-            ),
+            ).asRecorded,
             named: suffix,
             file: file,
             testName: testName,
