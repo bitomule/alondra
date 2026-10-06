@@ -11,7 +11,10 @@ bazelisk test //tests/sandbox:scenarios   # opt-in: fresh two-Mac sandbox + auto
 ```
 
 `SANDBOX_PORT` (default 47890) moves every port: the issuer on `PORT-1`, the relay on `PORT`,
-Mac *n* on `PORT+n`, and its future direct port on `PORT+20+n` (reserved in `sandbox.json`).
+Mac *n* on `PORT+n`, and its direct listener on `PORT+20+n`. The direct listener binds loopback;
+`SANDBOX_LAN=1` binds it on every interface so a real phone on the same Wi-Fi can reach it.
+Sandbox Macs advertise on Bonjour as `_alondra-sandbox._tcp`, never as `_alondra._tcp`, so real
+apps never list them; `ALONDRA_SANDBOX=1 alondra connect` searches for that type.
 
 ## Layout
 
@@ -19,7 +22,8 @@ Mac *n* on `PORT+n`, and its future direct port on `PORT+20+n` (reserved in `san
   `settings.json`, `alondrad.log`.
 - `relay.json`, `relay.log`: the real `alondra-relay`, without Postgres or Keycloak.
 - `issuer/`: the RSA key that signs sandbox account tokens and its `jwks.json`, served on loopback.
-- `phones/<name>/mac-N.json`: the synthetic phone's identity toward each Mac.
+- `phones/<name>/mac-N.json`: the synthetic phone's identity toward each Mac through the relay;
+  `mac-N-direct.json` the one it paired directly.
 - `sandbox.json`: Macs, ports and URLs, for the phone and later tools.
 
 ## Synthetic phone
@@ -28,7 +32,22 @@ Mac *n* on `PORT+n`, and its future direct port on `PORT+20+n` (reserved in `san
 alondra-sandbox phone --mac 1 pair                      # approve on the Mac, wait for relay enrollment
 alondra-sandbox phone --mac 1 request GET /capabilities # one encrypted request, prints the response
 alondra-sandbox phone --mac 1 revoke                    # revoke on the Mac, wait until the relay refuses
+alondra-sandbox phone --mac 1 pair --direct             # pair over the direct listener, codes compared
+alondra-sandbox phone --mac 1 request --direct GET /capabilities   # the same request, without the relay
 alondra-sandbox scenario                                # the automatic checks, on every Mac
+```
+
+`pair --direct` runs the local pairing as the iPhone will: `hello`, commitment, reveal, then it
+reads the code the Mac lists on `GET /devices/pending` (what the Mac app and the TUI show), checks
+it matches its own, and approves through `POST /devices/pending/<id>/approve` as a person would.
+
+A terminal can pair directly too, in a HOME of its own:
+
+```sh
+ALONDRA_HOME=$SANDBOX_DIR/client ALONDRA_SANDBOX=1 alondra connect --host 127.0.0.1:47911
+. $SANDBOX_DIR/mac-1/env && alondra devices            # lists the request with its code
+. $SANDBOX_DIR/mac-1/env && alondra devices --approve <id>
+ALONDRA_HOME=$SANDBOX_DIR/client alondra               # the TUI, with every Mac it paired
 ```
 
 `--name` keeps several phones apart. A route the daemon does not approve for phones gets no

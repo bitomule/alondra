@@ -11,6 +11,17 @@ use serde_json::Value;
 
 static CONFIG: OnceLock<Config> = OnceLock::new();
 
+/// The name the user gave this computer, as pairing requests show it on the Mac.
+pub fn computer_name() -> String {
+    std::process::Command::new("scutil")
+        .args(["--get", "ComputerName"])
+        .output()
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|h| !h.is_empty())
+        .unwrap_or_else(|| "Mac".into())
+}
+
 /// The effective configuration; a broken `config.toml` falls back to defaults here and is
 /// reported by `alondra doctor`.
 pub fn config() -> &'static Config {
@@ -22,7 +33,21 @@ pub struct Client {
     agent: ureq::Agent,
     signer: Option<Signer>,
     service: Option<std::sync::Arc<crate::service_client::Profile>>,
+    direct: Option<std::sync::Arc<crate::direct_client::Connection>>,
     timeout: Duration,
+}
+
+/// Which Mac a TUI instance talks to: this one over loopback, or one paired directly.
+#[derive(Clone)]
+pub enum Target {
+    Local,
+    Direct(std::sync::Arc<crate::direct_client::Connection>),
+}
+
+impl Target {
+    pub fn is_local(&self) -> bool {
+        matches!(self, Target::Local)
+    }
 }
 
 /// Long-poll reply for the views feed. `data_epoch` is carried explicitly so actions
@@ -103,7 +128,7 @@ impl Signer {
         let key = p256::ecdsa::SigningKey::from_slice(&seed).map_err(|e| anyhow!("key: {e}"))?;
         let code = unsigned.post("/pairing", &serde_json::json!({}))?.get("code").and_then(Value::as_str).map(str::to_string).context("no pairing code")?;
         let public = base64::engine::general_purpose::STANDARD.encode(key.verifying_key().to_sec1_point(false).as_bytes());
-        let host = std::process::Command::new("scutil").args(["--get", "ComputerName"]).output().ok().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).filter(|h| !h.is_empty()).unwrap_or_else(|| "Mac".into());
+        let host = computer_name();
         let paired = unsigned.post("/pair", &serde_json::json!({"code": code, "device_name": format!("Terminal ({host})"), "public_key": public}))?;
         let device = paired.get("device_id").and_then(Value::as_str).context("no device id")?.to_string();
         let pem = key.to_pkcs8_pem(LineEnding::LF).map_err(|e| anyhow!("key: {e}"))?;
@@ -131,7 +156,7 @@ impl Client {
             .http_status_as_error(false)
             .build()
             .into();
-        Client { base: format!("http://{host}:{port}"), agent, signer: None, service: None, timeout }
+        Client { base: format!("http://{host}:{port}"), agent, signer: None, service: None, direct: None, timeout }
     }
 
     #[cfg(test)]
@@ -161,6 +186,18 @@ impl Client {
         } else { Self::for_user(timeout) }
     }
 
+    /// A client for one TUI instance's Mac. A direct Mac gets the longer wait its network needs.
+    pub fn for_target(target: &Target, timeout: Duration) -> Self {
+        match target {
+            Target::Local => Self::for_tui(timeout),
+            Target::Direct(connection) => {
+                let mut client = Self::new(timeout.max(Duration::from_secs(15)));
+                client.direct = Some(connection.clone());
+                client
+            }
+        }
+    }
+
     fn headers<B>(&self, mut req: ureq::RequestBuilder<B>, method: &str, path: &str, body: &[u8]) -> ureq::RequestBuilder<B> {
         if let Ok(run) = std::env::var("ALONDRA_ORCHESTRATOR_EXECUTION") { req = req.header("x-alondra-orchestrator-execution", run); }
         if let Ok(sid) = std::env::var("ALONDRA_SESSION_ID").or_else(|_| std::env::var("CLAUDE_CODE_SESSION_ID")) { req = req.header("x-alondra-session", sid); }
@@ -174,6 +211,9 @@ impl Client {
     fn exchange(&self, method: &str, path: &str, body: Option<&Value>) -> Result<(u16, Value)> {
         if let Some(service) = &self.service {
             return service.request(method, path, body, self.timeout);
+        }
+        if let Some(direct) = &self.direct {
+            return direct.request(method, path, body, self.timeout);
         }
         let url = format!("{}{path}", self.base);
         let not_responding = tr!("alondrad is not responding (is it running?)", "alondrad no responde (¿está arrancado?)");

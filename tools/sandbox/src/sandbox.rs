@@ -21,6 +21,7 @@ struct Manifest {
 struct ManifestMac {
     home: PathBuf,
     port: u16,
+    direct_port: u16,
 }
 
 pub struct Sandbox {
@@ -34,6 +35,8 @@ pub struct Target {
     pub number: usize,
     pub mac: Mac,
     pub local: String,
+    /// `host:port` of the Mac's direct listener.
+    pub direct: String,
 }
 
 impl Sandbox {
@@ -64,6 +67,7 @@ impl Sandbox {
             number,
             mac: Mac::open(&entry.home)?,
             local: format!("http://127.0.0.1:{}", entry.port),
+            direct: format!("127.0.0.1:{}", entry.direct_port),
         })
     }
 

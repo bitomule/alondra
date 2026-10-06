@@ -2,6 +2,8 @@
 # Usage: tools/e2e-sandbox.sh <alondrad> <alondra> <alondra-relay> <alondra-sandbox>
 # Starts MACS throwaway alondrad daemons in the background, each with its own HOME, local port
 # and Mac service keys, plus a loopback relay and token issuer they and the synthetic phone use.
+# Each Mac also listens for direct connections on PORT+20+n (loopback; SANDBOX_LAN=1 opens it to
+# the LAN to try a real phone) and advertises itself on Bonjour as _alondra-sandbox._tcp.
 # Sandbox mode: test/ nodes allowed, wake off. Stop everything with tools/e2e-sandbox-stop.sh.
 set -eu
 
@@ -15,6 +17,8 @@ base=${SANDBOX_PORT:-47890}
 repo=$(cd "$(dirname "$0")/.." && pwd)
 issuer_port=$((base - 1))
 relay_port=$base
+direct_listen=127.0.0.1
+[ "${SANDBOX_LAN:-0}" = 1 ] && direct_listen=0.0.0.0
 
 case $macs in '' | *[!0-9]* | 0) echo "MACS must be a number from 1." >&2; exit 1 ;; esac
 
@@ -95,7 +99,7 @@ while [ "$i" -le "$macs" ]; do
 	home="$dir/mac-$i"
 	port=$(local_port "$i")
 	mkdir -p "$home"
-	mac_id=$("$tool" provision-mac "$home" --relay "$relay")
+	mac_id=$("$tool" provision-mac "$home" --relay "$relay" --direct-port "$(direct_port "$i")" --direct-listen "$direct_listen")
 	"$tool" enroll-mac "$home" --relay "$relay" --issuer "$issuer" --key "$dir/issuer/key.der"
 	printf 'port = %s\n' "$port" >"$home/config.toml"
 	printf '{"enabledPlugins": {"alondra@alondra": false, "alondra-orchestrator@alondra": false}, "env": {"ALONDRA_LAUNCHED": "1"}}\n' >"$home/settings.json"
@@ -128,7 +132,7 @@ i=1
 while [ "$i" -le "$macs" ]; do
 	home="$dir/mac-$i"
 	cat <<EOF
-Mac $i on http://127.0.0.1:$(local_port "$i") (log: make e2e-sandbox-logs MAC=$i)
+Mac $i on http://127.0.0.1:$(local_port "$i"), direct listener on $direct_listen:$(direct_port "$i") (log: make e2e-sandbox-logs MAC=$i)
   Probe node:  claude --bg --name test/<probe> --plugin-dir $home/plugin --settings $home/settings.json -- "<prompt>"
   Its CLI:     . $home/env && $dir/bin/alondra
 
@@ -140,6 +144,10 @@ Synthetic phone (state in $dir/phones):
   $tool --sandbox $dir phone --mac 1 pair
   $tool --sandbox $dir phone --mac 1 request GET /capabilities
   $tool --sandbox $dir phone --mac 1 revoke
+  $tool --sandbox $dir phone --mac 1 pair --direct
+  $tool --sandbox $dir phone --mac 1 request --direct GET /capabilities
+A terminal paired directly (pairing requests: . <Mac home>/env && $dir/bin/alondra devices):
+  ALONDRA_HOME=$dir/client ALONDRA_SANDBOX=1 $dir/bin/alondra connect --host 127.0.0.1:$(direct_port 1)
 
 Close probes with 'claude rm <id>' when done, then: make e2e-sandbox-stop
 EOF

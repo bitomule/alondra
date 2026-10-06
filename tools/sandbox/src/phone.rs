@@ -1,7 +1,9 @@
 //! A synthetic phone: its own keys per Mac, the same envelopes and relay calls as the iPhone.
+mod direct;
+
 use std::{fs, os::unix::fs::OpenOptionsExt, path::PathBuf, time::Duration};
 
-use alondra_e2e::{Context as Envelope, Envelope};
+use alondra_e2e::{Context as EnvelopeContext, Envelope};
 use anyhow::{Context, Result, anyhow, bail};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD as B64};
 use p256::{SecretKey, ecdsa::SigningKey};
@@ -153,7 +155,7 @@ impl<'a> Phone<'a> {
 
     pub fn seal(&self, target: &Target, link: &Link, request_id: &str, plaintext: &Value) -> Result<Vec<u8>> {
         let envelope = Envelope::seal_random(
-            Envelope {
+            EnvelopeContext {
                 route: &target.mac.id,
                 sender: &link.device_id,
                 recipient: &target.mac.id,
