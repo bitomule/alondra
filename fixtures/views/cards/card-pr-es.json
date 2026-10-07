@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:github.com/example/repo#12",
   "client": "ios",
-  "version": "vadd05d013673fdd2",
+  "version": "v7ace19f9308e722c",
   "cursor": "cursor-1",
   "title": "Add the compact schedule editor",
   "status": {
@@ -176,11 +176,6 @@
                 "kind": "none"
               },
               "attachments": false,
-              "confirm": {
-                "title": "¿Fusionar la PR #12?",
-                "message": "«Add the compact schedule editor» entra en main. Alondra la fusiona en GitHub y te avisa cuando termine.",
-                "button": "Fusionar"
-              },
               "enabled": true,
               "stamp": "Fusionando…"
             },

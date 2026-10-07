@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:hf-weekly-2026-09-30",
   "client": "ios",
-  "version": "v7565c00fd78423e1",
+  "version": "v31231a39e537c675",
   "cursor": "cursor-1",
   "title": "Add the compact schedule editor",
   "status": {
@@ -176,11 +176,6 @@
                 "kind": "none"
               },
               "attachments": false,
-              "confirm": {
-                "title": "¿Fusionar la PR #12?",
-                "message": "«Add the compact schedule editor» entra en main. Alondra la fusiona en GitHub y te avisa cuando termine.",
-                "button": "Fusionar"
-              },
               "enabled": true,
               "stamp": "Fusionando…"
             },

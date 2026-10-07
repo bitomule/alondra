@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:hf-weekly-2026-09-30",
   "client": "ios",
-  "version": "v04fadaafc47c1a4c",
+  "version": "va88ad942fd027130",
   "cursor": "cursor-1",
   "title": "Add the compact schedule editor",
   "status": {
@@ -176,11 +176,6 @@
                 "kind": "none"
               },
               "attachments": false,
-              "confirm": {
-                "title": "Merge PR #12?",
-                "message": "“Add the compact schedule editor” goes into main. Alondra merges it on GitHub and tells you when it's done.",
-                "button": "Merge"
-              },
               "enabled": true,
               "stamp": "Merging…"
             },

@@ -187,18 +187,6 @@ final class TriageSnapshotTests: XCTestCase {
 
     private func language(_ spanish: Bool) -> SnapshotLanguage { spanish ? .spanish : .english }
 
-    func test_mergeAsksFirstAndIsNotRed() async throws {
-        for spanish in [false, true] {
-            let store = try pullRequest(spanish: spanish) { actions, card in
-                let merge = try XCTUnwrap(card.actions.first { $0.id?.hasPrefix("merge:") == true })
-                actions.action = merge
-                actions.selectedOptionID = merge.options.first?.id
-                actions.confirmation = merge.confirm
-            }
-            await assertPresented(language: language(spanish), named: spanish ? "light_es" : "light") { Harness(store: store) }
-        }
-    }
-
     func test_closingWithoutMergingAsksFirstInRed() async throws {
         for spanish in [false, true] {
             let store = try pullRequest(spanish: spanish) { actions, card in

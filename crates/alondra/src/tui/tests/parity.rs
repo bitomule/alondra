@@ -121,7 +121,20 @@ fn escape_on_a_changed_modal_sends_nothing() {
     assert!(posted(&app).is_empty());
 }
 
-fn one_method_merge_card(app: &mut App) -> (String, String) {
+/// The merge action exactly as the server words it in `card-pr.json`, under this test's id.
+fn server_merge_action(action_id: &str) -> serde_json::Value {
+    let card = view_fixture("card-pr.json");
+    let mut merge = card["sections"].as_array().unwrap().iter()
+        .flat_map(|section| section["items"].as_array().unwrap())
+        .flat_map(|item| item["actions"].as_array().into_iter().flatten())
+        .find(|action| action["id"].as_str().is_some_and(|id| id.starts_with("merge:")))
+        .expect("card-pr.json offers a merge")
+        .clone();
+    merge["id"] = action_id.into();
+    merge
+}
+
+fn merge_card(app: &mut App, merge: impl FnOnce(&str) -> serde_json::Value) -> (String, String) {
     let id = "hf-weekly-2026-09-30";
     app.on_msg(Msg::ViewHome(Ok(serde_json::from_value(view_fixture("home-tui.json")).unwrap())));
     app.reconcile();
@@ -129,23 +142,28 @@ fn one_method_merge_card(app: &mut App) -> (String, String) {
     let action_id = format!("merge:{id}@7~abcdef12");
     let mut card = view_fixture("card-pr.json");
     card["key"] = format!("card:{id}").into();
-    card["sections"][0]["items"][0]["actions"] = serde_json::json!([{
-        "id": action_id,
-        "label": "Merge PR #12",
-        "style": "primary",
-        "presentation": "button",
-        "option_id": "squash",
-        "input": {"kind": "none"},
-        "attachments": false,
-        "enabled": true,
-        "stamp": "Merging…",
-        "confirm": {"title": "Merge PR #12?", "message": "“Add it” goes into main.", "button": "Merge"}
-    }]);
+    card["sections"][0]["items"][0]["actions"] = serde_json::json!([merge(&action_id)]);
     app.on_msg(Msg::ViewCard {
         key: format!("card:{id}"),
         result: Ok(serde_json::from_value(card).unwrap()),
     });
     (id.into(), action_id)
+}
+
+fn one_method_merge_card(app: &mut App) -> (String, String) {
+    merge_card(app, |action_id| {
+        let mut merge = server_merge_action(action_id);
+        let object = merge.as_object_mut().unwrap();
+        object.remove("options");
+        object.insert("presentation".into(), "button".into());
+        object.insert("option_id".into(), "squash".into());
+        object.insert("label".into(), "Merge PR #12".into());
+        merge
+    })
+}
+
+fn methods_merge_card(app: &mut App) -> (String, String) {
+    merge_card(app, server_merge_action)
 }
 
 fn applied(kind: &str, title: &str) -> Result<ViewActionReply, Delivery> {
@@ -155,22 +173,14 @@ fn applied(kind: &str, title: &str) -> Result<ViewActionReply, Delivery> {
 }
 
 #[test]
-fn merge_end_to_end_modal_then_one_post_then_started() {
+fn merge_end_to_end_one_press_one_post_then_started() {
     crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
     let (tx, _rx) = std::sync::mpsc::sync_channel(8);
     let mut app = App::new(tx);
     let (pr_id, action_id) = one_method_merge_card(&mut app);
 
     press(&mut app, KeyCode::Char('1'));
-    assert!(posted(&app).is_empty(), "the first press only asks");
-    assert!(app.modal.is_some());
-    assert!(!app.flash.as_ref().is_some_and(|f| f.kind == FlashKind::Error), "a question is not an error");
-    let drawn = screen(&mut app, 100, 30);
-    assert!(drawn.contains("Merge PR #12?"), "{drawn}");
-    assert!(drawn.contains("goes into main"), "{drawn}");
-    assert!(drawn.contains("Merge · Esc cancel"), "{drawn}");
-
-    press(&mut app, KeyCode::Enter);
+    assert!(app.modal.is_none(), "merging asks nothing");
     let sent = posted(&app);
     assert_eq!(sent.len(), 1);
     assert_eq!(sent[0].0, "/actions");
@@ -181,6 +191,7 @@ fn merge_end_to_end_modal_then_one_post_then_started() {
     assert!(!app.inbox_keys().contains(&Key(pr_id)), "the card leaves the list at once");
     let after = screen(&mut app, 120, 30);
     assert!(!after.contains("Review the beta candidate"), "the card is not drawn: {after}");
+    assert!(!after.contains("Merge PR #12?"), "{after}");
     assert!(after.contains("Merging…"), "{after}");
 
     app.on_msg(Msg::ViewAction {
@@ -193,14 +204,35 @@ fn merge_end_to_end_modal_then_one_post_then_started() {
 }
 
 #[test]
-fn escape_on_the_merge_modal_sends_nothing() {
+fn merge_with_several_methods_asks_the_method_then_posts_with_no_confirmation() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
     let (tx, _rx) = std::sync::mpsc::sync_channel(8);
     let mut app = App::new(tx);
-    one_method_merge_card(&mut app);
+    let (_, action_id) = methods_merge_card(&mut app);
+
+    press(&mut app, KeyCode::Char('1'));
+    assert!(posted(&app).is_empty(), "the first press asks the method");
+    let drawn = screen(&mut app, 120, 30);
+    assert!(drawn.contains("Squash and merge"), "{drawn}");
+    assert!(drawn.contains("Merge commit"), "{drawn}");
+
+    press(&mut app, KeyCode::Char('2'));
+    assert!(app.modal.is_none(), "choosing the method is the decision");
+    let sent = posted(&app);
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].1["action_id"], action_id);
+    assert_eq!(sent[0].1["option_id"], "merge");
+    assert_eq!(flash(&app), "Merging…");
+}
+
+#[test]
+fn escape_on_the_method_menu_sends_nothing() {
+    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
+    let mut app = App::new(tx);
+    methods_merge_card(&mut app);
     press(&mut app, KeyCode::Char('1'));
     press(&mut app, KeyCode::Esc);
-    assert!(app.modal.is_none());
-    press(&mut app, KeyCode::Enter);
+    assert!(app.card_menu.is_none());
     assert!(posted(&app).is_empty());
 }
 
@@ -211,7 +243,6 @@ fn a_refused_action_brings_the_card_back_with_the_servers_words() {
     let mut app = App::new(tx);
     let (pr_id, _) = one_method_merge_card(&mut app);
     press(&mut app, KeyCode::Char('1'));
-    press(&mut app, KeyCode::Enter);
     let request = posted(&app)[0].1.clone();
     assert!(app.hidden.contains_key(&Key(pr_id.clone())));
     app.on_msg(Msg::ViewAction {
@@ -238,7 +269,6 @@ fn a_transport_failure_says_nothing_was_sent_not_the_error_chain() {
     let mut app = App::new(tx);
     let (pr_id, _) = one_method_merge_card(&mut app);
     press(&mut app, KeyCode::Char('1'));
-    press(&mut app, KeyCode::Enter);
     let request = posted(&app)[0].1.clone();
     app.on_msg(Msg::ViewAction {
         request,
@@ -246,30 +276,6 @@ fn a_transport_failure_says_nothing_was_sent_not_the_error_chain() {
     });
     assert_eq!(flash(&app), "Couldn't reach your Mac. Nothing was sent; try again.");
     assert!(!app.hidden.contains_key(&Key(pr_id)));
-}
-
-#[test]
-fn a_two_method_merge_goes_menu_then_modal_then_one_post_with_the_option() {
-    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
-    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
-    let mut app = App::new(tx);
-    let pr_id = "github.com/example/repo#12";
-    app.sel = Some(Key(pr_id.into()));
-    app.on_msg(Msg::ViewCard {
-        key: format!("card:{pr_id}"),
-        result: Ok(serde_json::from_value(view_fixture("card-pr.json")).unwrap()),
-    });
-    press(&mut app, KeyCode::Char('1'));
-    assert!(app.card_menu.is_some() && app.modal.is_none());
-    press(&mut app, KeyCode::Char('2'));
-    assert!(app.card_menu.is_none(), "the menu does not reopen");
-    assert!(app.modal.is_some());
-    assert!(posted(&app).is_empty());
-    press(&mut app, KeyCode::Enter);
-    let sent = posted(&app);
-    assert_eq!(sent.len(), 1);
-    assert_eq!(sent[0].1["option_id"], "merge");
-    assert!(!app.flash.as_ref().is_some_and(|f| f.kind == FlashKind::Error));
 }
 
 #[test]
@@ -1499,7 +1505,6 @@ fn a_changed_modal_hides_the_card_it_came_from_not_the_selected_one() {
     let mut app = App::new(tx);
     let (origin, _) = one_method_merge_card(&mut app);
     press(&mut app, KeyCode::Char('1'));
-    press(&mut app, KeyCode::Enter);
     let request = posted(&app)[0].1.clone();
     let changed = view_action_result(serde_json::json!({
         "outcome":"changed", "result":{"kind":"changed", "title":"New commits",
@@ -1524,7 +1529,6 @@ fn a_daemon_error_is_not_reported_as_nothing_sent() {
     let mut app = App::new(tx);
     let (origin, _) = one_method_merge_card(&mut app);
     press(&mut app, KeyCode::Char('1'));
-    press(&mut app, KeyCode::Enter);
     let request = posted(&app)[0].1.clone();
     let error = anyhow::Error::new(crate::client::Answered { status: 500, message: "disk full".into() });
     app.on_msg(Msg::ViewAction { request, result: Err(crate::client::delivery(&error)) });
@@ -1540,7 +1544,6 @@ fn an_answer_the_terminal_cannot_read_is_not_reported_as_nothing_sent() {
     let mut app = App::new(tx);
     one_method_merge_card(&mut app);
     press(&mut app, KeyCode::Char('1'));
-    press(&mut app, KeyCode::Enter);
     let request = posted(&app)[0].1.clone();
     let result = view_action_result(serde_json::json!({"something": "else"}));
     app.on_msg(Msg::ViewAction { request, result });
@@ -1554,7 +1557,6 @@ fn a_timeout_asks_to_check_and_repeating_the_action_sends_the_same_command() {
     let mut app = App::new(tx);
     let (origin, _) = one_method_merge_card(&mut app);
     press(&mut app, KeyCode::Char('1'));
-    press(&mut app, KeyCode::Enter);
     let first = posted(&app)[0].1.clone();
     app.on_msg(Msg::ViewAction { request: first.clone(), result: Err(Delivery::Unanswered) });
     assert_eq!(
@@ -1565,7 +1567,6 @@ fn a_timeout_asks_to_check_and_repeating_the_action_sends_the_same_command() {
     assert_eq!(app.sel, Some(Key(origin)), "and selected again");
     one_method_merge_card(&mut app);
     press(&mut app, KeyCode::Char('1'));
-    press(&mut app, KeyCode::Enter);
     let sent = posted(&app);
     assert_eq!(sent.len(), 2);
     assert_eq!(sent[1].1["command_id"], first["command_id"], "the daemon runs one command once");
@@ -1578,7 +1579,6 @@ fn a_different_action_after_a_timeout_gets_its_own_command_id() {
     let mut app = App::new(tx);
     one_method_merge_card(&mut app);
     press(&mut app, KeyCode::Char('1'));
-    press(&mut app, KeyCode::Enter);
     let first = posted(&app)[0].1.clone();
     app.on_msg(Msg::ViewAction { request: first.clone(), result: Err(Delivery::Unanswered) });
     let other = crate::client::Client::action_body("epoch", "other@1", None, serde_json::json!({}));
@@ -1672,7 +1672,7 @@ fn write_my_own_answer_posts_the_questions_answer_action_with_the_text() {
 }
 
 #[test]
-fn the_pr_card_fixture_reads_in_the_terminal_with_the_servers_labels_order_confirm_and_outcome() {
+fn the_pr_card_fixture_reads_in_the_terminal_with_the_servers_labels_order_and_outcome() {
     crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
     let fixture = view_fixture("card-pr.json");
     let item = &fixture["sections"][0]["items"][0];
@@ -1718,13 +1718,8 @@ fn the_pr_card_fixture_reads_in_the_terminal_with_the_servers_labels_order_confi
     assert_in_order(&screen(&mut app, 120, 40), &options);
 
     press(&mut app, KeyCode::Char('1'));
-    let drawn = screen(&mut app, 120, 40);
-    assert!(drawn.contains(&format!("? {}", text(&merge["confirm"]["title"]))), "{drawn}");
-    assert!(drawn.contains("goes into main. Alondra merges it"), "{drawn}");
-    assert!(drawn.contains(&format!("⏎ {} · Esc cancel", text(&merge["confirm"]["button"]))), "{drawn}");
-    assert!(posted(&app).is_empty());
-
-    press(&mut app, KeyCode::Enter);
+    assert!(merge.get("confirm").is_none(), "{merge}");
+    assert!(app.modal.is_none(), "the method is the only question");
     let sent = posted(&app);
     assert_eq!(sent.len(), 1);
     assert_eq!(sent[0].1["action_id"], merge["id"]);
@@ -1768,7 +1763,6 @@ fn a_done_card_stays_away_and_comes_back_only_if_the_server_still_has_it() {
     let mut app = App::new(tx);
     let (origin, _) = one_method_merge_card(&mut app);
     press(&mut app, KeyCode::Char('1'));
-    press(&mut app, KeyCode::Enter);
     let request = posted(&app)[0].1.clone();
     app.on_msg(Msg::ViewAction { request, result: applied("started", "PR #12 is merging.") });
     assert!(!app.inbox_keys().contains(&Key(origin.clone())), "the server has not taken it away yet");
@@ -1822,7 +1816,6 @@ fn a_changed_question_waits_for_the_open_one_and_enter_answers_the_one_on_screen
     let mut app = App::new(tx);
     let (a, _) = one_method_merge_card(&mut app);
     press(&mut app, KeyCode::Char('1'));
-    press(&mut app, KeyCode::Enter);
     let merge_a = posted(&app)[0].1.clone();
 
     let b = question_id();
@@ -1857,7 +1850,11 @@ fn the_pairing_prompt_never_shows_over_a_question_that_holds_the_keys() {
     crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
     let (tx, _rx) = std::sync::mpsc::sync_channel(8);
     let mut app = App::new(tx);
-    one_method_merge_card(&mut app);
+    merge_card(&mut app, |_| serde_json::json!({
+        "id": "close_unmerged:hf-weekly-2026-09-30@7", "label": "Close without merging", "style": "destructive",
+        "presentation": "button", "input": {"kind": "none"}, "attachments": false, "enabled": true,
+        "confirm": {"title": "Close PR #12 without merging?", "message": "Nothing is merged.", "button": "Close PR"}
+    }));
     app.pairing.push(PendingDevice {
         id: "d-1".into(),
         name: "David's iPhone".into(),
@@ -1868,11 +1865,11 @@ fn the_pairing_prompt_never_shows_over_a_question_that_holds_the_keys() {
 
     press(&mut app, KeyCode::Char('1'));
     let drawn = screen(&mut app, 120, 30);
-    assert!(drawn.contains("Merge PR #12?"), "{drawn}");
+    assert!(drawn.contains("Close PR #12 without merging?"), "{drawn}");
     assert!(!drawn.contains("Allow “David's iPhone”"), "the prompt that does not get the keys is not shown: {drawn}");
 
     press(&mut app, KeyCode::Esc);
-    assert_eq!(app.pairing.len(), 1, "Esc answered the merge question, not the device");
+    assert_eq!(app.pairing.len(), 1, "Esc answered the close question, not the device");
     assert!(screen(&mut app, 120, 30).contains("Allow “David's iPhone” to use Alondra?"));
 }
 
@@ -1883,7 +1880,6 @@ fn a_card_that_comes_back_leaves_the_selection_where_the_user_moved_it() {
     let mut app = App::new(tx);
     let (origin, _) = one_method_merge_card(&mut app);
     press(&mut app, KeyCode::Char('1'));
-    press(&mut app, KeyCode::Enter);
     let request = posted(&app)[0].1.clone();
     let landed = app.sel.clone();
     press(&mut app, KeyCode::Char('j'));

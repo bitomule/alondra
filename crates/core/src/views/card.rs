@@ -996,7 +996,6 @@ fn merge_action(id: String, pr: &PullRequest, context: &RenderContext<'_>) -> Ac
     let lang = context.lang;
     let mut merge = button(id, t!(lang, "Merge", "Fusionar"), Role::Advance);
     merge.stamp = Some(t!(lang, "Merging…", "Fusionando…").into());
-    merge.confirm = Some(merge_confirm(pr, context));
     if let [only] = pr.allowed_methods.as_slice() {
         merge.label = tf!(lang, "Merge PR #{number}", "Fusionar la PR #{number}", number = pr.number);
         merge.option_id = Some(method_id(*only).into());
@@ -1018,29 +1017,6 @@ fn merge_action(id: String, pr: &PullRequest, context: &RenderContext<'_>) -> Ac
         key: (context.client != Client::Ios && index < 9).then(|| (index + 1).to_string()),
     }).collect();
     merge
-}
-
-fn merge_confirm(pr: &PullRequest, context: &RenderContext<'_>) -> super::Confirm {
-    let lang = context.lang;
-    let title = context
-        .live
-        .pull_requests
-        .iter()
-        .find(|detail| detail.id == pr.id.0)
-        .and_then(|detail| detail.title.clone())
-        .unwrap_or_else(|| pr.repository.clone());
-    let message = match pr.allowed_methods.as_slice() {
-        [only] => tf!(lang, "“{title}” goes into {base} with {method}. Alondra merges it on GitHub and tells you when it's done.",
-            "«{title}» entra en {base} con {method}. Alondra la fusiona en GitHub y te avisa cuando termine.",
-            title = title, base = pr.base, method = method_text(*only, lang).1),
-        _ => tf!(lang, "“{title}” goes into {base}. Alondra merges it on GitHub and tells you when it's done.",
-            "«{title}» entra en {base}. Alondra la fusiona en GitHub y te avisa cuando termine.", title = title, base = pr.base),
-    };
-    super::Confirm {
-        title: tf!(lang, "Merge PR #{number}?", "¿Fusionar la PR #{number}?", number = pr.number),
-        message,
-        button: t!(lang, "Merge", "Fusionar").into(),
-    }
 }
 
 /// The way out when the user does not want the PR: close it on GitHub and cancel the task.

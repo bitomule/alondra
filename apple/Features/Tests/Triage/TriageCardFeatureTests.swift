@@ -245,7 +245,7 @@ final class TriageCardFeatureTests: XCTestCase {
     // MARK: Merging
 
     @MainActor
-    func testMergingAsksForConfirmationAndSendsTheChosenMethod() async throws {
+    func testMergingSendsTheChosenMethodWithNoConfirmation() async throws {
         let feed = FeedStub()
         let pullRequest = try Fixtures.unblocked(try Fixtures.card(Fixtures.pullRequestID))
         let store = try await store(Fixtures.pullRequestID, feed: feed, loaded: pullRequest)
@@ -254,10 +254,7 @@ final class TriageCardFeatureTests: XCTestCase {
 
         await store.send(.menuOptionPicked(merge, optionID: "squash"))
         await store.skipReceivedActions()
-        XCTAssertEqual(store.state.actions.confirmation?.title, "Merge PR #12?")
-        XCTAssertEqual(feed.requests, [], "nothing goes before the confirmation")
-        await store.send(.actions(.confirm))
-        await store.skipReceivedActions()
+        XCTAssertNil(store.state.actions.confirmation)
         XCTAssertEqual(feed.requests.map(\.optionId), ["squash"])
     }
 

@@ -157,11 +157,6 @@
                 "kind": "none"
               },
               "attachments": false,
-              "confirm": {
-                "title": "Merge PR #12?",
-                "message": "Add the compact schedule editor",
-                "button": "Merge"
-              },
               "enabled": false,
               "disabled_reason": "Answer “Ship the compact schedule editor with this beta?” first",
               "stamp": "Merging…"

@@ -81,11 +81,11 @@ final class OutcomeStyleTests: XCTestCase {
     }
 
     func testOnlyADestructiveActionConfirmsInRed() throws {
-        let merge = try action(#"{"id":"merge:t-1@1","label":"Merge","style":"primary","presentation":"button","option_id":"squash","input":{"kind":"none"},"attachments":false,"confirm":{"title":"Merge PR #12?","message":"“Add it” goes into main with squash.","button":"Merge"},"enabled":true}"#)
+        let interrupt = try action(#"{"id":"interrupt:n-1@1","label":"Interrupt","style":"secondary","presentation":"button","input":{"kind":"none"},"attachments":false,"confirm":{"title":"Interrupt","message":"Stop what this node is doing now? It keeps its task and waits for you.","button":"Interrupt"},"enabled":true}"#)
         let close = try action(#"{"id":"close_unmerged:t-1@1","label":"Close without merging","style":"destructive","presentation":"button","input":{"kind":"none"},"attachments":false,"confirm":{"title":"Close PR #12 without merging?","message":"Alondra closes the PR on GitHub and cancels this task.","button":"Close PR"},"enabled":true}"#)
         var state = ActionFeature.State(dataEpoch: "e", client: .ios, lang: "en")
-        state.action = merge
-        XCTAssertFalse(state.confirmationIsDestructive, "merging is a question, not a danger")
+        state.action = interrupt
+        XCTAssertFalse(state.confirmationIsDestructive, "interrupting is a question, not a danger")
         state.action = close
         XCTAssertTrue(state.confirmationIsDestructive)
     }
@@ -128,8 +128,8 @@ final class OutcomeStyleTests: XCTestCase {
     }
 
     @MainActor
-    func testAOneMethodMergeSendsItsMethodWithoutAnyPick() async throws {
-        let merge = try action(#"{"id":"merge:t-1@1","label":"Merge PR #12","style":"primary","presentation":"button","option_id":"squash","description":"Squash: the only way this repository allows","input":{"kind":"none"},"attachments":false,"confirm":{"title":"Merge PR #12?","message":"“Add it” goes into main with squash.","button":"Merge"},"enabled":true}"#)
+    func testAOneMethodMergeSendsItsMethodWithoutAnyPickOrConfirmation() async throws {
+        let merge = try action(#"{"id":"merge:t-1@1","label":"Merge PR #12","style":"primary","presentation":"button","option_id":"squash","description":"Squash: the only way this repository allows","input":{"kind":"none"},"attachments":false,"enabled":true}"#)
         let sent = LockIsolated<[ActionRequest]>([])
         let store = TestStore(initialState: ActionFeature.State(dataEpoch: "e", client: .mac, lang: "en")) { ActionFeature() } withDependencies: {
             $0.uuid = .incrementing
@@ -141,8 +141,7 @@ final class OutcomeStyleTests: XCTestCase {
         store.exhaustivity = .off
         await store.send(.present(merge))
         await store.send(.submit)
-        XCTAssertEqual(store.state.confirmation?.button, "Merge")
-        await store.send(.confirm)
+        XCTAssertNil(store.state.confirmation)
         await store.finish()
         XCTAssertEqual(sent.value.map(\.optionId), ["squash"])
     }

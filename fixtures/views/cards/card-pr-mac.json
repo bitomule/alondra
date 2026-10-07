@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:github.com/example/repo#12",
   "client": "mac",
-  "version": "v0549c346dc9d06c5",
+  "version": "v852b195f93c7358f",
   "cursor": "cursor-1",
   "title": "Add the compact schedule editor",
   "status": {
@@ -181,11 +181,6 @@
                 "kind": "none"
               },
               "attachments": false,
-              "confirm": {
-                "title": "Merge PR #12?",
-                "message": "“Add the compact schedule editor” goes into main. Alondra merges it on GitHub and tells you when it's done.",
-                "button": "Merge"
-              },
               "enabled": true,
               "stamp": "Merging…",
               "key": "1"

@@ -1832,6 +1832,46 @@ fn card_variants_match_goldens() {
     }
 }
 
+/// Only a destructive action asks "are you sure?": merging, accepting, approving and answering are
+/// the decision itself, on every client and in every language.
+#[test]
+fn only_destructive_card_actions_ask_for_confirmation() {
+    fn walk(value: &serde_json::Value, merges: &mut usize, confirms: &mut usize) {
+        match value {
+            serde_json::Value::Object(map) => {
+                if map.get("id").and_then(|id| id.as_str()).is_some_and(|id| id.starts_with("merge:")) {
+                    *merges += 1;
+                }
+                if map.get("confirm").is_some_and(|confirm| !confirm.is_null()) {
+                    *confirms += 1;
+                    assert_eq!(map["style"], "destructive", "only a destructive action confirms: {value}");
+                }
+                map.values().for_each(|child| walk(child, merges, confirms));
+            }
+            serde_json::Value::Array(items) => items.iter().for_each(|child| walk(child, merges, confirms)),
+            _ => {}
+        }
+    }
+    let state = golden_fixture();
+    let live = golden_live();
+    let (mut merges, mut confirms) = (0, 0);
+    for client in [Client::Ios, Client::Mac, Client::Tui] {
+        for lang in [Lang::En, Lang::Es] {
+            for key in [
+                "card:github.com/example/repo#12",
+                "card:hf-weekly-2026-09-30",
+                "card:a98d034b-249e-4487-a89b-57de38c26372",
+                "pull_request:github.com/example/repo#12",
+            ] {
+                let view = render(&state, &live, client, lang, key, "2026-09-30T10:00:00Z");
+                walk(&serde_json::to_value(&view).unwrap(), &mut merges, &mut confirms);
+            }
+        }
+    }
+    assert!(merges > 0, "the fixtures offer a merge");
+    assert!(confirms > 0, "closing without merging still confirms");
+}
+
 #[test]
 fn spanish_cards_match_goldens() {
     let state = golden_fixture();

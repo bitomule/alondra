@@ -176,18 +176,6 @@ final class MacWorkspaceSnapshotTests: XCTestCase {
         return store
     }
 
-    func test_mergeAsksFirstAndIsNotRed() async throws {
-        for spanish in [false, true] {
-            let store = try pullRequest(spanish: spanish) { actions, card in
-                let merge = try XCTUnwrap(card.actions.first { $0.id?.hasPrefix("merge:") == true })
-                actions.action = merge
-                actions.selectedOptionID = merge.options.first?.id
-                actions.confirmation = merge.confirm
-            }
-            await assertAlert(spanish: spanish) { MacViewActionSheet(presentation: store) }
-        }
-    }
-
     func test_closingWithoutMergingAsksFirstInRed() async throws {
         for spanish in [false, true] {
             let store = try pullRequest(spanish: spanish) { actions, card in

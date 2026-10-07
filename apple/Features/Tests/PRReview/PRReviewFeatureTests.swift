@@ -29,8 +29,7 @@ final class PRReviewFeatureTests: XCTestCase {
     {"id":"merge:github.com/example/repo#12@3~abcdef12","label":"Merge","style":"primary","presentation":"menu",
      "options":[{"id":"merge","label":"Merge commit","style":"secondary","input":{"kind":"none"}},
                 {"id":"squash","label":"squash","style":"secondary","input":{"kind":"none"}}],
-     "input":{"kind":"none"},"attachments":false,
-     "confirm":{"title":"Merge PR #12?","message":"Add the compact schedule editor","button":"Merge"},"enabled":true}
+     "input":{"kind":"none"},"attachments":false,"enabled":true}
     """
 
     private static let conflictsAction = """
@@ -234,7 +233,7 @@ final class PRReviewFeatureTests: XCTestCase {
     }
 
     @MainActor
-    func testMergeWaitsForConfirmationAndThenSendsTheChosenMethod() async throws {
+    func testMergeSendsTheChosenMethodWithNoConfirmation() async throws {
         let requests = LockIsolated<[ActionRequest]>([])
         let store = store(requests: requests)
         await store.send(.screen(.loaded(try document(adding: [Self.mergeAction]))))
@@ -244,31 +243,10 @@ final class PRReviewFeatureTests: XCTestCase {
         await store.send(.perform(merge, optionID: "squash"))
         await store.skipReceivedActions()
 
-        XCTAssertEqual(store.state.actions.confirmation?.title, "Merge PR #12?")
-        XCTAssertEqual(store.state.actions.confirmation?.button, "Merge")
-        XCTAssertFalse(store.state.actions.confirmationIsDestructive)
+        XCTAssertNil(store.state.actions.confirmation)
         XCTAssertFalse(store.state.isComposing)
-        XCTAssertTrue(requests.value.isEmpty, "nothing is sent before the confirmation")
-
-        await store.send(.actions(.confirm))
-        await store.skipReceivedActions()
-
         XCTAssertEqual(requests.value.map(\.actionId), [merge.id])
         XCTAssertEqual(requests.value.first?.optionId, "squash")
-    }
-
-    func testCancellingTheConfirmationSendsNothing() async throws {
-        let requests = LockIsolated<[ActionRequest]>([])
-        let store = store(requests: requests)
-        await store.send(.screen(.loaded(try document(adding: [Self.mergeAction]))))
-        await store.receive(\.diffLoaded)
-
-        await store.send(.perform(try XCTUnwrap(store.state.review?.merge), optionID: "merge"))
-        await store.skipReceivedActions()
-        await store.send(.actions(.cancelConfirmation))
-
-        XCTAssertNil(store.state.actions.confirmation)
-        XCTAssertTrue(requests.value.isEmpty)
     }
 
     func testHandingTheConflictsBackIsOneTap() async throws {

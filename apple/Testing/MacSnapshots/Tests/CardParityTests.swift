@@ -68,11 +68,11 @@ final class CardParityTests: XCTestCase {
         }
     }
 
-    func testClosingWithoutMergingIsTheOnlyRedActionAndAsksFirst() throws {
+    func testClosingWithoutMergingIsTheOnlyRedActionAndTheOnlyOneThatAsksFirst() throws {
         let card = try mac(try document("card-pr-mac"))
         let red = card.filter { $0.paintedRole == .risk }
         XCTAssertEqual(red.map(\.label), ["Close without merging"])
-        XCTAssertNotNil(red.first?.confirm)
+        XCTAssertEqual(card.filter { $0.confirm != nil }.map(\.label), ["Close without merging"])
         XCTAssertEqual(card.first { $0.label == "Merge" }?.paintedRole, .advance)
     }
 
