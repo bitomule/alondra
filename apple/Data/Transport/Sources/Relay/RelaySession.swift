@@ -68,6 +68,12 @@ public actor RelaySession: OperationAPI, PushRegistrationAPI {
 
     public func deactivate() { active = false }
 
+    /// The envelope this session sent for an operation, so another carrier can resend the very
+    /// same bytes: the Mac's journal recognises them and never runs the operation twice.
+    public func sentEnvelope(for requestID: String) async -> Envelope? {
+        try? await outbox.entry(requestID: requestID)?.envelope
+    }
+
     /// Product callers use AlondraAPIClient. This capability preserves the caller's durable
     /// operation identity through encrypted dispatch and status-only reconciliation.
     public func perform(_ request: APIRequest) async throws -> APIResponse {

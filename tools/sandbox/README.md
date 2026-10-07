@@ -14,7 +14,9 @@ bazelisk test //tests/sandbox:scenarios   # opt-in: fresh two-Mac sandbox + auto
 Mac *n* on `PORT+n`, and its direct listener on `PORT+20+n`. The direct listener binds loopback;
 `SANDBOX_LAN=1` binds it on every interface so a real phone on the same Wi-Fi can reach it.
 Sandbox Macs advertise on Bonjour as `_alondra-sandbox._tcp`, never as `_alondra._tcp`, so real
-apps never list them; `ALONDRA_SANDBOX=1 alondra connect` searches for that type.
+apps never list them; `ALONDRA_SANDBOX=1 alondra connect` searches for that type. The iOS and
+Mac apps browse it only when built with `--define=alondra_sandbox=1` and launched with
+`ALONDRA_SANDBOX=1` (the Mac app also takes `ALONDRA_PORT` for the sandbox Mac's loopback port).
 
 ## Layout
 

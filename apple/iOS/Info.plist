@@ -32,11 +32,6 @@
 			</dict>
 		</dict>
 	</dict>
-	<key>NSBonjourServices</key>
-	<array>
-		<string>_alondra._tcp</string>
-		<string>_alondra-sandbox._tcp</string>
-	</array>
 	<key>NSCameraUsageDescription</key>
 	<string>Alondra uses the camera to read the QR code that pairs this iPhone with your Mac, and to take photos you attach to a message.</string>
 	<key>NSLocalNetworkUsageDescription</key>

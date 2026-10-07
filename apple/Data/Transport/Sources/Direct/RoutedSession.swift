@@ -4,6 +4,8 @@ import Foundation
 /// What `RoutedSession` needs from the relay; `RelaySession` in the app, a fake in tests.
 public protocol RelayOperations: OperationAPI, PushRegistrationAPI {
     func deactivate() async
+    /// The envelope sent for an operation, if one left this device.
+    func sentEnvelope(for requestID: String) async -> Envelope?
 }
 
 extension RelaySession: RelayOperations {}
@@ -57,16 +59,30 @@ public actor RoutedSession: OperationAPI, PushRegistrationAPI {
         do {
             let response = try await relay.perform(request)
             lastRoute = .relay
+            // The relay could not say whether the Mac ran it: ask the Mac directly with the same
+            // envelope, which it answers from its journal if it already did.
+            if response == .unknown, request.method == "POST", let direct, directAllowed(),
+               let answered = try? await resend(request, from: relay, over: direct), answered != .unknown {
+                return answered
+            }
             return response
         } catch where !(error is CancellationError) {
             guard let direct, directAllowed() else { throw error }
             let relayError = error
-            do {
-                let response = try await viaDirect(direct, request)
-                relayFirst = false
-                return response
-            } catch { throw Self.directFailed(error) ? relayError : error }
+            do { return try await resend(request, from: relay, over: direct) }
+            catch { throw Self.directFailed(error) ? relayError : error }
         }
+    }
+
+    /// A mutation the relay already sent goes out again as those same bytes.
+    private func resend(_ request: APIRequest, from relay: any RelayOperations,
+                        over direct: DirectSession) async throws -> APIResponse {
+        if request.method == "POST", let envelope = await relay.sentEnvelope(for: request.operationID) {
+            try await direct.adopt(envelope, for: request)
+        }
+        let response = try await viaDirect(direct, request)
+        relayFirst = false
+        return response
     }
 
     public func registerServicePush(token: String, environment: String, binding: String) async throws {
@@ -121,9 +137,8 @@ public actor RoutedSession: OperationAPI, PushRegistrationAPI {
         if answered { relayFirst = false }
     }
 
-    /// Failures that say nothing about the Mac itself: an unreachable or impostor address, or an
-    /// unsigned refusal. The relay's own answer is the one to believe.
+    /// No address proved to be this Mac: the relay's own answer is the one to believe.
     private static func directFailed(_ error: any Error) -> Bool {
-        error is DirectRouteError || error as? DirectSessionError == .unauthorized
+        error is DirectRouteError
     }
 }

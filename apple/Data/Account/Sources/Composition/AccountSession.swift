@@ -46,6 +46,8 @@ public final class AccountSession {
     @ObservationIgnored public var ownMacID: String?
     /// Set by each app to the system screen where Local Network access is turned back on.
     @ObservationIgnored public var openLocalNetworkSettings: @MainActor () -> Void = {}
+    /// Set by each app: whether it is in front, with no system alert over it.
+    @ObservationIgnored public var isActive: @MainActor () -> Bool = { true }
     @ObservationIgnored private var offeredServices: Set<String> = []
     private var restoreTask: Task<Bool, Error>?
     private var restoreTaskID: UUID?
@@ -128,12 +130,7 @@ public final class AccountSession {
         }, browse: { [self] in
             AsyncStream { continuation in
                 let task = Task { @MainActor in
-                    for await update in self.browse() {
-                        switch update {
-                        case .found(let macs): continuation.yield(.macs(self.found(macs)))
-                        case .denied: continuation.yield(.denied)
-                        }
-                    }
+                    await self.follow(continuation)
                     continuation.finish()
                 }
                 continuation.onTermination = { _ in task.cancel() }
@@ -149,6 +146,31 @@ public final class AccountSession {
                let sentence = error.errorDescription { return sentence }
             return String(localized: "Alondra couldn’t pair with that Mac. Try again.")
         }, openSettings: { [self] in Task { @MainActor in self.openLocalNetworkSettings() } })
+    }
+
+    /// While the system's Local Network alert is on screen the browser already reads as refused,
+    /// so a refusal counts only with the app in front; otherwise the browse starts over once the
+    /// alert is gone, and the person's real answer is what gets saved.
+    private func follow(_ continuation: AsyncStream<FindMacUpdate>.Continuation) async {
+        while !Task.isCancelled {
+            var askedWhileAway = false
+            for await update in browse() {
+                switch update {
+                case .found(let macs): continuation.yield(.macs(found(macs)))
+                case .allowed:
+                    LocalNetworkAccess.record(.allowed)
+                    continuation.yield(.allowed)
+                case .denied where isActive():
+                    LocalNetworkAccess.record(.denied)
+                    continuation.yield(.denied)
+                case .denied:
+                    askedWhileAway = true
+                }
+                if askedWhileAway { break }
+            }
+            guard askedWhileAway else { return }
+            while !isActive(), !Task.isCancelled { try? await Task.sleep(for: .milliseconds(300)) }
+        }
     }
 
     private func found(_ macs: [DiscoveredMac]) -> [FoundMac] {

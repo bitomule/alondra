@@ -39,6 +39,13 @@ private final class MemoryCredential: RefreshTokenStorage, @unchecked Sendable {
     func delete() throws { lock.withLock { credential = nil } }
 }
 
+private final class Shared<Value: Sendable>: Sendable {
+    private let value: Mutex<Value>
+    init(_ value: Value) { self.value = Mutex(value) }
+    var current: Value { value.withLock { $0 } }
+    func set(_ newValue: Value) { value.withLock { $0 = newValue } }
+}
+
 private struct Offline: AuthHTTPTransport {
     func send(_ request: URLRequest) async throws -> AuthHTTPResponse { throw URLError(.notConnectedToInternet) }
 }
@@ -71,11 +78,12 @@ private func pairing(_ mac: String, relay: Bool) -> ApprovedServicePairing {
 
 @MainActor
 private func account(credential: RefreshCredential?, pairings: [ApprovedServicePairing],
-                     advertised: [DiscoveredMac] = []) throws -> AccountSession {
+                     advertised: [DiscoveredMac] = [],
+                     browse: (@Sendable () -> AsyncStream<MacBrowser.Update>)? = nil) throws -> AccountSession {
     let auth = AuthSession(transport: Offline(), browser: NoBrowser(), storage: MemoryCredential(credential))
     return AccountSession(auth: auth, displayName: "iPhone",
                           storageDirectory: FileManager.default.temporaryDirectory.appending(path: "restore-\(UUID().uuidString)"),
-                          pairingStore: try MemoryPairings(pairings), browse: {
+                          pairingStore: try MemoryPairings(pairings), browse: browse ?? {
                               AsyncStream { continuation in
                                   continuation.yield(.found(advertised))
                                   continuation.finish()
@@ -138,5 +146,54 @@ struct AccountRestoreTests {
             if case let .macs(macs) = update { seen = macs }
         }
         #expect(seen.map(\.name) == ["Studio"])
+    }
+}
+
+/// Both write the one saved permission state, so they never run at the same time.
+@MainActor
+@Suite(.serialized)
+struct LocalNetworkAccessTests {
+    @Test func aRefusalWhileTheSystemAlertIsUpIsNotTheAnswer() async throws {
+        let browsed = Shared(0)
+        let owner = try account(credential: nil, pairings: [], browse: {
+            browsed.set(browsed.current + 1)
+            return AsyncStream { continuation in
+                continuation.yield(.denied)
+                continuation.finish()
+            }
+        })
+        let active = Shared(false)
+        owner.isActive = { active.current }
+        LocalNetworkAccess.record(.unknown)
+        defer { LocalNetworkAccess.record(.unknown) }
+        let updates = Task { @MainActor in
+            var seen: [FindMacUpdate] = []
+            for await update in owner.findMacClient.browse() { seen.append(update) }
+            return seen
+        }
+        try await waitUntil { browsed.current == 1 }
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(LocalNetworkAccess.state == .unknown)
+        #expect(browsed.current == 1)
+        active.set(true)
+        let seen = await updates.value
+        #expect(seen == [.denied])
+        #expect(browsed.current == 2)
+        #expect(LocalNetworkAccess.state == .denied)
+    }
+
+    @Test func allowingAccessAfterARefusalIsRemembered() async throws {
+        let owner = try account(credential: nil, pairings: [], browse: {
+            AsyncStream { continuation in
+                continuation.yield(.allowed)
+                continuation.finish()
+            }
+        })
+        LocalNetworkAccess.record(.denied)
+        defer { LocalNetworkAccess.record(.unknown) }
+        var seen: [FindMacUpdate] = []
+        for await update in owner.findMacClient.browse() { seen.append(update) }
+        #expect(seen == [.allowed])
+        #expect(LocalNetworkAccess.state == .allowed)
     }
 }

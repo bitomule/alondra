@@ -1,11 +1,6 @@
 import CryptoKit
 import Foundation
 
-public enum DirectSessionError: Error, Equatable, Sendable {
-    /// The Mac no longer accepts this device: revoked, never approved, or a stale envelope.
-    case unauthorized
-}
-
 /// Sealed requests to one paired Mac over its direct port, answered in the same exchange.
 /// A mutation is sealed once per operation ID and only ever resent as the same bytes: the Mac's
 /// receipt journal runs it once and replays the stored answer.
@@ -62,6 +57,16 @@ public actor DirectSession: OperationAPI {
         return try await deliver(body, requestID: request.operationID, mutation: true, timeout: timeout)
     }
 
+    /// Takes over an operation another carrier already sealed and sent: resending those exact
+    /// bytes lets the Mac's journal answer with what it stored instead of running it again.
+    public func adopt(_ envelope: Envelope, for request: APIRequest) throws {
+        guard sealed[request.operationID] == nil, envelope.requestID == request.operationID else { return }
+        let tag = try codec.semanticTag(method: request.method, path: request.path, body: request.body)
+        sealed[request.operationID] = (tag, try JSONEncoder().encode(envelope))
+        sealedOrder.append(request.operationID)
+        if sealedOrder.count > Self.maxSealed { sealed[sealedOrder.removeFirst()] = nil }
+    }
+
     private func seal(requestID: String, method: String, path: String, body: Data?) throws -> Data {
         do {
             let envelope = try codec.sealRequest(requestID: requestID, method: method, path: path, body: body)
@@ -98,14 +103,14 @@ public actor DirectSession: OperationAPI {
                 await router.reject(endpoint)
                 continue
             }
-            // A bare status is not signed. It is believed only from an address already proved;
-            // from any other it only rules that address out.
-            guard await router.isProven(endpoint) else {
+            // A bare status is not signed, so it never says anything about the Mac or this
+            // device: a refusal rules out only that address, and the Mac stays as not answering.
+            // From an address proved on this network, a conflict or a rejection is believed.
+            guard reply.status != 401, await router.isProven(endpoint) else {
                 await router.reject(endpoint)
                 continue
             }
             switch reply.status {
-            case 401: throw DirectSessionError.unauthorized
             case 409: throw RelaySessionError.operationIdentityConflict
             case 421: await router.reject(endpoint)
             case 429, 503: continue

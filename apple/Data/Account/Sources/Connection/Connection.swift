@@ -31,7 +31,8 @@ public actor Connection {
         let macSigning = try approved.macSigningPublicKey()
         let macAgreement = try approved.macAgreementPublicKey()
         let http = DirectHTTP(transport: AlondraAPIClient.makeHTTPTransport())
-        let router = DirectRouter(pinned: approved.pinnedIdentity, saved: approved.routes ?? [], http: http)
+        let router = DirectRouter(pinned: approved.pinnedIdentity, saved: approved.routes ?? [], http: http,
+                                  network: { NetworkReachability.shared.signature })
         let direct = DirectSession(macID: approved.macID, deviceID: approved.deviceID, signing: signing,
             agreement: agreement, macSigning: macSigning, macAgreement: macAgreement, router: router, http: http)
         var relay: RelaySession?

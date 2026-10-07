@@ -36,7 +36,7 @@ public struct FindMacFeature: Sendable {
     public enum Action: BindableAction {
         case binding(BindingAction<State>)
         case appeared, disappeared
-        case allowSearch, openSettings, permissionWasDenied
+        case allowSearch, openSettings, permissionWasDenied, permissionWasAllowed
         case macsChanged([FoundMac])
         case choose(String), addByAddress, submitAddress, cancel
         case codeShown(Int, DirectPairingCode), approved(Int), failed(Int, String)
@@ -74,6 +74,9 @@ public struct FindMacFeature: Sendable {
                 return .run { _ in client.openSettings() }
             case .permissionWasDenied:
                 state.permissionDenied = true
+                return .none
+            case .permissionWasAllowed:
+                state.permissionDenied = false
                 return .none
             case .macsChanged(let macs):
                 state.macs = macs
@@ -124,6 +127,7 @@ public struct FindMacFeature: Sendable {
                 switch update {
                 case .macs(let macs): await send(.macsChanged(macs))
                 case .denied: await send(.permissionWasDenied)
+                case .allowed: await send(.permissionWasAllowed)
                 }
             }
         }.cancellable(id: CancelID.browse, cancelInFlight: true)

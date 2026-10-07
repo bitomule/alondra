@@ -1,6 +1,7 @@
 import AlondraTransport
 import Foundation
 import Network
+import os
 
 /// A Mac advertising Alondra on this network. Its TXT record is only a hint: identity is the key
 /// `hello` returns, checked at pairing and on every route.
@@ -28,8 +29,11 @@ public enum MacBrowser {
 
     public enum Update: Sendable, Equatable {
         case found([DiscoveredMac])
-        /// The person turned Local Network access off for Alondra.
+        /// The system refuses the local network. While its permission alert is on screen it says
+        /// the same, so the caller decides whether this is the person's answer.
         case denied
+        /// The refusal ended: the person allowed Local Network access, Macs or not.
+        case allowed
     }
 
     public static func browse(type: String = serviceType) -> AsyncStream<Update> {
@@ -46,14 +50,21 @@ public enum MacBrowser {
                 if !macs.isEmpty { LocalNetworkAccess.record(.allowed) }
                 continuation.yield(.found(macs.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }))
             }
+            let refused = OSAllocatedUnfairLock(initialState: false)
             browser.stateUpdateHandler = { state in
                 switch state {
                 case .waiting(let error), .failed(let error):
                     if error == .dns(DNSServiceErrorType(kDNSServiceErr_PolicyDenied)) {
-                        LocalNetworkAccess.record(.denied)
+                        refused.withLock { $0 = true }
                         continuation.yield(.denied)
                     }
                     if case .failed = state { continuation.finish() }
+                case .ready:
+                    if refused.withLock({ $0 }) {
+                        refused.withLock { $0 = false }
+                        LocalNetworkAccess.record(.allowed)
+                        continuation.yield(.allowed)
+                    }
                 default: break
                 }
             }

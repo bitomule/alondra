@@ -23,6 +23,7 @@ func makeAccountSession(notifications: NotificationRuntime) -> AccountSession {
     }, willDeactivate: {
         try await notifications.deactivate()
     }, pushBinding: { notifications.pushBinding(for: $0) })
+    account.isActive = { UIApplication.shared.applicationState == .active }
     account.openLocalNetworkSettings = {
         guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
         UIApplication.shared.open(url)

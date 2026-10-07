@@ -84,4 +84,13 @@ struct LocalNetworkPermissionTests {
         await store.receive(\.macsChanged) { $0.macs = [studio]; $0.permissionDenied = false }
         await store.finish()
     }
+
+    @Test func allowingAccessLeavesTheRefusalEvenWithNoMacsAround() async {
+        let store = TestStore(initialState: FindMacFeature.State()) { FindMacFeature() } withDependencies: {
+            $0.findMac = client(permission: .denied, updates: [.allowed])
+        }
+        await store.send(.appeared) { $0.permissionDenied = true }
+        await store.receive(\.permissionWasAllowed) { $0.permissionDenied = false }
+        await store.finish()
+    }
 }

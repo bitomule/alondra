@@ -21,8 +21,6 @@ public enum ConnectionClassifier {
         if networkOffline { return .noInternet }
         switch error {
         case DirectRouteError.unreachable: return .macNotOnNetwork
-        case DirectRouteError.identityChanged: return .macIdentityChanged
-        case DirectSessionError.unauthorized: return .deviceRevoked
         case let error as URLError: return urlProblem(error)
         case let error as AuthError: return authProblem(error)
         case let error as RelayWireError:

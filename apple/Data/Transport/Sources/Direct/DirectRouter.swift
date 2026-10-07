@@ -2,18 +2,16 @@ import AlondraContract
 import Foundation
 
 public enum DirectRouteError: Error, Equatable, Sendable {
-    /// No known address answered as this Mac from the current network.
+    /// No address proved to be this Mac from the current network.
     case unreachable
-    /// The only answers carried this Mac's ID with other keys. Nothing is changed by it: those
-    /// addresses are skipped, the relay keeps working, and the next probe starts afresh.
-    case identityChanged
 }
 
 /// Picks the address one paired Mac answers on: LAN, then the tailnet IP, then the tailnet name.
 ///
-/// `hello` is public, so it only filters: an address that answers with other keys is skipped on
-/// its own, and an address becomes trusted only after a sealed answer from it opens with the
-/// pinned keys (`proved`). Only trusted addresses are ever handed out for saving.
+/// Nothing unsigned changes what the app believes about the Mac. `hello` only filters: an
+/// address that answers with other keys is skipped on its own and the Mac stays as not
+/// answering. An address is trusted only on the network where a sealed answer through it opened
+/// with the pinned keys; on a new network even a saved address is proved again first.
 public actor DirectRouter {
     public enum Source: Sendable { case saved, mac, bonjour }
 
@@ -23,41 +21,45 @@ public actor DirectRouter {
 
     private let pinned: DirectMacIdentity
     private let http: DirectHTTP
+    private let network: @Sendable () -> String
     private let freshness: Duration
     private let retryAfterFailure: Duration
     private let clock = ContinuousClock()
     private var saved: [DirectEndpoint]
     private var fromMac: [DirectEndpoint] = []
     private var fromBonjour: [DirectEndpoint] = []
-    private var proven: Set<DirectEndpoint>
+    /// The network each address was last proved on.
+    private var proven: [DirectEndpoint: String] = [:]
     private var rejected: [DirectEndpoint: ContinuousClock.Instant] = [:]
     private var current: DirectEndpoint?
-    private var validatedAt: ContinuousClock.Instant?
+    private var validated: (at: ContinuousClock.Instant, network: String)?
     private var failedAt: ContinuousClock.Instant?
     private var probing: Task<DirectEndpoint, any Error>?
 
-    /// `saved` are the addresses a sealed answer already proved, kept with the pairing.
+    /// `saved` are addresses a sealed answer proved before, on some network; `network` names the
+    /// current one.
     public init(pinned: DirectMacIdentity, saved: [DirectEndpoint], http: DirectHTTP,
+                network: @escaping @Sendable () -> String = { "" },
                 freshness: Duration = .seconds(60), retryAfterFailure: Duration = .seconds(15)) {
         self.pinned = pinned
         self.http = http
+        self.network = network
         self.freshness = freshness
         self.retryAfterFailure = retryAfterFailure
         self.saved = Self.unique(saved.filter(\.isValid))
-        proven = Set(self.saved)
     }
 
     public var known: [DirectEndpoint] { candidates }
 
-    /// The addresses a sealed answer proved, the only ones worth saving.
-    public var provenEndpoints: [DirectEndpoint] { candidates.filter(proven.contains) }
-
-    public var hasProvenEndpoint: Bool { !proven.isEmpty }
-
-    public func isProven(_ endpoint: DirectEndpoint) -> Bool { proven.contains(endpoint) }
+    /// The addresses worth keeping with the pairing: the saved ones and every address a sealed
+    /// answer proved, on any network.
+    public var provenEndpoints: [DirectEndpoint] { candidates.filter { saved.contains($0) || proven[$0] != nil } }
 
     /// The route in use, or nil when no address has answered as this Mac yet.
     public var route: ConnectionRoute? { current?.route }
+
+    /// Proved by a sealed answer on the network this device is on now.
+    public func isProven(_ endpoint: DirectEndpoint) -> Bool { proven[endpoint] == network() }
 
     /// Adds addresses learned from the Mac's sealed `/routes` or from Bonjour. Bonjour can be
     /// flooded by anyone on the network, so it only ever holds a few of the newest addresses and
@@ -72,11 +74,12 @@ public actor DirectRouter {
             fromBonjour = Array(Self.unique(fresh.filter { !others.contains($0) } + fromBonjour).prefix(Self.maxBonjour))
         }
         failedAt = nil
-        if let current, candidates.first.map({ $0.rank < current.rank }) == true { validatedAt = nil }
+        if let current, candidates.first.map({ $0.rank < current.rank }) == true { validated = nil }
     }
 
     public func endpoint() async throws -> DirectEndpoint {
-        if let current, let validatedAt, validatedAt.duration(to: clock.now) < freshness { return current }
+        if let current, let validated, validated.network == network(),
+           validated.at.duration(to: clock.now) < freshness { return current }
         // Away from home every request would otherwise wait for the probes.
         if let failedAt, failedAt.duration(to: clock.now) < retryAfterFailure { throw DirectRouteError.unreachable }
         if let probing { return try await probing.value }
@@ -88,23 +91,24 @@ public actor DirectRouter {
 
     /// A sealed answer from this address opened with the pinned keys.
     public func proved(_ endpoint: DirectEndpoint) {
-        proven.insert(endpoint)
+        proven[endpoint] = network()
         rejected[endpoint] = nil
     }
 
-    /// This address answered with something that is not this Mac: skip it, and only it.
+    /// This address answered with something that is not this Mac, or with an unsigned refusal:
+    /// skip it, and only it.
     public func reject(_ endpoint: DirectEndpoint) {
         rejected[endpoint] = clock.now
-        proven.remove(endpoint)
+        if proven[endpoint] == network() { proven[endpoint] = nil }
         if current == endpoint {
             current = nil
-            validatedAt = nil
+            validated = nil
         }
     }
 
     /// The last address stopped answering, or the network changed: probe again on next use.
     public func invalidate() {
-        validatedAt = nil
+        validated = nil
         failedAt = nil
     }
 
@@ -127,19 +131,17 @@ public actor DirectRouter {
             return answers
         }
         try Task.checkCancellation()
-        var impostor = false
         for (index, answer) in answers.enumerated() where answer?.macID == pinned.macID && answer?.sameKeys(as: pinned) == false {
             rejected[candidates[index]] = clock.now
-            impostor = true
         }
         guard let index = answers.firstIndex(where: { $0?.macID == pinned.macID && $0?.sameKeys(as: pinned) == true }) else {
             current = nil
-            validatedAt = nil
+            validated = nil
             failedAt = clock.now
-            throw impostor ? DirectRouteError.identityChanged : DirectRouteError.unreachable
+            throw DirectRouteError.unreachable
         }
         current = candidates[index]
-        validatedAt = clock.now
+        validated = (clock.now, network())
         failedAt = nil
         return candidates[index]
     }

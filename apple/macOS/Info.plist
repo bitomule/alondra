@@ -41,11 +41,6 @@
             </dict>
         </dict>
     </dict>
-    <key>NSBonjourServices</key>
-    <array>
-        <string>_alondra._tcp</string>
-        <string>_alondra-sandbox._tcp</string>
-    </array>
     <key>NSLocalNetworkUsageDescription</key>
     <string>Alondra finds the other Macs running Alondra on this network and connects to them directly.</string>
 </dict>

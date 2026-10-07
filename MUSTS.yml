@@ -35,6 +35,8 @@ checks:
       - "Makefile"
       - "apple/**/*.xcstrings"
       - "apple/no_sleep_wording_test.sh"
+      - "apple/release_bonjour_test.sh"
+      - "apple/Bonjour/*.plist"
       - "apple/push_keychain_group_test.py"
       - "apple/**/*.entitlements"
       - "apple/**/Info.plist"
@@ -45,6 +47,7 @@ checks:
       targets:
         - //crates/...
         - //apple:no_sleep_wording_test
+        - //apple:release_bonjour_test
         - //apple:spanish_catalog_test
         - //apple:push_keychain_group_test
         - //:plugin_mod_test
@@ -75,5 +78,6 @@ checks:
         - //apple/Testing:IssueReportingIntegrationTests
         - //apple/Testing/Snapshots:AlondraSnapshotTests
         - //apple/Testing/MacSnapshots:AlondraMacSnapshotTests
+        - //apple/Testing/MacSnapshots:AlondraMacSpanishSnapshotTests
         - //apple:AlondraMacServiceNavigationTests
         - //apple:AlondraMacWorkspaceOwnerTests

@@ -36,6 +36,8 @@ public enum LocalNetworkPermission: Equatable, Sendable { case unknown, allowed,
 public enum FindMacUpdate: Equatable, Sendable {
     case macs([FoundMac])
     case denied
+    /// Local Network access was allowed, Macs or not.
+    case allowed
 }
 
 /// Pairing with a Mac on the same network, without an account.

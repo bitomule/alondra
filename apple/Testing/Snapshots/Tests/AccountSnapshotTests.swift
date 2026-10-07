@@ -189,13 +189,7 @@ final class AccountSnapshotTests: XCTestCase {
         assertScreen([.light], inWindow: true) { lost(.deviceRevoked) }
     }
 
-    func test_connectionLost_macIdentityChanged() {
-        assertScreen([.light], inWindow: true) { lost(.macIdentityChanged) }
-    }
 
-    func test_connectionLost_macIdentityChanged_spanish() {
-        assertScreen([.light], language: .spanish, inWindow: true) { lost(.macIdentityChanged) }
-    }
 
     func test_connectionLost_signOutIncomplete() {
         assertScreen([.light, .dark], inWindow: true) { lost(.signOutIncomplete) }
@@ -233,37 +227,5 @@ final class AccountSnapshotTests: XCTestCase {
     func test_findMac_permissionDenied_spanish() {
         let store = signIn { $0.findMac.permissionDenied = true }
         assertScreen([.light], language: .spanish, inWindow: true) { ScreenFrame(height: 852) { SignInView(store: store, demo: {}) } }
-    }
-
-    // MARK: The Mac's own screens, in Spanish
-
-    /// The Mac snapshot target has no string catalog; these views are shared SwiftUI, so the
-    /// iOS host, which carries every Mac string too, draws them in Spanish.
-    func test_mac_pairingRequest_spanish() {
-        assertScreen([.light], language: .spanish, inWindow: true) {
-            ScreenFrame(height: 360) {
-                MacPairingRequestSheet(request: PairingRequest(id: "p-1", name: "iPhone de David", code: "4F2A91"),
-                                       error: nil, decide: { _ in })
-            }
-        }
-    }
-
-    func test_mac_settingsWithThisMacItsMacsAndDevices_spanish() {
-        var state = SettingsFeature.State(service: "127.0.0.1", device: "mac", supportsNotifications: false, usesAccount: false)
-        let ids = (1...3).map { UUID(uuidString: "00000000-0000-0000-0000-00000000000\($0)")! }
-        state.macs = [
-            MacChoice(id: ids[0], macID: "this-mac", name: "Este Mac"),
-            MacChoice(id: ids[1], macID: "mac-b27f03d9", name: "Mac mini", local: true),
-            MacChoice(id: ids[2], macID: "mac-c55e10aa", name: "MacBook Pro", local: true),
-        ]
-        state.selectedMacID = ids[0]
-        state.macStatuses = [ids[0]: .route(.thisMac), ids[1]: .route(.localNetwork), ids[2]: .problem(.macNotOnNetwork)]
-        state.devices = [TrustedDevice(id: "phone-1", name: "iPhone de David", origin: .direct),
-                         TrustedDevice(id: "phone-2", name: "iPad", origin: .relay)]
-        state.showsSignOutWithMacs = true
-        let store = Store(initialState: state) { EmptyReducer<SettingsFeature.State, SettingsFeature.Action>() }
-        assertScreen([.light], language: .spanish, inWindow: true) {
-            ScreenFrame(height: 1200) { MacSettingsView(store: store) { _ in EmptyView() } }
-        }
     }
 }

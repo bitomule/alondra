@@ -17,6 +17,7 @@ final class MacAppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationC
         let storage = AppStorageLocation.applicationSupport(bundleID: "com.bitomule.alondra.mac")
         let name = Host.current().localizedName ?? ProcessInfo.processInfo.hostName
         let account = AccountSession(auth: auth, displayName: String(name.prefix(80)), storageDirectory: storage)
+        account.isActive = { NSApplication.shared.isActive }
         account.openLocalNetworkSettings = {
             guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_LocalNetwork") else { return }
             NSWorkspace.shared.open(url)
