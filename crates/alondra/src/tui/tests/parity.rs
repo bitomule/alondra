@@ -950,7 +950,7 @@ fn detail_hides_the_disabled_accept_action() {
 fn question_card() -> alondra_core::views::View {
     let mut card = view_fixture("card-question.json");
     card["sections"][0]["items"][0]["timestamps"] =
-        serde_json::json!([{"role": "created", "at": "2026-09-30T09:58:00Z", "format": "relative"}]);
+        serde_json::json!([{"role": "created", "at": screens::minutes_ago(2), "format": "relative"}]);
     serde_json::from_value(card).unwrap()
 }
 
