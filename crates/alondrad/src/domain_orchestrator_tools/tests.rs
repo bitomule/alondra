@@ -72,6 +72,9 @@ struct FakeClaude {
     /// Whether agent-b was on a turn at each stop.
     busy_at_stop: Mutex<Vec<bool>>,
     turn: std::time::Duration,
+    /// Why `claude --bg` fails, when it does.
+    run_fails: Mutex<Option<String>>,
+    run_panics: bool,
 }
 impl FakeClaude {
     fn loading(domain: &Arc<DomainRuntime>) -> Self {
@@ -81,7 +84,7 @@ impl FakeClaude {
     fn without_mod() -> Self {
         Self { calls: Mutex::new(vec![]), loads_mod_in: None, stopped: Mutex::new(vec![]), removed: Mutex::new(vec![]), during_run: Mutex::new(None),
             drops_on_stop: Mutex::new(None), respawned: Mutex::new(vec![]), stop_fails: Mutex::new(None), busy_at_stop: Mutex::new(vec![]),
-            turn: std::time::Duration::from_millis(20) }
+            turn: std::time::Duration::from_millis(20), run_fails: Mutex::new(None), run_panics: false }
     }
 }
 
@@ -92,6 +95,10 @@ const REVIVAL: crate::node_revival::Timing = crate::node_revival::Timing {
 impl crate::orchestrate::Launcher for FakeClaude {
     async fn run(&self, cwd: &str, args: &[String]) -> Result<String, crate::orchestrate::Refusal> {
         self.calls.lock().unwrap().push((cwd.into(), args.to_vec()));
+        assert!(!self.run_panics, "claude --bg panicked");
+        if let Some(reason) = self.run_fails.lock().unwrap().take() {
+            return Err((axum::http::StatusCode::BAD_GATEWAY, reason));
+        }
         if let Some(domain) = &self.loads_mod_in {
             domain.live.mods.loaded_by(SESSION, args);
         }
@@ -741,11 +748,15 @@ async fn the_changes_the_user_asked_for_reach_the_node_that_takes_the_task_over(
 }
 
 fn connected_node_on_the_task(f: &Fixture) -> u64 {
-    give(f, "t", "agent-b");
-    command(&f.domain, Actor::Agent { agent_id: "agent-b".into() }, Command::StartTask { task_id: "t".into() });
-    crate::domain_agent_lifecycle::observe_instance(&f.domain, &"agent-b".into(), true,
-        &crate::domain_agent_lifecycle::prepare_event(&f.domain, "start-b").unwrap()).unwrap();
-    f.domain.live.mods.connect(serde_json::from_value(json!({"session_id": "agent-b", "version": "2.1.287", "cwd": f.project.to_str().unwrap()})).unwrap(), 1)
+    connected_node(f, "agent-b")
+}
+
+fn connected_node(f: &Fixture, agent: &str) -> u64 {
+    give(f, "t", agent);
+    command(&f.domain, Actor::Agent { agent_id: agent.into() }, Command::StartTask { task_id: "t".into() });
+    crate::domain_agent_lifecycle::observe_instance(&f.domain, &agent.into(), true,
+        &crate::domain_agent_lifecycle::prepare_event(&f.domain, &format!("start-{agent}")).unwrap()).unwrap();
+    f.domain.live.mods.connect(serde_json::from_value(json!({"session_id": agent, "version": "2.1.287", "cwd": f.project.to_str().unwrap()})).unwrap(), 1)
 }
 
 #[tokio::test]
@@ -853,6 +864,77 @@ async fn a_replacement_whose_stop_fails_launches_nothing_and_the_old_node_keeps_
     assert_eq!(state.agents.len(), 1, "no new agent was registered");
     assert!(state.agents[&AgentId::from("agent-b")].connected && !f.domain.live.is_closed("agent-b"));
     assert!(settings_files(&f.home).is_empty(), "the new session's settings are discarded");
+    assert!(!refused.message.contains("keeps its node"), "{}", refused.message);
+}
+
+fn release_reasons(f: &Fixture) -> Vec<String> {
+    let store = f.domain.store.lock().unwrap();
+    let mut query = store.conn_for_test().prepare(
+        "SELECT json_extract(command,'$.reason') FROM command_audit WHERE json_extract(command,'$.kind')='release_task' ORDER BY revision").unwrap();
+    query.query_map([], |row| row.get(0)).unwrap().map(Result::unwrap).collect()
+}
+
+fn told_orchestrator(f: &Fixture, prefix: &str) -> Vec<String> {
+    f.domain.state().unwrap().interactions.values().filter(|i| i.id.0.starts_with(prefix)).map(|i| i.body.clone()).collect()
+}
+
+/// Only a worktree Alondra could already delete passes to the replacing node: never the folder
+/// the old node was merely launched in.
+#[tokio::test]
+async fn a_replacement_inherits_only_a_worktree_alondra_owned() {
+    let f = world();
+    let actor = the_orchestrator(&f.domain);
+    connected_node_on_the_task(&f);
+    let claude = FakeClaude::loading(&f.domain);
+    let body = || serde_json::from_value(json!({"task": "t", "replace": true, "model": "opus", "reason": "Needs opus"})).unwrap();
+    launch(&f.domain, &f.home, &actor, body(), |_| None, &claude).await.unwrap();
+    assert_eq!(f.domain.inherited_worktree(SESSION).unwrap(), None, "the user's project folder is never Alondra's to delete");
+
+    let g = world();
+    let actor = the_orchestrator(&g.domain);
+    connected_node_on_the_task(&g);
+    let dir = g.project.to_str().unwrap();
+    g.domain.set_inherited_worktree("agent-b", dir, "agent-a").unwrap();
+    let claude = FakeClaude::loading(&g.domain);
+    launch(&g.domain, &g.home, &actor, body(), |_| None, &claude).await.unwrap();
+    assert_eq!(g.domain.inherited_worktree(SESSION).unwrap().as_deref(), Some(dir), "a worktree passed down a chain of replacements stays Alondra's");
+}
+
+/// `claude stop` can report a failure for a session that ended anyway: the replacement goes on.
+#[tokio::test]
+async fn a_replacement_whose_stop_errs_but_whose_node_ended_finishes() {
+    let f = world();
+    let actor = the_orchestrator(&f.domain);
+    connected_node_on_the_task(&f);
+    f.domain.live.mods.set_job("agent-b", None, Some(f.root.join("jobs/gone")));
+    let claude = FakeClaude::loading(&f.domain);
+    *claude.stop_fails.lock().unwrap() = Some("claude stop timed out".into());
+    let body = serde_json::from_value(json!({"task": "t", "replace": true, "model": "opus", "reason": "Needs opus"})).unwrap();
+    let answer = launch(&f.domain, &f.home, &actor, body, |_| None, &claude).await.unwrap();
+    assert_eq!(answer["agent_id"], SESSION);
+    assert_eq!(f.domain.state().unwrap().tasks[&TaskId::from("t")].agent_id, Some(AgentId::from(SESSION)));
+    assert_eq!(release_reasons(&f), ["node replaced by the orchestrator"]);
+}
+
+/// The node a replacement could not stop ends later: the task is freed for that reason, never as
+/// closed by the user, and the orchestrator hears it.
+#[tokio::test]
+async fn a_node_that_ends_after_its_replacement_stopped_short_frees_its_task_with_the_real_reason() {
+    let f = world();
+    let actor = the_orchestrator(&f.domain);
+    connected_node_on_the_task(&f);
+    let claude = FakeClaude::loading(&f.domain);
+    *claude.stop_fails.lock().unwrap() = Some("claude agents still shows agent-b running after claude stop".into());
+    let body = serde_json::from_value(json!({"task": "t", "replace": true, "model": "opus", "reason": "Needs opus"})).unwrap();
+    launch(&f.domain, &f.home, &actor, body, |_| None, &claude).await.unwrap_err();
+
+    crate::node_revival::user_closed(&f.domain, "agent-b").unwrap();
+    assert_eq!(f.domain.state().unwrap().tasks[&TaskId::from("t")].agent_id, None, "the task is free");
+    assert_eq!(release_reasons(&f), [crate::node_revival::REPLACE_ABORTED]);
+    let told = told_orchestrator(&f, "replace-aborted-");
+    assert_eq!(told.len(), 1, "{told:?}");
+    assert!(told[0].contains("“Editor colours” (t) has no node now") && told[0].contains("still shows agent-b running")
+        && told[0].contains("launch (task t), without replace"), "{}", told[0]);
 }
 
 fn on_a_turn(f: &Fixture) {
@@ -917,4 +999,153 @@ fn a_stopped_session_is_one_claude_agents_no_longer_shows_running() {
     for gone in ["old00000", "done0000", "missing0"] {
         assert!(!crate::orchestrate::still_running(&listing, gone), "{gone}");
     }
+}
+
+async fn until_told(f: &Fixture, prefix: &str) -> Vec<String> {
+    for _ in 0..500 {
+        let told = told_orchestrator(f, prefix);
+        if !told.is_empty() {
+            return told;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!("the orchestrator was never told how the replacement ended");
+}
+
+fn replace_body() -> LaunchBody {
+    serde_json::from_value(json!({"task": "t", "replace": true, "model": "opus", "reason": "Needs opus"})).unwrap()
+}
+
+/// Waiting for the old node's turn can outlast the call: the orchestrator gets its answer at once
+/// and hears how the replacement ended.
+#[tokio::test]
+async fn a_replacement_answers_before_the_old_node_stops_and_tells_how_it_ended() {
+    let f = world();
+    let actor = the_orchestrator(&f.domain);
+    connected_node_on_the_task(&f);
+    on_a_turn(&f);
+    let claude = Arc::new(FakeClaude { turn: std::time::Duration::from_secs(5), ..FakeClaude::loading(&f.domain) });
+    let answer = launch_replacing(f.domain.clone(), f.home.clone(), actor.clone(), replace_body(), |_| None, claude.clone()).await.unwrap();
+    assert_eq!(answer["replacing"], true, "{answer}");
+    assert!(answer["message"].as_str().unwrap().contains("you are told when the new node works on the task"), "{answer}");
+    assert!(claude.stopped.lock().unwrap().is_empty(), "answered while the old node is still on its turn");
+
+    let again = launch_replacing(f.domain.clone(), f.home.clone(), actor, replace_body(), |_| None, claude.clone()).await.unwrap_err();
+    assert_eq!(again.code, "conflict", "a second launch waits for the replacement under way: {}", again.message);
+
+    f.domain.live.observe(&json!({"session_id": "agent-b", "hook_event_name": "Stop"}));
+    let told = until_told(&f, "replaced-").await;
+    assert!(told[0].contains("“Editor colours” (t) has its new node, ab1234cd"), "{}", told[0]);
+    assert_eq!(f.domain.state().unwrap().tasks[&TaskId::from("t")].agent_id, Some(AgentId::from(SESSION)));
+    assert!(f.domain.live.begin_launch("t"), "the launch guard is released once it ends");
+}
+
+#[tokio::test]
+async fn a_replacement_that_fails_after_answering_tells_the_orchestrator_why() {
+    let f = world();
+    let actor = the_orchestrator(&f.domain);
+    connected_node_on_the_task(&f);
+    let claude = Arc::new(FakeClaude::loading(&f.domain));
+    *claude.stop_fails.lock().unwrap() = Some("claude agents still shows agent-b running after claude stop".into());
+    let answer = launch_replacing(f.domain.clone(), f.home.clone(), actor, replace_body(), |_| None, claude).await.unwrap();
+    assert_eq!(answer["replacing"], true);
+    let told = until_told(&f, "replaced-").await;
+    assert!(told[0].contains("did not finish") && told[0].contains("still shows agent-b running"), "{}", told[0]);
+    assert!(!told[0].contains("keeps its node"), "{}", told[0]);
+}
+
+#[tokio::test]
+async fn a_replacement_refused_before_stopping_anything_answers_with_the_refusal() {
+    let f = world();
+    let actor = the_orchestrator(&f.domain);
+    connected_node_on_the_task(&f);
+    let claude = Arc::new(FakeClaude::loading(&f.domain));
+    let body = serde_json::from_value(json!({"task": "t", "replace": true, "model": "opus", "reason": "Needs opus", "cwd": "/no/such/folder"})).unwrap();
+    let refused = launch_replacing(f.domain.clone(), f.home.clone(), actor, body, |_| None, claude.clone()).await.unwrap_err();
+    assert_eq!(refused.code, "invalid_input");
+    assert!(claude.stopped.lock().unwrap().is_empty());
+    assert!(f.domain.live.begin_launch("t"), "the launch guard is released");
+}
+
+/// Once the old node is stopped the task has no node: a launch that fails after that says so.
+#[tokio::test]
+async fn a_replacement_whose_new_node_does_not_start_says_the_task_has_no_node() {
+    let f = world();
+    let actor = the_orchestrator(&f.domain);
+    connected_node_on_the_task(&f);
+    let claude = Arc::new(FakeClaude::loading(&f.domain));
+    *claude.run_fails.lock().unwrap() = Some("claude --bg did not respond within 60 s".into());
+    launch_replacing(f.domain.clone(), f.home.clone(), actor.clone(), replace_body(), |_| None, claude.clone()).await.unwrap();
+    let told = until_told(&f, "replaced-").await;
+    assert!(told[0].contains("did not respond within 60 s")
+        && told[0].contains("The node it replaced was stopped, so “Editor colours” (t) has no node now: start one with launch (task t), without replace."),
+        "{}", told[0]);
+    assert_eq!(f.domain.state().unwrap().tasks[&TaskId::from("t")].agent_id, None);
+
+    let g = world();
+    let actor = the_orchestrator(&g.domain);
+    connected_node_on_the_task(&g);
+    let refused = launch(&g.domain, &g.home, &actor, replace_body(), |_| None, &FakeClaude::without_mod()).await.unwrap_err();
+    assert!(refused.message.contains(crate::node_reports::MODS_NOT_LOADED) && refused.message.contains("has no node now"), "{}", refused.message);
+}
+
+/// The call can be dropped as soon as the replacement starts: the orchestrator still hears how it
+/// ended.
+#[tokio::test]
+async fn a_dropped_replace_call_still_tells_the_orchestrator_how_it_ended() {
+    let f = world();
+    let actor = the_orchestrator(&f.domain);
+    connected_node_on_the_task(&f);
+    let claude = Arc::new(FakeClaude::loading(&f.domain));
+    let call = launch_replacing(f.domain.clone(), f.home.clone(), actor, replace_body(), |_| None, claude);
+    assert!(tokio::time::timeout(std::time::Duration::ZERO, call).await.is_err(), "the call is dropped before it answers");
+    let told = until_told(&f, "replaced-").await;
+    assert!(told[0].contains("has its new node"), "{}", told[0]);
+}
+
+/// A panic in the replacement gives the launch guard back and tells the orchestrator.
+#[tokio::test]
+async fn a_replacement_that_panics_releases_the_task_and_tells_the_orchestrator() {
+    let f = world();
+    let actor = the_orchestrator(&f.domain);
+    connected_node_on_the_task(&f);
+    let claude = Arc::new(FakeClaude { run_panics: true, ..FakeClaude::loading(&f.domain) });
+    launch_replacing(f.domain.clone(), f.home.clone(), actor, replace_body(), |_| None, claude).await.unwrap();
+    let told = until_told(&f, "replaced-").await;
+    assert!(told[0].contains("stopped unexpectedly"), "{}", told[0]);
+    assert!(f.domain.live.begin_launch("t"), "the task is not left being launched");
+}
+
+/// The branch where Claude Code made the old node's worktree, read from a Claude home of the
+/// test's own.
+#[tokio::test]
+async fn a_replacement_inherits_the_worktree_claude_code_made_for_the_old_node() {
+    let f = world();
+    let claude_home = f.root.join("claude");
+    crate::watcher::use_claude_home_for_test(&claude_home);
+    let old = "0ldn0de0-0000-4000-8000-000000000000";
+    command(&f.domain, Actor::System, Command::RegisterAgent { agent_id: old.into(), name: "Old".into() });
+    let made = f.project.join(".claude/worktrees/t");
+    std::fs::create_dir_all(&made).unwrap();
+    std::fs::create_dir_all(claude_home.join("jobs/0ldn0de0")).unwrap();
+    std::fs::write(claude_home.join("jobs/0ldn0de0/state.json"),
+        json!({"cwd": f.project.to_str().unwrap(), "worktreePath": made.to_str().unwrap()}).to_string()).unwrap();
+    let actor = the_orchestrator(&f.domain);
+    connected_node(&f, old);
+    let claude = FakeClaude::loading(&f.domain);
+    launch(&f.domain, &f.home, &actor, replace_body(), |_| None, &claude).await.unwrap();
+    assert_eq!(claude.calls.lock().unwrap()[0].0, made.to_str().unwrap(), "the new node starts in that worktree");
+    assert_eq!(f.domain.inherited_worktree(SESSION).unwrap().as_deref(), made.to_str(), "and Alondra may delete it with the new node");
+}
+
+/// What Alondra keeps about a session only while it lives goes when it ends.
+#[tokio::test]
+async fn an_ended_session_leaves_no_inherited_worktree_or_aborted_replace_behind() {
+    let f = world();
+    connected_node_on_the_task(&f);
+    f.domain.set_inherited_worktree("agent-b", f.project.to_str().unwrap(), "agent-a").unwrap();
+    f.domain.live.note_aborted_replace("agent-b", "stop failed");
+    crate::node_revival::take_out(&f.domain, "agent-b", "node closed by the user", None).unwrap();
+    assert_eq!(f.domain.inherited_worktree("agent-b").unwrap(), None);
+    assert_eq!(f.domain.live.take_aborted_replace("agent-b"), None);
 }

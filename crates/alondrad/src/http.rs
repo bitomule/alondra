@@ -2115,7 +2115,8 @@ async fn close_with_mode(hub: &Hub, key: &str, force: bool, still_free: Option<D
         let permitted = || hub.read(|v| v.nodes.get(&session).is_some_and(|n|
             n.in_daemon && !n.is_orchestrator && !n.busy && !n.waiting_permission));
         if !permitted() { return err(StatusCode::CONFLICT, "node is no longer idle; worktree was not discarded"); }
-        if let Err(why) = crate::worktree::discard(&session, permitted).await {
+        let inherited = hub.domain.inherited_worktree(&session).ok().flatten().map(std::path::PathBuf::from);
+        if let Err(why) = crate::worktree::discard(&session, inherited.as_deref(), permitted).await {
             return err(StatusCode::CONFLICT, format!("could not discard worktree: {why}"));
         }
     }
@@ -2166,6 +2167,7 @@ async fn close_with_mode(hub: &Hub, key: &str, force: bool, still_free: Option<D
                 if let Some(dir) = worktree.as_ref().filter(|d| d.exists()) {
                     return err(StatusCode::CONFLICT, format!("{short} is gone from claude agents but its worktree is still at {}", dir.display()));
                 }
+                if let Err(e) = hub.domain.forget_ended_session(&session) { return internal(e); }
                 if let Err(e) = hub.append(Event::NodeRemoved { session_id: session }) { return internal(e); }
                 return Json(json!({"ok": true, "output": said})).into_response();
             }

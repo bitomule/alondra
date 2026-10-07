@@ -7,7 +7,8 @@ use crate::domain_store::model_metrics::{Decision, DecisionKind};
 use alondra_core::domain::{Actor, AgentId, Command, CommandEnvelope, DomainError, DomainState, ModelChooser, RequestId, TaskId, PROTOCOL_VERSION};
 use serde::Deserialize;
 use serde_json::{Value, json};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 /// The orchestrator's starting model, for a relaunch of a task that never recorded one.
 const DEFAULT_MODEL: &str = "sonnet";
@@ -157,19 +158,96 @@ pub(crate) async fn launch(domain: &DomainRuntime, home: &Path, actor: &Actor, b
 pub(crate) async fn launch_from(domain: &DomainRuntime, home: &Path, actor: &Actor, body: LaunchBody,
     choices: impl FnOnce(&RequestId) -> Option<Choices>, launcher: &impl crate::orchestrate::Launcher, origin: Origin) -> Result<Value, DomainError> {
     if origin == Origin::Orchestrator {
-        if !domain.live.begin_launch(&body.task.0) {
-            return Err(DomainError::new("conflict", format!("{} is being launched already", body.task)));
-        }
-        let task = body.task.clone();
-        let launched = launch_guarded(domain, home, actor, body, choices, launcher, origin).await;
-        domain.live.end_launch(&task.0);
-        return launched;
+        let _launching = Launching::begin(domain, &body.task)?;
+        return launch_guarded(domain, home, actor, body, choices, launcher, origin, None).await;
     }
-    launch_guarded(domain, home, actor, body, choices, launcher, origin).await
+    launch_guarded(domain, home, actor, body, choices, launcher, origin, None).await
 }
 
+/// The right to launch a task's node, given back however the launch ends, a panic included.
+struct Launching<'a> {
+    domain: &'a DomainRuntime,
+    task: String,
+}
+
+impl<'a> Launching<'a> {
+    fn begin(domain: &'a DomainRuntime, task: &TaskId) -> Result<Self, DomainError> {
+        if !domain.live.begin_launch(&task.0) {
+            return Err(DomainError::new("conflict", format!("{task} is being launched already")));
+        }
+        Ok(Self { domain, task: task.0.clone() })
+    }
+}
+
+impl Drop for Launching<'_> {
+    fn drop(&mut self) {
+        self.domain.live.end_launch(&self.task);
+    }
+}
+
+/// The orchestrator's `launch` with replace: it answers once the launch is checked and the old
+/// node is about to be stopped, because waiting for that node's turn to end can take minutes.
+/// The replacement and the message that tells the orchestrator how it ended run in a task of
+/// their own, which neither a dropped call nor a panic in the replacement leaves untold.
+pub(crate) async fn launch_replacing<L: crate::orchestrate::Launcher + Send + 'static>(domain: Arc<DomainRuntime>, home: PathBuf, actor: Actor,
+    body: LaunchBody, choices: impl FnOnce(&RequestId) -> Option<Choices> + Send + 'static, launcher: Arc<L>) -> Result<Value, DomainError> {
+    if !body.replace {
+        return launch(&domain, &home, &actor, body, choices, &*launcher).await;
+    }
+    let task = body.task.clone();
+    let (checked_tx, checked) = tokio::sync::oneshot::channel();
+    let worker = tokio::spawn({
+        let (domain, task) = (domain.clone(), task.clone());
+        async move {
+            let reached = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let replacement = tokio::spawn({
+                let (domain, task, reached) = (domain.clone(), task.clone(), reached.clone());
+                async move {
+                    let _launching = Launching::begin(&domain, &task)?;
+                    let on_checked: Box<dyn FnOnce() + Send> = Box::new(move || {
+                        reached.store(true, std::sync::atomic::Ordering::SeqCst);
+                        let _ = checked_tx.send(());
+                    });
+                    launch_guarded(&domain, &home, &actor, body, choices, &*launcher, Origin::Orchestrator, Some(on_checked)).await
+                }
+            });
+            let outcome = replacement.await.unwrap_or_else(|failure| Err(DomainError::new("launch_failed", format!(
+                "the replacement stopped unexpectedly ({failure}); check the task with fleet before launching it again"))));
+            if reached.load(std::sync::atomic::Ordering::SeqCst) {
+                tell_replaced(&domain, &task, &outcome);
+            }
+            outcome
+        }
+    });
+    if checked.await.is_err() {
+        return worker.await.unwrap_or_else(|failure| Err(DomainError::new("launch_failed", format!("the launch stopped unexpectedly: {failure}"))));
+    }
+    Ok(json!({"task": task, "replacing": true, "message": format!(
+        "Replacing the node of “{}”: Alondra waits for its turn to end (interrupting it if it takes too long), stops it and \
+         starts the new node in its folder. This can take a few minutes; you are told when the new node works on the task, or \
+         why it did not start.", task_title(&domain, &task))}))
+}
+
+fn task_title(domain: &DomainRuntime, task: &TaskId) -> String {
+    domain.state().ok().and_then(|state| state.tasks.get(task).map(|task| task.title.clone())).unwrap_or_else(|| task.0.clone())
+}
+
+fn tell_replaced(domain: &DomainRuntime, task: &TaskId, outcome: &Result<Value, DomainError>) {
+    let title = task_title(domain, task);
+    let text = match outcome {
+        Ok(answer) => format!("“{title}” ({task}) has its new node, {}: it continues the work of the node it replaced.",
+            answer["short_id"].as_str().unwrap_or_default()),
+        Err(error) => format!("The replacement of the node of “{title}” ({task}) did not finish: {}", error.message),
+    };
+    if let Err(error) = domain.tell_orchestrator(&format!("replaced-{task}-{}", crate::auth::random_hex(4)), text) {
+        log!("could not tell the orchestrator how the replacement of {task}'s node ended: {error:?}");
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn launch_guarded(domain: &DomainRuntime, home: &Path, actor: &Actor, body: LaunchBody,
-    choices: impl FnOnce(&RequestId) -> Option<Choices>, launcher: &impl crate::orchestrate::Launcher, origin: Origin) -> Result<Value, DomainError> {
+    choices: impl FnOnce(&RequestId) -> Option<Choices>, launcher: &impl crate::orchestrate::Launcher, origin: Origin,
+    checked: Option<Box<dyn FnOnce() + Send>>) -> Result<Value, DomainError> {
     let conflict = |message: String| DomainError::new("conflict", message);
     let current = state(domain)?;
     let task = current.tasks.get(&body.task).ok_or_else(|| DomainError::new("not_found", "task does not exist"))?;
@@ -180,7 +258,9 @@ async fn launch_guarded(domain: &DomainRuntime, home: &Path, actor: &Actor, body
         (_, false) => None,
     };
     let mut body = body;
+    let mut inherited = None;
     if let Some(old) = &replaced {
+        inherited = owned_worktree(domain, &old.0).filter(|dir| body.cwd.as_ref().is_none_or(|cwd| cwd == dir));
         body.cwd = body.cwd.or_else(|| node_folder(domain, &old.0));
         body.name = body.name.or_else(|| current.agents.get(old).map(|agent| agent.name.clone()));
     }
@@ -259,11 +339,27 @@ async fn launch_guarded(domain: &DomainRuntime, home: &Path, actor: &Actor, body
         crate::domain_sessions::release(&settings);
         error
     };
+    if let Some(checked) = checked {
+        checked();
+    }
     if let Some(old) = &replaced {
         stop_replaced(domain, old, launcher).await.map_err(|reason| discard(DomainError::new("replace_failed", format!(
-            "{} keeps its node, which was not replaced: {reason}", task.id))))?;
+            "Alondra could not stop the node of {}, so no new node was started: {reason}. It is still assigned to that node; \
+             if that node ends later, the task is freed and you are told.", task.id))))?;
         crate::node_revival::take_out(domain, &old.0, "node replaced by the orchestrator", Some(cwd.clone()))
-            .map_err(|error| discard(DomainError::new("storage_unavailable", format!("could not free {} from its node: {error:#}", task.id))))?;
+            .map_err(|error| discard(DomainError::new("storage_unavailable", format!(
+                "the node of {} was stopped, but Alondra could not free the task from it: {error:#}", task.id))))?;
+    }
+    let discard = |error: DomainError| {
+        let error = discard(error);
+        if replaced.is_none() {
+            return error;
+        }
+        let message = format!("{} The node it replaced was stopped, so “{}” ({}) has no node now: start one with launch (task {}), without replace.",
+            error.message, task.title, task.id, task.id);
+        DomainError { message, ..error }
+    };
+    if replaced.is_some() {
         assigned_before = state(domain).map_err(discard)?.tasks.get(&task.id).and_then(|t| t.agent_id.clone());
     }
     let output = launcher.run(&cwd, &args).await.map_err(|(_, reason)| discard(DomainError::new("launch_failed", reason)))?;
@@ -280,6 +376,11 @@ async fn launch_guarded(domain: &DomainRuntime, home: &Path, actor: &Actor, body
         Err(error) if error.code == "invalid_input" => (),
         Err(error) => return Err(discard(error)),
     }
+    if let (Some(old), Some(dir)) = (&replaced, &inherited)
+        && let Err(error) = domain.set_inherited_worktree(&session, dir, &old.0)
+    {
+        log!("could not record that {session} took over {dir}: {error:#}");
+    }
     let bound = domain.bind_agent(&session).map_err(anyhow::Error::from)
         .and_then(|capability| crate::domain_sessions::bind(&settings, &agent_id, capability.expose_for_child_environment()));
     if let Err(error) = bound {
@@ -289,15 +390,17 @@ async fn launch_guarded(domain: &DomainRuntime, home: &Path, actor: &Actor, body
     let short = alondra_core::sessions::launched_short(&output).unwrap_or_else(|| session.chars().take(8).collect());
     let taken = state(domain).map(|now| now.tasks.get(&task.id).is_none_or(|t| t.state.terminal() || t.agent_id != assigned_before));
     let assigned = match taken {
-        Ok(false) => run(domain, actor, Command::AssignTask { task_id: task.id.clone(), agent_id: agent_id.clone(), model: resolved.launch_model() }),
+        Ok(false) => run(domain, actor, Command::AssignTask { task_id: task.id.clone(), agent_id: agent_id.clone(), model: resolved.launch_model() })
+            .map_err(discard),
         Ok(true) => Err(conflict(format!("{} was closed or taken while its node started", task.id))),
-        Err(error) => Err(error),
+        Err(error) => Err(discard(error)),
     };
     if let Err(error) = assigned {
         launcher.stop(&short).await;
         launcher.remove(&short).await;
         let _ = domain.revoke_agent(&session);
-        return Err(discard(error));
+        crate::domain_sessions::release(&settings);
+        return Err(error);
     }
     if origin == Origin::Auto {
         let _ = domain.store.lock().expect("domain store poisoned")
@@ -328,9 +431,13 @@ async fn stop_replaced(domain: &DomainRuntime, old: &AgentId, launcher: &impl cr
     }
     let short = domain.live.node(&old.0).map_or_else(|| old.0.chars().take(8).collect(), |node| node.short_id);
     let watched = domain.live.begin_watch(&old.0);
-    let stopped = launcher.stop_checked(&short).await;
-    if stopped.is_ok() {
-        domain.live.mark_closed(&old.0);
+    let stopped = match launcher.stop_checked(&short).await {
+        Err(_) if crate::node_revival::session_ended(domain, &old.0) => Ok(()),
+        stopped => stopped,
+    };
+    match &stopped {
+        Ok(()) => domain.live.mark_closed(&old.0),
+        Err(reason) => domain.live.note_aborted_replace(&old.0, reason),
     }
     if watched {
         domain.live.end_watch(&old.0);
@@ -358,6 +465,15 @@ async fn continuing_in(dir: &Path) -> String {
     match crate::worktree::branch_in(dir).await {
         Some(branch) => format!("You continue in {}, branch {branch}: its files are the earlier node's work. Do not create another worktree and do not use EnterWorktree.", dir.display()),
         None => format!("You continue in {}: its files are the earlier node's work. Do not create another worktree and do not use EnterWorktree.", dir.display()),
+    }
+}
+
+/// The worktree Alondra may delete with the node: the one Claude Code made for it, or the one it
+/// inherited from the node it replaced. Never a folder it was only launched in.
+fn owned_worktree(domain: &DomainRuntime, session: &str) -> Option<String> {
+    match crate::worktree::origin_in(&crate::watcher::claude_home(), session) {
+        Some(crate::worktree::WorktreeOrigin::Made(dir)) => dir.to_str().map(str::to_owned),
+        _ => domain.inherited_worktree(session).ok().flatten(),
     }
 }
 

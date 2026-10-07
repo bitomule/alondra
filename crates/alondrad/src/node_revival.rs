@@ -11,7 +11,7 @@
 //! to not started, waiting for a relaunch.
 use crate::domain_runtime::DomainRuntime;
 use crate::orchestrate::Launcher;
-use alondra_core::domain::{Actor, AgentId, Command, CommandEnvelope, QuestionOption, PROTOCOL_VERSION};
+use alondra_core::domain::{Actor, AgentId, Command, CommandEnvelope, QuestionOption, TaskId, PROTOCOL_VERSION};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -111,7 +111,7 @@ fn look_at_job(domain: &DomainRuntime, session: &str) {
 /// Whether the user stopped, killed or deleted the session in Claude agents: its job file says
 /// `stopped`, or the job folder Alondra last saw is gone. A session whose job was never seen is
 /// not known to be closed.
-fn closed_by_user(domain: &DomainRuntime, session: &str) -> bool {
+pub(crate) fn session_ended(domain: &DomainRuntime, session: &str) -> bool {
     let known = domain.live.mods.session(session).and_then(|reported| reported.job_dir);
     let Some(dir) = known.or_else(|| crate::job_state::locate(&crate::watcher::claude_home(), session)) else { return false };
     !dir.exists() || crate::job_state::read_in(&dir, session).is_some_and(|job| job.phase == crate::job_state::Phase::Stopped)
@@ -228,7 +228,7 @@ async fn restart_until_back(domain: &DomainRuntime, session: &str, launcher: &im
             if !needed(domain, session) {
                 return;
             }
-            if closed_by_user(domain, session) {
+            if session_ended(domain, session) {
                 if let Err(failure) = user_closed(domain, session) {
                     log!("could not record that {session} was closed by the user: {failure:#}");
                 }
@@ -251,13 +251,30 @@ async fn restart_until_back(domain: &DomainRuntime, session: &str, launcher: &im
 /// The user closed the session: the node leaves Fleet, is not brought back, and the tasks it had
 /// open go back to not started with no node, to be relaunched. What a relaunch needs of the node
 /// is kept.
+/// A session whose replacement stopped short because it could not be stopped ends for that
+/// reason, and the orchestrator hears that its tasks are free again.
 pub(crate) fn user_closed(domain: &DomainRuntime, session: &str) -> anyhow::Result<()> {
     let cwd = domain.live.mods.session(session).and_then(|reported| reported.cwd);
-    take_out(domain, session, "node closed by the user", cwd)
+    let Some(why) = domain.live.take_aborted_replace(session) else {
+        take_out(domain, session, "node closed by the user", cwd)?;
+        return Ok(());
+    };
+    let freed = take_out(domain, session, REPLACE_ABORTED, cwd)?;
+    let Ok(state) = domain.state() else { return Ok(()) };
+    for task_id in freed {
+        let title = state.tasks.get(&task_id).map_or_else(|| task_id.0.clone(), |task| task.title.clone());
+        let _ = domain.tell_orchestrator(&format!("replace-aborted-{task_id}-{}", crate::auth::random_hex(4)), format!(
+            "“{title}” ({task_id}) has no node now: its node ended after your replacement of it stopped short, because Alondra could \
+             not stop it then ({why}). No new node was started. Start one with launch (task {task_id}), without replace."));
+    }
+    Ok(())
 }
 
+pub(crate) const REPLACE_ABORTED: &str = "node ended after the orchestrator's replacement could not stop it";
+
 /// `user_closed` for a session that ends for `reason`; a relaunch of its tasks starts in `cwd`.
-pub(crate) fn take_out(domain: &DomainRuntime, session: &str, reason: &str, cwd: Option<String>) -> anyhow::Result<()> {
+/// The tasks it frees.
+pub(crate) fn take_out(domain: &DomainRuntime, session: &str, reason: &str, cwd: Option<String>) -> anyhow::Result<Vec<TaskId>> {
     let agent = AgentId(session.to_owned());
     let state = domain.state()?;
     let node = state.agents.get(&agent).map(|known| crate::client_routes::ClosedNode { name: known.name.clone(), cwd });
@@ -265,6 +282,7 @@ pub(crate) fn take_out(domain: &DomainRuntime, session: &str, reason: &str, cwd:
         .filter(|task| task.agent_id.as_ref() == Some(&agent) && !task.state.terminal() && !task.archived && task.final_presentation.is_none())
         .map(|task| task.id.clone())
         .collect();
+    let mut freed = vec![];
     for task_id in released {
         let state = domain.state()?;
         let envelope = CommandEnvelope {
@@ -276,6 +294,7 @@ pub(crate) fn take_out(domain: &DomainRuntime, session: &str, reason: &str, cwd:
                 if let Some(node) = &node {
                     domain.live.remember_closed_task(&task_id.0, node.clone());
                 }
+                freed.push(task_id);
             }
             Err(failure) => log!("could not free {task_id} after its node was closed: {failure:?}"),
         }
@@ -286,7 +305,8 @@ pub(crate) fn take_out(domain: &DomainRuntime, session: &str, reason: &str, cwd:
     crate::domain_transport::session_ended(domain, &agent)?;
     domain.live.mark_closed(session);
     domain.live.apply(&alondra_core::Event::NodeRemoved { session_id: session.to_owned() });
-    Ok(())
+    domain.forget_ended_session(session)?;
+    Ok(freed)
 }
 
 /// The card for the user once restarts keep failing; true when they ask for another round.

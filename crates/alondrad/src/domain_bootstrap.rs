@@ -633,19 +633,19 @@ async fn orchestrator_launch(
         ));
     };
     let domain = state.domain();
-    let choices = |request: &alondra_core::domain::RequestId| {
+    let choices = move |request: &alondra_core::domain::RequestId| {
         crate::domain_orchestrator_tools::request_choices(&domain, request)
             .ok()
             .flatten()
     };
     tool_answer(
-        crate::domain_orchestrator_tools::launch(
-            &state.domain,
-            &state.home,
-            &actor,
+        crate::domain_orchestrator_tools::launch_replacing(
+            state.domain(),
+            state.home.clone(),
+            actor,
             body,
             choices,
-            &crate::orchestrate::ClaudeCli,
+            Arc::new(crate::orchestrate::ClaudeCli),
         )
         .await,
     )

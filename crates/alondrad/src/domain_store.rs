@@ -103,6 +103,13 @@ const AUTO_LAUNCHES: &str = "CREATE TABLE IF NOT EXISTS auto_launches(\
  reason TEXT CHECK(reason IS NULL OR reason IN('usage_exhausted','workspace_untrusted','no_plan','launch_failed')),\
  detail TEXT,\
  at INTEGER NOT NULL);";
+/// The worktree a node took over from the node it replaced: Alondra may delete it with the node,
+/// as it may the worktree Claude Code made for a node, never a folder it was only launched in.
+const INHERITED_WORKTREES: &str = "CREATE TABLE IF NOT EXISTS inherited_worktrees(\
+ agent_id TEXT PRIMARY KEY CHECK(length(agent_id)>0),\
+ dir TEXT NOT NULL CHECK(length(dir)>0),\
+ from_agent TEXT NOT NULL,\
+ at INTEGER NOT NULL);";
 
 /// What a command carries into the transaction that commits it.
 pub(crate) enum Attached<'a> {
@@ -353,6 +360,7 @@ impl DomainStore {
         tx.execute_batch(TASK_CLOSINGS)?;
         tx.execute_batch(TASK_LAUNCH_PLANS)?;
         tx.execute_batch(AUTO_LAUNCHES)?;
+        tx.execute_batch(INHERITED_WORKTREES)?;
         if version != 0 {
             tx.execute_batch("DROP TRIGGER IF EXISTS schedule_launch_transition;")?;
             tx.execute_batch(SCHEDULE_LAUNCH_TRANSITION)?;
@@ -817,6 +825,22 @@ impl DomainStore {
             "INSERT INTO task_launch_plans(task_id,plan,role,at) VALUES(?1,?2,?3,?4) ON CONFLICT(task_id) DO UPDATE SET plan=excluded.plan,role=excluded.role,at=excluded.at",
             params![task_id.0, serde_json::to_string(plan)?, plan.role.map(|role| role.as_str()), now])?;
         self.note_side_write();
+        Ok(())
+    }
+    pub(crate) fn inherited_worktree(&self, agent_id: &str) -> Result<Option<String>> {
+        Ok(self.conn.query_row("SELECT dir FROM inherited_worktrees WHERE agent_id=?1", [agent_id], |row| row.get(0)).optional()?)
+    }
+    pub(crate) fn set_inherited_worktree(&mut self, agent_id: &str, dir: &str, from_agent: &str, now: i64) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO inherited_worktrees(agent_id,dir,from_agent,at) VALUES(?1,?2,?3,?4) ON CONFLICT(agent_id) DO UPDATE SET dir=excluded.dir,from_agent=excluded.from_agent,at=excluded.at",
+            params![agent_id, dir, from_agent, now])?;
+        self.note_side_write();
+        Ok(())
+    }
+    pub(crate) fn forget_inherited_worktree(&mut self, agent_id: &str) -> Result<()> {
+        if self.conn.execute("DELETE FROM inherited_worktrees WHERE agent_id=?1", [agent_id])? > 0 {
+            self.note_side_write();
+        }
         Ok(())
     }
     /// Every task a launch plan names a role for.

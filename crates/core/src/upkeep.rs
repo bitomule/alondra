@@ -212,7 +212,7 @@ pub fn idle_close_question(view: &View, node: &Node, pending: &[String], after: 
     let detail = format!(
         "{name} has done nothing for {span}, but Alondra does not close it because it has unfinished work:\n\n{}\n\n\
          - {KEEP}: Alondra leaves it as it is and does not ask again until it works and goes idle again.\n\
-         - {DISCARD}: Alondra deletes its worktree and closes it: uncommitted changes are lost, its commits stay on its local branch.\n\
+         - {DISCARD}: Alondra deletes the worktree it made for {name} and closes it; its commits stay on its local branch. A worktree with uncommitted changes, or a folder you gave it, is never deleted: Alondra tells you why instead.\n\
          - {RESUME}: Alondra tells {name} to pick the work up again.",
         pending.iter().map(|p| format!("- {p}")).collect::<Vec<_>>().join("\n")
     );

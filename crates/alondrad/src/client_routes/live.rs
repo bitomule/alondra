@@ -8,6 +8,7 @@ use std::sync::{Mutex, atomic::{AtomicU64, Ordering}};
 
 const CLOSED_FILE: &str = "closed-sessions.json";
 const CLOSED_TASKS_FILE: &str = "closed-task-nodes.json";
+const ABORTED_REPLACES_FILE: &str = "aborted-replaces.json";
 
 /// What a relaunch needs of the node the user closed while it worked on a task.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -46,6 +47,8 @@ pub(crate) struct Live {
     closed_file: Option<std::path::PathBuf>,
     closed_tasks: Mutex<std::collections::BTreeMap<String, ClosedNode>>,
     closed_tasks_file: Option<std::path::PathBuf>,
+    aborted_replaces: Mutex<std::collections::BTreeMap<String, String>>,
+    aborted_replaces_file: Option<std::path::PathBuf>,
 }
 
 impl Live {
@@ -54,7 +57,11 @@ impl Live {
         let closed = std::fs::read(&file).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default();
         let closed_tasks_file = home.join(CLOSED_TASKS_FILE);
         let closed_tasks = std::fs::read(&closed_tasks_file).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default();
+        let aborted_replaces_file = home.join(ABORTED_REPLACES_FILE);
+        let aborted_replaces = std::fs::read(&aborted_replaces_file).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default();
         Self {
+            aborted_replaces: Mutex::new(aborted_replaces),
+            aborted_replaces_file: Some(aborted_replaces_file),
             closed_tasks: Mutex::new(closed_tasks),
             closed_tasks_file: Some(closed_tasks_file),
             mods: crate::node_reports::Reports::persisted_in(home),
@@ -82,6 +89,25 @@ impl Live {
         if let Some(file) = &self.closed_tasks_file {
             save(file, &*tasks);
         }
+    }
+
+    /// The orchestrator's replacement of this session's node stopped short because the node could
+    /// not be stopped: if it ends later, that is why, not the user closing it.
+    pub(crate) fn note_aborted_replace(&self, session_id: &str, why: &str) {
+        let mut aborted = self.aborted_replaces.lock().expect("revivals poisoned");
+        aborted.insert(session_id.to_owned(), why.to_owned());
+        if let Some(file) = &self.aborted_replaces_file {
+            save(file, &*aborted);
+        }
+    }
+
+    pub(crate) fn take_aborted_replace(&self, session_id: &str) -> Option<String> {
+        let mut aborted = self.aborted_replaces.lock().expect("revivals poisoned");
+        let why = aborted.remove(session_id)?;
+        if let Some(file) = &self.aborted_replaces_file {
+            save(file, &*aborted);
+        }
+        Some(why)
     }
 
     pub(crate) fn closed_task(&self, task_id: &str) -> Option<ClosedNode> {

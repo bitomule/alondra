@@ -4,10 +4,29 @@
 
 use std::path::PathBuf;
 
+#[cfg(not(test))]
 pub fn claude_home() -> PathBuf {
     std::env::var("CLAUDE_HOME").map(PathBuf::from).unwrap_or_else(|_| {
         PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".claude")
     })
+}
+
+/// A unit test never reads the Mac's own Claude home: it gets the one it set on its thread with
+/// `use_claude_home_for_test`, else an empty folder of its own.
+#[cfg(test)]
+pub fn claude_home() -> PathBuf {
+    TEST_CLAUDE_HOME.with(|home| home.borrow().clone())
+        .unwrap_or_else(|| std::env::temp_dir().join(format!("alondra-test-claude-home-{}", std::process::id())))
+}
+
+#[cfg(test)]
+thread_local! {
+    static TEST_CLAUDE_HOME: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn use_claude_home_for_test(home: &std::path::Path) {
+    TEST_CLAUDE_HOME.with(|current| *current.borrow_mut() = Some(home.to_path_buf()));
 }
 
 pub fn pid_alive(pid: i32) -> bool {

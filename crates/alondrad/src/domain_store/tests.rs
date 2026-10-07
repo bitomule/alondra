@@ -1356,10 +1356,10 @@ fn a_store_made_before_wrap_ups_launch_plans_and_closings_opens_in_place() {
     seeded(&mut store);
     execute(&mut store, &user(), "cancel", Command::CancelTask { task_id: "task-1".into() });
     store.begin_task_closing(&"task-1".into(), 5).unwrap();
-    store.conn.execute_batch("DROP TABLE task_wrap_ups; DROP TABLE task_relations; DROP TABLE task_closings; DROP TABLE auto_launches; DROP TABLE task_launch_plans").unwrap();
+    store.conn.execute_batch("DROP TABLE task_wrap_ups; DROP TABLE task_relations; DROP TABLE task_closings; DROP TABLE auto_launches; DROP TABLE task_launch_plans; DROP TABLE inherited_worktrees").unwrap();
     drop(store);
     let mut reopened = DomainStore::open(&fixture.path()).unwrap();
-    for table in ["task_wrap_ups", "task_relations", "task_closings", "auto_launches", "task_launch_plans"] {
+    for table in ["task_wrap_ups", "task_relations", "task_closings", "auto_launches", "task_launch_plans", "inherited_worktrees"] {
         let count: i64 = reopened.conn.query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0)).unwrap();
         assert_eq!(count, 0, "{table} is created empty");
     }
