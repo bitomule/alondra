@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:f12d034b-249e-4487-a89b-57de38c26372",
   "client": "ios",
-  "version": "v5e2888960a44cb64",
+  "version": "vb2123fc97d725260",
   "cursor": "cursor-1",
   "title": "The simulator pass is clean",
   "status": {
@@ -99,7 +99,7 @@
           },
           "icon": "notice",
           "eyebrow": {
-            "text": "Saber",
+            "text": "Info",
             "tone": "neutral"
           },
           "title": "The simulator pass is clean",

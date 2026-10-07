@@ -34,7 +34,7 @@ enum SpanishTestData {
     ]
 
     private static let spanishKinds = [
-        "Decide": "Decidir", "Review": "Revisar", "Authorize": "Autorizar", "FYI": "Saber", "Provide": "Aportar",
+        "Decide": "Decidir", "Review": "Revisar", "Authorize": "Autorizar", "FYI": "Info", "Provide": "Aportar",
         "Test": "Probar", "Do": "Hacer", "Problem": "Problema", "Proposal": "Propuesta",
     ]
 

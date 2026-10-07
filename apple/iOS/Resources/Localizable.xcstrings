@@ -109,7 +109,7 @@
     "Do": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Hacer"}}}},
     "Problem": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Problema"}}}},
     "Propose": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Propuesta"}}}},
-    "Know": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Saber"}}}},
+    "Know": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Info"}}}},
     "Opens the details": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Abre el detalle"}}}},
     "More actions": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Más acciones"}}}},
     "Reply to the node…": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Responder al nodo…"}}}},

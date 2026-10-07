@@ -180,7 +180,7 @@ fn kind_label(kind: CardKind, lang: Lang) -> &'static str {
         CardKind::Decide => t!(lang, "Decide", "Decidir"),
         CardKind::Review => t!(lang, "Review", "Revisar"),
         CardKind::Authorize => t!(lang, "Authorize", "Autorizar"),
-        CardKind::Know => t!(lang, "FYI", "Saber"),
+        CardKind::Know => t!(lang, "FYI", "Info"),
         CardKind::Provide => t!(lang, "Provide", "Aportar"),
         CardKind::Test => t!(lang, "Test", "Probar"),
         CardKind::Do => t!(lang, "Do", "Hacer"),
