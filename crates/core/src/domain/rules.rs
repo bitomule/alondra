@@ -1085,7 +1085,7 @@ impl DomainState {
         self.merged_delivery(p)
             || (self.accepted(p)
                 && matches!(&p.payload, InteractionPayload::Delivery { targets, .. }
-                    if self.completable(t, targets).is_ok()))
+                    if self.completable(t, targets, true).is_ok()))
     }
     /// The final delivery is settled: every PR merged, or accepted with nothing left to merge.
     pub fn finished(&self, t: &Task) -> bool {
@@ -1123,7 +1123,10 @@ impl DomainState {
         }
     }
     /// What still keeps a Task with a settled final delivery from being done.
-    fn completable(&self, t: &Task, targets: &[DeliveryTarget]) -> Result<()> {
+    /// A PR closed without merging after the user accepted the delivery settles like a registered
+    /// one: only a person closes a PR, and nothing would ever merge it. A merged registered PR the
+    /// delivery leaves out settles too, since the user accepted the Task with it merged.
+    fn completable(&self, t: &Task, targets: &[DeliveryTarget], accepted: bool) -> Result<()> {
         if self.blockers(&t.id) {
             return fail(
                 "blocking_interaction",
@@ -1138,7 +1141,8 @@ impl DomainState {
         for target in targets {
             if let DeliveryTarget::PullRequest { pr_id, head } = target {
                 let pr = &self.pull_requests[pr_id];
-                if pr.state != PrState::Merged || pr.merged_head.as_ref() != Some(head) {
+                let merged = pr.state == PrState::Merged && pr.merged_head.as_ref() == Some(head);
+                if !merged && !(accepted && pr.state == PrState::Closed) {
                     return fail(
                         "merge_not_confirmed",
                         "Presented head is not confirmed merged",
@@ -1149,25 +1153,11 @@ impl DomainState {
                 // observation itself never grants that conformity.
             }
         }
-        if let Some(pr_id) = &t.pr_id {
-            let presented = targets
-                .iter()
-                .any(|x| matches!(x, DeliveryTarget::PullRequest { pr_id: p, .. } if p == pr_id));
-            match self.pull_requests[pr_id].state {
-                PrState::Open => {
-                    return fail(
-                        "merge_not_confirmed",
-                        "The Task's registered PR is still open",
-                    );
-                }
-                PrState::Merged if !presented => {
-                    return fail(
-                        "acceptance_missing",
-                        "The merged PR was never presented for acceptance",
-                    );
-                }
-                _ => {}
-            }
+        if t.pr_id.as_ref().is_some_and(|pr_id| self.pull_requests[pr_id].state == PrState::Open) {
+            return fail(
+                "merge_not_confirmed",
+                "The Task's registered PR is still open",
+            );
         }
         Ok(())
     }
@@ -2585,6 +2575,14 @@ impl DomainState {
                         .map(|i| i.id.0.clone()).collect::<Vec<_>>().join(", ");
                     return refuse("blocking_open", "is_final", &format!("Card {open} still waits on the user: wait for its answer or withdraw it before the final delivery"));
                 }
+                if let Some(pr) = self.task(task_id)?.pr_id.as_ref().map(|id| &self.pull_requests[id])
+                    && *is_final
+                    && pr.state == PrState::Open
+                    && !targets.iter().any(|t| matches!(t, DeliveryTarget::PullRequest { pr_id, .. } if *pr_id == pr.id))
+                {
+                    return refuse("pr_missing", "targets", &format!(
+                        "Your PR #{} is open: present it in the final delivery with its head {} so it is merged when the user accepts", pr.number, pr.head));
+                }
                 let mut card = card.clone();
                 if targets.iter().any(|t| matches!(t, DeliveryTarget::PullRequest { pr_id, .. }
                     if self.pull_requests.get(pr_id).is_some_and(|p| p.state != PrState::Open)))
@@ -2916,7 +2914,7 @@ impl DomainState {
                         "Current delivery needs valid user acceptance",
                     );
                 };
-                self.completable(t, targets)?;
+                self.completable(t, targets, self.accepted(p))?;
                 if !self.wraps_up(t) {
                     self.tasks.get_mut(task_id).unwrap().state = TaskState::Done;
                 }
