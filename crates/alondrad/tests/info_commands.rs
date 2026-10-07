@@ -60,12 +60,13 @@ fn help_and_version_exit_before_config_runtime_and_daemon_side_effects() {
     assert_eq!(fs::read_to_string(fixture.0.join("config.toml")).unwrap(), "not valid TOML {{{");
 }
 
+// ablation: passes-on-base: an empty alondra.db is no longer legacy data, so the fixture now holds real bytes
 #[test]
 fn a_legacy_home_is_refused_before_the_daemon_takes_its_lock() {
     let root = std::env::temp_dir().join(format!("alondrad-legacy-refusal-{}", std::process::id()));
     fs::create_dir(&root).unwrap();
     let fixture = Fixture(root.clone());
-    fs::write(root.join("alondra.db"), b"").unwrap();
+    fs::write(root.join("alondra.db"), b"legacy bytes").unwrap();
     let cutover = fs::OpenOptions::new().create(true).truncate(false).write(true)
         .open(root.join("service-home.lock")).unwrap();
     cutover.lock().unwrap();

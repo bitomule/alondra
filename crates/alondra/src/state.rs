@@ -49,7 +49,8 @@ pub fn repair_from_events(home: &Path) -> Result<String> {
         bail!("stop alondrad before repairing its database");
     }
     let db = home.join("alondra.db");
-    let mut conn = Connection::open(&db).with_context(|| format!("opening {}", db.display()))?;
+    let mut conn = Connection::open_with_flags(&db, OpenFlags::SQLITE_OPEN_READ_WRITE)
+        .with_context(|| format!("opening {}", db.display()))?;
     let (count, first, last): (i64, i64, i64) = conn.query_row(
         "SELECT COUNT(*), COALESCE(MIN(seq), 0), COALESCE(MAX(seq), 0) FROM events", [],
         |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
@@ -103,6 +104,17 @@ mod tests {
         conn.execute_batch("CREATE TABLE events (seq INTEGER PRIMARY KEY, at INTEGER, body TEXT); CREATE TABLE snapshots (seq INTEGER PRIMARY KEY, body TEXT); INSERT INTO events VALUES (2, 2, '{}');").unwrap();
         drop(conn);
         assert!(repair_from_events(&home).unwrap_err().to_string().contains("incomplete"));
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn repair_never_creates_a_missing_database() {
+        let home = std::env::temp_dir().join(format!("alondra-state-missing-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).unwrap();
+        assert!(repair_from_events(&home).is_err());
+        assert!(audit(&home).is_err());
+        assert!(!home.join("alondra.db").exists());
         std::fs::remove_dir_all(home).unwrap();
     }
 }

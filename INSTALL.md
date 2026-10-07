@@ -316,7 +316,10 @@ With a Homebrew install (`brew install bitomule/tap/alondra`), `alondra update` 
 seconds until the daemon reports the new version (or reports why the new binary failed its
 startup check) and ends with the `alondra doctor` lines. `alondra update --check` only says
 whether a newer release exists. A daemon from before self-restart is checked with
-`alondrad --preflight` and restarted through launchd once. A source install (`make install`)
+`alondrad --preflight` and restarted through launchd once. So is a daemon that remembers the
+new binary failing its startup check: running `alondra update` again checks it anew, and the
+daemon itself tries a rejected binary again every 10 minutes, so a cause that is gone (a stray
+file in HOME) no longer holds the upgrade back. A source install (`make install`)
 is updated from its checkout instead.
 
 The daemon looks for new releases (the `alondra-v*` releases of `bitomule/homebrew-tap`) when

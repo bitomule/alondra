@@ -12,6 +12,9 @@ use serde::Serialize;
 /// EX_TEMPFAIL: launchd's KeepAlive starts the job again.
 pub const RELAUNCH: i32 = 75;
 pub const EVERY: Duration = Duration::from_secs(60);
+/// A rejection can come from HOME rather than the binary (a stray file, a full disk), so the
+/// same binary is checked again once this long has passed.
+const RETRY_REJECTED: Duration = Duration::from_secs(600);
 const PREFLIGHT_TIMEOUT: Duration = Duration::from_secs(300);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -69,13 +72,14 @@ pub struct Outcome {
 pub struct Watcher {
     path: PathBuf,
     running: Identity,
-    rejected: Option<Identity>,
+    rejected: Option<(Identity, std::time::Instant)>,
+    retry_rejected: Duration,
 }
 
 impl Watcher {
     pub fn new(path: PathBuf) -> std::io::Result<Self> {
         let running = identity(&path)?;
-        Ok(Self { path, running, rejected: None })
+        Ok(Self { path, running, rejected: None, retry_rejected: RETRY_REJECTED })
     }
 
     pub fn path(&self) -> &Path {
@@ -88,7 +92,8 @@ impl Watcher {
 
     pub fn check(&mut self, preflight: impl FnOnce(&Path) -> Outcome) -> Check {
         let Ok(found) = identity(&self.path) else { return Check::Unchanged };
-        if found == self.running || Some(found) == self.rejected {
+        let waiting_to_retry = self.rejected.is_some_and(|(rejected, at)| rejected == found && at.elapsed() < self.retry_rejected);
+        if found == self.running || waiting_to_retry {
             return Check::Unchanged;
         }
         let outcome = preflight(&self.path);
@@ -98,7 +103,7 @@ impl Watcher {
         match outcome.passed {
             Ok(()) => Check::Relaunch { version: outcome.version },
             Err(reason) => {
-                self.rejected = Some(found);
+                self.rejected = Some((found, std::time::Instant::now()));
                 Check::Rejected(Rejection { path: self.path.display().to_string(), version: outcome.version, reason, at: alondra_core::now_millis() })
             }
         }
@@ -245,6 +250,20 @@ mod tests {
         replace(&bin, "fixed newer");
         assert_eq!(watcher.check(preflight(Ok(()))), Check::Relaunch { version: Some("9.9.9".into()) });
         assert_eq!(ran.get(), 2);
+    }
+
+    #[test]
+    fn a_rejected_binary_is_checked_again_once_the_retry_interval_passes() {
+        let dir = Dir(std::env::temp_dir().join(format!("alondra-relaunch-retry-{}", crate::auth::random_hex(8))));
+        std::fs::create_dir(&dir.0).unwrap();
+        let bin = dir.0.join("alondrad");
+        std::fs::write(&bin, "old").unwrap();
+        let mut watcher = Watcher::new(bin.clone()).unwrap();
+        watcher.retry_rejected = Duration::ZERO;
+        replace(&bin, "new");
+        assert!(matches!(watcher.check(|_| outcome(Err("this HOME still holds legacy data"))), Check::Rejected(_)));
+        assert_eq!(watcher.check(|_| outcome(Ok(()))), Check::Relaunch { version: Some("9.9.9".into()) },
+            "once whatever blocked it is gone, the same binary starts");
     }
 
     #[test]

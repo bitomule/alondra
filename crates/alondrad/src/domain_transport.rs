@@ -432,6 +432,12 @@ pub(crate) fn forbidden_for_nodes(tool: Option<&str>, input: Option<&Value>) -> 
             if runs_user_command {
                 return Some("Nodes cannot run `alondra answer`, `send`, `pair` or `devices`: they act as the user. Use your Alondra MCP tools (ask, present_result) instead.".into());
             }
+            let opens_home_database = words.iter().any(|w| *w == "sqlite3" || w.ends_with("/sqlite3"))
+                && words.iter().any(|w| w.contains(".alondra/"))
+                && !words.iter().any(|w| *w == "-readonly" || *w == "--readonly" || w.contains("mode=ro"));
+            if opens_home_database {
+                return Some("Open Alondra's databases with `sqlite3 -readonly`: a plain `sqlite3` creates the file when it is missing, and an empty alondra.db stops the daemon from starting.".into());
+            }
             touches_key(command).then(|| "Nodes cannot touch the user's signing key.".into())
         }
         _ => ["file_path", "path", "pattern", "notebook_path"]
@@ -2051,6 +2057,16 @@ mod node_guard_tests {
         assert!(bash("cat ~/.alondra/tui-key.pem").is_some());
         assert!(bash("ls ~/Library/'Application Support'/com.bitomule.alondra.mac").is_some());
         assert!(forbidden_for_nodes(Some("Read"), Some(&json!({"file_path": "/Users/x/.alondra/tui-key.pem"}))).is_some());
+    }
+
+    #[test]
+    fn nodes_open_alondra_databases_only_read_only() {
+        let refused = bash("sqlite3 ~/.alondra/alondra.db \".tables\" 2>/dev/null | head").unwrap();
+        assert!(refused.contains("sqlite3 -readonly"), "{refused}");
+        assert!(bash("cd /tmp; /usr/bin/sqlite3 /Users/x/.alondra/domain.db 'select 1'").is_some());
+        assert!(bash("sqlite3 -readonly ~/.alondra/alondra.db .tables").is_none());
+        assert!(bash("sqlite3 'file:/Users/x/.alondra/domain.db?mode=ro' .tables").is_none());
+        assert!(bash("sqlite3 /tmp/copy.db .tables").is_none());
     }
 
     #[test]

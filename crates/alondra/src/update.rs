@@ -84,8 +84,9 @@ fn daemon_info(client: &Client) -> Option<Value> {
     client.get::<Value>("/daemon").ok()
 }
 
-/// A daemon older than self-relaunch never restarts on its own: check the new binary the way
-/// the daemon would, then ask launchd to restart the job.
+/// A daemon older than self-relaunch never restarts on its own, and one that rejected the new
+/// binary does not try it again for a while: check the new binary the way the daemon would,
+/// so a rejection whose cause is gone does not stand, then ask launchd to restart the job.
 fn restart_old_daemon(daemon: &Path) -> Result<(), String> {
     let out = Command::new(daemon).arg("--preflight").output().map_err(|e| e.to_string())?;
     if !out.status.success() {
@@ -124,11 +125,12 @@ pub fn wait_for_daemon(
             if version == installed {
                 return Waited::Running;
             }
-            let rejected = info.get("preflight_rejected").filter(|r| r["version"].as_str() == Some(installed));
-            if let Some(rejected) = rejected {
-                return Waited::Rejected(rejected["reason"].as_str().unwrap_or_default().to_string());
-            }
-            if info.get("update").is_none() && let Some(restart) = restart.take() && let Err(e) = restart() {
+            let rejected = info.get("preflight_rejected").is_some_and(|r| r["version"].as_str() == Some(installed));
+            if rejected && let Some(restart) = restart.take() {
+                if let Err(reason) = restart() {
+                    return Waited::Rejected(reason);
+                }
+            } else if info.get("update").is_none() && let Some(restart) = restart.take() && let Err(e) = restart() {
                 return Waited::RestartFailed(e);
             }
             last = Some(version);
@@ -183,12 +185,21 @@ mod tests {
 
     #[test]
     fn a_rejected_binary_ends_the_wait_with_the_reason() {
-        let rejected = json!({"version": "0.1.0", "update": {}, "preflight_rejected": {"version": "0.2.0", "reason": "bootstrap failed integrity audit"}});
-        assert_eq!(wait(vec![Some(rejected)], never).0, Waited::Rejected("bootstrap failed integrity audit".into()));
+        let rejected = json!({"version": "0.1.0", "update": {}, "preflight_rejected": {"version": "0.2.0", "reason": "stale reason"}});
+        assert_eq!(wait(vec![Some(rejected)], || Err("bootstrap failed integrity audit".into())).0, Waited::Rejected("bootstrap failed integrity audit".into()));
         let older_rejection = json!({"version": "0.1.0", "update": {}, "preflight_rejected": {"version": "0.1.5", "reason": "x"}});
         let (waited, took) = wait(vec![Some(older_rejection); 200], never);
         assert_eq!(waited, Waited::Stale("0.1.0".into()));
         assert_eq!(took, WAIT);
+    }
+
+    #[test]
+    fn a_remembered_rejection_is_checked_again_before_it_is_reported() {
+        let rejected = Some(json!({"version": "0.1.0", "update": {}, "preflight_rejected": {"version": "0.2.0", "reason": "this HOME still holds legacy data"}}));
+        let rechecks = Cell::new(0);
+        let (waited, _) = wait(vec![rejected.clone(), rejected, Some(json!({"version": "0.2.0", "update": {}}))], || { rechecks.set(rechecks.get() + 1); Ok(()) });
+        assert_eq!(waited, Waited::Running, "a rejection the daemon remembers from before is not the final word");
+        assert_eq!(rechecks.get(), 1);
     }
 
     #[test]
