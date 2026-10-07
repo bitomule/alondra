@@ -170,8 +170,9 @@ async fn execute_action(
 ) -> anyhow::Result<Value> {
     let lang = if request.lang == "es" { Lang::Es } else { Lang::En };
     let action = ActionId::parse(&request.action_id).ok();
+    let accepted = domain.state().ok().zip(action.as_ref()).map_or(Accepted::Result, |(state, action)| Accepted::of(&state, action));
     let reply = execute_inner(domain, client, home, device, request, identity, authorize).await?;
-    Ok(with_result(reply, lang, action.as_ref()))
+    Ok(with_result(reply, lang, action.as_ref(), accepted))
 }
 
 async fn execute_inner(
@@ -1235,8 +1236,30 @@ fn domain_refusal_value(error: &DomainError, lang: Lang) -> Value {
     value
 }
 
+/// What an accept verb is accepting, read before the action changes the card.
+#[derive(Clone, Copy)]
+enum Accepted {
+    Plan,
+    Document,
+    Result,
+}
+
+impl Accepted {
+    fn of(state: &alondra_core::domain::DomainState, action: &ActionId) -> Self {
+        let Some(interaction) = state.interactions.get(&InteractionId(action.subject.clone())) else { return Self::Result; };
+        if held_plan(state, interaction) {
+            return Self::Plan;
+        }
+        match &interaction.payload {
+            InteractionPayload::Delivery { targets, .. } if !targets.is_empty()
+                && targets.iter().all(|target| matches!(target, alondra_core::domain::DeliveryTarget::DocumentRevision { .. })) => Self::Document,
+            _ => Self::Result,
+        }
+    }
+}
+
 /// What the user is told an applied action did.
-fn applied_outcome(verb: Verb, lang: Lang, stamp: &str) -> Outcome {
+fn applied_outcome(verb: Verb, lang: Lang, stamp: &str, accepted: Accepted) -> Outcome {
     let es = lang == Lang::Es;
     let say = |en: &str, es_text: &str| if es { es_text } else { en }.to_owned();
     match verb {
@@ -1245,7 +1268,11 @@ fn applied_outcome(verb: Verb, lang: Lang, stamp: &str) -> Outcome {
             Some(say("You'll see it finished in its task when GitHub confirms.", "La verás terminada en su tarea cuando GitHub lo confirme.")),
         ),
         Verb::CloseUnmerged => Outcome::done(say("PR closed without merging. The task is cancelled.", "PR cerrada sin fusionar. La tarea está cancelada.")),
-        Verb::Accept => Outcome::done(say("Result accepted.", "Resultado aceptado.")),
+        Verb::Accept => Outcome::done(match accepted {
+            Accepted::Plan => say("Plan approved.", "Plan aprobado."),
+            Accepted::Document => say("Document accepted.", "Documento aceptado."),
+            Accepted::Result => say("Result accepted.", "Resultado aceptado."),
+        }),
         Verb::Changes => Outcome::done(say("Changes sent. The card comes back when it is presented again.", "Cambios enviados. La tarjeta volverá cuando se presente de nuevo.")),
         Verb::Ans if stamp.contains(" · ") => Outcome::done(stamp.to_owned()),
         Verb::Ans => Outcome::done(say("Answer sent.", "Respuesta enviada.")),
@@ -1265,7 +1292,7 @@ fn applied_outcome(verb: Verb, lang: Lang, stamp: &str) -> Outcome {
 }
 
 /// Adds the typed `result` beside the fields the first clients read.
-fn with_result(mut reply: Value, lang: Lang, action: Option<&ActionId>) -> Value {
+fn with_result(mut reply: Value, lang: Lang, action: Option<&ActionId>, accepted: Accepted) -> Value {
     if reply.get("result").is_some() {
         return reply;
     }
@@ -1273,7 +1300,7 @@ fn with_result(mut reply: Value, lang: Lang, action: Option<&ActionId>) -> Value
         Some("applied") => {
             let verb = action.map_or(Verb::Msg, |action| action.verb);
             let stamp = reply["stamp"].as_str().unwrap_or_default().to_owned();
-            applied_outcome(verb, lang, &stamp)
+            applied_outcome(verb, lang, &stamp, accepted)
         }
         Some("changed") => {
             let es = lang == Lang::Es;
@@ -1836,6 +1863,60 @@ mod tests {
         state.holds.clear();
         assert!(mapped(&state, &approve, &request, &[], Lang::En).is_none(), "only a held plan is approved");
         assert!(mapped(&state, &changes, &request, &[], Lang::En).is_none());
+    }
+
+    fn accepting_card(id: &str, targets: Option<Vec<alondra_core::domain::DeliveryTarget>>) -> alondra_core::domain::DomainState {
+        use alondra_core::domain::{Author, Interaction, Recipient, Scope};
+        let mut state = alondra_core::domain::DomainState::new("epoch");
+        let payload = match targets {
+            Some(targets) => InteractionPayload::Delivery { targets, is_final: true, acceptance: None, feedback: vec![] },
+            None => {
+                state.holds.insert(id.into(), Hold::Plan);
+                InteractionPayload::Question { options: Hold::Plan.options(), answer: None }
+            }
+        };
+        state.interactions.insert(id.into(), Interaction {
+            attachments: vec![], id: id.into(), scope: Scope::Task { task_id: "t-1".into() },
+            author: Author::System, recipient: Recipient::User, body: "Body".into(),
+            blocking: true, subject: None, payload,
+            revision: 1, order: 1, withdrawn: false, card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Know, "Read the update"), clarification: None,
+        });
+        state
+    }
+
+    fn accept_title(state: &alondra_core::domain::DomainState, id: &str, lang: Lang) -> String {
+        let accept = ActionId::new(Verb::Accept, id, 1, None).unwrap();
+        let reply = json!({"outcome": "applied", "stamp": "Approved"});
+        with_result(reply, lang, Some(&accept), Accepted::of(state, &accept))["result"]["title"].as_str().unwrap().to_owned()
+    }
+
+    fn document_targets() -> Vec<alondra_core::domain::DeliveryTarget> {
+        vec![alondra_core::domain::DeliveryTarget::DocumentRevision { document_id: "doc".into(), revision_id: "doc-r1".into() }]
+    }
+
+    fn pull_request_targets() -> Vec<alondra_core::domain::DeliveryTarget> {
+        vec![alondra_core::domain::DeliveryTarget::PullRequest { pr_id: "pr".into(), head: "abc".into() }]
+    }
+
+    #[test]
+    fn accepting_a_held_plan_says_the_plan_is_approved() {
+        let state = accepting_card("hold-1", None);
+        assert_eq!(accept_title(&state, "hold-1", Lang::En), "Plan approved.");
+        assert_eq!(accept_title(&state, "hold-1", Lang::Es), "Plan aprobado.");
+    }
+
+    #[test]
+    fn accepting_a_document_says_the_document_is_accepted() {
+        let state = accepting_card("doc-card", Some(document_targets()));
+        assert_eq!(accept_title(&state, "doc-card", Lang::En), "Document accepted.");
+        assert_eq!(accept_title(&state, "doc-card", Lang::Es), "Documento aceptado.");
+    }
+
+    #[test]
+    fn accepting_a_result_says_the_result_is_accepted() {
+        let state = accepting_card("result", Some(pull_request_targets()));
+        assert_eq!(accept_title(&state, "result", Lang::En), "Result accepted.");
+        assert_eq!(accept_title(&state, "result", Lang::Es), "Resultado aceptado.");
     }
 
     struct ActionHome(std::path::PathBuf);
