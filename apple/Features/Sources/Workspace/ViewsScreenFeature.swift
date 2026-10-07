@@ -35,6 +35,13 @@ public struct ViewsScreenFeature: Sendable {
             key.rawValue.hasPrefix("new_request") || key.rawValue.hasPrefix("schedule:")
         }
 
+        /// The action's sheet steps aside while the server asks whether to send anyway, so the
+        /// question is not left under the sheet, and comes back with what was being answered when
+        /// the question is cancelled.
+        public var actionSheetPresented: Bool {
+            action.action != nil && action.changed == nil
+        }
+
         public init(key: ViewKey, owner: String) {
             self.key = key
             self.owner = owner

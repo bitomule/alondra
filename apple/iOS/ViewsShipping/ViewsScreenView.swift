@@ -65,7 +65,7 @@ struct ViewsScreenView: View {
 
     private var actionSheetContent: some View {
         attachmentContent
-        .sheet(isPresented: Binding(get: { store.action.action != nil && !isInlineNodeMessage && !isInlineForm }, set: { if !$0 && !isInlineNodeMessage && !isInlineForm { store.send(.action(.dismiss)) } })) {
+        .sheet(isPresented: Binding(get: { store.actionSheetPresented && !isInlineNodeMessage && !isInlineForm }, set: { if !$0 && store.actionSheetPresented && !isInlineNodeMessage && !isInlineForm { store.send(.action(.dismiss)) } })) {
             let action = store.scope(state: \.action, action: \.action)
             ActionComposerSheet(store: action, title: action.action?.label ?? "", submit: composerSubmit,
                                 tint: screenGlow) {

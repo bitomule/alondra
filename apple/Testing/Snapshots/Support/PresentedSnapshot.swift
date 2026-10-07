@@ -4,7 +4,7 @@ import UIKit
 import XCTest
 
 /// A screen with what it presents on top of it, an alert or a dialog, as the system draws it: the
-/// view goes into a real window, the presentation is given time to finish, and the window is drawn.
+/// view goes into a real window, the capture waits until the presentation has finished (its transition is over), and the window is drawn.
 @MainActor
 func assertPresented<Content: View>(
     language: SnapshotLanguage = .english,
@@ -25,11 +25,14 @@ func assertPresented<Content: View>(
     let host = UIHostingController(rootView: content().environment(\.locale, language.locale))
     window.rootViewController = host
     window.makeKeyAndVisible()
-    for _ in 0..<80 where host.presentedViewController == nil {
-        try? await Task.sleep(for: .milliseconds(50))
+    let presented = await settled { [host] in
+        guard let shown = host.presentedViewController else { return false }
+        return !shown.isBeingPresented && shown.transitionCoordinator == nil && shown.viewIfLoaded?.window != nil
     }
-    XCTAssertNotNil(host.presentedViewController, "nothing was presented", file: file, line: line)
-    try? await Task.sleep(for: .milliseconds(400))
+    guard presented else {
+        window.isHidden = true
+        return XCTFail("nothing was presented, or its presentation never finished", file: file, line: line)
+    }
     let format = UIGraphicsImageRendererFormat()
     format.scale = 1
     let image = UIGraphicsImageRenderer(bounds: bounds, format: format).image { _ in
@@ -38,4 +41,16 @@ func assertPresented<Content: View>(
     host.presentedViewController?.dismiss(animated: false)
     window.isHidden = true
     assertAppSnapshot(of: image, as: .image(perceptualPrecision: 0.98), named: name, file: file, testName: testName, line: line)
+}
+
+/// Lets the main run loop turn, and draw, until `condition` holds; the time limit only ends a wait
+/// that will never succeed.
+@MainActor
+private func settled(within limit: Duration = .seconds(5), _ condition: @MainActor () -> Bool) async -> Bool {
+    let deadline = ContinuousClock.now.advanced(by: limit)
+    while !condition() {
+        guard ContinuousClock.now < deadline else { return false }
+        try? await Task.sleep(for: .milliseconds(5))
+    }
+    return true
 }

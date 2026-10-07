@@ -35,6 +35,61 @@ final class ChangedParityTests: XCTestCase {
         XCTAssertTrue(mac.hidden, "Mac: the card left when Send anyway was pressed")
     }
 
+    private static let answer = #"{"id":"ans:x@1","label":"Answer","style":"primary","presentation":"button","input":{"kind":"text","required":true,"multiline":true},"attachments":false,"enabled":true}"#
+
+    /// What is on screen once Cancel closed the "changed" question.
+    private struct AfterCancel: Equatable {
+        let question: String?
+        let questionLeft: Bool
+        let answering: String?
+        let text: String
+        let sheetShown: Bool
+    }
+
+    @MainActor
+    func testCancelOnChangedClosesOnlyTheQuestionAndGoesBackToTheAnswerOnPhoneAndMac() async throws {
+        let action = try ContractCodec.decode(AlondraContract.Action.self, from: Data(Self.answer.utf8))
+        let reply = try ContractCodec.decode(ActionResponse.self, from: Data(Self.changed.utf8))
+
+        let phone = TestStore(initialState: ViewsScreenFeature.State(key: ViewKey(rawValue: "card:a"), owner: "changed-parity")) {
+            ViewsScreenFeature()
+        }
+        phone.exhaustivity = .off
+        await phone.send(.action(.present(action)))
+        await phone.send(.action(.textChanged("Use the compact one")))
+        await phone.send(.action(.response(reply)))
+        let phoneQuestion = phone.state.action.changed?.title
+        XCTAssertFalse(phone.state.actionSheetPresented, "iPhone: the question is not left under the sheet")
+        await phone.send(.action(.dismissChanged))
+        await phone.skipReceivedActions(strict: false)
+
+        var state = MacPresentationFeature.State()
+        state.sidebarDocument = try Self.sidebar(waiting: ["a", "b"])
+        state.selection = .viewKey("card:a")
+        state.selectedViewKey = "card:a"
+        state.detailDocument = try Self.document(key: "card:a")
+        let mac = TestStore(initialState: state) { MacPresentationFeature() } withDependencies: {
+            $0.continuousClock = TestClock()
+        }
+        mac.exhaustivity = .off
+        await mac.send(.beginViewAction(action))
+        await mac.send(.action(.textChanged("Use the compact one")))
+        await mac.send(.action(.response(reply)))
+        let macQuestion = mac.state.actionFeature.changed?.title
+        await mac.send(.action(.dismissChanged))
+        await mac.skipReceivedActions(strict: false)
+
+        let onPhone = AfterCancel(question: phoneQuestion, questionLeft: phone.state.action.changed == nil,
+                                  answering: phone.state.action.action?.id, text: phone.state.action.text,
+                                  sheetShown: phone.state.actionSheetPresented)
+        let onMac = AfterCancel(question: macQuestion, questionLeft: mac.state.actionFeature.changed == nil,
+                                answering: mac.state.actionFeature.action?.id, text: mac.state.actionFeature.text,
+                                sheetShown: mac.state.actionPresented)
+        XCTAssertEqual(onPhone, onMac)
+        XCTAssertEqual(onPhone, AfterCancel(question: "PR #12 has new commits", questionLeft: true,
+                                            answering: "ans:x@1", text: "Use the compact one", sheetShown: true))
+    }
+
     private struct Seen: Equatable {
         let question: String?
         let sentAnyway: [String]

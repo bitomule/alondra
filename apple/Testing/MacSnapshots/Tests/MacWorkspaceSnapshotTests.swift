@@ -120,7 +120,8 @@ final class MacWorkspaceSnapshotTests: XCTestCase {
     // MARK: What an action asks first, and what it says after
 
     /// The alert the system draws for a question an action asks: the view goes into a real window,
-    /// and the sheet the alert opens on it is what is captured.
+    /// and the sheet the alert opens on it is what is captured. The sheet's own view is drawn off
+    /// screen once it is attached and laid out, so where its slide-in animation is does not matter.
     private func assertAlert<Content: View>(
         spanish: Bool, file: StaticString = #filePath, testName: String = #function, line: UInt = #line,
         @ViewBuilder _ content: () -> Content
@@ -132,12 +133,15 @@ final class MacWorkspaceSnapshotTests: XCTestCase {
         window.appearance = Appearance.light.appearance
         window.contentView = NSHostingView(rootView: view.background(Color(nsColor: .windowBackgroundColor)))
         window.orderFront(nil)
-        for _ in 0..<80 where window.attachedSheet == nil { try? await Task.sleep(for: .milliseconds(50)) }
-        try? await Task.sleep(for: .milliseconds(400))
+        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+        while window.attachedSheet?.contentView == nil, ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(5))
+        }
         guard let sheet = window.attachedSheet, let frame = sheet.contentView?.superview ?? sheet.contentView else {
             window.close()
             return XCTFail("no alert was presented", file: file, line: line)
         }
+        frame.layoutSubtreeIfNeeded()
         let rep = frame.bitmapImageRepForCachingDisplay(in: frame.bounds)!
         frame.cacheDisplay(in: frame.bounds, to: rep)
         let image = NSImage(size: frame.bounds.size)

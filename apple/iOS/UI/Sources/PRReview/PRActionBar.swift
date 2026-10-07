@@ -13,20 +13,26 @@ struct PRActionBar: View {
     var body: some View {
         GlassActionBar {
             if let changes = review.requestChanges {
-                Button { store.send(.perform(changes)) } label: {
-                    GlassBarLabel(changesTitle(changes))
+                if changes.enabled {
+                    Button { store.send(.perform(changes)) } label: {
+                        GlassBarLabel(changesTitle(changes))
+                    }
+                    .buttonStyle(.glass)
+                } else {
+                    held(changes, systemImage: "text.bubble")
                 }
-                .buttonStyle(.glass)
-                .disabled(!changes.enabled)
             }
             if let conflicts = review.resolveConflicts {
-                Button { store.send(.perform(conflicts)) } label: {
-                    GlassBarLabel(conflicts.label, systemImage: "arrow.triangle.branch")
+                if conflicts.enabled {
+                    Button { store.send(.perform(conflicts)) } label: {
+                        GlassBarLabel(conflicts.label, systemImage: "arrow.triangle.branch")
+                    }
+                    .buttonStyle(.glassProminent).tint(Palette.dawn)
+                } else {
+                    held(conflicts, systemImage: "arrow.triangle.branch")
                 }
-                .buttonStyle(.glassProminent).tint(Palette.dawn)
-                .disabled(!conflicts.enabled)
             } else if let merge = review.merge {
-                if merge.enabled { mergeMenu(merge) } else { blocked(merge) }
+                if merge.enabled { mergeMenu(merge) } else { held(merge, systemImage: "square.stack.3d.up") }
             }
         }
     }
@@ -35,12 +41,17 @@ struct PRActionBar: View {
         store.comments.isEmpty ? action.label : "\(action.label) (\(store.comments.count))"
     }
 
-    /// A merge the server holds back: its reason in place of the button, never a button that does nothing.
-    private func blocked(_ merge: WireAction) -> some View {
-        GlassBarLabel(merge.disabledReason ?? merge.label, systemImage: "square.stack.3d.up")
-            .padding(.horizontal, 12).padding(.vertical, 10)
-            .foregroundStyle(.secondary)
-            .accessibilityElement(children: .combine)
+    /// An action the server holds back: its reason, on the bar's glass, in place of the button;
+    /// never a grey button that does nothing. Without a reason there is nothing to show.
+    @ViewBuilder private func held(_ action: WireAction, systemImage: String) -> some View {
+        if let reason = action.disabledReason {
+            GlassBarLabel(reason, systemImage: systemImage)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 16).padding(.vertical, 12)
+                .foregroundStyle(.secondary)
+                .glassEffect(.regular, in: .capsule)
+                .accessibilityElement(children: .combine)
+        }
     }
 
     private func mergeMenu(_ merge: WireAction) -> some View {

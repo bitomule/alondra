@@ -54,15 +54,23 @@ final class PRReviewSnapshotTests: XCTestCase {
         "Describe the changes": "Describe los cambios",
         "Answer “Ship the compact schedule editor with this beta?” first":
             "Responde primero a «¿Publicar el editor compacto con esta beta?»",
+        "Another task is resolving these conflicts": "Otra tarea está resolviendo estos conflictos",
     ]
+
+    private static let heldConflicts = """
+    {"id":"conflicts:github.com/example/repo#12@3","label":"Resolve conflicts","style":"primary","presentation":"button",
+     "input":{"kind":"none"},"attachments":false,"enabled":false,
+     "disabled_reason":"Another task is resolving these conflicts"}
+    """
 
     private func screen(
         adding action: String,
         comments: [String: ActionComment] = [:],
         collapsed: Set<String> = [],
+        holding held: [String: String] = [:],
         spanish: Bool = false
     ) throws -> some View {
-        PRReviewView(store: store(try state(adding: action, comments: comments, collapsed: collapsed, spanish: spanish)))
+        PRReviewView(store: store(try state(adding: action, comments: comments, collapsed: collapsed, holding: held, spanish: spanish)))
             .environment(\.highlightsDiffs, false)
     }
 
@@ -70,6 +78,7 @@ final class PRReviewSnapshotTests: XCTestCase {
         adding action: String,
         comments: [String: ActionComment] = [:],
         collapsed: Set<String> = [],
+        holding held: [String: String] = [:],
         spanish: Bool = false
     ) throws -> PRReviewFeature.State {
         let document = try ScreenFixtures.document("pull-request-ios") { object in
@@ -79,6 +88,12 @@ final class PRReviewSnapshotTests: XCTestCase {
                 var actions = bar[0]["actions"] as? [[String: Any]] ?? []
                 if !action.isEmpty {
                     actions.append((try? JSONSerialization.jsonObject(with: Data(action.utf8)) as? [String: Any]) ?? [:])
+                }
+                for slot in actions.indices {
+                    guard let verb = (actions[slot]["id"] as? String)?.split(separator: ":").first,
+                          let reason = held[String(verb)] else { continue }
+                    actions[slot]["enabled"] = false
+                    actions[slot]["disabled_reason"] = reason
                 }
                 if spanish {
                     for slot in actions.indices {
@@ -181,6 +196,18 @@ final class PRReviewSnapshotTests: XCTestCase {
             assertAppSnapshot(of: AnyView(NavigationStack { view }), as: spanishImage(style), named: style == .light ? "light" : "dark")
         }
         let spanish = try screen(adding: "", spanish: true)
+        assertAppSnapshot(of: spanishScreen(spanish), as: spanishImage(.light), named: "light_es")
+    }
+
+    /// Request changes and Resolve conflicts the server holds back: each says why on the bar's
+    /// glass, and neither is a grey button.
+    func test_prReview_changesAndConflictsHeldBackSayWhy() throws {
+        let held = ["changes": "Answer “Ship the compact schedule editor with this beta?” first"]
+        let view = try screen(adding: Self.heldConflicts, holding: held)
+        for style in [UIUserInterfaceStyle.light, .dark] {
+            assertAppSnapshot(of: AnyView(NavigationStack { view }), as: spanishImage(style), named: style == .light ? "light" : "dark")
+        }
+        let spanish = try screen(adding: Self.heldConflicts, holding: held, spanish: true)
         assertAppSnapshot(of: spanishScreen(spanish), as: spanishImage(.light), named: "light_es")
     }
 
