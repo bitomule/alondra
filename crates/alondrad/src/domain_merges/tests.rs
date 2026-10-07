@@ -35,7 +35,7 @@ fn targets() -> Vec<DeliveryTarget> {
 }
 
 fn now() -> Merger {
-    Merger::with(Duration::ZERO, Duration::ZERO, Duration::from_secs(3600))
+    Merger::with(Duration::ZERO, Duration::from_secs(3600))
 }
 
 /// A node's Task with its PR #7 presented as the final result, which GitHub reports open with
@@ -179,7 +179,7 @@ async fn an_auto_merge_waits_for_the_task_that_reviews_it_and_merges_once_it_app
 #[tokio::test]
 async fn an_auto_merge_goes_through_the_claims_checks() {
     let (_home, domain, github) = presented("auto-base", true);
-    github.statuses.lock().unwrap().insert(7, Ok(Status { state: PrState::Open, head: HEAD.into(), base: "develop".into(), checks: Checks::Passed }));
+    github.statuses.lock().unwrap().insert(7, Ok(Status { state: PrState::Open, head: HEAD.into(), base: "develop".into(), checks: Checks::Passed, clean: true }));
     assert!(now().merge_due(&domain, &github).await.unwrap());
     assert!(github.merged.lock().unwrap().is_empty(), "GitHub's base differs from the registered one: the claim refuses");
     assert_eq!(domain.state().unwrap().merge_authorizations.values().next().unwrap().attempt, MergeAttemptState::Unclaimed);
@@ -213,15 +213,55 @@ async fn a_cancel_after_alondra_claimed_the_merge_stops_it() {
     assert!(github.merged.lock().unwrap().is_empty(), "the delivery is read again right before merging");
 }
 
+/// A repo with no CI and no required checks: GitHub says CLEAN and nothing is waited for.
 #[tokio::test]
-async fn no_checks_at_all_wait_for_a_grace_period_before_they_count_as_passed() {
+async fn no_required_checks_and_a_clean_pr_merge_at_once() {
     let (_home, domain, github) = presented("no-checks", true);
     github.open(7, HEAD, Checks::None);
-    let mut patient = Merger::with(Duration::from_secs(3600), Duration::ZERO, Duration::from_secs(3600));
-    assert!(patient.merge_due(&domain, &github).await.unwrap());
-    assert!(github.merged.lock().unwrap().is_empty());
-    now().merge_due(&domain, &github).await.unwrap();
+    assert!(!now().merge_due(&domain, &github).await.unwrap(), "nothing waits");
     assert_eq!(github.merged.lock().unwrap().len(), 1);
+    assert!(!github.calls.lock().unwrap().iter().any(|call| call.starts_with("required")), "CLEAN needs no look at the rules");
+}
+
+#[tokio::test]
+async fn pending_required_checks_that_have_not_reported_make_it_wait() {
+    let (_home, domain, github) = presented("required-pending", true);
+    github.open_blocked(7, HEAD, Checks::None);
+    github.required.lock().unwrap().insert(7, Ok(vec!["build".into()]));
+    assert!(now().merge_due(&domain, &github).await.unwrap());
+    assert!(github.merged.lock().unwrap().is_empty());
+    assert!(!github.calls.lock().unwrap().iter().any(|call| call.starts_with("merge")), "merge is not even tried");
+}
+
+#[tokio::test]
+async fn blocked_without_required_checks_is_left_to_githubs_answer() {
+    let (_home, domain, github) = presented("blocked-other", true);
+    github.open_blocked(7, HEAD, Checks::None);
+    github.merges.lock().unwrap().insert(7, Err("Pull request #7 is not mergeable: the base branch policy prohibits the merge. A review is required".into()));
+    let mut merger = Merger::with(Duration::from_secs(3600), Duration::from_secs(3600));
+    merger.merge_due(&domain, &github).await.unwrap();
+    assert!(github.calls.lock().unwrap().iter().any(|call| call == "merge 7"), "no required check holds it, so the merge is tried");
+}
+
+#[tokio::test]
+async fn unreadable_rules_make_it_wait_instead_of_merging_blind() {
+    let (_home, domain, github) = presented("rules-unreadable", true);
+    github.open_blocked(7, HEAD, Checks::None);
+    github.required.lock().unwrap().insert(7, Err("HTTP 403: Resource not accessible".into()));
+    assert!(now().merge_due(&domain, &github).await.unwrap());
+    assert!(github.merged.lock().unwrap().is_empty());
+}
+
+#[test]
+fn required_checks_come_from_rulesets_and_from_classic_protection() {
+    let rules = serde_json::json!([
+        {"type": "pull_request", "parameters": {}},
+        {"type": "required_status_checks", "parameters": {"required_status_checks": [{"context": "build"}, {"context": "lint", "integration_id": 1}]}}
+    ]);
+    assert_eq!(ruleset_checks(&rules), vec!["build", "lint"]);
+    assert!(ruleset_checks(&serde_json::json!([{"type": "non_fast_forward"}])).is_empty());
+    let classic = serde_json::json!({"contexts": ["test"], "checks": [{"context": "test", "app_id": null}, {"context": "ui", "app_id": 3}]});
+    assert_eq!(classic_checks(&classic), vec!["test", "test", "ui"]);
 }
 
 /// The #744 sequence: accepted (Alondra waits on the checks), then Merge pressed again with another
@@ -232,7 +272,7 @@ async fn pressing_merge_again_while_the_checks_wait_is_acted_on_at_once() {
     github.open(7, HEAD, Checks::Pending);
     accept(&domain);
     assert_eq!(task(&domain), TaskState::Closing);
-    let mut merger = Merger::with(Duration::ZERO, Duration::from_secs(3600), Duration::from_secs(3600));
+    let mut merger = Merger::with(Duration::from_secs(3600), Duration::from_secs(3600));
     assert!(merger.merge_due(&domain, &github).await.unwrap(), "the checks are pending: Alondra waits");
     github.open(7, HEAD, Checks::Passed);
     assert!(merger.merge_due(&domain, &github).await.unwrap(), "the same authorization waits out its poll");
@@ -473,7 +513,7 @@ async fn gh_that_cannot_work_raises_one_card_until_it_works_again() {
 async fn a_waiting_pr_is_read_from_github_at_most_once_per_poll() {
     let (_home, domain, github) = presented("throttle", true);
     github.open(7, HEAD, Checks::Pending);
-    let mut merger = Merger::with(Duration::ZERO, Duration::from_secs(3600), Duration::from_secs(3600));
+    let mut merger = Merger::with(Duration::from_secs(3600), Duration::from_secs(3600));
     for _ in 0..5 {
         merger.merge_due(&domain, &github).await.unwrap();
     }

@@ -36,6 +36,8 @@ pub(crate) struct Status {
     pub head: String,
     pub base: String,
     pub checks: Checks,
+    /// GitHub's `mergeStateStatus` is CLEAN: nothing the base requires is missing, required checks included.
+    pub clean: bool,
 }
 
 type Pending<'a, T> = Pin<Box<dyn Future<Output = Result<T, String>> + Send + 'a>>;
@@ -48,6 +50,8 @@ pub(crate) trait PrMerger: Send + Sync + 'static {
     fn in_queue<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, bool>;
     fn is_draft<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, bool>;
     fn ready<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, ()>;
+    /// The checks the PR's base branch requires, from its rulesets and its classic branch protection.
+    fn required_checks<'a>(&'a self, pr: &'a PullRequest, base: &'a str) -> Pending<'a, Vec<String>>;
 }
 
 impl<T: PrMerger> PrMerger for Arc<T> {
@@ -66,17 +70,21 @@ impl<T: PrMerger> PrMerger for Arc<T> {
     fn ready<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, ()> {
         (**self).ready(pr)
     }
+    fn required_checks<'a>(&'a self, pr: &'a PullRequest, base: &'a str) -> Pending<'a, Vec<String>> {
+        (**self).required_checks(pr, base)
+    }
 }
 
 impl PrMerger for GhCli {
     fn status<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, Status> {
         Box::pin(async move {
             let url = pr_url(&pr.host, &pr.repository, pr.number);
-            let out = self.run(&["pr", "view", &url, "--json", "state,headRefOid,baseRefName,statusCheckRollup"], None,
+            let out = self.run(&["pr", "view", &url, "--json", "state,headRefOid,baseRefName,statusCheckRollup,mergeStateStatus"], None,
                 Duration::from_secs(30)).await?;
             let value: Value = serde_json::from_slice(&out).map_err(|e| e.to_string())?;
             let facts = crate::domain_github::parse(&value)?;
-            Ok(Status { state: facts.state, head: facts.head, base: facts.base, checks: rollup(&value) })
+            Ok(Status { state: facts.state, head: facts.head, base: facts.base, checks: rollup(&value),
+                clean: value["mergeStateStatus"].as_str() == Some("CLEAN") })
         })
     }
     fn merge<'a>(&'a self, pr: &'a PullRequest, head: &'a str, method: MergeMethod) -> Pending<'a, ()> {
@@ -107,6 +115,24 @@ impl PrMerger for GhCli {
             self.run(&["pr", "ready", &url], None, Duration::from_secs(60)).await.map(|_| ())
         })
     }
+    fn required_checks<'a>(&'a self, pr: &'a PullRequest, base: &'a str) -> Pending<'a, Vec<String>> {
+        Box::pin(async move {
+            let host = alondra_core::domain::normalize_pr_host(&pr.host);
+            let repo = format!("repos/{}", pr.repository);
+            let rules = self.run(&["api", "--hostname", &host, &format!("{repo}/rules/branches/{base}?per_page=100")], None, Duration::from_secs(30)).await?;
+            let mut required = ruleset_checks(&serde_json::from_slice(&rules).map_err(|e| e.to_string())?);
+            match self.run(&["api", "--hostname", &host, &format!("{repo}/branches/{base}/protection/required_status_checks")], None,
+                Duration::from_secs(30)).await
+            {
+                Ok(classic) => required.extend(classic_checks(&serde_json::from_slice(&classic).map_err(|e| e.to_string())?)),
+                Err(reason) if reason.contains("404") => {}
+                Err(reason) => return Err(reason),
+            }
+            required.sort();
+            required.dedup();
+            Ok(required)
+        })
+    }
     fn in_queue<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, bool> {
         Box::pin(async move {
             let (owner, name) = pr.repository.split_once('/').ok_or("the PR's repository is not owner/name")?;
@@ -123,6 +149,20 @@ impl PrMerger for GhCli {
             }
         })
     }
+}
+
+/// The checks the active rulesets of a branch require (`GET /repos/{owner}/{repo}/rules/branches/{branch}`).
+pub(crate) fn ruleset_checks(rules: &Value) -> Vec<String> {
+    rules.as_array().into_iter().flatten().filter(|rule| rule["type"].as_str() == Some("required_status_checks"))
+        .flat_map(|rule| rule["parameters"]["required_status_checks"].as_array().into_iter().flatten())
+        .filter_map(|check| check["context"].as_str().map(str::to_owned)).collect()
+}
+
+/// The checks a branch's classic protection requires (`.../protection/required_status_checks`).
+pub(crate) fn classic_checks(protection: &Value) -> Vec<String> {
+    let contexts = protection["contexts"].as_array().into_iter().flatten().filter_map(|c| c.as_str().map(str::to_owned));
+    let checks = protection["checks"].as_array().into_iter().flatten().filter_map(|c| c["context"].as_str().map(str::to_owned));
+    contexts.chain(checks).collect()
 }
 
 /// The checks GitHub reports for a PR's head. Only a check that failed sends the PR back;
@@ -259,13 +299,10 @@ const NON_TRANSIENT_FAILURES_BEFORE_CARD: u32 = 3;
 const TRANSIENT_MERGE_FAILURES_BEFORE_HANDING_BACK: u32 = 3;
 
 pub(crate) struct Merger {
-    /// How long "no checks" is read as "not started yet" after Alondra first sees a head.
-    pub grace: Duration,
     /// At most one GitHub read per PR this often while it waits.
     pub poll: Duration,
     /// How long GitHub may keep failing before the user is told.
     pub give_up: Duration,
-    seen: BTreeMap<(PrId, String), Instant>,
     waited: BTreeMap<PrId, Instant>,
     transient: BTreeMap<PrId, u32>,
     trouble: BTreeMap<PrId, Trouble>,
@@ -279,13 +316,13 @@ pub(crate) struct Merger {
 
 impl Default for Merger {
     fn default() -> Self {
-        Self::with(Duration::from_secs(5 * 60), Duration::from_secs(60), Duration::from_secs(15 * 60))
+        Self::with(Duration::from_secs(60), Duration::from_secs(15 * 60))
     }
 }
 
 impl Merger {
-    pub(crate) fn with(grace: Duration, poll: Duration, give_up: Duration) -> Self {
-        Self { grace, poll, give_up, seen: BTreeMap::new(), waited: BTreeMap::new(), transient: BTreeMap::new(),
+    pub(crate) fn with(poll: Duration, give_up: Duration) -> Self {
+        Self { poll, give_up, waited: BTreeMap::new(), transient: BTreeMap::new(),
             trouble: BTreeMap::new(), merge_trouble: BTreeMap::new(), queued: BTreeSet::new(), action: BTreeMap::new(),
             pressed: BTreeMap::new() }
     }
@@ -370,7 +407,6 @@ impl Merger {
                 }
             };
         }
-        let seen = *self.seen.entry((pr.id.clone(), item.head.clone())).or_insert_with(Instant::now);
         match &status.checks {
             Checks::Failed(names) => {
                 self.clear_action(domain, pr);
@@ -382,7 +418,14 @@ impl Merger {
                 return Ok(Step::Wait);
             }
             Checks::Pending => return Ok(Step::Wait),
-            Checks::None if seen.elapsed() < self.grace => return Ok(Step::Wait),
+            Checks::None if !status.clean => match github.required_checks(pr, &status.base).await {
+                Ok(required) if !required.is_empty() => return Ok(Step::Wait),
+                Ok(_) => self.clear_action(domain, pr),
+                Err(reason) => {
+                    log!("cannot read the checks {} requires of {}: {reason}", status.base, pr.id);
+                    return Ok(Step::Wait);
+                }
+            },
             Checks::None | Checks::Passed => self.clear_action(domain, pr),
         }
         let authorization = match &item.authorization {
@@ -494,7 +537,6 @@ impl Merger {
         self.pressed.remove(pr);
         self.transient.remove(pr);
         self.queued.remove(pr);
-        self.seen.retain(|(seen, _), _| seen != pr);
         let cards = [self.trouble.remove(pr).and_then(|t| t.card), self.merge_trouble.remove(pr).and_then(|t| t.card),
             self.action.remove(pr)];
         for card in cards.into_iter().flatten() {
@@ -504,7 +546,7 @@ impl Merger {
 
     fn forget_all_but(&mut self, domain: &DomainRuntime, due: &BTreeSet<PrId>) {
         let known: BTreeSet<PrId> = self.waited.keys().chain(self.pressed.keys()).chain(self.transient.keys()).chain(self.queued.iter())
-            .chain(self.seen.keys().map(|(pr, _)| pr)).chain(self.trouble.keys()).chain(self.merge_trouble.keys())
+            .chain(self.trouble.keys()).chain(self.merge_trouble.keys())
             .chain(self.action.keys()).cloned().collect();
         for pr in known.difference(due) {
             self.forget(domain, pr);
@@ -513,7 +555,7 @@ impl Merger {
 
     #[cfg(test)]
     pub(crate) fn tracked(&self) -> usize {
-        self.waited.len() + self.pressed.len() + self.transient.len() + self.queued.len() + self.seen.len() + self.trouble.len()
+        self.waited.len() + self.pressed.len() + self.transient.len() + self.queued.len() + self.trouble.len()
             + self.merge_trouble.len() + self.action.len()
     }
 }
@@ -653,6 +695,8 @@ pub(crate) struct FakeGithub {
     pub readies: std::sync::Mutex<BTreeMap<u64, Result<(), String>>>,
     /// `ready` and `merge` calls, in the order they happened.
     pub calls: std::sync::Mutex<Vec<String>>,
+    /// The checks each PR's base requires; unlisted PRs require none.
+    pub required: std::sync::Mutex<BTreeMap<u64, Result<Vec<String>, String>>>,
 }
 
 #[cfg(test)]
@@ -660,10 +704,18 @@ impl FakeGithub {
     pub(crate) fn new() -> Self {
         Self { statuses: Default::default(), merges: Default::default(), queue: Default::default(),
             merged: Default::default(), reads: Default::default(), on_read: Default::default(), merged_by_queue: Default::default(),
-            drafts: Default::default(), readies: Default::default(), calls: Default::default() }
+            drafts: Default::default(), readies: Default::default(), calls: Default::default(),
+            required: Default::default() }
     }
     pub(crate) fn open(&self, number: u64, head: &str, checks: Checks) {
-        self.statuses.lock().unwrap().insert(number, Ok(Status { state: PrState::Open, head: head.into(), base: "main".into(), checks }));
+        self.statuses.lock().unwrap().insert(number, Ok(Status { state: PrState::Open, head: head.into(), base: "main".into(), checks, clean: true }));
+    }
+    /// An open PR whose `mergeStateStatus` is not CLEAN.
+    pub(crate) fn open_blocked(&self, number: u64, head: &str, checks: Checks) {
+        self.open(number, head, checks);
+        if let Some(Ok(status)) = self.statuses.lock().unwrap().get_mut(&number) {
+            status.clean = false;
+        }
     }
 }
 
@@ -698,6 +750,11 @@ impl PrMerger for FakeGithub {
         self.calls.lock().unwrap().push(format!("ready {}", pr.number));
         let result = self.readies.lock().unwrap().get(&pr.number).cloned().unwrap_or(Ok(()));
         Box::pin(async move { result })
+    }
+    fn required_checks<'a>(&'a self, pr: &'a PullRequest, _base: &'a str) -> Pending<'a, Vec<String>> {
+        self.calls.lock().unwrap().push(format!("required {}", pr.number));
+        let required = self.required.lock().unwrap().get(&pr.number).cloned().unwrap_or(Ok(vec![]));
+        Box::pin(async move { required })
     }
     fn in_queue<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, bool> {
         if self.merged_by_queue.lock().unwrap().contains(&pr.number)

@@ -475,7 +475,7 @@ async fn http_an_accepted_pr_is_merged_by_alondra_and_a_node_can_neither_claim_n
         "targets":[{"kind":"pull_request", "pr_id":"pr-7", "head":head}]}));
     let github = FakeGithub::new();
     github.open(7, head, Checks::Passed);
-    Merger::with(Duration::ZERO, Duration::ZERO, Duration::from_secs(60)).merge_due(&fixture.domain, &github).await.unwrap();
+    Merger::with(Duration::ZERO, Duration::from_secs(60)).merge_due(&fixture.domain, &github).await.unwrap();
     assert_eq!(github.merged.lock().unwrap().len(), 1);
     let state = fixture.domain.state().unwrap();
     assert_eq!(state.merge_authorizations.values().next().unwrap().attempt, MergeAttemptState::Confirmed);

@@ -2249,7 +2249,7 @@ mod tests {
         github.open(7, "0123456789abcdef", crate::domain_merges::Checks::Pending);
         let accept = ActionId::new(Verb::Accept, "result", domain.state().unwrap().revision, None).unwrap();
         act(&home, &domain, &client, FIRST, accept, None, None).await;
-        let mut merger = crate::domain_merges::Merger::with(std::time::Duration::ZERO, std::time::Duration::from_secs(3600), std::time::Duration::from_secs(3600));
+        let mut merger = crate::domain_merges::Merger::with(std::time::Duration::from_secs(3600), std::time::Duration::from_secs(3600));
         assert!(merger.merge_due(&domain, &github).await.unwrap(), "the checks are pending: it waits");
         github.open(7, "0123456789abcdef", crate::domain_merges::Checks::Passed);
         assert!(merger.merge_due(&domain, &github).await.unwrap(), "and keeps waiting out its poll");
