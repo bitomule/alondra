@@ -4,6 +4,7 @@
 //! only after `GET /direct/hello` there returns exactly the pinned Mac.
 use alondra_e2e::pairing::{self as protocol, Approval, Transcript};
 use alondra_e2e::{Context as EnvelopeContext, Envelope};
+use crate::client::{Answered, Unanswered, Unsent};
 use anyhow::{Context, Result, anyhow, bail};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD as B64};
 use p256::ecdsa::{SigningKey, VerifyingKey};
@@ -310,25 +311,31 @@ impl Connection {
             let text = response.body_mut().with_config().limit(2 * 1024 * 1024).read_to_vec()?;
             return match status {
                 200 => self.open(&text, &request_id),
-                401 => Err(anyhow!(trf!(
-                    "{name} no longer accepts this terminal; pair again with: alondra connect",
-                    "{name} ya no acepta este terminal; vuelve a emparejar con: alondra connect"
-                ))),
+                401 => Err(anyhow::Error::new(Answered {
+                    status,
+                    message: trf!(
+                        "{name} no longer accepts this terminal; pair again with: alondra connect",
+                        "{name} ya no acepta este terminal; vuelve a emparejar con: alondra connect"
+                    ),
+                })),
                 409 => Ok((409, json!({"error": "idempotency_conflict"}))),
                 421 => {
                     *self.current.lock().expect("route lock poisoned") = None;
                     continue;
                 }
-                other => Err(anyhow!("{name} refused the request (HTTP {other}): {}", String::from_utf8_lossy(&text))),
+                other => Err(anyhow::Error::new(Answered {
+                    status: other,
+                    message: String::from_utf8_lossy(&text).trim().to_owned(),
+                })),
             };
         }
         if sent {
-            bail!(trf!(
+            return Err(anyhow::Error::new(Unanswered(trf!(
                 "{name} stopped answering mid-request; check it before repeating an action",
                 "{name} dejó de responder a mitad de la petición; compruébalo antes de repetir una acción"
-            ));
+            ))));
         }
-        bail!(trf!("{name} is not on this network", "{name} no está en esta red"))
+        Err(anyhow::Error::new(Unsent(trf!("{name} is not on this network", "{name} no está en esta red"))))
     }
 
     /// Asks the Mac where else it can be reached, and keeps those routes for next time.

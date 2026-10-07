@@ -369,16 +369,6 @@ fn role_color(action: &Action) -> Color {
 }
 
 fn button_line(key: &str, action: &Action) -> Vec<Line<'static>> {
-    if !action.enabled {
-        let mut lines = vec![Line::from(vec![
-            keycap_span(key, DIM),
-            Span::styled(format!(" {}", action.label), Style::new().fg(DIM)),
-        ])];
-        if let Some(reason) = &action.disabled_reason {
-            lines.push(Line::from(Span::styled(format!("    {reason}"), Style::new().fg(DIM))));
-        }
-        return lines;
-    }
     vec![Line::from(vec![keycap_span(key, role_color(action)), Span::raw(format!(" {}", action.label))])]
 }
 

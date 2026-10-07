@@ -27,8 +27,8 @@ pub(super) fn review_clone_flow(
 
 impl App {
     pub fn inbox_keys(&self) -> Vec<Key> {
-        if let Some(view) = &self.home_view {
-            return super::view_render::entries(view, &self.open_sections)
+        if let Some(view) = self.shown_home() {
+            return super::view_render::entries(&view, &self.open_sections)
                 .into_iter()
                 .map(|(id, _, _)| Key(id))
                 .collect();
@@ -37,8 +37,8 @@ impl App {
     }
 
     pub fn inbox_count(&self) -> usize {
-        if let Some(view) = &self.home_view {
-            return super::view_render::entries(view, &self.open_sections)
+        if let Some(view) = self.shown_home() {
+            return super::view_render::entries(&view, &self.open_sections)
                 .into_iter()
                 .filter(|(id, nested, _)| !nested && super::view_render::header_section(id).is_none())
                 .count();
@@ -358,7 +358,35 @@ impl App {
         Some(self.run_view_action(&action, None, &selected, epoch))
     }
 
-    fn run_view_action(
+    pub(super) fn run_view_action(
+        &mut self,
+        action: &alondra_core::views::Action,
+        option: Option<&alondra_core::views::ActionOption>,
+        selected: &Key,
+        epoch: String,
+    ) -> Flow {
+        if action.id.is_empty() || !action.enabled {
+            return self.run_view_action_confirmed(action, option, selected, epoch);
+        }
+        if let Some(confirm) = &action.confirm {
+            self.ask(super::Modal {
+                title: confirm.title.clone(),
+                body: confirm.message.clone(),
+                button: confirm.button.clone(),
+                destructive: action.style == alondra_core::views::Style::Destructive,
+                then: super::ModalThen::Action {
+                    action: Box::new(action.clone()),
+                    option_id: option.map(|option| option.id.clone()),
+                    selected: selected.clone(),
+                    epoch,
+                },
+            });
+            return Flow::Go;
+        }
+        self.run_view_action_confirmed(action, option, selected, epoch)
+    }
+
+    pub(super) fn run_view_action_confirmed(
         &mut self,
         action: &alondra_core::views::Action,
         option: Option<&alondra_core::views::ActionOption>,
@@ -428,12 +456,6 @@ impl App {
             return Flow::Go;
         }
         let option_id = option.map(|option| option.id.clone()).or_else(|| action.option_id.clone());
-        if let Some(confirm) = &action.confirm {
-            let step = format!("{}:{}", action.id, option_id.as_deref().unwrap_or(""));
-            if !self.confirmed(&step, confirm.message.clone()) {
-                return Flow::Go;
-            }
-        }
         let input = match option {
             Some(option)
                 if matches!(option.input, alondra_core::views::Input::None)
@@ -443,6 +465,10 @@ impl App {
             }
             Some(option) => &option.input,
             None => &action.input,
+        };
+        let acting = super::Acting {
+            origin: selected.clone(),
+            stamp: action.stamp.clone(),
         };
         let answers_a_choice = option.is_none() && action.option_id.is_some();
         match input {
@@ -455,6 +481,7 @@ impl App {
                         option_id,
                         required: *required,
                         allow_attachments: action.attachments,
+                        acting: Some(acting.clone()),
                     },
                     "",
                 );
@@ -469,7 +496,7 @@ impl App {
                     option_id.as_deref(),
                     serde_json::json!({}),
                 );
-                self.submit_view_request(request);
+                self.submit_view_request(request, Some(acting));
             }
         }
         Flow::Go

@@ -2,16 +2,17 @@
 
 use super::*;
 
-pub(in crate::tui) fn view_fixture(name: &str) -> serde_json::Value {
-    let path = match std::env::var("RUNFILES_DIR").or_else(|_| std::env::var("TEST_SRCDIR")) {
+fn fixtures_dir() -> std::path::PathBuf {
+    match std::env::var("RUNFILES_DIR").or_else(|_| std::env::var("TEST_SRCDIR")) {
         Ok(root) => std::path::PathBuf::from(root)
             .join(std::env::var("TEST_WORKSPACE").unwrap_or_else(|_| "_main".into()))
-            .join("fixtures/views/cards")
-            .join(name),
-        Err(_) => std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../fixtures/views/cards")
-            .join(name),
-    };
+            .join("fixtures/views/cards"),
+        Err(_) => std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/views/cards"),
+    }
+}
+
+pub(in crate::tui) fn view_fixture(name: &str) -> serde_json::Value {
+    let path = fixtures_dir().join(name);
     serde_json::from_str(
         &std::fs::read_to_string(&path)
             .unwrap_or_else(|error| panic!("{}: {error}", path.display())),
@@ -65,7 +66,8 @@ fn screen(app: &mut App, width: u16, height: u16) -> String {
 }
 
 #[test]
-fn changed_view_action_requires_a_fresh_explicit_confirmation() {
+fn changed_view_action_asks_in_a_modal_and_sends_the_fresh_action_on_enter() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
     let (tx, _rx) = std::sync::mpsc::sync_channel(8);
     let mut app = App::new(tx);
     let original = crate::client::Client::action_body(
@@ -75,56 +77,226 @@ fn changed_view_action_requires_a_fresh_explicit_confirmation() {
         serde_json::json!({"text":"Review notes"}),
     );
     let changed = view_action_result(serde_json::json!({
-        "outcome":"changed", "message":"New commits", "confirm":{
-            "action_id":"changes:pr@2-new", "button":"Send anyway"
-        }
+        "outcome":"changed", "message":"PR #12 has new commits",
+        "result":{"kind":"changed", "title":"PR #12 has new commits",
+            "body":"You reviewed an older version.",
+            "next":{"id":"changes:pr@2-new", "label":"Send anyway", "style":"primary",
+                "presentation":"button", "input":{"kind":"none"}, "attachments":false,
+                "enabled":true}}
     }))
     .unwrap();
     app.on_msg(Msg::ViewAction {
         request: original.clone(),
         result: Ok(changed),
     });
-    assert!(app.pending_changed_action.is_some());
     assert!(posted(&app).is_empty());
-    press(&mut app, KeyCode::Char('y'));
+    let drawn = screen(&mut app, 100, 30);
+    assert!(drawn.contains("PR #12 has new commits"), "{drawn}");
+    assert!(drawn.contains("Send anyway · Esc cancel"), "{drawn}");
+    assert!(!app.flash.as_ref().is_some_and(|f| f.kind == FlashKind::Error));
+    press(&mut app, KeyCode::Enter);
     let sent = posted(&app);
     assert_eq!(sent.len(), 1);
     assert_eq!(sent[0].1["action_id"], "changes:pr@2-new");
     assert_eq!(sent[0].1["input"], original["input"]);
     assert_ne!(sent[0].1["command_id"], original["command_id"]);
-    assert!(app.pending_changed_action.is_none());
+    assert!(app.modal.is_none());
 }
 
 #[test]
-fn merge_needs_two_presses() {
+fn escape_on_a_changed_modal_sends_nothing() {
+    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
+    let mut app = App::new(tx);
+    let request = crate::client::Client::action_body("epoch", "changes:pr@1-old", None, serde_json::json!({}));
+    let changed = view_action_result(serde_json::json!({
+        "outcome":"changed", "result":{"kind":"changed", "title":"New commits",
+            "next":{"id":"changes:pr@2-new", "label":"Send anyway", "style":"primary",
+                "presentation":"button", "input":{"kind":"none"}, "attachments":false, "enabled":true}}
+    }))
+    .unwrap();
+    app.on_msg(Msg::ViewAction { request, result: Ok(changed) });
+    press(&mut app, KeyCode::Esc);
+    press(&mut app, KeyCode::Enter);
+    assert!(app.modal.is_none());
+    assert!(posted(&app).is_empty());
+}
+
+fn one_method_merge_card(app: &mut App) -> (String, String) {
+    let id = "hf-weekly-2026-09-30";
+    app.on_msg(Msg::ViewHome(Ok(serde_json::from_value(view_fixture("home-tui.json")).unwrap())));
+    app.reconcile();
+    app.sel = Some(Key(id.into()));
+    let action_id = format!("merge:{id}@7~abcdef12");
+    let mut card = view_fixture("card-pr.json");
+    card["key"] = format!("card:{id}").into();
+    card["sections"][0]["items"][0]["actions"] = serde_json::json!([{
+        "id": action_id,
+        "label": "Merge PR #12",
+        "style": "primary",
+        "presentation": "button",
+        "option_id": "squash",
+        "input": {"kind": "none"},
+        "attachments": false,
+        "enabled": true,
+        "stamp": "Merging…",
+        "confirm": {"title": "Merge PR #12?", "message": "“Add it” goes into main.", "button": "Merge"}
+    }]);
+    app.on_msg(Msg::ViewCard {
+        key: format!("card:{id}"),
+        result: Ok(serde_json::from_value(card).unwrap()),
+    });
+    (id.into(), action_id)
+}
+
+fn applied(kind: &str, title: &str) -> Result<ViewActionReply, Delivery> {
+    view_action_result(serde_json::json!({
+        "outcome":"applied", "stamp":"x", "result":{"kind":kind, "title":title}
+    }))
+}
+
+#[test]
+fn merge_end_to_end_modal_then_one_post_then_started() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
+    let mut app = App::new(tx);
+    let (pr_id, action_id) = one_method_merge_card(&mut app);
+
+    press(&mut app, KeyCode::Char('1'));
+    assert!(posted(&app).is_empty(), "the first press only asks");
+    assert!(app.modal.is_some());
+    assert!(!app.flash.as_ref().is_some_and(|f| f.kind == FlashKind::Error), "a question is not an error");
+    let drawn = screen(&mut app, 100, 30);
+    assert!(drawn.contains("Merge PR #12?"), "{drawn}");
+    assert!(drawn.contains("goes into main"), "{drawn}");
+    assert!(drawn.contains("Merge · Esc cancel"), "{drawn}");
+
+    press(&mut app, KeyCode::Enter);
+    let sent = posted(&app);
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].0, "/actions");
+    assert_eq!(sent[0].1["action_id"], action_id);
+    assert_eq!(sent[0].1["option_id"], "squash");
+    assert_eq!(flash(&app), "Merging…");
+    assert!(app.hidden.contains_key(&Key(pr_id.clone())));
+    assert!(!app.inbox_keys().contains(&Key(pr_id)), "the card leaves the list at once");
+    let after = screen(&mut app, 120, 30);
+    assert!(!after.contains("Review the beta candidate"), "the card is not drawn: {after}");
+    assert!(after.contains("Merging…"), "{after}");
+
+    app.on_msg(Msg::ViewAction {
+        request: sent[0].1.clone(),
+        result: applied("started", "PR #12 is merging. You'll see it in its task when GitHub confirms."),
+    });
+    assert_eq!(flash(&app), "PR #12 is merging. You'll see it in its task when GitHub confirms.");
+    assert_eq!(app.flash.as_ref().map(|f| f.kind), Some(FlashKind::Pending));
+    assert_eq!(posted(&app).len(), 1);
+}
+
+#[test]
+fn escape_on_the_merge_modal_sends_nothing() {
+    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
+    let mut app = App::new(tx);
+    one_method_merge_card(&mut app);
+    press(&mut app, KeyCode::Char('1'));
+    press(&mut app, KeyCode::Esc);
+    assert!(app.modal.is_none());
+    press(&mut app, KeyCode::Enter);
+    assert!(posted(&app).is_empty());
+}
+
+#[test]
+fn a_refused_action_brings_the_card_back_with_the_servers_words() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
+    let mut app = App::new(tx);
+    let (pr_id, _) = one_method_merge_card(&mut app);
+    press(&mut app, KeyCode::Char('1'));
+    press(&mut app, KeyCode::Enter);
+    let request = posted(&app)[0].1.clone();
+    assert!(app.hidden.contains_key(&Key(pr_id.clone())));
+    app.on_msg(Msg::ViewAction {
+        request,
+        result: view_action_result(serde_json::json!({
+            "outcome":"rejected",
+            "result":{"kind":"refused", "title":"PR #11 must merge first.", "body":"This one builds on it."}
+        })),
+    });
+    assert!(!app.hidden.contains_key(&Key(pr_id.clone())), "the card is back");
+    assert!(app.inbox_keys().contains(&Key(pr_id)));
+    let back = screen(&mut app, 120, 30);
+    assert!(back.contains("Review the beta candidate"), "the card is drawn again: {back}");
+    assert!(back.contains("PR #11 must merge first."), "{back}");
+    assert_eq!(app.flash.as_ref().map(|f| f.kind), Some(FlashKind::Error));
+    assert!(flash(&app).contains("PR #11 must merge first."));
+    assert!(flash(&app).contains("This one builds on it."));
+}
+
+#[test]
+fn a_transport_failure_says_nothing_was_sent_not_the_error_chain() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
+    let mut app = App::new(tx);
+    let (pr_id, _) = one_method_merge_card(&mut app);
+    press(&mut app, KeyCode::Char('1'));
+    press(&mut app, KeyCode::Enter);
+    let request = posted(&app)[0].1.clone();
+    app.on_msg(Msg::ViewAction {
+        request,
+        result: Err(Delivery::Unsent),
+    });
+    assert_eq!(flash(&app), "Couldn't reach your Mac. Nothing was sent; try again.");
+    assert!(!app.hidden.contains_key(&Key(pr_id)));
+}
+
+#[test]
+fn a_two_method_merge_goes_menu_then_modal_then_one_post_with_the_option() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
     let (tx, _rx) = std::sync::mpsc::sync_channel(8);
     let mut app = App::new(tx);
     let pr_id = "github.com/example/repo#12";
     app.sel = Some(Key(pr_id.into()));
-    let key = format!("card:{pr_id}");
-    let mut card = view_fixture("card-pr.json");
-    card["sections"][0]["items"][0]["actions"] = serde_json::json!([{
-        "id": format!("merge:{pr_id}@7~abcdef12"),
-        "label": "Merge",
-        "style": "primary",
-        "presentation": "button",
-        "input": {"kind": "none"},
-        "attachments": false,
-        "enabled": true,
-        "confirm": {"title": "Merge", "message": "Merge this pull request?", "button": "Merge"}
-    }]);
     app.on_msg(Msg::ViewCard {
-        key,
-        result: Ok(serde_json::from_value(card).unwrap()),
+        key: format!("card:{pr_id}"),
+        result: Ok(serde_json::from_value(view_fixture("card-pr.json")).unwrap()),
     });
-
     press(&mut app, KeyCode::Char('1'));
-    assert!(posted(&app).is_empty(), "the first press only arms confirmation");
-    press(&mut app, KeyCode::Char('1'));
+    assert!(app.card_menu.is_some() && app.modal.is_none());
+    press(&mut app, KeyCode::Char('2'));
+    assert!(app.card_menu.is_none(), "the menu does not reopen");
+    assert!(app.modal.is_some());
+    assert!(posted(&app).is_empty());
+    press(&mut app, KeyCode::Enter);
     let sent = posted(&app);
     assert_eq!(sent.len(), 1);
-    assert_eq!(sent[0].0, "/actions");
-    assert_eq!(sent[0].1["action_id"], format!("merge:{pr_id}@7~abcdef12"));
+    assert_eq!(sent[0].1["option_id"], "merge");
+    assert!(!app.flash.as_ref().is_some_and(|f| f.kind == FlashKind::Error));
+}
+
+#[test]
+fn flash_kinds_draw_with_their_own_mark() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
+    let mut app = App::new(tx);
+    app.flash("Saved");
+    assert!(screen(&mut app, 80, 24).contains("✓ Saved"));
+    app.pending("Merging…");
+    assert!(screen(&mut app, 80, 24).contains("… Merging…"));
+    app.fail("Not done");
+    assert!(screen(&mut app, 80, 24).contains("✗ Not done"));
+}
+
+#[test]
+fn no_waiting_card_fixture_has_an_unusable_action() {
+    for name in std::fs::read_dir(fixtures_dir())
+    .unwrap()
+    .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
+    .filter(|name| name.starts_with("card-") && name.ends_with(".json"))
+    {
+        let view: alondra_core::views::View = serde_json::from_value(view_fixture(&name)).unwrap();
+        for action in crate::tui::view_render::actions(&view) {
+            assert!(action.enabled && action.disabled_reason.is_none(), "{name}: {}", action.label);
+        }
+    }
 }
 
 #[test]
@@ -527,9 +699,9 @@ fn view_footer_deduplicates_actions_and_names_merge_methods_for_people() {
                 {"id":"merge:one", "label":"Merge", "style":"primary",
                  "presentation":"menu", "input":{"kind":"none"}, "attachments":false,
                  "enabled":true, "key":"m", "options":[
-                    {"id":"squash", "label":"squash", "style":"secondary",
+                    {"id":"squash", "label":"Squash and merge", "style":"secondary",
                      "input":{"kind":"none"}},
-                    {"id":"merge", "label":"merge", "style":"secondary",
+                    {"id":"merge", "label":"Merge commit", "style":"secondary",
                      "input":{"kind":"none"}}
                  ]}
             ]
@@ -538,7 +710,7 @@ fn view_footer_deduplicates_actions_and_names_merge_methods_for_people() {
     let rendered: alondra_core::views::View = serde_json::from_value(view).unwrap();
     let keys = crate::tui::draw::view_footer_actions(&rendered);
     assert_eq!(keys.iter().filter(|(_, label)| label == "Ask about the PR").count(), 1);
-    assert!(keys.iter().any(|(key, label)| key == "1" && label == "Squash merge"));
+    assert!(keys.iter().any(|(key, label)| key == "1" && label == "Squash and merge"));
     assert!(keys.iter().any(|(key, label)| key == "2" && label == "Merge commit"));
 }
 
@@ -1319,4 +1491,410 @@ fn task_footer_offers_only_the_keys_the_selected_task_answers() {
     let keys = crate::tui::draw::footer_keys(&app);
     assert!(!keys.iter().any(|(key, _)| key == "M" || key == "⏎" || key == "r"), "{keys:?}");
     assert!(keys.iter().any(|(key, _)| key == "x"), "{keys:?}");
+}
+
+#[test]
+fn a_changed_modal_hides_the_card_it_came_from_not_the_selected_one() {
+    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
+    let mut app = App::new(tx);
+    let (origin, _) = one_method_merge_card(&mut app);
+    press(&mut app, KeyCode::Char('1'));
+    press(&mut app, KeyCode::Enter);
+    let request = posted(&app)[0].1.clone();
+    let changed = view_action_result(serde_json::json!({
+        "outcome":"changed", "result":{"kind":"changed", "title":"New commits",
+            "next":{"id":"merge:fresh", "label":"Send anyway", "style":"primary",
+                "presentation":"button", "input":{"kind":"none"}, "attachments":false, "enabled":true}}
+    }))
+    .unwrap();
+    app.on_msg(Msg::ViewAction { request, result: Ok(changed) });
+    assert!(app.flash.is_none(), "the merge is not running, so «Merging…» goes: {}", flash(&app));
+    let other = Key(question_id());
+    app.sel = Some(other.clone());
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(posted(&app).len(), 2);
+    assert!(app.hidden.contains_key(&Key(origin)), "the card the action came from leaves");
+    assert!(!app.hidden.contains_key(&other), "the selected card stays");
+}
+
+#[test]
+fn a_daemon_error_is_not_reported_as_nothing_sent() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
+    let mut app = App::new(tx);
+    let (origin, _) = one_method_merge_card(&mut app);
+    press(&mut app, KeyCode::Char('1'));
+    press(&mut app, KeyCode::Enter);
+    let request = posted(&app)[0].1.clone();
+    let error = anyhow::Error::new(crate::client::Answered { status: 500, message: "disk full".into() });
+    app.on_msg(Msg::ViewAction { request, result: Err(crate::client::delivery(&error)) });
+    assert_eq!(flash(&app), "Your Mac couldn't do it.\ndisk full");
+    assert_eq!(app.flash.as_ref().map(|f| f.kind), Some(FlashKind::Error));
+    assert!(app.inbox_keys().contains(&Key(origin)), "the card is back");
+}
+
+#[test]
+fn an_answer_the_terminal_cannot_read_is_not_reported_as_nothing_sent() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::Es);
+    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
+    let mut app = App::new(tx);
+    one_method_merge_card(&mut app);
+    press(&mut app, KeyCode::Char('1'));
+    press(&mut app, KeyCode::Enter);
+    let request = posted(&app)[0].1.clone();
+    let result = view_action_result(serde_json::json!({"something": "else"}));
+    app.on_msg(Msg::ViewAction { request, result });
+    assert_eq!(flash(&app), "Tu Mac no pudo hacerlo.");
+}
+
+#[test]
+fn a_timeout_asks_to_check_and_repeating_the_action_sends_the_same_command() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::Es);
+    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
+    let mut app = App::new(tx);
+    let (origin, _) = one_method_merge_card(&mut app);
+    press(&mut app, KeyCode::Char('1'));
+    press(&mut app, KeyCode::Enter);
+    let first = posted(&app)[0].1.clone();
+    app.on_msg(Msg::ViewAction { request: first.clone(), result: Err(Delivery::Unanswered) });
+    assert_eq!(
+        flash(&app),
+        "No sé si llegó; revisa antes de repetir.\nSi repites la misma acción, no se hará dos veces."
+    );
+    assert!(app.inbox_keys().contains(&Key(origin.clone())), "the card is back to check");
+    assert_eq!(app.sel, Some(Key(origin)), "and selected again");
+    one_method_merge_card(&mut app);
+    press(&mut app, KeyCode::Char('1'));
+    press(&mut app, KeyCode::Enter);
+    let sent = posted(&app);
+    assert_eq!(sent.len(), 2);
+    assert_eq!(sent[1].1["command_id"], first["command_id"], "the daemon runs one command once");
+    assert_eq!(sent[1].1, first, "the very same request, so the daemon's receipt matches it");
+}
+
+#[test]
+fn a_different_action_after_a_timeout_gets_its_own_command_id() {
+    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
+    let mut app = App::new(tx);
+    one_method_merge_card(&mut app);
+    press(&mut app, KeyCode::Char('1'));
+    press(&mut app, KeyCode::Enter);
+    let first = posted(&app)[0].1.clone();
+    app.on_msg(Msg::ViewAction { request: first.clone(), result: Err(Delivery::Unanswered) });
+    let other = crate::client::Client::action_body("epoch", "other@1", None, serde_json::json!({}));
+    app.submit_view_request(other, None);
+    assert_ne!(posted(&app)[1].1["command_id"], first["command_id"]);
+}
+
+#[test]
+fn a_changed_modal_waits_for_the_composer_and_never_takes_its_enter() {
+    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
+    let mut app = App::new(tx);
+    open_question(&mut app);
+    press(&mut app, KeyCode::Char('m'));
+    press(&mut app, KeyCode::Char('1'));
+    assert!(app.composer.is_some());
+    let request = crate::client::Client::action_body("epoch", "changes:pr@1-old", None, serde_json::json!({}));
+    let changed = view_action_result(serde_json::json!({
+        "outcome":"changed", "result":{"kind":"changed", "title":"New commits",
+            "next":{"id":"changes:pr@2-new", "label":"Send anyway", "style":"primary",
+                "presentation":"button", "input":{"kind":"none"}, "attachments":false, "enabled":true}}
+    }))
+    .unwrap();
+    app.on_msg(Msg::ViewAction { request, result: Ok(changed) });
+    assert!(app.modal.is_none(), "the composer keeps the keyboard");
+    typed(&mut app, "hello");
+    assert!(app.modal.is_none() && posted(&app).is_empty());
+    press(&mut app, KeyCode::Esc);
+    assert!(app.composer.is_none());
+    assert!(app.modal.is_some(), "the question opens once the composer closes");
+    assert!(
+        posted(&app).iter().all(|(_, body)| body["action_id"] != "changes:pr@2-new"),
+        "nothing was sent anyway"
+    );
+}
+
+fn open_question(app: &mut App) {
+    app.on_msg(Msg::ViewHome(Ok(serde_json::from_value(view_fixture("home-tui.json")).unwrap())));
+    app.reconcile();
+    app.sel = Some(Key(question_id()));
+    app.on_msg(Msg::ViewCard {
+        key: format!("card:{}", question_id()),
+        result: Ok(serde_json::from_value(view_fixture("card-question.json")).unwrap()),
+    });
+}
+
+#[test]
+fn cancelling_a_composer_leaves_no_stale_stamp_for_the_next_action() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
+    let mut app = App::new(tx);
+    app.on_msg(Msg::ViewHome(Ok(serde_json::from_value(view_fixture("home-tui.json")).unwrap())));
+    app.reconcile();
+    app.sel = Some(Key(question_id()));
+    let mut card = view_fixture("card-question.json");
+    card["sections"][0]["items"][0]["more"][0]["stamp"] = "Replying…".into();
+    app.on_msg(Msg::ViewCard {
+        key: format!("card:{}", question_id()),
+        result: Ok(serde_json::from_value(card).unwrap()),
+    });
+    press(&mut app, KeyCode::Char('m'));
+    press(&mut app, KeyCode::Char('1'));
+    assert!(app.composer.is_some());
+    press(&mut app, KeyCode::Esc);
+    let request = crate::client::Client::action_body("epoch", "changes:pr@1-old", None, serde_json::json!({}));
+    let changed = view_action_result(serde_json::json!({
+        "outcome":"changed", "result":{"kind":"changed", "title":"New commits",
+            "next":{"id":"changes:pr@2-new", "label":"Send anyway", "style":"primary",
+                "presentation":"button", "input":{"kind":"none"}, "attachments":false, "enabled":true}}
+    }))
+    .unwrap();
+    app.on_msg(Msg::ViewAction { request, result: Ok(changed) });
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(posted(&app).len(), 1);
+    assert_eq!(flash(&app), "Sending…", "not the cancelled answer's «Replying…»");
+}
+
+#[test]
+fn write_my_own_answer_posts_the_questions_answer_action_with_the_text() {
+    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
+    let mut app = App::new(tx);
+    open_question(&mut app);
+    press(&mut app, KeyCode::Char('m'));
+    press(&mut app, KeyCode::Char('1'));
+    typed(&mut app, "Neither");
+    app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL));
+    let sent = posted(&app);
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    assert_eq!(sent[0].0, "/actions");
+    assert!(sent[0].1["action_id"].as_str().unwrap().starts_with("ans:"), "{sent:?}");
+    assert_eq!(sent[0].1["input"]["text"], "Neither");
+}
+
+#[test]
+fn the_pr_card_fixture_reads_in_the_terminal_with_the_servers_labels_order_confirm_and_outcome() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+    let fixture = view_fixture("card-pr.json");
+    let item = &fixture["sections"][0]["items"][0];
+    let merge = &item["actions"][0];
+    let text = |value: &serde_json::Value| value.as_str().unwrap().to_owned();
+    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
+    let mut app = App::new(tx);
+    let origin = pr_card_fixture(&mut app);
+
+    let drawn = screen(&mut app, 120, 40);
+    let mut buttons: Vec<String> = item["actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .enumerate()
+        .map(|(index, action)| format!(" {}  {}", index + 1, text(&action["label"])))
+        .collect();
+    buttons.push(format!(" m  More… ({})", item["more"].as_array().unwrap().len()));
+    buttons.push(format!(" r  {}", text(&item["reply"]["label"])));
+    assert_in_order(&drawn, &buttons);
+
+    press(&mut app, KeyCode::Char('m'));
+    let more: Vec<String> = item["more"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .enumerate()
+        .map(|(index, action)| format!(" {}  {}", index + 1, text(&action["label"])))
+        .collect();
+    assert_in_order(&screen(&mut app, 120, 40), &more);
+    press(&mut app, KeyCode::Esc);
+
+    press(&mut app, KeyCode::Char('1'));
+    let options: Vec<String> = merge["options"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .enumerate()
+        .flat_map(|(index, option)| {
+            [format!(" {}  {}", index + 1, text(&option["label"])), format!("    {}", text(&option["description"]))]
+        })
+        .collect();
+    assert_in_order(&screen(&mut app, 120, 40), &options);
+
+    press(&mut app, KeyCode::Char('1'));
+    let drawn = screen(&mut app, 120, 40);
+    assert!(drawn.contains(&format!("? {}", text(&merge["confirm"]["title"]))), "{drawn}");
+    assert!(drawn.contains("goes into main. Alondra merges it"), "{drawn}");
+    assert!(drawn.contains(&format!("⏎ {} · Esc cancel", text(&merge["confirm"]["button"]))), "{drawn}");
+    assert!(posted(&app).is_empty());
+
+    press(&mut app, KeyCode::Enter);
+    let sent = posted(&app);
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].1["action_id"], merge["id"]);
+    assert_eq!(sent[0].1["option_id"], merge["options"][0]["id"]);
+    assert_eq!(flash(&app), text(&merge["stamp"]));
+    assert!(!app.inbox_keys().contains(&Key(origin)));
+
+    app.on_msg(Msg::ViewAction {
+        request: sent[0].1.clone(),
+        result: applied("started", "PR #12 is merging. You'll see it in its task when GitHub confirms."),
+    });
+    assert!(screen(&mut app, 120, 40).contains("PR #12 is merging. You'll see it in its task when GitHub confirms."));
+}
+
+fn assert_in_order(drawn: &str, texts: &[String]) {
+    let mut at = 0;
+    for text in texts {
+        let found = drawn[at..].find(text.as_str()).unwrap_or_else(|| panic!("{text:?} after the previous one in:\n{drawn}"));
+        at += found + text.len();
+    }
+}
+
+fn pr_card_fixture(app: &mut App) -> String {
+    let id = "hf-weekly-2026-09-30";
+    app.on_msg(Msg::ViewHome(Ok(serde_json::from_value(view_fixture("home-tui.json")).unwrap())));
+    app.reconcile();
+    app.sel = Some(Key(id.into()));
+    let mut card = view_fixture("card-pr.json");
+    card["key"] = format!("card:{id}").into();
+    app.on_msg(Msg::ViewCard {
+        key: format!("card:{id}"),
+        result: Ok(serde_json::from_value(card).unwrap()),
+    });
+    id.into()
+}
+
+#[test]
+fn a_done_card_stays_away_and_comes_back_only_if_the_server_still_has_it() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
+    let mut app = App::new(tx);
+    let (origin, _) = one_method_merge_card(&mut app);
+    press(&mut app, KeyCode::Char('1'));
+    press(&mut app, KeyCode::Enter);
+    let request = posted(&app)[0].1.clone();
+    app.on_msg(Msg::ViewAction { request, result: applied("started", "PR #12 is merging.") });
+    assert!(!app.inbox_keys().contains(&Key(origin.clone())), "the server has not taken it away yet");
+    assert!(!screen(&mut app, 120, 30).contains("Review the beta candidate"));
+
+    app.hidden.insert(Key(origin.clone()), now_millis() - HIDE_GRACE_MS - 1);
+    app.on_timers();
+    assert!(app.inbox_keys().contains(&Key(origin)), "the server still has it, so it is still there");
+    assert!(screen(&mut app, 120, 30).contains("Review the beta candidate"));
+}
+
+#[test]
+fn a_changed_modal_never_takes_the_enter_that_sends_the_composer() {
+    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
+    let mut app = App::new(tx);
+    open_question(&mut app);
+    press(&mut app, KeyCode::Char('m'));
+    press(&mut app, KeyCode::Char('1'));
+    let request = crate::client::Client::action_body("epoch", "changes:pr@1-old", None, serde_json::json!({}));
+    let changed = view_action_result(serde_json::json!({
+        "outcome":"changed", "result":{"kind":"changed", "title":"New commits",
+            "next":{"id":"changes:pr@2-new", "label":"Send anyway", "style":"primary",
+                "presentation":"button", "input":{"kind":"none"}, "attachments":false, "enabled":true}}
+    }))
+    .unwrap();
+    app.on_msg(Msg::ViewAction { request, result: Ok(changed) });
+    typed(&mut app, "Neither");
+    app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL));
+    let sent = posted(&app);
+    assert_eq!(sent.len(), 1, "only the composer's own answer: {sent:?}");
+    assert_eq!(sent[0].1["input"]["text"], "Neither");
+    assert!(app.modal.is_some(), "the question opens now that the composer is closed");
+    press(&mut app, KeyCode::Esc);
+    assert_eq!(posted(&app).len(), 1, "Send anyway was never sent");
+}
+
+fn changed_from(request: serde_json::Value) -> Msg {
+    let changed = view_action_result(serde_json::json!({
+        "outcome":"changed", "result":{"kind":"changed", "title":"PR #12 has new commits",
+            "next":{"id":"merge:fresh", "label":"Send anyway", "style":"primary",
+                "presentation":"button", "input":{"kind":"none"}, "attachments":false, "enabled":true}}
+    }))
+    .unwrap();
+    Msg::ViewAction { request, result: Ok(changed) }
+}
+
+#[test]
+fn a_changed_question_waits_for_the_open_one_and_enter_answers_the_one_on_screen() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
+    let mut app = App::new(tx);
+    let (a, _) = one_method_merge_card(&mut app);
+    press(&mut app, KeyCode::Char('1'));
+    press(&mut app, KeyCode::Enter);
+    let merge_a = posted(&app)[0].1.clone();
+
+    let b = question_id();
+    app.sel = Some(Key(b.clone()));
+    let mut card = view_fixture("card-question.json");
+    card["sections"][0]["items"][0]["actions"][0]["confirm"] =
+        serde_json::json!({"title": "Ship the concise copy?", "message": "The beta ships with it.", "button": "Ship it"});
+    app.on_msg(Msg::ViewCard { key: format!("card:{b}"), result: Ok(serde_json::from_value(card).unwrap()) });
+    press(&mut app, KeyCode::Char('1'));
+    assert!(screen(&mut app, 120, 30).contains("Ship the concise copy?"));
+
+    app.on_msg(changed_from(merge_a));
+    let drawn = screen(&mut app, 120, 30);
+    assert!(drawn.contains("Ship the concise copy?"), "B's question stays on screen: {drawn}");
+    assert!(!drawn.contains("PR #12 has new commits"), "{drawn}");
+
+    press(&mut app, KeyCode::Enter);
+    let sent = posted(&app);
+    assert_eq!(sent.len(), 2);
+    assert!(sent[1].1["action_id"].as_str().unwrap().starts_with("ans:"), "Enter answered B: {sent:?}");
+    assert!(screen(&mut app, 120, 30).contains("PR #12 has new commits"), "A's question comes next");
+
+    press(&mut app, KeyCode::Enter);
+    let sent = posted(&app);
+    assert_eq!(sent.len(), 3);
+    assert_eq!(sent[2].1["action_id"], "merge:fresh");
+    assert!(app.in_flight.values().any(|key| *key == Key(a.clone())), "it is A that leaves");
+}
+
+#[test]
+fn the_pairing_prompt_never_shows_over_a_question_that_holds_the_keys() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
+    let mut app = App::new(tx);
+    one_method_merge_card(&mut app);
+    app.pairing.push(PendingDevice {
+        id: "d-1".into(),
+        name: "David's iPhone".into(),
+        code: "4821".into(),
+        expires_at_ms: now_millis() + 600_000,
+    });
+    assert!(screen(&mut app, 120, 30).contains("Allow “David's iPhone” to use Alondra?"));
+
+    press(&mut app, KeyCode::Char('1'));
+    let drawn = screen(&mut app, 120, 30);
+    assert!(drawn.contains("Merge PR #12?"), "{drawn}");
+    assert!(!drawn.contains("Allow “David's iPhone”"), "the prompt that does not get the keys is not shown: {drawn}");
+
+    press(&mut app, KeyCode::Esc);
+    assert_eq!(app.pairing.len(), 1, "Esc answered the merge question, not the device");
+    assert!(screen(&mut app, 120, 30).contains("Allow “David's iPhone” to use Alondra?"));
+}
+
+#[test]
+fn a_card_that_comes_back_leaves_the_selection_where_the_user_moved_it() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
+    let mut app = App::new(tx);
+    let (origin, _) = one_method_merge_card(&mut app);
+    press(&mut app, KeyCode::Char('1'));
+    press(&mut app, KeyCode::Enter);
+    let request = posted(&app)[0].1.clone();
+    let landed = app.sel.clone();
+    press(&mut app, KeyCode::Char('j'));
+    let chosen = app.sel.clone();
+    assert_ne!(chosen, landed, "the user moved");
+    app.on_msg(Msg::ViewAction {
+        request,
+        result: view_action_result(serde_json::json!({
+            "outcome":"rejected", "result":{"kind":"refused", "title":"PR #11 must merge first."}
+        })),
+    });
+    assert!(app.inbox_keys().contains(&Key(origin)), "the card is back");
+    assert_eq!(app.sel, chosen, "and the selection stays where the user put it");
 }

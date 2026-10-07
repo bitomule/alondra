@@ -19,59 +19,55 @@ mod parity;
 #[path = "tui/tests/screens.rs"]
 mod screens;
 #[cfg(test)]
+#[path = "tui/tests/shots.rs"]
+mod shots;
+#[cfg(test)]
 mod views_tests;
+
+/// The card an action came from and what it says while it runs.
+#[derive(Clone, Debug)]
+pub struct Acting {
+    pub origin: Key,
+    pub stamp: Option<String>,
+}
 
 #[derive(Debug)]
 enum ViewActionReply {
-    Applied(String),
-    Changed {
-        message: String,
-        action_id: String,
-        button: String,
-    },
+    Outcome(Outcome),
 }
 
-fn view_action_result(value: serde_json::Value) -> std::result::Result<ViewActionReply, String> {
-    match value["outcome"].as_str() {
-        Some("applied") => Ok(ViewActionReply::Applied(
-            value["stamp"]
+fn view_action_result(value: serde_json::Value) -> std::result::Result<ViewActionReply, Delivery> {
+    if let Some(outcome) = value
+        .get("result")
+        .and_then(|result| serde_json::from_value::<Outcome>(result.clone()).ok())
+    {
+        return Ok(ViewActionReply::Outcome(outcome));
+    }
+    let message = |fallback: &str| value["message"].as_str().unwrap_or(fallback).to_owned();
+    let outcome = match value["outcome"].as_str() {
+        Some("applied") => Outcome {
+            kind: OutcomeKind::Done,
+            title: value["stamp"]
                 .as_str()
                 .unwrap_or(tr!("Done", "Hecho"))
                 .to_owned(),
-        )),
-        Some("changed") => {
-            let action_id = value["confirm"]["action_id"].as_str().ok_or_else(|| {
-                tr!(
-                    "The action changed; refresh the view",
-                    "La acción ha cambiado; actualiza la vista"
-                )
-                .to_owned()
-            })?;
-            let button = value["confirm"]["button"]
-                .as_str()
-                .unwrap_or(tr!("Send anyway", "Enviar igualmente"));
-            Ok(ViewActionReply::Changed {
-                message: value["message"]
-                    .as_str()
-                    .unwrap_or(tr!("The item changed", "El elemento ha cambiado"))
-                    .to_owned(),
-                action_id: action_id.to_owned(),
-                button: button.to_owned(),
-            })
-        }
-        Some("rejected" | "no_longer_available") => Err(value["message"]
-            .as_str()
-            .unwrap_or(tr!(
+            body: None,
+            next: None,
+        },
+        Some("rejected" | "no_longer_available") => Outcome {
+            kind: OutcomeKind::Refused,
+            title: message(tr!(
                 "Action could not be completed",
                 "No se pudo completar la acción"
-            ))
-            .to_owned()),
-        _ => Err(tr!(
-            "Unexpected action response",
-            "Respuesta de acción inesperada"
-        )
-        .to_owned()),
-    }
+            )),
+            body: None,
+            next: None,
+        },
+        _ => {
+            return Err(Delivery::Answered(None));
+        }
+    };
+    Ok(ViewActionReply::Outcome(outcome))
 }
 
 fn diff_reader_text(diff: crate::client::PullRequestDiff, truncated_notice: &str) -> String {
@@ -92,7 +88,8 @@ use alondra_core::domain::{
     PrId, Revision, TaskId,
 };
 use alondra_core::now_millis;
-use alondra_core::views::{Status as ViewStatus, View as ViewDocument};
+use crate::client::Delivery;
+use alondra_core::views::{Outcome, OutcomeKind, Status as ViewStatus, View as ViewDocument};
 use anyhow::Result;
 use crossterm::event::{
     self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEvent, KeyEventKind,
@@ -118,7 +115,6 @@ const SETTLE_MS: i64 = 700;
 const FLASH_MS: i64 = 4500;
 const HIDE_GRACE_MS: i64 = 15_000;
 const CLOCK_MS: i64 = 20_000;
-const CONFIRM_MS: i64 = 4000;
 const IDLE_POLL: Duration = Duration::from_millis(250);
 const ACTIVITY_EVERY_MS: i64 = 60_000;
 /// Threads move with every tool call, which does not move the domain: the open agent asks again this often.
@@ -151,10 +147,42 @@ pub struct View {
     pub shown: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FlashKind {
+    Success,
+    Pending,
+    Error,
+}
+
 pub struct Flash {
     pub text: String,
-    pub error: bool,
+    pub kind: FlashKind,
     pub at: i64,
+}
+
+/// A question the user answers with ⏎ or Esc before an action runs.
+#[derive(Clone, Debug)]
+pub struct Modal {
+    pub title: String,
+    pub body: String,
+    pub button: String,
+    pub destructive: bool,
+    then: ModalThen,
+}
+
+#[derive(Clone, Debug)]
+enum ModalThen {
+    Action {
+        action: Box<alondra_core::views::Action>,
+        option_id: Option<String>,
+        selected: Key,
+        epoch: String,
+    },
+    Changed {
+        request: Value,
+        action_id: String,
+        origin: Option<Key>,
+    },
 }
 
 /// A device asking to use Alondra on this Mac, as `/devices/pending` lists it.
@@ -412,6 +440,7 @@ pub enum Target {
         option_id: Option<String>,
         required: bool,
         allow_attachments: bool,
+        acting: Option<Acting>,
     },
     /// A message to an agent or the orchestrator; the text is filled in when it is sent.
     Message {
@@ -499,7 +528,7 @@ enum Msg {
     ViewFeed(Result<crate::client::ViewsFeed, String>),
     ViewAction {
         request: Value,
-        result: Result<ViewActionReply, String>,
+        result: Result<ViewActionReply, Delivery>,
     },
     Offline,
     SyncError(String),
@@ -602,9 +631,18 @@ pub struct App {
     pub agent_view: View,
     pub agent_zoom: bool,
     /// A step that takes a second press within a few seconds, until when, and the key that
-    /// confirms it; any other key starts over.
-    confirm: Option<(String, i64, KeyCode)>,
-    pending_changed_action: Option<(Value, String)>,
+    /// answers it; Esc or any other key cancels.
+    modal: Option<Modal>,
+    /// Cards hidden while their action is in flight, by the command that hides them.
+    in_flight: HashMap<String, Key>,
+    /// Where the selection landed when each card left: if it is still there when the card comes
+    /// back, the user has not moved and the card is selected again.
+    left_on: HashMap<Key, Option<Key>>,
+    /// A question that arrived while the user was typing or answering another; it opens when
+    /// they are done.
+    deferred_modal: Option<Modal>,
+    /// The last action whose answer never came: sending the same one again keeps its command id.
+    unsure: Option<Value>,
     pressed: KeyCode,
     /// Every request that is not a domain command, as the tests read what it would have sent.
     #[cfg(test)]
@@ -1016,8 +1054,11 @@ impl App {
             agent_detail_scroll: 0,
             agent_view: View::default(),
             agent_zoom: false,
-            confirm: None,
-            pending_changed_action: None,
+            modal: None,
+            in_flight: HashMap::new(),
+            left_on: HashMap::new(),
+            deferred_modal: None,
+            unsure: None,
             pressed: KeyCode::Null,
             #[cfg(test)]
             posted: Default::default(),
@@ -1164,6 +1205,12 @@ impl App {
         });
     }
 
+    /// The pairing prompt shows only when its keys reach it: never over an open question or text
+    /// being typed, which keep the keyboard.
+    pub fn pairing_answers_keys(&self) -> bool {
+        self.modal.is_none() && !self.typing()
+    }
+
     fn pairing_key(&mut self, k: KeyEvent) -> bool {
         let Some(device) = self.pairing_prompt().cloned() else {
             return false;
@@ -1214,8 +1261,8 @@ impl App {
         if let Some(key) = self.view_navigation.last() {
             return Some(key.clone());
         }
-        if let (Some(selected), Some(view)) = (self.sel.as_ref(), self.home_view.as_ref()) {
-            let entry = view_render::entries(view, &self.open_sections)
+        if let (Some(selected), Some(view)) = (self.sel.as_ref(), self.shown_home()) {
+            let entry = view_render::entries(&view, &self.open_sections)
                 .into_iter()
                 .find(|(id, _, _)| *id == selected.0);
             if let Some((_, _, link)) = entry {
@@ -1285,7 +1332,27 @@ impl App {
         self.sync_open_views();
     }
 
-    fn submit_view_request(&mut self, request: Value) {
+    fn submit_view_request(&mut self, mut request: Value, acting: Option<Acting>) {
+        let same = |earlier: &Value| {
+            ["action_id", "option_id", "input"]
+                .iter()
+                .all(|field| earlier[field] == request[field])
+        };
+        if self.unsure.as_ref().is_some_and(same)
+            && let Some(earlier) = self.unsure.take()
+        {
+            request = earlier;
+        }
+        let text = acting
+            .as_ref()
+            .and_then(|acting| acting.stamp.clone())
+            .unwrap_or_else(|| tr!("Sending…", "Enviando…").to_owned());
+        self.pending(text);
+        if let (Some(command), Some(acting)) = (request["command_id"].as_str(), acting) {
+            self.in_flight.insert(command.to_owned(), acting.origin.clone());
+            self.hide(acting.origin.clone());
+            self.left_on.insert(acting.origin, self.sel.clone());
+        }
         #[cfg(test)]
         self.posted
             .borrow_mut()
@@ -1293,27 +1360,71 @@ impl App {
         self.spawn(move |tx, target| {
             let result = Client::for_target(target, Duration::from_secs(30))
                 .post("/actions", &request)
-                .map_err(|error| format!("{error:#}"))
+                .map_err(|error| crate::client::delivery(&error))
                 .and_then(view_action_result);
             let _ = tx.send(Msg::ViewAction { request, result });
         });
     }
 
-    fn confirm_changed_action(&mut self) {
-        let Some((request, action_id)) = self.pending_changed_action.take() else {
+    fn run_modal(&mut self) {
+        let Some(modal) = self.modal.take() else {
             return;
         };
-        let data_epoch = request["data_epoch"].as_str().unwrap_or_default();
-        let option_id = request["option_id"].as_str();
-        let input = request["input"].clone();
-        let fresh = Client::action_body(data_epoch, &action_id, option_id, input);
-        self.submit_view_request(fresh);
+        match modal.then {
+            ModalThen::Action {
+                action,
+                option_id,
+                selected,
+                epoch,
+            } => {
+                let option = option_id
+                    .as_deref()
+                    .and_then(|id| action.options.iter().find(|option| option.id == id));
+                self.run_view_action_confirmed(&action, option, &selected, epoch);
+            }
+            ModalThen::Changed {
+                request,
+                action_id,
+                origin,
+            } => {
+                let data_epoch = request["data_epoch"].as_str().unwrap_or_default();
+                let option_id = request["option_id"].as_str();
+                let input = request["input"].clone();
+                let fresh = Client::action_body(data_epoch, &action_id, option_id, input);
+                let acting = origin.map(|origin| Acting {
+                    origin,
+                    stamp: None,
+                });
+                self.submit_view_request(fresh, acting);
+            }
+        }
+    }
+
+    pub(super) fn ask(&mut self, modal: Modal) {
+        self.modal = Some(modal);
+    }
+
+    fn modal_key(&mut self, key: KeyEvent) -> Flow {
+        if key.code == KeyCode::Enter {
+            self.run_modal();
+        } else {
+            self.modal = None;
+        }
+        Flow::Go
     }
 
     pub fn flash(&mut self, text: impl Into<String>) {
         self.flash = Some(Flash {
             text: text.into(),
-            error: false,
+            kind: FlashKind::Success,
+            at: now_millis(),
+        });
+    }
+
+    pub fn pending(&mut self, text: impl Into<String>) {
+        self.flash = Some(Flash {
+            text: text.into(),
+            kind: FlashKind::Pending,
             at: now_millis(),
         });
     }
@@ -1321,7 +1432,7 @@ impl App {
     pub fn fail(&mut self, text: impl Into<String>) {
         self.flash = Some(Flash {
             text: text.into(),
-            error: true,
+            kind: FlashKind::Error,
             at: now_millis(),
         });
     }
@@ -1344,22 +1455,6 @@ impl App {
         let tx = self.tx.clone();
         let target = self.target.clone();
         std::thread::spawn(move || job(&tx, &target));
-    }
-
-    /// A second press of the same step within a few seconds confirms it; anything else starts over.
-    fn confirmed(&mut self, step: &str, ask: String) -> bool {
-        let now = now_millis();
-        if self
-            .confirm
-            .as_ref()
-            .is_some_and(|(s, until, _)| s == step && now < *until)
-        {
-            self.confirm = None;
-            return true;
-        }
-        self.confirm = Some((step.to_string(), now + CONFIRM_MS, self.pressed));
-        self.fail(ask);
-        false
     }
 
     /// Tells alondrad the user is at the TUI, at most once a minute, so it holds back pushes.
@@ -1470,7 +1565,7 @@ impl App {
                             None,
                             json!({"text": text.trim()}),
                         );
-                        self.submit_view_request(request);
+                        self.submit_view_request(request, None);
                     } else {
                         self.fail(tr!(
                             "Request changes is unavailable for this PR",
@@ -1731,35 +1826,7 @@ impl App {
                     self.fail(error);
                 }
             }
-            Msg::ViewAction {
-                request: _,
-                result: Ok(ViewActionReply::Applied(message)),
-            } => {
-                self.pending_changed_action = None;
-                self.flash(message);
-            }
-            Msg::ViewAction {
-                request,
-                result:
-                    Ok(ViewActionReply::Changed {
-                        message,
-                        action_id,
-                        button,
-                    }),
-            } => {
-                self.pending_changed_action = Some((request, action_id));
-                self.flash(trf!(
-                    "{message} · press y to {button}",
-                    "{message} · pulsa y para {button}"
-                ));
-            }
-            Msg::ViewAction {
-                request: _,
-                result: Err(error),
-            } => {
-                self.pending_changed_action = None;
-                self.fail(error);
-            }
+            Msg::ViewAction { request, result } => self.view_action_done(request, result),
             Msg::SyncError(error) => self.fail(error),
             Msg::Offline => {
                 self.connected = false;
@@ -1907,6 +1974,127 @@ impl App {
         }
     }
 
+    fn view_action_done(&mut self, request: Value, result: Result<ViewActionReply, Delivery>) {
+        let command = request["command_id"].as_str().unwrap_or_default();
+        let origin = self.in_flight.remove(command);
+        if self.unsure.as_ref().is_some_and(|earlier| earlier["command_id"] == request["command_id"]) {
+            self.unsure = None;
+        }
+        let lang = i18n::lang();
+        let outcome = match result {
+            Ok(ViewActionReply::Outcome(outcome)) => outcome,
+            Err(Delivery::Unsent) => alondra_core::views::transport_failure(lang),
+            Err(Delivery::Unanswered) => {
+                self.unsure = Some(request.clone());
+                Outcome {
+                    kind: OutcomeKind::Failed,
+                    title: tr!(
+                        "Not sure it arrived; check before repeating.",
+                        "No sé si llegó; revisa antes de repetir."
+                    )
+                    .to_owned(),
+                    body: Some(
+                        tr!(
+                            "Repeating the same action won't do it twice.",
+                            "Si repites la misma acción, no se hará dos veces."
+                        )
+                        .to_owned(),
+                    ),
+                    next: None,
+                }
+            }
+            Err(Delivery::Answered(message)) => Outcome {
+                kind: OutcomeKind::Failed,
+                title: tr!("Your Mac couldn't do it.", "Tu Mac no pudo hacerlo.").to_owned(),
+                body: message,
+                next: None,
+            },
+        };
+        let text = match &outcome.body {
+            Some(body) => format!("{}\n{body}", outcome.title),
+            None => outcome.title.clone(),
+        };
+        match outcome.kind {
+            OutcomeKind::Done | OutcomeKind::Started => {
+                if let Some(key) = origin {
+                    self.left_on.remove(&key);
+                    self.hidden.insert(key, now_millis());
+                }
+                if outcome.kind == OutcomeKind::Done {
+                    self.flash(text);
+                } else {
+                    self.pending(text);
+                }
+            }
+            OutcomeKind::Refused | OutcomeKind::Failed => {
+                self.show_again(origin);
+                self.fail(text);
+            }
+            OutcomeKind::Changed => {
+                self.flash = None;
+                self.show_again(origin.clone());
+                let Some(next) = outcome.next else {
+                    self.fail(text);
+                    return;
+                };
+                let modal = Modal {
+                    title: outcome.title,
+                    body: outcome.body.unwrap_or_default(),
+                    button: next.label.clone(),
+                    destructive: false,
+                    then: ModalThen::Changed {
+                        request,
+                        action_id: next.id.clone(),
+                        origin,
+                    },
+                };
+                if self.typing() || self.modal.is_some() {
+                    self.deferred_modal = Some(modal);
+                } else {
+                    self.ask(modal);
+                }
+            }
+        }
+    }
+
+    fn show_again(&mut self, origin: Option<Key>) {
+        let Some(key) = origin else {
+            return;
+        };
+        self.hidden.remove(&key);
+        let left_on = self.left_on.remove(&key);
+        if left_on.is_none_or(|left_on| left_on == self.sel) {
+            self.sel = Some(key);
+            self.card_view = None;
+            self.card_view_asked = None;
+        }
+        self.reconcile();
+    }
+
+    /// A card leaves while its action runs and for a short while after it is done, so the server
+    /// has time to take it away; if it still has it then, it comes back.
+    fn is_hidden(&self, key: &Key, now: i64) -> bool {
+        self.in_flight.values().any(|acting| acting == key)
+            || self.hidden.get(key).is_some_and(|at| now - at < HIDE_GRACE_MS)
+    }
+
+    /// The home view as the user sees it: cards whose action is in flight are not there.
+    pub(super) fn shown_home(&self) -> Option<std::borrow::Cow<'_, ViewDocument>> {
+        let home = self.home_view.as_ref()?;
+        if self.hidden.is_empty() && self.in_flight.is_empty() {
+            return Some(std::borrow::Cow::Borrowed(home));
+        }
+        let now = now_millis();
+        let mut shown = home.clone();
+        for section in &mut shown.sections {
+            section.items.retain(|item| match item {
+                alondra_core::views::Item::Card(card) => !self.is_hidden(&Key(card.id.clone()), now),
+                _ => true,
+            });
+        }
+        Some(std::borrow::Cow::Owned(shown))
+    }
+
     fn on_timers(&mut self) -> bool {
         let now = now_millis();
         let mut dirty = false;
@@ -1918,7 +2106,11 @@ impl App {
             self.last_clock = now;
             dirty = true;
         }
-        if self.hidden.values().any(|at| now - at >= HIDE_GRACE_MS) {
+        let hidden = self.hidden.len();
+        let in_flight: HashSet<Key> = self.in_flight.values().cloned().collect();
+        self.hidden.retain(|key, at| in_flight.contains(key) || now - *at < HIDE_GRACE_MS);
+        if self.hidden.len() != hidden {
+            self.reconcile();
             dirty = true;
         }
         let waiting = self.pairing.len();
@@ -1971,25 +2163,22 @@ impl App {
     }
 
     fn on_key(&mut self, k: KeyEvent) -> Flow {
-        if self
-            .confirm
-            .as_ref()
-            .is_some_and(|(_, _, key)| *key != k.code)
-        {
-            self.confirm = None;
+        let flow = self.on_key_pressed(k);
+        if self.modal.is_none() && !self.typing() {
+            self.modal = self.deferred_modal.take();
         }
+        flow
+    }
+
+    fn on_key_pressed(&mut self, k: KeyEvent) -> Flow {
         self.pressed = k.code;
         if k.modifiers.contains(KeyModifiers::CONTROL) && k.code == KeyCode::Char('c') {
             return Flow::Quit;
         }
-        if self.pending_changed_action.is_some() {
-            if k.code == KeyCode::Char('y') && k.modifiers.is_empty() {
-                self.confirm_changed_action();
-                return Flow::Go;
-            }
-            self.pending_changed_action = None;
+        if self.modal.is_some() {
+            return self.modal_key(k);
         }
-        if !self.typing() && self.pairing_key(k) {
+        if self.pairing_answers_keys() && self.pairing_key(k) {
             return Flow::Go;
         }
         if self.help {
@@ -2460,6 +2649,7 @@ impl App {
                 data_epoch,
                 option_id,
                 allow_attachments,
+                acting,
                 ..
             } => {
                 let mut input = json!({});
@@ -2475,7 +2665,7 @@ impl App {
                 }
                 let request =
                     Client::action_body(&data_epoch, &action_id, option_id.as_deref(), input);
-                self.submit_view_request(request);
+                self.submit_view_request(request, acting);
             }
             Target::Message {
                 key,
@@ -2550,7 +2740,7 @@ impl App {
         for chip in &c.chips {
             self.previews.remove(&chip.seq);
         }
-        self.submit_view_request(request);
+        self.submit_view_request(request, None);
     }
 
     fn open_reader(&mut self) {
@@ -2944,6 +3134,7 @@ impl App {
                     option_id: None,
                     required,
                     allow_attachments: action.attachments,
+                    acting: None,
                 },
                 &text,
             );

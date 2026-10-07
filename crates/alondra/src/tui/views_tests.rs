@@ -172,7 +172,7 @@ fn a_failed_answer_brings_the_prompt_back() {
         result: Err("refused".into()),
     });
     assert_eq!(app.pairing_prompt().map(|d| d.id.as_str()), Some("p-1"));
-    assert!(app.flash.as_ref().is_some_and(|f| f.error));
+    assert!(app.flash.as_ref().is_some_and(|f| f.kind == FlashKind::Error));
 }
 
 #[test]

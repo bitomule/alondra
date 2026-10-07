@@ -523,8 +523,97 @@ fn failure(status: u16, body: &Value) -> anyhow::Error {
     if let Ok(error) = serde_json::from_value::<DomainError>(body.clone()) {
         return anyhow::Error::new(Refused(error));
     }
-    let msg = body.get("error").and_then(Value::as_str).map(str::to_string).unwrap_or_else(|| body.to_string());
-    anyhow!(trf!("alondrad answered {status}: {msg}", "alondrad respondió {status}: {msg}"))
+    let message = match body {
+        Value::Null => String::new(),
+        _ => body.get("error").and_then(Value::as_str).map(str::to_string).unwrap_or_else(|| body.to_string()),
+    };
+    anyhow::Error::new(Answered { status, message })
+}
+
+/// alondrad was reached and answered with an error of its own.
+#[derive(Debug)]
+pub struct Answered {
+    pub status: u16,
+    pub message: String,
+}
+
+impl std::fmt::Display for Answered {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let (status, msg) = (self.status, &self.message);
+        f.write_str(&trf!("alondrad answered {status}: {msg}", "alondrad respondió {status}: {msg}"))
+    }
+}
+
+impl std::error::Error for Answered {}
+
+/// The request left and no answer came back: it may have run.
+#[derive(Debug)]
+pub struct Unanswered(pub String);
+
+impl std::fmt::Display for Unanswered {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for Unanswered {}
+
+/// Nothing left this machine: the daemon could not be reached.
+#[derive(Debug)]
+pub struct Unsent(pub String);
+
+impl std::fmt::Display for Unsent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for Unsent {}
+
+/// Whether a failed request could have reached the daemon, which decides what the user is told.
+#[derive(Debug, PartialEq)]
+pub enum Delivery {
+    Unsent,
+    Unanswered,
+    /// The daemon answered; its words, when it gave any.
+    Answered(Option<String>),
+}
+
+pub fn delivery(error: &anyhow::Error) -> Delivery {
+    for cause in error.chain() {
+        if let Some(refused) = cause.downcast_ref::<Refused>() {
+            return Delivery::Answered(Some(refusal(&refused.0)));
+        }
+        if let Some(answered) = cause.downcast_ref::<Answered>() {
+            return Delivery::Answered(Some(answered.message.clone()).filter(|message| !message.is_empty()));
+        }
+        if cause.is::<Missing>() {
+            return Delivery::Answered(None);
+        }
+        if cause.is::<Unsent>() {
+            return Delivery::Unsent;
+        }
+        if cause.is::<Unanswered>() {
+            return Delivery::Unanswered;
+        }
+        if let Some(error) = cause.downcast_ref::<ureq::Error>() {
+            return if never_left(error) { Delivery::Unsent } else { Delivery::Unanswered };
+        }
+    }
+    Delivery::Unanswered
+}
+
+fn never_left(error: &ureq::Error) -> bool {
+    use std::io::ErrorKind;
+    match error {
+        ureq::Error::HostNotFound | ureq::Error::ConnectionFailed | ureq::Error::BadUri(_) => true,
+        ureq::Error::Timeout(timeout) => matches!(timeout, ureq::Timeout::Resolve | ureq::Timeout::Connect),
+        ureq::Error::Io(io) => matches!(
+            io.kind(),
+            ErrorKind::ConnectionRefused | ErrorKind::NotFound | ErrorKind::AddrNotAvailable | ErrorKind::PermissionDenied
+        ),
+        _ => false,
+    }
 }
 
 /// How a domain command ended when it did not succeed.
@@ -773,5 +862,60 @@ mod wire_tests {
         let full = client.interaction(&"i-1".into()).unwrap();
         assert_eq!(full.body, "first half");
         server.join().unwrap();
+    }
+
+    /// A daemon that takes the request and then answers with `reply`, or never answers.
+    fn one_shot(reply: Option<&'static str>) -> (String, std::thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut chunk = [0; 4096];
+            let _ = stream.read(&mut chunk);
+            match reply {
+                Some(reply) => stream.write_all(reply.as_bytes()).unwrap(),
+                None => std::thread::sleep(Duration::from_millis(800)),
+            }
+        });
+        (base, server)
+    }
+
+    fn post_to(base: String, timeout: Duration) -> anyhow::Error {
+        let mut client = Client::new(timeout);
+        client.base = base;
+        client.post("/actions", &serde_json::json!({})).unwrap_err()
+    }
+
+    #[test]
+    fn a_daemon_that_is_not_listening_got_nothing() {
+        let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let error = post_to(format!("http://127.0.0.1:{port}"), Duration::from_secs(2));
+        assert_eq!(delivery(&error), Delivery::Unsent, "{error:#}");
+    }
+
+    #[test]
+    fn a_daemon_that_took_the_request_and_never_answered_may_have_run_it() {
+        let (base, server) = one_shot(None);
+        let error = post_to(base, Duration::from_millis(300));
+        assert_eq!(delivery(&error), Delivery::Unanswered, "{error:#}");
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn a_daemon_error_is_its_own_answer() {
+        let (base, server) = one_shot(Some(
+            "HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\nContent-Length: 21\r\nConnection: close\r\n\r\n{\"error\":\"disk full\"}",
+        ));
+        let error = post_to(base, Duration::from_secs(2));
+        assert_eq!(delivery(&error), Delivery::Answered(Some("disk full".into())), "{error:#}");
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn a_direct_route_that_dropped_mid_request_is_not_nothing_sent() {
+        let error = anyhow::Error::new(Unanswered("stopped".into())).context("posting");
+        assert_eq!(delivery(&error), Delivery::Unanswered);
+        let error = anyhow::Error::new(Unsent("not on this network".into()));
+        assert_eq!(delivery(&error), Delivery::Unsent);
     }
 }

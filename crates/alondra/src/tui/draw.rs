@@ -11,7 +11,7 @@ use ratatui::widgets::{
 };
 
 use super::md::{self, str_width, truncate, wrap};
-use super::{App, Key, Pane, Screen, Target, View, unavailable};
+use super::{App, FlashKind, Key, Pane, Screen, Target, View, unavailable};
 use crate::i18n::{self, Occupancy};
 use crate::runtime::FleetNode;
 use alondra_core::NodeState;
@@ -70,7 +70,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     };
     if app.reader.is_some() {
         draw_reader(f, app, body);
-    } else if let Some(view) = app.home_view.clone() {
+    } else if let Some(view) = app.shown_home().map(std::borrow::Cow::into_owned) {
         draw_views_inbox(f, app, &view, body);
     } else {
         draw_waiting(f, app, body);
@@ -80,10 +80,13 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     }
     draw_foot(f, app, foot);
     draw_flash(f, app, body);
+    if let Some(modal) = &app.modal {
+        draw_modal(f, modal, body);
+    }
     if app.help {
         draw_help(f, app);
     }
-    if let Some(device) = app.pairing_prompt() {
+    if let Some(device) = app.pairing_prompt().filter(|_| app.pairing_answers_keys()) {
         draw_pairing(f, device, body);
     }
 }
@@ -1475,18 +1478,7 @@ pub(super) fn view_footer_actions(view: &alondra_core::views::View) -> Vec<(Stri
 }
 
 pub(super) fn option_label(option: &alondra_core::views::ActionOption) -> String {
-    let method = match option.id.as_str() {
-        "merge" => Some(alondra_core::pr::MergeMethod::Merge),
-        "squash" => Some(alondra_core::pr::MergeMethod::Squash),
-        "rebase" => Some(alondra_core::pr::MergeMethod::Rebase),
-        _ => None,
-    };
-    match method {
-        Some(alondra_core::pr::MergeMethod::Merge) => tr!("Merge commit", "Commit de fusión").into(),
-        Some(alondra_core::pr::MergeMethod::Squash) => tr!("Squash merge", "Fusión squash").into(),
-        Some(alondra_core::pr::MergeMethod::Rebase) => "rebase".into(),
-        None => option.label.clone(),
-    }
+    option.label.clone()
 }
 
 pub(super) fn visible_detail_actions(document: &alondra_core::views::View) -> Vec<alondra_core::views::Action> {
@@ -1810,10 +1802,10 @@ fn draw_pairing(f: &mut Frame, device: &super::PendingDevice, body: Rect) {
 
 fn draw_flash(f: &mut Frame, app: &App, body: Rect) {
     let Some(fl) = &app.flash else { return };
-    let (mark, color) = if fl.error {
-        ("✗ ", Color::LightRed)
-    } else {
-        ("✓ ", Color::LightGreen)
+    let (mark, color) = match fl.kind {
+        FlashKind::Error => ("✗ ", Color::LightRed),
+        FlashKind::Success => ("✓ ", Color::LightGreen),
+        FlashKind::Pending => ("… ", ACCENT),
     };
     let width = body.width.saturating_sub(4).clamp(10, 100);
     let inner_width = width.saturating_sub(4).max(1);
@@ -1838,6 +1830,50 @@ fn draw_flash(f: &mut Frame, app: &App, body: Rect) {
         Paragraph::new(Text::styled(text, Style::new().fg(color).bold()))
             .wrap(Wrap { trim: true })
             .block(panel),
+        area,
+    );
+}
+
+fn draw_modal(f: &mut Frame, modal: &super::Modal, body: Rect) {
+    let color = if modal.destructive {
+        Color::LightRed
+    } else {
+        ACCENT
+    };
+    let width = body.width.saturating_sub(8).clamp(20, 70);
+    let inner_width = width.saturating_sub(4).max(1);
+    let button = &modal.button;
+    let keys = trf!("⏎ {button} · Esc cancel", "⏎ {button} · Esc cancelar");
+    let mut lines = vec![
+        Line::from(Span::styled(
+            format!("? {}", modal.title),
+            Style::new().fg(color).bold(),
+        )),
+        Line::raw(""),
+    ];
+    if !modal.body.is_empty() {
+        lines.push(Line::raw(modal.body.clone()));
+        lines.push(Line::raw(""));
+    }
+    lines.push(Line::from(Span::styled(keys, Style::new().fg(color).bold())));
+    let rows: u16 = lines
+        .iter()
+        .map(|line| (line.width() as u16).div_ceil(inner_width).max(1))
+        .sum();
+    let height = (rows + 2).min(body.height);
+    let area = Rect {
+        x: body.x + body.width.saturating_sub(width) / 2,
+        y: body.y + body.height.saturating_sub(height) / 2,
+        width,
+        height,
+    };
+    f.render_widget(Clear, area);
+    f.render_widget(
+        Paragraph::new(lines).wrap(Wrap { trim: true }).block(
+            Panel::bordered()
+                .border_type(BorderType::Rounded)
+                .border_style(Style::new().fg(color)),
+        ),
         area,
     );
 }
@@ -2013,8 +2049,8 @@ pub(super) fn help_lines() -> Vec<Line<'static>> {
         row(
             "1-9",
             tr!(
-                "question: choose an option · delivery with a PR: authorize a merge method (twice to confirm)",
-                "pregunta: elegir una opción · entrega con PR: autorizar un método de fusión (dos veces para confirmar)"
+                "question: choose an option · delivery with a PR: merge it (⏎ confirms)",
+                "pregunta: elegir una opción · entrega con PR: fusionarla (⏎ confirma)"
             ),
         ),
         row(
@@ -2131,8 +2167,8 @@ pub(super) fn help_lines() -> Vec<Line<'static>> {
         row(
             "x",
             tr!(
-                "cancel the task, or withdraw a request without tasks (twice to confirm)",
-                "descartar la tarea, o retirar una petición sin tareas (dos veces para confirmar)"
+                "cancel the task, or withdraw a request without tasks (⏎ confirms)",
+                "descartar la tarea, o retirar una petición sin tareas (⏎ confirma)"
             ),
         ),
         row(
@@ -2203,15 +2239,15 @@ pub(super) fn help_lines() -> Vec<Line<'static>> {
         row(
             "x",
             tr!(
-                "close the node (twice to confirm; never discards work)",
-                "cerrar el nodo (dos veces para confirmar; nunca descarta trabajo)"
+                "close the node (⏎ confirms; never discards work)",
+                "cerrar el nodo (⏎ confirma; nunca descarta trabajo)"
             ),
         ),
         row(
             "C · S · R",
             tr!(
-                "orchestrator: continue without repeating · stop · retry (twice each)",
-                "orquestador: continuar sin repetir · detener · reintentar (dos veces cada una)"
+                "orchestrator: continue without repeating · stop · retry (⏎ confirms each)",
+                "orquestador: continuar sin repetir · detener · reintentar (⏎ confirma cada una)"
             ),
         ),
         Line::default(),

@@ -4,7 +4,7 @@ LABEL = $(shell $(BIN)/alondra config --get service_label 2>/dev/null)
 DEVICE ?= David iPhone
 export DEVICE
 
-.PHONY: snapshots-record snapshots-verify mac-snapshots-record mac-snapshots-verify no-holds build test install run tui setup launchd unlaunchd restart status doctor cargo-test mac device device-console e2e-sandbox e2e-sandbox-stop e2e-sandbox-logs soak tasks-screen rehearse-cutover cutover-live
+.PHONY: snapshots-record snapshots-verify tui-shots mac-snapshots-record mac-snapshots-verify no-holds build test install run tui setup launchd unlaunchd restart status doctor cargo-test mac device device-console e2e-sandbox e2e-sandbox-stop e2e-sandbox-logs soak tasks-screen rehearse-cutover cutover-live
 
 build:
 	bazelisk build //crates/... //apple:AlondraMac
@@ -42,6 +42,20 @@ snapshots-record:
 
 snapshots-verify:
 	bazelisk test $(SNAPSHOT_TARGET) --test_output=errors
+
+TUI_SHOTS ?= /tmp/alondra-tui-shots
+CHROME ?= /Applications/Google Chrome.app/Contents/MacOS/Google Chrome
+
+# The PR card flow (merge question, merging, refused, changed) drawn by the TUI, in es and en.
+tui-shots:
+	bazelisk test //crates/alondra:alondra_test --test_arg=--ignored --test_arg=tui_shots \
+		--nocache_test_results --zip_undeclared_test_outputs=false --test_output=errors
+	@mkdir -p $(TUI_SHOTS)
+	@for page in bazel-testlogs/crates/alondra/alondra_test/test.outputs/*.html; do \
+		"$(CHROME)" --headless=new --disable-gpu --hide-scrollbars --window-size=1110,664 \
+			--screenshot="$(TUI_SHOTS)/$$(basename $$page .html).png" "file://$(CURDIR)/$$page" >/dev/null 2>&1; \
+	done
+	@ls $(TUI_SHOTS)
 
 MAC_SNAPSHOT_TARGET := //apple/Testing/MacSnapshots:AlondraMacSnapshotTests
 MAC_SNAPSHOT_ROOT := apple/Testing/MacSnapshots/Tests/__Snapshots__

@@ -648,7 +648,7 @@ fn a_button_with_options_asks_which_before_it_sends() {
     let screen = rendered(&mut app, 120, 46);
     dump("detail: merge methods", &screen);
     assert!(
-        screen.contains("MERGE") && screen.contains(" 1  Squash merge") && screen.contains(" 2  Merge commit"),
+        screen.contains("MERGE") && screen.contains(" 1  Squash and merge") && screen.contains(" 2  Merge commit"),
         "{screen}"
     );
     press(&mut app, KeyCode::Char('2'));
@@ -781,4 +781,31 @@ fn a_device_asking_to_pair_shows_a_prompt_until_the_mac_stops_listing_it() {
         now_millis() - 1,
     )]));
     assert!(!rendered(&mut app, 120, 20).contains("Permitir"));
+}
+
+#[test]
+fn a_blocked_task_action_says_why_instead_of_asking_first() {
+    let (domain, live) = busy();
+    let mut app = task_screen(&domain, &live, "r-3", "t-3");
+    let mut view = serde_json::to_value(app.card_view.clone().unwrap()).unwrap();
+    fn block(value: &mut serde_json::Value, key: &str) -> usize {
+        match value {
+            serde_json::Value::Object(map) if map.get("key").and_then(|k| k.as_str()) == Some(key) && map.contains_key("confirm") => {
+                map.insert("enabled".into(), false.into());
+                map.insert("disabled_reason".into(), "The task is already closing".into());
+                1
+            }
+            serde_json::Value::Object(map) => map.values_mut().map(|value| block(value, key)).sum(),
+            serde_json::Value::Array(items) => items.iter_mut().map(|value| block(value, key)).sum(),
+            _ => 0,
+        }
+    }
+    assert_eq!(block(&mut view, "x"), 1, "the task's cancel action, which asks first");
+    app.card_view = Some(serde_json::from_value(view).unwrap());
+    press(&mut app, KeyCode::Char('x'));
+    assert!(app.modal.is_none(), "no question about something that cannot run");
+    let flash = app.flash.as_ref().expect("its reason");
+    assert_eq!(flash.text, "The task is already closing");
+    assert_eq!(flash.kind, FlashKind::Error);
+    assert!(app.posted.borrow().is_empty());
 }
