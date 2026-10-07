@@ -249,7 +249,7 @@ mod tests {
 
     fn run(domain: &crate::domain_runtime::DomainRuntime, actor: Actor, id: &str, command: Command) {
         let state = domain.state().unwrap();
-        domain.execute(&actor, &CommandEnvelope { protocol_version: 2, data_epoch: state.data_epoch,
+        domain.execute(&actor, &CommandEnvelope { protocol_version: 2, data_epoch: state.data_epoch.clone(),
             command_id: id.into(), expected_revision: state.revision, command }, None, || Ok(())).unwrap();
     }
 

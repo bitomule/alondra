@@ -101,7 +101,7 @@ fn execute(
         &Actor::System,
         &CommandEnvelope {
             protocol_version: PROTOCOL_VERSION,
-            data_epoch: state.data_epoch,
+            data_epoch: state.data_epoch.clone(),
             command_id: id.into(),
             expected_revision: state.revision,
             command,

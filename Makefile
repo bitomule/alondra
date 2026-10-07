@@ -12,7 +12,7 @@ BETA_GROUP := Internal Pilot,Private Pilot
 APPLE_VERSION = $(shell sed -n 's/^ *version = "\(.*\)".*/\1/p' tools/shared.bzl)
 APPLE_BUILD = $(shell sed -n 's/^ *build_number = "\(.*\)".*/\1/p' tools/shared.bzl)
 
-.PHONY: version-guard increment-version build-release snapshots-record snapshots-verify tui-shots mac-snapshots-record mac-snapshots-verify no-holds build test ablation install run tui setup launchd unlaunchd restart status doctor cargo-test mac device device-console e2e-sandbox e2e-sandbox-stop e2e-sandbox-logs soak tasks-screen rehearse-cutover cutover-live
+.PHONY: version-guard increment-version build-release snapshots-record snapshots-verify tui-shots mac-snapshots-record mac-snapshots-verify no-holds build test ablation install run tui setup launchd unlaunchd restart status doctor cargo-test mac device device-console e2e-sandbox e2e-sandbox-stop e2e-sandbox-logs soak load-bench tasks-screen rehearse-cutover cutover-live
 
 build:
 	bazelisk build //crates/... //apple:AlondraMac
@@ -166,6 +166,12 @@ rehearse-cutover:
 cutover-live:
 	bazelisk build //crates/alondrad
 	tools/cutover-live.sh $$(bazelisk cquery --output=files //crates/alondrad 2>/dev/null)
+
+# Latency of /v1/health, views and hooks plus alondrad's CPU under N simulated nodes (tools/load_bench.py).
+load-bench:
+	bazelisk build //crates/alondrad //crates/alondra //crates/alondrad:alondrad_test
+	python3 tools/load_bench.py --daemon bazel-bin/crates/alondrad/alondrad \
+		--cli bazel-bin/crates/alondra/alondra --seed bazel-bin/crates/alondrad/alondrad_test $(LOAD_BENCH_ARGS)
 
 soak:
 	bazelisk build //crates/alondrad

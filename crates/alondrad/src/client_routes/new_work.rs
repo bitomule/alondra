@@ -206,7 +206,7 @@ impl Client {
         let state = self.domain.state()?;
         let envelope = CommandEnvelope {
             protocol_version: PROTOCOL_VERSION,
-            data_epoch: state.data_epoch,
+            data_epoch: state.data_epoch.clone(),
             command_id: format!("request-{}", body.request_id).into(),
             expected_revision: 0,
             command: Command::CreateRequest { request_id: body.request_id.into(), body: body.text, auto_merge },

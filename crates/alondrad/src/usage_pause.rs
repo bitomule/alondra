@@ -382,7 +382,7 @@ pub(crate) struct PushAlerts {
 
 impl Alerts for PushAlerts {
     async fn tell(&self, text: impl Fn(bool) -> String + Send + Sync, passive: bool) {
-        let epoch = self.domain.state().map(|state| state.data_epoch).ok();
+        let epoch = self.domain.state().map(|state| state.data_epoch.clone()).ok();
         let payload = |spanish: bool| serde_json::json!({
             "aps": {
                 "alert": {"title": "Alondra", "body": text(spanish)},
@@ -696,7 +696,7 @@ mod tests {
         let state = domain.state().unwrap();
         domain.execute(&alondra_core::domain::Actor::User { user_id: "device:phone".into() }, &alondra_core::domain::CommandEnvelope {
             protocol_version: alondra_core::domain::PROTOCOL_VERSION,
-            data_epoch: state.data_epoch,
+            data_epoch: state.data_epoch.clone(),
             command_id: format!("answer-{card}-{option}").into(),
             expected_revision: state.revision,
             command: alondra_core::domain::Command::AnswerQuestion {

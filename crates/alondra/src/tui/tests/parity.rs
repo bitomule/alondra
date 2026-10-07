@@ -1429,7 +1429,7 @@ fn held_plan_card() -> alondra_core::views::View {
             .content(alondra_core::domain::ContentKind::Plan, "1. Split the lexer") });
     let live = alondra_core::views::LiveSnapshot::default();
     alondra_core::views::build("card:hold-1", alondra_core::views::RenderContext {
-        domain: &state, live: &live, client: alondra_core::views::Client::Tui, lang: alondra_core::views::Lang::En,
+        domain: &state, projection: &state.projection(), live: &live, client: alondra_core::views::Client::Tui, lang: alondra_core::views::Lang::En,
         transport: alondra_core::views::Transport::Loopback, cursor: "c", rendered_at: "",
     }).unwrap()
 }

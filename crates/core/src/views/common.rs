@@ -12,7 +12,6 @@ pub(super) fn view(
     context: &RenderContext<'_>,
     sections: Vec<Section>,
 ) -> View {
-    let projection = context.domain.projection();
     View {
         protocol: VIEWS_PROTOCOL,
         data_epoch: context.domain.data_epoch.0.clone(),
@@ -22,7 +21,7 @@ pub(super) fn view(
         version: String::new(),
         cursor: context.cursor.into(),
         title,
-        status: super::status::build(&projection, context),
+        status: super::status::build(context.projection, context),
         sections,
         empty: None,
         notices: vec![],

@@ -26,7 +26,7 @@ fn user() -> Actor {
 fn command(domain: &DomainRuntime, actor: Actor, command: Command) {
     let state = domain.state().unwrap();
     domain.execute(&actor, &CommandEnvelope {
-        protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch, command_id: format!("c-{}", crate::auth::random_hex(8)).into(),
+        protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: format!("c-{}", crate::auth::random_hex(8)).into(),
         expected_revision: state.revision, command,
     }, None, || Ok(())).unwrap();
 }
@@ -55,7 +55,7 @@ fn create(f: &Fixture, id: &str, after: &[&str], plan: Option<&LaunchPlan>) {
     let bearer = f.domain.bind_orchestrator(&format!("execution-{id}")).unwrap().expose_for_child_environment().to_owned();
     let state = f.domain.state().unwrap();
     let envelope = CommandEnvelope {
-        protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch, command_id: format!("create-{id}").into(), expected_revision: 0,
+        protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: format!("create-{id}").into(), expected_revision: 0,
         command: Command::CreateTask {
             task_id: id.into(), request_id: "r".into(), title: format!("Task {id}"), agent_id: None, review_prs: false,
             dependencies: after.iter().map(|dep| TaskId::from(*dep)).collect(), stack: None,
@@ -399,7 +399,7 @@ async fn a_task_of_a_closed_request_or_archived_is_not_started() {
     let f = world();
     done_task(&f, "f0");
     create(&f, "f1", &["f0"], Some(&plan(&f, "app/f1")));
-    let mut state = f.domain.state().unwrap();
+    let mut state = (*f.domain.state().unwrap()).clone();
     let task = state.tasks[&TaskId::from("f1")].clone();
     assert!(candidate(&state, &task));
     state.requests.get_mut(&"r".into()).unwrap().closed = true;

@@ -1197,7 +1197,7 @@ mod tests {
         ));
         std::fs::create_dir(&home).unwrap();
         let domain = DomainRuntime::open(&home).unwrap();
-        let epoch = domain.state().unwrap().data_epoch.0;
+        let epoch = domain.state().unwrap().data_epoch.0.clone();
         drop(domain);
         let auth = Auth::open(&home).unwrap();
         let key = SigningKey::from_slice(&[9u8; 32]).unwrap();
@@ -1665,7 +1665,7 @@ mod tests {
             .unwrap()
             .state()
             .unwrap()
-            .data_epoch
+            .data_epoch.clone()
             .0;
         let auth = Auth::open(&home).unwrap();
         let key = SigningKey::from_slice(&[21u8; 32]).unwrap();

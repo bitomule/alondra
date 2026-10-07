@@ -65,7 +65,7 @@ pub(super) fn node_state(agent: &AgentId, context: &RenderContext<'_>) -> super:
     let lang = context.lang;
     let live = context.live.nodes.iter().find(|node| node.agent_id == agent.0);
     let key = live.and_then(|node| node.state_key.as_deref());
-    let inbox = context.domain.projection().inbox;
+    let inbox = &context.projection.inbox;
     let waiting = |kinds: &[&str]| inbox.iter()
         .any(|item| item.pending && item.agent_id.as_ref() == Some(agent) && kinds.contains(&item.kind.as_str()));
     let reviewing = inbox.iter().any(|item| {
@@ -331,8 +331,7 @@ pub(super) fn node_row(agent: &crate::domain::Agent, context: &RenderContext<'_>
     } else {
         row.trailing = Some(Trailing::Count {
             value: context
-                .domain
-                .projection()
+                .projection
                 .inbox
                 .iter()
                 .filter(|item| item.pending && item.agent_id.as_ref() == Some(&agent.id))
@@ -412,7 +411,7 @@ fn urgency(agent: &AgentId, context: &RenderContext<'_>) -> Option<u8> {
     let live_working = context.live.nodes.iter().any(|node| node.agent_id == agent.0 && node.working);
     let open_task = context.domain.tasks.values()
         .any(|task| task.agent_id.as_ref() == Some(agent) && !task.archived && !task.state.terminal());
-    let owes_user = context.domain.projection().inbox.iter()
+    let owes_user = context.projection.inbox.iter()
         .any(|item| item.pending && item.agent_id.as_ref() == Some(agent));
     if !(live_working || open_task || owes_user) {
         return None;
@@ -558,12 +557,11 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
         view.sections.push(common::section("attach", None, vec![Item::Row(attach)]));
     }
     let waiting = context
-        .domain
-        .projection()
+        .projection
         .inbox
-        .into_iter()
+        .iter()
         .filter(|item| item.pending && item.agent_id.as_ref() == Some(&agent.id))
-        .map(|item| super::card::from_item(&item, context, false).map(Item::Card))
+        .map(|item| super::card::from_item(item, context, false).map(Item::Card))
         .collect::<Result<Vec<_>, BuildError>>()?;
     view.sections.push(common::section(
         "waiting",

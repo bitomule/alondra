@@ -611,7 +611,7 @@ mod tests {
     fn command(domain: &DomainRuntime, actor: Actor, id: &str, command: Command) {
         let state = domain.state().unwrap();
         domain.execute(&actor, &CommandEnvelope {
-            protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch,
+            protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(),
             command_id: id.into(), expected_revision: state.revision, command,
         }, None, || Ok(())).unwrap();
     }
@@ -804,7 +804,7 @@ printf '%s\n' '{"type":"result","session_id":"'"$session"'","subtype":"success",
         let state = domain.state().unwrap();
         domain.execute(&alondra_core::domain::Actor::User { user_id: "device:phone".into() }, &alondra_core::domain::CommandEnvelope {
             protocol_version: alondra_core::domain::PROTOCOL_VERSION,
-            data_epoch: state.data_epoch,
+            data_epoch: state.data_epoch.clone(),
             command_id: format!("answer-{option}").into(),
             expected_revision: state.revision,
             command: alondra_core::domain::Command::AnswerQuestion {

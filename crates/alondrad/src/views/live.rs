@@ -601,7 +601,7 @@ mod cache_tests {
         for id in ["a", "b"] {
             let state = domain.state().unwrap();
             domain.execute(&Actor::System, &CommandEnvelope {
-                protocol_version: 2, data_epoch: state.data_epoch,
+                protocol_version: 2, data_epoch: state.data_epoch.clone(),
                 command_id: format!("register-{id}").into(), expected_revision: state.revision,
                 command: Command::RegisterAgent { agent_id: id.into(), name: format!("Agent {id}") },
             }, None, || Ok(())).unwrap();

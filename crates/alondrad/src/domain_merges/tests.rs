@@ -15,7 +15,7 @@ impl Drop for Home {
 fn command(domain: &DomainRuntime, actor: Actor, id: &str, command: Command) {
     let state = domain.state().unwrap();
     domain.execute(&actor, &CommandEnvelope {
-        protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch, command_id: id.into(),
+        protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: id.into(),
         expected_revision: state.revision, command,
     }, None, || Ok(())).unwrap();
 }
@@ -89,7 +89,7 @@ fn accepted(domain: &DomainRuntime) -> bool {
 }
 
 fn problems(domain: &DomainRuntime) -> Vec<Interaction> {
-    domain.state().unwrap().interactions.into_values().filter(|card| card.card.kind == CardKind::Problem).collect()
+    domain.state().unwrap().interactions.values().cloned().filter(|card| card.card.kind == CardKind::Problem).collect()
 }
 
 #[tokio::test]

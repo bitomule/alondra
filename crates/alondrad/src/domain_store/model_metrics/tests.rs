@@ -106,7 +106,7 @@ fn store() -> (Fixture, DomainStore) {
 
 fn run_command(store: &mut DomainStore, actor: &Actor, id: &str, command: Command) {
     let state = store.load().unwrap();
-    let envelope = CommandEnvelope { protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch, command_id: id.into(), expected_revision: state.revision, command };
+    let envelope = CommandEnvelope { protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: id.into(), expected_revision: state.revision, command };
     store.execute_authenticated(actor, &envelope, None).unwrap();
 }
 

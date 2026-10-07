@@ -66,8 +66,7 @@ impl Cache {
             base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, clock,)
         );
         let cache_key = format!("{key}|{client:?}|{lang:?}|{transport:?}|{cursor}");
-        let mut entries = self.entries.lock().expect("view render cache poisoned");
-        if let Some(view) = entries.get(&cache_key) {
+        if let Some(view) = self.entries.lock().expect("view render cache poisoned").get(&cache_key) {
             return Ok(view);
         }
         #[cfg(test)]
@@ -76,6 +75,7 @@ impl Cache {
             key,
             RenderContext {
                 domain,
+                projection: &domain.projection(),
                 live,
                 client,
                 lang,
@@ -93,7 +93,7 @@ impl Cache {
         view.cursor = format!("c1.{}", base64::Engine::encode(
             &base64::engine::general_purpose::URL_SAFE_NO_PAD, feed_clock,
         ));
-        entries.insert(cache_key, view.clone());
+        self.entries.lock().expect("view render cache poisoned").insert(cache_key, view.clone());
         Ok(view)
     }
 }

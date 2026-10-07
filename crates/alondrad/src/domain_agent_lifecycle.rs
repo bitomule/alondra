@@ -37,7 +37,7 @@ pub(crate) fn prepare_event(
     let state = domain.state().map_err(StoreError::Storage)?;
     Ok(LifecycleEvent {
         event_id: event_id.to_owned(),
-        data_epoch: state.data_epoch,
+        data_epoch: state.data_epoch.clone(),
         expected_revision: state.revision,
     })
 }

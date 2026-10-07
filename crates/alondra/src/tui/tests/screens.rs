@@ -118,6 +118,7 @@ fn build(domain: &DomainState, live: &LiveSnapshot, key: &str) -> views::View {
         key,
         RenderContext {
             domain,
+            projection: &domain.projection(),
             live,
             client: Client::Tui,
             lang: Lang::Es,

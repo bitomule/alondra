@@ -55,7 +55,7 @@ impl Daemon {
     fn execute(&self, actor: Actor, id: &str, command: Command) -> CommandOutcome {
         let state = self.domain.state().unwrap();
         self.domain.execute(&actor, &CommandEnvelope {
-            protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch,
+            protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(),
             command_id: id.into(), expected_revision: state.revision, command,
         }, None, || Ok(())).unwrap()
     }

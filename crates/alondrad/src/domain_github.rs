@@ -153,7 +153,7 @@ pub(crate) fn execute_system(domain: &DomainRuntime, command: Command) -> Result
     let state = domain.state().map_err(StoreError::Storage)?;
     let envelope = CommandEnvelope {
         protocol_version: PROTOCOL_VERSION,
-        data_epoch: state.data_epoch,
+        data_epoch: state.data_epoch.clone(),
         command_id: format!("github-{}", crate::auth::random_hex(16)).into(),
         expected_revision: state.revision,
         command,
@@ -279,7 +279,7 @@ pub(crate) async fn run(domain: Arc<DomainRuntime>, observer: Arc<impl PrObserve
     let mut changed = domain.subscribe();
     let mut failures = ObservationFailures::default();
     loop {
-        let mut open = watched(&domain.state()?);
+        let mut open = watched(&*domain.state()?);
         if open.is_empty() {
             // No timer exists while there is no open PR. A registration wakes
             // this receiver because it commits a new domain revision.
@@ -288,7 +288,7 @@ pub(crate) async fn run(domain: Arc<DomainRuntime>, observer: Arc<impl PrObserve
         }
         let mut known: BTreeSet<_> = open.iter().map(|pr| pr.id.clone()).collect();
         reconcile(&domain, &*observer, &mut failures).await?;
-        open = watched(&domain.state()?);
+        open = watched(&*domain.state()?);
         if open.is_empty() {
             continue;
         }
@@ -300,7 +300,7 @@ pub(crate) async fn run(domain: Arc<DomainRuntime>, observer: Arc<impl PrObserve
                 change = changed.changed() => { change?; }
                 _ = interval.tick() => { reconcile(&domain, &*observer, &mut failures).await?; }
             }
-            open = watched(&domain.state()?);
+            open = watched(&*domain.state()?);
             if open.is_empty() {
                 break;
             }
@@ -357,7 +357,7 @@ mod tests {
     fn command(domain: &DomainRuntime, actor: Actor, id: &str, command: Command) {
         let state = domain.state().unwrap();
         domain.execute(&actor, &CommandEnvelope {
-            protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch,
+            protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(),
             command_id: id.into(), expected_revision: state.revision, command,
         }, None, || Ok(())).unwrap();
     }
@@ -642,6 +642,7 @@ mod tests {
             let (_fixture, domain) = open(tag);
             authorized(&domain);
             domain.store.lock().unwrap().claim_as_node("auth", "a");
+            domain.reload();
             let observer = FakeObserver::new();
             observer.set(7, Ok(remote.clone()));
             reconcile(&domain, &observer, &mut ObservationFailures::default()).await.unwrap();
@@ -660,6 +661,7 @@ mod tests {
         let (_fixture, domain) = open("superseded-claim");
         authorized(&domain);
         domain.store.lock().unwrap().claim_as_node("auth", "a");
+        domain.reload();
         let observer = FakeObserver::new();
         observer.set(7, Ok(facts(OTHER, PrState::Open)));
         reconcile(&domain, &observer, &mut ObservationFailures::default()).await.unwrap();
@@ -714,7 +716,7 @@ mod tests {
         let observer = FakeObserver::new();
         observer.set(7, Err("error connecting to github".into()));
         let mut failures = ObservationFailures::default();
-        let problems = |domain: &DomainRuntime| domain.state().unwrap().interactions.into_values()
+        let problems = |domain: &DomainRuntime| domain.state().unwrap().interactions.values().cloned()
             .filter(|card| card.card.kind == alondra_core::domain::CardKind::Problem)
             .collect::<Vec<_>>();
         for _ in 0..4 {

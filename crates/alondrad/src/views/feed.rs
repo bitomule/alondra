@@ -471,7 +471,7 @@ mod tests {
             let state = self.client.domain.state().unwrap();
             let envelope = CommandEnvelope {
                 protocol_version: 2,
-                data_epoch: state.data_epoch,
+                data_epoch: state.data_epoch.clone(),
                 command_id: command_id.into(),
                 expected_revision: state.revision,
                 command: Command::CreateRequest {
@@ -492,7 +492,7 @@ mod tests {
             let state = self.client.domain.state().unwrap();
             let envelope = CommandEnvelope {
                 protocol_version: 2,
-                data_epoch: state.data_epoch,
+                data_epoch: state.data_epoch.clone(),
                 command_id: command_id.into(),
                 expected_revision: state.revision,
                 command: Command::RegisterAgent {
@@ -518,7 +518,7 @@ mod tests {
                 &Actor::User { user_id: "feed-test".into() },
                 &CommandEnvelope {
                     protocol_version: 2,
-                    data_epoch: state.data_epoch,
+                    data_epoch: state.data_epoch.clone(),
                     command_id: format!("task-{suffix}").into(),
                     expected_revision: state.revision,
                     command: Command::CreateTask {
@@ -539,7 +539,7 @@ mod tests {
                 &Actor::Agent { agent_id: agent_id.into() },
                 &CommandEnvelope {
                     protocol_version: 2,
-                    data_epoch: state.data_epoch,
+                    data_epoch: state.data_epoch.clone(),
                     command_id: format!("question-{suffix}").into(),
                     expected_revision: state.revision,
                     command: Command::AskQuestion {

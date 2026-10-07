@@ -28,7 +28,7 @@ const TEXT_KEYS: [&str; 2] = ["body", "text"];
 pub(crate) struct Cache(Mutex<Option<Arc<Snapshot>>>);
 
 pub(crate) struct Snapshot {
-    state: DomainState,
+    state: Arc<DomainState>,
     projection: DomainProjection,
     sections: BTreeMap<String, SectionInfo>,
     inbox_by_id: HashMap<String, usize>,
@@ -65,7 +65,7 @@ fn ordered<'a>(items: impl Iterator<Item = (usize, &'a Interaction)>) -> Vec<usi
 }
 
 impl Snapshot {
-    fn build(state: DomainState) -> Self {
+    fn build(state: Arc<DomainState>) -> Self {
         let projection = state.projection();
         let mut inbox_by_id = HashMap::new();
         for (r, root) in projection.inbox.iter().enumerate() {

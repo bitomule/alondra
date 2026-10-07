@@ -4,12 +4,15 @@ use crate::domain_store::{DomainStore, StoreError, TransportIdentity};
 use alondra_core::domain::*;
 use anyhow::Result;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex, RwLock};
 use tokio::sync::watch;
 
 pub struct DomainRuntime {
     home: PathBuf,
     pub(crate) store: Mutex<DomainStore>,
+    /// The last committed state. Readers take it without the store, a transaction or a copy;
+    /// only a commit replaces it, while it still holds the store.
+    snapshot: RwLock<Arc<DomainState>>,
     approval_home: PathBuf,
     authority: Mutex<Authority>,
     changed: watch::Sender<Revision>,
@@ -42,10 +45,11 @@ impl DomainRuntime {
         let state = store.load()?;
         let (changed, _) = watch::channel(state.revision);
         let (schedule_changed, _) = watch::channel(state.revision);
-        let authority = capabilities::load(home, state.data_epoch.0)?;
+        let authority = capabilities::load(home, state.data_epoch.0.clone())?;
         Ok(Self {
             home: home.to_path_buf(),
             store: Mutex::new(store),
+            snapshot: RwLock::new(state),
             approval_home: home.to_path_buf(),
             authority: Mutex::new(authority),
             changed,
@@ -59,8 +63,18 @@ impl DomainRuntime {
     pub(crate) fn home(&self) -> &Path {
         &self.home
     }
-    pub fn state(&self) -> Result<DomainState> {
-        self.store.lock().expect("domain store poisoned").load()
+    pub fn state(&self) -> Result<Arc<DomainState>> {
+        Ok(Arc::clone(&self.snapshot.read().expect("domain snapshot poisoned")))
+    }
+    fn publish(&self, state: &Arc<DomainState>) {
+        *self.snapshot.write().expect("domain snapshot poisoned") = Arc::clone(state);
+    }
+    /// After a test writes domain rows straight to SQL, or through another runtime on the
+    /// same file: the daemon itself only changes the domain by committing commands.
+    #[cfg(test)]
+    pub(crate) fn reload(&self) {
+        let state = self.store.lock().unwrap().load().unwrap();
+        self.publish(&state);
     }
     pub(crate) fn schedule_request_tools(
         &self,
@@ -101,7 +115,7 @@ impl DomainRuntime {
     /// for that session stops working the moment the new one is issued.
     pub fn bind_agent(&self, session_id: &str) -> Result<Capability, StoreError> {
         let mut authority = self.authority.lock().expect("domain authority poisoned");
-        let state = self.store.lock().expect("domain store poisoned").load()?;
+        let state = self.state()?;
         if !state.agents.contains_key(&AgentId(session_id.to_owned())) {
             return Err(DomainError::new("not_found", "Agent does not exist").into());
         }
@@ -120,7 +134,7 @@ impl DomainRuntime {
     /// Bind one orchestrator execution to the current generation.
     pub fn bind_orchestrator(&self, execution_id: &str) -> Result<Capability, StoreError> {
         let mut authority = self.authority.lock().expect("domain authority poisoned");
-        let state = self.store.lock().expect("domain store poisoned").load()?;
+        let state = self.state()?;
         authority.revoke_execution(execution_id);
         let capability = authority
             .issue(Principal::Orchestrator {
@@ -147,7 +161,7 @@ impl DomainRuntime {
     /// Commands recheck the capability while holding the writer lock.
     pub fn resolve_bearer(&self, bearer: &str) -> Result<Principal, StoreError> {
         let authority = self.authority.lock().expect("domain authority poisoned");
-        let state = self.store.lock().expect("domain store poisoned").load()?;
+        let state = self.state()?;
         authority
             .resolve(&state.data_epoch.0, bearer)
             .map_err(|message| DomainError::new("forbidden", message).into())
@@ -238,6 +252,7 @@ impl DomainRuntime {
             prepared.discard_uncommitted(&self.home);
         }
         let commit = commit?;
+        self.publish(&commit.state);
         if !commit.replayed && commit.outcome.changed {
             self.changed.send_replace(commit.state.revision);
             if schedule_command(&prepared.envelope.command) {
@@ -312,6 +327,7 @@ impl DomainRuntime {
             prepared.discard_uncommitted(&self.home);
         }
         let commit = commit?;
+        self.publish(&commit.state);
         if !commit.replayed && commit.outcome.changed {
             self.changed.send_replace(commit.state.revision);
             if schedule_command(&prepared.envelope.command) {
@@ -448,7 +464,7 @@ mod approval_tests {
         let state = runtime.state().unwrap();
         let envelope = CommandEnvelope {
             protocol_version: PROTOCOL_VERSION,
-            data_epoch: state.data_epoch,
+            data_epoch: state.data_epoch.clone(),
             command_id: "command-lease".into(),
             expected_revision: state.revision,
             command: Command::CreateRequest {
@@ -525,6 +541,41 @@ mod approval_tests {
 }
 
 #[cfg(test)]
+mod snapshot_tests {
+    use super::*;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    #[test]
+    fn reads_never_wait_for_the_store_and_see_each_commit() {
+        let home = std::env::temp_dir().join(format!("alondra-domain-snapshot-{}", crate::auth::random_hex(8)));
+        std::fs::create_dir_all(&home).unwrap();
+        let runtime = Arc::new(DomainRuntime::open(&home).unwrap());
+        let before = runtime.state().unwrap();
+        assert!(Arc::ptr_eq(&before, &runtime.state().unwrap()), "a read copies nothing");
+        let store = runtime.store.lock().unwrap();
+        let (read, done) = mpsc::channel();
+        let reader = runtime.clone();
+        std::thread::spawn(move || read.send(reader.state().unwrap().revision).unwrap());
+        assert_eq!(done.recv_timeout(Duration::from_secs(2)), Ok(before.revision), "a read while a writer holds the store");
+        drop(store);
+        let envelope = CommandEnvelope {
+            protocol_version: PROTOCOL_VERSION,
+            data_epoch: before.data_epoch.clone(),
+            command_id: "agent".into(),
+            expected_revision: before.revision,
+            command: Command::RegisterAgent { agent_id: "agent-a".into(), name: "A".into() },
+        };
+        runtime.execute(&Actor::System, &envelope, None, || Ok(())).unwrap();
+        let after = runtime.state().unwrap();
+        assert_eq!(after.revision, before.revision + 1);
+        assert!(after.agents.contains_key(&AgentId::from("agent-a")));
+        assert!(before.agents.is_empty(), "a reader's snapshot never changes under it");
+        std::fs::remove_dir_all(home).unwrap();
+    }
+}
+
+#[cfg(test)]
 mod producer_revision_tests {
     use super::*;
 
@@ -540,7 +591,7 @@ mod producer_revision_tests {
             let state = runtime.state().unwrap();
             CommandEnvelope {
                 protocol_version: PROTOCOL_VERSION,
-                data_epoch: state.data_epoch,
+                data_epoch: state.data_epoch.clone(),
                 command_id: id.into(),
                 expected_revision: expected.unwrap_or(state.revision),
                 command,

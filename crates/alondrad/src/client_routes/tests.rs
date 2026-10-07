@@ -62,7 +62,7 @@ impl Fixture {
     pub(super) fn command(&self, actor: Actor, id: &str, command: Command) -> CommandOutcome {
         let state = self.domain.state().unwrap();
         self.domain.execute(&actor, &CommandEnvelope {
-            protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch,
+            protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(),
             command_id: id.into(), expected_revision: state.revision, command,
         }, None, || Ok(())).unwrap()
     }
@@ -939,7 +939,7 @@ async fn an_uncertain_delivery_is_resolved_on_this_mac_by_the_paired_device() {
         store.finish_message(claim.attempt_id, claim.version, alondra_core::delivery::State::Uncertain, Some("push_unknown")).unwrap();
         (claim.attempt_id, message.id)
     };
-    let epoch = fixture.domain.state().unwrap().data_epoch;
+    let epoch = fixture.domain.state().unwrap().data_epoch.clone();
     let path = format!("/delivery-attempts/{attempt}/resolve");
     let body = |decision: &str, version: u64| json!({"protocol_version": 2, "data_epoch": epoch, "expected_version": version, "decision": decision});
     let unsigned = reqwest::Client::new().post(format!("{}{path}", fixture.base)).json(&body("retry", 2)).send().await.unwrap();
@@ -1201,7 +1201,7 @@ async fn a_node_that_has_not_reconnected_after_a_restart_is_idle_and_never_reads
     let domain = &fixture.domain;
     let state = domain.state().unwrap();
     domain.execute(&Actor::System, &CommandEnvelope {
-        protocol_version: 2, data_epoch: state.data_epoch, command_id: "register-ghost".into(), expected_revision: state.revision,
+        protocol_version: 2, data_epoch: state.data_epoch.clone(), command_id: "register-ghost".into(), expected_revision: state.revision,
         command: Command::RegisterAgent { agent_id: "ghost".into(), name: "alondra/ghost".into() },
     }, None, || Ok(())).unwrap();
     crate::domain_agent_lifecycle::observe_instance(domain, &"ghost".into(), true,
@@ -1223,7 +1223,7 @@ async fn a_stopped_node_with_an_open_task_stays_in_fleet_under_its_project_with_
     let run = |actor: Actor, id: &str, command: Command| {
         let state = domain.state().unwrap();
         domain.execute(&actor, &CommandEnvelope {
-            protocol_version: 2, data_epoch: state.data_epoch, command_id: id.into(), expected_revision: state.revision, command,
+            protocol_version: 2, data_epoch: state.data_epoch.clone(), command_id: id.into(), expected_revision: state.revision, command,
         }, None, || Ok(())).unwrap();
     };
     let user = || Actor::User { user_id: "u".into() };
@@ -1254,7 +1254,7 @@ async fn an_agent_with_no_connection_no_task_and_nothing_live_has_left_fleet() {
     let domain = &fixture.domain;
     let state = domain.state().unwrap();
     domain.execute(&Actor::System, &CommandEnvelope {
-        protocol_version: 2, data_epoch: state.data_epoch, command_id: "register-bare".into(), expected_revision: state.revision,
+        protocol_version: 2, data_epoch: state.data_epoch.clone(), command_id: "register-bare".into(), expected_revision: state.revision,
         command: Command::RegisterAgent { agent_id: "bare".into(), name: "test/bare".into() },
     }, None, || Ok(())).unwrap();
     let fleet = view_json(&fixture, "fleet", "en").await;

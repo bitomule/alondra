@@ -12,7 +12,7 @@ impl Drop for Fixture {
 
 fn run(domain: &DomainRuntime, actor: Actor, command: Command) {
     let state = domain.state().unwrap();
-    domain.execute(&actor, &CommandEnvelope { protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch,
+    domain.execute(&actor, &CommandEnvelope { protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(),
         command_id: format!("c-{}", state.revision).into(), expected_revision: state.revision, command }, None, || Ok(())).unwrap();
 }
 

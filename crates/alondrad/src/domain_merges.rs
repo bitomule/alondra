@@ -330,7 +330,7 @@ impl Merger {
     /// Merges what is due. `true` while something waits, so the caller looks again.
     pub(crate) async fn merge_due(&mut self, domain: &DomainRuntime, github: &impl PrMerger) -> Result<bool> {
         let mut waiting = false;
-        let due = due(&domain.state()?);
+        let due = due(&*domain.state()?);
         let open: BTreeSet<_> = due.iter().map(|item| item.pr.id.clone()).collect();
         self.forget_all_but(domain, &open);
         for item in due {
@@ -450,7 +450,7 @@ impl Merger {
                 return Ok(Step::Wait);
             }
         }
-        if !still_due(&domain.state()?, item, &authorization) {
+        if !still_due(&*domain.state()?, item, &authorization) {
             return Ok(Step::Settled);
         }
         let marked = match github.is_draft(pr).await {

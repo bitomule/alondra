@@ -120,7 +120,7 @@ mod tests {
     fn register(domain: &DomainRuntime, agent: &str) {
         let state = domain.state().unwrap();
         domain.execute(&Actor::System, &CommandEnvelope {
-            protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch,
+            protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(),
             command_id: format!("register-{agent}").into(), expected_revision: state.revision,
             command: Command::RegisterAgent { agent_id: agent.into(), name: agent.into() },
         }, None, || Ok(())).unwrap();

@@ -93,7 +93,7 @@ pub(super) fn build(id: &str, context: &RenderContext<'_>) -> Result<View, Build
     }
     let key = format!("card:{id}");
     let domain = context.domain;
-    let projection = domain.projection();
+    let projection = context.projection;
     let fallback;
     let item = match projection.inbox.iter().find(|item| public_id(item) == id) {
         Some(item) => item,

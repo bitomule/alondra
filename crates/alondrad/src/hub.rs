@@ -32,7 +32,7 @@ impl Drop for Launching<'_> {
 }
 
 pub struct Hub {
-    pub domain: crate::domain_runtime::DomainRuntime,
+    pub domain: std::sync::Arc<crate::domain_runtime::DomainRuntime>,
     writer: Mutex<Store>,
     view: RwLock<View>,
     machine: RwLock<Machine>,
@@ -69,7 +69,7 @@ impl Hub {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o700))?;
         }
-        let domain = crate::domain_runtime::DomainRuntime::open(&home)?;
+        let domain = std::sync::Arc::new(crate::domain_runtime::DomainRuntime::open(&home)?);
         let mut store = Store::open(&home.join("alondra.db"))?;
         let (after, mut view) = store.latest_snapshot()?.unwrap_or_default();
         view.backfill_created_at();

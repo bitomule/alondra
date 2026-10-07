@@ -20,7 +20,7 @@ fn publish(runtime: &DomainRuntime, task: &str, id: &str, body: String) {
             &Actor::System,
             &CommandEnvelope {
                 protocol_version: PROTOCOL_VERSION,
-                data_epoch: state.data_epoch,
+                data_epoch: state.data_epoch.clone(),
                 command_id: format!("cmd-{id}").into(),
                 expected_revision: state.revision,
                 command: Command::PublishInformation {
@@ -46,7 +46,7 @@ fn run(runtime: &DomainRuntime, actor: &Actor, id: &str, command: Command) {
             actor,
             &CommandEnvelope {
                 protocol_version: PROTOCOL_VERSION,
-                data_epoch: state.data_epoch,
+                data_epoch: state.data_epoch.clone(),
                 command_id: id.into(),
                 expected_revision: state.revision,
                 command,

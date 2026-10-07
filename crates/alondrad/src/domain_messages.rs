@@ -167,7 +167,7 @@ pub(crate) fn take_held(domain: &DomainRuntime, agent: &AgentId) -> Vec<String> 
 fn mark_read(domain: &DomainRuntime, user: &Actor, interaction_id: InteractionId) -> Result<(), DomainError> {
     let state = domain.state().map_err(|_| refused("storage_unavailable", "domain state unavailable"))?;
     let envelope = CommandEnvelope {
-        protocol_version: alondra_core::domain::PROTOCOL_VERSION, data_epoch: state.data_epoch,
+        protocol_version: alondra_core::domain::PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(),
         command_id: format!("mark-read-{}", crate::auth::random_hex(8)).into(), expected_revision: state.revision,
         command: Command::MarkRead { interaction_id },
     };
@@ -200,7 +200,7 @@ mod tests {
         let domain = Arc::new(DomainRuntime::open(&home).unwrap());
         let run = |actor: Actor, id: &str, command: Command| {
             let state = domain.state().unwrap();
-            let envelope = CommandEnvelope { protocol_version: alondra_core::domain::PROTOCOL_VERSION, data_epoch: state.data_epoch,
+            let envelope = CommandEnvelope { protocol_version: alondra_core::domain::PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(),
                 command_id: id.into(), expected_revision: state.revision, command };
             domain.execute(&actor, &envelope, None, || Ok(())).unwrap();
         };
@@ -221,7 +221,7 @@ mod tests {
         let (fixture, domain) = world();
         let run = |actor: Actor, id: &str, command: Command| {
             let state = domain.state().unwrap();
-            let envelope = CommandEnvelope { protocol_version: alondra_core::domain::PROTOCOL_VERSION, data_epoch: state.data_epoch,
+            let envelope = CommandEnvelope { protocol_version: alondra_core::domain::PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(),
                 command_id: id.into(), expected_revision: state.revision, command };
             domain.execute(&actor, &envelope, None, || Ok(())).unwrap();
         };
@@ -318,7 +318,7 @@ mod tests {
         let (fixture, domain) = world();
         let state = domain.state().unwrap();
         domain.execute(&Actor::System, &CommandEnvelope {
-            protocol_version: alondra_core::domain::PROTOCOL_VERSION, data_epoch: state.data_epoch, command_id: "i".into(),
+            protocol_version: alondra_core::domain::PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: "i".into(),
             expected_revision: state.revision, command: Command::PublishInformation { attachments: vec![], interaction_id: "info-1".into(),
                 scope: alondra_core::domain::Scope::Task { task_id: "t".into() }, recipient: alondra_core::domain::Recipient::User, body: "Done".into(), card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Know, "Read the update") },
         }, None, || Ok(())).unwrap();

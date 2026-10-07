@@ -136,7 +136,7 @@ mod tests {
 
         fn run(&self, actor: Actor, id: &str, command: Command) {
             let state = self.domain.state().unwrap();
-            self.domain.execute(&actor, &CommandEnvelope { protocol_version: 2, data_epoch: state.data_epoch,
+            self.domain.execute(&actor, &CommandEnvelope { protocol_version: 2, data_epoch: state.data_epoch.clone(),
                 command_id: id.into(), expected_revision: state.revision, command }, None, || Ok(())).unwrap();
         }
 

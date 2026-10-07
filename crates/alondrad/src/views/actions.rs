@@ -1556,7 +1556,7 @@ mod tests {
         let state = domain.state().unwrap();
         domain.execute(&actor, &CommandEnvelope {
             protocol_version: 2,
-            data_epoch: state.data_epoch,
+            data_epoch: state.data_epoch.clone(),
             command_id: command_id.into(),
             expected_revision: state.revision,
             command,

@@ -418,7 +418,8 @@ pub(crate) fn cutover_offline(
     let data_epoch = crate::domain_runtime::DomainRuntime::open_at(&home, &database)?
         .state()?
         .data_epoch
-        .0;
+        .0
+        .clone();
     let marker = Marker {
         format: 1,
         phase: Phase::Prepared,
@@ -814,7 +815,8 @@ mod tests {
                 .state()
                 .unwrap()
                 .data_epoch
-                .0;
+                .0
+                .clone();
         let prepared = Marker {
             format: 1,
             phase: Phase::Prepared,

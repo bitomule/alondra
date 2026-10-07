@@ -26,12 +26,15 @@ pub use live::*;
 pub use text::Lang;
 pub const VIEWS_PROTOCOL: u32 = 1;
 
-use crate::domain::DomainState;
+use crate::domain::{DomainProjection, DomainState};
 use sha2::{Digest, Sha256};
 
 #[derive(Clone, Copy, Debug)]
 pub struct RenderContext<'a> {
     pub domain: &'a DomainState,
+    /// `domain.projection()`, computed once per render: it copies every interaction, so the
+    /// rows of a view must never compute it again.
+    pub projection: &'a DomainProjection,
     pub live: &'a LiveSnapshot,
     pub client: Client,
     pub lang: Lang,
@@ -158,7 +161,7 @@ pub fn push_content(
 ) -> Result<PushContent, BuildError> {
     let live = LiveSnapshot::default();
     let view = build(&format!("card:{card_id}"), RenderContext {
-        domain, live: &live, client: Client::Ios, lang, transport: Transport::Relay,
+        domain, projection: &domain.projection(), live: &live, client: Client::Ios, lang, transport: Transport::Relay,
         cursor: "push", rendered_at: "",
     })?;
     let interaction = domain.interactions.get(&crate::domain::InteractionId(card_id.into()));

@@ -532,7 +532,7 @@ mod tests {
         *disk.lock().unwrap() = 50 * GB;
         let state = domain.state().unwrap();
         domain.execute(&Actor::User { user_id: "device:phone".into() }, &CommandEnvelope {
-            protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch, command_id: "fixed".into(), expected_revision: state.revision,
+            protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: "fixed".into(), expected_revision: state.revision,
             command: Command::AnswerQuestion { attachments: vec![], interaction_id: cards[0].id.clone(), option_id: MACHINE_FIXED_OPTION.into(), inputs: Default::default() },
         }, None, || Ok(())).unwrap();
         until("the node woken", || node.texts() == [RESUME_MESSAGE]).await;

@@ -76,8 +76,7 @@ pub(super) fn task_row(task: &Task, context: &RenderContext<'_>) -> super::Row {
     }
     row.trailing = Some(Trailing::Count {
         value: context
-            .domain
-            .projection()
+            .projection
             .inbox
             .iter()
             .filter(|item| item.pending && item.task_id.as_ref() == Some(&task.id))
@@ -511,10 +510,9 @@ fn now_line(task: &Task, context: &RenderContext<'_>) -> Option<super::Row> {
     }
     match task.state {
         TaskState::NeedsYou => context
-            .domain
-            .projection()
+            .projection
             .inbox
-            .into_iter()
+            .iter()
             .find(|item| item.pending && item.task_id.as_ref() == Some(&task.id))
             .map(|item| line(
                 tf!(context.lang, "question: {title}", "pregunta: {title}", title = item.title),
@@ -668,12 +666,11 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
         ));
     }
     let waiting: Vec<_> = context
-        .domain
-        .projection()
+        .projection
         .inbox
-        .into_iter()
+        .iter()
         .filter(|item| item.pending && item.task_id.as_ref() == Some(&task.id))
-        .map(|item| super::card::from_item(&item, context, false).map(Item::Card))
+        .map(|item| super::card::from_item(item, context, false).map(Item::Card))
         .collect::<Result<Vec<_>, BuildError>>()?;
     if !waiting.is_empty() {
         view.sections.push(common::section(

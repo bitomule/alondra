@@ -434,6 +434,7 @@ mod tests {
             "schedule:new",
             &RenderContext {
                 domain: &domain,
+                projection: &domain.projection(),
                 live: &live,
                 client: Client::Ios,
                 lang: Lang::En,
@@ -487,6 +488,7 @@ mod tests {
             "schedule:new",
             &RenderContext {
                 domain: &domain,
+                projection: &domain.projection(),
                 live: &live,
                 client: Client::Ios,
                 lang: Lang::En,

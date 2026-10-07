@@ -19,7 +19,7 @@ impl DomainRuntime {
         }
         self.execute_as_system(CommandEnvelope {
             protocol_version: PROTOCOL_VERSION,
-            data_epoch: state.data_epoch,
+            data_epoch: state.data_epoch.clone(),
             command_id: format!("raise-{id}").into(),
             expected_revision: state.revision,
             command: Command::RaiseProblem {
@@ -49,7 +49,7 @@ impl DomainRuntime {
         }
         self.execute_as_system(CommandEnvelope {
             protocol_version: PROTOCOL_VERSION,
-            data_epoch: state.data_epoch,
+            data_epoch: state.data_epoch.clone(),
             command_id: format!("raise-{id}").into(),
             expected_revision: state.revision,
             command: Command::RaiseProblem {
@@ -72,7 +72,7 @@ impl DomainRuntime {
         }
         self.execute_as_system(CommandEnvelope {
             protocol_version: PROTOCOL_VERSION,
-            data_epoch: state.data_epoch,
+            data_epoch: state.data_epoch.clone(),
             command_id: format!("tell-{id}").into(),
             expected_revision: state.revision,
             command: Command::PublishInformation {
@@ -95,7 +95,7 @@ impl DomainRuntime {
         }
         self.execute_as_system(CommandEnvelope {
             protocol_version: PROTOCOL_VERSION,
-            data_epoch: state.data_epoch,
+            data_epoch: state.data_epoch.clone(),
             command_id: format!("notice-{id}").into(),
             expected_revision: state.revision,
             command: Command::PublishInformation {
@@ -129,7 +129,7 @@ impl DomainRuntime {
         card.recommended = Some(recommended.to_owned());
         self.execute_as_system(CommandEnvelope {
             protocol_version: PROTOCOL_VERSION,
-            data_epoch: state.data_epoch,
+            data_epoch: state.data_epoch.clone(),
             command_id: format!("ask-{id}").into(),
             expected_revision: state.revision,
             command: Command::AskQuestion {
@@ -150,7 +150,7 @@ impl DomainRuntime {
         let state = self.state().map_err(StoreError::Storage)?;
         self.execute_as_system(CommandEnvelope {
             protocol_version: PROTOCOL_VERSION,
-            data_epoch: state.data_epoch,
+            data_epoch: state.data_epoch.clone(),
             command_id: format!("withdraw-{id}-{}", state.revision).into(),
             expected_revision: state.revision,
             command: Command::Withdraw { interaction_id: id.clone() },

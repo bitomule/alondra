@@ -11,6 +11,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::path::Path;
+use std::sync::Arc;
 
 pub(crate) const SCHEMA_VERSION: i64 = 4;
 pub(crate) const ORCHESTRATOR_MESSAGE_TTL_MS: i64 = 24 * 60 * 60 * 1_000;
@@ -210,7 +211,7 @@ pub(crate) struct RequestLaunch {
 /// the paths that refresh it (`total_changes`). Any miss falls back to a full
 /// load, so a stale copy is never served.
 struct Cached {
-    state: DomainState,
+    state: Arc<DomainState>,
     data_version: i64,
     total_changes: u64,
 }
@@ -227,14 +228,14 @@ fn data_version(c: &Connection) -> Result<i64> {
 /// otherwise a full load. Also returns whether the cache served it and the
 /// `data_version` that state corresponds to, read inside the transaction so a
 /// commit by another connection after ours can never be absorbed into it.
-fn state_in(cached: &Option<Cached>, tx: &Connection) -> Result<(DomainState, bool, i64)> {
+fn state_in(cached: &Option<Cached>, tx: &Connection) -> Result<(Arc<DomainState>, bool, i64)> {
     let version = data_version(tx)?;
     let changes = tx.total_changes();
     match cached {
         Some(c) if c.data_version == version && c.total_changes == changes => {
-            Ok((c.state.clone(), true, version))
+            Ok((Arc::clone(&c.state), true, version))
         }
-        _ => Ok((repository::load(tx)?, false, version)),
+        _ => Ok((Arc::new(repository::load(tx)?), false, version)),
     }
 }
 #[derive(Debug)]
@@ -273,7 +274,7 @@ impl From<DomainError> for StoreError {
 }
 #[derive(Debug)]
 pub(crate) struct Commit {
-    pub state: DomainState,
+    pub state: Arc<DomainState>,
     pub outcome: CommandOutcome,
     pub replayed: bool,
 }
@@ -419,7 +420,7 @@ impl DomainStore {
     pub(crate) fn rows_written(&self) -> u64 {
         self.conn.total_changes()
     }
-    fn remember(&mut self, state: DomainState, data_version: i64) {
+    fn remember(&mut self, state: Arc<DomainState>, data_version: i64) {
         self.cached = Some(Cached {
             state,
             data_version,
@@ -432,13 +433,13 @@ impl DomainStore {
             cached.total_changes = self.conn.total_changes();
         }
     }
-    pub(crate) fn load(&mut self) -> Result<DomainState> {
+    pub(crate) fn load(&mut self) -> Result<Arc<DomainState>> {
         let tx = self.conn.transaction()?;
         check_schema(&tx)?;
         let (state, hit, version) = state_in(&self.cached, &tx)?;
         tx.commit()?;
         if !hit {
-            self.remember(state.clone(), version);
+            self.remember(Arc::clone(&state), version);
         }
         Ok(state)
     }
@@ -574,7 +575,7 @@ impl DomainStore {
                 let outcome = serde_json::from_str(&result)?;
                 tx.commit()?;
                 if !hit {
-                    self.remember(state.clone(), version);
+                    self.remember(Arc::clone(&state), version);
                 }
                 return Ok(Commit {
                     state,
@@ -601,7 +602,7 @@ impl DomainStore {
                 )?;
             }
             tx.commit()?;
-            self.remember(state.clone(), version);
+            self.remember(Arc::clone(&state), version);
             return Ok(Commit {
                 state,
                 outcome,
@@ -618,7 +619,7 @@ impl DomainStore {
         } else {
             envelope
         };
-        let mut next = state.clone();
+        let mut next = DomainState::clone(&state);
         let outcome = next.execute(actor, envelope)?;
         if outcome.changed {
             repository::save_changes(&tx, &state, &next)?;
@@ -725,7 +726,8 @@ impl DomainStore {
         if let Some(hook) = &mut self.after_commit {
             hook();
         }
-        self.remember(next.clone(), version);
+        let next = Arc::new(next);
+        self.remember(Arc::clone(&next), version);
         Ok(Commit {
             state: next,
             outcome,
@@ -1250,6 +1252,9 @@ impl DomainStore {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+#[path = "domain_store/load_bench.rs"]
+mod load_bench;
 #[cfg(test)]
 #[path = "domain_store/acceptance_tests.rs"]
 mod acceptance_tests;

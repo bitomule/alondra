@@ -6,7 +6,7 @@ use alondra_core::domain::{AgentId, Author, DomainError, DomainState, Interactio
 use alondra_core::Node;
 use serde_json::{Value, json};
 
-fn state(domain: &DomainRuntime) -> Result<DomainState, DomainError> {
+fn state(domain: &DomainRuntime) -> Result<std::sync::Arc<DomainState>, DomainError> {
     domain.state().map_err(|_| DomainError::new("storage_unavailable", "domain state unavailable"))
 }
 

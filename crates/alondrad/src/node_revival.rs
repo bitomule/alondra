@@ -286,7 +286,7 @@ pub(crate) fn take_out(domain: &DomainRuntime, session: &str, reason: &str, cwd:
     for task_id in released {
         let state = domain.state()?;
         let envelope = CommandEnvelope {
-            protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch, command_id: format!("release-{}-{}", task_id.0, crate::auth::random_hex(8)).into(),
+            protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: format!("release-{}-{}", task_id.0, crate::auth::random_hex(8)).into(),
             expected_revision: state.revision, command: Command::ReleaseTask { task_id: task_id.clone(), reason: reason.into() },
         };
         match domain.execute(&Actor::System, &envelope, None, || Ok(())) {
@@ -349,7 +349,7 @@ mod tests {
     fn command(domain: &DomainRuntime, actor: Actor, id: &str, command: Command) {
         let state = domain.state().unwrap();
         domain.execute(&actor, &CommandEnvelope {
-            protocol_version: 2, data_epoch: state.data_epoch, command_id: id.into(), expected_revision: state.revision, command,
+            protocol_version: 2, data_epoch: state.data_epoch.clone(), command_id: id.into(), expected_revision: state.revision, command,
         }, None, || Ok(())).unwrap();
     }
 

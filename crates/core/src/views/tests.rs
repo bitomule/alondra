@@ -1,6 +1,6 @@
 use super::*;
 use crate::domain::{
-    Agent, Author, Document, DocumentRevision, DomainState, Interaction, InteractionPayload,
+    Agent, Author, Document, DocumentRevision, DomainProjection, DomainState, Interaction, InteractionPayload,
     InteractionSubject, MergeAttemptState, MergeAuthorization, MergeMethod, PrState, PullRequest, QuestionOption, Recipient, Request, Scope, Task,
     TaskState, ModelChooser, TaskModel,
 };
@@ -139,10 +139,12 @@ fn render<'a>(
     key: &str,
     time: &'a str,
 ) -> View {
+    let domain = with_cards(domain);
     build(
         key,
         RenderContext {
-            domain: &with_cards(domain),
+            domain: &domain,
+            projection: &domain.projection(),
             live,
             client,
             lang,
@@ -883,6 +885,7 @@ fn invalid_generated_pr_action_id_is_omitted_while_the_card_renders() {
         "a valid action after the invalid action should still render");
     let result = build(&format!("card:{pr_id}"), RenderContext {
         domain: &state,
+        projection: &state.projection(),
         live: &live,
         client: Client::Ios,
         lang: Lang::En,
@@ -942,6 +945,7 @@ fn view_keys_are_addressable_and_bound_to_epoch() {
             "sidebar",
             RenderContext {
                 domain: &state,
+                projection: &state.projection(),
                 live: &live,
                 client: Client::Ios,
                 lang: Lang::En,
@@ -1078,7 +1082,8 @@ fn decidable_card(state: &DomainState, lang: Lang, interaction: &str) -> Card {
         action.enabled = true;
         action.disabled_reason = None;
     }
-    let context = RenderContext { domain: &domain, live: &live, client: Client::Ios, lang, transport: Transport::Loopback,
+    let projection = domain.projection();
+    let context = RenderContext { domain: &domain, projection: &projection, live: &live, client: Client::Ios, lang, transport: Transport::Loopback,
         cursor: "cursor-1", rendered_at: "" };
     card::from_item(&item, &context, true).unwrap()
 }
@@ -1406,6 +1411,29 @@ fn a_fleet_node_shows_the_one_task_it_is_on_not_the_ones_it_finished() {
     assert!(header_facts(&idle).iter().all(|fact| fact.label != "Task"), "a node between tasks is on none");
     state.tasks.get_mut(&"t-1".into()).unwrap().revision = 2;
     assert_eq!(node_row(&state), "Build a feature", "between tasks a node shows the last one it had");
+}
+
+#[test]
+fn rows_count_cards_from_the_render_projection_without_projecting_again() {
+    let mut state = with_cards(&fixture());
+    state.tasks.get_mut(&"t-1".into()).unwrap().agent_id = Some("a-1".into());
+    let live = LiveSnapshot::default();
+    let counted = |projection: &DomainProjection, key: &str| {
+        let view = build(key, RenderContext {
+            domain: &state, projection, live: &live, client: Client::Ios, lang: Lang::En,
+            transport: Transport::Loopback, cursor: "cursor-1", rendered_at: "",
+        }).unwrap();
+        fn count(row: &Row) -> u32 {
+            let own = match row.trailing { Some(Trailing::Count { value }) => value, _ => 0 };
+            own + row.children.iter().map(count).sum::<u32>()
+        }
+        view.sections.iter().flat_map(|section| &section.items)
+            .map(|item| if let Item::Row(row) = item { count(row) } else { 0 }).sum::<u32>()
+    };
+    assert!(counted(&state.projection(), "tasks") > 0, "the fixture has a card waiting on its task");
+    let nothing_waiting = DomainState::new("test-epoch").projection();
+    assert_eq!(counted(&nothing_waiting, "tasks"), 0);
+    assert_eq!(counted(&nothing_waiting, "fleet"), 0);
 }
 
 #[test]
@@ -2742,9 +2770,10 @@ fn no_card_of_any_fixture_carries_an_action_the_domain_says_is_not_available() {
         let live = golden_live();
         for client in [Client::Ios, Client::Mac, Client::Tui] {
             for lang in [Lang::En, Lang::Es] {
-                let context = RenderContext { domain: &domain, live: &live, client, lang, transport: Transport::Loopback,
+                let projection = domain.projection();
+                let context = RenderContext { domain: &domain, projection: &projection, live: &live, client, lang, transport: Transport::Loopback,
                     cursor: "cursor-1", rendered_at: "" };
-                for item in domain.projection().inbox {
+                for item in projection.inbox.clone() {
                     let card = card::from_item(&item, &context, true).unwrap();
                     for action in card.actions.iter().chain(&card.more).chain(&card.reply) {
                         let Ok(id) = ActionId::parse(&action.id) else { continue };

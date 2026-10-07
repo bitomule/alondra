@@ -49,7 +49,7 @@ pub(crate) fn orchestrator(domain: &DomainRuntime, bearer: Option<&str>) -> Resu
 fn run(domain: &DomainRuntime, actor: &Actor, command: Command) -> Result<(), DomainError> {
     let state = domain.state().map_err(|_| DomainError::new("storage_unavailable", "domain state unavailable"))?;
     let envelope = CommandEnvelope {
-        protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch,
+        protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(),
         command_id: format!("orchestrator-tool-{}", crate::auth::random_hex(16)).into(),
         expected_revision: state.revision, command,
     };
@@ -59,7 +59,7 @@ fn run(domain: &DomainRuntime, actor: &Actor, command: Command) -> Result<(), Do
     })
 }
 
-fn state(domain: &DomainRuntime) -> Result<DomainState, DomainError> {
+fn state(domain: &DomainRuntime) -> Result<std::sync::Arc<DomainState>, DomainError> {
     domain.state().map_err(|_| DomainError::new("storage_unavailable", "domain state unavailable"))
 }
 

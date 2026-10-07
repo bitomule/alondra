@@ -13,8 +13,8 @@ pub(super) fn build(key: &str, context: &RenderContext<'_>) -> Result<View, Buil
     if focus.is_some_and(|id| !plain_id(id)) {
         return Err(BuildError::InvalidKey);
     }
-    let projection = context.domain.projection();
-    let mut roots = waiting(&projection);
+    let projection = context.projection;
+    let mut roots = waiting(projection);
     if let Some(focus) = focus {
         if let Some(index) = roots.iter().position(|item| public_id(item) == focus) {
             roots.rotate_left(index);
@@ -22,7 +22,7 @@ pub(super) fn build(key: &str, context: &RenderContext<'_>) -> Result<View, Buil
             return Err(BuildError::NotFound);
         }
     }
-    let status = super::status::build(&projection, context);
+    let status = super::status::build(projection, context);
     let (sections, empty) = match context.client {
         Client::Ios => {
             let card_ids: Vec<String> = roots.iter().map(|item| public_id(item).to_owned()).collect();

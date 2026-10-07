@@ -54,7 +54,7 @@ impl Fixture {
         ));
         std::fs::create_dir(&home).unwrap();
         let store = DomainRuntime::open(&home).unwrap();
-        let epoch = store.state().unwrap().data_epoch.0;
+        let epoch = store.state().unwrap().data_epoch.0.clone();
         drop(store);
         let auth = Auth::open(&home).unwrap();
         let key = SigningKey::from_slice(&[13u8; 32]).unwrap();
@@ -488,7 +488,7 @@ async fn http_an_accepted_pr_is_merged_by_alondra_and_a_node_can_neither_claim_n
 #[tokio::test]
 async fn http_the_orchestrator_creates_tasks_for_fresh_nodes_and_plans_the_ones_that_wait() {
     let mut fixture = Fixture::start().await;
-    let epoch = fixture.domain.state().unwrap().data_epoch;
+    let epoch = fixture.domain.state().unwrap().data_epoch.clone();
     let register = CommandEnvelope {
         protocol_version: PROTOCOL_VERSION, data_epoch: epoch, command_id: "register-b".into(),
         expected_revision: fixture.domain.state().unwrap().revision,

@@ -473,7 +473,7 @@ impl Service {
         let domain = self
             .domain
             .as_deref()
-            .or_else(|| self.hub.as_deref().map(|hub| &hub.domain));
+            .or_else(|| self.hub.as_deref().map(|hub| &*hub.domain));
         match domain {
             Some(domain) => Ok(format!(
                 "{binding}:domain-v2:{}",
@@ -6980,7 +6980,7 @@ agreement_key = "{}"
                 &alondra_core::domain::Actor::System,
                 &alondra_core::domain::CommandEnvelope {
                     protocol_version: alondra_core::domain::PROTOCOL_VERSION,
-                    data_epoch: state.data_epoch,
+                    data_epoch: state.data_epoch.clone(),
                     command_id: "agent".into(),
                     expected_revision: state.revision,
                     command: alondra_core::domain::Command::RegisterAgent {

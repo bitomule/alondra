@@ -191,7 +191,7 @@ fn execute_system(domain: &DomainRuntime, command: Command) -> Result<CommandOut
         let state = domain.state().map_err(StoreError::Storage)?;
         let envelope = CommandEnvelope {
             protocol_version: PROTOCOL_VERSION,
-            data_epoch: state.data_epoch,
+            data_epoch: state.data_epoch.clone(),
             command_id: command_id.clone(),
             expected_revision: state.revision,
             command: command.clone(),
@@ -664,7 +664,7 @@ pub(crate) async fn run_cycle(
             }
         }
     }
-    let state: DomainState = domain.state()?;
+    let state = domain.state()?;
     let pending: Vec<_> = state
         .schedule
         .runs
@@ -789,7 +789,7 @@ pub(crate) async fn run(
     let mut system_clock = crate::schedule_clock::ClockChanges::new();
     loop {
         run_cycle(&domain, &home, due_enabled, &launcher).await?;
-        let deadline = if domain.live.usage_pause.is_active() { None } else { nearest_run(&domain.state()?, due_enabled) };
+        let deadline = if domain.live.usage_pause.is_active() { None } else { nearest_run(&*domain.state()?, due_enabled) };
         match wait_for_next_run(
             deadline,
             &mut schedule_changes,
@@ -1311,6 +1311,7 @@ mod tests {
         assert_eq!(*launcher.calls.lock().unwrap(), 1);
         assert_eq!(reopened.state().unwrap().schedule.runs[&ScheduleRunId::from("pending")].state, ScheduleRunState::Sent);
 
+        fixture.domain.reload();
         fixture.claim("uncertain");
         finish_claim(&fixture.domain, &fixture.home, &"uncertain".into()).unwrap();
         execute_system(
@@ -1437,7 +1438,7 @@ mod tests {
                     &Actor::User { user_id: "u".into() },
                     &CommandEnvelope {
                         protocol_version: PROTOCOL_VERSION,
-                        data_epoch: state.data_epoch,
+                        data_epoch: state.data_epoch.clone(),
                         command_id: id.to_owned().into(),
                         expected_revision: state.revision,
                         command: Command::AnswerQuestion {

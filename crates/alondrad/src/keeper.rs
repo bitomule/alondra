@@ -228,7 +228,7 @@ printf '%s\n' '{"type":"result","session_id":"'"$session"'","subtype":"success",
     #[tokio::test]
     async fn committed_marker_blocks_the_legacy_orchestrator() {
         let (hub, ch, dir, exe, lock) = fixture(SUCCESS);
-        let epoch = hub.domain.state().unwrap().data_epoch.0;
+        let epoch = hub.domain.state().unwrap().data_epoch.0.clone();
         let marker = serde_json::json!({"format":1,"phase":"committed",
             "backup_manifest_sha256":"a".repeat(64),"source_seq":1,"data_epoch":epoch});
         let path = hub.home.join(crate::domain_cutover::MARKER);

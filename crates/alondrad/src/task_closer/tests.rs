@@ -88,7 +88,7 @@ fn agent() -> Actor {
 fn command(domain: &DomainRuntime, actor: Actor, id: &str, command: Command) {
     let state = domain.state().unwrap();
     domain.execute(&actor, &CommandEnvelope {
-        protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch, command_id: id.into(),
+        protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: id.into(),
         expected_revision: state.revision, command,
     }, None, || Ok(())).unwrap();
 }
@@ -382,6 +382,7 @@ async fn a_task_cancelled_before_this_change_is_left_alone() {
     let rig = Rig::new(thirty_minutes());
     command(&rig.domain, user(), "cancel", Command::CancelTask { task_id: "t".into() });
     rig.domain.store.lock().unwrap().conn_for_test().execute("DELETE FROM task_wrap_ups", []).unwrap();
+    rig.domain.reload();
     assert!(!rig.task().wrap_up.close_cancelled);
     rig.pass(T0).await;
     rig.pass(T0 + 600 * MINUTE).await;

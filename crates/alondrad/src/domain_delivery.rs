@@ -381,7 +381,7 @@ mod tests {
                 &actor,
                 &CommandEnvelope {
                     protocol_version: 2,
-                    data_epoch: state.data_epoch,
+                    data_epoch: state.data_epoch.clone(),
                     command_id: id.into(),
                     expected_revision: state.revision,
                     command,
@@ -590,7 +590,7 @@ mod tests {
                 &actor,
                 &CommandEnvelope {
                     protocol_version: 2,
-                    data_epoch: state.data_epoch,
+                    data_epoch: state.data_epoch.clone(),
                     command_id: id.into(),
                     expected_revision: state.revision,
                     command,

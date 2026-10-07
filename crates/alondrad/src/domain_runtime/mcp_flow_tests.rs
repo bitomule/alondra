@@ -33,7 +33,7 @@ impl Fixture {
         let state = runtime.state().unwrap();
         runtime.execute(&Actor::System, &CommandEnvelope {
             protocol_version: PROTOCOL_VERSION,
-            data_epoch: state.data_epoch,
+            data_epoch: state.data_epoch.clone(),
             command_id: "register-fixture-agent".into(),
             expected_revision: state.revision,
             command: Command::RegisterAgent {
@@ -176,7 +176,7 @@ fn names() -> Value {
 }
 
 fn problems(fixture: &Fixture) -> Vec<Interaction> {
-    fixture.runtime.state().unwrap().interactions.into_values()
+    fixture.runtime.state().unwrap().interactions.values().cloned()
         .filter(|i| i.card.kind == CardKind::Problem).collect()
 }
 

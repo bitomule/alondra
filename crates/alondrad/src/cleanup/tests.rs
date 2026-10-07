@@ -69,7 +69,7 @@ fn command(domain: &DomainRuntime, actor: Actor, command: Command) {
 fn command_as(domain: &DomainRuntime, actor: Actor, id: &str, command: Command) {
     let state = domain.state().unwrap();
     domain.execute(&actor, &CommandEnvelope {
-        protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch, command_id: id.into(),
+        protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: id.into(),
         expected_revision: state.revision, command,
     }, None, || Ok(())).unwrap();
 }
@@ -144,6 +144,7 @@ impl Rig {
     /// The task ended before wrap-ups existed: its node end was never recorded.
     fn forget_wrap_up(&self, task: &str) {
         self.domain.store.lock().unwrap().conn_for_test().execute("DELETE FROM task_wrap_ups WHERE task_id=?1", [task]).unwrap();
+        self.domain.reload();
     }
 
     fn job(&self, session: &str, state: &str, updated: &str) {
@@ -336,7 +337,7 @@ async fn a_node_the_user_left_open_and_a_task_in_progress_are_not_closed() {
     let open = rig.session(Task::Open, true);
     let _ = (&kept, &open);
     rig.domain.store.lock().unwrap().conn_for_test().execute("INSERT OR REPLACE INTO task_wrap_ups(task_id,close_cancelled,node_end) VALUES('t1',0,'kept_by_user')", []).unwrap();
-    rig.domain.state().unwrap();
+    rig.domain.reload();
     let report = rig.run(true).await;
     for list in ["close", "kept", "failed"] {
         assert!(report[list].as_array().unwrap().is_empty(), "{list}: {report}");

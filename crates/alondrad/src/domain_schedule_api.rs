@@ -235,7 +235,7 @@ pub(crate) fn mutation(
         let now = now_millis();
         let envelope = d::CommandEnvelope {
             protocol_version: d::PROTOCOL_VERSION,
-            data_epoch: state.data_epoch,
+            data_epoch: state.data_epoch.clone(),
             command_id: format!("schedule-{}", crate::auth::random_hex(16)).into(),
             expected_revision: state.revision,
             command: d::Command::ClaimScheduleRun {
@@ -306,7 +306,7 @@ pub(crate) fn mutation(
     }
     let envelope = d::CommandEnvelope {
         protocol_version: d::PROTOCOL_VERSION,
-        data_epoch: state.data_epoch,
+        data_epoch: state.data_epoch.clone(),
         command_id: format!("schedule-{}", crate::auth::random_hex(16)).into(),
         expected_revision: state.revision,
         command,

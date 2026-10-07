@@ -138,7 +138,7 @@ fn project_sections(context: &RenderContext<'_>) -> Vec<super::Section> {
                 row.badges.push(Label { text: text.clone(), tone: if node.background_suspect { Tone::Warning } else { Tone::Neutral } });
             }
         }
-        let pending = context.domain.projection().inbox.iter()
+        let pending = context.projection.inbox.iter()
             .filter(|item| item.pending && item.agent_id.as_ref() == Some(&agent.id)).count();
         row.trailing = Some(Trailing::Count { value: pending as u32 });
         row.children = common::current_task(context.domain, &agent.id).into_iter()
@@ -164,9 +164,8 @@ pub(super) fn build(context: &RenderContext<'_>) -> Result<View, BuildError> {
     if context.client != Client::Mac {
         return Err(BuildError::UnsupportedClient);
     }
-    let projection = context.domain.projection();
     let mut view = common::view("sidebar", "sidebar", None, context, vec![]);
-    let pending = super::home::waiting(&projection);
+    let pending = super::home::waiting(context.projection);
     let mut waiting = common::section(
         "waiting",
         Some(t!(context.lang, "Waiting for You", "Te espera").into()),

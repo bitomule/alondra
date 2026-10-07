@@ -562,7 +562,7 @@ pub(crate) fn block_text(user: &str, title: &str) -> String {
 async fn unregistered_pr(domain: &DomainRuntime, session: &str) -> Option<String> {
     let dir = crate::worktree::worktree_of(session)?;
     let (repository, number) = crate::domain_github::GhCli::new().branch_pr(&dir, Duration::from_secs(3)).await?;
-    unregistered_pr_text(&domain.state().ok()?, &repository, number)
+    unregistered_pr_text(&*domain.state().ok()?, &repository, number)
 }
 
 pub(crate) fn unregistered_pr_text(state: &DomainState, repository: &str, number: u64) -> Option<String> {
@@ -710,7 +710,7 @@ mod tests {
     fn command(domain: &DomainRuntime, actor: Actor, id: &str, command: Command) {
         let state = domain.state().unwrap();
         domain.execute(&actor, &CommandEnvelope {
-            protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch,
+            protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(),
             command_id: id.into(), expected_revision: state.revision, command,
         }, None, || Ok(())).unwrap();
     }
@@ -1228,7 +1228,7 @@ mod tests {
     }
 
     fn problems(domain: &DomainRuntime) -> Vec<alondra_core::domain::Interaction> {
-        domain.state().unwrap().interactions.into_values().filter(|card| card.card.kind == CardKind::Problem).collect()
+        domain.state().unwrap().interactions.values().cloned().filter(|card| card.card.kind == CardKind::Problem).collect()
     }
 
     /// Three held-back turn ends in a row, kept across a daemon restart; the fourth tells the

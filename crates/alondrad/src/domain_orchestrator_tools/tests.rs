@@ -396,7 +396,7 @@ async fn an_interrupt_is_a_line_for_the_connected_agent_and_is_refused_for_one_t
 fn the_choices_are_the_ones_recorded_with_the_request() {
     let f = world();
     let state = f.domain.state().unwrap();
-    let envelope = CommandEnvelope { protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch, command_id: "asked".into(),
+    let envelope = CommandEnvelope { protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: "asked".into(),
         expected_revision: state.revision, command: Command::CreateRequest { request_id: "r2".into(), body: "Fix the crash".into(), auto_merge: false } };
     f.domain.execute_with(&user(), &envelope, None, Some(&hard_choices()), || Ok(())).unwrap();
     assert_eq!(request_choices(&f.domain, &"r2".into()).unwrap(), Some(hard_choices()));

@@ -299,9 +299,9 @@ pub(crate) fn withdraw(domain: &DomainRuntime, id: &InteractionId) -> Result<()>
 /// No hook survives a daemon restart, so every elicitation still held is withdrawn at start. The
 /// cards the mod holds are not: their helpers dial again and find them.
 pub(crate) fn release_orphans(domain: &DomainRuntime) -> Result<()> {
-    for (id, hold) in domain.state()?.holds {
-        if hold == Hold::Elicitation {
-            withdraw(domain, &id)?;
+    for (id, hold) in &domain.state()?.holds {
+        if *hold == Hold::Elicitation {
+            withdraw(domain, id)?;
         }
     }
     Ok(())

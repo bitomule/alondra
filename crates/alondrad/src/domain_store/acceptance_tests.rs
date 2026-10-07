@@ -156,7 +156,7 @@ fn run(
     let state = store.load().unwrap();
     let envelope = CommandEnvelope {
         protocol_version: PROTOCOL_VERSION,
-        data_epoch: state.data_epoch,
+        data_epoch: state.data_epoch.clone(),
         command_id: id.into(),
         expected_revision: state.revision,
         command,
@@ -497,7 +497,7 @@ struct Baseline {
     outbox: i64,
     attempts: i64,
     tasks: i64,
-    state: DomainState,
+    state: std::sync::Arc<DomainState>,
 }
 fn baseline(store: &mut DomainStore) -> Baseline {
     Baseline {

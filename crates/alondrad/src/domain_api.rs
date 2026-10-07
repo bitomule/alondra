@@ -1196,7 +1196,7 @@ mod tests {
         let signed = Some(Extension(Signed { device_id: device.id,
             name: device.name, public_key: device.public_key }));
         let host = crate::domain_bootstrap::DomainDaemon::open(&home).unwrap();
-        let epoch = host.domain().state().unwrap().data_epoch.0;
+        let epoch = host.domain().state().unwrap().data_epoch.0.clone();
 
         let legacy = changes::<crate::domain_bootstrap::DomainDaemon>(State(host.clone()), signed.clone(),
             RawQuery(Some(format!("data_epoch={epoch}&after=0&wait=0")))).await;
@@ -1241,7 +1241,7 @@ mod tests {
         store.finish_message(claim.attempt_id, claim.version,
             alondra_core::delivery::State::Uncertain, Some("push_unknown")).unwrap();
         drop(store);
-        let epoch = hub.domain.state().unwrap().data_epoch;
+        let epoch = hub.domain.state().unwrap().data_epoch.clone();
         let body = json!({"protocol_version":2,"data_epoch":epoch,"expected_version":2,
             "decision":"retry"});
         let digest = [31u8; 32];
@@ -1281,7 +1281,7 @@ mod tests {
         store.finish_message(claim.attempt_id, claim.version,
             alondra_core::delivery::State::Uncertain, Some("push_unknown")).unwrap();
         drop(store);
-        let epoch = hub.domain.state().unwrap().data_epoch;
+        let epoch = hub.domain.state().unwrap().data_epoch.clone();
         let body = json!({"protocol_version":2,"data_epoch":epoch,"expected_version":2,
             "decision":"retry"});
         let (checked_tx, checked_rx) = mpsc::channel();
@@ -1332,7 +1332,7 @@ mod tests {
         let state = hub.domain.state().unwrap();
         CommandEnvelope {
             protocol_version: 2,
-            data_epoch: state.data_epoch,
+            data_epoch: state.data_epoch.clone(),
             command_id: id.into(),
             expected_revision: state.revision,
             command,
@@ -1892,7 +1892,7 @@ mod domain_encrypted_tests {
         let home = std::env::temp_dir().join(format!("alondra-v2-relay-{}", crate::auth::random_hex(8)));
         std::fs::create_dir_all(&home).unwrap();
         let domain = DomainRuntime::open(&home).unwrap();
-        let epoch = domain.state().unwrap().data_epoch;
+        let epoch = domain.state().unwrap().data_epoch.clone();
         let envelope = CommandEnvelope {
             protocol_version: PROTOCOL_VERSION,
             data_epoch: epoch,

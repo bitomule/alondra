@@ -23,7 +23,7 @@ fn execute(hub: &crate::hub::Hub, actor: Actor, id: &str, command: Command) {
             &actor,
             &CommandEnvelope {
                 protocol_version: PROTOCOL_VERSION,
-                data_epoch: state.data_epoch,
+                data_epoch: state.data_epoch.clone(),
                 command_id: id.into(),
                 expected_revision: state.revision,
                 command,
@@ -290,7 +290,7 @@ async fn signed_loopback_and_sealed_service_share_reads_errors_and_command_recei
         "relay_url = \"{relay_url}\"\nmac_id = \"mac-parity\"\nowner_sub = \"owner\"\nsigning_key_path = \"mac-signing.key\"\nagreement_key_path = \"mac-agreement.key\"\n[[devices]]\ndevice_id = \"{}\"\nsigning_key = \"{signing_wire}\"\nagreement_key = \"{agreement_wire}\"\n",
         device_id,
     )).unwrap();
-    let domain = Arc::new(crate::domain_runtime::DomainRuntime::open(&home).unwrap());
+    let domain = hub.domain.clone();
     let service = Service::open(&home, 0, auth.clone())
         .unwrap()
         .unwrap()
@@ -303,7 +303,7 @@ async fn signed_loopback_and_sealed_service_share_reads_errors_and_command_recei
     let client = Client::new();
 
     let initial_revision = domain.state().unwrap().revision;
-    let epoch = domain.state().unwrap().data_epoch.0;
+    let epoch = domain.state().unwrap().data_epoch.0.clone();
     let paths = [
         "/capabilities".to_owned(),
         "/document-revisions/rev-parity/content?offset=0".to_owned(),
@@ -369,7 +369,7 @@ async fn signed_loopback_and_sealed_service_share_reads_errors_and_command_recei
     let state = domain.state().unwrap();
     let command = CommandEnvelope {
         protocol_version: PROTOCOL_VERSION,
-        data_epoch: state.data_epoch,
+        data_epoch: state.data_epoch.clone(),
         command_id: "read-parity-once".into(),
         expected_revision: state.revision,
         command: Command::MarkRead {
@@ -452,7 +452,7 @@ async fn signed_loopback_and_sealed_service_share_reads_errors_and_command_recei
             let barrier = barrier.clone();
             let envelope = CommandEnvelope {
                 protocol_version: PROTOCOL_VERSION,
-                data_epoch: domain.state().unwrap().data_epoch,
+                data_epoch: domain.state().unwrap().data_epoch.clone(),
                 command_id: format!("answer-{option}").into(),
                 expected_revision: question_revision,
                 command: Command::AnswerQuestion {

@@ -44,7 +44,7 @@ fn envelope(store: &mut DomainStore, id: &str, command: Command) -> CommandEnvel
     let s = store.load().unwrap();
     CommandEnvelope {
         protocol_version: 2,
-        data_epoch: s.data_epoch,
+        data_epoch: s.data_epoch.clone(),
         command_id: id.into(),
         expected_revision: s.revision,
         command,
@@ -143,6 +143,32 @@ fn count(store: &DomainStore, table: &str) -> i64 {
         .conn
         .query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0))
         .unwrap()
+}
+
+#[test]
+fn reads_share_one_snapshot_until_a_commit_replaces_it() {
+    let fixture = Fixture::new();
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    seeded(&mut store);
+    let first = store.load().unwrap();
+    assert!(Arc::ptr_eq(&first, &store.load().unwrap()), "a read without a write copies nothing");
+    let committed = execute(
+        &mut store,
+        &Actor::System,
+        "info",
+        Command::PublishInformation {
+            interaction_id: "info-1".into(),
+            scope: Scope::Task { task_id: "task-1".into() },
+            recipient: Recipient::User,
+            body: "Progress".into(),
+            attachments: vec![],
+            card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Know, "Read the update"),
+        },
+    );
+    let after = store.load().unwrap();
+    assert!(Arc::ptr_eq(&after, &committed.state), "readers get the committed state itself");
+    assert_eq!(after.revision, first.revision + 1);
+    assert!(!first.interactions.contains_key(&InteractionId::from("info-1")), "an earlier snapshot never changes");
 }
 
 #[test]
@@ -456,7 +482,7 @@ fn encrypted_resolution_has_a_durable_receipt_and_fences_stale_or_changed_decisi
     let claim = store.claim_message(agent_message.id).unwrap().unwrap();
     drop(store);
     let mut restarted = DomainStore::open(&fixture.path()).unwrap();
-    let epoch = restarted.load().unwrap().data_epoch.0;
+    let epoch = restarted.load().unwrap().data_epoch.0.clone();
     let page = restarted.delivery_evidence_page(0).unwrap();
     assert_eq!(page.len(), 1);
     assert_eq!(page[0].state, "uncertain");
@@ -509,7 +535,7 @@ fn a_store_with_another_schema_version_is_moved_aside_and_replaced_by_an_empty_o
         let fixture = Fixture::new();
         let mut store = DomainStore::open(&fixture.path()).unwrap();
         execute(&mut store, &user(), "old", Command::CreateRequest { request_id: "old".into(), body: "Made before".into(), auto_merge: false });
-        let old_epoch = store.load().unwrap().data_epoch;
+        let old_epoch = store.load().unwrap().data_epoch.clone();
         store.conn.pragma_update(None, "user_version", other).unwrap();
         drop(store);
         let mut fresh = DomainStore::open(&fixture.path()).unwrap();
@@ -1282,7 +1308,7 @@ fn persisting_a_removed_entry_is_refused_instead_of_leaving_its_row() {
     let mut store = DomainStore::open(&fixture.path()).unwrap();
     seeded(&mut store);
     let before = store.load().unwrap();
-    let mut after = before.clone();
+    let mut after = DomainState::clone(&before);
     after.agents.remove(&"agent-1".into());
     after.revision += 1;
     let tx = store.conn.transaction().unwrap();
@@ -1494,7 +1520,7 @@ fn a_launch_plan_is_stored_with_its_task_in_one_transaction() {
     let mut store = DomainStore::open(&fixture.path()).unwrap();
     seeded(&mut store);
     execute(&mut store, &user(), "title", Command::TitleRequest { request_id: "request-1".into(), title: "Work".into() });
-    let epoch = store.load().unwrap().data_epoch;
+    let epoch = store.load().unwrap().data_epoch.clone();
     let envelope = |id: &str, request: &str| planned_task(id, request, &epoch);
 
     let refused = store.execute_planned(&user(), &envelope("next-1", "no-such-request"), &plan());

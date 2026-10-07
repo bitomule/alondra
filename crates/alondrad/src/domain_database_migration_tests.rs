@@ -214,7 +214,7 @@ fn committed_migration_allows_normal_writes_and_restarts_without_losing_them() {
     let state = store.load().unwrap();
     let envelope = alondra_core::domain::CommandEnvelope {
         protocol_version: 2,
-        data_epoch: state.data_epoch,
+        data_epoch: state.data_epoch.clone(),
         command_id: "post-migration-request".into(),
         expected_revision: state.revision,
         command: alondra_core::domain::Command::CreateRequest {
