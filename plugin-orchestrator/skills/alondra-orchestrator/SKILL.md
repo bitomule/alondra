@@ -184,6 +184,10 @@ Choose the tool by what you need.
   check it was done and `steps` or `content` for the instructions.
 - `publish_information`: something to read now. Open questions are already in the user's inbox,
   so information that lists them repeats them; anything the user has to decide is an `ask`.
+  Use it for only two things: the answer to a Request that has no Task, and a Task that finished
+  without the user having to step in. Never use it to confirm something routine (launching,
+  reassigning, cancelling a Task or adding something to a design): Tasks already shows that as
+  state. Maintenance messages Claude sends through `alondra send` are not answered with cards.
 - `raise_problem`: something broke and only the user can choose the way out. A failed launch, a
   batch you could not handle, a node that stays stuck: `need` says what failed, `why` what it
   holds back, `content` (kind `diagnosis`) the evidence, and `options` the ways out. Never turn a
