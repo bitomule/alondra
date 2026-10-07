@@ -34,6 +34,14 @@ const TASK_WRAP_UPS: &str = "CREATE TABLE IF NOT EXISTS task_wrap_ups(\
  cleaned_at INTEGER CHECK(cleaned_at IS NULL OR cleaned_at BETWEEN 0 AND 9007199254740991),\
  close_cancelled INTEGER NOT NULL CHECK(close_cancelled IN(0,1)),\
  node_end TEXT CHECK(node_end IS NULL OR node_end IN('closed','gone','kept_by_user','users_own')));";
+/// What a task relates to beyond its dependencies, and its verdict on the tasks it blocks, kept
+/// beside the task; created on every open like task_wrap_ups.
+const TASK_RELATIONS: &str = "CREATE TABLE IF NOT EXISTS task_relations(\
+ task_id TEXT PRIMARY KEY REFERENCES tasks(id),\
+ delivered_dependencies TEXT NOT NULL CHECK(json_valid(delivered_dependencies)),\
+ blocks TEXT NOT NULL CHECK(json_valid(blocks)),\
+ verdict TEXT CHECK(verdict IS NULL OR json_valid(verdict)),\
+ review_rounds INTEGER NOT NULL CHECK(review_rounds BETWEEN 0 AND 255));";
 /// The closer's own bookkeeping (not domain state): when it first saw a task due for closing, its
 /// failures and the card it raised.
 const TASK_CLOSINGS: &str = "CREATE TABLE IF NOT EXISTS task_closings(\
@@ -341,6 +349,7 @@ impl DomainStore {
         tx.execute_batch(MODEL_METRICS)?;
         tx.execute_batch(STOP_BLOCKS)?;
         tx.execute_batch(TASK_WRAP_UPS)?;
+        tx.execute_batch(TASK_RELATIONS)?;
         tx.execute_batch(TASK_CLOSINGS)?;
         tx.execute_batch(TASK_LAUNCH_PLANS)?;
         tx.execute_batch(AUTO_LAUNCHES)?;

@@ -841,6 +841,15 @@ impl DomainState {
         by.into_iter().map(|i| i.id.clone()).collect()
     }
     fn unblocked(&self, delivery: &InteractionId) -> Result<()> {
+        if let Some(Scope::Task { task_id }) = self.interactions.get(delivery).map(|i| &i.scope)
+            && let Some(blocker) = self.open_blockers(task_id).first()
+        {
+            return refuse(
+                "blocked",
+                "presentation_id",
+                &format!("Task {blocker} still has to review this delivery: nothing is merged or accepted before it"),
+            );
+        }
         match self.blocked_by(delivery).first() {
             Some(x) => refuse(
                 "blocked",
@@ -925,9 +934,48 @@ impl DomainState {
             for d in task
                 .dependencies
                 .iter()
+                .chain(&task.delivered_dependencies)
                 .chain(task.stack.iter().map(|s| &s.upstream_task))
             {
                 visit(s, d, path, done)?;
+            }
+            path.remove(t);
+            done.insert(t.clone());
+            Ok(())
+        }
+        let mut done = BTreeSet::new();
+        for t in self.tasks.keys() {
+            visit(self, t, &mut BTreeSet::new(), &mut done)?;
+        }
+        self.blocks_graph()
+    }
+    /// A task cannot block one it waits for to be done, and blocks never loop: either would hold
+    /// both back for ever. Starting after a delivery while blocking it is the review pair.
+    fn blocks_graph(&self) -> Result<()> {
+        for blocker in self.tasks.values() {
+            for blocked in &blocker.blocks {
+                self.task(blocked)?;
+                if blocked == &blocker.id {
+                    return fail("dependency_cycle", "A task cannot block itself");
+                }
+                if blocker.dependencies.contains(blocked) {
+                    return fail("dependency_cycle", "A task cannot block one it waits for to be done");
+                }
+                let blocked_task = self.task(blocked)?;
+                if blocked_task.dependencies.contains(&blocker.id) || blocked_task.delivered_dependencies.contains(&blocker.id) {
+                    return fail("dependency_cycle", "A task cannot block one that depends on it: a reviewer depends on the task it reviews, never the other way round");
+                }
+            }
+        }
+        fn visit(s: &DomainState, t: &TaskId, path: &mut BTreeSet<TaskId>, done: &mut BTreeSet<TaskId>) -> Result<()> {
+            if done.contains(t) {
+                return Ok(());
+            }
+            if !path.insert(t.clone()) {
+                return fail("dependency_cycle", "Task blocks contain a cycle");
+            }
+            for next in &s.task(t)?.blocks {
+                visit(s, next, path, done)?;
             }
             path.remove(t);
             done.insert(t.clone());
@@ -943,6 +991,15 @@ impl DomainState {
         for dep in &t.dependencies {
             if self.task(dep)?.state != TaskState::Done {
                 return fail("dependency_not_done", "Objective dependency is not done");
+            }
+        }
+        for dep in &t.delivered_dependencies {
+            let up = self.task(dep)?;
+            if up.state == TaskState::Cancelled {
+                return fail("dependency_not_done", "Dependency was cancelled");
+            }
+            if up.final_presentation.is_none() {
+                return fail("dependency_not_delivered", "Dependency has not delivered yet");
             }
         }
         if let Some(stack) = &t.stack {
@@ -967,7 +1024,7 @@ impl DomainState {
         }
         Ok(())
     }
-    fn accepted(&self, p: &Interaction) -> bool {
+    pub(super) fn accepted(&self, p: &Interaction) -> bool {
         matches!(&p.payload,InteractionPayload::Delivery{acceptance:Some(a),..} if a.valid)
     }
     /// A final delivery whose PRs are all merged is settled by the merge itself, whoever merged
@@ -1069,7 +1126,7 @@ impl DomainState {
             self.record_acceptance(presentation, u);
         }
     }
-    fn blockers(&self, t: &TaskId) -> bool {
+    pub(super) fn blockers(&self, t: &TaskId) -> bool {
         self.interactions.values().any(|i| {
             i.scope == (Scope::Task { task_id: t.clone() })
                 && i.blocking
@@ -1081,7 +1138,7 @@ impl DomainState {
                 )
         })
     }
-    fn settled(&self, t: &Task, p: &Interaction) -> bool {
+    pub(super) fn settled(&self, t: &Task, p: &Interaction) -> bool {
         self.merged_delivery(p)
             || (self.accepted(p)
                 && matches!(&p.payload, InteractionPayload::Delivery { targets, .. }
@@ -1200,10 +1257,14 @@ impl DomainState {
                         if self.wraps_up(t) { TaskState::Closing } else { TaskState::Done }
                     } else if self.accepted(p) {
                         TaskState::Closing
-                    } else if self.handed_back(p).is_some() {
+                    } else if self.handed_back(p).is_some() || !t.blocks.is_empty() {
                         if t.started || t.agent_id.is_some() { TaskState::Running } else { TaskState::NotStarted }
+                    } else if !self.open_blockers(&t.id).is_empty() {
+                        TaskState::AwaitingBlocker
+                    } else if matches!(self.attention(t), Attention::Wait(_)) {
+                        TaskState::WaitingDependency
                     } else {
-                        TaskState::InReview
+                        TaskState::ForYourReview
                     }
                 } else if t.started {
                     TaskState::Running
@@ -1220,6 +1281,29 @@ impl DomainState {
             task.state = state;
         }
         changed
+    }
+    /// A reviewer whose blocked tasks are all over (cancelled, merged outside, finished) has
+    /// nothing left to review: it is cancelled, its node told, and its delivery never reaches the
+    /// user.
+    fn cancel_orphan_reviewers(&mut self, effects: &mut Vec<DomainEffect>) -> bool {
+        let orphans: Vec<TaskId> = self
+            .tasks
+            .values()
+            .filter(|b| !b.state.terminal() && !b.blocks.is_empty() && !self.finished(b))
+            .filter(|b| !b.blocks.iter().any(|a| self.tasks.get(a).is_some_and(|a| !a.state.terminal() && !self.finished(a))))
+            .map(|b| b.id.clone())
+            .collect();
+        for id in &orphans {
+            self.invalidate(id);
+            let t = self.tasks.get_mut(id).unwrap();
+            t.state = TaskState::Cancelled;
+            if let Some(agent_id) = t.agent_id.clone() {
+                t.wrap_up.close_cancelled = true;
+                let message = cancelled_notice(&t.title);
+                effects.push(DomainEffect::NotifyAgent { agent_id, task_id: Some(id.clone()), interaction_id: None, message });
+            }
+        }
+        !orphans.is_empty()
     }
     /// Tasks whose revision must move: their row, their decisions and
     /// deliveries, PR, authorizations, stack readiness, reviews or linked
@@ -1405,6 +1489,15 @@ impl DomainState {
         let mut created = vec![];
         next.apply(actor, &envelope.command, &mut effects, &mut created)?;
         next.derive_states();
+        if next.cancel_orphan_reviewers(&mut effects) {
+            next.derive_states();
+        }
+        let acting_before = self.acting();
+        for (task_id, card) in next.acting() {
+            if acting_before.get(&task_id).map(|before| &before.interaction) != Some(&card.interaction) {
+                effects.push(DomainEffect::NotifyUser { task_id: Some(task_id), interaction_id: card.interaction });
+            }
+        }
         next.wrap_up_step(&mut effects);
         for id in self.touched_tasks(&next) {
             next.tasks.get_mut(&id).unwrap().revision = self.revision + 1;
@@ -1799,7 +1892,7 @@ impl DomainState {
                         documents: BTreeMap::new(),
                         archived: false,
                         model: None,
-                        wrap_up: WrapUp::default(),
+                        delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: WrapUp::default(),
                     },
                 );
                 self.dependency_graph()?;
@@ -1869,6 +1962,113 @@ impl DomainState {
                 t.dependencies = dependencies.clone();
                 t.stack = stack.clone();
                 self.dependency_graph()?;
+            }
+            Command::SetRelations { task_id, delivered_dependencies, blocks } => {
+                self.manager(actor)?;
+                self.active(task_id)?;
+                for other in delivered_dependencies.iter().chain(blocks) {
+                    if self.task(other)?.state == TaskState::Cancelled {
+                        return refuse("invalid_input", "relations", "A cancelled task cannot be related: reopen it or leave it out");
+                    }
+                }
+                for blocked in blocks {
+                    let over = self.task(blocked)?;
+                    if over.state.terminal() || self.finished(over) {
+                        return refuse(
+                            "invalid_input",
+                            "blocks",
+                            &format!("Task {blocked} is already over, so there is nothing to block or review: leave it out"),
+                        );
+                    }
+                }
+                if !blocks.is_empty() && self.task(task_id)?.pr_id.is_some() {
+                    return refuse(
+                        "invalid_input",
+                        "blocks",
+                        "A task with a registered pull request cannot block others: a reviewer delivers a verdict, not a pull request",
+                    );
+                }
+                let t = self.tasks.get_mut(task_id).unwrap();
+                t.delivered_dependencies = delivered_dependencies.clone();
+                t.blocks = blocks.clone();
+                self.dependency_graph()?;
+            }
+            Command::RecordVerdict { task_id, presentation_id, verdict } => {
+                let t = self.assigned(actor, task_id)?;
+                if t.final_presentation.as_ref() != Some(presentation_id) {
+                    return fail("acceptance_stale", "The verdict is for a delivery that is no longer the final one");
+                }
+                if !self.reviewing(t) {
+                    return refuse("invalid_input", "verdict", "Only a task that blocks another open task gives a verdict");
+                }
+                if let Some(recorded) = &t.verdict {
+                    let same = match (recorded, verdict) {
+                        (Verdict::Approved { .. }, Verdict::Approved { .. }) => true,
+                        (Verdict::ChangesRequested { .. }, Verdict::ChangesRequested { .. }) => true,
+                        (Verdict::Approved { open_issues, .. }, Verdict::ChangesRequested { .. }) => *open_issues,
+                        _ => false,
+                    };
+                    if same {
+                        return Ok(());
+                    }
+                    return refuse("invalid_input", "verdict", "A verdict is already recorded for this result: present your result again to change it");
+                }
+                let reviewed_at = self.interaction(presentation_id)?.order;
+                let blocked: Vec<TaskId> = t.blocks.iter().filter(|b| self.tasks.get(*b).is_some_and(|b| !b.state.terminal())).cloned().collect();
+                for blocked_id in &blocked {
+                    let delivered = self.task(blocked_id)?.final_presentation.as_ref().and_then(|id| self.interactions.get(id));
+                    if delivered.is_some_and(|delivery| delivery.order > reviewed_at) {
+                        return refuse(
+                            "acceptance_stale",
+                            "verdict",
+                            "The task you review delivered again after your result: review its new delivery, present your result again and then give the verdict",
+                        );
+                    }
+                }
+                let capped = blocked.iter().any(|b| self.tasks[b].review_rounds >= MAX_REVIEW_ROUNDS);
+                let verdict = match verdict {
+                    Verdict::ChangesRequested { text } => {
+                        nonempty(text)?;
+                        if capped {
+                            Verdict::Approved { summary: text.clone(), open_issues: true }
+                        } else {
+                            verdict.clone()
+                        }
+                    }
+                    Verdict::Approved { summary, open_issues } => Verdict::Approved { summary: summary.clone(), open_issues: *open_issues },
+                };
+                match &verdict {
+                    Verdict::ChangesRequested { text } => {
+                        for blocked_id in &blocked {
+                            let Some(delivery) = self.task(blocked_id)?.final_presentation.clone() else {
+                                return refuse("invalid_input", "verdict", "The blocked task has delivered nothing to send back");
+                            };
+                            let already_sent_back = self.handed_back(&self.interactions[&delivery]).is_some();
+                            self.invalidate(blocked_id);
+                            let revision = self.revision + 1;
+                            let p = self.interactions.get_mut(&delivery).unwrap();
+                            if let InteractionPayload::Delivery { feedback, .. } = &mut p.payload {
+                                feedback.push(Feedback {
+                                    attachments: vec![],
+                                    user_id: Feedback::ALONDRA.to_owned(),
+                                    body: text.clone(),
+                                    at_revision: revision,
+                                    instruction: Instruction::Changes,
+                                });
+                            }
+                            p.revision = revision;
+                            if !already_sent_back {
+                                self.tasks.get_mut(blocked_id).unwrap().review_rounds += 1;
+                            }
+                            self.notify(blocked_id, Some(delivery), &Instruction::Changes.message(text), effects)?;
+                        }
+                        self.tasks.get_mut(task_id).unwrap().verdict = Some(verdict);
+                    }
+                    Verdict::Approved { .. } => {
+                        self.tasks.get_mut(task_id).unwrap().verdict = Some(verdict);
+                        self.record_acceptance(presentation_id, Feedback::ALONDRA);
+                    }
+                }
             }
             Command::StartTask { task_id } => {
                 self.task_editor(actor, task_id)?;
@@ -2463,7 +2663,13 @@ impl DomainState {
                 base,
                 allowed_methods,
             } => {
-                self.assigned(actor, task_id)?;
+                if !self.assigned(actor, task_id)?.blocks.is_empty() {
+                    return refuse(
+                        "invalid_input",
+                        "task_id",
+                        "A task that blocks another reviews it and delivers a verdict, not a pull request: leave the code to the task you review, and say what to change in record_verdict",
+                    );
+                }
                 id(&pr_id.0)?;
                 if !crate::views::id::valid(&pr_id.0) {
                     return refuse(
@@ -2617,15 +2823,24 @@ impl DomainState {
                 }
                 if *is_final {
                     self.invalidate(task_id);
-                    self.tasks.get_mut(task_id).unwrap().final_presentation =
-                        Some(interaction_id.clone());
+                    let t = self.tasks.get_mut(task_id).unwrap();
+                    t.final_presentation = Some(interaction_id.clone());
+                    t.verdict = None;
                     self.blocks_acyclic(interaction_id)?;
+                    let reviewers: Vec<TaskId> = self.open_blockers(task_id).into_iter()
+                        .filter(|b| self.tasks.get(b).is_some_and(|b| b.started))
+                        .collect();
+                    for reviewer in reviewers {
+                        self.notify(&reviewer, Some(interaction_id.clone()), "The task you review delivered again: review its new final delivery, present your result again and then give your verdict.", effects)?;
+                    }
                 }
                 created.push(interaction_id.0.clone());
-                effects.push(DomainEffect::NotifyUser {
-                    task_id: Some(task_id.clone()),
-                    interaction_id: interaction_id.clone(),
-                });
+                if !*is_final {
+                    effects.push(DomainEffect::NotifyUser {
+                        task_id: Some(task_id.clone()),
+                        interaction_id: interaction_id.clone(),
+                    });
+                }
             }
             Command::SubmitFeedback {
                 attachments,
@@ -2715,6 +2930,7 @@ impl DomainState {
                     if !self.requests.get(&t.request_id).is_some_and(|r| r.auto_merge) || !untouched {
                         return fail("forbidden", "Alondra merges on its own only an untouched delivery of an auto-merge Request");
                     }
+                    self.unblocked(presentation_id)?;
                     self.authorize_merge(authorization_id, presentation_id, pr_id, expected_head, *method, Feedback::ALONDRA, false)?;
                 } else {
                     let u = user(actor)?;
@@ -2962,6 +3178,13 @@ impl DomainState {
                     .is_some_and(|r| !r.closed)
                 {
                     return fail("not_found", "Open Request required to reopen Task");
+                }
+                if !task.blocks.is_empty() && !self.reviewing_open(task) {
+                    return refuse(
+                        "invalid_input",
+                        "task_id",
+                        "The task this one reviewed is already over, so there is nothing left to review: create a new task if you want another review",
+                    );
                 }
                 let released = task.agent_id.as_ref().is_some_and(|a| self.busy_with(a, task_id).is_some());
                 self.invalidate(task_id);

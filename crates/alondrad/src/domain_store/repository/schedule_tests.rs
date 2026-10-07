@@ -285,7 +285,7 @@ fn sent_run_request_task_policy_and_receipt_commit_together() {
             documents: BTreeMap::new(),
             archived: false,
             model: None,
-            wrap_up: Default::default(),
+            delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: Default::default(),
         },
         launch: ScheduleLaunchIntent {
             name: "scheduled/run-1".into(),

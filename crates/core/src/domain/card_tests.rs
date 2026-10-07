@@ -14,14 +14,24 @@ fn agent_b() -> Actor {
 fn orchestrator() -> Actor {
     Actor::Orchestrator { generation: 0 }
 }
+/// Every card in Waiting for You has something the user can do now and nothing holding it back,
+/// whatever state a test reached (the property of the cards design, checked after every command).
+fn assert_cards_usable(s: &DomainState) {
+    for item in s.projection().inbox.iter().filter(|item| item.pending) {
+        assert!(item.blocked_by.is_empty(), "{} is listed while held back", item.id);
+        assert!(item.available_actions.iter().any(|action| action.enabled), "{} is listed with nothing the user can do", item.id);
+    }
+}
 fn exec(s: &mut DomainState, a: Actor, c: Command) -> Result<CommandOutcome, DomainError> {
-    s.execute(&a, &CommandEnvelope {
+    let outcome = s.execute(&a, &CommandEnvelope {
         protocol_version: 2,
         data_epoch: s.data_epoch.clone(),
         command_id: format!("c-{}", s.revision).into(),
         expected_revision: s.revision,
         command: c,
-    })
+    });
+    assert_cards_usable(s);
+    outcome
 }
 fn ok(s: &mut DomainState, a: Actor, c: Command) -> CommandOutcome {
     exec(s, a, c).unwrap()

@@ -321,16 +321,54 @@ fn state_label(item: &InboxItem, interaction: Option<&Interaction>, context: &Re
     })
 }
 
+/// What the tasks that reviewed this one concluded: the line of each approval and, when the
+/// rounds ran out, the failures that were left.
+fn review_lines(item: &InboxItem, context: &RenderContext<'_>) -> Vec<ContextLine> {
+    use crate::domain::{MAX_REVIEW_ROUNDS, Verdict};
+    let lang = context.lang;
+    let Some(task) = &item.task_id else { return vec![] };
+    let line = |text: String| ContextLine { icon: Icon::Check, text, link: None, chip: None, state: None };
+    let mut lines = vec![];
+    let reviewed_after = |reviewer: &crate::domain::Task| {
+        reviewer.final_presentation.as_ref().and_then(|id| context.domain.interactions.get(id)).is_some_and(|result| result.order > item.order)
+    };
+    for reviewer in context.domain.tasks.values().filter(|b| b.blocks.contains(task) && reviewed_after(b)) {
+        match &reviewer.verdict {
+            Some(Verdict::Approved { summary, open_issues: false }) => lines.push(line(
+                tf!(lang, "Reviewed by “{title}”: {summary}", "Revisado por «{title}»: {summary}", title = reviewer.title, summary = summary.trim()),
+            )),
+            Some(Verdict::Approved { summary, open_issues: true }) => {
+                let left = summary.lines().filter(|line| !line.trim().is_empty()).count().max(1);
+                let text = if left == 1 {
+                    tf!(lang, "Reviewed by “{title}”: 1 failure left after {rounds} rounds", "Revisado por «{title}»: queda 1 fallo tras {rounds} vueltas",
+                        title = reviewer.title, rounds = MAX_REVIEW_ROUNDS)
+                } else {
+                    tf!(lang, "Reviewed by “{title}”: {left} failures left after {rounds} rounds", "Revisado por «{title}»: quedan {left} fallos tras {rounds} vueltas",
+                        title = reviewer.title, left = left, rounds = MAX_REVIEW_ROUNDS)
+                };
+                lines.push(line(text));
+                lines.push(line(summary.trim().to_owned()));
+            }
+            _ => {}
+        }
+    }
+    lines
+}
+
 fn context_lines(item: &InboxItem, context: &RenderContext<'_>) -> Vec<ContextLine> {
-    let Some(agent_id) = &item.agent_id else { return vec![] };
-    let node = context.live.nodes.iter().find(|node| node.agent_id == agent_id.0);
-    vec![ContextLine {
-        icon: Icon::Node,
-        text: super::common::agent_label(agent_id, context),
-        link: Some(Link::View { key: format!("node:{agent_id}") }),
-        chip: node.and_then(|node| node.project.as_ref()).map(|project| Label { text: project.clone(), tone: Tone::Neutral }),
-        state: node.map(|_| super::fleet::node_state(agent_id, context)),
-    }]
+    let mut lines = vec![];
+    if let Some(agent_id) = &item.agent_id {
+        let node = context.live.nodes.iter().find(|node| node.agent_id == agent_id.0);
+        lines.push(ContextLine {
+            icon: Icon::Node,
+            text: super::common::agent_label(agent_id, context),
+            link: Some(Link::View { key: format!("node:{agent_id}") }),
+            chip: node.and_then(|node| node.project.as_ref()).map(|project| Label { text: project.clone(), tone: Tone::Neutral }),
+            state: node.map(|_| super::fleet::node_state(agent_id, context)),
+        });
+    }
+    lines.extend(review_lines(item, context));
+    lines
 }
 
 pub(super) fn from_item(item: &InboxItem, context: &RenderContext<'_>, included: bool) -> Result<Card, BuildError> {

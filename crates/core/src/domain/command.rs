@@ -119,6 +119,21 @@ pub enum Command {
         dependencies: BTreeSet<TaskId>,
         stack: Option<StackDependency>,
     },
+    /// The relations between tasks beyond `SetDependencies`: starts after a final delivery, and
+    /// holds back the review of other tasks.
+    SetRelations {
+        task_id: TaskId,
+        #[serde(default)]
+        delivered_dependencies: BTreeSet<TaskId>,
+        #[serde(default)]
+        blocks: BTreeSet<TaskId>,
+    },
+    /// What the final delivery of a task that blocks others concluded about them.
+    RecordVerdict {
+        task_id: TaskId,
+        presentation_id: InteractionId,
+        verdict: Verdict,
+    },
     StartTask {
         task_id: TaskId,
     },

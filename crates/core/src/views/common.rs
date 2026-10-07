@@ -69,7 +69,7 @@ pub(super) fn state_tone(state: &str) -> super::Tone {
     match state {
         "needs_you" | "stalled" => Tone::Warning,
         "your_turn" => Tone::YourTurn,
-        "in_review" | "waiting_merge" | "waiting_machine"
+        "in_review" | "for_your_review" | "awaiting_blocker" | "waiting_merge" | "waiting_machine"
         | "waiting_dependency" | "closing" | "defining" => Tone::Info,
         "running" | "working" | "busy" | "free" | "waiting_answer" => Tone::Accent,
         "done" | "delivered" => Tone::Success,
@@ -149,7 +149,8 @@ pub(super) fn task_presentation(state: crate::domain::TaskState) -> (super::Icon
     match state {
         S::Running => (Icon::Mission, Tone::Accent),
         S::NeedsYou => (Icon::Action, Tone::Warning),
-        S::InReview => (Icon::PullRequest, Tone::Info),
+        S::ForYourReview => (Icon::PullRequest, Tone::Info),
+        S::AwaitingBlocker => (Icon::Branch, Tone::Info),
         S::WaitingDependency => (Icon::Branch, Tone::Info),
         S::Done | S::Closing => (Icon::Check, Tone::Success),
         S::Cancelled => (Icon::Warning, Tone::Neutral),

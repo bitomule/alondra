@@ -26,7 +26,8 @@ fn task_state_label(state: TaskState, lang: super::Lang) -> &'static str {
         TaskState::NotStarted => t!(lang, "Not started", "Sin empezar"),
         TaskState::Running => t!(lang, "Working", "Trabajando"),
         TaskState::NeedsYou => t!(lang, "Needs you", "Te necesita"),
-        TaskState::InReview => t!(lang, "In review", "En revisión"),
+        TaskState::ForYourReview => t!(lang, "In review", "En revisión"),
+        TaskState::AwaitingBlocker => t!(lang, "Waiting", "Esperando"),
         TaskState::WaitingDependency => t!(lang, "Waiting", "Esperando"),
         TaskState::Closing => t!(lang, "Closing", "Cerrando"),
         TaskState::Done => t!(lang, "Finished", "Terminado"),
@@ -37,7 +38,8 @@ fn task_state_label(state: TaskState, lang: super::Lang) -> &'static str {
 fn task_groups(context: &RenderContext<'_>) -> super::Section {
     let states = [
         (TaskState::NeedsYou, "needs_you", t!(context.lang, "Needs you", "Te necesita")),
-        (TaskState::InReview, "in_review", t!(context.lang, "In review", "En revisión")),
+        (TaskState::ForYourReview, "in_review", t!(context.lang, "In review", "En revisión")),
+        (TaskState::AwaitingBlocker, "awaiting_blocker", t!(context.lang, "Waiting", "Esperando")),
         (TaskState::Closing, "closing", t!(context.lang, "Closing", "Cerrando")),
         (TaskState::Running, "running", t!(context.lang, "Working", "Trabajando")),
         (TaskState::WaitingDependency, "waiting_dependency", t!(context.lang, "Waiting", "Esperando")),
@@ -97,7 +99,7 @@ fn task_groups(context: &RenderContext<'_>) -> super::Section {
 
 fn group_row(id: &str, title: &str, children: Vec<super::Row>) -> super::Row {
     let state = match id {
-        "needs_you" => "needs_you", "in_review" => "in_review", "closing" => "closing",
+        "needs_you" => "needs_you", "in_review" => "in_review", "awaiting_blocker" => "awaiting_blocker", "closing" => "closing",
         "running" => "running", "waiting_dependency" => "waiting_dependency",
         "not_started" => "not_started", "done" => "done", "cancelled" => "cancelled",
         "archived" => "archived", _ => "defining",
@@ -107,7 +109,7 @@ fn group_row(id: &str, title: &str, children: Vec<super::Row>) -> super::Row {
         "in_review" => super::Icon::PullRequest,
         "closing" | "done" => super::Icon::Check,
         "running" => super::Icon::Mission,
-        "waiting_dependency" => super::Icon::Branch,
+        "waiting_dependency" | "awaiting_blocker" => super::Icon::Branch,
         "cancelled" => super::Icon::Warning,
         _ => super::Icon::Task,
     };

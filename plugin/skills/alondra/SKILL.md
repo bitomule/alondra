@@ -73,6 +73,11 @@ Pick the tool by what you need:
   `ask`, to need an action `request_action`, for input
   `request_input`, to have the user try something `request_test`; report results in
   `present_result`.
+- If your task blocks another (you are its reviewer), call `record_verdict` right after your final
+  `present_result`: `approved` closes you and releases the blocked task to the user;
+  `changes_requested` with the findings as `text` sends it back to work and you review its next
+  final delivery (three rounds at most; your last word then closes the review). If it delivers again
+  before your verdict, present your result again first. A reviewer registers no pull request.
 - `present_result` with `is_final: true`: you are done. `need` says what to review, the report or
   diff goes in `content`, both about the change itself; `targets` names
   what you deliver: `text`, a document revision you created, or the PR you registered with its

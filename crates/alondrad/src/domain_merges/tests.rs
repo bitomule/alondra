@@ -133,7 +133,7 @@ async fn auto_merge_waits_for_the_checks_then_claims_durably_and_merges() {
     assert!(merger.merge_due(&domain, &github).await.unwrap(), "pending checks are looked at again");
     assert!(github.merged.lock().unwrap().is_empty());
     assert!(domain.state().unwrap().merge_authorizations.is_empty(), "nothing claimed while checks run");
-    assert_eq!(task(&domain), TaskState::InReview);
+    assert_eq!(task(&domain), TaskState::ForYourReview);
     github.open(7, HEAD, Checks::Passed);
     assert!(!merger.merge_due(&domain, &github).await.unwrap());
     assert_eq!(*github.merged.lock().unwrap(), vec![(7, HEAD.to_owned(), MergeMethod::Squash)]);
@@ -144,6 +144,36 @@ async fn auto_merge_waits_for_the_checks_then_claims_durably_and_merges() {
     end_node(&domain);
     assert_eq!(task(&domain), TaskState::Done);
     assert_eq!(told(&domain), vec![merged_notice(7, 0), cleanup_request("Task", &"t".into())]);
+}
+
+#[tokio::test]
+async fn an_auto_merge_waits_for_the_task_that_reviews_it_and_merges_once_it_approves() {
+    let (_home, domain, github) = presented("reviewed", true);
+    let reviewer = || Actor::Agent { agent_id: "rev".into() };
+    command(&domain, Actor::System, "reviewer-agent", Command::RegisterAgent { agent_id: "rev".into(), name: "Reviewer".into() });
+    command(&domain, user(), "title", Command::TitleRequest { request_id: "r".into(), title: "Work".into() });
+    command(&domain, user(), "reviewer", Command::CreateTask {
+        task_id: "review".into(), request_id: "r".into(), title: "Review".into(), agent_id: Some("rev".into()),
+        review_prs: false, dependencies: BTreeSet::new(), stack: None,
+    });
+    command(&domain, user(), "relations", Command::SetRelations {
+        task_id: "review".into(), delivered_dependencies: BTreeSet::from(["t".into()]), blocks: BTreeSet::from(["t".into()]),
+    });
+    command(&domain, reviewer(), "start", Command::StartTask { task_id: "review".into() });
+    command(&domain, reviewer(), "present-review", Command::PresentResult {
+        attachments: vec![], task_id: "review".into(), interaction_id: "rd".into(), body: "Looked at it".into(),
+        targets: vec![DeliveryTarget::Text { text: "The review".into() }], is_final: true,
+        card: CardSpec::delivery("Review the result", &[], true),
+    });
+    let mut merger = now();
+    assert!(!merger.merge_due(&domain, &github).await.unwrap());
+    assert!(github.merged.lock().unwrap().is_empty(), "nothing is merged while its review is open");
+    assert!(domain.state().unwrap().merge_authorizations.is_empty());
+    command(&domain, reviewer(), "approve", Command::RecordVerdict {
+        task_id: "review".into(), presentation_id: "rd".into(), verdict: Verdict::Approved { summary: "fine".into(), open_issues: false },
+    });
+    merger.merge_due(&domain, &github).await.unwrap();
+    assert_eq!(*github.merged.lock().unwrap(), vec![(7, HEAD.to_owned(), MergeMethod::Squash)], "approved: auto-merge goes ahead");
 }
 
 #[tokio::test]
@@ -333,7 +363,7 @@ async fn checks_that_need_someone_on_github_raise_one_card_and_wait() {
     let raised = problems(&domain);
     assert_eq!(raised.len(), 1);
     assert_eq!(raised[0].card.need, "Act on the checks of PR #7 on GitHub");
-    assert_eq!(task(&domain), TaskState::InReview, "not handed back");
+    assert_eq!(task(&domain), TaskState::ForYourReview, "not handed back");
     github.open(7, HEAD, Checks::Passed);
     merger.merge_due(&domain, &github).await.unwrap();
     assert!(problems(&domain).iter().all(|card| card.withdrawn));

@@ -60,8 +60,8 @@ final class MacCardTests: XCTestCase {
         let review = try card("card-pr-mac")
         let buttons = MacCardButtons(review)
         XCTAssertEqual(buttons.visible.map(\.resolvedRole), [.advance, .neutral])
-        XCTAssertEqual(buttons.visible.first?.enabled, false, "the merge waits for what blocks it")
-        XCTAssertFalse(review.blockedBy.isEmpty)
+        XCTAssertEqual(buttons.visible.first?.enabled, true, "a card in Waiting for You offers a merge that works")
+        XCTAssertTrue(review.blockedBy.isEmpty)
         XCTAssertTrue(buttons.more.contains { $0.link != nil }, "Open on GitHub is a link in More…")
     }
 

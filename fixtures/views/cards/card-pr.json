@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:github.com/example/repo#12",
   "client": "ios",
-  "version": "va85af3f1b2d6ccdb",
+  "version": "va6e0bea071a45594",
   "cursor": "cursor-1",
   "title": "Add the compact schedule editor",
   "status": {
@@ -77,16 +77,6 @@
             "label": "Changes",
             "summary": "4 files · +120 −30"
           },
-          "blocked_by": [
-            {
-              "id": "8fa4034b-249e-4487-a89b-57de38c26372",
-              "label": "blocked by Ship the compact schedule editor with this beta?",
-              "link": {
-                "kind": "view",
-                "key": "card:8fa4034b-249e-4487-a89b-57de38c26372"
-              }
-            }
-          ],
           "reply": {
             "id": "reply:hf-weekly-2026-09-30@1",
             "label": "Reply",
@@ -114,8 +104,7 @@
                 "kind": "none"
               },
               "attachments": false,
-              "enabled": false,
-              "disabled_reason": "Answer “Ship the compact schedule editor with this beta?” first",
+              "enabled": true,
               "stamp": "Accepted"
             },
             {
@@ -185,8 +174,7 @@
                 "message": "Add the compact schedule editor",
                 "button": "Merge"
               },
-              "enabled": false,
-              "disabled_reason": "Answer “Ship the compact schedule editor with this beta?” first",
+              "enabled": true,
               "stamp": "Merging…"
             },
             {

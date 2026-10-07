@@ -1371,16 +1371,81 @@ fn a_store_made_before_wrap_ups_launch_plans_and_closings_opens_in_place() {
     seeded(&mut store);
     execute(&mut store, &user(), "cancel", Command::CancelTask { task_id: "task-1".into() });
     store.begin_task_closing(&"task-1".into(), 5).unwrap();
-    store.conn.execute_batch("DROP TABLE task_wrap_ups; DROP TABLE task_closings; DROP TABLE auto_launches; DROP TABLE task_launch_plans").unwrap();
+    store.conn.execute_batch("DROP TABLE task_wrap_ups; DROP TABLE task_relations; DROP TABLE task_closings; DROP TABLE auto_launches; DROP TABLE task_launch_plans").unwrap();
     drop(store);
     let mut reopened = DomainStore::open(&fixture.path()).unwrap();
-    for table in ["task_wrap_ups", "task_closings", "auto_launches", "task_launch_plans"] {
+    for table in ["task_wrap_ups", "task_relations", "task_closings", "auto_launches", "task_launch_plans"] {
         let count: i64 = reopened.conn.query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0)).unwrap();
         assert_eq!(count, 0, "{table} is created empty");
     }
     assert!(reopened.load().unwrap().tasks[&"task-1".into()].wrap_up.is_default(), "the task decodes with the default wrap-up");
     assert_eq!(reopened.conn.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), SCHEMA_VERSION);
     assert!(!fixture.0.read_dir().unwrap().any(|e| e.unwrap().file_name().to_string_lossy().contains(".old-")), "nothing was moved aside");
+}
+
+#[test]
+fn task_relations_a_verdict_and_the_split_review_states_survive_a_restart() {
+    let fixture = Fixture::new();
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    seeded(&mut store);
+    execute(&mut store, &Actor::System, "agent-2", Command::RegisterAgent { agent_id: "agent-2".into(), name: "Reviewer".into() });
+    execute(&mut store, &user(), "request-title", Command::TitleRequest { request_id: "request-1".into(), title: "Useful work".into() });
+    execute(&mut store, &user(), "task-2", Command::CreateTask {
+        task_id: "task-2".into(), request_id: "request-1".into(), title: "Review".into(), agent_id: Some("agent-2".into()),
+        review_prs: false, dependencies: BTreeSet::new(), stack: None,
+    });
+    execute(&mut store, &user(), "relations", Command::SetRelations {
+        task_id: "task-2".into(), delivered_dependencies: BTreeSet::from(["task-1".into()]), blocks: BTreeSet::from(["task-1".into()]),
+    });
+    present(&mut store);
+    assert_eq!(store.load().unwrap().tasks[&"task-1".into()].state, TaskState::AwaitingBlocker);
+    let reviewer = Actor::Agent { agent_id: "agent-2".into() };
+    execute(&mut store, &reviewer, "start-review", Command::StartTask { task_id: "task-2".into() });
+    execute(&mut store, &reviewer, "present-review", Command::PresentResult {
+        task_id: "task-2".into(), interaction_id: "delivery-2".into(), body: "Reviewed".into(),
+        targets: vec![DeliveryTarget::Text { text: "The review".into() }], is_final: true, attachments: vec![],
+        card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
+    });
+    execute(&mut store, &reviewer, "changes", Command::RecordVerdict {
+        task_id: "task-2".into(), presentation_id: "delivery-2".into(), verdict: Verdict::ChangesRequested { text: "Fix it".into() },
+    });
+    drop(store);
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let state = store.load().unwrap();
+    let review = &state.tasks[&"task-2".into()];
+    assert_eq!((review.blocks.len(), review.delivered_dependencies.len()), (1, 1));
+    assert_eq!(review.verdict, Some(Verdict::ChangesRequested { text: "Fix it".into() }));
+    assert_eq!(state.tasks[&"task-1".into()].review_rounds, 1, "the round is counted on the task under review");
+    assert_eq!(state.tasks[&"task-1".into()].state, TaskState::Running, "the work went back to its node");
+
+    let pushes = |store: &DomainStore, card: &str| -> i64 {
+        store.conn.query_row(
+            "SELECT count(*) FROM domain_messages m JOIN domain_message_user_targets t ON t.message_id=m.id WHERE m.interaction_id=?1",
+            [card], |r| r.get(0),
+        ).unwrap()
+    };
+    assert_eq!(pushes(&store, "delivery-1"), 0, "no push while a review holds the delivery back");
+    execute(&mut store, &agent(), "present-again", Command::PresentResult {
+        task_id: "task-1".into(), interaction_id: "delivery-1b".into(), body: "Fixed".into(),
+        targets: vec![DeliveryTarget::Text { text: "The answer".into() }], is_final: true, attachments: vec![],
+        card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
+    });
+    execute(&mut store, &reviewer, "present-review-again", Command::PresentResult {
+        task_id: "task-2".into(), interaction_id: "delivery-2b".into(), body: "Reviewed again".into(),
+        targets: vec![DeliveryTarget::Text { text: "The review".into() }], is_final: true, attachments: vec![],
+        card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
+    });
+    execute(&mut store, &reviewer, "approve", Command::RecordVerdict {
+        task_id: "task-2".into(), presentation_id: "delivery-2b".into(),
+        verdict: Verdict::Approved { summary: "Fine".into(), open_issues: false },
+    });
+    assert_eq!(pushes(&store, "delivery-1b"), 1, "one push when the review lets the delivery through");
+    drop(store);
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    assert_eq!(store.load().unwrap().tasks[&"task-1".into()].state, TaskState::ForYourReview);
+    execute(&mut store, &user(), "rename", Command::RetitleTask { task_id: "task-1".into(), title: "Goal, renamed".into() });
+    assert_eq!(pushes(&store, "delivery-1b"), 1, "a restart and an unrelated command never repeat it");
+    assert_eq!(pushes(&store, "delivery-1"), 0);
 }
 
 #[test]

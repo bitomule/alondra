@@ -4,7 +4,7 @@
   "view": "pull_request",
   "key": "pull_request:github.com/example/repo#12",
   "client": "mac",
-  "version": "v989c7e609a293b41",
+  "version": "v7c2f08059bcbed91",
   "cursor": "cursor-1",
   "title": "Add the compact schedule editor",
   "status": {
@@ -164,8 +164,7 @@
                 "message": "Add the compact schedule editor",
                 "button": "Merge"
               },
-              "enabled": false,
-              "disabled_reason": "Answer “Ship the compact schedule editor with this beta?” first",
+              "enabled": true,
               "stamp": "Merging…",
               "key": "1"
             },
@@ -220,8 +219,7 @@
                 "kind": "none"
               },
               "attachments": false,
-              "enabled": false,
-              "disabled_reason": "Answer “Ship the compact schedule editor with this beta?” first",
+              "enabled": true,
               "stamp": "Accepted",
               "key": "3"
             },

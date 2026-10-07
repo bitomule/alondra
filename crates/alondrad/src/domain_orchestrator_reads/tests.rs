@@ -80,6 +80,21 @@ fn the_fleet_lists_live_agents_what_waits_on_someone_and_the_requests() {
 }
 
 #[test]
+fn the_fleet_shows_the_orchestrator_the_relations_the_verdict_and_the_rounds_of_each_task() {
+    let f = world();
+    run(&f.1, user(), Command::CreateTask { task_id: "t3".into(), request_id: "r".into(), title: "Review".into(), agent_id: Some("agent-b".into()),
+        review_prs: false, dependencies: BTreeSet::new(), stack: None });
+    run(&f.1, user(), Command::SetRelations {
+        task_id: "t3".into(), delivered_dependencies: BTreeSet::from(["t1".into()]), blocks: BTreeSet::from(["t1".into()]),
+    });
+    let fleet = fleet(&f.1, json!({}), json!(null)).unwrap();
+    let find = |id: &str| fleet["tasks"].as_array().unwrap().iter().find(|t| t["id"] == id).unwrap().clone();
+    let (reviewer, reviewed) = (find("t3"), find("t1"));
+    assert_eq!((reviewer["delivered_dependencies"].clone(), reviewer["blocks"].clone()), (json!(["t1"]), json!(["t1"])));
+    assert_eq!((reviewed["blocked_by"].clone(), reviewed["review_rounds"].clone(), reviewed["verdict"].clone()), (json!(["t3"]), json!(0), Value::Null));
+}
+
+#[test]
 fn a_node_is_found_by_name_or_id_with_its_questions_results_and_undelivered_messages() {
     let f = world();
     ask(&f.1, "q", Recipient::User, Scope::Task { task_id: "t1".into() }, agent_a());

@@ -64,7 +64,7 @@ fn task(id: &str, request: &str, agent: Option<&str>, title: &str, state: TaskSt
         documents: BTreeMap::new(),
         archived: false,
         model: None,
-        wrap_up: Default::default(),
+        delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: Default::default(),
     }
 }
 
@@ -352,6 +352,24 @@ fn edited(name: &str, change: impl FnOnce(&mut serde_json::Value)) -> views::Vie
     serde_json::from_value(value).unwrap()
 }
 
+/// The PR card as a server that still sent a held-back delivery would: its merge disabled with
+/// the reason and the card that holds it back.
+fn blocked_pr() -> views::View {
+    edited("card-pr.json", |card| {
+        let question = "8fa4034b-249e-4487-a89b-57de38c26372";
+        let reason = "Answer “Ship the compact schedule editor with this beta?” first";
+        card["blocked_by"] = serde_json::json!([{
+            "id": question,
+            "label": "blocked by Ship the compact schedule editor with this beta?",
+            "link": {"kind": "view", "key": format!("card:{question}")},
+        }]);
+        for list in ["actions", "more"] {
+            card[list][0]["enabled"] = false.into();
+            card[list][0]["disabled_reason"] = reason.into();
+        }
+    })
+}
+
 fn held_card(hold: alondra_core::domain::Hold, spec: alondra_core::domain::CardSpec) -> views::View {
     use alondra_core::domain::*;
     let mut state = DomainState::new("e");
@@ -402,9 +420,6 @@ fn inbox_lists_one_row_per_card_with_its_kind_glyph_and_meta_on_the_right() {
     assert!(welcome[0].contains("▌? Choose the welcome copy") && welcome[0].contains("Alondra"), "{welcome:?}");
     assert!(screen.contains("◎ Review the beta candidate"), "{screen}");
     assert!(screen.contains("· The simulator pass is clean"), "{screen}");
-    let review = screen.lines().position(|line| line.contains("◎ Review the beta candidate")).unwrap();
-    let hint = screen.lines().nth(review + 1).unwrap();
-    assert!(hint.contains("blocked by Ship the compact schedule"), "the blocked card names what holds it: {hint}");
     assert!(!screen.contains("Merge") && !screen.contains("Reply"), "the list has no buttons: {screen}");
 }
 
@@ -463,7 +478,7 @@ fn authorize_detail_has_a_risk_button_and_the_command_to_run() {
 
 #[test]
 fn review_pr_detail_shows_what_blocks_it_and_greys_the_disabled_merge() {
-    let mut app = english(fixture_view("card-pr.json"));
+    let mut app = english(blocked_pr());
     let screen = rendered(&mut app, 120, 46);
     dump("detail: Review PR, blocked", &screen);
     assert!(screen.contains("◎ REVIEW · PR #12"), "{screen}");
@@ -518,7 +533,7 @@ fn know_detail_only_offers_seen_and_the_reply() {
 
 #[test]
 fn m_opens_the_more_menu_with_its_own_numbering_and_escape_closes_it() {
-    let mut app = english(fixture_view("card-pr.json"));
+    let mut app = english(blocked_pr());
     press(&mut app, KeyCode::Char('m'));
     let screen = rendered(&mut app, 120, 46);
     dump("detail: More menu", &screen);

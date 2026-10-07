@@ -96,7 +96,7 @@ pub(super) fn node_state(agent: &AgentId, context: &RenderContext<'_>) -> super:
         (t!(lang, "Waiting for the machine", "Esperando máquina"), Tone::Neutral)
     } else if waiting(&["action_request"]) || tasks.contains(&TaskState::NeedsYou) {
         (t!(lang, "Your turn", "Te toca"), Tone::YourTurn)
-    } else if reviewing || tasks.contains(&TaskState::InReview) {
+    } else if reviewing || tasks.contains(&TaskState::ForYourReview) {
         (t!(lang, "Waiting for your review", "Espera tu revisión"), Tone::Accent)
     } else if waiting(&["delivery"]) {
         (t!(lang, "Delivering results", "Entrega resultado"), Tone::Success)

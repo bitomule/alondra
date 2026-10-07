@@ -331,6 +331,13 @@ fn node_domain_tools(user: &str) -> Vec<Value> {
             json!({"task_id":{"type":"string"},"presentation_id":{"type":"string"},"pr_id":{"type":"string"},"head":{"type":"string"},"ready":{"type":"boolean"}}),
             vec!["task_id", "presentation_id", "pr_id", "head", "ready"],
         ),
+        (
+            "record_verdict",
+            "record_verdict",
+            "Say what your final delivery concluded about the Tasks you block (a review): approved, or changes_requested with the findings as text. Call it right after present_result with is_final true. Changes_requested sends those Tasks back to work with your text, and you review their next final delivery; after three rounds your last word closes the review. Approved closes your Task and lets the blocked one reach the user. If the task you review delivers again before you give the verdict, present your result again first: a verdict only counts for the delivery you saw. You cannot register a pull request: a reviewer delivers a verdict, not code.",
+            json!({"task_id":{"type":"string"},"presentation_id":{"type":"string"},"verdict":{"oneOf":[{"type":"object","properties":{"kind":{"const":"approved"},"summary":{"type":"string"},"open_issues":{"type":"boolean"}},"required":["kind","summary"],"additionalProperties":false},{"type":"object","properties":{"kind":{"const":"changes_requested"},"text":{"type":"string"}},"required":["kind","text"],"additionalProperties":false}]}}),
+            vec!["task_id", "presentation_id", "verdict"],
+        ),
     ];
     tools.extend(
         simple
@@ -411,6 +418,12 @@ fn orchestrator_domain_tools(user: &str) -> Vec<Value> {
             vec!["task_id", "dependencies", "stack"],
         ),
         (
+            "set_relations",
+            "Relate a Task to others beyond dependencies. delivered_dependencies: tasks whose final delivery it waits for (not their completion). blocks: tasks that cannot reach the user's review, or have a card, while this one is open. A review is B with delivered_dependencies [A] and blocks [A]; the reviewer's verdict (record_verdict) decides what happens to A.",
+            json!({"task_id":{"type":"string"},"delivered_dependencies":{"type":"array","items":{"type":"string"}},"blocks":{"type":"array","items":{"type":"string"}}}),
+            vec!["task_id", "delivered_dependencies", "blocks"],
+        ),
+        (
             "start_task",
             "Mark a Task started once its dependencies are ready.",
             json!({"task_id":{"type":"string"}}),
@@ -485,6 +498,7 @@ fn call_node(client: &Client, name: &str, args: &Value) -> Result<String> {
         | "link_interaction_subject"
         | "present_result"
         | "publish_stack_readiness"
+        | "record_verdict"
         | "cleanup_done"
         | "wait_for_machine" => execute_tool(client, name, args),
         _ => anyhow::bail!("incompatible_protocol: this tool is unavailable to the node MCP"),
@@ -501,6 +515,7 @@ fn call_orchestrator(client: &Client, name: &str, args: &Value) -> Result<String
         | "assign_task"
         | "retitle_task"
         | "set_dependencies"
+        | "set_relations"
         | "start_task"
         | "publish_information"
         | "ask"
@@ -556,6 +571,7 @@ fn execute_tool(client: &Client, name: &str, args: &Value) -> Result<String> {
         | "assign_task"
         | "retitle_task"
         | "set_dependencies"
+        | "set_relations"
         | "start_task"
         | "create_document"
         | "revise_document"
@@ -564,6 +580,7 @@ fn execute_tool(client: &Client, name: &str, args: &Value) -> Result<String> {
         | "link_interaction_subject"
         | "present_result"
         | "publish_stack_readiness"
+        | "record_verdict"
         | "cancel_task"
         | "reopen_task"
         | "cleanup_done" => submit(client, &domain_bearer()?, name, args)?,
@@ -756,6 +773,8 @@ pub(crate) fn resource_target(name: &str, command: &Value) -> Result<(&'static s
         "assign_task" => ("PUT", format!("/tasks/{}/assignee", id("task_id")?)),
         "retitle_task" => ("PATCH", format!("/tasks/{}", id("task_id")?)),
         "set_dependencies" => ("PUT", format!("/tasks/{}/dependencies", id("task_id")?)),
+        "set_relations" => ("PUT", format!("/tasks/{}/relations", id("task_id")?)),
+        "record_verdict" => ("POST", format!("/tasks/{}/verdict", id("task_id")?)),
         "start_task" => ("POST", format!("/tasks/{}/start", id("task_id")?)),
         "cleanup_done" => ("POST", format!("/tasks/{}/cleanup", id("task_id")?)),
         "create_document" => ("POST", format!("/tasks/{}/documents", id("task_id")?)),
@@ -790,6 +809,8 @@ fn domain_envelope(name: &str, args: &Value, data_epoch: &str, command_id: &str)
         "assign_task" => "assign_task",
         "retitle_task" => "retitle_task",
         "set_dependencies" => "set_dependencies",
+        "set_relations" => "set_relations",
+        "record_verdict" => "record_verdict",
         "start_task" => "start_task",
         "cleanup_done" => "confirm_cleanup",
         "create_document" => "create_document",
@@ -1127,6 +1148,17 @@ fn requests_summary(o: &Value, all: bool) -> (Vec<Value>, usize) {
                 let mut row = pick(t, &["id", "title", "state"]);
                 if let Some(d) = t.get("depends_on").filter(|d| d.as_array().is_some_and(|a| !a.is_empty())) {
                     row["depends_on"] = d.clone();
+                }
+                for key in ["delivered_dependencies", "blocks", "blocked_by"] {
+                    if let Some(list) = t.get(key).filter(|d| d.as_array().is_some_and(|a| !a.is_empty())) {
+                        row[key] = list.clone();
+                    }
+                }
+                if let Some(verdict) = t.get("verdict").filter(|v| !v.is_null()) {
+                    row["verdict"] = verdict.clone();
+                }
+                if let Some(rounds) = t.get("review_rounds").and_then(Value::as_u64).filter(|n| *n > 0) {
+                    row["review_rounds"] = json!(rounds);
                 }
                 if let Some(session) = t.pointer("/assignee/session_id").and_then(Value::as_str) {
                     row["node"] = name_of(session);
@@ -1506,7 +1538,9 @@ mod tests {
         fn names(role: Role) -> HashSet<String> { tools(role,"User").as_array().unwrap().iter().map(|t|t["name"].as_str().unwrap().to_owned()).collect() }
         let node=names(Role::Node); let orchestrator=names(Role::Orchestrator);
         for c in [&node,&orchestrator] { for hidden in ["domain_command","register_agent","observe_agent","authorize_merge","mark_read","submit_feedback","accept_delivery","observe_pr_state","create_schedule"] { assert!(!c.contains(hidden),"{hidden}"); } }
-        for n in ["register_pr","present_result","create_document"] { assert!(node.contains(n),"{n}"); }
+        for n in ["register_pr","present_result","create_document","record_verdict"] { assert!(node.contains(n),"{n}"); }
+        assert!(orchestrator.contains("set_relations") && !node.contains("set_relations"), "only the orchestrator relates tasks");
+        assert!(!orchestrator.contains("record_verdict"), "only a node gives a verdict");
         for n in ["complete_task","claim_merge_authorization"] { assert!(!node.contains(n),"{n}: Alondra merges and completes"); }
         for n in ["create_request","close_request","create_task","assign_task","set_dependencies","link_task_document"] { assert!(orchestrator.contains(n),"{n}"); }
         for n in ["create_task","close_request","link_task_document"] { assert!(!node.contains(n),"{n}"); }

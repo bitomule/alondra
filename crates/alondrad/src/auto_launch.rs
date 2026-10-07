@@ -66,7 +66,7 @@ fn candidate(state: &DomainState, task: &Task) -> bool {
         && !task.started
         && task.agent_id.is_none()
         && !task.archived
-        && (!task.dependencies.is_empty() || task.stack.is_some())
+        && (!task.dependencies.is_empty() || !task.delivered_dependencies.is_empty() || task.stack.is_some())
         && state.requests.get(&task.request_id).is_some_and(|request| !request.closed)
         && !state.schedule.runs.values().any(|run| run.task_id.as_ref() == Some(&task.id))
 }
@@ -162,7 +162,7 @@ fn tell(domain: &DomainRuntime, id: &str, body: String) {
 /// A task whose dependency was cancelled waits forever: the orchestrator decides what to do.
 fn tell_about_cancelled_dependencies(domain: &DomainRuntime, state: &DomainState) {
     for task in state.tasks.values().filter(|task| task.state == TaskState::WaitingDependency) {
-        for dependency in task.dependencies.iter().filter_map(|id| state.tasks.get(id)).filter(|dep| dep.state == TaskState::Cancelled) {
+        for dependency in task.dependencies.iter().chain(&task.delivered_dependencies).filter_map(|id| state.tasks.get(id)).filter(|dep| dep.state == TaskState::Cancelled) {
             let id = format!("dependency-cancelled-{}-{}", task.id, dependency.id);
             if state.interactions.contains_key(&alondra_core::domain::InteractionId(id.clone())) {
                 continue;

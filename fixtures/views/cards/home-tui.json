@@ -59,16 +59,6 @@
           "why": "The new empty state is ready; the beta ships with the copy you pick."
         },
         {
-          "blocks": [
-            {
-              "id": "hf-weekly-2026-09-30",
-              "label": "blocks PR #12",
-              "link": {
-                "key": "card:hf-weekly-2026-09-30",
-                "kind": "view"
-              }
-            }
-          ],
           "detail": "reference",
           "eyebrow": {
             "text": "Decide",
@@ -93,16 +83,6 @@
           "why": "The review of the pull request waits for your answer."
         },
         {
-          "blocked_by": [
-            {
-              "id": "8fa4034b-249e-4487-a89b-57de38c26372",
-              "label": "blocked by Ship the compact schedule editor with this beta?",
-              "link": {
-                "key": "card:8fa4034b-249e-4487-a89b-57de38c26372",
-                "kind": "view"
-              }
-            }
-          ],
           "content_row": {
             "icon": "pull_request",
             "kind": "diff",
@@ -445,6 +425,6 @@
     "summary": "2 questions · 3 to read · 0 nodes working",
     "version": "v29e230088bd2c22c"
   },
-  "version": "v9b76ce5da9751bc4",
+  "version": "v2e268e7365a71c72",
   "view": "home"
 }

@@ -373,7 +373,8 @@ final class CardDetailFeatureTests: XCTestCase {
     func testAnActionTheDaemonDisabledSendsNothing() async throws {
         let feed = FeedStub()
         let store = store(try Fixtures.card(Fixtures.pullRequestID), feed: feed)
-        let merge = try XCTUnwrap(store.state.subject?.buttons.first { $0.id?.hasPrefix("merge:") == true })
+        let merge = try ContractCodec.decode(AlondraContract.Action.self, from: Data(
+            #"{"id":"merge:github.com/example/repo#12@1","label":"Merge","style":"primary","presentation":"button","input":{"kind":"none"},"attachments":false,"enabled":false,"disabled_reason":"Answer the question first"}"#.utf8))
         XCTAssertFalse(merge.enabled)
 
         await store.send(.actionTapped(merge))

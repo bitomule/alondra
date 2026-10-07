@@ -23,8 +23,16 @@ fn end_node(s: &mut DomainState, task: &str) {
     assert_eq!(s.tasks[&task.into()].state, TaskState::Closing);
     exec(s, Actor::System, Command::RecordNodeEnd { task_id: task.into(), end: NodeEnd::Closed, agent_id: None }).unwrap();
 }
+/// Every card in Waiting for You has something the user can do now and nothing holding it back,
+/// whatever state a test reached (the property of the cards design, checked after every command).
+fn assert_cards_usable(s: &DomainState) {
+    for item in s.projection().inbox.iter().filter(|item| item.pending) {
+        assert!(item.blocked_by.is_empty(), "{} is listed while held back", item.id);
+        assert!(item.available_actions.iter().any(|action| action.enabled), "{} is listed with nothing the user can do", item.id);
+    }
+}
 fn exec(s: &mut DomainState, a: Actor, c: Command) -> Result<CommandOutcome, DomainError> {
-    s.execute(
+    let outcome = s.execute(
         &a,
         &CommandEnvelope {
             protocol_version: 2,
@@ -33,7 +41,9 @@ fn exec(s: &mut DomainState, a: Actor, c: Command) -> Result<CommandOutcome, Dom
             expected_revision: s.revision,
             command: c,
         },
-    )
+    );
+    assert_cards_usable(s);
+    outcome
 }
 fn fixture() -> DomainState {
     let mut s = DomainState::new("epoch");
@@ -110,7 +120,7 @@ fn scheduled_request_task(request_id: &str, task_id: &str) -> (Request, Task) {
         documents: BTreeMap::new(),
         archived: false,
         model: None,
-        wrap_up: WrapUp::default(),
+        delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: WrapUp::default(),
     };
     (request, task)
 }
@@ -547,7 +557,7 @@ fn reassigning_a_task_waiting_for_its_merge_needs_fresh_acceptance() {
         },
     )
     .unwrap();
-    assert_eq!(s.tasks[&"t".into()].state, TaskState::InReview);
+    assert_eq!(s.tasks[&"t".into()].state, TaskState::ForYourReview);
     reject_unchanged(&mut s, Actor::System, complete(), "acceptance_missing");
     merged_by_someone_else(&mut s);
     end_node(&mut s, "t");
@@ -812,7 +822,7 @@ fn a_pr_merged_outside_alondra_while_in_review_closes_the_task_and_tells_the_nod
     let mut s = fixture();
     register(&mut s);
     present(&mut s, "d", pr_targets());
-    assert_eq!(s.tasks[&"t".into()].state, TaskState::InReview);
+    assert_eq!(s.tasks[&"t".into()].state, TaskState::ForYourReview);
     let out = exec(&mut s, Actor::System, Command::ObservePrState { pr_id: "pr".into(), head: "head1".into(),
         base: "main".into(), state: PrState::Merged, merged_head: Some("head1".into()) }).unwrap();
     end_node(&mut s, "t");
@@ -883,7 +893,7 @@ fn alondra_authorizes_its_own_merge_only_for_an_untouched_auto_merge_delivery() 
     let authorization = &s.merge_authorizations[&"auto-1".into()];
     assert_eq!((authorization.user_id.as_str(), authorization.valid), (Feedback::ALONDRA, true));
     assert!(s.pull_requests[&"pr".into()].review.as_ref().unwrap().decisions.is_empty(), "no review decision is made up");
-    assert_eq!(s.tasks[&"t".into()].state, TaskState::InReview, "no acceptance is made up");
+    assert_eq!(s.tasks[&"t".into()].state, TaskState::ForYourReview, "no acceptance is made up");
     exec(&mut s, user(), Command::SubmitFeedback { attachments: vec![], presentation_id: "d".into(), targets: pr_targets(),
         body: "Wait".into(), instruction: Instruction::Changes }).unwrap();
     assert!(!s.merge_authorizations[&"auto-1".into()].valid, "the user's feedback stops Alondra's merge");
@@ -2405,7 +2415,7 @@ fn mixed_package_needs_merge_authorization_and_document_decision() {
     // The merge authorization covers the PR and the text, never the document.
     authorize(&mut s);
     assert!(!accepted(&s));
-    assert_eq!(s.tasks[&"t".into()].state, TaskState::InReview);
+    assert_eq!(s.tasks[&"t".into()].state, TaskState::ForYourReview);
     assert!(s.document_reviews[0].decisions.is_empty());
     assert_eq!(complete(&mut s).unwrap_err().code, "acceptance_missing");
     // A rejection invalidates the authorization; a later approval alone is not enough.
@@ -2865,9 +2875,11 @@ fn variant_index(c: &Command) -> usize {
         Command::ReleaseTask { .. } => 50,
         Command::ConfirmCleanup { .. } => 51,
         Command::RecordNodeEnd { .. } => 52,
+        Command::SetRelations { .. } => 53,
+        Command::RecordVerdict { .. } => 54,
     }
 }
-const COMMAND_KINDS: usize = 53;
+const COMMAND_KINDS: usize = 55;
 /// Every command kind naming the given ids. The flag marks commands that only
 /// create a fresh entity and therefore may succeed with an unknown id.
 fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
@@ -2977,6 +2989,8 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
         (Command::ReleaseTask { task_id: ids.task.into(), reason: "node closed by the user".into() }, false),
         (Command::ConfirmCleanup { task_id: ids.task.into() }, false),
         (Command::RecordNodeEnd { task_id: ids.task.into(), end: NodeEnd::Closed, agent_id: None }, false),
+        (Command::SetRelations { task_id: ids.task.into(), delivered_dependencies: BTreeSet::new(), blocks: BTreeSet::new() }, false),
+        (Command::RecordVerdict { task_id: ids.task.into(), presentation_id: ids.interaction.into(), verdict: Verdict::Approved { summary: "ok".into(), open_issues: false } }, false),
     ];
     let mut covered = vec![false; COMMAND_KINDS];
     for (command, _) in &list {
@@ -3199,7 +3213,7 @@ fn a_delivery_sent_back_with_an_instruction_waits_on_its_agent_until_it_presents
         assert_eq!(s.task_handed_back(&"t".into()), Some(instruction));
         present(&mut s, "d2", pr_targets());
         assert!(waiting(&s, "d2"));
-        assert_eq!((s.tasks[&"t".into()].state, s.task_handed_back(&"t".into())), (TaskState::InReview, None));
+        assert_eq!((s.tasks[&"t".into()].state, s.task_handed_back(&"t".into())), (TaskState::ForYourReview, None));
     }
 }
 
@@ -3552,4 +3566,54 @@ fn recording_the_end_of_a_node_the_task_no_longer_has_changes_nothing() {
     exec(&mut s, orchestrator(), Command::AssignTask { task_id: "t".into(), agent_id: "b".into(), model: None }).unwrap();
     reject_unchanged(&mut s, Actor::System, Command::RecordNodeEnd { task_id: "t".into(), end: NodeEnd::Closed, agent_id: Some("a".into()) }, "conflict");
     assert_eq!(s.tasks[&"t".into()].agent_id, Some("b".into()), "the new node was not unassigned");
+}
+
+#[test]
+fn a_delivery_stacked_on_an_open_pr_is_no_card_until_that_pr_merges_and_then_one_card_and_one_push() {
+    let mut s = fixture();
+    register(&mut s);
+    register_b(&mut s);
+    present(&mut s, "d", pr_targets());
+    let stack = StackDependency { upstream_task: "t".into(), presentation_id: "d".into(), pr_id: "pr".into(), head: "head1".into() };
+    exec(&mut s, user(), Command::CreateTask {
+        task_id: "down".into(), request_id: "r".into(), title: "Downstream".into(), agent_id: Some("b".into()),
+        review_prs: true, dependencies: BTreeSet::new(), stack: Some(stack),
+    }).unwrap();
+    exec(&mut s, agent(), Command::PublishStackReadiness {
+        task_id: "t".into(), presentation_id: "d".into(), pr_id: "pr".into(), head: "head1".into(), ready: true,
+    }).unwrap();
+    exec(&mut s, agent_b(), Command::StartTask { task_id: "down".into() }).unwrap();
+    exec(&mut s, agent_b(), Command::RegisterPr {
+        task_id: "down".into(), pr_id: "pr-down".into(), host: "github.com".into(), repository: "owner/repo".into(),
+        number: 2, head: "head-down".into(), base: "upstream-branch".into(), allowed_methods: vec![MergeMethod::Squash],
+    }).unwrap();
+    let delivered = exec(&mut s, agent_b(), Command::PresentResult {
+        attachments: vec![], task_id: "down".into(), interaction_id: "d-down".into(), body: "Downstream ready".into(),
+        targets: vec![DeliveryTarget::PullRequest { pr_id: "pr-down".into(), head: "head-down".into() }],
+        is_final: true, card: crate::domain::CardSpec::delivery("Review the result", &[], true),
+    }).unwrap();
+    let notified = |outcome: &CommandOutcome| outcome.effects.iter().filter(|e| matches!(e, DomainEffect::NotifyUser { interaction_id, .. } if interaction_id.0 == "d-down")).count();
+    assert_eq!(notified(&delivered), 0, "no push while it waits for the PR of the delivery in front");
+    assert_eq!(s.attention(&s.tasks[&"down".into()]), Attention::Wait(WaitReason::UpstreamPr { number: 1 }));
+    assert!(!waiting(&s, "d-down"));
+    let observe = || Command::ObservePrState {
+        pr_id: "pr".into(), head: "head1".into(), base: "main".into(), state: PrState::Merged, merged_head: Some("head1".into()),
+    };
+    let merged = exec(&mut s, Actor::System, observe()).unwrap();
+    assert_eq!(notified(&merged), 1, "one push when the PR in front merges");
+    assert!(waiting(&s, "d-down"));
+    let again = exec(&mut s, Actor::System, observe()).unwrap();
+    assert_eq!(notified(&again), 0, "and never a second time");
+}
+
+#[test]
+fn pr_observations_on_a_pending_delivery_never_notify_again() {
+    let mut s = fixture();
+    register(&mut s);
+    present(&mut s, "d", pr_targets());
+    let observed = exec(&mut s, Actor::System, Command::ObservePrState {
+        pr_id: "pr".into(), head: "head1".into(), base: "main".into(), state: PrState::Open, merged_head: None,
+    }).unwrap();
+    assert!(!observed.effects.iter().any(|e| matches!(e, DomainEffect::NotifyUser { .. })), "the card already went out when it was delivered");
+    assert!(waiting(&s, "d"));
 }

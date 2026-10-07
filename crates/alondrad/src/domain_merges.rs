@@ -145,7 +145,7 @@ pub(crate) fn due(state: &DomainState) -> Vec<Due> {
     for task in state.tasks.values().filter(|task| !task.state.terminal()) {
         let Some(p) = task.final_presentation.as_ref().and_then(|p| state.interactions.get(p)) else { continue };
         let InteractionPayload::Delivery { targets, acceptance, feedback, .. } = &p.payload else { continue };
-        if state.handed_back(p).is_some() {
+        if state.handed_back(p).is_some() || !state.open_blockers(&task.id).is_empty() {
             continue;
         }
         let auto = acceptance.is_none() && feedback.is_empty()

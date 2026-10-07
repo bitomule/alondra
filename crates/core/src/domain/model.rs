@@ -93,7 +93,11 @@ pub enum TaskState {
     NotStarted,
     Running,
     NeedsYou,
-    InReview,
+    /// Delivered, but an open task blocks it: nothing for the user to do yet.
+    AwaitingBlocker,
+    /// Delivered and the user can act on it now.
+    #[serde(alias = "in_review")]
+    ForYourReview,
     WaitingDependency,
     Closing,
     Done,
@@ -117,6 +121,18 @@ pub struct Task {
     pub final_presentation: Option<InteractionId>,
     pub pr_id: Option<PrId>,
     pub dependencies: BTreeSet<TaskId>,
+    /// Tasks this one starts after, as soon as they make their final delivery.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub delivered_dependencies: BTreeSet<TaskId>,
+    /// Tasks that cannot reach the user's review, or have a card, while this one is open.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub blocks: BTreeSet<TaskId>,
+    /// What this task's final delivery said about the tasks it blocks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verdict: Option<Verdict>,
+    /// How many times its verdict sent the blocked tasks back to work.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub review_rounds: u8,
     pub stack: Option<StackDependency>,
     pub documents: BTreeMap<DocumentId, String>,
     pub archived: bool,
@@ -128,6 +144,24 @@ pub struct Task {
     /// became of the node.
     #[serde(default, skip_serializing_if = "WrapUp::is_default")]
     pub wrap_up: WrapUp,
+}
+fn is_zero(n: &u8) -> bool {
+    *n == 0
+}
+/// The most rounds a blocking task sends the work back before its last word closes it.
+pub const MAX_REVIEW_ROUNDS: u8 = 3;
+/// What a task that blocks others concluded about the tasks it blocks.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Verdict {
+    /// `open_issues` is set when the rounds ran out with failures still open: `summary` then
+    /// holds them.
+    Approved {
+        summary: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        open_issues: bool,
+    },
+    ChangesRequested { text: String },
 }
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WrapUp {

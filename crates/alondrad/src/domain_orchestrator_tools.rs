@@ -332,12 +332,18 @@ fn clipped(text: &str, limit: usize, mark: &str) -> String {
 /// What a task that builds on others starts from: each earlier task's final result and its pull
 /// request, so its node does not need to be told by hand.
 fn follow_up_context(state: &DomainState, task: &alondra_core::domain::Task) -> String {
-    let mut sources: std::collections::BTreeSet<&TaskId> = task.dependencies.iter().collect();
+    let mut sources: std::collections::BTreeSet<&TaskId> = task.dependencies.iter().chain(&task.delivered_dependencies).collect();
     if let Some(stack) = &task.stack {
         sources.insert(&stack.upstream_task);
     }
     let entries: Vec<String> = sources.into_iter().filter_map(|id| state.tasks.get(id)).map(|earlier| {
-        let status = if earlier.state == alondra_core::domain::TaskState::Done { "done" } else { "not finished yet" };
+        let status = if earlier.state == alondra_core::domain::TaskState::Done {
+            "done"
+        } else if earlier.final_presentation.is_some() {
+            "delivered, not finished yet"
+        } else {
+            "not finished yet"
+        };
         let body = match earlier.final_presentation.as_ref().and_then(|id| state.interactions.get(id)) {
             Some(result) => clipped(result.body.trim(), RESULT_LIMIT, "\n[shortened]"),
             None => "No final result was recorded for it.".to_owned(),

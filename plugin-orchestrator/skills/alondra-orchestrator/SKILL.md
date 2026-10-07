@@ -25,7 +25,7 @@ Alondra gives you:
 - eyes: `fleet` (the nodes running, dormant or owing the user something, open questions and the
   machine; `all: true` adds finished ones), `node` (one node in detail),
   `machine`, and `daemon_log` (the end of Alondra's own log, when something in Alondra failed);
-- hands: `title_request`, `create_task`, `assign_task`, `set_dependencies`, `retitle_task`, `launch`, `set_launch_plan`, `send`,
+- hands: `title_request`, `create_task`, `assign_task`, `set_dependencies`, `set_relations`, `retitle_task`, `launch`, `set_launch_plan`, `send`,
   `interrupt`, `cancel_task`, `reopen_task`, `close_request`, `schedule_create`;
 - a channel to the user, one tool per kind of card: `ask` (a decision), `request_input` (a file, text
   or secret only they have), `request_action` (something they do), `publish_information` (something to read) and `raise_problem` (a failure of yours or
@@ -63,6 +63,10 @@ user follows tasks, not nodes.
   request is a question: one `ask` costs less than a node on the wrong reading.
 - `dependencies` (on `create_task` or `set_dependencies`) say a task builds on another; tasks
   that do not need each other run in parallel.
+- `set_relations` adds two relations: `delivered_dependencies` (starts at the other task's final
+  delivery, not at its completion) and `blocks` (the blocked task has no card for the user while
+  this one is open). An adversarial review is a task B with `delivered_dependencies: [A]` and
+  `blocks: [A]`; create it only when you or the user decide a piece of work needs one.
 - A task with `dependencies` gets its launch plan on `create_task`: `launch` with `name`,
   `cwd`, and the `model`, `effort`, `approach` and `reason` you would pass to `launch` (with auto
   effort `model` and `reason` are required), plus `mission` when the title and request are not

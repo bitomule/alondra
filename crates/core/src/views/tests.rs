@@ -38,7 +38,7 @@ fn fixture() -> DomainState {
             documents: BTreeMap::new(),
             archived: false,
             model: None,
-            wrap_up: Default::default(),
+            delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: Default::default(),
         },
     );
     for (index, kind) in ["question", "information", "delivery"].iter().enumerate() {
@@ -578,7 +578,6 @@ fn golden_fixture() -> DomainState {
             .content(Content::Diff, "## Beta candidate ready\n\n- Restored the native review layouts\n- Verified the ARM simulator build"));
         let mut schedule = spec(CardKind::Decide, "Ship the compact schedule editor with this beta?",
             "The review of the pull request waits for your answer.");
-        schedule.blocks = vec![CardTarget::PullRequest { pr_id: pr_id.into() }];
         card("8fa4034b-249e-4487-a89b-57de38c26372", schedule);
         card("cc2d034b-249e-4487-a89b-57de38c26372", spec(CardKind::Know, "The pull request checks passed", ""));
         for id in ["8fa4034b-249e-4487-a89b-57de38c26372"] {
@@ -633,7 +632,7 @@ fn tasks_fixture() -> (DomainState, LiveSnapshot) {
     add_task(&mut state, "t-badge-count", "r-badge", "Count the retracted pushes", TaskState::Running, &[]);
     add_task(&mut state, "t-badge-decrement", "r-badge", "Decrement the badge on retraction", TaskState::NotStarted, &[parent]);
     add_request(&mut state, "r-legacy", None, "Look at the schedule editor and write the notes for the beta.");
-    add_task(&mut state, "t-legacy-editor", "r-legacy", "Review the schedule editor", TaskState::InReview, &[]);
+    add_task(&mut state, "t-legacy-editor", "r-legacy", "Review the schedule editor", TaskState::ForYourReview, &[]);
     add_task(&mut state, "t-legacy-notes", "r-legacy", "Write the release notes", TaskState::NotStarted, &[]);
     add_request(&mut state, "r-new", None, "Import lists from Notes");
     add_request(&mut state, "r-answer", Some("Is main green?"), "Is main green right now?");
@@ -720,7 +719,7 @@ fn the_tasks_counter_counts_only_tasks_still_under_way() {
     let archived = state.tasks.get_mut(&"t-badge-count".into()).unwrap();
     (archived.state, archived.archived) = (TaskState::Done, true);
     assert_eq!(count(&state), all - 3);
-    for waiting in [TaskState::WaitingDependency, TaskState::NeedsYou, TaskState::InReview, TaskState::Closing] {
+    for waiting in [TaskState::WaitingDependency, TaskState::NeedsYou, TaskState::ForYourReview, TaskState::Closing] {
         state.tasks.get_mut(&"t-legacy-editor".into()).unwrap().state = waiting;
         assert_eq!(count(&state), all - 2, "{waiting:?}");
     }
@@ -1340,7 +1339,7 @@ fn task_detail_offers_only_the_actions_its_state_allows() {
         (TaskState::NotStarted, false, false, &["Cancel Task"][..]),
         (TaskState::Running, false, false, &["Cancel Task"]),
         (TaskState::NeedsYou, false, false, &["Cancel Task"]),
-        (TaskState::InReview, false, false, &["Cancel Task"]),
+        (TaskState::ForYourReview, false, false, &["Cancel Task"]),
         (TaskState::WaitingDependency, false, false, &["Cancel Task"]),
         (TaskState::Closing, false, false, &["Cancel Task"]),
         (TaskState::Done, false, false, &["Reopen", "Archive"]),
@@ -1400,7 +1399,7 @@ fn each_fleet_node_shows_one_state_derived_from_its_task_never_its_connection() 
     state.interactions.clear();
     let template = state.tasks.remove(&"t-1".into()).unwrap();
     for (agent, connected, task, task_state) in [
-        ("one-task", true, "t-one-task-per-node", TaskState::InReview),
+        ("one-task", true, "t-one-task-per-node", TaskState::ForYourReview),
         ("recent-queue", false, "t-recent-requests-queue", TaskState::Done),
         ("home-zero", true, "t-home-counters-zero", TaskState::Done),
         ("claude-mods", true, "t-claude-mods-analysis", TaskState::Done),
@@ -3050,6 +3049,140 @@ fn a_pull_request_delivery_carries_checks_branch_and_change_size_in_its_detail()
     assert!(card_of(&view).meta.as_deref().unwrap().contains("1 file · +120 −30"));
 }
 
+fn reviewed_fixture(verdict: crate::domain::Verdict) -> DomainState {
+    reviewed_fixture_after(verdict, true)
+}
+
+/// `saw_this_delivery` false puts the reviewer's result before the card's delivery, as when the
+/// reviewed task delivered again after the review.
+fn reviewed_fixture_after(verdict: crate::domain::Verdict, saw_this_delivery: bool) -> DomainState {
+    let mut state = golden_fixture();
+    let delivery = state.interactions[&"hf-weekly-2026-09-30".into()].clone();
+    let mut result = delivery.clone();
+    result.id = "reviewer-result".into();
+    result.order = if saw_this_delivery { delivery.order + 1000 } else { 0 };
+    state.interactions.insert(result.id.clone(), result);
+    let template = state.tasks[&"t-651c38484cd2f34e74d5107ba05f7f15".into()].clone();
+    let mut reviewer = template;
+    reviewer.id = "t-reviewer".into();
+    reviewer.title = "Review the editor".into();
+    reviewer.state = TaskState::Done;
+    reviewer.final_presentation = Some("reviewer-result".into());
+    reviewer.pr_id = None;
+    reviewer.agent_id = None;
+    reviewer.blocks = std::collections::BTreeSet::from(["t-651c38484cd2f34e74d5107ba05f7f15".into()]);
+    reviewer.verdict = Some(verdict);
+    state.tasks.insert(reviewer.id.clone(), reviewer);
+    state
+}
+
+fn context_texts(state: &DomainState, lang: Lang) -> Vec<String> {
+    let view = render(state, &golden_live(), Client::Ios, lang, "card:hf-weekly-2026-09-30", "");
+    card_of(&view).context.iter().map(|line| line.text.clone()).collect()
+}
+
+#[test]
+fn the_card_of_a_reviewed_task_carries_the_line_of_its_reviewer() {
+    let state = reviewed_fixture(crate::domain::Verdict::Approved { summary: "4 fixed".into(), open_issues: false });
+    assert!(context_texts(&state, Lang::En).contains(&"Reviewed by “Review the editor”: 4 fixed".to_owned()));
+    assert!(context_texts(&state, Lang::Es).contains(&"Revisado por «Review the editor»: 4 fixed".to_owned()));
+}
+
+#[test]
+fn a_new_delivery_after_the_review_carries_no_line_of_that_review() {
+    let state = reviewed_fixture_after(crate::domain::Verdict::Approved { summary: "4 fixed".into(), open_issues: false }, false);
+    assert!(!context_texts(&state, Lang::En).iter().any(|line| line.starts_with("Reviewed by")), "the review saw an older delivery");
+}
+
+#[test]
+fn one_failure_left_is_said_in_the_singular_in_both_languages() {
+    let state = reviewed_fixture(crate::domain::Verdict::Approved { summary: "Empty list crashes".into(), open_issues: true });
+    assert!(context_texts(&state, Lang::En).contains(&"Reviewed by “Review the editor”: 1 failure left after 3 rounds".to_owned()));
+    assert!(context_texts(&state, Lang::Es).contains(&"Revisado por «Review the editor»: queda 1 fallo tras 3 vueltas".to_owned()));
+}
+
+#[test]
+fn a_delivery_held_by_a_question_is_grouped_and_counted_as_waiting_never_as_in_review() {
+    let mut state = golden_fixture();
+    let question = "8fa4034b-249e-4487-a89b-57de38c26372";
+    let asked = state.interactions.get_mut(&question.into()).unwrap();
+    asked.card.blocks = vec![crate::domain::CardTarget::PullRequest { pr_id: "github.com/example/repo#12".into() }];
+    asked.blocking = false;
+    for other in state.interactions.values_mut() {
+        other.blocking = false;
+    }
+    state.derive_states();
+    let task = "t-651c38484cd2f34e74d5107ba05f7f15";
+    assert_eq!(state.tasks[&task.into()].state, TaskState::WaitingDependency);
+    let sidebar = render(&state, &golden_live(), Client::Mac, Lang::Es, "sidebar", "");
+    let group_of = |id: &str| sidebar.sections.iter().flat_map(|section| &section.items).find_map(|item| match item {
+        Item::Row(row) if row.id == id => Some(row.children.iter().map(|child| child.id.clone()).collect::<Vec<_>>()),
+        _ => None,
+    }).unwrap_or_default();
+    assert_eq!(group_of("waiting_dependency"), [task.to_owned()], "grouped as waiting");
+    assert!(group_of("in_review").is_empty(), "not as in review");
+    let detail = render(&state, &golden_live(), Client::Ios, Lang::Es, &format!("task:{task}"), "");
+    let texts: Vec<String> = detail.sections.iter().flat_map(|section| &section.items).filter_map(|item| match item {
+        Item::Row(row) => Some(row.title.clone()), _ => None,
+    }).collect();
+    assert!(texts.iter().any(|text| text.starts_with("Espera tu respuesta a «")), "the detail says why it waits: {texts:?}");
+}
+
+#[test]
+fn a_review_that_ran_out_of_rounds_says_how_many_failures_are_left_and_lists_them() {
+    let state = reviewed_fixture(crate::domain::Verdict::Approved { summary: "Empty list crashes\nWrong total".into(), open_issues: true });
+    let en = context_texts(&state, Lang::En);
+    assert!(en.contains(&"Reviewed by “Review the editor”: 2 failures left after 3 rounds".to_owned()), "{en:?}");
+    assert!(en.contains(&"Empty list crashes\nWrong total".to_owned()), "the failures are in the detail: {en:?}");
+    assert!(context_texts(&state, Lang::Es).contains(&"Revisado por «Review the editor»: quedan 2 fallos tras 3 vueltas".to_owned()));
+}
+
+#[test]
+fn the_sidebar_groups_a_task_waiting_for_its_reviewer_and_the_history_names_the_new_states() {
+    let mut state = golden_fixture();
+    let task = "t-651c38484cd2f34e74d5107ba05f7f15";
+    state.tasks.get_mut(&task.into()).unwrap().state = TaskState::AwaitingBlocker;
+    let mut live = golden_live();
+    live.task_history.insert(task.into(), vec![
+        LiveHistoryStep { at: "2026-09-30T08:00:00Z".into(), state: "awaiting_blocker".into(), summary: "Delivered".into() },
+        LiveHistoryStep { at: "2026-09-30T09:00:00Z".into(), state: "for_your_review".into(), summary: "Reviewed".into() },
+    ]);
+    let tasks = render(&state, &live, Client::Ios, Lang::Es, &format!("task:{task}"), "");
+    let titles: Vec<String> = tasks.sections.iter().flat_map(|section| &section.items).filter_map(|item| match item {
+        Item::Row(row) => Some(row.title.clone()), _ => None,
+    }).collect();
+    assert!(titles.contains(&"Esperando".to_owned()) && titles.contains(&"En revisión".to_owned()), "{titles:?}");
+    assert!(!titles.iter().any(|title| title.contains("awaiting_blocker") || title.contains("for_your_review")), "never a raw state name: {titles:?}");
+    let sidebar = render(&state, &live, Client::Mac, Lang::Es, "sidebar", "");
+    let group = sidebar.sections.iter().flat_map(|section| &section.items).find_map(|item| match item {
+        Item::Row(row) if row.id == "awaiting_blocker" => Some(row),
+        _ => None,
+    }).expect("the sidebar lists the tasks waiting for a reviewer as a group");
+    assert_eq!((group.badges[0].text.as_str(), group.badges[0].tone), ("Esperando", Tone::Info), "not filed under a made-up state");
+    assert_eq!(group.children.len(), 1);
+}
+
+#[test]
+fn the_task_whose_node_resolves_conflicts_says_so_with_its_pr_in_both_languages() {
+    let mut state = golden_fixture();
+    let agent = state.agents.values().find(|agent| agent.name == "Alondra · iOS").unwrap().id.clone();
+    state.tasks.get_mut(&"t-651c38484cd2f34e74d5107ba05f7f15".into()).unwrap().agent_id = Some(agent);
+    let delivery = state.interactions.get_mut(&"hf-weekly-2026-09-30".into()).unwrap();
+    if let InteractionPayload::Delivery { feedback, .. } = &mut delivery.payload {
+        feedback.push(crate::domain::Feedback {
+            attachments: vec![], user_id: crate::domain::Feedback::ALONDRA.into(), body: "Conflicts".into(),
+            at_revision: 99, instruction: crate::domain::Instruction::Conflicts,
+        });
+    }
+    for (lang, expected) in [(Lang::En, "“Alondra · iOS” is resolving the conflicts on PR #12"), (Lang::Es, "«Alondra · iOS» está resolviendo los conflictos de la PR #12")] {
+        let view = render(&state, &golden_live(), Client::Ios, lang, "task:t-651c38484cd2f34e74d5107ba05f7f15", "");
+        let texts: Vec<String> = view.sections.iter().flat_map(|section| &section.items).filter_map(|item| match item {
+            Item::Row(row) => Some(row.title.clone()), _ => None,
+        }).collect();
+        assert!(texts.contains(&expected.to_owned()), "{texts:?}");
+    }
+}
+
 #[test]
 fn a_pull_request_without_github_details_keeps_the_aggregate_check_and_names_the_pr() {
     let state = golden_fixture();
@@ -3126,6 +3259,8 @@ fn merge_is_disabled_with_its_reason_until_the_card_that_blocks_it_is_answered()
     let mut state = golden_fixture();
     let key = "card:hf-weekly-2026-09-30";
     let question = "8fa4034b-249e-4487-a89b-57de38c26372";
+    state.interactions.get_mut(&question.into()).unwrap().card.blocks =
+        vec![crate::domain::CardTarget::PullRequest { pr_id: "github.com/example/repo#12".into() }];
     let view = render(&state, &golden_live(), Client::Ios, Lang::En, key, "");
     let card = card_of(&view);
     let merge = card.actions.iter().find(|action| action.id.starts_with("merge:")).expect("merge");

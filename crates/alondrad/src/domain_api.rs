@@ -68,7 +68,8 @@ pub fn routes<H: DomainHost>() -> Router<Arc<H>> {
         ("/requests/{id}/close", "POST"), ("/requests/{id}/title", "POST"),
         ("/requests/{request_id}/tasks", "POST"),
         ("/tasks/{id}/assignee", "PUT"),
-        ("/tasks/{id}/dependencies", "PUT"), ("/tasks/{id}/start", "POST"),
+        ("/tasks/{id}/dependencies", "PUT"), ("/tasks/{id}/relations", "PUT"), ("/tasks/{id}/verdict", "POST"),
+        ("/tasks/{id}/start", "POST"),
         ("/tasks/{id}/documents", "POST"), ("/tasks/{id}/documents/{document_id}", "PUT"),
         ("/tasks/{id}/documents/{document_id}/review", "PUT"),
         ("/tasks/{id}/document-links", "POST"), ("/tasks/{id}/pull-requests", "POST"),
@@ -809,6 +810,8 @@ pub(crate) fn resource_envelope(
         ("PATCH", p) if p.starts_with("/tasks/") => ("retitle_task", Some(("task_id", task?))),
         ("PUT", p) if p.starts_with("/tasks/") && p.ends_with("/assignee") => ("assign_task", Some(("task_id", task?))),
         ("PUT", p) if p.starts_with("/tasks/") && p.ends_with("/dependencies") => ("set_dependencies", Some(("task_id", task?))),
+        ("PUT", p) if p.starts_with("/tasks/") && p.ends_with("/relations") => ("set_relations", Some(("task_id", task?))),
+        ("POST", p) if p.starts_with("/tasks/") && p.ends_with("/verdict") => ("record_verdict", Some(("task_id", task?))),
         ("POST", p) if p.starts_with("/tasks/") && p.ends_with("/start") => ("start_task", Some(("task_id", task?))),
         ("POST", p) if p.starts_with("/tasks/") && p.ends_with("/documents") => ("create_document", Some(("task_id", task?))),
         ("PUT", p) if p.starts_with("/tasks/") && p.ends_with("/review") => {
@@ -892,12 +895,12 @@ pub(crate) fn is_resource_mutation_path(method: &str, path: &str) -> bool {
     let registered = match (method, segments.as_slice()) {
         ("POST", ["requests"] | ["questions"] | ["question-groups"] | ["action-requests"] | ["messages"] | ["problems"])
         | ("POST", ["requests", _, "close"] | ["requests", _, "title"] | ["requests", _, "tasks"])
-        | ("POST", ["tasks", _, "start"] | ["tasks", _, "documents"] | ["tasks", _, "document-links"]
+        | ("POST", ["tasks", _, "verdict"] | ["tasks", _, "start"] | ["tasks", _, "documents"] | ["tasks", _, "document-links"]
             | ["tasks", _, "pull-requests"] | ["tasks", _, "results"] | ["tasks", _, "stack-readiness"]
             | ["tasks", _, "completion"] | ["tasks", _, "cancellation"] | ["tasks", _, "reopening"] | ["tasks", _, "archival"] | ["tasks", _, "cleanup"]
             | ["interactions", _, "answers"] | ["interactions", _, "withdrawal"] | ["interactions", _, "clarification"]
             | ["interactions", _, "feedback"] | ["interactions", _, "acceptance"] | ["interactions", _, "merge-authorizations"]) => true,
-        ("PUT", ["tasks", _, "assignee"] | ["tasks", _, "dependencies"]
+        ("PUT", ["tasks", _, "assignee"] | ["tasks", _, "dependencies"] | ["tasks", _, "relations"]
             | ["tasks", _, "documents", _] | ["tasks", _, "documents", _, "review"]
             | ["interactions", _, "subject"] | ["interactions", _, "read-state"]) => true,
         ("PATCH", ["tasks", _]) => true,

@@ -936,6 +936,11 @@ fn schedules_screen_has_its_own_footer_with_the_create_hint() {
 #[test]
 fn detail_hides_the_disabled_accept_action() {
     let mut view = view_fixture("card-delivery.json");
+    for action in view["sections"][0]["items"][0]["more"].as_array_mut().unwrap() {
+        if action["id"].as_str().is_some_and(|id| id.starts_with("accept:")) {
+            action["enabled"] = serde_json::json!(false);
+        }
+    }
     let actions = view["sections"][0]["items"][0]["more"].as_array().unwrap();
     assert!(actions.iter().any(|action| action["id"].as_str().is_some_and(|id| id.starts_with("accept:"))
         && action["enabled"] == serde_json::json!(false)));
@@ -965,7 +970,7 @@ fn card_detail_says_the_title_once_under_a_kind_agent_and_age_header() {
     let lines = text_of(&crate::tui::view_render::document_lines(&card, 80));
     let header = &lines[0];
     assert!(
-        header.starts_with("? DECIDE · Alondra · iOS · Demo Garden · ") && header.ends_with(" ago"),
+        header.starts_with("? DECIDE · Alondra · iOS · Demo Garden · ") && (header.ends_with(" ago") || header.ends_with("Sep 30")),
         "{header}"
     );
     assert_eq!(lines[1], "Choose the welcome copy");

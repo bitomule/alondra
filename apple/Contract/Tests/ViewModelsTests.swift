@@ -32,7 +32,7 @@ final class ViewModelsTests: XCTestCase {
         XCTAssertEqual(card.need, "Review the beta candidate")
         XCTAssertEqual(card.title, "Add the compact schedule editor")
         XCTAssertEqual(card.contentRow?.kind, "diff")
-        XCTAssertEqual(card.blockedBy.count, 1)
+        XCTAssertTrue(card.blockedBy.isEmpty, "a delivery held back is no card, so the golden review has nothing holding it")
         XCTAssertNotNil(card.reply)
         XCTAssertEqual(card.actions.first?.role, .advance)
         XCTAssertTrue(card.more.contains { $0.link != nil })

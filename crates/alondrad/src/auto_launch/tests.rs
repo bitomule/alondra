@@ -198,6 +198,44 @@ async fn a_chain_of_three_tasks_starts_each_one_when_the_one_before_is_done() {
 }
 
 #[tokio::test]
+async fn a_review_starts_by_itself_when_the_task_it_reviews_delivers_and_its_mission_has_that_delivery() {
+    let f = world();
+    let claude = FakeClaude::new(&f);
+    open_task(&f, "a");
+    create(&f, "rev", &[], Some(&plan(&f, "app/rev")));
+    command(&f.domain, user(), Command::SetRelations {
+        task_id: "rev".into(), delivered_dependencies: ["a".into()].into(), blocks: ["a".into()].into(),
+    });
+    pass(&f.domain, &f.home, &claude).await.unwrap();
+    assert_eq!(claude.launches(), 0, "nothing to review before the delivery");
+    let author = Actor::Agent { agent_id: "seed-a".into() };
+    command(&f.domain, author.clone(), Command::RegisterPr { task_id: "a".into(), pr_id: "pr-a".into(), host: "github.com".into(),
+        repository: "me/app".into(), number: 9, head: "head1".into(), base: "main".into(), allowed_methods: vec![MergeMethod::Squash] });
+    command(&f.domain, author, Command::PresentResult { attachments: vec![], task_id: "a".into(), interaction_id: "final-a".into(),
+        body: "What a delivered".into(), targets: vec![DeliveryTarget::PullRequest { pr_id: "pr-a".into(), head: "head1".into() }],
+        is_final: true, card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true) });
+    pass(&f.domain, &f.home, &claude).await.unwrap();
+    assert_eq!(claude.launches(), 1, "the review starts at the delivery, not at the merge");
+    let prompt = claude.prompt(0);
+    assert!(prompt.contains("### “Task a” (delivered, not finished yet)\nWhat a delivered\nPull request: https://github.com/me/app/pull/9 (open)"), "{prompt}");
+    pass(&f.domain, &f.home, &claude).await.unwrap();
+    assert_eq!(claude.launches(), 1);
+}
+
+#[tokio::test]
+async fn a_cancelled_task_a_delivery_dependency_waits_on_is_told_to_the_orchestrator() {
+    let f = world();
+    let claude = FakeClaude::new(&f);
+    open_task(&f, "a");
+    create(&f, "after", &[], Some(&plan(&f, "app/after")));
+    command(&f.domain, user(), Command::SetRelations { task_id: "after".into(), delivered_dependencies: ["a".into()].into(), blocks: Default::default() });
+    command(&f.domain, user(), Command::CancelTask { task_id: "a".into() });
+    pass(&f.domain, &f.home, &claude).await.unwrap();
+    assert_eq!(claude.launches(), 0);
+    assert!(told(&f).contains(&"dependency-cancelled-after-a".to_owned()), "{:?}", told(&f));
+}
+
+#[tokio::test]
 async fn a_ready_task_without_a_plan_tells_the_orchestrator_once_and_starts_after_set_launch_plan() {
     let f = world();
     let claude = FakeClaude::new(&f);

@@ -299,8 +299,29 @@ fn changed<'a, K: Ord, V: PartialEq>(
 }
 fn task_row(t: &Task) -> Result<Map<String, Value>> {
     let mut row = object(t)?;
-    strip(&mut row, &["dependencies", "stack", "documents", "model", "wrap_up"]);
+    strip(&mut row, &["dependencies", "stack", "documents", "model", "wrap_up", "delivered_dependencies", "blocks", "verdict", "review_rounds"]);
+    // The column's check predates the two states that split `in_review`; the state is derived
+    // from the facts when the store is read, so either of them is kept as the old value.
+    if matches!(t.state, TaskState::AwaitingBlocker | TaskState::ForYourReview) {
+        row.insert("state".into(), json!("in_review"));
+    }
     Ok(row)
+}
+fn save_relations(c: &Connection, t: &Task) -> Result<()> {
+    exec(
+        c,
+        "INSERT INTO task_relations(task_id,delivered_dependencies,blocks,verdict,review_rounds) VALUES(?1,?2,?3,?4,?5) \
+         ON CONFLICT(task_id) DO UPDATE SET delivered_dependencies=excluded.delivered_dependencies,blocks=excluded.blocks,\
+         verdict=excluded.verdict,review_rounds=excluded.review_rounds",
+        params![
+            t.id.0,
+            serde_json::to_string(&t.delivered_dependencies)?,
+            serde_json::to_string(&t.blocks)?,
+            t.verdict.as_ref().map(serde_json::to_string).transpose()?,
+            t.review_rounds as i64
+        ],
+    )?;
+    Ok(())
 }
 fn save_wrap_up(c: &Connection, t: &Task) -> Result<()> {
     let w = &t.wrap_up;
@@ -678,6 +699,12 @@ pub(super) fn save_changes(c: &Connection, before: &DomainState, after: &DomainS
         if prior.is_none_or(|p| p.wrap_up != x.wrap_up) {
             save_wrap_up(c, x)?;
         }
+        if prior.map_or(
+            !x.delivered_dependencies.is_empty() || !x.blocks.is_empty() || x.verdict.is_some() || x.review_rounds != 0,
+            |p| (&p.delivered_dependencies, &p.blocks, &p.verdict, p.review_rounds) != (&x.delivered_dependencies, &x.blocks, &x.verdict, x.review_rounds),
+        ) {
+            save_relations(c, x)?;
+        }
     }
     for (x, _) in changed(&before.documents, &after.documents) {
         upsert(c, "documents", &["id"], object(x)?)?;
@@ -980,6 +1007,17 @@ pub(super) fn load(c: &Connection) -> Result<DomainState> {
         state.tasks.get_mut(&TaskId::from(id)).context("wrap-up task missing")?.wrap_up = wrap_up;
     }
     drop(stored);
+    let mut relations = c.prepare("SELECT task_id, delivered_dependencies, blocks, verdict, review_rounds FROM task_relations")?;
+    let mut stored = relations.query([])?;
+    while let Some(row) = stored.next()? {
+        let id: String = row.get(0)?;
+        let task = state.tasks.get_mut(&TaskId::from(id)).context("relations task missing")?;
+        task.delivered_dependencies = serde_json::from_str(&row.get::<_, String>(1)?)?;
+        task.blocks = serde_json::from_str(&row.get::<_, String>(2)?)?;
+        task.verdict = row.get::<_, Option<String>>(3)?.map(|v| serde_json::from_str(&v)).transpose()?;
+        task.review_rounds = row.get::<_, i64>(4)? as u8;
+    }
+    drop(stored);
     for mut row in rows(c, "task_stacks", &[], &[])? {
         let id = take(&mut row, "task_id");
         state
@@ -996,6 +1034,7 @@ pub(super) fn load(c: &Connection) -> Result<DomainState> {
         state.holds.insert(InteractionId::from(s(&row["interaction_id"])?), decode(row["hold"].clone())?);
     }
     state.schedule = load_schedule_state(c)?;
+    state.derive_states();
     state.validate()?;
     Ok(state)
 }

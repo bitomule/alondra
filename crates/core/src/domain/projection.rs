@@ -288,7 +288,8 @@ impl DomainState {
                     current
                         && active
                         && !acceptance.as_ref().is_some_and(|a| a.valid)
-                        && self.handed_back(i).is_none(),
+                        && self.handed_back(i).is_none()
+                        && task.is_some_and(|t| matches!(self.attention(t), Attention::Act(card) if card.interaction == i.id)),
                     actions,
                 )
             }
@@ -354,6 +355,7 @@ impl DomainState {
             && let Some(upstream_delivery) = self.interactions.get(&stack.presentation_id)
             && self.open(upstream_delivery)
             && upstream_delivery.id != delivery.id
+            && self.pull_requests.get(&stack.pr_id).is_none_or(|pr| pr.state == PrState::Open)
             && !by.contains(&upstream_delivery.id)
         {
             by.push(upstream_delivery.id.clone());

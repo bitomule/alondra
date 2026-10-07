@@ -221,7 +221,8 @@ final class TriageCardFeatureTests: XCTestCase {
     func testADisabledButtonSendsNothing() async throws {
         let feed = FeedStub()
         let store = try await store(Fixtures.pullRequestID, feed: feed, loaded: try Fixtures.card(Fixtures.pullRequestID))
-        let merge = try action(store, verb: "merge")
+        let merge = try ContractCodec.decode(AlondraContract.Action.self, from: Data(
+            #"{"id":"merge:github.com/example/repo#12@1","label":"Merge","style":"primary","presentation":"button","input":{"kind":"none"},"attachments":false,"enabled":false,"disabled_reason":"Answer the question first"}"#.utf8))
         XCTAssertFalse(merge.enabled)
         XCTAssertNotNil(merge.disabledReason, "the card says why")
 

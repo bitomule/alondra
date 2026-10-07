@@ -139,7 +139,7 @@
         }
       ],
       "accepted": false,
-      "task_status": "in_review"
+      "task_status": "for_your_review"
     },
     "accepted-text-final": {
       "extends": "unaccepted-text-final",
@@ -169,7 +169,7 @@
         }
       ],
       "accepted": false,
-      "task_status": "in_review"
+      "task_status": "for_your_review"
     },
     "accepted-document-v1": {
       "extends": "document-v1",
@@ -211,7 +211,7 @@
         }
       ],
       "accepted": false,
-      "task_status": "in_review"
+      "task_status": "for_your_review"
     },
     "authorized-pr": {
       "extends": "pr-final",
@@ -681,7 +681,7 @@
         {
           "path": "tasks.task-1.status",
           "op": "eq",
-          "value": "in_review"
+          "value": "for_your_review"
         }
       ],
       "execution_status": "store_runner"
@@ -1417,7 +1417,7 @@
         {
           "path": "tasks.task-1.status",
           "op": "eq",
-          "value": "in_review"
+          "value": "for_your_review"
         }
       ],
       "execution_status": "store_runner"
@@ -3158,7 +3158,7 @@
         {
           "path": "tasks.task-1.status",
           "op": "eq",
-          "value": "in_review"
+          "value": "for_your_review"
         }
       ],
       "cs_evidence": ["domain::tests::authorization_merge_and_completion_are_three_distinct_steps"],

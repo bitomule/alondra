@@ -20,7 +20,8 @@ fn state(task: &Task, context: &RenderContext<'_>) -> &'static str {
         TaskState::NotStarted => t!(lang, "Not started", "Sin empezar"),
         TaskState::Running => t!(lang, "Working", "Trabajando"),
         TaskState::NeedsYou => t!(lang, "Needs you", "Te necesita"),
-        TaskState::InReview => t!(lang, "In review", "En revisión"),
+        TaskState::ForYourReview => t!(lang, "In review", "En revisión"),
+        TaskState::AwaitingBlocker => t!(lang, "Waiting", "Esperando"),
         TaskState::WaitingDependency => t!(lang, "Waiting", "Esperando"),
         TaskState::Closing => t!(lang, "Closing", "Cerrando"),
         TaskState::Done => t!(lang, "Finished", "Terminado"),
@@ -465,12 +466,38 @@ pub(super) fn list(key: &str, context: &RenderContext<'_>) -> Result<View, Build
     Ok(view)
 }
 
+/// What a task that has no card waits for, as a sentence.
+fn wait_text(reason: &crate::domain::WaitReason, context: &RenderContext<'_>) -> String {
+    use crate::domain::WaitReason as W;
+    let lang = context.lang;
+    match reason {
+        W::BlockedBy { task } => {
+            let title = context.domain.tasks.get(task).map_or(task.0.as_str(), |t| t.title.as_str());
+            tf!(lang, "Waits for “{title}”", "Espera a «{title}»", title = title)
+        }
+        W::UpstreamPr { number } => tf!(lang, "Waits for PR #{number} to merge", "Espera a que se fusione la PR #{number}", number = number),
+        W::Answer { need } => tf!(lang, "Waits for your answer to “{need}”", "Espera tu respuesta a «{need}»", need = need),
+        W::NodeFixing { node, pr } => tf!(lang, "“{node}” is resolving the conflicts on PR #{pr}", "«{node}» está resolviendo los conflictos de la PR #{pr}", node = node, pr = pr),
+        W::Merging { pr } => tf!(lang, "Merging PR #{pr}", "Fusionando la PR #{pr}", pr = pr),
+        W::Closing => t!(lang, "Closing", "Cerrando").into(),
+    }
+}
+
 fn now_line(task: &Task, context: &RenderContext<'_>) -> Option<super::Row> {
     let line = |text: String, link: Option<super::Link>| {
         let mut row = common::row("now", "task", Icon::History, text, None);
         row.link = link;
         row
     };
+    if let crate::domain::Attention::Wait(reason) = context.domain.attention(task)
+        && matches!(
+            reason,
+            crate::domain::WaitReason::BlockedBy { .. } | crate::domain::WaitReason::UpstreamPr { .. }
+                | crate::domain::WaitReason::Answer { .. } | crate::domain::WaitReason::NodeFixing { .. }
+        )
+    {
+        return Some(line(wait_text(&reason, context), None));
+    }
     match task.state {
         TaskState::NeedsYou => context
             .domain
@@ -482,7 +509,11 @@ fn now_line(task: &Task, context: &RenderContext<'_>) -> Option<super::Row> {
                 tf!(context.lang, "question: {title}", "pregunta: {title}", title = item.title),
                 Some(super::Link::View { key: super::card::card_key(&item) }),
             )),
-        TaskState::InReview => task.documents.keys().last()
+        TaskState::AwaitingBlocker => match context.domain.attention(task) {
+            crate::domain::Attention::Wait(reason) => Some(line(wait_text(&reason, context), None)),
+            _ => None,
+        },
+        TaskState::ForYourReview => task.documents.keys().last()
             .and_then(|id| context.domain.documents.get(id))
             .map(|document| line(
                 tf!(context.lang, "document: {title}", "documento: {title}", title = document.title), None)),
@@ -596,7 +627,8 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
                     "not_started" => t!(context.lang, "Not started", "Sin empezar"),
                     "running" => t!(context.lang, "Working", "Trabajando"),
                     "needs_you" => t!(context.lang, "Needs you", "Te necesita"),
-                    "in_review" => t!(context.lang, "In review", "En revisión"),
+                    "in_review" | "for_your_review" => t!(context.lang, "In review", "En revisión"),
+                    "awaiting_blocker" => t!(context.lang, "Waiting", "Esperando"),
                     "waiting_dependency" => t!(context.lang, "Waiting", "Esperando"),
                     "closing" => t!(context.lang, "Closing", "Cerrando"),
                     "done" => t!(context.lang, "Finished", "Terminado"),
