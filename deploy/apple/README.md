@@ -58,7 +58,7 @@ security find-identity -v -p codesigning
 security find-identity -v -p basic
 ```
 
-The version is an explicit `x.y.z`; build is an integer 1–9999. The source's normal version is `0.1.1 (3)`; distribution receives the same
+The version is an explicit `x.y.z`; build is an integer 1–9999. The source's normal version is `0.1.2 (4)`; distribution receives the same
 explicit version/build through the release command. ASC's initial App Store drafts were `1.0` at the
 26 Sep inventory; align the App Store version before attaching a release build.
 TestFlight can process a different marketing version without changing that draft.
@@ -214,7 +214,7 @@ python3 deploy/apple/beta.py \
   --macos-group "<Mac external group>" \
   --identity "$APPLE_DISTRIBUTION_SHA1" \
   --installer-identity "$MAC_INSTALLER_SHA1" \
-  --output-root /Volumes/Externo/alondra-beta-0.1.1
+  --output-root /Volumes/Externo/alondra-beta-0.1.2
 ```
 
 Notes format:
@@ -240,7 +240,7 @@ python3 deploy/apple/beta.py \
   --macos-group "<Mac external group>" \
   --identity "$APPLE_DISTRIBUTION_SHA1" \
   --installer-identity "$MAC_INSTALLER_SHA1" \
-  --output-root /Volumes/Externo/alondra-beta-0.1.1 \
+  --output-root /Volumes/Externo/alondra-beta-0.1.2 \
   --bazel-output-user-root /Volumes/Externo/bazel/output \
   --publish
 ```
