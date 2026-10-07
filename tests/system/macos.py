@@ -25,7 +25,7 @@ BASE_NAME = 'alondra-clean-install-20260927'
 BASE_ORIGIN = 'ghcr.io/cirruslabs/macos-tahoe-xcode@sha256:49c83cf0989d5c3039b8f1a5c543aa25b2cd920784fdaf30be22e18e4edeaa95'
 GUEST = '/Users/admin/alondra-gate'
 BASE_MARKER = '/Users/admin/alondra-test-tools/base.json'
-BUNDLE = 'com.bitomule.alondra.mac'
+BUNDLE = 'com.bitomule.alondra'
 MIN_FREE = 8 * 1024**3
 
 
@@ -61,7 +61,7 @@ def run_name():
 
 def config():
     return '''project_name: Alondra disposable macOS demo
-bundle_id: com.bitomule.alondra.mac
+bundle_id: com.bitomule.alondra
 process_name: Alondra
 target_kind: macos
 vm: false

@@ -20,8 +20,12 @@ import xml.etree.ElementTree as ET
 ROOT = Path(__file__).resolve().parents[2]
 TEAM = "658YBSK6MG"
 IOS = "com.bitomule.alondra"
-MAC = IOS + ".mac"
+MAC = IOS
 EXT = IOS + ".NotificationService"
+VERSIONS = ROOT / "tools/shared.bzl"
+BETA_OUTPUT = ROOT / ".beta-build"
+# The /beta skill writes its release notes here and deletes them after the upload.
+BETA_NOTES = "?? .beta_notes"
 PROFILES = {
     "ios": [(IOS, "Alondra_AppStore.mobileprovision"), (EXT, "Alondra_NotificationService_AppStore.mobileprovision")],
     "macos": [(MAC, "Alondra_Mac_AppStore.provisionprofile")],
@@ -55,6 +59,30 @@ def run(*args):
     return result.stdout
 
 
+def read_versions(path=VERSIONS):
+    source = path.read_text()
+    version = re.search(r'^\s*version = "([0-9]+\.[0-9]+\.[0-9]+)"', source, re.MULTILINE)
+    build = re.search(r'^\s*build_number = "([1-9][0-9]{0,3})"', source, re.MULTILINE)
+    require(version and build, "Could not read version and build_number from tools/shared.bzl")
+    return version.group(1), build.group(1)
+
+
+def uncommitted(status):
+    return [line for line in status.decode().splitlines() if line and line != BETA_NOTES]
+
+
+def prepare_output(output, root=ROOT, beta_output=BETA_OUTPUT):
+    output, root, beta_output = output.resolve(), root.resolve(), beta_output.resolve()
+    if output.is_relative_to(beta_output) and output != beta_output:
+        if output.exists():
+            shutil.rmtree(output)
+    else:
+        require(not output.exists() and not output.is_relative_to(root),
+                "Output must be under .beta-build/ or a new directory outside checkout")
+    output.mkdir(parents=True, mode=0o700)
+    return output
+
+
 def digest(path):
     with path.open("rb") as stream:
         return hashlib.file_digest(stream, "sha256").hexdigest()
@@ -81,9 +109,22 @@ def validate_profile(profile, bundle_id, destination, identity, now=None):
     require(app_id == TEAM + "." + bundle_id, "Profile bundle identifier mismatch")
     require(any(hashlib.sha1(cert).hexdigest().upper() == identity for cert in profile.get("DeveloperCertificates", [])), "Signing identity absent from profile")
     require(("iOS" if destination == "ios" else "OSX") in profile.get("Platform", []), "Profile platform mismatch")
-    if bundle_id == IOS:
+    if bundle_id == IOS and destination == "ios":
         require(ent.get("aps-environment") == "production", "APNs distribution profile must use production")
     return ent
+
+
+def only_identity(output, installer=False):
+    required = "3rd Party Mac Developer Installer:" if installer else "Apple Distribution:"
+    matches = {value for value, name in re.findall(r'([0-9A-F]{40}) "([^"]+)"', output)
+               if name.startswith(required) and name.endswith("(" + TEAM + ")")}
+    require(len(matches) == 1, "Expected exactly one valid " + required.rstrip(":") + " identity for team " + TEAM
+            + "; pass it explicitly")
+    return matches.pop()
+
+
+def default_identity(installer=False):
+    return only_identity(run("security", "find-identity", "-v", "-p", "basic" if installer else "codesigning").decode(), installer)
 
 
 def local_identity(fingerprint, installer=False):
@@ -202,23 +243,21 @@ def verify_bundle(bundle, bundle_id, destination, version, build, identity, prof
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("destination", choices=PROFILES)
-    parser.add_argument("--version", required=True, help="Explicit x.y.z marketing version")
-    parser.add_argument("--build-number", required=True)
-    parser.add_argument("--identity", required=True, help="Existing Apple Distribution SHA-1")
-    parser.add_argument("--installer-identity", help="Existing Mac Installer SHA-1 (macos only)")
-    parser.add_argument("--output", required=True, type=Path, help="New private directory outside checkout")
+    parser.add_argument("--identity", help="Apple Distribution SHA-1; defaults to the only valid one in the keychain")
+    parser.add_argument("--installer-identity", help="Mac Installer SHA-1 (macos only); defaults to the only valid one")
+    parser.add_argument("--output", required=True, type=Path,
+                        help="Directory under .beta-build/ (replaced) or a new directory outside checkout")
     parser.add_argument("--bazel-output-user-root", type=Path, help="Reuse the coordinated local Bazel storage root")
     parser.add_argument("--bazel-output-base", type=Path, help="Reuse the coordinated local Bazel output base")
     parser.add_argument("--preflight-only", action="store_true", help="Validate existing local signing inputs without building")
     args = parser.parse_args()
     os.chdir(ROOT)
-    require(re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", args.version), "Version must be x.y.z")
-    require(re.fullmatch(r"[1-9][0-9]{0,3}", args.build_number), "Build number must be an integer from 1 through 9999")
-    args.identity = args.identity.upper()
+    args.version, args.build_number = read_versions()
+    args.identity = (args.identity or default_identity()).upper()
     signing_name = local_identity(args.identity)
     installer = None
     if args.destination == "macos":
-        require(args.installer_identity, "Mac distribution needs an Installer identity")
+        args.installer_identity = args.installer_identity or default_identity(installer=True)
         installer = local_identity(args.installer_identity.upper(), installer=True)
     profiles = {}
     profile_hashes = {}
@@ -229,16 +268,14 @@ def main():
         validate_profile(profile, bundle_id, args.destination, args.identity)
         profiles[bundle_id] = path
         profile_hashes[bundle_id] = digest(path)
-    require(not run("git", "-C", ROOT, "status", "--porcelain", "--untracked-files=normal").strip(), "Use a clean committed checkout")
+    require(not uncommitted(run("git", "-C", ROOT, "status", "--porcelain", "--untracked-files=normal")), "Use a clean committed checkout")
     source_commit = run("git", "-C", ROOT, "rev-parse", "HEAD").decode().strip()
     if args.preflight_only:
         print("Local profile/identity preflight passed; no build or publication performed.")
         return
-    output = args.output.resolve()
-    require(not output.exists() and not output.is_relative_to(ROOT), "Output must be a new directory outside checkout")
-    output.mkdir(parents=True, mode=0o700)
+    output = prepare_output(args.output)
     target = "//apple:AlondraiOS" if args.destination == "ios" else "//apple:AlondraMac"
-    flags = ["--define=alondra_distribution=1", "--embed_label=alondra_" + args.version + "_" + args.build_number,
+    flags = ["--define=alondra_distribution=1",
              # rules_apple resolves this flag by certificate common name, not SHA-1.
              # Bundle verification below still requires the exact requested leaf.
              "--@build_bazel_rules_apple//apple/build_settings:signing_certificate_name=" + signing_name,
@@ -258,7 +295,7 @@ def main():
     source = archives[0]
     require(all(digest(path) == profile_hashes[key] for key, path in profiles.items()), "Profile changed during build")
     require(run("git", "-C", ROOT, "rev-parse", "HEAD").decode().strip() == source_commit
-            and not run("git", "-C", ROOT, "status", "--porcelain", "--untracked-files=normal").strip(), "Source changed during build")
+            and not uncommitted(run("git", "-C", ROOT, "status", "--porcelain", "--untracked-files=normal")), "Source changed during build")
     with tempfile.TemporaryDirectory(prefix="alondra-package-", dir=output) as directory:
         private = Path(directory)
         snapshot, app = snapshot_archive(source, private, args.destination)

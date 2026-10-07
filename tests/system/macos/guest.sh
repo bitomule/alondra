@@ -6,7 +6,7 @@ ROOT=/Users/admin/alondra-gate
 cd "$ROOT"
 [[ "$(sysctl -n hw.model)" == VirtualMac* ]] || { echo 'Refusing non-virtual Mac'; exit 2; }
 [[ -f /Users/admin/alondra-test-tools/base.json ]] || { echo 'Missing prepared-base marker'; exit 2; }
-[[ ! -e "$HOME/.alondra" && ! -e "$HOME/Library/Containers/com.bitomule.alondra.mac" ]] || { echo 'Fixture contains Alondra user state'; exit 2; }
+[[ ! -e "$HOME/.alondra" && ! -e "$HOME/Library/Containers/com.bitomule.alondra" ]] || { echo 'Fixture contains Alondra user state'; exit 2; }
 # Tart guest exec uses virtio sockets, so this does not disconnect control.
 # No host network or permission changes; this is the disposable clone only.
 sudo -n /sbin/ifconfig en0 down

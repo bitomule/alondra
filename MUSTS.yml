@@ -44,6 +44,8 @@ checks:
       - "plugin/**"
       - "tools/plugin-mod-test.sh"
       - "deploy/brew/**"
+      - "deploy/apple/**"
+      - "tools/shared.bzl"
     with:
       targets:
         - //crates/...
@@ -54,6 +56,9 @@ checks:
         - //apple:update_keeps_session_test
         - //:plugin_mod_test
         - //deploy/brew:plugin_payload_test
+        - //deploy/apple:prepare_test
+        - //deploy/apple:increment_version_test
+        - //deploy/apple:version_guard_test
 
   apple-tests:
     uses: bazel/test

@@ -1,0 +1,14 @@
+exports_files(["shared.bzl"])
+
+exports_files(
+    [
+        "e2e-sandbox.sh",
+        "e2e-sandbox-stop.sh",
+    ],
+    visibility = ["//tests/sandbox:__pkg__"],
+)
+
+exports_files(
+    ["plugin-mod-test.sh"],
+    visibility = ["//:__pkg__"],
+)

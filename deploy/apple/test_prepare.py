@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """Exercise actual ZIP/plist gates without Xcode builds, signing or network."""
 import copy
 import base64
@@ -10,7 +11,9 @@ import tempfile
 import unittest
 import zipfile
 
-from prepare import GateError, IOS, EXT, MAC, TEAM, validate_archive, validate_profile, snapshot_archive, verify_pkg_leaf, verify_pkg_trust, validate_store_metadata
+from prepare import (GateError, IOS, EXT, MAC, TEAM, only_identity, prepare_output, read_versions, uncommitted,
+                     validate_archive, validate_profile, snapshot_archive, verify_pkg_leaf, verify_pkg_trust,
+                     validate_store_metadata)
 
 
 class DistributionInputTests(unittest.TestCase):
@@ -67,9 +70,16 @@ class DistributionInputTests(unittest.TestCase):
                 invalid["Entitlements"][key] = value
                 with self.assertRaises(GateError):
                     validate_profile(invalid, IOS, "ios", identity)
+        # The Mac shares the iOS App ID, so its profile carries push under the macOS key and no
+        # aps-environment; the Mac app does not use push.
         mac = self.profile(MAC, "OSX")
         mac["Entitlements"]["com.apple.application-identifier"] = mac["Entitlements"].pop("application-identifier")
+        mac["Entitlements"]["com.apple.developer.aps-environment"] = mac["Entitlements"].pop("aps-environment")
         validate_profile(mac, MAC, "macos", identity)
+        ios_without_push = self.profile()
+        del ios_without_push["Entitlements"]["aps-environment"]
+        with self.assertRaisesRegex(GateError, "APNs"):
+            validate_profile(ios_without_push, IOS, "ios", identity)
 
     def archive(self, path, simulator=False, extension=True, extra=None):
         app = "Payload/Alondra.app/"
@@ -152,6 +162,51 @@ class DistributionInputTests(unittest.TestCase):
             self.archive(path, extra=(link, "../../../outside"))
             with self.assertRaisesRegex(GateError, "symlink"):
                 validate_archive(path, "ios")
+
+
+class BetaInputTests(unittest.TestCase):
+    def test_version_and_build_come_from_the_shared_file(self):
+        self.assertRegex(read_versions()[0], r"^[0-9]+\.[0-9]+\.[0-9]+$")
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "shared.bzl"
+            path.write_text('versions = struct(\n    minimum_ios_version = "26.0",\n    version = "0.3.0",\n    build_number = "39",\n)\n')
+            self.assertEqual(read_versions(path), ("0.3.0", "39"))
+            path.write_text('versions = struct(\n    version = "0.3",\n    build_number = "39",\n)\n')
+            with self.assertRaisesRegex(GateError, "tools/shared.bzl"):
+                read_versions(path)
+
+    def test_only_the_beta_notes_may_be_untracked(self):
+        self.assertEqual(uncommitted(b"?? .beta_notes\n"), [])
+        self.assertEqual(uncommitted(b"?? .beta_notes\n M apple/BUILD.bazel\n"), [" M apple/BUILD.bazel"])
+        self.assertEqual(uncommitted(b"?? notes/.beta_notes\n"), ["?? notes/.beta_notes"])
+
+    def test_beta_output_is_replaced_and_other_checkout_paths_refused(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "repo"
+            beta = root / ".beta-build"
+            stale = beta / "ios" / "Alondra.ipa"
+            stale.parent.mkdir(parents=True)
+            stale.write_text("previous build")
+            self.assertEqual(prepare_output(beta / "ios", root, beta), (beta / "ios").resolve())
+            self.assertFalse(stale.exists())
+            for refused in (beta, root / "apple"):
+                with self.assertRaisesRegex(GateError, "Output must be"):
+                    prepare_output(refused, root, beta)
+            outside = Path(directory) / "outside"
+            self.assertEqual(prepare_output(outside, root, beta), outside.resolve())
+            with self.assertRaisesRegex(GateError, "Output must be"):
+                prepare_output(outside, root, beta)
+
+    def test_default_identity_must_be_unique_for_the_team(self):
+        one = '  1) ' + 'A' * 40 + ' "Apple Distribution: David (' + TEAM + ')"\n'
+        other_team = '  2) ' + 'B' * 40 + ' "Apple Distribution: Someone (XXXXXXXXXX)"\n'
+        installer = '  3) ' + 'C' * 40 + ' "3rd Party Mac Developer Installer: David (' + TEAM + ')"\n'
+        self.assertEqual(only_identity(one + other_team + installer), "A" * 40)
+        self.assertEqual(only_identity(one + installer, installer=True), "C" * 40)
+        with self.assertRaisesRegex(GateError, "exactly one"):
+            only_identity(one + one.replace("A" * 40, "D" * 40))
+        with self.assertRaisesRegex(GateError, "exactly one"):
+            only_identity(other_team)
 
 
 if __name__ == "__main__":

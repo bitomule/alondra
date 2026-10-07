@@ -1,224 +1,59 @@
-# Local Apple distribution preparation
+# Apple apps: TestFlight betas
 
-This lane prepares private, verified local artifacts for iOS TestFlight and the
-Mac App Store. It never calls App Store Connect, creates profiles/certificates,
-exports private keys, installs the app, or uploads anything. It is separate from
-Homebrew and from simulator/MAV builds.
+Betas of the iOS and Mac apps go out with the `/beta` skill
+(`~/.claude/skills/beta`, script `scripts/beta.sh`), run from a clean, up-to-date
+`main`. The skill reads its settings from the `Makefile`:
 
-## Existing rule mechanisms
-
-The implementation uses the repository's pinned rules_apple 5.0.0-rc3:
-
-- `ios_application` emits an IPA; `macos_application` emits a ZIP.
-- `provisioning_profile`, `entitlements` and the
-  `apple/build_settings:signing_certificate_name` flag control signing.
-- `apple_bundle_version` obtains explicit version/build from `--embed_label`.
-- `--ios_multi_cpus=arm64` selects the device platform. An arm64 simulator is not
-  interchangeable with this build.
-
-These mechanisms were checked in the installed pinned rule sources before
-implementation (`apple/internal/rule_attrs.bzl`, `apple/versioning.bzl`,
-`apple/internal/codesigning_support.bzl`, `doc/tutorials/ios-app.md`). Upstream
-primary documentation: [iOS rules](https://github.com/bazelbuild/rules_apple/blob/5.0.0-rc3/doc/rules-ios.md),
-[macOS rules](https://github.com/bazelbuild/rules_apple/blob/5.0.0-rc3/doc/rules-macos.md),
-[signing](https://github.com/bazelbuild/rules_apple/blob/5.0.0-rc3/doc/common_info.md).
-No generated Xcode project or fabricated xcarchive is involved.
-
-## Prerequisites
-
-Use a clean, committed, reviewed checkout in an isolated worktree, with Xcode,
-Bazelisk and Python 3.11+ available. Coordinate the local build slot first. The
-script uses one Bazel job. Never run it alongside the backend or MAV build.
-Pass `--bazel-output-user-root` and `--bazel-output-base` to reuse the agreed local
-cache instead of allocating another worktree cache. Both build and cquery receive
-the same startup paths. Sharing a path does not authorize concurrent builds.
-
-The team's profiles are versioned in `signing/`, as in the other apps; a profile
-holds no private key (the signing identity stays in the keychain). Replace a file
-there, reviewed, when its profile is renewed:
-
-| Destination | File | Bundle identifier |
+| Variable | Value | Meaning |
 | --- | --- | --- |
-| iOS app | `Alondra_AppStore.mobileprovision` | `com.bitomule.alondra` |
-| iOS extension | `Alondra_NotificationService_AppStore.mobileprovision` | `com.bitomule.alondra.NotificationService` |
-| Mac App Store | `Alondra_Mac_AppStore.provisionprofile` | `com.bitomule.alondra.mac` |
+| `APP_ID` | `6816262826` | the App Store Connect app, iOS and macOS platforms |
+| `IPA_PATH` | `.beta-build/ios/Alondra.ipa` | written by `make build-release` |
+| `PKG_PATH` | `.beta-build/macos/Alondra.pkg` | written by `make build-release` |
+| `BETA_GROUP` | `Internal Pilot,Private Pilot` | groups of that app; they get iOS and Mac builds |
 
-The profiles must belong to team/prefix `658YBSK6MG`, be unexpired, exclude
-development/ad hoc/enterprise devices, and include the selected existing Apple
-Distribution certificate. An existing valid Mac Installer identity is also
-required for the Mac package. Certificate and profile downloads are deliberately
-outside this script. Never commit private keys or certificates.
+`BETA_GROUP` lists the internal group on purpose: «Internal Pilot» does not
+receive builds automatically, and `asc publish testflight` / `asc builds add-groups`
+take several comma-separated groups.
 
-Inspect next build numbers immediately before selecting version/build:
+## One App Store Connect record
 
-```sh
-asc builds next-build-number --app 6816262826 --platform IOS
-asc builds next-build-number --app 6816263014 --platform MAC_OS
-security find-identity -v -p codesigning
-security find-identity -v -p basic
-```
+iOS and Mac share the bundle ID `com.bitomule.alondra` and the record `6816262826`
+(universal purchase). macOS was added to it as a platform; the bundle ID is a
+universal App ID, so the Mac App Store profile in `signing/` is issued for it too.
+That profile carries push because the App ID has it; the Mac app does not use push.
 
-The version is an explicit `x.y.z`; build is an integer 1–9999. The source's normal version is `0.1.2 (4)`; distribution receives the same
-explicit version/build through the release command. ASC's initial App Store drafts were `1.0` at the
-26 Sep inventory; align the App Store version before attaching a release build.
-TestFlight can process a different marketing version without changing that draft.
+Until October 2026 the Mac app was `com.bitomule.alondra.mac`, record `6816263014`.
+A sandboxed Mac app's container and login-keychain items belong to its bundle ID,
+so the Mac starts empty after the move: it signs in once more, approves its paired
+Macs again and pairs with its local daemon on its own. Its keychain services are
+`com.bitomule.alondra.mac.*`, distinct from the old app's, so the old items are
+never read and macOS never asks for the keychain password. The old app can be
+deleted from `/Applications`. Its TestFlight builds stay available until the Mac
+build from this record is confirmed working, and are expired only then.
 
-## Preflight, then prepare
+## Version
 
-Replace the fingerprints with the existing identities returned above; the
-script accepts fingerprints, not ambiguous certificate names. Preflight reads
-only local identity metadata and existing profiles, and does not build.
+`tools/shared.bzl` holds the marketing version and the build number of both apps.
+Bazel reads it (`apple/BUILD.bazel`, target `Version`) for every build, release
+included.
 
-```sh
-python3 deploy/apple/prepare.py ios --version 0.1.0 --build-number 1 \
-  --identity "$APPLE_DISTRIBUTION_SHA1" \
-  --output /private/tmp/alondra-ios-distribution-1 --preflight-only
+- Raise `version` by hand, in a reviewed PR.
+- Never edit `build_number`: `make increment-version` bumps it, commits
+  `🔖 Release <version> (<build>)` and tags `v<version>-<build>`; `/beta` then
+  raises it further if App Store Connect is ahead.
 
-python3 deploy/apple/prepare.py ios --version 0.1.0 --build-number 1 \
-  --identity "$APPLE_DISTRIBUTION_SHA1" \
-  --output /private/tmp/alondra-ios-distribution-1
+The app version is independent from the daemon's. Builds up to iOS 36 / Mac 12
+were uploaded with the daemon version (up to 0.2.49), so the apps restart at 0.3.0.
 
-python3 deploy/apple/prepare.py macos --version 0.1.0 --build-number 1 \
-  --identity "$APPLE_DISTRIBUTION_SHA1" \
-  --installer-identity "$MAC_INSTALLER_SHA1" \
-  --output /private/tmp/alondra-mac-distribution-1
-```
+`make version-guard` (`deploy/apple/version_guard.py`) refuses a version lower than
+any build App Store Connect has on either platform, or an equal version without a
+higher build number. TestFlight never offers a lower version to someone who has a
+higher one installed. `make increment-version` and `make build-release` both run it.
 
-The output must be a new directory outside the checkout. Failed attempts retain
-their directory; use a new destination after diagnosis. There is no overwrite or
-retry-upload command. Successful output is an IPA or signed PKG plus a manifest
-containing source commit, explicit version, artifact SHA-256, selected signing
-identity fingerprint and profile hashes. It does not contain profiles or keys.
+## Release notes
 
-Distribution is selected only by `--define=alondra_distribution=1`, supplied by
-the script along with the explicit version label and signing identity. Without
-that define, existing profiles, entitlements and versions are unchanged. Mac
-builds in this initial lane are Apple Silicon; universal/Intel GUI distribution
-is not claimed.
-
-The script rejects a simulator IPA even when its filename looks correct. Both
-iOS bundles must have the expected IDs/version, exact validated embedded
-profiles, matching signer, device Mach-O platform, production APNs on the app,
-and the shared Keychain group. The Mac artifact must have matching identity,
-profile, version and sandbox/network/user-selected-file entitlements. Strict
-nested code-signature verification runs before packaging. The Mac package's
-Installer signature is checked after `productbuild`, followed by an exact SHA-1
-comparison of the package signature's leaf DER certificate against the requested
-Installer fingerprint. An issuer/root matching the requested fingerprint does not
-satisfy this check. The installed `productbuild` also accepts an exact SHA-1
-selector: this was verified with a real empty package while an expired certificate
-with the same Common Name remained in the login keychain. The lane passes that
-fingerprint, rechecks its validity before signing, and verifies the resulting leaf.
-If another host cannot select by fingerprint, signing fails without approving an
-artifact. `pkgutil` must explicitly report an Apple-issued trusted developer
-signature; exit zero alone is insufficient (an untrusted status can also exit zero).
-
-The Bazel ZIP/IPA is copied into a unique private staging directory before any
-archive validation. That read-only snapshot is the only archive subsequently
-validated, extracted and copied into the release output. A concurrent replacement
-of the Bazel output path cannot change the bytes shipped after validation.
-
-Failed commands leave a private diagnostic at the path reported in the error
-(mode 0700 directory / 0600 log). It contains the tool name, exit status and capped,
-filtered diagnostics. It never records environment variables, command arguments
-or `security cms` stdout (which could contain a profile). Treat the local log as
-private evidence; it is not included in the release manifest or uploaded.
-
-## Verification and remaining release gates
-
-```sh
-python3 -m unittest discover -s deploy/apple -p 'test_*.py'
-```
-
-These tests serialize real plist and ZIP fixtures and exercise expired/wrong
-profile, certificate/team/platform mismatch, simulator, absent/extra extension,
-foreign payload and ZIP traversal/symlink rejection. They do not prove real CMS
-validation, signing, a successful Bazel distribution build, package acceptance,
-or runtime behavior inside the Mac sandbox. Those checks require real artifacts
-and remain mandatory after independent review of this lane.
-
-After preparation, complete MAV/runtime checks for the distribution build,
-including Mac file import/export, Keychain/login, notifications and the iOS
-extension. Then the orchestrator may use the existing ASC upload workflow with
-the verified artifact. ASC processing, export-compliance answers, Beta App Review,
-review access and external-group distribution are separate gates. A successful
-local manifest is not an App Store or TestFlight approval.
-
-## Independent-review corrections
-
-After the initial implementation, review found a mutable Bazel archive could be
-reread after verification, and that comparing only the Installer Common Name did
-not prove its identity. Both are addressed above. Two additional tests replace a
-Bazel IPA with a simulator IPA between validation and output copying, and reject
-ambiguous Installer names / a wrong leaf even when the requested certificate is
-later in the signature chain. These are packaging validation tests, not a claim
-of cryptographic validation of synthetic certificate fixtures.
-
-Local primary documentation checked for the fix: `man productbuild` (SIGNED
-PRODUCT ARCHIVES: --sign selects Common Name), `man xar` (--dump-toc=- emits the
-XML TOC) and `man pkgutil` (--check-signature checks validity/trust). The leaf parser
-was also checked read-only against an existing local signed Memoir PKG: its exact
-Installer fingerprint was accepted, a different fingerprint rejected. That
-historical PKG returns an untrusted-certificate failure from pkgutil on this host;
-it is not accepted by this lane and is not evidence of a successful new release.
-No Apple build, package signing, ASC mutation or upload was performed for this fix.
-
-## Real local signing probe, 26 Sep
-
-Created the three missing App Store profiles with the existing distribution
-certificate, and kept downloads in ignored signing paths. iOS preflight passed.
-The initial Mac preflight correctly detected an expired same-name Installer
-identity. A local empty package signed with the exact requested SHA-1 proved
-selection of the current certificate without changing/exporting any key. Its XAR
-leaf matches `15028A74350CC881DF8CF8956D0AC9D7DC9D02E9`.
-
-The same package reports untrusted inside the restricted sandbox and an Apple-issued
-chain outside it. Both invocations exit zero. The gate now checks the explicit
-trust status as well as the exact leaf, using C locale. Six packaging tests pass,
-including the observed misleading-success status. Probe evidence is private under
-`/private/tmp/alondra-installer-identity-probe`; it is not an Alondra app build,
-installation, upload or release approval.
-
-## Scripted TestFlight beta
-
-`beta.py` adapts the installed `/beta` release checks to Alondra's two Apple
-apps and the local signed-artifact gate. Unlike that skill's generic script, it
-does not bump source versions or commit, tag, fetch changes into the checkout,
-or push. It requires a clean checkout exactly equal to reviewed `origin/main`,
-takes the version from `apple/BUILD.bazel`, and looks up independent next build
-numbers and external groups for:
-
-| Platform | ASC app ID | ASC platform |
-| --- | --- | --- |
-| iOS | `6816262826` | `IOS` |
-| Mac | `6816263014` | `MAC_OS` |
-
-It verifies ASC authentication, account/agreement health, the selected Apple
-Distribution certificate and its 14-day expiry window, both external groups,
-and both local signing/profile preflights before a build. It prepares, uploads,
-waits for `VALID` processing, writes `en-US`, `de-DE`, and `es-MX` What to Test
-localizations, adds the build to that app's configured external group and to the
-internal group (`--internal-group`, default `Internal Pilot`, which does not
-receive all builds automatically) and confirms both memberships and sends the TestFlight notification before starting the next platform. Mac and iOS build numbers are
-independent. It writes a private `release-result.json` and preserves artifact
-manifests. A partial run after upload names the platform and says not to upload
-again.
-
-The default is plan-only and performs no ASC calls, builds, or signing. Supply
-the app-specific external group names and localized notes in a private file
-outside the checkout. Then review the plan:
-
-```sh
-python3 deploy/apple/beta.py \
-  --notes /private/tmp/alondra-beta-notes.txt \
-  --ios-group "<iOS external group>" \
-  --macos-group "<Mac external group>" \
-  --identity "$APPLE_DISTRIBUTION_SHA1" \
-  --installer-identity "$MAC_INSTALLER_SHA1" \
-  --output-root /Volumes/Externo/alondra-beta-0.1.2
-```
-
-Notes format:
+`/beta` writes `.beta_notes` in the repo root before the run and deletes it after.
+It is never committed. Each section name is the App Store Connect locale:
 
 ```text
 [en-US]
@@ -231,31 +66,48 @@ Notes format:
 - Prueba el nuevo espacio de trabajo y los detalles seleccionados.
 ```
 
-To execute signed builds and TestFlight ASC operations, add `--publish` and
-select the coordinated Bazel cache explicitly:
+## Release build
+
+`make build-release` runs `deploy/apple/prepare.py` for iOS and for Mac. It never
+calls App Store Connect or uploads anything. It builds with
+`--define=alondra_distribution=1` (App Store profiles and entitlements in
+`apple/BUILD.bazel`), one Bazel job, arm64 only, and verifies the result before
+writing it to `.beta-build/` (ignored by git, replaced on every run):
+
+- the checkout is clean and committed (only `.beta_notes` may be untracked) and does
+  not change during the build;
+- the profiles in `signing/` belong to team `658YBSK6MG`, are unexpired App Store
+  profiles and contain the signing certificate;
+- the signing identity is the only valid Apple Distribution identity of the team in
+  the keychain (Mac: also the only valid Mac Installer identity), unless
+  `--identity` / `--installer-identity` name one;
+- the bundles have the expected IDs, the version and build of `tools/shared.bzl`,
+  device Mach-O, the validated embedded profile, the requested signer, production
+  APNs and the shared Keychain group (iOS) or the sandbox entitlements (Mac);
+- the Bazel archive is copied to a private snapshot before validation, so a later
+  Bazel run cannot change what ships;
+- the Mac PKG signature is trusted by Apple and its leaf certificate is exactly the
+  requested Installer identity.
+
+Each output folder gets a `manifest.json` with source commit, version, build,
+artifact SHA-256, identities and profile hashes. Failed commands leave a private
+diagnostic log at the path the error names.
+
+| Destination | Profile in `signing/` | Bundle identifier |
+| --- | --- | --- |
+| iOS app | `Alondra_AppStore.mobileprovision` | `com.bitomule.alondra` |
+| iOS extension | `Alondra_NotificationService_AppStore.mobileprovision` | `com.bitomule.alondra.NotificationService` |
+| Mac App Store | `Alondra_Mac_AppStore.provisionprofile` | `com.bitomule.alondra` |
+
+`python3 deploy/apple/prepare.py ios --output .beta-build/ios --preflight-only`
+checks identities and profiles without building.
+
+## Tests
 
 ```sh
-python3 deploy/apple/beta.py \
-  --notes /private/tmp/alondra-beta-notes.txt \
-  --ios-group "<iOS external group>" \
-  --macos-group "<Mac external group>" \
-  --identity "$APPLE_DISTRIBUTION_SHA1" \
-  --installer-identity "$MAC_INSTALLER_SHA1" \
-  --output-root /Volumes/Externo/alondra-beta-0.1.2 \
-  --bazel-output-user-root /Volumes/Externo/bazel/output \
-  --publish
+bazelisk test //deploy/apple:prepare_test //deploy/apple:version_guard_test
 ```
 
-Use a new output directory for each attempt. The adapter refuses an existing
-directory and refuses to re-upload a build number that changed or already
-appeared in ASC. Before running it, inspect external group names without writes:
-
-```sh
-asc testflight groups list --app 6816262826 --external --paginate --output table
-asc testflight groups list --app 6816263014 --external --paginate --output table
-```
-
-Plan mode has no `--publish` side effects; publish mode is a real release
-operation and must run only from reviewed, clean main after reserving the local
-Apple/Bazel build slot. Offline adapter tests do not claim ASC account health,
-signing, processing, review approval, or tester access.
+They exercise the packaging gates with real plist and ZIP fixtures and the version
+guard with recorded App Store Connect responses. They do not prove signing,
+App Store processing or runtime behaviour.

@@ -1,5 +1,6 @@
 import AlondraAccount
 import AlondraNotifications
+import AlondraPairing
 import AppKit
 import UserNotifications
 
@@ -10,13 +11,17 @@ final class MacAppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationC
     let owner: MacWorkspaceOwner
     let notices = MacLocalNotices()
 
+    // Own keychain services: the Mac app moved from com.bitomule.alondra.mac to the iOS bundle ID,
+    // and the login keychain guards the old app's items with an ACL bound to that app. Reading them
+    // could ask for the keychain password; with new names the Mac just signs in once.
     override init() {
         let auth = AuthSession(browser: SystemAuthBrowser(anchor: {
             NSApplication.shared.keyWindow ?? NSApplication.shared.mainWindow
-        }))
+        }), storage: KeychainRefreshTokenStorage(service: "com.bitomule.alondra.mac.auth"))
         let storage = AppStorageLocation.applicationSupport(bundleID: "com.bitomule.alondra.mac")
         let name = Host.current().localizedName ?? ProcessInfo.processInfo.hostName
-        let account = AccountSession(auth: auth, displayName: String(name.prefix(80)), storageDirectory: storage)
+        let account = AccountSession(auth: auth, displayName: String(name.prefix(80)), storageDirectory: storage,
+                                     pairingStore: KeychainApprovedPairingStore(service: "com.bitomule.alondra.mac.service-pairing.v1"))
         account.isActive = { NSApplication.shared.isActive }
         account.openLocalNetworkSettings = {
             guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_LocalNetwork") else { return }

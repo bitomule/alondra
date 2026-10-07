@@ -4,7 +4,15 @@ LABEL = $(shell $(BIN)/alondra config --get service_label 2>/dev/null)
 DEVICE ?= David iPhone
 export DEVICE
 
-.PHONY: snapshots-record snapshots-verify tui-shots mac-snapshots-record mac-snapshots-verify no-holds build test install run tui setup launchd unlaunchd restart status doctor cargo-test mac device device-console e2e-sandbox e2e-sandbox-stop e2e-sandbox-logs soak tasks-screen rehearse-cutover cutover-live
+# TestFlight betas go out with the /beta skill, which reads these variables.
+APP_ID     := 6816262826
+IPA_PATH   := .beta-build/ios/Alondra.ipa
+PKG_PATH   := .beta-build/macos/Alondra.pkg
+BETA_GROUP := Internal Pilot,Private Pilot
+APPLE_VERSION = $(shell sed -n 's/^ *version = "\(.*\)".*/\1/p' tools/shared.bzl)
+APPLE_BUILD = $(shell sed -n 's/^ *build_number = "\(.*\)".*/\1/p' tools/shared.bzl)
+
+.PHONY: version-guard increment-version build-release snapshots-record snapshots-verify tui-shots mac-snapshots-record mac-snapshots-verify no-holds build test install run tui setup launchd unlaunchd restart status doctor cargo-test mac device device-console e2e-sandbox e2e-sandbox-stop e2e-sandbox-logs soak tasks-screen rehearse-cutover cutover-live
 
 build:
 	bazelisk build //crates/... //apple:AlondraMac
@@ -165,3 +173,21 @@ tasks-screen:
 	curl -sf http://127.0.0.1:47800/v1/overview -o /tmp/alondra-overview.json
 	ALONDRA_OVERVIEW=/tmp/alondra-overview.json ALONDRA_SCREEN=$(or $(SCREEN),/tmp/alondra-tasks.txt) cargo test -q -p alondra tasks_screen_of_an_overview -- --ignored
 	cat $(or $(SCREEN),/tmp/alondra-tasks.txt)
+
+# Fails when tools/shared.bzl is below a build App Store Connect already has, for either app.
+version-guard:
+	python3 deploy/apple/version_guard.py
+
+increment-version:
+	@set -e; \
+	NEW_BUILD=$$(( $(APPLE_BUILD) + 1 )); \
+	sed -i '' 's/build_number = "$(APPLE_BUILD)"/build_number = "'$$NEW_BUILD'"/' tools/shared.bzl; \
+	python3 deploy/apple/version_guard.py || { git checkout -- tools/shared.bzl; exit 1; }; \
+	git add tools/shared.bzl; \
+	git commit -m "🔖 Release $(APPLE_VERSION) ($$NEW_BUILD)"; \
+	git tag -a "v$(APPLE_VERSION)-$$NEW_BUILD" -m "Release $(APPLE_VERSION) build $$NEW_BUILD"
+
+# Signed, verified IPA and PKG at IPA_PATH and PKG_PATH; uploads nothing.
+build-release: version-guard
+	python3 deploy/apple/prepare.py ios --output .beta-build/ios
+	python3 deploy/apple/prepare.py macos --output .beta-build/macos

@@ -124,13 +124,12 @@ any other Claude session never talks to Alondra.
 ## 4. Notifications with your own Apple developer account
 
 This needs a paid Apple Developer Program membership. Pick a bundle ID prefix you own, e.g.
-`com.<you>.alondra`. Three IDs are used:
+`com.<you>.alondra`. Two IDs are used:
 
 | What | Bundle ID |
 |---|---|
-| iOS app | `com.<you>.alondra` |
+| iOS app and Mac app (the Mac is not signed with a profile, no portal work) | `com.<you>.alondra` |
 | Notification service extension | `com.<you>.alondra.NotificationService` |
-| Mac app (not signed with a profile, no portal work) | `com.<you>.alondra.mac` |
 
 ### 4a. Bundle IDs, push, certificate, device, profiles
 

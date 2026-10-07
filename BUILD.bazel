@@ -1,11 +1,8 @@
 exports_files(["Cargo.toml", "Cargo.lock"])
 
 exports_files(
-    [
-        "tools/e2e-sandbox.sh",
-        "tools/e2e-sandbox-stop.sh",
-    ],
-    visibility = ["//tests/sandbox:__pkg__"],
+    ["Makefile"],
+    visibility = ["//deploy/apple:__pkg__"],
 )
 
 # What Claude Code writes beside a mod it loads with --plugin-dir: never part of the plugin.
@@ -33,7 +30,7 @@ filegroup(
 
 sh_test(
     name = "plugin_mod_test",
-    srcs = ["tools/plugin-mod-test.sh"],
+    srcs = ["//tools:plugin-mod-test.sh"],
     args = ["$(rootpath plugin/.claude-plugin/plugin.json)"],
     data = glob(["plugin/**"], exclude = MOD_TYPES),
     env_inherit = ["PATH"],

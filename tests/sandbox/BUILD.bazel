@@ -11,8 +11,8 @@ sh_test(
     ],
     data = [
         "//:plugin_files",
-        "//:tools/e2e-sandbox.sh",
-        "//:tools/e2e-sandbox-stop.sh",
+        "//tools:e2e-sandbox.sh",
+        "//tools:e2e-sandbox-stop.sh",
         "//crates/alondra",
         "//crates/alondrad",
         "//crates/relay:alondra-relay",

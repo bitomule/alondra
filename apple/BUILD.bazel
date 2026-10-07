@@ -2,8 +2,9 @@ load("@build_bazel_rules_apple//apple:ios.bzl", "ios_application", "ios_extensio
 load("@build_bazel_rules_apple//apple:macos.bzl", "macos_application")
 load("@build_bazel_rules_apple//apple:versioning.bzl", "apple_bundle_version")
 load("@build_bazel_rules_swift//swift:swift.bzl", "swift_library", "swift_test")
-load("@alondra_signing//:signing.bzl", "IOS_BUNDLE_ID", "IOS_PROFILE", "MAC_BUNDLE_ID", "NOTIFICATION_SERVICE_BUNDLE_ID", "NOTIFICATION_SERVICE_PROFILE")
+load("@alondra_signing//:signing.bzl", "IOS_BUNDLE_ID", "IOS_PROFILE", "NOTIFICATION_SERVICE_BUNDLE_ID", "NOTIFICATION_SERVICE_PROFILE")
 load("//apple:swift.bzl", "STRICT_SWIFT_CONCURRENCY_COPTS")
+load("//tools:shared.bzl", "versions")
 
 exports_files(
     ["iOS/Resources/Localizable.xcstrings", "macOS/Resources/Localizable.xcstrings"],
@@ -138,25 +139,17 @@ BONJOUR_PLIST = select({
     "//conditions:default": ["Bonjour/Bonjour.plist"],
 })
 
-apple_bundle_version(
-    name = "DistributionVersion",
-    build_label_pattern = "alondra_{version}_{build}",
-    capture_groups = {"version": "[0-9]+[.][0-9]+[.][0-9]+", "build": "[1-9][0-9]*"},
-    build_version = "{build}",
-    short_version_string = "{version}",
-)
-
 macos_application(
     name = "AlondraMac",
     app_icons = glob(["IconConcepts/Alondra.icon/**"]),
-    bundle_id = MAC_BUNDLE_ID,
+    bundle_id = IOS_BUNDLE_ID,
     bundle_name = "Alondra",
     infoplists = ["macOS/Info.plist"] + BONJOUR_PLIST,
     entitlements = select({":distribution": "macOS/AppStore.entitlements", "//conditions:default": None}),
     provisioning_profile = select({":distribution": "//signing:Alondra_Mac_AppStore.provisionprofile", "//conditions:default": None}),
     minimum_os_version = "26.0",
     resources = glob(["macOS/Resources/*.xcstrings"]) + ["//fixtures/views:all", "//fixtures/views:cards_ios"],
-    version = select({":distribution": ":DistributionVersion", "//conditions:default": ":Version"}),
+    version = ":Version",
     visibility = ["//visibility:public"],
     deps = [":AlondraMacViewsEntry"],
 )
@@ -187,6 +180,7 @@ swift_library(
         "//apple/Data/Transport:AlondraTransport",
         "//apple/Data/Account:AlondraAccount",
         "//apple/Data/Notifications:AlondraNotifications",
+        "//apple/Data/Pairing:AlondraPairing",
         "//apple/Contract:AlondraContract",
         "//apple/Data/Sync:AlondraNetworkReachability",
         "//apple/Data/Attachments:AlondraAttachments",
@@ -199,8 +193,8 @@ swift_library(
 
 apple_bundle_version(
     name = "Version",
-    build_version = "4",
-    short_version_string = "0.1.2",
+    build_version = versions.build_number,
+    short_version_string = versions.version,
 )
 
 
@@ -215,7 +209,7 @@ ios_application(
     infoplists = ["iOS/Info.plist"] + BONJOUR_PLIST,
     minimum_os_version = "26.0",
     resources = glob(["iOS/Resources/*.xcstrings"]) + ["//fixtures/views:cards_ios"],
-    version = select({":distribution": ":DistributionVersion", "//conditions:default": ":Version"}),
+    version = ":Version",
     extensions = [":AlondraNotificationService"],
     visibility = ["//visibility:public"],
     deps = [":AlondraiOSViewsEntry"],
@@ -261,6 +255,6 @@ ios_extension(
     minimum_os_version = "26.0",
     resources = glob(["iOSNotificationService/Resources/*.xcstrings"]),
     provisioning_profile = select({":distribution": "//signing:Alondra_NotificationService_AppStore.mobileprovision", "//conditions:default": "//signing:" + NOTIFICATION_SERVICE_PROFILE}),
-    version = select({":distribution": ":DistributionVersion", "//conditions:default": ":Version"}),
+    version = ":Version",
     deps = [":AlondraNotificationServiceLib"],
 )
