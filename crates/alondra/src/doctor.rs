@@ -430,14 +430,12 @@ pub fn run(json_out: bool) -> Result<()> {
 
     checks.extend(notification_checks(&home));
     if up {
-        checks.push(check("apns push", Status::Pass, tr!("delivery round trip is not checked here", "aquí no se comprueba la entrega de extremo a extremo"), ""));
-    }
-    if up {
         let devices = client.get::<Value>("/devices").ok().and_then(|v| v.get("devices").and_then(Value::as_array).map(Vec::len)).unwrap_or(0);
         checks.push(if devices > 0 {
             check("pairing", Status::Pass, trf!("{devices} paired device(s)", "{devices} dispositivo(s) vinculado(s)"), "")
         } else {
-            check("pairing", Status::Warn, tr!("no paired iPhone", "ningún iPhone vinculado"), "alondra pair")
+            check("pairing", Status::Warn, tr!("no paired iPhone", "ningún iPhone vinculado"),
+                tr!("open Alondra on your iPhone", "abre Alondra en tu iPhone"))
         });
     }
 

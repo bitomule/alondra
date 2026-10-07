@@ -261,6 +261,20 @@ fn approval_bytes(a: &Approval<'_>) -> Vec<u8> {
     out
 }
 
+#[derive(Deserialize)]
+struct LocalServiceDevices {
+    #[serde(default)]
+    devices: Vec<ServiceDevice>,
+}
+
+pub fn has_relay(home: &Path) -> Result<bool> {
+    let path = home.join("service.toml");
+    if !path.exists() {
+        return Ok(false);
+    }
+    Ok(toml::from_str::<toml::Table>(&fs::read_to_string(path)?)?.contains_key("relay_url"))
+}
+
 pub fn has_paired_device(home: &Path) -> Result<bool> {
     if home.join("service-pairing-pending.json").exists() {
         return Ok(false);
@@ -269,7 +283,7 @@ pub fn has_paired_device(home: &Path) -> Result<bool> {
     if !path.exists() {
         return Ok(false);
     }
-    let config: ServiceConfig = toml::from_str(&fs::read_to_string(path)?)?;
+    let config: LocalServiceDevices = toml::from_str(&fs::read_to_string(path)?)?;
     let local_path = home.join("devices.json");
     if !local_path.exists() {
         return Ok(false);
@@ -959,5 +973,34 @@ mod tests {
         )
         .unwrap();
         assert!(!has_paired_device(&dir).unwrap());
+    }
+
+    #[test]
+    fn a_device_paired_without_relay_counts_as_paired() {
+        let dir = std::env::temp_dir().join(format!(
+            "alondra-pair-local-{}",
+            URL_SAFE_NO_PAD.encode(random::<8>().unwrap())
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        assert!(!has_relay(&dir).unwrap());
+        let service = format!(
+            "mac_id = \"mac-a\"\nsigning_key_path = \"signing.key\"\nagreement_key_path = \"agreement.key\"\n\n[[devices]]\ndevice_id = \"phone-a\"\nsigning_key = \"{}\"\nagreement_key = \"unused\"\n",
+            URL_SAFE_NO_PAD.encode([7u8; 65])
+        );
+        fs::write(dir.join("service.toml"), &service).unwrap();
+        assert!(!has_relay(&dir).unwrap());
+        assert!(!has_paired_device(&dir).unwrap());
+        let local = vec![LocalDevice {
+            id: "phone-a".into(),
+            name: "iPhone".into(),
+            public_key: STANDARD.encode([7u8; 65]),
+            created_at: 1,
+            last_seen: None,
+        }];
+        fs::write(dir.join("devices.json"), serde_json::to_vec(&local).unwrap()).unwrap();
+        assert!(has_paired_device(&dir).unwrap());
+        fs::write(dir.join("service.toml"), format!("relay_url = \"https://example.test/\"\nowner_sub = \"owner\"\n{service}")).unwrap();
+        assert!(has_relay(&dir).unwrap());
+        fs::remove_dir_all(dir).unwrap();
     }
 }

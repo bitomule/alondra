@@ -853,10 +853,18 @@ pub fn run(args: Args) -> Result<()> {
     if args.skip_pair || args.skip_service {
         return Ok(());
     }
+    pair_through_relay(&mut home_lock, &paths.alondra_home, || crate::service_pair::run(&paths.alondra_home))
+}
+
+fn pair_through_relay(
+    home_lock: &mut Option<alondra_core::home_lock::HomeLock>,
+    home: &Path,
+    pair: impl FnOnce() -> Result<()>,
+) -> Result<()> {
     pair_unless_paired(
-        &mut home_lock,
-        || crate::service_pair::has_paired_device(&paths.alondra_home),
-        || crate::service_pair::run(&paths.alondra_home),
+        home_lock,
+        || Ok(!crate::service_pair::has_relay(home)? || crate::service_pair::has_paired_device(home)?),
+        pair,
     )
 }
 
@@ -1522,6 +1530,27 @@ mod brew_upgrade_tests {
         let mut paired = Some(alondra_core::home_lock::HomeLock::shared(&home).unwrap());
         pair_unless_paired(&mut paired, || Ok(true), || anyhow::bail!("already paired")).unwrap();
         assert!(paired.is_some());
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    const LOCAL_SERVICE_TOML: &str = "mac_id = \"mac-1\"\nsigning_key_path = \"keys/signing.pem\"\nagreement_key_path = \"keys/agreement.pem\"\ndevices = []\n";
+
+    #[test]
+    fn setup_without_relay_finishes_without_pairing() {
+        let home = fixture_home();
+        std::fs::write(home.join("service.toml"), LOCAL_SERVICE_TOML).unwrap();
+        pair_through_relay(&mut None, &home, || anyhow::bail!("pairing needs a relay")).unwrap();
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn setup_with_relay_and_no_device_pairs() {
+        let home = fixture_home();
+        let relay = format!("relay_url = \"https://relay.example\"\nowner_sub = \"owner\"\n{LOCAL_SERVICE_TOML}");
+        std::fs::write(home.join("service.toml"), relay).unwrap();
+        let mut paired = false;
+        pair_through_relay(&mut None, &home, || { paired = true; Ok(()) }).unwrap();
+        assert!(paired);
         std::fs::remove_dir_all(home).unwrap();
     }
 
