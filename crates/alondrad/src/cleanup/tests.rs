@@ -335,3 +335,16 @@ async fn a_session_of_the_users_that_the_orchestrator_gave_a_task_with_assign_ta
     let report = rig.run(false).await;
     assert_eq!(rig.sessions.removals(), [launched[..8].to_owned()], "the user's sessions got no claude rm: {report}");
 }
+
+#[tokio::test]
+async fn cleanup_right_after_the_daemon_starts_closes_finished_sessions_whose_mod_has_not_connected() {
+    let mut rig = Rig::new();
+    rig.session(Task::Done, true);
+    rig.session(Task::Cancelled, true);
+    let starting = tokio::spawn(crate::node_revival::run(rig.domain.clone()));
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let report = rig.run(false).await;
+    starting.abort();
+    assert_eq!(names(&report["closed"]), ["Node 1", "Node 2"], "{report}");
+    assert!(report["kept"].as_array().unwrap().is_empty(), "{report}");
+}

@@ -203,8 +203,10 @@ fn needed(domain: &DomainRuntime, session: &str) -> bool {
         && !domain.live.mods.connected(session)
 }
 
+/// Only a session that still has to be brought back is watched: the watch keeps cleanup and the
+/// task closer off the session, and the daemon reports every known session as lost when it starts.
 pub(crate) async fn revive(domain: &DomainRuntime, session: &str, launcher: &impl Launcher, timing: &Timing) {
-    if !domain.live.begin_watch(session) {
+    if !needed(domain, session) || !domain.live.begin_watch(session) {
         return;
     }
     if !domain.live.mods.wait_connected(session, timing.grace).await && needed(domain, session) {
