@@ -301,7 +301,7 @@ async fn a_session_whose_mod_never_loads_is_stopped_and_the_launch_fails_without
     let claude = FakeClaude::without_mod();
     let error = launch(&f.domain, &f.home, &actor, launch_body(&f, json!({"model": "sonnet"})), |_| None, &claude).await.unwrap_err();
     assert_eq!(error.code, "launch_failed");
-    assert!(error.message.contains("mods did not load") && error.message.contains("not trusted"), "{}", error.message);
+    assert!(error.message.starts_with("The session's mod did not report within"), "{}", error.message);
     assert_eq!(*claude.stopped.lock().unwrap(), ["ab1234"], "the session is stopped, not left working unseen");
     assert!(settings_files(&f.home).is_empty());
     let state = f.domain.state().unwrap();
@@ -1086,7 +1086,7 @@ async fn a_replacement_whose_new_node_does_not_start_says_the_task_has_no_node()
     let actor = the_orchestrator(&g.domain);
     connected_node_on_the_task(&g);
     let refused = launch(&g.domain, &g.home, &actor, replace_body(), |_| None, &FakeClaude::without_mod()).await.unwrap_err();
-    assert!(refused.message.contains(crate::node_reports::MODS_NOT_LOADED) && refused.message.contains("has no node now"), "{}", refused.message);
+    assert!(refused.message.contains("The session's mod did not report within") && refused.message.contains("has no node now"), "{}", refused.message);
 }
 
 /// The call can be dropped as soon as the replacement starts: the orchestrator still hears how it

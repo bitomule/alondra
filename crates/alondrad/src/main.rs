@@ -43,6 +43,7 @@ mod machine_watch;
 mod managed_orchestrator;
 mod markdown;
 mod mods_check;
+mod mods_wait;
 mod auto_launch;
 mod launch_plans;
 mod node_close;

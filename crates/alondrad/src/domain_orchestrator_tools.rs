@@ -363,11 +363,15 @@ async fn launch_guarded(domain: &DomainRuntime, home: &Path, actor: &Actor, body
         assigned_before = state(domain).map_err(discard)?.tasks.get(&task.id).and_then(|t| t.agent_id.clone());
     }
     let output = launcher.run(&cwd, &args).await.map_err(|(_, reason)| discard(DomainError::new("launch_failed", reason)))?;
-    let Some(session) = domain.live.mods.wait_launched(&key, launcher.mods_deadline()).await else {
-        if let Some(short) = alondra_core::sessions::launched_short(&output) {
-            launcher.stop(&short).await;
+    let session = match crate::mods_wait::wait(&domain.live.mods, &key, launcher).await {
+        Ok(session) => session,
+        Err(waited) => {
+            if let Some(short) = alondra_core::sessions::launched_short(&output) {
+                launcher.stop(&short).await;
+            }
+            let reason = crate::mods_wait::not_loaded(Path::new(&cwd), &waited, launcher).await;
+            return Err(discard(DomainError::new("launch_failed", reason)));
         }
-        return Err(discard(DomainError::new("launch_failed", crate::node_reports::MODS_NOT_LOADED)));
     };
     let agent_id = AgentId(session.clone());
     let agent_name = body.title.clone().unwrap_or_else(|| name.clone());

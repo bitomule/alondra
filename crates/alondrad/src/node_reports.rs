@@ -17,9 +17,6 @@ use std::time::Duration;
 /// How long a launch waits for the mod's `session.start` before it counts the mods as not loaded.
 pub(crate) const MODS_DEADLINE: Duration = Duration::from_secs(30);
 
-pub(crate) const MODS_NOT_LOADED: &str =
-    "Claude Code mods did not load in the session: its folder is not trusted, mods are disabled, or Claude Code is older than 2.1.287";
-
 #[derive(Deserialize, Debug, PartialEq)]
 #[serde(tag = "event")]
 pub(crate) enum Report {

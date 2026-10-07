@@ -372,13 +372,17 @@ async fn dispatch_pending(
                 return Ok(());
             }
         };
-    let Some(session) = domain.live.mods.wait_launched(&run_id.0, launcher.mods_deadline()).await else {
-        if let Some(short) = alondra_core::sessions::launched_short(&output) {
-            launcher.stop(&short).await;
+    let session = match crate::mods_wait::wait(&domain.live.mods, &run_id.0, launcher).await {
+        Ok(session) => session,
+        Err(waited) => {
+            if let Some(short) = alondra_core::sessions::launched_short(&output) {
+                launcher.stop(&short).await;
+            }
+            crate::domain_sessions::release(&settings);
+            let reason = crate::mods_wait::not_loaded(Path::new(&intent.cwd), &waited, launcher).await;
+            fail_run(domain, run_id, reason)?;
+            return Ok(());
         }
-        crate::domain_sessions::release(&settings);
-        fail_run(domain, run_id, crate::node_reports::MODS_NOT_LOADED.into())?;
-        return Ok(());
     };
     hand_over(domain, run_id, &intent.name, &session, &settings)
 }
@@ -497,9 +501,9 @@ async fn recover_uncertain(
     };
     let name = launch.intent.name.clone();
     let settings = settings_path(home, &run_id.0)?;
-    match domain.live.mods.wait_launched(&run_id.0, launcher.mods_deadline()).await {
-        Some(session) => hand_over(domain, run_id, &name, &session, &settings),
-        None => {
+    match crate::mods_wait::wait(&domain.live.mods, &run_id.0, launcher).await {
+        Ok(session) => hand_over(domain, run_id, &name, &session, &settings),
+        Err(_) => {
             launcher.stop(&name).await;
             crate::domain_sessions::release(&settings);
             let title = run.definition_snapshot.as_ref().map_or(name.as_str(), |snapshot| snapshot.title.as_str());
@@ -1578,7 +1582,7 @@ mod tests {
         let state = fixture.domain.state().unwrap();
         let run = &state.schedule.runs[&ScheduleRunId::from("untrusted")];
         assert_eq!(run.state, ScheduleRunState::Failed);
-        assert_eq!(run.error.as_deref(), Some(crate::node_reports::MODS_NOT_LOADED));
+        assert!(run.error.as_deref().is_some_and(|error| error.starts_with("The session's mod did not report within")), "{:?}", run.error);
         assert_eq!(*launcher.0.lock().unwrap(), ["ab1234"]);
         assert!(state.agents.is_empty());
         assert!(settings_files(&fixture.home).is_empty());

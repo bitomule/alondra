@@ -67,9 +67,20 @@ pub trait Launcher: Sync {
         std::time::Duration::from_secs(60)
     }
 
-    /// How long a launched session has to say its node mod loaded.
+    /// How long a launched session has to say its node mod loaded on an idle Mac.
     fn mods_deadline(&self) -> std::time::Duration {
         crate::node_reports::MODS_DEADLINE
+    }
+
+    /// The Mac's load, which stretches the wait for a session's mod. A launcher that cannot read
+    /// it waits `mods_deadline` alone.
+    fn machine_load(&self) -> Option<crate::mods_wait::Load> {
+        None
+    }
+
+    /// What `claude --version` prints, or `None` when it cannot tell.
+    fn claude_version(&self) -> impl Future<Output = Option<String>> + Send {
+        async { None }
     }
 
     /// The node plugin every launched session loads.
@@ -100,6 +111,19 @@ impl Launcher for ClaudeCli {
 
     async fn respawn(&self, short: &str) -> Result<(), String> {
         Self::respawn_session(short).await
+    }
+
+    fn machine_load(&self) -> Option<crate::mods_wait::Load> {
+        crate::mods_wait::Load::current()
+    }
+
+    async fn claude_version(&self) -> Option<String> {
+        let version = tokio::process::Command::new("claude").arg("--version").kill_on_drop(true)
+            .stdin(std::process::Stdio::null()).output();
+        match tokio::time::timeout(std::time::Duration::from_secs(20), version).await {
+            Ok(Ok(out)) if out.status.success() => Some(String::from_utf8_lossy(&out.stdout).trim().to_string()),
+            _ => None,
+        }
     }
 
     async fn remove(&self, short: &str) {
