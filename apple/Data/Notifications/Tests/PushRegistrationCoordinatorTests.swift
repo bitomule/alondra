@@ -127,8 +127,8 @@ private func registrationClient(_ n: UInt8, recorder: RegistrationRecorder) -> N
 
 @Test(arguments: [
     (URLError(.timedOut) as any Error, "Your Mac couldn’t be reached to turn on alerts. Alondra tries again when you reopen the app."),
-    (RelayWireError.unauthorized as any Error, "Your Mac no longer accepts this device. Link it again in Settings."),
-    (APIError.unauthorized as any Error, "Your Mac no longer accepts this device. Link it again in Settings."),
+    (RelayWireError.unauthorized as any Error, "Your Mac didn’t accept this device’s alerts. Alondra tries again when you reopen the app."),
+    (APIError.unauthorized as any Error, "Your Mac didn’t accept this device’s alerts. Alondra tries again when you reopen the app."),
     (RelaySessionError.outcomeUnknown as any Error, "Your Mac couldn’t be reached to turn on alerts. Alondra tries again when you reopen the app."),
     (CocoaError(.fileReadCorruptFile) as any Error, "Your Mac didn’t accept this device’s alerts. Alondra tries again when you reopen the app."),
 ])

@@ -128,6 +128,17 @@ public final class AccountSession {
     /// The next pairing on this network may replace the saved pairing of this Mac.
     public func pairAgain(macID: String?) { pairAgainMacID = macID }
 
+    /// Pair Again on a Mac's connection screen, for a Mac paired on the network or through the
+    /// relay: a device removed through the relay never gets the Mac's sealed revocation, so this
+    /// is its only way back. `open` shows Link a Mac. None for the Mac this app runs on.
+    public func pairAgainAction(for services: Connection, open: @escaping @MainActor () -> Void) -> (@MainActor () -> Void)? {
+        guard let macID = services.macID else { return nil }
+        return { [weak self] in
+            self?.pairAgain(macID: macID)
+            open()
+        }
+    }
+
     private func endPairAgain() { pairAgainMacID = nil }
 
     /// Pairing with a Mac on this network, for the first screen and for Settings' Add a Mac.
@@ -425,7 +436,7 @@ public final class AccountSession {
         let token = try await auth.bearerToken()
         let pending = try await pairing.begin(qrPayload: payload,
             authorization: PairingAuthorization(bearerToken: token, ownerSub: subject), displayName: displayName,
-            rejectExistingMac: scope != nil)
+            rejectExistingMac: scope != nil, replacing: pairAgainMacID)
         guard current == generation, attempts.contains(ticket), !Task.isCancelled,
               expectedSession == nil || services === expectedSession else {
             await pairing.discard(pending.attemptID)
@@ -441,7 +452,7 @@ public final class AccountSession {
         defer { attempts.release(ticket) }
         let current = generation
         let approved: ApprovedServicePairing
-        do { approved = try await pairing.waitForApproval(attempt) }
+        do { approved = try await pairing.waitForApproval(attempt); pairAgainMacID = nil }
         catch {
             await pairing.discard(attempt)
             if self.attempt == attempt { self.attempt = nil }

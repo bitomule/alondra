@@ -147,6 +147,18 @@ final class MacWorkspaceSnapshotTests: XCTestCase {
         }
     }
 
+    func test_connectionLost_accessNotConfirmed() {
+        assertWindow(size: CGSize(width: 900, height: 600)) {
+            ConnectionLostView(problem: .accessNotConfirmed, retry: {}, settings: {}, pairAgain: {})
+        }
+    }
+
+    func test_connectionLost_accessNotConfirmed_spanish() {
+        assertWindow(size: CGSize(width: 900, height: 600), spanish: true, variants: [.light]) {
+            ConnectionLostView(problem: .accessNotConfirmed, retry: {}, settings: {}, pairAgain: {})
+        }
+    }
+
     func test_connectionLost_deviceRevoked() {
         assertWindow(size: CGSize(width: 900, height: 600)) {
             ConnectionLostView(problem: .deviceRevoked(macName: "Mac Studio"), retry: {}, settings: {}, pairAgain: {})

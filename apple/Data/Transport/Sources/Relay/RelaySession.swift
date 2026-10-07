@@ -14,7 +14,7 @@ public enum RelayRecoveryStatus: Sendable, Equatable {
     case unknown
 }
 
-public enum RelaySessionError: Error, Equatable { case invalidRequest, invalidResponse, operationIdentityConflict, outcomeUnknown, localStatus(Int) }
+public enum RelaySessionError: Error, Equatable { case invalidRequest, invalidResponse, operationIdentityConflict, outcomeUnknown }
 
 /// One immutable approved pairing. Replace the entire service when identity or keys change.
 public actor RelaySession: OperationAPI, PushRegistrationAPI {
@@ -29,18 +29,20 @@ public actor RelaySession: OperationAPI, PushRegistrationAPI {
 
     public init(scope: RelayOutboxScope,
                 bearer: @escaping @Sendable () async throws -> String,
+                bearerRefused: @escaping @Sendable () async -> Void = {},
                 transport: (any HTTPTransport)? = nil,
                 signing: P256.Signing.PrivateKey, agreement: P256.KeyAgreement.PrivateKey,
                 macSigning: P256.Signing.PublicKey, macAgreement: P256.KeyAgreement.PublicKey,
                 now: @escaping @Sendable () -> UInt64 = { UInt64(Date().timeIntervalSince1970 * 1000) },
                 sleep: @escaping @Sendable () async throws -> Void = { try await Task.sleep(for: .seconds(1)) }) throws {
-        try self.init(scope: scope, bearer: bearer, transport: transport,
+        try self.init(scope: scope, bearer: bearer, bearerRefused: bearerRefused, transport: transport,
             signing: signing, agreement: agreement, macSigning: macSigning, macAgreement: macAgreement,
             now: now, sleep: sleep, waitForReadDeadline: { try await ContinuousClock().sleep(until: $0) })
     }
 
     init(scope: RelayOutboxScope,
                 bearer: @escaping @Sendable () async throws -> String,
+                bearerRefused: @escaping @Sendable () async -> Void = {},
                 transport: (any HTTPTransport)? = nil,
                 signing: P256.Signing.PrivateKey, agreement: P256.KeyAgreement.PrivateKey,
                 macSigning: P256.Signing.PublicKey, macAgreement: P256.KeyAgreement.PublicKey,
@@ -48,7 +50,7 @@ public actor RelaySession: OperationAPI, PushRegistrationAPI {
                 sleep: @escaping @Sendable () async throws -> Void = { try await Task.sleep(for: .seconds(1)) },
                 waitForReadDeadline: @escaping @Sendable (ContinuousClock.Instant) async throws -> Void) throws {
         let client = try AlondraAPIClient.makeTransport(base: scope.relay, deviceID: scope.deviceID,
-            signing: signing, bearer: bearer, transport: transport)
+            signing: signing, bearer: bearer, bearerRefused: bearerRefused, transport: transport)
         self.client = client; self.scope = scope
         outbox = RelayOutbox(scope: scope, transport: client)
         codec = EnvelopeCodec(macID: scope.macID, deviceID: scope.deviceID, signing: signing,

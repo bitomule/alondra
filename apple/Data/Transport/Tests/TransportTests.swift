@@ -18,6 +18,11 @@ private actor RecordingTransport: HTTPTransport {
     func recorded() -> [URLRequest] { requests }
 }
 
+private actor Refusals {
+    private(set) var total = 0
+    func count() { total += 1 }
+}
+
 private func base64URL(_ bytes: Data) -> String {
     bytes.base64EncodedString().replacingOccurrences(of: "+", with: "-")
         .replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "")
@@ -88,6 +93,67 @@ final class TransportTests: XCTestCase {
             decodedBase64URL(try XCTUnwrap(post.value(forHTTPHeaderField: "x-device-signature"))))
         XCTAssertTrue(signer.publicKey.isValidSignature(signature, for: challenge))
         XCTAssertEqual(post.value(forHTTPHeaderField: "x-device-nonce"), base64URL(nonce))
+    }
+
+    func testARelay401AsksToRenewTheAccessTokenButAnUnsignedOneDoesNot() async throws {
+        let epoch = base64URL(Data(repeating: 7, count: 16))
+        let transport = RecordingTransport([
+            .init(status: 401, body: Data()),
+            .init(status: 200, body: Data(#"{"protocol":1,"epoch":"\#(epoch)"}"#.utf8)),
+            .init(status: 401, body: Data(#"{"error":"unauthorized"}"#.utf8)),
+        ])
+        let refusals = Refusals()
+        let signer = P256.Signing.PrivateKey()
+        let client = try AlondraAPIClient.makeTransport(base: URL(string: "https://relay.example")!, deviceID: "phone-1",
+                                            signer: { try signer.signature(for: $0).rawRepresentation },
+                                            bearer: { "jwt-token" }, bearerRefused: { await refusals.count() },
+                                            transport: transport)
+        do { _ = try await client.bootstrap(); XCTFail("Unsigned 401") }
+        catch let error as RelayWireError { XCTAssertEqual(error, .unauthorized) }
+        let afterUnsigned = await refusals.total
+        XCTAssertEqual(afterUnsigned, 0)
+        do { _ = try await client.status(requestID: "op-123"); XCTFail("Signed 401") }
+        catch let error as RelayWireError { XCTAssertEqual(error, .unauthorized) }
+        let afterSigned = await refusals.total
+        XCTAssertEqual(afterSigned, 1)
+    }
+
+    func testA401AfterTheRelayRestartsRebootstrapsBeforeRenewingTheToken() async throws {
+        let first = base64URL(Data(repeating: 7, count: 16))
+        let second = base64URL(Data(repeating: 8, count: 16))
+        let job = Data(#"{"request_id":"op-123","status":"queued","revision":1}"#.utf8)
+        let transport = RecordingTransport([
+            .init(status: 200, body: Data(#"{"protocol":1,"epoch":"\#(first)"}"#.utf8)),
+            .init(status: 200, body: job),
+            .init(status: 401, body: Data()),
+            .init(status: 200, body: Data(#"{"protocol":1,"epoch":"\#(second)"}"#.utf8)),
+            .init(status: 200, body: job),
+            .init(status: 401, body: Data()),
+            .init(status: 200, body: Data(#"{"protocol":1,"epoch":"\#(second)"}"#.utf8)),
+            .init(status: 401, body: Data()),
+        ])
+        let refusals = Refusals()
+        let signer = P256.Signing.PrivateKey()
+        let client = try AlondraAPIClient.makeTransport(base: URL(string: "https://relay.example")!, deviceID: "phone-1",
+                                            signer: { try signer.signature(for: $0).rawRepresentation },
+                                            bearer: { "jwt-token" }, bearerRefused: { await refusals.count() },
+                                            transport: transport)
+        _ = try await client.status(requestID: "op-123")
+        do { _ = try await client.status(requestID: "op-123"); XCTFail("Relay restarted") }
+        catch let error as RelayWireError { XCTAssertEqual(error, .unauthorized) }
+        let afterRestart = await refusals.total
+        XCTAssertEqual(afterRestart, 0, "An epoch that already worked is refreshed, not the token")
+        _ = try await client.status(requestID: "op-123")
+        let afterRecovery = await refusals.total
+        XCTAssertEqual(afterRecovery, 0)
+        do { _ = try await client.status(requestID: "op-123"); XCTFail("Token refused") }
+        catch let error as RelayWireError { XCTAssertEqual(error, .unauthorized) }
+        do { _ = try await client.status(requestID: "op-123"); XCTFail("Token refused with a fresh epoch") }
+        catch let error as RelayWireError { XCTAssertEqual(error, .unauthorized) }
+        let afterFreshEpoch = await refusals.total
+        XCTAssertEqual(afterFreshEpoch, 1)
+        let paths = await transport.recorded().map { $0.url!.path }
+        XCTAssertEqual(paths.filter { $0 == "/v1/bootstrap" }.count, 3)
     }
 
     func testRejectsMismatchedRequestIDsFromSubmitAndStatus() async throws {

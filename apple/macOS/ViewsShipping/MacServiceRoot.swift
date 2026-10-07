@@ -138,11 +138,10 @@ private struct MacServiceWindow: View {
                     .connectionLostOverlay(store: store, diagnose: { await services.diagnose() }, retry: retry,
                                            signIn: account.map { account in { account.store.send(.reauthenticate) } },
                                            pairAgain: account.flatMap { account in
-                                               services.isDirectOnly ? {
-                                                   account.pairAgain(macID: services.macID)
+                                               account.pairAgainAction(for: services) {
                                                    context.settings.requestLinkMac(unopened: { account.pairAgain(macID: nil) })
                                                    store.send(.settingsPresented(true))
-                                               } : nil
+                                               }
                                            })
                     .onChange(of: notices.openedCard, initial: true) { _, card in
                         guard let card else { return }

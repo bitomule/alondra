@@ -18,18 +18,21 @@ public extension AlondraAPIClient {
 
     static func makeTransport(base: URL, deviceID: String, signing: P256.Signing.PrivateKey,
         bearer: @escaping @Sendable () async throws -> String,
+        bearerRefused: @escaping @Sendable () async -> Void = {},
         transport: (any HTTPTransport)? = nil,
         now: @escaping @Sendable () -> UInt64 = { UInt64(max(0, Date().timeIntervalSince1970 * 1000)) }) throws -> any Transport {
         try makeTransport(base: base, deviceID: deviceID,
-            signer: { try signing.signature(for: $0).rawRepresentation }, bearer: bearer, transport: transport, now: now)
+            signer: { try signing.signature(for: $0).rawRepresentation }, bearer: bearer, bearerRefused: bearerRefused,
+            transport: transport, now: now)
     }
 
     static func makeTransport(base: URL, deviceID: String,
         signer: @escaping @Sendable (Data) throws -> Data,
         bearer: @escaping @Sendable () async throws -> String,
+        bearerRefused: @escaping @Sendable () async -> Void = {},
         transport: (any HTTPTransport)? = nil,
         now: @escaping @Sendable () -> UInt64 = { UInt64(max(0, Date().timeIntervalSince1970 * 1000)) }) throws -> any Transport {
-        try RelayTransport(base: base, deviceID: deviceID, signer: signer, bearer: bearer,
+        try RelayTransport(base: base, deviceID: deviceID, signer: signer, bearer: bearer, bearerRefused: bearerRefused,
                            transport: transport ?? URLSessionTransport(), now: now)
     }
 }

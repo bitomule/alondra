@@ -111,6 +111,18 @@ public struct ConnectionLostView: View {
                     .buttonStyle(.bordered)
                     .controlSize(.regular)
             }
+            if problem == .accessNotConfirmed, let pairAgain {
+                VStack(spacing: 8) {
+                    Text(ConnectionProblem.removedDeviceHint)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                    Button("Pair Again", systemImage: "link.badge.plus", action: pairAgain)
+                        .buttonStyle(.bordered)
+                        .controlSize(.regular)
+                }
+                .padding(.top, 6)
+            }
             if let settings, !problem.isDeviceRevoked, problem != .signOutIncomplete {
                 Button("Settings", systemImage: "gearshape", action: settings)
                     .buttonStyle(.borderless)

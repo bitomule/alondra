@@ -246,6 +246,23 @@ private func rejectsForgedOrOtherAccountApproval(mode: FakeRelay.ApprovalMode) a
     #expect(collection.selectedID == ApprovedPairingID(approved))
 }
 
+@Test func pairingARelayMacAgainReplacesItsRevokedPairing() async throws {
+    let store = MemoryStore(), relay = FakeRelay()
+    let revoked = try storedMac("mac-1", relay: "https://relay.example:443/")
+    try store.save(revoked)
+    let client = PairingClient(transport: relay, store: store,
+        now: { Date(timeIntervalSince1970: Double(fixedNow) / 1_000) })
+    let auth = try PairingAuthorization(bearerToken: "oidc-token", ownerSub: "owner-1")
+    let pending = try await client.begin(qrPayload: invitation(), authorization: auth, displayName: "Phone",
+                                         rejectExistingMac: true, replacing: "mac-1")
+    #expect(await relay.candidate != nil)
+    #expect(try store.loadCollection().pairings.map(\.deviceID) == ["existing-phone"], "The old pairing stays until approval")
+    let approved = try await client.waitForApproval(pending.attemptID)
+    let collection = try store.loadCollection()
+    #expect(collection.pairings.map(\.deviceID) == [approved.deviceID])
+    #expect(collection.selectedID == ApprovedPairingID(approved))
+}
+
 private func storedMac(_ mac: String, relay: String = "https://relay.example", owner: String = "owner-1") throws -> ApprovedServicePairing {
     ApprovedServicePairing(relayURL: URL(string: relay)!, macID: mac, deviceID: "existing-phone", ownerSub: owner,
         macSigningKey: PairingWire.encode(macSigning.publicKey.x963Representation),

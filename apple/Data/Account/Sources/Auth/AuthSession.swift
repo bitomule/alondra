@@ -47,7 +47,16 @@ public actor AuthSession {
     /// Keeps the process alive while a refresh is on the wire. The grant calls `expired` when
     /// the system takes the time back; the returned closure ends it.
     public typealias RefreshGrant = @Sendable (_ expired: @escaping @Sendable () -> Void) async -> @Sendable () async -> Void
-    private static let log = Logger(subsystem: "com.bitomule.alondra", category: "auth")
+    /// One line per refresh step and outcome. Callers build it from statuses, codes and flags
+    /// only: never a token, subject or URL.
+    public typealias Diagnostics = @Sendable (_ line: String, _ failed: Bool) -> Void
+    private static let systemLog = Logger(subsystem: "com.bitomule.alondra", category: "auth")
+    /// Notice and above are kept on disk; info is memory-only and lost after the fact.
+    public static let persistentLog: Diagnostics = { line, failed in
+        if failed { systemLog.error("\(line, privacy: .public)") }
+        else { systemLog.notice("\(line, privacy: .public)") }
+    }
+    private let diagnostics: Diagnostics
     private let configuration: OIDCConfiguration
     private let transport: any AuthHTTPTransport
     private let browser: any AuthBrowser
@@ -61,6 +70,7 @@ public actor AuthSession {
     private var epoch = 0
     private var transitions = 0
     private var sessionSuspended = false
+    private var lastForcedRenewal: Date?
     // A successful issuer response can outlive a failed Keychain write. Keep its
     // successor until it is durable; logout must never fall back to the old token.
     private var unpersistedCredential: RefreshCredential?
@@ -98,8 +108,10 @@ public actor AuthSession {
                 storage: any RefreshTokenStorage = KeychainRefreshTokenStorage(),
                 now: @escaping @Sendable () -> Date = { Date() },
                 refreshGrant: @escaping RefreshGrant = { _ in { } },
-                sessionLost: @escaping @Sendable () -> Void = {}) {
+                sessionLost: @escaping @Sendable () -> Void = {},
+                diagnostics: @escaping Diagnostics = AuthSession.persistentLog) {
         self.configuration = configuration
+        self.diagnostics = diagnostics
         self.sessionLost = sessionLost
         self.transport = transport
         self.browser = browser
@@ -228,6 +240,38 @@ public actor AuthSession {
     public func verifiedSubject() async throws -> String {
         let startedAt = epoch
         let token = try await bearerToken()
+        do { return try await userInfoSubject(bearer: token, startedAt: startedAt) }
+        catch AuthError.httpStatus(let status) where status == 401 || status == 403 {
+            // Keycloak can refuse a valid access token right after it restarts. Only a refresh
+            // answered with invalid_grant ends the session; anything else stays retryable.
+            diagnostics("userinfo refused status=\(status); renewing the access token", true)
+            if accessToken == token { accessToken = nil; expiresAt = .distantPast }
+            let renewed = try await bearerToken()
+            guard epoch == startedAt else { throw CancellationError() }
+            do {
+                let subject = try await userInfoSubject(bearer: renewed, startedAt: startedAt)
+                diagnostics("userinfo accepted the renewed access token", false)
+                return subject
+            } catch AuthError.httpStatus(let again) where again == 401 || again == 403 {
+                diagnostics("userinfo refused the renewed access token status=\(again); session kept, retrying later", true)
+                throw AuthError.httpStatus(again)
+            }
+        }
+    }
+
+    /// The relay refused the access token without a sealed revocation from the Mac. The next
+    /// request renews it; only a renewal answered with invalid_grant ends the session.
+    public func accessTokenRefused() {
+        guard accessToken != nil else { return }
+        // Repeated refusals renew at most once a minute; the session stays either way.
+        if let lastForcedRenewal, now().timeIntervalSince(lastForcedRenewal) < 60 { return }
+        lastForcedRenewal = now()
+        diagnostics("relay refused the access token; renewing it on the next request", true)
+        accessToken = nil
+        expiresAt = .distantPast
+    }
+
+    private func userInfoSubject(bearer token: String, startedAt: Int) async throws -> String {
         guard epoch == startedAt else { throw CancellationError() }
         let document = try await discovery()
         guard epoch == startedAt else { throw CancellationError() }
@@ -317,7 +361,15 @@ public actor AuthSession {
     }
 
     private func revokeStoredCredential() async throws {
-        guard var credential = try unpersistedCredential ?? storage.read() else { return }
+        let stored: RefreshCredential?
+        do { stored = try unpersistedCredential ?? storage.read() }
+        catch AuthError.unreadableCredential {
+            // Nothing readable is left to revoke; clear it so signing in can replace it.
+            diagnostics("saved credential unreadable; cleared before signing in", true)
+            try storage.delete()
+            return
+        }
+        guard var credential = stored else { return }
         if credential.status == .rotationUncertain || credential.status == .rejected {
             guard case .offlineSession = configuration.revocationScope else { throw AuthError.rotationUncertain }
             // Keep uncertainty durable until revocation succeeds. A failed request
@@ -350,15 +402,16 @@ public actor AuthSession {
         // missing response must not reuse a token whose successor is unknown, unless
         // the issuer keeps the predecessor valid (refreshReplay).
         try storage.write(RefreshCredential(token: saved, status: .rotationUncertain))
-        Self.log.info("refresh started replaying=\(uncertain, privacy: .public)")
+        diagnostics("refresh started replaying=\(uncertain)", false)
         let result: TokenResponse
         do {
             result = try await exchange(at: document.token_endpoint, fields: [
                 "grant_type": "refresh_token", "refresh_token": saved, "client_id": configuration.clientID,
             ])
         } catch AuthError.oauth(let status, let code) {
-            Self.log.error("refresh rejected status=\(status, privacy: .public) code=\(code, privacy: .public) replaying=\(uncertain, privacy: .public)")
+            diagnostics("refresh rejected status=\(status) code=\(Self.oauthCode(code)) replaying=\(uncertain)", true)
             if code == "invalid_grant" {
+                diagnostics("session ended by the sign-in server; asking to sign in again", true)
                 sessionLost()
                 try await endRejectedSession(uncertain: uncertain)
                 throw AuthError.noSession
@@ -368,21 +421,21 @@ public actor AuthSession {
             throw AuthError.oauth(status: status, code: code)
         } catch let error as URLError where Self.neverReachedIssuer(error) {
             // Nothing left this device, so the issuer cannot have rotated anything.
-            Self.log.error("refresh not sent urlError=\(error.code.rawValue, privacy: .public) replaying=\(uncertain, privacy: .public)")
+            diagnostics("refresh not sent urlError=\(error.code.rawValue) replaying=\(uncertain); session kept", true)
             try storage.write(RefreshCredential(token: saved, status: uncertain ? .rotationUncertain : .active))
             throw error
         } catch let error as URLError {
-            Self.log.error("refresh response lost urlError=\(error.code.rawValue, privacy: .public) replaying=\(uncertain, privacy: .public)")
+            diagnostics("refresh response lost urlError=\(error.code.rawValue) replaying=\(uncertain); session kept, the saved token is replayed next", true)
             throw error
         } catch {
             // Preserve the transport/configuration error for the current caller;
             // the durable uncertain state prevents unsafe subsequent refreshes.
-            Self.log.error("refresh failed \(String(describing: type(of: error)), privacy: .public) replaying=\(uncertain, privacy: .public)")
+            diagnostics("refresh failed \(Self.describe(error)) replaying=\(uncertain); session kept", true)
             throw error
         }
         let rotated = result.refresh_token.flatMap { $0.isEmpty ? nil : $0 } ?? saved
         try persistIssuedCredential(RefreshCredential(token: rotated))
-        Self.log.info("refresh succeeded replaying=\(uncertain, privacy: .public)")
+        diagnostics("refresh succeeded replaying=\(uncertain) rotated=\(rotated != saved) expiresIn=\(result.expires_in)", false)
         // Persistence precedes cancellation/generation checks: logout needs this token.
         guard epoch == startedAt, transitions == 0 else { throw CancellationError() }
         accessToken = result.access_token
@@ -396,19 +449,35 @@ public actor AuthSession {
         guard uncertain else { try storage.delete(); return }
         do {
             try await revokeStoredCredential()
-            Self.log.info("rejected uncertain session revoked")
+            diagnostics("rejected uncertain session revoked", false)
         } catch {
             // Park it: the next sign-in revokes it before opening the browser, and no
             // further refresh replays a token the issuer already refused.
             if let credential = try? storage.read() {
                 try storage.write(RefreshCredential(token: credential.token, status: .rejected))
             }
-            Self.log.error("rejected uncertain session revocation failed \(String(describing: error), privacy: .public)")
+            diagnostics("rejected uncertain session revocation failed \(Self.describe(error))", true)
+        }
+    }
+
+    /// OAuth error codes are a fixed vocabulary; anything else is reduced to its length.
+    private static func oauthCode(_ code: String) -> String {
+        code.utf8.count <= 40 && code.allSatisfy({ $0.isASCII && ($0.isLetter || $0 == "_") }) ? code : "other(\(code.count))"
+    }
+
+    private static func describe(_ error: any Error) -> String {
+        switch error {
+        case AuthError.httpStatus(let status): "httpStatus=\(status)"
+        case AuthError.keychain(let status): "keychain=\(status)"
+        case AuthError.oauth(let status, let code): "oauth status=\(status) code=\(oauthCode(code))"
+        case let error as AuthError: "\(error)"
+        case let error as URLError: "urlError=\(error.code.rawValue)"
+        default: String(describing: type(of: error))
         }
     }
 
     private func expireRefresh() {
-        Self.log.error("refresh background time expired")
+        diagnostics("refresh background time expired", true)
         refreshTask?.cancel()
     }
 

@@ -16,7 +16,7 @@ public struct KeychainRefreshTokenStorage: RefreshTokenStorage {
         if status == errSecItemNotFound { return nil }
         guard status == errSecSuccess else { throw AuthError.keychain(status) }
         guard let data = result as? Data else {
-            throw AuthError.invalidToken
+            throw AuthError.unreadableCredential
         }
         return try RefreshCredential.decodePersisted(data)
     }

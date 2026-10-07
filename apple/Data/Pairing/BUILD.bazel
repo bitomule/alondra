@@ -1,6 +1,8 @@
 load("@build_bazel_rules_swift//swift:swift.bzl", "swift_library", "swift_test")
 load("//apple:swift.bzl", "STRICT_SWIFT_CONCURRENCY_COPTS")
 
+exports_files(["Sources/PairingStore.swift"])
+
 swift_library(
     name = "AlondraPairing",
     copts = STRICT_SWIFT_CONCURRENCY_COPTS,

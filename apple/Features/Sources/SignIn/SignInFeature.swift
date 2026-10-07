@@ -116,6 +116,7 @@ public struct SignInFeature: Sendable {
                     } catch RestoreError.revocationRequired {
                         await send(.revocationRequired(generation))
                     } catch RestoreError.reauthenticationRequired {
+                        AccountDiagnostics.personSees(.sessionExpired, after: "RestoreError.reauthenticationRequired")
                         await send(.restorationFailed(generation, .sessionExpired))
                     } catch {
                         await send(.restorationFailed(generation, service.classify(error)))
@@ -155,6 +156,7 @@ public struct SignInFeature: Sendable {
                     } catch RestoreError.revocationRequired {
                         await send(.revocationRequired(generation))
                     } catch RestoreError.reauthenticationRequired {
+                        AccountDiagnostics.personSees(.sessionExpired, after: "RestoreError.reauthenticationRequired")
                         await send(.restorationFailed(generation, .sessionExpired))
                     } catch {
                         await send(.restorationFailed(generation, service.classify(error)))

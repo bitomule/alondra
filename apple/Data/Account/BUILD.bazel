@@ -1,6 +1,11 @@
 load("@build_bazel_rules_swift//swift:swift.bzl", "swift_library", "swift_test")
 load("//apple:swift.bzl", "STRICT_SWIFT_CONCURRENCY_COPTS")
 
+exports_files([
+    "Sources/Auth/KeychainRefreshTokenStorage.swift",
+    "Sources/Composition/AppStorageLocation.swift",
+])
+
 swift_library(
     name = "AlondraAccount",
     copts = STRICT_SWIFT_CONCURRENCY_COPTS,

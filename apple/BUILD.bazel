@@ -40,6 +40,22 @@ sh_test(
     data = PUSH_KEYCHAIN_FILES,
 )
 
+UPDATE_KEEPS_SESSION_FILES = [
+    "iOS/Alondra.entitlements",
+    "iOS/AppStore.entitlements",
+    "iOS/ViewsShipping/AccountBootstrap.swift",
+    "//apple/Data/Account:Sources/Auth/KeychainRefreshTokenStorage.swift",
+    "//apple/Data/Account:Sources/Composition/AppStorageLocation.swift",
+    "//apple/Data/Pairing:Sources/PairingStore.swift",
+]
+
+sh_test(
+    name = "update_keeps_session_test",
+    srcs = ["update_keeps_session_test.py"],
+    args = ["$(rootpath %s)" % path for path in UPDATE_KEEPS_SESSION_FILES],
+    data = UPDATE_KEEPS_SESSION_FILES,
+)
+
 sh_test(
     name = "spanish_catalog_test",
     srcs = ["spanish_catalog_test.py"],

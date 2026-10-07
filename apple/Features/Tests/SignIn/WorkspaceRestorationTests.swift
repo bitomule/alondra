@@ -72,6 +72,36 @@ import Testing
         await store.finish()
     }
 
+    @Test func aRefusedAccessCheckKeepsTheSessionAndRetriesUntilItAnswers() async {
+        let clock = TestClock()
+        let attempts = LockIsolated(0)
+        let store = TestStore(initialState: SignInFeature.State()) { SignInFeature() } withDependencies: {
+            $0.continuousClock = clock
+            $0.withRandomNumberGenerator = .init(LowestRandom())
+            $0.cloudPairing.hasSavedConfiguration = { true }
+            $0.cloudPairing.restore = {
+                attempts.withValue { $0 += 1 }
+                if attempts.value == 1 { throw URLError(.userCancelledAuthentication) }
+                return true
+            }
+            $0.cloudPairing.classify = { _ in .accessNotConfirmed }
+            $0.cloudPairing.login = { Issue.record("A refused access check must not ask to sign in") }
+            $0.cloudPairing.logout = { Issue.record("A refused access check must not sign out") }
+        }
+        store.exhaustivity = .off
+        await store.send(.appeared)
+        await store.receive(\.restorationFailed)
+        #expect(store.state.restoreProblem == .accessNotConfirmed)
+        #expect(!store.state.reauthenticationRequired)
+        #expect(store.state.showsWorkspace)
+        await clock.advance(by: .milliseconds(500))
+        await store.receive(\.retryRestore)
+        await store.receive(\.restored)
+        #expect(store.state.phase == .approved)
+        #expect(store.state.restoreProblem == nil)
+        await store.finish()
+    }
+
     @Test func networkReturningSkipsTheWait() async {
         let clock = TestClock()
         let attempts = LockIsolated(0)
@@ -93,6 +123,22 @@ import Testing
         await store.receive(\.retryRestore)
         await store.receive(\.restored)
         #expect(store.state.phase == .approved)
+        await store.finish()
+    }
+
+    @Test func anExpiredSessionFoundWhileRestoringIsLogged() async {
+        let lines = LockIsolated<[String]>([])
+        AccountDiagnostics.record(to: { line, _ in lines.withValue { $0.append(line) } })
+        defer { AccountDiagnostics.record(to: AccountDiagnostics.systemLog) }
+        let store = TestStore(initialState: SignInFeature.State()) { SignInFeature() } withDependencies: {
+            $0.continuousClock = TestClock()
+            $0.cloudPairing.hasSavedConfiguration = { true }
+            $0.cloudPairing.restore = { throw RestoreError.reauthenticationRequired }
+        }
+        store.exhaustivity = .off
+        await store.send(.appeared)
+        await store.receive(\.restorationFailed)
+        #expect(lines.value.contains("person sees sessionExpired after RestoreError.reauthenticationRequired"))
         await store.finish()
     }
 

@@ -10,13 +10,17 @@ actor RelayTransport: Transport {
     private let deviceID: String
     private let signer: @Sendable (Data) throws -> Data
     private let bearer: @Sendable () async throws -> String
+    private let bearerRefused: @Sendable () async -> Void
     private let transport: any HTTPTransport
     private var epoch: Data?
+    /// A signed request has been accepted with the current epoch, so the relay knew it.
+    private var epochProven = false
     private let now: @Sendable () -> UInt64
 
     public init(base: URL, deviceID: String,
                 signer: @escaping @Sendable (Data) throws -> Data,
                 bearer: @escaping @Sendable () async throws -> String,
+                bearerRefused: @escaping @Sendable () async -> Void = {},
                 transport: any HTTPTransport,
                 now: @escaping @Sendable () -> UInt64) throws {
         let scheme = base.scheme?.lowercased()
@@ -25,7 +29,7 @@ actor RelayTransport: Transport {
               base.path.isEmpty || base.path == "/", RelayHTTPChallenge.validText(deviceID)
         else { throw RelayWireError.invalidEndpoint }
         self.base = base; self.deviceID = deviceID; self.signer = signer
-        self.bearer = bearer; self.transport = transport; self.now = now
+        self.bearer = bearer; self.bearerRefused = bearerRefused; self.transport = transport; self.now = now
     }
 
     public func bootstrap() async throws -> RelayBootstrap {
@@ -34,6 +38,7 @@ actor RelayTransport: Transport {
             throw RelayWireError.invalidResponse
         }
         epoch = try Base64URL.decode(result.epoch)
+        epochProven = false
         return result
     }
 
@@ -127,7 +132,18 @@ actor RelayTransport: Transport {
             request.setValue(Base64URL.encode(random), forHTTPHeaderField: "x-device-nonce")
             request.setValue(Base64URL.encode(signature), forHTTPHeaderField: "x-device-signature")
         }
-        return try await transport.send(request)
+        let reply = try await transport.send(request)
+        guard signed else { return reply }
+        if reply.status == 401 {
+            // A relay restart changes its epoch, and an epoch that already worked is the likely
+            // cause: bootstrap again first. A 401 with a fresh epoch is about the access token,
+            // never that the Mac revoked this device: renew it before the next request.
+            if epochProven { epochProven = false; epoch = nil }
+            else { await bearerRefused() }
+        } else if reply.status < 500 {
+            epochProven = true
+        }
+        return reply
     }
 
     private static let encoder: JSONEncoder = {

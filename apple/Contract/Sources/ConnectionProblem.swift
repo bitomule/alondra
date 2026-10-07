@@ -12,8 +12,12 @@ public enum ConnectionProblem: Equatable, Sendable {
     case macNotAnswering
     /// Nothing answers on this Mac's loopback port.
     case alondraNotRunning
-    /// The account session ended; signing in again restores it.
+    /// The account session ended; signing in again restores it. Only the sign-in server rejecting
+    /// a refresh (invalid_grant) ends it.
     case sessionExpired
+    /// The sign-in server or the relay refused this device's access without ending the session,
+    /// as Keycloak does right after a restart. The session is kept and Alondra retries.
+    case accessNotConfirmed
     /// The Mac or relay no longer accepts this device; it has to be paired again. `macName` is the
     /// paired Mac's name when it is known.
     case deviceRevoked(macName: String?)

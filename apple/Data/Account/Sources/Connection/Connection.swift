@@ -46,7 +46,8 @@ public actor Connection {
             relay = try RelaySession(
                 scope: RelayOutboxScope(relay: relayURL, macID: approved.macID,
                                        deviceID: approved.deviceID, credentialRevision: revision),
-                bearer: { try await auth.bearerToken() }, signing: signing, agreement: agreement,
+                bearer: { try await auth.bearerToken() }, bearerRefused: { await auth.accessTokenRefused() },
+                signing: signing, agreement: agreement,
                 macSigning: macSigning, macAgreement: macAgreement)
         }
         let hasRelay = relay != nil

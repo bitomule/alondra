@@ -185,6 +185,14 @@ final class AccountSnapshotTests: XCTestCase {
         assertScreen([.light], language: .spanish, inWindow: true) { lost(.sessionExpired) }
     }
 
+    func test_connectionLost_accessNotConfirmed() {
+        assertScreen([.light, .dark], inWindow: true, animatedPixels: true) { lost(.accessNotConfirmed, pairAgain: {}) }
+    }
+
+    func test_connectionLost_accessNotConfirmed_spanish() {
+        assertScreen([.light], language: .spanish, inWindow: true, animatedPixels: true) { lost(.accessNotConfirmed, pairAgain: {}) }
+    }
+
     func test_connectionLost_deviceDisconnected() {
         assertScreen([.light], inWindow: true) { lost(.deviceRevoked(macName: nil)) }
     }

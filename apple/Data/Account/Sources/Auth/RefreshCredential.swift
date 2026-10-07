@@ -21,11 +21,11 @@ public struct RefreshCredential: Codable, Equatable, Sendable {
     /// The previous Keychain value was an unquoted UTF-8 refresh token.
     public static func decodePersisted(_ data: Data) throws -> Self {
         guard let value = String(data: data, encoding: .utf8), !value.isEmpty else {
-            throw AuthError.invalidToken
+            throw AuthError.unreadableCredential
         }
         if value.hasPrefix("{") {
-            let record = try JSONDecoder().decode(Self.self, from: data)
-            guard record.version == 1, !record.token.isEmpty else { throw AuthError.invalidToken }
+            guard let record = try? JSONDecoder().decode(Self.self, from: data),
+                  record.version == 1, !record.token.isEmpty else { throw AuthError.unreadableCredential }
             return record
         }
         return Self(token: value)

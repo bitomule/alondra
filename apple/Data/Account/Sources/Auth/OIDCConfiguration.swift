@@ -48,6 +48,8 @@ public enum AuthError: Error, Equatable, Sendable {
     case invalidRedirect
     case stateMismatch
     case invalidToken
+    /// The saved credential exists but cannot be read back. Only signing in again replaces it.
+    case unreadableCredential
     case noSession
     case operationInProgress
     case oauth(status: Int, code: String)
@@ -112,6 +114,7 @@ extension AuthError: LocalizedError {
         case .oauth, .invalidDiscovery: String(localized: "The sign-in service isn’t working right now. Try again later.")
         case .httpStatus: String(localized: "The sign-in service isn’t answering. Alondra keeps trying.")
         case .keychain: String(localized: "This device couldn’t read its saved sign-in. Restart the app and try again.")
+        case .unreadableCredential: String(localized: "Sign in again to reconnect. Your pairing and saved work are kept.")
         case .invalidRedirect, .stateMismatch, .invalidToken: String(localized: "Sign-in couldn’t be completed. Try again.")
         }
     }

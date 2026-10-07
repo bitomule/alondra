@@ -38,6 +38,7 @@ checks:
       - "apple/release_bonjour_test.sh"
       - "apple/Bonjour/*.plist"
       - "apple/push_keychain_group_test.py"
+      - "apple/update_keeps_session_test.py"
       - "apple/**/*.entitlements"
       - "apple/**/Info.plist"
       - "plugin/**"
@@ -50,6 +51,7 @@ checks:
         - //apple:release_bonjour_test
         - //apple:spanish_catalog_test
         - //apple:push_keychain_group_test
+        - //apple:update_keeps_session_test
         - //:plugin_mod_test
         - //deploy/brew:plugin_payload_test
 

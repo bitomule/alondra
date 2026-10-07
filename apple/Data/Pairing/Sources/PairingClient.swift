@@ -13,6 +13,7 @@ public actor PairingClient {
         let agreementPrivateKey: Data
         let signingPublicKey: String
         let agreementPublicKey: String
+        let replacesExisting: Bool
     }
 
     private let transport: any HTTPTransport
@@ -64,9 +65,11 @@ public actor PairingClient {
     }
 
     /// Submit a candidate. The returned code must remain visible until the Mac owner types it.
+    /// `replacing` is a Mac already paired here that the person chose to pair again: its old
+    /// pairing stays until the new one is approved and saved.
     public func begin(
         qrPayload: String, authorization: PairingAuthorization, displayName: String,
-        rejectExistingMac: Bool = false
+        rejectExistingMac: Bool = false, replacing replacedMacID: String? = nil
     ) async throws -> PairingPending {
         let invitation = try PairingInvitation(qrPayload: qrPayload)
         let start = currentMs()
@@ -76,7 +79,8 @@ public actor PairingClient {
               !displayName.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) else {
             throw PairingError.invalidInvitation
         }
-        if rejectExistingMac, try store.loadCollection().pairings.contains(where: {
+        let replacesExisting = invitation.macID == replacedMacID
+        if rejectExistingMac, !replacesExisting, try store.loadCollection().pairings.contains(where: {
             $0.ownerSub == authorization.ownerSub && $0.macID == invitation.macID &&
                 $0.relayURL.map { Self.sameRelay($0, invitation.url) } == true
         }) { throw PairingError.alreadyLinked }
@@ -112,7 +116,7 @@ public actor PairingClient {
         attempts[id] = Attempt(invitation: invitation, authorization: authorization,
             deviceID: deviceID, signingPrivateKey: signing.rawRepresentation,
             agreementPrivateKey: agreement.rawRepresentation,
-            signingPublicKey: signingPublic, agreementPublicKey: agreementPublic)
+            signingPublicKey: signingPublic, agreementPublicKey: agreementPublic, replacesExisting: replacesExisting)
         return PairingPending(attemptID: id, comparisonCode: comparisonCode,
             expiresAtMs: invitation.expiresAtMs)
     }
@@ -166,6 +170,12 @@ public actor PairingClient {
                 // Linking the account to a Mac already paired on the local network replaces that
                 // pairing: the relay one keeps its direct routes and the Mac appears once.
                 try store.modify { collection in
+                    if attempt.replacesExisting {
+                        for old in collection.pairings where old.macID == approved.macID && old.hasRelay
+                            && old.ownerSub == approved.ownerSub && old.relayURL.map({ Self.sameRelay($0, approved.relayURL!) }) == true {
+                            collection.remove(ApprovedPairingID(old))
+                        }
+                    }
                     try collection.upsert(approved)
                     for local in collection.pairings where local.macID == approved.macID && !local.hasRelay {
                         _ = collection.updateRoutes(ApprovedPairingID(approved), routes: local.routes ?? [], name: local.name)

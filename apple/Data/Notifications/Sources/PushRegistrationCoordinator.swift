@@ -81,9 +81,6 @@ public final class PushRegistrationCoordinator {
     /// What the Settings row says about a Mac that did not take this device's alerts.
     nonisolated static func failureMessage(_ error: any Error) -> String {
         switch error {
-        case RelayWireError.unauthorized, APIError.unauthorized,
-             RelaySessionError.localStatus(401), RelaySessionError.localStatus(403):
-            String(localized: "Your Mac no longer accepts this device. Link it again in Settings.")
         case is URLError, RelayWireError.outcomeUnknown, RelaySessionError.outcomeUnknown:
             String(localized: "Your Mac couldn’t be reached to turn on alerts. Alondra tries again when you reopen the app.")
         default:
