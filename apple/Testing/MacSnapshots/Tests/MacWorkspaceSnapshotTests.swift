@@ -50,11 +50,11 @@ final class MacWorkspaceSnapshotTests: XCTestCase {
     }
 
     private func assertWindow<Content: View>(
-        size: CGSize, file: StaticString = #filePath, testName: String = #function, line: UInt = #line,
+        size: CGSize, spanish: Bool = false, variants: [Appearance] = Appearance.allCases, file: StaticString = #filePath, testName: String = #function, line: UInt = #line,
         @ViewBuilder _ content: () -> Content
     ) {
-        let view = content()
-        for variant in Appearance.allCases {
+        let view = AnyView(content().environment(\.locale, spanish ? Locale(identifier: "es_ES") : .current))
+        for variant in variants {
             let hosting = NSHostingView(rootView: view.background(Color(nsColor: .windowBackgroundColor)))
             let window = NSWindow(contentRect: CGRect(origin: .zero, size: size), styleMask: [.borderless], backing: .buffered, defer: false)
             window.appearance = variant.appearance
@@ -64,7 +64,7 @@ final class MacWorkspaceSnapshotTests: XCTestCase {
             assertAppSnapshot(
                 of: hosting as NSView,
                 as: .image(perceptualPrecision: 0.98, size: size),
-                named: variant.name, file: file, testName: testName, line: line
+                named: spanish ? "\(variant.name)_es" : variant.name, file: file, testName: testName, line: line
             )
         }
     }
@@ -137,6 +137,12 @@ final class MacWorkspaceSnapshotTests: XCTestCase {
 
     func test_connectionLost_signOutIncomplete() {
         assertWindow(size: CGSize(width: 900, height: 600)) {
+            ConnectionLostView(problem: .signOutIncomplete, retry: {}, settings: {}, signOut: {})
+        }
+    }
+
+    func test_connectionLost_signOutIncomplete_spanish() {
+        assertWindow(size: CGSize(width: 900, height: 600), spanish: true, variants: [.light]) {
             ConnectionLostView(problem: .signOutIncomplete, retry: {}, settings: {}, signOut: {})
         }
     }

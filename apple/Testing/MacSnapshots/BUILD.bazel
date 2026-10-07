@@ -1,6 +1,20 @@
 load("@build_bazel_rules_swift//swift:swift.bzl", "swift_test")
 load("//apple:swift.bzl", "STRICT_SWIFT_CONCURRENCY_COPTS")
 
+# The strings the Mac app ships, as the `.lproj` folders the test bundle finds. `en` stays empty so
+# English remains the preferred language and a key renders as itself; `es` is what a Spanish capture reads.
+genrule(
+    name = "localizations",
+    srcs = ["//apple:macOS/Resources/Localizable.xcstrings", "//apple/Design:Resources/AlondraDesign.xcstrings"],
+    outs = [
+        "AlondraMacSnapshotTests.xctest/Contents/Resources/en.lproj/Localizable.strings",
+        "AlondraMacSnapshotTests.xctest/Contents/Resources/es.lproj/Localizable.strings",
+    ],
+    cmd = "python3 $(location xcstrings_to_strings.py) en $(RULEDIR)/AlondraMacSnapshotTests.xctest/Contents/Resources/en.lproj/Localizable.strings $(SRCS) && " +
+          "python3 $(location xcstrings_to_strings.py) es $(RULEDIR)/AlondraMacSnapshotTests.xctest/Contents/Resources/es.lproj/Localizable.strings $(SRCS)",
+    tools = ["xcstrings_to_strings.py"],
+)
+
 # The Mac window's own screens, drawn the way the daemon serves them to the Mac (`client: mac`) and
 # captured through an NSHostingView, so a change to what the Mac shows is seen without launching it.
 swift_test(
@@ -8,7 +22,7 @@ swift_test(
     copts = STRICT_SWIFT_CONCURRENCY_COPTS,
     args = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US"],
     srcs = glob(["Tests/*.swift"]) + ["//apple/Testing/Snapshots:Support/AssertAppSnapshot.swift"],
-    data = glob(["Tests/__Snapshots__/**"], allow_empty = True) + ["//fixtures/views:cards"],
+    data = glob(["Tests/__Snapshots__/**"], allow_empty = True) + ["//fixtures/views:cards", ":localizations"],
     env = {
         "SNAPSHOT_ROOT": "apple/Testing/MacSnapshots/Tests/__Snapshots__",
         "TZ": "UTC",
