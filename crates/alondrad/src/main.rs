@@ -46,6 +46,7 @@ mod mods_check;
 mod auto_launch;
 mod launch_plans;
 mod node_close;
+mod revoked_devices;
 mod node_push;
 mod node_reports;
 mod node_work;

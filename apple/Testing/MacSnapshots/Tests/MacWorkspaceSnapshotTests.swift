@@ -146,4 +146,28 @@ final class MacWorkspaceSnapshotTests: XCTestCase {
             ConnectionLostView(problem: .signOutIncomplete, retry: {}, settings: {}, signOut: {})
         }
     }
+
+    func test_connectionLost_deviceRevoked() {
+        assertWindow(size: CGSize(width: 900, height: 600)) {
+            ConnectionLostView(problem: .deviceRevoked(macName: "Mac Studio"), retry: {}, settings: {}, pairAgain: {})
+        }
+    }
+
+    func test_connectionLost_deviceRevoked_spanish() {
+        assertWindow(size: CGSize(width: 900, height: 600), spanish: true, variants: [.light]) {
+            ConnectionLostView(problem: .deviceRevoked(macName: "Mac Studio"), retry: {}, settings: {}, pairAgain: {})
+        }
+    }
+
+    func test_connectionLost_macChangedIdentity() {
+        assertWindow(size: CGSize(width: 900, height: 600), variants: [.light]) {
+            ConnectionLostView(problem: .macChangedIdentity, retry: {}, settings: {}, pairAgain: {})
+        }
+    }
+
+    func test_connectionLost_macChangedIdentity_spanish() {
+        assertWindow(size: CGSize(width: 900, height: 600), spanish: true, variants: [.light]) {
+            ConnectionLostView(problem: .macChangedIdentity, retry: {}, settings: {}, pairAgain: {})
+        }
+    }
 }

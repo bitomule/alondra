@@ -114,7 +114,12 @@ private struct ApprovedServiceScene: View {
                     accountContent: SettingsScene(services: services, owner: owner,
                                                         notifications: notifications, context: context.settings))
                     .connectionLostOverlay(store: store, diagnose: { await services.diagnose() }, retry: retry,
-                                           signIn: { owner.store.send(.reauthenticate) })
+                                           signIn: { owner.store.send(.reauthenticate) },
+                                           pairAgain: services.isDirectOnly ? {
+                                               owner.pairAgain(macID: services.macID)
+                                               context.settings.requestLinkMac(unopened: { owner.pairAgain(macID: nil) })
+                                               store.send(.settingsPresented(true))
+                                           } : nil)
             } else { ProgressView("Opening workspace…") }
         }
         .retriesConnection(networkChanges: { NetworkReachability.shared.changes() }) { retry() }

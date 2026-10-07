@@ -4,6 +4,14 @@ import Foundation
 public enum DirectRouteError: Error, Equatable, Sendable {
     /// No address proved to be this Mac from the current network.
     case unreachable
+    /// Like `unreachable`, and an address already proved on this network now answers as the same
+    /// Mac ID with other keys. Only a hint: nothing the app trusts changes until the person pairs again.
+    case identityChanged
+}
+
+public enum DirectSessionError: Error, Equatable, Sendable {
+    /// The Mac itself, in an answer sealed with the pinned keys, said it revoked this device.
+    case deviceRevoked
 }
 
 /// Picks the address one paired Mac answers on: LAN, then the tailnet IP, then the tailnet name.
@@ -35,6 +43,7 @@ public actor DirectRouter {
     private var validated: (at: ContinuousClock.Instant, network: String)?
     private var failedAt: ContinuousClock.Instant?
     private var probing: Task<DirectEndpoint, any Error>?
+    private var identityChangedOn: String?
 
     /// `saved` are addresses a sealed answer proved before, on some network; `network` names the
     /// current one.
@@ -81,7 +90,7 @@ public actor DirectRouter {
         if let current, let validated, validated.network == network(),
            validated.at.duration(to: clock.now) < freshness { return current }
         // Away from home every request would otherwise wait for the probes.
-        if let failedAt, failedAt.duration(to: clock.now) < retryAfterFailure { throw DirectRouteError.unreachable }
+        if let failedAt, failedAt.duration(to: clock.now) < retryAfterFailure { throw unreachable }
         if let probing { return try await probing.value }
         let task = Task { try await self.probe() }
         probing = task
@@ -131,19 +140,27 @@ public actor DirectRouter {
             return answers
         }
         try Task.checkCancellation()
+        var changedOn: String?
         for (index, answer) in answers.enumerated() where answer?.macID == pinned.macID && answer?.sameKeys(as: pinned) == false {
+            if proven[candidates[index]] == network() { changedOn = network() }
             rejected[candidates[index]] = clock.now
         }
         guard let index = answers.firstIndex(where: { $0?.macID == pinned.macID && $0?.sameKeys(as: pinned) == true }) else {
             current = nil
             validated = nil
             failedAt = clock.now
-            throw DirectRouteError.unreachable
+            if changedOn != nil { identityChangedOn = changedOn }
+            throw unreachable
         }
+        identityChangedOn = nil
         current = candidates[index]
         validated = (clock.now, network())
         failedAt = nil
         return candidates[index]
+    }
+
+    private var unreachable: DirectRouteError {
+        identityChangedOn != nil && identityChangedOn == network() ? .identityChanged : .unreachable
     }
 
     private static func unique(_ endpoints: [DirectEndpoint]) -> [DirectEndpoint] {

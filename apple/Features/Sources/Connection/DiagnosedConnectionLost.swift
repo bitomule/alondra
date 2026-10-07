@@ -9,19 +9,22 @@ public struct DiagnosedConnectionLost: View {
     let retry: () -> Void
     let signIn: (() -> Void)?
     let settings: (() -> Void)?
+    let pairAgain: (() -> Void)?
     @State private var problem: ConnectionProblem = .unexpected
 
     public init(failure: String, diagnose: @escaping @Sendable () async -> ConnectionProblem,
-                retry: @escaping () -> Void, signIn: (() -> Void)?, settings: (() -> Void)?) {
+                retry: @escaping () -> Void, signIn: (() -> Void)?, settings: (() -> Void)?,
+                pairAgain: (() -> Void)? = nil) {
         self.failure = failure
         self.diagnose = diagnose
         self.retry = retry
         self.signIn = signIn
         self.settings = settings
+        self.pairAgain = pairAgain
     }
 
     public var body: some View {
-        ConnectionLostView(problem: problem, retry: retry, signIn: signIn, settings: settings)
+        ConnectionLostView(problem: problem, retry: retry, signIn: signIn, settings: settings, pairAgain: pairAgain)
             .task(id: failure) { problem = await diagnose() }
     }
 }

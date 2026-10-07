@@ -51,16 +51,21 @@ public enum MacBrowser {
                 continuation.yield(.found(macs.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }))
             }
             let refused = OSAllocatedUnfairLock(initialState: false)
+            let denials = OSAllocatedUnfairLock(initialState: 0)
             browser.stateUpdateHandler = { state in
                 switch state {
                 case .waiting(let error), .failed(let error):
                     if error == .dns(DNSServiceErrorType(kDNSServiceErr_PolicyDenied)) {
                         refused.withLock { $0 = true }
+                        denials.withLock { $0 += 1 }
                         continuation.yield(.denied)
                     }
                     if case .failed = state { continuation.finish() }
                 case .ready:
-                    if refused.withLock({ $0 }) {
+                    guard leavesDenied(refusedDuringBrowse: refused.withLock({ $0 }), saved: LocalNetworkAccess.state)
+                    else { return }
+                    Task {
+                        guard await confirmsAllowed(denialCount: { denials.withLock { $0 } }) else { return }
                         refused.withLock { $0 = false }
                         LocalNetworkAccess.record(.allowed)
                         continuation.yield(.allowed)
@@ -71,6 +76,22 @@ public enum MacBrowser {
             continuation.onTermination = { _ in browser.cancel() }
             browser.start(queue: .global(qos: .userInitiated))
         }
+    }
+
+    /// A browser that gets ready proves the system lets this app use the local network. That ends a
+    /// refusal seen in this browse, and one saved by an earlier run: access may have been granted
+    /// in Settings while the app was closed.
+    static func leavesDenied(refusedDuringBrowse: Bool, saved: LocalNetworkAccess.State) -> Bool {
+        refusedDuringBrowse || saved == .denied
+    }
+
+    /// The browser reports ready before the system's refusal arrives, so ready alone is not an answer:
+    /// access counts as allowed only once the browser has stayed ready, with no refusal, for `delay`.
+    static func confirmsAllowed(delay: Duration = .seconds(1.5), denialCount: @Sendable () -> Int,
+                                sleep: @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }) async -> Bool {
+        let before = denialCount()
+        do { try await sleep(delay) } catch { return false }
+        return denialCount() == before
     }
 
     /// Network cannot resolve a service without connecting, so a short TCP connection gives the

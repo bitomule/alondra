@@ -83,6 +83,8 @@ pub(crate) enum DirectRefusal {
     Conflict,
     /// From an approved device, but not something the service runs.
     Rejected(String),
+    /// From a device revoked on this Mac and signed by it: the sealed answer saying so.
+    Revoked(Vec<u8>),
 }
 
 /// A live executor owns the receipt until response upload finishes. A lease
@@ -277,6 +279,7 @@ pub struct Service {
     signing: SigningKey,
     agreement: SecretKey,
     devices: Devices,
+    revoked: crate::revoked_devices::RevokedDevices,
     auth: Arc<Auth>,
     journal: Journal,
     local_port: u16,
@@ -756,6 +759,7 @@ impl Service {
             signing,
             agreement,
             devices: devices.into(),
+            revoked: crate::revoked_devices::RevokedDevices::open(home),
             auth,
             journal,
             local_port,
@@ -786,6 +790,16 @@ impl Service {
             relay.resync();
         }
         Ok(())
+    }
+
+    /// Called once a device's approval is gone: its keys stay in `service.toml`, and a direct
+    /// request from it is from then on answered, sealed, that it was revoked.
+    pub(crate) fn remember_revoked(&self, id: &str) {
+        let Some(device) = self.devices.get(id) else { return };
+        let tombstone = crate::revoked_devices::Tombstone::new(id, &device.signing, &device.agreement, now_ms());
+        if let Err(error) = self.revoked.add(vec![tombstone]) {
+            log!("revoked device {id} not remembered: {error:#}");
+        }
     }
 
     pub(crate) fn has_relay(&self) -> bool {
@@ -1066,9 +1080,11 @@ impl Service {
         if envelope.kind != "request" || envelope.route != self.mac_id || envelope.recipient != self.mac_id {
             return Err(DirectRefusal::Misdirected);
         }
-        let device = self.devices.get(&envelope.sender).ok_or(DirectRefusal::Unauthorized)?;
+        let Some(device) = self.devices.get(&envelope.sender) else {
+            return Err(self.revoked_refusal(&envelope));
+        };
         self.require_device_approval(&envelope.sender, &device, Transport::Direct)
-            .map_err(|_| DirectRefusal::Unauthorized)?;
+            .map_err(|_| self.revoked_refusal(&envelope))?;
         envelope
             .verify_signature(&device.signing, &envelope.sender, &self.mac_id, &self.mac_id, now_ms())
             .map_err(|_| DirectRefusal::Unauthorized)?;
@@ -1098,6 +1114,35 @@ impl Service {
         self.require_device_approval(&work.envelope.sender, &device, Transport::Direct)
             .map_err(|_| DirectRefusal::Unauthorized)?;
         Ok((response, lease))
+    }
+
+    /// A device revoked here that signs its request is told so, sealed to its own keys; anyone
+    /// else gets the plain refusal, which proves nothing to the sender.
+    fn revoked_refusal(&self, request: &Envelope) -> DirectRefusal {
+        let Some(agreement) = self.revoked.proven_sender(request, &self.mac_id, now_ms()) else {
+            return DirectRefusal::Unauthorized;
+        };
+        let answer = json!({"status": 403, "error": "device_revoked", "body": {"error": "device_revoked"}});
+        let sealed = serde_json::to_vec(&answer).ok().and_then(|payload| {
+            Envelope::seal_random(
+                EnvelopeContext {
+                    route: &self.mac_id,
+                    sender: &self.mac_id,
+                    recipient: &request.sender,
+                    request_id: &request.request_id,
+                    kind: "response",
+                    expires_at_ms: now_ms() + 600_000,
+                },
+                &payload,
+                &self.signing,
+                &agreement,
+            )
+            .ok()
+        });
+        match sealed.and_then(|envelope| serde_json::to_vec(&envelope).ok()) {
+            Some(bytes) => DirectRefusal::Revoked(bytes),
+            None => DirectRefusal::Unauthorized,
+        }
     }
 
     fn encode_response(
@@ -5680,6 +5725,7 @@ agreement_key = "{}"
             hub: None,
             domain: None,
             routes: None,
+            revoked: crate::revoked_devices::RevokedDevices::empty(),
             auth: Arc::new(Auth::open(&home).unwrap()),
             journal: Journal::open(home.join("receipts.sqlite")).unwrap(),
             local_port,
@@ -5773,6 +5819,7 @@ agreement_key = "{}"
             hub: None,
             domain: None,
             routes: None,
+            revoked: crate::revoked_devices::RevokedDevices::empty(),
             auth: Arc::new(Auth::open(&home).unwrap()),
             journal: Journal::open(home.join("receipts.sqlite")).unwrap(),
             local_port,
@@ -6146,6 +6193,7 @@ agreement_key = "{}"
                     hub: None,
                     domain: None,
                     routes: None,
+                    revoked: crate::revoked_devices::RevokedDevices::empty(),
                     auth: Arc::new(Auth::open(&scenario_home).unwrap()),
                     journal: Journal::open(scenario_home.join("service-receipts.sqlite")).unwrap(),
                     local_port: 0,
@@ -6294,6 +6342,7 @@ agreement_key = "{}"
             hub: None,
             domain: None,
             routes: None,
+            revoked: crate::revoked_devices::RevokedDevices::empty(),
             auth: Arc::new(Auth::open(&home).unwrap()),
             journal: Journal::open(home.join("service-receipts.sqlite")).unwrap(),
             local_port: 0,
@@ -6456,6 +6505,7 @@ agreement_key = "{}"
             hub: None,
             domain: None,
             routes: None,
+            revoked: crate::revoked_devices::RevokedDevices::empty(),
             auth: auth.clone(),
             journal: Journal::open(journal_path.clone()).unwrap(),
             local_port,
@@ -6492,6 +6542,7 @@ agreement_key = "{}"
             hub: None,
             domain: None,
             routes: None,
+            revoked: crate::revoked_devices::RevokedDevices::empty(),
             auth: Arc::new(Auth::open(&home).unwrap()),
             journal: Journal::open(journal_path.clone()).unwrap(),
             local_port,
@@ -6684,6 +6735,7 @@ agreement_key = "{}"
             hub: None,
             domain: None,
             routes: None,
+            revoked: crate::revoked_devices::RevokedDevices::empty(),
             auth: Arc::new(Auth::open(&home).unwrap()),
             journal: Journal::open(journal_path).unwrap(),
             local_port,

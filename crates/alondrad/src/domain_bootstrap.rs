@@ -454,7 +454,18 @@ async fn revoke_device(
         return refused;
     }
     let auth = state.auth.clone();
-    let revoked = match tokio::task::spawn_blocking(move || auth.revoke(&id)).await {
+    let service = state.service.get().cloned();
+    let revoked = tokio::task::spawn_blocking(move || {
+        let revoked = auth.revoke(&id)?;
+        if revoked {
+            if let Some(service) = service {
+                service.remember_revoked(&id);
+            }
+        }
+        anyhow::Ok(revoked)
+    })
+    .await;
+    let revoked = match revoked {
         Ok(Ok(revoked)) => revoked,
         _ => return storage(),
     };

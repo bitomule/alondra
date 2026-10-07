@@ -10,15 +10,19 @@ public struct ConnectionLostView: View {
     let signIn: (() -> Void)?
     let settings: (() -> Void)?
     let signOut: (() -> Void)?
+    let pairAgain: (() -> Void)?
 
-    /// `problem == nil` means the first attempt is still in flight.
+    /// `problem == nil` means the first attempt is still in flight. `pairAgain` starts pairing with
+    /// the Mac this screen is about; without it a revoked device is sent to Settings.
     public init(problem: ConnectionProblem?, retry: @escaping () -> Void,
-                signIn: (() -> Void)? = nil, settings: (() -> Void)? = nil, signOut: (() -> Void)? = nil) {
+                signIn: (() -> Void)? = nil, settings: (() -> Void)? = nil, signOut: (() -> Void)? = nil,
+                pairAgain: (() -> Void)? = nil) {
         self.problem = problem
         self.retry = retry
         self.signIn = signIn
         self.settings = settings
         self.signOut = signOut
+        self.pairAgain = pairAgain
     }
 
     public var body: some View {
@@ -64,6 +68,13 @@ public struct ConnectionLostView: View {
         .frame(maxWidth: .infinity)
     }
 
+    private func pairAgainButton(_ action: @escaping () -> Void) -> some View {
+        Button("Pair Again", systemImage: "link.badge.plus", action: action)
+            .buttonStyle(.glassProminent)
+            .controlSize(.large)
+            .tint(Palette.dawn)
+    }
+
     @ViewBuilder
     private func actions(for problem: ConnectionProblem) -> some View {
         VStack(spacing: 12) {
@@ -77,7 +88,9 @@ public struct ConnectionLostView: View {
                     .buttonStyle(.glassProminent)
                     .controlSize(.large)
                     .tint(Palette.dawn)
-            } else if problem == .deviceRevoked, let settings {
+            } else if problem.isDeviceRevoked, let pairAgain {
+                pairAgainButton(pairAgain)
+            } else if problem.isDeviceRevoked, let settings {
                 Button("Open Settings", systemImage: "gearshape", action: settings)
                     .buttonStyle(.glassProminent)
                     .controlSize(.large)
@@ -93,7 +106,12 @@ public struct ConnectionLostView: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
-            if let settings, problem != .deviceRevoked, problem != .signOutIncomplete {
+            if problem == .macChangedIdentity, let pairAgain {
+                Button("Pair Again", systemImage: "link.badge.plus", action: pairAgain)
+                    .buttonStyle(.bordered)
+                    .controlSize(.regular)
+            }
+            if let settings, !problem.isDeviceRevoked, problem != .signOutIncomplete {
                 Button("Settings", systemImage: "gearshape", action: settings)
                     .buttonStyle(.borderless)
                     .font(.footnote)

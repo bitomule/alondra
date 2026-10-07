@@ -202,6 +202,52 @@ async fn unknown_revoked_expired_and_misdirected_envelopes_are_refused() {
 }
 
 #[tokio::test]
+async fn a_revoked_device_is_told_so_in_a_sealed_answer_only_when_it_proves_who_it_is() {
+    let phone = Phone::new("client-a", 30);
+    let bystander = Phone::new("client-b", 40);
+    let f = fixture(&[&phone, &bystander]).await;
+    assert_eq!(send(&f.base, "/direct/request", &phone.request("op-1", routes::PATH)).await.0, 200);
+
+    let auth = Auth::open(&f.home).unwrap();
+    assert!(auth.revoke("client-a").unwrap());
+    assert!(auth.revoke("client-b").unwrap());
+    f.direct.service.remember_revoked("client-a");
+
+    let (status, body) = send(&f.base, "/direct/request", &phone.request("op-2", routes::PATH)).await;
+    assert_eq!(status, 200, "the revoked device gets an answer it can open");
+    let answer = phone.open(&body);
+    assert_eq!((answer["status"].as_u64(), answer["error"].as_str()), (Some(403), Some("device_revoked")));
+
+    let mut forged = phone.request("op-3", routes::PATH);
+    forged.signature = bystander.request("op-3", routes::PATH).signature;
+    assert_eq!(send(&f.base, "/direct/request", &forged).await.0, 401, "someone else's signature proves nothing");
+
+    assert_eq!(
+        send(&f.base, "/direct/request", &bystander.request("op-4", routes::PATH)).await.0,
+        401,
+        "a device nobody remembered gets the plain refusal"
+    );
+}
+
+#[tokio::test]
+async fn the_remembered_revoked_devices_survive_a_restart_and_stay_bounded() {
+    let phone = Phone::new("client-a", 30);
+    let home = home_with(&[&phone], None);
+    let service = Service::open(&home, 0, Arc::new(Auth::open(&home).unwrap())).unwrap().unwrap();
+    service.remember_revoked("client-a");
+    let again = crate::revoked_devices::RevokedDevices::open(&home);
+    assert_eq!(again.len(), 1);
+    let many: Vec<_> = (0..100)
+        .map(|n| {
+            let key = Phone::new(&format!("client-{n}"), 30);
+            crate::revoked_devices::Tombstone::new(&key.id, key.signing.verifying_key(), &key.agreement.public_key(), n)
+        })
+        .collect();
+    again.add(many).unwrap();
+    assert_eq!(again.len(), 64);
+}
+
+#[tokio::test]
 async fn the_loopback_api_is_not_reachable_on_the_direct_port() {
     let f = fixture(&[]).await;
     for path in ["/tasks", "/devices", "/devices/pending", "/daemon", "/pairing"] {

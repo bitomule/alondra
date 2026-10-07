@@ -8,7 +8,7 @@ struct MacServiceSettingsScene: View {
     let services: Connection
     let owner: AccountSession?
     let workspace: MacWorkspaceOwner
-    @State private var context = MacSettingsContext()
+    let context: MacSettingsContext
     var body: some View {
         Group {
             if let store = context.store { MacSettingsView(store: store) { pairing in
@@ -19,8 +19,22 @@ struct MacServiceSettingsScene: View {
     }
 }
 
-@MainActor @Observable private final class MacSettingsContext {
+@MainActor @Observable final class MacSettingsContext {
     private(set) var store: StoreOf<SettingsFeature>?
+    private var pairingRequested: (() -> Void)?
+
+    /// Opens the pairing sheet as soon as the settings exist, for a Mac the person pairs again.
+    /// `unopened` runs when the sheet did not open, so no pairing-again request is left behind.
+    func requestLinkMac(unopened: @escaping () -> Void) {
+        if store != nil { openPairing(unopened) } else { pairingRequested = unopened }
+    }
+
+    private func openPairing(_ unopened: () -> Void) {
+        guard let store else { return unopened() }
+        store.send(.linkMac)
+        if store.pairing == nil { unopened() }
+    }
+
     func connect(services: Connection, owner: AccountSession?, workspace: MacWorkspaceOwner) async {
         guard store == nil else { return }
         let api = await services.api
@@ -58,5 +72,9 @@ struct MacServiceSettingsScene: View {
                 $0.cloudPairing = account.additionalMacPairing
                 $0.findMac = account.findMacClient
             }
+        if let unopened = pairingRequested {
+            pairingRequested = nil
+            openPairing(unopened)
+        }
     }
 }

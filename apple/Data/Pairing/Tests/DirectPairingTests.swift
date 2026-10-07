@@ -139,4 +139,37 @@ private func sign(_ approval: DirectPairingProtocol.Approval, with key: P256.Sig
         #expect(collection.pairings.map(\.macID) == ["mac-2"])
         #expect(collection.selectedID == ApprovedPairingID(direct))
     }
+
+    @Test func pairingAMacAgainReplacesItsSavedKeysOnlyInTheSameWrite() throws {
+        let old = ApprovedServicePairing(relayURL: nil, macID: "mac-1", deviceID: "phone-1", ownerSub: nil,
+            macSigningKey: try key(1), macAgreementKey: try key(2), signingPrivateKey: Data(repeating: 3, count: 32),
+            agreementPrivateKey: Data(repeating: 4, count: 32), approvedAtMs: 1)
+        let other = ApprovedServicePairing(relayURL: nil, macID: "mac-2", deviceID: "phone-2", ownerSub: nil,
+            macSigningKey: try key(7), macAgreementKey: try key(8), signingPrivateKey: Data(repeating: 5, count: 32),
+            agreementPrivateKey: Data(repeating: 6, count: 32), approvedAtMs: 2)
+        let reinstalled = ApprovedServicePairing(relayURL: nil, macID: "mac-1", deviceID: "phone-3", ownerSub: nil,
+            macSigningKey: try key(9), macAgreementKey: try key(10), signingPrivateKey: Data(repeating: 11, count: 32),
+            agreementPrivateKey: Data(repeating: 12, count: 32), approvedAtMs: 3)
+        var collection = ApprovedPairingCollection()
+        try collection.upsert(old)
+        try collection.upsert(other)
+        #expect(throws: PairingStoreError.identityConflict) { try collection.upsert(reinstalled) }
+        #expect(collection.pairings.map(\.deviceID) == ["phone-1", "phone-2"], "a plain save never changes pinned keys")
+
+        try collection.replaceLocalPairing(of: "mac-1", with: reinstalled)
+        #expect(collection.pairings.map(\.deviceID) == ["phone-2", "phone-3"])
+        #expect(collection.selected?.macSigningKey == reinstalled.macSigningKey)
+    }
+
+    @Test func pairingAgainNeverTouchesTheRelayPairingOfThatMac() throws {
+        let relay = ApprovedServicePairing(relayURL: URL(string: "https://alondra-api.davidcollado.dev")!, macID: "mac-1",
+            deviceID: "phone-1", ownerSub: "owner", macSigningKey: try key(1), macAgreementKey: try key(2),
+            signingPrivateKey: Data(repeating: 3, count: 32), agreementPrivateKey: Data(repeating: 4, count: 32), approvedAtMs: 1)
+        let impostor = ApprovedServicePairing(relayURL: nil, macID: "mac-1", deviceID: "phone-2", ownerSub: nil,
+            macSigningKey: try key(9), macAgreementKey: try key(2), signingPrivateKey: Data(repeating: 5, count: 32),
+            agreementPrivateKey: Data(repeating: 6, count: 32), approvedAtMs: 2)
+        var collection = ApprovedPairingCollection()
+        try collection.upsert(relay)
+        #expect(throws: PairingStoreError.identityConflict) { try collection.replaceLocalPairing(of: "mac-1", with: impostor) }
+    }
 }

@@ -20,6 +20,7 @@ public actor DirectPairingClient {
         let signing: P256.Signing.PrivateKey
         let agreement: P256.KeyAgreement.PrivateKey
         let expiresAtMs: UInt64
+        let replacesExisting: Bool
     }
 
     private struct Started: Decodable {
@@ -56,8 +57,11 @@ public actor DirectPairingClient {
         self.pause = pause
     }
 
-    /// `excluding` is the Mac this app runs on: it cannot pair with itself.
-    public func begin(at endpoint: DirectEndpoint, displayName: String, excluding ownMacID: String? = nil) async throws -> DirectPairingAttempt {
+    /// `excluding` is the Mac this app runs on: it cannot pair with itself. `replacing` is the ID of a
+    /// Mac already paired here that the person chose to pair again: the old pairing stays until the
+    /// new one is approved and saved.
+    public func begin(at endpoint: DirectEndpoint, displayName: String, excluding ownMacID: String? = nil,
+                      replacing replacedMacID: String? = nil) async throws -> DirectPairingAttempt {
         guard !displayName.isEmpty, displayName.utf8.count <= 80,
               !displayName.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) else {
             throw PairingError.invalidIdentity
@@ -68,7 +72,8 @@ public actor DirectPairingClient {
             throw PairingError.insecureAddress
         } catch is URLError { throw PairingError.macUnreachable }
         if hello.macID == ownMacID { throw PairingError.thisMac }
-        if try store.loadCollection().pairings.contains(where: { $0.macID == hello.macID }) {
+        let replacesExisting = hello.macID == replacedMacID
+        if !replacesExisting, try store.loadCollection().pairings.contains(where: { $0.macID == hello.macID }) {
             throw PairingError.alreadyLinked
         }
         let macAgreement = try hello.agreementPublicKey()
@@ -95,7 +100,7 @@ public actor DirectPairingClient {
             clientAgreementKey: agreementKey, clientNonce: clientNonce, macNonce: started.macNonce)
         let id = UUID()
         attempts[id] = Attempt(endpoint: endpoint, hello: hello, transcript: transcript, signing: signing,
-                               agreement: agreement, expiresAtMs: started.expiresAtMs)
+                               agreement: agreement, expiresAtMs: started.expiresAtMs, replacesExisting: replacesExisting)
         return DirectPairingAttempt(id: id, code: try transcript.code(), macName: hello.name, expiresAtMs: started.expiresAtMs)
     }
 
@@ -124,7 +129,11 @@ public actor DirectPairingClient {
                 approved.name = attempt.hello.name
                 approved.routes = [attempt.endpoint]
                 try Task.checkCancellation()
-                try store.save(approved)
+                if attempt.replacesExisting {
+                    try store.modify { try $0.replaceLocalPairing(of: approved.macID, with: approved) }
+                } else {
+                    try store.save(approved)
+                }
                 LocalNetworkAccess.record(.allowed)
                 return approved
             case "denied": throw PairingError.denied

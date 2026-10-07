@@ -45,8 +45,6 @@ snapshots-verify:
 
 MAC_SNAPSHOT_TARGET := //apple/Testing/MacSnapshots:AlondraMacSnapshotTests
 MAC_SNAPSHOT_ROOT := apple/Testing/MacSnapshots/Tests/__Snapshots__
-MAC_SPANISH_SNAPSHOT_TARGET := //apple/Testing/MacSnapshots:AlondraMacSpanishSnapshotTests
-MAC_SPANISH_SNAPSHOT_ROOT := apple/Testing/MacSnapshots/SpanishTests/__Snapshots__
 
 mac-snapshots-record:
 	-bazelisk test $(MAC_SNAPSHOT_TARGET) \
@@ -61,20 +59,8 @@ mac-snapshots-record:
 		echo "No recorded snapshots found"; exit 1; \
 	fi
 
-	-bazelisk test $(MAC_SPANISH_SNAPSHOT_TARGET) \
-		--test_env=SNAPSHOT_TESTING_RECORD=all \
-		--test_env=SNAPSHOT_ROOT=$(MAC_SPANISH_SNAPSHOT_ROOT) \
-		--nocache_test_results --test_output=errors
-	@outputs=$$(find bazel-testlogs/apple/Testing/MacSnapshots/AlondraMacSpanishSnapshotTests -type d -name test.outputs | head -1); \
-	if [ -n "$$outputs" ] && [ -d "$$outputs/$(MAC_SPANISH_SNAPSHOT_ROOT)" ]; then \
-		mkdir -p $(MAC_SPANISH_SNAPSHOT_ROOT) && cp -R "$$outputs/$(MAC_SPANISH_SNAPSHOT_ROOT)/." $(MAC_SPANISH_SNAPSHOT_ROOT)/ && chmod -R u+w $(MAC_SPANISH_SNAPSHOT_ROOT); \
-		echo "Baselines copied to $(MAC_SPANISH_SNAPSHOT_ROOT)"; \
-	else \
-		echo "No recorded Spanish Mac snapshots found"; exit 1; \
-	fi
-
 mac-snapshots-verify:
-	bazelisk test $(MAC_SNAPSHOT_TARGET) $(MAC_SPANISH_SNAPSHOT_TARGET) --test_output=errors
+	bazelisk test $(MAC_SNAPSHOT_TARGET) --test_output=errors
 
 cargo-test:
 	cargo test

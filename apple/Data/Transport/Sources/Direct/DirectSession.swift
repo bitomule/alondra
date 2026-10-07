@@ -74,6 +74,13 @@ public actor DirectSession: OperationAPI {
         } catch EnvelopeError.invalidRequest { throw RelaySessionError.invalidRequest }
     }
 
+    /// The Mac's sealed answer to a device it revoked.
+    private static func saysRevoked(_ response: APIResponse) -> Bool {
+        guard case let .completed(status, body) = response, status == 403,
+              let json = try? JSONSerialization.jsonObject(with: body) as? [String: Any] else { return false }
+        return json["error"] as? String == "device_revoked"
+    }
+
     /// Up to four tries, re-picking the route after a network failure or an impostor. A mutation that may have
     /// reached the Mac without an answer is `.unknown`, never silently dropped.
     private func deliver(_ body: Data, requestID: String, mutation: Bool, timeout: Duration) async throws -> APIResponse {
@@ -83,7 +90,7 @@ public actor DirectSession: OperationAPI {
             if attempt > 0 { try await pause(.milliseconds(500 * attempt)) }
             let endpoint: DirectEndpoint
             do { endpoint = try await router.endpoint() }
-            catch DirectRouteError.unreachable where mayHaveArrived { break }
+            catch is DirectRouteError where mayHaveArrived { break }
             let reply: HTTPReply
             do { reply = try await http.post(endpoint, path: "/direct/request", body: body, timeout: timeout) }
             catch let error as URLError where error.code == .cancelled { throw CancellationError() }
@@ -98,6 +105,7 @@ public actor DirectSession: OperationAPI {
                 if let envelope = try? JSONDecoder().decode(Envelope.self, from: reply.body),
                    let response = try? codec.opened(envelope, requestID: requestID) {
                     await router.proved(endpoint)
+                    if Self.saysRevoked(response) { throw DirectSessionError.deviceRevoked }
                     return response
                 }
                 await router.reject(endpoint)
@@ -115,7 +123,7 @@ public actor DirectSession: OperationAPI {
             case 421: await router.reject(endpoint)
             case 429, 503: continue
             case 400: return .completed(status: 400, body: reply.body)
-            default: throw RelayWireError.server(reply.status)
+            default: await router.reject(endpoint)
             }
         }
         if mutation && mayHaveArrived { return .unknown }

@@ -20,6 +20,9 @@ public actor Connection {
     public let viewsFeed: FeedSession
     public let viewActionSender: ViewActionSender
     private let operations: any FeedOperations
+    private let macName: String?
+    /// The paired Mac's ID; nil for the Mac this app runs on.
+    public nonisolated let macID: String?
     private var active = true
 
     /// A Mac paired on the local network talks only directly; one paired with an account also
@@ -53,12 +56,12 @@ public actor Connection {
         name.scheme = "alondra-direct"
         name.host = approved.macID
         guard let server = approved.relayURL ?? name.url else { throw PairingError.invalidIdentity }
-        self.init(operations: routed, server: server, deviceID: approved.deviceID)
+        self.init(operations: routed, server: server, deviceID: approved.deviceID, macName: approved.name, macID: approved.macID)
     }
 
     public static func local(_ session: LoopbackSession, identity: LoopbackIdentityStore) async throws -> Connection {
         _ = try await identity.credentialRevision()
-        return Connection(operations: session, server: session.base, deviceID: "mac")
+        return Connection(operations: session, server: session.base, deviceID: "mac", macName: nil, macID: nil)
     }
 
     public nonisolated var isLocal: Bool { operations is LoopbackSession }
@@ -103,8 +106,10 @@ public actor Connection {
         await (operations as? RoutedSession)?.networkChanged()
     }
 
-    private init(operations: any FeedOperations, server: URL, deviceID: String) {
+    private init(operations: any FeedOperations, server: URL, deviceID: String, macName: String?, macID: String?) {
         self.operations = operations
+        self.macName = macName
+        self.macID = macID
         api = AlondraAPIClient(serviceURL: server, deviceID: deviceID, operations: operations)
         #if os(macOS)
         let client: ViewClient = .mac
@@ -147,7 +152,8 @@ public actor Connection {
     }
 
     public nonisolated func connectionProblem(for error: any Error) -> ConnectionProblem {
-        ConnectionClassifier.problem(for: error, local: isLocal, networkOffline: NetworkReachability.shared.isOffline)
+        ConnectionClassifier.problem(for: error, local: isLocal, networkOffline: NetworkReachability.shared.isOffline,
+                                     macName: macName)
     }
 
     public func uploadAttachment(_ data: Data, name: String, transferID: UUID,

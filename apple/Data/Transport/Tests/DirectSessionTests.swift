@@ -14,6 +14,7 @@ private actor FakeDirectMac: HTTPTransport {
     let deviceAgreement = P256.KeyAgreement.PrivateKey()
     var helloByHost: [String: DirectMacIdentity] = [:]
     var forged: Set<String> = []
+    var revokedAnswers: Set<String> = []
     var statusByHost: [String: Int] = [:]
     var failNextRequests = 0
     private(set) var requestBodies: [Data] = []
@@ -36,6 +37,7 @@ private actor FakeDirectMac: HTTPTransport {
 
     func answerHello(on host: String, with identity: DirectMacIdentity?) { helloByHost[host] = identity }
     func forge(on host: String) { forged.insert(host) }
+    func sayRevoked(on host: String) { revokedAnswers.insert(host) }
     func answer(on host: String, with status: Int) { statusByHost[host] = status }
     func failRequests(_ count: Int) { failNextRequests = count }
     var executed: Int { executions }
@@ -55,7 +57,11 @@ private actor FakeDirectMac: HTTPTransport {
         }
         if let status = statusByHost[host] { return HTTPReply(status: status, body: Data("{}".utf8)) }
         let envelope = try JSONDecoder().decode(Envelope.self, from: request.httpBody!)
-        if forged.contains(host) { return HTTPReply(status: 200, body: try seal(envelope.requestID, by: P256.Signing.PrivateKey())) }
+        let revoked = revokedAnswers.contains(host)
+        if forged.contains(host) {
+            return HTTPReply(status: 200, body: try seal(envelope.requestID, by: P256.Signing.PrivateKey(), revoked: revoked))
+        }
+        if revoked { return HTTPReply(status: 200, body: try seal(envelope.requestID, by: macSigning, revoked: true)) }
         guard let body = try run(envelope) else { return HTTPReply(status: 409, body: Data(#"{"error":"idempotency_conflict"}"#.utf8)) }
         return HTTPReply(status: 200, body: body)
     }
@@ -78,8 +84,11 @@ private actor FakeDirectMac: HTTPTransport {
         return body
     }
 
-    private func seal(_ requestID: String, by signer: P256.Signing.PrivateKey) throws -> Data {
-        let plain = try JSONSerialization.data(withJSONObject: ["status": 200, "body": ["ok": true]])
+    private func seal(_ requestID: String, by signer: P256.Signing.PrivateKey, revoked: Bool = false) throws -> Data {
+        let answer: [String: Any] = revoked
+            ? ["status": 403, "error": "device_revoked", "body": ["error": "device_revoked"]]
+            : ["status": 200, "body": ["ok": true]]
+        let plain = try JSONSerialization.data(withJSONObject: answer)
         return try JSONEncoder().encode(Envelope.seal(route: "mac-1", sender: "mac-1", recipient: "phone-1",
             requestID: requestID, kind: "response",
             expiresAtMilliseconds: UInt64(Date().timeIntervalSince1970 * 1000) + 60_000,
@@ -178,6 +187,39 @@ private let answered = APIResponse.completed(status: 200, body: Data(#"{"ok":tru
         await #expect(throws: RelaySessionError.operationIdentityConflict) { try await f.session.perform(f.action("op-1")) }
     }
 
+    @Test func anUnsealedStatusNeverBecomesAnExpiredSessionOrALogin() async throws {
+        for status in [403, 404, 500, 502] {
+            let proved = try await Fixture()
+            _ = try await proved.session.perform(proved.read())
+            await proved.mac.answer(on: lan.host, with: status)
+            await #expect(throws: DirectRouteError.unreachable, "\(status) from a proved address") {
+                try await proved.session.perform(proved.action("op-\(status)"))
+            }
+
+            let saved = try await Fixture(saved: [], offered: [lan])
+            await saved.mac.answer(on: lan.host, with: status)
+            await #expect(throws: DirectRouteError.unreachable, "\(status) from an address never proved") {
+                try await saved.session.perform(saved.read())
+            }
+        }
+    }
+
+    @Test func aSealedRevocationFromTheMacIsBelievedAndProvesTheAddress() async throws {
+        let f = try await Fixture()
+        await f.mac.sayRevoked(on: lan.host)
+        await #expect(throws: DirectSessionError.deviceRevoked) { try await f.session.perform(f.read()) }
+        await #expect(throws: DirectSessionError.deviceRevoked) { try await f.session.perform(f.action("op-1")) }
+        #expect(await f.router.isProven(lan))
+    }
+
+    @Test func aRevocationSealedByAnImpostorIsNotBelieved() async throws {
+        let f = try await Fixture()
+        await f.mac.sayRevoked(on: lan.host)
+        await f.mac.forge(on: lan.host)
+        await #expect(throws: DirectRouteError.unreachable) { try await f.session.perform(f.read()) }
+        #expect(await !f.router.isProven(lan))
+    }
+
     @Test func anUnprovedAddressCannotClaimTheDeviceIsRevoked() async throws {
         let f = try await Fixture(saved: [], offered: [lan, tailnetIP])
         await f.mac.answer(on: lan.host, with: 401)
@@ -248,6 +290,41 @@ private let answered = APIResponse.completed(status: 200, body: Data(#"{"ok":tru
         await f.mac.answerHello(on: tailnetIP.host, with: await f.mac.identity)
         await f.router.offer([tailnetIP], from: .mac)
         #expect(try await f.router.endpoint() == tailnetIP)
+    }
+
+    @Test func anAddressProvedHereNowAnsweringWithOtherKeysOnlyLeavesAHint() async throws {
+        let f = try await Fixture()
+        #expect(try await f.session.perform(f.read()) == answered)
+        await f.router.invalidate()
+        await f.mac.answerHello(on: lan.host, with: await f.mac.impostor)
+        await #expect(throws: DirectRouteError.identityChanged) { try await f.session.perform(f.read()) }
+        await #expect(throws: DirectRouteError.identityChanged) { try await f.session.perform(f.action("op-1")) }
+        #expect(await f.router.route == nil)
+        #expect(await f.router.provenEndpoints == [lan])
+        #expect(await f.mac.hosts == [lan.host], "nothing was sent to the impostor")
+    }
+
+    @Test func theHintNeedsAnAddressProvedOnThisNetworkAndGoesWhenTheRealMacAnswers() async throws {
+        let unproved = try await Fixture()
+        await unproved.mac.answerHello(on: lan.host, with: await unproved.mac.impostor)
+        await #expect(throws: DirectRouteError.unreachable) { try await unproved.router.endpoint() }
+
+        let moved = try await Fixture()
+        #expect(try await moved.session.perform(moved.read()) == answered)
+        await moved.router.invalidate()
+        await moved.mac.answerHello(on: lan.host, with: await moved.mac.impostor)
+        moved.network.join("café")
+        await #expect(throws: DirectRouteError.unreachable) { try await moved.router.endpoint() }
+
+        let recovered = try await Fixture(saved: [lan, tailnetIP])
+        #expect(try await recovered.session.perform(recovered.read()) == answered)
+        await recovered.router.invalidate()
+        await recovered.mac.answerHello(on: lan.host, with: await recovered.mac.impostor)
+        await recovered.mac.answerHello(on: tailnetIP.host, with: await recovered.mac.identity)
+        #expect(try await recovered.router.endpoint() == tailnetIP)
+        await recovered.mac.answerHello(on: tailnetIP.host, with: nil)
+        await recovered.router.invalidate()
+        await #expect(throws: DirectRouteError.unreachable) { try await recovered.router.endpoint() }
     }
 
     @Test func aSavedAddressIsProvedAgainOnANewNetworkBeforeItsAnswerIsBelieved() async throws {

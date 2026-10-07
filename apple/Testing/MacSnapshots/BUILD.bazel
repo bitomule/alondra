@@ -15,7 +15,7 @@ genrule(
     tools = ["xcstrings_to_strings.py"],
 )
 
-# The Mac window's own screens, drawn the way the daemon serves them to the Mac (`client: mac`) and
+# The Mac window's own screens, in English and Spanish, drawn the way the daemon serves them to the Mac (`client: mac`) and
 # captured through an NSHostingView, so a change to what the Mac shows is seen without launching it.
 swift_test(
     name = "AlondraMacSnapshotTests",
@@ -33,30 +33,6 @@ swift_test(
         "//apple:AlondraMacWorkspace",
         "//apple/Contract:AlondraContract",
         "//apple/Design:AlondraDesign",
-        "//apple/Features:AlondraFeatures",
-        "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
-        "@swiftpkg_swift_snapshot_testing//:SnapshotTesting",
-        "@swiftpkg_xctest_dynamic_overlay//:IssueReportingTestSupport",
-    ],
-)
-
-# The Mac's own screens in Spanish, drawn on macOS. A test bundle carries no strings, so this
-# process, on its own, turns the Mac catalog's Spanish into a bundle and draws with it. (A hosted
-# test app would need macOS's permission to reach Bazel's output volume, which no one is there to
-# grant during a test run.)
-swift_test(
-    name = "AlondraMacSpanishSnapshotTests",
-    copts = STRICT_SWIFT_CONCURRENCY_COPTS,
-    srcs = glob(["SpanishTests/*.swift"]) + ["//apple/Testing/Snapshots:Support/AssertAppSnapshot.swift"],
-    data = glob(["SpanishTests/__Snapshots__/**"], allow_empty = True) + ["//apple:macOS/Resources/Localizable.xcstrings"],
-    env = {
-        "SNAPSHOT_ROOT": "apple/Testing/MacSnapshots/SpanishTests/__Snapshots__",
-        "TZ": "UTC",
-    },
-    # IssueReporting resolves its reporter with dlsym; retain it under -dead_strip.
-    linkopts = ["-Wl,-export_dynamic"],
-    deps = [
-        "//apple/Contract:AlondraContract",
         "//apple/Features:AlondraFeatures",
         "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
         "@swiftpkg_swift_snapshot_testing//:SnapshotTesting",

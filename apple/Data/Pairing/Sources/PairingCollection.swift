@@ -78,6 +78,13 @@ public struct ApprovedPairingCollection: Codable, Sendable {
         if selectedID == id { selectedID = pairings.first.map(ApprovedPairingID.init) }
     }
 
+    /// A Mac paired on the local network is removed only when the person pairs it again and the new
+    /// pairing is saved in the same write, so pinned keys never change without that explicit step.
+    public mutating func replaceLocalPairing(of macID: String, with pairing: ApprovedServicePairing) throws {
+        pairings.removeAll { $0.macID == macID && !$0.hasRelay }
+        try upsert(pairing)
+    }
+
     /// Signing out of the account removes only the pairings that depend on it.
     public mutating func removeRelayPairings() {
         pairings.removeAll(where: \.hasRelay)

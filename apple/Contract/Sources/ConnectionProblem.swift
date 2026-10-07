@@ -14,17 +14,29 @@ public enum ConnectionProblem: Equatable, Sendable {
     case alondraNotRunning
     /// The account session ended; signing in again restores it.
     case sessionExpired
-    /// The Mac or relay no longer accepts this device; it has to be paired again.
-    case deviceRevoked
+    /// The Mac or relay no longer accepts this device; it has to be paired again. `macName` is the
+    /// paired Mac's name when it is known.
+    case deviceRevoked(macName: String?)
     /// A Mac paired without an account answers on none of its direct routes from this network.
     case macNotOnNetwork
+    /// Like `macNotOnNetwork`, and an address that answered as this Mac before now answers as the
+    /// same Mac with another identity. Only a hint: nothing is trusted or replaced until the person
+    /// pairs again.
+    case macChangedIdentity
     /// An earlier sign-out could not reach the server; it has to finish before signing in again.
     case signOutIncomplete
     case unexpected
 
     /// Problems only the person can fix. Automatic retries continue, but they cannot succeed.
+    public var isDeviceRevoked: Bool {
+        if case .deviceRevoked = self { true } else { false }
+    }
+
     public var needsAction: Bool {
-        self == .sessionExpired || self == .deviceRevoked || self == .signOutIncomplete
+        switch self {
+        case .sessionExpired, .deviceRevoked, .signOutIncomplete: true
+        default: false
+        }
     }
 }
 

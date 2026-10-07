@@ -194,6 +194,9 @@ async fn request(State(direct): State<Arc<Direct>>, body: Bytes) -> Response {
             response
         }
         Err(DirectRefusal::Misdirected) => refuse(StatusCode::MISDIRECTED_REQUEST, "wrong_mac"),
+        Err(DirectRefusal::Revoked(sealed)) => {
+            ([(header::CONTENT_TYPE, "application/json")], sealed).into_response()
+        }
         Err(DirectRefusal::Unauthorized) => refuse(StatusCode::UNAUTHORIZED, "unauthorized"),
         Err(DirectRefusal::Conflict) => refuse(StatusCode::CONFLICT, "idempotency_conflict"),
         Err(DirectRefusal::Rejected(detail)) => {

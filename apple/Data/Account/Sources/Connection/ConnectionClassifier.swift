@@ -4,8 +4,9 @@ import Foundation
 
 /// The one place that turns a transport, relay or account error into what the person sees.
 public enum ConnectionClassifier {
-    public static func problem(for error: any Error, local: Bool, networkOffline: Bool) -> ConnectionProblem {
-        local ? loopbackProblem(error) : remoteProblem(error, networkOffline: networkOffline)
+    public static func problem(for error: any Error, local: Bool, networkOffline: Bool,
+                               macName: String? = nil) -> ConnectionProblem {
+        local ? loopbackProblem(error) : remoteProblem(error, networkOffline: networkOffline, macName: macName)
     }
 
     private static func loopbackProblem(_ error: any Error) -> ConnectionProblem {
@@ -17,15 +18,18 @@ public enum ConnectionClassifier {
         return .unexpected
     }
 
-    private static func remoteProblem(_ error: any Error, networkOffline: Bool) -> ConnectionProblem {
+    private static func remoteProblem(_ error: any Error, networkOffline: Bool, macName: String?) -> ConnectionProblem {
+        // The Mac's own sealed answer reached this device, so the network is not the problem.
+        if error as? DirectSessionError == .deviceRevoked { return .deviceRevoked(macName: macName) }
         if networkOffline { return .noInternet }
         switch error {
         case DirectRouteError.unreachable: return .macNotOnNetwork
+        case DirectRouteError.identityChanged: return .macChangedIdentity
         case let error as URLError: return urlProblem(error)
         case let error as AuthError: return authProblem(error)
         case let error as RelayWireError:
             switch error {
-            case .unauthorized: return .deviceRevoked
+            case .unauthorized: return .deviceRevoked(macName: macName)
             case .outcomeUnknown: return .macNotAnswering
             case .server(403): return .sessionExpired
             case .server(let status) where status >= 500: return .serverUnreachable
@@ -34,11 +38,11 @@ public enum ConnectionClassifier {
         case let error as RelaySessionError:
             switch error {
             case .outcomeUnknown: return .macNotAnswering
-            case .localStatus(401), .localStatus(403): return .deviceRevoked
+            case .localStatus(401), .localStatus(403): return .deviceRevoked(macName: macName)
             default: return .unexpected
             }
         case OperationError.outcomeUnknown: return .macNotAnswering
-        case APIError.unauthorized: return .deviceRevoked
+        case APIError.unauthorized: return .deviceRevoked(macName: macName)
         default: return .unexpected
         }
     }

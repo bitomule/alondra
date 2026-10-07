@@ -44,6 +44,9 @@ public final class AccountSession {
     @ObservationIgnored private let browse: @Sendable () -> AsyncStream<MacBrowser.Update>
     /// This Mac's own ID in the Mac app, so Find a Mac never offers the Mac it runs on.
     @ObservationIgnored public var ownMacID: String?
+    /// The Mac the person chose to pair again: it is offered as pairable even though it is saved,
+    /// and the saved pairing is replaced only when the new one is approved.
+    @ObservationIgnored public private(set) var pairAgainMacID: String?
     /// Set by each app to the system screen where Local Network access is turned back on.
     @ObservationIgnored public var openLocalNetworkSettings: @MainActor () -> Void = {}
     /// Set by each app: whether it is in front, with no system alert over it.
@@ -114,10 +117,18 @@ public final class AccountSession {
                 guard let expectedSession else { throw CancellationError() }
                 try await approve(scope: scope, expectedSession: expectedSession)
             },
-            cancel: { [self] in await cancel(scope: scope) }, logout: { throw CancellationError() })
+            cancel: { [self] in
+                await endPairAgain()
+                await cancel(scope: scope)
+            }, logout: { throw CancellationError() })
         service.prepareCamera = prepareCamera
         return service
     }
+
+    /// The next pairing on this network may replace the saved pairing of this Mac.
+    public func pairAgain(macID: String?) { pairAgainMacID = macID }
+
+    private func endPairAgain() { pairAgainMacID = nil }
 
     /// Pairing with a Mac on this network, for the first screen and for Settings' Add a Mac.
     public nonisolated var findMacClient: FindMacClient {
@@ -177,7 +188,7 @@ public final class AccountSession {
         let own = ownMacID
         let shown = macs.filter { $0.macID == nil || $0.macID != own }
         for mac in shown { discovered[mac.id] = mac }
-        let paired = Set(registry.snapshot.entries.map(\.approved.macID))
+        let paired = Set(registry.snapshot.entries.map(\.approved.macID)).subtracting(pairAgainMacID.map { [$0] } ?? [])
         return shown.map { FoundMac(id: $0.id, name: $0.name, paired: $0.macID.map(paired.contains) ?? false) }
     }
 
@@ -192,7 +203,8 @@ public final class AccountSession {
             guard let parsed = DirectEndpoint(typed: text) else { throw PairingError.macUnreachable }
             endpoint = parsed
         }
-        let attempt = try await directPairing.begin(at: endpoint, displayName: displayName, excluding: ownMacID)
+        let attempt = try await directPairing.begin(at: endpoint, displayName: displayName, excluding: ownMacID,
+                                                          replacing: pairAgainMacID)
         directAttempt = attempt.id
         return DirectPairingCode(code: attempt.code, macName: attempt.macName)
     }
@@ -202,6 +214,7 @@ public final class AccountSession {
         let current = generation
         let approved = try await directPairing.waitForApproval(id)
         if directAttempt == id { directAttempt = nil }
+        pairAgainMacID = nil
         guard current == generation else { throw CancellationError() }
         let collection = try await pairing.approvedPairings()
         try await reconcile(collection, subject: registry.ownerSubject, preferred: ApprovedPairingID(approved), generation: current)

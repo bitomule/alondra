@@ -107,6 +107,7 @@ private struct DemoAccountView: View {
 /// Scene dependency assembly; authentication and I/O are process-owned by the account.
 @MainActor @Observable
 private final class MacServiceWindowContext {
+    let settings = MacSettingsContext()
     private(set) var store: StoreOf<MacAppFeature>?
     func connect(_ services: Connection) async {
         guard store == nil else { return }
@@ -133,9 +134,16 @@ private struct MacServiceWindow: View {
         Group {
             if let store = context.store {
                 MacServiceWorkspace(store: store, accountContent: MacServiceSettingsScene(services: services, owner: account,
-                                                                                         workspace: workspace))
+                                                                                         workspace: workspace, context: context.settings))
                     .connectionLostOverlay(store: store, diagnose: { await services.diagnose() }, retry: retry,
-                                           signIn: account.map { account in { account.store.send(.reauthenticate) } })
+                                           signIn: account.map { account in { account.store.send(.reauthenticate) } },
+                                           pairAgain: account.flatMap { account in
+                                               services.isDirectOnly ? {
+                                                   account.pairAgain(macID: services.macID)
+                                                   context.settings.requestLinkMac(unopened: { account.pairAgain(macID: nil) })
+                                                   store.send(.settingsPresented(true))
+                                               } : nil
+                                           })
                     .onChange(of: notices.openedCard, initial: true) { _, card in
                         guard let card else { return }
                         store.send(.macPresentation(.select(.viewKey("card:\(card)"))))

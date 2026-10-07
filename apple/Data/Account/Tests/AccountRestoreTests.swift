@@ -147,6 +147,25 @@ struct AccountRestoreTests {
         }
         #expect(seen.map(\.name) == ["Studio"])
     }
+
+    @Test func aSavedMacIsOfferedAgainOnlyWhileThePersonPairsItAgain() async throws {
+        let owner = try account(credential: nil, pairings: [pairing("mac-studio", relay: false), pairing("mac-mini", relay: false)],
+                                advertised: [advertised("Studio", macID: "mac-studio"), advertised("Mini", macID: "mac-mini")])
+        owner.store.send(.appeared)
+        try await waitUntil { owner.macs.count == 2 }
+        func pairedFlags() async -> [String: Bool] {
+            var seen: [FoundMac] = []
+            for await update in owner.findMacClient.browse() {
+                if case let .macs(macs) = update { seen = macs }
+            }
+            return Dictionary(uniqueKeysWithValues: seen.map { ($0.name, $0.paired) })
+        }
+        #expect(await pairedFlags() == ["Studio": true, "Mini": true])
+        owner.pairAgain(macID: "mac-studio")
+        #expect(await pairedFlags() == ["Studio": false, "Mini": true])
+        await owner.additionalMacPairing.cancel()
+        #expect(await pairedFlags() == ["Studio": true, "Mini": true])
+    }
 }
 
 /// Both write the one saved permission state, so they never run at the same time.

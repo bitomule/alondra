@@ -170,9 +170,9 @@ final class AccountSnapshotTests: XCTestCase {
 
     // MARK: Connection lost
 
-    private func lost(_ problem: ConnectionProblem?) -> some View {
+    private func lost(_ problem: ConnectionProblem?, pairAgain: (() -> Void)? = nil) -> some View {
         ScreenFrame(height: 700) {
-            ConnectionLostView(problem: problem, retry: {}, signIn: {}, settings: {}, signOut: {})
+            ConnectionLostView(problem: problem, retry: {}, signIn: {}, settings: {}, signOut: {}, pairAgain: pairAgain)
                 .background(Palette.night)
         }
     }
@@ -186,7 +186,23 @@ final class AccountSnapshotTests: XCTestCase {
     }
 
     func test_connectionLost_deviceDisconnected() {
-        assertScreen([.light], inWindow: true) { lost(.deviceRevoked) }
+        assertScreen([.light], inWindow: true) { lost(.deviceRevoked(macName: nil)) }
+    }
+
+    func test_connectionLost_deviceRevokedPairAgain() {
+        assertScreen([.light, .dark], inWindow: true) { lost(.deviceRevoked(macName: "Mac Studio"), pairAgain: {}) }
+    }
+
+    func test_connectionLost_deviceRevokedPairAgain_spanish() {
+        assertScreen([.light], language: .spanish, inWindow: true) { lost(.deviceRevoked(macName: "Mac Studio"), pairAgain: {}) }
+    }
+
+    func test_connectionLost_macChangedIdentity() {
+        assertScreen([.light, .dark], inWindow: true, animatedPixels: true) { lost(.macChangedIdentity, pairAgain: {}) }
+    }
+
+    func test_connectionLost_macChangedIdentity_spanish() {
+        assertScreen([.light], language: .spanish, inWindow: true, animatedPixels: true) { lost(.macChangedIdentity, pairAgain: {}) }
     }
 
 
