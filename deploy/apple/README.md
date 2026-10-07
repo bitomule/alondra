@@ -197,8 +197,9 @@ It verifies ASC authentication, account/agreement health, the selected Apple
 Distribution certificate and its 14-day expiry window, both external groups,
 and both local signing/profile preflights before a build. It prepares, uploads,
 waits for `VALID` processing, writes `en-US`, `de-DE`, and `es-MX` What to Test
-localizations, adds the build to that app's configured group and confirms group
-membership and sends the TestFlight notification before starting the next platform. Mac and iOS build numbers are
+localizations, adds the build to that app's configured external group and to the
+internal group (`--internal-group`, default `Internal Pilot`, which does not
+receive all builds automatically) and confirms both memberships and sends the TestFlight notification before starting the next platform. Mac and iOS build numbers are
 independent. It writes a private `release-result.json` and preserves artifact
 manifests. A partial run after upload names the platform and says not to upload
 again.

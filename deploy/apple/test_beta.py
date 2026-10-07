@@ -4,7 +4,9 @@ import hashlib
 import json
 from pathlib import Path
 import tempfile
+import types
 import unittest
+from unittest import mock
 
 import beta
 
@@ -77,6 +79,69 @@ class BetaAdapterTests(unittest.TestCase):
         rows["data"].append({"id": "external-2", "attributes": {"name": "QA", "isInternalGroup": False}})
         with self.assertRaises(beta.ReleaseError):
             beta.group_id(json.dumps(rows).encode(), "QA")
+
+    def test_internal_group_lookup_requires_one_internal_exact_match(self):
+        rows = {"data": [
+            {"id": "internal", "attributes": {"name": "QA", "isInternalGroup": True}},
+            {"id": "external", "attributes": {"name": "QA", "isInternalGroup": False}},
+        ]}
+        self.assertEqual(beta.group_id(json.dumps(rows).encode(), "QA", internal=True), "internal")
+        rows["data"].pop(0)
+        with self.assertRaisesRegex(beta.ReleaseError, "internal"):
+            beta.group_id(json.dumps(rows).encode(), "QA", internal=True)
+
+    def release_platform(self, destination, confirmed_groups):
+        calls = []
+
+        def fake_asc(*args):
+            calls.append(args)
+            if args[:3] == ("testflight", "groups", "list"):
+                rows = [{"id": group, "name": group} for group in confirmed_groups]
+                return json.dumps({"complete": True, "groups": rows, "groupCount": len(rows)}).encode()
+            return b"{}"
+
+        with tempfile.TemporaryDirectory() as directory:
+            run = beta.BetaRun.__new__(beta.BetaRun)
+            run.args = types.SimpleNamespace(output_root=Path(directory), identity="", installer_identity="",
+                                             bazel_output_user_root=None, bazel_output_base=None)
+            run.version = "1.0"
+            run.source = "head"
+            run.notes = {}
+            run.result = {"version": "1.0", "platforms": {}}
+            run.build_numbers = {destination: 5}
+            run.groups = {destination: "external-id"}
+            run.internal_groups = {destination: "internal-id"}
+            run.call_asc = fake_asc
+            run.wait_for_valid_build = lambda *_: {"id": "build-1"}
+            artifact = {"manifest": {"sha256": "x"}, "artifact": Path("artifact")}
+            with mock.patch.object(beta, "run"), \
+                    mock.patch.object(beta, "manifest_ok", return_value=artifact), \
+                    mock.patch.object(beta, "next_build_number", return_value=5), \
+                    mock.patch.object(beta, "matching_build", return_value=None), \
+                    mock.patch.object(beta, "upsert_notes"), \
+                    mock.patch.object(beta, "validate_notes_response"):
+                try:
+                    run.release_platform(destination)
+                finally:
+                    self.calls = calls
+                    self.result = run.result["platforms"][destination]
+
+    def test_both_groups_are_added_on_ios_and_mac(self):
+        for destination in ("ios", "macos"):
+            with self.subTest(destination=destination):
+                self.release_platform(destination, ["external-id", "internal-id"])
+                add = next(call for call in self.calls if call[:2] == ("builds", "add-groups"))
+                self.assertEqual(add[add.index("--group") + 1], "internal-id,external-id")
+                self.assertEqual(self.result["state"], "distributed")
+                self.assertEqual(self.result["internal_group_id"], "internal-id")
+
+    def test_release_fails_when_either_group_is_missing_after_assignment(self):
+        for destination in ("ios", "macos"):
+            for confirmed in (["external-id"], ["internal-id"], []):
+                with self.subTest(destination=destination, confirmed=confirmed):
+                    with self.assertRaisesRegex(beta.ReleaseError, "group was not confirmed"):
+                        self.release_platform(destination, confirmed)
+                    self.assertNotIn(("testflight", "notifications"), [call[:2] for call in self.calls])
 
     def test_localized_notes_must_be_present_exactly_as_submitted(self):
         expected = {"en-US": "- Test one", "de-DE": "- Test zwei", "es-MX": "- Prueba tres"}

@@ -211,7 +211,7 @@ def matching_build(rows: bytes, *, build: int, macos: bool) -> dict | None:
     return matches[0] if matches else None
 
 
-def group_id(raw: bytes, name: str) -> str:
+def group_id(raw: bytes, name: str, *, internal: bool = False) -> str:
     response = json_data(raw, "ASC beta-group lookup")
     rows = response.get("data")
     if not isinstance(rows, list):
@@ -222,10 +222,11 @@ def group_id(raw: bytes, name: str) -> str:
             continue
         attributes = row.get("attributes", {})
         if (isinstance(attributes, dict) and attributes.get("name") == name
-                and attributes.get("isInternalGroup") is not True):
+                and (attributes.get("isInternalGroup") is True) == internal):
             ids.append(row.get("id"))
     if len(ids) != 1 or not isinstance(ids[0], str):
-        raise ReleaseError("Expected exactly one matching external TestFlight group")
+        kind = "internal" if internal else "external"
+        raise ReleaseError(f"Expected exactly one matching {kind} TestFlight group")
     return ids[0]
 
 
@@ -349,6 +350,8 @@ class BetaRun:
         self.args.installer_identity = args.installer_identity.replace(":", "").upper()
         if not args.ios_group.strip() or not args.macos_group.strip():
             raise ReleaseError("Both app-specific external TestFlight group names are required")
+        if not args.internal_group.strip():
+            raise ReleaseError("The internal TestFlight group name is required")
         for identity in (self.args.identity, self.args.installer_identity):
             if not re.fullmatch(r"[0-9A-F]{40}", identity):
                 raise ReleaseError("Signing identities must be explicit SHA-1 fingerprints")
@@ -359,6 +362,7 @@ class BetaRun:
         self.result = {"version": self.version, "platforms": {}}
         self.build_numbers: dict[str, int] = {}
         self.groups: dict[str, str] = {}
+        self.internal_groups: dict[str, str] = {}
 
     def call_asc(self, *args: str) -> bytes:
         return run(self.asc + list(args))
@@ -391,6 +395,10 @@ class BetaRun:
             self.groups[destination] = group_id(
                 self.call_asc("testflight", "groups", "list", "--app", app["id"],
                               "--external", "--name", group_name, "--paginate", "--output", "json"), group_name)
+            self.internal_groups[destination] = group_id(
+                self.call_asc("testflight", "groups", "list", "--app", app["id"],
+                              "--internal", "--name", self.args.internal_group, "--paginate", "--output", "json"),
+                self.args.internal_group, internal=True)
         # The existing Alondra preparation gate checks the chosen local identities,
         # embedded provisioning profiles, ignored credentials and clean Git state.
         for destination in APPS:
@@ -444,6 +452,7 @@ class BetaRun:
         self.result["platforms"][destination] = {"build": number, "state": "preparing"}
         self.persist()
         group = self.groups[destination]
+        internal_group = self.internal_groups[destination]
         output = self.args.output_root / destination
         command = [sys.executable, str(ROOT / "deploy/apple/prepare.py"), destination,
                    "--version", self.version, "--build-number", str(number),
@@ -488,14 +497,14 @@ class BetaRun:
         self.result["platforms"][destination]["state"] = "notes-verified"
         self.persist()
         self.call_asc("builds", "add-groups", "--build-id", build_id,
-                      "--group", group, "--submit", "--confirm")
+                      "--group", f"{internal_group},{group}", "--submit", "--confirm")
         groups = self.call_asc("testflight", "groups", "list", "--build-id", build_id, "--app", app["id"], "--output", "json")
-        if group not in group_ids(groups):
+        if not {group, internal_group} <= group_ids(groups):
             raise ReleaseError(f"{destination} build is processed but its TestFlight group was not confirmed; do not re-upload")
-        self.result["platforms"][destination].update(state="grouped", group_id=group)
+        self.result["platforms"][destination].update(state="grouped", group_id=group, internal_group_id=internal_group)
         self.persist()
         self.call_asc("testflight", "notifications", "send", "--build-id", build_id)
-        self.result["platforms"][destination].update(state="distributed", group_id=group)
+        self.result["platforms"][destination].update(state="distributed", group_id=group, internal_group_id=internal_group)
         self.persist()
 
     def wait_for_valid_build(self, app_id: str, destination: str, number: int) -> dict:
@@ -530,6 +539,7 @@ def parser():
     value.add_argument("--notes", required=True, type=Path, help="Localized [en-US], [de-DE], [es-MX] What to Test file")
     value.add_argument("--ios-group", required=True, help="Exact external TestFlight group name for the iOS app")
     value.add_argument("--macos-group", required=True, help="Exact external TestFlight group name for the Mac app")
+    value.add_argument("--internal-group", default="Internal Pilot", help="Exact internal TestFlight group name, shared by both apps")
     value.add_argument("--identity", required=True, help="Existing Apple Distribution SHA-1 fingerprint")
     value.add_argument("--installer-identity", required=True, help="Existing Mac Installer SHA-1 fingerprint")
     value.add_argument("--output-root", required=True, type=Path, help="New private artifact directory outside checkout")
@@ -546,7 +556,7 @@ def main(argv=None) -> int:
         if not args.publish:
             print(json.dumps({"mode": "plan-only", "source_checkout": str(ROOT),
                               "version": release.version, "apps": APPS,
-                              "groups": {"ios": args.ios_group, "macos": args.macos_group},
+                              "groups": {"ios": args.ios_group, "macos": args.macos_group, "internal": args.internal_group},
                               "localization": list(release.notes),
                               "writes": "none; pass --publish to enable signing and ASC operations"}, indent=2))
             return 0
