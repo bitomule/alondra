@@ -62,7 +62,7 @@ public struct APIRequest: Sendable, Equatable {
         if method == .post, path.count == 2, path[0] == "uploads",
            ["start", "chunk", "finish", "cancel"].contains(path[1]) { return true }
         switch (method, path) {
-        case (.get, ["capabilities"]), (.get, ["changes"]), (.get, ["files", "chunk"]),
+        case (.get, ["capabilities"]), (.get, ["changes"]), (.get, ["files", "chunk"]), (.get, ["routes"]),
              (.post, ["actions"]), (.post, ["activity"]), (.post, ["device", "push-binding"]),
              (.post, ["device", "push-binding", "remove"]):
             return true

@@ -38,6 +38,13 @@ private final class MemoryStore: ApprovedPairingStore {
         }
     }
     func delete() throws { value.withLock { $0 = ApprovedPairingCollection() } }
+    func modify(_ change: (inout ApprovedPairingCollection) throws -> Void) throws {
+        try value.withLock { current in
+            var next = current
+            try change(&next)
+            current = next
+        }
+    }
 }
 
 private actor FakeRelay: HTTPTransport {

@@ -25,6 +25,8 @@ public struct MacSettingsView<PairingContent: View>: View {
                     Text("This Mac talks to its own Alondra directly. No account is needed.")
                 }
             }
+            macsSection
+            if store.devices != nil || store.devicesError != nil { devicesSection }
             if store.supportsNotifications {
                 notifications
             }
@@ -70,6 +72,7 @@ public struct MacSettingsView<PairingContent: View>: View {
         } message: {
             Text("Signing out removes this device’s saved connection and notification keys.")
         }
+        .modifier(MacSettingsDeviceDialogs(store: store))
         .task { await store.send(.appeared).finish() }
         .onDisappear { store.send(.disappeared) }
         .onChange(of: phase) { _, phase in if phase == .active { store.send(.refreshPermission) } }
@@ -89,32 +92,77 @@ public struct MacSettingsView<PairingContent: View>: View {
                     .truncationMode(.middle)
                     .textSelection(.enabled)
             }
+            Button("Sign out", systemImage: "link.badge.minus", role: .destructive) { store.send(.logoutTapped) }
+        } header: {
+            Text("Account")
+        } footer: {
+            Text("Encrypted between your devices")
+        }
+    }
+
+    private var macsSection: some View {
+        Section {
             ForEach(store.macs) { mac in
                 Button { store.send(.selectMac(mac.id)) } label: {
                     HStack {
-                        Label("Mac \(mac.macID.prefix(8))", systemImage: "desktopcomputer")
+                        VStack(alignment: .leading, spacing: 2) {
+                            Label(mac.displayName, systemImage: "desktopcomputer")
+                            if let status = store.macStatuses[mac.id] { MacStatusLabel(status: status).font(.caption) }
+                        }
                         Spacer()
-                        if store.selectingMacID == mac.id { ProgressView() }
+                        if store.selectingMacID == mac.id || store.forgettingMacID == mac.id { ProgressView() }
                         else if store.selectedMacID == mac.id {
                             Image(systemName: "checkmark").foregroundStyle(success).accessibilityHidden(true)
                         }
                     }
                 }
                 .disabled(store.selectingMacID != nil || store.selectedMacID == mac.id)
-                .accessibilityLabel("Mac \(mac.macID)")
+                .contextMenu {
+                    if mac.local { Button("Forget This Mac", role: .destructive) { store.send(.forgetMacTapped(mac.id)) } }
+                }
+                .accessibilityLabel(mac.displayName)
                 .accessibilityValue(store.selectedMacID == mac.id ? "Selected" : "")
             }
             if let problem = store.macError {
                 Label { Text(problem.title) } icon: { Image(systemName: problem.systemImage) }
                     .foregroundStyle(failure)
             }
-            Button("Link another Mac", systemImage: "plus") { store.send(.linkMac) }
+            if let error = store.forgetError { Text(error).foregroundStyle(failure) }
+            Button("Connect to Another Mac…", systemImage: "plus") { store.send(.linkMac) }
                 .disabled(store.selectingMacID != nil || store.pairingCleanup)
-            Button("Sign out", systemImage: "link.badge.minus", role: .destructive) { store.send(.logoutTapped) }
+                .accessibilityIdentifier("settings.addMac")
+            if store.showsSignOutWithMacs {
+                Button("Sign out", systemImage: "link.badge.minus", role: .destructive) { store.send(.logoutTapped) }
+                    .accessibilityIdentifier("settings.signOut")
+            }
         } header: {
-            Text("Account")
+            Text("Macs")
+        }
+        .task { await store.send(.loadMacStatuses).finish() }
+    }
+
+    private var devicesSection: some View {
+        Section {
+            ForEach(store.devices ?? []) { device in
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Label(device.name, systemImage: "iphone")
+                        if let origin = device.origin { Text(origin.title).font(.caption).foregroundStyle(.secondary) }
+                    }
+                    Spacer()
+                    Button("Revoke", role: .destructive) { store.send(.revokeDeviceTapped(device.id)) }
+                        .disabled(store.revokingDeviceID != nil)
+                }
+                .accessibilityIdentifier("settings.device")
+            }
+            if store.devices?.isEmpty == true {
+                Text("No other device can use this Mac yet.").foregroundStyle(.secondary)
+            }
+            if let error = store.devicesError { Text(error).foregroundStyle(failure) }
+        } header: {
+            Text("Devices that can use this Mac")
         } footer: {
-            Text("Encrypted between your devices")
+            Text("Revoking a device cuts it off on every path at once.")
         }
     }
 

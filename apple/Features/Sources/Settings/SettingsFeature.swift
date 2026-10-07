@@ -26,7 +26,18 @@ public struct NotificationSettings: Equatable, Sendable {
 public struct MacChoice: Identifiable, Equatable, Sendable {
     public let id: UUID
     public let macID: String
-    public init(id: UUID, macID: String) { self.id = id; self.macID = macID }
+    public let name: String?
+    /// Paired on the local network, without an account: it can be forgotten from here.
+    public let local: Bool
+    public init(id: UUID, macID: String, name: String? = nil, local: Bool = false) {
+        self.id = id; self.macID = macID; self.name = name; self.local = local
+    }
+}
+
+/// How a paired Mac answers right now, as a fact next to it.
+public enum MacStatus: Equatable, Sendable {
+    case route(ConnectionRoute)
+    case problem(ConnectionProblem)
 }
 
 public struct SettingsClient: Sendable {
@@ -37,6 +48,11 @@ public struct SettingsClient: Sendable {
     public var openSystemSettings: @Sendable () async -> Void
     public var checkConnection: @Sendable () async throws -> Void
     public var selectMac: @Sendable (UUID) async throws -> Void = { _ in throw CancellationError() }
+    public var macStatuses: @Sendable () async -> [UUID: MacStatus] = { [:] }
+    public var forgetMac: @Sendable (UUID) async throws -> Void = { _ in throw CancellationError() }
+    /// Only the Mac app on its own daemon lists and revokes devices.
+    public var devices: (@Sendable () async throws -> [TrustedDevice])?
+    public var revokeDevice: @Sendable (String) async throws -> Void = { _ in throw CancellationError() }
     public var problem: @Sendable (any Error) -> ConnectionProblem = { _ in .unexpected }
     public var logout: @Sendable () async -> Void
     public init(observe: @escaping @Sendable () async -> AsyncStream<NotificationSettings>,
@@ -88,6 +104,16 @@ public extension DependencyValues {
         public var selectedMacID: UUID?
         public var selectingMacID: UUID?
         public var macError: ConnectionProblem?
+        public var forgetError: String?
+        public var macStatuses: [UUID: MacStatus] = [:]
+        public var forgettingMacID: UUID?
+        public var confirmForgetMacID: UUID?
+        public var devices: [TrustedDevice]?
+        public var devicesError: String?
+        public var revokingDeviceID: String?
+        public var confirmRevokeDeviceID: String?
+        /// The Mac app on its own daemon, with an account behind some of its paired Macs.
+        public var showsSignOutWithMacs = false
         public var confirmLogout = false
         public var generation: UInt64 = 0
         public let cancellation = UUID()
@@ -109,10 +135,16 @@ public extension DependencyValues {
         case checkConnection, checked(UInt64), checkFailed(ConnectionProblem, UInt64)
         case linkMac, pairingCleanupFinished, pairing(PresentationAction<SignInFeature.Action>)
         case selectMac(UUID), macSelected(UUID, UInt64), macSelectionFailed(ConnectionProblem?, UInt64)
+        case loadMacStatuses, macStatusesLoaded([UUID: MacStatus])
+        case forgetMacTapped(UUID), cancelForgetMac, confirmForgetMac, macForgotten(UUID), macForgetFailed(String)
+        case loadDevices, devicesLoaded([TrustedDevice]), devicesFailed(String)
+        case revokeDeviceTapped(String), cancelRevokeDevice, confirmRevokeDevice, deviceRevoked(String), revokeFailed(String)
         case logoutTapped, cancelLogout, confirmLogout
     }
     @Dependency(\.serviceSettings) var client
     @Dependency(\.cloudPairing) var pairingService
+    @Dependency(\.findMac) var findMacService
+    private enum StatusesID { case statuses }
     public init() {}
     static func saveFailure(_ error: any Error) -> String {
         (error as? LocalizedError)?.errorDescription
@@ -127,6 +159,72 @@ public extension DependencyValues {
                 return .run { send in
                     for await snapshot in await client.observe() { await send(.updated(snapshot)) }
                 }.cancellable(id: state.cancellation, cancelInFlight: true)
+            case .loadMacStatuses:
+                return .run { send in await send(.macStatusesLoaded(await client.macStatuses())) }
+                    .cancellable(id: StatusesID.statuses, cancelInFlight: true)
+            case .macStatusesLoaded(let statuses):
+                state.macStatuses = statuses
+                return .none
+            case .forgetMacTapped(let id):
+                guard state.macs.contains(where: { $0.id == id && $0.local }), state.forgettingMacID == nil else { return .none }
+                state.confirmForgetMacID = id
+                return .none
+            case .cancelForgetMac:
+                state.confirmForgetMacID = nil
+                return .none
+            case .confirmForgetMac:
+                guard let id = state.confirmForgetMacID else { return .none }
+                state.confirmForgetMacID = nil
+                state.forgettingMacID = id
+                state.forgetError = nil
+                return .run { send in
+                    do { try await client.forgetMac(id); await send(.macForgotten(id)) }
+                    catch { await send(.macForgetFailed(String(localized: "Alondra couldn’t forget this Mac. Try again."))) }
+                }
+            case .macForgotten(let id):
+                state.forgettingMacID = nil
+                state.macs.removeAll { $0.id == id }
+                return .none
+            case .macForgetFailed(let message):
+                state.forgettingMacID = nil
+                state.forgetError = message
+                return .none
+            case .loadDevices:
+                guard let devices = client.devices else { return .none }
+                return .run { send in
+                    do { await send(.devicesLoaded(try await devices())) }
+                    catch { await send(.devicesFailed(String(localized: "Alondra couldn’t read the devices of this Mac."))) }
+                }
+            case .devicesLoaded(let devices):
+                state.devices = devices.filter { $0.origin != .mac }
+                state.devicesError = nil
+                return .none
+            case .devicesFailed(let message):
+                state.devicesError = message
+                return .none
+            case .revokeDeviceTapped(let id):
+                guard state.revokingDeviceID == nil else { return .none }
+                state.confirmRevokeDeviceID = id
+                return .none
+            case .cancelRevokeDevice:
+                state.confirmRevokeDeviceID = nil
+                return .none
+            case .confirmRevokeDevice:
+                guard let id = state.confirmRevokeDeviceID else { return .none }
+                state.confirmRevokeDeviceID = nil
+                state.revokingDeviceID = id
+                state.devices?.removeAll { $0.id == id }
+                return .run { send in
+                    do { try await client.revokeDevice(id); await send(.deviceRevoked(id)) }
+                    catch { await send(.revokeFailed(String(localized: "Alondra couldn’t revoke this device. Try again."))) }
+                }
+            case .deviceRevoked:
+                state.revokingDeviceID = nil
+                return .none
+            case .revokeFailed(let message):
+                state.revokingDeviceID = nil
+                state.devicesError = message
+                return .send(.loadDevices)
             case .disappeared:
                 state.generation &+= 1
                 if !state.automaticallySavesQuietHours { state.saving = false }
@@ -221,8 +319,12 @@ public extension DependencyValues {
                 state.pairingCleanup = true
                 return .run { send in
                     await pairingService.cancel()
+                    await findMacService.cancel()
                     await send(.pairingCleanupFinished)
                 }
+            case .pairing(.presented(.findMac(.delegate(.paired)))):
+                state.pairing = nil
+                return .send(.loadMacStatuses)
             case .pairingCleanupFinished:
                 state.pairingCleanup = false
                 return .none

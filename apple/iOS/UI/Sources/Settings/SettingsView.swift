@@ -23,7 +23,7 @@ public struct SettingsView: View {
         .navigationBarTitleDisplayMode(.inline)
         .sheet(item: $store.scope(state: \.pairing, action: \.pairing)) { pairing in
             NavigationStack {
-                PairingView(store: pairing)
+                SignInView(store: pairing)
                     .toolbar {
                         ToolbarItem(placement: .cancellationAction) {
                             Button("Close", systemImage: "xmark") { store.send(.pairing(.dismiss)) }
@@ -40,6 +40,15 @@ public struct SettingsView: View {
         } message: {
             Text("Signing out removes this device’s saved connection and notification keys.")
         }
+        .confirmationDialog(
+            "Forget this Mac?",
+            isPresented: Binding(get: { store.confirmForgetMacID != nil }, set: { if !$0 { store.send(.cancelForgetMac) } }),
+            titleVisibility: .visible
+        ) {
+            Button("Forget Mac", role: .destructive) { store.send(.confirmForgetMac) }
+        } message: {
+            Text("This iPhone deletes its keys for this Mac. To use it again, find it and pair it again.")
+        }
         .task { await store.send(.appeared).finish() }
         .onDisappear { store.send(.disappeared) }
         .onChange(of: phase) { _, phase in if phase == .active { store.send(.refreshPermission) } }
@@ -47,10 +56,12 @@ public struct SettingsView: View {
 
     private var account: some View {
         Section {
-            LabeledContent("Account") {
-                Text(verbatim: store.service)
-                    .font(.mono(.subheadline))
-                    .foregroundStyle(Palette.ink)
+            if store.usesAccount {
+                LabeledContent("Account") {
+                    Text(verbatim: store.service)
+                        .font(.mono(.subheadline))
+                        .foregroundStyle(Palette.ink)
+                }
             }
             LabeledContent("Device") {
                 Text(verbatim: store.device)
@@ -62,10 +73,15 @@ public struct SettingsView: View {
             ForEach(store.macs) { mac in
                 Button { store.send(.selectMac(mac.id)) } label: {
                     HStack {
-                        Label("Mac \(mac.macID.prefix(8))", systemImage: "desktopcomputer")
-                            .foregroundStyle(Palette.ink)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Label(mac.displayName, systemImage: "desktopcomputer")
+                                .foregroundStyle(Palette.ink)
+                            if let status = store.macStatuses[mac.id] {
+                                MacStatusLabel(status: status).font(.caption).padding(.leading, 34)
+                            }
+                        }
                         Spacer()
-                        if store.selectingMacID == mac.id {
+                        if store.selectingMacID == mac.id || store.forgettingMacID == mac.id {
                             ProgressView()
                         } else if store.selectedMacID == mac.id {
                             Image(systemName: "checkmark").foregroundStyle(Palette.sage).accessibilityHidden(true)
@@ -73,17 +89,27 @@ public struct SettingsView: View {
                     }
                 }
                 .disabled(store.selectingMacID != nil || store.selectedMacID == mac.id)
-                .accessibilityLabel(Text("Mac \(mac.macID)"))
+                .swipeActions {
+                    if mac.local {
+                        Button("Forget", systemImage: "trash", role: .destructive) { store.send(.forgetMacTapped(mac.id)) }
+                    }
+                }
+                .accessibilityLabel(Text(verbatim: mac.displayName))
                 .accessibilityValue(store.selectedMacID == mac.id ? Text("Selected") : Text(verbatim: ""))
             }
+            .task { await store.send(.loadMacStatuses).finish() }
             if let problem = store.macError {
                 Label { Text(problem.title) } icon: { Image(systemName: problem.systemImage) }
                     .foregroundStyle(Palette.rose)
                     .accessibilityIdentifier("settings.macError")
             }
-            Button("Link another Mac", systemImage: "qrcode.viewfinder") { store.send(.linkMac) }
+            if let error = store.forgetError { Text(verbatim: error).foregroundStyle(Palette.rose) }
+            Button("Add a Mac", systemImage: "plus") { store.send(.linkMac) }
                 .disabled(store.selectingMacID != nil || store.pairingCleanup)
-            Button("Sign out", systemImage: "link.badge.minus", role: .destructive) { store.send(.logoutTapped) }
+                .accessibilityIdentifier("settings.addMac")
+            if store.usesAccount {
+                Button("Sign out", systemImage: "link.badge.minus", role: .destructive) { store.send(.logoutTapped) }
+            }
         } header: {
             Text("This iPhone")
         } footer: {

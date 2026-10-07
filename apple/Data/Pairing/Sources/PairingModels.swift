@@ -11,9 +11,21 @@ public enum PairingError: LocalizedError, Equatable, Sendable {
     case invalidResponse
     case missingAttempt
     case alreadyLinked
+    case denied
+    case busy
+    case macUnreachable
+    case requestExpired
+    case thisMac
+    case insecureAddress
     public var errorDescription: String? {
         switch self {
         case .alreadyLinked: String(localized: "This Mac is already linked. Select it in Settings.")
+        case .denied: String(localized: "The Mac didn’t allow this device.")
+        case .busy: String(localized: "The Mac has too many requests right now. Try again in a few minutes.")
+        case .macUnreachable: String(localized: "Can’t reach that Mac. Check that it’s on and on this network.")
+        case .requestExpired: String(localized: "The request expired before the Mac answered. Try again.")
+        case .thisMac: String(localized: "That’s this Mac. Pick another one.")
+        case .insecureAddress: String(localized: "This device only connects to that address securely. Use the Mac’s IP address, like 192.168.1.20 or 100.101.2.3, or its name ending in .ts.net.")
         case .invalidInvitation: String(localized: "This QR code isn’t from Alondra. Scan the code your Mac shows.")
         case .expired: String(localized: "This QR code has expired. Show a new one on your Mac and scan it.")
         case .invalidApproval, .invalidIdentity, .invalidResponse, .missingAttempt, .unexpectedStatus:
@@ -89,16 +101,34 @@ public struct PairingPending: Sendable {
 }
 
 /// One verified, approved pairing. The private keys are stored in this-device-only Keychain data.
+/// A pairing made on the local network has no relay and no account owner.
 public struct ApprovedServicePairing: Codable, Sendable {
-    public let relayURL: URL
+    public let relayURL: URL?
     public let macID: String
     public let deviceID: String
-    public let ownerSub: String
+    public let ownerSub: String?
     public let macSigningKey: String
     public let macAgreementKey: String
     public let signingPrivateKey: Data
     public let agreementPrivateKey: Data
     public let approvedAtMs: UInt64
+    public var name: String? = nil
+    /// Direct addresses learned from Bonjour, the pairing itself and the Mac's `/routes`.
+    public var routes: [DirectEndpoint]? = nil
+
+    public init(relayURL: URL?, macID: String, deviceID: String, ownerSub: String?, macSigningKey: String,
+                macAgreementKey: String, signingPrivateKey: Data, agreementPrivateKey: Data, approvedAtMs: UInt64) {
+        self.relayURL = relayURL; self.macID = macID; self.deviceID = deviceID; self.ownerSub = ownerSub
+        self.macSigningKey = macSigningKey; self.macAgreementKey = macAgreementKey
+        self.signingPrivateKey = signingPrivateKey; self.agreementPrivateKey = agreementPrivateKey
+        self.approvedAtMs = approvedAtMs
+    }
+
+    public var hasRelay: Bool { relayURL != nil && ownerSub != nil }
+
+    public var pinnedIdentity: DirectMacIdentity {
+        DirectMacIdentity(macID: macID, name: name ?? "", signingKey: macSigningKey, agreementKey: macAgreementKey)
+    }
 
     public func macSigningPublicKey() throws -> P256.Signing.PublicKey {
         guard let bytes = PairingWire.decode(macSigningKey) else { throw PairingError.invalidIdentity }

@@ -15,9 +15,14 @@ final class MacAppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationC
             NSApplication.shared.keyWindow ?? NSApplication.shared.mainWindow
         }))
         let storage = AppStorageLocation.applicationSupport(bundleID: "com.bitomule.alondra.mac")
-        let account = AccountSession(auth: auth, displayName: "Mac", storageDirectory: storage)
-        owner = MacWorkspaceOwner(account: account, storageDirectory: storage,
-            deviceName: "Mac (\(Host.current().localizedName ?? ProcessInfo.processInfo.hostName))")
+        let name = Host.current().localizedName ?? ProcessInfo.processInfo.hostName
+        let account = AccountSession(auth: auth, displayName: String(name.prefix(80)), storageDirectory: storage)
+        account.isActive = { NSApplication.shared.isActive }
+        account.openLocalNetworkSettings = {
+            guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_LocalNetwork") else { return }
+            NSWorkspace.shared.open(url)
+        }
+        owner = MacWorkspaceOwner(account: account, storageDirectory: storage, deviceName: "Mac (\(name))")
         super.init()
     }
 
@@ -26,6 +31,7 @@ final class MacAppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationC
         Task { [owner, notices] in await notices.run(owner: owner) }
     }
 
+    /// With the app in front, the window shows the same notice; a pairing request as a sheet.
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter,
                                             willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
         []
@@ -33,6 +39,14 @@ final class MacAppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationC
 
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter,
                                             didReceive response: UNNotificationResponse) async {
+        if let pairing = MacLocalNotices.pairing(of: response) {
+            switch response.actionIdentifier {
+            case MacLocalNotices.allowAction: await notices.decide(pairing, allow: true)
+            case MacLocalNotices.denyAction: await notices.decide(pairing, allow: false)
+            default: await notices.bringForward()
+            }
+            return
+        }
         guard let card = SystemLocalNoticeCenter.card(of: response) else { return }
         await notices.open(card)
     }

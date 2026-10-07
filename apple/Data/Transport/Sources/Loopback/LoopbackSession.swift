@@ -13,7 +13,11 @@ public enum LoopbackOutcome: Sendable, Equatable {
 /// deduplication locally, so a mutation whose response is lost is reported as unknown and never
 /// sent again.
 public actor LoopbackSession: OperationAPI {
-    public static let defaultBase = URL(string: "http://127.0.0.1:47800")!
+    /// `ALONDRA_PORT` points the app at a sandbox daemon from `make e2e-sandbox`.
+    public static let defaultBase: URL = {
+        let port = ProcessInfo.processInfo.environment["ALONDRA_PORT"].flatMap(UInt16.init) ?? 47800
+        return URL(string: "http://127.0.0.1:\(port)")!
+    }()
 
     public nonisolated let base: URL
     let urlSession: URLSession
@@ -47,6 +51,19 @@ public actor LoopbackSession: OperationAPI {
         let request = URLRequest(url: base.appending(path: "daemon"), timeoutInterval: 2)
         guard let (_, response) = try? await urlSession.data(for: request) else { return false }
         return (response as? HTTPURLResponse)?.statusCode == 200
+    }
+
+    /// This Mac's own ID, read from its daemon's direct port. Unsigned and public, like `hello`.
+    public static func ownMacID(at base: URL = defaultBase, urlSession: URLSession = makeURLSession()) async -> String? {
+        struct Daemon: Decodable {
+            struct Direct: Decodable { let port: UInt16 }
+            let direct: Direct?
+        }
+        let request = URLRequest(url: base.appending(path: "daemon"), timeoutInterval: 2)
+        guard let (body, _) = try? await urlSession.data(for: request),
+              let port = (try? JSONDecoder().decode(Daemon.self, from: body))?.direct?.port else { return nil }
+        let http = DirectHTTP(transport: URLSessionTransport())
+        return try? await http.hello(at: DirectEndpoint(host: "127.0.0.1", port: port, kind: .localNetwork)).macID
     }
 
     public func deactivate() {

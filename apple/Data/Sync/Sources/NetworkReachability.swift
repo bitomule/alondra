@@ -9,14 +9,28 @@ public final class NetworkReachability: @unchecked Sendable {
     private let monitor = NWPathMonitor()
     private let lock = NSLock()
     private var online = true
+    private var network = ""
     private var listeners: [UUID: AsyncStream<Bool>.Continuation] = [:]
 
     private init() {
-        monitor.pathUpdateHandler = { [weak self] path in self?.update(path.status == .satisfied) }
+        monitor.pathUpdateHandler = { [weak self] path in
+            self?.lock.withLock { self?.network = Self.signature(of: path) }
+            self?.update(path.status == .satisfied)
+        }
         monitor.start(queue: DispatchQueue(label: "alondra.network-reachability"))
     }
 
     public var isOffline: Bool { lock.withLock { !online } }
+
+    /// Which network this is: its interfaces and gateways. Joining another Wi-Fi changes it, so
+    /// an address learned on one network is proved again before it is believed on the next.
+    public var signature: String { lock.withLock { network } }
+
+    private static func signature(of path: NWPath) -> String {
+        let interfaces = path.availableInterfaces.map { "\($0.type)/\($0.name)" }
+        let gateways = path.gateways.map { "\($0)" }
+        return (interfaces.sorted() + gateways.sorted()).joined(separator: ",")
+    }
 
     /// Yields the current state, then every change.
     public func changes() -> AsyncStream<Bool> {

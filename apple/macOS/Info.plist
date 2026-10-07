@@ -30,6 +30,18 @@
     <dict>
         <key>NSAllowsLocalNetworking</key>
         <true/>
+        <key>NSExceptionDomains</key>
+        <dict>
+            <key>ts.net</key>
+            <dict>
+                <key>NSIncludesSubdomains</key>
+                <true/>
+                <key>NSExceptionAllowsInsecureHTTPLoads</key>
+                <true/>
+            </dict>
+        </dict>
     </dict>
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>Alondra finds the other Macs running Alondra on this network and connects to them directly.</string>
 </dict>
 </plist>

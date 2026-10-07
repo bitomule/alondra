@@ -25,13 +25,17 @@ struct SettingsScene: View {
         let api = await services.api
         let client = notifications.settingsClient(services: services, owner: owner)
         guard !Task.isCancelled else { return }
+        // Without the relay there is no push, so there is nothing to turn on here.
+        let usesAccount = owner.macs.contains { !$0.local }
         var state = SettingsFeature.State(service: api.base.host() ?? api.base.absoluteString,
-            device: api.device, supportsNotifications: true, automaticallySavesQuietHours: true)
-        state.macs = owner.macs.map { MacChoice(id: $0.id, macID: $0.macID) }
+            device: api.device, supportsNotifications: usesAccount, automaticallySavesQuietHours: true,
+            usesAccount: usesAccount)
+        state.macs = owner.macs
         state.selectedMacID = owner.selectedMacID
         store = Store(initialState: state) { SettingsFeature() } withDependencies: {
                 $0.serviceSettings = client
                 $0.cloudPairing = owner.additionalMacPairing
+                $0.findMac = owner.findMacClient
             }
     }
 }

@@ -16,6 +16,8 @@ public enum ConnectionProblem: Equatable, Sendable {
     case sessionExpired
     /// The Mac or relay no longer accepts this device; it has to be paired again.
     case deviceRevoked
+    /// A Mac paired without an account answers on none of its direct routes from this network.
+    case macNotOnNetwork
     /// An earlier sign-out could not reach the server; it has to finish before signing in again.
     case signOutIncomplete
     case unexpected

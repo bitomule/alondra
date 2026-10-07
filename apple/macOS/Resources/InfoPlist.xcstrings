@@ -1,0 +1,22 @@
+{
+  "sourceLanguage": "en",
+  "strings": {
+    "NSLocalNetworkUsageDescription": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Alondra finds the other Macs running Alondra on this network and connects to them directly."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Alondra busca los otros Mac de esta red que usan Alondra y se conecta a ellos directamente."
+          }
+        }
+      }
+    }
+  },
+  "version": "1.0"
+}

@@ -46,6 +46,23 @@ public actor PairingClient {
         try store.delete()
     }
 
+    /// Signing out removes the account's pairings and keeps the ones made on the local network.
+    public func removeRelayPairings() throws {
+        attempts.removeAll()
+        try store.modify { $0.removeRelayPairings() }
+    }
+
+    public func removePairing(_ id: ApprovedPairingID) throws {
+        try store.modify { $0.remove(id) }
+    }
+
+    /// Writes only when something new was learned, so Bonjour updates do not churn the Keychain.
+    public func updateRoutes(_ id: ApprovedPairingID, routes: [DirectEndpoint], name: String?) throws {
+        var probe = try store.loadCollection()
+        guard probe.updateRoutes(id, routes: routes, name: name) else { return }
+        try store.modify { _ = $0.updateRoutes(id, routes: routes, name: name) }
+    }
+
     /// Submit a candidate. The returned code must remain visible until the Mac owner types it.
     public func begin(
         qrPayload: String, authorization: PairingAuthorization, displayName: String,
@@ -61,7 +78,7 @@ public actor PairingClient {
         }
         if rejectExistingMac, try store.loadCollection().pairings.contains(where: {
             $0.ownerSub == authorization.ownerSub && $0.macID == invitation.macID &&
-                Self.sameRelay($0.relayURL, invitation.url)
+                $0.relayURL.map { Self.sameRelay($0, invitation.url) } == true
         }) { throw PairingError.alreadyLinked }
         let signing = P256.Signing.PrivateKey()
         let agreement = P256.KeyAgreement.PrivateKey()
@@ -146,7 +163,16 @@ public actor PairingClient {
                     signingPrivateKey: attempt.signingPrivateKey,
                     agreementPrivateKey: attempt.agreementPrivateKey,
                     approvedAtMs: currentMs())
-                try store.save(approved)
+                // Linking the account to a Mac already paired on the local network replaces that
+                // pairing: the relay one keeps its direct routes and the Mac appears once.
+                try store.modify { collection in
+                    try collection.upsert(approved)
+                    for local in collection.pairings where local.macID == approved.macID && !local.hasRelay {
+                        _ = collection.updateRoutes(ApprovedPairingID(approved), routes: local.routes ?? [], name: local.name)
+                        collection.remove(ApprovedPairingID(local))
+                    }
+                    try collection.select(ApprovedPairingID(approved))
+                }
                 attempts.removeValue(forKey: id)
                 return approved
             case 404:

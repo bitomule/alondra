@@ -126,6 +126,10 @@ public struct PairingView: View {
             .padding(.top, 12)
         }
         .font(.callout)
-        if !store.additionalMac { Button("Use another account") { store.send(.logout) }.font(.footnote) }
+        if store.additionalMac {
+            Button("Find a Mac on this network instead") { store.send(.showAccount(false)) }.font(.footnote)
+        } else {
+            Button("Use another account") { store.send(.logout) }.font(.footnote)
+        }
     }
 }

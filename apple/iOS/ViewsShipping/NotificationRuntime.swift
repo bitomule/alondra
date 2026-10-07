@@ -47,13 +47,15 @@ final class NotificationRuntime {
         var clients: [NotificationClient] = []
         var selected: NotificationPayload.Binding?
         var destinations: [NotificationPayload.Binding: ApprovedPairingID] = [:]
+        // A Mac paired on the local network has no relay and so no push: it never registers.
         for entry in snapshot.entries {
             let approved = entry.approved
+            guard let relayURL = approved.relayURL, let ownerSub = approved.ownerSub else { continue }
             let signing = try P256.Signing.PrivateKey(rawRepresentation: approved.signingPrivateKey)
             let revision = SHA256.hash(data: signing.publicKey.rawRepresentation + Data(approved.macSigningKey.utf8)
-                + Data(approved.ownerSub.utf8) + Data(String(approved.approvedAtMs).utf8))
+                + Data(ownerSub.utf8) + Data(String(approved.approvedAtMs).utf8))
                 .map { String(format: "%02x", $0) }.joined()
-            let scope = NotificationBindingScope(relayURL: approved.relayURL, ownerSub: approved.ownerSub,
+            let scope = NotificationBindingScope(relayURL: relayURL, ownerSub: ownerSub,
                 macID: approved.macID, deviceID: approved.deviceID, credentialRevision: revision)
             guard let binding = bindings.binding(scope: scope) else { throw ProvisioningError.binding }
             contexts.append(NotificationDecryptionContext(macID: approved.macID, deviceID: approved.deviceID,
@@ -70,7 +72,7 @@ final class NotificationRuntime {
         do {
             await push.refreshAuthorization()
             guard current == generation, !Task.isCancelled else { throw CancellationError() }
-            if push.authorization == .notDetermined { await push.activate() }
+            if push.authorization == .notDetermined, !clients.isEmpty { await push.activate() }
             guard current == generation, !Task.isCancelled else { throw CancellationError() }
             guard let vault else { throw ProvisioningError.missingKeychainGroup }
             let routes = zip(clients, contexts).map { NotificationRoutingCoordinator.Entry(client: $0.0, context: $0.1) }
@@ -121,9 +123,10 @@ final class NotificationRuntime {
         drainUnregistrations()
     }
 
+    /// A Mac paired on the local network has no relay, so it never has a push binding.
     func pushBinding(for approved: ApprovedServicePairing) -> String? {
-        bindings.registered(relayURL: approved.relayURL, ownerSub: approved.ownerSub,
-                            macID: approved.macID, deviceID: approved.deviceID)
+        guard let relayURL = approved.relayURL, let ownerSub = approved.ownerSub else { return nil }
+        return bindings.registered(relayURL: relayURL, ownerSub: ownerSub, macID: approved.macID, deviceID: approved.deviceID)
     }
 
     func drainUnregistrations() {

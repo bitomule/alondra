@@ -1,10 +1,11 @@
+import AlondraTransport
 import Foundation
 
 /// A local binding identity, not authorization. OIDC issuer is not stored in the legacy
 /// pairing contract; callers must still validate the configured provider and owner.
 public struct ApprovedPairingID: Codable, Hashable, Sendable {
-    public let relayURL: URL
-    public let ownerSub: String
+    public let relayURL: URL?
+    public let ownerSub: String?
     public let macID: String
     public let deviceID: String
 
@@ -40,8 +41,9 @@ public struct ApprovedPairingCollection: Codable, Sendable {
     /// after explicit removal; repeated saves never change a journal's revision.
     public mutating func upsert(_ pairing: ApprovedServicePairing) throws {
         let id = ApprovedPairingID(pairing)
-        for existing in pairings where existing.relayURL == pairing.relayURL &&
-            existing.ownerSub == pairing.ownerSub && existing.macID == pairing.macID {
+        // A Mac paired without an account is pinned against every saved pairing of that Mac.
+        for existing in pairings where existing.macID == pairing.macID && (!pairing.hasRelay || !existing.hasRelay
+            || existing.relayURL == pairing.relayURL && existing.ownerSub == pairing.ownerSub) {
             guard existing.macSigningKey == pairing.macSigningKey,
                   existing.macAgreementKey == pairing.macAgreementKey else {
                 throw PairingStoreError.identityConflict
@@ -57,6 +59,31 @@ public struct ApprovedPairingCollection: Codable, Sendable {
             pairings.append(pairing)
         }
         selectedID = id
+    }
+
+    /// Keeps the addresses a Mac answers on directly. Keys and identity never change here.
+    public mutating func updateRoutes(_ id: ApprovedPairingID, routes: [DirectEndpoint], name: String?) -> Bool {
+        guard let index = pairings.firstIndex(where: { ApprovedPairingID($0) == id }) else { return false }
+        let known = pairings[index].routes ?? []
+        let merged = Array((known + routes.filter { !known.contains($0) }).suffix(12))
+        let renamed = name.map { !$0.isEmpty && $0 != pairings[index].name } ?? false
+        guard merged != known || renamed else { return false }
+        pairings[index].routes = merged
+        if renamed { pairings[index].name = name }
+        return true
+    }
+
+    public mutating func remove(_ id: ApprovedPairingID) {
+        pairings.removeAll { ApprovedPairingID($0) == id }
+        if selectedID == id { selectedID = pairings.first.map(ApprovedPairingID.init) }
+    }
+
+    /// Signing out of the account removes only the pairings that depend on it.
+    public mutating func removeRelayPairings() {
+        pairings.removeAll(where: \.hasRelay)
+        if let selectedID, !pairings.contains(where: { ApprovedPairingID($0) == selectedID }) {
+            self.selectedID = pairings.first.map(ApprovedPairingID.init)
+        }
     }
 
     public mutating func select(_ id: ApprovedPairingID) throws {

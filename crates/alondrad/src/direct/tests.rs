@@ -135,6 +135,18 @@ async fn get(base: &str, path: &str) -> (u16, serde_json::Value) {
 }
 
 #[tokio::test]
+async fn a_device_paired_directly_is_listed_as_direct_and_this_macs_clients_as_mac() {
+    let direct = Phone::new("phone-a", 40);
+    let relay = Phone::new("phone-b", 50);
+    let f = fixture(&[&direct, &relay]).await;
+    remember_direct(&f.home, "phone-a").unwrap();
+    remember_direct(&f.home, "phone-a").unwrap();
+    assert_eq!(f.direct.service.device_origin("phone-a"), "direct");
+    assert_eq!(f.direct.service.device_origin("phone-b"), "relay");
+    assert_eq!(f.direct.service.device_origin("mac-app"), "mac");
+}
+
+#[tokio::test]
 async fn hello_names_the_mac_and_its_public_keys() {
     let f = fixture(&[]).await;
     let (status, hello) = get(&f.base, "/direct/hello").await;

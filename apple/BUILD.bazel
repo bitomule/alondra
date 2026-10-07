@@ -17,6 +17,13 @@ sh_test(
     data = [":localization_catalogs"],
 )
 
+sh_test(
+    name = "release_bonjour_test",
+    srcs = ["release_bonjour_test.sh"],
+    args = ["$(rootpath Bonjour/Bonjour.plist)", "$(rootpath iOS/Info.plist)", "$(rootpath macOS/Info.plist)"],
+    data = ["Bonjour/Bonjour.plist", "iOS/Info.plist", "macOS/Info.plist"],
+)
+
 PUSH_KEYCHAIN_FILES = [
     "iOS/Info.plist",
     "iOSNotificationService/Info.plist",
@@ -102,6 +109,18 @@ config_setting(
     define_values = {"alondra_distribution": "1"},
 )
 
+# `--define=alondra_sandbox=1` builds apps that also browse the e2e sandbox's Macs
+# (`_alondra-sandbox._tcp`); every other build, releases included, lists only the real service.
+config_setting(
+    name = "sandbox",
+    define_values = {"alondra_sandbox": "1"},
+)
+
+BONJOUR_PLIST = select({
+    ":sandbox": ["Bonjour/BonjourSandbox.plist"],
+    "//conditions:default": ["Bonjour/Bonjour.plist"],
+})
+
 apple_bundle_version(
     name = "DistributionVersion",
     build_label_pattern = "alondra_{version}_{build}",
@@ -115,7 +134,7 @@ macos_application(
     app_icons = glob(["IconConcepts/Alondra.icon/**"]),
     bundle_id = MAC_BUNDLE_ID,
     bundle_name = "Alondra",
-    infoplists = ["macOS/Info.plist"],
+    infoplists = ["macOS/Info.plist"] + BONJOUR_PLIST,
     entitlements = select({":distribution": "macOS/AppStore.entitlements", "//conditions:default": None}),
     provisioning_profile = select({":distribution": "//signing:Alondra_Mac_AppStore.provisionprofile", "//conditions:default": None}),
     minimum_os_version = "26.0",
@@ -176,7 +195,7 @@ ios_application(
     bundle_name = "Alondra",
     entitlements = select({":distribution": "iOS/AppStore.entitlements", "//conditions:default": "iOS/Alondra.entitlements"}),
     families = ["iphone"],
-    infoplists = ["iOS/Info.plist"],
+    infoplists = ["iOS/Info.plist"] + BONJOUR_PLIST,
     minimum_os_version = "26.0",
     resources = glob(["iOS/Resources/*.xcstrings"]) + ["//fixtures/views:cards_ios"],
     version = select({":distribution": ":DistributionVersion", "//conditions:default": ":Version"}),

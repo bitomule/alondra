@@ -249,6 +249,7 @@ fn direct_approval(
             },
         )
         .map_err(|error| error.to_string())?;
+        direct::remember_direct(&home, &device.device_id).map_err(|error| error.to_string())?;
         drop(lock);
         auth.approve_service(&device.device_id, &device.name, &device.signing_key)?;
         service.reload_devices().map_err(|error| format!("{error:#}"))

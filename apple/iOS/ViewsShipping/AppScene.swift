@@ -113,7 +113,7 @@ private struct ApprovedServiceScene: View {
                 RootView(store: store,
                     accountContent: SettingsScene(services: services, owner: owner,
                                                         notifications: notifications, context: context.settings))
-                    .connectionLostOverlay(store: store, retry: retry,
+                    .connectionLostOverlay(store: store, diagnose: { await services.diagnose() }, retry: retry,
                                            signIn: { owner.store.send(.reauthenticate) })
             } else { ProgressView("Opening workspace…") }
         }
