@@ -87,3 +87,19 @@ checks:
         - //apple/Testing/MacSnapshots:AlondraMacSnapshotTests
         - //apple:AlondraMacServiceNavigationTests
         - //apple:AlondraMacWorkspaceOwnerTests
+
+  # The tests a change adds or edits must fail on the base's production code and pass on the
+  # branch (`make ablation`). The extension refuses a log about other code than what is on disk;
+  # these paths are what its fingerprint covers.
+  ablation:
+    uses: ablation/check
+    paths:
+      - "crates/**"
+      - "fixtures/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "MODULE.bazel"
+      - ".bazelrc"
+      - ".bazelversion"
+      - "**/*.bazel"
+      - "**/*.bzl"

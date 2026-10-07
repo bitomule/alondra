@@ -1,0 +1,10 @@
+name: ablation
+version: 0.1.0
+
+capabilities:
+  check:
+    uses: ablation/check
+    resolve:
+      command: ["./ablation-check.sh", "resolve"]
+    evidence:
+      command: ["./ablation-check.sh", "evidence"]

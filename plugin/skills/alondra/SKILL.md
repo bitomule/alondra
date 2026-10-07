@@ -85,6 +85,8 @@ Pick the tool by what you need:
   this session is not a delivery. Commit and push everything first: Alondra refuses a final result
   while your worktree has uncommitted files, unpushed commits, or work that is neither on the
   default branch nor in your registered PR, and says what is left.
+  When the repository has its own check that proves the new tests fail without the change, run
+  it before delivering and put its result in the report instead of describing that proof yourself.
 - When the user accepts your final result (for a PR, once Alondra has merged it) the task is
   closing: Alondra asks you to delete what you generated that git does not track (build outputs,
   caches, temporary files), with the project's own tools, and to call `cleanup_done`. Change
