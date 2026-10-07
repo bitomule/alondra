@@ -522,3 +522,59 @@ async fn gh_merges_with_the_method_only_at_the_presented_head_and_reads_status_a
     assert!(calls.contains("api graphql --hostname github.com") && calls.contains("number=7"), "{calls}");
     assert!(!calls.contains("--delete-branch") && !calls.contains("--auto"), "{calls}");
 }
+
+const DRAFT_REFUSAL: &str = "PR #7 is a draft: mark it ready with gh pr ready before delivering";
+
+#[tokio::test]
+async fn a_final_delivery_of_a_draft_pr_is_refused_with_the_ready_instruction() {
+    let (_home, domain, github) = presented("draft", false);
+    github.drafts.lock().unwrap().insert(7, Ok(true));
+    let refusal = draft_refusal(&domain.state().unwrap(), &targets(), &github).await.unwrap();
+    assert_eq!(refusal.message, DRAFT_REFUSAL);
+}
+
+#[tokio::test]
+async fn a_final_delivery_of_a_ready_pr_is_accepted() {
+    let (_home, domain, github) = presented("ready-pr", false);
+    github.drafts.lock().unwrap().insert(7, Ok(false));
+    assert_eq!(draft_refusal(&domain.state().unwrap(), &targets(), &github).await, None);
+}
+
+#[tokio::test]
+async fn when_github_cannot_say_if_the_pr_is_a_draft_the_delivery_is_accepted_and_the_merger_marks_it_ready_first() {
+    let (_home, domain, github) = presented("draft-unknown", false);
+    github.drafts.lock().unwrap().insert(7, Err("network down".into()));
+    assert_eq!(draft_refusal(&domain.state().unwrap(), &targets(), &github).await, None);
+    accept(&domain);
+    now().merge_due(&domain, &github).await.unwrap();
+    assert_eq!(*github.calls.lock().unwrap(), vec!["ready 7".to_owned(), "merge 7".to_owned()]);
+}
+
+#[tokio::test]
+async fn when_marking_the_pr_ready_fails_nothing_is_merged_and_the_real_reason_is_kept() {
+    let (_home, domain, github) = presented("ready-fails", false);
+    github.drafts.lock().unwrap().insert(7, Ok(true));
+    github.readies.lock().unwrap().insert(7, Err("GraphQL: Pull request is in a state that cannot be marked ready".into()));
+    accept(&domain);
+    now().merge_due(&domain, &github).await.unwrap();
+    assert!(github.merged.lock().unwrap().is_empty());
+    assert!(feedback(&domain).iter().any(|body| body.contains("cannot be marked ready")), "{:?}", feedback(&domain));
+}
+
+#[tokio::test]
+async fn a_pr_github_says_is_ready_is_merged_without_marking_it_ready() {
+    let (_home, domain, github) = presented("merge-ready", false);
+    github.drafts.lock().unwrap().insert(7, Ok(false));
+    accept(&domain);
+    now().merge_due(&domain, &github).await.unwrap();
+    assert_eq!(*github.calls.lock().unwrap(), vec!["merge 7".to_owned()]);
+}
+
+#[tokio::test]
+async fn a_draft_pr_is_marked_ready_before_it_is_merged() {
+    let (_home, domain, github) = presented("merge-draft", false);
+    github.drafts.lock().unwrap().insert(7, Ok(true));
+    accept(&domain);
+    now().merge_due(&domain, &github).await.unwrap();
+    assert_eq!(*github.calls.lock().unwrap(), vec!["ready 7".to_owned(), "merge 7".to_owned()]);
+}

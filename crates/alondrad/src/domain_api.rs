@@ -980,6 +980,12 @@ async fn execute_command<H: DomainHost>(
         {
             return domain_error(refusal);
         }
+        if let (Principal::Agent { .. }, Command::PresentResult { targets, is_final: true, .. }) = (&principal, &envelope.command)
+            && let Ok(state) = host.domain().state()
+            && let Some(refusal) = crate::domain_merges::draft_refusal(&state, targets, &crate::domain_github::GhCli::new()).await
+        {
+            return domain_error(refusal);
+        }
         if let Err(error) = check_launch_plan(host.domain(), host.home(), &principal, &envelope.command, plan.as_ref()) {
             return domain_error(error);
         }

@@ -8,7 +8,7 @@ use crate::domain_github::{GhCli, execute_system, pr_url};
 use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::StoreError;
 use alondra_core::domain::{
-    AuthorizationId, CardSpec, Command, DeliveryTarget, DomainState, Instruction, InteractionId, InteractionPayload,
+    AuthorizationId, CardSpec, Command, DeliveryTarget, DomainError, DomainState, Instruction, InteractionId, InteractionPayload,
     MergeAttemptState, MergeMethod, PrId, PrState, PullRequest, Scope, clip,
 };
 use anyhow::Result;
@@ -46,6 +46,8 @@ pub(crate) trait PrMerger: Send + Sync + 'static {
     /// it in its merge queue.
     fn merge<'a>(&'a self, pr: &'a PullRequest, head: &'a str, method: MergeMethod) -> Pending<'a, ()>;
     fn in_queue<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, bool>;
+    fn is_draft<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, bool>;
+    fn ready<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, ()>;
 }
 
 impl<T: PrMerger> PrMerger for Arc<T> {
@@ -57,6 +59,12 @@ impl<T: PrMerger> PrMerger for Arc<T> {
     }
     fn in_queue<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, bool> {
         (**self).in_queue(pr)
+    }
+    fn is_draft<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, bool> {
+        (**self).is_draft(pr)
+    }
+    fn ready<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, ()> {
+        (**self).ready(pr)
     }
 }
 
@@ -80,6 +88,23 @@ impl PrMerger for GhCli {
                 MergeMethod::Rebase => "--rebase",
             };
             self.run(&["pr", "merge", &url, flag, "--match-head-commit", head], None, Duration::from_secs(120)).await.map(|_| ())
+        })
+    }
+    fn is_draft<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, bool> {
+        Box::pin(async move {
+            let url = pr_url(&pr.host, &pr.repository, pr.number);
+            let out = self.run(&["pr", "view", &url, "--json", "isDraft", "--jq", ".isDraft"], None, Duration::from_secs(30)).await?;
+            match String::from_utf8_lossy(&out).trim() {
+                "true" => Ok(true),
+                "false" => Ok(false),
+                other => Err(format!("GitHub did not say whether the PR is a draft: {other}")),
+            }
+        })
+    }
+    fn ready<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, ()> {
+        Box::pin(async move {
+            let url = pr_url(&pr.host, &pr.repository, pr.number);
+            self.run(&["pr", "ready", &url], None, Duration::from_secs(60)).await.map(|_| ())
         })
     }
     fn in_queue<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, bool> {
@@ -188,6 +213,20 @@ fn has(reason: &str, signs: &[&str]) -> bool {
 /// GitHub or the network did not answer.
 fn transient(reason: &str) -> bool {
     has(reason, &["error connecting", "timed out", "did not finish", "could not resolve", "connection", "http 5", "502", "503", "504", "rate limit"])
+}
+
+/// A final delivery whose PR GitHub confirms is still a draft cannot be merged, so it is refused;
+/// when GitHub does not answer, the delivery is accepted and the merger marks the PR ready itself.
+pub(crate) async fn draft_refusal(state: &DomainState, targets: &[DeliveryTarget], github: &impl PrMerger) -> Option<DomainError> {
+    for target in targets {
+        let DeliveryTarget::PullRequest { pr_id, .. } = target else { continue };
+        let Some(pr) = state.pull_requests.get(pr_id) else { continue };
+        if github.is_draft(pr).await == Ok(true) {
+            return Some(DomainError::new("pull_request_is_draft", format!(
+                "PR #{} is a draft: mark it ready with gh pr ready before delivering", pr.number)));
+        }
+    }
+    None
 }
 
 /// `gh` itself cannot work here: missing, logged out, or without access.
@@ -371,7 +410,15 @@ impl Merger {
         if !still_due(&domain.state()?, item, &authorization) {
             return Ok(Step::Settled);
         }
-        match github.merge(pr, &item.head, item.method).await {
+        let marked = match github.is_draft(pr).await {
+            Ok(false) => Ok(()),
+            Ok(true) | Err(_) => github.ready(pr).await,
+        };
+        let merged = match marked {
+            Ok(()) => github.merge(pr, &item.head, item.method).await,
+            Err(reason) => Err(reason),
+        };
+        match merged {
             Ok(()) => {
                 self.transient.remove(&pr.id);
                 if let Some(Trouble { card: Some(card), .. }) = self.merge_trouble.remove(&pr.id) {
@@ -601,13 +648,19 @@ pub(crate) struct FakeGithub {
     pub on_read: std::sync::Mutex<Option<Box<dyn FnOnce() + Send>>>,
     /// PRs the queue merges between Alondra's status read and its queue check.
     pub merged_by_queue: std::sync::Mutex<BTreeSet<u64>>,
+    /// What GitHub answers to "is it a draft", per PR; unlisted PRs are not drafts.
+    pub drafts: std::sync::Mutex<BTreeMap<u64, Result<bool, String>>>,
+    pub readies: std::sync::Mutex<BTreeMap<u64, Result<(), String>>>,
+    /// `ready` and `merge` calls, in the order they happened.
+    pub calls: std::sync::Mutex<Vec<String>>,
 }
 
 #[cfg(test)]
 impl FakeGithub {
     pub(crate) fn new() -> Self {
         Self { statuses: Default::default(), merges: Default::default(), queue: Default::default(),
-            merged: Default::default(), reads: Default::default(), on_read: Default::default(), merged_by_queue: Default::default() }
+            merged: Default::default(), reads: Default::default(), on_read: Default::default(), merged_by_queue: Default::default(),
+            drafts: Default::default(), readies: Default::default(), calls: Default::default() }
     }
     pub(crate) fn open(&self, number: u64, head: &str, checks: Checks) {
         self.statuses.lock().unwrap().insert(number, Ok(Status { state: PrState::Open, head: head.into(), base: "main".into(), checks }));
@@ -626,6 +679,7 @@ impl PrMerger for FakeGithub {
     }
     fn merge<'a>(&'a self, pr: &'a PullRequest, head: &'a str, method: MergeMethod) -> Pending<'a, ()> {
         let result = self.merges.lock().unwrap().get(&pr.number).cloned().unwrap_or(Ok(()));
+        self.calls.lock().unwrap().push(format!("merge {}", pr.number));
         if result.is_ok() {
             self.merged.lock().unwrap().push((pr.number, head.to_owned(), method));
             if !self.queue.lock().unwrap().contains_key(&pr.number)
@@ -634,6 +688,15 @@ impl PrMerger for FakeGithub {
                 status.state = PrState::Merged;
             }
         }
+        Box::pin(async move { result })
+    }
+    fn is_draft<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, bool> {
+        let draft = self.drafts.lock().unwrap().get(&pr.number).cloned().unwrap_or(Ok(false));
+        Box::pin(async move { draft })
+    }
+    fn ready<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, ()> {
+        self.calls.lock().unwrap().push(format!("ready {}", pr.number));
+        let result = self.readies.lock().unwrap().get(&pr.number).cloned().unwrap_or(Ok(()));
         Box::pin(async move { result })
     }
     fn in_queue<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, bool> {
