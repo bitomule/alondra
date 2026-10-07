@@ -43,7 +43,7 @@ fn iso(millis: i64) -> String {
     )
 }
 
-fn minutes_ago(minutes: i64) -> String {
+pub(super) fn minutes_ago(minutes: i64) -> String {
     iso(alondra_core::now_millis() - minutes * 60_000)
 }
 
