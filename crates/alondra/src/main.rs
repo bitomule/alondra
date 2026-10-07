@@ -102,11 +102,7 @@ enum Cmd {
         reason: Option<String>,
     },
     #[command(about = tr!("Close a node's session (name, short id or session_id)", "Cierra la sesión de un nodo (nombre, id corto o session_id)"))]
-    Close {
-        node: String,
-        #[arg(long, help = tr!("Close even with unpushed work or open questions", "Cierra aunque tenga trabajo sin subir o preguntas abiertas"))]
-        force: bool,
-    },
+    Close { node: String },
     #[command(about = tr!("Open a node's terminal (← on an empty line, Ctrl+Z or /exit returns)", "Abre el terminal de un nodo (← con la línea vacía, Ctrl+Z o /exit vuelven)"))]
     Attach { node: String },
     #[command(about = tr!(
@@ -217,7 +213,7 @@ fn main() -> Result<()> {
         Some(Cmd::Answer { id, option, text }) => cli::answer_cmd(&id, option.as_deref(), &text.join(" ")),
         Some(Cmd::Send { node, text }) => cli::send(&node, &text.join(" ")),
         Some(Cmd::Cancel { tasks, reason }) => cli::cancel(&tasks, reason.as_deref()),
-        Some(Cmd::Close { node, force }) => cli::close(&node, force),
+        Some(Cmd::Close { node }) => cli::close(&node),
         Some(Cmd::Attach { node }) => cli::attach(&node),
         Some(Cmd::Pair { url: None }) if client::config().home.join("service.toml").exists() => service_pair::run(&client::config().home),
         Some(Cmd::Pair { url }) => match url.or_else(|| setup::pairing_url(client::config())) {
@@ -590,7 +586,8 @@ mod mcp_entrypoint_tests {
             else { panic!("cancel did not parse") };
         assert_eq!((tasks, reason.as_deref()), (vec!["t-1".to_string(), "t-2".to_string()], Some("done elsewhere")));
         assert!(Cli::try_parse_from(["alondra", "cancel"]).is_err());
-        assert!(matches!(Cli::try_parse_from(["alondra", "close", "node", "--force"]).unwrap().command, Some(Cmd::Close { force: true, .. })));
+        assert!(matches!(Cli::try_parse_from(["alondra", "close", "node"]).unwrap().command, Some(Cmd::Close { .. })));
+        assert!(Cli::try_parse_from(["alondra", "close", "node", "--force"]).is_err(), "--force would discard unsaved work, so it does not exist");
     }
 }
 

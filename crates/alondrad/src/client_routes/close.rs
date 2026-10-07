@@ -9,18 +9,16 @@ use serde_json::{Value, json};
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Body {
-    #[serde(default)]
-    #[allow(dead_code)]
-    force: bool,
-}
+struct Body {}
 
 fn refused(message: impl Into<String>, reasons: Vec<Reason>) -> Reply {
-    Reply { status: StatusCode::CONFLICT, body: json!({"error": message.into(), "reasons": reasons}) }
+    let message = message.into();
+    Reply { status: StatusCode::CONFLICT, body: json!({"code": "close_refused", "error": message, "message": message, "reasons": reasons}) }
 }
 
 fn failed(status: StatusCode, message: impl Into<String>) -> Reply {
-    Reply { status, body: json!({"error": message.into()}) }
+    let message = message.into();
+    Reply { status, body: json!({"code": "close_failed", "error": message, "message": message}) }
 }
 
 impl Client {

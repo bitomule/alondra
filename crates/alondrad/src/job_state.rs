@@ -28,6 +28,8 @@ pub(crate) struct Job {
     pub updated_at: Millis,
     /// The `--settings` file `claude respawn` passes the session again.
     pub settings: Option<PathBuf>,
+    /// The worktree Claude Code made for the session, which `claude rm` deletes with it.
+    pub worktree: Option<PathBuf>,
 }
 
 /// None unless the file names `session` and carries a state and an update time.
@@ -56,6 +58,7 @@ pub(crate) fn parse(text: &str, session: &str) -> Option<Job> {
         tasks: value["inFlight"]["tasks"].as_u64().unwrap_or(0),
         updated_at,
         settings,
+        worktree: value["worktreePath"].as_str().map(PathBuf::from),
     })
 }
 

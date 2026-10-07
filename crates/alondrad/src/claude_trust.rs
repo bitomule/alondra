@@ -40,12 +40,25 @@ pub fn untrusted(config: &Path, cwd: &Path) -> Option<PathBuf> {
     let cwd = cwd.canonicalize().ok()?;
     let repository = cwd.ancestors().find(|dir| dir.join(".git").exists()).unwrap_or(&cwd).to_path_buf();
     let document: Value = serde_json::from_str(&std::fs::read_to_string(config).ok()?).ok()?;
-    let trusted = document
-        .get("projects")
-        .and_then(|projects| projects.get(repository.to_str()?))
-        .and_then(|project| project.get("hasTrustDialogAccepted"))
-        == Some(&Value::Bool(true));
+    let accepted = |dir: &Path| {
+        dir.to_str().and_then(|dir| document.get("projects")?.get(dir)?.get("hasTrustDialogAccepted"))
+            == Some(&Value::Bool(true))
+    };
+    let trusted = accepted(&repository) || main_checkout(&repository).is_some_and(|main| accepted(&main));
     (!trusted).then_some(repository)
+}
+
+/// The repository a linked worktree belongs to, which Claude Code trusts it through. Its links
+/// must agree both ways, as Claude Code checks them: a `.git` file naming
+/// `<main>/.git/worktrees/<name>`, whose `commondir` is `<main>/.git` and whose `gitdir` names
+/// this worktree back, so a crafted repository cannot borrow another one's trust.
+fn main_checkout(worktree: &Path) -> Option<PathBuf> {
+    let link = std::fs::read_to_string(worktree.join(".git")).ok()?;
+    let admin = worktree.join(link.trim().strip_prefix("gitdir:")?.trim()).canonicalize().ok()?;
+    let common = admin.join(std::fs::read_to_string(admin.join("commondir")).ok()?.trim()).canonicalize().ok()?;
+    let named_back = PathBuf::from(std::fs::read_to_string(admin.join("gitdir")).ok()?.trim()).canonicalize().ok()?;
+    let linked = admin.parent()? == common.join("worktrees") && named_back == worktree.join(".git");
+    (linked && common.file_name()? == ".git").then(|| common.parent().map(Path::to_path_buf))?
 }
 
 /// What the user does to trust `repository`; Alondra never does it for them.
@@ -122,6 +135,61 @@ mod tests {
         let config = fixture.config(serde_json::json!({nested.to_str().unwrap(): {"hasTrustDialogAccepted": true}}));
 
         assert_eq!(untrusted(&config, &nested), Some(quill));
+    }
+
+    /// A linked worktree as `git worktree add` lays it out, under `<main>/.claude/worktrees/<name>`.
+    fn worktree(main: &Path, name: &str) -> PathBuf {
+        let dir = main.join(".claude/worktrees").join(name);
+        let admin = main.join(".git/worktrees").join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::create_dir_all(&admin).unwrap();
+        std::fs::write(dir.join(".git"), format!("gitdir: {}\n", admin.display())).unwrap();
+        std::fs::write(admin.join("commondir"), "../..\n").unwrap();
+        std::fs::write(admin.join("gitdir"), format!("{}\n", dir.join(".git").display())).unwrap();
+        dir
+    }
+
+    #[test]
+    fn a_worktree_of_a_trusted_repository_is_trusted_as_claude_code_does() {
+        let fixture = Fixture::new();
+        let alondra = fixture.repository("alondra");
+        let linked = worktree(&alondra, "t-cards-3-tui");
+        let nested = linked.join("crates");
+        std::fs::create_dir_all(&nested).unwrap();
+        let config = fixture.config(serde_json::json!({alondra.to_str().unwrap(): {"hasTrustDialogAccepted": true}}));
+
+        assert_eq!(untrusted(&config, &linked), None);
+        assert_eq!(untrusted(&config, &nested), None);
+    }
+
+    #[test]
+    fn a_worktree_of_an_untrusted_repository_is_untrusted() {
+        let fixture = Fixture::new();
+        let lumo = fixture.repository("Lumo");
+        let linked = worktree(&lumo, "feature");
+        let config = fixture.config(serde_json::json!({}));
+
+        assert_eq!(untrusted(&config, &linked), Some(linked));
+    }
+
+    #[test]
+    fn a_crafted_worktree_link_does_not_borrow_another_repositorys_trust() {
+        let fixture = Fixture::new();
+        let trusted = fixture.repository("Trusted");
+        let real = worktree(&trusted, "real");
+        let config = fixture.config(serde_json::json!({trusted.to_str().unwrap(): {"hasTrustDialogAccepted": true}}));
+        let cloned = fixture.dir.join("Cloned");
+        std::fs::create_dir_all(&cloned).unwrap();
+        std::fs::write(cloned.join(".git"), format!("gitdir: {}\n", trusted.join(".git/worktrees/real").display())).unwrap();
+        assert_eq!(untrusted(&config, &cloned), Some(cloned.clone()), "the trusted worktree does not name it back");
+
+        let admin = cloned.join("admin");
+        std::fs::create_dir_all(&admin).unwrap();
+        std::fs::write(cloned.join(".git"), format!("gitdir: {}\n", admin.display())).unwrap();
+        std::fs::write(admin.join("commondir"), format!("{}\n", trusted.join(".git").display())).unwrap();
+        std::fs::write(admin.join("gitdir"), format!("{}\n", cloned.join(".git").display())).unwrap();
+        assert_eq!(untrusted(&config, &cloned), Some(cloned), "a commondir pointing at a trusted repository is not enough");
+        assert_eq!(untrusted(&config, &real), None);
     }
 
     #[test]

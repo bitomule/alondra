@@ -96,6 +96,9 @@ pub(crate) struct LaunchBody {
     /// What a relaunch passes when the orchestrator chose the model: the one the task had.
     #[serde(skip)]
     relaunch_model: Option<String>,
+    /// Stops the task's current node and launches this one in its folder, keeping its files.
+    #[serde(default)]
+    replace: bool,
     /// Orchestrators written when going over pace needed the user's word still send it.
     #[serde(default, rename = "over_pace_ok")]
     _over_pace_ok: bool,
@@ -115,6 +118,7 @@ impl LaunchBody {
             approach: plan.approach,
             reason: plan.reason.clone(),
             relaunch_model: None,
+            replace: false,
             _over_pace_ok: false,
         }
     }
@@ -169,7 +173,17 @@ async fn launch_guarded(domain: &DomainRuntime, home: &Path, actor: &Actor, body
     let conflict = |message: String| DomainError::new("conflict", message);
     let current = state(domain)?;
     let task = current.tasks.get(&body.task).ok_or_else(|| DomainError::new("not_found", "task does not exist"))?;
-    let assigned_before = task.agent_id.clone();
+    let mut assigned_before = task.agent_id.clone();
+    let replaced = match (&assigned_before, body.replace) {
+        (Some(old), true) => Some(old.clone()),
+        (None, true) => return Err(DomainError::new("invalid_input", format!("{} has no node to replace: launch it without replace", body.task))),
+        (_, false) => None,
+    };
+    let mut body = body;
+    if let Some(old) = &replaced {
+        body.cwd = body.cwd.or_else(|| node_folder(domain, &old.0));
+        body.name = body.name.or_else(|| current.agents.get(old).map(|agent| agent.name.clone()));
+    }
     let plan = domain.launch_plan(&task.id).map_err(|_| DomainError::new("storage_unavailable", "domain state unavailable"))?;
     let body = body.with_plan(plan.as_ref());
     let (Some(name), Some(cwd)) = (body.name.clone(), body.cwd.clone()) else {
@@ -178,7 +192,7 @@ async fn launch_guarded(domain: &DomainRuntime, home: &Path, actor: &Actor, body
     if task.state.terminal() {
         return Err(conflict(format!("{} is closed; reopen it first", body.task)));
     }
-    if task.agent_id.as_ref().and_then(|id| current.agents.get(id)).is_some_and(|a| a.connected) {
+    if replaced.is_none() && task.agent_id.as_ref().and_then(|id| current.agents.get(id)).is_some_and(|a| a.connected) {
         return Err(conflict(format!("{} already has a connected agent; send it what to do", body.task)));
     }
     if let Some(exhausted) = domain.live.usage_pause.current() {
@@ -224,6 +238,10 @@ async fn launch_guarded(domain: &DomainRuntime, home: &Path, actor: &Actor, body
         text
     });
     let mission = format!("{mission}{}{}", prefixed("\n\n", follow_up_context(&current, task)), prefixed("\n\n", asked_changes(&current, task)));
+    let mission = match &replaced {
+        Some(_) => format!("{mission}\n\n{}", continuing_in(Path::new(&cwd)).await),
+        None => mission,
+    };
     let prompt = crate::domain_schedule_runner::producer_prompt(&mission, &resolved, &task.id, body.approach.unwrap_or_default());
     let key = format!("launch-{}", crate::auth::random_hex(8));
     let settings = crate::domain_sessions::prepare(home, &key)
@@ -241,6 +259,13 @@ async fn launch_guarded(domain: &DomainRuntime, home: &Path, actor: &Actor, body
         crate::domain_sessions::release(&settings);
         error
     };
+    if let Some(old) = &replaced {
+        stop_replaced(domain, old, launcher).await.map_err(|reason| discard(DomainError::new("replace_failed", format!(
+            "{} keeps its node, which was not replaced: {reason}", task.id))))?;
+        crate::node_revival::take_out(domain, &old.0, "node replaced by the orchestrator", Some(cwd.clone()))
+            .map_err(|error| discard(DomainError::new("storage_unavailable", format!("could not free {} from its node: {error:#}", task.id))))?;
+        assigned_before = state(domain).map_err(discard)?.tasks.get(&task.id).and_then(|t| t.agent_id.clone());
+    }
     let output = launcher.run(&cwd, &args).await.map_err(|(_, reason)| discard(DomainError::new("launch_failed", reason)))?;
     let Some(session) = domain.live.mods.wait_launched(&key, launcher.mods_deadline()).await else {
         if let Some(short) = alondra_core::sessions::launched_short(&output) {
@@ -290,6 +315,56 @@ async fn launch_guarded(domain: &DomainRuntime, home: &Path, actor: &Actor, body
     domain.live.forget_closed_task(&task.id.0);
     crate::usage_pause::raise_over_pace_card(domain, alondra_core::now_millis());
     Ok(json!({"agent_id": agent_id, "short_id": session.chars().take(8).collect::<String>(), "task": task.id}))
+}
+
+/// Stops the node being replaced once its turn ends, so it is not cut mid-edit: past the launcher's
+/// turn deadline it is interrupted, and then stopped either way. Its watch keeps the revival off it
+/// meanwhile; if the stop fails it is handed back to the revival and the task keeps it.
+async fn stop_replaced(domain: &DomainRuntime, old: &AgentId, launcher: &impl crate::orchestrate::Launcher) -> Result<(), String> {
+    let busy = || domain.live.node(&old.0).is_some_and(|node| node.busy);
+    if !until_idle(busy, launcher.turn_deadline()).await {
+        let _ = domain.live.pushes.interrupt(&old.0);
+        until_idle(busy, launcher.turn_deadline()).await;
+    }
+    let short = domain.live.node(&old.0).map_or_else(|| old.0.chars().take(8).collect(), |node| node.short_id);
+    let watched = domain.live.begin_watch(&old.0);
+    let stopped = launcher.stop_checked(&short).await;
+    if stopped.is_ok() {
+        domain.live.mark_closed(&old.0);
+    }
+    if watched {
+        domain.live.end_watch(&old.0);
+    }
+    if stopped.is_err() {
+        domain.live.losses.report(&old.0);
+    }
+    stopped
+}
+
+/// Waits until `busy` is false, at most `deadline`; true when it is.
+async fn until_idle(busy: impl Fn() -> bool, deadline: std::time::Duration) -> bool {
+    let until = tokio::time::Instant::now() + deadline;
+    while busy() {
+        if tokio::time::Instant::now() >= until {
+            return false;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(250).min(deadline)).await;
+    }
+    true
+}
+
+/// What the node that takes over a worktree is told about where it works.
+async fn continuing_in(dir: &Path) -> String {
+    match crate::worktree::branch_in(dir).await {
+        Some(branch) => format!("You continue in {}, branch {branch}: its files are the earlier node's work. Do not create another worktree and do not use EnterWorktree.", dir.display()),
+        None => format!("You continue in {}: its files are the earlier node's work. Do not create another worktree and do not use EnterWorktree.", dir.display()),
+    }
+}
+
+/// Where a node works: the worktree Claude Code made for it, else the folder it started in.
+fn node_folder(domain: &DomainRuntime, session: &str) -> Option<String> {
+    crate::worktree::worktree_of(session).and_then(|dir| dir.to_str().map(str::to_owned))
+        .or_else(|| domain.live.mods.session(session).and_then(|reported| reported.cwd))
 }
 
 /// A new node for a task whose node the user closed, launched with the task's mission in the

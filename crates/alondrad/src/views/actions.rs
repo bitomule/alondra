@@ -400,8 +400,7 @@ async fn execute_external(
         Verb::Close => {
             let agent = AgentId(action.subject.clone());
             if !state.agents.contains_key(&agent) { return Ok(no_longer_available(lang, "This node is no longer available")); }
-            let force = request.input.fields.get("force").and_then(Value::as_bool).unwrap_or(false);
-            let reply = client.write(&user_id, Write::Close(agent.0), &json!({"force":force}), transport, &authorize).await?;
+            let reply = client.write(&user_id, Write::Close(agent.0), &json!({}), transport, &authorize).await?;
             Ok(to_applied(reply.status.as_u16(), reply.body))
         }
         Verb::Interrupt => {
@@ -1342,13 +1341,33 @@ fn applied(verb: Verb, lang: Lang, stamp: &str, revision: u64, status: u16, body
             _ => stamp,
         };
         json!({"protocol":VIEWS_PROTOCOL,"outcome":"applied","stamp":stamp,"revision":revision,"detail":body})
-    } else if status == 404 || (status == 409 && code != Some("session_unreachable")) {
+    } else if code == Some("close_refused") {
+        json!({"protocol":VIEWS_PROTOCOL,"outcome":"rejected","code":"close_refused","message":close_refusal(lang, &body)})
+    } else if status == 404 || (status == 409 && !matches!(code, Some("session_unreachable" | "close_failed"))) {
         no_longer_available(lang, body.get("message").and_then(Value::as_str).unwrap_or("This action is no longer available"))
     } else {
         let message = body.get("message").and_then(Value::as_str).unwrap_or("Action was rejected");
         let code = code.unwrap_or("action_rejected");
         json!({"protocol":VIEWS_PROTOCOL,"outcome":"rejected","message":rejection_message(lang, code, message),"code":code})
     }
+}
+
+/// Why a node was not closed, from the reasons the close route gives, in the user's language.
+fn close_refusal(lang: Lang, body: &Value) -> String {
+    let es = lang == Lang::Es;
+    let reasons: Vec<String> = body.get("reasons").and_then(Value::as_array).into_iter().flatten().map(|reason| {
+        let detail = reason.get("detail").and_then(Value::as_str).unwrap_or_default();
+        match (reason.get("kind").and_then(Value::as_str).unwrap_or_default(), es) {
+            ("busy", false) => "it is working; wait until it stops".to_owned(),
+            ("busy", true) => "está trabajando; espera a que termine".to_owned(),
+            ("permission", false) => "it is waiting for a permission; answer it first".to_owned(),
+            ("permission", true) => "espera un permiso; respóndelo primero".to_owned(),
+            ("worktree", false) => format!("its worktree has work not saved anywhere else ({detail}); commit and push it, or discard it"),
+            ("worktree", true) => format!("su worktree tiene trabajo sin guardar en otro sitio ({detail}); haz commit y push, o descártalo"),
+            (kind, _) => if detail.is_empty() { kind.to_owned() } else { detail.to_owned() },
+        }
+    }).collect();
+    if es { format!("No se cerró: {}", reasons.join("; ")) } else { format!("It was not closed: {}", reasons.join("; ")) }
 }
 
 fn rejection_message(lang: Lang, code: &str, english: &str) -> String {
@@ -1657,6 +1676,20 @@ mod tests {
         assert!(es["message"].as_str().unwrap().starts_with("El nodo no está conectado a Alondra"), "{es}");
         assert_eq!(reply(Lang::En, 409, json!({"code": "conflict", "message": "stale"}))["outcome"], "no_longer_available");
         assert_eq!(applied(Verb::Reply, Lang::En, "Reply sent", 7, 200, json!({"delivery_state": "handed"}))["stamp"], "Reply sent");
+    }
+
+    #[test]
+    fn a_refused_close_is_rejected_with_its_reasons_not_gone() {
+        let reply = |lang, status, body: Value| applied(Verb::Close, lang, "Closed", 7, status, body);
+        let refused = json!({"code": "close_refused", "message": "a1b2c3d4 still has something pending",
+            "reasons": [{"kind": "permission"}, {"kind": "worktree", "detail": "2 uncommitted file(s) in /w"}]});
+        let es = reply(Lang::Es, 409, refused.clone());
+        assert_eq!((es["outcome"].as_str(), es["code"].as_str()), (Some("rejected"), Some("close_refused")), "{es}");
+        assert_eq!(es["message"], "No se cerró: espera un permiso; respóndelo primero; su worktree tiene trabajo sin guardar en otro sitio (2 uncommitted file(s) in /w); haz commit y push, o descártalo");
+        assert_eq!(reply(Lang::En, 409, json!({"code": "close_refused", "reasons": [{"kind": "busy"}]}))["message"],
+            "It was not closed: it is working; wait until it stops");
+        let failed = reply(Lang::En, 409, json!({"code": "close_failed", "message": "claude rm said 'x' but a1b2c3d4 is still listed"}));
+        assert_eq!((failed["outcome"].as_str(), failed["message"].as_str()), (Some("rejected"), Some("claude rm said 'x' but a1b2c3d4 is still listed")));
     }
 
     #[test]

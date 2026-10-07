@@ -252,12 +252,15 @@ async fn restart_until_back(domain: &DomainRuntime, session: &str, launcher: &im
 /// open go back to not started with no node, to be relaunched. What a relaunch needs of the node
 /// is kept.
 pub(crate) fn user_closed(domain: &DomainRuntime, session: &str) -> anyhow::Result<()> {
+    let cwd = domain.live.mods.session(session).and_then(|reported| reported.cwd);
+    take_out(domain, session, "node closed by the user", cwd)
+}
+
+/// `user_closed` for a session that ends for `reason`; a relaunch of its tasks starts in `cwd`.
+pub(crate) fn take_out(domain: &DomainRuntime, session: &str, reason: &str, cwd: Option<String>) -> anyhow::Result<()> {
     let agent = AgentId(session.to_owned());
     let state = domain.state()?;
-    let node = state.agents.get(&agent).map(|known| crate::client_routes::ClosedNode {
-        name: known.name.clone(),
-        cwd: domain.live.mods.session(session).and_then(|reported| reported.cwd),
-    });
+    let node = state.agents.get(&agent).map(|known| crate::client_routes::ClosedNode { name: known.name.clone(), cwd });
     let released: Vec<_> = state.tasks.values()
         .filter(|task| task.agent_id.as_ref() == Some(&agent) && !task.state.terminal() && !task.archived && task.final_presentation.is_none())
         .map(|task| task.id.clone())
@@ -266,7 +269,7 @@ pub(crate) fn user_closed(domain: &DomainRuntime, session: &str) -> anyhow::Resu
         let state = domain.state()?;
         let envelope = CommandEnvelope {
             protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch, command_id: format!("release-{}-{}", task_id.0, crate::auth::random_hex(8)).into(),
-            expected_revision: state.revision, command: Command::ReleaseTask { task_id: task_id.clone(), reason: "node closed by the user".into() },
+            expected_revision: state.revision, command: Command::ReleaseTask { task_id: task_id.clone(), reason: reason.into() },
         };
         match domain.execute(&Actor::System, &envelope, None, || Ok(())) {
             Ok(_) => {

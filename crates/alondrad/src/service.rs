@@ -7095,7 +7095,7 @@ agreement_key = "{}"
                 &LocalRequest {
                     method: "POST".into(),
                     path: "/agents/nobody/close".into(),
-                    body: Some(json!({"force": true})),
+                    body: Some(json!({})),
                 }, Transport::Relay,
             )
             .await

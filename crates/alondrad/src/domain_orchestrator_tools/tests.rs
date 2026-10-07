@@ -64,16 +64,31 @@ struct FakeClaude {
     stopped: Mutex<Vec<String>>,
     removed: Mutex<Vec<String>>,
     during_run: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    /// The session and connection a stop drops, which the revival then sees lost.
+    drops_on_stop: Mutex<Option<(String, u64)>>,
+    respawned: Mutex<Vec<String>>,
+    /// Why `claude stop` fails, when it does.
+    stop_fails: Mutex<Option<String>>,
+    /// Whether agent-b was on a turn at each stop.
+    busy_at_stop: Mutex<Vec<bool>>,
+    turn: std::time::Duration,
 }
 impl FakeClaude {
     fn loading(domain: &Arc<DomainRuntime>) -> Self {
-        Self { calls: Mutex::new(vec![]), loads_mod_in: Some(domain.clone()), stopped: Mutex::new(vec![]), removed: Mutex::new(vec![]), during_run: Mutex::new(None) }
+        Self { loads_mod_in: Some(domain.clone()), ..Self::without_mod() }
     }
 
     fn without_mod() -> Self {
-        Self { calls: Mutex::new(vec![]), loads_mod_in: None, stopped: Mutex::new(vec![]), removed: Mutex::new(vec![]), during_run: Mutex::new(None) }
+        Self { calls: Mutex::new(vec![]), loads_mod_in: None, stopped: Mutex::new(vec![]), removed: Mutex::new(vec![]), during_run: Mutex::new(None),
+            drops_on_stop: Mutex::new(None), respawned: Mutex::new(vec![]), stop_fails: Mutex::new(None), busy_at_stop: Mutex::new(vec![]),
+            turn: std::time::Duration::from_millis(20) }
     }
 }
+
+const REVIVAL: crate::node_revival::Timing = crate::node_revival::Timing {
+    grace: std::time::Duration::from_millis(10), settle: std::time::Duration::from_millis(10),
+    pauses: [std::time::Duration::from_millis(1), std::time::Duration::from_millis(1)],
+};
 impl crate::orchestrate::Launcher for FakeClaude {
     async fn run(&self, cwd: &str, args: &[String]) -> Result<String, crate::orchestrate::Refusal> {
         self.calls.lock().unwrap().push((cwd.into(), args.to_vec()));
@@ -85,8 +100,33 @@ impl crate::orchestrate::Launcher for FakeClaude {
         }
         Ok("backgrounded · ab1234 · editor".into())
     }
+    async fn stop_checked(&self, short: &str) -> Result<(), String> {
+        if let Some(reason) = self.stop_fails.lock().unwrap().take() {
+            return Err(reason);
+        }
+        self.stop(short).await;
+        Ok(())
+    }
+    fn turn_deadline(&self) -> std::time::Duration {
+        self.turn
+    }
     async fn stop(&self, short: &str) {
         self.stopped.lock().unwrap().push(short.into());
+        if let Some(domain) = &self.loads_mod_in {
+            self.busy_at_stop.lock().unwrap().push(domain.live.node("agent-b").is_some_and(|node| node.busy));
+        }
+        let dropped = self.drops_on_stop.lock().unwrap().take();
+        if let (Some((session, connection)), Some(domain)) = (dropped, &self.loads_mod_in) {
+            domain.live.mods.disconnect(&session, connection);
+            crate::node_revival::revive(domain, &session, self, &REVIVAL).await;
+        }
+    }
+    async fn respawn(&self, short: &str) -> Result<(), String> {
+        self.respawned.lock().unwrap().push(short.into());
+        if let Some(domain) = &self.loads_mod_in {
+            domain.live.mods.connect(serde_json::from_value(json!({"session_id": "agent-b", "version": "2.1.287"})).unwrap(), 2);
+        }
+        Ok(())
     }
     async fn remove(&self, short: &str) {
         self.removed.lock().unwrap().push(short.into());
@@ -698,4 +738,183 @@ async fn the_changes_the_user_asked_for_reach_the_node_that_takes_the_task_over(
     launch(&f.domain, &f.home, &actor, launch_body(&f, json!({"model": "sonnet"})), |_| None, &claude).await.unwrap();
     let prompt = claude.calls.lock().unwrap()[0].1.last().unwrap().clone();
     assert!(prompt.contains("## Changes the user asked for on the result you take over\n\n- Use the new palette"), "{prompt}");
+}
+
+fn connected_node_on_the_task(f: &Fixture) -> u64 {
+    give(f, "t", "agent-b");
+    command(&f.domain, Actor::Agent { agent_id: "agent-b".into() }, Command::StartTask { task_id: "t".into() });
+    crate::domain_agent_lifecycle::observe_instance(&f.domain, &"agent-b".into(), true,
+        &crate::domain_agent_lifecycle::prepare_event(&f.domain, "start-b").unwrap()).unwrap();
+    f.domain.live.mods.connect(serde_json::from_value(json!({"session_id": "agent-b", "version": "2.1.287", "cwd": f.project.to_str().unwrap()})).unwrap(), 1)
+}
+
+#[tokio::test]
+async fn the_replaced_node_is_never_revived_when_its_stop_drops_the_connection() {
+    let f = world();
+    let actor = the_orchestrator(&f.domain);
+    let connection = connected_node_on_the_task(&f);
+    let claude = FakeClaude::loading(&f.domain);
+    *claude.drops_on_stop.lock().unwrap() = Some(("agent-b".into(), connection));
+    let body = serde_json::from_value(json!({"task": "t", "replace": true, "model": "opus", "reason": "Needs opus"})).unwrap();
+    launch(&f.domain, &f.home, &actor, body, |_| None, &claude).await.unwrap();
+    assert_eq!(*claude.stopped.lock().unwrap(), ["agent-b"]);
+    assert!(claude.respawned.lock().unwrap().is_empty(), "the revival saw the stop and did not restart the old node");
+
+    crate::node_revival::revive(&f.domain, "agent-b", &claude, &REVIVAL).await;
+    assert!(claude.respawned.lock().unwrap().is_empty(), "nor later, when the daemon reports every known session as lost");
+}
+
+#[tokio::test]
+async fn replacing_a_tasks_node_stops_it_keeps_its_folder_and_gives_the_task_to_the_new_model() {
+    let f = world();
+    let actor = the_orchestrator(&f.domain);
+    connected_node_on_the_task(&f);
+    let claude = FakeClaude::loading(&f.domain);
+    let taken = launch(&f.domain, &f.home, &actor, launch_body(&f, json!({"model": "opus"})), |_| None, &claude).await.unwrap_err();
+    assert!(taken.message.contains("already has a connected agent"), "without replace a live node keeps its task: {}", taken.message);
+
+    let body = serde_json::from_value(json!({"task": "t", "replace": true, "model": "opus", "reason": "Needs opus", "effort": "high", "prompt": "Finish the tokens"})).unwrap();
+    let answer = launch(&f.domain, &f.home, &actor, body, |_| None, &claude).await.unwrap();
+    assert_eq!(answer["agent_id"], SESSION);
+    assert_eq!(*claude.stopped.lock().unwrap(), ["agent-b"], "the old session is stopped");
+    assert!(claude.removed.lock().unwrap().is_empty(), "never claude rm: its worktree and uncommitted files stay");
+    let calls = claude.calls.lock().unwrap();
+    let (cwd, args) = &calls[0];
+    assert_eq!(cwd, f.project.to_str().unwrap(), "the new node starts where the old one worked");
+    assert!(args.windows(2).any(|pair| pair == ["--name", "Instance B"]), "{args:?}");
+    assert!(args.windows(2).any(|pair| pair == ["--model", "opus"]) && args.windows(2).any(|pair| pair == ["--effort", "high"]), "{args:?}");
+    assert!(args.last().unwrap().starts_with("Finish the tokens"), "{}", args.last().unwrap());
+    let state = f.domain.state().unwrap();
+    assert_eq!(state.tasks[&TaskId::from("t")].agent_id, Some(AgentId::from(SESSION)));
+    assert_eq!(state.tasks[&TaskId::from("t")].model.as_ref().map(|m| m.model.as_str()), Some("opus"));
+    assert!(!state.agents[&AgentId::from("agent-b")].connected, "the old node is disconnected");
+    assert!(f.domain.live.is_closed("agent-b"), "and is not brought back");
+    assert!(f.domain.live.closed_task_ids().is_empty());
+}
+
+#[tokio::test]
+async fn a_replacement_that_cannot_launch_leaves_the_old_node_working() {
+    let f = world();
+    let actor = the_orchestrator(&f.domain);
+    connected_node_on_the_task(&f);
+    let claude = FakeClaude::loading(&f.domain);
+    let body = serde_json::from_value(json!({"task": "t", "replace": true, "model": "opus", "reason": "Needs opus", "cwd": "/no/such/folder"})).unwrap();
+    let refused = launch(&f.domain, &f.home, &actor, body, |_| None, &claude).await.unwrap_err();
+    assert_eq!(refused.code, "invalid_input");
+    assert!(claude.stopped.lock().unwrap().is_empty() && claude.calls.lock().unwrap().is_empty());
+    let state = f.domain.state().unwrap();
+    assert_eq!(state.tasks[&TaskId::from("t")].agent_id, Some(AgentId::from("agent-b")));
+    assert!(state.agents[&AgentId::from("agent-b")].connected);
+
+    command(&f.domain, user(), Command::CreateTask { task_id: "free".into(), request_id: "r".into(), title: "Free".into(),
+        agent_id: None, review_prs: false, dependencies: Default::default(), stack: None });
+    let body = serde_json::from_value(json!({"task": "free", "replace": true, "model": "opus", "reason": "Needs opus", "name": "x", "cwd": f.project.to_str().unwrap()})).unwrap();
+    let nothing = launch(&f.domain, &f.home, &actor, body, |_| None, &claude).await.unwrap_err();
+    assert!(nothing.message.contains("no node to replace"), "{}", nothing.message);
+}
+
+#[tokio::test]
+async fn a_replacement_works_in_a_worktree_of_a_trusted_repository() {
+    let f = world();
+    let actor = the_orchestrator(&f.domain);
+    let main = f.project.canonicalize().unwrap();
+    let admin = main.join(".git/worktrees/cards");
+    let linked = main.join(".claude/worktrees/cards");
+    std::fs::create_dir_all(&admin).unwrap();
+    std::fs::create_dir_all(&linked).unwrap();
+    std::fs::write(linked.join(".git"), format!("gitdir: {}\n", admin.display())).unwrap();
+    std::fs::write(admin.join("commondir"), "../..\n").unwrap();
+    std::fs::write(admin.join("gitdir"), format!("{}\n", linked.join(".git").display())).unwrap();
+    let config = f.root.join(".claude.json");
+    crate::claude_trust::use_config_for_test(&config);
+    std::fs::write(&config, json!({"projects": {main.to_str().unwrap(): {"hasTrustDialogAccepted": true}}}).to_string()).unwrap();
+    connected_node_on_the_task(&f);
+    let claude = FakeClaude::loading(&f.domain);
+    let body = serde_json::from_value(json!({"task": "t", "replace": true, "model": "opus", "reason": "Needs opus", "cwd": linked.to_str().unwrap()})).unwrap();
+    launch(&f.domain, &f.home, &actor, body, |_| None, &claude).await.unwrap();
+    assert_eq!(claude.calls.lock().unwrap()[0].0, linked.to_str().unwrap());
+}
+
+#[tokio::test]
+async fn a_replacement_whose_stop_fails_launches_nothing_and_the_old_node_keeps_the_task() {
+    let f = world();
+    let actor = the_orchestrator(&f.domain);
+    connected_node_on_the_task(&f);
+    let claude = FakeClaude::loading(&f.domain);
+    *claude.stop_fails.lock().unwrap() = Some("claude agents still shows agent-b running after claude stop".into());
+    let body = serde_json::from_value(json!({"task": "t", "replace": true, "model": "opus", "reason": "Needs opus"})).unwrap();
+    let refused = launch(&f.domain, &f.home, &actor, body, |_| None, &claude).await.unwrap_err();
+    assert_eq!(refused.code, "replace_failed");
+    assert!(refused.message.contains("still shows agent-b running"), "the orchestrator gets the reason: {}", refused.message);
+    assert!(claude.calls.lock().unwrap().is_empty(), "no second node is launched into the worktree");
+    let state = f.domain.state().unwrap();
+    assert_eq!(state.tasks[&TaskId::from("t")].agent_id, Some(AgentId::from("agent-b")), "the old node keeps its task");
+    assert_eq!(state.tasks[&TaskId::from("t")].state, TaskState::Running);
+    assert_eq!(state.agents.len(), 1, "no new agent was registered");
+    assert!(state.agents[&AgentId::from("agent-b")].connected && !f.domain.live.is_closed("agent-b"));
+    assert!(settings_files(&f.home).is_empty(), "the new session's settings are discarded");
+}
+
+fn on_a_turn(f: &Fixture) {
+    f.domain.live.apply(&alondra_core::Event::DaemonSeen(alondra_core::DaemonObservation {
+        session_id: "agent-b".into(), short_id: "agent-b".into(), name: Some("Instance B".into()), ..Default::default() }));
+    f.domain.live.observe(&json!({"session_id": "agent-b", "hook_event_name": "UserPromptSubmit", "prompt": "go"}));
+    assert!(f.domain.live.node("agent-b").is_some_and(|node| node.busy), "agent-b is on a turn");
+}
+
+#[tokio::test]
+async fn a_node_on_a_turn_is_stopped_once_the_turn_ends() {
+    let f = world();
+    let actor = the_orchestrator(&f.domain);
+    connected_node_on_the_task(&f);
+    on_a_turn(&f);
+    let claude = FakeClaude { turn: std::time::Duration::from_secs(5), ..FakeClaude::loading(&f.domain) };
+    let domain = f.domain.clone();
+    let ends = tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        domain.live.observe(&json!({"session_id": "agent-b", "hook_event_name": "Stop"}));
+    });
+    let body = serde_json::from_value(json!({"task": "t", "replace": true, "model": "opus", "reason": "Needs opus"})).unwrap();
+    launch(&f.domain, &f.home, &actor, body, |_| None, &claude).await.unwrap();
+    ends.await.unwrap();
+    assert_eq!(*claude.busy_at_stop.lock().unwrap(), [false], "claude stop waited for the turn to end");
+}
+
+#[tokio::test]
+async fn a_node_whose_turn_does_not_end_is_interrupted_before_it_is_stopped() {
+    let f = world();
+    let actor = the_orchestrator(&f.domain);
+    connected_node_on_the_task(&f);
+    let node = Node::connect(&f.domain, "agent-b");
+    on_a_turn(&f);
+    let claude = FakeClaude::loading(&f.domain);
+    let body = serde_json::from_value(json!({"task": "t", "replace": true, "model": "opus", "reason": "Needs opus"})).unwrap();
+    launch(&f.domain, &f.home, &actor, body, |_| None, &claude).await.unwrap();
+    assert_eq!(node.interrupts(), 1, "past the deadline the turn is interrupted first");
+    assert_eq!(claude.stopped.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn the_replacing_node_is_told_to_continue_in_the_worktree_without_making_another() {
+    let f = world();
+    let actor = the_orchestrator(&f.domain);
+    connected_node_on_the_task(&f);
+    let git = |args: &[&str]| assert!(std::process::Command::new("git").arg("-C").arg(&f.project).args(args).output().unwrap().status.success(), "git {args:?}");
+    git(&["init", "-q", "-b", "worktree-t-cards-3"]);
+    git(&["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "start"]);
+    let claude = FakeClaude::loading(&f.domain);
+    let body = serde_json::from_value(json!({"task": "t", "replace": true, "model": "opus", "reason": "Needs opus"})).unwrap();
+    launch(&f.domain, &f.home, &actor, body, |_| None, &claude).await.unwrap();
+    let prompt = claude.calls.lock().unwrap()[0].1.last().unwrap().clone();
+    let expected = format!("You continue in {}, branch worktree-t-cards-3", f.project.display());
+    assert!(prompt.contains(&expected) && prompt.contains("Do not create another worktree and do not use EnterWorktree"), "{prompt}");
+}
+
+#[test]
+fn a_stopped_session_is_one_claude_agents_no_longer_shows_running() {
+    let listing = json!([{"id": "agent-b", "state": "idle"}, {"id": "old00000", "state": "stopped"}, {"id": "done0000", "state": "done"}]).to_string();
+    assert!(crate::orchestrate::still_running(&listing, "agent-b"));
+    for gone in ["old00000", "done0000", "missing0"] {
+        assert!(!crate::orchestrate::still_running(&listing, gone), "{gone}");
+    }
 }

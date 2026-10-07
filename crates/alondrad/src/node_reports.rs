@@ -978,7 +978,7 @@ mod tests {
     }
 
     fn job(phase: crate::job_state::Phase, tasks: u64, updated_at: Millis) -> crate::job_state::Job {
-        crate::job_state::Job { phase, detail: "exit 1 before init".into(), tasks, updated_at, settings: None }
+        crate::job_state::Job { phase, detail: "exit 1 before init".into(), tasks, updated_at, settings: None, worktree: None }
     }
 
     #[test]

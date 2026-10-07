@@ -358,6 +358,49 @@ struct FakeSessions {
     stuck: bool,
 }
 
+/// `claude rm` that drops the session's connection while it runs, as the real one does, and lets
+/// the revival loop look at the session before it answers.
+struct DroppingSessions {
+    inner: Arc<FakeSessions>,
+    domain: Arc<crate::domain_runtime::DomainRuntime>,
+    session: String,
+    connection: u64,
+    respawned: std::sync::Mutex<Vec<String>>,
+}
+
+const REVIVAL: crate::node_revival::Timing = crate::node_revival::Timing {
+    grace: std::time::Duration::from_millis(10), settle: std::time::Duration::from_millis(10),
+    pauses: [std::time::Duration::from_millis(1), std::time::Duration::from_millis(1)],
+};
+
+impl crate::orchestrate::Launcher for DroppingSessions {
+    async fn run(&self, _: &str, _: &[String]) -> Result<String, crate::orchestrate::Refusal> {
+        unreachable!("a revival never launches")
+    }
+    async fn stop(&self, _: &str) {}
+    async fn respawn(&self, short: &str) -> Result<(), String> {
+        self.respawned.lock().unwrap().push(short.into());
+        self.domain.live.mods.connect(serde_json::from_value(json!({"session_id": self.session, "version": "2.1.287"})).unwrap(), 2);
+        Ok(())
+    }
+}
+
+impl Sessions for DroppingSessions {
+    fn claude<'a>(&'a self, args: Vec<String>) -> close::Answer<'a, Result<String, String>> {
+        Box::pin(async move {
+            if args[0] == "rm" {
+                self.domain.live.mods.disconnect(&self.session, self.connection);
+                crate::node_revival::revive(&self.domain, &self.session, self, &REVIVAL).await;
+            }
+            self.inner.claude(args).await
+        })
+    }
+
+    fn leftovers<'a>(&'a self, session_id: &'a str) -> close::Answer<'a, Option<String>> {
+        self.inner.leftovers(session_id)
+    }
+}
+
 impl FakeSessions {
     fn listing(ids: &[&str]) -> Arc<Self> {
         Arc::new(Self { listed: std::sync::Mutex::new(ids.iter().map(|id| id.to_string()).collect()), leftovers: None,
@@ -423,7 +466,7 @@ async fn a_node_the_user_closed_leaves_fleet_stays_gone_after_a_restart_and_is_n
     fixture.client.use_sessions(FakeSessions::listing(&[&short]));
     assert!(fleet_lists(&view_json(&fixture, "fleet", "en").await, "agent-a"), "it is a row before it is closed");
 
-    let (status, answer) = fixture.local_send("/agents/agent-a/close", &json!({"force": false})).await;
+    let (status, answer) = fixture.local_send("/agents/agent-a/close", &json!({})).await;
     assert_eq!(status, StatusCode::OK, "{answer}");
 
     assert!(!fleet_lists(&view_json(&fixture, "fleet", "en").await, "agent-a"), "closing takes the node out of Fleet at once");
@@ -434,6 +477,28 @@ async fn a_node_the_user_closed_leaves_fleet_stays_gone_after_a_restart_and_is_n
 }
 
 #[tokio::test]
+async fn a_node_closed_with_alondra_close_is_never_revived_while_or_after_it_is_removed() {
+    let fixture = Fixture::start().await;
+    seed_work(&fixture);
+    observe_sessions(&fixture);
+    fixture.domain.live.observe(&hook("agent-a", "Stop", json!({})));
+    fixture.command(Actor::System, "connect-a", Command::ObserveAgent { agent_id: "agent-a".into(), connected: true });
+    let connection = fixture.domain.live.mods.connect(serde_json::from_value(json!({"session_id": "agent-a", "version": "2.1.287"})).unwrap(), 1);
+    let short = fixture.domain.live.node("agent-a").unwrap().short_id;
+    let sessions = Arc::new(DroppingSessions { inner: FakeSessions::listing(&[&short]), domain: fixture.domain.clone(),
+        session: "agent-a".into(), connection, respawned: Default::default() });
+    fixture.client.use_sessions(sessions.clone());
+    assert!(fixture.domain.state().unwrap().tasks.values().any(|task| task.agent_id == Some("agent-a".into()) && !task.state.terminal()),
+        "the node has an open task, which is what the revival restarts for");
+
+    let (status, answer) = fixture.local_send("/agents/agent-a/close", &json!({})).await;
+    assert_eq!(status, StatusCode::OK, "{answer}");
+    assert!(sessions.respawned.lock().unwrap().is_empty(), "the revival left the session being closed alone");
+    crate::node_revival::revive(&fixture.domain, "agent-a", sessions.as_ref(), &REVIVAL).await;
+    assert!(sessions.respawned.lock().unwrap().is_empty(), "and never brings it back afterwards");
+}
+
+#[tokio::test]
 async fn closing_an_interactive_session_only_leaves_the_fleet() {
     let fixture = Fixture::start().await;
     seed_work(&fixture);
@@ -441,7 +506,7 @@ async fn closing_an_interactive_session_only_leaves_the_fleet() {
     fixture.command(Actor::System, "connect-b", Command::ObserveAgent { agent_id: "agent-b".into(), connected: true });
     let sessions = FakeSessions::listing(&[]);
     fixture.client.use_sessions(sessions.clone());
-    let (status, answer) = fixture.local_send("/agents/agent-b/close", &json!({"force": false})).await;
+    let (status, answer) = fixture.local_send("/agents/agent-b/close", &json!({})).await;
     assert_eq!(status, StatusCode::OK, "{answer}");
     assert_eq!(answer["interactive"], true);
     assert!(answer["output"].as_str().unwrap().contains("interactive session"));
@@ -460,23 +525,25 @@ async fn a_busy_session_or_one_with_unsaved_work_is_not_closed() {
         calls: Default::default(), stuck: false,
     });
     fixture.client.use_sessions(sessions.clone());
-    let (status, answer) = fixture.local_send("/agents/agent-a/close", &json!({"force": true})).await;
+    let (status, answer) = fixture.local_send("/agents/agent-a/close", &json!({})).await;
     assert_eq!(status, StatusCode::CONFLICT);
     assert_eq!(answer["reasons"], json!([{"kind": "busy"}]), "{answer}");
+    assert_eq!(answer["code"], "close_refused", "a refusal is named so the apps say why: {answer}");
     assert!(answer["error"].as_str().unwrap().contains("still has something pending"));
 
     fixture.domain.live.observe(&hook("agent-a", "Stop", json!({})));
-    let (status, answer) = fixture.local_send("/agents/agent-a/close", &json!({"force": true})).await;
+    let (status, answer) = fixture.local_send("/agents/agent-a/close", &json!({})).await;
     assert_eq!(status, StatusCode::CONFLICT);
     assert_eq!(answer["reasons"], json!([{"kind": "worktree", "detail": "2 uncommitted file(s) in /w"}]), "force never discards work: {answer}");
     assert!(sessions.calls.lock().unwrap().iter().all(|call| call[0] != "rm"), "nothing was removed");
 
     let stuck = Arc::new(FakeSessions { listed: std::sync::Mutex::new(vec![short.clone()]), leftovers: None, calls: Default::default(), stuck: true });
     fixture.client.use_sessions(stuck);
-    let (status, answer) = fixture.local_send("/agents/agent-a/close", &json!({"force": true})).await;
+    let (status, answer) = fixture.local_send("/agents/agent-a/close", &json!({})).await;
     assert_eq!(status, StatusCode::CONFLICT, "{answer}");
     assert!(answer["error"].as_str().unwrap().contains("is still listed by claude agents"), "{answer}");
-    let (status, error) = fixture.local_send("/agents/nobody/close", &json!({"force": true})).await;
+    assert_eq!(answer["code"], "close_failed");
+    let (status, error) = fixture.local_send("/agents/nobody/close", &json!({})).await;
     assert_eq!((status, error["code"].as_str()), (StatusCode::NOT_FOUND, Some("not_found")));
 }
 

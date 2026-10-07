@@ -61,10 +61,19 @@ fn why(state: &DomainState, domain: &DomainRuntime, claude_home: &Path, agent: &
     }
     let stopped_since = match crate::job_state::locate(claude_home, &agent.0).and_then(|dir| crate::job_state::read_in(&dir, &agent.0)) {
         Some(job) if matches!(job.phase, crate::job_state::Phase::Working | crate::job_state::Phase::Blocked) => return None,
+        Some(job) if job.worktree.as_deref().is_some_and(|dir| worked_in(state, domain, agent, dir)) => return None,
         Some(job) => job.updated_at,
         None => domain.live.node(&agent.0)?.state_since,
     };
     (now - stopped_since > STOPPED_FOR_MS).then_some((Why::StoppedWithoutTask, None))
+}
+
+/// Whether another node with an open task works in `dir`: the node that replaced this one keeps
+/// its worktree, which `claude rm` of this one would delete.
+fn worked_in(state: &DomainState, domain: &DomainRuntime, agent: &AgentId, dir: &Path) -> bool {
+    state.tasks.values().filter(|task| !task.state.terminal()).filter_map(|task| task.agent_id.as_ref()).filter(|other| *other != agent)
+        .filter_map(|other| domain.live.mods.session(&other.0)?.cwd)
+        .any(|cwd| Path::new(&cwd).starts_with(dir))
 }
 
 /// What would be closed (`dry_run`) or what was closed, kept and failed.

@@ -53,6 +53,20 @@ pub trait Launcher: Sync {
         async { Err("this launcher cannot restart sessions".into()) }
     }
 
+    /// Stops a session for good and says whether it did: `claude stop` answered and `claude agents`
+    /// no longer shows it running. A launcher that cannot tell takes `stop` at its word.
+    fn stop_checked(&self, short: &str) -> impl Future<Output = Result<(), String>> + Send {
+        async move {
+            self.stop(short).await;
+            Ok(())
+        }
+    }
+
+    /// How long a node on a turn gets to end it before Alondra stops the node to replace it.
+    fn turn_deadline(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(60)
+    }
+
     /// How long a launched session has to say its node mod loaded.
     fn mods_deadline(&self) -> std::time::Duration {
         crate::node_reports::MODS_DEADLINE
@@ -100,18 +114,51 @@ impl Launcher for ClaudeCli {
     }
 
     async fn stop(&self, short: &str) {
-        let stop = tokio::process::Command::new("claude").args(["stop", short]).kill_on_drop(true)
-            .stdin(std::process::Stdio::null()).output();
-        match tokio::time::timeout(std::time::Duration::from_secs(20), stop).await {
-            Ok(Ok(out)) if out.status.success() => (),
-            Ok(Ok(out)) => log!("claude stop {short} failed: {}", String::from_utf8_lossy(&out.stderr).trim()),
-            Ok(Err(error)) => log!("claude stop {short} failed: {error}"),
-            Err(_) => log!("claude stop {short} did not answer in 20 s"),
+        if let Err(error) = Self::stop_session(short).await {
+            log!("{error}");
         }
+    }
+
+    async fn stop_checked(&self, short: &str) -> Result<(), String> {
+        Self::stop_session(short).await?;
+        for _ in 0..5 {
+            let list = tokio::process::Command::new("claude").args(["agents", "--json", "--all"]).kill_on_drop(true)
+                .stdin(std::process::Stdio::null()).output();
+            let listing = match tokio::time::timeout(std::time::Duration::from_secs(20), list).await {
+                Ok(Ok(out)) if out.status.success() => String::from_utf8_lossy(&out.stdout).to_string(),
+                Ok(Ok(out)) => return Err(format!("claude agents failed: {}", String::from_utf8_lossy(&out.stderr).trim())),
+                Ok(Err(error)) => return Err(format!("claude agents failed: {error}")),
+                Err(_) => return Err("claude agents did not answer in 20 s".into()),
+            };
+            if !still_running(&listing, short) {
+                return Ok(());
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        }
+        Err(format!("claude agents still shows {short} running after claude stop"))
     }
 }
 
+/// Whether `claude agents --json` lists `short` in a state that still runs a turn or waits for one.
+pub(crate) fn still_running(agents_json: &str, short: &str) -> bool {
+    serde_json::from_str::<Value>(agents_json).ok().and_then(|list| list.as_array().cloned()).is_some_and(|list| list.iter().any(|agent| {
+        agent.get("id").and_then(Value::as_str) == Some(short)
+            && matches!(agent.get("state").and_then(Value::as_str), Some("working" | "idle" | "blocked"))
+    }))
+}
+
 impl ClaudeCli {
+    async fn stop_session(short: &str) -> Result<(), String> {
+        let stop = tokio::process::Command::new("claude").args(["stop", short]).kill_on_drop(true)
+            .stdin(std::process::Stdio::null()).output();
+        match tokio::time::timeout(std::time::Duration::from_secs(20), stop).await {
+            Ok(Ok(out)) if out.status.success() => Ok(()),
+            Ok(Ok(out)) => Err(format!("claude stop {short} failed: {}", String::from_utf8_lossy(&out.stderr).trim())),
+            Ok(Err(error)) => Err(format!("claude stop {short} failed: {error}")),
+            Err(_) => Err(format!("claude stop {short} did not answer in 20 s")),
+        }
+    }
+
     async fn respawn_session(short: &str) -> Result<(), String> {
         let respawn = tokio::process::Command::new("claude").args(["respawn", short]).kill_on_drop(true)
             .stdin(std::process::Stdio::null()).output();

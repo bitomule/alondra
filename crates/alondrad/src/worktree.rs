@@ -5,10 +5,24 @@ use serde_json::Value;
 use tokio::process::Command;
 
 pub(crate) fn worktree_of(session_id: &str) -> Option<PathBuf> {
+    worktree_in(&crate::watcher::claude_home(), session_id)
+}
+
+/// The worktree a session works in: the one Claude Code made for it, else the linked worktree it
+/// was launched in, as the node that replaces another one is. A main checkout is not one.
+pub(crate) fn worktree_in(claude_home: &Path, session_id: &str) -> Option<PathBuf> {
     let short = session_id.get(..8)?;
-    let job = std::fs::read_to_string(crate::watcher::claude_home().join("jobs").join(short).join("state.json")).ok()?;
-    let dir = serde_json::from_str::<Value>(&job).ok()?.get("worktreePath")?.as_str().map(PathBuf::from)?;
-    dir.exists().then_some(dir)
+    let job: Value = serde_json::from_str(&std::fs::read_to_string(claude_home.join("jobs").join(short).join("state.json")).ok()?).ok()?;
+    if let Some(dir) = job.get("worktreePath").and_then(Value::as_str).map(PathBuf::from) {
+        return dir.exists().then_some(dir);
+    }
+    let cwd = PathBuf::from(job.get("cwd")?.as_str()?);
+    cwd.join(".git").is_file().then_some(cwd)
+}
+
+/// The branch checked out in `dir`.
+pub(crate) async fn branch_in(dir: &Path) -> Option<String> {
+    git(dir, &["rev-parse", "--abbrev-ref", "HEAD"]).await.filter(|branch| branch != "HEAD")
 }
 
 async fn git(dir: &Path, args: &[&str]) -> Option<String> {
@@ -218,6 +232,41 @@ mod tests {
         assert_eq!(std::fs::read(wt.join("unsaved")).unwrap(), b"keep until authorized");
         discard_in(&wt, || true).await.unwrap();
         assert!(!wt.exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// The node that replaced another one was launched in that one's worktree, which Claude Code
+    /// records only on the old session's job: the successor's own launch folder names it.
+    #[tokio::test]
+    async fn a_node_launched_in_an_inherited_worktree_keeps_its_protections() {
+        let root = std::env::temp_dir().join(format!("alondra-inherited-{}-{}", std::process::id(), alondra_core::now_millis()));
+        std::fs::create_dir_all(&root).unwrap();
+        run(&root, &["init", "-q", "repo"]);
+        let repo = root.join("repo");
+        run(&repo, &["config", "user.email", "test@example.invalid"]);
+        run(&repo, &["config", "user.name", "Test"]);
+        run(&repo, &["commit", "-q", "--allow-empty", "-m", "base"]);
+        let wt = repo.join(".claude/worktrees/t-cards-3");
+        run(&repo, &["worktree", "add", "-q", "-b", "worktree-t-cards-3", wt.to_str().unwrap()]);
+        let home = root.join("claude");
+        let job = |short: &str, cwd: &Path| {
+            std::fs::create_dir_all(home.join("jobs").join(short)).unwrap();
+            std::fs::write(home.join("jobs").join(short).join("state.json"),
+                serde_json::json!({"state": "working", "cwd": cwd.to_str().unwrap()}).to_string()).unwrap();
+        };
+        job("succ0000", &wt);
+        job("main0000", &repo);
+        let successor = "succ0000-0000-4000-8000-000000000000";
+        assert_eq!(worktree_in(&home, successor).as_deref(), Some(wt.as_path()));
+        assert_eq!(worktree_in(&home, "main0000-0000-4000-8000-000000000000"), None, "a main checkout is nobody's worktree");
+
+        std::fs::write(wt.join("tokens.swift"), b"let accent = 1").unwrap();
+        let dir = worktree_in(&home, successor).unwrap();
+        let state = DomainState::new("e");
+        let refused = final_refusal_in(&state, &dir, &TaskId::from("t"), &[]).await.unwrap();
+        assert_eq!(refused.code, "worktree_not_clean", "a final result with an uncommitted file is refused: {}", refused.message);
+        assert!(refused.message.contains("tokens.swift"), "{}", refused.message);
+        assert!(leftovers_in(&dir).await.is_some_and(|left| left.contains("1 uncommitted file(s)")), "closing it keeps the work");
         std::fs::remove_dir_all(root).unwrap();
     }
 

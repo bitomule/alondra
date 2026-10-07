@@ -114,6 +114,21 @@ pub(crate) async fn close_node(
         let message = reasons.iter().map(|r| r.detail.clone().unwrap_or_else(|| r.kind.to_string())).collect::<Vec<_>>().join("; ");
         return Ok(CloseOutcome::Refused { message: format!("{short} still has something pending, so it was not closed: {message}"), reasons });
     }
+    let watched = domain.live.begin_watch(agent_id);
+    let removed = remove(domain, sessions, agent_id, &short).await;
+    if watched {
+        domain.live.end_watch(agent_id);
+    }
+    if !matches!(removed, Ok(CloseOutcome::Closed { .. })) && !domain.live.is_closed(agent_id) {
+        domain.live.losses.report(agent_id);
+    }
+    removed
+}
+
+/// `claude rm` until `claude agents` no longer lists the session. Its connection drops on the way,
+/// so the caller holds the session's watch: the revival must not restart what is being closed.
+async fn remove(domain: &DomainRuntime, sessions: &dyn Sessions, agent_id: &str, short: &str) -> anyhow::Result<CloseOutcome> {
+    let short = short.to_owned();
     let job = std::fs::read_to_string(crate::watcher::claude_home().join("jobs").join(&short).join("state.json"))
         .ok()
         .and_then(|t| serde_json::from_str::<Value>(&t).ok());

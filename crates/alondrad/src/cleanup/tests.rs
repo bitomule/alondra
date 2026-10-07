@@ -247,6 +247,25 @@ async fn a_session_without_a_task_stopped_less_than_a_day_ago_is_not_closed() {
 }
 
 #[tokio::test]
+async fn a_replaced_node_is_not_closed_while_the_node_that_took_its_worktree_works_there() {
+    let mut rig = Rig::new();
+    let replaced = rig.session(Task::None, true);
+    let successor = rig.session(Task::Open, true);
+    let short = &replaced[..8];
+    std::fs::create_dir_all(rig.claude_home.join("jobs").join(short)).unwrap();
+    std::fs::write(rig.claude_home.join("jobs").join(short).join("state.json"),
+        format!(r#"{{"state":"stopped","detail":"d","sessionId":"{replaced}","updatedAt":"2025-12-25T00:00:00.000Z","worktreePath":"/w/t-cards-3"}}"#)).unwrap();
+    rig.domain.live.mods.connect(serde_json::from_value(serde_json::json!({"session_id": successor, "version": "2.1.287", "cwd": "/w/t-cards-3"})).unwrap(), 1);
+
+    let report = rig.run(false).await;
+    assert!(rig.sessions.removals().is_empty(), "claude rm would delete the worktree the successor works in: {report}");
+
+    command(&rig.domain, user(), Command::CancelTask { task_id: "t2".into() });
+    let report = rig.run(false).await;
+    assert!(names(&report["closed"]).contains(&"Node 1".to_owned()), "once that task ends the old session goes: {report}");
+}
+
+#[tokio::test]
 async fn when_claude_agents_cannot_run_nothing_is_closed() {
     struct Broken;
     impl Sessions for Broken {

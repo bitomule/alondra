@@ -250,18 +250,26 @@ fn sent_notice(answer: &Value, name: &str) -> String {
     }
 }
 
-pub fn close(name: &str, force: bool) -> Result<()> {
+pub fn close(name: &str) -> Result<()> {
     let client = Client::for_user(Duration::from_secs(90));
     let Some(agent) = resolved(&client, name)?.0 else { bail!(tr!("Alondra manages the orchestrator automatically", "Alondra gestiona el orquestador automáticamente")) };
     let view = client.views(&format!("node:{agent}"), None)?;
     let action = view_action(&view, |a| a.id.starts_with("close:" )).context("Close action unavailable")?;
-    let answer = submit(&client, &view, &action, None, serde_json::json!({"fields":{"force":force}}))?;
-    if answer.get("detail").and_then(|detail| detail.get("interactive")).and_then(Value::as_bool) == Some(true) {
-        println!("{}", trf!("{name} left the fleet; it is an interactive session, so close its terminal with /exit", "{name} ha salido de la flota; es una sesión interactiva, así que cierra su terminal con /exit"));
-    } else {
-        println!("{}", trf!("Closed {name}", "Cerrado {name}"));
-    }
+    let answer = submit(&client, &view, &action, None, serde_json::json!({}))?;
+    println!("{}", closed_notice(&answer, name)?);
     Ok(())
+}
+
+fn closed_notice(answer: &Value, name: &str) -> Result<String> {
+    if answer.get("outcome").and_then(Value::as_str) != Some("applied") {
+        bail!("{}", answer.get("message").and_then(Value::as_str).map(str::to_owned)
+            .unwrap_or_else(|| trf!("{name} was not closed", "{name} no se cerró")));
+    }
+    Ok(if answer.get("detail").and_then(|detail| detail.get("interactive")).and_then(Value::as_bool) == Some(true) {
+        trf!("{name} left the fleet; it is an interactive session, so close its terminal with /exit", "{name} ha salido de la flota; es una sesión interactiva, así que cierra su terminal con /exit")
+    } else {
+        trf!("Closed {name}", "Cerrado {name}")
+    })
 }
 
 pub fn attach(name: &str) -> Result<()> {
@@ -326,6 +334,17 @@ mod tests {
         s.execute(&Actor::User { user_id: "u".into() }, &envelope).unwrap();
         let answered = s.interactions[&InteractionId::from("q")].clone();
         assert!(answer(&s.projection(), &answered, Some("1"), "").unwrap_err().to_string().contains("already answered"));
+    }
+
+    #[test]
+    fn close_fails_with_the_reason_unless_the_node_was_closed() {
+        crate::i18n::set_for_this_thread(crate::i18n::Lang::Es);
+        let refused = serde_json::json!({"outcome": "rejected", "code": "close_refused", "message": "No se cerró: está trabajando; espera a que termine"});
+        assert_eq!(closed_notice(&refused, "nodo").unwrap_err().to_string(), "No se cerró: está trabajando; espera a que termine");
+        let gone = serde_json::json!({"outcome": "no_longer_available"});
+        assert_eq!(closed_notice(&gone, "nodo").unwrap_err().to_string(), "nodo no se cerró");
+        assert_eq!(closed_notice(&serde_json::json!({"outcome": "applied", "detail": {"interactive": false}}), "nodo").unwrap(), "Cerrado nodo");
+        assert!(closed_notice(&serde_json::json!({"outcome": "applied", "detail": {"interactive": true}}), "nodo").unwrap().contains("/exit"));
     }
 
     #[test]
