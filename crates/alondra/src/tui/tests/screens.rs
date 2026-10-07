@@ -357,16 +357,12 @@ fn edited(name: &str, change: impl FnOnce(&mut serde_json::Value)) -> views::Vie
 fn blocked_pr() -> views::View {
     edited("card-pr.json", |card| {
         let question = "8fa4034b-249e-4487-a89b-57de38c26372";
-        let reason = "Answer “Ship the compact schedule editor with this beta?” first";
         card["blocked_by"] = serde_json::json!([{
             "id": question,
             "label": "blocked by Ship the compact schedule editor with this beta?",
             "link": {"kind": "view", "key": format!("card:{question}")},
         }]);
-        for list in ["actions", "more"] {
-            card[list][0]["enabled"] = false.into();
-            card[list][0]["disabled_reason"] = reason.into();
-        }
+        card["actions"].as_array_mut().unwrap().remove(0);
     })
 }
 
@@ -477,21 +473,18 @@ fn authorize_detail_has_a_risk_button_and_the_command_to_run() {
 }
 
 #[test]
-fn review_pr_detail_shows_what_blocks_it_and_greys_the_disabled_merge() {
+fn review_pr_detail_shows_what_blocks_it_and_offers_no_merge() {
     let mut app = english(blocked_pr());
     let screen = rendered(&mut app, 120, 46);
     dump("detail: Review PR, blocked", &screen);
     assert!(screen.contains("◎ REVIEW · PR #12"), "{screen}");
     assert!(screen.contains("▤ Diff · 4 files · +120 −30") && !screen.contains("0 B"), "{screen}");
     assert!(screen.contains("blocked by Ship the compact schedule editor"), "{screen}");
-    assert!(screen.contains(" 1  Merge"), "{screen}");
-    assert!(screen.contains("    Answer “Ship the compact schedule editor with this beta?” first"), "the reason sits under the button: {screen}");
+    assert!(!screen.contains("Merge") && !screen.contains("Answer “Ship"), "a blocked merge is not on the card, grey or not: {screen}");
     let footer = draw::footer_keys(&app);
-    assert!(!footer.iter().any(|(key, _)| key == "1"), "a blocked button is not a working key: {footer:?}");
-    assert!(footer.iter().any(|(key, _)| key == "2"), "{footer:?}");
+    assert!(footer.iter().any(|(key, _)| key == "r"), "{footer:?}");
     press(&mut app, KeyCode::Char('1'));
-    assert!(app.posted.borrow().is_empty(), "a blocked merge sends nothing");
-    assert!(app.flash.as_ref().is_some_and(|flash| flash.text.contains("Answer")), "it says why instead");
+    assert!(app.posted.borrow().is_empty(), "nothing to press sends nothing");
 }
 
 #[test]
@@ -538,7 +531,7 @@ fn m_opens_the_more_menu_with_its_own_numbering_and_escape_closes_it() {
     let screen = rendered(&mut app, 120, 46);
     dump("detail: More menu", &screen);
     assert!(screen.contains("MORE"), "{screen}");
-    assert!(screen.contains(" 1  Accept without merging") && screen.contains("Answer “Ship the compact"), "{screen}");
+    assert!(screen.contains(" 1  Close without merging") && !screen.contains("Accept without merging"), "{screen}");
     assert!(screen.contains(" 2  Open on GitHub"), "{screen}");
     assert!(!screen.contains(" m  More…"), "the menu replaces the buttons: {screen}");
     let footer = draw::footer_keys(&app);

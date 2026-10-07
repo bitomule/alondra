@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:github.com/example/repo#12",
   "client": "ios",
-  "version": "va6e0bea071a45594",
+  "version": "vbc43e84b8a54eb18",
   "cursor": "cursor-1",
   "title": "Add the compact schedule editor",
   "status": {
@@ -95,17 +95,22 @@
           },
           "more": [
             {
-              "id": "accept:hf-weekly-2026-09-30@1",
-              "label": "Accept without merging",
-              "style": "secondary",
-              "role": "neutral",
+              "id": "close_unmerged:hf-weekly-2026-09-30@1",
+              "label": "Close without merging",
+              "style": "destructive",
+              "role": "risk",
               "presentation": "button",
               "input": {
                 "kind": "none"
               },
               "attachments": false,
+              "confirm": {
+                "title": "Close PR #12 without merging?",
+                "message": "Alondra closes the PR on GitHub and cancels this task. Nothing is merged.",
+                "button": "Close PR"
+              },
               "enabled": true,
-              "stamp": "Accepted"
+              "stamp": "Closing…"
             },
             {
               "id": "",
@@ -150,7 +155,8 @@
               "options": [
                 {
                   "id": "squash",
-                  "label": "squash",
+                  "label": "Squash and merge",
+                  "description": "One commit on main",
                   "style": "secondary",
                   "input": {
                     "kind": "none"
@@ -159,6 +165,7 @@
                 {
                   "id": "merge",
                   "label": "Merge commit",
+                  "description": "Keeps every commit",
                   "style": "secondary",
                   "input": {
                     "kind": "none"
@@ -171,7 +178,7 @@
               "attachments": false,
               "confirm": {
                 "title": "Merge PR #12?",
-                "message": "Add the compact schedule editor",
+                "message": "“Add the compact schedule editor” goes into main. Alondra merges it on GitHub and tells you when it's done.",
                 "button": "Merge"
               },
               "enabled": true,

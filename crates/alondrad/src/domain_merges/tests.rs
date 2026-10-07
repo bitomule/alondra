@@ -224,6 +224,36 @@ async fn no_checks_at_all_wait_for_a_grace_period_before_they_count_as_passed() 
     assert_eq!(github.merged.lock().unwrap().len(), 1);
 }
 
+/// The #744 sequence: accepted (Alondra waits on the checks), then Merge pressed again with another
+/// method. The press must be looked at at once, not after the wait the first one left behind.
+#[tokio::test]
+async fn pressing_merge_again_while_the_checks_wait_is_acted_on_at_once() {
+    let (_home, domain, github) = presented("pressed", false);
+    github.open(7, HEAD, Checks::Pending);
+    accept(&domain);
+    assert_eq!(task(&domain), TaskState::Closing);
+    let mut merger = Merger::with(Duration::ZERO, Duration::from_secs(3600), Duration::from_secs(3600));
+    assert!(merger.merge_due(&domain, &github).await.unwrap(), "the checks are pending: Alondra waits");
+    github.open(7, HEAD, Checks::Passed);
+    assert!(merger.merge_due(&domain, &github).await.unwrap(), "the same authorization waits out its poll");
+    assert!(github.merged.lock().unwrap().is_empty());
+    command(&domain, user(), "again", Command::AuthorizeMerge { authorization_id: "again".into(),
+        presentation_id: "d".into(), pr_id: "pr".into(), expected_head: HEAD.into(), method: MergeMethod::Merge });
+    merger.merge_due(&domain, &github).await.unwrap();
+    assert_eq!(*github.merged.lock().unwrap(), vec![(7, HEAD.to_owned(), MergeMethod::Merge)],
+        "the new press merges with its method without waiting for the next poll");
+    merger.merge_due(&domain, &github).await.unwrap();
+    assert_eq!(merger.tracked(), 0, "and nothing is left behind once it is merged");
+}
+
+#[tokio::test]
+async fn a_restarted_merger_picks_up_an_authorization_it_never_saw() {
+    let (_home, domain, github) = presented("restart", false);
+    accept(&domain);
+    now().merge_due(&domain, &github).await.unwrap();
+    assert_eq!(github.merged.lock().unwrap().len(), 1, "a fresh merger needs nothing but the domain to merge what was authorized");
+}
+
 #[tokio::test]
 async fn github_waiting_for_required_checks_keeps_the_acceptance() {
     let (_home, domain, github) = presented("required", false);

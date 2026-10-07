@@ -879,7 +879,7 @@ fn invalid_generated_pr_action_id_is_omitted_while_the_card_renders() {
     let view = render(&state, &live, Client::Ios, Lang::En, &format!("card:{pr_id}"), "");
     let Item::Card(card) = &view.sections[0].items[0] else { panic!("the card remains visible") };
     assert!(!card.actions.iter().any(|action| action.label == "Request changes"));
-    assert!(card.actions.iter().any(|action| action.label == "Resolve conflicts"),
+    assert!(card.more.iter().any(|action| action.label == "Close without merging"),
         "a valid action after the invalid action should still render");
     let result = build(&format!("card:{pr_id}"), RenderContext {
         domain: &state,
@@ -1008,7 +1008,7 @@ fn document_review_card_exposes_revision_content_and_review_actions() {
     let digest = "b".repeat(64);
     assert_eq!(content.digest.as_deref(), Some(digest.as_str()));
     assert!(content.commentable);
-    let Item::Card(card) = &view.sections[0].items[0] else { panic!("review card") };
+    let card = &decidable_card(&state, Lang::En, "i-3");
     assert!(card.actions.iter().any(|action| action.label == "Approve"
         && action.style == Style::Primary
         && action.stamp.as_deref() == Some("Approved")), "{:?}", card.actions);
@@ -1068,6 +1068,21 @@ fn a_question_linked_to_no_document_keeps_its_plain_answer() {
     assert!(card.actions.iter().all(|action| !action.id.starts_with("changes:")), "{:?}", card.actions);
 }
 
+/// The card the fixture's delivery would have if the user could decide it now: the fixture is not
+/// a state the domain accepts, so its own availability says no to everything.
+fn decidable_card(state: &DomainState, lang: Lang, interaction: &str) -> Card {
+    let domain = with_cards(state);
+    let live = LiveSnapshot::default();
+    let mut item = domain.projection().inbox.into_iter().find(|item| item.id == format!("interaction:{interaction}")).expect("the card exists");
+    for action in &mut item.available_actions {
+        action.enabled = true;
+        action.disabled_reason = None;
+    }
+    let context = RenderContext { domain: &domain, live: &live, client: Client::Ios, lang, transport: Transport::Loopback,
+        cursor: "cursor-1", rendered_at: "" };
+    card::from_item(&item, &context, true).unwrap()
+}
+
 fn delivery_card(state: &DomainState, lang: Lang, key: &str) -> Card {
     let view = render(state, &LiveSnapshot::default(), Client::Ios, lang, key, "");
     let Item::Card(card) = &view.sections[0].items[0] else { panic!("delivery card") };
@@ -1100,7 +1115,7 @@ fn attach_document(state: &mut DomainState) {
 fn plain_delivery_offers_accept_and_request_changes_with_a_reply_to_the_node() {
     let mut state = fixture();
     state.interactions.get_mut(&"i-3".into()).unwrap().author = Author::Agent { agent_id: "a-1".into() };
-    let card = delivery_card(&state, Lang::En, "card:i-3");
+    let card = decidable_card(&state, Lang::En, "i-3");
     assert_eq!(card.kind, Some(crate::domain::CardKind::Review));
     let accept = card.actions.iter().find(|action| action.label == "Accept").expect("accept");
     assert_eq!((accept.style, accept.role), (Style::Primary, Some(Role::Advance)));
@@ -1127,7 +1142,7 @@ fn delivery_reply_placeholder_is_localized_and_falls_back_to_this_node() {
 fn delivery_with_a_document_offers_the_review_with_comments_beside_the_reply() {
     let mut state = fixture();
     attach_document(&mut state);
-    let card = delivery_card(&state, Lang::En, "card:revision-1");
+    let card = decidable_card(&state, Lang::En, "i-3");
     assert!(card.actions.iter().any(|action| action.label == "Approve" && action.style == Style::Primary));
     let changes = card.actions.iter().find(|action| action.id.starts_with("changes:")).expect("review feedback");
     assert!(changes.comments.is_some());
@@ -1140,7 +1155,7 @@ fn a_delivery_carrying_a_claude_artifact_asks_for_changes_in_a_sheet_with_commen
     let mut state = fixture();
     state.interactions.get_mut(&"i-3".into()).unwrap().body =
         "Plan ready: https://claude.ai/artifact/abc123".into();
-    let card = delivery_card(&state, Lang::En, "card:i-3");
+    let card = decidable_card(&state, Lang::En, "i-3");
     let changes = card.actions.iter().find(|action| action.label == "Request changes").expect("request changes");
     assert!(matches!(&changes.input, Input::Text { placeholder, .. } if placeholder == "Describe the changes"));
     assert!(card.actions.iter().any(|action| action.label == "Accept" && action.style == Style::Primary));
@@ -2299,24 +2314,12 @@ fn stacked_pr_merge_names_upstream_number_and_keeps_canonical_link() {
     let Item::Card(card) = &view.sections[0].items[0] else {
         panic!("PR card")
     };
-    let merge = card
-        .actions
-        .iter()
-        .find(|action| {
+    assert!(
+        !card.actions.iter().any(|action| {
             action_id::ActionId::parse(&action.id).is_ok_and(|id| id.verb == action_id::Verb::Merge)
-        })
-        .expect("merge action");
-    assert!(!merge.enabled);
-    let confirm = merge.confirm.as_ref().expect("merge confirmation");
-    assert_eq!(
-        (confirm.title.as_str(), confirm.message.as_str(), confirm.button.as_str()),
-        ("Merge PR #12?", "Add the schedule editor", "Merge")
+        }),
+        "a PR stacked on an open one has nothing to merge yet"
     );
-    let spanish = render(&state, &live, Client::Ios, Lang::Es, "card:pr-1", "");
-    let Item::Card(spanish_card) = &spanish.sections[0].items[0] else { panic!("PR card") };
-    let spanish_confirm = spanish_card.actions.iter().find_map(|action| action.confirm.as_ref()).expect("confirmation");
-    assert_eq!(spanish_confirm.title, "¿Fusionar la PR #12?");
-    assert_eq!(merge.disabled_reason.as_deref(), Some("Merge #153 first"));
     assert!(view.sections.iter().flat_map(|section| &section.items).any(|item| matches!(item, Item::Facts(facts)
         if facts.items.iter().any(|fact| fact.value == "#153"
             && matches!(&fact.link, Some(Link::View { key }) if key == "pull_request:github.com/bitomule/alondra#153")))));
@@ -2643,6 +2646,67 @@ fn task_detail_says_which_question_it_is_waiting_on() {
     let spanish = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::Es, "task:t-1", "2026-09-30T10:00:00Z");
     let Item::Row(row) = &spanish.sections.iter().find(|section| section.id == "now").unwrap().items[0] else { panic!("now row") };
     assert!(row.title.starts_with("pregunta: "), "{}", row.title);
+}
+
+#[test]
+fn a_task_waiting_on_a_question_says_so_in_its_state_and_its_row_without_a_pr_ahead() {
+    let mut state = golden_fixture();
+    let question = "8fa4034b-249e-4487-a89b-57de38c26372";
+    state.interactions.get_mut(&question.into()).unwrap().card.blocks =
+        vec![crate::domain::CardTarget::PullRequest { pr_id: "github.com/example/repo#12".into() }];
+    let task = state.pull_requests[&"github.com/example/repo#12".into()].task_id.clone();
+    state.tasks.get_mut(&task).unwrap().state = TaskState::WaitingDependency;
+    assert!(matches!(state.attention(&state.tasks[&task]), crate::domain::Attention::Wait(crate::domain::WaitReason::Answer { .. })));
+    for (lang, expected) in [
+        (Lang::En, "Waits for your answer to “Ship the compact schedule editor with this beta?”"),
+        (Lang::Es, "Espera tu respuesta a «Ship the compact schedule editor with this beta?»"),
+    ] {
+        let view = render(&state, &golden_live(), Client::Ios, lang, &format!("task:{task}"), "2026-09-30T10:00:00Z");
+        let texts: Vec<String> = view.sections.iter().flat_map(|section| &section.items).flat_map(|item| match item {
+            Item::Facts(facts) => facts.items.iter().map(|fact| fact.value.clone()).collect(),
+            _ => vec![],
+        }).collect();
+        assert!(texts.iter().any(|text| text == expected), "{lang:?}: the state says why it waits: {texts:?}");
+    }
+}
+
+/// §7.1: whatever the state, no card has an action the domain would turn down. Every action a
+/// card carries is compared with what the domain says is available for that very card.
+#[test]
+fn no_card_of_any_fixture_carries_an_action_the_domain_says_is_not_available() {
+    use action_id::{ActionId, Verb};
+    let mut compared = 0;
+    for domain in [fixture(), golden_fixture(), plan_question_fixture()] {
+        let domain = with_cards(&domain);
+        let live = golden_live();
+        for client in [Client::Ios, Client::Mac, Client::Tui] {
+            for lang in [Lang::En, Lang::Es] {
+                let context = RenderContext { domain: &domain, live: &live, client, lang, transport: Transport::Loopback,
+                    cursor: "cursor-1", rendered_at: "" };
+                for item in domain.projection().inbox {
+                    let card = card::from_item(&item, &context, true).unwrap();
+                    for action in card.actions.iter().chain(&card.more).chain(&card.reply) {
+                        let Ok(id) = ActionId::parse(&action.id) else { continue };
+                        let kinds: &[&str] = match id.verb {
+                            Verb::Accept => &["accept_delivery", "answer_question"],
+                            Verb::Merge => &["authorize_merge"],
+                            Verb::Changes => &["submit_feedback", "answer_question"],
+                            Verb::Ans => &["answer_question"],
+                            Verb::Read => &["mark_read"],
+                            Verb::Clarify => &["request_clarification"],
+                            _ => continue,
+                        };
+                        compared += 1;
+                        assert!(
+                            item.available_actions.iter().any(|available| available.enabled && kinds.contains(&available.kind.as_str())),
+                            "{} carries {} but the domain has none of {kinds:?} available: {:?}", item.id, action.id, item.available_actions
+                        );
+                    }
+                }
+            }
+        }
+    }
+    assert!(compared > 100, "the property compared {compared} actions");
 }
 
 #[test]
@@ -3255,7 +3319,7 @@ fn a_task_and_node_with_the_same_name_appear_once_in_the_context() {
 }
 
 #[test]
-fn merge_is_disabled_with_its_reason_until_the_card_that_blocks_it_is_answered() {
+fn merge_is_not_offered_until_the_card_that_blocks_it_is_answered() {
     let mut state = golden_fixture();
     let key = "card:hf-weekly-2026-09-30";
     let question = "8fa4034b-249e-4487-a89b-57de38c26372";
@@ -3263,18 +3327,14 @@ fn merge_is_disabled_with_its_reason_until_the_card_that_blocks_it_is_answered()
         vec![crate::domain::CardTarget::PullRequest { pr_id: "github.com/example/repo#12".into() }];
     let view = render(&state, &golden_live(), Client::Ios, Lang::En, key, "");
     let card = card_of(&view);
-    let merge = card.actions.iter().find(|action| action.id.starts_with("merge:")).expect("merge");
-    assert!(!merge.enabled);
-    assert_eq!(merge.disabled_reason.as_deref(), Some("Answer “Ship the compact schedule editor with this beta?” first"));
-    let accept = card.more.iter().find(|action| action.id.starts_with("accept:")).expect("accept without merging");
-    assert!(!accept.enabled, "accepting is held back too");
+    assert!(!card.actions.iter().any(|action| action.id.starts_with("merge:")), "a blocked merge is not a button");
+    assert!(!card.actions.iter().chain(&card.more).any(|action| action.id.starts_with("accept:")), "accepting is held back too");
     assert_eq!(card.blocked_by.len(), 1);
     assert_eq!(card.blocked_by[0].id, question);
     assert!(card.blocked_by[0].label.starts_with("blocked by Ship the compact schedule editor"));
     assert!(matches!(&card.blocked_by[0].link, Some(Link::View { key }) if key == &format!("card:{question}")));
     let spanish = render(&state, &golden_live(), Client::Ios, Lang::Es, key, "");
-    let merge = card_of(&spanish).actions.iter().find(|action| action.id.starts_with("merge:")).unwrap();
-    assert_eq!(merge.disabled_reason.as_deref(), Some("Responde primero «Ship the compact schedule editor with this beta?»"));
+    assert!(!card_of(&spanish).actions.iter().any(|action| action.id.starts_with("merge:")));
 
     let blocker = render(&state, &golden_live(), Client::Ios, Lang::En, &format!("card:{question}"), "");
     let chip = &card_of(&blocker).blocks[0];
@@ -3288,8 +3348,7 @@ fn merge_is_disabled_with_its_reason_until_the_card_that_blocks_it_is_answered()
     let answered = render(&state, &golden_live(), Client::Ios, Lang::En, key, "");
     let card = card_of(&answered);
     assert!(card.blocked_by.is_empty(), "an answered card holds nothing back");
-    let merge = card.actions.iter().find(|action| action.id.starts_with("merge:")).unwrap();
-    assert_ne!(merge.disabled_reason.as_deref(), Some("Answer “Ship the compact schedule editor with this beta?” first"));
+    assert!(card.actions.iter().any(|action| action.id.starts_with("merge:")), "answered, the merge is offered");
 }
 
 #[test]
@@ -3453,7 +3512,7 @@ fn spec(kind: crate::domain::CardKind, need: &str, why: &str) -> crate::domain::
     crate::domain::CardSpec::new(kind, need).why(why)
 }
 
-fn answers(card: &Card) -> Vec<&Action> {
+fn answers(card: &Card) -> Vec<&CardAction> {
     card.actions.iter().filter(|action| action.id.starts_with("ans:i-1@")).collect()
 }
 
@@ -3800,7 +3859,7 @@ fn tui_document_actions(view: &View) -> Vec<Action> {
     let mut out = Vec::new();
     for item in view.sections.iter().flat_map(|section| &section.items) {
         match item {
-            Item::Card(card) => out.extend(card.actions.iter().chain(&card.reply).chain(&card.more).cloned()),
+            Item::Card(card) => out.extend(card.actions.iter().chain(&card.reply).chain(&card.more).cloned().map(Action::from)),
             Item::Actions(bar) => out.extend(bar.actions.iter().cloned()),
             Item::Notice(notice) => out.extend(notice.action.iter().cloned()),
             _ => {}
@@ -4079,7 +4138,7 @@ fn change_answers_lists_what_was_answered_while_the_group_is_incomplete() {
     let live = LiveSnapshot::default();
     let more = |state: &DomainState, id: &str| render(state, &live, Client::Ios, Lang::En, &format!("card:{id}"), "").sections[0].items.iter()
         .find_map(|item| match item { Item::Card(card) => Some(card.more.clone()), _ => None }).unwrap();
-    let change = |more: &[Action]| more.iter().find(|a| a.id.starts_with("retake:")).cloned();
+    let change = |more: &[CardAction]| more.iter().find(|a| a.id.starts_with("retake:")).cloned();
     assert!(change(&more(&group_state(&[]), "g-q1")).is_none(), "nothing answered, nothing to change");
     let state = group_state(&[0, 2]);
     let action = change(&more(&state, "g-q2")).expect("Change answers on the one still open");
@@ -4282,27 +4341,6 @@ fn a_node_with_an_open_task_never_reads_idle_and_idle_is_only_for_the_bottom_sec
             }
         }
     }
-}
-
-#[test]
-fn every_refusal_a_card_can_meet_has_its_own_words() {
-    let codes = [
-        "already_read", "withdrawn", "forbidden", "task_not_active", "invalid_action_for_kind", "stale_revision",
-        "blocked", "clarification_pending", "delivery_uncertain", "stale_head", "acceptance_stale",
-        "acceptance_missing", "merge_not_confirmed", "blocking_interaction", "blocking_open", "stack_not_ready",
-        "dependency_not_done", "dependency_cycle", "not_found", "not_assigned", "agent_busy", "agent_used", "task_closing",
-        "question_already_answered", "already_answered", "already_withdrawn", "ask_already_open",
-        "subject_already_linked", "pr_mismatch", "pr_owned_by_other_task", "task_already_has_pr", "unknown_target",
-        "no_task", "request_title_required", "archive_task", "stale_generation", "stale_epoch", "conflict",
-        "idempotency_conflict", "payload_too_large", "incompatible_protocol", "invalid_input",
-    ];
-    for lang in [Lang::En, Lang::Es] {
-        let fallback = card::disabled_reason("an unknown code", lang);
-        for code in codes {
-            assert_ne!(card::disabled_reason(code, lang), fallback, "{code} needs its own words");
-        }
-    }
-    assert_eq!(card::disabled_reason("delivery_uncertain", Lang::En), "Alondra is already merging this pull request");
 }
 
 fn now_title(state: &DomainState, lang: Lang) -> Option<String> {

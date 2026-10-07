@@ -844,18 +844,24 @@ impl DomainState {
         if let Some(Scope::Task { task_id }) = self.interactions.get(delivery).map(|i| &i.scope)
             && let Some(blocker) = self.open_blockers(task_id).first()
         {
+            let title = self.tasks.get(blocker).map_or_else(|| blocker.0.clone(), |task| task.title.clone());
             return refuse(
                 "blocked",
                 "presentation_id",
                 &format!("Task {blocker} still has to review this delivery: nothing is merged or accepted before it"),
-            );
+            )
+            .map_err(|error| error.because(Refusal::BlockedByTask { title }));
         }
         match self.blocked_by(delivery).first() {
-            Some(x) => refuse(
-                "blocked",
-                "presentation_id",
-                &format!("Card {x} blocks this delivery: answer or withdraw it first"),
-            ),
+            Some(x) => {
+                let need = self.interactions.get(x).map_or_else(String::new, |blocker| blocker.card.need.clone());
+                refuse(
+                    "blocked",
+                    "presentation_id",
+                    &format!("Card {x} blocks this delivery: answer or withdraw it first"),
+                )
+                .map_err(|error| error.because(Refusal::BlockedByQuestion { need }))
+            }
             None => Ok(()),
         }
     }
@@ -1428,7 +1434,8 @@ impl DomainState {
                     .and_then(|a| self.tasks.get(&a.task_id))
                     .map_or(0, |t| t.revision),
             ),
-            Command::ObservePrState { pr_id, .. } => Some(
+            Command::ObservePrState { pr_id, .. }
+            | Command::ObservePrMergeMethods { pr_id, .. } => Some(
                 self.pull_requests
                     .get(pr_id)
                     .and_then(|p| self.tasks.get(&p.task_id))
@@ -3071,6 +3078,20 @@ impl DomainState {
                     self.notify(&task, None, &merged_notice(number, left), effects)?;
                 }
             }
+            Command::ObservePrMergeMethods {
+                pr_id,
+                allowed_methods,
+            } => {
+                system(actor)?;
+                if allowed_methods.is_empty() {
+                    return fail("invalid_input", "Merge methods required");
+                };
+                let p = self
+                    .pull_requests
+                    .get_mut(pr_id)
+                    .ok_or_else(|| DomainError::new("not_found", "PR missing"))?;
+                p.allowed_methods = allowed_methods.clone();
+            }
             Command::PublishStackReadiness {
                 task_id,
                 presentation_id,
@@ -3316,19 +3337,21 @@ impl DomainState {
     ) -> Result<TaskId> {
         let (_, t, targets) = self.presentation(presentation_id)?;
         self.unblocked(presentation_id)?;
+        let number = self.pull_requests[pr_id].number;
         if !targets.contains(&DeliveryTarget::PullRequest {
             pr_id: pr_id.clone(),
             head: expected_head.to_owned(),
         }) {
-            return fail("stale_head", "PR/head not in current delivery");
+            return fail("stale_head", "PR/head not in current delivery").map_err(|e| e.because(Refusal::StaleHead { number }));
         };
         let task = t.id.clone();
         let pr = &self.pull_requests[pr_id];
         if pr.state != PrState::Open {
-            return fail("invalid_action_for_kind", "Only an open PR can be authorized");
+            return fail("invalid_action_for_kind", "Only an open PR can be authorized").map_err(|e| e.because(Refusal::PrClosed { number }));
         };
         if !pr.allowed_methods.contains(&method) {
-            return fail("invalid_input", "Merge method not allowed");
+            return fail("invalid_input", "Merge method not allowed")
+                .map_err(|e| e.because(Refusal::MethodNotAllowed { method, allowed: pr.allowed_methods.clone() }));
         };
         if self.merge_authorizations.contains_key(authorization_id) {
             return fail("invalid_input", "Authorization ID already exists");
@@ -3338,7 +3361,8 @@ impl DomainState {
                 && a.head == pr.head
                 && matches!(a.attempt, MergeAttemptState::Claimed | MergeAttemptState::Uncertain)
         }) {
-            return fail("delivery_uncertain", "Reconcile existing merge attempt before authorizing again");
+            return fail("delivery_uncertain", "Reconcile existing merge attempt before authorizing again")
+                .map_err(|e| e.because(Refusal::MergeInProgress { number }));
         };
         for a in self.merge_authorizations.values_mut().filter(|a| a.pr_id == *pr_id) {
             a.valid = false;

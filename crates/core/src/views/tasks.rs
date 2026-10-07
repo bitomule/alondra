@@ -5,7 +5,18 @@ use super::{
 use crate::domain::{DomainState, ModelChooser, NodeEnd, Request, RequestId, Task, TaskId, TaskState};
 use std::collections::{BTreeMap, BTreeSet};
 
-fn state(task: &Task, context: &RenderContext<'_>) -> &'static str {
+/// The task's state as a short line. A task that waits says what for, whatever it waits for.
+fn state(task: &Task, context: &RenderContext<'_>) -> String {
+    let plain = plain_state(task, context);
+    if plain == t!(context.lang, "Waiting", "Esperando")
+        && let crate::domain::Attention::Wait(reason) = context.domain.attention(task)
+    {
+        return wait_text(&reason, context);
+    }
+    plain.into()
+}
+
+fn plain_state(task: &Task, context: &RenderContext<'_>) -> &'static str {
     let (domain, lang) = (context.domain, context.lang);
     if let Some(label) = common::instruction_label(task, domain, lang) {
         return label;

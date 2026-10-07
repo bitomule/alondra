@@ -280,7 +280,7 @@ impl App {
         let selected = self.sel.clone().unwrap_or_else(|| Key(card.id.clone()));
         match character {
             '1'..='3' => {
-                let action = card.actions.get(character as usize - '1' as usize)?.clone();
+                let action = alondra_core::views::Action::from(card.actions.get(character as usize - '1' as usize)?.clone());
                 Some(self.press_card_action(action, None, &selected, epoch))
             }
             'm' if !card.more.is_empty() => {

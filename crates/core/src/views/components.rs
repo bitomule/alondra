@@ -231,11 +231,11 @@ pub struct Card {
     pub blocked_by: Vec<BlockChip>,
     /// Send text to the node (or the orchestrator) the card came from; on every card.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reply: Option<Action>,
+    pub reply: Option<CardAction>,
     /// What does not fit the three visible `actions`, with "Request clarification" and
     /// "Open on GitHub".
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub more: Vec<Action>,
+    pub more: Vec<CardAction>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub link: Option<Link>,
     pub icon: Icon,
@@ -258,7 +258,7 @@ pub struct Card {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachments: Vec<Attachment>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub actions: Vec<Action>,
+    pub actions: Vec<CardAction>,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ContentRow {
@@ -404,6 +404,34 @@ pub struct Notice {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ActionBar {
     pub actions: Vec<Action>,
+}
+/// An action of a card: one the user can use now. A card never carries one that cannot be used,
+/// so there is no way to build it disabled. The wire still says `enabled: true` for the clients
+/// that read it; they stop reading it when they move to this type.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(from = "Action", into = "Action")]
+pub struct CardAction(Action);
+impl CardAction {
+    /// The action as a card carries it; `None` when it cannot be used, so the card omits it.
+    pub fn usable(action: Action) -> Option<Self> {
+        action.enabled.then(|| Self(Action { disabled_reason: None, ..action }))
+    }
+}
+impl From<Action> for CardAction {
+    fn from(action: Action) -> Self {
+        Self(Action { enabled: true, disabled_reason: None, ..action })
+    }
+}
+impl From<CardAction> for Action {
+    fn from(action: CardAction) -> Self {
+        action.0
+    }
+}
+impl std::ops::Deref for CardAction {
+    type Target = Action;
+    fn deref(&self) -> &Action {
+        &self.0
+    }
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Action {

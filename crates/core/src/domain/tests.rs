@@ -2916,9 +2916,10 @@ fn variant_index(c: &Command) -> usize {
         Command::RecordNodeEnd { .. } => 52,
         Command::SetRelations { .. } => 53,
         Command::RecordVerdict { .. } => 54,
+        Command::ObservePrMergeMethods { .. } => 55,
     }
 }
-const COMMAND_KINDS: usize = 55;
+const COMMAND_KINDS: usize = 56;
 /// Every command kind naming the given ids. The flag marks commands that only
 /// create a fresh entity and therefore may succeed with an unknown id.
 fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
@@ -3030,6 +3031,7 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
         (Command::RecordNodeEnd { task_id: ids.task.into(), end: NodeEnd::Closed, agent_id: None }, false),
         (Command::SetRelations { task_id: ids.task.into(), delivered_dependencies: BTreeSet::new(), blocks: BTreeSet::new() }, false),
         (Command::RecordVerdict { task_id: ids.task.into(), presentation_id: ids.interaction.into(), verdict: Verdict::Approved { summary: "ok".into(), open_issues: false } }, false),
+        (Command::ObservePrMergeMethods { pr_id: ids.pr.into(), allowed_methods: vec![MergeMethod::Squash] }, false),
     ];
     let mut covered = vec![false; COMMAND_KINDS];
     for (command, _) in &list {

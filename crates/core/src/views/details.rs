@@ -72,7 +72,7 @@ pub(super) fn document(id: &str, context: &RenderContext<'_>) -> Result<View, Bu
     let projection = context.domain.projection();
     if let Some(item) = super::card::item_for_revision(&projection, &revision.id, context.domain) {
         let card = super::card::from_item(item, context, true)?;
-        let actions: Vec<_> = card.actions.into_iter().chain(card.more.into_iter().filter(|action| action.link.is_none())).collect();
+        let actions: Vec<super::Action> = card.actions.into_iter().chain(card.more.into_iter().filter(|action| action.link.is_none())).map(Into::into).collect();
         if !actions.is_empty() { view.sections.push(common::section("actions", None, vec![Item::Actions(super::ActionBar { actions })])); }
     }
     Ok(view)
@@ -151,7 +151,7 @@ pub(super) fn pull_request(id: &str, context: &RenderContext<'_>) -> Result<View
                 vec![Item::Markdown(body)],
             ));
         }
-        let actions: Vec<_> = card.actions.into_iter().chain(card.reply).chain(card.more).collect();
+        let actions: Vec<super::Action> = card.actions.into_iter().chain(card.reply).chain(card.more).map(Into::into).collect();
         if !actions.is_empty() {
             view.sections.push(common::section(
                 "actions",

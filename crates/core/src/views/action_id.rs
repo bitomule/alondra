@@ -30,11 +30,13 @@ pub enum Verb {
     SchedDelete,
     SchedSave,
     NewRequest,
+    /// Close the delivered PR on GitHub without merging it, and cancel its task.
+    CloseUnmerged,
     /// Take back an answer to one of the questions asked together with this one.
     Retake,
 }
 impl Verb {
-    pub const ALL: [Self; 29] = [
+    pub const ALL: [Self; 30] = [
         Self::Ans,
         Self::Read,
         Self::Accept,
@@ -63,6 +65,7 @@ impl Verb {
         Self::SchedDelete,
         Self::SchedSave,
         Self::NewRequest,
+        Self::CloseUnmerged,
         Self::Retake,
     ];
     pub fn as_str(self) -> &'static str {
@@ -95,6 +98,7 @@ impl Verb {
             Self::SchedDelete => "sched_delete",
             Self::SchedSave => "sched_save",
             Self::NewRequest => "new_request",
+            Self::CloseUnmerged => "close_unmerged",
             Self::Retake => "retake",
         }
     }

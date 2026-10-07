@@ -18,7 +18,7 @@ fn view_action(view: &View, predicate: impl Fn(&Action) -> bool) -> Option<Actio
         for item in items {
             match item {
                 Item::Card(card) => {
-                    if let Some(action) = card.actions.iter().find(|a| predicate(a)) { return Some(action.clone()); }
+                    if let Some(action) = card.actions.iter().find(|a| predicate(a)) { return Some(Action::from(action.clone())); }
                 }
                 Item::Actions(bar) => if let Some(action) = bar.actions.iter().find(|a| predicate(a)) { return Some(action.clone()); },
                 Item::Row(row) => {
@@ -36,8 +36,9 @@ fn view_action(view: &View, predicate: impl Fn(&Action) -> bool) -> Option<Actio
 fn local_attach(view: &View) -> Option<String> {
     fn scan(items: &[Item]) -> Option<String> {
         for item in items {
+            let card_actions: Vec<Action>;
             let actions: &[Action] = match item {
-                Item::Card(card) => &card.actions,
+                Item::Card(card) => { card_actions = card.actions.iter().cloned().map(Action::from).collect(); &card_actions }
                 Item::Actions(bar) => &bar.actions,
                 Item::Row(row) => &row.actions,
                 Item::Form(form) => std::slice::from_ref(&form.submit),

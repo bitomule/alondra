@@ -103,6 +103,9 @@ fn card_for(cause: MachineCause, machine: &Machine, waiting: &[Waiter], minutes:
 fn orchestrator_text(card: &MachineCard, opening: bool) -> String {
     let (_, why) = card.text(Lang::En);
     let lead = if opening { "Machine at its limit" } else { "The machine is still at its limit" };
+    if card.cause == MachineCause::Load {
+        return format!("{lead}: {why} Do not launch or wake nodes until Alondra says it recovered; it clears by itself and needs nothing from {}.", crate::domain_messages::user_name());
+    }
     format!("{lead}: {why} Do not launch or wake nodes until Alondra says it recovered; {} has a card about it.", crate::domain_messages::user_name())
 }
 
@@ -273,6 +276,9 @@ fn wake(domain: &DomainRuntime, session: &str) {
 async fn act(domain: &DomainRuntime, alerts: &impl Alerts, sample: impl Fn() -> Option<Machine>, actions: Vec<Action>) {
     for action in actions {
         match action {
+            // The CPU at its limit from the nodes' own work clears by itself and the user has
+            // nothing to do about it: it is the machine's state, not a card or a push.
+            Action::Raise { card, .. } | Action::Push(card) if card.cause == MachineCause::Load => {}
             Action::Raise { id, card } => {
                 let (need, why) = card.text(Lang::En);
                 let option = alondra_core::domain::QuestionOption { id: MACHINE_FIXED_OPTION.into(), label: MACHINE_FIXED_LABEL.into(), description: None, inputs: vec![] };
@@ -537,6 +543,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_passing_cpu_load_is_the_machines_state_not_a_card_and_the_node_still_wakes_by_itself() {
+        let (_home, domain) = world();
+        let session = "builder";
+        domain.live.machine_watch.declare(session, "the machine is busy", 0, now_millis());
+        let node = Node::connect(&domain, session);
+        let busy = Arc::new(Mutex::new(true));
+        let reading = busy.clone();
+        let told = Arc::new(Told(Mutex::new(vec![])));
+        let watcher = tokio::spawn(watch(domain.clone(), move || {
+            let mut sample = machine(50 * GB, 50);
+            sample.unreliable = *reading.lock().unwrap();
+            Some(sample)
+        }, told.clone(), Duration::from_millis(20)));
+
+        until("the incident", || domain.live.machine_watch.incident().is_some()).await;
+        until("the orchestrator told", || !orchestrator_inbox(&domain).is_empty()).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(open_machine_cards(&domain).is_empty(), "nothing for the user to do: no card");
+        assert!(told.0.lock().unwrap().is_empty(), "and no push");
+        *busy.lock().unwrap() = false;
+        until("the node woken", || node.texts() == [RESUME_MESSAGE]).await;
+        watcher.abort();
+    }
+
+    #[tokio::test]
     async fn when_the_card_cannot_be_written_the_user_hears_it_by_push() {
         let (_home, domain) = world();
         domain.live.machine_watch.declare("fase0", "disk full", 0, now_millis());
@@ -551,6 +582,14 @@ mod tests {
         until("the push", || !told.0.lock().unwrap().is_empty()).await;
         watcher.abort();
         assert_eq!(told.0.lock().unwrap()[0], "Libera espacio en disco: quedan 0 B. Disco casi lleno (0 B libres). Parados: fase0. Continúan solos cuando se recupere.");
+    }
+
+    #[test]
+    fn the_orchestrator_is_not_told_of_a_card_for_a_cpu_load_that_makes_none() {
+        let load = MachineCard { cause: MachineCause::Load, disk_free: 0, memory_free_percent: None, nodes: vec![], reason: None, minutes: None };
+        let disk = MachineCard { cause: MachineCause::Disk, ..load.clone() };
+        assert!(!orchestrator_text(&load, true).contains("card"), "{}", orchestrator_text(&load, true));
+        assert!(orchestrator_text(&disk, true).contains("has a card about it"));
     }
 
     #[test]

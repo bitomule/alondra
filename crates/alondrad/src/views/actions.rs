@@ -6,9 +6,9 @@
 
 use alondra_core::domain::{
     Actor, AuthorizationId, Command, CommandEnvelope, CommandId, DataEpoch, DomainError, Hold, Instruction,
-    InteractionId, InteractionPayload, MergeMethod, Revision, TaskId,
+    InteractionId, InteractionPayload, MergeMethod, Refusal, Revision, TaskId,
 };
-use alondra_core::views::{action_id::{ActionId, Verb}, Lang, VIEWS_PROTOCOL};
+use alondra_core::views::{action_id::{ActionId, Verb}, Lang, Outcome, OutcomeKind, VIEWS_PROTOCOL, refusal_text};
 use axum::{extract::{rejection::JsonRejection, State}, http::StatusCode, response::{IntoResponse, Response}, Extension, Json};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -156,10 +156,25 @@ fn action_receipts() -> &'static tokio::sync::Mutex<std::collections::HashMap<(S
 fn is_external(verb: Verb) -> bool {
     matches!(verb, Verb::Reply | Verb::AskPr | Verb::Conflicts | Verb::Msg | Verb::Relaunch | Verb::Close | Verb::Interrupt |
         Verb::OrchRetry | Verb::OrchAck | Verb::OrchStop | Verb::SchedRun | Verb::SchedToggle |
-        Verb::SchedDelete | Verb::SchedSave | Verb::NewRequest)
+        Verb::SchedDelete | Verb::SchedSave | Verb::NewRequest | Verb::CloseUnmerged)
 }
 
 async fn execute_action(
+    domain: &crate::domain_runtime::DomainRuntime,
+    client: &crate::client_routes::Client,
+    home: &std::path::Path,
+    device: &str,
+    request: ActionRequest,
+    identity: Option<(&str, &str, &[u8; 32])>,
+    authorize: impl Fn() -> anyhow::Result<()> + Sync,
+) -> anyhow::Result<Value> {
+    let lang = if request.lang == "es" { Lang::Es } else { Lang::En };
+    let action = ActionId::parse(&request.action_id).ok();
+    let reply = execute_inner(domain, client, home, device, request, identity, authorize).await?;
+    Ok(with_result(reply, lang, action.as_ref()))
+}
+
+async fn execute_inner(
     domain: &crate::domain_runtime::DomainRuntime,
     client: &crate::client_routes::Client,
     home: &std::path::Path,
@@ -226,7 +241,7 @@ async fn execute_external(
 
     let state = domain.state()?;
     if authorize().is_err() {
-        return Ok(error_value_lang(lang, "forbidden", "device approval was revoked"));
+        return Ok(device_not_approved_value(lang));
     }
     let user_id = format!("device:{device}");
     let transport = identity.map(|(sender, request_id, digest)| (sender, request_id, digest));
@@ -246,6 +261,7 @@ async fn execute_external(
         Verb::SchedDelete => "Schedule deleted",
         Verb::SchedSave => "Schedule saved",
         Verb::NewRequest => "Request sent",
+        Verb::CloseUnmerged => "PR closed",
         _ => return Ok(no_longer_available(lang, "This action is no longer available")),
     };
     let stamp = if lang == Lang::Es { match action.verb {
@@ -255,7 +271,7 @@ async fn execute_external(
         Verb::OrchRetry => "Reintentado", Verb::OrchAck => "Confirmado", Verb::OrchStop => "Detenido",
         Verb::SchedRun => "Ejecución iniciada", Verb::SchedToggle => "Tarea actualizada",
         Verb::SchedDelete => "Tarea eliminada", Verb::SchedSave => "Tarea guardada",
-        Verb::NewRequest => "Solicitud enviada", _ => stamp,
+        Verb::NewRequest => "Solicitud enviada", Verb::CloseUnmerged => "PR cerrada", _ => stamp,
     }} else { stamp };
     let to_applied = |status: u16, body: Value| -> Value { applied(action.verb, lang, stamp, state.revision, status, body) };
     match action.verb {
@@ -284,6 +300,7 @@ async fn execute_external(
             let body = json!({"text":text,"attachments":attachments,"kind":"reply",
                 "mark_read":mark_read,"interaction_id":interaction_id,"task_id":task_id});
             let reply = crate::domain_bootstrap::send_agent_message(domain, home, device, &agent, body).await;
+            if let Some(unreachable) = unreachable_reply(&state, &agent, &reply, lang) { return Ok(unreachable); }
             let status = reply["status"].as_u64().unwrap_or(500) as u16;
             Ok(to_applied(status, reply["body"].clone()))
         }
@@ -301,7 +318,47 @@ async fn execute_external(
             let body = json!({"text":text,"attachments":attachments,"kind":"pr_question",
                 "pr_id":pr.id,"task_id":task.id});
             let reply = crate::domain_bootstrap::send_agent_message(domain, home, device, agent, body).await;
+            if let Some(unreachable) = unreachable_reply(&state, agent, &reply, lang) { return Ok(unreachable); }
             Ok(to_applied(reply["status"].as_u64().unwrap_or(500) as u16, reply["body"].clone()))
+        }
+        Verb::CloseUnmerged => {
+            let Some(interaction) = state.interactions.get(&InteractionId(action.subject.clone())) else {
+                return Ok(refused_value(&Refusal::NoLongerAvailable, lang));
+            };
+            let interaction = current_delivery(&state, interaction);
+            let Some(pr) = pr_of(&state, interaction) else { return Ok(refused_value(&Refusal::NoLongerAvailable, lang)); };
+            let Some(task) = state.tasks.get(&pr.task_id).filter(|task| !task.state.terminal()) else {
+                return Ok(refused_value(&Refusal::TaskNotActive, lang));
+            };
+            let (task_id, number, mut was_open) = (task.id.clone(), pr.number, pr.state == alondra_core::domain::PrState::Open);
+            if was_open {
+                if let Err(detail) = client.github().close_pr(&pr.host, &pr.repository, pr.number).await {
+                    log!("could not close PR #{number} on GitHub: {detail}");
+                    let said = detail.to_ascii_lowercase();
+                    if said.contains("already merged") || said.contains("was merged") {
+                        return Ok(refused_value(&Refusal::PrAlreadyMerged { number }, lang));
+                    }
+                    if said.contains("already closed") {
+                        was_open = false;
+                    } else {
+                        return Ok(refused_value(&Refusal::GithubUnreachable, lang));
+                    }
+                }
+            }
+            // The task may have moved while GitHub answered: cancel it as it is now.
+            let cancel = ActionId::new(Verb::Cancel, task_id.0.clone(), domain.state()?.revision, None)
+                .map_err(|_| anyhow::anyhow!("invalid cancel id"))?;
+            let mut request = request.clone();
+            request.action_id = cancel.to_string();
+            let mut reply = execute_value(domain, device, request, attachments, identity, authorize)?;
+            if !was_open && reply["outcome"] == "applied" {
+                reply["result"] = json!(Outcome::done(if lang == Lang::Es {
+                    format!("La PR #{number} ya estaba cerrada. Tarea cancelada.")
+                } else {
+                    format!("PR #{number} was already closed. Task cancelled.")
+                }));
+            }
+            Ok(reply)
         }
         Verb::Conflicts => {
             let pr_id = PrId(action.subject.clone());
@@ -331,6 +388,7 @@ async fn execute_external(
             } else { None };
             let body = json!({"text":text,"attachments":attachments,"kind":"message","task_id":task_id});
             let reply = crate::domain_bootstrap::send_agent_message(domain, home, device, &agent, body).await;
+            if let Some(unreachable) = unreachable_reply(&state, &agent, &reply, lang) { return Ok(unreachable); }
             Ok(to_applied(reply["status"].as_u64().unwrap_or(500) as u16, reply["body"].clone()))
         }
         Verb::Relaunch => {
@@ -351,8 +409,7 @@ async fn execute_external(
             if !state.agents.contains_key(&agent) { return Ok(no_longer_available(lang, "This node is no longer available")); }
             match domain.live.pushes.interrupt(&agent.0) {
                 Ok(()) => Ok(to_applied(200, json!({"interrupted": agent.0}))),
-                Err(_) => Ok(to_applied(409, json!({"code": "session_unreachable",
-                    "message": "The node is not connected to Alondra: its session is stopped or its Claude Code mod is not running. Nothing was sent"}))),
+                Err(_) => Ok(node_unreachable_value(&state, &agent, lang)),
             }
         }
         Verb::OrchRetry | Verb::OrchAck | Verb::OrchStop => {
@@ -662,9 +719,11 @@ fn execute_value(
     if action.verb == Verb::ArchiveDone {
         return archive_done(domain, device, &request, &action, &state, lang, authorize);
     }
-    let Some((command, stamp)) = map_domain_action(&state, &action, &request, attachments, lang) else {
-        return Ok(no_longer_available(lang, "This action is no longer available"));
+    let (command, stamp) = match map_domain_action(&state, &action, &request, attachments, lang) {
+        Ok(mapped) => mapped,
+        Err(refusal) => return Ok(refused_value(&refusal, lang)),
     };
+    let expected_revision = expected_revision(&state, &command, &action);
     let conflicts = (action.verb == Verb::Conflicts)
         .then(|| state.pull_requests.get(&alondra_core::domain::PrId(action.subject.clone())))
         .flatten();
@@ -676,20 +735,15 @@ fn execute_value(
         protocol_version: 2,
         data_epoch: DataEpoch(request.data_epoch),
         command_id,
-        expected_revision: action.revision as Revision,
+        expected_revision,
         command,
     };
     let transport = identity.map(|(sender, request_id, digest)| (sender, request_id, digest));
     let outcome = match domain.execute(&actor, &envelope, transport,
         || authorize().map_err(|_| DomainError::new("forbidden", "device approval was revoked").into())) {
         Ok(outcome) => outcome,
-        Err(crate::domain_store::StoreError::Domain(error))
-            if matches!(error.code.as_str(), "stale_revision" | "not_found" | "invalid_action_for_kind" | "task_not_active") =>
-        {
-            return Ok(no_longer_available(lang, "This action is no longer available"));
-        }
         Err(crate::domain_store::StoreError::Domain(error)) => {
-            return Ok(json!({"protocol":VIEWS_PROTOCOL,"outcome":"rejected","message":error.message,"code":error.code}));
+            return Ok(domain_refusal_value(&error, lang));
         }
         Err(crate::domain_store::StoreError::Storage(error)) => return Err(error.into()),
     };
@@ -764,7 +818,148 @@ fn archive_command_id(parent: &str, task: &TaskId) -> CommandId {
     CommandId(format!("{parent}/{suffix}"))
 }
 
+/// The command an action asks for, or why Alondra will not do it. Every action is judged against
+/// the task's current final delivery, never against the one the user's id was made from.
 fn map_domain_action(
+    state: &alondra_core::domain::DomainState,
+    action: &ActionId,
+    request: &ActionRequest,
+    attachments: &[alondra_core::domain::AttachmentRef],
+    lang: Lang,
+) -> Result<(Command, String), Refusal> {
+    if action.verb == Verb::Merge {
+        return map_merge(state, action, request, lang);
+    }
+    if action.verb == Verb::Accept {
+        seen_delivery_is_current(state, &action.subject)?;
+    }
+    map_action(state, action, request, attachments, lang).ok_or_else(|| unavailable(state, action))
+}
+
+/// Why an action that maps to nothing is no longer possible.
+fn unavailable(state: &alondra_core::domain::DomainState, action: &ActionId) -> Refusal {
+    let Some(interaction) = state.interactions.get(&InteractionId(action.subject.clone())) else {
+        return Refusal::NoLongerAvailable;
+    };
+    match &interaction.payload {
+        _ if interaction.withdrawn => Refusal::Withdrawn,
+        InteractionPayload::Question { answer: Some(_), .. } | InteractionPayload::ActionRequest { answer: Some(_), .. } => Refusal::AlreadyAnswered,
+        InteractionPayload::Delivery { acceptance: Some(_), .. } => Refusal::AlreadyAnswered,
+        _ => Refusal::NoLongerAvailable,
+    }
+}
+
+/// Accepting or merging is decided on what the user saw: when the task has presented a newer
+/// result since, or the PR moved under the one that was shown, nothing is accepted or merged.
+fn seen_delivery_is_current(state: &alondra_core::domain::DomainState, interaction: &str) -> Result<(), Refusal> {
+    let Some(interaction) = state.interactions.get(&InteractionId(interaction.to_owned())) else { return Ok(()); };
+    let InteractionPayload::Delivery { targets, .. } = &interaction.payload else { return Ok(()); };
+    let alondra_core::domain::Scope::Task { task_id } = &interaction.scope else { return Ok(()); };
+    if state.tasks.get(task_id).and_then(|task| task.final_presentation.as_ref()).is_some_and(|current| *current != interaction.id) {
+        return Err(Refusal::NewerResult);
+    }
+    for target in targets {
+        if let alondra_core::domain::DeliveryTarget::PullRequest { pr_id, head } = target
+            && let Some(pr) = state.pull_requests.get(pr_id)
+            && pr.head != *head
+        {
+            return Err(Refusal::StaleHead { number: pr.number });
+        }
+    }
+    Ok(())
+}
+
+/// The delivery an action about `interaction` is for: its task's current final one.
+fn current_delivery<'a>(
+    state: &'a alondra_core::domain::DomainState,
+    interaction: &'a alondra_core::domain::Interaction,
+) -> &'a alondra_core::domain::Interaction {
+    let alondra_core::domain::Scope::Task { task_id } = &interaction.scope else { return interaction; };
+    if !matches!(interaction.payload, InteractionPayload::Delivery { .. }) { return interaction; }
+    state.tasks.get(task_id)
+        .and_then(|task| task.final_presentation.as_ref())
+        .and_then(|id| state.interactions.get(id))
+        .filter(|current| matches!(current.payload, InteractionPayload::Delivery { .. }))
+        .unwrap_or(interaction)
+}
+
+fn pr_of<'a>(
+    state: &'a alondra_core::domain::DomainState,
+    interaction: &alondra_core::domain::Interaction,
+) -> Option<&'a alondra_core::domain::PullRequest> {
+    let InteractionPayload::Delivery { targets, .. } = &interaction.payload else { return None; };
+    targets.iter().find_map(|target| match target {
+        alondra_core::domain::DeliveryTarget::PullRequest { pr_id, .. } => state.pull_requests.get(pr_id),
+        _ => None,
+    })
+}
+
+/// Changes and replies belong to the task's current delivery, so they are judged against that
+/// delivery's own revision; accepting and merging keep the revision of the card they came from.
+fn expected_revision(state: &alondra_core::domain::DomainState, command: &Command, action: &ActionId) -> Revision {
+    let presentation = match command {
+        Command::SubmitFeedback { presentation_id, .. } => Some(presentation_id),
+        _ => None,
+    };
+    let floor = presentation.and_then(|id| state.interactions.get(id)).map_or(0, |interaction| interaction.revision);
+    (action.revision as Revision).max(floor as Revision)
+}
+
+fn map_merge(
+    state: &alondra_core::domain::DomainState,
+    action: &ActionId,
+    request: &ActionRequest,
+    lang: Lang,
+) -> Result<(Command, String), Refusal> {
+    let gone = Refusal::NoLongerAvailable;
+    let presented = if state.pull_requests.contains_key(&alondra_core::domain::PrId(action.subject.clone())) {
+        action.extra.as_deref().and_then(|extra| extra.split_once('-')).map(|(_, presentation)| presentation.to_owned())
+    } else {
+        Some(action.subject.clone())
+    };
+    let interaction = presented
+        .and_then(|id| state.interactions.get(&InteractionId(id)))
+        .ok_or_else(|| gone.clone())?;
+    seen_delivery_is_current(state, &interaction.id.0)?;
+    let pr = pr_of(state, interaction).ok_or_else(|| gone.clone())?;
+    let InteractionPayload::Delivery { targets, .. } = &interaction.payload else { return Err(gone); };
+    let head = targets.iter().find_map(|target| match target {
+        alondra_core::domain::DeliveryTarget::PullRequest { head, .. } => Some(head.clone()),
+        _ => None,
+    }).ok_or(Refusal::NoLongerAvailable)?;
+    if pr.head != head { return Err(Refusal::StaleHead { number: pr.number }); }
+    if pr.state != alondra_core::domain::PrState::Open { return Err(Refusal::PrClosed { number: pr.number }); }
+    if let Some(upstream) = state.pull_requests.values().find(|upstream| upstream.id != pr.id
+        && upstream.state == alondra_core::domain::PrState::Open
+        && upstream.repository == pr.repository && upstream.head == pr.base) {
+        return Err(Refusal::UpstreamPrOpen { number: upstream.number });
+    }
+    let method = match (request.option_id.as_deref().filter(|id| !id.is_empty()), pr.allowed_methods.as_slice()) {
+        (Some("merge"), _) => MergeMethod::Merge,
+        (Some("squash"), _) => MergeMethod::Squash,
+        (Some("rebase"), _) => MergeMethod::Rebase,
+        (None, [only]) => *only,
+        _ => return Err(Refusal::NoMethodChosen { number: pr.number }),
+    };
+    if !pr.allowed_methods.contains(&method) {
+        return Err(Refusal::MethodNotAllowed { method, allowed: pr.allowed_methods.clone() });
+    }
+    // A merge already in flight at GitHub cannot be pressed again: say so. One still waiting for its
+    // checks is not: pressing again makes the merger look at the PR right now.
+    let merging = state.merge_authorizations.values().any(|a| a.valid && a.pr_id == pr.id && a.head == head
+        && a.method == method && a.presentation_id == interaction.id
+        && matches!(a.attempt, alondra_core::domain::MergeAttemptState::Claimed
+            | alondra_core::domain::MergeAttemptState::Uncertain));
+    if merging { return Err(Refusal::MergeInProgress { number: pr.number }); }
+    let stamp = if lang == Lang::Es { "Fusionando…" } else { "Merging…" };
+    Ok((Command::AuthorizeMerge {
+        authorization_id: AuthorizationId(format!("auth-{}", request.command_id)),
+        presentation_id: interaction.id.clone(), pr_id: pr.id.clone(),
+        expected_head: head, method,
+    }, stamp.to_owned()))
+}
+
+fn map_action(
     state: &alondra_core::domain::DomainState,
     action: &ActionId,
     request: &ActionRequest,
@@ -794,7 +989,8 @@ fn map_domain_action(
                 interaction_id: interaction.id.clone(), option_id,
                 inputs, attachments: attachments.to_vec(),
             }, match option {
-                Some(option) => format!("{} · {}", stamp("Answered", "Respondida"), option.label),
+                Some(option) => format!("{} · {}", stamp("Answered", "Respondida"),
+                    alondra_core::views::answer_label(state, interaction, option, lang)),
                 None => stamp("Answered", "Respondida"),
             }))
         }
@@ -809,6 +1005,15 @@ fn map_domain_action(
         }
         Verb::Reply => {
             let interaction = state.interactions.get(&InteractionId(action.subject.clone()))?;
+            if let InteractionPayload::Question { answer: None, .. } | InteractionPayload::ActionRequest { answer: None, .. } = &interaction.payload {
+                if state.holds.contains_key(&interaction.id) { return None; }
+                let text = request.input.text.as_deref()?.trim();
+                if text.is_empty() { return None; }
+                let inputs = std::collections::BTreeMap::from([("text".to_owned(), alondra_core::domain::InputValue::Text(text.into()))]);
+                return Some((Command::AnswerQuestion { interaction_id: interaction.id.clone(), option_id: String::new(),
+                    inputs, attachments: attachments.to_vec() }, stamp("Answered", "Respondida")));
+            }
+            let interaction = current_delivery(state, interaction);
             let InteractionPayload::Delivery { targets, .. } = &interaction.payload else { return None; };
             let comments: Vec<_> = request.input.comments.iter()
                 .map(|comment| (comment.anchor.clone(), comment.text.clone(), comment.quote.clone())).collect();
@@ -867,19 +1072,9 @@ fn map_domain_action(
         Verb::Changes => {
             let (interaction, pr_head) = if state.pull_requests.contains_key(&alondra_core::domain::PrId(action.subject.clone())) {
                 let pr = state.pull_requests.get(&alondra_core::domain::PrId(action.subject.clone()))?;
-                let head = action.extra.as_deref()?;
-                if head != head_prefix(&pr.head) {
-                    return None;
-                }
-                let presentation = state.interactions.values().find(|interaction| {
-                    matches!(&interaction.payload, InteractionPayload::Delivery { targets, .. }
-                        if targets.iter().any(|target| matches!(target,
-                            alondra_core::domain::DeliveryTarget::PullRequest { pr_id, head }
-                                if pr_id == &pr.id && head == &pr.head)))
-                })?;
-                (presentation, Some(pr.head.clone()))
+                (pr_presentation(state, pr)?, Some(pr.head.clone()))
             } else {
-                (state.interactions.get(&InteractionId(action.subject.clone()))?, None)
+                (current_delivery(state, state.interactions.get(&InteractionId(action.subject.clone()))?), None)
             };
             let comments: Vec<_> = request.input.comments.iter()
                 .map(|comment| (comment.anchor.clone(), comment.text.clone(), comment.quote.clone())).collect();
@@ -905,43 +1100,6 @@ fn map_domain_action(
             }
             Some((Command::SubmitFeedback { presentation_id: interaction.id.clone(), targets: targets.clone(), body,
                 attachments: attachments.to_vec(), instruction: Instruction::Changes }, stamp("Changes requested", "Cambios solicitados")))
-        }
-        Verb::Merge => {
-            let (interaction, target_pr) = if state.pull_requests.contains_key(&alondra_core::domain::PrId(action.subject.clone())) {
-                let (head, presentation_id) = action.extra.as_deref()?.split_once('-')?;
-                let pr = state.pull_requests.get(&alondra_core::domain::PrId(action.subject.clone()))?;
-                if head != head_prefix(&pr.head) { return None; }
-                let presentation = state.interactions.get(&InteractionId(presentation_id.to_owned()))?;
-                (presentation, Some(pr.id.clone()))
-            } else {
-                (state.interactions.get(&InteractionId(action.subject.clone()))?, None)
-            };
-            let InteractionPayload::Delivery { targets, .. } = &interaction.payload else { return None; };
-            let (pr_id, head) = targets.iter().find_map(|target| match target {
-                alondra_core::domain::DeliveryTarget::PullRequest { pr_id, head } => Some((pr_id, head)),
-                _ => None,
-            }).filter(|(pr_id, _)| target_pr.as_ref().is_none_or(|expected| expected == *pr_id))?;
-            let (prefix, expected_presentation) = action.extra.as_deref()?.split_once('-')?;
-            if expected_presentation != interaction.id.0 || prefix != head_prefix(head) { return None; }
-            let pr = state.pull_requests.get(pr_id)?;
-            if pr.head != *head || pr.state != alondra_core::domain::PrState::Open { return None; }
-            if state.pull_requests.values().any(|upstream| upstream.id != pr.id
-                && upstream.state == alondra_core::domain::PrState::Open
-                && upstream.repository == pr.repository && upstream.head == pr.base) {
-                return None;
-            }
-            let method = match request.option_id.as_deref()? {
-                "merge" => MergeMethod::Merge,
-                "squash" => MergeMethod::Squash,
-                "rebase" => MergeMethod::Rebase,
-                _ => return None,
-            };
-            if !pr.allowed_methods.contains(&method) { return None; }
-            Some((Command::AuthorizeMerge {
-                authorization_id: AuthorizationId(format!("auth-{}", request.command_id)),
-                presentation_id: interaction.id.clone(), pr_id: pr_id.clone(),
-                expected_head: head.clone(), method,
-            }, stamp("Merge authorized", "Integración autorizada")))
         }
         Verb::Withdraw => {
             if !state.requests.get(&alondra_core::domain::RequestId(action.subject.clone()))?.closed {
@@ -970,7 +1128,12 @@ fn map_domain_action(
 fn handed_back_in_domain(state: &alondra_core::domain::DomainState, action: &ActionId) -> bool {
     match action.verb {
         Verb::Reply => state.interactions.get(&InteractionId(action.subject.clone()))
-            .is_some_and(|interaction| matches!(interaction.payload, InteractionPayload::Delivery { .. })),
+            .is_some_and(|interaction| match &interaction.payload {
+                InteractionPayload::Delivery { .. } => true,
+                InteractionPayload::Question { answer: None, .. } | InteractionPayload::ActionRequest { answer: None, .. } =>
+                    !state.holds.contains_key(&interaction.id),
+                _ => false,
+            }),
         Verb::AskPr | Verb::Conflicts => state.pull_requests.get(&alondra_core::domain::PrId(action.subject.clone()))
             .is_some_and(|pr| pr_presentation(state, pr).is_some()),
         _ => false,
@@ -1000,51 +1163,24 @@ fn held_plan(state: &alondra_core::domain::DomainState, interaction: &alondra_co
     state.holds.get(&interaction.id) == Some(&Hold::Plan)
 }
 
+/// "Request changes" from a card whose PR got new commits since: ask before sending, with the same
+/// action pointed at the new head. Merging never asks: it is refused when what was shown is stale.
 fn changed_pr_head(
     state: &alondra_core::domain::DomainState,
     action: &ActionId,
     lang: Lang,
 ) -> Option<Value> {
-    let (pr_id, presentation_id, old_prefix) = match action.verb {
-        Verb::Changes if state.pull_requests.contains_key(&alondra_core::domain::PrId(action.subject.clone())) => (
-            alondra_core::domain::PrId(action.subject.clone()),
-            None,
-            action.extra.as_deref()?,
-        ),
-        Verb::Merge => {
-            let (prefix, presentation_id) = action.extra.as_deref()?.split_once('-')?;
-            let pr_id = if state.pull_requests.contains_key(&alondra_core::domain::PrId(action.subject.clone())) {
-                alondra_core::domain::PrId(action.subject.clone())
-            } else {
-                let interaction = state.interactions.get(&InteractionId(action.subject.clone()))?;
-                let InteractionPayload::Delivery { targets, .. } = &interaction.payload else { return None; };
-                targets.iter().find_map(|target| match target {
-                    alondra_core::domain::DeliveryTarget::PullRequest { pr_id, .. } => Some(pr_id.clone()),
-                    _ => None,
-                })?
-            };
-            (pr_id, Some(presentation_id), prefix)
-        }
-        _ => return None,
-    };
+    if action.verb != Verb::Changes { return None; }
+    let pr_id = alondra_core::domain::PrId(action.subject.clone());
+    let old_prefix = action.extra.as_deref()?;
     let pr = state.pull_requests.get(&pr_id)?;
     let new_prefix = head_prefix(&pr.head);
     if old_prefix == new_prefix { return None; }
-    let (verb, subject, revision, extra) = match action.verb {
-        Verb::Changes => (Verb::Changes, pr_id.0.clone(), state.revision, new_prefix.to_owned()),
-        Verb::Merge => {
-            let presentation = presentation_id?;
-            let id = if state.pull_requests.contains_key(&alondra_core::domain::PrId(action.subject.clone())) { presentation } else { action.subject.as_str() };
-            let revision = state.interactions.get(&InteractionId(id.to_owned())).map_or(state.revision, |interaction| interaction.revision);
-            (Verb::Merge, action.subject.clone(), revision, format!("{new_prefix}-{presentation}"))
-        }
-        _ => return None,
-    };
-    let fresh = ActionId::new(verb, subject, revision, Some(extra)).ok()?.to_string();
+    let fresh = ActionId::new(Verb::Changes, pr_id.0.clone(), state.revision, Some(new_prefix.to_owned())).ok()?.to_string();
     Some(json!({
         "protocol":VIEWS_PROTOCOL,
         "outcome":"changed",
-        "message":if lang == Lang::Es {"La PR tiene commits nuevos desde tu revisión"} else {"The PR has new commits since your review"},
+        "message":if lang == Lang::Es { format!("La PR #{} tiene commits nuevos", pr.number) } else { format!("PR #{} has new commits", pr.number) },
         "confirm":{"action_id":fresh,"button":if lang == Lang::Es {"Enviar igualmente"} else {"Send anyway"}}
     }))
 }
@@ -1056,6 +1192,113 @@ fn context_request(note: &str) -> String {
 
 fn no_longer_available(lang: Lang, message: &str) -> Value {
     json!({"protocol":VIEWS_PROTOCOL,"outcome":"no_longer_available","message":localize(lang, message)})
+}
+
+/// A refusal worded for the user. Clients still reading the old `outcome` see the same kinds as
+/// before; the sentence is the catalog's, in the user's language.
+fn refused_value(refusal: &Refusal, lang: Lang) -> Value {
+    let gone = matches!(refusal, Refusal::NoLongerAvailable | Refusal::AlreadyAnswered | Refusal::TaskNotActive
+        | Refusal::Withdrawn | Refusal::Changed | Refusal::NewerResult | Refusal::PrClosed { .. });
+    json!({"protocol":VIEWS_PROTOCOL,"outcome":if gone {"no_longer_available"} else {"rejected"},
+        "message":refusal_text(refusal, lang),"result":Outcome::refused(refusal, lang)})
+}
+
+fn device_not_approved_value(lang: Lang) -> Value {
+    let mut value = refused_value(&Refusal::DeviceNotApproved, lang);
+    value["code"] = json!("forbidden");
+    value
+}
+
+fn node_unreachable_value(state: &alondra_core::domain::DomainState, agent: &alondra_core::domain::AgentId, lang: Lang) -> Value {
+    let node = state.tasks.values().find(|task| task.agent_id.as_ref() == Some(agent) && !task.archived).map(|task| task.title.clone())
+        .or_else(|| state.agents.get(agent).map(|agent| agent.name.clone()))
+        .unwrap_or_else(|| agent.0.chars().take(8).collect());
+    let mut value = refused_value(&Refusal::NodeUnreachable { node }, lang);
+    value["code"] = json!("session_unreachable");
+    value
+}
+
+/// A node that is not connected, when a message to it says so.
+fn unreachable_reply(
+    state: &alondra_core::domain::DomainState,
+    agent: &alondra_core::domain::AgentId,
+    reply: &Value,
+    lang: Lang,
+) -> Option<Value> {
+    (reply["body"]["code"] == "session_unreachable").then(|| node_unreachable_value(state, agent, lang))
+}
+
+fn domain_refusal_value(error: &DomainError, lang: Lang) -> Value {
+    let mut value = refused_value(&error.why(), lang);
+    if value["outcome"] == "rejected" {
+        value["code"] = json!(error.code);
+    }
+    value
+}
+
+/// What the user is told an applied action did.
+fn applied_outcome(verb: Verb, lang: Lang, stamp: &str) -> Outcome {
+    let es = lang == Lang::Es;
+    let say = |en: &str, es_text: &str| if es { es_text } else { en }.to_owned();
+    match verb {
+        Verb::Merge => Outcome::started(
+            say("The PR is merging", "La PR se está fusionando"),
+            Some(say("You'll see it finished in its task when GitHub confirms.", "La verás terminada en su tarea cuando GitHub lo confirme.")),
+        ),
+        Verb::CloseUnmerged => Outcome::done(say("PR closed without merging. The task is cancelled.", "PR cerrada sin fusionar. La tarea está cancelada.")),
+        Verb::Accept => Outcome::done(say("Result accepted.", "Resultado aceptado.")),
+        Verb::Changes => Outcome::done(say("Changes sent. The card comes back when it is presented again.", "Cambios enviados. La tarjeta volverá cuando se presente de nuevo.")),
+        Verb::Ans if stamp.contains(" · ") => Outcome::done(stamp.to_owned()),
+        Verb::Ans => Outcome::done(say("Answer sent.", "Respuesta enviada.")),
+        Verb::Ctx | Verb::Clarify => Outcome::done(say("Clarification asked. Its new card replaces this one.", "Aclaración pedida. Su nueva tarjeta sustituirá a esta.")),
+        Verb::Retake => Outcome::done(say("Question reopened: answer it again.", "Pregunta reabierta: respóndela de nuevo.")),
+        Verb::Read => Outcome::done(say("Marked as read.", "Marcada como leída.")),
+        Verb::Reply => Outcome::done(say("Reply sent.", "Respuesta enviada.")),
+        Verb::Conflicts => Outcome::done(say("Asked its node to resolve the conflicts.", "Pedido a su nodo que resuelva los conflictos.")),
+        Verb::Archive => Outcome::done(say("Task archived.", "Tarea archivada.")),
+        Verb::Unarchive => Outcome::done(say("Task restored.", "Tarea restaurada.")),
+        Verb::SchedRun => Outcome::started(say("Run started: its task appears in Tasks.", "Ejecución iniciada: su tarea aparece en Tareas."), None),
+        Verb::SchedToggle => Outcome::done(say("Scheduled task updated.", "Tarea programada actualizada.")),
+        Verb::SchedDelete => Outcome::done(say("Scheduled task deleted.", "Tarea programada eliminada.")),
+        Verb::SchedSave => Outcome::done(say("Scheduled task saved.", "Tarea programada guardada.")),
+        _ => Outcome::done(stamp.to_owned()),
+    }
+}
+
+/// Adds the typed `result` beside the fields the first clients read.
+fn with_result(mut reply: Value, lang: Lang, action: Option<&ActionId>) -> Value {
+    if reply.get("result").is_some() {
+        return reply;
+    }
+    let outcome = match reply["outcome"].as_str() {
+        Some("applied") => {
+            let verb = action.map_or(Verb::Msg, |action| action.verb);
+            let stamp = reply["stamp"].as_str().unwrap_or_default().to_owned();
+            applied_outcome(verb, lang, &stamp)
+        }
+        Some("changed") => {
+            let es = lang == Lang::Es;
+            let title = reply["message"].as_str().unwrap_or_default().to_owned();
+            let id = reply["confirm"]["action_id"].as_str().unwrap_or_default().to_owned();
+            let label = reply["confirm"]["button"].as_str().unwrap_or_default();
+            Outcome::changed(title, if es {
+                "Revisaste una versión anterior. Envíalo igualmente o abre la PR para ver qué cambió."
+            } else {
+                "You reviewed an older version. Send anyway, or open the PR to see what changed."
+            }.to_owned(), alondra_core::views::send_anyway(id, label))
+        }
+        _ => {
+            let message = reply["message"].as_str().unwrap_or_default().to_owned();
+            let kind = if reply["code"].as_str().is_some_and(|code| matches!(code, "storage_unavailable" | "external_read_failed" | "github_unavailable")) {
+                OutcomeKind::Failed
+            } else {
+                OutcomeKind::Refused
+            };
+            Outcome { kind, title: message, body: None, next: None }
+        }
+    };
+    reply["result"] = json!(outcome);
+    reply
 }
 
 fn resolve_attachments(
@@ -1109,6 +1352,8 @@ fn applied(verb: Verb, lang: Lang, stamp: &str, revision: u64, status: u16, body
 }
 
 fn rejection_message(lang: Lang, code: &str, english: &str) -> String {
+    let known = Refusal::for_code(code);
+    if known != Refusal::NoLongerAvailable { return refusal_text(&known, lang); }
     if lang != Lang::Es { return english.to_owned(); }
     match code {
         "incompatible_protocol" => "Actualiza Alondra para completar esta acción",
@@ -1176,7 +1421,7 @@ fn localize<'a>(lang: Lang, message: &'a str) -> &'a str {
         "This schedule action is unavailable" => "Esta acción de programación no está disponible",
         "This view has changed" => "Esta vista ha cambiado",
         "A completed task changed; refresh the view" => "Una tarea completada ha cambiado; actualiza la vista",
-        _ => "Ya no está disponible",
+        _ => "Esto ya no está disponible.",
     }
 }
 
@@ -1206,6 +1451,16 @@ fn head_prefix(head: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn mapped(
+        state: &alondra_core::domain::DomainState,
+        action: &ActionId,
+        request: &ActionRequest,
+        attachments: &[alondra_core::domain::AttachmentRef],
+        lang: Lang,
+    ) -> Option<(Command, String)> {
+        map_domain_action(state, action, request, attachments, lang).ok()
+    }
 
     fn choice_spec(id: &str, selected: &str, default: &str) -> alondra_core::options::Spec {
         alondra_core::options::Spec {
@@ -1361,14 +1616,14 @@ mod tests {
         assert_eq!(rejection_message(Lang::Es, "stale_head", "head changed"),
             "El elemento ha cambiado; actualiza la vista e inténtalo de nuevo");
         assert_eq!(rejection_message(Lang::Es, "storage_unavailable", "database unavailable"),
-            "Los datos de Alondra no están disponibles ahora mismo");
+            "Alondra no pudo guardarlo. No cambió nada; inténtalo de nuevo.");
         assert_eq!(rejection_message(Lang::En, "storage_unavailable", "database unavailable"),
-            "database unavailable");
+            "Alondra couldn't save this. Nothing changed; try again.");
         for (code, expected) in [
             ("stack_not_ready", "La pila todavía no está lista para esta acción"),
-            ("acceptance_stale", "El elemento ha cambiado; actualiza la vista e inténtalo de nuevo"),
-            ("task_not_active", "La tarea ya no está activa"),
-            ("withdrawn", "La persona autora retiró esta pregunta"),
+            ("acceptance_stale", "Hay un resultado más nuevo: revísalo."),
+            ("task_not_active", "Esta tarea ya terminó o se canceló."),
+            ("withdrawn", "Su autor retiró esta tarjeta."),
             ("dependency_not_done", "Completa primero la tarea dependiente"),
             ("subject_already_linked", "Este elemento ya está vinculado a otra tarea"),
             ("delivery_uncertain", "No se pudo confirmar si el nodo recibió el mensaje"),
@@ -1461,16 +1716,16 @@ mod tests {
         };
         let action = ActionId::new(Verb::Ans, "q-1", 1, None).unwrap();
         let Some((Command::AnswerQuestion { option_id, inputs, .. }, _)) =
-            map_domain_action(&state, &action, &request, &[], Lang::En) else { panic!("free answer") };
+            mapped(&state, &action, &request, &[], Lang::En) else { panic!("free answer") };
         assert!(option_id.is_empty());
         assert_eq!(inputs.get("text"), Some(&InputValue::Text("My own answer".into())));
         let mut blank = request;
         blank.input.text = Some("   ".into());
-        assert!(map_domain_action(&state, &action, &blank, &[], Lang::En).is_none());
+        assert!(mapped(&state, &action, &blank, &[], Lang::En).is_none());
         blank.option_id = Some("yes".into());
         blank.input.text = None;
         let Some((Command::AnswerQuestion { option_id, inputs, .. }, _)) =
-            map_domain_action(&state, &action, &blank, &[], Lang::En) else { panic!("option answer") };
+            mapped(&state, &action, &blank, &[], Lang::En) else { panic!("option answer") };
         assert_eq!(option_id, "yes");
         assert!(inputs.is_empty());
     }
@@ -1499,12 +1754,12 @@ mod tests {
         };
         let changes = ActionId::new(Verb::Changes, "q-1", 1, None).unwrap();
         let Some((Command::AnswerQuestion { interaction_id, option_id, inputs, .. }, stamp)) =
-            map_domain_action(&state, &changes, &request, &[], Lang::Es) else { panic!("changes answer the question") };
+            mapped(&state, &changes, &request, &[], Lang::Es) else { panic!("changes answer the question") };
         assert_eq!((interaction_id.0.as_str(), option_id.as_str(), stamp.as_str()), ("q-1", "", "Cambios solicitados"));
         assert_eq!(inputs.get("text"), Some(&InputValue::Text(
             "I reviewed your code and have the following comments. Please address them.\n\n1. `p-2` - Drop this step\n\nSplit it in two PRs".into())));
         state.interactions.get_mut(&"q-1".into()).unwrap().subject = None;
-        assert!(map_domain_action(&state, &changes, &request, &[], Lang::Es).is_none(),
+        assert!(mapped(&state, &changes, &request, &[], Lang::Es).is_none(),
             "a question about no document is answered, not reviewed");
     }
 
@@ -1529,7 +1784,7 @@ mod tests {
         };
         let changes = ActionId::new(Verb::Changes, "hold-1", 1, None).unwrap();
         let Some((Command::AnswerQuestion { option_id, inputs, .. }, _)) =
-            map_domain_action(&state, &changes, &request, &[], Lang::En) else { panic!("changes answer the plan") };
+            mapped(&state, &changes, &request, &[], Lang::En) else { panic!("changes answer the plan") };
         assert_eq!(option_id, Hold::REQUEST_CHANGES);
         assert_eq!(inputs.get(Hold::NOTE), Some(&InputValue::Text(
             "I reviewed your code and have the following comments. Please address them.\n\n1. `p-1` - Keep the lexer".into())));
@@ -1537,62 +1792,17 @@ mod tests {
             comments: vec![Comment { anchor: "paragraph:1:0".into(), text: "Keep the lexer".into(), quote: Some("Split the lexer".into()) }],
             ..Default::default() }, ..request.clone() };
         let Some((Command::AnswerQuestion { inputs, .. }, _)) =
-            map_domain_action(&state, &changes, &quoted, &[], Lang::En) else { panic!("changes answer the plan") };
+            mapped(&state, &changes, &quoted, &[], Lang::En) else { panic!("changes answer the plan") };
         assert_eq!(inputs.get(Hold::NOTE), Some(&InputValue::Text(
             "I reviewed this and have the following comments. Please address them.\n\n> Split the lexer\nKeep the lexer\n\nLooks right.".into())));
         let approve = ActionId::new(Verb::Accept, "hold-1", 1, None).unwrap();
         let Some((Command::AnswerQuestion { option_id, inputs, .. }, stamp)) =
-            map_domain_action(&state, &approve, &request, &[], Lang::En) else { panic!("approve answers the plan") };
+            mapped(&state, &approve, &request, &[], Lang::En) else { panic!("approve answers the plan") };
         assert_eq!((option_id.as_str(), stamp.as_str()), (Hold::APPROVE, "Approved"));
         assert!(inputs.is_empty());
         state.holds.clear();
-        assert!(map_domain_action(&state, &approve, &request, &[], Lang::En).is_none(), "only a held plan is approved");
-        assert!(map_domain_action(&state, &changes, &request, &[], Lang::En).is_none());
-    }
-
-    #[test]
-    fn canonical_pr_subject_maps_changes_merge_and_stale_head() {
-        use alondra_core::domain::{Author, DeliveryTarget, Interaction, PrState, PullRequest,
-            Recipient, Scope};
-        let id = "github.com/bitomule/alondra#154";
-        let mut state = alondra_core::domain::DomainState::new("epoch");
-        state.pull_requests.insert(id.into(), PullRequest {
-            id: id.into(), task_id: "t-1".into(), host: "github.com".into(),
-            repository: "bitomule/alondra".into(), number: 154,
-            head: "abcdef123456".into(), base: "main".into(), state: PrState::Open,
-            merged_head: None, allowed_methods: vec![MergeMethod::Merge], review: None,
-        });
-        state.interactions.insert("i-1".into(), Interaction {
-            attachments: vec![], id: "i-1".into(), scope: Scope::Task { task_id: "t-1".into() },
-            author: Author::System, recipient: Recipient::User, body: "Review".into(),
-            blocking: true, subject: None,
-            payload: InteractionPayload::Delivery {
-                targets: vec![DeliveryTarget::PullRequest { pr_id: id.into(), head: "abcdef123456".into() }],
-                is_final: false, acceptance: None, feedback: vec![],
-            }, revision: 1, order: 1, withdrawn: false, card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Know, "Read the update"), clarification: None,
-        });
-        let request = ActionRequest {
-            protocol: VIEWS_PROTOCOL, command_id: "5f0c2d9e-8d0b-4c71-9b0e-2b6f5d8f1a10".into(),
-            data_epoch: "epoch".into(), client: "ios".into(), lang: "en".into(),
-            action_id: String::new(), option_id: Some("merge".into()),
-            input: ActionInput { text: Some("Please revise".into()), ..Default::default() },
-        };
-        let changes = ActionId::new(Verb::Changes, id, 1, Some("abcdef12".into())).unwrap();
-        assert!(matches!(map_domain_action(&state, &changes, &request, &[], Lang::En),
-            Some((Command::SubmitFeedback { .. }, _))));
-        let merge = ActionId::new(Verb::Merge, id, 1, Some("abcdef12-i-1".into())).unwrap();
-        assert!(matches!(map_domain_action(&state, &merge, &request, &[], Lang::En),
-            Some((Command::AuthorizeMerge { .. }, _))));
-        state.pull_requests.get_mut(&id.into()).unwrap().base = "upstream-head".into();
-        state.pull_requests.insert("github.com/bitomule/alondra#153".into(), PullRequest {
-            id: "github.com/bitomule/alondra#153".into(), task_id: "t-2".into(), host: "github.com".into(),
-            repository: "bitomule/alondra".into(), number: 153, head: "upstream-head".into(),
-            base: "main".into(), state: PrState::Open, merged_head: None,
-            allowed_methods: vec![MergeMethod::Merge], review: None,
-        });
-        assert!(map_domain_action(&state, &merge, &request, &[], Lang::En).is_none());
-        let old = ActionId::new(Verb::Changes, id, 1, Some("00000000".into())).unwrap();
-        assert_eq!(changed_pr_head(&state, &old, Lang::En).unwrap()["outcome"], "changed");
+        assert!(mapped(&state, &approve, &request, &[], Lang::En).is_none(), "only a held plan is approved");
+        assert!(mapped(&state, &changes, &request, &[], Lang::En).is_none());
     }
 
     struct ActionHome(std::path::PathBuf);
@@ -1806,5 +2016,346 @@ mod tests {
         assert!(!approved_path("GET", "/actions"));
         assert!(!approved_path("POST", "/actions?protocol=1"));
         assert!(!approved_path("POST", "/actions/"));
+    }
+
+    struct ClosesPrs(std::sync::Mutex<Vec<u64>>, Option<&'static str>, Option<Box<dyn Fn() + Send + Sync>>);
+    impl crate::client_routes::Github for ClosesPrs {
+        fn search_issues<'a>(&'a self, _: &'a [String]) -> crate::node_close::Answer<'a, Result<Value, String>> {
+            Box::pin(async { Err("not used".into()) })
+        }
+        fn issue_view<'a>(&'a self, _: &'a str, _: u64) -> crate::node_close::Answer<'a, Result<Value, String>> {
+            Box::pin(async { Err("not used".into()) })
+        }
+        fn close_pr<'a>(&'a self, _: &'a str, _: &'a str, number: u64) -> crate::node_close::Answer<'a, Result<(), String>> {
+            Box::pin(async move {
+                if let Some(error) = self.1 { return Err(error.into()); }
+                if let Some(during) = &self.2 { during(); }
+                self.0.lock().unwrap().push(number);
+                Ok(())
+            })
+        }
+    }
+
+    const FIRST: &str = "5f0c2d9e-8d0b-4c71-9b0e-2b6f5d8f1a10";
+    const SECOND: &str = "7a1d3c5e-2b4f-4a6c-8d9e-0f1a2b3c4d5e";
+
+    async fn act(
+        home: &ActionHome,
+        domain: &crate::domain_runtime::DomainRuntime,
+        client: &crate::client_routes::Client,
+        command_id: &str,
+        action: ActionId,
+        option: Option<&str>,
+        text: Option<&str>,
+    ) -> Value {
+        let mut request = action_request(domain, command_id, "es", action.to_string(), option, json!({}));
+        request.input.text = text.map(str::to_owned);
+        execute_action(domain, client, &home.0, "test-device", request, None, || Ok(())).await.unwrap()
+    }
+
+    fn present_again(domain: &crate::domain_runtime::DomainRuntime, interaction: &str) {
+        use alondra_core::domain::DeliveryTarget;
+        apply_seed_command(domain, Actor::Agent { agent_id: "agent-a".into() }, interaction, Command::PresentResult {
+            attachments: vec![], task_id: "task".into(), interaction_id: interaction.into(), body: "Ready again".into(),
+            targets: vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: "0123456789abcdef".into() }],
+            is_final: true, card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
+        });
+    }
+
+    #[tokio::test]
+    async fn changes_on_a_pr_apply_to_its_current_delivery_after_three_redeliveries() {
+        let (home, domain, client) = action_home();
+        presented_pr(&domain);
+        let seen = domain.state().unwrap().revision;
+        let first_card = ActionId::new(Verb::Changes, "pr", seen, Some("01234567".into())).unwrap();
+        present_again(&domain, "result-2");
+        present_again(&domain, "result-3");
+        present_again(&domain, "result-4");
+        let current = ActionId::new(Verb::Changes, "pr", domain.state().unwrap().revision, Some("01234567".into())).unwrap();
+        for (command_id, action) in [(FIRST, first_card), (SECOND, current)] {
+            let reply = act(&home, &domain, &client, command_id, action, None, Some("Rename the table")).await;
+            assert_eq!(reply["outcome"], "applied", "{reply}");
+            let state = domain.state().unwrap();
+            let final_delivery = state.tasks[&"task".into()].final_presentation.clone().unwrap();
+            let InteractionPayload::Delivery { feedback, .. } = &state.interactions[&final_delivery].payload else { unreachable!() };
+            assert!(!feedback.is_empty(), "the changes reached the delivery the task has now");
+            present_again(&domain, &format!("again-{}", &command_id[..4]));
+        }
+    }
+
+    #[tokio::test]
+    async fn a_merge_method_the_pr_does_not_allow_is_refused_saying_which_it_does() {
+        let (home, domain, client) = action_home();
+        presented_pr(&domain);
+        let revision = domain.state().unwrap().revision;
+        let id = |rev| ActionId::new(Verb::Merge, "result", rev, Some("01234567-result".into())).unwrap();
+        let refused = act(&home, &domain, &client, FIRST, id(revision), Some("merge"), None).await;
+        assert_eq!(refused["outcome"], "rejected", "{refused}");
+        assert_eq!(refused["message"], "Esta PR solo admite: squash.");
+        assert_eq!(refused["result"]["kind"], "refused");
+        assert_eq!(domain.state().unwrap().revision, revision, "nothing was authorized");
+        let preset = act(&home, &domain, &client, SECOND, id(revision), None, None).await;
+        assert_eq!(preset["outcome"], "applied", "a PR with one method needs no choice: {preset}");
+        assert_eq!(preset["result"]["kind"], "started");
+    }
+
+    #[tokio::test]
+    async fn merging_a_closing_task_presses_again_while_it_waits_and_is_told_when_the_merge_is_in_flight() {
+        let (home, domain, client) = action_home();
+        presented_pr(&domain);
+        let revision = domain.state().unwrap().revision;
+        let accept = ActionId::new(Verb::Accept, "result", revision, None).unwrap();
+        assert_eq!(act(&home, &domain, &client, FIRST, accept, None, None).await["outcome"], "applied");
+        let state = domain.state().unwrap();
+        assert_eq!(state.tasks[&"task".into()].state, alondra_core::domain::TaskState::Closing);
+        assert!(crate::domain_merges::due(&state).iter().any(|item| item.pr.id.0 == "pr" && item.method == MergeMethod::Squash),
+            "accepting already queued the merge");
+        // Alondra has not claimed it yet (it waits for the checks): pressing again makes it look now.
+        let merge = ActionId::new(Verb::Merge, "result", state.revision, Some("01234567-result".into())).unwrap();
+        let waiting = act(&home, &domain, &client, SECOND, merge.clone(), Some("squash"), None).await;
+        assert_eq!(waiting["outcome"], "applied", "{waiting}");
+        assert_eq!(waiting["result"]["kind"], "started");
+        // Once GitHub has been asked (the attempt is claimed) there is nothing to press: it says so.
+        let state = domain.state().unwrap();
+        let authorization = state.merge_authorizations.values().find(|a| a.valid).unwrap().id.clone();
+        apply_seed_command(&domain, Actor::System, "claim", Command::ClaimMergeAuthorization {
+            authorization_id: authorization, remote_head: "0123456789abcdef".into(), remote_base: "main".into(), base_verified: true,
+        });
+        let again = ActionId::new(Verb::Merge, "result", domain.state().unwrap().revision, Some("01234567-result".into())).unwrap();
+        let in_flight = act(&home, &domain, &client, "9b2e4d6f-1a3c-4e5b-8f70-a1b2c3d4e5f6", again, Some("squash"), None).await;
+        assert_eq!(in_flight["result"]["kind"], "refused", "{in_flight}");
+        assert_eq!(in_flight["message"], "Alondra ya está fusionando la PR #7; espera a que GitHub lo confirme.");
+    }
+
+    #[tokio::test]
+    async fn a_second_merge_while_the_checks_wait_makes_the_merger_look_at_the_pr_at_once() {
+        let (home, domain, client) = action_home();
+        presented_pr(&domain);
+        let github = crate::domain_merges::FakeGithub::new();
+        github.open(7, "0123456789abcdef", crate::domain_merges::Checks::Pending);
+        let accept = ActionId::new(Verb::Accept, "result", domain.state().unwrap().revision, None).unwrap();
+        act(&home, &domain, &client, FIRST, accept, None, None).await;
+        let mut merger = crate::domain_merges::Merger::with(std::time::Duration::ZERO, std::time::Duration::from_secs(3600), std::time::Duration::from_secs(3600));
+        assert!(merger.merge_due(&domain, &github).await.unwrap(), "the checks are pending: it waits");
+        github.open(7, "0123456789abcdef", crate::domain_merges::Checks::Passed);
+        assert!(merger.merge_due(&domain, &github).await.unwrap(), "and keeps waiting out its poll");
+        let merge = ActionId::new(Verb::Merge, "result", domain.state().unwrap().revision, Some("01234567-result".into())).unwrap();
+        let pressed = act(&home, &domain, &client, SECOND, merge, Some("squash"), None).await;
+        assert_eq!(pressed["outcome"], "applied", "{pressed}");
+        merger.merge_due(&domain, &github).await.unwrap();
+        assert_eq!(github.merged.lock().unwrap().len(), 1, "pressing again merged it without waiting for the next poll");
+    }
+
+    #[tokio::test]
+    async fn merging_from_an_old_card_whose_pr_got_new_commits_is_refused_not_offered_again() {
+        let (home, domain, client) = action_home();
+        presented_pr(&domain);
+        let old_card = ActionId::new(Verb::Merge, "result", domain.state().unwrap().revision, Some("01234567-result".into())).unwrap();
+        let moved = "fedcba9876543210";
+        apply_seed_command(&domain, Actor::System, "observed", Command::ObservePrState {
+            pr_id: "pr".into(), head: moved.into(), base: "main".into(),
+            state: alondra_core::domain::PrState::Open, merged_head: None,
+        });
+        apply_seed_command(&domain, Actor::Agent { agent_id: "agent-a".into() }, "present-moved", Command::PresentResult {
+            attachments: vec![], task_id: "task".into(), interaction_id: "result-2".into(), body: "Pushed again".into(),
+            targets: vec![alondra_core::domain::DeliveryTarget::PullRequest { pr_id: "pr".into(), head: moved.into() }],
+            is_final: true, card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
+        });
+        let revision = domain.state().unwrap().revision;
+        let reply = act(&home, &domain, &client, FIRST, old_card, Some("squash"), None).await;
+        assert_eq!(reply["outcome"], "no_longer_available", "{reply}");
+        assert_eq!(reply["result"]["kind"], "refused", "never \"send anyway\": {reply}");
+        assert!(reply["result"].get("next").is_none(), "{reply}");
+        assert_eq!(reply["message"], "Hay un resultado más nuevo: revísalo.");
+        assert_eq!(domain.state().unwrap().revision, revision, "nothing was authorized");
+    }
+
+    #[tokio::test]
+    async fn closing_a_pr_github_says_is_already_closed_or_merged_says_so_in_its_own_words() {
+        for (error, cancelled, title) in [
+            ("! Pull request me/app#7 is already closed", true, "La PR #7 ya estaba cerrada. Tarea cancelada."),
+            ("X Pull request me/app#7 can't be closed because it was already merged", false,
+                "La PR #7 ya estaba fusionada, así que no se puede cerrar sin fusionar."),
+        ] {
+            let (home, domain, client) = action_home();
+            client.use_github(std::sync::Arc::new(ClosesPrs(Default::default(), Some(error), None)));
+            presented_pr(&domain);
+            let close = ActionId::new(Verb::CloseUnmerged, "result", domain.state().unwrap().revision, None).unwrap();
+            let reply = act(&home, &domain, &client, FIRST, close, None, None).await;
+            let state = domain.state().unwrap();
+            assert_eq!(state.tasks[&"task".into()].state == alondra_core::domain::TaskState::Cancelled, cancelled, "{reply}");
+            let said = if cancelled { reply["result"]["title"].clone() } else { reply["message"].clone() };
+            assert_eq!(said, title, "{reply}");
+            assert!(!reply.to_string().contains("contactar con GitHub"), "{reply}");
+        }
+    }
+
+    #[tokio::test]
+    async fn replying_to_a_question_answers_it_with_its_own_words() {
+        use alondra_core::domain::{Recipient, Scope, QuestionOption};
+        let (home, domain, client) = action_home();
+        presented_pr(&domain);
+        apply_seed_command(&domain, Actor::Agent { agent_id: "agent-a".into() }, "ask", Command::AskQuestion {
+            attachments: vec![], interaction_id: "question".into(), scope: Scope::Task { task_id: "task".into() },
+            recipient: Recipient::User, body: "Which API?".into(), blocking: true,
+            options: vec![QuestionOption { id: "new".into(), label: "New".into(), description: None, inputs: vec![] }],
+            card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Provide, "Answer the question"),
+        });
+        let revision = domain.state().unwrap().interactions[&"question".into()].revision;
+        let reply = ActionId::new(Verb::Reply, "question", revision, None).unwrap();
+        let applied = act(&home, &domain, &client, FIRST, reply, None, Some("Neither: keep the old one")).await;
+        assert_eq!(applied["outcome"], "applied", "{applied}");
+        let state = domain.state().unwrap();
+        let InteractionPayload::Question { answer: Some(answer), .. } = &state.interactions[&"question".into()].payload else {
+            panic!("the reply answered the question: {applied}")
+        };
+        assert_eq!(answer.inputs["text"], alondra_core::domain::InputValue::Text("Neither: keep the old one".into()));
+        assert!(!state.projection().inbox.iter().any(|item| item.id == "interaction:question" && item.pending));
+    }
+
+    #[tokio::test]
+    async fn closing_a_pr_without_merging_closes_it_on_github_and_cancels_the_task() {
+        let (home, domain, client) = action_home();
+        let github = std::sync::Arc::new(ClosesPrs(Default::default(), None, None));
+        client.use_github(github.clone());
+        presented_pr(&domain);
+        let close = ActionId::new(Verb::CloseUnmerged, "result", domain.state().unwrap().revision, None).unwrap();
+        let reply = act(&home, &domain, &client, FIRST, close, None, None).await;
+        assert_eq!(reply["outcome"], "applied", "{reply}");
+        assert_eq!(*github.0.lock().unwrap(), [7]);
+        assert_eq!(domain.state().unwrap().tasks[&"task".into()].state, alondra_core::domain::TaskState::Cancelled);
+    }
+
+    #[tokio::test]
+    async fn closing_a_pr_when_github_does_not_answer_keeps_the_task_and_hides_the_raw_error() {
+        let (home, domain, client) = action_home();
+        client.use_github(std::sync::Arc::new(ClosesPrs(Default::default(), Some("GitHub is down: raw gh error"), None)));
+        presented_pr(&domain);
+        let close = ActionId::new(Verb::CloseUnmerged, "result", domain.state().unwrap().revision, None).unwrap();
+        let reply = act(&home, &domain, &client, FIRST, close, None, None).await;
+        assert_eq!(reply["result"]["kind"], "failed", "{reply}");
+        assert_eq!(reply["message"], "Alondra no pudo contactar con GitHub. No cambió nada; inténtalo de nuevo.");
+        assert!(!reply.to_string().contains("raw gh error"), "{reply}");
+        assert_ne!(domain.state().unwrap().tasks[&"task".into()].state, alondra_core::domain::TaskState::Cancelled);
+    }
+
+    #[tokio::test]
+    async fn closing_cancels_the_task_as_it_is_after_a_change_during_the_close() {
+        let (home, domain, client) = action_home();
+        presented_pr(&domain);
+        let moved = domain.clone();
+        client.use_github(std::sync::Arc::new(ClosesPrs(Default::default(), None,
+            Some(Box::new(move || present_again(&moved, "result-2"))))));
+        let close = ActionId::new(Verb::CloseUnmerged, "result", domain.state().unwrap().revision, None).unwrap();
+        let reply = act(&home, &domain, &client, FIRST, close, None, None).await;
+        assert_eq!(reply["outcome"], "applied", "the task moved while GitHub answered and is still cancelled: {reply}");
+        assert_eq!(domain.state().unwrap().tasks[&"task".into()].state, alondra_core::domain::TaskState::Cancelled);
+    }
+
+    #[tokio::test]
+    async fn closing_an_already_closed_pr_cancels_the_task_without_talking_about_merging() {
+        let (home, domain, client) = action_home();
+        let github = std::sync::Arc::new(ClosesPrs(Default::default(), None, None));
+        client.use_github(github.clone());
+        presented_pr(&domain);
+        apply_seed_command(&domain, Actor::System, "closed-on-github", Command::ObservePrState {
+            pr_id: "pr".into(), head: "0123456789abcdef".into(), base: "main".into(),
+            state: alondra_core::domain::PrState::Closed, merged_head: None,
+        });
+        let close = ActionId::new(Verb::CloseUnmerged, "result", domain.state().unwrap().revision, None).unwrap();
+        let reply = act(&home, &domain, &client, FIRST, close, None, None).await;
+        assert_eq!(reply["outcome"], "applied", "{reply}");
+        assert_eq!(reply["result"]["title"], "La PR #7 ya estaba cerrada. Tarea cancelada.");
+        assert!(github.0.lock().unwrap().is_empty(), "nothing to close on GitHub");
+        assert_eq!(domain.state().unwrap().tasks[&"task".into()].state, alondra_core::domain::TaskState::Cancelled);
+    }
+
+    #[tokio::test]
+    async fn accepting_or_merging_from_an_old_card_never_takes_a_newer_delivery() {
+        let (home, domain, client) = action_home();
+        presented_pr(&domain);
+        let seen = domain.state().unwrap().revision;
+        let accept_old = ActionId::new(Verb::Accept, "result", seen, None).unwrap();
+        let merge_old = ActionId::new(Verb::Merge, "result", seen, Some("01234567-result".into())).unwrap();
+        present_again(&domain, "result-2");
+        let revision = domain.state().unwrap().revision;
+        for (command_id, action, option) in [(FIRST, accept_old, None), (SECOND, merge_old, Some("squash"))] {
+            let reply = act(&home, &domain, &client, command_id, action, option, None).await;
+            assert_eq!(reply["result"]["kind"], "refused", "{reply}");
+            assert_eq!(reply["message"], "Hay un resultado más nuevo: revísalo.");
+        }
+        let state = domain.state().unwrap();
+        assert_eq!(state.revision, revision, "nothing was accepted or authorized");
+        assert!(state.merge_authorizations.is_empty());
+        let accept_new = ActionId::new(Verb::Accept, "result-2", state.revision, None).unwrap();
+        let reply = act(&home, &domain, &client, "9b2e4d6f-1a3c-4e5b-8f70-a1b2c3d4e5f6", accept_new, None, None).await;
+        assert_eq!(reply["outcome"], "applied", "the delivery the user saw can be accepted: {reply}");
+    }
+
+    #[tokio::test]
+    async fn changes_from_a_card_whose_pr_got_new_commits_ask_before_sending() {
+        let (home, domain, client) = action_home();
+        presented_pr(&domain);
+        let seen = domain.state().unwrap().revision;
+        let old_card = ActionId::new(Verb::Changes, "pr", seen, Some("deadbeef".into())).unwrap();
+        let reply = act(&home, &domain, &client, FIRST, old_card, None, Some("Rename the table")).await;
+        assert_eq!(reply["outcome"], "changed", "{reply}");
+        assert_eq!(reply["result"]["kind"], "changed");
+        assert_eq!(reply["result"]["title"], "La PR #7 tiene commits nuevos");
+        let next = reply["result"]["next"]["id"].as_str().unwrap();
+        let sent = act(&home, &domain, &client, SECOND, ActionId::parse(next).unwrap(), None, Some("Rename the table")).await;
+        assert_eq!(sent["outcome"], "applied", "Send anyway applies the changes: {sent}");
+    }
+
+    #[tokio::test]
+    async fn a_device_that_lost_its_approval_and_a_node_that_is_not_connected_are_refused_in_words() {
+        let (home, domain, client) = action_home();
+        apply_seed_command(&domain, Actor::System, "register-agent", Command::RegisterAgent { agent_id: "agent-a".into(), name: "Agent A".into() });
+        let interrupt = ActionId::new(Verb::Interrupt, "agent-a", domain.state().unwrap().revision, None).unwrap();
+        let request = action_request(&domain, FIRST, "es", interrupt.to_string(), None, json!({}));
+        let gone = execute_action(&domain, &client, &home.0, "test-device", request, None, || Ok(())).await.unwrap();
+        assert_eq!(gone["code"], "session_unreachable", "{gone}");
+        assert_eq!(gone["message"], "«Agent A» no está conectado: su sesión se detuvo. No se envió nada.");
+        let request = action_request(&domain, SECOND, "es", interrupt.to_string(), None, json!({}));
+        let revoked = execute_action(&domain, &client, &home.0, "test-device", request, None, || Err(anyhow::anyhow!("revoked"))).await.unwrap();
+        assert_eq!(revoked["message"], "Este dispositivo ya no está aprobado. Vuelve a aprobarlo desde el Mac.");
+    }
+
+    #[test]
+    fn the_stamp_of_an_answer_names_the_option_by_its_translated_label_never_its_id() {
+        use alondra_core::domain::{Author, Hold, Interaction, QuestionOption, Recipient, Scope};
+        let option = |id: &str, label: &str| QuestionOption { id: id.into(), label: label.into(), description: None, inputs: vec![] };
+        let mut state = alondra_core::domain::DomainState::new("epoch");
+        let mut ask = |id: &str, options: Vec<QuestionOption>, hold: Option<Hold>| {
+            state.interactions.insert(id.into(), Interaction {
+                attachments: vec![], id: id.into(), scope: Scope::Task { task_id: "t-1".into() }, author: Author::System,
+                recipient: Recipient::User, body: "Ask".into(), blocking: true, subject: None,
+                payload: InteractionPayload::Question { options, answer: None }, revision: 1, order: 1, withdrawn: false,
+                card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Know, "Read the update"), clarification: None,
+            });
+            if let Some(hold) = hold { state.holds.insert(id.into(), hold); }
+        };
+        ask("permission", vec![option(Hold::ALLOW, "Allow"), option("deny", "Deny")], Some(Hold::Permission));
+        ask("fixed", vec![option("done", "Done"), option("cannot", "I can't do it")], None);
+        ask("authored", vec![option("additive", "Aditivo"), option("bump", "Subir protocolo")], None);
+        let stamp = |lang: &str, interaction: &str, choice: &str| {
+            let request = ActionRequest {
+                protocol: VIEWS_PROTOCOL, command_id: "5f0c2d9e-8d0b-4c71-9b0e-2b6f5d8f1a10".into(),
+                data_epoch: "epoch".into(), client: "ios".into(), lang: lang.into(),
+                action_id: String::new(), option_id: Some(choice.into()), input: ActionInput::default(),
+            };
+            let action = ActionId::new(Verb::Ans, interaction, 1, None).unwrap();
+            let lang = if lang == "es" { Lang::Es } else { Lang::En };
+            map_domain_action(&state, &action, &request, &[], lang).unwrap().1
+        };
+        for (interaction, choice, english, spanish) in [
+            ("permission", "allow", "Answered · Allow", "Respondida · Permitir"),
+            ("permission", "deny", "Answered · Deny", "Respondida · Denegar"),
+            ("fixed", "done", "Answered · Done", "Respondida · Hecho"),
+            ("authored", "additive", "Answered · Aditivo", "Respondida · Aditivo"),
+        ] {
+            assert_eq!(stamp("en", interaction, choice), english);
+            assert_eq!(stamp("es", interaction, choice), spanish);
+        }
     }
 }

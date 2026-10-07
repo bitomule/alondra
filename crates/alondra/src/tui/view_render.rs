@@ -392,7 +392,7 @@ pub struct Menu {
 pub fn more_menu(card: &Card) -> Menu {
     Menu {
         title: tr!("More", "Más").into(),
-        entries: card.more.iter().take(9).map(|action| (action.clone(), None)).collect(),
+        entries: card.more.iter().take(9).map(|action| (Action::from(action.clone()), None)).collect(),
     }
 }
 
@@ -744,7 +744,7 @@ pub fn actions(view: &View) -> Vec<Action> {
     for section in sections(view) {
         for item in &section.items {
             match item {
-                Item::Card(card) => out.extend(card.actions.iter().chain(&card.reply).chain(&card.more).cloned()),
+                Item::Card(card) => out.extend(card.actions.iter().chain(&card.reply).chain(&card.more).cloned().map(Action::from)),
                 Item::Row(row) => row_actions(row, &mut out),
                 Item::Actions(bar) => out.extend(bar.actions.iter().cloned()),
                 Item::Form(_) => {}

@@ -933,25 +933,6 @@ fn schedules_screen_has_its_own_footer_with_the_create_hint() {
     assert!(!keys.iter().any(|(key, _)| key == "Shift+A" || key == "Tab"));
 }
 
-#[test]
-fn detail_hides_the_disabled_accept_action() {
-    let mut view = view_fixture("card-delivery.json");
-    for action in view["sections"][0]["items"][0]["more"].as_array_mut().unwrap() {
-        if action["id"].as_str().is_some_and(|id| id.starts_with("accept:")) {
-            action["enabled"] = serde_json::json!(false);
-        }
-    }
-    let actions = view["sections"][0]["items"][0]["more"].as_array().unwrap();
-    assert!(actions.iter().any(|action| action["id"].as_str().is_some_and(|id| id.starts_with("accept:"))
-        && action["enabled"] == serde_json::json!(false)));
-    let document: alondra_core::views::View = serde_json::from_value(view.take()).unwrap();
-
-    let visible = crate::tui::draw::visible_detail_actions(&document);
-
-    assert!(!visible.iter().any(|action| action.id.starts_with("accept:")));
-    assert!(visible.iter().any(|action| action.id.starts_with("reply:")));
-}
-
 fn question_card() -> alondra_core::views::View {
     let mut card = view_fixture("card-question.json");
     card["sections"][0]["items"][0]["timestamps"] =

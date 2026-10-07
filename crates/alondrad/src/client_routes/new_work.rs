@@ -17,6 +17,8 @@ use std::collections::BTreeMap;
 pub(crate) trait Github: Send + Sync + 'static {
     fn search_issues<'a>(&'a self, owners: &'a [String]) -> Answer<'a, Result<Value, String>>;
     fn issue_view<'a>(&'a self, repo: &'a str, number: u64) -> Answer<'a, Result<Value, String>>;
+    /// Closes the PR on GitHub without merging it.
+    fn close_pr<'a>(&'a self, host: &'a str, repository: &'a str, number: u64) -> Answer<'a, Result<(), String>>;
 }
 
 pub(crate) struct Gh;
@@ -28,6 +30,16 @@ impl Github for Gh {
 
     fn issue_view<'a>(&'a self, repo: &'a str, number: u64) -> Answer<'a, Result<Value, String>> {
         Box::pin(crate::prs::Gh::issue_view(&crate::prs::GhCli, repo, number))
+    }
+
+    fn close_pr<'a>(&'a self, host: &'a str, repository: &'a str, number: u64) -> Answer<'a, Result<(), String>> {
+        Box::pin(async move {
+            let url = crate::domain_github::pr_url(host, repository, number);
+            crate::domain_github::GhCli::new()
+                .run(&["pr", "close", &url], None, std::time::Duration::from_secs(60))
+                .await
+                .map(|_| ())
+        })
     }
 }
 
@@ -89,6 +101,10 @@ fn issue_of(body: &Body, file: &OptionsFile) -> Result<Option<(String, u64)>, St
 }
 
 impl Client {
+    pub(crate) fn github(&self) -> std::sync::Arc<dyn Github> {
+        self.github.lock().expect("github poisoned").clone()
+    }
+
     #[cfg(test)]
     pub(crate) fn use_github(&self, github: std::sync::Arc<dyn Github>) {
         *self.github.lock().expect("github poisoned") = github;

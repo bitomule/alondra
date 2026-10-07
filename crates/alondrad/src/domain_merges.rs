@@ -234,6 +234,8 @@ pub(crate) struct Merger {
     merge_trouble: BTreeMap<PrId, Trouble>,
     queued: BTreeSet<PrId>,
     action: BTreeMap<PrId, InteractionId>,
+    /// The authorization each PR was last looked at with: a new one is the user pressing again.
+    pressed: BTreeMap<PrId, AuthorizationId>,
 }
 
 impl Default for Merger {
@@ -245,7 +247,8 @@ impl Default for Merger {
 impl Merger {
     pub(crate) fn with(grace: Duration, poll: Duration, give_up: Duration) -> Self {
         Self { grace, poll, give_up, seen: BTreeMap::new(), waited: BTreeMap::new(), transient: BTreeMap::new(),
-            trouble: BTreeMap::new(), merge_trouble: BTreeMap::new(), queued: BTreeSet::new(), action: BTreeMap::new() }
+            trouble: BTreeMap::new(), merge_trouble: BTreeMap::new(), queued: BTreeSet::new(), action: BTreeMap::new(),
+            pressed: BTreeMap::new() }
     }
 
     /// Merges what is due. `true` while something waits, so the caller looks again.
@@ -256,6 +259,13 @@ impl Merger {
         self.forget_all_but(domain, &open);
         for item in due {
             let now = Instant::now();
+            // A new authorization is the user pressing Merge again: it is looked at now, not after
+            // the wait the one before left behind.
+            if let Some(authorization) = &item.authorization
+                && self.pressed.insert(item.pr.id.clone(), authorization.clone()).is_some_and(|before| before != *authorization)
+            {
+                self.waited.remove(&item.pr.id);
+            }
             if self.waited.get(&item.pr.id).is_some_and(|at| now.duration_since(*at) < self.poll) {
                 waiting = true;
                 continue;
@@ -434,6 +444,7 @@ impl Merger {
     /// Everything kept about a PR that is no longer due, with the cards raised for it.
     fn forget(&mut self, domain: &DomainRuntime, pr: &PrId) {
         self.waited.remove(pr);
+        self.pressed.remove(pr);
         self.transient.remove(pr);
         self.queued.remove(pr);
         self.seen.retain(|(seen, _), _| seen != pr);
@@ -445,7 +456,7 @@ impl Merger {
     }
 
     fn forget_all_but(&mut self, domain: &DomainRuntime, due: &BTreeSet<PrId>) {
-        let known: BTreeSet<PrId> = self.waited.keys().chain(self.transient.keys()).chain(self.queued.iter())
+        let known: BTreeSet<PrId> = self.waited.keys().chain(self.pressed.keys()).chain(self.transient.keys()).chain(self.queued.iter())
             .chain(self.seen.keys().map(|(pr, _)| pr)).chain(self.trouble.keys()).chain(self.merge_trouble.keys())
             .chain(self.action.keys()).cloned().collect();
         for pr in known.difference(due) {
@@ -455,7 +466,7 @@ impl Merger {
 
     #[cfg(test)]
     pub(crate) fn tracked(&self) -> usize {
-        self.waited.len() + self.transient.len() + self.queued.len() + self.seen.len() + self.trouble.len()
+        self.waited.len() + self.pressed.len() + self.transient.len() + self.queued.len() + self.seen.len() + self.trouble.len()
             + self.merge_trouble.len() + self.action.len()
     }
 }

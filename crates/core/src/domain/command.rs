@@ -322,6 +322,10 @@ pub enum Command {
         state: PrState,
         merged_head: Option<String>,
     },
+    ObservePrMergeMethods {
+        pr_id: PrId,
+        allowed_methods: Vec<MergeMethod>,
+    },
     PublishStackReadiness {
         task_id: TaskId,
         presentation_id: InteractionId,
@@ -466,6 +470,9 @@ pub struct DomainError {
     pub message: String,
     pub current_revision: Option<Revision>,
     pub subject: Option<String>,
+    /// Why, for a person: what the user's action ran into. Absent when only a node can get here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refusal: Option<Refusal>,
 }
 impl DomainError {
     pub fn new(code: &str, message: impl Into<String>) -> Self {
@@ -474,7 +481,16 @@ impl DomainError {
             message: message.into(),
             current_revision: None,
             subject: None,
+            refusal: None,
         }
+    }
+    pub fn because(mut self, refusal: Refusal) -> Self {
+        self.refusal = Some(refusal);
+        self
+    }
+    /// What to tell the person whose action this stopped.
+    pub fn why(&self) -> Refusal {
+        self.refusal.clone().unwrap_or_else(|| Refusal::for_code(&self.code))
     }
 }
 impl std::fmt::Display for DomainError {

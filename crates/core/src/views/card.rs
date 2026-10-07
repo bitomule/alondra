@@ -2,6 +2,7 @@
 //! three buttons and a reply. The detail adds the whole content, its context and its history.
 
 use super::{
+    CardAction,
     Action, ActionOption, Attachment, AttachmentKind, BlockChip, BuildError, Card, Check, CheckState,
     Checks, Client, CommentSpec, ContentRef, ContentRow, ContextLine, Detail, Fact, Facts, Icon, Input, Item,
     Label, Lang, Link, LocalLink, Markdown, Presentation, RenderContext, Role, Row, Stamp, Style,
@@ -13,7 +14,7 @@ use super::{
 use crate::domain::{
     AvailableAction, Author, CardKind, CardSpec, ClarificationReason, ContentKind as DomainContent,
     DeliveryTarget, DomainProjection, DomainState, Hold, InboxItem, InboxSubject, Interaction, InteractionId,
-    InteractionPayload, InteractionSubject, PrId, PullRequest, QuestionGroup, QuestionOption, Recipient, Scope, clip,
+    InteractionPayload, InteractionSubject, MergeMethod, PrId, PrState, PullRequest, QuestionGroup, QuestionOption, Recipient, Scope, clip,
 };
 
 const VISIBLE_ACTIONS: usize = 3;
@@ -439,6 +440,8 @@ pub(super) fn from_item(item: &InboxItem, context: &RenderContext<'_>, included:
     }
     let (mut visible, mut more) = actions(item, interaction, context)?;
     more.extend(extra_actions(item, interaction, context));
+    visible.retain(|action| action.enabled);
+    more.retain(|action| action.enabled);
     if visible.len() > VISIBLE_ACTIONS {
         let rest = visible.split_off(VISIBLE_ACTIONS);
         more.splice(0..0, rest);
@@ -456,9 +459,9 @@ pub(super) fn from_item(item: &InboxItem, context: &RenderContext<'_>, included:
             next += 1;
         }
     }
-    card.reply = reply_action(item, interaction, context);
-    card.actions = visible;
-    card.more = more;
+    card.reply = reply_action(item, interaction, context).and_then(CardAction::usable);
+    card.actions = visible.into_iter().filter_map(CardAction::usable).collect();
+    card.more = more.into_iter().filter_map(CardAction::usable).collect();
     Ok(card)
 }
 
@@ -581,7 +584,7 @@ fn action_id(verb: Verb, subject: &str, revision: u64, extra: Option<String>) ->
     }
 }
 
-fn button(id: String, label: &str, role: Role) -> Action {
+pub(super) fn button(id: String, label: &str, role: Role) -> Action {
     Action {
         id,
         label: label.into(),
@@ -610,7 +613,6 @@ fn button(id: String, label: &str, role: Role) -> Action {
 fn with_availability(mut action: Action, available: Option<&AvailableAction>, lang: Lang) -> Action {
     if let Some(available) = available {
         action.enabled = available.enabled;
-        action.disabled_reason = available.disabled_reason.as_deref().map(|code| disabled_reason(code, lang).to_owned());
     }
     action
 }
@@ -677,6 +679,15 @@ fn held_option(hold: Hold, option: &QuestionOption, lang: Lang) -> (String, Inpu
         }
     };
     (label.to_owned(), input)
+}
+
+/// What the user chose, as the card showed it: the translated words of a held prompt or of an
+/// option the system wrote, otherwise the label its author gave. Never the option's id.
+pub fn answer_label(state: &DomainState, interaction: &Interaction, option: &QuestionOption, lang: Lang) -> String {
+    match state.holds.get(&interaction.id).copied().filter(|hold| *hold != Hold::Question) {
+        Some(hold) => held_option(hold, option, lang).0,
+        None => fixed_option_text(option, lang).0,
+    }
 }
 
 /// What Alondra's own cards about the pace of the week's usage and about the machine say, in the
@@ -879,14 +890,7 @@ fn delivery_actions(
     let lang = context.lang;
     let domain = context.domain;
     let find = |kind: &str| item.available_actions.iter().find(|action| action.kind == kind);
-    let blocked = blocked_reason(item, context);
-    let hold_back = |mut action: Action| {
-        if let Some(reason) = &blocked {
-            action.enabled = false;
-            action.disabled_reason = Some(reason.clone());
-        }
-        action
-    };
+    let held = blocked_reason(item, context).is_some();
     let pr = pr_target(interaction, domain);
     let live = pr.and_then(|pr| context.live.pull_requests.iter().find(|detail| detail.id == pr.id.0));
     let document = is_document_review(interaction);
@@ -901,7 +905,7 @@ fn delivery_actions(
         let id = action_id(Verb::Accept, &interaction.id.0, interaction.revision, None)?;
         let mut action = button(id.to_string(), label, role);
         action.stamp = Some(if document { t!(lang, "Approved", "Aprobada") } else { t!(lang, "Accepted", "Aceptada") }.into());
-        Some(hold_back(with_availability(action, find("accept_delivery"), lang)))
+        Some(with_availability(action, find("accept_delivery"), lang))
     };
     let mut visible = vec![];
     let mut more = vec![];
@@ -916,83 +920,114 @@ fn delivery_actions(
         return (visible, more);
     };
     let revision = context.domain.revision;
-    if live.is_some_and(|detail| detail.conflicts) {
-        if let Some(id) = action_id(Verb::Conflicts, &pr.id.0, revision, None) {
-            let mut action = button(id.to_string(), t!(lang, "Resolve conflicts", "Resolver conflictos"), Role::Advance);
-            action.stamp = Some(t!(lang, "Conflicts requested", "Conflictos comunicados").into());
-            visible.push(action);
-        }
-    } else if let Some(available) = find("authorize_merge") {
+    let conflicts = live.is_some_and(|detail| detail.conflicts);
+    let stacked = live.is_some_and(|detail| detail.stacked_on.is_some());
+    if held || conflicts || stacked {
+        // The task shows what it waits for; the card has nothing to press until that is over.
+    } else if let Some(available) = find("authorize_merge").filter(|available| available.enabled) {
         let head = available.expected_head.as_ref().map(|head| merge_extra(head, &interaction.id.0));
         if let Some(id) = action_id(Verb::Merge, &interaction.id.0, interaction.revision, head) {
-            let stacked = live.and_then(|detail| detail.stacked_on.as_deref());
-            let methods = pr
-                .allowed_methods
-                .iter()
-                .enumerate()
-                .map(|(index, method)| {
-                    let name = format!("{method:?}").to_ascii_lowercase();
-                    ActionOption {
-                        id: name.clone(),
-                        label: match name.as_str() {
-                            "merge" => t!(lang, "Merge commit", "Commit de fusión").into(),
-                            "squash" => "squash".into(),
-                            _ => "rebase".into(),
-                        },
-                        description: None,
-                        style: Style::Secondary,
-                        input: Input::None,
-                        key: (context.client != Client::Ios && index < 9).then(|| (index + 1).to_string()),
-                    }
-                })
-                .collect();
-            let mut merge = button(id.to_string(), t!(lang, "Merge", "Fusionar"), Role::Advance);
-            merge.presentation = Presentation::Menu;
-            merge.options = methods;
-            merge.confirm = Some(merge_confirm(pr, context));
-            merge.stamp = Some(t!(lang, "Merging…", "Fusionando…").into());
-            merge.enabled = available.enabled && stacked.is_none();
-            merge.disabled_reason = stacked
-                .map(|id| {
-                    domain.pull_requests.get(&PrId(id.into())).map_or_else(
-                        || t!(lang, "Merge the upstream PR first", "Fusiona primero la PR anterior").into(),
-                        |upstream| tf!(lang, "Merge #{number} first", "Fusiona primero la #{number}", number = upstream.number),
-                    )
-                })
-                .or_else(|| available.disabled_reason.as_deref().map(|code| disabled_reason(code, lang).to_owned()));
-            visible.push(hold_back(merge));
+            visible.push(merge_action(id.to_string(), pr, context));
         }
-    } else {
+    } else if find("authorize_merge").is_none() {
         visible.extend(accept(Role::Advance, accept_label));
     }
     let head: String = pr.head.chars().take(8).collect();
     visible.extend(request_changes(
-        Verb::Changes, &pr.id.0, revision, Some(head), false, None, context,
+        Verb::Changes, &pr.id.0, revision, Some(head), false, find("submit_feedback"), context,
     ));
     if let Some(action) = visible.last_mut().filter(|action| action.id.starts_with("changes:")) {
         action.comments = Some(CommentSpec { kind: super::CommentKind::DiffLines });
         action.link = Some(Link::View { key: format!("pull_request:{}", pr.id) });
     }
-    if find("authorize_merge").is_some() || live.is_some_and(|detail| detail.conflicts) {
-        let label = t!(lang, "Accept without merging", "Aceptar sin fusionar");
-        more.extend(accept(Role::Neutral, label));
+    if pr.state == PrState::Open {
+        more.extend(close_unmerged_action(pr, &interaction.id.0, interaction.revision, context));
     }
     (visible, more)
 }
 
+fn method_text(method: MergeMethod, lang: Lang) -> (&'static str, &'static str) {
+    match method {
+        MergeMethod::Squash => (t!(lang, "Squash and merge", "Fusionar con squash"), t!(lang, "squash", "squash")),
+        MergeMethod::Merge => (t!(lang, "Merge commit", "Commit de fusión"), t!(lang, "a merge commit", "un commit de fusión")),
+        MergeMethod::Rebase => (t!(lang, "Rebase and merge", "Rebase y fusión"), t!(lang, "rebase", "rebase")),
+    }
+}
+
+fn method_id(method: MergeMethod) -> &'static str {
+    match method {
+        MergeMethod::Squash => "squash",
+        MergeMethod::Merge => "merge",
+        MergeMethod::Rebase => "rebase",
+    }
+}
+
+/// Merge the PR with a way its repository admits: a plain button when only one is, a menu of
+/// described ways when there are several. The server words every label; clients paint them.
+fn merge_action(id: String, pr: &PullRequest, context: &RenderContext<'_>) -> Action {
+    let lang = context.lang;
+    let mut merge = button(id, t!(lang, "Merge", "Fusionar"), Role::Advance);
+    merge.stamp = Some(t!(lang, "Merging…", "Fusionando…").into());
+    merge.confirm = Some(merge_confirm(pr, context));
+    if let [only] = pr.allowed_methods.as_slice() {
+        merge.label = tf!(lang, "Merge PR #{number}", "Fusionar la PR #{number}", number = pr.number);
+        merge.option_id = Some(method_id(*only).into());
+        merge.description = Some(tf!(lang, "{method}: the only way this repository allows",
+            "{method}: la única forma que permite este repositorio", method = method_text(*only, lang).0));
+        return merge;
+    }
+    merge.presentation = Presentation::Menu;
+    merge.options = pr.allowed_methods.iter().enumerate().map(|(index, method)| ActionOption {
+        id: method_id(*method).into(),
+        label: method_text(*method, lang).0.into(),
+        description: Some(match method {
+            MergeMethod::Squash => tf!(lang, "One commit on {base}", "Un solo commit en {base}", base = pr.base),
+            MergeMethod::Merge => t!(lang, "Keeps every commit", "Conserva todos los commits").into(),
+            MergeMethod::Rebase => tf!(lang, "Commits replayed on {base}", "Los commits se reaplican sobre {base}", base = pr.base),
+        }),
+        style: Style::Secondary,
+        input: Input::None,
+        key: (context.client != Client::Ios && index < 9).then(|| (index + 1).to_string()),
+    }).collect();
+    merge
+}
+
 fn merge_confirm(pr: &PullRequest, context: &RenderContext<'_>) -> super::Confirm {
-    let summary = context
+    let lang = context.lang;
+    let title = context
         .live
         .pull_requests
         .iter()
         .find(|detail| detail.id == pr.id.0)
         .and_then(|detail| detail.title.clone())
         .unwrap_or_else(|| pr.repository.clone());
+    let message = match pr.allowed_methods.as_slice() {
+        [only] => tf!(lang, "“{title}” goes into {base} with {method}. Alondra merges it on GitHub and tells you when it's done.",
+            "«{title}» entra en {base} con {method}. Alondra la fusiona en GitHub y te avisa cuando termine.",
+            title = title, base = pr.base, method = method_text(*only, lang).1),
+        _ => tf!(lang, "“{title}” goes into {base}. Alondra merges it on GitHub and tells you when it's done.",
+            "«{title}» entra en {base}. Alondra la fusiona en GitHub y te avisa cuando termine.", title = title, base = pr.base),
+    };
     super::Confirm {
-        title: tf!(context.lang, "Merge PR #{number}?", "¿Fusionar la PR #{number}?", number = pr.number),
-        message: summary,
-        button: t!(context.lang, "Merge", "Fusionar").into(),
+        title: tf!(lang, "Merge PR #{number}?", "¿Fusionar la PR #{number}?", number = pr.number),
+        message,
+        button: t!(lang, "Merge", "Fusionar").into(),
     }
+}
+
+/// The way out when the user does not want the PR: close it on GitHub and cancel the task.
+fn close_unmerged_action(pr: &PullRequest, subject: &str, revision: u64, context: &RenderContext<'_>) -> Option<Action> {
+    let lang = context.lang;
+    let id = action_id(Verb::CloseUnmerged, subject, revision, None)?;
+    let mut action = button(id.to_string(), t!(lang, "Close without merging", "Cerrar sin fusionar"), Role::Risk);
+    action.stamp = Some(t!(lang, "Closing…", "Cerrando…").into());
+    action.confirm = Some(super::Confirm {
+        title: tf!(lang, "Close PR #{number} without merging?", "¿Cerrar la PR #{number} sin fusionar?", number = pr.number),
+        message: t!(lang, "Alondra closes the PR on GitHub and cancels this task. Nothing is merged.",
+            "Alondra cierra la PR en GitHub y cancela esta tarea. No se fusiona nada.").into(),
+        button: t!(lang, "Close PR", "Cerrar la PR").into(),
+    });
+    Some(action)
 }
 
 /// Always behind "More": open the PR, ask the author to say it again, and the terminal's local
@@ -1117,7 +1152,6 @@ fn reply_action(item: &InboxItem, interaction: Option<&Interaction>, context: &R
     action.stamp = Some(t!(lang, "Sent", "Enviado").into());
     action.key = (context.client != Client::Ios).then(|| "r".into());
     action.enabled = !interaction.withdrawn;
-    action.disabled_reason = interaction.withdrawn.then(|| disabled_reason("withdrawn", lang).to_owned());
     Some(action)
 }
 
@@ -1411,46 +1445,4 @@ pub(super) fn pr_overview(pr: &PullRequest, context: &RenderContext<'_>) -> (Fac
             })
         });
     (Facts { items: facts }, checks, pr_badges(pr, context))
-}
-
-pub(super) fn disabled_reason(code: &str, lang: Lang) -> &'static str {
-    match code {
-        "already_read" => t!(lang, "Already read", "Ya leído"),
-        "withdrawn" => t!(lang, "Withdrawn", "Retirada"),
-        "forbidden" => t!(lang, "Meant for the orchestrator or a node, not for you", "Es para el orquestador o un nodo, no para ti"),
-        "task_not_active" => t!(lang, "Task is no longer active", "La tarea ya no está activa"),
-        "invalid_action_for_kind" => t!(lang, "Already answered", "Ya respondida"),
-        "stale_revision" => t!(lang, "This card has changed", "Esta tarjeta ha cambiado"),
-        "blocked" => t!(lang, "Another card holds it back", "Otra tarjeta la retiene"),
-        "clarification_pending" => t!(lang, "Waiting for the clarification", "Esperando la aclaración"),
-        "delivery_uncertain" => t!(lang, "Alondra is already merging this pull request", "Alondra ya está fusionando esta PR"),
-        "stale_head" => t!(lang, "The pull request has new commits since this result", "La PR tiene commits nuevos desde este resultado"),
-        "acceptance_stale" => t!(lang, "A newer result replaced this one", "Un resultado más reciente sustituyó a este"),
-        "acceptance_missing" => t!(lang, "The result is not accepted yet", "El resultado aún no está aceptado"),
-        "merge_not_confirmed" => t!(lang, "The pull request is not merged yet", "La PR aún no está fusionada"),
-        "blocking_interaction" | "blocking_open" => t!(lang, "A question of this task is still unanswered", "Una pregunta de esta tarea sigue sin respuesta"),
-        "stack_not_ready" => t!(lang, "The pull request it builds on is not merged yet", "La PR de la que depende aún no está fusionada"),
-        "dependency_not_done" => t!(lang, "A task this one depends on is not done", "Una tarea de la que depende no está hecha"),
-        "dependency_cycle" => t!(lang, "These tasks depend on each other", "Estas tareas dependen unas de otras"),
-        "not_found" => t!(lang, "This was deleted", "Esto se ha borrado"),
-        "not_assigned" => t!(lang, "Another node works on this task now", "Ahora otro nodo trabaja en esta tarea"),
-        "agent_busy" => t!(lang, "That node is busy with another task", "Ese nodo está ocupado con otra tarea"),
-        "agent_used" => t!(lang, "That node already worked on another task", "Ese nodo ya trabajó en otra tarea"),
-        "task_closing" => t!(lang, "This task's pull request is already merged and the task is closing", "El PR de esta tarea ya está fusionado y la tarea se está cerrando"),
-        "question_already_answered" | "already_answered" => t!(lang, "Already answered", "Ya respondida"),
-        "already_withdrawn" => t!(lang, "Withdrawn", "Retirada"),
-        "ask_already_open" => t!(lang, "Another question of this node is still open", "Otra pregunta de este nodo sigue abierta"),
-        "subject_already_linked" => t!(lang, "Already linked to something else", "Ya está vinculada a otra cosa"),
-        "pr_mismatch" | "pr_owned_by_other_task" | "task_already_has_pr" => t!(lang, "The pull request belongs to another task", "La PR pertenece a otra tarea"),
-        "unknown_target" => t!(lang, "What it refers to no longer exists", "Lo que menciona ya no existe"),
-        "no_task" => t!(lang, "It has no task", "No tiene tarea"),
-        "request_title_required" => t!(lang, "The request needs a title first", "La petición necesita antes un título"),
-        "archive_task" => t!(lang, "Only finished tasks can be archived", "Solo se archivan tareas terminadas"),
-        "stale_generation" | "stale_epoch" => t!(lang, "Alondra restarted: refresh to act on it", "Alondra se reinició: actualiza para actuar"),
-        "conflict" | "idempotency_conflict" => t!(lang, "Someone else changed it just now", "Alguien lo acaba de cambiar"),
-        "payload_too_large" => t!(lang, "Too large to send", "Demasiado grande para enviarlo"),
-        "incompatible_protocol" => t!(lang, "Update Alondra to do this", "Actualiza Alondra para hacer esto"),
-        "invalid_input" => t!(lang, "Alondra cannot do this with what the card holds", "Alondra no puede hacerlo con lo que tiene la tarjeta"),
-        _ => t!(lang, "No longer available", "Ya no está disponible"),
-    }
 }

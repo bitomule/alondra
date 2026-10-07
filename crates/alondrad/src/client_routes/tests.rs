@@ -554,6 +554,10 @@ impl Github for FakeGithub {
                 "body": "It crashes when the app opens.", "comments": []}))
         })
     }
+
+    fn close_pr<'a>(&'a self, _: &'a str, _: &'a str, _: u64) -> close::Answer<'a, Result<(), String>> {
+        Box::pin(async { Err("closing is not available here".into()) })
+    }
 }
 
 const USER_OPTION: &str = "

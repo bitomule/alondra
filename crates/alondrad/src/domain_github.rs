@@ -4,7 +4,7 @@
 use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::StoreError;
 use alondra_core::domain::{
-    Actor, Command, CommandEnvelope, DomainState, MergeAttemptState,
+    Actor, Command, CommandEnvelope, DomainState, MergeAttemptState, MergeMethod,
     clip, CardSpec, PrId, PrState, PullRequest, Scope, PROTOCOL_VERSION,
 };
 use anyhow::Result;
@@ -25,6 +25,7 @@ pub(crate) struct PrFacts {
     pub base: String,
     pub state: PrState,
     pub merged_head: Option<String>,
+    pub allowed_methods: Vec<MergeMethod>,
 }
 
 type Observed<'a> = Pin<Box<dyn Future<Output = Result<PrFacts, String>> + Send + 'a>>;
@@ -68,12 +69,23 @@ impl PrObserver for GhCli {
                 Err(_) => return Err("gh pr view did not finish within 30 s".into()),
             };
             let value: Value = serde_json::from_slice(&output.stdout).map_err(|e| e.to_string())?;
-            parse(&value)
+            let mut facts = parse(&value)?;
+            facts.allowed_methods = self.repository_methods(host, repository).await;
+            Ok(facts)
         })
     }
 }
 
 impl GhCli {
+    /// The merge methods the repository settings allow, squash first; empty when GitHub does not answer.
+    async fn repository_methods(&self, host: &str, repository: &str) -> Vec<MergeMethod> {
+        let url = format!("https://{}/{repository}", alondra_core::domain::normalize_pr_host(host));
+        let args = ["repo", "view", url.as_str(), "--json", "mergeCommitAllowed,squashMergeAllowed,rebaseMergeAllowed"];
+        let Ok(out) = self.run(&args, None, Duration::from_secs(30)).await else { return vec![] };
+        let Ok(value) = serde_json::from_slice::<Value>(&out) else { return vec![] };
+        parse_methods(&value)
+    }
+
     pub(crate) async fn run(&self, args: &[&str], dir: Option<&std::path::Path>, limit: Duration) -> Result<Vec<u8>, String> {
         let mut command = tokio::process::Command::new(&self.program);
         command.args(args).kill_on_drop(true);
@@ -104,6 +116,18 @@ pub(crate) fn pr_url(host: &str, repository: &str, number: u64) -> String {
     format!("https://{}/{repository}/pull/{number}", alondra_core::domain::normalize_pr_host(host))
 }
 
+fn parse_methods(value: &Value) -> Vec<MergeMethod> {
+    [
+        ("squashMergeAllowed", MergeMethod::Squash),
+        ("mergeCommitAllowed", MergeMethod::Merge),
+        ("rebaseMergeAllowed", MergeMethod::Rebase),
+    ]
+    .into_iter()
+    .filter(|(key, _)| value[*key].as_bool() == Some(true))
+    .map(|(_, method)| method)
+    .collect()
+}
+
 pub(crate) fn parse(value: &Value) -> Result<PrFacts, String> {
     let head = value["headRefOid"].as_str()
         .filter(|head| head.len() == 40 && head.bytes().all(|byte| byte.is_ascii_hexdigit()))
@@ -121,6 +145,7 @@ pub(crate) fn parse(value: &Value) -> Result<PrFacts, String> {
         base: base.to_owned(),
         merged_head: (state == PrState::Merged).then(|| head.to_owned()),
         state,
+        allowed_methods: vec![],
     })
 }
 
@@ -213,6 +238,15 @@ fn apply(domain: &DomainRuntime, state: &DomainState, pr: &PullRequest, facts: &
         }) {
             Ok(()) => (),
             Err(StoreError::Domain(error)) => log!("PR observation for {} refused: {error}", pr.id),
+            Err(StoreError::Storage(error)) => return Err(error),
+        }
+    }
+    if !facts.allowed_methods.is_empty() && facts.allowed_methods != pr.allowed_methods {
+        match execute_system(domain, Command::ObservePrMergeMethods {
+            pr_id: pr.id.clone(), allowed_methods: facts.allowed_methods.clone(),
+        }) {
+            Ok(()) => (),
+            Err(StoreError::Domain(error)) => log!("merge methods observation for {} refused: {error}", pr.id),
             Err(StoreError::Storage(error)) => return Err(error),
         }
     }
@@ -333,7 +367,7 @@ mod tests {
 
     fn facts(head: &str, state: PrState) -> PrFacts {
         PrFacts { head: head.into(), base: "main".into(), state,
-            merged_head: (state == PrState::Merged).then(|| head.to_owned()) }
+            merged_head: (state == PrState::Merged).then(|| head.to_owned()), allowed_methods: vec![] }
     }
 
     /// A Task with a registered PR, a presented final and the user's merge authorization.
@@ -375,6 +409,44 @@ mod tests {
             attachments: vec![], task_id: "t".into(), interaction_id: "d".into(), body: "Ready".into(),
             targets: vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: HEAD.into() }], is_final: true, card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
         });
+    }
+
+    #[tokio::test]
+    async fn reconcile_replaces_the_methods_the_node_declared_with_the_repository_settings() {
+        let (_fixture, domain) = open("methods");
+        presented(&domain, false);
+        let observer = FakeObserver::new();
+        let mut github = facts(HEAD, PrState::Open);
+        github.allowed_methods = vec![MergeMethod::Squash, MergeMethod::Merge, MergeMethod::Rebase];
+        observer.set(7, Ok(github));
+        reconcile(&domain, &observer, &mut ObservationFailures::default()).await.unwrap();
+        assert_eq!(
+            domain.state().unwrap().pull_requests[&"pr".into()].allowed_methods,
+            vec![MergeMethod::Squash, MergeMethod::Merge, MergeMethod::Rebase],
+        );
+    }
+
+    #[tokio::test]
+    async fn reconcile_keeps_the_node_methods_when_github_does_not_report_any() {
+        let (_fixture, domain) = open("methods-silent");
+        presented(&domain, false);
+        let observer = FakeObserver::new();
+        observer.set(7, Ok(facts(HEAD, PrState::Open)));
+        reconcile(&domain, &observer, &mut ObservationFailures::default()).await.unwrap();
+        assert_eq!(domain.state().unwrap().pull_requests[&"pr".into()].allowed_methods, vec![MergeMethod::Squash]);
+    }
+
+    #[tokio::test]
+    async fn gh_reports_the_repository_merge_methods_and_stays_silent_when_it_fails() {
+        let (fixture, _) = open("gh-methods");
+        let program = fixture.0.join("gh");
+        std::fs::write(&program, format!("#!/bin/sh\ncase \"$*\" in *\"repo view\"*owner/repo*) printf '%s' '{{\"mergeCommitAllowed\":true,\"squashMergeAllowed\":false,\"rebaseMergeAllowed\":true}}';; *\"repo view\"*) echo 'boom' >&2; exit 1;; *) printf '%s' '{{\"state\":\"OPEN\",\"headRefOid\":\"{HEAD}\",\"baseRefName\":\"main\"}}';; esac\n")).unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let gh = GhCli::at(program);
+        let known = gh.observe("github.com", "owner/repo", 7).await.unwrap();
+        assert_eq!(known.allowed_methods, vec![MergeMethod::Merge, MergeMethod::Rebase]);
+        let unknown = gh.observe("github.com", "other/repo", 7).await.unwrap();
+        assert!(unknown.allowed_methods.is_empty());
     }
 
     #[tokio::test]
@@ -616,7 +688,7 @@ mod tests {
         std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
         let gh = GhCli::at(program);
         let merged = gh.observe("github.com", "owner/repo", 7).await.unwrap();
-        assert_eq!(merged, PrFacts { head: HEAD.into(), base: "main".into(), state: PrState::Merged, merged_head: Some(HEAD.into()) });
+        assert_eq!(merged, PrFacts { head: HEAD.into(), base: "main".into(), state: PrState::Merged, merged_head: Some(HEAD.into()), allowed_methods: vec![] });
         assert_eq!(gh.observe("github.com", "owner/repo", 8).await.unwrap_err(), "gh reported no PR head");
         assert!(gh.observe("github.com", "owner/repo", 9).await.unwrap_err().contains("no pull requests found"));
         let calls = std::fs::read_to_string(&log).unwrap();
