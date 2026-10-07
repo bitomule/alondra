@@ -312,14 +312,38 @@ fn state_label(item: &InboxItem, interaction: Option<&Interaction>, context: &Re
         parts.extend(mark.map(str::to_owned));
         return (!parts.is_empty()).then(|| Label { text: parts.join(" · "), tone });
     }
-    if matches!(interaction.payload, InteractionPayload::Delivery { .. }) {
-        return None;
+    if let InteractionPayload::Delivery { acceptance, .. } = &interaction.payload {
+        let accepted = acceptance.as_ref().is_some_and(|acceptance| acceptance.valid);
+        return accepted.then(|| Label {
+            text: if is_document_review(interaction) { t!(lang, "Approved", "Aprobada") } else { t!(lang, "Accepted", "Aceptada") }.into(),
+            tone: Tone::Success,
+        });
+    }
+    if !item.pending {
+        return Some(settled_label(interaction, lang));
     }
     Some(if interaction.blocking {
         Label { text: tf!(lang, "Blocks {node}", "Bloquea a {node}", node = node_name(item, context)), tone: Tone::Warning }
     } else {
         Label { text: t!(lang, "Doesn't block", "No bloquea").into(), tone: Tone::Neutral }
     })
+}
+
+/// Why a card no longer waits for the user, so one reached by its link never reads as open.
+fn settled_label(interaction: &Interaction, lang: Lang) -> Label {
+    let text = match &interaction.payload {
+        _ if interaction.withdrawn => t!(lang, "Withdrawn: no longer needed", "Retirada: ya no hace falta").to_owned(),
+        InteractionPayload::Question { options, answer: Some(answer) }
+        | InteractionPayload::ActionRequest { options, answer: Some(answer) } => {
+            match options.iter().find(|option| option.id == answer.option_id) {
+                Some(option) => tf!(lang, "Answered · {option}", "Respondida · {option}", option = fixed_option_text(option, lang).0),
+                None => t!(lang, "Answered", "Respondida").to_owned(),
+            }
+        }
+        InteractionPayload::Information { read_by } if !read_by.is_empty() => t!(lang, "Read", "Leída").to_owned(),
+        _ => t!(lang, "Its task is over", "Su tarea ya terminó").to_owned(),
+    };
+    Label { text, tone: Tone::Neutral }
 }
 
 /// What the tasks that reviewed this one concluded: the line of each approval and, when the
@@ -901,8 +925,12 @@ fn delivery_actions(
     } else {
         t!(lang, "Accept", "Aceptar")
     };
+    let accepted = matches!(&interaction.payload, InteractionPayload::Delivery { acceptance: Some(acceptance), .. } if acceptance.valid);
     let accept = |role: Role, label: &str| {
-        let id = action_id(Verb::Accept, &interaction.id.0, interaction.revision, None)?;
+        if accepted {
+            return None;
+        }
+        let id =action_id(Verb::Accept, &interaction.id.0, interaction.revision, None)?;
         let mut action = button(id.to_string(), label, role);
         action.stamp = Some(if document { t!(lang, "Approved", "Aprobada") } else { t!(lang, "Accepted", "Aceptada") }.into());
         Some(with_availability(action, find("accept_delivery"), lang))

@@ -4403,3 +4403,148 @@ fn a_finished_task_says_what_became_of_its_node() {
         state.tasks.get_mut(&"t-1".into()).unwrap().wrap_up.node = None;
     }
 }
+
+fn opt(id: &str, inputs: Vec<crate::domain::InputSpec>) -> QuestionOption {
+    QuestionOption { id: id.into(), label: format!("Option {id}"), description: None, inputs }
+}
+
+fn answer_to(option_id: &str) -> crate::domain::Answer {
+    crate::domain::Answer { attachments: vec![], option_id: option_id.into(), inputs: Default::default(), responder: "device:1".into(), at_revision: 1 }
+}
+
+fn card_state(card: &Card) -> String {
+    card.state.as_ref().map(|state| state.text.clone()).unwrap_or_default()
+}
+
+#[test]
+fn every_open_card_with_options_or_input_can_be_answered_and_a_settled_one_says_so_in_every_client() {
+    use crate::domain::{CardKind, Hold, InputKind, InputSpec};
+    let note = || vec![InputSpec { id: "note".into(), kind: InputKind::Text, required: false }];
+    let option_sets = [vec![], vec![opt("retry", vec![]), opt("later", vec![])], vec![opt("a", note()), opt("b", vec![]), opt("c", vec![])]];
+    let kinds = [CardKind::Decide, CardKind::Problem, CardKind::Propose, CardKind::Do, CardKind::Provide, CardKind::Test];
+    let holds = [None, Some(Hold::Question), Some(Hold::Permission), Some(Hold::Elicitation)];
+    let task_states = [TaskState::NotStarted, TaskState::Running, TaskState::NeedsYou, TaskState::WaitingDependency, TaskState::Done];
+    let mut checked = 0;
+    for options in &option_sets {
+        for kind in kinds {
+            for hold in holds {
+                for task_state in task_states {
+                    for orchestrator in [false, true] {
+                        for blocking in [false, true] {
+                            for settle in ["open", "answered", "withdrawn"] {
+                                let mut state = fixture();
+                                state.tasks.get_mut(&"t-1".into()).unwrap().state = task_state;
+                                let question = state.interactions.get_mut(&"i-1".into()).unwrap();
+                                if orchestrator {
+                                    question.author = Author::Orchestrator { generation: 1 };
+                                }
+                                question.blocking = blocking;
+                                question.card = spec(kind, "Choose how to go on", "The task needs it.");
+                                let answer = (settle == "answered").then(|| answer_to(options.first().map_or("text", |option| option.id.as_str())));
+                                question.withdrawn = settle == "withdrawn";
+                                question.payload = if kind == CardKind::Do {
+                                    InteractionPayload::ActionRequest { options: options.clone(), answer }
+                                } else {
+                                    InteractionPayload::Question { options: options.clone(), answer }
+                                };
+                                if let Some(hold) = hold {
+                                    state.holds.insert("i-1".into(), hold);
+                                }
+                                let pending = with_cards(&state).projection().inbox.iter()
+                                    .find(|item| item.id == "interaction:i-1").expect("the card is in the inbox").pending;
+                                for client in [Client::Ios, Client::Mac, Client::Tui] {
+                                    let view = render(&state, &LiveSnapshot::default(), client, Lang::Es, "card:i-1", "");
+                                    let Item::Card(card) = &view.sections[0].items[0] else { panic!("question card") };
+                                    let answers = card.actions.iter().chain(&card.more).any(|action| action.id.starts_with("ans:"));
+                                    let label = card_state(card);
+                                    let case = format!("{kind:?} {hold:?} {task_state:?} orchestrator={orchestrator} blocking={blocking} {settle} options={} {client:?}", options.len());
+                                    if pending {
+                                        assert!(answers, "an open card has no answer: {case}");
+                                    } else {
+                                        assert!(!answers, "a settled card offers an answer: {case}");
+                                        assert!(!label.starts_with("No bloquea") && !label.starts_with("Bloquea"), "a settled card reads as open ({label}): {case}");
+                                    }
+                                    checked += 1;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert!(checked > 1000, "{checked}");
+}
+
+#[test]
+fn an_open_text_delivery_can_be_accepted_or_sent_back_and_an_accepted_one_says_so_in_every_client() {
+    use crate::domain::{Acceptance, DeliveryTarget};
+    let mut open = 0;
+    let cases = [(TaskState::ForYourReview, false), (TaskState::NeedsYou, false), (TaskState::Running, false), (TaskState::Closing, true), (TaskState::Done, true)];
+    for (task_state, accepted) in cases {
+        {
+            let mut state = fixture();
+            state.interactions.retain(|id, _| id.0 == "i-3");
+            state.revision = 10;
+            state.tasks.get_mut(&"t-1".into()).unwrap().state = task_state;
+            let delivery = state.interactions.get_mut(&"i-3".into()).unwrap();
+            delivery.author = Author::Agent { agent_id: "a-1".into() };
+            delivery.blocking = false;
+            delivery.payload = InteractionPayload::Delivery {
+                targets: vec![DeliveryTarget::Text { text: "No hay reservas acumuladas.".into() }],
+                is_final: true,
+                acceptance: accepted.then(|| Acceptance { user_id: "device:1".into(), at_revision: 1, valid: true }),
+                feedback: vec![],
+            };
+            let pending = with_cards(&state).projection().inbox.iter()
+                .find(|item| item.id == "interaction:i-3").expect("the delivery is in the inbox").pending;
+            open += usize::from(pending);
+            for client in [Client::Ios, Client::Mac, Client::Tui] {
+                let view = render(&state, &LiveSnapshot::default(), client, Lang::Es, "card:i-3", "");
+                let Item::Card(card) = &view.sections[0].items[0] else { panic!("delivery card") };
+                let ids: Vec<&str> = card.actions.iter().chain(&card.more).map(|action| action.id.as_str()).collect();
+                let case = format!("{task_state:?} accepted={accepted} {client:?} {ids:?}");
+                if pending {
+                    assert!(ids.iter().any(|id| id.starts_with("accept:")), "an open delivery has no accept: {case}");
+                    assert!(ids.iter().any(|id| id.starts_with("changes:")), "an open delivery cannot be sent back: {case}");
+                }
+                if accepted {
+                    assert!(!ids.iter().any(|id| id.starts_with("accept:")), "an accepted delivery offers accept again: {case}");
+                    assert_eq!(card_state(card), "Aceptada", "{case}");
+                }
+            }
+        }
+    }
+    assert!(open > 0);
+}
+
+#[test]
+fn a_withdrawn_problem_and_an_answered_question_say_why_they_wait_for_nothing() {
+    use crate::domain::CardKind;
+    let mut state = fixture();
+    state.tasks.get_mut(&"t-1".into()).unwrap().state = TaskState::NotStarted;
+    let problem = state.interactions.get_mut(&"i-1".into()).unwrap();
+    problem.author = Author::Orchestrator { generation: 1 };
+    problem.blocking = false;
+    problem.card = spec(CardKind::Problem, "No consigo arrancar la tarea", "Cuatro intentos fallan.");
+    problem.payload = InteractionPayload::Question {
+        options: vec![opt("retry_later", vec![]), opt("user_freed", vec![]), opt("wait_launch_fix", vec![])],
+        answer: None,
+    };
+    problem.withdrawn = true;
+    let view = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::Es, "card:i-1", "");
+    let Item::Card(card) = &view.sections[0].items[0] else { panic!("problem card") };
+    assert_eq!(card_state(card), "Retirada: ya no hace falta");
+
+    let question = state.interactions.get_mut(&"i-1".into()).unwrap();
+    question.withdrawn = false;
+    question.blocking = true;
+    question.card = spec(CardKind::Decide, "Decide si repito el grabado de snapshots", "Sin ellos no puedo abrir la PR.");
+    question.payload = InteractionPayload::Question {
+        options: vec![QuestionOption { label: "Repetir ahora".into(), ..opt("retry", vec![]) }, opt("later", vec![])],
+        answer: Some(answer_to("retry")),
+    };
+    let view = render(&state, &LiveSnapshot::default(), Client::Tui, Lang::Es, "card:i-1", "");
+    let Item::Card(card) = &view.sections[0].items[0] else { panic!("question card") };
+    assert_eq!(card_state(card), "Respondida · Repetir ahora");
+}
