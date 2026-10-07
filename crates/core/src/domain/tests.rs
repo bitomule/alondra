@@ -1379,6 +1379,79 @@ fn a_task_left_closing_by_an_older_daemon_completes_with_the_next_command() {
     end_node(&mut state, "t");
     assert_eq!(state.tasks[&"t".into()].state, TaskState::Done);
 }
+/// The release of 0.2.51: the node asked whether to merge its PR, the PR merged, and the final
+/// delivery the user accepted named only the published tag.
+#[test]
+fn an_accepted_text_delivery_whose_registered_pr_merged_closes_its_node() {
+    let mut state = fixture();
+    register(&mut state);
+    merged_by_someone_else(&mut state);
+    present(&mut state, "final", text());
+    let accepted = exec(&mut state, user(), Command::AcceptDelivery { presentation_id: "final".into(), targets: text() }).unwrap();
+    let task = &state.tasks[&"t".into()];
+    assert!(state.finished(task), "the accepted delivery is settled");
+    assert_eq!((task.state, task.wrap_up.asked_at), (TaskState::Closing, Some(state.revision)));
+    assert_eq!(accepted.effects, vec![DomainEffect::NotifyAgent { agent_id: "a".into(), task_id: Some("t".into()),
+        interaction_id: None, message: cleanup_request("Result", &"t".into()) }]);
+    end_node(&mut state, "t");
+    assert_eq!(state.tasks[&"t".into()].state, TaskState::Done);
+}
+#[test]
+fn a_presented_pr_closed_after_the_user_accepted_it_closes_the_node() {
+    let mut state = fixture();
+    register(&mut state);
+    present(&mut state, "d", pr_targets());
+    exec(&mut state, user(), Command::AcceptDelivery { presentation_id: "d".into(), targets: pr_targets() }).unwrap();
+    assert_eq!((state.tasks[&"t".into()].state, state.tasks[&"t".into()].wrap_up.asked_at), (TaskState::Closing, None), "Alondra merges it first");
+    exec(&mut state, Actor::System, Command::ObservePrState { pr_id: "pr".into(), head: "head1".into(), base: "main".into(),
+        state: PrState::Closed, merged_head: None }).unwrap();
+    assert!(state.tasks[&"t".into()].wrap_up.asked_at.is_some(), "nothing will merge it, so the node is asked to clean up");
+    end_node(&mut state, "t");
+    assert_eq!(state.tasks[&"t".into()].state, TaskState::Done);
+}
+/// Every task in Closing either waits for its node to clean up and be closed, or for an open PR
+/// that Alondra merges or GitHub settles.
+#[test]
+fn no_task_stays_closing_without_a_way_out() {
+    let closing_has_a_way_out = |s: &DomainState| {
+        let t = &s.tasks[&"t".into()];
+        t.state != TaskState::Closing
+            || (s.in_cleanup(t) && s.wraps_up(t))
+            || t.pr_id.as_ref().is_some_and(|pr| s.pull_requests[pr].state == PrState::Open)
+    };
+    for presented in [false, true] {
+        for end in [PrState::Open, PrState::Merged, PrState::Closed] {
+            for accept in [false, true] {
+                let mut s = fixture();
+                register(&mut s);
+                let observe = |s: &mut DomainState| {
+                    exec(s, Actor::System, Command::ObservePrState { pr_id: "pr".into(), head: "head1".into(), base: "main".into(),
+                        state: end, merged_head: (end == PrState::Merged).then(|| "head1".into()) }).unwrap();
+                };
+                let targets = if presented { pr_targets() } else { text() };
+                if !presented && end != PrState::Open {
+                    observe(&mut s);
+                }
+                let shown = exec(&mut s, agent(), Command::PresentResult {
+                    attachments: vec![], task_id: "t".into(), interaction_id: "d".into(), body: "Result ready".into(),
+                    targets: targets.clone(), is_final: true, card: crate::domain::CardSpec::delivery("Review the result", &[], true),
+                });
+                if shown.is_err() {
+                    assert!(!presented && end == PrState::Open, "only an open PR left out of the delivery is refused");
+                    continue;
+                }
+                if accept {
+                    exec(&mut s, user(), Command::AcceptDelivery { presentation_id: "d".into(), targets }).unwrap();
+                }
+                if presented && end != PrState::Open {
+                    observe(&mut s);
+                }
+                exec(&mut s, Actor::System, Command::ObserveAgent { agent_id: "a".into(), connected: true }).unwrap();
+                assert!(closing_has_a_way_out(&s), "presented={presented} {end:?} accepted={accept}: {:?}", s.tasks[&"t".into()]);
+            }
+        }
+    }
+}
 #[test]
 fn cross_task_delivery_and_dependency_cycle_roll_back() {
     let mut s = fixture();
@@ -2554,64 +2627,30 @@ fn authorization_covers_pr_and_text_but_not_a_document_only_package() {
     );
 }
 #[test]
-fn complete_task_requires_registered_pr_merged_and_presented_or_closed() {
-    let mut s = fixture();
-    register(&mut s);
-    present(&mut s, "d", text());
-    exec(
-        &mut s,
-        user(),
-        Command::AcceptDelivery {
-            presentation_id: "d".into(),
-            targets: text(),
-        },
-    )
-    .unwrap();
-    reject_unchanged(
-        &mut s,
-        Actor::System,
-        Command::CompleteTask {
-            task_id: "t".into(),
-            presentation_id: "d".into(),
-        },
-        "merge_not_confirmed",
-    );
-    let mut merged_unpresented = s.clone();
-    exec(
-        &mut merged_unpresented,
-        Actor::System,
-        Command::ObservePrState {
-            pr_id: "pr".into(),
-            head: "head1".into(),
-            base: "main".into(),
-            state: PrState::Merged,
-            merged_head: Some("head1".into()),
-        },
-    )
-    .unwrap();
-    reject_unchanged(
-        &mut merged_unpresented,
-        Actor::System,
-        Command::CompleteTask {
-            task_id: "t".into(),
-            presentation_id: "d".into(),
-        },
-        "acceptance_missing",
-    );
-    exec(
-        &mut s,
-        Actor::System,
-        Command::ObservePrState {
-            pr_id: "pr".into(),
-            head: "head1".into(),
-            base: "main".into(),
-            state: PrState::Closed,
-            merged_head: None,
-        },
-    )
-    .unwrap();
-    end_node(&mut s, "t");
-    assert_eq!(s.tasks[&"t".into()].state, TaskState::Done, "closing the unpresented PR completes the accepted Task");
+fn a_registered_pr_is_presented_while_open_and_an_accepted_task_settles_once_it_is_merged_or_closed() {
+    let mut open = fixture();
+    register(&mut open);
+    let before = open.clone();
+    let error = exec(&mut open, agent(), Command::PresentResult {
+        attachments: vec![], task_id: "t".into(), interaction_id: "d".into(), body: "Result ready".into(),
+        targets: text(), is_final: true, card: crate::domain::CardSpec::delivery("Review the result", &[], true),
+    }).unwrap_err();
+    assert_eq!((error.code.as_str(), error.subject.as_deref()), ("pr_missing", Some("targets")));
+    assert!(error.message.contains("PR #1 is open") && error.message.contains("head1"), "{}", error.message);
+    assert_eq!(open, before, "a refused delivery changes nothing");
+
+    for end in [PrState::Merged, PrState::Closed] {
+        let mut s = fixture();
+        register(&mut s);
+        exec(&mut s, Actor::System, Command::ObservePrState { pr_id: "pr".into(), head: "head1".into(), base: "main".into(),
+            state: end, merged_head: (end == PrState::Merged).then(|| "head1".into()) }).unwrap();
+        present(&mut s, "d", text());
+        exec(&mut s, user(), Command::AcceptDelivery { presentation_id: "d".into(), targets: text() }).unwrap();
+        assert!(s.tasks[&"t".into()].wrap_up.asked_at.is_some(), "{end:?}: the node is asked to clean up");
+        exec(&mut s, Actor::System, complete()).unwrap();
+        end_node(&mut s, "t");
+        assert_eq!(s.tasks[&"t".into()].state, TaskState::Done, "{end:?}");
+    }
 }
 #[test]
 fn answer_reaches_the_current_assignee_after_reassignment() {

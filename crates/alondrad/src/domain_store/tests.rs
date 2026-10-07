@@ -1204,21 +1204,6 @@ fn a_new_final_reports_the_acceptance_it_superseded_and_feedback_does_not() {
     let fixture = Fixture::new();
     let mut store = DomainStore::open(&fixture.path()).unwrap();
     seeded(&mut store);
-    execute(
-        &mut store,
-        &agent(),
-        "pr-still-open",
-        Command::RegisterPr {
-            task_id: "task-1".into(),
-            pr_id: "pr-1".into(),
-            host: "github.com".into(),
-            repository: "owner/repository".into(),
-            number: 1,
-            head: "aaa".into(),
-            base: "main".into(),
-            allowed_methods: vec![MergeMethod::Squash],
-        },
-    );
     present(&mut store);
     let e = acceptance(&mut store);
     let accepted_at = store

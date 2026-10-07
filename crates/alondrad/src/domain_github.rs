@@ -576,8 +576,8 @@ mod tests {
             let state = domain.state().unwrap();
             assert_eq!(state.pull_requests[&"pr".into()].state, remote.state, "{tag}");
             assert_eq!(state.merge_authorizations[&"auth".into()].attempt, MergeAttemptState::Failed, "{tag}");
-            assert_eq!(state.tasks[&"t".into()].wrap_up.asked_at.is_some(), remote.state == PrState::Merged,
-                "{tag}: only a merge settles the delivery");
+            assert_eq!(state.tasks[&"t".into()].wrap_up.asked_at.is_some(), remote.state != PrState::Open,
+                "{tag}: a merge or a close settles the accepted delivery, a newer head does not");
         }
     }
 
