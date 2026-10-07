@@ -142,7 +142,9 @@ public struct Label: Codable, Equatable, Sendable { public let text: String; pub
 public struct ViewSection: Codable, Equatable, Sendable {
     public let id: String; public let title: String?; public let count: UInt32?; public let collapsed: Bool
     public let items: [ViewItem]; public let cardIds: [String]?; public let more: More?
-    enum CodingKeys: String, CodingKey { case id, title, count, collapsed, items; case cardIds = "card_ids"; case more }
+    /// What each card in `cardIds` waits for, at the same index: "question" or "read".
+    public let cardWaits: [String]?
+    enum CodingKeys: String, CodingKey { case id, title, count, collapsed, items; case cardIds = "card_ids"; case more; case cardWaits = "card_waits" }
 }
 public struct More: Codable, Equatable, Sendable { public let key: String; public let remaining: UInt32 }
 

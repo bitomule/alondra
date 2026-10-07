@@ -68,6 +68,7 @@ extension Fixtures {
         if let focus { object["key"] = "home?focus=\(focus)" }
         var sections = try XCTUnwrap(object["sections"] as? [[String: Any]])
         sections[0]["card_ids"] = queue
+        sections[0]["card_waits"] = queue.map { [informationID, deliveryID, pullRequestID].contains($0) ? "read" : "question" }
         object["sections"] = sections
         return try ContractCodec.decode(ViewDocument.self, from: JSONSerialization.data(withJSONObject: object))
     }

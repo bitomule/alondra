@@ -605,7 +605,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "%lld para leer"
+            "value": "%lld por leer"
           }
         }
       }

@@ -37,6 +37,7 @@ pub(super) fn section(id: &str, title: Option<String>, items: Vec<Item>) -> Sect
         collapsed: false,
         items,
         card_ids: vec![],
+        card_waits: vec![],
         more: None,
     }
 }

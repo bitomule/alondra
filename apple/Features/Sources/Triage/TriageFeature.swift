@@ -38,6 +38,18 @@ public struct TriageFeature: Sendable {
         /// Nil until the first queue arrives, so a fresh launch keeps the number a push set.
         public var iconBadge: Int? { screen.document == nil ? nil : badge }
         public var queueTitle: String? { screen.document?.sections.first { $0.id == "queue" }?.title }
+        /// The header's numbers, counted over the cards the queue shows, so it never states one it
+        /// hides. Nil from a daemon that does not say what each card waits for.
+        public var header: Header? {
+            guard let status, let queue = screen.document?.sections.first(where: { $0.id == "queue" }),
+                  let ids = queue.cardIds, let waits = queue.cardWaits, waits.count == ids.count else { return nil }
+            let waiting = Dictionary(zip(ids, waits), uniquingKeysWith: { first, _ in first })
+            let questions = orderedIDs.filter { waiting[$0] == "question" }.count
+            return Header(
+                questions: questions, toRead: orderedIDs.count - questions,
+                working: Int(status.counts.first { $0.id == "working" }?.value ?? 0)
+            )
+        }
         public var isOffline: Bool {
             if case .failed = screen.phase { return screen.document != nil }
             return false
@@ -52,6 +64,13 @@ public struct TriageFeature: Sendable {
         }
 
         fileprivate var stampShowing: Bool { visibleIDs.contains { cards[id: $0]?.actions.stamp != nil } }
+    }
+
+    public struct Header: Equatable, Sendable {
+        public let questions: Int
+        public let toRead: Int
+        public let working: Int
+        public var waiting: Int { questions + toRead }
     }
 
     /// A drag on the front card, from its first movement until the card has left or sprung back.
@@ -203,6 +222,7 @@ public struct TriageFeature: Sendable {
                 guard state.swipe == nil else { return .none }
                 return .send(.delegate(.open(key)))
             case .cards(.element(id: let id, action: .actions(.sent(let request)))):
+                guard request.resolvesItsCard else { return stampTimer() }
                 state.optimistic.begin(id, request)
                 return .merge(stampTimer(), sendDeadline(request))
             case .cards(.element(id: _, action: .actions(.settled(let request, let applied)))),
@@ -231,6 +251,7 @@ public struct TriageFeature: Sendable {
                 guard state.cards[id: id] != nil else { return queue }
                 return .merge(queue, .send(.cards(.element(id: id, action: .actions(.dismiss)))))
             case .handedOff(let request, let cardID):
+                guard request.resolvesItsCard else { return .none }
                 state.optimistic.begin(cardID, request)
                 guard !state.stampShowing else {
                     state.newerQueueWaiting = true

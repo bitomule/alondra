@@ -64,6 +64,19 @@ extension Fixtures {
         }
     }
 
+    /// A notice from the orchestrator, outside any task: its reply goes to the orchestrator.
+    static func orchestratorNotice() throws -> ViewDocument {
+        try card("card-information") { item in
+            item["need"] = "The machine is at its limit"
+            item["title"] = "The machine is at its limit"
+            item["why"] = "Two nodes wait for memory. Reply if one of them can stop."
+            var reply = try XCTUnwrap(item["reply"] as? [String: Any])
+            reply["id"] = "msg:view@7"
+            reply["input"] = ["kind": "text", "placeholder": "Reply to the orchestrator…", "required": true, "multiline": true]
+            item["reply"] = reply
+        }
+    }
+
     /// A Problem: the daemon raised it and the way out is a risky button.
     static func problemCard(id: String = "problem-1") throws -> ViewDocument {
         try retargeted(

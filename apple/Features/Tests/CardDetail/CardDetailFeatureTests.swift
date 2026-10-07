@@ -350,6 +350,21 @@ final class CardDetailFeatureTests: XCTestCase {
     }
 
     @MainActor
+    func testReplyingToAnOrchestratorNoticeSendsAtOnceWithoutASheet() async throws {
+        let feed = FeedStub()
+        let store = store(try Fixtures.orchestratorNotice(), feed: feed)
+        let reply = try XCTUnwrap(store.state.subject?.replyAction)
+
+        await store.send(.replyChanged("Restarted it"))
+        await store.send(.actionTapped(reply))
+        await store.skipReceivedActions()
+
+        XCTAssertNil(store.state.composition, "the reply field is the words: no second field asks for them")
+        XCTAssertEqual(feed.requests.map(\.actionId), ["msg:view@7"])
+        XCTAssertEqual(feed.requests.first?.input.text, "Restarted it")
+    }
+
+    @MainActor
     func testRequestingClarificationFromTheDetailAsksForTheReasonFirst() async throws {
         let feed = FeedStub()
         let store = store(try Fixtures.card(Fixtures.questionID), feed: feed)

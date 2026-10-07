@@ -53,6 +53,12 @@ public struct ActionRequest: Codable, Equatable, Sendable {
         self.protocolVersion = protocolVersion; self.commandId = commandId; self.dataEpoch = dataEpoch; self.client = client
         self.lang = lang; self.actionId = actionId; self.optionId = optionId; self.input = input
     }
+
+    /// A message sent from a card (a reply to its node or the orchestrator, a question about its
+    /// PR) leaves the card waiting: only an answer, an acceptance or a read takes it out.
+    public var resolvesItsCard: Bool {
+        !["reply:", "msg:", "ask_pr:"].contains { actionId.hasPrefix($0) }
+    }
 }
 
 public enum ActionOutcomeKind: String, Codable, Equatable, Sendable { case applied, noLongerAvailable = "no_longer_available", changed, rejected }

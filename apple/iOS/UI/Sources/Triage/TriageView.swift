@@ -94,7 +94,7 @@ public struct TriageView: View {
                 Label("saved data · connection lost", systemImage: "wifi.slash")
                     .font(.subheadline.weight(.medium)).foregroundStyle(Palette.rose).lineLimit(1)
             } else {
-                Text(store.status?.summary ?? String(localized: "Connecting to the fleet…"))
+                summary
                     .font(.subheadline.weight(.medium)).foregroundStyle(.secondary).lineLimit(1)
                     .contentTransition(.numericText())
             }
@@ -103,6 +103,17 @@ public struct TriageView: View {
             }
         }
         .padding(.bottom, 14)
+    }
+
+    private var summary: Text {
+        guard let header = store.header else {
+            return Text(store.status?.summary ?? String(localized: "Connecting to the fleet…"))
+        }
+        var parts: [Text] = []
+        if header.questions > 0 { parts.append(Text("\(header.questions) questions")) }
+        if header.toRead > 0 { parts.append(Text("\(header.toRead) to read")) }
+        parts.append(Text("\(header.working) nodes working"))
+        return parts.dropFirst().reduce(parts[0]) { line, part in Text("\(line) · \(part)") }
     }
 
     private var pageDots: some View {

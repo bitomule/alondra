@@ -181,6 +181,9 @@ pub struct Section {
     pub items: Vec<Item>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub card_ids: Vec<String>,
+    /// What each card in `card_ids` waits for, at the same index: "question" or "read".
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub card_waits: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub more: Option<More>,
 }

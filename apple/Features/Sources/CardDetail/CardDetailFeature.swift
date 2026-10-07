@@ -226,7 +226,7 @@ public struct CardDetailFeature: Sendable {
             case .actionTapped(let action):
                 if case .view(let key) = action.link { return .send(.opened(ViewKey(rawValue: key))) }
                 guard action.link == nil, state.isSendable(action) else { return .none }
-                if action.comments == nil, action.id?.hasPrefix("reply:") != true, TriageCardFeature.asksForWords(action) {
+                if action.comments == nil, action != state.subject?.replyAction, TriageCardFeature.asksForWords(action) {
                     state.composition = TriageCardFeature.Composition(action: action)
                     return .none
                 }

@@ -111,6 +111,15 @@ final class CardDetailSnapshotTests: XCTestCase {
         assertDetail(store)
     }
 
+    /// Send in the reply field of an orchestrator notice sends: no sheet with a second field opens.
+    func test_orchestratorNoticeReplySent() throws {
+        let store = ScreenStores.cardDetail(try Fixtures.orchestratorNotice())
+        store.send(.replyChanged("Stop the Lumo node, it can wait"))
+        store.send(.actionTapped(try XCTUnwrap(store.subject?.replyAction)))
+        XCTAssertNil(store.composition)
+        assertDetail(store)
+    }
+
     func test_knowWithACommandInItsBody_es() throws {
         let store = ScreenStores.cardDetail(try Fixtures.document("card-know-command-es") { _ in })
         assertDetail(store, language: .spanish)

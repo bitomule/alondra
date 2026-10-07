@@ -4590,6 +4590,54 @@ fn a_withdrawn_problem_and_an_answered_question_say_why_they_wait_for_nothing() 
     assert_eq!(card_state(card), "Respondida · Repetir ahora");
 }
 
+/// The number the Waiting for You header states: every segment of its summary but the last, which
+/// counts the nodes working.
+fn header_count(summary: &str) -> usize {
+    let segments: Vec<&str> = summary.split(" · ").collect();
+    segments[..segments.len() - 1]
+        .iter()
+        .map(|segment| segment.split(' ').next().unwrap().parse::<usize>().unwrap())
+        .sum()
+}
+
+#[test]
+fn the_waiting_header_counts_exactly_the_cards_the_inbox_lists_and_each_one_opens() {
+    let mut finished = fixture();
+    finished.tasks.get_mut(&"t-1".into()).unwrap().state = TaskState::Done;
+    let states = [
+        ("fixture", fixture()),
+        ("finished task", finished),
+        ("pr", pr_fixture()),
+        ("golden", golden_fixture()),
+        ("plan question", plan_question_fixture()),
+        ("across requests", across_requests()),
+        ("scheduled run", scheduled_run_fixture(true)),
+        ("presented pr", presented_pr()),
+        ("failed launch", failed_launch_fixture("boom")),
+        ("answered and closed", answered_and_closed_request()),
+        ("group", group_state(&[0])),
+    ];
+    let live = golden_live();
+    for (name, state) in &states {
+        for lang in [Lang::En, Lang::Es] {
+            let home = render(state, &live, Client::Ios, lang, "home", "2026-09-30T10:00:00Z");
+            let queue = &home.sections[0];
+            assert_eq!(header_count(&home.status.summary), queue.card_ids.len(), "{name} {lang:?}: {}", home.status.summary);
+            assert_eq!(queue.card_waits.len(), queue.card_ids.len(), "{name}: every card says what it waits for");
+            let questions = queue.card_waits.iter().filter(|wait| *wait == "question").count();
+            assert_eq!(home.status.summary.starts_with(&format!("{questions} ")), questions > 0, "{name}: {}", home.status.summary);
+            assert_eq!(home.status.badge as usize, queue.card_ids.len(), "{name}");
+            for id in &queue.card_ids {
+                let card = build(&format!("card:{id}"), RenderContext {
+                    domain: &with_cards(state), live: &live, client: Client::Ios, lang,
+                    transport: Transport::Loopback, cursor: "cursor-1", rendered_at: "2026-09-30T10:00:00Z",
+                });
+                assert!(card.is_ok(), "{name}: card {id} is counted but does not open");
+            }
+        }
+    }
+}
+
 const TRUST_COMMAND_BODY: &str = "Ejecútalo una vez en el terminal del Mac. Hace una copia de ~/.claude.json:\n\n```\ncp ~/.claude.json ~/.claude.json.bak-$(date +%s) && python3 - <<'PY'\nprint(\"Confiados\")\nPY\n```\n\nSi clonas repos nuevos en ~/Projects, vuelve a ejecutarlo.";
 
 fn know_notice(state: &mut DomainState, need: &str, why: &str, body: &str) {

@@ -816,6 +816,46 @@ final class TriageFeatureTests: XCTestCase {
     }
 
     @MainActor
+    func testTheHeaderCountsExactlyTheCardsTheQueueShowsInEveryFixture() async throws {
+        for (name, spanish) in [("home-ios", false), ("home-ios-es", true)] {
+            let home = try Fixtures.document(name)
+            let ids = try XCTUnwrap(home.sections.first?.cardIds)
+            let store = store(FeedStub([home]))
+            await store.send(.task)
+            await store.skipReceivedActions()
+            XCTAssertEqual(store.state.header?.waiting, store.state.orderedIDs.count, name)
+            let daemonNumbers = home.status.summary.components(separatedBy: " · ").dropLast().map { Int($0.prefix { $0.isNumber }) ?? -1 }
+            let header = try XCTUnwrap(store.state.header)
+            XCTAssertEqual(daemonNumbers, [header.questions, header.toRead].filter { $0 > 0 }, "\(name): with nothing hidden it reads as the Mac's line")
+
+            let request = ActionRequest(commandId: "c-\(name)", dataEpoch: "", client: .ios, lang: spanish ? "es" : "en", actionId: "accept:x@1")
+            await store.send(.handedOff(request, cardID: ids[0]))
+            XCTAssertEqual(store.state.orderedIDs.count, ids.count - 1, name)
+            XCTAssertEqual(store.state.header?.waiting, store.state.orderedIDs.count, "\(name): a card the queue hides is not counted")
+        }
+    }
+
+    /// David saw «1 pregunta · 1 por leer» over «Nada te espera»: he had replied to the machine
+    /// notice, which hid it although a reply answers nothing, then read the orchestrator's answer.
+    @MainActor
+    func testReplyingFromACardKeepsItWaitingAndTheHeaderNeverCountsWhatIsHidden() async throws {
+        let store = store(try fullFeed())
+        await store.send(.task)
+        await store.skipReceivedActions()
+        XCTAssertEqual(store.state.header?.waiting, 4)
+
+        let reply = ActionRequest(commandId: "c-reply", dataEpoch: "", client: .ios, lang: "en", actionId: "msg:view@7")
+        await store.send(.handedOff(reply, cardID: ids.question))
+        await store.send(.handOffSettled(reply, applied: true))
+        XCTAssertEqual(store.state.orderedIDs, queue, "a reply answers nothing: the card still waits")
+
+        let read = ActionRequest(commandId: "c-read", dataEpoch: "", client: .ios, lang: "en", actionId: "read:x@1")
+        await store.send(.handedOff(read, cardID: ids.information))
+        XCTAssertEqual(store.state.orderedIDs, [ids.question, ids.delivery, ids.pullRequest])
+        XCTAssertEqual(store.state.header?.waiting, 3, "the header drops the card the queue hides")
+    }
+
+    @MainActor
     func testAnAnswerFromTheFrontCardNeverStampsItsNeighbour() async throws {
         let store = store(try fullFeed())
         await store.send(.task)

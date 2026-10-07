@@ -26,6 +26,7 @@ pub(super) fn build(key: &str, context: &RenderContext<'_>) -> Result<View, Buil
     let (sections, empty) = match context.client {
         Client::Ios => {
             let card_ids: Vec<String> = roots.iter().map(|item| public_id(item).to_owned()).collect();
+            let card_waits = roots.iter().map(|item| waits_for(item).to_owned()).collect();
             let count = card_ids.len() as u32;
             (
                 vec![Section {
@@ -35,6 +36,7 @@ pub(super) fn build(key: &str, context: &RenderContext<'_>) -> Result<View, Buil
                     collapsed: false,
                     items: vec![],
                     card_ids,
+                    card_waits,
                     more: None,
                 }],
                 (count == 0).then(|| Notice {
@@ -61,6 +63,7 @@ pub(super) fn build(key: &str, context: &RenderContext<'_>) -> Result<View, Buil
                 collapsed: false,
                 items,
                 card_ids: vec![],
+                card_waits: vec![],
                 more: None,
             }];
             sections.retain(|section| !section.items.is_empty());
@@ -76,6 +79,7 @@ pub(super) fn build(key: &str, context: &RenderContext<'_>) -> Result<View, Buil
                     collapsed: false,
                     items: vec![Item::Card(detail)],
                     card_ids: vec![],
+                    card_waits: vec![],
                     more: None,
                 });
             }
@@ -114,4 +118,8 @@ pub(super) fn build(key: &str, context: &RenderContext<'_>) -> Result<View, Buil
 /// holds what is addressed to the user, the orchestrator's answers and questions included.
 pub(super) fn waiting(projection: &DomainProjection) -> Vec<&InboxItem> {
     projection.inbox.iter().filter(|item| item.pending).collect()
+}
+/// What a waiting card asks of the user: an answer ("question") or only to be read ("read").
+pub(super) fn waits_for(item: &InboxItem) -> &'static str {
+    if matches!(item.kind.as_str(), "question" | "action_request" | "permission" | "plan") { "question" } else { "read" }
 }

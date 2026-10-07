@@ -4,7 +4,7 @@
   "view": "home",
   "key": "home",
   "client": "ios",
-  "version": "v95d3d37a5b5b67b3",
+  "version": "va7bd001d59d7bb5f",
   "cursor": "cursor-1",
   "status": {
     "version": "vca21bf17ff853499",
@@ -71,6 +71,13 @@
         "hf-weekly-2026-09-30",
         "f12d034b-249e-4487-a89b-57de38c26372",
         "cc2d034b-249e-4487-a89b-57de38c26372"
+      ],
+      "card_waits": [
+        "question",
+        "question",
+        "read",
+        "read",
+        "read"
       ]
     }
   ]
