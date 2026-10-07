@@ -769,6 +769,7 @@ fn reader_comments_follow_the_selected_views_text_option() {
         {"id":"approve", "label":"Approve", "style":"primary",
          "input":{"kind":"none"}, "key":"2"}
     ]);
+    untyped(&mut view);
     app.view_navigation.push(format!("card:{}", question_id()));
     app.card_view = Some(serde_json::from_value(view).unwrap());
     app.open_reader();
@@ -1893,4 +1894,111 @@ fn a_card_that_comes_back_leaves_the_selection_where_the_user_moved_it() {
     });
     assert!(app.inbox_keys().contains(&Key(origin)), "the card is back");
     assert_eq!(app.sel, chosen, "and the selection stays where the user put it");
+}
+
+fn plan_card() -> (serde_json::Value, String) {
+    let mut view = view_fixture("card-question.json");
+    let id = question_id();
+    let changes = format!("changes:{id}@1");
+    let card = &mut view["sections"][0]["items"][0];
+    card["kind"] = "review".into();
+    card["actions"] = serde_json::json!([
+        {"id":format!("accept:{id}@1"), "label":"Approve", "style":"primary", "role":"advance",
+         "presentation":"button", "input":{"kind":"none"}, "attachments":false, "enabled":true,
+         "stamp":"Approved"},
+        {"id":changes, "label":"Request changes", "style":"secondary", "role":"neutral",
+         "presentation":"button",
+         "input":{"kind":"text", "placeholder":"Describe the changes", "required":true, "multiline":true},
+         "attachments":true, "comments":{"kind":"blocks"}, "enabled":true, "stamp":"Changes requested"}
+    ]);
+    (view, changes)
+}
+
+#[test]
+fn reader_comments_on_a_plan_go_to_request_changes_by_its_button_number() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
+    let mut app = App::new(tx);
+    let (view, changes) = plan_card();
+    app.view_navigation.push(format!("card:{}", question_id()));
+    app.card_view = Some(serde_json::from_value(view).unwrap());
+    app.open_reader();
+    press(&mut app, KeyCode::Char('C'));
+    typed(&mut app, "Split step two");
+    press(&mut app, KeyCode::Enter);
+
+    press(&mut app, KeyCode::Char('2'));
+    assert!(!flash(&app).contains("takes no text"), "{}", flash(&app));
+    assert!(
+        matches!(app.composer.as_ref().map(|composer| &composer.target),
+        Some(Target::ViewAction { action_id, option_id: None, .. }) if *action_id == changes),
+        "the composer writes Request changes"
+    );
+    assert!(app.composer.as_ref().is_some_and(|composer| composer.input.text().contains("Split step two")));
+    press(&mut app, KeyCode::Enter);
+    let sent = posted(&app);
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].0, "/actions");
+    assert_eq!(sent[0].1["action_id"], changes.as_str());
+    assert!(sent[0].1["input"]["text"].as_str().unwrap().contains("Split step two"));
+}
+
+fn pull_request_detail(app: &mut App, options: serde_json::Value) -> String {
+    let mut view = view_fixture("pull-request-mac.json");
+    let key = view["key"].as_str().unwrap().to_owned();
+    let merge = view["sections"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .flat_map(|section| section["items"].as_array_mut().unwrap().iter_mut())
+        .filter_map(|item| item["actions"].as_array_mut())
+        .flat_map(|actions| actions.iter_mut())
+        .find(|action| action["id"].as_str().is_some_and(|id| id.starts_with("merge:")))
+        .unwrap();
+    merge["options"] = options;
+    let action_id = merge["id"].as_str().unwrap().to_owned();
+    app.view_navigation.push(key);
+    app.card_view = Some(serde_json::from_value(view).unwrap());
+    action_id
+}
+
+fn method(id: &str, label: &str) -> serde_json::Value {
+    serde_json::json!({"id":id, "label":label, "style":"secondary", "input":{"kind":"none"}})
+}
+
+#[test]
+fn merge_from_a_pull_request_detail_asks_the_method_when_there_are_several() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
+    let mut app = App::new(tx);
+    let action_id = pull_request_detail(&mut app, serde_json::json!([
+        method("squash", "Squash and merge"), method("merge", "Merge commit"), method("rebase", "Rebase and merge")
+    ]));
+    press(&mut app, KeyCode::Char('1'));
+    assert!(posted(&app).is_empty(), "the method comes first");
+    assert_eq!(app.card_menu.as_ref().map(|menu| menu.entries.len()), Some(3));
+    let menu = crate::tui::view_render::menu_lines(app.card_menu.as_ref().unwrap());
+    assert!(format!("{menu:?}").contains("Rebase and merge"));
+    press(&mut app, KeyCode::Char('3'));
+    assert!(app.card_menu.is_none());
+    press(&mut app, KeyCode::Enter);
+    let sent = posted(&app);
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].1["action_id"], action_id.as_str());
+    assert_eq!(sent[0].1["option_id"], "rebase");
+}
+
+#[test]
+fn merge_from_a_pull_request_detail_sends_the_only_method_directly() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
+    let mut app = App::new(tx);
+    let action_id = pull_request_detail(&mut app, serde_json::json!([method("squash", "Squash and merge")]));
+    press(&mut app, KeyCode::Char('1'));
+    assert!(app.card_menu.is_none(), "one method needs no menu");
+    press(&mut app, KeyCode::Enter);
+    let sent = posted(&app);
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].1["action_id"], action_id.as_str());
+    assert_eq!(sent[0].1["option_id"], "squash");
 }

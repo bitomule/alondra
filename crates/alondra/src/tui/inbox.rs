@@ -200,8 +200,8 @@ impl App {
             .card_view
             .as_ref()
             .filter(|view| view.key == selected)?;
-        if self.reader.is_none()
-            && let Some(card) = super::view_render::typed_card(document)
+        if let Some(card) = super::view_render::typed_card(document)
+            && (self.reader.is_none() || card_button_index(key).is_some())
         {
             let (card, epoch) = (card.clone(), document.data_epoch.clone());
             return self.card_button_key(key, &card, epoch);
@@ -229,39 +229,10 @@ impl App {
                 return Some(Flow::Go);
             }
         }
-        for action in super::view_render::actions(document) {
-            if hint_matches(super::view_render::action_hint(&action), key) {
-                let local_key = self.sel.clone().unwrap_or_else(|| Key(selected.clone()));
-                return Some(self.run_view_action(
-                    &action,
-                    None,
-                    &local_key,
-                    document.data_epoch.clone(),
-                ));
-            }
-            for (index, option) in action.options.iter().enumerate() {
-                let matches = option.key.as_deref().map_or_else(
-                    || {
-                        key.code
-                            == KeyCode::Char(
-                                char::from_digit((index + 1) as u32, 10).unwrap_or('\0'),
-                            )
-                            && key.modifiers.is_empty()
-                    },
-                    |hint| hint_matches(hint, key),
-                );
-                if matches {
-                    let local_key = self.sel.clone().unwrap_or_else(|| Key(selected.clone()));
-                    return Some(self.run_view_action(
-                        &action,
-                        Some(option),
-                        &local_key,
-                        document.data_epoch.clone(),
-                    ));
-                }
-            }
-        }
-        None
+        let (action, option) = view_key_choice(document, key)?;
+        let epoch = document.data_epoch.clone();
+        let local_key = self.sel.clone().unwrap_or_else(|| Key(selected.clone()));
+        Some(self.press_card_action(action, option, &local_key, epoch))
     }
 
     /// A card's keys never change: `1`-`3` press its buttons, `m` lists the rest, `r` replies.
@@ -278,11 +249,11 @@ impl App {
             return None;
         };
         let selected = self.sel.clone().unwrap_or_else(|| Key(card.id.clone()));
+        if let Some(index) = card_button_index(key) {
+            let action = alondra_core::views::Action::from(card.actions.get(index)?.clone());
+            return Some(self.press_card_action(action, None, &selected, epoch));
+        }
         match character {
-            '1'..='3' => {
-                let action = alondra_core::views::Action::from(card.actions.get(character as usize - '1' as usize)?.clone());
-                Some(self.press_card_action(action, None, &selected, epoch))
-            }
             'm' if !card.more.is_empty() => {
                 self.card_menu = Some(super::view_render::more_menu(card));
                 Some(Flow::Go)
@@ -303,6 +274,7 @@ impl App {
         selected: &Key,
         epoch: String,
     ) -> Flow {
+        let option = option.or_else(|| only_option(&action));
         if action.enabled && option.is_none() && action.option_id.is_none() && !action.options.is_empty() {
             self.card_menu = Some(super::view_render::option_menu(&action));
             return Flow::Go;
@@ -515,6 +487,57 @@ pub(super) fn safe_github_url(value: &str) -> bool {
         && url.password().is_none()
         && url.port_or_known_default() == Some(443)
         && (host == "github.com" || host.ends_with(".github.com"))
+}
+
+/// An action with a single option needs no menu: pressing it picks that option.
+fn only_option(action: &alondra_core::views::Action) -> Option<alondra_core::views::ActionOption> {
+    match action.options.as_slice() {
+        [option] if action.option_id.is_none() => Some(option.clone()),
+        _ => None,
+    }
+}
+
+fn card_button_index(key: KeyEvent) -> Option<usize> {
+    match key.code {
+        KeyCode::Char(character @ '1'..='3') if (key.modifiers - crossterm::event::KeyModifiers::SHIFT).is_empty() => {
+            Some(character as usize - '1' as usize)
+        }
+        _ => None,
+    }
+}
+
+/// The action, and the option when the key names one, that a key presses on a view's detail.
+pub(super) fn view_key_choice(
+    document: &alondra_core::views::View,
+    key: KeyEvent,
+) -> Option<(alondra_core::views::Action, Option<alondra_core::views::ActionOption>)> {
+    if let Some(card) = super::view_render::typed_card(document)
+        && let Some(index) = card_button_index(key)
+    {
+        let action = alondra_core::views::Action::from(card.actions.get(index)?.clone());
+        let option = only_option(&action);
+        return Some((action, option));
+    }
+    for action in super::view_render::actions(document) {
+        if hint_matches(super::view_render::action_hint(&action), key) {
+            let option = only_option(&action);
+            return Some((action, option));
+        }
+        let option = action.options.iter().enumerate().find(|(index, option)| {
+            option.key.as_deref().map_or_else(
+                || {
+                    key.code == KeyCode::Char(char::from_digit((index + 1) as u32, 10).unwrap_or('\0'))
+                        && key.modifiers.is_empty()
+                },
+                |hint| hint_matches(hint, key),
+            )
+        });
+        if let Some((_, option)) = option {
+            let option = option.clone();
+            return Some((action, Some(option)));
+        }
+    }
+    None
 }
 
 fn hint_matches(hint: &str, key: KeyEvent) -> bool {

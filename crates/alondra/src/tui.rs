@@ -3013,16 +3013,16 @@ impl App {
                         .get(&key)
                         .is_some_and(|review| !review.is_empty());
                     if has_review {
-                        let index = c as usize - '1' as usize;
-                        let accepts_text = self.card_view.as_ref().is_some_and(|view| {
-                            view_render::actions(view)
-                                .iter()
-                                .flat_map(|action| &action.options)
-                                .nth(index)
-                                .is_some_and(|option| {
-                                    matches!(option.input, alondra_core::views::Input::Text { .. })
-                                })
-                        });
+                        let takes_text = |input: &alondra_core::views::Input| {
+                            matches!(input, alondra_core::views::Input::Text { .. })
+                        };
+                        let accepts_text = self
+                            .card_view
+                            .as_ref()
+                            .and_then(|view| inbox::view_key_choice(view, k))
+                            .is_some_and(|(action, option)| {
+                                takes_text(&action.input) || option.is_some_and(|option| takes_text(&option.input))
+                            });
                         if !accepts_text {
                             self.fail(tr!("That option takes no text: your comments stay here. Pick one that asks you to write.",
                                 "Esa opción no admite texto: tus comentarios se quedan aquí. Elige una que pida escribir."));
