@@ -88,6 +88,8 @@ public struct TriageFeature: Sendable {
         /// A screen opened from a card sent its answer and left; the app delivers it.
         case handedOff(ActionRequest, cardID: String)
         case handOffSettled(ActionRequest, applied: Bool)
+        /// A screen's answer got no reply: its card comes back saying why, ready to send the same again.
+        case handOffUndelivered(ActionRequest, SendFailure)
         case sendTimedOut(ActionRequest)
         case answeredExpired(String)
         case delegate(Delegate)
@@ -206,6 +208,14 @@ public struct TriageFeature: Sendable {
             case .cards(.element(id: _, action: .actions(.settled(let request, let applied)))),
                  .handOffSettled(let request, let applied):
                 return settle(request, applied: applied, &state)
+            case .handOffUndelivered(let request, let failure):
+                let id = state.optimistic.target(of: request)
+                let rolledBack = settle(request, applied: false, &state)
+                if let id, state.cards[id: id] != nil {
+                    state.cards[id: id]?.actions.error = failure.message
+                    state.cards[id: id]?.actions.unsure = failure == .unsure ? request : nil
+                }
+                return rolledBack
             case .sendTimedOut(let request):
                 guard let id = state.optimistic.target(of: request) else { return .none }
                 let rolledBack = settle(request, applied: false, &state)
@@ -213,7 +223,7 @@ public struct TriageFeature: Sendable {
                 return .merge(
                     .cancel(id: ActionFeature.DeliveryID(commandID: request.commandId)),
                     rolledBack,
-                    .send(.cards(.element(id: id, action: .actions(.failed(ActionFeature.sendFailure)))))
+                    .send(.cards(.element(id: id, action: .actions(.undelivered(request, .unsure)))))
                 )
             case .answeredExpired(let id):
                 guard state.answered.remove(id) != nil else { return .none }
@@ -241,9 +251,9 @@ public struct TriageFeature: Sendable {
         .forEach(\.cards, action: \.cards) { TriageCardFeature() }
     }
 
-    private func showQueue(_ state: inout State) -> Effect<Action> {
+    private func showQueue(_ state: inout State, front: String? = nil) -> Effect<Action> {
         guard let document = state.screen.document else { return .none }
-        let previousID = state.currentID
+        let previousID = front ?? state.currentID
         let ids = (document.sections.first { $0.id == "queue" }?.cardIds ?? []).filter { !state.optimistic.hides($0) && !state.answered.contains($0) }
         state.orderedIDs = ids
         state.index = previousID.flatMap(ids.firstIndex(of:)) ?? min(state.index, max(ids.count - 1, 0))
@@ -258,11 +268,10 @@ public struct TriageFeature: Sendable {
         return .merge(effects)
     }
 
-    /// An answer the daemon did not apply: its card returns to the front, where it was answered.
+    /// An answer the daemon did not apply: its card returns to the front, where it was answered,
+    /// keeping what it showed and what it sent.
     private func bringBack(_ id: String, _ state: inout State) -> Effect<Action> {
-        let queue = showQueue(&state)
-        if let index = state.orderedIDs.firstIndex(of: id) { state.index = index }
-        return .merge(queue, keepWindowObserved(&state))
+        showQueue(&state, front: id)
     }
 
     /// The answer is final once the daemon applied it: the card stays out, the queue is pulled again

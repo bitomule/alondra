@@ -42,11 +42,27 @@ final class CardDetailSnapshotTests: XCTestCase {
     Roll back by pulling the build if crash reports exceed the threshold.
     """
 
-    private func fetchedPlan(edit: (inout CardDetailFeature.State) -> Void = { _ in }) throws
+    private let planSpanish = """
+    # Plan de publicación
+
+    La beta sale el viernes cuando pasen las tres comprobaciones de abajo.
+
+    - Generar el archivo en la máquina de publicación
+    - Subirlo a TestFlight y esperar a que se procese
+    - Enviar las notas al grupo interno
+
+    | Paso | Responsable |
+    | --- | --- |
+    | Archivo | Alondra |
+    | Notas | Tú |
+    """
+
+    private func fetchedPlan(spanish: Bool = false, edit: (inout CardDetailFeature.State) -> Void = { _ in }) throws
         -> StoreOf<CardDetailFeature> {
-        ScreenStores.cardDetail(try Fixtures.planCard()) { state in
+        let card = spanish ? try Fixtures.spanish(try Fixtures.planCard()) : try Fixtures.planCard()
+        return ScreenStores.cardDetail(card) { state in
             state.contentDigest = "plan-digest"
-            state.content = plan
+            state.content = spanish ? planSpanish : plan
             edit(&state)
         }
     }
@@ -71,7 +87,7 @@ final class CardDetailSnapshotTests: XCTestCase {
     }
 
     func test_decide_es() throws {
-        let store = ScreenStores.cardDetail(try Fixtures.card(Fixtures.questionID))
+        let store = ScreenStores.cardDetail(try Fixtures.spanishCard(Fixtures.questionID))
         assertDetail(store, language: .spanish)
     }
 
@@ -106,7 +122,7 @@ final class CardDetailSnapshotTests: XCTestCase {
     }
 
     func test_pullRequestReadyToMerge_es() throws {
-        let store = ScreenStores.cardDetail(try Fixtures.unblocked(try Fixtures.card(Fixtures.pullRequestID)))
+        let store = ScreenStores.cardDetail(try Fixtures.spanishCard(Fixtures.pullRequestID))
         assertDetail(store, language: .spanish)
     }
 
@@ -130,7 +146,7 @@ final class CardDetailSnapshotTests: XCTestCase {
     }
 
     func test_planWithComments_es() throws {
-        let store = try fetchedPlan { state in
+        let store = try fetchedPlan(spanish: true) { state in
             if let block = state.blocks.first(where: \.isCommentable) {
                 state.comments[block.draftKey] = ActionComment(
                     anchor: block.draftKey, text: "Indica el simulador", quote: block.plainText
@@ -155,11 +171,13 @@ final class CardDetailSnapshotTests: XCTestCase {
 
     // MARK: A plan Claude Code holds, annotated
 
-    private func heldPlan(annotating count: Int, edit: (inout CardDetailFeature.State) -> Void = { _ in }) throws
+    private func heldPlan(annotating count: Int, spanish: Bool = false, edit: (inout CardDetailFeature.State) -> Void = { _ in }) throws
         -> StoreOf<CardDetailFeature> {
-        ScreenStores.cardDetail(try Fixtures.heldPlanCard(text: plan)) { state in
-            state.content = plan
-            let notes = ["Say which simulator", "Who approves the notes?"]
+        let text = spanish ? planSpanish : plan
+        let card = try Fixtures.heldPlanCard(text: text)
+        return ScreenStores.cardDetail(spanish ? try Fixtures.spanish(card) : card) { state in
+            state.content = text
+            let notes = spanish ? ["Indica el simulador", "¿Quién aprueba las notas?"] : ["Say which simulator", "Who approves the notes?"]
             for (block, note) in zip(state.blocks.filter(\.isCommentable).dropFirst(), notes).prefix(count) {
                 state.comments[block.draftKey] = ActionComment(anchor: block.draftKey, text: note, quote: block.plainText)
             }
@@ -176,7 +194,7 @@ final class CardDetailSnapshotTests: XCTestCase {
     }
 
     func test_heldPlanWithTwoAnnotations_es() throws {
-        assertDetail(try heldPlan(annotating: 2), language: .spanish)
+        assertDetail(try heldPlan(annotating: 2, spanish: true), language: .spanish)
     }
 
     // MARK: A document opened by itself

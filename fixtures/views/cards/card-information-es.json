@@ -1,0 +1,164 @@
+{
+  "protocol": 1,
+  "data_epoch": "test-epoch",
+  "view": "card",
+  "key": "card:f12d034b-249e-4487-a89b-57de38c26372",
+  "client": "ios",
+  "version": "v5e2888960a44cb64",
+  "cursor": "cursor-1",
+  "title": "The simulator pass is clean",
+  "status": {
+    "version": "vca21bf17ff853499",
+    "summary": "2 preguntas · 3 por leer · 0 nodos trabajando",
+    "badge": 5,
+    "counts": [
+      {
+        "id": "inbox",
+        "label": "Bandeja",
+        "value": 5
+      },
+      {
+        "id": "tasks",
+        "label": "Tareas",
+        "value": 1
+      },
+      {
+        "id": "agents",
+        "label": "Flota",
+        "value": 1
+      },
+      {
+        "id": "working",
+        "label": "trabajando",
+        "value": 0
+      },
+      {
+        "id": "waiting",
+        "label": "esperando",
+        "value": 1
+      }
+    ],
+    "gauges": [
+      {
+        "id": "memory",
+        "label": "Memory",
+        "value": 0.38,
+        "text": "6.1 GB of 16 GB",
+        "level": "calm"
+      },
+      {
+        "id": "disk",
+        "label": "Disk available",
+        "value": 0.72,
+        "text": "120 GB",
+        "level": "calm"
+      }
+    ],
+    "orchestrator": {
+      "text": "inactivo",
+      "tone": "neutral"
+    }
+  },
+  "sections": [
+    {
+      "id": "card",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "card",
+          "id": "f12d034b-249e-4487-a89b-57de38c26372",
+          "kind": "know",
+          "need": "The simulator pass is clean",
+          "why": "Swipe navigation, inline replies and attachment previews are ready for review.",
+          "meta": "Alondra",
+          "content_row": {
+            "kind": "report",
+            "icon": "notice",
+            "label": "Informe",
+            "summary": "3 puntos"
+          },
+          "reply": {
+            "id": "reply:f12d034b-249e-4487-a89b-57de38c26372@1",
+            "label": "Responder",
+            "style": "secondary",
+            "role": "neutral",
+            "presentation": "button",
+            "input": {
+              "kind": "text",
+              "placeholder": "Responder a este nodo…",
+              "required": true,
+              "multiline": true
+            },
+            "attachments": true,
+            "enabled": true,
+            "stamp": "Enviado"
+          },
+          "link": {
+            "kind": "view",
+            "key": "card:f12d034b-249e-4487-a89b-57de38c26372"
+          },
+          "icon": "notice",
+          "eyebrow": {
+            "text": "Saber",
+            "tone": "neutral"
+          },
+          "title": "The simulator pass is clean",
+          "subtitle": "Swipe navigation, inline replies and attachment previews are ready for review.",
+          "state": {
+            "text": "No bloquea",
+            "tone": "neutral"
+          },
+          "detail": "included",
+          "actions": [
+            {
+              "id": "read:f12d034b-249e-4487-a89b-57de38c26372@1",
+              "label": "Visto",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "stamp": "Leída"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "content",
+      "title": "Contenido",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "markdown",
+          "text": "- Swipe navigation\n- Inline replies\n- Attachment previews",
+          "truncated": false,
+          "commentable": false
+        }
+      ]
+    },
+    {
+      "id": "context",
+      "title": "Contexto",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "facts",
+          "items": [
+            {
+              "label": "Tarea",
+              "value": "Restore the native review experience",
+              "link": {
+                "kind": "view",
+                "key": "task:t-651c38484cd2f34e74d5107ba05f7f15"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

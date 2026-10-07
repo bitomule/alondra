@@ -71,18 +71,7 @@ public struct CardDetailView: View {
 
     private func alerts<Content: View>(_ view: Content) -> some View {
         view
-            .alert(store.actions.confirmation?.title ?? "", isPresented: Binding(
-                get: { store.actions.confirmation != nil }, set: { if !$0 { store.send(.actions(.cancelConfirmation)) } }
-            )) {
-                Button(store.actions.confirmation?.button ?? String(localized: "Continue")) { store.send(.actions(.confirm)) }
-                Button("Cancel", role: .cancel) { store.send(.actions(.cancelConfirmation)) }
-            } message: { Text(store.actions.confirmation?.message ?? "") }
-            .alert("This item changed", isPresented: Binding(
-                get: { store.actions.changed != nil }, set: { if !$0 { store.send(.actions(.dismiss)) } }
-            )) {
-                Button(store.actions.changed?.button ?? String(localized: "Continue")) { store.send(.actions(.sendChangedAction)) }
-                Button("Cancel", role: .cancel) { store.send(.actions(.dismiss)) }
-            } message: { Text(store.actions.error ?? "") }
+            .actionDialogs(store.scope(state: \.actions, action: \.actions))
     }
 
     @ViewBuilder private var placeholder: some View {

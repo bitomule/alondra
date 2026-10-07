@@ -51,7 +51,7 @@ public struct AppFeature: Sendable {
         case newRequestPath(StackActionOf<DetailRoute>)
         case viewsFeed(FeedEvent)
         case handOffAnswered(ActionRequest, ActionResponse)
-        case handOffFailed(ActionRequest, String)
+        case handOffFailed(ActionRequest, SendFailure)
     }
 
     @Dependency(\.viewsClient) var viewsClient
@@ -164,8 +164,8 @@ public struct AppFeature: Sendable {
             let applied = reply.outcome == .applied
             return .merge(.send(.triage(.handOffSettled(request, applied: applied))),
                           .send(.fleet(.handOffSettled(request, applied: applied))))
-        case .handOffFailed(let request, _):
-            return .merge(.send(.triage(.handOffSettled(request, applied: false))),
+        case .handOffFailed(let request, let failure):
+            return .merge(.send(.triage(.handOffUndelivered(request, failure))),
                           .send(.fleet(.handOffSettled(request, applied: false))))
         case .triage, .tasks, .fleet, .newRequest, .inboxPath, .tasksPath, .fleetPath, .newRequestPath:
             return .none
@@ -183,7 +183,7 @@ public struct AppFeature: Sendable {
             .send(.fleet(.handedOff(request))),
             .run { [viewsClient] send in
                 do { await send(.handOffAnswered(request, try await viewsClient.perform(request))) }
-                catch { await send(.handOffFailed(request, String(localized: "Couldn’t send. Try again."))) }
+                catch { await send(.handOffFailed(request, SendFailure(error))) }
             }
         )
     }
@@ -219,11 +219,13 @@ public struct AppFeature: Sendable {
         case .triage(.delegate(.noLongerPending)):
             return .actionCompleted(String(localized: "That’s no longer pending"))
         case .handOffAnswered(_, let reply):
-            return reply.outcome == .applied
-                ? .actionCompleted(reply.message ?? String(localized: "Action completed"))
-                : .failure(reply.message ?? String(localized: "Action failed"))
-        case .handOffFailed(_, let message):
-            return .failure(message)
+            switch OutcomeStyle(reply) {
+            case .success(let message): return .actionCompleted(message)
+            case .failure(let message): return .failure(message)
+            case .ask(let changed): return .failure(changed.title)
+            }
+        case .handOffFailed(_, let failure):
+            return .failure(failure.message)
         case .inboxPath(.element(id: _, action: let route)),
              .tasksPath(.element(id: _, action: let route)),
              .fleetPath(.element(id: _, action: let route)),

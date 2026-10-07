@@ -1,0 +1,287 @@
+{
+  "protocol": 1,
+  "data_epoch": "test-epoch",
+  "view": "card",
+  "key": "card:hf-weekly-2026-09-30",
+  "client": "ios",
+  "version": "v7565c00fd78423e1",
+  "cursor": "cursor-1",
+  "title": "Add the compact schedule editor",
+  "status": {
+    "version": "vca21bf17ff853499",
+    "summary": "2 preguntas · 3 por leer · 0 nodos trabajando",
+    "badge": 5,
+    "counts": [
+      {
+        "id": "inbox",
+        "label": "Bandeja",
+        "value": 5
+      },
+      {
+        "id": "tasks",
+        "label": "Tareas",
+        "value": 1
+      },
+      {
+        "id": "agents",
+        "label": "Flota",
+        "value": 1
+      },
+      {
+        "id": "working",
+        "label": "trabajando",
+        "value": 0
+      },
+      {
+        "id": "waiting",
+        "label": "esperando",
+        "value": 1
+      }
+    ],
+    "gauges": [
+      {
+        "id": "memory",
+        "label": "Memory",
+        "value": 0.38,
+        "text": "6.1 GB of 16 GB",
+        "level": "calm"
+      },
+      {
+        "id": "disk",
+        "label": "Disk available",
+        "value": 0.72,
+        "text": "120 GB",
+        "level": "calm"
+      }
+    ],
+    "orchestrator": {
+      "text": "inactivo",
+      "tone": "neutral"
+    }
+  },
+  "sections": [
+    {
+      "id": "card",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "card",
+          "id": "hf-weekly-2026-09-30",
+          "kind": "review",
+          "need": "Review the beta candidate",
+          "why": "All required checks passed and the branch is up to date with main.",
+          "meta": "example/repo · feature/compact-schedule-editor → main · 4 archivos · +120 −30 · Comprobaciones superadas",
+          "content_row": {
+            "kind": "diff",
+            "icon": "pull_request",
+            "label": "Cambios",
+            "summary": "4 archivos · +120 −30"
+          },
+          "reply": {
+            "id": "reply:hf-weekly-2026-09-30@1",
+            "label": "Responder",
+            "style": "secondary",
+            "role": "neutral",
+            "presentation": "button",
+            "input": {
+              "kind": "text",
+              "placeholder": "Responder a este nodo…",
+              "required": true,
+              "multiline": true
+            },
+            "attachments": true,
+            "enabled": true,
+            "stamp": "Enviado"
+          },
+          "more": [
+            {
+              "id": "close_unmerged:hf-weekly-2026-09-30@1",
+              "label": "Cerrar sin fusionar",
+              "style": "destructive",
+              "role": "risk",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "confirm": {
+                "title": "¿Cerrar la PR #12 sin fusionar?",
+                "message": "Alondra cierra la PR en GitHub y cancela esta tarea. No se fusiona nada.",
+                "button": "Cerrar la PR"
+              },
+              "enabled": true,
+              "stamp": "Cerrando…"
+            },
+            {
+              "id": "",
+              "label": "Abrir en GitHub",
+              "style": "plain",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "link": {
+                "kind": "url",
+                "url": "https://github.com/example/repo/pull/12"
+              }
+            }
+          ],
+          "link": {
+            "kind": "view",
+            "key": "card:hf-weekly-2026-09-30"
+          },
+          "icon": "pull_request",
+          "eyebrow": {
+            "text": "Revisar · PR #12",
+            "tone": "accent"
+          },
+          "title": "Add the compact schedule editor",
+          "subtitle": "All required checks passed and the branch is up to date with main.",
+          "state": {
+            "text": "+120 −30 · ✓",
+            "tone": "success"
+          },
+          "detail": "included",
+          "actions": [
+            {
+              "id": "merge:hf-weekly-2026-09-30@1~abcdef12-hf-weekly-2026-09-30",
+              "label": "Fusionar",
+              "style": "primary",
+              "role": "advance",
+              "presentation": "menu",
+              "options": [
+                {
+                  "id": "squash",
+                  "label": "Fusionar con squash",
+                  "description": "Un solo commit en main",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                },
+                {
+                  "id": "merge",
+                  "label": "Commit de fusión",
+                  "description": "Conserva todos los commits",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                }
+              ],
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "confirm": {
+                "title": "¿Fusionar la PR #12?",
+                "message": "«Add the compact schedule editor» entra en main. Alondra la fusiona en GitHub y te avisa cuando termine.",
+                "button": "Fusionar"
+              },
+              "enabled": true,
+              "stamp": "Fusionando…"
+            },
+            {
+              "id": "changes:github.com/example/repo#12@6~abcdef12",
+              "label": "Pedir cambios",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "text",
+                "placeholder": "Describe los cambios",
+                "required": true,
+                "multiline": true
+              },
+              "attachments": true,
+              "comments": {
+                "kind": "diff_lines"
+              },
+              "enabled": true,
+              "stamp": "Cambios solicitados",
+              "link": {
+                "kind": "view",
+                "key": "pull_request:github.com/example/repo#12"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "checks",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "checks",
+          "items": [
+            {
+              "name": "Build",
+              "state": "pass"
+            },
+            {
+              "name": "Unit tests",
+              "state": "pass"
+            },
+            {
+              "name": "Lint",
+              "state": "pending"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "diff",
+      "title": "Diferencias",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "content_ref",
+          "kind": "diff",
+          "title": "Diferencias",
+          "size": 0,
+          "digest": "abcdef12",
+          "fetch": "/pull-requests/github.com%2Fexample%2Frepo%2312/diff",
+          "commentable": true
+        }
+      ]
+    },
+    {
+      "id": "description",
+      "title": "Descripción",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "markdown",
+          "text": "Replaces the long schedule form with a compact editor.\n\n- Repeat and time on one row\n- Launch options in a sheet",
+          "truncated": false,
+          "commentable": false
+        }
+      ]
+    },
+    {
+      "id": "context",
+      "title": "Contexto",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "facts",
+          "items": [
+            {
+              "label": "Tarea",
+              "value": "Restore the native review experience",
+              "link": {
+                "kind": "view",
+                "key": "task:t-651c38484cd2f34e74d5107ba05f7f15"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

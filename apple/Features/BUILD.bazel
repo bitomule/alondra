@@ -33,6 +33,7 @@ swift_test(
         "//apple/Contract:AlondraContract",
         "//apple/Data/Attachments:AlondraAttachments",
         "//apple/Data/Feed:AlondraFeed",
+        "//apple/Data/Transport:AlondraTransport",
         "//apple/Design:AlondraDesign",
         "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
         "@swiftpkg_xctest_dynamic_overlay//:IssueReportingTestSupport",

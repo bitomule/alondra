@@ -27,7 +27,7 @@ extension View {
 }
 
 extension WireAction {
-    var cardRole: ActionRole { role ?? (style == .primary ? .advance : style == .destructive ? .risk : .neutral) }
+    var cardRole: ActionRole { paintedRole }
 }
 
 /// The one line of content a card shows; what is behind it opens in the detail.

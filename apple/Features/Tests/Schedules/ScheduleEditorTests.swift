@@ -237,7 +237,7 @@ final class ScheduleEditorTests: XCTestCase {
         await store.receive(\.actions.sent)
         XCTAssertTrue(store.state.isSaving)
         await gate.open()
-        await store.receive(\.actions.failed)
+        await store.receive(\.actions.undelivered)
         XCTAssertFalse(store.state.isSaving)
     }
 

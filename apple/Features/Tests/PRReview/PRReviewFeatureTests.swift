@@ -218,6 +218,22 @@ final class PRReviewFeatureTests: XCTestCase {
         XCTAssertEqual(request.input.comments, [first, second])
     }
 
+    func testAMergeTheServerHoldsBackOpensNothingAndSendsNothing() async throws {
+        let requests = LockIsolated<[ActionRequest]>([])
+        let store = store(requests: requests)
+        await store.send(.screen(.loaded(try document())))
+        await store.receive(\.diffLoaded)
+        let merge = try XCTUnwrap(store.state.review?.merge)
+        XCTAssertFalse(merge.enabled, "the server's own fixture holds it back until a question is answered")
+
+        await store.send(.perform(merge, optionID: "squash"))
+        await store.skipReceivedActions(strict: false)
+        XCTAssertNil(store.state.actions.action)
+        XCTAssertNil(store.state.actions.confirmation)
+        XCTAssertTrue(requests.value.isEmpty)
+    }
+
+    @MainActor
     func testMergeWaitsForConfirmationAndThenSendsTheChosenMethod() async throws {
         let requests = LockIsolated<[ActionRequest]>([])
         let store = store(requests: requests)
@@ -229,7 +245,7 @@ final class PRReviewFeatureTests: XCTestCase {
         await store.skipReceivedActions()
 
         XCTAssertEqual(store.state.actions.confirmation?.title, "Merge PR #12?")
-        XCTAssertEqual(store.state.actions.confirmationButton, "Merge (squash)")
+        XCTAssertEqual(store.state.actions.confirmation?.button, "Merge")
         XCTAssertFalse(store.state.actions.confirmationIsDestructive)
         XCTAssertFalse(store.state.isComposing)
         XCTAssertTrue(requests.value.isEmpty, "nothing is sent before the confirmation")

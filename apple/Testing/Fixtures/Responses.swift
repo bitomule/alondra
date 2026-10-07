@@ -13,6 +13,11 @@ enum Responses {
         try response(#"{"protocol":1,"outcome":"rejected","message":"\#(message)"\#(field.map { #","field":"\#($0)""# } ?? "")}"#)
     }
 
+    /// A refusal as the server words it now: the typed `result` carries the sentence the card shows.
+    static func refused(_ title: String) throws -> ActionResponse {
+        try response(#"{"protocol":1,"outcome":"rejected","message":"raw domain text","result":{"kind":"refused","title":"\#(title)"}}"#)
+    }
+
     private static func response(_ json: String) throws -> ActionResponse {
         try ContractCodec.decode(ActionResponse.self, from: Data(json.utf8))
     }

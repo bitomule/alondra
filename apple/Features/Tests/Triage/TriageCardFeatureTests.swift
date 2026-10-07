@@ -177,7 +177,7 @@ final class TriageCardFeatureTests: XCTestCase {
         await store.send(.actionTapped(yes))
         await store.skipReceivedActions()
         XCTAssertFalse(store.state.actions.inFlight)
-        XCTAssertEqual(store.state.actions.error, "Couldn’t send. Try again.")
+        XCTAssertEqual(store.state.actions.error, "Your Mac didn’t confirm it. It may have arrived: try again and it won’t be done twice.")
         await store.send(.actionTapped(yes))
         await store.skipReceivedActions()
         failing.setValue(false)
@@ -330,7 +330,7 @@ final class TriageCardFeatureTests: XCTestCase {
 
         await store.send(.replyChanged("Ship the warmer one"))
         await store.send(.replySent(reply))
-        await store.receive(\.actions.failed)
+        await store.receive(\.actions.undelivered)
         await store.receive(\.actions.delegate.failed)
         XCTAssertEqual(store.state.replyDraft, "Ship the warmer one")
         XCTAssertNil(store.state.stamp)

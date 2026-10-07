@@ -4,3 +4,8 @@ filegroup(
     srcs = glob(["*.swift"]),
     visibility = ["//apple:__subpackages__"],
 )
+
+exports_files(
+    ["SpanishTestData.swift"],
+    visibility = ["//apple:__subpackages__"],
+)

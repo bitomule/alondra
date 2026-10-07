@@ -47,7 +47,7 @@ final class NodeDetailFeatureTests: XCTestCase {
             $0.dismiss = DismissEffect { dismissed.setValue(true) }
             $0.viewsClient.perform = { request in
                 requests.withValue { $0.append(request) }
-                if fail { throw ViewsClientError.missingView }
+                if fail { throw URLError(.notConnectedToInternet) }
                 return try Fixtures.response(reply)
             }
         }
@@ -161,7 +161,7 @@ final class NodeDetailFeatureTests: XCTestCase {
         await store.send(.draftChanged("Use the new copy"))
 
         await store.send(.send)
-        await store.receive(\.delegate.failed, "Couldn’t send. Try again.")
+        await store.receive(\.delegate.failed, "Couldn’t reach your Mac. Nothing was sent; try again.")
 
         XCTAssertEqual(store.state.draft, "Use the new copy")
         XCTAssertTrue(store.state.canSend)

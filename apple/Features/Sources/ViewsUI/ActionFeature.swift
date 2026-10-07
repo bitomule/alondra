@@ -23,7 +23,10 @@ public struct ActionFeature: Sendable {
         public var inFlight = false
         public var stamp: String?
         public var error: String?
-        public var changed: ActionConfirmation?
+        public var changed: ChangedNotice?
+        /// The last request that went out and got no answer. Sending the same again reuses its
+        /// command, so the Mac does it once even if the first one did arrive.
+        public var unsure: ActionRequest?
         public var attachmentPicker = AttachmentFeature.State()
         public var pendingAttachmentSubmit = false
         public var requiresAttachments = false
@@ -36,17 +39,9 @@ public struct ActionFeature: Sendable {
             self.dataEpoch = dataEpoch; self.client = client; self.lang = lang
         }
 
-        /// The confirm button, naming the option the action runs with: "Merge (squash)".
-        public var confirmationButton: String? {
-            guard let confirmation else { return nil }
-            guard let id = selectedOptionID, let option = action?.options.first(where: { $0.id == id }) else {
-                return confirmation.button
-            }
-            return "\(confirmation.button) (\(option.label))"
-        }
-
+        /// Only an action the server styles destructive asks in red: merging is a question, closing a PR is not.
         public var confirmationIsDestructive: Bool {
-            action?.id?.hasPrefix("merge:") != true
+            action?.style == .destructive
         }
 
         /// Whether the send button can go now: the action is live and has what it asks for.
@@ -75,6 +70,14 @@ public struct ActionFeature: Sendable {
         }
     }
 
+    /// What the server says moved while the person looked, and the action that goes on anyway.
+    public struct ChangedNotice: Equatable, Sendable {
+        public let title: String
+        public let body: String?
+        public let actionId: String
+        public let button: String
+    }
+
     public enum Action {
         case present(WireAction)
         case presentForm(WireAction, [String: JSONValue], requiresAttachments: Bool)
@@ -94,8 +97,15 @@ public struct ActionFeature: Sendable {
         /// The daemon answered `sent`, or could not be reached; a screen undoes what it showed when not applied.
         case settled(ActionRequest, applied: Bool)
         case response(ActionResponse)
+        /// The daemon answered `request`. Only the request this action is still waiting on changes
+        /// what it shows; an answer to an earlier one is only reported.
+        case answered(ActionRequest, ActionResponse)
         case failed(String)
+        /// The request got no answer from the daemon, for the reason given.
+        case undelivered(ActionRequest, SendFailure)
         case dismiss
+        /// The person closed the notice that something changed; what they were answering stays open.
+        case dismissChanged
         case delegate(Delegate)
 
         /// What the screen showing this action reports upward; the app turns it into a toast.
@@ -114,8 +124,6 @@ public struct ActionFeature: Sendable {
         public let commandID: String
         public init(commandID: String) { self.commandID = commandID }
     }
-
-    public static var sendFailure: String { String(localized: "Couldn’t send. Try again.") }
 
     public init() {}
 
@@ -201,23 +209,33 @@ public struct ActionFeature: Sendable {
                 return send(&state)
             case .sent, .settled:
                 return .none
+            case let .answered(request, reply):
+                guard state.pending?.commandId == request.commandId else {
+                    switch OutcomeStyle(reply) {
+                    case .success(let message): return .send(.delegate(.completed(message)))
+                    case .failure(let message): return .send(.delegate(.failed(message)))
+                    case .ask(let changed): return .send(.delegate(.failed(changed.title)))
+                    }
+                }
+                return .send(.response(reply))
             case let .response(reply):
                 state.inFlight = false
                 state.pending = nil
-                switch reply.outcome {
-                case .applied:
+                state.unsure = nil
+                switch OutcomeStyle(reply) {
+                case .success(let message):
                     state.stamp = reply.stamp ?? state.stamp ?? state.action?.stamp
                     state.error = nil
-                    return .send(.delegate(.completed(reply.message ?? String(localized: "Action completed"))))
-                case .changed:
+                    return .send(.delegate(.completed(message)))
+                case .ask(let changed):
                     state.stamp = nil
-                    state.changed = reply.confirm
-                    state.error = reply.message
+                    state.changed = changed
+                    state.error = nil
                     return .none
-                case .noLongerAvailable, .rejected:
+                case .failure(let message):
                     state.stamp = nil
-                    state.error = reply.message
-                    return .send(.delegate(.failed(reply.message ?? String(localized: "Action failed"))))
+                    state.error = message
+                    return .send(.delegate(.failed(message)))
                 }
             case let .failed(message):
                 state.inFlight = false
@@ -225,7 +243,20 @@ public struct ActionFeature: Sendable {
                 state.error = message
                 // Keep the exact request and command ID for an explicit retry.
                 return .send(.delegate(.failed(message)))
+            case let .undelivered(request, failure):
+                guard state.pending?.commandId == request.commandId else {
+                    return .send(.delegate(.failed(failure.message)))
+                }
+                state.inFlight = false
+                state.pending = nil
+                state.stamp = nil
+                state.error = failure.message
+                state.unsure = failure == .unsure ? request : nil
+                return .send(.delegate(.failed(failure.message)))
             case .delegate:
+                return .none
+            case .dismissChanged:
+                state.changed = nil
                 return .none
             case .dismiss:
                 state.action = nil; state.confirmation = nil; state.changed = nil
@@ -264,17 +295,17 @@ public struct ActionFeature: Sendable {
             do {
                 let reply = try await delivery.value
                 await send(.settled(request, applied: reply.outcome == .applied))
-                await send(.response(reply))
+                await send(.answered(request, reply))
             } catch {
                 await send(.settled(request, applied: false))
-                await send(.failed(Self.sendFailure))
+                await send(.undelivered(request, SendFailure(error)))
             }
         }
         .cancellable(id: DeliveryID(commandID: request.commandId)))
     }
 
     private func makeRequest(_ state: State, actionID: String) -> ActionRequest {
-        ActionRequest(
+        let request = ActionRequest(
             commandId: uuid().uuidString.lowercased(), dataEpoch: state.dataEpoch,
             client: state.client, lang: state.lang, actionId: actionID,
             optionId: state.selectedOptionID ?? (state.action?.presentation == .options && !state.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "" : nil),
@@ -283,6 +314,9 @@ public struct ActionFeature: Sendable {
                 comments: state.comments.isEmpty ? nil : state.comments,
                 fields: state.fields.isEmpty ? nil : state.fields)
         )
+        guard let unsure = state.unsure, unsure.actionId == request.actionId,
+              unsure.optionId == request.optionId, unsure.input == request.input else { return request }
+        return unsure
     }
 }
 

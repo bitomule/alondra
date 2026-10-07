@@ -57,6 +57,21 @@ final class CardDetailFeatureTests: XCTestCase {
     // MARK: What the detail shows
 
     @MainActor
+    func testAnActionTheServerHoldsBackCannotBePressedAndSendsNothing() async throws {
+        let feed = FeedStub()
+        let document = try Fixtures.document("pull-request-ios")
+        let store = store(document, feed: feed)
+        let merge = try XCTUnwrap(store.state.subject?.allActions.first { $0.id?.hasPrefix("merge:") == true })
+        XCTAssertFalse(merge.enabled)
+        XCTAssertFalse(store.state.isSendable(merge), "the button is drawn disabled, with its reason under it")
+
+        await store.send(.actionTapped(merge))
+        await store.skipReceivedActions(strict: false)
+        XCTAssertNil(store.state.actions.action)
+        XCTAssertEqual(feed.requests, [])
+    }
+
+    @MainActor
     func testTheDetailHasTheCardsActionsAndItsReplyAndTheServersSectionsInOrder() async throws {
         let store = store(try Fixtures.card(Fixtures.questionID))
         let subject = try XCTUnwrap(store.state.subject)

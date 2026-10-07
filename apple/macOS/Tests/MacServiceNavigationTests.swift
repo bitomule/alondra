@@ -1,6 +1,7 @@
 import AlondraContract
 import AlondraFeed
 import AlondraFeatures
+import AlondraTransport
 import Foundation
 import ComposableArchitecture
 import Testing
@@ -51,7 +52,7 @@ private let unchangedSidebar: @Sendable (ViewKey) throws -> ViewFetch = { key in
 
 @MainActor
 private func makeStore(
-    waiting: [String], selected: String? = nil,
+    waiting: [String], selected: String? = nil, clock: TestClock<Duration> = TestClock(),
     load: @escaping @Sendable (ViewKey) throws -> ViewFetch = { .document(try makeDocument(key: $0.rawValue, version: "d1")) }
 ) throws -> TestStoreOf<MacPresentationFeature> {
     var state = MacPresentationFeature.State()
@@ -65,8 +66,56 @@ private func makeStore(
         $0.viewsClient.openScreen = { _, _ in }
         $0.viewsClient.closeScreen = { _ in }
         $0.viewsClient.load = { key, _ in try load(key) }
+        $0.continuousClock = clock
     }
     store.exhaustivity = .off
+    return store
+}
+
+private let changedReply = #"{"protocol":1,"outcome":"changed","result":{"kind":"changed","title":"PR #12 has new commits","body":"You reviewed an older version.","next":{"id":"answer:x@2","label":"Send anyway","style":"primary","presentation":"button","input":{"kind":"none"},"attachments":false,"enabled":true}}}"#
+
+private func refused(_ title: String) throws -> ActionResponse {
+    try JSONDecoder().decode(ActionResponse.self, from: Data(
+        #"{"protocol":1,"outcome":"rejected","message":"raw","result":{"kind":"refused","title":"\#(title)"}}"#.utf8))
+}
+
+/// What the Mac sees of the daemon while an action travels: every request, and the answer it gets.
+private final class Daemon: @unchecked Sendable {
+    private let lock = NSLock()
+    private var sent: [ActionRequest] = []
+    private let answer: @Sendable (Int) async throws -> ActionResponse
+
+    init(_ answer: @escaping @Sendable (Int) async throws -> ActionResponse) { self.answer = answer }
+
+    var requests: [ActionRequest] { lock.withLock { sent } }
+
+    func perform(_ request: ActionRequest) async throws -> ActionResponse {
+        let call = lock.withLock { sent.append(request); return sent.count }
+        return try await answer(call)
+    }
+}
+
+/// Holds the first answer back until it is opened.
+private actor Hold {
+    private var open = false
+    private var waiting: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        if open { return }
+        await withCheckedContinuation { waiting.append($0) }
+    }
+
+    func release() {
+        open = true
+        waiting.forEach { $0.resume() }
+        waiting.removeAll()
+    }
+}
+
+@MainActor
+private func answering(_ daemon: Daemon, clock: TestClock<Duration> = TestClock()) throws -> TestStoreOf<MacPresentationFeature> {
+    let store = try makeStore(waiting: ["a", "b"], selected: "card:a", clock: clock, load: unchangedSidebar)
+    store.dependencies.viewsClient.perform = { try await daemon.perform($0) }
     return store
 }
 
@@ -229,6 +278,144 @@ struct MacAnsweringTests {
         await store.send(.action(.sent(request("1"))))
         await store.send(.action(.settled(request("1"), applied: false)))
         #expect(!store.state.optimistic.hides("a"))
+    }
+
+    @Test
+    func aRefusalShowsTheCardAgainWithTheServersWords() async throws {
+        let store = try answering(Daemon { _ in try refused("PR #12 must merge first: this one builds on it.") })
+        await store.send(.beginViewAction(try optionButton()))
+        await store.receive(\.action.delegate.failed, "PR #12 must merge first: this one builds on it.")
+        await store.skipReceivedActions()
+        #expect(!store.state.optimistic.hides("a"))
+        #expect(store.state.selection == .viewKey("card:a"))
+        #expect(store.state.detailDocument?.key == "card:a")
+        #expect(store.state.returnReasons["a"] == "PR #12 must merge first: this one builds on it.", "the card says why it is back")
+    }
+
+    @Test
+    func aMacThatCannotBeReachedSaysNothingWasSentAndSendsAFreshCommandNextTime() async throws {
+        let daemon = Daemon { call in
+            if call == 1 { throw URLError(.cannotConnectToHost) }
+            return try response("applied")
+        }
+        let store = try answering(daemon)
+        await store.send(.beginViewAction(try optionButton()))
+        await store.receive(\.action.delegate.failed, "Couldn’t reach your Mac. Nothing was sent; try again.")
+        await store.skipReceivedActions()
+        #expect(store.state.selection == .viewKey("card:a"))
+        #expect(store.state.returnReasons["a"] == "Couldn’t reach your Mac. Nothing was sent; try again.")
+
+        await store.send(.beginViewAction(try optionButton()))
+        await store.skipReceivedActions()
+        #expect(daemon.requests.count == 2)
+        #expect(daemon.requests.first?.commandId != daemon.requests.last?.commandId)
+    }
+
+    @Test
+    func aMacThatAnswersWithAnErrorSaysNothingChanged() async throws {
+        let store = try answering(Daemon { _ in throw APIError.server(status: 500, kind: nil, detail: "panicked", reasons: []) })
+        await store.send(.beginViewAction(try optionButton()))
+        await store.receive(\.action.delegate.failed, "Your Mac couldn’t do it. Nothing changed; try again.")
+        await store.skipReceivedActions()
+        #expect(store.state.selection == .viewKey("card:a"))
+        #expect(store.state.returnReasons["a"] == "Your Mac couldn’t do it. Nothing changed; try again.")
+    }
+
+    @Test
+    func noAnswerInTimeBringsTheCardBackAndTheRetryIsTheSameCommand() async throws {
+        let clock = TestClock<Duration>()
+        let hold = Hold()
+        let daemon = Daemon { call in
+            if call == 1 { await hold.wait() }
+            return try response("applied")
+        }
+        let store = try answering(daemon, clock: clock)
+        await store.send(.beginViewAction(try optionButton()))
+        await store.skipReceivedActions()
+        #expect(store.state.optimistic.hides("a"))
+        #expect(store.state.selection == .viewKey("card:b"))
+
+        await clock.advance(by: TriageFeature.sendDeadline)
+        await store.receive(\.action.delegate.failed,
+                            "Your Mac didn’t confirm it. It may have arrived: try again and it won’t be done twice.")
+        await store.skipReceivedActions()
+        #expect(!store.state.optimistic.hides("a"))
+        #expect(store.state.selection == .viewKey("card:a"))
+
+        await store.send(.beginViewAction(try optionButton()))
+        await store.skipReceivedActions()
+        #expect(daemon.requests.count == 2)
+        #expect(daemon.requests.last == daemon.requests.first, "the Mac does it once even if the first one arrived")
+        #expect(store.state.optimistic.hides("a"))
+        #expect(store.state.returnReasons["a"] == nil, "answering again clears why it came back")
+        await hold.release()
+    }
+
+    @Test
+    func aLateAnswerToAnEarlierCardLeavesTheOneBeingAnsweredAlone() async throws {
+        let hold = Hold()
+        let daemon = Daemon { call in
+            if call == 1 {
+                await hold.wait()
+                return try refused("It already moved on")
+            }
+            return try response("applied")
+        }
+        let store = try answering(daemon)
+        await store.send(.beginViewAction(try optionButton()))
+        await store.skipReceivedActions()
+        #expect(store.state.selection == .viewKey("card:b"))
+
+        await store.send(.beginViewAction(try answer()))
+        await store.send(.action(.textChanged("Use the compact one")))
+        await hold.release()
+        await store.receive(\.action.delegate.failed, "It already moved on")
+        await store.skipReceivedActions(strict: false)
+        #expect(store.state.actionFeature.action?.id == "answer:x@1")
+        #expect(store.state.actionFeature.text == "Use the compact one")
+        #expect(store.state.actionFeature.error == nil)
+        #expect(store.state.actionPresented)
+        #expect(store.state.selection == .viewKey("card:b"), "the open sheet is not pulled away")
+        #expect(!store.state.optimistic.hides("a"))
+        #expect(store.state.returnReasons["a"] == "It already moved on")
+    }
+
+    @Test
+    func cancellingTheChangedQuestionKeepsWhatWasBeingAnsweredOpen() async throws {
+        let store = try makeStore(waiting: ["a", "b"], selected: "card:a")
+        await store.send(.beginViewAction(try answer()))
+        await store.send(.action(.textChanged("Use the compact one")))
+        await store.send(.action(.response(try JSONDecoder().decode(ActionResponse.self, from: Data(changedReply.utf8)))))
+        #expect(store.state.actionFeature.changed?.title == "PR #12 has new commits")
+        #expect(store.state.actionPresented)
+
+        await store.send(.action(.dismissChanged))
+        #expect(store.state.actionFeature.changed == nil)
+        #expect(store.state.actionPresented, "the sheet underneath stays")
+        #expect(store.state.actionFeature.action?.id == "answer:x@1")
+        #expect(store.state.actionFeature.text == "Use the compact one")
+    }
+
+    @Test
+    func whyACardCameBackIsForgottenOnceTheServerSendsANewerList() async throws {
+        let store = try answering(Daemon { _ in throw URLError(.cannotConnectToHost) })
+        await store.send(.beginViewAction(try optionButton()))
+        await store.skipReceivedActions()
+        #expect(store.state.returnReasons["a"] == "Couldn’t reach your Mac. Nothing was sent; try again.")
+
+        await store.send(.viewLoaded("sidebar", .document(try sidebar(version: "v2", waiting: ["a", "b"]))))
+        #expect(store.state.returnReasons.isEmpty)
+    }
+
+    @Test
+    func whyACardCameBackIsForgottenWhenTheConnectionComesBack() async throws {
+        let store = try answering(Daemon { _ in throw URLError(.cannotConnectToHost) })
+        await store.send(.beginViewAction(try optionButton()))
+        await store.skipReceivedActions()
+        #expect(!store.state.returnReasons.isEmpty)
+
+        await store.send(.viewsReset)
+        #expect(store.state.returnReasons.isEmpty)
     }
 
     @Test

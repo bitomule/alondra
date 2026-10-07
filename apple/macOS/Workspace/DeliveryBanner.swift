@@ -27,9 +27,10 @@ struct DeliveryBanner: View {
     }
 }
 
-struct MacNoticeToast: View {
+public struct MacNoticeToast: View {
     let store: StoreOf<MacAppFeature>
-    var body: some View {
+    public init(store: StoreOf<MacAppFeature>) { self.store = store }
+    public var body: some View {
         ZStack {
             if let notice = store.notice {
                 Label {

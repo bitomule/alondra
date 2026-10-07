@@ -4,9 +4,10 @@ import ComposableArchitecture
 import SwiftUI
 
 /// Original notice presentation; expiration and operation ownership live in the reducer.
-struct NoticeToast: View {
+public struct NoticeToast: View {
     let store: StoreOf<AppFeature>
-    var body: some View {
+    public init(store: StoreOf<AppFeature>) { self.store = store }
+    public var body: some View {
         VStack(spacing: 8) {
             if let notice = store.notice {
                 Label {

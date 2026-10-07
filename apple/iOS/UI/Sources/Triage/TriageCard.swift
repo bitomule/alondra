@@ -24,7 +24,7 @@ struct TriageCard: View {
     private var tint: Color { kind.tint }
     private var stamp: String? { store.stamp }
 
-    var body: some View { compositionSheet(changedAlert(confirmationAlert(shell))) }
+    var body: some View { compositionSheet(shell.actionDialogs(store.scope(state: \.actions, action: \.actions))) }
 
     private var shell: some View {
         Color.clear
@@ -88,6 +88,9 @@ struct TriageCard: View {
             if fit.row, let row = card.contentRow {
                 CardContentRow(row: row, tint: tint) { openDetail() }
             }
+            if fit.chips, !card.badges.isEmpty {
+                HStack(spacing: 10) { ForEach(card.badges, id: \.text) { stateText($0) } }
+            }
             if fit.chips {
                 BlockChips(blocks: card.blocks, blockedBy: card.blockedBy, open: handleLink)
             }
@@ -99,24 +102,6 @@ struct TriageCard: View {
                 composer(reply)
             }
         }
-    }
-
-    private func confirmationAlert<Content: View>(_ view: Content) -> some View {
-        view.alert(store.actions.confirmation?.title ?? "", isPresented: Binding(
-            get: { store.actions.confirmation != nil }, set: { if !$0 { store.send(.actions(.cancelConfirmation)) } }
-        )) {
-            Button(store.actions.confirmation?.button ?? String(localized: "Continue")) { store.send(.actions(.confirm)) }
-            Button("Cancel", role: .cancel) { store.send(.actions(.cancelConfirmation)) }
-        } message: { Text(store.actions.confirmation?.message ?? "") }
-    }
-
-    private func changedAlert<Content: View>(_ view: Content) -> some View {
-        view.alert("This item changed", isPresented: Binding(
-            get: { store.actions.changed != nil }, set: { if !$0 { store.send(.actions(.dismiss)) } }
-        )) {
-            Button(store.actions.changed?.button ?? String(localized: "Continue")) { store.send(.actions(.sendChangedAction)) }
-            Button("Cancel", role: .cancel) { store.send(.actions(.dismiss)) }
-        } message: { Text(store.actions.error ?? "") }
     }
 
     private func compositionSheet<Content: View>(_ view: Content) -> some View {
@@ -133,7 +118,7 @@ struct TriageCard: View {
         ViewThatFits(in: .horizontal) {
             HStack(spacing: 8) { badges(showsState: showsState); Spacer(minLength: 4); trailing }
             VStack(alignment: .leading, spacing: 8) {
-                HStack(spacing: 8) { KindBadge(kind: kind); Spacer(minLength: 4); trailing }
+                HStack(spacing: 8) { KindBadge(kind: kind, title: card.eyebrow?.text); Spacer(minLength: 4); trailing }
                 if showsState, let state = card.state { stateText(state) }
             }
         }
@@ -141,7 +126,7 @@ struct TriageCard: View {
 
     private func badges(showsState: Bool) -> some View {
         HStack(spacing: 8) {
-            KindBadge(kind: kind)
+            KindBadge(kind: kind, title: card.eyebrow?.text)
             if showsState, let state = card.state { stateText(state) }
         }
     }
@@ -215,15 +200,9 @@ struct TriageCard: View {
                 }
                 .menuStyle(.button)
                 .glassRole(action.cardRole)
-                .disabled(!action.enabled)
             } else {
                 Button { perform(action) } label: { GlassBarLabel(action.label).multilineTextAlignment(.center) }
                     .glassRole(action.cardRole)
-                    .disabled(!action.enabled)
-            }
-            if !action.enabled, let reason = action.disabledReason {
-                Text(reason).font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
-                    .frame(maxWidth: .infinity)
             }
         }
     }
@@ -231,7 +210,7 @@ struct TriageCard: View {
     private var moreMenu: some View {
         Menu {
             ForEach(Array(store.menu.enumerated()), id: \.offset) { _, action in
-                Button(action.label) { perform(action) }.disabled(!action.enabled)
+                Button(action.label) { perform(action) }
             }
         } label: {
             Image(systemName: "ellipsis.circle")
@@ -271,7 +250,7 @@ struct TriageCard: View {
                     .frame(width: 36, height: 36).background(empty ? Palette.slate.opacity(0.5) : tint, in: .circle)
             }
             .buttonStyle(PressStyle())
-            .disabled(empty || !action.enabled)
+            .disabled(empty)
             .padding(4)
             .accessibilityLabel("Send")
         }

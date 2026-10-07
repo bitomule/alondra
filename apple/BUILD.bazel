@@ -113,6 +113,7 @@ swift_test(
     srcs = ["macOS/Tests/MacServiceNavigationTests.swift"],
     deps = [
         "//apple/Data/Feed:AlondraFeed",
+        "//apple/Data/Transport:AlondraTransport",
         "//apple/Features:AlondraFeatures",
         "//apple/Contract:AlondraContract",
         "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",

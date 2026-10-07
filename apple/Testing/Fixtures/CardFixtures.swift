@@ -29,6 +29,12 @@ extension Fixtures {
             item["id"] = id
             item["link"] = ["kind": "view", "key": "card:\(id)"]
             item["kind"] = kind
+            if var eyebrow = item["eyebrow"] as? [String: Any] {
+                let labels = ["decide": "Decide", "review": "Review", "authorize": "Authorize", "know": "FYI", "provide": "Provide",
+                              "test": "Test", "do": "Do", "problem": "Problem", "propose": "Proposal"]
+                eyebrow["text"] = labels[kind] ?? kind
+                item["eyebrow"] = eyebrow
+            }
             item["need"] = need
             item["title"] = need
             item["why"] = why

@@ -1,10 +1,10 @@
-import AlondraFeatures
 import ComposableArchitecture
 import SwiftUI
 
-extension View {
-    /// The questions an action can raise before it runs: the daemon's confirmation, and the
-    /// notice that what the action meant has changed since the screen was drawn.
+public extension View {
+    /// The two questions an action can raise, asked the same way on iPhone and Mac: the server's
+    /// confirmation, and the notice that what the person looked at has changed. The words come from
+    /// the server; the confirming button is red only when the action itself is destructive.
     func actionDialogs(_ store: StoreOf<ActionFeature>) -> some View {
         modifier(ActionDialogs(store: store))
     }
@@ -15,31 +15,31 @@ private struct ActionDialogs: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .confirmationDialog(
+            .alert(
                 store.confirmation?.title ?? "",
                 isPresented: Binding(
                     get: { store.confirmation != nil },
                     set: { if !$0 { store.send(.cancelConfirmation) } }
-                ),
-                titleVisibility: .visible
+                )
             ) {
-                Button(store.confirmationButton ?? "", role: store.confirmationIsDestructive ? .destructive : nil) {
+                Button(store.confirmation?.button ?? "", role: store.confirmationIsDestructive ? .destructive : nil) {
                     store.send(.confirm)
                 }
+                Button("Cancel", role: .cancel) { store.send(.cancelConfirmation) }
             } message: {
                 Text(verbatim: store.confirmation?.message ?? "")
             }
             .alert(
-                "This changed",
+                store.changed?.title ?? "",
                 isPresented: Binding(
                     get: { store.changed != nil },
-                    set: { if !$0 { store.send(.dismiss) } }
+                    set: { if !$0 { store.send(.dismissChanged) } }
                 )
             ) {
                 Button(store.changed?.button ?? "") { store.send(.sendChangedAction) }
-                Button("Cancel", role: .cancel) { store.send(.dismiss) }
+                Button("Cancel", role: .cancel) { store.send(.dismissChanged) }
             } message: {
-                Text(verbatim: store.error ?? "")
+                Text(verbatim: store.changed?.body ?? "")
             }
     }
 }

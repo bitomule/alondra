@@ -114,6 +114,7 @@ public struct PRReviewFeature: Sendable {
                 state.comments[anchor] = comment
                 return .none
             case .perform(let wire, let optionID):
+                guard wire.enabled else { return .none }
                 var effects: [Effect<Action>] = [.send(.actions(.present(wire)))]
                 if wire.comments?.kind == .diffLines {
                     effects.append(.send(.actions(.commentsChanged(state.sortedComments))))

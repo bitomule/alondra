@@ -1833,6 +1833,22 @@ fn card_variants_match_goldens() {
 }
 
 #[test]
+fn spanish_cards_match_goldens() {
+    let state = golden_fixture();
+    let live = golden_live();
+    for (filename, client, key, expected) in [
+        ("card-pr-es.json", Client::Ios, "card:github.com/example/repo#12", include_str!("../../../../fixtures/views/cards/card-pr-es.json")),
+        ("card-pr-es-mac.json", Client::Mac, "card:github.com/example/repo#12", include_str!("../../../../fixtures/views/cards/card-pr-es-mac.json")),
+        ("card-question-es.json", Client::Ios, "card:a98d034b-249e-4487-a89b-57de38c26372", include_str!("../../../../fixtures/views/cards/card-question-es.json")),
+        ("card-information-es.json", Client::Ios, "card:f12d034b-249e-4487-a89b-57de38c26372", include_str!("../../../../fixtures/views/cards/card-information-es.json")),
+        ("card-delivery-es.json", Client::Ios, "card:hf-weekly-2026-09-30", include_str!("../../../../fixtures/views/cards/card-delivery-es.json")),
+    ] {
+        let actual = render(&state, &live, client, Lang::Es, key, "2026-09-30T10:00:00Z");
+        assert_golden(filename, &actual, expected);
+    }
+}
+
+#[test]
 fn home_ios_es_matches_golden() {
     let state = golden_fixture();
     let live = golden_live();
@@ -1922,6 +1938,11 @@ fn generate_goldens() {
         ("card-pr.json", "card:github.com/example/repo#12", Client::Ios, Lang::En),
         ("card-delivery.json", "card:hf-weekly-2026-09-30", Client::Ios, Lang::En),
         ("home-ios-es.json", "home", Client::Ios, Lang::Es),
+        ("card-pr-es.json", "card:github.com/example/repo#12", Client::Ios, Lang::Es),
+        ("card-question-es.json", "card:a98d034b-249e-4487-a89b-57de38c26372", Client::Ios, Lang::Es),
+        ("card-information-es.json", "card:f12d034b-249e-4487-a89b-57de38c26372", Client::Ios, Lang::Es),
+        ("card-delivery-es.json", "card:hf-weekly-2026-09-30", Client::Ios, Lang::Es),
+        ("card-pr-es-mac.json", "card:github.com/example/repo#12", Client::Mac, Lang::Es),
         ("new-request-ios.json", "new_request", Client::Ios, Lang::En),
         ("node-ios.json", "node:d887a34b-249e-4487-a89b-57de38c26372", Client::Ios, Lang::En),
         ("task-ios.json", "task:t-651c38484cd2f34e74d5107ba05f7f15", Client::Ios, Lang::En),

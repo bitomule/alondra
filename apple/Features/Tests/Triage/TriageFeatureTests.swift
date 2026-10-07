@@ -1,6 +1,7 @@
 import AlondraContract
 import AlondraFeatures
 import AlondraFeed
+import AlondraTransport
 import ComposableArchitecture
 import Foundation
 import XCTest
@@ -603,6 +604,30 @@ final class TriageFeatureTests: XCTestCase {
     }
 
     @MainActor
+    func testARefusalBringsTheCardBackWithTheServersSentenceNotItsRawText() async throws {
+        let clock = TestClock<Duration>()
+        let gate = Gate()
+        let store = gated(try fullFeed(), clock: clock, gate: gate) {
+            try Responses.refused("PR #12 must merge first: this one builds on it.")
+        }
+        await store.send(.task)
+        await store.skipReceivedActions()
+
+        _ = try await answer(store, id: ids.question)
+        await Task.megaYield()
+        XCTAssertNotNil(store.state.cards[id: ids.question]?.stamp, "the card shows its stamp at once")
+
+        await gate.open()
+        await store.receive(\.cards[id: ids.question].actions.settled)
+        await store.receive(\.cards[id: ids.question].actions.response)
+        XCTAssertEqual(store.state.orderedIDs, queue, "the card is back")
+        XCTAssertEqual(store.state.currentID, ids.question, "in front, where it was answered")
+        XCTAssertNil(store.state.cards[id: ids.question]?.stamp)
+        XCTAssertEqual(store.state.cards[id: ids.question]?.actions.error, "PR #12 must merge first: this one builds on it.")
+        await store.receive(\.cards[id: ids.question].actions.delegate.failed)
+    }
+
+    @MainActor
     func testAnAnswerThatNeverGetsAnAnswerIsRolledBackWithAnError() async throws {
         let clock = TestClock<Duration>()
         let store = gated(try fullFeed(), clock: clock, gate: Gate())
@@ -621,7 +646,8 @@ final class TriageFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.orderedIDs, queue)
         XCTAssertEqual(store.state.currentID, ids.question)
         XCTAssertNil(store.state.cards[id: ids.question]?.stamp)
-        XCTAssertEqual(store.state.cards[id: ids.question]?.actions.error, ActionFeature.sendFailure)
+        XCTAssertEqual(store.state.cards[id: ids.question]?.actions.error,
+                       "Your Mac didn’t confirm it. It may have arrived: try again and it won’t be done twice.")
         XCTAssertTrue(store.state.answered.isEmpty)
     }
 
@@ -639,7 +665,135 @@ final class TriageFeatureTests: XCTestCase {
         _ = try await answer(store, id: ids.question)
         XCTAssertEqual(store.state.orderedIDs, queue)
         XCTAssertNil(store.state.cards[id: ids.question]?.stamp)
-        XCTAssertEqual(store.state.cards[id: ids.question]?.actions.error, ActionFeature.sendFailure)
+        XCTAssertEqual(store.state.cards[id: ids.question]?.actions.error,
+                       "Couldn’t reach your Mac. Nothing was sent; try again.")
+    }
+
+    @MainActor
+    func testAnAnswerAppliedWithAResultKindThisAppDoesNotKnowStaysAnswered() async throws {
+        let clock = TestClock<Duration>()
+        let gate = Gate()
+        let store = gated(try fullFeed(), clock: clock, gate: gate) {
+            try ContractCodec.decode(ActionResponse.self, from: Data(
+                #"{"protocol":1,"outcome":"applied","stamp":"Queued","result":{"kind":"queued","title":"Queued for the Mac."}}"#.utf8))
+        }
+        await store.send(.task)
+        await store.skipReceivedActions()
+
+        _ = try await answer(store, id: ids.question)
+        await gate.open()
+        await store.receive(\.cards[id: ids.question].actions.delegate.completed, "Queued for the Mac.")
+        await clock.advance(by: TriageFeature.stampDuration)
+        await store.skipReceivedActions()
+        XCTAssertFalse(store.state.orderedIDs.contains(ids.question))
+        XCTAssertNil(store.state.cards[id: ids.question]?.actions.error)
+    }
+
+    @MainActor
+    func testAMacThatAnswersWithAnErrorBringsTheCardBackSayingNothingChanged() async throws {
+        let store = TestStore(initialState: TriageFeature.State()) { TriageFeature() } withDependencies: {
+            $0.continuousClock = TestClock()
+            $0.viewsClient.observe = try! fullFeed().observe
+            $0.viewsClient.perform = { _ in throw APIError.server(status: 500, kind: nil, detail: "panicked at store.rs", reasons: []) }
+        }
+        store.exhaustivity = .off
+        await store.send(.task)
+        await store.skipReceivedActions()
+
+        _ = try await answer(store, id: ids.question)
+        XCTAssertEqual(store.state.orderedIDs, queue)
+        XCTAssertEqual(store.state.currentID, ids.question)
+        XCTAssertEqual(store.state.cards[id: ids.question]?.actions.error,
+                       "Your Mac couldn’t do it. Nothing changed; try again.", "never the daemon's raw text")
+    }
+
+    @MainActor
+    func testAnAnswerTheMacMayHaveGotGoesAgainAsTheSameCommand() async throws {
+        let clock = TestClock<Duration>()
+        let feed = try fullFeed()
+        let calls = LockIsolated(0)
+        let store = TestStore(initialState: TriageFeature.State()) { TriageFeature() } withDependencies: {
+            $0.continuousClock = clock
+            $0.viewsClient.observe = feed.observe
+            $0.viewsClient.perform = { request in
+                feed.deliver(request)
+                let call = calls.withValue { $0 += 1; return $0 }
+                if call == 1 { throw OperationError.outcomeUnknown }
+                return try Responses.applied()
+            }
+        }
+        store.exhaustivity = .off
+        await store.send(.task)
+        await store.skipReceivedActions()
+
+        let action = try await answer(store, id: ids.question)
+        XCTAssertEqual(store.state.currentID, ids.question, "the card is back")
+        XCTAssertEqual(store.state.cards[id: ids.question]?.actions.error,
+                       "Your Mac didn’t confirm it. It may have arrived: try again and it won’t be done twice.")
+
+        await store.send(.cards(.element(id: ids.question, action: .actionTapped(action))))
+        await store.skipReceivedActions()
+        XCTAssertEqual(feed.requests.count, 2)
+        XCTAssertEqual(feed.requests[1].commandId, feed.requests[0].commandId, "the Mac does it once")
+        XCTAssertEqual(feed.requests[1], feed.requests[0])
+        await clock.advance(by: TriageFeature.stampDuration)
+        await store.skipReceivedActions()
+        XCTAssertFalse(store.state.orderedIDs.contains(ids.question))
+    }
+
+    @MainActor
+    func testAnAnswerThatNeverLeftGoesAgainAsANewCommand() async throws {
+        let feed = try fullFeed()
+        let calls = LockIsolated(0)
+        let store = TestStore(initialState: TriageFeature.State()) { TriageFeature() } withDependencies: {
+            $0.continuousClock = TestClock()
+            $0.viewsClient.observe = feed.observe
+            $0.viewsClient.perform = { request in
+                feed.deliver(request)
+                let call = calls.withValue { $0 += 1; return $0 }
+                if call == 1 { throw URLError(.cannotConnectToHost) }
+                return try Responses.applied()
+            }
+        }
+        store.exhaustivity = .off
+        await store.send(.task)
+        await store.skipReceivedActions()
+
+        let action = try await answer(store, id: ids.question)
+        await store.send(.cards(.element(id: ids.question, action: .actionTapped(action))))
+        await store.skipReceivedActions()
+        XCTAssertEqual(feed.requests.count, 2)
+        XCTAssertNotEqual(feed.requests[1].commandId, feed.requests[0].commandId)
+    }
+
+    @MainActor
+    func testAnAnswerThatTimedOutGoesAgainAsTheSameCommand() async throws {
+        let clock = TestClock<Duration>()
+        let feed = try fullFeed()
+        let gate = Gate()
+        let store = TestStore(initialState: TriageFeature.State()) { TriageFeature() } withDependencies: {
+            $0.continuousClock = clock
+            $0.viewsClient.observe = feed.observe
+            $0.viewsClient.perform = { request in
+                feed.deliver(request)
+                if feed.requests.count == 1 { await gate.wait() }
+                return try Responses.applied()
+            }
+        }
+        store.exhaustivity = .off
+        await store.send(.task)
+        await store.skipReceivedActions()
+
+        let action = try await answer(store, id: ids.question)
+        await Task.megaYield()
+        await clock.advance(by: TriageFeature.sendDeadline)
+        await store.skipReceivedActions()
+        XCTAssertEqual(store.state.currentID, ids.question)
+
+        await store.send(.cards(.element(id: ids.question, action: .actionTapped(action))))
+        await store.skipReceivedActions()
+        XCTAssertEqual(feed.requests.map(\.commandId), [feed.requests[0].commandId, feed.requests[0].commandId])
+        await gate.open()
     }
 
     @MainActor

@@ -26,7 +26,7 @@ struct PRActionBar: View {
                 .buttonStyle(.glassProminent).tint(Palette.dawn)
                 .disabled(!conflicts.enabled)
             } else if let merge = review.merge {
-                mergeMenu(merge)
+                if merge.enabled { mergeMenu(merge) } else { blocked(merge) }
             }
         }
     }
@@ -35,17 +35,23 @@ struct PRActionBar: View {
         store.comments.isEmpty ? action.label : "\(action.label) (\(store.comments.count))"
     }
 
+    /// A merge the server holds back: its reason in place of the button, never a button that does nothing.
+    private func blocked(_ merge: WireAction) -> some View {
+        GlassBarLabel(merge.disabledReason ?? merge.label, systemImage: "square.stack.3d.up")
+            .padding(.horizontal, 12).padding(.vertical, 10)
+            .foregroundStyle(.secondary)
+            .accessibilityElement(children: .combine)
+    }
+
     private func mergeMenu(_ merge: WireAction) -> some View {
         Menu {
             ForEach(merge.options, id: \.id) { option in
                 Button(option.label) { store.send(.perform(merge, optionID: option.id)) }
             }
         } label: {
-            GlassBarLabel(merge.enabled ? "\(merge.label)…" : (merge.disabledReason ?? merge.label),
-                          systemImage: merge.enabled ? "arrow.triangle.merge" : "square.stack.3d.up")
+            GlassBarLabel("\(merge.label)…", systemImage: "arrow.triangle.merge")
         }
         .menuStyle(.button).buttonStyle(.glassProminent)
-        .tint(merge.enabled ? Palette.sageDeep : Palette.slate)
-        .disabled(!merge.enabled)
+        .tint(Palette.sageDeep)
     }
 }

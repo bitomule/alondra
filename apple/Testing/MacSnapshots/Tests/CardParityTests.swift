@@ -1,0 +1,84 @@
+import AlondraContract
+import AlondraFeatures
+import AlondraMacWorkspace
+import XCTest
+
+/// Design §7.4: the same card, served to the iPhone and to the Mac, reads the same on both:
+/// labels, order, options, confirmation words and colours come from the server and no client changes them.
+final class CardParityTests: XCTestCase {
+    private func document(_ name: String) throws -> ViewDocument {
+        let environment = ProcessInfo.processInfo.environment
+        let root = URL(fileURLWithPath: try XCTUnwrap(environment["TEST_SRCDIR"]))
+            .appendingPathComponent(environment["TEST_WORKSPACE"] ?? "_main")
+        return try ContractCodec.decode(
+            ViewDocument.self, from: Data(contentsOf: root.appendingPathComponent("fixtures/views/cards/\(name).json")))
+    }
+
+    private func card(in document: ViewDocument) throws -> Card {
+        try XCTUnwrap(document.sections.flatMap(\.items).compactMap { item -> Card? in
+            if case let .card(card) = item { card } else { nil }
+        }.first)
+    }
+
+    /// The buttons the phone's card shows, then what its "More…" holds.
+    private func phone(_ document: ViewDocument) -> [AlondraContract.Action] {
+        var state = TriageCardFeature.State(id: "parity")
+        state.screen.document = document
+        return state.buttons + state.menu
+    }
+
+    private func mac(_ document: ViewDocument) throws -> [AlondraContract.Action] {
+        let buttons = MacCardButtons(try card(in: document))
+        return buttons.visible + buttons.more
+    }
+
+    private func shown(_ action: AlondraContract.Action) -> [String] {
+        [action.label, action.paintedRole.rawValue, action.confirm?.title ?? "", action.confirm?.message ?? "",
+         action.confirm?.button ?? "", action.description ?? ""] + action.options.flatMap { [$0.label, $0.description ?? ""] }
+    }
+
+    func testTheSameCardOffersTheSameActionsInTheSameOrderOnPhoneAndMac() throws {
+        for (phoneName, macName) in [("card-pr", "card-pr-mac"), ("card-question", "card-question-mac"),
+                                     ("card-information", "card-information-mac")] {
+            let onPhone = phone(try document(phoneName)).map(shown)
+            let onMac = try mac(try document(macName)).map(shown)
+            XCTAssertFalse(onPhone.isEmpty, phoneName)
+            XCTAssertEqual(onPhone, onMac, phoneName)
+        }
+    }
+
+    func testAnActionTheServerMarksUnusableIsOnNeitherCard() throws {
+        for name in ["card-pr", "card-pr-mac"] {
+            let original = try document(name)
+            var object = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(original)) as? [String: Any])
+            var sections = try XCTUnwrap(object["sections"] as? [[String: Any]])
+            var items = try XCTUnwrap(sections[0]["items"] as? [[String: Any]])
+            var actions = try XCTUnwrap(items[0]["actions"] as? [[String: Any]])
+            actions[0]["enabled"] = false
+            actions[0]["disabled_reason"] = "Merge #11 first"
+            items[0]["actions"] = actions
+            sections[0]["items"] = items
+            object["sections"] = sections
+            let blocked = try ContractCodec.decode(ViewDocument.self, from: JSONSerialization.data(withJSONObject: object))
+
+            XCTAssertFalse(phone(blocked).contains { $0.label == "Merge" }, name)
+            XCTAssertFalse(try mac(blocked).contains { $0.label == "Merge" }, name)
+            XCTAssertTrue(phone(blocked).allSatisfy(\.enabled), name)
+            XCTAssertTrue(try mac(blocked).allSatisfy(\.enabled), name)
+        }
+    }
+
+    func testClosingWithoutMergingIsTheOnlyRedActionAndAsksFirst() throws {
+        let card = try mac(try document("card-pr-mac"))
+        let red = card.filter { $0.paintedRole == .risk }
+        XCTAssertEqual(red.map(\.label), ["Close without merging"])
+        XCTAssertNotNil(red.first?.confirm)
+        XCTAssertEqual(card.first { $0.label == "Merge" }?.paintedRole, .advance)
+    }
+
+    func testAMenuOffersTwoOrMoreDescribedMethods() throws {
+        let merge = try XCTUnwrap(try mac(try document("card-pr-mac")).first { $0.presentation == .menu })
+        XCTAssertGreaterThanOrEqual(merge.options.count, 2)
+        XCTAssertTrue(merge.options.allSatisfy { $0.description?.isEmpty == false })
+    }
+}

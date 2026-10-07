@@ -104,6 +104,7 @@ final class ViewsUITests: XCTestCase {
         }
         await store.receive(\.sent, request)
         await store.receive(\.settled)
+        await store.receive(\.answered)
         await store.receive(\.response) {
             $0.inFlight = false
             $0.pending = nil

@@ -52,6 +52,8 @@ final class PRReviewSnapshotTests: XCTestCase {
         "Resolve conflicts": "Resolver conflictos",
         "Your question": "Tu pregunta",
         "Describe the changes": "Describe los cambios",
+        "Answer “Ship the compact schedule editor with this beta?” first":
+            "Responde primero a «¿Publicar el editor compacto con esta beta?»",
     ]
 
     private func screen(
@@ -75,11 +77,16 @@ final class PRReviewSnapshotTests: XCTestCase {
             for index in sections.indices where sections[index]["id"] as? String == "actions" {
                 var bar = sections[index]["items"] as? [[String: Any]] ?? []
                 var actions = bar[0]["actions"] as? [[String: Any]] ?? []
-                actions.append((try? JSONSerialization.jsonObject(with: Data(action.utf8)) as? [String: Any]) ?? [:])
+                if !action.isEmpty {
+                    actions.append((try? JSONSerialization.jsonObject(with: Data(action.utf8)) as? [String: Any]) ?? [:])
+                }
                 if spanish {
                     for slot in actions.indices {
                         if let label = actions[slot]["label"] as? String, let es = Self.spanishLabels[label] {
                             actions[slot]["label"] = es
+                        }
+                        if let reason = actions[slot]["disabled_reason"] as? String, let es = Self.spanishLabels[reason] {
+                            actions[slot]["disabled_reason"] = es
                         }
                         if var input = actions[slot]["input"] as? [String: Any],
                            let placeholder = input["placeholder"] as? String, let es = Self.spanishLabels[placeholder] {
@@ -94,7 +101,7 @@ final class PRReviewSnapshotTests: XCTestCase {
             object["sections"] = sections
         }
         var state = PRReviewFeature.State(key: .pullRequest("github.com/example/repo#12"))
-        state.screen.document = document
+        state.screen.document = spanish ? try SpanishTestData.document(document) : document
         state.screen.phase = .loaded
         state.diffDigest = "abcdef12"
         state.diff = .loaded(UnifiedDiff.parse(Self.diff))
@@ -164,6 +171,17 @@ final class PRReviewSnapshotTests: XCTestCase {
     private func spanishImage(_ style: UIUserInterfaceStyle) -> Snapshotting<AnyView, UIImage> {
         Snapshotting<AnyView, UIImage>.image(drawHierarchyInKeyWindow: true, perceptualPrecision: 0.98,
                layout: .fixed(width: 393, height: 852), traits: .init(userInterfaceStyle: style)).asRecorded
+    }
+
+    /// The server's own view with Merge held back until a question is answered: the bar says why
+    /// instead of offering a button that does nothing.
+    func test_prReview_mergeHeldBackSaysWhy() throws {
+        let view = try screen(adding: "")
+        for style in [UIUserInterfaceStyle.light, .dark] {
+            assertAppSnapshot(of: AnyView(NavigationStack { view }), as: spanishImage(style), named: style == .light ? "light" : "dark")
+        }
+        let spanish = try screen(adding: "", spanish: true)
+        assertAppSnapshot(of: spanishScreen(spanish), as: spanishImage(.light), named: "light_es")
     }
 
     func test_prReview_noLongerAvailable() {

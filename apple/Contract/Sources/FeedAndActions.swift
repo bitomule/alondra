@@ -64,7 +64,32 @@ public struct ActionResponse: Codable, Equatable, Sendable {
     public let message: String?
     public let field: String?
     public let confirm: ActionConfirmation?
-    enum CodingKeys: String, CodingKey { case protocolVersion = "protocol", outcome, stamp, revision, message, field, confirm }
+    /// What the action did, worded by the server for the person; absent from an older daemon.
+    public let result: ActionResult?
+    enum CodingKeys: String, CodingKey { case protocolVersion = "protocol", outcome, stamp, revision, message, field, confirm, result }
+}
+
+/// What happened after an action, in the person's language: the same five kinds on every client.
+public enum ActionResultKind: String, Codable, Equatable, Sendable {
+    case done, started, refused, failed, changed
+    /// A kind added by a newer daemon: read by the reply's outcome, with the server's title.
+    case other
+
+    public init(from decoder: any Decoder) throws {
+        self = Self(rawValue: try decoder.singleValueContainer().decode(String.self)) ?? .other
+    }
+}
+
+public struct ActionResult: Codable, Equatable, Sendable {
+    public let kind: ActionResultKind
+    public let title: String
+    public let body: String?
+    /// What to offer when the thing moved under the person: the same action, to go on anyway.
+    public let next: Action?
+
+    public init(kind: ActionResultKind, title: String, body: String? = nil, next: Action? = nil) {
+        self.kind = kind; self.title = title; self.body = body; self.next = next
+    }
 }
 public struct ActionConfirmation: Codable, Equatable, Sendable {
     public let actionId: String

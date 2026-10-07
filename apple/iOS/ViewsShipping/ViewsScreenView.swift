@@ -119,19 +119,7 @@ struct ViewsScreenView: View {
 
     private var alertsContent: some View {
         pickerContent
-        .confirmationDialog(store.action.confirmation?.title ?? "Confirm", isPresented: Binding(
-            get: { store.action.confirmation != nil },
-            set: { if !$0 { store.send(.action(.cancelConfirmation)) } }
-        )) {
-            Button(store.action.confirmation?.button ?? "Confirm", role: .destructive) { store.send(.action(.confirm)) }
-            Button("Cancel", role: .cancel) { store.send(.action(.cancelConfirmation)) }
-        } message: {
-            Text(store.action.confirmation?.message ?? "")
-        }
-        .alert("Action updated", isPresented: Binding(get: { store.action.changed != nil }, set: { if !$0 { store.send(.action(.dismiss)) } })) {
-            Button("Continue") { store.send(.action(.sendChangedAction)) }
-            Button("Cancel", role: .cancel) { store.send(.action(.dismiss)) }
-        } message: { Text("The item changed. Confirm to send your response to the current version.") }
+        .actionDialogs(store.scope(state: \.action, action: \.action))
     }
 
     private var screenContent: some View {

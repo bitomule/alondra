@@ -50,9 +50,7 @@ enum MacCardPalette {
 }
 
 extension AlondraContract.Action {
-    public var resolvedRole: ActionRole {
-        role ?? (style == .destructive ? .risk : style == .primary ? .advance : .neutral)
-    }
+    public var resolvedRole: ActionRole { paintedRole }
 }
 
 /// How many buttons a card shows before the rest go behind "More…".
@@ -70,7 +68,7 @@ public struct MacCardButtons: Equatable {
     }
 
     public init(_ card: Card, excluding hidden: Set<String> = []) {
-        self.init(actions: card.actions, more: card.more, excluding: hidden)
+        self.init(actions: card.usableActions, more: card.usableMore, excluding: hidden)
     }
 }
 
@@ -79,6 +77,8 @@ public struct MacCardButtons: Equatable {
 struct MacCardView: View {
     let card: Card
     var excludedActionIDs: Set<String> = []
+    /// Why the card is back: the last answer to it did not go through.
+    var returnReason: String?
     var onAction: (AlondraContract.Action) -> Void
     var onReply: (AlondraContract.Action, String) -> Void
     var onLink: (AlondraContract.Link) -> Void
@@ -103,6 +103,9 @@ struct MacCardView: View {
             if let row = card.contentRow { contentRow(row) }
             if !card.blocks.isEmpty || !card.blockedBy.isEmpty { chips }
             MacActionColumn(buttons: buttons, moreOpen: $moreOpen, onAction: onAction)
+            if let returnReason {
+                Text(returnReason).font(.callout).foregroundStyle(MacCardPalette.risk).fixedSize(horizontal: false, vertical: true)
+            }
             if let action = card.reply { replyField(action) }
         }
         .padding(18)
@@ -192,7 +195,7 @@ struct MacCardView: View {
                     .foregroundStyle(text.isEmpty ? Color.secondary.opacity(0.5) : MacCardPalette.kind(card.kind))
             }
             .buttonStyle(.plain)
-            .disabled(text.isEmpty || !action.enabled)
+            .disabled(text.isEmpty)
             .help("Send the reply")
             .accessibilityLabel("Send the reply")
         }
@@ -237,10 +240,6 @@ struct MacActionColumn: View {
                 VStack(spacing: 4) {
                     Button { onAction(action) } label: { MacCardButtonLabel(action: action) }
                         .buttonStyle(MacCardButtonStyle(role: action.resolvedRole))
-                        .disabled(!action.enabled)
-                    if !action.enabled, let reason = action.disabledReason {
-                        Text(reason).font(.caption).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading)
-                    }
                 }
             }
             if !buttons.more.isEmpty { moreButton }
@@ -275,7 +274,6 @@ struct MacActionColumn: View {
                         .padding(.horizontal, 10).padding(.vertical, 6).contentShape(.rect)
                     }
                     .buttonStyle(.plain)
-                    .disabled(!action.enabled)
                 }
             }
             .padding(6).frame(minWidth: 220)
@@ -311,7 +309,7 @@ struct MacShortcuts: View {
     var body: some View {
         ZStack {
             ForEach(Array((buttons.visible + buttons.more).enumerated()), id: \.offset) { _, action in
-                if let key = action.key, key.count == 1, let character = key.first, !(key == "m" && !buttons.more.isEmpty), !(key == "r" && reply != nil), action.enabled {
+                if let key = action.key, key.count == 1, let character = key.first, !(key == "m" && !buttons.more.isEmpty), !(key == "r" && reply != nil) {
                     Button(action.label) { onAction(action) }
                         .keyboardShortcut(KeyEquivalent(character), modifiers: [])
                 }
@@ -393,6 +391,7 @@ private struct MacCardButtonStyle: ButtonStyle {
 /// A server section as the Mac lays it out: cards in the card anatomy, everything else as it comes.
 struct MacSectionView: View {
     let section: ViewSection
+    var returnReasons: [String: String] = [:]
     var onAction: (AlondraContract.Action) -> Void
     var onReply: (AlondraContract.Action, String) -> Void
     var onLink: (AlondraContract.Link) -> Void
@@ -410,7 +409,7 @@ struct MacSectionView: View {
             if !section.collapsed {
                 ForEach(Array(section.items.enumerated()), id: \.offset) { _, item in
                     if case let .card(card) = item, card.need != nil {
-                        MacCardView(card: card, onAction: onAction, onReply: onReply, onLink: onLink, onContent: onContentRow)
+                        MacCardView(card: card, returnReason: returnReasons[card.id], onAction: onAction, onReply: onReply, onLink: onLink, onContent: onContentRow)
                     } else if case let .actions(bar) = item {
                         MacActionBar(bar: bar, onAction: onAction)
                     } else {

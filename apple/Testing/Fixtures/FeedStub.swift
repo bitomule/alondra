@@ -61,8 +61,8 @@ extension Fixtures {
     }
 
     /// The home view with its queue replaced, as the daemon sends it when something moved.
-    static func home(queue: [String], version: String = "vq", focus: String? = nil) throws -> ViewDocument {
-        let data = try Data(contentsOf: directory().appendingPathComponent("home-ios.json"))
+    static func home(queue: [String], version: String = "vq", focus: String? = nil, spanish: Bool = false) throws -> ViewDocument {
+        let data = try Data(contentsOf: directory().appendingPathComponent(spanish ? "home-ios-es.json" : "home-ios.json"))
         var object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
         object["version"] = version
         if let focus { object["key"] = "home?focus=\(focus)" }
@@ -78,6 +78,17 @@ extension Fixtures {
         var object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
         try edit(&object)
         return try ContractCodec.decode(ViewDocument.self, from: JSONSerialization.data(withJSONObject: object))
+    }
+
+    /// The card view of `id` as the daemon serves it to a Spanish phone, with Spanish node text.
+    static func spanishCard(_ id: String) throws -> ViewDocument {
+        let names = [questionID: "card-question-es", informationID: "card-information-es",
+                     deliveryID: "card-delivery-es", pullRequestID: "card-pr-es"]
+        return try spanish(try document(try XCTUnwrap(names[id])))
+    }
+
+    static func spanish(_ document: ViewDocument) throws -> ViewDocument {
+        try SpanishTestData.document(document)
     }
 
     /// The first card of a card view, edited.

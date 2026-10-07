@@ -227,6 +227,7 @@ public struct MacServiceDetail: View {
                             if let title = document.title, !showsCard(document) { Text(title).font(.title2.weight(.semibold)) }
                             ForEach(document.sections, id: \.id) { section in
                                 MacSectionView(section: section,
+                                               returnReasons: presentation.returnReasons,
                                                onAction: perform,
                                                onReply: { presentation.send(.sendReply($0, text: $1)) },
                                                onLink: openLink,
@@ -394,20 +395,7 @@ public struct MacViewActionSheet: View {
             MacViewIssuePicker(presentation: presentation)
                 .frame(minWidth: 440, minHeight: 360)
         }
-        .confirmationDialog(store.confirmation?.title ?? "", isPresented: Binding(get: { store.confirmation != nil }, set: { if !$0 { store.send(.cancelConfirmation) } })) {
-            if let confirmation = store.confirmation {
-                Button(confirmation.button, role: .destructive) { store.send(.confirm) }
-                Button("Cancel", role: .cancel) { store.send(.cancelConfirmation) }
-            }
-        } message: {
-            if let confirmation = store.confirmation { Text(confirmation.message) }
-        }
-        .alert("The item changed", isPresented: Binding(get: { store.changed != nil }, set: { if !$0 { store.send(.dismiss) } })) {
-            Button("Continue", role: .destructive) { store.send(.sendChangedAction) }
-            Button("Cancel", role: .cancel) { store.send(.dismiss); onDismiss() }
-        } message: {
-            if let changed = store.changed { Text(changed.button) }
-        }
+        .actionDialogs(store)
     }
 }
 

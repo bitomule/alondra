@@ -14,9 +14,9 @@ final class MacCardTests: XCTestCase {
         }.first)
     }
 
-    private func action(_ id: String, role: ActionRole?, style: Style = .secondary) throws -> AlondraContract.Action {
+    private func action(_ id: String, role: ActionRole?, style: Style = .secondary, enabled: Bool = true) throws -> AlondraContract.Action {
         let roleField = role.map { #""role":"\#($0.rawValue)","# } ?? ""
-        let json = #"{"id":"\#(id)","label":"\#(id)","style":"\#(style.rawValue)",\#(roleField)"presentation":"button","input":{"kind":"none"},"attachments":false,"enabled":true}"#
+        let json = #"{"id":"\#(id)","label":"\#(id)","style":"\#(style.rawValue)",\#(roleField)"presentation":"button","input":{"kind":"none"},"attachments":false,"enabled":\#(enabled)}"#
         return try JSONDecoder().decode(AlondraContract.Action.self, from: Data(json.utf8))
     }
 
@@ -49,11 +49,26 @@ final class MacCardTests: XCTestCase {
         XCTAssertTrue(buttons.visible.isEmpty, "the options share one action id, so all of them go")
     }
 
-    func test_role_fallsBackToTheStyleWhenTheServerSendsNone() throws {
+    func test_role_isRedOnlyForADestructiveAction() throws {
         XCTAssertEqual(try action("a", role: nil, style: .primary).resolvedRole, .advance)
         XCTAssertEqual(try action("a", role: nil, style: .destructive).resolvedRole, .risk)
         XCTAssertEqual(try action("a", role: nil, style: .secondary).resolvedRole, .neutral)
-        XCTAssertEqual(try action("a", role: .risk, style: .primary).resolvedRole, .risk)
+        XCTAssertEqual(try action("a", role: .risk, style: .primary).resolvedRole, .advance, "a risky role alone is not red")
+        XCTAssertEqual(try action("a", role: .risk, style: .secondary).resolvedRole, .neutral)
+    }
+
+    func test_buttons_neverPaintAnActionTheServerMarksUnusable() throws {
+        let base = try card("card-pr-mac")
+        let json = try JSONEncoder().encode(base)
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: json) as? [String: Any])
+        let usable = try action("usable", role: .advance, style: .primary)
+        let unusable = try action("unusable", role: .advance, style: .primary, enabled: false)
+        object["actions"] = try [unusable, usable].map { try JSONSerialization.jsonObject(with: JSONEncoder().encode($0)) }
+        object["more"] = try [action("greyed", role: .neutral, enabled: false)].map { try JSONSerialization.jsonObject(with: JSONEncoder().encode($0)) }
+        let card = try JSONDecoder().decode(Card.self, from: JSONSerialization.data(withJSONObject: object))
+        let buttons = MacCardButtons(card)
+        XCTAssertEqual(buttons.visible.map(\.label), ["usable"])
+        XCTAssertTrue(buttons.more.isEmpty)
     }
 
     func test_pullRequest_advancesWithMergeAndHoldsTheRestBehindMore() throws {

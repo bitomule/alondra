@@ -21,7 +21,10 @@ swift_test(
     name = "AlondraMacSnapshotTests",
     copts = STRICT_SWIFT_CONCURRENCY_COPTS,
     args = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US"],
-    srcs = glob(["Tests/*.swift"]) + ["//apple/Testing/Snapshots:Support/AssertAppSnapshot.swift"],
+    srcs = glob(["Tests/*.swift"]) + [
+        "//apple/Testing/Snapshots:Support/AssertAppSnapshot.swift",
+        "//apple/Testing/Fixtures:SpanishTestData.swift",
+    ],
     data = glob(["Tests/__Snapshots__/**"], allow_empty = True) + ["//fixtures/views:cards", ":localizations"],
     env = {
         "SNAPSHOT_ROOT": "apple/Testing/MacSnapshots/Tests/__Snapshots__",

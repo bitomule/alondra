@@ -73,8 +73,8 @@ public struct CardDetailFeature: Sendable {
             title = card?.title ?? card?.need ?? document.title ?? ""
             sections = document.sections.filter { $0.id != "card" && $0.id != "actions" }
             if let card {
-                buttons = Array(card.actions.prefix(TriageCardFeature.State.visibleLimit))
-                menu = Array(card.actions.dropFirst(TriageCardFeature.State.visibleLimit)) + card.more
+                buttons = Array(card.usableActions.prefix(TriageCardFeature.State.visibleLimit))
+                menu = Array(card.usableActions.dropFirst(TriageCardFeature.State.visibleLimit)) + card.usableMore
                 replyAction = card.reply
             } else {
                 let bar = document.sections.flatMap(\.items).flatMap { item -> [WireAction] in

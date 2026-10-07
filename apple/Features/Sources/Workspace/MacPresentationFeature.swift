@@ -30,6 +30,12 @@ public struct MacPresentationFeature: Sendable {
         public var actionPresented = false
         public var actionTarget: String?
         public var optimistic = Optimistic()
+        /// Requests that went out without an answer, by action: pressing the same again resends them.
+        public var unsure: [String: ActionRequest] = [:]
+        /// Why a card came back, by card, until it is answered again.
+        public var returnReasons: [String: String] = [:]
+        /// Cards an action just failed to leave, by the command that failed, until its reason arrives.
+        public var returning: [String: String] = [:]
         public var activeForm: AlondraContract.Form?
         public var pickerFieldID: String?
         public var pickerDocument: ViewDocument?
@@ -86,10 +92,11 @@ public struct MacPresentationFeature: Sendable {
         case contentPresented(Bool)
         case actionPresented(Bool)
         case action(ActionFeature.Action)
+        case sendTimedOut(ActionRequest)
     }
     @Dependency(\.continuousClock) var clock
     @Dependency(\.viewsClient) var viewsClient
-    private enum CancelID { case search, picker }
+    private enum CancelID: Hashable { case search, picker, sendDeadline(String) }
     public var body: some ReducerOf<Self> {
         Reduce { state, action in
             switch action {
@@ -97,6 +104,7 @@ public struct MacPresentationFeature: Sendable {
                 guard let document = state.detailDocument ?? state.sidebarDocument else { return .none }
                 let lang = Locale.preferredLanguages.first?.lowercased().hasPrefix("es") == true ? "es" : "en"
                 state.actionFeature = ActionFeature.State(dataEpoch: document.dataEpoch, client: .mac, lang: lang)
+                state.actionFeature.unsure = action.id.flatMap { state.unsure[$0] }
                 state.activeForm = nil
                 state.actionTarget = target ?? state.selectedViewKey.flatMap(Self.cardID)
                 state.actionPresented = !action.sendsWithoutAsking
@@ -112,6 +120,7 @@ public struct MacPresentationFeature: Sendable {
                 guard let document = state.detailDocument ?? state.sidebarDocument else { return .none }
                 let lang = Locale.preferredLanguages.first?.lowercased().hasPrefix("es") == true ? "es" : "en"
                 state.actionFeature = ActionFeature.State(dataEpoch: document.dataEpoch, client: .mac, lang: lang)
+                state.actionFeature.unsure = action.id.flatMap { state.unsure[$0] }
                 state.activeForm = nil
                 state.actionTarget = nil
                 state.actionPresented = false
@@ -234,13 +243,36 @@ public struct MacPresentationFeature: Sendable {
                     state.actionTarget = nil
                 }
             case .action(.sent(let request)):
-                guard let target = state.actionTarget else { return .none }
+                let deadline = sendDeadline(request)
+                guard let target = state.actionTarget else { return deadline }
                 state.actionTarget = nil
                 state.optimistic.begin(target, request)
+                state.returnReasons[target] = nil
                 state.actionPresented = false
-                return leaveCard(target, &state)
+                return .merge(deadline, leaveCard(target, &state))
             case .action(.settled(let request, let applied)):
-                state.optimistic.settle(request, applied: applied, shown: state.sidebarDocument?.version)
+                let deadline: Effect<Action> = .cancel(id: CancelID.sendDeadline(request.commandId))
+                guard let returned = state.optimistic.settle(request, applied: applied, shown: state.sidebarDocument?.version)
+                else { return deadline }
+                state.returning[request.commandId] = returned
+                return .merge(deadline, bringBack(returned, &state))
+            case .sendTimedOut(let request):
+                return .concatenate(
+                    .cancel(id: ActionFeature.DeliveryID(commandID: request.commandId)),
+                    .send(.action(.settled(request, applied: false))),
+                    .send(.action(.undelivered(request, .unsure)))
+                )
+            case .action(.undelivered(let request, let failure)):
+                state.unsure[request.actionId] = failure == .unsure ? request : nil
+                if let card = state.returning.removeValue(forKey: request.commandId) { state.returnReasons[card] = failure.message }
+            case .action(.answered(let request, let reply)):
+                if state.unsure[request.actionId]?.commandId == request.commandId { state.unsure[request.actionId] = nil }
+                guard let card = state.returning.removeValue(forKey: request.commandId) else { return .none }
+                switch OutcomeStyle(reply) {
+                case .failure(let reason): state.returnReasons[card] = reason
+                case .ask where state.actionFeature.pending?.commandId == request.commandId: state.actionTarget = card
+                case .ask, .success: break
+                }
             case .action(.response(let reply)) where reply.outcome == .changed:
                 state.actionPresented = true
             case .action(let childAction):
@@ -271,6 +303,7 @@ public struct MacPresentationFeature: Sendable {
                     return loadView(key, known: known)
                 })
             case .viewsReset:
+                state.returnReasons = [:]
                 state.sidebarDocument = nil
                 state.detailDocument = nil
                 return .merge(loadView("sidebar"), state.selectedViewKey.map { loadView($0) } ?? .none)
@@ -279,6 +312,7 @@ public struct MacPresentationFeature: Sendable {
                 if case let .document(document) = fetch {
                     if key == "sidebar" {
                         let previous = state.sidebarDocument
+                        if previous?.version != document.version { state.returnReasons = [:] }
                         state.sidebarDocument = document
                         state.optimistic.reconcile(document.version)
                         let links = Self.links(in: document)
@@ -366,6 +400,26 @@ public struct MacPresentationFeature: Sendable {
             return .none
         }
         Scope(state: \.actionFeature, action: \.action) { ActionFeature() }
+    }
+
+    private func sendDeadline(_ request: ActionRequest) -> Effect<Action> {
+        .run { [clock] send in
+            try await clock.sleep(for: TriageFeature.sendDeadline)
+            await send(.sendTimedOut(request))
+        }
+        .cancellable(id: CancelID.sendDeadline(request.commandId), cancelInFlight: true)
+    }
+
+    /// An action the daemon did not apply: its card is shown again, unless the person is already
+    /// answering another one.
+    private func bringBack(_ id: String, _ state: inout State) -> Effect<Action> {
+        guard !state.actionPresented,
+              let key = Self.waitingEntries(in: state.sidebarDocument).first(where: { $0.id == id })?.key,
+              key != state.selectedViewKey else { return .none }
+        state.selection = .viewKey(key)
+        state.selectedViewKey = key
+        state.detailDocument = nil
+        return loadAndOpenView(key, visibleKeys: visibleViewKeys(state))
     }
 
     private func leaveCard(_ id: String, _ state: inout State) -> Effect<Action> {
