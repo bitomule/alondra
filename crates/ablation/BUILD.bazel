@@ -35,13 +35,11 @@ rust_test(
     data = [
         ":ablation",
         "tests/fake_bazel.sh",
-        "//.musts/extensions/ablation:ablation-check.sh",
     ],
     edition = "2024",
     env = {
         "ABLATION_BIN": "$(rootpath :ablation)",
         "FAKE_BAZEL": "$(rootpath tests/fake_bazel.sh)",
-        "EVIDENCE_SCRIPT": "$(rootpath //.musts/extensions/ablation:ablation-check.sh)",
     },
     deps = all_crate_deps(normal = True, normal_dev = True),
 )

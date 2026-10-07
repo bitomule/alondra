@@ -22,8 +22,7 @@ const MAX_COMPILE_ROUNDS: usize = 8;
 /// Unoptimized builds: each run recompiles the changed crates up to a few times, and the
 /// result of a test does not depend on optimization.
 const FAST: &str = "--compilation_mode=fastbuild";
-/// What the verdict's fingerprint covers; `.musts/extensions/ablation/ablation-check.sh`
-/// lists the same paths.
+/// What the verdict's fingerprint covers.
 const FINGERPRINT_PATHS: &[&str] = &[
     "crates",
     "fixtures",

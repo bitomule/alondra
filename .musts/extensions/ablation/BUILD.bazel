@@ -1,4 +1,0 @@
-exports_files(
-    ["ablation-check.sh"],
-    visibility = ["//crates/ablation:__pkg__"],
-)
