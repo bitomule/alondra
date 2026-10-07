@@ -130,6 +130,7 @@
   "variants": {
     "unaccepted-text-final": {
       "task_id": "task-1",
+      "answered_first": ["question-1"],
       "presentation_id": "final-1",
       "final": true,
       "targets": [
@@ -148,6 +149,7 @@
     },
     "document-v1": {
       "task_id": "task-1",
+      "answered_first": ["question-1"],
       "document": {
         "id": "doc-1",
         "url": "https://docs.example.invalid/design/1"
@@ -178,6 +180,7 @@
     },
     "mixed-text-document-final": {
       "extends": "document-v1",
+      "answered_first": ["question-1"],
       "targets": [
         {
           "kind": "text",
@@ -191,6 +194,7 @@
     },
     "pr-final": {
       "task_id": "task-1",
+      "answered_first": ["question-1"],
       "pr": {
         "id": "pr-1",
         "task_id": "task-1",
@@ -559,7 +563,7 @@
         "R03",
         "R13"
       ],
-      "title": "Accepting a final text moves its task to closing while its node cleans up",
+      "title": "Accepting a final text, delivered once its task's question is answered, moves the task to closing while its node cleans up",
       "layers": [
         "C",
         "A",
@@ -573,6 +577,16 @@
         }
       ],
       "steps": [
+        {
+          "type": "command",
+          "actor": "user-a",
+          "command": {
+            "kind": "answer_question",
+            "interaction_id": "question-1",
+            "option_id": "yes",
+            "inputs": {}
+          }
+        },
         {
           "type": "command",
           "actor": "agent-a",
@@ -3372,16 +3386,6 @@
               "kind": "pull_request",
               "pr_id": "pr-1"
             }
-          }
-        },
-        {
-          "type": "command",
-          "actor": "user-a",
-          "command": {
-            "kind": "answer_question",
-            "interaction_id": "question-1",
-            "option_id": "yes",
-            "inputs": {}
           }
         },
         {

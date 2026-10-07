@@ -512,6 +512,7 @@ fn no_pending_card_is_left_with_nothing_the_user_can_do_once_its_task_ends() {
         card.verify = Some("I check it".into());
         card
     };
+    ok(&mut s, agent(), present("review", text(), true, review()));
     ok(&mut s, agent(), ask("decide", "t", false, decide("Pick a name")));
     ok(&mut s, agent(), ask("test", "t", false, CardSpec::new(CardKind::Test, "Try the build").why("Because")));
     ok(&mut s, agent(), ask("provide", "t", false, CardSpec::new(CardKind::Provide, "Send the key").why("Because")));
@@ -520,7 +521,6 @@ fn no_pending_card_is_left_with_nothing_the_user_can_do_once_its_task_ends() {
         body: "Log in".into(), blocking: false, options: two(), card: with_verify(CardKind::Do, "Log in"),
     });
     ok(&mut s, orchestrator(), inform("know", scope("t"), "Heads up"));
-    ok(&mut s, agent(), present("review", text(), true, review()));
     proposal(&mut s);
     ok(&mut s, user(), Command::CancelTask { task_id: "t".into() });
     let items = s.projection().inbox;
@@ -534,7 +534,12 @@ fn no_pending_card_is_left_with_nothing_the_user_can_do_once_its_task_ends() {
     }
     let mut pending: Vec<&str> = items.iter().filter(|item| item.pending).map(|item| item.id.as_str()).collect();
     pending.sort();
-    assert_eq!(pending, ["interaction:know", "interaction:p"], "a card nobody can answer leaves the inbox: {pending:?}");
+    assert_eq!(pending, ["interaction:ended-unanswered-decide", "interaction:ended-unanswered-do", "interaction:ended-unanswered-provide",
+        "interaction:ended-unanswered-test", "interaction:know", "interaction:p"],
+        "a card nobody can answer leaves the inbox, and the user is told it no longer waits: {pending:?}");
+    for card in ["decide", "test", "provide", "do"] {
+        assert!(s.interactions[&card.into()].withdrawn, "{card} is withdrawn, not left open");
+    }
 }
 
 // F2: the inbox is one item per interaction, in the order the user should meet them.
@@ -575,6 +580,7 @@ fn the_inbox_has_one_item_per_interaction_and_never_groups_by_pr_or_document() {
     }
 }
 
+// ablation: passes-on-base: the review moved to its own task, since a task's open questions keep it from delivering
 #[test]
 fn the_inbox_runs_problem_then_blocking_asks_then_review_provide_propose_know_oldest_first() {
     let mut s = fixture();
@@ -586,7 +592,12 @@ fn the_inbox_runs_problem_then_blocking_asks_then_review_provide_propose_know_ol
     ok(&mut s, agent(), ask("provide", "t", false,
         CardSpec::new(CardKind::Provide, "Send a screenshot of the bug").why("I cannot reproduce it")));
     ok(&mut s, orchestrator(), inform("know-new", scope("t"), "The second notice"));
-    ok(&mut s, agent(), present("review", text(), true, review()));
+    register_agent(&mut s, "c");
+    task(&mut s, "t3", "c");
+    ok(&mut s, Actor::Agent { agent_id: "c".into() }, Command::PresentResult {
+        attachments: vec![], task_id: "t3".into(), interaction_id: "review".into(), body: "Done".into(),
+        targets: text(), is_final: true, card: review(),
+    });
     ok(&mut s, Actor::System, Command::HoldHook {
         interaction_id: "permission".into(), task_id: "t".into(), agent_id: "a".into(), hold: Hold::Permission,
         body: "Bash: rm -rf build".into(), options: Hold::Permission.options(),

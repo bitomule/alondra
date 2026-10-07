@@ -418,7 +418,7 @@ pub(super) fn from_item(item: &InboxItem, context: &RenderContext<'_>, included:
         .map(|at| vec![Stamp { role: "created".into(), at: at.into(), format: TimeFormat::Relative }])
         .unwrap_or_default();
     let (blocks, blocked_by) = chips(item, context);
-    let (need, why) = match interaction.and_then(|i| pace_text(i, lang)) {
+    let (need, why) = match interaction.and_then(|i| pace_text(i, domain, lang)) {
         Some((need, why)) => (need, Some(why)),
         None => (
             humanize_task_ids(&spec.need, domain),
@@ -714,12 +714,24 @@ pub fn answer_label(state: &DomainState, interaction: &Interaction, option: &Que
     }
 }
 
-/// What Alondra's own cards about the pace of the week's usage and about the machine say, in the
-/// viewer's language.
-fn pace_text(interaction: &Interaction, lang: Lang) -> Option<(String, String)> {
+/// What Alondra's own cards about the pace of the week's usage, about the machine and about a task
+/// that ended with a card unanswered say, in the viewer's language.
+fn pace_text(interaction: &Interaction, domain: &DomainState, lang: Lang) -> Option<(String, String)> {
     use crate::usage::{OVER_PACE_PREFIX, PACE_RESUME_PREFIX, PaceNumbers};
     if interaction.author != Author::System {
         return None;
+    }
+    if let Some(question) = interaction.id.0.strip_prefix(crate::domain::ENDED_UNANSWERED_PREFIX) {
+        let question = domain.interactions.get(&InteractionId(question.into()))?;
+        let title = match &question.scope {
+            Scope::Task { task_id } => domain.tasks.get(task_id)?.title.clone(),
+            Scope::Orchestrator { .. } => return None,
+        };
+        let need = humanize_task_ids(&question.card.need, domain);
+        return Some((
+            tf!(lang, "“{title}” ended before you answered", "«{title}» terminó sin tu respuesta", title = title),
+            tf!(lang, "No longer waits for an answer: {need}", "Ya no espera respuesta: {need}", need = need),
+        ));
     }
     if interaction.id.0.starts_with(crate::machine_incident::MACHINE_PREFIX) {
         return crate::machine_incident::MachineCard::from_body(&interaction.body).map(|card| card.text(lang));

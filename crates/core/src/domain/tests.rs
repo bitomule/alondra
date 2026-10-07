@@ -621,15 +621,7 @@ fn typed_option_ids_and_open_question_guard() {
         },
     )
     .unwrap();
-    exec(
-        &mut s,
-        user(),
-        Command::AcceptDelivery {
-            presentation_id: "d".into(),
-            targets: text(),
-        },
-    )
-    .unwrap();
+    reject_unchanged(&mut s, user(), Command::AcceptDelivery { presentation_id: "d".into(), targets: text() }, "acceptance_stale");
     assert_eq!(s.tasks[&"t".into()].state, TaskState::NeedsYou);
     reject_unchanged(
         &mut s,
@@ -638,7 +630,7 @@ fn typed_option_ids_and_open_question_guard() {
             task_id: "t".into(),
             presentation_id: "d".into(),
         },
-        "blocking_interaction",
+        "acceptance_stale",
     );
     reject_unchanged(
         &mut s,
@@ -673,9 +665,11 @@ fn typed_option_ids_and_open_question_guard() {
         },
     )
     .unwrap();
-    assert_eq!(out.effects.len(), 2);
+    assert_eq!(out.effects.len(), 1, "the node hears the answer; there is no delivery to bring back");
+    present(&mut s, "d2", text());
+    exec(&mut s, user(), Command::AcceptDelivery { presentation_id: "d2".into(), targets: text() }).unwrap();
     end_node(&mut s, "t");
-    assert_eq!(s.tasks[&"t".into()].state, TaskState::Done, "answering the last blocker completes an accepted Task");
+    assert_eq!(s.tasks[&"t".into()].state, TaskState::Done, "answered, the node delivers again and the Task completes");
 }
 fn register(s: &mut DomainState) {
     exec(
@@ -3054,6 +3048,7 @@ fn assert_all_rejected(base: &DomainState, actors: &[Actor], ids: &Ids) {
         }
     }
 }
+// ablation: passes-on-base: the merge is authorized before the question, which would now withdraw the delivery
 #[test]
 fn unknown_and_foreign_ids_are_typed_rejections_never_panics() {
     let actors = [
@@ -3097,12 +3092,12 @@ fn unknown_and_foreign_ids_are_typed_rejections_never_panics() {
         interaction_id: "pres2".into(), body: "Done".into(),
         targets: vec![DeliveryTarget::PullRequest { pr_id: "pr2".into(), head: "head1".into() }],
         is_final: true, card: crate::domain::CardSpec::delivery("Review the result", &[], true) }).unwrap();
-    exec(&mut s, b.clone(), Command::AskQuestion { attachments: vec![], interaction_id: "q2".into(),
-        scope: Scope::Task { task_id: "t2".into() }, recipient: Recipient::User, body: "Q?".into(),
-        blocking: false, options: vec![QuestionOption { id: "yes".into(), label: "Yes".into(), description: None, inputs: vec![] }], card: crate::domain::CardSpec::derived(crate::domain::CardKind::Provide, "Answer the question") }).unwrap();
     exec(&mut s, user(), Command::AuthorizeMerge { authorization_id: "auth2".into(),
         presentation_id: "pres2".into(), pr_id: "pr2".into(), expected_head: "head1".into(),
         method: MergeMethod::Squash }).unwrap();
+    exec(&mut s, b.clone(), Command::AskQuestion { attachments: vec![], interaction_id: "q2".into(),
+        scope: Scope::Task { task_id: "t2".into() }, recipient: Recipient::User, body: "Q?".into(),
+        blocking: false, options: vec![QuestionOption { id: "yes".into(), label: "Yes".into(), description: None, inputs: vec![] }], card: crate::domain::CardSpec::derived(crate::domain::CardKind::Provide, "Answer the question") }).unwrap();
     let foreign = Ids {
         task: "t2",
         agent: "b",
@@ -3657,4 +3652,121 @@ fn pr_observations_on_a_pending_delivery_never_notify_again() {
     }).unwrap();
     assert!(!observed.effects.iter().any(|e| matches!(e, DomainEffect::NotifyUser { .. })), "the card already went out when it was delivered");
     assert!(waiting(&s, "d"));
+}
+/// A question the node asks without blocking, the way BlurCamera's keywords task asked whether to
+/// cover card numbers that fail Luhn.
+fn ask_aside(s: &mut DomainState, id: &str) -> CommandOutcome {
+    exec(s, agent(), Command::AskQuestion {
+        attachments: vec![], interaction_id: id.into(), scope: Scope::Task { task_id: "t".into() },
+        recipient: Recipient::User, body: "Cover card numbers that fail Luhn too?".into(), blocking: false,
+        options: vec![QuestionOption { id: "keep".into(), label: "Keep it".into(), description: None, inputs: vec![] },
+            QuestionOption { id: "cover".into(), label: "Cover them".into(), description: None, inputs: vec![] }],
+        card: crate::domain::CardSpec::derived(crate::domain::CardKind::Decide, "Decide whether to cover invalid card numbers"),
+    }).unwrap()
+}
+fn answer_aside(s: &mut DomainState, id: &str) {
+    exec(s, user(), Command::AnswerQuestion { attachments: vec![], interaction_id: id.into(),
+        option_id: "keep".into(), inputs: BTreeMap::new() }).unwrap();
+}
+fn pending(s: &DomainState, id: &str) -> bool {
+    s.projection().inbox.iter().any(|item| item.id == format!("interaction:{id}") && item.pending)
+}
+#[test]
+fn a_final_delivery_is_refused_while_a_question_of_its_task_waits() {
+    let mut s = fixture();
+    register(&mut s);
+    ask_aside(&mut s, "q");
+    let before = s.clone();
+    let refused = exec(&mut s, agent(), Command::PresentResult {
+        attachments: vec![], task_id: "t".into(), interaction_id: "d".into(), body: "Result ready".into(),
+        targets: pr_targets(), is_final: true, card: crate::domain::CardSpec::delivery("Review the result", &[], true),
+    }).unwrap_err();
+    assert_eq!(refused.code, "unanswered_questions");
+    assert!(refused.message.contains("You have unanswered questions (“Decide whether to cover invalid card numbers”)"), "{}", refused.message);
+    assert_eq!(s, before);
+    answer_aside(&mut s, "q");
+    present(&mut s, "d", pr_targets());
+    assert!(pending(&s, "d"), "once answered, the delivery reaches the user");
+}
+/// Revisions 1522-1570: BlurCamera's keywords task asked a question after its final delivery, the
+/// PR was merged and the task closed, and the question left the inbox unanswered.
+#[test]
+fn a_question_asked_after_the_final_delivery_withdraws_it_until_the_node_delivers_again() {
+    let mut s = fixture();
+    register(&mut s);
+    present(&mut s, "d", pr_targets());
+    assert!(pending(&s, "d"));
+    let asked = ask_aside(&mut s, "q");
+    let t = &s.tasks[&"t".into()];
+    assert_eq!((t.state, t.final_presentation.as_ref()), (TaskState::Running, None), "the task is in progress again");
+    assert!(s.interactions[&"d".into()].withdrawn);
+    assert!(!pending(&s, "d") && pending(&s, "q"), "the PR card leaves the queue; the question stays");
+    assert!(sent_to_node(&asked).contains(&delivery_withdrawn_for_questions()), "the node hears why");
+    let merge = |presentation: &str| Command::AuthorizeMerge { authorization_id: "auth".into(), presentation_id: presentation.into(),
+        pr_id: "pr".into(), expected_head: "head1".into(), method: MergeMethod::Squash };
+    let before = s.clone();
+    assert!(exec(&mut s, user(), merge("d")).is_err(), "the withdrawn delivery cannot be merged");
+    assert_eq!(s, before);
+    answer_aside(&mut s, "q");
+    present(&mut s, "d2", pr_targets());
+    assert!(pending(&s, "d2"), "delivering again brings the PR card back");
+    exec(&mut s, user(), merge("d2")).unwrap();
+    merge_observed(&mut s);
+    end_node(&mut s, "t");
+    assert_eq!(s.tasks[&"t".into()].state, TaskState::Done);
+}
+/// A PR merged on GitHub is not taken back: the task waits for the answer instead of closing.
+#[test]
+fn a_task_whose_pr_merged_does_not_close_while_a_question_asked_afterwards_waits() {
+    let mut s = fixture();
+    register(&mut s);
+    present(&mut s, "d", pr_targets());
+    merge_observed(&mut s);
+    assert_eq!(s.tasks[&"t".into()].state, TaskState::Closing);
+    ask_aside(&mut s, "q");
+    assert_eq!(s.tasks[&"t".into()].state, TaskState::NeedsYou);
+    assert!(!s.interactions[&"d".into()].withdrawn, "a merged delivery stays");
+    assert!(pending(&s, "q"));
+    answer_aside(&mut s, "q");
+    end_node(&mut s, "t");
+    assert_eq!(s.tasks[&"t".into()].state, TaskState::Done);
+}
+#[test]
+fn an_accepted_text_delivery_waits_for_a_question_asked_during_cleanup() {
+    let mut s = fixture();
+    accept_text(&mut s);
+    ask_aside(&mut s, "q");
+    assert_eq!(s.tasks[&"t".into()].state, TaskState::NeedsYou);
+    let ended = exec(&mut s, Actor::System, Command::RecordNodeEnd { task_id: "t".into(), end: NodeEnd::Closed, agent_id: None });
+    assert!(ended.is_ok());
+    assert_eq!(s.tasks[&"t".into()].state, TaskState::NeedsYou, "the task is not done while its question waits");
+    assert!(pending(&s, "q"));
+    answer_aside(&mut s, "q");
+    assert_eq!(s.tasks[&"t".into()].state, TaskState::Done);
+}
+#[test]
+fn cancelling_a_task_withdraws_its_open_questions_and_tells_the_user() {
+    let mut s = fixture();
+    ask_aside(&mut s, "q");
+    let cancelled = exec(&mut s, user(), Command::CancelTask { task_id: "t".into() }).unwrap();
+    assert!(s.interactions[&"q".into()].withdrawn);
+    let notice: InteractionId = format!("{ENDED_UNANSWERED_PREFIX}q").into();
+    assert!(pending(&s, &notice.0), "the user hears the question no longer waits");
+    assert!(cancelled.effects.contains(&DomainEffect::NotifyUser { task_id: Some("t".into()), interaction_id: notice.clone() }));
+    let card = &s.interactions[&notice].card;
+    assert_eq!(card.why, "No longer waits for an answer: Decide whether to cover invalid card numbers");
+    assert_eq!(card.content.as_ref().unwrap().body, "Cover card numbers that fail Luhn too?");
+}
+/// The state an older daemon left: a done task with a question nobody answered.
+#[test]
+fn a_task_left_done_with_an_open_question_tells_the_user_once() {
+    let mut s = fixture();
+    ask_aside(&mut s, "q");
+    s.tasks.get_mut(&"t".into()).unwrap().state = TaskState::Done;
+    exec(&mut s, Actor::System, Command::ObserveAgent { agent_id: "a".into(), connected: false }).unwrap();
+    let notice = format!("{ENDED_UNANSWERED_PREFIX}q");
+    assert!(pending(&s, &notice) && !pending(&s, "q"));
+    let again = exec(&mut s, Actor::System, Command::ObserveAgent { agent_id: "a".into(), connected: true }).unwrap();
+    assert!(!again.effects.iter().any(|e| matches!(e, DomainEffect::NotifyUser { .. })));
+    assert_eq!(s.interactions.keys().filter(|id| id.0.starts_with(ENDED_UNANSWERED_PREFIX)).count(), 1);
 }

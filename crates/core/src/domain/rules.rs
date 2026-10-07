@@ -46,6 +46,8 @@ impl Source {
 /// The option of a Propose card that turns it into a Request.
 pub const REQUEST_TITLE_LIMIT: usize = 60;
 pub const PROPOSAL_ACCEPTED: &str = "do_it";
+/// The notice that a task ended with a card still waiting for the user: this prefix and the card's id.
+pub const ENDED_UNANSWERED_PREFIX: &str = "ended-unanswered-";
 fn kind_name(kind: CardKind) -> String {
     serde_json::to_value(kind).ok().and_then(|v| v.as_str().map(str::to_owned)).unwrap_or_default()
 }
@@ -218,6 +220,11 @@ Do not change, commit or push anything else. Then call cleanup_done with task_id
 not, Alondra closes the session after a while anyway.", task = task.0)
 }
 /// What a node is told when its task is cancelled.
+pub fn delivery_withdrawn_for_questions() -> String {
+    "You asked the user something after your final delivery, so that delivery was withdrawn and the task \
+is in progress again. When the answers arrive, present your result again as it is if nothing changes, or \
+update the work first and then present it.".into()
+}
 pub fn cancelled_notice(title: &str) -> String {
     format!("Your task “{title}” was cancelled. Stop working on it now and do not start anything new \
 for it: do not commit, push, register a pull request or deliver anything. Before you end your \
@@ -1132,6 +1139,31 @@ impl DomainState {
             self.record_acceptance(presentation, u);
         }
     }
+    /// A question or request the task's node or the orchestrator asked the user and that still
+    /// waits, blocking or not. A proposal is new work, not part of the task's: it outlives the task
+    /// and holds nothing back. Alondra's own cards (problems, held prompts) are about what Alondra
+    /// does with the task, which they would otherwise hold back themselves.
+    fn unanswered_card(&self, i: &Interaction, t: &TaskId) -> bool {
+        matches!(&i.scope, Scope::Task { task_id } if task_id == t)
+            && i.recipient == Recipient::User
+            && !matches!(i.author, Author::System)
+            && i.card.kind != CardKind::Propose
+            && !i.withdrawn
+            && matches!(
+                i.payload,
+                InteractionPayload::Question { answer: None, .. } | InteractionPayload::ActionRequest { answer: None, .. }
+            )
+    }
+    /// The task has a question or request the user has not answered: it neither closes nor ends
+    /// with it.
+    pub fn unanswered(&self, t: &TaskId) -> bool {
+        self.interactions.values().any(|i| self.unanswered_card(i, t))
+    }
+    /// An unanswered card that does not name what it holds back: no final delivery may stand next to
+    /// it. A card that names its delivery or PR already holds that merge back where the user sees it.
+    fn asked_aside(&self, i: &Interaction, t: &TaskId) -> bool {
+        i.card.blocks.is_empty() && self.unanswered_card(i, t)
+    }
     pub(super) fn blockers(&self, t: &TaskId) -> bool {
         self.interactions.values().any(|i| {
             i.scope == (Scope::Task { task_id: t.clone() })
@@ -1154,6 +1186,70 @@ impl DomainState {
     pub fn finished(&self, t: &Task) -> bool {
         t.final_presentation.as_ref().and_then(|p| self.interactions.get(p)).is_some_and(|p| self.settled(t, p))
     }
+    /// A node that asks the user something after its final delivery takes that delivery back: it
+    /// leaves the user's queue, the task is in progress again, and the node presents again once it
+    /// has the answers. A delivery the user accepted or a PR already merged stays.
+    fn withdraw_deliveries_asked_after(&mut self, effects: &mut Vec<DomainEffect>) {
+        let asked: Vec<(TaskId, InteractionId)> = self.tasks.values()
+            .filter(|t| !t.state.terminal() && self.interactions.values().any(|i| self.asked_aside(i, &t.id)))
+            .filter_map(|t| {
+                let p = self.interactions.get(t.final_presentation.as_ref()?)?;
+                (!self.accepted(p) && !self.settled(t, p)).then(|| (t.id.clone(), p.id.clone()))
+            })
+            .collect();
+        for (task_id, delivery) in asked {
+            self.invalidate(&task_id);
+            self.retire(&delivery);
+            let t = self.tasks.get_mut(&task_id).unwrap();
+            t.final_presentation = None;
+            if let Some(agent_id) = t.agent_id.clone() {
+                t.started = true;
+                effects.push(DomainEffect::NotifyAgent {
+                    agent_id, task_id: Some(task_id), interaction_id: None, message: delivery_withdrawn_for_questions(),
+                });
+            }
+        }
+    }
+    /// A task that ended anyway (cancelled, or left done by an older daemon) never drops the cards
+    /// still waiting for the user in silence: each is withdrawn and the user told so, with the
+    /// card's own text.
+    fn retire_cards_of_ended_tasks(&mut self, effects: &mut Vec<DomainEffect>) {
+        let left: Vec<(TaskId, InteractionId)> = self.tasks.values()
+            .filter(|t| t.state.terminal())
+            .flat_map(|t| self.interactions.values().filter(|i| self.unanswered_card(i, &t.id)).map(|i| (t.id.clone(), i.id.clone())))
+            .collect();
+        for (task_id, question) in left {
+            self.retire(&question);
+            let q = &self.interactions[&question];
+            let id = InteractionId(format!("{ENDED_UNANSWERED_PREFIX}{}", question.0));
+            if self.interactions.contains_key(&id) {
+                continue;
+            }
+            let title = self.tasks[&task_id].title.clone();
+            let need = clip(&format!("“{title}” ended before you answered"), CardSpec::NEED_MAX);
+            let why = clip(&format!("No longer waits for an answer: {}", q.card.need), CardSpec::WHY_MAX);
+            let body = q.card.content.as_ref().map_or_else(|| q.body.clone(), |c| c.body.clone());
+            let card = CardSpec::new(CardKind::Know, need).why(&why).content(ContentKind::Report, &body);
+            let interaction = Interaction {
+                attachments: vec![],
+                id: id.clone(),
+                scope: Scope::Task { task_id: task_id.clone() },
+                author: Author::System,
+                recipient: Recipient::User,
+                body,
+                blocking: false,
+                subject: None,
+                payload: InteractionPayload::Information { read_by: BTreeSet::new() },
+                revision: self.revision + 1,
+                order: self.revision + 1,
+                withdrawn: false,
+                card,
+                clarification: None,
+            };
+            self.interactions.insert(id.clone(), interaction);
+            effects.push(DomainEffect::NotifyUser { task_id: Some(task_id), interaction_id: id });
+        }
+    }
     /// The task has a node whose end Alondra has not recorded.
     pub fn wraps_up(&self, t: &Task) -> bool {
         t.agent_id.is_some() && t.wrap_up.node.is_none()
@@ -1168,7 +1264,7 @@ impl DomainState {
         let revision = self.revision + 1;
         let ids: Vec<TaskId> = self.tasks.values().filter(|t| !t.state.terminal()).map(|t| t.id.clone()).collect();
         for id in ids {
-            if self.blockers(&id) {
+            if self.blockers(&id) || self.unanswered(&id) {
                 continue;
             }
             let t = &self.tasks[&id];
@@ -1249,7 +1345,9 @@ impl DomainState {
                     .as_ref()
                     .and_then(|p| self.interactions.get(p))
                 {
-                    if self.settled(t, p) {
+                    if (self.settled(t, p) || self.accepted(p)) && self.unanswered(&t.id) {
+                        TaskState::NeedsYou
+                    } else if self.settled(t, p) {
                         if self.wraps_up(t) { TaskState::Closing } else { TaskState::Done }
                     } else if self.accepted(p) {
                         TaskState::Closing
@@ -1485,10 +1583,12 @@ impl DomainState {
         let mut effects = vec![];
         let mut created = vec![];
         next.apply(actor, &envelope.command, &mut effects, &mut created)?;
+        next.withdraw_deliveries_asked_after(&mut effects);
         next.derive_states();
         if next.cancel_orphan_reviewers(&mut effects) {
             next.derive_states();
         }
+        next.retire_cards_of_ended_tasks(&mut effects);
         let acting_before = self.acting();
         for (task_id, card) in next.acting() {
             if acting_before.get(&task_id).map(|before| &before.interaction) != Some(&card.interaction) {
@@ -2823,6 +2923,13 @@ impl DomainState {
                     &card,
                     Source::Delivery,
                 )?;
+                if *is_final && self.interactions.values().any(|i| self.asked_aside(i, task_id)) {
+                    let open = self.interactions.values()
+                        .filter(|i| self.asked_aside(i, task_id))
+                        .map(|i| format!("“{}”", i.card.need)).collect::<Vec<_>>().join(", ");
+                    return refuse("unanswered_questions", "is_final", &format!(
+                        "You have unanswered questions ({open}): wait for the answers before you deliver, or withdraw the ones you no longer need"));
+                }
                 if let Some(previous) = previous {
                     self.retire(&previous);
                 }
@@ -3152,7 +3259,7 @@ impl DomainState {
                     );
                 };
                 self.completable(t, targets, self.accepted(p))?;
-                if !self.wraps_up(t) {
+                if !self.wraps_up(t) && !self.unanswered(task_id) {
                     self.tasks.get_mut(task_id).unwrap().state = TaskState::Done;
                 }
             }

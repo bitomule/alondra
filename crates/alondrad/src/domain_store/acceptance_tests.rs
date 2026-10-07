@@ -328,8 +328,18 @@ fn setup_base(store: &mut DomainStore, base: &Value) {
     assert!(field(base, "documents").as_array().unwrap().is_empty());
     assert!(field(base, "pull_requests").as_array().unwrap().is_empty());
 }
+/// A node delivers only once the user answered its task's questions: the variant names the ones
+/// answered before it delivers.
+fn answer_first(store: &mut DomainStore, variant: &Value, name: &str) {
+    for question in variant.get("answered_first").and_then(Value::as_array).into_iter().flatten() {
+        setup_command(store, &format!("setup-answer-{name}-{}", string(question)), actor("user-a"), Command::AnswerQuestion {
+            attachments: vec![], interaction_id: string(question).into(), option_id: "yes".into(), inputs: Default::default(),
+        });
+    }
+}
 fn setup_variant(store: &mut DomainStore, variants: &Value, name: &str) {
     let variant = field(variants, name);
+    answer_first(store, variant, name);
     if name == "pr-final" {
         assert_eq!(field(variant, "accepted"), false);
         let pr = field(variant, "pr");

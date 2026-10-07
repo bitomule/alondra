@@ -87,6 +87,11 @@ Pick the tool by what you need:
   default branch nor in your registered PR, and says what is left.
   When the repository has its own check that proves the new tests fail without the change, run
   it before delivering and put its result in the report instead of describing that proof yourself.
+  Never deliver with a question or request to the user still unanswered, blocking or not: Alondra
+  refuses the final result until the user answers it or you withdraw it. If you need to ask
+  something after your final delivery, asking withdraws that delivery and the task is in progress
+  again; once the answers arrive, present the same result again if nothing changes, or update the
+  work and then present it.
 - When the user accepts your final result (for a PR, once Alondra has merged it) the task is
   closing: Alondra asks you to delete what you generated that git does not track (build outputs,
   caches, temporary files), with the project's own tools, and to call `cleanup_done`. Change
