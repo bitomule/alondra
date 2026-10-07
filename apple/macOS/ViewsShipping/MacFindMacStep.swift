@@ -12,6 +12,22 @@ struct MacFindMacStep: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             switch store.findMac.step {
+            case .browsing where store.findMac.explainsPermission:
+                Label("Alondra needs your local network", systemImage: "wifi").font(.title2.bold())
+                Text("To find the other Macs on this Wi-Fi, macOS will ask whether Alondra may use your local network. Alondra only talks to your Macs, always encrypted.")
+                    .foregroundStyle(.secondary)
+                Button("Continue") { find.send(.allowSearch) }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+                    .accessibilityIdentifier("findMac.allow")
+            case .browsing where store.findMac.permissionDenied:
+                Label("Local network access is off", systemImage: "wifi.slash").font(.title2.bold())
+                Text("Alondra can’t look for other Macs until you turn on Local Network for it in System Settings.")
+                    .foregroundStyle(.secondary)
+                Button("Open System Settings") { find.send(.openSettings) }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+                    .accessibilityIdentifier("findMac.openSettings")
             case .browsing: browsing
             case .connecting(let name):
                 ProgressView(String(localized: "Connecting to \(name)…"))

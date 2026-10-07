@@ -1,6 +1,5 @@
 import AlondraContract
 import AlondraFeatures
-import AlondraMacWorkspace
 import AppKit
 import ComposableArchitecture
 import SnapshotTesting
@@ -48,6 +47,7 @@ final class MacLocalPairingSnapshotTests: XCTestCase {
             MacChoice(id: ids[2], macID: "mac-c55e10aa", name: "MacBook Pro", local: true),
         ]
         state.selectedMacID = ids[0]
+        state.showsSignOutWithMacs = true
         state.macStatuses = [ids[0]: .route(.thisMac), ids[1]: .route(.localNetwork), ids[2]: .problem(.macNotOnNetwork)]
         state.devices = [
             TrustedDevice(id: "phone-1", name: "iPhone de David", origin: .direct),

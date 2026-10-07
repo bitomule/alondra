@@ -15,6 +15,32 @@ public struct DirectEndpoint: Codable, Hashable, Sendable {
         self.kind = kind
     }
 
+    /// "host" or "host:port" as the person typed it; the direct port is 47810 unless they say
+    /// otherwise. A tailnet IP or a `.ts.net` name is a Tailscale address.
+    public init?(typed text: String) {
+        var host = text.trimmingCharacters(in: .whitespaces)
+        for scheme in ["http://", "https://"] where host.lowercased().hasPrefix(scheme) { host.removeFirst(scheme.count) }
+        while host.hasSuffix("/") { host.removeLast() }
+        var port: UInt16 = 47810
+        if host.hasPrefix("["), let close = host.firstIndex(of: "]") {
+            let rest = host[host.index(after: close)...]
+            if rest.hasPrefix(":") {
+                guard let parsed = UInt16(rest.dropFirst()) else { return nil }
+                port = parsed
+            } else if !rest.isEmpty { return nil }
+            host = String(host[host.index(after: host.startIndex)..<close])
+        } else if host.filter({ $0 == ":" }).count == 1, let colon = host.lastIndex(of: ":") {
+            guard let parsed = UInt16(host[host.index(after: colon)...]) else { return nil }
+            port = parsed
+            host = String(host[..<colon])
+        }
+        let octets = host.split(separator: ".").compactMap { UInt8($0) }
+        let tailnet = octets.count == 4 && octets[0] == 100 && (64..<128).contains(octets[1])
+            || host.lowercased().hasSuffix(".ts.net")
+        self.init(host: host, port: port, kind: tailnet ? .tailscale : .localNetwork)
+        guard isValid else { return nil }
+    }
+
     public var route: ConnectionRoute { kind == .localNetwork ? .localNetwork : .tailscale }
 
     /// LAN first, then the tailnet IP, then the tailnet name.

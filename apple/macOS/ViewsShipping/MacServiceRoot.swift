@@ -134,7 +134,7 @@ private struct MacServiceWindow: View {
             if let store = context.store {
                 MacServiceWorkspace(store: store, accountContent: MacServiceSettingsScene(services: services, owner: account,
                                                                                          workspace: workspace))
-                    .connectionLostOverlay(store: store, retry: retry,
+                    .connectionLostOverlay(store: store, diagnose: { await services.diagnose() }, retry: retry,
                                            signIn: account.map { account in { account.store.send(.reauthenticate) } })
                     .onChange(of: notices.openedCard, initial: true) { _, card in
                         guard let card else { return }

@@ -23,14 +23,15 @@ public actor Connection {
     private var active = true
 
     /// A Mac paired on the local network talks only directly; one paired with an account also
-    /// keeps the relay for when no direct route answers.
-    public init(approved: ApprovedServicePairing, auth: AuthSession) throws {
+    /// keeps the relay, and reaches it directly only once Local Network access is allowed.
+    public init(approved: ApprovedServicePairing, auth: AuthSession,
+                localNetworkAllowed: @escaping @Sendable () -> Bool = { LocalNetworkAccess.allowed }) throws {
         let signing = try P256.Signing.PrivateKey(rawRepresentation: approved.signingPrivateKey)
         let agreement = try P256.KeyAgreement.PrivateKey(rawRepresentation: approved.agreementPrivateKey)
         let macSigning = try approved.macSigningPublicKey()
         let macAgreement = try approved.macAgreementPublicKey()
         let http = DirectHTTP(transport: AlondraAPIClient.makeHTTPTransport())
-        let router = DirectRouter(pinned: approved.pinnedIdentity, candidates: approved.routes ?? [], http: http)
+        let router = DirectRouter(pinned: approved.pinnedIdentity, saved: approved.routes ?? [], http: http)
         let direct = DirectSession(macID: approved.macID, deviceID: approved.deviceID, signing: signing,
             agreement: agreement, macSigning: macSigning, macAgreement: macAgreement, router: router, http: http)
         var relay: RelaySession?
@@ -44,9 +45,14 @@ public actor Connection {
                 bearer: { try await auth.bearerToken() }, signing: signing, agreement: agreement,
                 macSigning: macSigning, macAgreement: macAgreement)
         }
-        let routed = RoutedSession(direct: direct, router: router, relay: relay)
-        self.init(operations: routed, server: approved.relayURL ?? URL(string: "alondra-direct://\(approved.macID)")!,
-                  deviceID: approved.deviceID)
+        let hasRelay = relay != nil
+        let directAllowed: @Sendable () -> Bool = { !hasRelay || localNetworkAllowed() }
+        let routed = RoutedSession(direct: direct, router: router, relay: relay, directAllowed: directAllowed)
+        var name = URLComponents()
+        name.scheme = "alondra-direct"
+        name.host = approved.macID
+        guard let server = approved.relayURL ?? name.url else { throw PairingError.invalidIdentity }
+        self.init(operations: routed, server: server, deviceID: approved.deviceID)
     }
 
     public static func local(_ session: LoopbackSession, identity: LoopbackIdentityStore) async throws -> Connection {
@@ -72,20 +78,23 @@ public actor Connection {
         return await (operations as? RoutedSession)?.route
     }
 
-    /// Asks the Mac where it answers directly and starts using what it says. Every address is
-    /// still checked against the pinned keys before use.
-    public func learnRoutes() async throws -> [DirectEndpoint] {
-        guard let routed = operations as? RoutedSession else { return [] }
+    /// Asks the Mac where it answers directly and starts trying what it says. Nothing is saved
+    /// from it: an address is kept only after a sealed answer through it.
+    public func learnRoutes() async throws {
+        guard let routed = operations as? RoutedSession else { return }
         try checkActive()
         let reply = try await api.send(.data(.get, path: ["routes"]))
-        let endpoints = try JSONDecoder().decode(DirectRoutesReply.self, from: reply).endpoints
-        await routed.offer(endpoints)
-        return await routed.knownEndpoints()
+        await routed.offer(try JSONDecoder().decode(DirectRoutesReply.self, from: reply).endpoints, from: .mac)
     }
 
-    /// An address Bonjour found for this Mac on the current network.
-    public func offer(_ endpoints: [DirectEndpoint]) async {
-        await (operations as? RoutedSession)?.offer(endpoints)
+    /// An address Bonjour found for this Mac on the current network: a hint, never saved as is.
+    public func offerDiscovered(_ endpoint: DirectEndpoint) async {
+        await (operations as? RoutedSession)?.offer([endpoint], from: .bonjour)
+    }
+
+    /// The addresses a sealed answer proved, the only ones the pairing keeps.
+    public func provenEndpoints() async -> [DirectEndpoint] {
+        await (operations as? RoutedSession)?.provenEndpoints() ?? []
     }
 
     /// The network changed or the app came back to the foreground.
@@ -126,6 +135,14 @@ public actor Connection {
         try checkActive()
         _ = try await api.send(.data(.get, path: ["capabilities"]))
         try checkActive()
+    }
+
+    /// Why this Mac cannot be loaded right now, from one signed round trip.
+    public func diagnose() async -> ConnectionProblem {
+        do {
+            try await checkSettingsConnection()
+            return .unexpected
+        } catch { return connectionProblem(for: error) }
     }
 
     public nonisolated func connectionProblem(for error: any Error) -> ConnectionProblem {

@@ -29,8 +29,8 @@ struct MacServiceSettingsScene: View {
             save: { _, _ in throw CancellationError() }, requestPermission: {}, openSystemSettings: {},
             checkConnection: { try await services.checkSettingsConnection() },
             logout: { await MainActor.run {
-                guard let owner, owner.services === services else { return }
-                _ = owner.store.send(.logout)
+                if let owner { guard owner.services === services else { return } }
+                _ = account.store.send(.logout)
             } })
         client.selectMac = { id in try await workspace.select(choice: id) }
         client.macStatuses = {
@@ -52,6 +52,7 @@ struct MacServiceSettingsScene: View {
             device: api.device, supportsNotifications: false, usesAccount: owner != nil && !services.isDirectOnly)
         state.macs = workspace.macChoices
         state.selectedMacID = workspace.selectedChoiceID
+        state.showsSignOutWithMacs = owner == nil && account.macs.contains { !$0.local }
         store = Store(initialState: state) { SettingsFeature() } withDependencies: {
                 $0.serviceSettings = client
                 $0.cloudPairing = account.additionalMacPairing

@@ -1,4 +1,3 @@
-import AlondraFeatures
 import SwiftUI
 
 /// A device on this network asks to use this Mac. Allow it only when its screen shows the
@@ -40,6 +39,6 @@ public struct MacPairingRequestSheet: View {
             .controlSize(.large)
         }
         .padding(28)
-        .frame(width: 440)
+        .frame(idealWidth: 440, maxWidth: 440)
     }
 }

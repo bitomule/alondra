@@ -14,7 +14,10 @@ public actor DirectSession: OperationAPI {
     private let router: DirectRouter
     private let http: DirectHTTP
     private let pause: @Sendable (Duration) async throws -> Void
+    /// Most recent operations first; old ones age out, their envelopes long expired anyway.
     private var sealed: [String: (tag: Data, body: Data)] = [:]
+    private var sealedOrder: [String] = []
+    static let maxSealed = 256
     private var active = true
 
     public init(macID: String, deviceID: String, signing: P256.Signing.PrivateKey,
@@ -53,6 +56,8 @@ public actor DirectSession: OperationAPI {
         } else {
             body = try seal(requestID: request.operationID, method: request.method, path: request.path, body: request.body)
             sealed[request.operationID] = (tag, body)
+            sealedOrder.append(request.operationID)
+            if sealedOrder.count > Self.maxSealed { sealed[sealedOrder.removeFirst()] = nil }
         }
         return try await deliver(body, requestID: request.operationID, mutation: true, timeout: timeout)
     }
@@ -64,11 +69,11 @@ public actor DirectSession: OperationAPI {
         } catch EnvelopeError.invalidRequest { throw RelaySessionError.invalidRequest }
     }
 
-    /// Up to three tries, re-picking the route after a network failure. A mutation that may have
+    /// Up to four tries, re-picking the route after a network failure or an impostor. A mutation that may have
     /// reached the Mac without an answer is `.unknown`, never silently dropped.
     private func deliver(_ body: Data, requestID: String, mutation: Bool, timeout: Duration) async throws -> APIResponse {
         var mayHaveArrived = false
-        for attempt in 0..<3 {
+        for attempt in 0..<4 {
             guard active else { throw CancellationError() }
             if attempt > 0 { try await pause(.milliseconds(500 * attempt)) }
             let endpoint: DirectEndpoint
@@ -83,15 +88,26 @@ public actor DirectSession: OperationAPI {
                 continue
             }
             guard active else { throw CancellationError() }
-            switch reply.status {
-            case 200:
-                guard let envelope = try? JSONDecoder().decode(Envelope.self, from: reply.body) else {
-                    throw RelayWireError.invalidResponse
+            if reply.status == 200 {
+                // Only an answer that opens with the pinned keys proves the address is this Mac.
+                if let envelope = try? JSONDecoder().decode(Envelope.self, from: reply.body),
+                   let response = try? codec.opened(envelope, requestID: requestID) {
+                    await router.proved(endpoint)
+                    return response
                 }
-                return try codec.opened(envelope, requestID: requestID)
+                await router.reject(endpoint)
+                continue
+            }
+            // A bare status is not signed. It is believed only from an address already proved;
+            // from any other it only rules that address out.
+            guard await router.isProven(endpoint) else {
+                await router.reject(endpoint)
+                continue
+            }
+            switch reply.status {
             case 401: throw DirectSessionError.unauthorized
             case 409: throw RelaySessionError.operationIdentityConflict
-            case 421: await router.invalidate()
+            case 421: await router.reject(endpoint)
             case 429, 503: continue
             case 400: return .completed(status: 400, body: reply.body)
             default: throw RelayWireError.server(reply.status)

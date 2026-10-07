@@ -56,14 +56,18 @@ public actor DirectPairingClient {
         self.pause = pause
     }
 
-    public func begin(at endpoint: DirectEndpoint, displayName: String) async throws -> DirectPairingAttempt {
+    /// `excluding` is the Mac this app runs on: it cannot pair with itself.
+    public func begin(at endpoint: DirectEndpoint, displayName: String, excluding ownMacID: String? = nil) async throws -> DirectPairingAttempt {
         guard !displayName.isEmpty, displayName.utf8.count <= 80,
               !displayName.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) else {
             throw PairingError.invalidIdentity
         }
         let hello: DirectMacIdentity
         do { hello = try await http.hello(at: endpoint) }
-        catch is URLError { throw PairingError.macUnreachable }
+        catch let error as URLError where error.code == .appTransportSecurityRequiresSecureConnection {
+            throw PairingError.insecureAddress
+        } catch is URLError { throw PairingError.macUnreachable }
+        if hello.macID == ownMacID { throw PairingError.thisMac }
         if try store.loadCollection().pairings.contains(where: { $0.macID == hello.macID }) {
             throw PairingError.alreadyLinked
         }
@@ -121,6 +125,7 @@ public actor DirectPairingClient {
                 approved.routes = [attempt.endpoint]
                 try Task.checkCancellation()
                 try store.save(approved)
+                LocalNetworkAccess.record(.allowed)
                 return approved
             case "denied": throw PairingError.denied
             case "expired": throw PairingError.requestExpired

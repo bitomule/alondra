@@ -9,6 +9,8 @@ public enum RestoreError: Error, Sendable {
 
 public struct SignInClient: Sendable {
     public var hasSavedConfiguration: @Sendable () async throws -> Bool = { false }
+    /// After signing out: brings back the Macs paired on the local network, if any are left.
+    public var keepsLocalMacs: @Sendable () async -> Bool = { false }
     public var prepareCamera: @Sendable () async -> Bool = { false }
     public var classify: @Sendable (any Error) -> ConnectionProblem = { _ in .unexpected }
     /// What a failed sign-in, pairing or sign-out step tells the person, in their language.
@@ -177,6 +179,7 @@ public struct SignInFeature: Sendable {
                 state.reauthenticationRequired = false
                 state.restoreProblem = nil
                 state.restoreFailures = 0
+                if state.phase == .signingOut { state.logoutIncomplete = false }
                 state.configuration = approved ? .saved : .missing
                 state.phase = approved ? .approved : .signedOut
                 return .none
@@ -267,8 +270,12 @@ public struct SignInFeature: Sendable {
                 let generation = state.generation
                 return .concatenate(.cancel(id: CancelID.operation), .cancel(id: CancelID.restoreRetry), .run { send in
                     await service.cancel()
-                    do { try await service.logout(); await send(.loggedOut(generation)) }
-                    catch { await send(.failed(generation, service.describe(error))) }
+                    do { try await service.logout() }
+                    catch { await send(.failed(generation, service.describe(error))); return }
+                    // Macs paired on the local network never depended on the account: the
+                    // person stays in the workspace with them.
+                    if await service.keepsLocalMacs() { await send(.restored(generation, true)) }
+                    else { await send(.loggedOut(generation)) }
                 })
             }
         }

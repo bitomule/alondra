@@ -53,6 +53,19 @@ public actor LoopbackSession: OperationAPI {
         return (response as? HTTPURLResponse)?.statusCode == 200
     }
 
+    /// This Mac's own ID, read from its daemon's direct port. Unsigned and public, like `hello`.
+    public static func ownMacID(at base: URL = defaultBase, urlSession: URLSession = makeURLSession()) async -> String? {
+        struct Daemon: Decodable {
+            struct Direct: Decodable { let port: UInt16 }
+            let direct: Direct?
+        }
+        let request = URLRequest(url: base.appending(path: "daemon"), timeoutInterval: 2)
+        guard let (body, _) = try? await urlSession.data(for: request),
+              let port = (try? JSONDecoder().decode(Daemon.self, from: body))?.direct?.port else { return nil }
+        let http = DirectHTTP(transport: URLSessionTransport())
+        return try? await http.hello(at: DirectEndpoint(host: "127.0.0.1", port: port, kind: .localNetwork)).macID
+    }
+
     public func deactivate() {
         active = false
         pairing?.cancel()

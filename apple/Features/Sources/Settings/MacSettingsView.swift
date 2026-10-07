@@ -131,6 +131,10 @@ public struct MacSettingsView<PairingContent: View>: View {
             Button("Connect to Another Mac…", systemImage: "plus") { store.send(.linkMac) }
                 .disabled(store.selectingMacID != nil || store.pairingCleanup)
                 .accessibilityIdentifier("settings.addMac")
+            if store.showsSignOutWithMacs {
+                Button("Sign out", systemImage: "link.badge.minus", role: .destructive) { store.send(.logoutTapped) }
+                    .accessibilityIdentifier("settings.signOut")
+            }
         } header: {
             Text("Macs")
         }

@@ -30,25 +30,40 @@ public enum FindMacTarget: Equatable, Sendable {
     case address(String)
 }
 
+/// What the device knows about its Local Network permission.
+public enum LocalNetworkPermission: Equatable, Sendable { case unknown, allowed, denied }
+
+public enum FindMacUpdate: Equatable, Sendable {
+    case macs([FoundMac])
+    case denied
+}
+
 /// Pairing with a Mac on the same network, without an account.
 public struct FindMacClient: Sendable {
-    public var browse: @Sendable () -> AsyncStream<[FoundMac]>
+    public var permission: @Sendable () -> LocalNetworkPermission
+    public var browse: @Sendable () -> AsyncStream<FindMacUpdate>
     public var pair: @Sendable (FindMacTarget) async throws -> DirectPairingCode
     public var approve: @Sendable () async throws -> Void
     public var cancel: @Sendable () async -> Void
     /// A sentence the person can act on; never an error's type or raw description.
     public var describe: @Sendable (any Error) -> String
+    /// Opens the system settings where Local Network access for Alondra is turned back on.
+    public var openSettings: @Sendable () -> Void
 
-    public init(browse: @escaping @Sendable () -> AsyncStream<[FoundMac]>,
+    public init(permission: @escaping @Sendable () -> LocalNetworkPermission = { .allowed },
+                browse: @escaping @Sendable () -> AsyncStream<FindMacUpdate>,
                 pair: @escaping @Sendable (FindMacTarget) async throws -> DirectPairingCode,
                 approve: @escaping @Sendable () async throws -> Void,
                 cancel: @escaping @Sendable () async -> Void,
-                describe: @escaping @Sendable (any Error) -> String) {
+                describe: @escaping @Sendable (any Error) -> String,
+                openSettings: @escaping @Sendable () -> Void = {}) {
+        self.permission = permission
         self.browse = browse
         self.pair = pair
         self.approve = approve
         self.cancel = cancel
         self.describe = describe
+        self.openSettings = openSettings
     }
 }
 

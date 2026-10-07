@@ -1,6 +1,16 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "Alondra needs your local network": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Alondra necesita tu red local"}}}},
+    "To find the Macs on this Wi-Fi, iOS will ask whether Alondra may use your local network. Alondra only talks to your Macs, always encrypted.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Para encontrar los Mac de esta wifi, iOS te preguntará si Alondra puede usar tu red local. Alondra solo habla con tus Mac, y siempre cifrado."}}}},
+    "To find the other Macs on this Wi-Fi, macOS will ask whether Alondra may use your local network. Alondra only talks to your Macs, always encrypted.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Para encontrar los otros Mac de esta wifi, macOS te preguntará si Alondra puede usar tu red local. Alondra solo habla con tus Mac, y siempre cifrado."}}}},
+    "Local network access is off": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "El acceso a la red local está desactivado"}}}},
+    "Alondra can’t look for your Macs until you turn on Local Network for it in Settings.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Alondra no puede buscar tus Mac hasta que actives Red local para Alondra en Ajustes."}}}},
+    "Alondra can’t look for other Macs until you turn on Local Network for it in System Settings.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Alondra no puede buscar otros Mac hasta que actives Red local para Alondra en Ajustes del Sistema."}}}},
+    "Open System Settings": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Abrir Ajustes del Sistema"}}}},
+    "It may be in sleep mode, or on another network. Alondra reconnects as soon as it answers; to reach it away from home, turn on Tailscale on both.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Puede que esté en reposo o en otra red. Alondra se reconecta en cuanto responda; para llegar a él fuera de casa, activa Tailscale en los dos."}}}},
+    "That’s this Mac. Pick another one.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Ese es este Mac. Elige otro."}}}},
+    "This device only connects to that address securely. Use the Mac’s IP address, like 192.168.1.20 or 100.101.2.3, or its name ending in .ts.net.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Este dispositivo solo se conecta a esa dirección de forma segura. Usa la IP del Mac, como 192.168.1.20 o 100.101.2.3, o su nombre terminado en .ts.net."}}}},
     "Your Mac isn’t on this network": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Tu Mac no está en esta red"}}}},
     "This Mac’s identity has changed": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "La identidad de este Mac ha cambiado"}}}},
     "Connect to the same Wi-Fi as your Mac, or turn on Tailscale on both. Alondra reconnects as soon as it answers.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Conéctate a la misma wifi que tu Mac o activa Tailscale en los dos. Alondra se reconecta en cuanto responda."}}}},

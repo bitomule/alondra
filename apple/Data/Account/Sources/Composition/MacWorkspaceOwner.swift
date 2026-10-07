@@ -21,6 +21,7 @@ public final class MacWorkspaceOwner {
     @ObservationIgnored private let openLocal: @MainActor () async throws -> Connection
     @ObservationIgnored private let startRemote: @MainActor () -> Void
     @ObservationIgnored private let reprobeInterval: Duration
+    @ObservationIgnored private let ownMacID: @Sendable () async -> String?
 
     public convenience init(account: AccountSession, storageDirectory: URL, deviceName: String) {
         let identity = LoopbackIdentityStore(directory: storageDirectory.appendingPathComponent("loopback-identity", isDirectory: true))
@@ -30,12 +31,15 @@ public final class MacWorkspaceOwner {
                       try await Connection.local(LoopbackSession(identity: identity, deviceName: deviceName),
                                                        identity: identity)
                   },
-                  startRemote: { account.store.send(.appeared) })
+                  startRemote: { account.store.send(.appeared) },
+                  ownMacID: { await LoopbackSession.ownMacID() })
     }
 
     public init(account: AccountSession, isDaemonRunning: @escaping @Sendable () async -> Bool,
          openLocal: @escaping @MainActor () async throws -> Connection,
-         startRemote: @escaping @MainActor () -> Void, reprobeInterval: Duration = .seconds(10)) {
+         startRemote: @escaping @MainActor () -> Void, reprobeInterval: Duration = .seconds(10),
+         ownMacID: @escaping @Sendable () async -> String? = { nil }) {
+        self.ownMacID = ownMacID
         self.account = account
         self.isDaemonRunning = isDaemonRunning
         self.openLocal = openLocal
@@ -87,6 +91,7 @@ public final class MacWorkspaceOwner {
                 guard !Task.isCancelled else { await services.deactivate(); return }
                 localServices = services
                 route = .local
+                account.ownMacID = await ownMacID()
                 if !restoredPaired { startRemote() }
                 return
             }

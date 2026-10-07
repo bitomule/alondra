@@ -12,7 +12,7 @@ func makeAccountSession(notifications: NotificationRuntime) -> AccountSession {
     })
     let auth = AuthSession(browser: browser, refreshGrant: keepRefreshAlive,
                            sessionLost: { Task { @MainActor in notifications.retireBindings() } })
-    return AccountSession(auth: auth, displayName: "iPhone",
+    let account = AccountSession(auth: auth, displayName: "iPhone",
         storageDirectory: AppStorageLocation.applicationSupport(bundleID: "com.bitomule.alondra"), prepareCamera: {
         guard await DataScannerViewController.isSupported else { return false }
         let allowed = await AVCaptureDevice.requestAccess(for: .video)
@@ -23,6 +23,11 @@ func makeAccountSession(notifications: NotificationRuntime) -> AccountSession {
     }, willDeactivate: {
         try await notifications.deactivate()
     }, pushBinding: { notifications.pushBinding(for: $0) })
+    account.openLocalNetworkSettings = {
+        guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
+        UIApplication.shared.open(url)
+    }
+    return account
 }
 
 /// A refresh cut off by suspension loses the issuer's answer; finish it in the background.

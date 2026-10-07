@@ -26,7 +26,13 @@ public enum MacBrowser {
         ProcessInfo.processInfo.environment["ALONDRA_SANDBOX"] == "1" ? "_alondra-sandbox._tcp" : "_alondra._tcp"
     }
 
-    public static func browse(type: String = serviceType) -> AsyncStream<[DiscoveredMac]> {
+    public enum Update: Sendable, Equatable {
+        case found([DiscoveredMac])
+        /// The person turned Local Network access off for Alondra.
+        case denied
+    }
+
+    public static func browse(type: String = serviceType) -> AsyncStream<Update> {
         AsyncStream { continuation in
             let browser = NWBrowser(for: .bonjourWithTXTRecord(type: type, domain: nil), using: .tcp)
             browser.browseResultsChangedHandler = { results, _ in
@@ -37,10 +43,19 @@ public enum MacBrowser {
                     return DiscoveredMac(id: service, name: txt["name"].flatMap { $0.isEmpty ? nil : $0 } ?? service,
                                          macID: txt["mac_id"], endpoint: result.endpoint)
                 }
-                continuation.yield(macs.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending })
+                if !macs.isEmpty { LocalNetworkAccess.record(.allowed) }
+                continuation.yield(.found(macs.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }))
             }
             browser.stateUpdateHandler = { state in
-                if case .failed = state { continuation.finish() }
+                switch state {
+                case .waiting(let error), .failed(let error):
+                    if error == .dns(DNSServiceErrorType(kDNSServiceErr_PolicyDenied)) {
+                        LocalNetworkAccess.record(.denied)
+                        continuation.yield(.denied)
+                    }
+                    if case .failed = state { continuation.finish() }
+                default: break
+                }
             }
             continuation.onTermination = { _ in browser.cancel() }
             browser.start(queue: .global(qos: .userInitiated))

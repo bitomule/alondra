@@ -112,6 +112,8 @@ public extension DependencyValues {
         public var devicesError: String?
         public var revokingDeviceID: String?
         public var confirmRevokeDeviceID: String?
+        /// The Mac app on its own daemon, with an account behind some of its paired Macs.
+        public var showsSignOutWithMacs = false
         public var confirmLogout = false
         public var generation: UInt64 = 0
         public let cancellation = UUID()

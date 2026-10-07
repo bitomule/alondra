@@ -74,6 +74,8 @@ public struct FindMacView: View {
 
     @ViewBuilder private var content: some View {
         switch store.findMac.step {
+        case .browsing where store.findMac.explainsPermission: explanation
+        case .browsing where store.findMac.permissionDenied: denied
         case .browsing: browsing
         case .connecting(let name):
             ProgressView(String(localized: "Connecting to \(name)…")).frame(maxWidth: .infinity).padding(.vertical, 24)
@@ -92,6 +94,35 @@ public struct FindMacView: View {
         case .approved:
             Label("Mac connected", systemImage: "checkmark.circle.fill").font(.headline).foregroundStyle(Palette.sage)
         }
+    }
+
+    @ViewBuilder private var explanation: some View {
+        Label("Alondra needs your local network", systemImage: "wifi").font(.headline)
+        Text("To find the Macs on this Wi-Fi, iOS will ask whether Alondra may use your local network. Alondra only talks to your Macs, always encrypted.")
+            .foregroundStyle(.secondary)
+        Button { find.send(.allowSearch) } label: {
+            Label("Continue", systemImage: "arrow.right").frame(maxWidth: .infinity)
+        }
+        .buttonStyle(.glassProminent)
+        .buttonBorderShape(.capsule)
+        .controlSize(.large)
+        .tint(Palette.dawn)
+        .accessibilityIdentifier("findMac.allow")
+    }
+
+    @ViewBuilder private var denied: some View {
+        Label("Local network access is off", systemImage: "wifi.slash").font(.headline)
+        Text("Alondra can’t look for your Macs until you turn on Local Network for it in Settings.")
+            .foregroundStyle(.secondary)
+        Button { find.send(.openSettings) } label: {
+            Label("Open Settings", systemImage: "gear").frame(maxWidth: .infinity)
+        }
+        .buttonStyle(.glassProminent)
+        .buttonBorderShape(.capsule)
+        .controlSize(.large)
+        .tint(Palette.dawn)
+        .accessibilityIdentifier("findMac.openSettings")
+        addByAddress
     }
 
     @ViewBuilder private var browsing: some View {
@@ -117,6 +148,11 @@ public struct FindMacView: View {
                 .accessibilityIdentifier("findMac.mac")
             }
         }
+        addByAddress
+    }
+
+    /// The error of the last attempt, and pairing by a typed address, also when Bonjour is off.
+    @ViewBuilder private var addByAddress: some View {
         if let error = store.findMac.error {
             Label(error, systemImage: "exclamationmark.circle")
                 .font(.callout)

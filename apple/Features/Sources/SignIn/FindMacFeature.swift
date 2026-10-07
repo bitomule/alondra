@@ -16,6 +16,9 @@ public struct FindMacFeature: Sendable {
 
         public var macs: [FoundMac] = []
         public var step: Step = .browsing
+        /// Before the system asks for Local Network access, the person reads why.
+        public var explainsPermission = false
+        public var permissionDenied = false
         public var addingByAddress = false
         public var address = ""
         public var error: String?
@@ -33,6 +36,7 @@ public struct FindMacFeature: Sendable {
     public enum Action: BindableAction {
         case binding(BindingAction<State>)
         case appeared, disappeared
+        case allowSearch, openSettings, permissionWasDenied
         case macsChanged([FoundMac])
         case choose(String), addByAddress, submitAddress, cancel
         case codeShown(Int, DirectPairingCode), approved(Int), failed(Int, String)
@@ -52,13 +56,28 @@ public struct FindMacFeature: Sendable {
             switch action {
             case .binding, .delegate: return .none
             case .appeared:
-                return .run { send in
-                    for await macs in client.browse() { await send(.macsChanged(macs)) }
-                }.cancellable(id: CancelID.browse, cancelInFlight: true)
+                switch client.permission() {
+                case .unknown:
+                    state.explainsPermission = true
+                    return .none
+                case .denied:
+                    state.permissionDenied = true
+                case .allowed: break
+                }
+                return browse()
+            case .allowSearch:
+                state.explainsPermission = false
+                return browse()
             case .disappeared:
                 return .cancel(id: CancelID.browse)
+            case .openSettings:
+                return .run { _ in client.openSettings() }
+            case .permissionWasDenied:
+                state.permissionDenied = true
+                return .none
             case .macsChanged(let macs):
                 state.macs = macs
+                if !macs.isEmpty { state.permissionDenied = false }
                 return .none
             case .choose(let id):
                 guard state.step == .browsing, let mac = state.macs.first(where: { $0.id == id }) else { return .none }
@@ -97,6 +116,17 @@ public struct FindMacFeature: Sendable {
                 return .concatenate(.cancel(id: CancelID.pairing), .run { _ in await client.cancel() })
             }
         }
+    }
+
+    private func browse() -> Effect<Action> {
+        .run { send in
+            for await update in client.browse() {
+                switch update {
+                case .macs(let macs): await send(.macsChanged(macs))
+                case .denied: await send(.permissionWasDenied)
+                }
+            }
+        }.cancellable(id: CancelID.browse, cancelInFlight: true)
     }
 
     private func start(_ target: FindMacTarget, state: inout State) -> Effect<Action> {
