@@ -74,6 +74,23 @@ struct LogoutFailureTests {
     }
 }
 
+extension LogoutFailureTests {
+    @Test func automaticRetryDoesNothingWhileLogoutIsUnfinished() async {
+        var initial = SignInFeature.State()
+        initial.configuration = .saved
+        initial.logoutIncomplete = true
+        initial.restoreProblem = .unexpected
+        let store = TestStore(initialState: initial) { SignInFeature() } withDependencies: {
+            $0.cloudPairing = SignInClient(
+                restore: { Issue.record("Must not restore during incomplete logout"); return false },
+                login: { Issue.record("Must not authorize during incomplete logout") },
+                begin: { _ in "" }, approve: {}, cancel: {}, logout: { Issue.record("Must not sign out unasked") })
+        }
+        await store.send(.retryNow)
+        await store.finish()
+    }
+}
+
 private actor ControlledLogout {
     private var failed = false
     func run() throws {

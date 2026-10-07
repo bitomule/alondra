@@ -6,7 +6,7 @@ load("@alondra_signing//:signing.bzl", "IOS_BUNDLE_ID", "IOS_PROFILE", "MAC_BUND
 load("//apple:swift.bzl", "STRICT_SWIFT_CONCURRENCY_COPTS")
 
 exports_files(
-    ["iOS/Resources/Localizable.xcstrings"],
+    ["iOS/Resources/Localizable.xcstrings", "macOS/Resources/Localizable.xcstrings"],
     visibility = ["//apple/Testing:__subpackages__"],
 )
 
