@@ -111,6 +111,11 @@ final class CardDetailSnapshotTests: XCTestCase {
         assertDetail(store)
     }
 
+    func test_knowWithACommandInItsBody_es() throws {
+        let store = ScreenStores.cardDetail(try Fixtures.document("card-know-command-es") { _ in })
+        assertDetail(store, language: .spanish)
+    }
+
     func test_pullRequestHeldBackByAnotherCard() throws {
         let store = ScreenStores.cardDetail(try Fixtures.card(Fixtures.pullRequestID))
         assertDetail(store)

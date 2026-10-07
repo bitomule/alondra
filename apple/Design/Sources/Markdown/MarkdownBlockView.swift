@@ -62,18 +62,9 @@ public struct MarkdownBlockView: View {
             }
             .fixedSize(horizontal: false, vertical: true)
         case .code(let language):
-            VStack(alignment: .leading, spacing: 6) {
-                if let language {
-                    Text(language.uppercased())
-                        .font(.caption2.weight(.bold))
-                        .kerning(0.8)
-                        .foregroundStyle(.tertiary)
-                }
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HighlightedCode(code: block.plainText, language: language)
-                        .font(.mono(.callout))
-                        .fixedSize()
-                }
+            CodeBlock(source: block.plainText, language: language) {
+                HighlightedCode(code: block.plainText, language: language)
+                    .font(.mono(.callout))
             }
             .padding(14)
             .frame(maxWidth: .infinity, alignment: .leading)

@@ -1020,6 +1020,11 @@ fn attach_card(name: &str, command: &mut serde_json::Map<String, Value>) -> Resu
             command.insert("options".into(), json!([choice("works", "Works", true), choice("fails", "Doesn't work", true)]));
             command.entry("blocking").or_insert(json!(false));
         }
+        "publish_information" | "present_result" if content.is_none() => {
+            content = command.get("body").and_then(Value::as_str).map(str::trim)
+                .filter(|body| !body.is_empty() && *body != need.trim())
+                .map(|body| json!({"kind":"report","body":body}));
+        }
         _ => {}
     }
     card.insert("kind".into(), json!(kind));
@@ -2023,6 +2028,20 @@ mod card_tool_tests {
         let node = tool(Role::Node, "answer_clarification");
         assert!(node["inputSchema"]["properties"].get("text").is_none());
         assert!(tool(Role::Orchestrator, "answer_clarification")["inputSchema"]["properties"].get("text").is_some());
+    }
+
+    #[test]
+    fn a_notice_or_result_sent_with_only_a_body_carries_it_as_the_cards_content() {
+        let body = "Ejecútalo una vez en el terminal del Mac:\n\n```\ncp ~/.claude.json ~/.claude.json.bak && python3 - <<'PY'\nprint(\"Confiados\")\nPY\n```\n\nSi clonas repos nuevos, vuelve a ejecutarlo.";
+        let notice = built("publish_information", with(json!({"need":"Pega este comando en el terminal","body":body})));
+        assert_eq!(notice["card"]["content"], json!({"kind":"report","body":body}));
+        assert_eq!(notice["body"], body);
+        let result = built("present_result", json!({"task_id":"t-1","interaction_id":"card-1","need":"Read the answer","targets":[{"kind":"text","text":"done"}],"is_final":true,"body":body}));
+        assert_eq!(result["card"]["content"], json!({"kind":"report","body":body}));
+        let headline_only = built("publish_information", with(json!({"need":"The build is green","body":"The build is green"})));
+        assert!(headline_only["card"].get("content").is_none(), "a body that repeats the headline adds nothing");
+        let own = built("publish_information", with(json!({"need":"Run it","body":body,"content":{"kind":"command","body":"ls"}})));
+        assert_eq!(own["card"]["content"], json!({"kind":"command","body":"ls"}), "the node's own content wins");
     }
 
     #[test]

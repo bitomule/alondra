@@ -683,6 +683,28 @@ pub struct Interaction {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub clarification: Option<Clarification>,
 }
+impl Interaction {
+    /// The long part the reader sees: the card's content, or else the body its author wrote, so a
+    /// notice sent with only `need` and `body` never loses its text. Alondra's own cards keep data
+    /// in their body and only show their content.
+    pub fn shown_content(&self) -> Option<std::borrow::Cow<'_, CardContent>> {
+        use std::borrow::Cow;
+        if let Some(content) = &self.card.content {
+            return Some(Cow::Borrowed(content));
+        }
+        let body = self.body.trim();
+        let (need, why) = (self.card.need.trim(), self.card.why.trim());
+        let only_the_card = body
+            .lines()
+            .map(|line| line.trim().trim_start_matches('#').trim())
+            .filter(|line| !line.is_empty())
+            .all(|line| line == need || line == why);
+        if self.author == Author::System || only_the_card {
+            return None;
+        }
+        Some(Cow::Owned(CardContent { kind: ContentKind::Report, summary: None, body: body.to_owned() }))
+    }
+}
 /// What a held question stands for: a tool permission prompt, a plan to approve, Claude's
 /// AskUserQuestion, or an MCP server asking for input.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

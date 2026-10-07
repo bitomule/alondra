@@ -1,6 +1,9 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "Copy": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Copiar"}}}},
+    "Copied": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Copiado"}}}},
+    "Copies the whole block": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Copia el bloque entero"}}}},
     "This %@ is no longer paired with “%@”": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Este %1$@ ya no está emparejado con “%2$@”"}}}},
     "This %@ is no longer paired with your Mac": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Este %@ ya no está emparejado con tu Mac"}}}},
     "There’s a Mac with this name but a different identity. Pair it again only if you reinstalled that Mac.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Hay un Mac con este nombre pero con otra identidad. Vuelve a emparejarlo solo si reinstalaste ese Mac."}}}},

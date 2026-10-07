@@ -2002,3 +2002,17 @@ fn merge_from_a_pull_request_detail_sends_the_only_method_directly() {
     assert_eq!(sent[0].1["action_id"], action_id.as_str());
     assert_eq!(sent[0].1["option_id"], "squash");
 }
+
+#[test]
+fn a_know_card_detail_shows_its_whole_body_with_the_command_block() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::Es);
+    let view = serde_json::from_value(view_fixture("card-know-command-es-tui.json")).unwrap();
+    let lines = text_of(&crate::tui::view_render::document_lines(&view, 100));
+    let at = |text: &str| lines.iter().position(|line| line.contains(text)).unwrap_or_else(|| panic!("{text} missing: {lines:#?}"));
+    let headline = at("Pega este comando en el terminal");
+    let intro = at("Ejecútalo una vez en el terminal del Mac");
+    let command = at("│ cp ~/.claude.json ~/.claude.json.bak-$(date +%s) && python3 - <<'PY'");
+    let script = at("│ print(\"Confiados\")");
+    let closing = at("Si clonas repos nuevos en ~/Projects, vuelve a ejecutarlo.");
+    assert!(headline < intro && intro < command && command < script && script < closing, "{lines:#?}");
+}

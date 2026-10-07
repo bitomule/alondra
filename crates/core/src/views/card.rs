@@ -516,11 +516,11 @@ fn content_row(item: &InboxItem, interaction: Option<&Interaction>, context: &Re
     let lang = context.lang;
     let domain = context.domain;
     let interaction = interaction?;
-    let spec: &CardSpec = &interaction.card;
     let attachments = interaction.attachments.len();
     let live = pr_target(interaction, domain)
         .and_then(|pr| context.live.pull_requests.iter().find(|detail| detail.id == pr.id.0));
-    let (kind, summary_text, others) = match &spec.content {
+    let shown = interaction.shown_content();
+    let (kind, summary_text, others) = match shown.as_deref() {
         Some(content) => {
             let agent = content.summary.as_deref().map(str::trim).filter(|text| !text.is_empty()).map(|text| clip(text, 60));
             let derived = match content.kind {
@@ -1194,7 +1194,8 @@ fn content_items(item: &InboxItem, context: &RenderContext<'_>) -> Vec<Item> {
     let domain = context.domain;
     let Some(interaction) = interaction_of(item, domain) else { return vec![] };
     let mut out = vec![];
-    let content = interaction.card.content.as_ref().filter(|content| !content.body.trim().is_empty());
+    let shown = interaction.shown_content();
+    let content = shown.as_deref().filter(|content| !content.body.trim().is_empty());
     if let Some(revision_id) = reviewed_revision(interaction)
         && let Some(revision) = domain.document_revisions.get(revision_id)
         && let Some(document) = domain.documents.get(&revision.document_id)
@@ -1287,7 +1288,8 @@ fn pr_sections(item: &InboxItem, context: &RenderContext<'_>) -> Option<Vec<supe
     let interaction = interaction_of(item, domain)?;
     let pr = pr_target(interaction, domain)?;
     let (facts, checks, _) = pr_overview(pr, context);
-    let content = interaction.card.content.as_ref().filter(|content| content.kind != DomainContent::Diff);
+    let shown = interaction.shown_content();
+    let content = shown.as_deref().filter(|content| content.kind != DomainContent::Diff);
     let report = content.map(|content| without_pr_link(&content.body, pr)).filter(|text| !text.is_empty());
     let description = live_pr(pr, context)
         .and_then(|detail| detail.body.clone())

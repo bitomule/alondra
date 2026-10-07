@@ -217,6 +217,11 @@ final class MacWorkspaceSnapshotTests: XCTestCase {
         assertWindow(size: CGSize(width: 900, height: 520)) { MacServiceDetail(presentation: store) }
     }
 
+    func test_card_noticeWithACommandInItsBody_es() throws {
+        let store = try presentation(detail: "card-know-command-es-mac")
+        assertWindow(size: CGSize(width: 900, height: 620), spanish: true) { MacServiceDetail(presentation: store) }
+    }
+
     func test_card_clarificationSheet() throws {
         let store = try presentation(detail: "card-question-mac", edit: { state in
             let card = state.detailDocument?.sections.flatMap(\.items).compactMap { item -> Card? in

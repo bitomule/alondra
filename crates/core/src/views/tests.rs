@@ -496,10 +496,10 @@ fn golden_fixture() -> DomainState {
         interaction.body = "## Beta candidate ready\n\n- Restored the native review layouts\n- Kept swipe navigation between cards\n- Verified the ARM simulator build\n\nThe candidate is ready for your final approval.".into();
     }
     if let Some(interaction) = state.interactions.get_mut(&"i-5".into()) {
-        interaction.body = "The pull request is ready. Should the compact schedule editor ship with this beta?".into();
+        interaction.body = "The review of the pull request waits for your answer.".into();
     }
     if let Some(interaction) = state.interactions.get_mut(&"i-6".into()) {
-        interaction.body = "All required checks passed and the branch is up to date with main.".into();
+        interaction.body = "The pull request checks passed".into();
     }
     let old_interactions = std::mem::take(&mut state.interactions);
     state.interactions = old_interactions.into_values().map(|mut interaction| {
@@ -3426,6 +3426,7 @@ fn every_content_kind_has_a_one_line_row_and_the_card_has_no_body() {
         if let Some((kind, body)) = content {
             card = card.content(kind, body);
         }
+        interaction.body = card.why.clone();
         interaction.card = card;
         interaction.attachments = (0..attachments).map(|n| crate::domain::AttachmentRef {
             id: format!("a{n}"), name: format!("shot{n}.png"), content_digest: "d".repeat(64), content_reference: format!("stored/{n}"), bytes: 10,
@@ -4587,4 +4588,78 @@ fn a_withdrawn_problem_and_an_answered_question_say_why_they_wait_for_nothing() 
     let view = render(&state, &LiveSnapshot::default(), Client::Tui, Lang::Es, "card:i-1", "");
     let Item::Card(card) = &view.sections[0].items[0] else { panic!("question card") };
     assert_eq!(card_state(card), "Respondida · Repetir ahora");
+}
+
+const TRUST_COMMAND_BODY: &str = "Ejecútalo una vez en el terminal del Mac. Hace una copia de ~/.claude.json:\n\n```\ncp ~/.claude.json ~/.claude.json.bak-$(date +%s) && python3 - <<'PY'\nprint(\"Confiados\")\nPY\n```\n\nSi clonas repos nuevos en ~/Projects, vuelve a ejecutarlo.";
+
+fn know_notice(state: &mut DomainState, need: &str, why: &str, body: &str) {
+    let interaction = state.interactions.get_mut(&"i-4".into()).unwrap();
+    interaction.payload = InteractionPayload::Information { read_by: BTreeSet::new() };
+    interaction.card = spec(crate::domain::CardKind::Know, need, why);
+    interaction.body = body.into();
+}
+
+#[test]
+fn a_know_card_sent_with_only_need_and_body_shows_the_whole_body_with_its_code_block() {
+    let mut state = fixture();
+    know_notice(&mut state, "Pega este comando en el terminal: confía en todos los repos de ~/Projects", "", TRUST_COMMAND_BODY);
+    for client in [Client::Ios, Client::Mac, Client::Tui] {
+        let view = render(&state, &LiveSnapshot::default(), client, Lang::Es, "card:i-4", "");
+        assert_eq!(markdown_items(&view).iter().map(|m| m.text.as_str()).collect::<Vec<_>>(), [TRUST_COMMAND_BODY], "{client:?}");
+        assert_eq!(card_of(&view).content_row.as_ref().map(|row| row.kind.as_str()), Some("report"), "{client:?}");
+    }
+}
+
+#[test]
+fn a_body_that_only_repeats_the_card_or_holds_alondras_own_data_is_not_shown_again() {
+    let mut state = fixture();
+    know_notice(&mut state, "The build is green", "All 400 tests pass.", "The build is green\n\nAll 400 tests pass.");
+    let view = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::En, "card:i-4", "");
+    assert!(markdown_items(&view).is_empty());
+    assert!(card_of(&view).content_row.is_none());
+    know_notice(&mut state, "The build is green", "", "{\"machine\":\"data\"}");
+    state.interactions.get_mut(&"i-4".into()).unwrap().author = Author::System;
+    let view = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::En, "card:i-4", "");
+    assert!(markdown_items(&view).is_empty());
+}
+
+const KNOW_COMMAND_CARD: &str = "cc2d034b-249e-4487-a89b-57de38c26372";
+const KNOW_COMMAND_CASES: [(&str, Client, Lang); 3] = [
+    ("card-know-command-es.json", Client::Ios, Lang::Es),
+    ("card-know-command-es-mac.json", Client::Mac, Lang::Es),
+    ("card-know-command-es-tui.json", Client::Tui, Lang::Es),
+];
+
+/// The orchestrator's notice as it reached the user: a headline and a body holding a command in a
+/// fenced block, with no separate content.
+fn know_command_state() -> DomainState {
+    let mut state = golden_fixture();
+    let interaction = state.interactions.get_mut(&KNOW_COMMAND_CARD.into()).unwrap();
+    interaction.card = spec(crate::domain::CardKind::Know, "Pega este comando en el terminal: confía en todos los repos de ~/Projects", "");
+    interaction.body = TRUST_COMMAND_BODY.into();
+    state
+}
+
+#[test]
+fn know_command_cards_match_goldens() {
+    let state = know_command_state();
+    for ((filename, client, lang), expected) in KNOW_COMMAND_CASES.into_iter().zip([
+        include_str!("../../../../fixtures/views/cards/card-know-command-es.json"),
+        include_str!("../../../../fixtures/views/cards/card-know-command-es-mac.json"),
+        include_str!("../../../../fixtures/views/cards/card-know-command-es-tui.json"),
+    ]) {
+        let actual = render(&state, &golden_live(), client, lang, &format!("card:{KNOW_COMMAND_CARD}"), "2026-09-30T10:00:00Z");
+        assert_golden(filename, &actual, expected);
+    }
+}
+
+#[test]
+#[ignore = "explicit fixture generation after Bazel authorization"]
+fn generate_know_command_goldens() {
+    let dir = std::env::var("ALONDRA_GOLDEN_OUT").expect("ALONDRA_GOLDEN_OUT required");
+    let state = know_command_state();
+    for (filename, client, lang) in KNOW_COMMAND_CASES {
+        let view = render(&state, &golden_live(), client, lang, &format!("card:{KNOW_COMMAND_CARD}"), "2026-09-30T10:00:00Z");
+        std::fs::write(format!("{dir}/{filename}"), format!("{}\n", serde_json::to_string_pretty(&view).unwrap())).unwrap();
+    }
 }
