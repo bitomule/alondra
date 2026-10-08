@@ -27,6 +27,9 @@ use crate::usage_pause::Alerts;
 
 pub(crate) const FILE: &str = "machine-incident.json";
 const HEALTHY_SAMPLES: u32 = 2;
+/// A disk that climbs back can fall again within minutes as builds come and go: its incident, and
+/// its one card, stays open until the disk has been fine this long.
+pub(crate) const DISK_SETTLE_MS: Millis = 10 * 60_000;
 pub(crate) const REMIND_AFTER_MS: Millis = 30 * 60_000;
 const TICK: Duration = Duration::from_secs(10);
 
@@ -51,6 +54,9 @@ pub(crate) struct Incident {
     /// The card says memory stays at its limit with a single node working.
     #[serde(default)]
     pub single: bool,
+    /// Since when the gauges say fine, while they do.
+    #[serde(default)]
+    pub fine_since: Option<Millis>,
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -183,8 +189,10 @@ pub(crate) fn step_on(previous: Option<Incident>, machine: &Machine, health: Hea
     };
     let fine = measured.is_none();
     incident.healthy = if fine { incident.healthy + 1 } else { 0 };
+    incident.fine_since = if fine { incident.fine_since.or(Some(now)) } else { None };
+    let settled = incident.cause != MachineCause::Disk || incident.fine_since.is_some_and(|since| now - since >= DISK_SETTLE_MS);
     let declared_only = incident.cause == MachineCause::Declared;
-    if declared_only || (fine && (fixed || incident.healthy >= HEALTHY_SAMPLES)) {
+    if declared_only || (fine && (fixed || (incident.healthy >= HEALTHY_SAMPLES && settled))) {
         let mut actions: Vec<Action> = incident.card.into_iter().map(Action::Withdraw).collect();
         let names = waiting.iter().map(|waiter| waiter.name.as_str()).collect::<Vec<_>>().join(", ");
         if !declared_only && (incident.cause != MachineCause::Memory || !names.is_empty()) {
@@ -229,7 +237,7 @@ pub(crate) fn step_on(previous: Option<Incident>, machine: &Machine, health: Hea
 fn open(cause: MachineCause, machine: &Machine, disk: Option<&str>, waiting: &[Waiter], now: Millis) -> (Option<Incident>, Vec<Action>) {
     let card = card_for(cause, machine, disk, waiting, None);
     let id = format!("{MACHINE_PREFIX}{now}");
-    let incident = Incident { since: now, cause, card: Some(id.clone()), cards: 1, nodes_shown: waiting.len(), reminded: false, healthy: 0, single: false };
+    let incident = Incident { since: now, cause, card: Some(id.clone()), cards: 1, nodes_shown: waiting.len(), reminded: false, healthy: 0, single: false, fine_since: None };
     let mut actions = vec![];
     if cause != MachineCause::Memory {
         actions.push(Action::TellOrchestrator(orchestrator_text(&card, true)));
@@ -649,7 +657,7 @@ mod tests {
     }
 
     #[test]
-    fn the_disk_must_climb_past_the_recovery_line_twice_to_release_everyone() {
+    fn the_disk_must_stay_past_the_recovery_line_to_release_everyone() {
         let stopped = [waiter("s1", "Lumo", 0), waiter("s2", "Quill", 0)];
         let (incident, _) = step(None, &machine(0, 50), &stopped, false, 0);
         let (incident, actions) = step(incident, &machine(6 * GB, 50), &stopped, false, MIN);
@@ -657,9 +665,26 @@ mod tests {
         let (incident, actions) = step(incident, &machine(8 * GB, 50), &stopped, false, 2 * MIN);
         assert!(actions.is_empty() && incident.is_some(), "one healthy sample is not enough");
         let (incident, actions) = step(incident, &machine(8 * GB, 50), &stopped, false, 3 * MIN);
+        assert!(actions.is_empty() && incident.is_some(), "a disk fine for a minute may fall again");
+        let (incident, actions) = step(incident, &machine(8 * GB, 50), &stopped, false, 2 * MIN + DISK_SETTLE_MS);
         assert!(incident.is_none());
         assert_eq!(actions[0], Action::Withdraw("machine-0".into()));
         assert!(actions.contains(&Action::Release(vec!["s1".into(), "s2".into()])));
+    }
+
+    /// 8 Oct 2026: the disk climbed past the recovery line for two samples and fell again, and
+    /// a second card («3.8 GB left») joined the first («4.8 GB left») three minutes later.
+    #[test]
+    fn a_disk_that_recovers_briefly_and_falls_again_keeps_its_one_card() {
+        let (mut incident, actions) = step(None, &machine(4_800_000_000, 50), &[], false, 0);
+        assert_eq!(raised(&actions).len(), 1);
+        let samples = [(8 * GB, MIN), (8 * GB, MIN + 10_000), (8 * GB, MIN + 20_000), (3_800_000_000, 3 * MIN)];
+        for (free, at) in samples {
+            let (next, actions) = step(incident, &machine(free, 50), &[], false, at);
+            assert!(actions.is_empty(), "no card withdrawn or raised at {at}: {actions:?}");
+            incident = next;
+        }
+        assert_eq!(incident.unwrap().card.as_deref(), Some("machine-0"));
     }
 
     #[test]
@@ -694,7 +719,7 @@ mod tests {
         }
         assert_eq!((cards, incident), (0, None));
 
-        let left = Incident { since: 0, cause: MachineCause::Declared, card: Some("machine-1791441349131".into()), cards: 3, nodes_shown: 1, reminded: false, healthy: 0, single: false };
+        let left = Incident { since: 0, cause: MachineCause::Declared, card: Some("machine-1791441349131".into()), cards: 3, nodes_shown: 1, reminded: false, healthy: 0, single: false, fine_since: None };
         let (incident, actions) = step(Some(left), &machine(100 * GB, 50), &queued, false, MIN);
         assert!(incident.is_none());
         assert_eq!(actions, [Action::Withdraw("machine-1791441349131".into()), Action::Release(vec!["s1".into()])]);
@@ -852,7 +877,7 @@ mod tests {
         let (_home, domain) = world();
         domain.live.machine_watch.declare("fase0", "disk full", 0, now_millis());
         let told = Arc::new(Told(Mutex::new(vec![])));
-        let incident = Incident { since: 0, cause: MachineCause::Disk, card: None, cards: 1, nodes_shown: 0, reminded: false, healthy: 0, single: false };
+        let incident = Incident { since: 0, cause: MachineCause::Disk, card: None, cards: 1, nodes_shown: 0, reminded: false, healthy: 0, single: false, fine_since: None };
         domain.live.machine_watch.set_incident(Some(incident));
         // The card's id is taken already, so the domain refuses it as a full disk would.
         domain.raise_worded_problem("machine-0-2", MACHINE_CAUSE, "taken".into(), "taken".into(), "{}".into(), vec![
