@@ -23,14 +23,26 @@ public struct NodeDetailView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.hidden, for: .tabBar)
         .toolbar {
-            if let close = store.detail?.close {
+            if let resume = store.detail?.resume {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button { store.send(.perform(resume)) } label: { Label(resume.label, systemImage: "play.fill") }
+                        .accessibilityHint(resume.description.map { Text($0) } ?? Text(""))
+                        .accessibilityIdentifier("node.resume")
+                }
+            }
+            if store.detail?.close != nil || store.detail?.pause != nil {
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
                         if let interrupt = store.detail?.interrupt {
                             Button { store.send(.perform(interrupt)) } label: { Label(interrupt.label, systemImage: "stop.circle") }
                         }
-                        Button(role: .destructive) { store.send(.perform(close)) } label: {
-                            Label("Close Node", systemImage: "xmark.bin")
+                        if let pause = store.detail?.pause {
+                            Button { store.send(.perform(pause)) } label: { Label(pause.label, systemImage: "pause.circle") }
+                        }
+                        if let close = store.detail?.close {
+                            Button(role: .destructive) { store.send(.perform(close)) } label: {
+                                Label("Close Node", systemImage: "xmark.bin")
+                            }
                         }
                     } label: {
                         Label("More", systemImage: "ellipsis")

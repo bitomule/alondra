@@ -15,6 +15,7 @@ use crate::node_reports::Activity;
 use alondra_core::domain::{Actor, DomainState, ScheduleLaunchState, ScheduleRunState, TaskId, TaskPriority, TaskState};
 use alondra_core::views::{LiveHold, LivePacing, LivePaused, LivePauseReason, LiveQueued};
 use alondra_core::Millis;
+use alondra_core::options::NodeLimit;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -350,6 +351,7 @@ impl FleetGate {
                 && matches!(snapshot.hold, None | Some(Hold::Spacing { .. }));
             Some(LivePaused {
                 task_id: entry.task.0.clone(),
+                session: Some(session.clone()),
                 at: crate::usage_pause::clock_text(entry.since, now, false),
                 reason: match entry.reason {
                     Reason::Memory => LivePauseReason::Memory,
@@ -366,15 +368,19 @@ impl FleetGate {
             })
         }).chain(pauses.held.iter().map(|(task, held)| LivePaused {
             task_id: task.0.clone(),
+            session: None,
             at: crate::usage_pause::clock_text(held.since, now, false),
             reason: LivePauseReason::User,
             fine_minutes,
             next: false,
             waits_for: None,
         })).collect();
+        let (fixed, auto) = node_limit_setting(domain);
         Some(LivePacing {
             working: snapshot.working,
             limit: snapshot.limit,
+            fixed,
+            auto,
             memory_free: snapshot.mac.free_percent,
             tight: snapshot.mac.health != Health::Fine,
             queued,
@@ -500,6 +506,32 @@ fn configured_limit(domain: &DomainRuntime, tuning: Tuning) -> u32 {
     let file = crate::domain_schedule_runner::options_at(domain.home()).unwrap_or_default();
     let (cores, memory) = machine_size();
     file.max_working_nodes.resolve(cores, memory)
+}
+
+/// What the user set in `options.toml` (`None` for automatic) and what automatic gives here.
+fn node_limit_setting(domain: &DomainRuntime) -> (Option<u32>, u32) {
+    let file = crate::domain_schedule_runner::options_at(domain.home()).unwrap_or_default();
+    let (cores, memory) = machine_size();
+    let fixed = match file.max_working_nodes {
+        NodeLimit::Auto => None,
+        NodeLimit::Fixed(count) => Some(count),
+    };
+    (fixed, NodeLimit::Auto.resolve(cores, memory))
+}
+
+/// Writes `max_working_nodes` into `options.toml`, keeping the rest of the file; the gate
+/// rereads it on its next decision.
+pub(crate) fn set_node_limit(home: &Path, limit: NodeLimit) -> Result<(), &'static str> {
+    let path = alondra_core::options::path_in(home);
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(_) => return Err("Alondra could not read options.toml"),
+    };
+    let written = alondra_core::options::with_node_limit(&text, limit).map_err(|_| "options.toml has an error: fix it first")?;
+    let temporary = path.with_extension("toml.tmp");
+    std::fs::write(&temporary, written).and_then(|()| std::fs::rename(&temporary, &path))
+        .map_err(|_| "Alondra could not write options.toml")
 }
 
 fn machine_size() -> (usize, u64) {

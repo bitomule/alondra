@@ -1,6 +1,7 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "Nodes at once: %@": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Nodos a la vez: %@"}}}},
     "Copy": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Copiar"}}}},
     "Copied": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Copiado"}}}},
     "Copies the whole block": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Copia el bloque entero"}}}},

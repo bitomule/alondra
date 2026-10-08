@@ -59,6 +59,12 @@ pub struct LiveSnapshot {
 pub struct LivePacing {
     pub working: usize,
     pub limit: u32,
+    /// What `max_working_nodes` in `options.toml` says: a number, or `None` for automatic.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fixed: Option<u32>,
+    /// The limit automatic gives on this Mac.
+    #[serde(default)]
+    pub auto: u32,
     pub memory_free: Option<u32>,
     /// The Mac is short of memory: Tight or at its limit.
     pub tight: bool,
@@ -71,6 +77,9 @@ pub struct LivePacing {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LivePaused {
     pub task_id: String,
+    /// The paused node; `None` for a queued task the user took out of the queue.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<String>,
     /// Local clock time it was paused at, "14:05".
     pub at: String,
     pub reason: LivePauseReason,

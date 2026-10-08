@@ -1,6 +1,7 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "Nodes at once: %@": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Nodos a la vez: %@"}}}},
     "until %@": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "hasta %@"}}}},
     "for %lld more min": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "durante %lld min más"}}}},
     "Paused by you until tomorrow %@": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Pausado por ti hasta mañana %@"}}}},

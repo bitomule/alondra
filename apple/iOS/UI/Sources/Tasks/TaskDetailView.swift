@@ -218,12 +218,18 @@ public struct TaskDetailView: View {
             DetailSection(title: detail.options.title ?? String(localized: "Options"), symbol: "slider.horizontal.3") {
                 VStack(spacing: 0) {
                     ForEach(Array(detail.options.elements.enumerated()), id: \.offset) { index, fact in
-                        HStack(alignment: .firstTextBaseline) {
-                            Text(verbatim: fact.label)
-                            Spacer(minLength: 12)
-                            Text(verbatim: fact.value)
-                                .foregroundStyle(.secondary)
-                                .multilineTextAlignment(.trailing)
+                        Group {
+                            if let priority = detail.priority, fact.label == priority.label {
+                                priorityMenu(priority, value: fact.value)
+                            } else {
+                                HStack(alignment: .firstTextBaseline) {
+                                    Text(verbatim: fact.label)
+                                    Spacer(minLength: 12)
+                                    Text(verbatim: fact.value)
+                                        .foregroundStyle(.secondary)
+                                        .multilineTextAlignment(.trailing)
+                                }
+                            }
                         }
                         .padding(.horizontal, 16)
                         .padding(.vertical, 13)
@@ -232,6 +238,27 @@ public struct TaskDetailView: View {
                 }
             }
         }
+    }
+
+    private func priorityMenu(_ priority: WireAction, value: String) -> some View {
+        let shown = store.optimistic.hides(priority.id) ? store.choices[priority.id ?? ""] ?? value : value
+        return Menu {
+            ForEach(priority.options, id: \.id) { option in
+                Button { store.send(.choose(priority, option)) } label: {
+                    Text(option.label)
+                    if let description = option.description { Text(description) }
+                }
+            }
+        } label: {
+            HStack(alignment: .firstTextBaseline) {
+                Text(verbatim: priority.label).foregroundStyle(Palette.ink)
+                Spacer(minLength: 12)
+                Text(verbatim: shown).foregroundStyle(Palette.dawn)
+                Image(systemName: "chevron.up.chevron.down").font(.caption).foregroundStyle(.secondary)
+            }
+            .contentShape(.rect)
+        }
+        .accessibilityIdentifier("task.priority")
     }
 
     @ViewBuilder private func history(_ detail: TaskDetail) -> some View {
@@ -248,7 +275,7 @@ public struct TaskDetailView: View {
     }
 
     @ViewBuilder private func actions(_ detail: TaskDetail) -> some View {
-        let shown = [detail.relaunch, detail.cancel, detail.reopen, detail.archive].compactMap(\.self).filter { !store.optimistic.hides($0.id) }
+        let shown = [detail.resume, detail.relaunch, detail.pause, detail.cancel, detail.reopen, detail.archive].compactMap(\.self).filter { !store.optimistic.hides($0.id) }
         if !shown.isEmpty {
             VStack(spacing: 10) {
                 ForEach(shown, id: \.id) { action in
@@ -263,6 +290,8 @@ public struct TaskDetailView: View {
     private static func symbol(for action: WireAction) -> String {
         switch action.command {
         case "relaunch": "arrow.triangle.2.circlepath"
+        case "resume": "play.circle"
+        case "pause": "pause.circle"
         case "cancel": "xmark.circle"
         case "reopen": "arrow.clockwise"
         default: "archivebox"
@@ -272,6 +301,7 @@ public struct TaskDetailView: View {
     private static func tint(for action: WireAction) -> Color {
         switch action.command {
         case "relaunch": Palette.sage
+        case "resume": Palette.sky
         case "cancel": Palette.rose
         case "reopen": Palette.sky
         default: Palette.slate

@@ -111,6 +111,7 @@ pub(super) fn task_row(task: &Task, context: &RenderContext<'_>) -> super::Row {
     row.badges.push(super::Label { text: state(task, context).into(), tone });
     row.badges.extend(common::scheduled_mark(task, context.domain, context.lang));
     row.actions.extend(relaunch_action(task, context));
+    row.actions.extend(super::pacing::task_actions(task, context));
     if context.client == super::Client::Tui {
         row.subtitle = None;
         row.trailing = context.live.task_history.get(&task.id.0)
@@ -307,6 +308,7 @@ fn request_row(request: &Request, forest: &Forest<'_>, context: &RenderContext<'
                 row.badges.insert(0, super::Label { text: state(task, context).into(), tone });
                 row.badges.extend(common::scheduled_mark(task, context.domain, context.lang));
                 row.actions.extend(relaunch_action(task, context));
+                row.actions.extend(super::pacing::task_actions(task, context));
                 row.children = match children.as_mut_slice() {
                     [only] if only.id == task.id.0 => std::mem::take(&mut only.children),
                     _ => children,
@@ -813,6 +815,11 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
         ));
     }
     let mut task_options = vec![Fact {
+            label: t!(context.lang, "Priority", "Prioridad").into(),
+            value: super::pacing::priority_text(task.priority, context.lang).into(),
+            tone: None,
+            link: None,
+        }, Fact {
             label: t!(context.lang, "PR handling", "Gestión de PR").into(),
             value: if task.review_prs {
                 t!(context.lang, "Review before merge", "Revisar antes de fusionar")
@@ -921,6 +928,8 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
         }
     }
     actions.extend(relaunch_action(task, context));
+    actions.extend(super::pacing::task_actions(task, context));
+    actions.extend(super::pacing::priority_action(task, context));
     for available in context.domain.task_actions(&task.id).unwrap_or_default() {
         if !available.enabled {
             continue;

@@ -3,9 +3,10 @@ import AlondraFeed
 import ComposableArchitecture
 import Foundation
 
-/// The Fleet tab: the orchestrator, every node grouped by project, a search the daemon answers,
-/// and the actions the daemon offers on each node: interrupting it while it works, closing it. A
-/// closed node leaves the list at once and returns if the daemon does not close it.
+/// The Fleet tab: the orchestrator, the fleet's pace, every node grouped by project, a search the
+/// daemon answers, and the actions the daemon offers: interrupting, pausing, resuming or closing a
+/// node, and changing how many work at once. A closed node leaves the list at once and returns if
+/// the daemon does not close it.
 @Reducer
 public struct FleetFeature: Sendable {
     public init() {}
@@ -17,14 +18,16 @@ public struct FleetFeature: Sendable {
         public var query = ""
         public var actions: ActionFeature.State
         public var optimistic = Optimistic()
+        /// The option label chosen for each action sent with one, shown until the daemon answers.
+        public var choices: [String: String] = [:]
 
         public init() {
             actions = .ios()
         }
 
         public var isSearching: Bool { !query.trimmingCharacters(in: .whitespaces).isEmpty }
-        public var overview: FleetOverview? { screen.document.map { FleetOverview(document: $0).hiding(optimistic) } }
-        public var results: FleetOverview? { search?.document.map { FleetOverview(document: $0).hiding(optimistic) } }
+        public var overview: FleetOverview? { screen.document.map { FleetOverview(document: $0).hiding(optimistic, choices: choices) } }
+        public var results: FleetOverview? { search?.document.map { FleetOverview(document: $0).hiding(optimistic, choices: choices) } }
     }
 
     public enum Action {
@@ -35,6 +38,7 @@ public struct FleetFeature: Sendable {
         case queryChanged(String)
         case searchStarted(String)
         case perform(WireAction)
+        case choose(WireAction, ActionOption)
         case actions(ActionFeature.Action)
         case follow(AlondraContract.Link)
         /// A node's own screen closed it and left; the app delivers the close.
@@ -100,6 +104,9 @@ public struct FleetFeature: Sendable {
                 return .send(.search(.task))
             case .perform(let wire):
                 return .concatenate(.send(.actions(.present(wire))), .send(.actions(.submit)))
+            case let .choose(wire, option):
+                if let id = wire.id { state.choices[id] = option.label }
+                return .concatenate(.send(.actions(.present(wire))), .send(.actions(.chooseOption(option.id))), .send(.actions(.submit)))
             case .actions(.response(let response)) where response.outcome == .rejected && state.actions.action?.id?.hasPrefix("close:") == true:
                 return .send(.delegate(.closeRefused(response.message ?? String(localized: "Couldn’t close the node"))))
             case .actions(.sent(let request)), .handedOff(let request):

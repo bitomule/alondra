@@ -290,6 +290,13 @@ final class MacWorkspaceSnapshotTests: XCTestCase {
         assertWindow(size: CGSize(width: 900, height: 520)) { MacServiceDetail(presentation: store) }
     }
 
+    func test_fleet_paceWithQueuedAndPausedTasks() throws {
+        let store = try presentation(detail: "fleet-pacing-mac")
+        assertWindow(size: CGSize(width: 900, height: 900)) { MacServiceDetail(presentation: store) }
+        let spanish = try presentation(detail: "fleet-pacing-es-mac")
+        assertWindow(size: CGSize(width: 900, height: 900), spanish: true, variants: [.light]) { MacServiceDetail(presentation: spanish) }
+    }
+
     func test_connectionLost_signOutIncomplete() {
         assertWindow(size: CGSize(width: 900, height: 600)) {
             ConnectionLostView(problem: .signOutIncomplete, retry: {}, settings: {}, signOut: {})

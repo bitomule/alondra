@@ -161,7 +161,7 @@ fn action_receipts() -> &'static tokio::sync::Mutex<std::collections::HashMap<(S
 fn is_external(verb: Verb) -> bool {
     matches!(verb, Verb::Reply | Verb::AskPr | Verb::Conflicts | Verb::Msg | Verb::Relaunch | Verb::Close | Verb::Interrupt |
         Verb::OrchRetry | Verb::OrchAck | Verb::OrchStop | Verb::SchedRun | Verb::SchedToggle |
-        Verb::SchedDelete | Verb::SchedSave | Verb::NewRequest | Verb::CloseUnmerged | Verb::Pause | Verb::Resume)
+        Verb::SchedDelete | Verb::SchedSave | Verb::NewRequest | Verb::CloseUnmerged | Verb::Pause | Verb::Resume | Verb::SetLimit)
 }
 
 async fn execute_action(
@@ -270,6 +270,7 @@ async fn execute_external(
         Verb::CloseUnmerged => "PR closed",
         Verb::Pause => "Paused",
         Verb::Resume => "Resumed",
+        Verb::SetLimit => "Limit updated",
         _ => return Ok(no_longer_available(lang, "This action is no longer available")),
     };
     let stamp = if lang == Lang::Es { match action.verb {
@@ -280,7 +281,7 @@ async fn execute_external(
         Verb::SchedRun => "Ejecución iniciada", Verb::SchedToggle => "Tarea actualizada",
         Verb::SchedDelete => "Tarea eliminada", Verb::SchedSave => "Tarea guardada",
         Verb::NewRequest => "Solicitud enviada", Verb::CloseUnmerged => "PR cerrada",
-        Verb::Pause => "En pausa", Verb::Resume => "Reanudado", _ => stamp,
+        Verb::Pause => "En pausa", Verb::Resume => "Reanudado", Verb::SetLimit => "Límite actualizado", _ => stamp,
     }} else { stamp };
     let to_applied = |status: u16, body: Value| -> Value { applied(action.verb, lang, stamp, state.revision, status, body) };
     match action.verb {
@@ -441,6 +442,20 @@ async fn execute_external(
             }
             match crate::fleet_gate::release_queued(domain, home, &TaskId(action.subject.clone()), &crate::orchestrate::ClaudeCli).await {
                 Ok(()) => Ok(to_applied(200, json!({"resumed": action.subject}))),
+                Err(why) => Ok(error_value_lang(lang, "conflict", why)),
+            }
+        }
+        Verb::SetLimit => {
+            let limit = match request.option_id.as_deref() {
+                Some(alondra_core::options::AUTO) => alondra_core::options::NodeLimit::Auto,
+                Some(count) => match count.parse::<u32>() {
+                    Ok(count) if (1..=alondra_core::options::MAX_WORKING_NODES).contains(&count) => alondra_core::options::NodeLimit::Fixed(count),
+                    _ => return Ok(rejected_field(lang, "option_id", "Choose an option")),
+                },
+                None => return Ok(rejected_field(lang, "option_id", "Choose an option")),
+            };
+            match crate::fleet_gate::set_node_limit(home, limit) {
+                Ok(()) => Ok(to_applied(200, json!({"max_working_nodes": limit}))),
                 Err(why) => Ok(error_value_lang(lang, "conflict", why)),
             }
         }
@@ -1138,6 +1153,16 @@ fn map_action(
                 Some((Command::CloseRequest { request_id: action.subject.clone().into(), answer: None, withdrawn: true, title: None }, stamp("Withdrawn", "Retirada")))
             } else { None }
         }
+        Verb::SetPriority => {
+            let task = state.tasks.get(&TaskId(action.subject.clone())).filter(|task| !task.state.terminal())?;
+            let priority = match request.option_id.as_deref()? {
+                "high" => alondra_core::domain::TaskPriority::High,
+                "normal" => alondra_core::domain::TaskPriority::Normal,
+                "low" => alondra_core::domain::TaskPriority::Low,
+                _ => return None,
+            };
+            Some((Command::SetPriority { task_id: task.id.clone(), priority }, stamp("Priority changed", "Prioridad cambiada")))
+        }
         Verb::Cancel => {
             let task = state.tasks.get(&TaskId(action.subject.clone()))?;
             Some((Command::CancelTask { task_id: task.id.clone() }, stamp("Cancelled", "Cancelada")))
@@ -1321,6 +1346,8 @@ fn applied_outcome(verb: Verb, lang: Lang, stamp: &str, accepted: Accepted) -> O
         Verb::SchedSave => Outcome::done(say("Scheduled task saved.", "Tarea programada guardada.")),
         Verb::Pause => Outcome::done(say("Paused. Alondra does not resume it by itself: only you do.", "En pausa. Alondra no la reanuda sola: solo tú.")),
         Verb::Resume => Outcome::done(say("Resumed now, even over the limit.", "Reanudada ya, aunque se pase del límite.")),
+        Verb::SetLimit => Outcome::done(say("Limit changed: it counts from now on.", "Límite cambiado: cuenta desde ahora.")),
+        Verb::SetPriority => Outcome::done(say("Priority changed. The queue follows it now.", "Prioridad cambiada. La cola ya la sigue.")),
         _ => Outcome::done(stamp.to_owned()),
     }
 }
@@ -1490,6 +1517,9 @@ fn localize<'a>(lang: Lang, message: &'a str) -> &'a str {
         "This node has no open task" => "Este nodo no tiene ninguna tarea abierta",
         "This task is not queued" => "Esta tarea no está en cola",
         "This node or task is not paused" => "Este nodo o esta tarea no está en pausa",
+        "Alondra could not read options.toml" => "Alondra no pudo leer options.toml",
+        "Alondra could not write options.toml" => "Alondra no pudo escribir options.toml",
+        "options.toml has an error: fix it first" => "options.toml tiene un error: corrígelo primero",
         "Alondra could not start the task" => "Alondra no pudo arrancar la tarea",
         "This item has changed" => "Este elemento ha cambiado",
         "This action is no longer available" => "Esta acción ya no está disponible",
@@ -1605,6 +1635,63 @@ mod tests {
         let database = crate::domain_database_migration::active_path(home);
         let connection = rusqlite::Connection::open(database).unwrap();
         connection.query_row("SELECT count(*) FROM semantic_receipts", [], |row| row.get(0)).unwrap()
+    }
+
+    fn pacing_request(state: &alondra_core::domain::DomainState, verb: Verb, subject: &str, option: &str, lang: &str) -> ActionRequest {
+        ActionRequest {
+            protocol: VIEWS_PROTOCOL,
+            command_id: format!("5f0c2d9e-8d0b-4c71-9b0e-{}", crate::auth::random_hex(6)),
+            data_epoch: state.data_epoch.0.clone(),
+            client: "ios".into(),
+            lang: lang.into(),
+            action_id: ActionId::new(verb, subject, state.revision, None).unwrap().to_string(),
+            option_id: Some(option.into()),
+            input: ActionInput::default(),
+        }
+    }
+
+    #[tokio::test]
+    async fn the_limit_chosen_in_an_app_is_written_to_options_and_a_task_priority_changes_from_its_detail() {
+        use std::fs;
+        let home = std::env::temp_dir().join(format!("alondra-pacing-action-{}", crate::auth::random_hex(8)));
+        fs::create_dir(&home).unwrap();
+        struct TestHome(std::path::PathBuf);
+        impl Drop for TestHome {
+            fn drop(&mut self) { let _ = fs::remove_dir_all(&self.0); }
+        }
+        let _home = TestHome(home.clone());
+        let options = alondra_core::options::path_in(&home);
+        fs::write(&options, "# mine\n[defaults]\neffort = \"light\"\n").unwrap();
+        let domain = std::sync::Arc::new(crate::domain_runtime::DomainRuntime::open(&home).unwrap());
+        let client = crate::client_routes::Client::open(domain.clone(), &home, Default::default());
+        let state = domain.state().unwrap();
+
+        let reply = execute_action(&domain, &client, &home, "test-device", pacing_request(&state, Verb::SetLimit, "limit", "4", "es"), None, || Ok(())).await.unwrap();
+        assert_eq!(reply["outcome"], "applied", "{reply}");
+        assert_eq!(fs::read_to_string(&options).unwrap(), "# mine\nmax_working_nodes = 4\n\n[defaults]\neffort = \"light\"\n");
+        assert_eq!(domain.live.gate.live(&domain, alondra_core::now_millis()).unwrap().fixed, Some(4));
+        let reply = execute_action(&domain, &client, &home, "test-device", pacing_request(&state, Verb::SetLimit, "limit", "auto", "en"), None, || Ok(())).await.unwrap();
+        assert_eq!(reply["outcome"], "applied", "{reply}");
+        assert!(fs::read_to_string(&options).unwrap().contains("max_working_nodes = \"auto\""));
+        let reply = execute_action(&domain, &client, &home, "test-device", pacing_request(&state, Verb::SetLimit, "limit", "13", "es"), None, || Ok(())).await.unwrap();
+        assert_ne!(reply["outcome"], "applied", "{reply}");
+        fs::write(&options, "[defaults\n").unwrap();
+        let reply = execute_action(&domain, &client, &home, "test-device", pacing_request(&state, Verb::SetLimit, "limit", "3", "es"), None, || Ok(())).await.unwrap();
+        assert!(reply.to_string().contains("options.toml tiene un error: corrígelo primero"), "{reply}");
+        assert_eq!(fs::read_to_string(&options).unwrap(), "[defaults\n", "a broken file is never overwritten");
+
+        apply_seed_command(&domain, Actor::User { user_id: "user".into() }, "create-request", Command::CreateRequest {
+            request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false,
+        });
+        apply_seed_command(&domain, Actor::User { user_id: "user".into() }, "create-task", Command::CreateTask {
+            task_id: "task-a".into(), request_id: "request".into(), title: "Work".into(),
+            agent_id: None, review_prs: false, dependencies: Default::default(), stack: None,
+        });
+        let state = domain.state().unwrap();
+        let reply = execute_action(&domain, &client, &home, "test-device", pacing_request(&state, Verb::SetPriority, "task-a", "high", "es"), None, || Ok(())).await.unwrap();
+        assert_eq!(reply["outcome"], "applied", "{reply}");
+        let task = &domain.state().unwrap().tasks[&TaskId("task-a".into())];
+        assert_eq!(task.priority, alondra_core::domain::TaskPriority::High);
     }
 
     #[tokio::test]

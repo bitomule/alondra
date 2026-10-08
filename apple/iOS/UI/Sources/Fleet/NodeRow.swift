@@ -15,8 +15,8 @@ struct NodeRow: View {
                 HStack(spacing: 8) {
                     Glyph(symbol: node.isOrchestrator ? "point.3.connected.trianglepath.dotted" : NodeStyle.symbol(tone: node.state?.tone),
                           tint: tint, size: .small, pulse: !node.isOrchestrator && node.state?.tone == .info)
-                    if let state = node.state {
-                        Text(state.text).font(.caption.weight(.semibold)).foregroundStyle(tint).lineLimit(1)
+                    if let state = node.stamp ?? node.state?.text {
+                        Text(state).font(.caption.weight(.semibold)).foregroundStyle(tint).lineLimit(1)
                     }
                     Spacer(minLength: 8)
                     if node.pending > 0 { WaitingBadge(count: Int(node.pending)) }

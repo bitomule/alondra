@@ -38,9 +38,13 @@ pub enum Verb {
     Pause,
     /// Resume a paused node or task at once, even over the limit.
     Resume,
+    /// Set how many nodes work at once on this Mac: `auto` or a number, as `option_id`.
+    SetLimit,
+    /// Set a task's priority: `high`, `normal` or `low`, as `option_id`.
+    SetPriority,
 }
 impl Verb {
-    pub const ALL: [Self; 32] = [
+    pub const ALL: [Self; 34] = [
         Self::Ans,
         Self::Read,
         Self::Accept,
@@ -73,6 +77,8 @@ impl Verb {
         Self::Retake,
         Self::Pause,
         Self::Resume,
+        Self::SetLimit,
+        Self::SetPriority,
     ];
     pub fn as_str(self) -> &'static str {
         match self {
@@ -108,6 +114,8 @@ impl Verb {
             Self::Retake => "retake",
             Self::Pause => "pause",
             Self::Resume => "resume",
+            Self::SetLimit => "set_limit",
+            Self::SetPriority => "set_priority",
         }
     }
     fn parse(value: &str) -> Option<Self> {

@@ -4,7 +4,7 @@
   "view": "task",
   "key": "task:t-651c38484cd2f34e74d5107ba05f7f15",
   "client": "ios",
-  "version": "vae8b7cd47b5870a4",
+  "version": "vb616e0687c9c1a80",
   "cursor": "cursor-1",
   "title": "Restore the native review experience",
   "status": {
@@ -176,6 +176,10 @@
           "type": "facts",
           "items": [
             {
+              "label": "Priority",
+              "value": "Normal"
+            },
+            {
               "label": "PR handling",
               "value": "No PR review; merge still needs your authorization"
             }
@@ -195,6 +199,46 @@
               "label": "Relaunch",
               "style": "primary",
               "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true
+            },
+            {
+              "id": "set_priority:t-651c38484cd2f34e74d5107ba05f7f15@6",
+              "label": "Priority",
+              "style": "secondary",
+              "presentation": "menu",
+              "options": [
+                {
+                  "id": "high",
+                  "label": "High",
+                  "description": "Starts before Normal and Low",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                },
+                {
+                  "id": "normal",
+                  "label": "Normal · now",
+                  "description": "The default",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                },
+                {
+                  "id": "low",
+                  "label": "Low",
+                  "description": "Starts when nothing else waits",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                }
+              ],
               "input": {
                 "kind": "none"
               },

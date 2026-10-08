@@ -4,7 +4,7 @@
   "view": "fleet",
   "key": "fleet",
   "client": "ios",
-  "version": "va5dd8cebc93c66e9",
+  "version": "ve20043c331398193",
   "cursor": "cursor-1",
   "title": "Fleet",
   "status": {
@@ -236,6 +236,23 @@
                 "button": "Interrupt"
               },
               "enabled": true
+            },
+            {
+              "id": "pause:zeta-worker@6",
+              "label": "Pause",
+              "style": "secondary",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "confirm": {
+                "title": "Pause this node?",
+                "message": "It stops what it is running now and keeps its task. Alondra does not resume it by itself: only you do.",
+                "button": "Pause"
+              },
+              "enabled": true,
+              "stamp": "Paused"
             },
             {
               "id": "close:zeta-worker@6",

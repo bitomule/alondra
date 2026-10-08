@@ -326,6 +326,7 @@ pub(super) fn node_row(agent: &crate::domain::Agent, context: &RenderContext<'_>
         }
         row.children.extend(live.and_then(activity));
         row.actions.extend(interrupt_action(&agent.id.0, context));
+        row.actions.extend(super::pacing::node_actions(&agent.id, context));
     } else {
         if let Some(task) = task {
             row.title = task.title.clone();
@@ -440,19 +441,25 @@ fn pacing_section(context: &RenderContext<'_>) -> Option<super::Section> {
             false => tf!(lang, "Mac: memory {free}% free", "Mac: memoria {free} % libre"),
         });
     }
-    let mut header = common::row("pacing", "fleet", Icon::Machine, parts.join(" · "), None);
+    let mut header = common::row("pacing", "fleet", Icon::Machine, parts.join(" · "), Some(super::pacing::limit_text(pacing, lang)));
     header.link = None;
     let mut items = vec![Item::Row(header)];
     for place in &pacing.queued {
         let Some(task) = context.domain.tasks.get(&crate::domain::TaskId(place.task_id.clone())) else { continue };
-        items.push(Item::Row(common::row(&format!("queued:{}", task.id.0), &format!("task:{}", task.id.0), Icon::Task,
-            task.title.clone(), Some(common::queued_label(place, lang)))));
+        let mut row = common::row(&format!("queued:{}", task.id.0), &format!("task:{}", task.id.0), Icon::Task,
+            task.title.clone(), Some(common::queued_label(place, lang)));
+        row.actions.extend(super::pacing::pause_queued_action(task, context));
+        items.push(Item::Row(row));
     }
     for paused in &pacing.paused {
         let Some(task) = context.domain.tasks.get(&crate::domain::TaskId(paused.task_id.clone())) else { continue };
-        items.push(Item::Row(common::row(&format!("paused:{}", task.id.0), &format!("task:{}", task.id.0), Icon::Task,
-            task.title.clone(), Some(common::paused_label(paused, lang)))));
+        let mut row = common::row(&format!("paused:{}", task.id.0), &format!("task:{}", task.id.0), Icon::Task,
+            task.title.clone(), Some(common::paused_label(paused, lang)));
+        row.actions.extend(super::pacing::resume_action(paused, context));
+        items.push(Item::Row(row));
     }
+    let limit = super::pacing::limit_action(pacing, context).into_iter().collect();
+    items.push(Item::Actions(super::ActionBar { actions: limit }));
     Some(common::section("pacing", None, items))
 }
 
@@ -722,6 +729,7 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
     }
     let mut actions: Vec<_> = message_action(id, context).into_iter().collect();
     actions.extend(interrupt_action(id, context));
+    actions.extend(super::pacing::node_actions(&AgentId(id.into()), context));
     actions.extend(close_action(id, context));
     if !actions.is_empty() {
         view.sections.push(common::section(

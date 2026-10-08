@@ -78,6 +78,16 @@ fn answered(lang: crate::i18n::Lang, outcome: Outcome) -> App {
     app
 }
 
+fn fleet_at_its_limit(lang: crate::i18n::Lang, fixture: &str) -> App {
+    crate::i18n::set_for_this_thread(lang);
+    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
+    let mut app = App::new(tx);
+    app.screen = Screen::Fleet;
+    app.on_msg(Msg::ViewHome(Ok(serde_json::from_value(view_fixture(fixture)).unwrap())));
+    app.reconcile();
+    app
+}
+
 #[test]
 #[ignore = "writes the review pictures: make tui-shots"]
 fn tui_shots() {
@@ -108,6 +118,11 @@ fn tui_shots() {
             ("3-refused", answered(lang, Outcome::refused(&Refusal::UpstreamPrOpen { number: 11 }, view_lang))),
             ("4-changed", answered(lang, changed)),
         ];
+        let pacing = if es { "fleet-pacing-es-tui.json" } else { "fleet-pacing-tui.json" };
+        let fleet = fleet_at_its_limit(lang, pacing);
+        let mut limit_menu = fleet_at_its_limit(lang, pacing);
+        limit_menu.on_key(KeyEvent::new(KeyCode::Char('L'), KeyModifiers::SHIFT));
+        let shots = shots.into_iter().chain([("5-fleet-pace", fleet), ("6-fleet-limit", limit_menu)]);
         for (shot, mut app) in shots {
             let html = page(&mut app);
             std::fs::write(out.join(format!("{shot}-{name}.html")), html).unwrap();

@@ -826,3 +826,20 @@ fn a_blocked_task_action_says_why_instead_of_asking_first() {
     assert_eq!(flash.kind, FlashKind::Error);
     assert!(app.posted.borrow().is_empty());
 }
+
+#[test]
+fn the_fleet_limit_opens_a_numbered_menu_and_sends_the_chosen_value() {
+    let (domain, mut live) = busy();
+    live.pacing = Some(views::LivePacing { working: 3, limit: 6, fixed: None, auto: 6, memory_free: Some(40), tight: false,
+        queued: vec![], paused: vec![] });
+    let mut app = app_on(Screen::Fleet, build(&domain, &live, "fleet"));
+    app.on_key(KeyEvent::new(KeyCode::Char('L'), KeyModifiers::SHIFT));
+    let menu = app.card_menu.clone().expect("L opens the limit's menu");
+    assert_eq!(menu.entries.len(), 9);
+    assert!(app.posted.borrow().is_empty(), "nothing is sent before a value is chosen");
+    press(&mut app, KeyCode::Char('5'));
+    let sent = app.posted.borrow().clone();
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    assert!(sent[0].1["action_id"].as_str().unwrap().starts_with("set_limit:limit@"), "{sent:?}");
+    assert_eq!(sent[0].1["option_id"], "5", "the menu runs Automatic, then 2 to 9 around the automatic 6");
+}

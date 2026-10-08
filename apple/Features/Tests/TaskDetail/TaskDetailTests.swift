@@ -52,7 +52,7 @@ final class TaskDetailTests: XCTestCase {
         XCTAssertEqual(detail.state, "Node closed")
         XCTAssertEqual(detail.relaunch?.label, "Relaunch")
         XCTAssertEqual(detail.relaunch?.enabled, true)
-        XCTAssertEqual(detail.actions.map(\.command), ["relaunch", "cancel"])
+        XCTAssertEqual(detail.actions.map(\.command), ["relaunch", "set_priority", "cancel"])
         XCTAssertNil(TaskDetail(document: try Fixtures.document("task-ios")).relaunch, "a task with a node offers none")
     }
 
@@ -66,7 +66,8 @@ final class TaskDetailTests: XCTestCase {
         XCTAssertEqual(detail.pullRequests.elements.count, 1)
         XCTAssertEqual(detail.dependencies.elements.count, 0)
         XCTAssertNil(detail.node, "this task has no node yet")
-        XCTAssertEqual(detail.actions.map(\.command), ["cancel"], "an open task can only be cancelled")
+        XCTAssertEqual(detail.actions.map(\.command), ["set_priority", "cancel"], "an open task can only change its priority or be cancelled")
+        XCTAssertEqual(detail.priority?.options.map(\.id), ["high", "normal", "low"])
     }
 
     func testASectionTheScreenDoesNotKnowIsIgnored() throws {
@@ -138,6 +139,35 @@ final class TaskDetailTests: XCTestCase {
         await store.receive(\.actions.settled)
         XCTAssertFalse(store.state.optimistic.hides(cancel.id))
         await store.receive(\.delegate.failed, "The task already finished")
+    }
+
+    @MainActor
+    func testChoosingAPrioritySendsItsLevelAndShowsAtOnce() async throws {
+        let sent = SentActions()
+        let document = try Fixtures.document("task-pacing-ios-es")
+        let store = TestStore(initialState: TaskDetailFeature.State(key: ViewKey(rawValue: document.key))) {
+            TaskDetailFeature()
+        } withDependencies: {
+            $0.viewsClient.observe = ViewsClient.showing(document)
+            $0.viewsClient.perform = { request in sent.record(request); return try Responses.applied("Prioridad cambiada") }
+            $0.uuid = .incrementing
+        }
+        store.exhaustivity = .off
+        await store.send(.task)
+        await store.finish()
+        await store.skipReceivedActions()
+        let priority = try XCTUnwrap(store.state.detail?.priority)
+        XCTAssertEqual(priority.options.map(\.label), ["Alta · ahora", "Normal", "Baja"])
+        XCTAssertEqual(store.state.detail?.options.elements.first?.value, "Alta")
+        XCTAssertEqual(store.state.detail?.pause?.label, "Pausar", "a queued task can be taken out of the queue")
+        let low = try XCTUnwrap(priority.options.last)
+
+        await store.send(.choose(priority, low))
+        await store.skipReceivedActions()
+        XCTAssertEqual(store.state.choices[priority.id ?? ""], "Baja")
+        XCTAssertTrue(store.state.optimistic.hides(priority.id), "the new level shows before the daemon's view")
+        XCTAssertEqual(sent.requests.map(\.actionId), [priority.id])
+        XCTAssertEqual(sent.requests.map(\.optionId), ["low"])
     }
 
     @MainActor
