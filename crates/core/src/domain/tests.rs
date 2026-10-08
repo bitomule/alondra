@@ -3877,3 +3877,27 @@ fn a_node_waiting_on_a_task_is_resumed_once_when_that_task_is_done() {
     let later = exec(&mut s, Actor::System, Command::ObserveAgent { agent_id: "b".into(), connected: true }).unwrap();
     assert!(!later.effects.iter().any(|e| matches!(e, DomainEffect::NotifyAgent { .. })));
 }
+
+#[test]
+fn preview_matches_execution_without_changing_the_input() {
+    let state = fixture();
+    let commands = [Command::CancelTask { task_id: "t".into() },
+        Command::ReopenTask { task_id: "t".into() },
+        Command::ArchiveTask { task_id: "t".into(), archived: true },
+        Command::CancelTask { task_id: "missing".into() }];
+    for actor in [user(), agent(), Actor::System, Actor::Orchestrator { generation: 0 }] {
+        for command in &commands {
+            for (protocol, epoch, revision) in [(PROTOCOL_VERSION, state.data_epoch.clone(), state.revision),
+                (0, state.data_epoch.clone(), state.revision),
+                (PROTOCOL_VERSION, "other-epoch".into(), state.revision),
+                (PROTOCOL_VERSION, state.data_epoch.clone(), state.revision + 1)] {
+                let envelope = CommandEnvelope { protocol_version: protocol, data_epoch: epoch,
+                    command_id: "preview-check".into(), expected_revision: revision, command: command.clone() };
+                let untouched = state.clone();
+                let mut applied = state.clone();
+                assert_eq!(state.preview(&actor, &envelope), applied.execute(&actor, &envelope));
+                assert_eq!(state, untouched);
+            }
+        }
+    }
+}

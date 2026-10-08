@@ -1,5 +1,5 @@
 load("@crates//:defs.bzl", "all_crate_deps")
-load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
 
 rust_library(
     name = "alondra_core",
@@ -18,4 +18,13 @@ rust_test(
     compile_data = glob(["fixtures/*.jsonl", "fixtures/*.json"]) + ["//fixtures/views:all", "//fixtures/views:cards"],
     crate = ":alondra_core",
     edition = "2024",
+)
+
+# Opt-in profiling driver; ordinary tests do not execute it.
+rust_binary(
+    name = "projection_cost",
+    testonly = True,
+    srcs = ["benches/projection_cost.rs"],
+    edition = "2024",
+    deps = [":alondra_core"] + all_crate_deps(normal = True),
 )

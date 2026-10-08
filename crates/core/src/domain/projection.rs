@@ -111,9 +111,8 @@ impl DomainState {
         presentation: Option<InteractionId>,
         head: Option<String>,
     ) -> AvailableAction {
-        let mut scratch = self.clone();
-        let error = scratch
-            .execute(
+        let error = self
+            .preview(
                 &Actor::User {
                     user_id: "projection-user".into(),
                 },
