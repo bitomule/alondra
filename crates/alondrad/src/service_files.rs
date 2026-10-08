@@ -247,7 +247,7 @@ impl Transfers {
     }
 }
 impl Transfers {
-    /// A step of an upload as the v2 routes name it. What `finish` answers is the attachment
+    /// A step of an upload as the domain routes name it. What `finish` answers is the attachment
     /// a v2 command carries.
     pub fn dispatch_domain(&self, home: &Path, sender: &str, route: &str, body: Value) -> Result<Value> {
         let finished = self.dispatch(home, sender, route, body)?;

@@ -1,4 +1,4 @@
-//! The v2-only orchestrator executor: one durable inbox batch per print-mode
+//! The orchestrator executor: one durable inbox batch per print-mode
 //! Claude invocation of `mcp-orchestrator`, with a bearer bound to this
 //! execution. The batch is claimed from the domain outbox before Claude runs
 //! and finished as handed, retryable or uncertain afterwards; finishing an
@@ -18,7 +18,9 @@ use std::time::Duration;
 
 const MAX_BATCH_MESSAGES: usize = 32;
 const MAX_BATCH_BYTES: usize = 128 * 1024;
-const FILE: &str = "orchestrator-v2.json";
+pub(crate) const FILE: &str = "orchestrator.json";
+/// The runtime record's name before it was renamed; startup moves it to `FILE`.
+pub(crate) const PREVIOUS_FILE: &str = "orchestrator-v2.json";
 const SUMMARY_LINE: usize = 200;
 const MAX_SUMMARY_BYTES: usize = 32 * 1024;
 
@@ -315,7 +317,7 @@ impl Executor {
             }
         }).await;
         if let Err(error) = self.domain.revoke_execution(&run_id) {
-            log!("v2 orchestrator: cannot persist the revoked capability of {run_id}: {error:#}");
+            log!("orchestrator: cannot persist the revoked capability of {run_id}: {error:#}");
         }
         let mut runtime = load(&self.home)?;
         let Some(run) = runtime.active_run.clone() else { return Ok(()) };
@@ -449,7 +451,7 @@ impl Executor {
             Some(BATCH_CONTINUE),
         );
         if let Err(error) = raised {
-            log!("v2 orchestrator: could not raise the failed batch's Problem: {error:?}");
+            log!("orchestrator: could not raise the failed batch's Problem: {error:?}");
         }
     }
 
@@ -474,7 +476,7 @@ impl Executor {
                         other => Err(anyhow::anyhow!("unknown option {other}")),
                     };
                     if let Err(error) = applied {
-                        log!("v2 orchestrator: answer {} to {id} no longer applies: {error:#}", answer.option_id);
+                        log!("orchestrator: answer {} to {id} no longer applies: {error:#}", answer.option_id);
                     }
                 }
                 None if active.as_deref() != Some(run_id) => {
@@ -583,7 +585,7 @@ pub(crate) async fn run(domain: Arc<DomainRuntime>, home: PathBuf, claude_home: 
         tokio::time::sleep(Duration::from_secs(5)).await;
     };
     if let Err(error) = executor.recover() {
-        return Err(error.context("v2 orchestrator recovery failed"));
+        return Err(error.context("orchestrator recovery failed"));
     }
     if let Some(session) = load(&home).ok().and_then(|runtime| runtime.session_id) {
         executor.bind_session(&session);
@@ -592,7 +594,7 @@ pub(crate) async fn run(domain: Arc<DomainRuntime>, home: PathBuf, claude_home: 
     let mut usage = executor.domain.live.usage_pause.subscribe();
     loop {
         if let Err(error) = executor.tick(&ownership).await {
-            log!("v2 orchestrator: {error:#}");
+            log!("orchestrator: {error:#}");
             tokio::time::sleep(Duration::from_secs(5)).await;
         }
         tokio::select! {
@@ -663,7 +665,7 @@ exit 1"#;
     }
 
     fn fixture(body: &str) -> Fixture {
-        let root = std::env::temp_dir().join(format!("alondra-v2-orchestrator-{}", crate::auth::random_hex(8)));
+        let root = std::env::temp_dir().join(format!("alondra-orchestrator-{}", crate::auth::random_hex(8)));
         let home = root.join("home");
         std::fs::create_dir_all(&home).unwrap();
         let (claude_home, executable) = stub_claude(&root, body);

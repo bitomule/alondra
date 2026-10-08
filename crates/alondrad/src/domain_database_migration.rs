@@ -21,7 +21,7 @@ use std::{
 };
 
 pub(crate) const DATABASE: &str = "domain.db";
-const SOURCE: &str = "domain-v2.db";
+pub(crate) const SOURCE: &str = "domain-v2.db";
 const NEXT: &str = "domain.db.next";
 pub(crate) const MARKER: &str = "database-migration.json";
 const APPLICATION_ID: i64 = 0x414c4432;
@@ -682,6 +682,14 @@ fn validate_regular(path: &Path) -> Result<()> {
         path.display()
     );
     Ok(())
+}
+
+/// When the move to `DATABASE` was committed; from then on `SOURCE` is only a recovery copy.
+pub(crate) fn committed_at(home: &Path) -> Result<Option<std::time::SystemTime>> {
+    match read_marker(home)? {
+        Some(marker) if marker.phase == Phase::Committed => Ok(Some(fs::metadata(home.join(MARKER))?.modified()?)),
+        _ => Ok(None),
+    }
 }
 
 fn read_marker(home: &Path) -> Result<Option<Marker>> {

@@ -49,7 +49,7 @@ struct Fixture {
 impl Fixture {
     async fn start() -> Self {
         let home = std::env::temp_dir().join(format!(
-            "alondra-v2-vertical-{}",
+            "alondra-vertical-{}",
             crate::auth::random_hex(8)
         ));
         std::fs::create_dir(&home).unwrap();

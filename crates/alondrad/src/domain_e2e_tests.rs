@@ -168,7 +168,7 @@ fn tool_args(epoch: &str, id: &str, expected_revision: u64, command: Value) -> V
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_scheduled_session_commands_and_receives_its_answer_once_across_a_daemon_restart() {
-    let root = std::env::temp_dir().join(format!("alondra-v2-e2e-{}", crate::auth::random_hex(8)));
+    let root = std::env::temp_dir().join(format!("alondra-e2e-{}", crate::auth::random_hex(8)));
     let home = root.join("home");
     std::fs::create_dir_all(&home).unwrap();
     std::fs::create_dir_all(root.join("projects")).unwrap();
@@ -300,7 +300,7 @@ async fn eventually(what: &str, condition: impl Fn() -> bool) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_node_mod_reports_through_the_cli_and_its_open_connection_is_its_liveness() {
-    let root = std::env::temp_dir().join(format!("alondra-v2-mods-{}", crate::auth::random_hex(8)));
+    let root = std::env::temp_dir().join(format!("alondra-mods-{}", crate::auth::random_hex(8)));
     let home = root.join("home");
     std::fs::create_dir_all(&home).unwrap();
     let daemon = Daemon::start(&home).await;
@@ -372,7 +372,7 @@ async fn a_node_mod_reports_through_the_cli_and_its_open_connection_is_its_liven
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_message_after_a_daemon_restart_reaches_the_reconnected_node_under_an_id_the_mod_has_not_seen() {
-    let root = std::env::temp_dir().join(format!("alondra-v2-restart-{}", crate::auth::random_hex(8)));
+    let root = std::env::temp_dir().join(format!("alondra-restart-{}", crate::auth::random_hex(8)));
     let home = root.join("home");
     std::fs::create_dir_all(&home).unwrap();
     let patience = std::time::Duration::from_secs(10);
@@ -419,7 +419,7 @@ fn alondra_as_claude(home: &Path, port: u16, lang: &str, args: &[&str]) -> std::
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn what_claude_sends_the_orchestrator_is_maintenance_and_its_answer_is_no_card() {
-    let root = std::env::temp_dir().join(format!("alondra-v2-claude-send-{}", crate::auth::random_hex(8)));
+    let root = std::env::temp_dir().join(format!("alondra-claude-send-{}", crate::auth::random_hex(8)));
     let home = root.join("home");
     std::fs::create_dir_all(&home).unwrap();
     let daemon = Daemon::start(&home).await;

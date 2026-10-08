@@ -1110,7 +1110,7 @@ mod tests {
     async fn pair_approves_a_service_phone_with_the_macs_signature() {
         use base64::engine::general_purpose::URL_SAFE_NO_PAD;
         let home = std::env::temp_dir().join(format!(
-            "alondra-v2-service-approval-{}",
+            "alondra-service-approval-{}",
             crate::auth::random_hex(8)
         ));
         std::fs::create_dir_all(home.join("service-keys")).unwrap();
@@ -1154,7 +1154,7 @@ mod tests {
         use base64::engine::general_purpose::URL_SAFE_NO_PAD;
         use std::os::unix::fs::PermissionsExt;
         let home = std::env::temp_dir().join(format!(
-            "alondra-v2-service-reload-{}",
+            "alondra-service-reload-{}",
             crate::auth::random_hex(8)
         ));
         std::fs::create_dir_all(home.join("service-keys")).unwrap();
@@ -1218,7 +1218,7 @@ mod tests {
     #[test]
     fn a_store_reset_for_another_schema_still_boots() {
         let home = std::env::temp_dir().join(format!(
-            "alondra-v2-bootstrap-reset-{}",
+            "alondra-bootstrap-reset-{}",
             crate::auth::random_hex(8)
         ));
         std::fs::create_dir(&home).unwrap();
@@ -1235,7 +1235,7 @@ mod tests {
     #[tokio::test]
     async fn standalone_router_reads_real_domain_and_has_no_legacy_routes() {
         let home = std::env::temp_dir().join(format!(
-            "alondra-v2-bootstrap-{}",
+            "alondra-bootstrap-{}",
             crate::auth::random_hex(8)
         ));
         std::fs::create_dir(&home).unwrap();
@@ -1695,7 +1695,7 @@ mod tests {
     #[tokio::test]
     async fn a_paired_local_device_is_the_user_for_commands_and_schedule_writes() {
         let home = std::env::temp_dir().join(format!(
-            "alondra-v2-local-user-{}",
+            "alondra-local-user-{}",
             crate::auth::random_hex(8)
         ));
         std::fs::create_dir(&home).unwrap();
@@ -2256,7 +2256,7 @@ mod tests {
     #[test]
     fn committed_boot_requires_existing_database() {
         let home = std::env::temp_dir().join(format!(
-            "alondra-v2-bootstrap-missing-{}",
+            "alondra-bootstrap-missing-{}",
             crate::auth::random_hex(8)
         ));
         std::fs::create_dir(&home).unwrap();

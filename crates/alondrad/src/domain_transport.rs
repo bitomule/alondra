@@ -39,7 +39,7 @@ pub(crate) async fn serve(listener: UnixListener, domain: Arc<DomainRuntime>) ->
         let domain = domain.clone();
         tokio::spawn(async move {
             if let Err(error) = handle(stream, &domain).await {
-                log!("v2 local hook failed: {error:#}");
+                log!("local hook failed: {error:#}");
             }
         });
     }
@@ -702,7 +702,7 @@ mod tests {
     struct Fixture(PathBuf);
     impl Fixture {
         fn new() -> Self {
-            let home = std::env::temp_dir().join(format!("alondra-v2-transport-{}", crate::auth::random_hex(8)));
+            let home = std::env::temp_dir().join(format!("alondra-transport-{}", crate::auth::random_hex(8)));
             std::fs::create_dir(&home).unwrap();
             Self(home)
         }

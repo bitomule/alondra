@@ -314,7 +314,7 @@ mod tests {
     #[tokio::test]
     async fn domain_outbox_exits_on_sql_failure() {
         let home = std::env::temp_dir().join(format!(
-            "alondra-v2-outbox-failure-{}",
+            "alondra-outbox-failure-{}",
             crate::auth::random_hex(8)
         ));
         std::fs::create_dir_all(&home).unwrap();
@@ -395,7 +395,7 @@ mod tests {
     #[tokio::test]
     async fn domain_outbox_hands_user_hint_and_leaves_producer_pending_without_transport() {
         let home = std::env::temp_dir().join(format!(
-            "alondra-v2-only-outbox-{}",
+            "alondra-only-outbox-{}",
             crate::auth::random_hex(8)
         ));
         std::fs::create_dir_all(&home).unwrap();
@@ -604,7 +604,7 @@ mod tests {
     #[tokio::test]
     async fn user_hint_is_handed_without_claiming_a_read_or_acceptance() {
         let home = std::env::temp_dir().join(format!(
-            "alondra-v2-delivery-{}",
+            "alondra-delivery-{}",
             crate::auth::random_hex(16)
         ));
         let config = alondra_core::config::Config::resolve(

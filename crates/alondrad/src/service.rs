@@ -661,7 +661,7 @@ impl Service {
                     || self.require_device_approval(&envelope.sender, device, transport),
                 )
             } else {
-                bail!("v2-only service command path is not approved");
+                bail!("domain service command path is not approved");
             };
             let bytes = self.encode_response(envelope, device, &result, request)?;
             self.journal
@@ -915,12 +915,12 @@ impl Service {
                     || crate::views::routes::approved_read_path(&request.path)
                     || crate::views::actions::approved_path(&request.method, &request.path))
                     && approved_method(&request).is_ok(),
-                "v2-only service route is not approved"
+                "domain service route is not approved"
             );
         } else {
             anyhow::ensure!(
                 request.path != PUSH_BINDING_ROUTE,
-                "a v2 route is not served by the legacy daemon"
+                "a domain route is not served by the legacy daemon"
             );
         }
         let body = serde_json::to_vec(e)?;
@@ -1271,7 +1271,7 @@ impl Service {
             let routes = self.routes.as_ref().context("client routes unavailable")?;
             let route = crate::client_routes::parse_write(&request.path)
                 .or_else(|| crate::client_routes::parse_put(&request.path))
-                .context("v2-only write is not approved")?;
+                .context("domain write is not approved")?;
             let body = request.body.as_ref().context("write body required")?;
             let reply = routes
                 .write(&format!("device:{sender}"), route, body, None, &|| {
@@ -1283,7 +1283,7 @@ impl Service {
         }
         anyhow::ensure!(
             request.method == "GET" && request.body.is_none(),
-            "v2-only read must be GET"
+            "domain read must be GET"
         );
         let client_read = match &self.routes {
             Some(client) if crate::views::feed::approved_path(&request.path) => {
@@ -1345,7 +1345,7 @@ impl Service {
             self.require_device_approval(sender, &device, transport)?;
             return Ok(json!({"status":409,"body":{
                 "code":"incompatible_protocol",
-                "message":"Schedule v2 requires v2-only domain authority",
+                "message":"Schedules require the domain store's authority",
                 "current_revision":null,"subject":null
             }}));
         }
@@ -4804,7 +4804,7 @@ agreement_key = "{}"
                     json!({"push_binding": binding})
                 ), Transport::Relay)
                 .is_err(),
-            "the legacy daemon does not serve v2 routes"
+            "the legacy daemon does not serve domain routes"
         );
         let domain = Arc::new(crate::domain_runtime::DomainRuntime::open(&home).unwrap());
         let service = service.with_domain(domain);
@@ -6874,7 +6874,7 @@ agreement_key = "{}"
     async fn committed_service_accepts_only_encrypted_domain_routes_and_fences_revoked_reader() {
         use std::os::unix::fs::PermissionsExt;
         let home =
-            std::env::temp_dir().join(format!("alondra-v2-service-{}", crate::auth::random_hex(8)));
+            std::env::temp_dir().join(format!("alondra-service-{}", crate::auth::random_hex(8)));
         std::fs::create_dir_all(&home).unwrap();
         let domain = Arc::new(crate::domain_runtime::DomainRuntime::open(&home).unwrap());
         let phone_signing = SigningKey::from_slice(&[3u8; 32]).unwrap();
@@ -6969,7 +6969,7 @@ agreement_key = "{}"
     async fn committed_service_relays_the_client_reads_and_nothing_else_outside_the_domain() {
         use std::os::unix::fs::PermissionsExt;
         let home = std::env::temp_dir().join(format!(
-            "alondra-v2-client-relay-{}",
+            "alondra-client-relay-{}",
             crate::auth::random_hex(8)
         ));
         std::fs::create_dir_all(&home).unwrap();

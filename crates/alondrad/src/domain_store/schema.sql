@@ -70,7 +70,6 @@ CREATE TABLE domain_message_user_targets(message_id INTEGER PRIMARY KEY REFERENC
 CREATE TABLE delivery_attempts(id INTEGER PRIMARY KEY,message_id INTEGER NOT NULL REFERENCES domain_messages(id),state TEXT NOT NULL CHECK(state IN('dispatching','uncertain','handed','retryable','discarded')),version INTEGER NOT NULL CHECK(version BETWEEN 1 AND 9007199254740991),reason TEXT);
 CREATE TABLE domain_outbox(message_id INTEGER PRIMARY KEY REFERENCES domain_messages(id),state TEXT NOT NULL CHECK(state IN('pending','dispatching','uncertain','handed','retryable','discarded')));
 -- A legacy Store::open fails while creating its events index, before replay/writes.
-CREATE VIEW events AS SELECT revision AS seq,0 AS at,'domain_v2' AS kind,NULL AS session,command AS body FROM command_audit;
 CREATE TABLE interaction_attachments(
  interaction_id TEXT NOT NULL REFERENCES interactions(id),kind TEXT NOT NULL CHECK(kind IN('interaction','answer','feedback')),
  feedback_ordinal INTEGER,ordinal INTEGER NOT NULL CHECK(ordinal>=0),id TEXT NOT NULL,name TEXT NOT NULL,content_digest TEXT NOT NULL,content_reference TEXT NOT NULL,bytes INTEGER NOT NULL CHECK(bytes BETWEEN 0 AND 67108864),

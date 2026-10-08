@@ -34,6 +34,7 @@ mod domain_sessions;
 mod domain_store;
 mod domain_transport;
 mod hook_socket;
+mod home_renames;
 mod http;
 mod hub;
 mod issues;
@@ -168,6 +169,7 @@ fn main() -> Result<()> {
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn run(diagnostic: Option<String>) -> Result<()> {
     let config = Config::load().map_err(|e| anyhow!("config.toml unreadable: {e}"))?;
+    home_renames::apply(&config.home)?;
     domain_cutover::refuse_legacy_home(&config.home)?;
     let (database_migrated, _source_fence) =
         domain_database_migration::migrate_and_fence(&config.home)?;
@@ -280,34 +282,34 @@ where
     tokio::select! {
         result = github => {
             match result {
-                Ok(Ok(())) => anyhow::bail!("v2 GitHub observer stopped unexpectedly"),
-                Ok(Err(error)) => anyhow::bail!("v2 GitHub observer failed: {error:#}"),
-                Err(error) => anyhow::bail!("v2 GitHub observer panicked: {error}"),
+                Ok(Ok(())) => anyhow::bail!("GitHub observer stopped unexpectedly"),
+                Ok(Err(error)) => anyhow::bail!("GitHub observer failed: {error:#}"),
+                Err(error) => anyhow::bail!("GitHub observer panicked: {error}"),
             }
         },
         result = transport => {
             match result {
-                Ok(Ok(())) => anyhow::bail!("v2 producer transport stopped unexpectedly"),
-                Ok(Err(error)) => anyhow::bail!("v2 producer transport failed: {error:#}"),
-                Err(error) => anyhow::bail!("v2 producer transport panicked: {error}"),
+                Ok(Ok(())) => anyhow::bail!("producer transport stopped unexpectedly"),
+                Ok(Err(error)) => anyhow::bail!("producer transport failed: {error:#}"),
+                Err(error) => anyhow::bail!("producer transport panicked: {error}"),
             }
         },
         result = server => {
             result?;
-            anyhow::bail!("v2-only domain listener stopped unexpectedly")
+            anyhow::bail!("domain listener stopped unexpectedly")
         },
         result = outbox => {
             match result {
-                Ok(Ok(())) => anyhow::bail!("v2 outbox worker stopped unexpectedly"),
-                Ok(Err(error)) => anyhow::bail!("v2 outbox worker failed: {error:#}"),
-                Err(error) => anyhow::bail!("v2 outbox worker panicked: {error}"),
+                Ok(Ok(())) => anyhow::bail!("outbox worker stopped unexpectedly"),
+                Ok(Err(error)) => anyhow::bail!("outbox worker failed: {error:#}"),
+                Err(error) => anyhow::bail!("outbox worker panicked: {error}"),
             }
         },
         result = scheduler => {
             match result {
-                Ok(Ok(())) => anyhow::bail!("v2 Schedule worker stopped unexpectedly"),
-                Ok(Err(error)) => anyhow::bail!("v2 Schedule worker failed: {error:#}"),
-                Err(error) => anyhow::bail!("v2 Schedule worker panicked: {error}"),
+                Ok(Ok(())) => anyhow::bail!("Schedule worker stopped unexpectedly"),
+                Ok(Err(error)) => anyhow::bail!("Schedule worker failed: {error:#}"),
+                Err(error) => anyhow::bail!("Schedule worker panicked: {error}"),
             }
         },
         result = async {
@@ -317,9 +319,9 @@ where
             }
         } => {
             match result.expect("orchestrator future has task") {
-                Ok(Ok(())) => anyhow::bail!("v2 orchestrator executor stopped unexpectedly"),
-                Ok(Err(error)) => anyhow::bail!("v2 orchestrator executor failed: {error:#}"),
-                Err(error) => anyhow::bail!("v2 orchestrator executor panicked: {error}"),
+                Ok(Ok(())) => anyhow::bail!("orchestrator executor stopped unexpectedly"),
+                Ok(Err(error)) => anyhow::bail!("orchestrator executor failed: {error:#}"),
+                Err(error) => anyhow::bail!("orchestrator executor panicked: {error}"),
             }
         },
         result = async {
@@ -329,8 +331,8 @@ where
             }
         } => {
             match result.expect("connector future has task") {
-                Ok(()) => anyhow::bail!("v2 encrypted service connector stopped unexpectedly"),
-                Err(error) => anyhow::bail!("v2 encrypted service connector failed: {error}"),
+                Ok(()) => anyhow::bail!("encrypted service connector stopped unexpectedly"),
+                Err(error) => anyhow::bail!("encrypted service connector failed: {error}"),
             }
         },
     }
@@ -360,7 +362,7 @@ fn retire_empty_older_sidecar(home: &Path) -> Result<Option<std::path::PathBuf>>
     {
         return Ok(None);
     }
-    let kept = home.join(format!("domain-v2-retired-{}", unix_seconds()));
+    let kept = home.join(format!("domain-retired-{}", unix_seconds()));
     std::fs::create_dir(&kept)?;
     let files = ["domain-v2.db", "domain-v2.db-wal", "domain-v2.db-shm"];
     for name in files {
@@ -475,7 +477,7 @@ async fn run_domain(config: &Config) -> Result<()> {
     let app = domain_bootstrap::router(state)
         .layer(axum::middleware::from_fn_with_state(auth, auth::guard));
     log!(
-        "v2-only domain listener on http://{addr}, data in {}",
+        "domain listener on http://{addr}, data in {}",
         config.home.display()
     );
     let server = axum::serve(

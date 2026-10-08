@@ -40,7 +40,7 @@ pub(super) fn fixture_json(name: &str) -> Value {
 
 impl Fixture {
     pub(super) async fn start() -> Self {
-        let home = std::env::temp_dir().join(format!("alondra-v2-client-{}", crate::auth::random_hex(8)));
+        let home = std::env::temp_dir().join(format!("alondra-client-{}", crate::auth::random_hex(8)));
         std::fs::create_dir(&home).unwrap();
         drop(DomainRuntime::open(&home).unwrap());
         let auth = Auth::open(&home).unwrap();

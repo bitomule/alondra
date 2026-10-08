@@ -183,6 +183,9 @@ const TASK_WORKTREES: &str = "CREATE TABLE IF NOT EXISTS task_worktrees(\
  dir TEXT NOT NULL CHECK(length(dir)>0),\
  at INTEGER NOT NULL);";
 
+const EVENTS_VIEW: &str = "DROP VIEW IF EXISTS events;\
+ CREATE VIEW events AS SELECT revision AS seq,0 AS at,'domain' AS kind,NULL AS session,command AS body FROM command_audit;";
+
 /// What a command carries into the transaction that commits it.
 pub(crate) enum Attached<'a> {
     None,
@@ -458,6 +461,7 @@ impl DomainStore {
         tx.execute_batch(LAUNCH_REFUSALS)?;
         tx.execute_batch(INHERITED_WORKTREES)?;
         tx.execute_batch(TASK_WORKTREES)?;
+        tx.execute_batch(EVENTS_VIEW)?;
         if version != 0 {
             tx.execute_batch("DROP TRIGGER IF EXISTS schedule_launch_transition;")?;
             tx.execute_batch(SCHEDULE_LAUNCH_TRANSITION)?;

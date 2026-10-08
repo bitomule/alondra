@@ -74,7 +74,7 @@ struct TemporaryStore(std::path::PathBuf);
 impl TemporaryStore {
     fn new() -> Self {
         let path = std::env::temp_dir().join(format!(
-            "alondra-v2-acceptance-{}",
+            "alondra-acceptance-{}",
             crate::auth::random_hex(16)
         ));
         std::fs::create_dir(&path).unwrap();

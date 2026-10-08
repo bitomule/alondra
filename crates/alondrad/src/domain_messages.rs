@@ -199,7 +199,7 @@ mod tests {
     }
 
     fn world() -> (Fixture, Arc<DomainRuntime>) {
-        let home = std::env::temp_dir().join(format!("alondra-v2-messages-{}", crate::auth::random_hex(8)));
+        let home = std::env::temp_dir().join(format!("alondra-messages-{}", crate::auth::random_hex(8)));
         std::fs::create_dir_all(&home).unwrap();
         let domain = Arc::new(DomainRuntime::open(&home).unwrap());
         let run = |actor: Actor, id: &str, command: Command| {
