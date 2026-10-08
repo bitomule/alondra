@@ -70,6 +70,8 @@ pub enum Command {
         body: String,
         #[serde(default)]
         auto_merge: bool,
+        #[serde(default)]
+        maintenance: bool,
     },
     CloseRequest {
         request_id: RequestId,

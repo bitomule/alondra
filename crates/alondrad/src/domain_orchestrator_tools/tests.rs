@@ -35,7 +35,7 @@ fn world() -> Fixture {
     std::fs::create_dir_all(&project).unwrap();
     let domain = Arc::new(DomainRuntime::open(&home).unwrap());
     command(&domain, Actor::System, Command::RegisterAgent { agent_id: "agent-b".into(), name: "Instance B".into() });
-    command(&domain, user(), Command::CreateRequest { request_id: "r".into(), body: "Make the editor readable".into(), auto_merge: false });
+    command(&domain, user(), Command::CreateRequest { request_id: "r".into(), body: "Make the editor readable".into(), auto_merge: false, maintenance: false });
     command(&domain, user(), Command::TitleRequest { request_id: "r".into(), title: "Readable editor".into() });
     command(&domain, user(), Command::CreateTask { task_id: "t".into(), request_id: "r".into(), title: "Editor colours".into(),
         agent_id: None, review_prs: false, dependencies: Default::default(), stack: None });
@@ -397,7 +397,7 @@ fn the_choices_are_the_ones_recorded_with_the_request() {
     let f = world();
     let state = f.domain.state().unwrap();
     let envelope = CommandEnvelope { protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: "asked".into(),
-        expected_revision: state.revision, command: Command::CreateRequest { request_id: "r2".into(), body: "Fix the crash".into(), auto_merge: false } };
+        expected_revision: state.revision, command: Command::CreateRequest { request_id: "r2".into(), body: "Fix the crash".into(), auto_merge: false, maintenance: false } };
     f.domain.execute_with(&user(), &envelope, None, Some(&hard_choices()), || Ok(())).unwrap();
     assert_eq!(request_choices(&f.domain, &"r2".into()).unwrap(), Some(hard_choices()));
     assert_eq!(request_choices(&f.domain, &"r".into()).unwrap(), None);
@@ -1098,7 +1098,7 @@ async fn a_review_that_asks_for_changes_twice_shows_its_rounds_and_serious_findi
     drop(DomainRuntime::open(&home).unwrap());
     let daemon = crate::domain_bootstrap::DomainDaemon::open(&home).unwrap();
     let domain = daemon.domain();
-    command(&domain, user(), Command::CreateRequest { request_id: "r".into(), body: "Make the editor readable".into(), auto_merge: false });
+    command(&domain, user(), Command::CreateRequest { request_id: "r".into(), body: "Make the editor readable".into(), auto_merge: false, maintenance: false });
     command(&domain, user(), Command::TitleRequest { request_id: "r".into(), title: "Readable editor".into() });
     command(&domain, user(), Command::CreateTask { task_id: "t".into(), request_id: "r".into(), title: "Editor colours".into(),
         agent_id: None, review_prs: false, dependencies: Default::default(), stack: None });
@@ -1179,10 +1179,20 @@ fn replace_body() -> LaunchBody {
     serde_json::from_value(json!({"task": "t", "replace": true, "model": "opus", "reason": "Needs opus"})).unwrap()
 }
 
-/// Waiting for the old node's turn can outlast the call: the orchestrator gets its answer at once
-/// and hears how the replacement ended.
+async fn until_replaced(f: &Fixture) {
+    for _ in 0..500 {
+        if f.domain.state().unwrap().tasks[&TaskId::from("t")].agent_id == Some(AgentId::from(SESSION)) {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!("the replacement never finished");
+}
+
+/// Waiting for the old node's turn can outlast the call: the orchestrator gets its answer at once,
+/// and a replacement that finishes tells it nothing more.
 #[tokio::test]
-async fn a_replacement_answers_before_the_old_node_stops_and_tells_how_it_ended() {
+async fn a_replacement_answers_before_the_old_node_stops_and_finishes_without_a_notice() {
     let f = world();
     let actor = the_orchestrator(&f.domain);
     connected_node_on_the_task(&f);
@@ -1190,17 +1200,22 @@ async fn a_replacement_answers_before_the_old_node_stops_and_tells_how_it_ended(
     let claude = Arc::new(FakeClaude { turn: std::time::Duration::from_secs(5), ..FakeClaude::loading(&f.domain) });
     let answer = launch_replacing(f.domain.clone(), f.home.clone(), actor.clone(), replace_body(), |_| None, claude.clone()).await.unwrap();
     assert_eq!(answer["replacing"], true, "{answer}");
-    assert!(answer["message"].as_str().unwrap().contains("you are told when the new node works on the task"), "{answer}");
+    assert!(answer["message"].as_str().unwrap().contains("you are told only if it did not start"), "{answer}");
     assert!(claude.stopped.lock().unwrap().is_empty(), "answered while the old node is still on its turn");
 
     let again = launch_replacing(f.domain.clone(), f.home.clone(), actor, replace_body(), |_| None, claude.clone()).await.unwrap_err();
     assert_eq!(again.code, "conflict", "a second launch waits for the replacement under way: {}", again.message);
 
     f.domain.live.observe(&json!({"session_id": "agent-b", "hook_event_name": "Stop"}));
-    let told = until_told(&f, "replaced-").await;
-    assert!(told[0].contains("“Editor colours” (t) has its new node, ab1234cd"), "{}", told[0]);
-    assert_eq!(f.domain.state().unwrap().tasks[&TaskId::from("t")].agent_id, Some(AgentId::from(SESSION)));
-    assert!(f.domain.live.begin_launch("t"), "the launch guard is released once it ends");
+    until_replaced(&f).await;
+    assert!(told_orchestrator(&f, "replaced-").is_empty(), "a finished replacement is no news");
+    for _ in 0..500 {
+        if f.domain.live.begin_launch("t") {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!("the launch guard is released once it ends");
 }
 
 #[tokio::test]
@@ -1252,18 +1267,16 @@ async fn a_replacement_whose_new_node_does_not_start_says_the_task_has_no_node()
     assert!(refused.message.contains("The session's mod did not report within") && refused.message.contains("has no node now"), "{}", refused.message);
 }
 
-/// The call can be dropped as soon as the replacement starts: the orchestrator still hears how it
-/// ended.
+/// The call can be dropped as soon as the replacement starts: the replacement still finishes.
 #[tokio::test]
-async fn a_dropped_replace_call_still_tells_the_orchestrator_how_it_ended() {
+async fn a_dropped_replace_call_still_finishes_the_replacement() {
     let f = world();
     let actor = the_orchestrator(&f.domain);
     connected_node_on_the_task(&f);
     let claude = Arc::new(FakeClaude::loading(&f.domain));
     let call = launch_replacing(f.domain.clone(), f.home.clone(), actor, replace_body(), |_| None, claude);
     assert!(tokio::time::timeout(std::time::Duration::ZERO, call).await.is_err(), "the call is dropped before it answers");
-    let told = until_told(&f, "replaced-").await;
-    assert!(told[0].contains("has its new node"), "{}", told[0]);
+    until_replaced(&f).await;
 }
 
 /// A panic in the replacement gives the launch guard back and tells the orchestrator.

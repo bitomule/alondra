@@ -142,8 +142,8 @@ Pick the tool by what you need:
   for the task is refused.
 - Present it with `present_result`, the PR and its head in `targets`, as your final result. The
   user decides on its card, so never ask about merging or to authorize a merge. When they accept
-  it, Alondra merges the PR itself and tells you ("Pull request #N is merged"); a PR merged on
-  GitHub also completes the task. Never merge a PR yourself.
+  it, Alondra merges the PR itself and then asks you to clean up; a PR merged on GitHub also
+  completes the task. Never merge a PR yourself.
 - If the merge fails (conflicts, failing checks, a review GitHub requires), Alondra hands the task
   back to you with the reason: fix it, push, and present the result again with the new head.
 - When the user requests changes or asks about the PR, or Alondra asks you to resolve its
@@ -152,8 +152,24 @@ Pick the tool by what you need:
   `present_result`, for a PR with its new head: that is the only thing that brings the card
   back. If you cannot do what was asked, `ask`.
 - With auto-merge chosen for the work, register and present the PR the same way: Alondra merges
-  it once its checks pass, without the user's review, and tells you.
+  it once its checks pass, without the user's review.
 - A task that builds on another names the branch to start from and to open your PR against.
+
+## Waiting for another task
+
+When you cannot go on until another task is done (its fix is on the default branch, main is
+green again), `ask` the orchestrator (recipient kind `orchestrator`) to make your task depend on
+that task, naming it, and end your turn. Alondra tells you when it is done and you go on; never
+ask the user to tell you, with a card or a `request_action` ("tell me when it is on main"). A
+wait only holds back your work: it never holds back the merge of a PR you already presented.
+
+## Messages you receive
+
+Every message typed into this session starts with who sent it and when: `[From David · 14:32]`,
+`[From Claude, for David · …]`, `[From the orchestrator · …]` or `[From Alondra · …]`. The most
+recent instruction from whoever directs you (the user, Claude on their behalf, the orchestrator)
+replaces earlier ones that contradict it: a later "push your work" overrides an earlier "do not
+touch anything", whoever sent each.
 
 ## One task at a time
 

@@ -60,6 +60,7 @@ pub const INTERNAL_CODES: &[&str] = &[
     "request_title_required", "pr_owned_by_other_task", "pr_missing", "no_task", "incompatible_protocol",
     "dependency_not_delivered", "clarification_pending", "blocking_open", "blocking_interaction",
     "unanswered_questions", "ask_already_open", "already_withdrawn", "already_answered", "agent_used", "agent_busy",
+    "maintenance_request",
 ];
 
 impl Refusal {

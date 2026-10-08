@@ -235,7 +235,7 @@ fn failure(domain: &DomainRuntime, timing: &Timing, now: i64, task: &Task, agent
     row.rm_started_at = None;
     if cleanup {
         let text = close_failed_text(reason, &task.id, timing.retry.as_secs() / 60);
-        let _ = domain.live.pushes.message(&agent.0, &text, false);
+        let _ = domain.live.pushes.message(&agent.0, crate::node_push::ALONDRA, &text, false);
     }
     if row.failures >= MAX_FAILURES && row.problem_id.is_none() {
         row.problem_id = raise_card(domain, task, reason, cleanup);

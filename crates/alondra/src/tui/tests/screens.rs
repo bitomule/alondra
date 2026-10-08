@@ -381,7 +381,7 @@ fn held_card(hold: alondra_core::domain::Hold, spec: alondra_core::domain::CardS
         state.execute(&actor, &envelope).unwrap();
     };
     let user = || Actor::User { user_id: "u".into() };
-    run(user(), Command::CreateRequest { request_id: "r".into(), body: "Ship the release".into(), auto_merge: false });
+    run(user(), Command::CreateRequest { request_id: "r".into(), body: "Ship the release".into(), auto_merge: false, maintenance: false });
     run(Actor::System, Command::RegisterAgent { agent_id: "agent-a".into(), name: "release".into() });
     run(user(), Command::CreateTask {
         task_id: "t".into(), request_id: "r".into(), title: "Release".into(),

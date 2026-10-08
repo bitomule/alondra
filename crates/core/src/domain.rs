@@ -19,4 +19,4 @@ pub use model::*;
 pub use projection::*;
 pub use refusal::*;
 pub use schedule::*;
-pub use rules::{ALONDRA_MERGES, ENDED_UNANSWERED_PREFIX, cancelled_notice, delivery_withdrawn_for_questions, cleanup_request, merge_failed_text, merge_failure, merged_notice};
+pub use rules::{ALONDRA_MERGES, ENDED_UNANSWERED_PREFIX, cancelled_notice, delivery_withdrawn_for_questions, dependencies_done_notice, cleanup_request, merge_failed_text, merge_failure, merged_notice};

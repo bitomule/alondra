@@ -231,8 +231,8 @@ pub(crate) async fn launch_replacing<L: crate::orchestrate::Launcher + Send + 's
             });
             let outcome = replacement.await.unwrap_or_else(|failure| Err(DomainError::new("launch_failed", format!(
                 "the replacement stopped unexpectedly ({failure}); check the task with fleet before launching it again"))));
-            if reached.load(std::sync::atomic::Ordering::SeqCst) {
-                tell_replaced(&domain, &task, &outcome);
+            if let (true, Err(error)) = (reached.load(std::sync::atomic::Ordering::SeqCst), &outcome) {
+                tell_replace_failed(&domain, &task, error);
             }
             outcome
         }
@@ -242,21 +242,18 @@ pub(crate) async fn launch_replacing<L: crate::orchestrate::Launcher + Send + 's
     }
     Ok(json!({"task": task, "replacing": true, "message": format!(
         "Replacing the node of “{}”: Alondra waits for its turn to end (interrupting it if it takes too long), stops it and \
-         starts the new node in its folder. This can take a few minutes; you are told when the new node works on the task, or \
-         why it did not start.", task_title(&domain, &task))}))
+         starts the new node in its folder. This can take a few minutes; fleet shows the new node once it works on the task, and you \
+         are told only if it did not start.", task_title(&domain, &task))}))
 }
 
 fn task_title(domain: &DomainRuntime, task: &TaskId) -> String {
     domain.state().ok().and_then(|state| state.tasks.get(task).map(|task| task.title.clone())).unwrap_or_else(|| task.0.clone())
 }
 
-fn tell_replaced(domain: &DomainRuntime, task: &TaskId, outcome: &Result<Value, DomainError>) {
+/// Only a replacement that did not finish is told: one that did shows in fleet and the task.
+fn tell_replace_failed(domain: &DomainRuntime, task: &TaskId, error: &DomainError) {
     let title = task_title(domain, task);
-    let text = match outcome {
-        Ok(answer) => format!("“{title}” ({task}) has its new node, {}: it continues the work of the node it replaced.",
-            answer["short_id"].as_str().unwrap_or_default()),
-        Err(error) => format!("The replacement of the node of “{title}” ({task}) did not finish: {}", error.message),
-    };
+    let text = format!("The replacement of the node of “{title}” ({task}) did not finish: {}", error.message);
     if let Err(error) = domain.tell_orchestrator(&format!("replaced-{task}-{}", crate::auth::random_hex(4)), text) {
         log!("could not tell the orchestrator how the replacement of {task}'s node ended: {error:?}");
     }

@@ -1,7 +1,8 @@
 //! Alondra merges the PR of a final delivery, with the same `gh` the watcher reads it with: once
 //! the user accepts the delivery (or presses Merge), or, for an auto-merge Request, once its
-//! checks pass. Every merge first takes a durable system claim, which checks the head, the base,
-//! the dependencies and the stack, and the delivery is read again right before `gh pr merge`. A
+//! checks pass. Every merge first takes a durable system claim, which checks the head, the base
+//! and the stack (dependencies only hold back a start), and the delivery is read again right
+//! before `gh pr merge`. A
 //! merge counts only when GitHub reports the PR merged. A merge GitHub refuses goes back to the
 //! node with GitHub's reason, as feedback on that delivery.
 use crate::domain_github::{GhCli, execute_system, pr_url};

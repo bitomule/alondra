@@ -58,7 +58,7 @@ fn register_agent(s: &mut DomainState, id: &str) {
 fn fixture() -> DomainState {
     let mut s = DomainState::new("epoch");
     register_agent(&mut s, "a");
-    ok(&mut s, user(), Command::CreateRequest { request_id: "r".into(), body: "Build it".into(), auto_merge: false });
+    ok(&mut s, user(), Command::CreateRequest { request_id: "r".into(), body: "Build it".into(), auto_merge: false, maintenance: false });
     s.requests.get_mut(&"r".into()).unwrap().title = Some("Build it".into());
     task(&mut s, "t", "a");
     s
@@ -410,7 +410,7 @@ fn only_alondra_raises_a_problem() {
 #[test]
 fn closing_with_an_answer_tells_the_user() {
     let mut s = fixture();
-    ok(&mut s, user(), Command::CreateRequest { request_id: "q-r".into(), body: "Is it in review?".into(), auto_merge: false });
+    ok(&mut s, user(), Command::CreateRequest { request_id: "q-r".into(), body: "Is it in review?".into(), auto_merge: false, maintenance: false });
     let out = ok(&mut s, orchestrator(), Command::CloseRequest {
         request_id: "q-r".into(), answer: Some("Yes, since Monday".into()), withdrawn: false, title: Some("Review status".into()),
     });
@@ -420,7 +420,7 @@ fn closing_with_an_answer_tells_the_user() {
     assert_eq!(told.len(), 1);
     assert_eq!((told[0].card.kind, told[0].card.need.as_str(), told[0].body.as_str()), (CardKind::Know, "Review status", "Yes, since Monday"));
     assert!(out.effects.iter().any(|e| matches!(e, DomainEffect::NotifyUser { interaction_id, .. } if interaction_id == &told[0].id)));
-    ok(&mut s, user(), Command::CreateRequest { request_id: "told".into(), body: "Encrypt images?".into(), auto_merge: false });
+    ok(&mut s, user(), Command::CreateRequest { request_id: "told".into(), body: "Encrypt images?".into(), auto_merge: false, maintenance: false });
     ok(&mut s, orchestrator(), inform("told-answer", Scope::Orchestrator { request_id: Some("told".into()) }, "Yes, with R2"));
     ok(&mut s, orchestrator(), Command::CloseRequest {
         request_id: "told".into(), answer: Some("Yes, with R2".into()), withdrawn: false, title: None,

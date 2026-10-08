@@ -191,8 +191,7 @@ fn system(actor: &Actor) -> Result<()> {
     }
 }
 /// What a node that tries to merge or complete its own Task is told.
-pub const ALONDRA_MERGES: &str = "Alondra merges pull requests and completes tasks itself: deliver with present_result, and Alondra tells you when the pull request is merged.";
-const MERGE_ACCEPTED: &str = "The user accepted your result. Alondra is merging its pull request now and tells you when it is merged; there is nothing for you to merge.";
+pub const ALONDRA_MERGES: &str = "Alondra merges pull requests and completes tasks itself: deliver with present_result. Once it is merged Alondra asks you to clean up; if the merge fails, it hands the task back with the reason.";
 const MERGE_FAILED: &str = "Alondra could not merge pull request #";
 const MERGE_FAILED_FIX: &str = ". Fix what stops the merge";
 /// What a node is told when Alondra cannot merge its PR, which the task also shows.
@@ -219,7 +218,12 @@ the worktree. Use the project's own tools for it (its clean commands, scripts or
 Do not change, commit or push anything else. Then call cleanup_done with task_id {task}. If you do \
 not, Alondra closes the session after a while anyway.", task = task.0)
 }
-/// What a node is told when its task is cancelled.
+/// What a node that waited on other Tasks is told when they are done.
+pub fn dependencies_done_notice(titles: &[&str]) -> String {
+    let names: Vec<String> = titles.iter().map(|title| format!("“{title}”")).collect();
+    format!("What you were waiting for is done: {}. Go on with your task; update your branch from the default branch \
+first if you need what it changed.", names.join(", "))
+}
 pub fn delivery_withdrawn_for_questions() -> String {
     "You asked the user something after your final delivery, so that delivery was withdrawn and the task \
 is in progress again. When the answers arrive, present your result again as it is if nothing changes, or \
@@ -930,6 +934,19 @@ impl DomainState {
         }
         Ok(())
     }
+    /// A node that waited on other Tasks goes on by itself once they are done: nobody has to
+    /// tell it, and it is told once, by the command that ended the wait.
+    fn resume_waiting_nodes(&self, before: &DomainState, effects: &mut Vec<DomainEffect>) {
+        for t in self.tasks.values() {
+            let waited = before.tasks.get(&t.id).is_some_and(|b| b.state == TaskState::WaitingDependency);
+            if !waited || t.state != TaskState::Running || t.dependencies.is_empty() || t.final_presentation.is_some() {
+                continue;
+            }
+            let titles: Vec<&str> = t.dependencies.iter()
+                .filter_map(|dep| self.tasks.get(dep).map(|d| d.title.as_str())).collect();
+            let _ = self.notify(&t.id, None, &dependencies_done_notice(&titles), effects);
+        }
+    }
     fn dependency_graph(&self) -> Result<()> {
         fn visit(
             s: &DomainState,
@@ -1001,6 +1018,13 @@ impl DomainState {
         Ok(())
     }
     fn ready_to_start(&self, t: &Task) -> Result<()> {
+        self.waits_are_over(t)?;
+        self.stack_ready(t)
+    }
+    /// What a Task waits for before it starts or goes on: its dependencies done and its
+    /// delivered dependencies delivered. A wait never holds back the merge of a PR the user
+    /// accepted; only `stack` orders merges.
+    fn waits_are_over(&self, t: &Task) -> Result<()> {
         for dep in &t.dependencies {
             if self.task(dep)?.state != TaskState::Done {
                 return fail("dependency_not_done", "Objective dependency is not done");
@@ -1015,6 +1039,9 @@ impl DomainState {
                 return fail("dependency_not_delivered", "Dependency has not delivered yet");
             }
         }
+        Ok(())
+    }
+    fn stack_ready(&self, t: &Task) -> Result<()> {
         if let Some(stack) = &t.stack {
             let up = self.task(&stack.upstream_task)?;
             if up.state == TaskState::Cancelled {
@@ -1292,11 +1319,6 @@ impl DomainState {
                 "Task has an unanswered blocking Interaction",
             );
         };
-        for dep in &t.dependencies {
-            if self.task(dep)?.state != TaskState::Done {
-                return fail("dependency_not_done", "Objective dependency incomplete");
-            }
-        }
         for target in targets {
             if let DeliveryTarget::PullRequest { pr_id, head } = target {
                 let pr = &self.pull_requests[pr_id];
@@ -1336,7 +1358,9 @@ impl DomainState {
             .values()
             .filter(|t| !t.state.terminal())
             .map(|t| {
-                let state = if self.ready_to_start(t).is_err() {
+                let state = if self.stack_ready(t).is_err()
+                    || (t.final_presentation.is_none() && self.waits_are_over(t).is_err())
+                {
                     TaskState::WaitingDependency
                 } else if self.blockers(&t.id) {
                     TaskState::NeedsYou
@@ -1595,6 +1619,7 @@ impl DomainState {
                 effects.push(DomainEffect::NotifyUser { task_id: Some(task_id), interaction_id: card.interaction });
             }
         }
+        next.resume_waiting_nodes(self, &mut effects);
         next.wrap_up_step(&mut effects);
         for id in self.touched_tasks(&next) {
             next.tasks.get_mut(&id).unwrap().revision = self.revision + 1;
@@ -1855,7 +1880,7 @@ impl DomainState {
                 system(actor)?;
                 self.schedule.interrupt_on_restart();
             }
-            Command::CreateRequest { request_id, body, auto_merge } => {
+            Command::CreateRequest { request_id, body, auto_merge, maintenance } => {
                 self.manager(actor)?;
                 id(&request_id.0)?;
                 nonempty(body)?;
@@ -1864,7 +1889,7 @@ impl DomainState {
                 };
                 self.requests.insert(
                     request_id.clone(),
-                    Request { auto_merge: *auto_merge, ..Request::new(request_id.clone(), body.clone()) },
+                    Request { auto_merge: *auto_merge, maintenance: *maintenance, ..Request::new(request_id.clone(), body.clone()) },
                 );
                 created.push(request_id.0.clone());
                 // 8ccd131 handed every new request of the user to the orchestrator.
@@ -1896,7 +1921,7 @@ impl DomainState {
                 if title.is_some() {
                     request.title = title.clone();
                 }
-                if let Some(answer) = answer {
+                if let Some(answer) = answer.as_ref().filter(|_| !request.maintenance) {
                     self.tell_the_answer(actor, request_id, answer, title.as_deref(), created, effects)?;
                 }
             }
@@ -2207,6 +2232,12 @@ impl DomainState {
             } => {
                 if matches!(actor, Actor::Agent { .. }) && matches!(recipient, Recipient::User) {
                     return refuse("forbidden", "card.kind", NODES_DO_NOT_NOTIFY);
+                }
+                if let Scope::Orchestrator { request_id: Some(request) } = scope
+                    && matches!(recipient, Recipient::User)
+                    && self.requests.get(request).is_some_and(|r| r.maintenance)
+                {
+                    return refuse("maintenance_request", "scope.request_id", MAINTENANCE_GETS_NO_CARD);
                 }
                 if let Some(existing) = self.insert_interaction(
                     actor,
@@ -3019,7 +3050,6 @@ impl DomainState {
                     return fail("acceptance_stale", "Delivery targets changed");
                 };
                 self.unblocked(presentation_id)?;
-                let mut authorized = false;
                 for target in targets {
                     if let DeliveryTarget::PullRequest { pr_id, head } = target {
                         let pr = &self.pull_requests[pr_id];
@@ -3040,14 +3070,9 @@ impl DomainState {
                         let authorization = AuthorizationId(format!("accept-{}-{}", self.revision + 1, pr_id.0));
                         self.authorize_merge(&authorization, presentation_id, pr_id, head, method, &u, true)?;
                         created.push(authorization.0);
-                        authorized = true;
                     }
                 }
                 self.accept(presentation_id, &u)?;
-                if authorized {
-                    let task = self.presentation(presentation_id)?.1.id.clone();
-                    self.notify(&task, Some(presentation_id.clone()), MERGE_ACCEPTED, effects)?;
-                }
             }
             Command::AuthorizeMerge {
                 authorization_id,
@@ -3067,9 +3092,8 @@ impl DomainState {
                     self.authorize_merge(authorization_id, presentation_id, pr_id, expected_head, *method, Feedback::ALONDRA, false)?;
                 } else {
                     let u = user(actor)?;
-                    let task = self.authorize_merge(authorization_id, presentation_id, pr_id, expected_head, *method, &u, true)?;
+                    self.authorize_merge(authorization_id, presentation_id, pr_id, expected_head, *method, &u, true)?;
                     self.settle(presentation_id, &u);
-                    self.notify(&task, Some(presentation_id.clone()), MERGE_ACCEPTED, effects)?;
                 }
                 created.push(authorization_id.0.clone());
             }
@@ -3108,7 +3132,7 @@ impl DomainState {
                     return fail("stack_not_ready", "Remote base must be verified");
                 };
                 let t = self.task(&a.task_id)?;
-                self.ready_to_start(t)?;
+                self.stack_ready(t)?;
                 if let Some(s) = &t.stack {
                     let upstream = self.pull_requests.get(&s.pr_id).ok_or_else(|| {
                         DomainError::new("stack_not_ready", "Upstream PR missing")
@@ -3201,7 +3225,9 @@ impl DomainState {
                         a.attempt = MergeAttemptState::Confirmed;
                     }
                 }
-                if newly_merged && self.active(&task).is_ok() {
+                // A merge that finishes the Task is told by the cleanup request alone.
+                let closing = self.task(&task).is_ok_and(|t| self.finished(t) && self.wraps_up(t));
+                if newly_merged && self.active(&task).is_ok() && !closing {
                     let left = self.unmerged_targets(&task);
                     self.notify(&task, None, &merged_notice(number, left), effects)?;
                 }

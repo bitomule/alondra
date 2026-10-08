@@ -1419,7 +1419,7 @@ fn held_plan_card() -> alondra_core::views::View {
         state.execute(&actor, &envelope).unwrap();
     };
     let user = || Actor::User { user_id: "u".into() };
-    run(user(), Command::CreateRequest { request_id: "r".into(), body: "Build it".into(), auto_merge: false });
+    run(user(), Command::CreateRequest { request_id: "r".into(), body: "Build it".into(), auto_merge: false, maintenance: false });
     run(Actor::System, Command::RegisterAgent { agent_id: "agent-a".into(), name: "Instance A".into() });
     run(user(), Command::CreateTask { task_id: "t".into(), request_id: "r".into(), title: "Build".into(),
         agent_id: Some("agent-a".into()), review_prs: false, dependencies: Default::default(), stack: None });

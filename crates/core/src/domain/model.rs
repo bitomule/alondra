@@ -75,10 +75,14 @@ pub struct Request {
     /// without waiting for their acceptance.
     #[serde(default)]
     pub auto_merge: bool,
+    /// Sent with `alondra send` to keep the fleet running, not to get an answer: closing it
+    /// tells the user nothing, and no card answers it.
+    #[serde(default)]
+    pub maintenance: bool,
 }
 impl Request {
     pub fn new(id: RequestId, body: String) -> Self {
-        Request { id, body, closed: false, title: None, answer: None, withdrawn: false, auto_merge: false }
+        Request { id, body, closed: false, title: None, answer: None, withdrawn: false, auto_merge: false, maintenance: false }
     }
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -890,3 +894,5 @@ impl DomainState {
 
 /// What a node is told when it tries to send the user a Know card.
 pub const NODES_DO_NOT_NOTIFY: &str = "Nodes don't send notices. To ask/decide use ask; to need an action use request_action; for input use request_input; to have the user try something use request_test; report results in present_result.";
+/// What the orchestrator is told when it answers a maintenance message with a card.
+pub const MAINTENANCE_GETS_NO_CARD: &str = "this Request is a maintenance message sent with alondra send: act on it and close it with close_request, without a card for the user. It is answered only when sent with --reply.";

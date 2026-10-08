@@ -50,6 +50,11 @@ pub(crate) struct Comment {
     pub quote: Option<String>,
 }
 
+/// A yes/no field the CLI sets on a message (`maintenance`, `from_claude`); the apps never do.
+fn flag(input: &ActionInput, name: &str) -> bool {
+    input.fields.get(name).and_then(Value::as_bool).unwrap_or(false)
+}
+
 /// Whether an encrypted relay write is the exact protocol route handled here.
 pub(crate) fn approved_path(method: &str, path: &str) -> bool {
     method == "POST" && path == "/actions"
@@ -372,7 +377,8 @@ async fn execute_external(
         Verb::Msg if action.subject == "view" => {
             let text = request.input.text.as_deref().unwrap_or_default().trim();
             if text.is_empty() { return Ok(error_value_lang(lang, "invalid_input", "text is required")); }
-            let body = json!({"text":text,"attachments":attachments});
+            let body = json!({"text":text,"attachments":attachments,
+                "maintenance":flag(&request.input, "maintenance"),"from_claude":flag(&request.input, "from_claude")});
             let reply = client.write(&user_id, Write::OrchestratorMessage, &body, transport, &authorize).await?;
             Ok(to_applied(reply.status.as_u16(), reply.body))
         }
@@ -387,7 +393,8 @@ async fn execute_external(
                 let Some(task) = task else { return Ok(no_longer_available(lang, "This task is no longer assigned to the node")); };
                 Some(task.id.clone())
             } else { None };
-            let body = json!({"text":text,"attachments":attachments,"kind":"message","task_id":task_id});
+            let body = json!({"text":text,"attachments":attachments,"kind":"message","task_id":task_id,
+                "from_claude":flag(&request.input, "from_claude")});
             let reply = crate::domain_bootstrap::send_agent_message(domain, home, device, &agent, body).await;
             if let Some(unreachable) = unreachable_reply(&state, &agent, &reply, lang) { return Ok(unreachable); }
             Ok(to_applied(reply["status"].as_u64().unwrap_or(500) as u16, reply["body"].clone()))
@@ -1588,7 +1595,7 @@ mod tests {
             agent_id: "agent-a".into(), name: "Agent A".into(),
         });
         apply_seed_command(&domain, Actor::User { user_id: "user".into() }, "create-request", Command::CreateRequest {
-            request_id: "request".into(), body: "Work".into(), auto_merge: false,
+            request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false,
         });
         apply_seed_command(&domain, Actor::User { user_id: "user".into() }, "title-request", Command::TitleRequest {
             request_id: "request".into(), title: "Work".into(),
@@ -1958,7 +1965,7 @@ mod tests {
             agent_id: "agent-a".into(), name: "Agent A".into(),
         });
         apply_seed_command(&domain, user.clone(), "create-request", Command::CreateRequest {
-            request_id: "request".into(), body: "Work".into(), auto_merge: false,
+            request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false,
         });
         apply_seed_command(&domain, user, "create-task", Command::CreateTask {
             task_id: "task".into(), request_id: "request".into(), title: "Task".into(),
@@ -1990,7 +1997,7 @@ mod tests {
             agent_id: "agent-a".into(), name: "Agent A".into(),
         });
         apply_seed_command(domain, user.clone(), "create-request", Command::CreateRequest {
-            request_id: "request".into(), body: "Work".into(), auto_merge: false,
+            request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false,
         });
         apply_seed_command(domain, user, "create-task", Command::CreateTask {
             task_id: "task".into(), request_id: "request".into(), title: "Task".into(),

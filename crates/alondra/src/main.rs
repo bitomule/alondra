@@ -93,8 +93,14 @@ enum Cmd {
         option: Option<String>,
         text: Vec<String>,
     },
-    #[command(about = tr!("Send a message to a Task's node (task id), a node (name, short id or session_id) or the orchestrator", "Manda un mensaje al nodo de una tarea (id de tarea), a un nodo (nombre, id corto o session_id) o al orquestador"))]
-    Send { node: String, text: Vec<String> },
+    #[command(about = tr!("Send a message to a Task's node (task id), a node (name, short id or session_id) or the orchestrator", "Manda un mensaje al nodo de una tarea (id de tarea), a un nodo (nombre, id corto o session_id) o al orquestador"),
+        long_about = tr!("Send a message to a Task's node (task id), a node (name, short id or session_id) or the orchestrator. Anything about one task in progress goes to its task id, not to the orchestrator. A message to the orchestrator is maintenance: it acts on it and the user gets no card, unless --reply asks for an answer.", "Manda un mensaje al nodo de una tarea (id de tarea), a un nodo (nombre, id corto o session_id) o al orquestador. Lo que trata de una tarea en marcha va a su id de tarea, no al orquestador. Un mensaje al orquestador es de mantenimiento: actúa y el usuario no recibe tarjeta, salvo que --reply pida respuesta."))]
+    Send {
+        node: String,
+        #[arg(long, help = tr!("The orchestrator answers the user with a card", "El orquestador responde al usuario con una tarjeta"))]
+        reply: bool,
+        text: Vec<String>,
+    },
     #[command(about = tr!("Cancel tasks by id", "Cancela tareas por su id"))]
     Cancel {
         #[arg(required = true)]
@@ -212,7 +218,7 @@ fn main() -> Result<()> {
         Some(Cmd::OrchestratorAcknowledge { run_id, confirm: _ }) => cli::recover(ops::Recovery::Acknowledge, &run_id),
         Some(Cmd::OrchestratorRetry { run_id, confirm: _ }) => cli::recover(ops::Recovery::Retry, &run_id),
         Some(Cmd::Answer { id, option, text }) => cli::answer_cmd(&id, option.as_deref(), &text.join(" ")),
-        Some(Cmd::Send { node, text }) => cli::send(&node, &text.join(" ")),
+        Some(Cmd::Send { node, reply, text }) => cli::send(&node, &text.join(" "), reply),
         Some(Cmd::Cancel { tasks, reason }) => cli::cancel(&tasks, reason.as_deref()),
         Some(Cmd::Close { node }) => cli::close(&node),
         Some(Cmd::Attach { node }) => cli::attach(&node),

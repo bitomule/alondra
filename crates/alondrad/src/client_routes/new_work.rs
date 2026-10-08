@@ -81,6 +81,8 @@ struct Body {
     issue: Option<String>,
     #[serde(default)]
     attachments: Vec<AttachmentRef>,
+    #[serde(default)]
+    maintenance: bool,
 }
 
 fn refused(message: impl Into<String>) -> Reply {
@@ -134,7 +136,9 @@ impl Client {
         Json(json!(crate::issues::list_in(&self.issue_cache, &file, refresh, &Issues(&*github)).await)).into_response()
     }
 
-    /// A user's message to the orchestrator is a new Request with the default options.
+    /// A user's message to the orchestrator is a new Request with the default options. One sent
+    /// with `alondra send` is maintenance unless it asks for an answer, and says who sent it and
+    /// when, since Claude sends most of them on the user's behalf.
     pub(super) async fn orchestrator_message(
         &self,
         user_id: &str,
@@ -148,12 +152,23 @@ impl Client {
             text: String,
             #[serde(default)]
             attachments: Vec<AttachmentRef>,
+            #[serde(default)]
+            maintenance: bool,
+            #[serde(default)]
+            from_claude: bool,
         }
         let Ok(message) = serde_json::from_value::<Message>(body.clone()) else {
             return Ok(Reply::error(DomainError::new("invalid_input", "invalid message")));
         };
+        let text = if message.maintenance || message.from_claude {
+            let user = crate::domain_messages::user_name();
+            let author = if message.from_claude { format!("Claude, for {user}") } else { user };
+            crate::node_push::stamped(&author, alondra_core::now_millis(), &message.text)
+        } else {
+            message.text
+        };
         let request = json!({"request_id": format!("request-{}", crate::auth::random_hex(16)),
-            "text": message.text, "options": {}, "attachments": message.attachments});
+            "text": text, "options": {}, "attachments": message.attachments, "maintenance": message.maintenance});
         self.new_request(user_id, &request, transport, authorize).await
     }
 
@@ -209,7 +224,7 @@ impl Client {
             data_epoch: state.data_epoch.clone(),
             command_id: format!("request-{}", body.request_id).into(),
             expected_revision: 0,
-            command: Command::CreateRequest { request_id: body.request_id.into(), body: body.text, auto_merge },
+            command: Command::CreateRequest { request_id: body.request_id.into(), body: body.text, auto_merge, maintenance: body.maintenance },
         };
         let outcome = self.domain.execute_with(&Actor::User { user_id: user_id.to_owned() }, &envelope, transport, Some(&launch), || {
             authorize().map_err(|_| DomainError::new("forbidden", "device approval was revoked").into())

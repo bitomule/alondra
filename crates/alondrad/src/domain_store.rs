@@ -43,6 +43,9 @@ const TASK_RELATIONS: &str = "CREATE TABLE IF NOT EXISTS task_relations(\
  blocks TEXT NOT NULL CHECK(json_valid(blocks)),\
  verdict TEXT CHECK(verdict IS NULL OR json_valid(verdict)),\
  review_rounds INTEGER NOT NULL CHECK(review_rounds BETWEEN 0 AND 255));";
+/// The Requests sent as maintenance messages, kept beside them; created on every open like
+/// task_relations.
+const MAINTENANCE_REQUESTS: &str = "CREATE TABLE IF NOT EXISTS maintenance_requests(request_id TEXT PRIMARY KEY REFERENCES requests(id));";
 /// A task's priority other than Normal, kept beside the task; created on every open like task_relations.
 const TASK_PRIORITIES: &str = "CREATE TABLE IF NOT EXISTS task_priorities(\
  task_id TEXT PRIMARY KEY REFERENCES tasks(id),\
@@ -384,6 +387,7 @@ impl DomainStore {
         tx.execute_batch(STOP_BLOCKS)?;
         tx.execute_batch(TASK_WRAP_UPS)?;
         tx.execute_batch(TASK_RELATIONS)?;
+        tx.execute_batch(MAINTENANCE_REQUESTS)?;
         tx.execute_batch(TASK_PRIORITIES)?;
         tx.execute_batch(LAUNCH_QUEUE)?;
         tx.execute_batch(TASK_CLOSINGS)?;
@@ -716,6 +720,8 @@ impl DomainStore {
                         None,
                         None,
                         match request_id {
+                            Some(request) if next.requests.get(request).is_some_and(|r| r.maintenance) => format!(
+                                "Maintenance message {request} (sent with alondra send): act on it, then close it with close_request; it gets no card for the user."),
                             Some(request) => format!("The user created Request {request}: turn it into Tasks, or answer it and close it."),
                             None => "The domain has something for you.".to_owned(),
                         },
@@ -1011,6 +1017,14 @@ impl DomainStore {
             WHERE h.task_id=?1 ORDER BY h.revision")?;
         let rows = query.query_map([&task_id.0], |row| Ok(HistoryStep { at: row.get(0)?, state: row.get(1)?, summary: row.get(2)? }))?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+    /// When an outbox message was written and the kind of actor whose command wrote it
+    /// (`user`, `orchestrator`, `agent` or `system`).
+    pub(crate) fn message_origin(&self, id: i64) -> Result<Option<(i64, String)>> {
+        Ok(self.conn.query_row(
+            "SELECT a.at,coalesce(json_extract(a.actor,'$.kind'),'') FROM domain_messages m JOIN command_audit a ON a.revision=m.revision WHERE m.id=?1",
+            [id], |r| Ok((r.get(0)?, r.get(1)?)),
+        ).optional()?)
     }
     pub(crate) fn pending_messages(&self) -> Result<Vec<OutboxMessage>> {
         let mut q=self.conn.prepare("SELECT m.id,CASE WHEN u.message_id IS NOT NULL THEN 'user' ELSE m.recipient_kind END,m.agent_id,m.task_id,m.interaction_id,m.message,o.state FROM domain_messages m JOIN command_audit a ON a.revision=m.revision JOIN domain_outbox o ON o.message_id=m.id LEFT JOIN domain_message_user_targets u ON u.message_id=m.id WHERE o.state IN('pending','retryable') ORDER BY a.at,m.id")?;

@@ -3846,7 +3846,7 @@ fn presented_pr() -> DomainState {
     let user = Actor::User { user_id: "u".into() };
     for (actor, command) in [
         (Actor::System, Command::RegisterAgent { agent_id: "a".into(), name: "Node A".into() }),
-        (user.clone(), Command::CreateRequest { request_id: "r".into(), body: "Fix it".into(), auto_merge: false }),
+        (user.clone(), Command::CreateRequest { request_id: "r".into(), body: "Fix it".into(), auto_merge: false, maintenance: false }),
         (user.clone(), Command::CreateTask { task_id: "t".into(), request_id: "r".into(), title: "Fix it".into(),
             agent_id: Some("a".into()), review_prs: false, dependencies: BTreeSet::new(), stack: None }),
         (agent.clone(), Command::RegisterPr { task_id: "t".into(), pr_id: "pr".into(), host: "github.com".into(),
@@ -4170,7 +4170,7 @@ fn answered_and_closed_request() -> DomainState {
     let mut state = DomainState::new("epoch-1");
     let orchestrator = Actor::Orchestrator { generation: 0 };
     run(&mut state, Actor::User { user_id: "u".into() }, Command::CreateRequest {
-        request_id: "a7efd99d".into(), body: "can we encrypt images via R2".into(), auto_merge: false,
+        request_id: "a7efd99d".into(), body: "can we encrypt images via R2".into(), auto_merge: false, maintenance: false,
     });
     let published = run(&mut state, orchestrator.clone(), Command::PublishInformation {
         attachments: vec![],

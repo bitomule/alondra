@@ -199,7 +199,7 @@ fn setup_base(store: &mut DomainStore, base: &Value) {
             Command::CreateRequest {
                 request_id: id.into(),
                 body: string(field(request, "content")).into(),
-                auto_merge: false,
+                auto_merge: false, maintenance: false,
             },
         );
     }

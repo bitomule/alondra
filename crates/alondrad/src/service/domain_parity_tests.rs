@@ -150,7 +150,7 @@ async fn signed_loopback_and_sealed_service_share_reads_errors_and_command_recei
         "request",
         Command::CreateRequest {
             request_id: "request-parity".into(),
-            body: "Synthetic request".into(), auto_merge: false,
+            body: "Synthetic request".into(), auto_merge: false, maintenance: false,
         },
     );
     execute(

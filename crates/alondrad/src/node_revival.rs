@@ -185,7 +185,7 @@ pub(crate) async fn revive_stalled(domain: &DomainRuntime, session: &str, launch
 /// The mod's connection is recorded a moment before its push link attaches.
 async fn tell_to_continue(domain: &DomainRuntime, session: &str) {
     for _ in 0..250 {
-        if domain.live.pushes.message(session, CONTINUE, false).is_ok() {
+        if domain.live.pushes.message(session, crate::node_push::ALONDRA, CONTINUE, false).is_ok() {
             return;
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
@@ -369,7 +369,7 @@ mod tests {
         let user = || Actor::User { user_id: "u".into() };
         command(&domain, Actor::System, "register", Command::RegisterAgent { agent_id: SESSION.into(), name: "alondra/probe".into() });
         if with_task {
-            command(&domain, user(), "request", Command::CreateRequest { request_id: "r".into(), body: "Work".into(), auto_merge: false });
+            command(&domain, user(), "request", Command::CreateRequest { request_id: "r".into(), body: "Work".into(), auto_merge: false, maintenance: false });
             command(&domain, user(), "task", Command::CreateTask { task_id: "t".into(), request_id: "r".into(), title: "Probe".into(),
                 agent_id: Some(SESSION.into()), review_prs: false, dependencies: Default::default(), stack: None });
         }

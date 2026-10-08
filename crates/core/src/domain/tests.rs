@@ -61,7 +61,7 @@ fn fixture() -> DomainState {
         user(),
         Command::CreateRequest {
             request_id: "r".into(),
-            body: "Build requested result".into(), auto_merge: false,
+            body: "Build requested result".into(), auto_merge: false, maintenance: false,
         },
     )
     .unwrap();
@@ -822,7 +822,6 @@ fn a_pr_merged_outside_alondra_while_in_review_closes_the_task_and_tells_the_nod
     end_node(&mut s, "t");
     assert_eq!(s.tasks[&"t".into()].state, TaskState::Done, "the user does not have to accept a merged delivery");
     assert_eq!(out.effects, vec![
-        DomainEffect::NotifyAgent { agent_id: "a".into(), task_id: Some("t".into()), interaction_id: None, message: merged_notice(1, 0) },
         DomainEffect::NotifyAgent { agent_id: "a".into(), task_id: Some("t".into()), interaction_id: None, message: cleanup_request("Result", &"t".into()) },
     ]);
     assert_eq!(merged_notice(1, 0), "Pull request #1 is merged; no pull request of this task is left to merge.");
@@ -852,8 +851,7 @@ fn accepting_a_pr_delivery_authorizes_alondra_to_merge_it() {
     assert_eq!((authorization.head.as_str(), authorization.method, authorization.attempt, authorization.valid),
         ("head1", MergeMethod::Squash, MergeAttemptState::Unclaimed, true));
     assert_eq!(s.tasks[&"t".into()].state, TaskState::WaitingDependency, "accepted, waiting for Alondra's merge");
-    assert!(matches!(&out.effects[..], [DomainEffect::NotifyAgent { message, .. }] if message.contains("Alondra is merging")),
-        "{:?}", out.effects);
+    assert!(!out.effects.iter().any(|e| matches!(e, DomainEffect::NotifyAgent { .. })), "nothing for the node to do: {:?}", out.effects);
 }
 #[test]
 fn a_node_claim_left_from_before_is_taken_over_by_alondra() {
@@ -1092,7 +1090,7 @@ fn orchestrator() -> Actor {
 #[test]
 fn a_request_that_needed_no_task_closes_with_its_answer_title_or_withdrawal() {
     let mut s = fixture();
-    exec(&mut s, user(), Command::CreateRequest { request_id: "q".into(), body: "Is main green?".into(), auto_merge: false }).unwrap();
+    exec(&mut s, user(), Command::CreateRequest { request_id: "q".into(), body: "Is main green?".into(), auto_merge: false, maintenance: false }).unwrap();
     reject_unchanged(&mut s, agent(), Command::CloseRequest { request_id: "q".into(), answer: Some("Yes".into()), withdrawn: false, title: None }, "forbidden");
     reject_unchanged(&mut s, orchestrator(), Command::CloseRequest { request_id: "q".into(), answer: Some(" ".into()), withdrawn: false, title: None }, "invalid_input");
     exec(&mut s, orchestrator(), Command::CloseRequest { request_id: "q".into(), answer: Some("Main is green".into()),
@@ -1100,10 +1098,35 @@ fn a_request_that_needed_no_task_closes_with_its_answer_title_or_withdrawal() {
     let closed = &s.requests[&"q".into()];
     assert!(closed.closed && !closed.withdrawn);
     assert_eq!((closed.answer.as_deref(), closed.title.as_deref()), (Some("Main is green"), Some("CI status")));
-    exec(&mut s, user(), Command::CreateRequest { request_id: "w".into(), body: "Never mind".into(), auto_merge: false }).unwrap();
+    exec(&mut s, user(), Command::CreateRequest { request_id: "w".into(), body: "Never mind".into(), auto_merge: false, maintenance: false }).unwrap();
     exec(&mut s, user(), Command::CloseRequest { request_id: "w".into(), answer: None, withdrawn: true, title: None }).unwrap();
     assert!(s.requests[&"w".into()].withdrawn);
     reject_unchanged(&mut s, user(), Command::CloseRequest { request_id: "r".into(), answer: None, withdrawn: true, title: None }, "task_not_active");
+}
+/// Every `alondra send` used to be a Request whose answer became a card for the user.
+#[test]
+fn a_maintenance_message_closes_without_a_card_unless_it_asked_for_an_answer() {
+    let mut s = fixture();
+    let cards = |s: &DomainState| s.interactions.values().filter(|i| i.recipient == Recipient::User).count();
+    let info = |id: &str, request: &str| Command::PublishInformation {
+        attachments: vec![], interaction_id: id.into(), scope: Scope::Orchestrator { request_id: Some(request.into()) },
+        recipient: Recipient::User, body: "Done".into(), card: crate::domain::CardSpec::derived(crate::domain::CardKind::Know, "Done"),
+    };
+    exec(&mut s, user(), Command::CreateRequest { request_id: "m".into(), body: "Launch two more".into(), auto_merge: false, maintenance: true }).unwrap();
+    let error = exec(&mut s, orchestrator(), info("m-info", "m")).unwrap_err();
+    assert_eq!(error.code, "maintenance_request");
+    assert!(error.message.contains("--reply"), "{error}");
+    let closed = exec(&mut s, orchestrator(), Command::CloseRequest { request_id: "m".into(), answer: Some("Launched".into()),
+        withdrawn: false, title: Some("Two more nodes".into()) }).unwrap();
+    assert_eq!(cards(&s), 0);
+    assert!(!closed.effects.iter().any(|e| matches!(e, DomainEffect::NotifyUser { .. })));
+    exec(&mut s, user(), Command::CreateRequest { request_id: "q".into(), body: "Is main green?".into(), auto_merge: false, maintenance: false }).unwrap();
+    exec(&mut s, orchestrator(), Command::CloseRequest { request_id: "q".into(), answer: Some("Main is green".into()),
+        withdrawn: false, title: None }).unwrap();
+    assert_eq!(cards(&s), 1);
+    exec(&mut s, user(), Command::CreateRequest { request_id: "q2".into(), body: "And now?".into(), auto_merge: false, maintenance: false }).unwrap();
+    exec(&mut s, orchestrator(), info("q2-info", "q2")).unwrap();
+    assert_eq!(cards(&s), 2);
 }
 #[test]
 fn the_orchestrator_names_a_request_with_a_short_title() {
@@ -1123,7 +1146,7 @@ fn task_in(request: &str, id: &str) -> Command {
 #[test]
 fn a_request_needs_its_title_before_it_gets_a_second_task() {
     let mut s = fixture();
-    exec(&mut s, user(), Command::CreateRequest { request_id: "two".into(), body: "Two things".into(), auto_merge: false }).unwrap();
+    exec(&mut s, user(), Command::CreateRequest { request_id: "two".into(), body: "Two things".into(), auto_merge: false, maintenance: false }).unwrap();
     exec(&mut s, orchestrator(), task_in("two", "first")).unwrap();
     let error = exec(&mut s, orchestrator(), task_in("two", "second")).unwrap_err();
     assert_eq!((error.code.as_str(), error.subject.as_deref()), ("request_title_required", Some("request.title")));
@@ -2834,7 +2857,7 @@ fn revision_checks_are_per_subject_and_invalidation_dates_decisions() {
     assert_eq!(s.tasks[&"t".into()].agent_id, Some("b".into()));
     // Commands without a narrower subject still need the current revision.
     assert_eq!(
-        run(&mut s, user(), "r2", seen, Command::CreateRequest { request_id: "r2".into(), body: "More".into(), auto_merge: false })
+        run(&mut s, user(), "r2", seen, Command::CreateRequest { request_id: "r2".into(), body: "More".into(), auto_merge: false, maintenance: false })
             .unwrap_err()
             .code,
         "stale_revision"
@@ -2946,7 +2969,7 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
         (Command::RecordScheduleLaunchHanded { run_id: ids.run.into(), session_id: None, agent_id: None, finished_at: 1 }, false),
         (Command::RecordScheduleRunFailed { run_id: ids.run.into(), reason: "boom".into(), finished_at: 1 }, false),
         (Command::InterruptScheduleRunsOnRestart, true),
-        (Command::CreateRequest { request_id: ids.request.into(), body: "Work".into(), auto_merge: false }, true),
+        (Command::CreateRequest { request_id: ids.request.into(), body: "Work".into(), auto_merge: false, maintenance: false }, true),
         (Command::CloseRequest { request_id: ids.request.into(), answer: None, withdrawn: false, title: None }, false),
         (Command::RegisterAgent { agent_id: ids.agent.into(), name: "Ghost".into() }, true),
         (Command::ObserveAgent { agent_id: ids.agent.into(), connected: true }, false),
@@ -3370,16 +3393,16 @@ fn second_task(s: &mut DomainState, id: &str, agent_id: Option<&str>) {
         agent_id: agent_id.map(Into::into), review_prs: false, dependencies: BTreeSet::new(), stack: None }).unwrap();
 }
 #[test]
-fn a_merged_pr_closes_the_task_with_the_merged_notice_before_the_cleanup_request() {
+fn accepting_and_merging_a_pr_wakes_the_node_only_to_clean_up() {
     let mut s = fixture();
     register(&mut s);
     present(&mut s, "d", pr_targets());
     let accepted = exec(&mut s, user(), Command::AcceptDelivery { presentation_id: "d".into(), targets: pr_targets() }).unwrap();
     assert_eq!(s.tasks[&"t".into()].state, TaskState::WaitingDependency);
     assert!(s.tasks[&"t".into()].wrap_up.asked_at.is_none(), "merge pending: no cleanup yet");
-    assert!(!sent_to_node(&accepted).iter().any(|m| m.contains("cleanup_done")));
+    assert!(sent_to_node(&accepted).is_empty(), "nothing for the node to do while Alondra merges");
     let merged = merge_observed(&mut s);
-    assert_eq!(sent_to_node(&merged), vec![merged_notice(1, 0), cleanup_request("Result", &"t".into())]);
+    assert_eq!(sent_to_node(&merged), vec![cleanup_request("Result", &"t".into())]);
     assert_eq!(s.tasks[&"t".into()].state, TaskState::Closing);
 }
 #[test]
@@ -3771,4 +3794,56 @@ fn a_task_left_done_with_an_open_question_tells_the_user_once() {
     let again = exec(&mut s, Actor::System, Command::ObserveAgent { agent_id: "a".into(), connected: true }).unwrap();
     assert!(!again.effects.iter().any(|e| matches!(e, DomainEffect::NotifyUser { .. })));
     assert_eq!(s.interactions.keys().filter(|id| id.0.starts_with(ENDED_UNANSWERED_PREFIX)).count(), 1);
+}
+/// PR #765: “Diseño: instalación guiada” depended on the snapshot fix only to wait before
+/// committing; its PR was accepted and the merge was refused with dependency_not_done.
+#[test]
+fn a_dependency_holds_back_the_start_but_never_the_merge_of_an_accepted_pr() {
+    let mut s = fixture();
+    second_task(&mut s, "fix", None);
+    exec(&mut s, orchestrator(), Command::SetDependencies {
+        task_id: "t".into(), dependencies: BTreeSet::from(["fix".into()]), stack: None }).unwrap();
+    assert_eq!(s.tasks[&"t".into()].state, TaskState::WaitingDependency);
+    register(&mut s);
+    present(&mut s, "d", pr_targets());
+    authorize(&mut s);
+    exec(&mut s, Actor::System, Command::ClaimMergeAuthorization {
+        authorization_id: "auth".into(), remote_head: "head1".into(), remote_base: "main".into(), base_verified: true }).unwrap();
+    merged_by_someone_else(&mut s);
+    end_node(&mut s, "t");
+    assert_eq!(s.tasks[&"t".into()].state, TaskState::Done);
+    assert_ne!(s.tasks[&"fix".into()].state, TaskState::Done);
+}
+#[test]
+fn a_dependency_still_holds_back_the_start() {
+    let mut s = fixture();
+    register_b(&mut s);
+    second_task(&mut s, "fix", None);
+    second_task(&mut s, "after", Some("b"));
+    exec(&mut s, orchestrator(), Command::SetDependencies {
+        task_id: "after".into(), dependencies: BTreeSet::from(["fix".into()]), stack: None }).unwrap();
+    reject_unchanged(&mut s, agent_b(), Command::StartTask { task_id: "after".into() }, "dependency_not_done");
+}
+/// The node of “Permisos seguros” asked the user to tell it when main passed the snapshot tests:
+/// waiting is a dependency the orchestrator sets, and Alondra resumes the node when it is done.
+#[test]
+fn a_node_waiting_on_a_task_is_resumed_once_when_that_task_is_done() {
+    let mut s = fixture();
+    register_b(&mut s);
+    second_task(&mut s, "waits", Some("b"));
+    exec(&mut s, agent_b(), Command::StartTask { task_id: "waits".into() }).unwrap();
+    exec(&mut s, orchestrator(), Command::SetDependencies {
+        task_id: "waits".into(), dependencies: BTreeSet::from(["t".into()]), stack: None }).unwrap();
+    assert_eq!(s.tasks[&"waits".into()].state, TaskState::WaitingDependency);
+    let accepted = accept_text(&mut s);
+    assert!(!accepted.effects.iter().any(|e| matches!(e, DomainEffect::NotifyAgent { agent_id, .. } if agent_id.0 == "b")));
+    let done = exec(&mut s, Actor::System, Command::RecordNodeEnd { task_id: "t".into(), end: NodeEnd::Closed, agent_id: None }).unwrap();
+    assert_eq!(s.tasks[&"waits".into()].state, TaskState::Running);
+    let resumed: Vec<_> = done.effects.iter().filter_map(|e| match e {
+        DomainEffect::NotifyAgent { agent_id, task_id, message, .. } if agent_id.0 == "b" => Some((task_id.clone(), message.clone())),
+        _ => None,
+    }).collect();
+    assert_eq!(resumed, vec![(Some("waits".into()), dependencies_done_notice(&["Result"]))]);
+    let later = exec(&mut s, Actor::System, Command::ObserveAgent { agent_id: "b".into(), connected: true }).unwrap();
+    assert!(!later.effects.iter().any(|e| matches!(e, DomainEffect::NotifyAgent { .. })));
 }

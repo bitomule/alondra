@@ -50,7 +50,7 @@ fn pair() -> DomainState {
     for agent_id in ["wa", "wb"] {
         ok(&mut s, Actor::System, Command::RegisterAgent { agent_id: agent_id.into(), name: agent_id.into() });
     }
-    ok(&mut s, user(), Command::CreateRequest { request_id: "r".into(), body: "Build it".into(), auto_merge: false });
+    ok(&mut s, user(), Command::CreateRequest { request_id: "r".into(), body: "Build it".into(), auto_merge: false, maintenance: false });
     ok(&mut s, user(), Command::TitleRequest { request_id: "r".into(), title: "Build it".into() });
     for (id, node) in [("a", "wa"), ("b", "wb")] {
         ok(&mut s, user(), Command::CreateTask {
@@ -309,7 +309,7 @@ fn merged_outside(s: &mut DomainState) -> CommandOutcome {
 #[test]
 fn nothing_is_merged_or_accepted_while_a_review_of_the_task_is_open() {
     let mut s = pair();
-    ok(&mut s, user(), Command::CreateRequest { request_id: "auto".into(), body: "Auto".into(), auto_merge: true });
+    ok(&mut s, user(), Command::CreateRequest { request_id: "auto".into(), body: "Auto".into(), auto_merge: true, maintenance: false });
     ok(&mut s, user(), Command::CreateTask {
         task_id: "c".into(), request_id: "auto".into(), title: "C".into(), agent_id: None, review_prs: false,
         dependencies: BTreeSet::new(), stack: None,

@@ -217,19 +217,27 @@ fn resolved(client: &Client, name: &str) -> Result<(Option<String>, Option<Strin
     }
 }
 
-/// A Task id sends to the Task's agent, about that Task; anything else names the agent.
-pub fn send(name: &str, text: &str) -> Result<()> {
+/// A Task id sends to the Task's agent, about that Task; anything else names the agent. A
+/// message to the orchestrator is maintenance unless `reply` asks for an answer.
+pub fn send(name: &str, text: &str, reply: bool) -> Result<()> {
     let client = Client::for_user(Duration::from_secs(60));
+    let to_orchestrator = name.eq_ignore_ascii_case("orchestrator");
     let view = if name.starts_with("t-") {
         client.views(&format!("task:{name}"), None).with_context(|| trf!("No task {name}", "No hay ninguna tarea {name}"))?
-    } else if name.eq_ignore_ascii_case("orchestrator") {
+    } else if to_orchestrator {
         client.views("node:orchestrator", None)?
     } else {
         let agent = resolved(&client, name)?.0.context("Agent not found")?;
         client.views(&format!("node:{agent}"), None)?
     };
-    let action = view_action(&view, |a| a.id.starts_with("msg:" )).context("Message action unavailable")?;
-    let answer = submit(&client, &view, &action, None, serde_json::json!({"text":text}))?;
+    let action = view_action(&view, |a| a.id.starts_with("msg:" )).with_context(|| if name.starts_with("t-") {
+        trf!("{name} has no node right now, so nothing was sent. Ask the orchestrator to start one for it.",
+            "{name} no tiene nodo ahora, así que no se envió nada. Pide al orquestador que le arranque uno.")
+    } else {
+        tr!("Message action unavailable", "No se puede mandar un mensaje").into()
+    })?;
+    let fields = serde_json::json!({"maintenance": to_orchestrator && !reply, "from_claude": std::env::var_os("CLAUDECODE").is_some()});
+    let answer = submit(&client, &view, &action, None, serde_json::json!({"text":text,"fields":fields}))?;
     anyhow::ensure!(answer.get("outcome").and_then(Value::as_str) == Some("applied"), "{}",
         answer.get("message").and_then(Value::as_str).map(str::to_owned)
             .unwrap_or_else(|| trf!("The message was not sent to {name}", "El mensaje no se envió a {name}")));
@@ -304,7 +312,7 @@ mod tests {
             s.execute(&actor, &envelope).unwrap();
         };
         let user = || Actor::User { user_id: "u".into() };
-        run(user(), Command::CreateRequest { request_id: "r".into(), body: "Build it".into(), auto_merge: false });
+        run(user(), Command::CreateRequest { request_id: "r".into(), body: "Build it".into(), auto_merge: false, maintenance: false });
         run(Actor::System, Command::RegisterAgent { agent_id: "agent-a".into(), name: "Instance A".into() });
         run(Actor::System, Command::RegisterAgent { agent_id: "agent-ab".into(), name: "Instance AB".into() });
         run(user(), Command::CreateTask { task_id: "t".into(), request_id: "r".into(), title: "Build".into(), agent_id: Some("agent-a".into()), review_prs: false, dependencies: Default::default(), stack: None });

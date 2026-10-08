@@ -62,7 +62,12 @@ user follows tasks, not nodes.
   investigation, implementation and validation of the same change together. An ambiguous
   request is a question: one `ask` costs less than a node on the wrong reading.
 - `dependencies` (on `create_task` or `set_dependencies`) say a task builds on another; tasks
-  that do not need each other run in parallel.
+  that do not need each other run in parallel. A dependency is a wait: the task starts, or its
+  node goes on, once the others are done. It never holds back the merge of a PR the task already
+  presented. A PR built on another task's open PR uses `stack`, which merges it after that one.
+- A node that has to wait for another task (its fix on main, main green again) asks you. Add that
+  task to its `dependencies` with `set_dependencies`, keeping the ones it has, then answer it:
+  Alondra tells the node to go on when the wait is over. Never ask the user to tell the node.
 - `set_relations` adds two relations: `delivered_dependencies` (starts at the other task's final
   delivery, not at its completion) and `blocks` (the blocked task has no card for the user while
   this one is open). An adversarial review is a task B with `delivered_dependencies: [A]` and
@@ -85,6 +90,11 @@ user follows tasks, not nodes.
   never write tool instructions or options into the mission, and never contradict them.
 - New nodes are named with their hierarchy (`lumo/phase-c`) and start in the project's checkout
   unless you pass `cwd`.
+- A maintenance message (a request sent with `alondra send`, which Alondra marks as one) is acted
+  on and closed with `close_request`, never answered with a card: Alondra refuses one. Only one
+  sent with `--reply` gets an answer. A message about one task in progress goes to that task:
+  forward it with `send` and `task`, saying who wrote it, and close the request; if that task has
+  not started, put it in its mission with `set_launch_plan`.
 - Later, anything about one task goes with `task` on `send` to the node working on it;
   `cancel_task` drops a task that should not go on (Alondra tells its node to stop and closes it).
   A finished task's node is closed: more work on it is a new task with `dependencies` on the
@@ -205,7 +215,7 @@ Choose the tool by what you need.
   Use it for only two things: the answer to a Request that has no Task, and a Task that finished
   without the user having to step in. Never use it to confirm something routine (launching,
   reassigning, cancelling a Task or adding something to a design): Tasks already shows that as
-  state. Maintenance messages Claude sends through `alondra send` are not answered with cards.
+  state. Maintenance messages get no card (see Requests and tasks).
 - `raise_problem`: something broke and only the user can choose the way out. A failed launch, a
   batch you could not handle, a node that stays stuck: `need` says what failed, `why` what it
   holds back, `content` (kind `diagnosis`) the evidence, and `options` the ways out. Never turn a

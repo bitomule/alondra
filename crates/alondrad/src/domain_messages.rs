@@ -38,6 +38,9 @@ pub(crate) struct MessageBody {
     pr_id: Option<PrId>,
     /// The Task the message is about; it must be the Agent's.
     task_id: Option<TaskId>,
+    /// Sent by Claude on the user's behalf (`alondra send` run inside Claude Code).
+    #[serde(default)]
+    from_claude: bool,
 }
 
 fn refused(code: &str, message: impl Into<String>) -> DomainError {
@@ -96,7 +99,8 @@ pub(crate) async fn deliver(domain: &DomainRuntime, home: &Path, user: &Actor, n
     {
         return Err(refused("session_stalled", format!("{name} stopped processing in the middle of a turn, so a message would not reach it. Alondra restarts it; send again once it is back. Nothing was sent")));
     }
-    let acked = domain.live.pushes.message(&agent.0, &text, as_user)
+    let author = if body.from_claude { format!("Claude, for {name}") } else { name.to_owned() };
+    let acked = domain.live.pushes.message(&agent.0, &author, &text, as_user)
         .map_err(|_| refused("session_unreachable", "the node is not connected to Alondra: its session is stopped or its Claude Code mod is not running. Nothing was sent"))?;
     let delivered = match tokio::time::timeout(ACK_WAIT, acked).await {
         Ok(Ok(())) => State::Handed,
@@ -117,7 +121,7 @@ pub(crate) async fn resolve_conflicts(domain: &DomainRuntime, home: &Path, user:
         .ok_or_else(|| refused("not_assigned", "the PR's task has no agent to ask"))?;
     let text = conflicts_text(name, pr);
     let body = MessageBody { text, attachments: vec![], kind: Kind::Message, mark_read: false,
-        interaction_id: None, pr_id: None, task_id: Some(pr.task_id.clone()) };
+        interaction_id: None, pr_id: None, task_id: Some(pr.task_id.clone()), from_claude: false };
     deliver(domain, home, user, name, &agent, body, false).await
 }
 
@@ -206,7 +210,7 @@ mod tests {
         };
         run(Actor::System, "a", Command::RegisterAgent { agent_id: "agent-a".into(), name: "A".into() });
         run(Actor::System, "b", Command::RegisterAgent { agent_id: "agent-b".into(), name: "B".into() });
-        run(user(), "r", Command::CreateRequest { request_id: "r".into(), body: "Build".into(), auto_merge: false });
+        run(user(), "r", Command::CreateRequest { request_id: "r".into(), body: "Build".into(), auto_merge: false, maintenance: false });
         run(user(), "t", Command::CreateTask { task_id: "t".into(), request_id: "r".into(), title: "Build it".into(),
             agent_id: Some("agent-a".into()), review_prs: false, dependencies: Default::default(), stack: None });
         (Fixture(home), domain)
@@ -253,6 +257,9 @@ mod tests {
         assert_eq!(answer, json!({"delivery_state": "handed"}));
         assert_eq!(node.texts(), ["[Task t “Build it”] Use the new API"]);
         assert_eq!(node.lines.lock().unwrap()[0]["as_user"], true);
+        deliver(&domain, &fixture.0, &user(), "Ana", &"agent-a".into(),
+            body(json!({"text": "Push your work", "task_id": "t", "from_claude": true})), true).await.unwrap();
+        assert_eq!(node.authors(), ["Ana", "Claude, for Ana"], "every message says who sent it");
         assert_eq!(domain.state().unwrap(), before, "a message records nothing in the domain");
     }
 

@@ -35,7 +35,7 @@ fn seed_load_bench() {
         run(&mut store, &Actor::Orchestrator { generation: 0 }, format!("request-{r}"), Command::CreateRequest {
             request_id: format!("request-{r}").into(),
             body: body(r),
-            auto_merge: false,
+            auto_merge: false, maintenance: false,
         });
         run(&mut store, &user, format!("title-{r}"), Command::TitleRequest {
             request_id: format!("request-{r}").into(),

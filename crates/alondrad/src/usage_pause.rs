@@ -448,7 +448,7 @@ fn jitter(max_ms: u64) -> u64 {
 /// was lost meanwhile.
 pub(crate) fn wake_nodes(domain: &crate::domain_runtime::DomainRuntime) {
     for node in domain.live.nodes().into_iter().filter(|node| node.usage_limited && !node.busy) {
-        if domain.live.pushes.message(&node.session_id, RESUME_MESSAGE, true).is_err() {
+        if domain.live.pushes.message(&node.session_id, crate::node_push::ALONDRA, RESUME_MESSAGE, true).is_err() {
             domain.live.losses.report(&node.session_id);
         }
     }

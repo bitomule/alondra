@@ -118,7 +118,7 @@ impl Rig {
         std::fs::create_dir(&home).unwrap();
         let domain = Arc::new(DomainRuntime::open(&home).unwrap());
         command(&domain, Actor::System, "agent", Command::RegisterAgent { agent_id: SESSION.into(), name: "Node".into() });
-        command(&domain, user(), "request", Command::CreateRequest { request_id: "r".into(), body: "Work".into(), auto_merge: false });
+        command(&domain, user(), "request", Command::CreateRequest { request_id: "r".into(), body: "Work".into(), auto_merge: false, maintenance: false });
         command(&domain, user(), "task", Command::CreateTask {
             task_id: "t".into(), request_id: "r".into(), title: "Result".into(), agent_id: Some(SESSION.into()),
             review_prs: false, dependencies: Default::default(), stack: None,

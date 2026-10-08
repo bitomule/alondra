@@ -47,7 +47,7 @@ fn presented(tag: &str, auto_merge: bool) -> (Home, Arc<DomainRuntime>, FakeGith
     std::fs::create_dir(&home.0).unwrap();
     let domain = Arc::new(DomainRuntime::open(&home.0).unwrap());
     command(&domain, Actor::System, "agent", Command::RegisterAgent { agent_id: "a".into(), name: "A".into() });
-    command(&domain, user(), "request", Command::CreateRequest { request_id: "r".into(), body: "Work".into(), auto_merge });
+    command(&domain, user(), "request", Command::CreateRequest { request_id: "r".into(), body: "Work".into(), auto_merge, maintenance: false });
     command(&domain, user(), "task", Command::CreateTask {
         task_id: "t".into(), request_id: "r".into(), title: "Task".into(), agent_id: Some("a".into()),
         review_prs: true, dependencies: BTreeSet::new(), stack: None,
@@ -95,7 +95,7 @@ fn problems(domain: &DomainRuntime) -> Vec<Interaction> {
 }
 
 #[tokio::test]
-async fn an_accepted_delivery_is_merged_by_alondra_and_the_node_is_told() {
+async fn an_accepted_delivery_is_merged_by_alondra_and_the_node_is_only_asked_to_clean_up() {
     let (_home, domain, github) = presented("accept", false);
     let mut merger = now();
     assert!(!merger.merge_due(&domain, &github).await.unwrap());
@@ -109,9 +109,7 @@ async fn an_accepted_delivery_is_merged_by_alondra_and_the_node_is_told() {
     assert_eq!(state.merge_authorizations.values().next().unwrap().attempt, MergeAttemptState::Confirmed);
     end_node(&domain);
     assert_eq!(task(&domain), TaskState::Done);
-    let told = told(&domain);
-    assert!(told[0].contains("Alondra is merging its pull request"), "{told:?}");
-    assert_eq!(told[told.len() - 2..], [merged_notice(7, 0), cleanup_request("Task", &"t".into())]);
+    assert_eq!(told(&domain), vec![cleanup_request("Task", &"t".into())]);
     merger.merge_due(&domain, &github).await.unwrap();
     assert_eq!(github.merged.lock().unwrap().len(), 1, "a merged PR is not merged again");
 }
@@ -145,7 +143,27 @@ async fn auto_merge_waits_for_the_checks_then_claims_durably_and_merges() {
     assert!(state.pull_requests[&PrId::from("pr")].review.as_ref().unwrap().decisions.is_empty(), "no review is made up");
     end_node(&domain);
     assert_eq!(task(&domain), TaskState::Done);
-    assert_eq!(told(&domain), vec![merged_notice(7, 0), cleanup_request("Task", &"t".into())]);
+    assert_eq!(told(&domain), vec![cleanup_request("Task", &"t".into())]);
+}
+
+/// PR #765 was accepted and never merged: its task waited on another one only to commit, and
+/// every merge step was refused with dependency_not_done.
+#[tokio::test]
+async fn a_task_that_waited_on_another_to_start_has_its_accepted_pr_merged() {
+    let (_home, domain, github) = presented("waited", false);
+    command(&domain, user(), "title", Command::TitleRequest { request_id: "r".into(), title: "Work".into() });
+    command(&domain, user(), "fix", Command::CreateTask {
+        task_id: "fix".into(), request_id: "r".into(), title: "Fix main".into(), agent_id: None,
+        review_prs: false, dependencies: BTreeSet::new(), stack: None,
+    });
+    command(&domain, Actor::Orchestrator { generation: 0 }, "wait", Command::SetDependencies {
+        task_id: "t".into(), dependencies: BTreeSet::from(["fix".into()]), stack: None,
+    });
+    accept(&domain);
+    now().merge_due(&domain, &github).await.unwrap();
+    assert_eq!(*github.merged.lock().unwrap(), vec![(7, HEAD.to_owned(), MergeMethod::Squash)]);
+    end_node(&domain);
+    assert_eq!(task(&domain), TaskState::Done);
 }
 
 #[tokio::test]

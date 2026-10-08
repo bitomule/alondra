@@ -232,7 +232,7 @@ fn register_probe(domain: &DomainRuntime, session: &str) -> Result<()> {
     let steps = [
         (Actor::System, "register", Command::RegisterAgent { agent_id: session.into(), name: format!("test/{short}") }),
         (user(), "request", Command::CreateRequest {
-            request_id: format!("sandbox-probe-{session}").into(), body: "Probe".into(), auto_merge: false,
+            request_id: format!("sandbox-probe-{session}").into(), body: "Probe".into(), auto_merge: false, maintenance: false,
         }),
         (user(), "task", Command::CreateTask {
             task_id: format!("sandbox-probe-{session}").into(), request_id: format!("sandbox-probe-{session}").into(),
@@ -261,9 +261,15 @@ fn pending_lines(domain: &DomainRuntime, session: &str, sent: &mut BTreeSet<i64>
         return Ok(vec![]);
     }
     let state = domain.state()?;
-    Ok(pending.into_iter().map(|message| {
+    let origins: Vec<_> = {
+        let store = domain.store.lock().expect("domain store poisoned");
+        pending.iter().map(|message| store.message_origin(message.id)).collect::<Result<_, _>>()?
+    };
+    Ok(pending.into_iter().zip(origins).map(|(message, origin)| {
         sent.insert(message.id);
-        crate::node_push::message_line(&crate::node_push::outbox_id(message.id), &render(&state, &message), from_user(&state, &message))
+        let (at, actor) = origin.unwrap_or_else(|| (alondra_core::now_millis(), String::new()));
+        let text = crate::node_push::stamped(&crate::node_push::author_of(&actor), at, &render(&state, &message));
+        crate::node_push::message_line(&crate::node_push::outbox_id(message.id), &text, from_user(&state, &message))
     }).collect())
 }
 
@@ -722,7 +728,7 @@ mod tests {
             agent_id: agent.into(), name: agent.into(),
         });
         command(domain, Actor::User { user_id: "u".into() }, &format!("request-{agent}"),
-            Command::CreateRequest { request_id: format!("request-{agent}").into(), body: "Work".into(), auto_merge: false });
+            Command::CreateRequest { request_id: format!("request-{agent}").into(), body: "Work".into(), auto_merge: false, maintenance: false });
         command(domain, Actor::User { user_id: "u".into() }, &format!("task-{agent}"), Command::CreateTask {
             task_id: format!("task-{agent}").into(), request_id: format!("request-{agent}").into(),
             title: "Task".into(), agent_id: Some(agent.into()), review_prs: false,
@@ -769,7 +775,7 @@ mod tests {
             agent_id: "agent-a".into(), name: "Agent A".into(),
         });
         command(&domain, Actor::User { user_id: "u".into() }, "request", Command::CreateRequest {
-            request_id: "request".into(), body: "Build a widget".into(), auto_merge: false,
+            request_id: "request".into(), body: "Build a widget".into(), auto_merge: false, maintenance: false,
         });
         command(&domain, Actor::User { user_id: "u".into() }, "task", Command::CreateTask {
             task_id: "task".into(), request_id: "request".into(), title: "Widget".into(),
@@ -842,7 +848,7 @@ mod tests {
             agent_id: "agent-a".into(), name: "Agent A".into(),
         });
         command(&domain, Actor::User { user_id: "u".into() }, "request", Command::CreateRequest {
-            request_id: "request".into(), body: "Work".into(), auto_merge: false,
+            request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false,
         });
         command(&domain, Actor::User { user_id: "u".into() }, "task", Command::CreateTask {
             task_id: "task".into(), request_id: "request".into(), title: "Task".into(),
@@ -936,7 +942,7 @@ mod tests {
             agent_id: "agent-a".into(), name: "Agent A".into(),
         });
         command(domain, Actor::User { user_id: "u".into() }, "request", Command::CreateRequest {
-            request_id: "request".into(), body: "Work".into(), auto_merge: false,
+            request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false,
         });
         command(domain, Actor::User { user_id: "u".into() }, "task", Command::CreateTask {
             task_id: "task".into(), request_id: "request".into(), title: "Task".into(),
@@ -1086,10 +1092,10 @@ mod tests {
         let domain = Arc::new(domain);
         let mut node = connect(&domain, "session-a").await;
         let answer = node.line().await.unwrap();
-        let notice = node.line().await.unwrap();
-        assert_eq!(answer["text"], "Yes.");
-        let context = format!("{}\n\n{}", answer["text"].as_str().unwrap(), notice["text"].as_str().unwrap().trim());
-        assert_eq!(context, "Yes.\n\nThe user accepted your result. Alondra is merging its pull request now and tells you when it is merged; there is nothing for you to merge.");
+        let context = answer["text"].as_str().unwrap();
+        let user = crate::domain_messages::user_name();
+        assert!(context.starts_with(&format!("[From {user} · ")) && context.ends_with("] Yes."), "the answer says who and when: {context}");
+        assert_eq!(agent_outbox(&domain, "session-a").len(), 1, "accepting the merge wakes the node for nothing");
         assert!(!context.contains("authorization_id") && !context.contains("pr_id")
             && !context.contains("head") && !context.contains("auth-"), "{context}");
     }
@@ -1412,7 +1418,10 @@ mod tests {
         answered_question(&domain, "session-a");
         let line = node.line().await.unwrap();
         let id = agent_outbox(&domain, "session-a")[0].0;
-        assert_eq!(line, json!({"id": format!("o-{id}"), "text": "Yes.", "as_user": true}));
+        assert_eq!((line["id"].as_str(), line["as_user"].as_bool()), (Some(format!("o-{id}").as_str()), Some(true)));
+        let user = crate::domain_messages::user_name();
+        let text = line["text"].as_str().unwrap();
+        assert!(text.starts_with(&format!("[From {user} · ")) && text.ends_with("] Yes."), "the user's answer says who and when: {text}");
         assert_eq!(agent_outbox(&domain, "session-a").len(), 1, "written is not handed");
 
         acknowledge(&domain, "other-session", json!([format!("o-{id}")])).await.unwrap();
@@ -1492,7 +1501,7 @@ mod tests {
         let user = || Actor::User { user_id: "u".into() };
         command(domain, Actor::System, &format!("register-{agent}"), Command::RegisterAgent { agent_id: agent.into(), name: agent.into() });
         command(domain, user(), &format!("request-{agent}"),
-            Command::CreateRequest { request_id: format!("request-{agent}").into(), body: "Work".into(), auto_merge: false });
+            Command::CreateRequest { request_id: format!("request-{agent}").into(), body: "Work".into(), auto_merge: false, maintenance: false });
         command(domain, user(), &format!("task-{agent}"), Command::CreateTask {
             task_id: format!("task-{agent}").into(), request_id: format!("request-{agent}").into(),
             title: "Task".into(), agent_id: Some(agent.into()), review_prs: false, dependencies: BTreeSet::new(), stack: None,

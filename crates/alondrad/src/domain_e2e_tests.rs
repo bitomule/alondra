@@ -225,7 +225,8 @@ async fn a_scheduled_session_commands_and_receives_its_answer_once_across_a_daem
     });
     let line = next_line(&mut pushed, patience).expect("the answer was written down the connection");
     let id = line["id"].as_str().unwrap().to_owned();
-    assert_eq!((line["text"].as_str(), line["as_user"].as_bool()), (Some("Yes."), Some(true)), "{line}");
+    assert!(line["text"].as_str().unwrap().ends_with("] Yes."), "{line}");
+    assert_eq!(line["as_user"].as_bool(), Some(true), "{line}");
     assert!(daemon.domain.store.lock().unwrap().delivery_evidence_page(0).unwrap().is_empty(), "written is not handed");
 
     // The Stop hook holds back a turn end without a result, and never carries the outbox.
@@ -315,9 +316,10 @@ async fn a_node_mod_reports_through_the_cli_and_its_open_connection_is_its_liven
     assert!(!session.connection_lost());
 
     let patience = std::time::Duration::from_secs(10);
-    let acked = daemon.domain.live.pushes.message(SESSION, "Use the new API", true).unwrap();
+    let acked = daemon.domain.live.pushes.message(SESSION, "David", "Use the new API", true).unwrap();
     let line = next_line(&mut reader, patience).expect("a direct message is written down the connection");
-    assert_eq!((line["text"].as_str(), line["as_user"].as_bool()), (Some("Use the new API"), Some(true)));
+    assert!(line["text"].as_str().unwrap().ends_with("] Use the new API"), "{line}");
+    assert_eq!(line["as_user"].as_bool(), Some(true));
     node_ack(&home, &[line["id"].as_str().unwrap()]);
     tokio::time::timeout(patience, acked).await.expect("the ack reached the sender").unwrap();
     daemon.domain.live.pushes.interrupt(SESSION).unwrap();
@@ -379,7 +381,7 @@ async fn a_message_after_a_daemon_restart_reaches_the_reconnected_node_under_an_
     let daemon = Daemon::start(&home).await;
     let (mut helper, reader) = connect(&home);
     let mut reader = Some(reader);
-    let first = daemon.domain.live.pushes.message(SESSION, "first", true).unwrap();
+    let first = daemon.domain.live.pushes.message(SESSION, "David", "first", true).unwrap();
     let line = next_line(&mut reader, patience).expect("the first message is written");
     let first_id = line["id"].as_str().unwrap().to_owned();
     node_ack(&home, &[&first_id]);
@@ -393,9 +395,9 @@ async fn a_message_after_a_daemon_restart_reaches_the_reconnected_node_under_an_
     let mut reader = Some(reader);
     let mods = &daemon.domain.live.mods;
     eventually("the helper is connected to the new daemon", || mods.session(SESSION).is_some_and(|s| s.connection.is_some())).await;
-    let _again = daemon.domain.live.pushes.message(SESSION, "AGAIN", true).unwrap();
+    let _again = daemon.domain.live.pushes.message(SESSION, "David", "AGAIN", true).unwrap();
     let line = next_line(&mut reader, patience).expect("the message after the restart is written");
-    assert_eq!(line["text"], "AGAIN");
+    assert!(line["text"].as_str().unwrap().ends_with("] AGAIN"), "{line}");
     assert_ne!(line["id"].as_str().unwrap(), first_id, "the mod would take the reused id for a resend and never submit it");
     helper.kill().unwrap();
     helper.wait().unwrap();

@@ -394,7 +394,7 @@ fn push_text(card: MachineCard) -> impl Fn(bool) -> String + Send + Sync {
 }
 
 fn wake(domain: &DomainRuntime, session: &str) {
-    if domain.live.pushes.message(session, RESUME_MESSAGE, true).is_err() {
+    if domain.live.pushes.message(session, crate::node_push::ALONDRA, RESUME_MESSAGE, true).is_err() {
         domain.live.losses.report(session);
     }
 }
