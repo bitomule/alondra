@@ -2,5 +2,5 @@
 
 versions = struct(
     version = "0.3.0",
-    build_number = "39",
+    build_number = "40",
 )
