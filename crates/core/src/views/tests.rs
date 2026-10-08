@@ -4990,6 +4990,7 @@ fn fleet_heads_with_the_working_count_and_lists_the_queued_tasks_with_their_plac
         pacing: Some(LivePacing {
             working: 6, limit: 6, memory_free: Some(12), tight: true,
             queued: vec![LiveQueued { task_id: "t-1".into(), position: 2, of: 3, hold: LiveHold::Slots { working: 6, limit: 6 } }],
+            paused: vec![],
         }),
         ..LiveSnapshot::default()
     };
@@ -5002,4 +5003,29 @@ fn fleet_heads_with_the_working_count_and_lists_the_queued_tasks_with_their_plac
     assert_eq!(common::queued_label(&memory, Lang::Es), "En cola · 1.º de 1 · el Mac va justo de memoria (12 % libre)");
     let load = LiveQueued { hold: LiveHold::Cpu { load: 52, cpus: 11 }, ..memory };
     assert_eq!(common::queued_label(&load, Lang::En), "Queued · 1st of 1 · the Mac is very busy (load 52 on 11 cores)");
+}
+
+#[test]
+fn a_paused_task_says_since_when_why_and_when_it_comes_back_in_both_languages() {
+    let mut state = fixture();
+    let task = state.tasks.get_mut(&crate::domain::TaskId::from("t-1")).unwrap();
+    (task.state, task.final_presentation) = (TaskState::Running, None);
+    let memory = LivePaused { task_id: "t-1".into(), at: "14:05".into(), reason: LivePauseReason::Memory, fine_minutes: Some(2), next: false, waits_for: None };
+    let live = LiveSnapshot {
+        pacing: Some(LivePacing { working: 5, limit: 6, memory_free: Some(24), tight: true, queued: vec![], paused: vec![memory.clone()] }),
+        ..LiveSnapshot::default()
+    };
+    let fleet = serde_json::to_string(&render(&state, &live, Client::Ios, Lang::Es, "fleet", "")).unwrap();
+    assert!(fleet.contains("Trabajando 5/6 · En pausa 1 · Mac: memoria 24 % libre (justo)"), "{fleet}");
+    assert!(fleet.contains("Pausado desde las 14:05 por memoria · se reanuda cuando el Mac lleve 5 min bien (2 hasta ahora)"), "{fleet}");
+    let task = serde_json::to_string(&render(&state, &live, Client::Tui, Lang::En, "task:t-1", "")).unwrap();
+    assert!(task.contains("Paused since 14:05 for memory · resumes when the Mac has been fine for 5 min (2 so far)"), "{task}");
+    let user = LivePaused { reason: LivePauseReason::User, at: "11:20".into(), ..memory.clone() };
+    assert_eq!(common::paused_label(&user, Lang::En), "Paused · you paused it at 11:20");
+    assert_eq!(common::paused_label(&user, Lang::Es), "Pausado · lo pausaste a las 11:20");
+    let declared = LivePaused { reason: LivePauseReason::Machine, waits_for: Some("cola de compilación".into()), fine_minutes: Some(30), ..memory.clone() };
+    assert_eq!(common::paused_label(&declared, Lang::Es), "Esperando: cola de compilación · desde las 14:05", "the node's reason, not the Mac's health");
+    assert_eq!(common::paused_label(&LivePaused { next: true, ..declared }, Lang::Es), "Esperando: cola de compilación · desde las 14:05 · se reanuda el siguiente");
+    let unexplained = LivePaused { reason: LivePauseReason::Machine, ..memory };
+    assert_eq!(common::paused_label(&unexplained, Lang::En), "Waiting since 14:05");
 }

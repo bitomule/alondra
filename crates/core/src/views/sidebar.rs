@@ -8,7 +8,8 @@ use std::collections::BTreeMap;
 fn task_subtitle(task: &Task, context: &RenderContext<'_>, group: Option<&str>) -> Option<String> {
     let project = task.agent_id.as_ref().and_then(|id| context.live.nodes.iter()
         .find(|node| node.agent_id == id.0).and_then(|node| node.project.as_deref()));
-    let queued = common::queued(task, context).map(|queued| common::queued_label(queued, context.lang));
+    let queued = common::paused(task, context).map(|paused| common::paused_label(paused, context.lang))
+        .or_else(|| common::queued(task, context).map(|queued| common::queued_label(queued, context.lang)));
     let state = common::instruction_label(task, context.domain, context.lang)
         .or_else(|| common::failed_launch(task, context.domain).map(|_| common::launch_failed_label(context.lang)))
         .or_else(|| common::node_closed(task, context).then(|| common::node_closed_label(context.lang)))

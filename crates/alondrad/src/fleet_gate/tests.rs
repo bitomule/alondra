@@ -14,7 +14,7 @@ fn waiting(key: &str, priority: TaskPriority, resuming: bool, since: Millis) -> 
 fn keys(queue: &[Waiting]) -> Vec<String> {
     queue.iter().map(|waiting| match &waiting.key {
         Key::Task(task) => task.0.clone(),
-        Key::Run(run) => run.clone(),
+        Key::Run(run) | Key::Resume(run) => run.clone(),
     }).collect()
 }
 
@@ -153,7 +153,7 @@ fn memory_back_above_20_percent_for_5_minutes_recovers_once_and_lets_the_queue_g
     }
     assert_eq!(mac.health, Health::Fine);
     assert_eq!(notices.len(), 2, "{notices:?}");
-    assert_eq!(notices[1], "The Mac has memory again (30% free): Alondra starts the queued launches one by one.");
+    assert_eq!(notices[1], "The Mac has memory again (30% free): Alondra resumes the paused nodes and starts the queued launches one by one.");
 }
 
 struct Home(PathBuf);

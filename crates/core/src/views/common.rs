@@ -149,7 +149,46 @@ pub(super) fn queued_label(queued: &super::LiveQueued, lang: super::Lang) -> Str
         LiveHold::Next if queued.position == 1 => tf!(lang, "Queued · next · starts within a minute",
             "En cola · la siguiente · arranca en menos de un minuto"),
         LiveHold::Next => tf!(lang, "Queued · {place} of {of}", "En cola · {place} de {of}"),
+        LiveHold::Disk => tf!(lang, "Queued · {place} of {of} · the disk is nearly full",
+            "En cola · {place} de {of} · el disco está casi lleno"),
     }
+}
+
+/// The task's pause, if its node is paused.
+pub(super) fn paused<'a>(task: &crate::domain::Task, context: &'a RenderContext<'_>) -> Option<&'a super::LivePaused> {
+    if task.state.terminal() { return None; }
+    context.live.pacing.as_ref()?.paused.iter().find(|paused| paused.task_id == task.id.0)
+}
+
+/// "Paused since 14:05 for memory · resumes when the Mac has been fine for 5 min (2 so far)".
+pub(super) fn paused_label(paused: &super::LivePaused, lang: super::Lang) -> String {
+    use super::{LivePauseReason, text::tf};
+    let at = &paused.at;
+    let why = match paused.reason {
+        LivePauseReason::User => return tf!(lang, "Paused · you paused it at {at}", "Pausado · lo pausaste a las {at}"),
+        LivePauseReason::Usage => return tf!(lang, "Paused since {at} for the usage limit · resumes in turn once it resets",
+            "Pausado desde las {at} por el límite de uso · se reanuda por turno cuando se reinicie"),
+        LivePauseReason::Memory => tf!(lang, "Paused since {at} for memory", "Pausado desde las {at} por memoria"),
+        LivePauseReason::Machine => {
+            let reason = paused.waits_for.as_deref().map(|reason| reason.trim().trim_end_matches('.')).filter(|reason| !reason.is_empty());
+            let since = match reason {
+                Some(reason) => tf!(lang, "Waiting: {reason} · since {at}", "Esperando: {reason} · desde las {at}"),
+                None => tf!(lang, "Waiting since {at}", "Esperando desde las {at}"),
+            };
+            return match paused.next {
+                true => format!("{since} · {}", super::text::t!(lang, "resumes next", "se reanuda el siguiente")),
+                false => since,
+            };
+        }
+    };
+    let when = match paused.fine_minutes {
+        _ if paused.next => tf!(lang, "resumes next", "se reanuda el siguiente"),
+        Some(minutes) if minutes >= 5 => tf!(lang, "resumes in turn, within the limit", "se reanuda por turno, sin pasar del límite"),
+        Some(minutes) => tf!(lang, "resumes when the Mac has been fine for 5 min ({minutes} so far)",
+            "se reanuda cuando el Mac lleve 5 min bien ({minutes} hasta ahora)"),
+        None => tf!(lang, "resumes when the Mac has been fine for 5 min", "se reanuda cuando el Mac lleve 5 min bien"),
+    };
+    format!("{why} · {when}")
 }
 
 /// The error of the scheduled launch that should have started this task and did not.

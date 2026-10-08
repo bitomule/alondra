@@ -34,9 +34,13 @@ pub enum Verb {
     CloseUnmerged,
     /// Take back an answer to one of the questions asked together with this one.
     Retake,
+    /// Pause a working node, or take a queued task out of the queue.
+    Pause,
+    /// Resume a paused node or task at once, even over the limit.
+    Resume,
 }
 impl Verb {
-    pub const ALL: [Self; 30] = [
+    pub const ALL: [Self; 32] = [
         Self::Ans,
         Self::Read,
         Self::Accept,
@@ -67,6 +71,8 @@ impl Verb {
         Self::NewRequest,
         Self::CloseUnmerged,
         Self::Retake,
+        Self::Pause,
+        Self::Resume,
     ];
     pub fn as_str(self) -> &'static str {
         match self {
@@ -100,6 +106,8 @@ impl Verb {
             Self::NewRequest => "new_request",
             Self::CloseUnmerged => "close_unmerged",
             Self::Retake => "retake",
+            Self::Pause => "pause",
+            Self::Resume => "resume",
         }
     }
     fn parse(value: &str) -> Option<Self> {

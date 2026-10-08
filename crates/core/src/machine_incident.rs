@@ -40,6 +40,15 @@ pub struct MachineCard {
     /// The volume that is nearly full, when it is not the Mac's own disk.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub disk: Option<String>,
+    /// Memory stays at its limit with one node working, the rest paused: something else eats it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub single_node: bool,
+    /// The processes using the most memory, by name and resident bytes, on that card.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub top: Vec<(String, u64)>,
+    /// The user said they fixed it and the gauge still measures the problem.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub still: bool,
 }
 
 /// "0 B", "450 MB", "4.2 GB".
@@ -81,8 +90,12 @@ impl MachineCard {
         let on = self.disk.as_ref().map(|disk| tf!(lang, " on {disk}", " en {disk}")).unwrap_or_default();
         let memory = self.memory_free_percent.unwrap_or(0);
         let need = match self.cause {
+            MachineCause::Disk if self.still => tf!(lang, "Still: {free} free left{on}", "Sigue: quedan {free} libres{on}"),
+            MachineCause::Memory if self.still => tf!(lang, "Still: memory {memory}% free", "Sigue: memoria al {memory}% libre"),
             MachineCause::Disk if self.nodes.is_empty() => tf!(lang, "Free up disk space: only {free} left{on}", "Libera espacio en disco: solo quedan {free}{on}"),
             MachineCause::Disk => tf!(lang, "Free up disk space: {free} left{on}", "Libera espacio en disco: quedan {free}{on}"),
+            MachineCause::Memory if self.single_node => tf!(lang, "Free up memory: {memory}% free with a single node working",
+                "Libera memoria: {memory}% libre con un solo nodo trabajando"),
             MachineCause::Memory => tf!(lang, "Free up memory: {memory}% free", "Libera memoria: {memory}% libre"),
             MachineCause::Load => t!(lang, "Lighten the Mac's load: the CPU is at its limit", "Alivia la carga del Mac: la CPU está al límite").into(),
             MachineCause::Declared => t!(lang, "Check the Mac: nodes are waiting for the machine", "Revisa el Mac: hay nodos esperando a la máquina").into(),
@@ -99,6 +112,10 @@ impl MachineCard {
                 None => tf!(lang, "Disk nearly full ({free} free). Alondra starts no new node until there is space.",
                     "Disco casi lleno ({free} libres). Alondra no lanzará nodos nuevos hasta que haya espacio."),
             },
+            MachineCause::Memory if !self.top.is_empty() => {
+                let top = self.top.iter().map(|(name, bytes)| format!("{name} {}", bytes_text(*bytes, lang))).collect::<Vec<_>>().join(", ");
+                tf!(lang, "Memory at its limit ({memory}% free). Using the most: {top}.", "Memoria al límite ({memory}% libre). Lo que más ocupa: {top}.")
+            }
             MachineCause::Memory => tf!(lang, "Memory at its limit ({memory}% free).", "Memoria al límite ({memory}% libre)."),
             MachineCause::Load => t!(lang, "CPU at its limit.", "CPU al límite.").into(),
             MachineCause::Declared => match &self.reason {
@@ -117,7 +134,7 @@ mod tests {
     use super::*;
 
     fn card(cause: MachineCause, nodes: &[&str]) -> MachineCard {
-        MachineCard { cause, disk_free: 0, memory_free_percent: Some(9), nodes: nodes.iter().map(|n| n.to_string()).collect(), reason: None, minutes: None, disk: None }
+        MachineCard { cause, disk_free: 0, memory_free_percent: Some(9), nodes: nodes.iter().map(|n| n.to_string()).collect(), reason: None, minutes: None, disk: None, single_node: false, top: vec![], still: false }
     }
 
     #[test]
@@ -159,5 +176,15 @@ mod tests {
     fn a_declared_wait_quotes_the_node() {
         let declared = MachineCard { reason: Some("build queue full.".into()), ..card(MachineCause::Declared, &["Quill"]) };
         assert!(declared.text(Lang::En).1.starts_with("A node says: build queue full. Stopped: Quill."));
+    }
+
+    #[test]
+    fn memory_at_its_limit_with_a_single_node_working_says_so_and_names_what_uses_the_most() {
+        let single = MachineCard { memory_free_percent: Some(4), single_node: true, top: vec![("Simulator".into(), 1_900_000_000), ("Xcode".into(), 3_100_000_000)], ..card(MachineCause::Memory, &[]) };
+        assert_eq!(MachineCard::from_body(&single.to_body()), Some(single.clone()));
+        let (need, why) = single.text(Lang::Es);
+        assert_eq!(need, "Libera memoria: 4% libre con un solo nodo trabajando");
+        assert!(why.starts_with("Memoria al límite (4% libre). Lo que más ocupa: Simulator 1,9 GB, Xcode 3,1 GB."), "{why}");
+        assert_eq!(single.text(Lang::En).0, "Free up memory: 4% free with a single node working");
     }
 }

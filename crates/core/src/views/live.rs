@@ -63,6 +63,36 @@ pub struct LivePacing {
     /// The Mac is short of memory: Tight or at its limit.
     pub tight: bool,
     pub queued: Vec<LiveQueued>,
+    /// Nodes Alondra or the user paused, in the order they come back.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub paused: Vec<LivePaused>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LivePaused {
+    pub task_id: String,
+    /// Local clock time it was paused at, "14:05".
+    pub at: String,
+    pub reason: LivePauseReason,
+    /// Whole minutes the Mac has had memory without a break, while it has.
+    #[serde(default)]
+    pub fine_minutes: Option<u32>,
+    /// Nothing but the step between two resumes holds it back.
+    #[serde(default)]
+    pub next: bool,
+    /// What the node said it waits for, when it declared the wait itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub waits_for: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LivePauseReason {
+    Memory,
+    /// The node said it waits for the machine.
+    Machine,
+    Usage,
+    User,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -82,6 +112,7 @@ pub enum LiveHold {
     Cpu { load: u32, cpus: usize },
     /// Nothing holds it but the minute between two starts.
     Next,
+    Disk,
 }
 /// `reason` is `usage_exhausted`, `disk_low`, `workspace_untrusted` (with the folder as `detail`)
 /// or `launch_failed` (with the error).

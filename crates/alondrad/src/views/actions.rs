@@ -161,7 +161,7 @@ fn action_receipts() -> &'static tokio::sync::Mutex<std::collections::HashMap<(S
 fn is_external(verb: Verb) -> bool {
     matches!(verb, Verb::Reply | Verb::AskPr | Verb::Conflicts | Verb::Msg | Verb::Relaunch | Verb::Close | Verb::Interrupt |
         Verb::OrchRetry | Verb::OrchAck | Verb::OrchStop | Verb::SchedRun | Verb::SchedToggle |
-        Verb::SchedDelete | Verb::SchedSave | Verb::NewRequest | Verb::CloseUnmerged)
+        Verb::SchedDelete | Verb::SchedSave | Verb::NewRequest | Verb::CloseUnmerged | Verb::Pause | Verb::Resume)
 }
 
 async fn execute_action(
@@ -268,6 +268,8 @@ async fn execute_external(
         Verb::SchedSave => "Schedule saved",
         Verb::NewRequest => "Request sent",
         Verb::CloseUnmerged => "PR closed",
+        Verb::Pause => "Paused",
+        Verb::Resume => "Resumed",
         _ => return Ok(no_longer_available(lang, "This action is no longer available")),
     };
     let stamp = if lang == Lang::Es { match action.verb {
@@ -277,7 +279,8 @@ async fn execute_external(
         Verb::OrchRetry => "Reintentado", Verb::OrchAck => "Confirmado", Verb::OrchStop => "Detenido",
         Verb::SchedRun => "Ejecución iniciada", Verb::SchedToggle => "Tarea actualizada",
         Verb::SchedDelete => "Tarea eliminada", Verb::SchedSave => "Tarea guardada",
-        Verb::NewRequest => "Solicitud enviada", Verb::CloseUnmerged => "PR cerrada", _ => stamp,
+        Verb::NewRequest => "Solicitud enviada", Verb::CloseUnmerged => "PR cerrada",
+        Verb::Pause => "En pausa", Verb::Resume => "Reanudado", _ => stamp,
     }} else { stamp };
     let to_applied = |status: u16, body: Value| -> Value { applied(action.verb, lang, stamp, state.revision, status, body) };
     match action.verb {
@@ -417,6 +420,28 @@ async fn execute_external(
             match domain.live.pushes.interrupt(&agent.0) {
                 Ok(()) => Ok(to_applied(200, json!({"interrupted": agent.0}))),
                 Err(_) => Ok(node_unreachable_value(&state, &agent, lang)),
+            }
+        }
+        Verb::Pause => {
+            let now = alondra_core::now_millis();
+            let paused = if state.agents.contains_key(&AgentId(action.subject.clone())) {
+                domain.live.gate.pause_by_user(domain, &action.subject, now)
+            } else {
+                crate::fleet_gate::hold_queued(domain, &TaskId(action.subject.clone()), now)
+            };
+            match paused {
+                Ok(()) => Ok(to_applied(200, json!({"paused": action.subject}))),
+                Err(why) => Ok(error_value_lang(lang, "conflict", why)),
+            }
+        }
+        Verb::Resume => {
+            let now = alondra_core::now_millis();
+            if domain.live.gate.resume_now(domain, &action.subject, now) {
+                return Ok(to_applied(200, json!({"resumed": action.subject})));
+            }
+            match crate::fleet_gate::release_queued(domain, home, &TaskId(action.subject.clone()), &crate::orchestrate::ClaudeCli).await {
+                Ok(()) => Ok(to_applied(200, json!({"resumed": action.subject}))),
+                Err(why) => Ok(error_value_lang(lang, "conflict", why)),
             }
         }
         Verb::OrchRetry | Verb::OrchAck | Verb::OrchStop => {
@@ -1294,6 +1319,8 @@ fn applied_outcome(verb: Verb, lang: Lang, stamp: &str, accepted: Accepted) -> O
         Verb::SchedToggle => Outcome::done(say("Scheduled task updated.", "Tarea programada actualizada.")),
         Verb::SchedDelete => Outcome::done(say("Scheduled task deleted.", "Tarea programada eliminada.")),
         Verb::SchedSave => Outcome::done(say("Scheduled task saved.", "Tarea programada guardada.")),
+        Verb::Pause => Outcome::done(say("Paused. Alondra does not resume it by itself: only you do.", "En pausa. Alondra no la reanuda sola: solo tú.")),
+        Verb::Resume => Outcome::done(say("Resumed now, even over the limit.", "Reanudada ya, aunque se pase del límite.")),
         _ => Outcome::done(stamp.to_owned()),
     }
 }
@@ -1460,6 +1487,10 @@ fn localize<'a>(lang: Lang, message: &'a str) -> &'a str {
         "An attachment is no longer available" => "Un archivo adjunto ya no está disponible",
         "Choose an option" => "Elige una opción",
         "This item is no longer available" => "Este elemento ya no está disponible",
+        "This node has no open task" => "Este nodo no tiene ninguna tarea abierta",
+        "This task is not queued" => "Esta tarea no está en cola",
+        "This node or task is not paused" => "Este nodo o esta tarea no está en pausa",
+        "Alondra could not start the task" => "Alondra no pudo arrancar la tarea",
         "This item has changed" => "Este elemento ha cambiado",
         "This action is no longer available" => "Esta acción ya no está disponible",
         "This item has no active node" => "Este elemento no tiene un nodo activo",

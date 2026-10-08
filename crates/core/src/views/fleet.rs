@@ -430,6 +430,10 @@ fn pacing_section(context: &RenderContext<'_>) -> Option<super::Section> {
     if queued > 0 {
         parts.push(tf!(lang, "Queued {queued}", "En cola {queued}"));
     }
+    let paused = pacing.paused.len();
+    if paused > 0 {
+        parts.push(tf!(lang, "Paused {paused}", "En pausa {paused}"));
+    }
     if let Some(free) = pacing.memory_free {
         parts.push(match pacing.tight {
             true => tf!(lang, "Mac: memory {free}% free (tight)", "Mac: memoria {free} % libre (justo)"),
@@ -443,6 +447,11 @@ fn pacing_section(context: &RenderContext<'_>) -> Option<super::Section> {
         let Some(task) = context.domain.tasks.get(&crate::domain::TaskId(place.task_id.clone())) else { continue };
         items.push(Item::Row(common::row(&format!("queued:{}", task.id.0), &format!("task:{}", task.id.0), Icon::Task,
             task.title.clone(), Some(common::queued_label(place, lang)))));
+    }
+    for paused in &pacing.paused {
+        let Some(task) = context.domain.tasks.get(&crate::domain::TaskId(paused.task_id.clone())) else { continue };
+        items.push(Item::Row(common::row(&format!("paused:{}", task.id.0), &format!("task:{}", task.id.0), Icon::Task,
+            task.title.clone(), Some(common::paused_label(paused, lang)))));
     }
     Some(common::section("pacing", None, items))
 }

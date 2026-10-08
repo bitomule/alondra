@@ -816,7 +816,8 @@ struct WaitingBody {
 }
 
 /// An Agent declares it is stopped waiting for the machine, as 8ccd131's `wait_for_machine` did:
-/// its live state says so until its next turn, and the machine watch tells the user and wakes it.
+/// its live state says so until its next turn, the machine watch tells the user, and the fleet
+/// gate brings it back in its turn.
 async fn agent_waiting_machine(
     State(state): State<Arc<DomainDaemon>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
@@ -842,7 +843,9 @@ async fn agent_waiting_machine(
     };
     let live = &state.domain.live;
     let turn = live.node(&session_id).map_or(0, |node| node.turn);
-    live.machine_watch.declare(&session_id, &body.reason, turn, alondra_core::now_millis());
+    let now = alondra_core::now_millis();
+    live.machine_watch.declare(&session_id, &body.reason, turn, now);
+    live.gate.hold_back(&state.domain, &session_id, crate::fleet_pause::Reason::Declared { reason: body.reason.clone() }, now);
     live.apply(&alondra_core::Event::WaitingMachine {
         session_id,
         reason: body.reason,

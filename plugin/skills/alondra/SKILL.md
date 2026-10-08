@@ -130,7 +130,14 @@ Pick the tool by what you need:
   must replace it: send `replacement` (the corrected card, as `{tool, arguments}`) with the
   explanation in its `why` or `content`, or `withdraw` it.
 - There is no tool to authorize anything. Permission prompts reach the user from Claude Code.
-- `wait_for_machine`: you are stopped by RAM, a build queue or a usage limit.
+- `wait_for_machine`: you are stopped by memory, a full disk or a usage limit. If something you
+  ran died for lack of memory (killed, out of memory, a build cut short), call it with that reason
+  and end your turn; never ask the user whether to run it again. Waiting in a build queue (such as
+  the build queue) is normal, not a stop: keep waiting for your build and never call
+  `wait_for_machine` for it. Alondra tells you to carry on
+  when the Mac has room for you, and then you run again what was cut.
+- Alondra may pause you when the Mac runs out of memory: your turn is interrupted, and later a
+  message says when and what was cut. Carry on from there and run again what was cut.
 
 ## What a delivery is not
 

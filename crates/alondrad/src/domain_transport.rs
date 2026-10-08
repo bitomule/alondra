@@ -558,8 +558,8 @@ pub(crate) fn block_text(user: &str, title: &str) -> String {
         "[Alondra] Do not end your turn yet: your task “{title}” is still open and {user} has not heard from you. Your terminal \
          does not reach {user}; only the Alondra tools do. If the work is done, deliver it with `present_result` and is_final true \
          (the answer in body, files in attachments, the PR you registered in targets). If you need a decision or something only \
-         {user} can do, use `ask` or `request_action`. If the machine stopped you (memory, a build queue, a usage limit), say so \
-         with `wait_for_machine`. Otherwise keep working until one of these applies."
+         {user} can do, use `ask` or `request_action`. If the machine stopped you (memory, a full disk, a usage limit, a build \
+         killed for lack of memory; a build queue is not a stop), say so with `wait_for_machine`; never ask {user} whether to run it again. Otherwise keep working until one of these applies."
     )
 }
 

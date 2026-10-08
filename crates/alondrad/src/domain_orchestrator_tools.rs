@@ -682,7 +682,14 @@ pub(crate) struct SendBody {
 pub(crate) async fn send(domain: &DomainRuntime, home: &Path, actor: &Actor, body: SendBody) -> Result<Value, DomainError> {
     let current = state(domain)?;
     let agent_id = agent(&current, &body.node)?;
-    let node_runs = domain.live.mods.session(&agent_id.0).and_then(|reported| reported.model);
+    if let Some(paused) = domain.live.gate.paused(&agent_id.0) {
+        let why = match paused.reason {
+            crate::fleet_pause::Reason::ByUser => format!("{} paused it and only {} resumes it", crate::domain_messages::user_name(), crate::domain_messages::user_name()),
+            _ => "Alondra paused it for the machine and resumes it by itself in its turn, within the limit".into(),
+        };
+        return Err(DomainError::new("node_paused", format!("{} is paused: {why}. Nothing was sent; a message now would start it again past the limit.", body.node)));
+    }
+    let node_runs =domain.live.mods.session(&agent_id.0).and_then(|reported| reported.model);
     let node_model = node_runs.as_deref().map(alondra_core::model_label::model_family);
     if let Some(task_id) = &body.task {
         let task = current.tasks.get(task_id).ok_or_else(|| DomainError::new("not_found", "task does not exist"))?;

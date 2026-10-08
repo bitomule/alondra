@@ -19,6 +19,7 @@ use tokio::sync::mpsc;
 const RETRY: &str = "retry";
 const STALL_CHECK: Duration = Duration::from_secs(30);
 const DISK_RECHECK: Duration = Duration::from_secs(10);
+const GATE_RECHECK: Duration = Duration::from_secs(30);
 const CONTINUE: &str = "Alondra restarted your session because it had stopped processing in the middle of a turn. Check where you were and continue your task.";
 
 pub(crate) struct Timing {
@@ -128,6 +129,7 @@ pub(crate) fn stalled_sessions(domain: &DomainRuntime, now: alondra_core::Millis
         .map(|agent| agent.0.clone())
         .filter(|session| open_task(&state, session) && !domain.live.is_closed(session))
         .filter(|session| !crate::domain_holds::waits_on_user(&state, session))
+        .filter(|session| domain.live.gate.paused(session).is_none())
         .filter(|session| domain.live.mods.session(session).is_some_and(|reported| reported.silent(now)))
         .collect()
 }
@@ -159,7 +161,7 @@ pub(crate) async fn revive_stalled(domain: &DomainRuntime, session: &str, launch
             while domain.live.machine_watch.disk_low() {
                 tokio::time::sleep(DISK_RECHECK).await;
             }
-            if !still_stalled(domain, session) {
+            if !until_admitted(domain, session, || still_stalled(domain, session)).await {
                 break 'rounds;
             }
             let previous = domain.live.mods.session(session).and_then(|reported| reported.connection);
@@ -180,6 +182,33 @@ pub(crate) async fn revive_stalled(domain: &DomainRuntime, session: &str, launch
     }
     domain.live.set_reconnecting(session, false);
     domain.live.end_watch(session);
+}
+
+/// Waits for the fleet gate to let the session back to work, as work that resumes, so nodes come
+/// back one at a time within the limit; false once `still` says it no longer has to come back.
+async fn until_admitted(domain: &DomainRuntime, session: &str, still: impl Fn() -> bool) -> bool {
+    use crate::fleet_gate::{Key, Waiting};
+    let gate = &domain.live.gate;
+    let mut turn = gate.subscribe();
+    let key = Key::Resume(session.to_owned());
+    let since = alondra_core::now_millis();
+    loop {
+        if !still() {
+            gate.forget(&key);
+            return false;
+        }
+        let priority = domain.state().ok()
+            .and_then(|state| crate::fleet_gate::open_task_of(&state, session).and_then(|task| state.tasks.get(&task).map(|task| task.priority)))
+            .unwrap_or_default();
+        match gate.ask(domain, Waiting { key: key.clone(), priority, resuming: true, since }, alondra_core::now_millis()) {
+            Ok(()) => return true,
+            Err(hold) => log!("{session} waits at the fleet gate to come back: {hold:?}"),
+        }
+        tokio::select! {
+            _ = turn.changed() => {}
+            () = tokio::time::sleep(GATE_RECHECK) => {}
+        }
+    }
 }
 
 /// The mod's connection is recorded a moment before its push link attaches.
@@ -229,7 +258,7 @@ async fn restart_until_back(domain: &DomainRuntime, session: &str, launcher: &im
                 tokio::time::sleep(timing.pauses[attempt - 1]).await;
             }
             domain.live.usage_pause.until_clear().await;
-            if !needed(domain, session) {
+            if !until_admitted(domain, session, || needed(domain, session)).await {
                 return;
             }
             if session_ended(domain, session) {

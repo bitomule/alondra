@@ -78,6 +78,11 @@ impl MacState {
         (before != next).then_some((before, next))
     }
 
+    /// How long memory has been at 20 % free or more without a break.
+    pub(crate) fn fine_for(&self, now: Millis) -> Option<Millis> {
+        self.from_fine.map(|since| now - since)
+    }
+
     fn step_load(&mut self, machine: &Machine, now: Millis) {
         if machine.cpus == 0 {
             return;

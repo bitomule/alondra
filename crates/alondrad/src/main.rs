@@ -43,6 +43,7 @@ mod machine;
 mod machine_state;
 mod machine_watch;
 mod fleet_gate;
+mod fleet_pause;
 mod managed_orchestrator;
 mod markdown;
 mod mods_check;
