@@ -121,7 +121,7 @@ impl Fleet {
         std::fs::create_dir_all(&home).unwrap();
         let domain = Arc::new(DomainRuntime::open(&home).unwrap());
         domain.live.gate.tune(Tuning { spacing: crate::fleet_gate::SPACING, limit: Some(limit) });
-        run(&domain, user(), Command::CreateRequest { request_id: "r".into(), body: "Work".into(), auto_merge: false, maintenance: false });
+        run(&domain, user(), Command::CreateRequest { request_id: "r".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
         run(&domain, user(), Command::TitleRequest { request_id: "r".into(), title: "Work".into() });
         let mut nodes = vec![];
         for (index, (id, priority)) in tasks.iter().enumerate() {

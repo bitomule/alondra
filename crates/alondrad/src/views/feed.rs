@@ -477,7 +477,7 @@ mod tests {
                 command: Command::CreateRequest {
                     request_id: format!("request-{command_id}").into(),
                     body: body.into(),
-                    auto_merge: false, maintenance: false,
+                    auto_merge: false, maintenance: false, message: false,
                 },
             };
             self.client.domain.execute(

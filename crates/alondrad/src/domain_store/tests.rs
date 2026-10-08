@@ -67,7 +67,7 @@ pub(super) fn seeded(store: &mut DomainStore) {
         "request",
         Command::CreateRequest {
             request_id: "request-1".into(),
-            body: "Do useful work".into(), auto_merge: false, maintenance: false,
+            body: "Do useful work".into(), auto_merge: false, maintenance: false, message: false,
         },
     );
     execute(
@@ -325,7 +325,7 @@ fn replay_returns_the_first_outcome() {
     let mut user_zero = envelope(
         &mut store,
         "user-zero",
-        Command::CreateRequest { request_id: "request-2".into(), body: "More".into(), auto_merge: false, maintenance: false },
+        Command::CreateRequest { request_id: "request-2".into(), body: "More".into(), auto_merge: false, maintenance: false, message: false },
     );
     user_zero.expected_revision = 0;
     assert!(matches!(
@@ -535,7 +535,7 @@ fn a_store_with_another_schema_version_is_moved_aside_and_replaced_by_an_empty_o
     for other in [1, 7, 8, SCHEMA_VERSION + 1] {
         let fixture = Fixture::new();
         let mut store = DomainStore::open(&fixture.path()).unwrap();
-        execute(&mut store, &user(), "old", Command::CreateRequest { request_id: "old".into(), body: "Made before".into(), auto_merge: false, maintenance: false });
+        execute(&mut store, &user(), "old", Command::CreateRequest { request_id: "old".into(), body: "Made before".into(), auto_merge: false, maintenance: false, message: false });
         let old_epoch = store.load().unwrap().data_epoch.clone();
         store.conn.pragma_update(None, "user_version", other).unwrap();
         drop(store);
@@ -695,10 +695,10 @@ fn a_withdrawn_question_a_retitled_task_and_a_closed_requests_answer_survive_res
     execute(&mut store, &agent(), "withdraw", Command::Withdraw { interaction_id: "question-1".into() });
     let orchestrator = Actor::Orchestrator { generation: 0 };
     execute(&mut store, &orchestrator, "retitle", Command::RetitleTask { task_id: "task-1".into(), title: "Editor colours".into() });
-    execute(&mut store, &user(), "request-2", Command::CreateRequest { request_id: "request-2".into(), body: "Is main green?".into(), auto_merge: false, maintenance: false });
+    execute(&mut store, &user(), "request-2", Command::CreateRequest { request_id: "request-2".into(), body: "Is main green?".into(), auto_merge: false, maintenance: false, message: false });
     execute(&mut store, &orchestrator, "close-2", Command::CloseRequest { request_id: "request-2".into(),
         answer: Some("Main is green".into()), withdrawn: false, title: Some("CI status".into()) });
-    execute(&mut store, &user(), "request-3", Command::CreateRequest { request_id: "request-3".into(), body: "Never mind".into(), auto_merge: false, maintenance: false });
+    execute(&mut store, &user(), "request-3", Command::CreateRequest { request_id: "request-3".into(), body: "Never mind".into(), auto_merge: false, maintenance: false, message: false });
     execute(&mut store, &user(), "close-3", Command::CloseRequest { request_id: "request-3".into(), answer: None, withdrawn: true, title: None });
     let before = store.load().unwrap();
     drop(store);
@@ -732,8 +732,8 @@ fn work_declared_after_the_merge_survives_a_restart_and_leaves_no_row_once_it_en
 fn a_requests_auto_merge_choice_survives_restart() {
     let fixture = Fixture::new();
     let mut store = DomainStore::open(&fixture.path()).unwrap();
-    execute(&mut store, &user(), "auto", Command::CreateRequest { request_id: "auto".into(), body: "Merge alone".into(), auto_merge: true, maintenance: false });
-    execute(&mut store, &user(), "manual", Command::CreateRequest { request_id: "manual".into(), body: "Ask me".into(), auto_merge: false, maintenance: false });
+    execute(&mut store, &user(), "auto", Command::CreateRequest { request_id: "auto".into(), body: "Merge alone".into(), auto_merge: true, maintenance: false, message: false });
+    execute(&mut store, &user(), "manual", Command::CreateRequest { request_id: "manual".into(), body: "Ask me".into(), auto_merge: false, maintenance: false, message: false });
     drop(store);
     let reopened = DomainStore::open(&fixture.path()).unwrap().load().unwrap();
     assert_eq!((reopened.requests[&"auto".into()].auto_merge, reopened.requests[&"manual".into()].auto_merge), (true, false));
@@ -1216,7 +1216,7 @@ fn a_commit_landing_right_after_ours_is_never_served_from_the_cache() {
         "foreign-request",
         Command::CreateRequest {
             request_id: "request-2".into(),
-            body: "Written by another connection".into(), auto_merge: false, maintenance: false,
+            body: "Written by another connection".into(), auto_merge: false, maintenance: false, message: false,
         },
     );
     let mut foreign_writer = Some((second, foreign));
@@ -1232,7 +1232,7 @@ fn a_commit_landing_right_after_ours_is_never_served_from_the_cache() {
         "own-request",
         Command::CreateRequest {
             request_id: "request-3".into(),
-            body: "Written by this connection".into(), auto_merge: false, maintenance: false,
+            body: "Written by this connection".into(), auto_merge: false, maintenance: false, message: false,
         },
     );
     first.execute_authenticated(&user(), &own, None).unwrap();
@@ -1349,7 +1349,7 @@ fn a_request_and_what_the_user_chose_for_its_launch_commit_together_or_not_at_al
         attachments: vec![attachment("att-1")],
     };
     let create = |store: &mut DomainStore, id: &str, request: &str, body: &str| {
-        let mut e = envelope(store, id, Command::CreateRequest { request_id: request.into(), body: body.into(), auto_merge: false, maintenance: false });
+        let mut e = envelope(store, id, Command::CreateRequest { request_id: request.into(), body: body.into(), auto_merge: false, maintenance: false, message: false });
         e.expected_revision = 0;
         store.execute_launching(&user(), &e, None, &launch)
     };
@@ -1365,7 +1365,7 @@ fn a_request_and_what_the_user_chose_for_its_launch_commit_together_or_not_at_al
     assert_eq!(store.request_launch_summaries().unwrap()[&"request-1".into()], (Some("App".to_owned()), Some("auto".to_owned())));
     let again = create(&mut store, "first", "request-1", "Ship it").unwrap();
     assert!(again.replayed, "the same command again is the same request");
-    execute(&mut store, &user(), "plain", Command::CreateRequest { request_id: "request-2".into(), body: "Plain".into(), auto_merge: false, maintenance: false });
+    execute(&mut store, &user(), "plain", Command::CreateRequest { request_id: "request-2".into(), body: "Plain".into(), auto_merge: false, maintenance: false, message: false });
     assert!(store.request_launch(&"request-2".into()).unwrap().is_none(), "a plain request keeps no launch");
 
     assert!(store.conn.execute("UPDATE request_launch SET project='Other'", []).is_err(), "what was asked for is immutable");
@@ -1421,11 +1421,44 @@ fn a_maintenance_message_stays_one_after_a_restart() {
     let mut store = DomainStore::open(&fixture.path()).unwrap();
     seeded(&mut store);
     execute(&mut store, &user(), "maintenance", Command::CreateRequest {
-        request_id: "request-m".into(), body: "Launch two more".into(), auto_merge: false, maintenance: true });
+        request_id: "request-m".into(), body: "Launch two more".into(), auto_merge: false, maintenance: true, message: false });
     drop(store);
     let state = DomainStore::open(&fixture.path()).unwrap().load().unwrap();
     assert!(state.requests[&"request-m".into()].maintenance);
     assert!(!state.requests[&"request-1".into()].maintenance);
+}
+
+#[test]
+fn a_message_to_the_orchestrator_stays_one_after_a_restart() {
+    let fixture = Fixture::new();
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    seeded(&mut store);
+    execute(&mut store, &user(), "message", Command::CreateRequest {
+        request_id: "request-q".into(), body: "Is main green?".into(), auto_merge: false, maintenance: false, message: true });
+    execute(&mut store, &user(), "maintenance", Command::CreateRequest {
+        request_id: "request-m".into(), body: "Launch two more".into(), auto_merge: false, maintenance: true, message: false });
+    drop(store);
+    let state = DomainStore::open(&fixture.path()).unwrap().load().unwrap();
+    assert!(state.requests[&"request-q".into()].message);
+    assert!(state.requests[&"request-m".into()].message, "maintenance is a message too");
+    assert!(!state.requests[&"request-1".into()].message);
+}
+
+#[test]
+fn a_store_made_before_messages_were_marked_marks_the_ones_the_message_route_made() {
+    let fixture = Fixture::new();
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    seeded(&mut store);
+    let routed = "request-0123456789abcdef0123456789abcdef";
+    for (id, maintenance) in [(routed, false), ("request-m", true), ("5f1c2c1e-6d55-4a2e-9a77-0b3c1d7e9f10", false), ("request-0123456789abcdef0123456789abcdeg", false)] {
+        execute(&mut store, &user(), id, Command::CreateRequest {
+            request_id: id.into(), body: "Text".into(), auto_merge: false, maintenance, message: false });
+    }
+    store.conn.execute_batch("DROP TABLE message_requests").unwrap();
+    drop(store);
+    let state = DomainStore::open(&fixture.path()).unwrap().load().unwrap();
+    let marked: BTreeSet<&str> = state.requests.values().filter(|r| r.message).map(|r| r.id.0.as_str()).collect();
+    assert_eq!(marked, BTreeSet::from([routed, "request-m"]));
 }
 
 #[test]

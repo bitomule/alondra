@@ -443,6 +443,7 @@ async fn what_claude_sends_the_orchestrator_is_maintenance_and_its_answer_is_no_
             .unwrap_or_else(|| panic!("{name}: no request ({})", String::from_utf8_lossy(&sent.stdout)));
         assert!(request.body.contains("From Claude, for "), "{}", request.body);
         assert_eq!(request.maintenance, !reply, "{name} ({lang}, reply {reply}): only a message to the orchestrator that asks no reply is maintenance");
+        assert!(request.message, "{name} ({lang}, reply {reply}): it is a message, so the Tasks list leaves it out until it makes tasks");
         if reply { continue; }
         let id = request.id.clone();
         daemon.execute(Actor::Orchestrator { generation: state.orchestrator_generation }, &format!("close-{name}-{lang}"), Command::CloseRequest {

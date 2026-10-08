@@ -61,7 +61,7 @@ fn fixture() -> DomainState {
         user(),
         Command::CreateRequest {
             request_id: "r".into(),
-            body: "Build requested result".into(), auto_merge: false, maintenance: false,
+            body: "Build requested result".into(), auto_merge: false, maintenance: false, message: false,
         },
     )
     .unwrap();
@@ -1090,7 +1090,7 @@ fn orchestrator() -> Actor {
 #[test]
 fn a_request_that_needed_no_task_closes_with_its_answer_title_or_withdrawal() {
     let mut s = fixture();
-    exec(&mut s, user(), Command::CreateRequest { request_id: "q".into(), body: "Is main green?".into(), auto_merge: false, maintenance: false }).unwrap();
+    exec(&mut s, user(), Command::CreateRequest { request_id: "q".into(), body: "Is main green?".into(), auto_merge: false, maintenance: false, message: false }).unwrap();
     reject_unchanged(&mut s, agent(), Command::CloseRequest { request_id: "q".into(), answer: Some("Yes".into()), withdrawn: false, title: None }, "forbidden");
     reject_unchanged(&mut s, orchestrator(), Command::CloseRequest { request_id: "q".into(), answer: Some(" ".into()), withdrawn: false, title: None }, "invalid_input");
     exec(&mut s, orchestrator(), Command::CloseRequest { request_id: "q".into(), answer: Some("Main is green".into()),
@@ -1098,7 +1098,7 @@ fn a_request_that_needed_no_task_closes_with_its_answer_title_or_withdrawal() {
     let closed = &s.requests[&"q".into()];
     assert!(closed.closed && !closed.withdrawn);
     assert_eq!((closed.answer.as_deref(), closed.title.as_deref()), (Some("Main is green"), Some("CI status")));
-    exec(&mut s, user(), Command::CreateRequest { request_id: "w".into(), body: "Never mind".into(), auto_merge: false, maintenance: false }).unwrap();
+    exec(&mut s, user(), Command::CreateRequest { request_id: "w".into(), body: "Never mind".into(), auto_merge: false, maintenance: false, message: false }).unwrap();
     exec(&mut s, user(), Command::CloseRequest { request_id: "w".into(), answer: None, withdrawn: true, title: None }).unwrap();
     assert!(s.requests[&"w".into()].withdrawn);
     reject_unchanged(&mut s, user(), Command::CloseRequest { request_id: "r".into(), answer: None, withdrawn: true, title: None }, "task_not_active");
@@ -1112,7 +1112,7 @@ fn a_maintenance_message_closes_without_a_card_unless_it_asked_for_an_answer() {
         attachments: vec![], interaction_id: id.into(), scope: Scope::Orchestrator { request_id: Some(request.into()) },
         recipient: Recipient::User, body: "Done".into(), card: crate::domain::CardSpec::derived(crate::domain::CardKind::Know, "Done"),
     };
-    exec(&mut s, user(), Command::CreateRequest { request_id: "m".into(), body: "Launch two more".into(), auto_merge: false, maintenance: true }).unwrap();
+    exec(&mut s, user(), Command::CreateRequest { request_id: "m".into(), body: "Launch two more".into(), auto_merge: false, maintenance: true, message: false }).unwrap();
     let error = exec(&mut s, orchestrator(), info("m-info", "m")).unwrap_err();
     assert_eq!(error.code, "maintenance_request");
     assert!(error.message.contains("--reply"), "{error}");
@@ -1120,11 +1120,11 @@ fn a_maintenance_message_closes_without_a_card_unless_it_asked_for_an_answer() {
         withdrawn: false, title: Some("Two more nodes".into()) }).unwrap();
     assert_eq!(cards(&s), 0);
     assert!(!closed.effects.iter().any(|e| matches!(e, DomainEffect::NotifyUser { .. })));
-    exec(&mut s, user(), Command::CreateRequest { request_id: "q".into(), body: "Is main green?".into(), auto_merge: false, maintenance: false }).unwrap();
+    exec(&mut s, user(), Command::CreateRequest { request_id: "q".into(), body: "Is main green?".into(), auto_merge: false, maintenance: false, message: false }).unwrap();
     exec(&mut s, orchestrator(), Command::CloseRequest { request_id: "q".into(), answer: Some("Main is green".into()),
         withdrawn: false, title: None }).unwrap();
     assert_eq!(cards(&s), 1);
-    exec(&mut s, user(), Command::CreateRequest { request_id: "q2".into(), body: "And now?".into(), auto_merge: false, maintenance: false }).unwrap();
+    exec(&mut s, user(), Command::CreateRequest { request_id: "q2".into(), body: "And now?".into(), auto_merge: false, maintenance: false, message: false }).unwrap();
     exec(&mut s, orchestrator(), info("q2-info", "q2")).unwrap();
     assert_eq!(cards(&s), 2);
 }
@@ -1146,7 +1146,7 @@ fn task_in(request: &str, id: &str) -> Command {
 #[test]
 fn a_request_needs_its_title_before_it_gets_a_second_task() {
     let mut s = fixture();
-    exec(&mut s, user(), Command::CreateRequest { request_id: "two".into(), body: "Two things".into(), auto_merge: false, maintenance: false }).unwrap();
+    exec(&mut s, user(), Command::CreateRequest { request_id: "two".into(), body: "Two things".into(), auto_merge: false, maintenance: false, message: false }).unwrap();
     exec(&mut s, orchestrator(), task_in("two", "first")).unwrap();
     let error = exec(&mut s, orchestrator(), task_in("two", "second")).unwrap_err();
     assert_eq!((error.code.as_str(), error.subject.as_deref()), ("request_title_required", Some("request.title")));
@@ -2857,7 +2857,7 @@ fn revision_checks_are_per_subject_and_invalidation_dates_decisions() {
     assert_eq!(s.tasks[&"t".into()].agent_id, Some("b".into()));
     // Commands without a narrower subject still need the current revision.
     assert_eq!(
-        run(&mut s, user(), "r2", seen, Command::CreateRequest { request_id: "r2".into(), body: "More".into(), auto_merge: false, maintenance: false })
+        run(&mut s, user(), "r2", seen, Command::CreateRequest { request_id: "r2".into(), body: "More".into(), auto_merge: false, maintenance: false, message: false })
             .unwrap_err()
             .code,
         "stale_revision"
@@ -2971,7 +2971,7 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
         (Command::RecordScheduleLaunchHanded { run_id: ids.run.into(), session_id: None, agent_id: None, finished_at: 1 }, false),
         (Command::RecordScheduleRunFailed { run_id: ids.run.into(), reason: "boom".into(), finished_at: 1 }, false),
         (Command::InterruptScheduleRunsOnRestart, true),
-        (Command::CreateRequest { request_id: ids.request.into(), body: "Work".into(), auto_merge: false, maintenance: false }, true),
+        (Command::CreateRequest { request_id: ids.request.into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false }, true),
         (Command::CloseRequest { request_id: ids.request.into(), answer: None, withdrawn: false, title: None }, false),
         (Command::RegisterAgent { agent_id: ids.agent.into(), name: "Ghost".into() }, true),
         (Command::ObserveAgent { agent_id: ids.agent.into(), connected: true }, false),

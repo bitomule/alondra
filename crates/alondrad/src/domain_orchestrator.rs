@@ -685,7 +685,7 @@ exit 1"#;
     fn ask_orchestrator(domain: &DomainRuntime, n: u32) {
         if n == 1 {
             command(domain, Actor::System, "agent", Command::RegisterAgent { agent_id: "a".into(), name: "A".into() });
-            command(domain, Actor::Orchestrator { generation: 0 }, "request", Command::CreateRequest { request_id: "r".into(), body: "Work".into(), auto_merge: false, maintenance: false });
+            command(domain, Actor::Orchestrator { generation: 0 }, "request", Command::CreateRequest { request_id: "r".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
             command(domain, Actor::User { user_id: "u".into() }, "task", Command::CreateTask {
                 task_id: "t".into(), request_id: "r".into(), title: "Task".into(), agent_id: Some("a".into()),
                 review_prs: false, dependencies: BTreeSet::new(), stack: None,
@@ -1030,7 +1030,7 @@ printf '%s\n' '{"type":"result","session_id":"'"$session"'","subtype":"success",
         let f = fixture(SUCCESS);
         let domain = &f.executor.domain;
         command(domain, Actor::User { user_id: "u".into() }, "request", Command::CreateRequest {
-            request_id: "bc2466f2".into(), body: "Make the editor readable".into(), auto_merge: false, maintenance: false,
+            request_id: "bc2466f2".into(), body: "Make the editor readable".into(), auto_merge: false, maintenance: false, message: false,
         });
         let pending = outbox(domain)[0].0;
         let claim = domain.store.lock().unwrap().claim_message(pending).unwrap().unwrap();
@@ -1072,7 +1072,7 @@ printf '%s\n' '{"type":"result","session_id":"'"$session"'","subtype":"success",
         let f = fixture(SUCCESS);
         let long = format!("{} end of the message", "word ".repeat(80));
         command(&f.executor.domain, Actor::User { user_id: "u".into() }, "long", Command::CreateRequest {
-            request_id: "long".into(), body: long.clone(), auto_merge: false, maintenance: false,
+            request_id: "long".into(), body: long.clone(), auto_merge: false, maintenance: false, message: false,
         });
         let text = summary(&f.executor.domain.state().unwrap(), |_| None);
         assert!(text.contains("end of the message"), "{text}");

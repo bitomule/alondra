@@ -1934,7 +1934,7 @@ impl DomainState {
                 system(actor)?;
                 self.schedule.interrupt_on_restart();
             }
-            Command::CreateRequest { request_id, body, auto_merge, maintenance } => {
+            Command::CreateRequest { request_id, body, auto_merge, maintenance, message } => {
                 self.manager(actor)?;
                 id(&request_id.0)?;
                 nonempty(body)?;
@@ -1943,7 +1943,7 @@ impl DomainState {
                 };
                 self.requests.insert(
                     request_id.clone(),
-                    Request { auto_merge: *auto_merge, maintenance: *maintenance, ..Request::new(request_id.clone(), body.clone()) },
+                    Request { auto_merge: *auto_merge, maintenance: *maintenance, message: *message || *maintenance, ..Request::new(request_id.clone(), body.clone()) },
                 );
                 created.push(request_id.0.clone());
                 // 8ccd131 handed every new request of the user to the orchestrator.

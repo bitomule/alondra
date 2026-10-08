@@ -52,6 +52,13 @@ const ORCHESTRATOR_DELIVERIES: &str = "CREATE TABLE IF NOT EXISTS orchestrator_d
  attempt_id INTEGER PRIMARY KEY REFERENCES delivery_attempts(id),\
  session_id TEXT NOT NULL CHECK(length(session_id)>0));";
 const MAINTENANCE_REQUESTS: &str = "CREATE TABLE IF NOT EXISTS maintenance_requests(request_id TEXT PRIMARY KEY REFERENCES requests(id));";
+/// The Requests sent as messages to the orchestrator, kept beside them; created on every open like
+/// task_relations. When it is first created, the messages from before it are the maintenance ones and
+/// those with the `request-` + 32 hex id that only the orchestrator message route makes.
+const MESSAGE_REQUESTS: &str = "CREATE TABLE IF NOT EXISTS message_requests(request_id TEXT PRIMARY KEY REFERENCES requests(id));";
+const MESSAGE_REQUESTS_BEFORE: &str = "INSERT OR IGNORE INTO message_requests(request_id) \
+ SELECT request_id FROM maintenance_requests UNION \
+ SELECT id FROM requests WHERE length(id)=40 AND substr(id,1,8)='request-' AND substr(id,9) NOT GLOB '*[^0-9a-f]*';";
 /// What a node says it still does after its PR merged, kept beside the task's wrap-up; created on
 /// every open like task_relations.
 const TASK_POST_MERGE_WORK: &str = "CREATE TABLE IF NOT EXISTS task_post_merge_work(\
@@ -432,6 +439,13 @@ impl DomainStore {
         tx.execute_batch(TASK_WRAP_UPS)?;
         tx.execute_batch(TASK_RELATIONS)?;
         tx.execute_batch(MAINTENANCE_REQUESTS)?;
+        let messages_known: bool = tx.query_row(
+            "SELECT count(*) FROM sqlite_schema WHERE type='table' AND name='message_requests'", [], |r| r.get::<_, i64>(0),
+        )? == 1;
+        tx.execute_batch(MESSAGE_REQUESTS)?;
+        if !messages_known {
+            tx.execute_batch(MESSAGE_REQUESTS_BEFORE)?;
+        }
         tx.execute_batch(ORCHESTRATOR_SESSION)?;
         tx.execute_batch(ORCHESTRATOR_DELIVERIES)?;
         tx.execute_batch(TASK_POST_MERGE_WORK)?;

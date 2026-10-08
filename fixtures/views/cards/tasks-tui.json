@@ -4,7 +4,7 @@
   "view": "tasks",
   "key": "tasks",
   "client": "tui",
-  "version": "v162646afefff35f4",
+  "version": "vfa8afbfa5883c69d",
   "cursor": "cursor-1",
   "title": "Tasks",
   "status": {
@@ -275,7 +275,7 @@
           "type": "row",
           "id": "r-new",
           "icon": "mission",
-          "title": "New request",
+          "title": "Import lists from Notes",
           "subtitle": "The orchestrator is splitting it",
           "trailing": {
             "kind": "time",

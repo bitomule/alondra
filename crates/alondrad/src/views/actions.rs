@@ -1687,7 +1687,7 @@ mod tests {
         assert_eq!(fs::read_to_string(&options).unwrap(), "[defaults\n", "a broken file is never overwritten");
 
         apply_seed_command(&domain, Actor::User { user_id: "user".into() }, "create-request", Command::CreateRequest {
-            request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false,
+            request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false,
         });
         apply_seed_command(&domain, Actor::User { user_id: "user".into() }, "create-task", Command::CreateTask {
             task_id: "task-a".into(), request_id: "request".into(), title: "Work".into(),
@@ -1719,7 +1719,7 @@ mod tests {
             agent_id: "agent-a".into(), name: "Agent A".into(),
         });
         apply_seed_command(&domain, Actor::User { user_id: "user".into() }, "create-request", Command::CreateRequest {
-            request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false,
+            request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false,
         });
         apply_seed_command(&domain, Actor::User { user_id: "user".into() }, "title-request", Command::TitleRequest {
             request_id: "request".into(), title: "Work".into(),
@@ -2089,7 +2089,7 @@ mod tests {
             agent_id: "agent-a".into(), name: "Agent A".into(),
         });
         apply_seed_command(&domain, user.clone(), "create-request", Command::CreateRequest {
-            request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false,
+            request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false,
         });
         apply_seed_command(&domain, user, "create-task", Command::CreateTask {
             task_id: "task".into(), request_id: "request".into(), title: "Task".into(),
@@ -2121,7 +2121,7 @@ mod tests {
             agent_id: "agent-a".into(), name: "Agent A".into(),
         });
         apply_seed_command(domain, user.clone(), "create-request", Command::CreateRequest {
-            request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false,
+            request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false,
         });
         apply_seed_command(domain, user, "create-task", Command::CreateTask {
             task_id: "task".into(), request_id: "request".into(), title: "Task".into(),

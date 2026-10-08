@@ -235,7 +235,7 @@ fn register_probe(domain: &DomainRuntime, session: &str) -> Result<()> {
     let steps = [
         (Actor::System, "register", Command::RegisterAgent { agent_id: session.into(), name: format!("test/{short}") }),
         (user(), "request", Command::CreateRequest {
-            request_id: format!("sandbox-probe-{session}").into(), body: "Probe".into(), auto_merge: false, maintenance: false,
+            request_id: format!("sandbox-probe-{session}").into(), body: "Probe".into(), auto_merge: false, maintenance: false, message: false,
         }),
         (user(), "task", Command::CreateTask {
             task_id: format!("sandbox-probe-{session}").into(), request_id: format!("sandbox-probe-{session}").into(),
@@ -731,7 +731,7 @@ mod tests {
             agent_id: agent.into(), name: agent.into(),
         });
         command(domain, Actor::User { user_id: "u".into() }, &format!("request-{agent}"),
-            Command::CreateRequest { request_id: format!("request-{agent}").into(), body: "Work".into(), auto_merge: false, maintenance: false });
+            Command::CreateRequest { request_id: format!("request-{agent}").into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
         command(domain, Actor::User { user_id: "u".into() }, &format!("task-{agent}"), Command::CreateTask {
             task_id: format!("task-{agent}").into(), request_id: format!("request-{agent}").into(),
             title: "Task".into(), agent_id: Some(agent.into()), review_prs: false,
@@ -778,7 +778,7 @@ mod tests {
             agent_id: "agent-a".into(), name: "Agent A".into(),
         });
         command(&domain, Actor::User { user_id: "u".into() }, "request", Command::CreateRequest {
-            request_id: "request".into(), body: "Build a widget".into(), auto_merge: false, maintenance: false,
+            request_id: "request".into(), body: "Build a widget".into(), auto_merge: false, maintenance: false, message: false,
         });
         command(&domain, Actor::User { user_id: "u".into() }, "task", Command::CreateTask {
             task_id: "task".into(), request_id: "request".into(), title: "Widget".into(),
@@ -851,7 +851,7 @@ mod tests {
             agent_id: "agent-a".into(), name: "Agent A".into(),
         });
         command(&domain, Actor::User { user_id: "u".into() }, "request", Command::CreateRequest {
-            request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false,
+            request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false,
         });
         command(&domain, Actor::User { user_id: "u".into() }, "task", Command::CreateTask {
             task_id: "task".into(), request_id: "request".into(), title: "Task".into(),
@@ -945,7 +945,7 @@ mod tests {
             agent_id: "agent-a".into(), name: "Agent A".into(),
         });
         command(domain, Actor::User { user_id: "u".into() }, "request", Command::CreateRequest {
-            request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false,
+            request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false,
         });
         command(domain, Actor::User { user_id: "u".into() }, "task", Command::CreateTask {
             task_id: "task".into(), request_id: "request".into(), title: "Task".into(),
@@ -1505,7 +1505,7 @@ mod tests {
         let user = || Actor::User { user_id: "u".into() };
         command(domain, Actor::System, &format!("register-{agent}"), Command::RegisterAgent { agent_id: agent.into(), name: agent.into() });
         command(domain, user(), &format!("request-{agent}"),
-            Command::CreateRequest { request_id: format!("request-{agent}").into(), body: "Work".into(), auto_merge: false, maintenance: false });
+            Command::CreateRequest { request_id: format!("request-{agent}").into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
         command(domain, user(), &format!("task-{agent}"), Command::CreateTask {
             task_id: format!("task-{agent}").into(), request_id: format!("request-{agent}").into(),
             title: "Task".into(), agent_id: Some(agent.into()), review_prs: false, dependencies: BTreeSet::new(), stack: None,

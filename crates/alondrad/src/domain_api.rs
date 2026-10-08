@@ -1454,7 +1454,7 @@ mod tests {
                 "request",
                 Command::CreateRequest {
                     request_id: "request-a".into(),
-                    body: "Synthetic request".into(), auto_merge: false, maintenance: false,
+                    body: "Synthetic request".into(), auto_merge: false, maintenance: false, message: false,
                 },
             ),
             (
@@ -1914,7 +1914,7 @@ mod domain_encrypted_tests {
             expected_revision: 0,
             command: Command::CreateRequest {
                 request_id: "request-from-phone".into(),
-                body: "Synthetic encrypted request".into(), auto_merge: false, maintenance: false,
+                body: "Synthetic encrypted request".into(), auto_merge: false, maintenance: false, message: false,
             },
         };
         let body = serde_json::to_value(&envelope).unwrap();
@@ -1939,7 +1939,7 @@ mod domain_encrypted_tests {
             expected_revision: 1,
             command: Command::CreateRequest {
                 request_id: "request-after-revocation".into(),
-                body: "Must not commit".into(), auto_merge: false, maintenance: false,
+                body: "Must not commit".into(), auto_merge: false, maintenance: false, message: false,
             },
             ..envelope
         };

@@ -90,7 +90,7 @@ impl Rig {
         std::fs::create_dir_all(&home).unwrap();
         std::fs::create_dir_all(claude_home.join("jobs")).unwrap();
         let domain = Arc::new(DomainRuntime::open(&home).unwrap());
-        command(&domain, user(), Command::CreateRequest { request_id: "r".into(), body: "Work".into(), auto_merge: false, maintenance: false });
+        command(&domain, user(), Command::CreateRequest { request_id: "r".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
         command(&domain, user(), Command::TitleRequest { request_id: "r".into(), title: "Work".into() });
         let sessions = Arc::new(FakeSessions { listed: Default::default(), leftovers: Default::default(), calls: Default::default() });
         Self { root, claude_home, domain, sessions, count: 0 }

@@ -504,7 +504,7 @@ mod approval_tests {
             command: Command::CreateRequest {
                 request_id: "request-lease".into(),
                 body: "Work".into(),
-                auto_merge: false, maintenance: false,
+                auto_merge: false, maintenance: false, message: false,
             },
         };
         let (checked_tx, checked_rx) = mpsc::channel();
@@ -660,7 +660,7 @@ mod producer_revision_tests {
                     Command::CreateRequest {
                         request_id: "request-a".into(),
                         body: "Work".into(),
-                        auto_merge: false, maintenance: false,
+                        auto_merge: false, maintenance: false, message: false,
                     },
                 ),
                 None,
@@ -731,7 +731,7 @@ mod producer_revision_tests {
                     Command::CreateRequest {
                         request_id: "request-b".into(),
                         body: "More".into(),
-                        auto_merge: false, maintenance: false,
+                        auto_merge: false, maintenance: false, message: false,
                     },
                 )
             },

@@ -398,7 +398,7 @@ mod tests {
         let user = || Actor::User { user_id: "u".into() };
         command(&domain, Actor::System, "register", Command::RegisterAgent { agent_id: SESSION.into(), name: "alondra/probe".into() });
         if with_task {
-            command(&domain, user(), "request", Command::CreateRequest { request_id: "r".into(), body: "Work".into(), auto_merge: false, maintenance: false });
+            command(&domain, user(), "request", Command::CreateRequest { request_id: "r".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
             command(&domain, user(), "task", Command::CreateTask { task_id: "t".into(), request_id: "r".into(), title: "Probe".into(),
                 agent_id: Some(SESSION.into()), review_prs: false, dependencies: Default::default(), stack: None });
         }

@@ -423,7 +423,7 @@ mod tests {
             Command::CreateRequest {
                 request_id: "request-a".into(),
                 body: "Request".into(),
-                auto_merge: false, maintenance: false,
+                auto_merge: false, maintenance: false, message: false,
             },
         );
         apply_command(
@@ -632,7 +632,7 @@ mod tests {
             Command::CreateRequest {
                 request_id: "request-a".into(),
                 body: "Request".into(),
-                auto_merge: false, maintenance: false,
+                auto_merge: false, maintenance: false, message: false,
             },
         );
         command(
@@ -1119,7 +1119,7 @@ mod tests {
         let client = crate::client_routes::Client::open(domain.clone(), &home, Default::default());
         let orchestrator = Actor::Orchestrator { generation: 0 };
         apply_command(&domain, Actor::User { user_id: "u".into() }, "request", Command::CreateRequest {
-            request_id: "a7efd99d".into(), body: "can we encrypt images via R2".into(), auto_merge: false, maintenance: false,
+            request_id: "a7efd99d".into(), body: "can we encrypt images via R2".into(), auto_merge: false, maintenance: false, message: false,
         });
         apply_command(&domain, orchestrator.clone(), "answer", Command::PublishInformation {
             attachments: vec![],
@@ -1163,7 +1163,7 @@ mod tests {
         let agent = Actor::Agent { agent_id: "agent-a".into() };
         apply_command(&domain, Actor::System, "agent", Command::RegisterAgent { agent_id: "agent-a".into(), name: "A".into() });
         apply_command(&domain, Actor::User { user_id: "u".into() }, "request", Command::CreateRequest {
-            request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false });
+            request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
         apply_command(&domain, Actor::User { user_id: "u".into() }, "task", Command::CreateTask {
             task_id: "task-a".into(), request_id: "request".into(), title: "Task".into(), agent_id: Some("agent-a".into()),
             review_prs: false, dependencies: Default::default(), stack: None });
@@ -1197,7 +1197,7 @@ mod tests {
         let domain = open();
         apply_command(&domain, Actor::System, "agent", Command::RegisterAgent { agent_id: "agent-a".into(), name: "A".into() });
         apply_command(&domain, Actor::User { user_id: "u".into() }, "request", Command::CreateRequest {
-            request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false });
+            request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
         apply_command(&domain, Actor::User { user_id: "u".into() }, "task", Command::CreateTask {
             task_id: "task-a".into(), request_id: "request".into(), title: "Task".into(), agent_id: Some("agent-a".into()),
             review_prs: false, dependencies: Default::default(), stack: None });

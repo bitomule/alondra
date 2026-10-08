@@ -4,7 +4,7 @@
   "view": "tasks",
   "key": "tasks",
   "client": "mac",
-  "version": "vce0ab9bb34e74788",
+  "version": "v3a4ab74f2079569d",
   "cursor": "cursor-1",
   "title": "Tasks",
   "status": {
@@ -294,7 +294,7 @@
           "type": "row",
           "id": "r-new",
           "icon": "mission",
-          "title": "New request",
+          "title": "Import lists from Notes",
           "subtitle": "The orchestrator is splitting it",
           "trailing": {
             "kind": "time",

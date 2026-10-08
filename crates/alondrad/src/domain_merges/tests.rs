@@ -47,7 +47,7 @@ fn presented(tag: &str, auto_merge: bool) -> (Home, Arc<DomainRuntime>, FakeGith
     std::fs::create_dir(&home.0).unwrap();
     let domain = Arc::new(DomainRuntime::open(&home.0).unwrap());
     command(&domain, Actor::System, "agent", Command::RegisterAgent { agent_id: "a".into(), name: "A".into() });
-    command(&domain, user(), "request", Command::CreateRequest { request_id: "r".into(), body: "Work".into(), auto_merge, maintenance: false });
+    command(&domain, user(), "request", Command::CreateRequest { request_id: "r".into(), body: "Work".into(), auto_merge, maintenance: false, message: false });
     command(&domain, user(), "task", Command::CreateTask {
         task_id: "t".into(), request_id: "r".into(), title: "Task".into(), agent_id: Some("a".into()),
         review_prs: true, dependencies: BTreeSet::new(), stack: None,

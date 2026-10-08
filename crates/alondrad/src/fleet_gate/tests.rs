@@ -167,7 +167,7 @@ fn world() -> (Home, Arc<DomainRuntime>) {
     let home = std::env::temp_dir().join(format!("alondra-gate-{}", crate::auth::random_hex(8)));
     std::fs::create_dir_all(&home).unwrap();
     let domain = Arc::new(DomainRuntime::open(&home).unwrap());
-    run(&domain, Actor::User { user_id: "u".into() }, Command::CreateRequest { request_id: "r".into(), body: "Work".into(), auto_merge: false, maintenance: false });
+    run(&domain, Actor::User { user_id: "u".into() }, Command::CreateRequest { request_id: "r".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
     run(&domain, Actor::User { user_id: "u".into() }, Command::TitleRequest { request_id: "r".into(), title: "Work".into() });
     (Home(home), domain)
 }

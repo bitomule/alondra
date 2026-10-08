@@ -79,10 +79,14 @@ pub struct Request {
     /// tells the user nothing, and no card answers it.
     #[serde(default)]
     pub maintenance: bool,
+    /// Sent as a message to the orchestrator, not written as a new request: the Tasks list shows
+    /// it only once it has tasks.
+    #[serde(default)]
+    pub message: bool,
 }
 impl Request {
     pub fn new(id: RequestId, body: String) -> Self {
-        Request { id, body, closed: false, title: None, answer: None, withdrawn: false, auto_merge: false, maintenance: false }
+        Request { id, body, closed: false, title: None, answer: None, withdrawn: false, auto_merge: false, maintenance: false, message: false }
     }
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

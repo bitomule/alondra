@@ -72,6 +72,8 @@ pub enum Command {
         auto_merge: bool,
         #[serde(default)]
         maintenance: bool,
+        #[serde(default)]
+        message: bool,
     },
     CloseRequest {
         request_id: RequestId,

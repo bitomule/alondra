@@ -636,7 +636,9 @@ fn tasks_fixture() -> (DomainState, LiveSnapshot) {
     add_request(&mut state, "r-legacy", None, "Look at the schedule editor and write the notes for the beta.");
     add_task(&mut state, "t-legacy-editor", "r-legacy", "Review the schedule editor", TaskState::ForYourReview, &[]);
     add_task(&mut state, "t-legacy-notes", "r-legacy", "Write the release notes", TaskState::NotStarted, &[]);
-    add_request(&mut state, "r-new", None, "Import lists from Notes");
+    add_request(&mut state, "r-new", None, "Import lists from Notes. Keep the order and the checked items.");
+    add_request(&mut state, "r-message", None, "[From Claude, for David · 09:58] Launch two more from the queue.");
+    state.requests.get_mut(&"r-message".into()).unwrap().message = true;
     add_request(&mut state, "r-answer", Some("Is main green?"), "Is main green right now?");
     let answered = state.requests.get_mut(&"r-answer".into()).unwrap();
     answered.closed = true;
@@ -743,6 +745,73 @@ fn the_tasks_counter_counts_only_tasks_still_under_way() {
         state.tasks.get_mut(&"t-legacy-editor".into()).unwrap().state = waiting;
         assert_eq!(count(&state), all - 2, "{waiting:?}");
     }
+}
+
+#[test]
+fn a_message_to_the_orchestrator_is_listed_only_once_it_made_tasks() {
+    let (mut state, live) = tasks_fixture();
+    let listed = |state: &DomainState| -> Vec<String> {
+        ["tasks", "tasks?section=finished&after=0", "tasks?section=archived&after=0"].into_iter()
+            .flat_map(|key| render(state, &live, Client::Ios, Lang::En, key, "2026-09-30T10:00:00Z").sections)
+            .flat_map(|section| section.items)
+            .filter_map(|item| if let Item::Row(row) = item { Some(row.id) } else { None })
+            .collect()
+    };
+    let counted = |state: &DomainState| -> u32 {
+        render(state, &live, Client::Ios, Lang::En, "tasks", "2026-09-30T10:00:00Z").sections.iter()
+            .filter(|section| ["active", "finished", "archived"].contains(&section.id.as_str()))
+            .filter_map(|section| section.count).sum()
+    };
+    let before = counted(&state);
+    assert!(!listed(&state).contains(&"r-message".to_string()), "a message still being handled is no request");
+    assert!(listed(&state).contains(&"r-new".to_string()), "a request the user wrote shows before it has tasks");
+    state.requests.get_mut(&"r-message".into()).unwrap().closed = true;
+    assert!(!listed(&state).contains(&"r-message".to_string()), "nor once it was handled");
+    assert_eq!(counted(&state), before, "and no section counts it");
+    let mut task = state.tasks.values().next().unwrap().clone();
+    (task.id, task.request_id, task.title, task.state) = ("t-from-message".into(), "r-message".into(), "Launch the queue".into(), TaskState::NotStarted);
+    state.requests.get_mut(&"r-message".into()).unwrap().closed = false;
+    state.tasks.insert(task.id.clone(), task);
+    assert!(listed(&state).contains(&"r-message".to_string()), "a message that made a task is work like any other");
+}
+
+#[test]
+fn a_new_request_without_a_title_is_named_by_its_text() {
+    let (state, live) = tasks_fixture();
+    for lang in [Lang::En, Lang::Es] {
+        let view = render(&state, &live, Client::Ios, lang, "tasks", "2026-09-30T10:00:00Z");
+        let row = view.sections.iter().flat_map(|section| &section.items)
+            .find_map(|item| if let Item::Row(row) = item { (row.id == "r-new").then_some(row) } else { None })
+            .expect("the new request");
+        assert_eq!(row.title, "Import lists from Notes");
+    }
+    let detail = render(&state, &live, Client::Ios, Lang::Es, "task:t-legacy-notes", "2026-09-30T10:00:00Z");
+    let request = detail.sections.iter().flat_map(|section| &section.items)
+        .find_map(|item| if let Item::Facts(facts) = item { facts.items.iter().find(|fact| fact.label == "Solicitud") } else { None })
+        .expect("the task's request");
+    assert_eq!(request.value, "Look at the schedule editor and write the notes for the beta");
+    assert_eq!(super::tasks::summary("  \nFix the crash when the schedule list is empty? It happens on launch."),
+        "Fix the crash when the schedule list is empty?");
+    assert_eq!(super::tasks::summary("En iOS en la pantalla de nuevo de Alondra deberíamos hacer dismiss del teclado al enviar y además"),
+        "En iOS en la pantalla de nuevo de Alondra deberíamos hacer…");
+    assert_eq!(super::tasks::summary("v0.2.57 is out"), "v0.2.57 is out");
+}
+
+#[test]
+fn pr_handling_says_what_happens_to_the_pr() {
+    let mut state = fixture();
+    let live = LiveSnapshot::default();
+    let handling = |state: &DomainState| -> String {
+        render(state, &live, Client::Ios, Lang::Es, "task:t-1", "").sections.iter().flat_map(|section| &section.items)
+            .find_map(|item| if let Item::Facts(facts) = item {
+                facts.items.iter().find(|fact| fact.label == "Gestión de PR").map(|fact| fact.value.clone())
+            } else { None })
+            .expect("PR handling")
+    };
+    state.tasks.get_mut(&"t-1".into()).unwrap().review_prs = true;
+    assert_eq!(handling(&state), "La revisas tú; al aceptarla, Alondra la fusiona");
+    state.tasks.get_mut(&"t-1".into()).unwrap().review_prs = false;
+    assert_eq!(handling(&state), "Merge automático: Alondra la fusiona al pasar los checks");
 }
 
 #[test]
@@ -1734,16 +1803,15 @@ fn an_untitled_request_with_several_tasks_has_no_header_and_its_tasks_stand_loos
 }
 
 #[test]
-fn an_untitled_request_with_one_task_is_that_task_and_one_with_none_is_new() {
+fn an_untitled_request_with_one_task_is_that_task_and_one_with_none_is_its_text() {
     let mut state = fixture();
-    state.requests.insert("r-2".into(), Request::new("r-2".into(), "Prompt text that is not a title".into()));
-    for (lang, new_request) in [(Lang::En, "New request"), (Lang::Es, "Nueva petición")] {
+    state.requests.insert("r-2".into(), Request::new("r-2".into(), "Export the logs from settings. Today it needs a cable.".into()));
+    for lang in [Lang::En, Lang::Es] {
         for client in [Client::Ios, Client::Mac, Client::Tui] {
             let rows = tasks_items(&state, client, lang);
             let title = |id: &str| rows.iter().find(|row| row.id == id).unwrap().title.clone();
             assert_eq!(title("r-1"), "Build a feature");
-            assert_eq!(title("r-2"), new_request);
-            assert!(every_text(&rows).iter().all(|text| !text.contains("Prompt text")), "the prompt is never a title");
+            assert_eq!(title("r-2"), "Export the logs from settings");
         }
     }
 }
@@ -4021,7 +4089,7 @@ fn presented_pr() -> DomainState {
     let user = Actor::User { user_id: "u".into() };
     for (actor, command) in [
         (Actor::System, Command::RegisterAgent { agent_id: "a".into(), name: "Node A".into() }),
-        (user.clone(), Command::CreateRequest { request_id: "r".into(), body: "Fix it".into(), auto_merge: false, maintenance: false }),
+        (user.clone(), Command::CreateRequest { request_id: "r".into(), body: "Fix it".into(), auto_merge: false, maintenance: false, message: false }),
         (user.clone(), Command::CreateTask { task_id: "t".into(), request_id: "r".into(), title: "Fix it".into(),
             agent_id: Some("a".into()), review_prs: false, dependencies: BTreeSet::new(), stack: None }),
         (agent.clone(), Command::RegisterPr { task_id: "t".into(), pr_id: "pr".into(), host: "github.com".into(),
@@ -4365,7 +4433,7 @@ fn answered_and_closed_request() -> DomainState {
     let mut state = DomainState::new("epoch-1");
     let orchestrator = Actor::Orchestrator { generation: 0 };
     run(&mut state, Actor::User { user_id: "u".into() }, Command::CreateRequest {
-        request_id: "a7efd99d".into(), body: "can we encrypt images via R2".into(), auto_merge: false, maintenance: false,
+        request_id: "a7efd99d".into(), body: "can we encrypt images via R2".into(), auto_merge: false, maintenance: false, message: false,
     });
     let published = run(&mut state, orchestrator.clone(), Command::PublishInformation {
         attachments: vec![],
@@ -5052,7 +5120,7 @@ fn the_terminal_shows_only_the_new_plan_after_the_first_was_sent_back() {
         card: CardSpec::new(CardKind::Review, title).content(ContentKind::Plan, format!("# {title}\n\n1. Do it")),
     };
     execute(&mut state, Actor::System, Command::RegisterAgent { agent_id: "a".into(), name: "Node A".into() });
-    execute(&mut state, user.clone(), Command::CreateRequest { request_id: "r".into(), body: "Weekly cycle".into(), auto_merge: false, maintenance: false });
+    execute(&mut state, user.clone(), Command::CreateRequest { request_id: "r".into(), body: "Weekly cycle".into(), auto_merge: false, maintenance: false, message: false });
     execute(&mut state, user.clone(), Command::CreateTask { task_id: "t".into(), request_id: "r".into(), title: "Weekly cycle".into(),
         agent_id: Some("a".into()), review_prs: false, dependencies: BTreeSet::new(), stack: None });
     execute(&mut state, Actor::System, plan("p1", "First weekly plan"));

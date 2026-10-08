@@ -4,7 +4,7 @@
   "view": "tasks",
   "key": "tasks?section=finished&after=0",
   "client": "ios",
-  "version": "vcf68e9fdf3eb6e96",
+  "version": "va1262884fbf042c6",
   "cursor": "cursor-1",
   "title": "Tareas",
   "status": {
@@ -336,7 +336,7 @@
           "type": "row",
           "id": "r-new",
           "icon": "mission",
-          "title": "Nueva petición",
+          "title": "Import lists from Notes",
           "subtitle": "El orquestador la está dividiendo",
           "trailing": {
             "kind": "time",

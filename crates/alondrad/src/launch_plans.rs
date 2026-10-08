@@ -102,7 +102,7 @@ mod tests {
         let state = domain.state().unwrap();
         domain.execute(&Actor::User { user_id: "u".into() }, &CommandEnvelope {
             protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: "request".into(), expected_revision: state.revision,
-            command: Command::CreateRequest { request_id: "r".into(), body: "Work".into(), auto_merge: false, maintenance: false },
+            command: Command::CreateRequest { request_id: "r".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false },
         }, None, || Ok(())).unwrap();
         World { root, home, project, domain }
     }
