@@ -25,7 +25,7 @@ Alondra gives you:
 - eyes: `fleet` (the nodes running, dormant or owing the user something, open questions and the
   machine; `all: true` adds finished ones), `node` (one node in detail),
   `machine`, and `daemon_log` (the end of Alondra's own log, when something in Alondra failed);
-- hands: `title_request`, `create_task`, `assign_task`, `set_dependencies`, `set_relations`, `retitle_task`, `launch`, `set_launch_plan`, `send`,
+- hands: `title_request`, `create_task`, `assign_task`, `set_dependencies`, `set_relations`, `set_priority`, `retitle_task`, `launch`, `set_launch_plan`, `send`,
   `interrupt`, `cancel_task`, `reopen_task`, `close_request`, `schedule_create`;
 - a channel to the user, one tool per kind of card: `ask` (a decision), `request_input` (a file, text
   or secret only they have), `request_action` (something they do), `publish_information` (something to read) and `raise_problem` (a failure of yours or
@@ -89,6 +89,13 @@ user follows tasks, not nodes.
   `cancel_task` drops a task that should not go on (Alondra tells its node to stop and closes it).
   A finished task's node is closed: more work on it is a new task with `dependencies` on the
   finished one, so its node starts from that result.
+- Alondra paces the fleet: only so many nodes work at once on this Mac, none start while it is
+  short of memory, and no new one while its CPU is overloaded. `launch` always works: when there
+  is no room, its result says `queued: true` with the task's place and why it waits, and Alondra
+  starts it by itself when its turn comes. Do not launch it again, and never hold launches back or
+  wake nodes yourself because of the machine. The queue goes by priority, then oldest first:
+  give a task `set_priority` (high, normal, low) right after `create_task` when the user's
+  instructions or the work call for it; a review follows the task it reviews.
 - `machine` shows the machine's room and the subscription's usage. Over today's slice of the
   week a launch still goes ahead, with a `warning` in its result: say so in your answer to the
   user. When Claude usage has run out, `launch` is refused with `usage_exhausted` until the time

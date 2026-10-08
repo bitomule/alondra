@@ -11,7 +11,7 @@
 //! a push, which writes nothing to disk.
 use alondra_core::machine_incident::{MACHINE_FIXED_LABEL, MACHINE_FIXED_OPTION, MACHINE_PREFIX, MachineCard, MachineCause};
 use alondra_core::views::Lang;
-use alondra_core::{Machine, Millis, STRAINED_FREE_PERCENT, now_millis};
+use alondra_core::{Machine, Millis, now_millis};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -19,6 +19,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use crate::domain_runtime::DomainRuntime;
+use crate::machine_state::{Health, MacState};
 use crate::usage_pause::Alerts;
 
 pub(crate) const FILE: &str = "machine-incident.json";
@@ -57,6 +58,10 @@ struct Record {
     /// Mount points of the volumes nodes were launched on, other than the Mac's own disk.
     #[serde(default)]
     volumes: BTreeSet<PathBuf>,
+    #[serde(default)]
+    mac: MacState,
+    #[serde(default)]
+    sampled_at: Millis,
 }
 
 /// A node stopped for the machine, as the card names it.
@@ -78,17 +83,29 @@ pub(crate) enum Action {
 }
 
 /// What the gauges say is wrong. Once the disk was the cause it must climb past
-/// `disk::recovered_line()` to count as fine, so a disk hovering at the line does not flap.
-pub(crate) fn failing(machine: &Machine, disk_was_low: bool) -> Option<MachineCause> {
-    let line = if disk_was_low { crate::disk::recovered_line() } else { crate::disk::low_line() };
+/// `disk::recovered_line()` to count as fine, so a disk hovering at the line does not flap. Memory
+/// opens an incident at its limit and keeps it until the Mac is Fine again, after the hysteresis
+/// of `machine_state`. The CPU load opens none: it only holds new starts at the gate.
+pub(crate) fn failing(machine: &Machine, health: Health, previous: Option<MachineCause>) -> Option<MachineCause> {
+    let line = if previous == Some(MachineCause::Disk) { crate::disk::recovered_line() } else { crate::disk::low_line() };
     if machine.disk_total > 0 && machine.disk_available < line {
         Some(MachineCause::Disk)
-    } else if machine.memory_free_percent.is_some_and(|free| free < STRAINED_FREE_PERCENT) {
+    } else if health == Health::AtLimit || (previous == Some(MachineCause::Memory) && health != Health::Fine) {
         Some(MachineCause::Memory)
-    } else if machine.unreliable {
-        Some(MachineCause::Load)
     } else {
         None
+    }
+}
+
+/// What the orchestrator hears when memory changes for real: entering pressure and being Fine
+/// again, never the swings between Tight and AtLimit.
+pub(crate) fn pacing_notice(from: Health, to: Health, free: Option<u32>) -> Option<String> {
+    let free = free.map(|free| format!(" ({free}% free)")).unwrap_or_default();
+    match (from, to) {
+        (Health::Fine, _) => Some(format!(
+            "The Mac is short of memory{free}: Alondra keeps new launches in the queue until it has been fine for 5 minutes, then starts them one by one. Launch as usual; do not hold launches back or wake nodes yourself.")),
+        (_, Health::Fine) => Some(format!("The Mac has memory again{free}: Alondra starts the queued launches one by one.")),
+        _ => None,
     }
 }
 
@@ -117,9 +134,6 @@ pub(crate) fn tightest(machine: Machine, volumes: &[(String, crate::disk::Space)
 fn orchestrator_text(card: &MachineCard, opening: bool) -> String {
     let (_, why) = card.text(Lang::En);
     let lead = if opening { "Machine at its limit" } else { "The machine is still at its limit" };
-    if card.cause == MachineCause::Load {
-        return format!("{lead}: {why} Do not launch or wake nodes until Alondra says it recovered; it clears by itself and needs nothing from {}.", crate::domain_messages::user_name());
-    }
     format!("{lead}: {why} Do not launch or wake nodes until Alondra says it recovered; {} has a card about it.", crate::domain_messages::user_name())
 }
 
@@ -127,19 +141,31 @@ fn orchestrator_text(card: &MachineCard, opening: bool) -> String {
 /// fixed it. Pure, so every turn of it is tested without a clock.
 #[cfg(test)]
 pub(crate) fn step(previous: Option<Incident>, machine: &Machine, waiting: &[Waiter], fixed: bool, now: Millis) -> (Option<Incident>, Vec<Action>) {
-    step_on(previous, machine, None, waiting, fixed, now)
+    let health = match machine.memory_free_percent {
+        Some(free) if free < 10 => Health::AtLimit,
+        Some(free) if free < 20 => Health::Tight,
+        _ => Health::Fine,
+    };
+    step_on(previous, machine, health, None, waiting, fixed, now)
 }
 
 /// `step` with the name of the volume the disk gauge measured, when it is not the Mac's own.
-pub(crate) fn step_on(previous: Option<Incident>, machine: &Machine, disk: Option<&str>, waiting: &[Waiter], fixed: bool, now: Millis) -> (Option<Incident>, Vec<Action>) {
-    let disk_was_low = previous.as_ref().is_some_and(|incident| incident.cause == MachineCause::Disk);
-    let measured = failing(machine, disk_was_low);
+///
+/// Memory is told to the orchestrator by `pacing_notice` when the Mac's health changes, so its
+/// incidents only put the card in front of the user and wake the nodes that waited.
+pub(crate) fn step_on(previous: Option<Incident>, machine: &Machine, health: Health, disk: Option<&str>, waiting: &[Waiter], fixed: bool, now: Millis) -> (Option<Incident>, Vec<Action>) {
+    let measured = failing(machine, health, previous.as_ref().map(|incident| incident.cause));
     let Some(mut incident) = previous else {
         let Some(cause) = measured.or_else(|| (!waiting.is_empty()).then_some(MachineCause::Declared)) else { return (None, vec![]) };
         let card = card_for(cause, machine, disk, waiting, None);
         let id = format!("{MACHINE_PREFIX}{now}");
         let incident = Incident { since: now, cause, card: Some(id.clone()), cards: 1, nodes_shown: waiting.len(), reminded: false, healthy: 0 };
-        return (Some(incident), vec![Action::TellOrchestrator(orchestrator_text(&card, true)), Action::Raise { id, card }]);
+        let mut actions = vec![];
+        if cause != MachineCause::Memory {
+            actions.push(Action::TellOrchestrator(orchestrator_text(&card, true)));
+        }
+        actions.push(Action::Raise { id, card });
+        return (Some(incident), actions);
     };
     let waited_enough = waiting.iter().all(|waiter| now - waiter.at >= DECLARED_GRACE_MS);
     let fine = measured.is_none() && (incident.cause != MachineCause::Declared || waited_enough || fixed);
@@ -147,11 +173,13 @@ pub(crate) fn step_on(previous: Option<Incident>, machine: &Machine, disk: Optio
     if fine && (fixed || incident.healthy >= HEALTHY_SAMPLES || (incident.cause == MachineCause::Declared && waiting.is_empty())) {
         let mut actions: Vec<Action> = incident.card.into_iter().map(Action::Withdraw).collect();
         let names = waiting.iter().map(|waiter| waiter.name.as_str()).collect::<Vec<_>>().join(", ");
-        actions.push(Action::TellOrchestrator(if names.is_empty() {
-            "The machine recovered.".into()
-        } else {
-            format!("The machine recovered: Alondra woke the nodes that waited for it ({names}).")
-        }));
+        if incident.cause != MachineCause::Memory || !names.is_empty() {
+            actions.push(Action::TellOrchestrator(if names.is_empty() {
+                "The machine recovered.".into()
+            } else {
+                format!("The machine recovered: Alondra woke the nodes that waited for it ({names}).")
+            }));
+        }
         if !waiting.is_empty() {
             actions.push(Action::Wake {
                 sessions: waiting.iter().map(|waiter| waiter.session.clone()).collect(),
@@ -170,7 +198,9 @@ pub(crate) fn step_on(previous: Option<Incident>, machine: &Machine, disk: Optio
         actions.extend(incident.card.take().map(Action::Withdraw));
         if remind {
             incident.reminded = true;
-            actions.push(Action::TellOrchestrator(orchestrator_text(&card, false)));
+            if cause != MachineCause::Memory {
+                actions.push(Action::TellOrchestrator(orchestrator_text(&card, false)));
+            }
             actions.push(Action::Push(card.clone()));
         }
         incident.cards += 1;
@@ -230,6 +260,29 @@ impl MachineWatch {
 
     pub(crate) fn incident(&self) -> Option<Incident> {
         self.record.lock().expect("machine watch poisoned").incident.clone()
+    }
+
+    /// How the Mac is doing, as the gate reads it.
+    pub(crate) fn mac(&self) -> MacState {
+        self.record.lock().expect("machine watch poisoned").mac.clone()
+    }
+
+    /// Takes a new sample into the Mac's health; a sample already taken changes nothing.
+    fn sample(&self, machine: &Machine) -> Option<(Health, Health)> {
+        let mut record = self.record.lock().expect("machine watch poisoned");
+        if machine.at != 0 && machine.at == record.sampled_at {
+            return None;
+        }
+        record.sampled_at = machine.at;
+        let change = record.mac.step(machine, machine.at);
+        if change.is_some() {
+            self.save(&record);
+        }
+        change
+    }
+
+    fn home(&self) -> Option<&Path> {
+        self.file.as_deref().and_then(Path::parent)
     }
 
     #[cfg(test)]
@@ -350,9 +403,6 @@ fn wake(domain: &DomainRuntime, session: &str) {
 async fn act(domain: &DomainRuntime, alerts: &impl Alerts, sample: impl Fn() -> Option<Machine>, actions: Vec<Action>) {
     for action in actions {
         match action {
-            // The CPU at its limit from the nodes' own work clears by itself and the user has
-            // nothing to do about it: it is the machine's state, not a card or a push.
-            Action::Raise { card, .. } | Action::Push(card) if card.cause == MachineCause::Load => {}
             Action::Raise { id, card } => {
                 let (need, why) = card.text(Lang::En);
                 let option = alondra_core::domain::QuestionOption { id: MACHINE_FIXED_OPTION.into(), label: MACHINE_FIXED_LABEL.into(), description: None, inputs: vec![] };
@@ -377,7 +427,7 @@ async fn act(domain: &DomainRuntime, alerts: &impl Alerts, sample: impl Fn() -> 
                 for (index, session) in sessions.iter().enumerate() {
                     if one_by_one && index > 0 {
                         tokio::time::sleep(STAGGER).await;
-                        if sample().is_some_and(|machine| failing(&machine, false).is_some()) {
+                        if domain.live.machine_watch.mac().health != Health::Fine || sample().is_some_and(|machine| failing(&machine, Health::Fine, None).is_some()) {
                             log!("the machine is at its limit again: the other nodes keep waiting");
                             let rest = sessions[index..].to_vec();
                             let now = now_millis();
@@ -394,6 +444,31 @@ async fn act(domain: &DomainRuntime, alerts: &impl Alerts, sample: impl Fn() -> 
     }
 }
 
+/// A new sample into the Mac's health: a real change of health tells the orchestrator and the
+/// gate, and reaching the limit lowers how many nodes the gate lets work.
+fn pace(domain: &DomainRuntime, machine: &Machine) {
+    let watch = &domain.live.machine_watch;
+    let change = watch.sample(machine);
+    let mac = watch.mac();
+    let now = if machine.at == 0 { now_millis() } else { machine.at };
+    let working = domain.state().map(|state| crate::fleet_gate::busy_tasks(domain, &state, now).len()).unwrap_or(0);
+    if let Some(home) = watch.home() {
+        crate::machine_state::record(&home.join(crate::machine_state::SAMPLES_DIR), now, &mac, working);
+    }
+    let Some((from, to)) = change else { return };
+    log!("the Mac's memory went from {from:?} to {to:?} ({:?}% free, {working} node(s) working)", mac.free_percent);
+    if to == Health::AtLimit {
+        domain.live.gate.at_limit(working);
+    }
+    if let Some(text) = pacing_notice(from, to, mac.free_percent) {
+        let id = format!("{MACHINE_PREFIX}pacing-{}", crate::auth::random_hex(6));
+        if let Err(error) = domain.tell_orchestrator(&id, text) {
+            log!("could not tell the orchestrator about the Mac's memory: {error:?}");
+        }
+    }
+    domain.live.gate.poke();
+}
+
 /// Looks at the machine on every sample and whenever a node declares a wait or the user answers.
 pub(crate) async fn run(domain: std::sync::Arc<DomainRuntime>, gauges: crate::machine::Gauges, alerts: impl Alerts) {
     watch(domain, move || gauges.lock().expect("machine gauges poisoned").as_ref().map(|(machine, _)| machine.clone()), alerts, TICK).await
@@ -404,10 +479,11 @@ async fn watch(domain: std::sync::Arc<DomainRuntime>, sample: impl Fn() -> Optio
     loop {
         if let Some(machine) = sample() {
             let watch = &domain.live.machine_watch;
+            pace(&domain, &machine);
             let (machine, disk) = tightest(machine, &watch.volumes());
             let previous = watch.incident();
             let fixed = fixed(&domain, previous.as_ref());
-            let (next, actions) = step_on(previous, &machine, disk.as_deref(), &waiters(&domain), fixed, now_millis());
+            let (next, actions) = step_on(previous, &machine, watch.mac().health, disk.as_deref(), &waiters(&domain), fixed, now_millis());
             watch.set_incident(next);
             act(&domain, &alerts, &sample, actions).await;
         }
@@ -478,7 +554,7 @@ mod tests {
             ("Fotos".to_owned(), crate::disk::Space { free: 400 * GB, total: 900 * GB })];
         let (measured, disk) = tightest(machine(80 * GB, 50), &external);
         assert_eq!((measured.disk_available, disk.as_deref()), (3 * GB, Some("Externo")));
-        let (incident, actions) = step_on(None, &measured, disk.as_deref(), &[], false, 0);
+        let (incident, actions) = step_on(None, &measured, Health::Fine, disk.as_deref(), &[], false, 0);
         assert_eq!(incident.unwrap().cause, MachineCause::Disk);
         assert_eq!(raised(&actions)[0].text(Lang::Es).0, "Libera espacio en disco: solo quedan 3,0 GB en Externo");
 
@@ -662,28 +738,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_passing_cpu_load_is_the_machines_state_not_a_card_and_the_node_still_wakes_by_itself() {
+    async fn a_cpu_load_opens_no_incident_no_card_and_no_notice() {
         let (_home, domain) = world();
-        let session = "builder";
-        domain.live.machine_watch.declare(session, "the machine is busy", 0, now_millis());
-        let node = Node::connect(&domain, session);
-        let busy = Arc::new(Mutex::new(true));
-        let reading = busy.clone();
         let told = Arc::new(Told(Mutex::new(vec![])));
-        let watcher = tokio::spawn(watch(domain.clone(), move || {
+        let watcher = tokio::spawn(watch(domain.clone(), || {
             let mut sample = machine(50 * GB, 50);
-            sample.unreliable = *reading.lock().unwrap();
+            sample.load = [90.0; 3];
+            sample.unreliable = true;
             Some(sample)
         }, told.clone(), Duration::from_millis(20)));
-
-        until("the incident", || domain.live.machine_watch.incident().is_some()).await;
-        until("the orchestrator told", || !orchestrator_inbox(&domain).is_empty()).await;
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        assert!(open_machine_cards(&domain).is_empty(), "nothing for the user to do: no card");
-        assert!(told.0.lock().unwrap().is_empty(), "and no push");
-        *busy.lock().unwrap() = false;
-        until("the node woken", || node.texts() == [RESUME_MESSAGE]).await;
+        tokio::time::sleep(Duration::from_millis(200)).await;
         watcher.abort();
+        assert!(domain.live.machine_watch.incident().is_none());
+        assert!(open_machine_cards(&domain).is_empty());
+        assert!(orchestrator_inbox(&domain).is_empty(), "{:?}", orchestrator_inbox(&domain));
+        assert!(told.0.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -701,14 +770,6 @@ mod tests {
         until("the push", || !told.0.lock().unwrap().is_empty()).await;
         watcher.abort();
         assert_eq!(told.0.lock().unwrap()[0], "Libera espacio en disco: quedan 0 B. Disco casi lleno (0 B libres). Alondra no lanzará nodos nuevos hasta que haya espacio. Parados: fase0. Continúan solos cuando se recupere.");
-    }
-
-    #[test]
-    fn the_orchestrator_is_not_told_of_a_card_for_a_cpu_load_that_makes_none() {
-        let load = MachineCard { cause: MachineCause::Load, disk_free: 0, memory_free_percent: None, nodes: vec![], reason: None, minutes: None, disk: None };
-        let disk = MachineCard { cause: MachineCause::Disk, ..load.clone() };
-        assert!(!orchestrator_text(&load, true).contains("card"), "{}", orchestrator_text(&load, true));
-        assert!(orchestrator_text(&disk, true).contains("has a card about it"));
     }
 
     #[test]

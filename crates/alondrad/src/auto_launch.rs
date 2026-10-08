@@ -21,6 +21,7 @@ pub(crate) async fn run(domain: Arc<DomainRuntime>, home: PathBuf, launcher: imp
         log!("could not look at the automatic launches a restart interrupted: {error:#}");
     }
     let mut changed = domain.subscribe();
+    let mut turn = domain.live.gate.subscribe();
     let mut backoff = FIRST_BACKOFF;
     loop {
         let pause = match pass(&domain, &home, &launcher).await {
@@ -37,6 +38,7 @@ pub(crate) async fn run(domain: Arc<DomainRuntime>, home: PathBuf, launcher: imp
         };
         let woke = tokio::select! {
             change = changed.changed() => change.is_ok(),
+            turn = turn.changed() => turn.is_ok(),
             () = tokio::time::sleep(pause) => true,
         };
         if !woke {
@@ -110,6 +112,10 @@ pub(crate) async fn pass(domain: &DomainRuntime, home: &Path, launcher: &impl La
         }
         // The user has the disk card; the task stays unclaimed and starts on a pass after it clears.
         if disk_low {
+            continue;
+        }
+        let waiting = crate::fleet_gate::Waiting { key: crate::fleet_gate::Key::Task(task.id.clone()), priority: task.priority, resuming: false, since: now };
+        if domain.live.gate.ask(domain, waiting, now).is_err() {
             continue;
         }
         if !domain.store.lock().expect("domain store poisoned").claim_auto_launch(&task.id, now, retry)? {

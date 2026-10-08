@@ -110,6 +110,48 @@ pub(super) fn instruction_label(task: &crate::domain::Task, domain: &crate::doma
     })
 }
 
+/// The task's place in the queue of starts waiting for the gate, if it waits there.
+pub(super) fn queued<'a>(task: &crate::domain::Task, context: &'a RenderContext<'_>) -> Option<&'a super::LiveQueued> {
+    if task.agent_id.is_some() || task.state.terminal() { return None; }
+    context.live.pacing.as_ref()?.queued.iter().find(|queued| queued.task_id == task.id.0)
+}
+
+fn ordinal(position: usize, lang: super::Lang) -> String {
+    match lang {
+        super::Lang::Es => format!("{position}.º"),
+        super::Lang::En => {
+            let suffix = match (position % 10, position % 100) {
+                (1, 11) | (2, 12) | (3, 13) => "th",
+                (1, _) => "st",
+                (2, _) => "nd",
+                (3, _) => "rd",
+                _ => "th",
+            };
+            format!("{position}{suffix}")
+        }
+    }
+}
+
+/// "Queued · 2nd of 3 · 6 of 6 working", or why the Mac holds every start.
+pub(super) fn queued_label(queued: &super::LiveQueued, lang: super::Lang) -> String {
+    use super::{LiveHold, text::tf};
+    let place = ordinal(queued.position, lang);
+    let of = queued.of;
+    match &queued.hold {
+        LiveHold::Slots { working, limit } => tf!(lang, "Queued · {place} of {of} · {working} of {limit} working",
+            "En cola · {place} de {of} · hay {working} de {limit} trabajando"),
+        LiveHold::Memory { free: Some(free) } => tf!(lang, "Queued · {place} of {of} · the Mac is short of memory ({free}% free)",
+            "En cola · {place} de {of} · el Mac va justo de memoria ({free} % libre)"),
+        LiveHold::Memory { free: None } => tf!(lang, "Queued · {place} of {of} · the Mac is short of memory",
+            "En cola · {place} de {of} · el Mac va justo de memoria"),
+        LiveHold::Cpu { load, cpus } => tf!(lang, "Queued · {place} of {of} · the Mac is very busy (load {load} on {cpus} cores)",
+            "En cola · {place} de {of} · el Mac está muy cargado (carga {load} en {cpus} núcleos)"),
+        LiveHold::Next if queued.position == 1 => tf!(lang, "Queued · next · starts within a minute",
+            "En cola · la siguiente · arranca en menos de un minuto"),
+        LiveHold::Next => tf!(lang, "Queued · {place} of {of}", "En cola · {place} de {of}"),
+    }
+}
+
 /// The error of the scheduled launch that should have started this task and did not.
 pub(super) fn failed_launch<'a>(task: &crate::domain::Task, domain: &'a crate::domain::DomainState) -> Option<&'a str> {
     use crate::domain::{ScheduleRunState, TaskState};

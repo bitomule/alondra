@@ -373,6 +373,9 @@ pub(super) fn list(context: &RenderContext<'_>) -> View {
         None,
         vec![Item::Row(orchestrator)],
     ));
+    if let Some(section) = pacing_section(context) {
+        view.sections.push(section);
+    }
     let mut projects: BTreeMap<String, Vec<(u8, Item)>> = BTreeMap::new();
     let mut idle: Vec<(Recency, Item)> = vec![];
     for agent in context.domain.agents.values().filter(|agent| in_fleet(agent, context)) {
@@ -403,6 +406,33 @@ pub(super) fn list(context: &RenderContext<'_>) -> View {
         view.sections.push(section);
     }
     view
+}
+
+/// "Working 6/6 · Queued 3 · Mac: memory 12% free (tight)": how many nodes work against the
+/// limit and how the Mac is, with every queued task under it in the order it starts.
+fn pacing_section(context: &RenderContext<'_>) -> Option<super::Section> {
+    let pacing = context.live.pacing.as_ref()?;
+    let lang = context.lang;
+    let (working, limit, queued) = (pacing.working, pacing.limit, pacing.queued.len());
+    let mut parts = vec![tf!(lang, "Working {working}/{limit}", "Trabajando {working}/{limit}")];
+    if queued > 0 {
+        parts.push(tf!(lang, "Queued {queued}", "En cola {queued}"));
+    }
+    if let Some(free) = pacing.memory_free {
+        parts.push(match pacing.tight {
+            true => tf!(lang, "Mac: memory {free}% free (tight)", "Mac: memoria {free} % libre (justo)"),
+            false => tf!(lang, "Mac: memory {free}% free", "Mac: memoria {free} % libre"),
+        });
+    }
+    let mut header = common::row("pacing", "fleet", Icon::Machine, parts.join(" · "), None);
+    header.link = None;
+    let mut items = vec![Item::Row(header)];
+    for place in &pacing.queued {
+        let Some(task) = context.domain.tasks.get(&crate::domain::TaskId(place.task_id.clone())) else { continue };
+        items.push(Item::Row(common::row(&format!("queued:{}", task.id.0), &format!("task:{}", task.id.0), Icon::Task,
+            task.title.clone(), Some(common::queued_label(place, lang)))));
+    }
+    Some(common::section("pacing", None, items))
 }
 
 /// Where a node stands in Fleet: 0 when it needs the user, 1 while it works, 2 while it waits;

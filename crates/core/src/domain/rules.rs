@@ -1989,7 +1989,7 @@ impl DomainState {
                         documents: BTreeMap::new(),
                         archived: false,
                         model: None,
-                        delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: WrapUp::default(),
+                        delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: WrapUp::default(), priority: Default::default(),
                     },
                 );
                 self.dependency_graph()?;
@@ -2085,10 +2085,24 @@ impl DomainState {
                         "A task with a registered pull request cannot block others: a reviewer delivers a verdict, not a pull request",
                     );
                 }
+                let reviewed = blocks.iter().filter_map(|blocked| self.tasks.get(blocked)).map(|blocked| blocked.priority).min();
                 let t = self.tasks.get_mut(task_id).unwrap();
                 t.delivered_dependencies = delivered_dependencies.clone();
                 t.blocks = blocks.clone();
+                if let Some(priority) = reviewed {
+                    t.priority = priority;
+                }
                 self.dependency_graph()?;
+            }
+            Command::SetPriority { task_id, priority } => {
+                self.manager(actor)?;
+                self.active(task_id)?;
+                let reviewers: Vec<TaskId> = self.tasks.values()
+                    .filter(|other| other.blocks.contains(task_id) && !other.state.terminal())
+                    .map(|other| other.id.clone()).collect();
+                for id in std::iter::once(task_id).chain(&reviewers) {
+                    self.tasks.get_mut(id).unwrap().priority = *priority;
+                }
             }
             Command::RecordVerdict { task_id, presentation_id, verdict } => {
                 let t = self.assigned(actor, task_id)?;

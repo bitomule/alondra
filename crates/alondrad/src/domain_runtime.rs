@@ -362,6 +362,7 @@ fn command_task(state: &DomainState, command: &Command) -> Option<TaskId> {
         | Command::RetitleTask { task_id, .. }
         | Command::SetDependencies { task_id, .. }
         | Command::SetRelations { task_id, .. }
+        | Command::SetPriority { task_id, .. }
         | Command::RecordVerdict { task_id, .. }
         | Command::StartTask { task_id }
         | Command::CreateDocument { task_id, .. }

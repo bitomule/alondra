@@ -43,6 +43,17 @@ const TASK_RELATIONS: &str = "CREATE TABLE IF NOT EXISTS task_relations(\
  blocks TEXT NOT NULL CHECK(json_valid(blocks)),\
  verdict TEXT CHECK(verdict IS NULL OR json_valid(verdict)),\
  review_rounds INTEGER NOT NULL CHECK(review_rounds BETWEEN 0 AND 255));";
+/// A task's priority other than Normal, kept beside the task; created on every open like task_relations.
+const TASK_PRIORITIES: &str = "CREATE TABLE IF NOT EXISTS task_priorities(\
+ task_id TEXT PRIMARY KEY REFERENCES tasks(id),\
+ priority TEXT NOT NULL CHECK(priority IN('high','normal','low')));";
+/// Launches waiting at the gate for a free slot (not domain state): what to launch, who asked and
+/// since when. See docs/fleet-pacing.md.
+const LAUNCH_QUEUE: &str = "CREATE TABLE IF NOT EXISTS launch_queue(\
+ task_id TEXT PRIMARY KEY,\
+ body TEXT NOT NULL CHECK(json_valid(body)),\
+ origin TEXT NOT NULL,\
+ enqueued_at INTEGER NOT NULL);";
 /// The closer's own bookkeeping (not domain state): when it first saw a task due for closing, its
 /// failures and the card it raised.
 const TASK_CLOSINGS: &str = "CREATE TABLE IF NOT EXISTS task_closings(\
@@ -175,6 +186,15 @@ impl AutoLaunchReason {
             _ => return None,
         })
     }
+}
+
+/// A launch waiting at the gate: the launch as asked, who asked and since when.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct QueuedLaunch {
+    pub task_id: TaskId,
+    pub body: serde_json::Value,
+    pub origin: String,
+    pub enqueued_at: i64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -364,6 +384,8 @@ impl DomainStore {
         tx.execute_batch(STOP_BLOCKS)?;
         tx.execute_batch(TASK_WRAP_UPS)?;
         tx.execute_batch(TASK_RELATIONS)?;
+        tx.execute_batch(TASK_PRIORITIES)?;
+        tx.execute_batch(LAUNCH_QUEUE)?;
         tx.execute_batch(TASK_CLOSINGS)?;
         tx.execute_batch(TASK_LAUNCH_PLANS)?;
         tx.execute_batch(AUTO_LAUNCHES)?;
@@ -894,6 +916,32 @@ impl DomainStore {
         self.note_side_write();
         Ok(())
     }
+    pub(crate) fn launch_queue(&self) -> Result<Vec<QueuedLaunch>> {
+        let mut query = self.conn.prepare("SELECT task_id,body,origin,enqueued_at FROM launch_queue ORDER BY enqueued_at,task_id")?;
+        let rows = query.query_map([], |row| {
+            let body: String = row.get(1)?;
+            Ok((TaskId(row.get(0)?), body, row.get(2)?, row.get(3)?))
+        })?;
+        rows.map(|row| {
+            let (task_id, body, origin, enqueued_at) = row?;
+            Ok(QueuedLaunch { task_id, body: serde_json::from_str(&body)?, origin, enqueued_at })
+        }).collect()
+    }
+
+    /// Queues a launch once: asking again keeps its place.
+    pub(crate) fn enqueue_launch(&mut self, task_id: &TaskId, body: &serde_json::Value, origin: &str, now: i64) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO launch_queue(task_id,body,origin,enqueued_at) VALUES(?1,?2,?3,?4) ON CONFLICT(task_id) DO UPDATE SET body=excluded.body",
+            rusqlite::params![task_id.0, serde_json::to_string(body)?, origin, now],
+        )?;
+        Ok(())
+    }
+
+    pub(crate) fn dequeue_launch(&mut self, task_id: &TaskId) -> Result<()> {
+        self.conn.execute("DELETE FROM launch_queue WHERE task_id=?1", [&task_id.0])?;
+        Ok(())
+    }
+
     pub(crate) fn forget_auto_launch(&mut self, task_id: &TaskId) -> Result<()> {
         self.conn.execute("DELETE FROM auto_launches WHERE task_id=?1", [&task_id.0])?;
         self.note_side_write();

@@ -40,7 +40,9 @@ mod issues;
 mod job_state;
 mod keeper;
 mod machine;
+mod machine_state;
 mod machine_watch;
+mod fleet_gate;
 mod managed_orchestrator;
 mod markdown;
 mod mods_check;
@@ -506,6 +508,7 @@ async fn run_domain(config: &Config) -> Result<()> {
     if config.wake {
         tokio::spawn(auto_launch::run(domain.clone(), config.home.clone(), orchestrate::ClaudeCli));
     }
+    tokio::spawn(fleet_gate::run(domain.clone(), config.home.clone(), orchestrate::ClaudeCli));
     let transport = tokio::spawn(domain_transport::run(hooks, domain.clone()));
     match plugins::node_source(&watcher::claude_home()).zip(plugins::own_cli()) {
         Some((source, cli)) => match plugins::install_node(&config.home, &source, &cli) {

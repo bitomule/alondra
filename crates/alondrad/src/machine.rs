@@ -28,9 +28,11 @@ async fn sample_loop(mut publish: impl FnMut(Machine)) {
     loop {
         sys.refresh_memory();
         sys.refresh_cpu_usage();
-        if round.is_multiple_of(3) {
-            pressure = tokio::task::spawn_blocking(memory_free_percent).await.ok().flatten();
-        }
+        pressure = match memorystatus_level() {
+            Some(level) => Some(level),
+            None if round.is_multiple_of(3) => tokio::task::spawn_blocking(memory_free_percent).await.ok().flatten(),
+            None => pressure,
+        };
         let load = System::load_average();
         let root = crate::disk::space(Path::new(BOOT_DATA)).or_else(|| crate::disk::space(Path::new("/")));
         let machine = Machine {
@@ -49,6 +51,23 @@ async fn sample_loop(mut publish: impl FnMut(Machine)) {
         round += 1;
         tokio::time::sleep(Duration::from_secs(10)).await;
     }
+}
+
+/// The free memory percentage `memory_pressure` prints, read from the kernel without a process.
+#[cfg(target_os = "macos")]
+fn memorystatus_level() -> Option<u32> {
+    let mut level: libc::c_int = 0;
+    let mut size = std::mem::size_of::<libc::c_int>();
+    // SAFETY: the name is NUL-terminated and `level` is a c_int whose size is passed in `size`.
+    let status = unsafe {
+        libc::sysctlbyname(c"kern.memorystatus_level".as_ptr(), (&raw mut level).cast(), &raw mut size, std::ptr::null_mut(), 0)
+    };
+    (status == 0 && (0..=100).contains(&level)).then_some(level as u32)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn memorystatus_level() -> Option<u32> {
+    None
 }
 
 fn memory_free_percent() -> Option<u32> {

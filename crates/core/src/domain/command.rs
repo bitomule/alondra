@@ -128,6 +128,12 @@ pub enum Command {
         #[serde(default)]
         blocks: BTreeSet<TaskId>,
     },
+    /// Where the task's node stands in the queue of nodes waiting to work; the tasks that review it
+    /// follow it.
+    SetPriority {
+        task_id: TaskId,
+        priority: TaskPriority,
+    },
     /// What the final delivery of a task that blocks others concluded about them.
     RecordVerdict {
         task_id: TaskId,

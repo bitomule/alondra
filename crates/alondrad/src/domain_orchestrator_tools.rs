@@ -6,7 +6,7 @@ use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::model_metrics::{Decision, DecisionKind};
 use crate::launch_worktree::Workplace;
 use alondra_core::domain::{Actor, AgentId, Command, CommandEnvelope, DomainError, DomainState, ModelChooser, RequestId, TaskId, PROTOCOL_VERSION};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -74,7 +74,7 @@ fn agent(state: &DomainState, node: &str) -> Result<AgentId, DomainError> {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct LaunchBody {
     #[serde(default)]
@@ -125,6 +125,21 @@ impl LaunchBody {
         }
     }
 
+    pub(crate) fn task_id(&self) -> &TaskId {
+        &self.task
+    }
+
+    /// The launch as the gate's queue keeps it, the model of a relaunch included.
+    pub(crate) fn to_queue(&self) -> Value {
+        json!({"body": serde_json::to_value(self).unwrap_or_default(), "relaunch_model": self.relaunch_model})
+    }
+
+    pub(crate) fn from_queue(stored: &Value) -> anyhow::Result<LaunchBody> {
+        let mut body: LaunchBody = serde_json::from_value(stored["body"].clone())?;
+        body.relaunch_model = stored["relaunch_model"].as_str().map(str::to_owned);
+        Ok(body)
+    }
+
     /// What the task's stored plan fills in where the call named nothing.
     fn with_plan(mut self, plan: Option<&crate::launch_plans::LaunchPlan>) -> LaunchBody {
         let Some(plan) = plan else { return self };
@@ -146,6 +161,8 @@ impl LaunchBody {
 pub(crate) enum Origin {
     Orchestrator,
     Auto,
+    /// A launch the orchestrator or the user asked for, which waited at the gate for its turn.
+    Admitted,
 }
 
 /// Launches a Claude session for a Task with the options its Request was asked for, gives it its
@@ -158,7 +175,7 @@ pub(crate) async fn launch(domain: &DomainRuntime, home: &Path, actor: &Actor, b
 /// `launch`, for either origin. An automatic launch holds the task's launch guard already.
 pub(crate) async fn launch_from(domain: &DomainRuntime, home: &Path, actor: &Actor, body: LaunchBody,
     choices: impl FnOnce(&RequestId) -> Option<Choices>, launcher: &impl crate::orchestrate::Launcher, origin: Origin) -> Result<Value, DomainError> {
-    if origin == Origin::Orchestrator {
+    if matches!(origin, Origin::Orchestrator | Origin::Admitted) {
         let _launching = Launching::begin(domain, &body.task)?;
         return launch_guarded(domain, home, actor, body, choices, launcher, origin, None).await;
     }
@@ -313,6 +330,19 @@ async fn launch_guarded(domain: &DomainRuntime, home: &Path, actor: &Actor, body
     let reason = given(body.reason.as_deref());
     if auto && body.relaunch_model.is_none() && reason.is_none() {
         return Err(DomainError::new("invalid_input", "effort is auto for this request: pass reason, one short line on what the task is and why this model fits it"));
+    }
+    if origin == Origin::Orchestrator && replaced.is_none() {
+        use crate::fleet_gate::{Key, Waiting};
+        let now = alondra_core::now_millis();
+        let key = Key::Task(task.id.clone());
+        let waiting = Waiting { key: key.clone(), priority: task.priority, resuming: false, since: now };
+        if domain.live.gate.ask(domain, waiting, now).is_err() {
+            domain.live.gate.forget(&key);
+            crate::fleet_gate::enqueue(domain, &body, "orchestrator", now)
+                .map_err(|error| DomainError::new("storage_unavailable", format!("could not queue the launch: {error:#}")))?;
+            return Ok(json!({"task": task.id, "queued": true, "message": format!("“{}” is queued. {}", task.title,
+                crate::fleet_gate::queued_text(domain, &task.id, now))}));
+        }
     }
     let mission = body.prompt.clone().unwrap_or_else(|| {
         let mut text = format!("{}\n\n{}", task.title, request.map(|r| r.body.as_str()).unwrap_or_default());

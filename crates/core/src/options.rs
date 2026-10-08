@@ -88,6 +88,60 @@ pub struct OptionsFile {
     pub option: Vec<UserOption>,
     pub projects: BTreeMap<String, ProjectOptions>,
     pub issues: IssuesConfig,
+    /// How many nodes may work at once on this Mac: `"auto"` (the default) derives it from its
+    /// cores and memory.
+    pub max_working_nodes: NodeLimit,
+}
+
+/// `max_working_nodes`: a number from 1 to `MAX_WORKING_NODES`, or `"auto"`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum NodeLimit {
+    #[default]
+    Auto,
+    Fixed(u32),
+}
+
+pub const MAX_WORKING_NODES: u32 = 12;
+
+impl NodeLimit {
+    /// `min(ceil(cores / 2), floor((GB of RAM - 4) / 2))`, from 1 to `MAX_WORKING_NODES`: 4 GB
+    /// for macOS and the user's apps, 2 GB for what a node runs.
+    pub fn resolve(self, cores: usize, memory_bytes: u64) -> u32 {
+        match self {
+            NodeLimit::Fixed(count) => count.clamp(1, MAX_WORKING_NODES),
+            NodeLimit::Auto => {
+                let by_cores = (cores as u32).div_ceil(2);
+                let gigabytes = memory_bytes / (1 << 30);
+                let by_memory = (gigabytes.saturating_sub(4) / 2) as u32;
+                by_cores.min(by_memory).clamp(1, MAX_WORKING_NODES)
+            }
+        }
+    }
+}
+
+impl Serialize for NodeLimit {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            NodeLimit::Auto => serializer.serialize_str(AUTO),
+            NodeLimit::Fixed(count) => serializer.serialize_u32(*count),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for NodeLimit {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Raw {
+            Count(i64),
+            Word(String),
+        }
+        match Raw::deserialize(deserializer)? {
+            Raw::Word(word) if word == AUTO => Ok(NodeLimit::Auto),
+            Raw::Count(count) if (1..=MAX_WORKING_NODES as i64).contains(&count) => Ok(NodeLimit::Fixed(count as u32)),
+            _ => Err(serde::de::Error::custom(format!("max_working_nodes is \"auto\" or a number from 1 to {MAX_WORKING_NODES}"))),
+        }
+    }
 }
 
 /// Where "New" looks for open issues. With no owners, the owners of the GitHub checkouts
@@ -911,5 +965,32 @@ on = "Run /review-loop before the merge."
         let names: Vec<String> = projects(&dir).into_iter().map(|(n, _)| n).collect();
         assert_eq!(names, ["A-repo", "b-repo"]);
         let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+#[cfg(test)]
+mod node_limit_tests {
+    use super::*;
+
+    const GB: u64 = 1 << 30;
+
+    #[test]
+    fn auto_takes_the_smaller_of_half_the_cores_and_2_gb_per_node_over_4_gb() {
+        assert_eq!(NodeLimit::Auto.resolve(11, 18 * GB), 6);
+        assert_eq!(NodeLimit::Auto.resolve(16, 16 * GB), 6);
+        assert_eq!(NodeLimit::Auto.resolve(2, 8 * GB), 1);
+        assert_eq!(NodeLimit::Auto.resolve(4, 4 * GB), 1);
+        assert_eq!(NodeLimit::Auto.resolve(64, 512 * GB), 12);
+    }
+
+    #[test]
+    fn the_file_takes_auto_or_a_number_from_1_to_12() {
+        assert_eq!(OptionsFile::parse("").unwrap().max_working_nodes, NodeLimit::Auto);
+        assert_eq!(OptionsFile::parse("max_working_nodes = \"auto\"").unwrap().max_working_nodes, NodeLimit::Auto);
+        assert_eq!(OptionsFile::parse("max_working_nodes = 3").unwrap().max_working_nodes, NodeLimit::Fixed(3));
+        for wrong in ["max_working_nodes = 0", "max_working_nodes = 13", "max_working_nodes = \"many\""] {
+            assert!(OptionsFile::parse(wrong).unwrap_err().contains("max_working_nodes"), "{wrong}");
+        }
+        assert_eq!(NodeLimit::Fixed(3).resolve(64, 512 * GB), 3);
     }
 }

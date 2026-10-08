@@ -47,6 +47,38 @@ pub struct LiveSnapshot {
     pub search_matches: Option<Vec<String>>,
     #[serde(default)]
     pub usage_exhausted: Option<LiveUsageExhausted>,
+    #[serde(default)]
+    pub pacing: Option<LivePacing>,
+}
+
+/// How many nodes work against the limit, how the Mac is, and the place of every queued task.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LivePacing {
+    pub working: usize,
+    pub limit: u32,
+    pub memory_free: Option<u32>,
+    /// The Mac is short of memory: Tight or at its limit.
+    pub tight: bool,
+    pub queued: Vec<LiveQueued>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LiveQueued {
+    pub task_id: String,
+    pub position: usize,
+    pub of: usize,
+    pub hold: LiveHold,
+}
+
+/// What the queue waits for.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum LiveHold {
+    Slots { working: usize, limit: u32 },
+    Memory { free: Option<u32> },
+    Cpu { load: u32, cpus: usize },
+    /// Nothing holds it but the minute between two starts.
+    Next,
 }
 /// When Claude usage ran out on this Mac and when Claude said it comes back, as local ISO times.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

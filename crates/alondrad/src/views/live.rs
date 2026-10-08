@@ -458,6 +458,7 @@ pub(crate) async fn gather(
             until: timestamp(exhausted.until),
             paused_by_user: exhausted.by_user,
         }),
+        pacing: client.domain.live.gate.live(&client.domain, now),
     }
 }
 

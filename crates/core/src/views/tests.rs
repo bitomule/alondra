@@ -38,7 +38,7 @@ fn fixture() -> DomainState {
             documents: BTreeMap::new(),
             archived: false,
             model: None,
-            delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: Default::default(),
+            delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: Default::default(), priority: Default::default(),
         },
     );
     for (index, kind) in ["question", "information", "delivery"].iter().enumerate() {
@@ -4820,4 +4820,27 @@ fn generate_know_command_goldens() {
         let view = render(&state, &golden_live(), client, lang, &format!("card:{KNOW_COMMAND_CARD}"), "2026-09-30T10:00:00Z");
         std::fs::write(format!("{dir}/{filename}"), format!("{}\n", serde_json::to_string_pretty(&view).unwrap())).unwrap();
     }
+}
+
+#[test]
+fn fleet_heads_with_the_working_count_and_lists_the_queued_tasks_with_their_place_and_why() {
+    let mut state = fixture();
+    let task = state.tasks.get_mut(&crate::domain::TaskId::from("t-1")).unwrap();
+    (task.state, task.final_presentation) = (TaskState::NotStarted, None);
+    let live = LiveSnapshot {
+        pacing: Some(LivePacing {
+            working: 6, limit: 6, memory_free: Some(12), tight: true,
+            queued: vec![LiveQueued { task_id: "t-1".into(), position: 2, of: 3, hold: LiveHold::Slots { working: 6, limit: 6 } }],
+        }),
+        ..LiveSnapshot::default()
+    };
+    let fleet = serde_json::to_string(&render(&state, &live, Client::Ios, Lang::Es, "fleet", "")).unwrap();
+    assert!(fleet.contains("Trabajando 6/6 · En cola 1 · Mac: memoria 12 % libre (justo)"), "{fleet}");
+    assert!(fleet.contains("En cola · 2.º de 3 · hay 6 de 6 trabajando"), "{fleet}");
+    let task = serde_json::to_string(&render(&state, &live, Client::Tui, Lang::En, "task:t-1", "")).unwrap();
+    assert!(task.contains("Queued · 2nd of 3 · 6 of 6 working"), "{task}");
+    let memory = LiveQueued { task_id: "t-1".into(), position: 1, of: 1, hold: LiveHold::Memory { free: Some(12) } };
+    assert_eq!(common::queued_label(&memory, Lang::Es), "En cola · 1.º de 1 · el Mac va justo de memoria (12 % libre)");
+    let load = LiveQueued { hold: LiveHold::Cpu { load: 52, cpus: 11 }, ..memory };
+    assert_eq!(common::queued_label(&load, Lang::En), "Queued · 1st of 1 · the Mac is very busy (load 52 on 11 cores)");
 }

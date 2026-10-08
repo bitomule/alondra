@@ -7,6 +7,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 /// The task's state as a short line. A task that waits says what for, whatever it waits for.
 fn state(task: &Task, context: &RenderContext<'_>) -> String {
+    if let Some(queued) = common::queued(task, context) {
+        return common::queued_label(queued, context.lang);
+    }
     let plain = plain_state(task, context);
     if plain == t!(context.lang, "Waiting", "Esperando")
         && let crate::domain::Attention::Wait(reason) = context.domain.attention(task)

@@ -424,6 +424,12 @@ fn orchestrator_domain_tools(user: &str) -> Vec<Value> {
             vec!["task_id", "delivered_dependencies", "blocks"],
         ),
         (
+            "set_priority",
+            "Set where a Task's node stands in the queue when more nodes want to work than the Mac takes: high, normal (the default) or low. Within a priority the oldest goes first. A Task that reviews another follows the priority of the one it reviews. Set it right after create_task when the Task is not normal.",
+            json!({"task_id":{"type":"string"},"priority":{"type":"string","enum":["high","normal","low"]}}),
+            vec!["task_id", "priority"],
+        ),
+        (
             "start_task",
             "Mark a Task started once its dependencies are ready.",
             json!({"task_id":{"type":"string"}}),
@@ -516,6 +522,7 @@ fn call_orchestrator(client: &Client, name: &str, args: &Value) -> Result<String
         | "retitle_task"
         | "set_dependencies"
         | "set_relations"
+        | "set_priority"
         | "start_task"
         | "publish_information"
         | "ask"
@@ -572,6 +579,7 @@ fn execute_tool(client: &Client, name: &str, args: &Value) -> Result<String> {
         | "retitle_task"
         | "set_dependencies"
         | "set_relations"
+        | "set_priority"
         | "start_task"
         | "create_document"
         | "revise_document"
@@ -774,6 +782,7 @@ pub(crate) fn resource_target(name: &str, command: &Value) -> Result<(&'static s
         "retitle_task" => ("PATCH", format!("/tasks/{}", id("task_id")?)),
         "set_dependencies" => ("PUT", format!("/tasks/{}/dependencies", id("task_id")?)),
         "set_relations" => ("PUT", format!("/tasks/{}/relations", id("task_id")?)),
+        "set_priority" => ("PUT", format!("/tasks/{}/priority", id("task_id")?)),
         "record_verdict" => ("POST", format!("/tasks/{}/verdict", id("task_id")?)),
         "start_task" => ("POST", format!("/tasks/{}/start", id("task_id")?)),
         "cleanup_done" => ("POST", format!("/tasks/{}/cleanup", id("task_id")?)),
@@ -810,6 +819,7 @@ fn domain_envelope(name: &str, args: &Value, data_epoch: &str, command_id: &str)
         "retitle_task" => "retitle_task",
         "set_dependencies" => "set_dependencies",
         "set_relations" => "set_relations",
+        "set_priority" => "set_priority",
         "record_verdict" => "record_verdict",
         "start_task" => "start_task",
         "cleanup_done" => "confirm_cleanup",

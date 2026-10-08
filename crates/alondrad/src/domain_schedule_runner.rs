@@ -243,7 +243,7 @@ fn request_task(snapshot: &ScheduleDefinitionSnapshot) -> (Request, Task) {
         documents: BTreeMap::new(),
         archived: false,
         model: None,
-        delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: Default::default(),
+        delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: Default::default(), priority: Default::default(),
     };
     (request, task)
 }
@@ -353,6 +353,16 @@ async fn dispatch_pending(
         }
     };
     if domain.live.usage_pause.is_active() || domain.live.machine_watch.disk_low() {
+        return Ok(());
+    }
+    let now = alondra_core::now_millis();
+    let waiting = crate::fleet_gate::Waiting {
+        key: crate::fleet_gate::Key::Run(run_id.0.clone()),
+        priority: crate::fleet_gate::run_priority(&state, run),
+        resuming: false,
+        since: run.claimed_at.unwrap_or(now),
+    };
+    if domain.live.gate.ask(domain, waiting, now).is_err() {
         return Ok(());
     }
     let intent = launch.intent.clone();
@@ -772,12 +782,14 @@ async fn wait_for_next_run(
     schedules: &mut tokio::sync::watch::Receiver<alondra_core::domain::Revision>,
     usage: &mut tokio::sync::watch::Receiver<Option<crate::usage_pause::Exhausted>>,
     clock_changes: &mut tokio::sync::watch::Receiver<crate::schedule_clock::ClockChange>,
+    turn: &mut tokio::sync::watch::Receiver<u64>,
 ) -> WakeReason {
     if let Some(deadline) = deadline {
         let (_timer, mut timer_fired) = crate::schedule_clock::WallTimer::at(deadline);
         tokio::select! {
             result = schedules.changed() => if result.is_ok() { WakeReason::Schedule } else { WakeReason::Closed },
             result = usage.changed() => if result.is_ok() { WakeReason::Schedule } else { WakeReason::Closed },
+            result = turn.changed() => if result.is_ok() { WakeReason::Schedule } else { WakeReason::Closed },
             result = clock_changes.changed() => if result.is_ok() { WakeReason::Clock(*clock_changes.borrow_and_update()) } else { WakeReason::Closed },
             result = timer_fired.changed() => if result.is_ok() { WakeReason::Deadline } else { WakeReason::Closed },
         }
@@ -785,6 +797,7 @@ async fn wait_for_next_run(
         tokio::select! {
             result = schedules.changed() => if result.is_ok() { WakeReason::Schedule } else { WakeReason::Closed },
             result = usage.changed() => if result.is_ok() { WakeReason::Schedule } else { WakeReason::Closed },
+            result = turn.changed() => if result.is_ok() { WakeReason::Schedule } else { WakeReason::Closed },
             result = clock_changes.changed() => if result.is_ok() { WakeReason::Clock(*clock_changes.borrow_and_update()) } else { WakeReason::Closed },
         }
     }
@@ -798,6 +811,7 @@ pub(crate) async fn run(
     let launcher = crate::orchestrate::ClaudeCli;
     let mut schedule_changes = domain.subscribe_schedules();
     let mut usage_changes = domain.live.usage_pause.subscribe();
+    let mut turn = domain.live.gate.subscribe();
     let mut system_clock = crate::schedule_clock::ClockChanges::new();
     loop {
         run_cycle(&domain, &home, due_enabled, &launcher).await?;
@@ -807,6 +821,7 @@ pub(crate) async fn run(
             &mut schedule_changes,
             &mut usage_changes,
             system_clock.receiver(),
+            &mut turn,
         )
         .await
         {

@@ -144,6 +144,23 @@ pub struct Task {
     /// became of the node.
     #[serde(default, skip_serializing_if = "WrapUp::is_default")]
     pub wrap_up: WrapUp,
+    /// Where its node stands in the queue of nodes waiting to work.
+    #[serde(default, skip_serializing_if = "TaskPriority::is_normal")]
+    pub priority: TaskPriority,
+}
+/// Higher priorities start before lower ones when nodes wait for a free slot.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskPriority {
+    High,
+    #[default]
+    Normal,
+    Low,
+}
+impl TaskPriority {
+    pub fn is_normal(&self) -> bool {
+        *self == TaskPriority::Normal
+    }
 }
 fn is_zero(n: &u8) -> bool {
     *n == 0

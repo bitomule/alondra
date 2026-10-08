@@ -154,7 +154,7 @@ fn sent(run: &str, suffix: &str, finished_at: i64) -> Command {
             documents: BTreeMap::new(),
             archived: false,
             model: None,
-            delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: Default::default(),
+            delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: Default::default(), priority: Default::default(),
         },
         launch: ScheduleLaunchIntent {
             name: format!("scheduled/{run}"),

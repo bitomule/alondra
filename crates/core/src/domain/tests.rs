@@ -120,7 +120,7 @@ fn scheduled_request_task(request_id: &str, task_id: &str) -> (Request, Task) {
         documents: BTreeMap::new(),
         archived: false,
         model: None,
-        delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: WrapUp::default(),
+        delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: WrapUp::default(), priority: Default::default(),
     };
     (request, task)
 }
@@ -2911,9 +2911,10 @@ fn variant_index(c: &Command) -> usize {
         Command::SetRelations { .. } => 53,
         Command::RecordVerdict { .. } => 54,
         Command::ObservePrMergeMethods { .. } => 55,
+        Command::SetPriority { .. } => 56,
     }
 }
-const COMMAND_KINDS: usize = 56;
+const COMMAND_KINDS: usize = 57;
 /// Every command kind naming the given ids. The flag marks commands that only
 /// create a fresh entity and therefore may succeed with an unknown id.
 fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
@@ -3026,6 +3027,7 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
         (Command::SetRelations { task_id: ids.task.into(), delivered_dependencies: BTreeSet::new(), blocks: BTreeSet::new() }, false),
         (Command::RecordVerdict { task_id: ids.task.into(), presentation_id: ids.interaction.into(), verdict: Verdict::Approved { summary: "ok".into(), open_issues: false, serious_findings: 0 } }, false),
         (Command::ObservePrMergeMethods { pr_id: ids.pr.into(), allowed_methods: vec![MergeMethod::Squash] }, false),
+        (Command::SetPriority { task_id: ids.task.into(), priority: TaskPriority::High }, false),
     ];
     let mut covered = vec![false; COMMAND_KINDS];
     for (command, _) in &list {

@@ -299,7 +299,7 @@ fn changed<'a, K: Ord, V: PartialEq>(
 }
 fn task_row(t: &Task) -> Result<Map<String, Value>> {
     let mut row = object(t)?;
-    strip(&mut row, &["dependencies", "stack", "documents", "model", "wrap_up", "delivered_dependencies", "blocks", "verdict", "review_rounds"]);
+    strip(&mut row, &["dependencies", "stack", "documents", "model", "wrap_up", "delivered_dependencies", "blocks", "verdict", "review_rounds", "priority"]);
     // The column's check predates the two states that split `in_review`; the state is derived
     // from the facts when the store is read, so either of them is kept as the old value.
     if matches!(t.state, TaskState::AwaitingBlocker | TaskState::ForYourReview) {
@@ -722,6 +722,13 @@ pub(super) fn save_changes(c: &Connection, before: &DomainState, after: &DomainS
         if let Some(verdict) = x.verdict.as_ref().filter(|_| prior.is_none_or(|p| p.verdict != x.verdict)) {
             save_review_findings(c, x, verdict, after.revision)?;
         }
+        if prior.map_or(!x.priority.is_normal(), |p| p.priority != x.priority) {
+            exec(
+                c,
+                "INSERT INTO task_priorities(task_id,priority) VALUES(?1,?2) ON CONFLICT(task_id) DO UPDATE SET priority=excluded.priority",
+                params![x.id.0, serde_json::to_value(x.priority)?.as_str().context("priority is a string")?],
+            )?;
+        }
     }
     for (x, _) in changed(&before.documents, &after.documents) {
         upsert(c, "documents", &["id"], object(x)?)?;
@@ -1022,6 +1029,13 @@ pub(super) fn load(c: &Connection) -> Result<DomainState> {
             node: node.map(|n| decode(Value::String(n))).transpose()?,
         };
         state.tasks.get_mut(&TaskId::from(id)).context("wrap-up task missing")?.wrap_up = wrap_up;
+    }
+    drop(stored);
+    let mut priorities = c.prepare("SELECT task_id, priority FROM task_priorities")?;
+    let mut stored = priorities.query([])?;
+    while let Some(row) = stored.next()? {
+        let id: String = row.get(0)?;
+        state.tasks.get_mut(&TaskId::from(id)).context("priority task missing")?.priority = decode(Value::String(row.get(1)?))?;
     }
     drop(stored);
     let mut relations = c.prepare("SELECT task_id, delivered_dependencies, blocks, verdict, review_rounds FROM task_relations")?;
