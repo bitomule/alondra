@@ -12,3 +12,10 @@ exports_files(
     ["plugin-mod-test.sh"],
     visibility = ["//:__pkg__"],
 )
+
+sh_test(
+    name = "load_bench_test",
+    srcs = ["tests/test_load_bench.py"],
+    data = ["load_bench.py"],
+    size = "small",
+)
