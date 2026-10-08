@@ -78,6 +78,8 @@ Pick the tool by what you need:
   `changes_requested` with the findings as `text` sends it back to work and you review its next
   final delivery (three rounds at most; your last word then closes the review). If it delivers again
   before your verdict, present your result again first. A reviewer registers no pull request.
+  Each verdict carries `serious_findings`: how many failures you found break behaviour, lose
+  data, or open a security or session hole (0 if none).
 - `present_result` with `is_final: true`: you are done. `need` says what to review, the report or
   diff goes in `content`, both about the change itself; `targets` names
   what you deliver: `text`, a document revision you created, or the PR you registered with its

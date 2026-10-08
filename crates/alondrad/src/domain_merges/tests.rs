@@ -172,7 +172,7 @@ async fn an_auto_merge_waits_for_the_task_that_reviews_it_and_merges_once_it_app
     assert!(github.merged.lock().unwrap().is_empty(), "nothing is merged while its review is open");
     assert!(domain.state().unwrap().merge_authorizations.is_empty());
     command(&domain, reviewer(), "approve", Command::RecordVerdict {
-        task_id: "review".into(), presentation_id: "rd".into(), verdict: Verdict::Approved { summary: "fine".into(), open_issues: false },
+        task_id: "review".into(), presentation_id: "rd".into(), verdict: Verdict::Approved { summary: "fine".into(), open_issues: false, serious_findings: 0 },
     });
     merger.merge_due(&domain, &github).await.unwrap();
     assert_eq!(*github.merged.lock().unwrap(), vec![(7, HEAD.to_owned(), MergeMethod::Squash)], "approved: auto-merge goes ahead");

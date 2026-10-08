@@ -1418,14 +1418,14 @@ fn task_relations_a_verdict_and_the_split_review_states_survive_a_restart() {
         card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
     });
     execute(&mut store, &reviewer, "changes", Command::RecordVerdict {
-        task_id: "task-2".into(), presentation_id: "delivery-2".into(), verdict: Verdict::ChangesRequested { text: "Fix it".into() },
+        task_id: "task-2".into(), presentation_id: "delivery-2".into(), verdict: Verdict::ChangesRequested { text: "Fix it".into(), serious_findings: Some(1) },
     });
     drop(store);
     let mut store = DomainStore::open(&fixture.path()).unwrap();
     let state = store.load().unwrap();
     let review = &state.tasks[&"task-2".into()];
     assert_eq!((review.blocks.len(), review.delivered_dependencies.len()), (1, 1));
-    assert_eq!(review.verdict, Some(Verdict::ChangesRequested { text: "Fix it".into() }));
+    assert_eq!(review.verdict, Some(Verdict::ChangesRequested { text: "Fix it".into(), serious_findings: Some(1) }));
     assert_eq!(state.tasks[&"task-1".into()].review_rounds, 1, "the round is counted on the task under review");
     assert_eq!(state.tasks[&"task-1".into()].state, TaskState::Running, "the work went back to its node");
 
@@ -1448,7 +1448,7 @@ fn task_relations_a_verdict_and_the_split_review_states_survive_a_restart() {
     });
     execute(&mut store, &reviewer, "approve", Command::RecordVerdict {
         task_id: "task-2".into(), presentation_id: "delivery-2b".into(),
-        verdict: Verdict::Approved { summary: "Fine".into(), open_issues: false },
+        verdict: Verdict::Approved { summary: "Fine".into(), open_issues: false, serious_findings: 0 },
     });
     assert_eq!(pushes(&store, "delivery-1b"), 1, "one push when the review lets the delivery through");
     drop(store);

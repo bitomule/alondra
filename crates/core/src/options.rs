@@ -513,8 +513,8 @@ impl Approach {
         ];
         match self {
             Approach::Solo => {}
-            Approach::Subagents => lines.push("Split independent parts across subagents (the Agent tool) and work on them in parallel. Give each subagent a precise brief: the files, the change and how to check it. Pass model sonnet only when the subagent's change is clear and mechanical, with no design in it; otherwise pass model opus. Review what each subagent returns before you rely on it.".into()),
-            Approach::Workflow => lines.push("Use a workflow (the Workflow tool) to run this: its parts can run in parallel and each has a check. Name a model for each stage: sonnet only for stages whose change is clear and mechanical, with no design in it; opus for every other stage. Try it on a small slice first.".into()),
+            Approach::Subagents => lines.push("Split independent parts across subagents (the Agent tool) and work on them in parallel. Give each subagent a precise brief: the files, the change and how to check it. Pass model sonnet only when the brief already names the files, the change and the expected tests, or the change is literal (copy, versions, renames); otherwise pass model opus. Review what each subagent returns before you rely on it.".into()),
+            Approach::Workflow => lines.push("Use a workflow (the Workflow tool) to run this: its parts can run in parallel and each has a check. Name a model for each stage: sonnet only for stages whose files, change and expected tests are already written down, or whose change is literal (copy, versions, renames); opus for every other stage. Try it on a small slice first.".into()),
         }
         lines
     }
@@ -597,7 +597,7 @@ impl Resolved {
     /// What the orchestrator is told about effort alongside the request.
     pub fn effort_note(&self, user: &str) -> String {
         if self.effort == AUTO {
-            "Effort is auto: choose the model and effort per task after splitting. Sonnet only when the change is clear and mechanical, with no design in it; opus with effort medium for everything else; opus with effort high for architecture design, a hard bug or a migration with difficult invariants; fable only after an opus node failed at the task. When in doubt, use opus. Request size or importance does not raise every task.".into()
+            "Effort is auto: choose the model and effort per task after splitting. Opus whenever the task touches interface with interaction, a state machine, concurrency or races, session or security, includes a data migration, or its specification does not name the files, states and edge cases; sonnet only when the files, the changes and the expected tests are already written down, or the change is literal (copy, versions, renames); opus with effort medium for everything else; opus with effort high for architecture design, a hard bug or a migration with difficult invariants; fable only after an opus node failed at the task. When in doubt, use opus. Request size or importance does not raise every task.".into()
         } else {
             format!("Effort {} was chosen by {user} and is binding: do not pass model or effort.", self.effort)
         }

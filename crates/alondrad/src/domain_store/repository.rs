@@ -323,6 +323,20 @@ fn save_relations(c: &Connection, t: &Task) -> Result<()> {
     )?;
     Ok(())
 }
+fn save_review_findings(c: &Connection, reviewer: &Task, verdict: &Verdict, revision: Revision) -> Result<()> {
+    let kind = match verdict {
+        Verdict::Approved { .. } => "approved",
+        Verdict::ChangesRequested { .. } => "changes_requested",
+    };
+    for reviewed in &reviewer.blocks {
+        exec(
+            c,
+            "INSERT OR IGNORE INTO review_findings(task_id,reviewer_task_id,at_revision,kind,serious_findings) VALUES(?1,?2,?3,?4,?5)",
+            params![reviewed.0, reviewer.id.0, revision as i64, kind, verdict.serious_findings()],
+        )?;
+    }
+    Ok(())
+}
 fn save_wrap_up(c: &Connection, t: &Task) -> Result<()> {
     let w = &t.wrap_up;
     let node_end = match w.node {
@@ -704,6 +718,9 @@ pub(super) fn save_changes(c: &Connection, before: &DomainState, after: &DomainS
             |p| (&p.delivered_dependencies, &p.blocks, &p.verdict, p.review_rounds) != (&x.delivered_dependencies, &x.blocks, &x.verdict, x.review_rounds),
         ) {
             save_relations(c, x)?;
+        }
+        if let Some(verdict) = x.verdict.as_ref().filter(|_| prior.is_none_or(|p| p.verdict != x.verdict)) {
+            save_review_findings(c, x, verdict, after.revision)?;
         }
     }
     for (x, _) in changed(&before.documents, &after.documents) {

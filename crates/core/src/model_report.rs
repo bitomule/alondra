@@ -13,8 +13,12 @@ pub struct ModelReport {
     /// Work split into design, implementation and review, measured apart.
     #[serde(default)]
     pub by_role: Vec<Group>,
-    /// Sonnet attempts that were reopened, relaunched, cancelled or had changes requested.
+    /// Sonnet attempts that were reopened, relaunched, cancelled, had changes requested on any
+    /// delivery, or had serious findings.
     pub sonnet_trouble: Vec<Attempt>,
+    /// Every attempt in the period, oldest first, to compare tasks one by one.
+    #[serde(default)]
+    pub attempts: Vec<Attempt>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -38,6 +42,15 @@ pub struct Group {
     /// How many times the Task went to needs-you, across the group's attempts.
     pub questions: u32,
     pub changes_requested: u32,
+    /// Rounds of changes asked for, by the user or a reviewer, across the group's attempts.
+    #[serde(default)]
+    pub change_rounds: u32,
+    /// Of those, the rounds a reviewer task sent back.
+    #[serde(default)]
+    pub reviewer_rounds: u32,
+    /// Serious failures reviewers found: broken behaviour, lost data, a security or session hole.
+    #[serde(default)]
+    pub serious_findings: u32,
     pub median_ms_to_done: Option<Millis>,
     pub mean_cost_usd: Option<f64>,
     /// How many attempts a cost was recorded for, which the mean is over.
@@ -45,6 +58,10 @@ pub struct Group {
 }
 
 impl Group {
+    pub fn mean_change_rounds(&self) -> f64 {
+        if self.tasks == 0 { 0.0 } else { self.change_rounds as f64 / self.tasks as f64 }
+    }
+
     pub fn percent(&self, count: u32) -> u32 {
         if self.tasks == 0 { 0 } else { ((count as f64) * 100.0 / self.tasks as f64).round() as u32 }
     }
@@ -70,4 +87,13 @@ pub struct Attempt {
     pub outcomes: Vec<Outcome>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub relaunched_to: Option<String>,
+    /// Times the user or a reviewer asked for changes during this attempt.
+    #[serde(default)]
+    pub change_rounds: u32,
+    /// Of those, the times a reviewer task sent it back.
+    #[serde(default)]
+    pub reviewer_rounds: u32,
+    /// Serious failures reviewers found during this attempt.
+    #[serde(default)]
+    pub serious_findings: u32,
 }

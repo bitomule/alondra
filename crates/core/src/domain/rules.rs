@@ -2124,18 +2124,25 @@ impl DomainState {
                 }
                 let capped = blocked.iter().any(|b| self.tasks[b].review_rounds >= MAX_REVIEW_ROUNDS);
                 let verdict = match verdict {
-                    Verdict::ChangesRequested { text } => {
+                    Verdict::ChangesRequested { text, serious_findings } => {
                         nonempty(text)?;
+                        let Some(serious_findings) = *serious_findings else {
+                            return refuse(
+                                "invalid_input",
+                                "serious_findings",
+                                "Say how many of the failures you found are serious (broken behaviour, lost data, or a security or session hole), 0 if none",
+                            );
+                        };
                         if capped {
-                            Verdict::Approved { summary: text.clone(), open_issues: true }
+                            Verdict::Approved { summary: text.clone(), open_issues: true, serious_findings }
                         } else {
                             verdict.clone()
                         }
                     }
-                    Verdict::Approved { summary, open_issues } => Verdict::Approved { summary: summary.clone(), open_issues: *open_issues },
+                    Verdict::Approved { .. } => verdict.clone(),
                 };
                 match &verdict {
-                    Verdict::ChangesRequested { text } => {
+                    Verdict::ChangesRequested { text, .. } => {
                         for blocked_id in &blocked {
                             let Some(delivery) = self.task(blocked_id)?.final_presentation.clone() else {
                                 return refuse("invalid_input", "verdict", "The blocked task has delivered nothing to send back");
@@ -2764,7 +2771,7 @@ impl DomainState {
                     return refuse(
                         "invalid_input",
                         "task_id",
-                        "A task that blocks another reviews it and delivers a verdict, not a pull request: leave the code to the task you review, and say what to change in record_verdict",
+                        "A task that blocks another reviews it and delivers a verdict, not a pull request: leave the code to the task you review, and say what to change in record_verdict, with serious_findings: how many failures you found break behaviour, lose data, or open a security or session hole (0 if none)",
                     );
                 }
                 id(&pr_id.0)?;

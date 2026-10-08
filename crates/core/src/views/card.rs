@@ -384,10 +384,10 @@ fn review_lines(item: &InboxItem, context: &RenderContext<'_>) -> Vec<ContextLin
     };
     for reviewer in context.domain.tasks.values().filter(|b| b.blocks.contains(task) && reviewed_after(b)) {
         match &reviewer.verdict {
-            Some(Verdict::Approved { summary, open_issues: false }) => lines.push(line(
+            Some(Verdict::Approved { summary, open_issues: false, .. }) => lines.push(line(
                 tf!(lang, "Reviewed by “{title}”: {summary}", "Revisado por «{title}»: {summary}", title = reviewer.title, summary = summary.trim()),
             )),
-            Some(Verdict::Approved { summary, open_issues: true }) => {
+            Some(Verdict::Approved { summary, open_issues: true, .. }) => {
                 let left = summary.lines().filter(|line| !line.trim().is_empty()).count().max(1);
                 let text = if left == 1 {
                     tf!(lang, "Reviewed by “{title}”: 1 failure left after {rounds} rounds", "Revisado por «{title}»: queda 1 fallo tras {rounds} vueltas",

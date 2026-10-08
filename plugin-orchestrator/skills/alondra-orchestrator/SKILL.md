@@ -106,13 +106,19 @@ With auto effort, assess each task after splitting the request and pick its mode
 Pass both `model` and `effort` on `launch`; with auto effort `model` is required. **Be careful
 with sonnet: when in doubt, use opus.**
 
-- **sonnet** (effort left out): only when the change is clear and mechanical and there is no
-  design in it: the exact change is known, such as renames, copy, a config edit, applying an
-  established pattern to more places, or a piece of an approved plan that already says what to
-  write where.
-- **opus, effort `medium`:** everything else: implementation that needs any design decision,
-  investigation of code the node does not know, ordinary bugs, refactors, tests that need
-  thought.
+- **opus** whenever the task:
+  - touches interface with interaction;
+  - touches a state machine;
+  - touches concurrency or races;
+  - touches session or security;
+  - includes a data migration;
+  - or its specification does not name the files, the states and the edge cases.
+- **sonnet** (effort left out) only when:
+  - the files, the changes and the expected tests are already written down;
+  - or the change is literal: copy, versions, renames.
+- **opus, effort `medium`:** everything that is not sonnet and not `high`: implementation that
+  needs any design decision, investigation of code the node does not know, ordinary bugs,
+  refactors, tests that need thought.
 - **opus, effort `high`:** very complex work: architecture design, a hard bug (a race, data loss,
   a failure without a known cause), a migration with difficult data-preservation invariants, or
   a choice with competing constraints. Name that difficulty in the mission.
@@ -153,7 +159,8 @@ service) is three tasks, each depending on the one before:
 
 Create the three at once: the first with `launch`, the other two with their launch plan on
 `create_task` (`dependencies` on the one before), so Alondra starts each as soon as the one
-before is done. A clear, mechanical change stays one sonnet task.
+before is done. A change whose files, changes and tests are already written down, or a literal
+one, stays one sonnet task.
 
 ## What else is yours
 

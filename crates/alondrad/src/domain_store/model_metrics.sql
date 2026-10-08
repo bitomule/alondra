@@ -35,3 +35,18 @@ CREATE TABLE IF NOT EXISTS node_costs (
  started_at INTEGER,
  ended_at INTEGER NOT NULL
 );
+
+-- Each verdict a reviewer gave on the tasks it blocks, one row per round, with how many of its
+-- findings were serious. The reviewer's verdict on the task is replaced each round; this is not.
+CREATE TABLE IF NOT EXISTS review_findings (
+ task_id TEXT NOT NULL REFERENCES tasks(id),
+ reviewer_task_id TEXT NOT NULL REFERENCES tasks(id),
+ at_revision INTEGER NOT NULL,
+ kind TEXT NOT NULL CHECK(kind IN('approved','changes_requested')),
+ serious_findings INTEGER NOT NULL CHECK(serious_findings>=0),
+ PRIMARY KEY(task_id,reviewer_task_id,at_revision)
+);
+CREATE TRIGGER IF NOT EXISTS immutable_review_finding BEFORE UPDATE ON review_findings
+ BEGIN SELECT RAISE(ABORT,'review findings are immutable'); END;
+CREATE TRIGGER IF NOT EXISTS retain_review_finding BEFORE DELETE ON review_findings
+ BEGIN SELECT RAISE(ABORT,'review findings are retained'); END;

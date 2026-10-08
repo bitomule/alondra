@@ -3275,20 +3275,20 @@ fn context_texts(state: &DomainState, lang: Lang) -> Vec<String> {
 
 #[test]
 fn the_card_of_a_reviewed_task_carries_the_line_of_its_reviewer() {
-    let state = reviewed_fixture(crate::domain::Verdict::Approved { summary: "4 fixed".into(), open_issues: false });
+    let state = reviewed_fixture(crate::domain::Verdict::Approved { summary: "4 fixed".into(), open_issues: false, serious_findings: 0 });
     assert!(context_texts(&state, Lang::En).contains(&"Reviewed by “Review the editor”: 4 fixed".to_owned()));
     assert!(context_texts(&state, Lang::Es).contains(&"Revisado por «Review the editor»: 4 fixed".to_owned()));
 }
 
 #[test]
 fn a_new_delivery_after_the_review_carries_no_line_of_that_review() {
-    let state = reviewed_fixture_after(crate::domain::Verdict::Approved { summary: "4 fixed".into(), open_issues: false }, false);
+    let state = reviewed_fixture_after(crate::domain::Verdict::Approved { summary: "4 fixed".into(), open_issues: false, serious_findings: 0 }, false);
     assert!(!context_texts(&state, Lang::En).iter().any(|line| line.starts_with("Reviewed by")), "the review saw an older delivery");
 }
 
 #[test]
 fn one_failure_left_is_said_in_the_singular_in_both_languages() {
-    let state = reviewed_fixture(crate::domain::Verdict::Approved { summary: "Empty list crashes".into(), open_issues: true });
+    let state = reviewed_fixture(crate::domain::Verdict::Approved { summary: "Empty list crashes".into(), open_issues: true, serious_findings: 0 });
     assert!(context_texts(&state, Lang::En).contains(&"Reviewed by “Review the editor”: 1 failure left after 3 rounds".to_owned()));
     assert!(context_texts(&state, Lang::Es).contains(&"Revisado por «Review the editor»: queda 1 fallo tras 3 vueltas".to_owned()));
 }
@@ -3322,7 +3322,7 @@ fn a_delivery_held_by_a_question_is_grouped_and_counted_as_waiting_never_as_in_r
 
 #[test]
 fn a_review_that_ran_out_of_rounds_says_how_many_failures_are_left_and_lists_them() {
-    let state = reviewed_fixture(crate::domain::Verdict::Approved { summary: "Empty list crashes\nWrong total".into(), open_issues: true });
+    let state = reviewed_fixture(crate::domain::Verdict::Approved { summary: "Empty list crashes\nWrong total".into(), open_issues: true, serious_findings: 0 });
     let en = context_texts(&state, Lang::En);
     assert!(en.contains(&"Reviewed by “Review the editor”: 2 failures left after 3 rounds".to_owned()), "{en:?}");
     assert!(en.contains(&"Empty list crashes\nWrong total".to_owned()), "the failures are in the detail: {en:?}");

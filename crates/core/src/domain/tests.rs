@@ -3024,7 +3024,7 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
         (Command::ConfirmCleanup { task_id: ids.task.into() }, false),
         (Command::RecordNodeEnd { task_id: ids.task.into(), end: NodeEnd::Closed, agent_id: None }, false),
         (Command::SetRelations { task_id: ids.task.into(), delivered_dependencies: BTreeSet::new(), blocks: BTreeSet::new() }, false),
-        (Command::RecordVerdict { task_id: ids.task.into(), presentation_id: ids.interaction.into(), verdict: Verdict::Approved { summary: "ok".into(), open_issues: false } }, false),
+        (Command::RecordVerdict { task_id: ids.task.into(), presentation_id: ids.interaction.into(), verdict: Verdict::Approved { summary: "ok".into(), open_issues: false, serious_findings: 0 } }, false),
         (Command::ObservePrMergeMethods { pr_id: ids.pr.into(), allowed_methods: vec![MergeMethod::Squash] }, false),
     ];
     let mut covered = vec![false; COMMAND_KINDS];

@@ -160,8 +160,29 @@ pub enum Verdict {
         summary: String,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         open_issues: bool,
+        /// Serious failures found in this round: broken behaviour, lost data, or a security or
+        /// session hole. Verdicts recorded before the count read as 0.
+        #[serde(default, skip_serializing_if = "is_zero_u32")]
+        serious_findings: u32,
     },
-    ChangesRequested { text: String },
+    /// `serious_findings` is required from the reviewer; only verdicts recorded before the count
+    /// lack it.
+    ChangesRequested {
+        text: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        serious_findings: Option<u32>,
+    },
+}
+impl Verdict {
+    pub fn serious_findings(&self) -> u32 {
+        match self {
+            Self::Approved { serious_findings, .. } => *serious_findings,
+            Self::ChangesRequested { serious_findings, .. } => serious_findings.unwrap_or(0),
+        }
+    }
+}
+fn is_zero_u32(n: &u32) -> bool {
+    *n == 0
 }
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WrapUp {

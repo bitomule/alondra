@@ -47,7 +47,7 @@ fn facts() -> Facts {
         ("t4", history(&[(110, "running"), (150, "cancelled")])),
         ("t5", history(&[(110, "running"), (400, "done")])),
     ].into_iter().map(|(task, rows)| (task.to_owned(), rows)).collect();
-    f.changes = [("t2".to_owned(), vec![155])].into();
+    f.changes = [("t2".to_owned(), vec![ChangeRound { at: 155, by_reviewer: false, on_pull_request: true }])].into();
     f.costs = [("a1", "t1", 1.0), ("a4", "t3", 3.0), ("a5", "other-task", 9.0)].into_iter()
         .map(|(session, task, cost)| (session.to_owned(), (Some(task.to_owned()), Some(cost)))).collect();
     f
@@ -210,4 +210,91 @@ fn the_roles_come_from_the_launch_plans_in_the_store() {
     store.set_launch_plan(&"task-1".into(), &plan, 1).unwrap();
     let report = store.model_report(None, alondra_core::now_millis()).unwrap();
     assert_eq!(report.by_role.iter().map(|g| (g.role.clone().unwrap(), g.tasks)).collect::<Vec<_>>(), [("review".to_owned(), 1)]);
+}
+
+fn round(at: Millis, by_reviewer: bool) -> ChangeRound {
+    ChangeRound { at, by_reviewer, on_pull_request: true }
+}
+
+#[test]
+fn each_attempt_counts_its_rounds_of_changes_and_the_serious_findings_of_its_reviews() {
+    let mut f = facts();
+    f.changes.insert("t1".into(), vec![round(140, true), round(150, false), round(160, true)]);
+    f.changes.insert("t3".into(), vec![round(300, true), round(600, true)]);
+    f.findings = [("t1".to_owned(), vec![(140, 2), (160, 1)]), ("t3".to_owned(), vec![(300, 4), (600, 1)])].into();
+    let report = report(&f, None, 1_000);
+
+    let attempt = |task: &str, model: &str| report.attempts.iter().find(|a| a.task_id == task && a.model.as_deref() == Some(model)).unwrap();
+    let counts = |a: &Attempt| (a.change_rounds, a.reviewer_rounds, a.serious_findings);
+    assert_eq!(counts(attempt("t1", "sonnet")), (3, 2, 3), "two reviewer rounds and one from the user");
+    assert_eq!(counts(attempt("t3", "sonnet")), (1, 1, 4), "the round after the relaunch is not the first attempt's");
+    assert_eq!(counts(attempt("t3", "opus")), (1, 1, 1));
+    assert_eq!(counts(attempt("t5", "sonnet")), (0, 0, 0));
+
+    let sonnet = find(&report.by_model, "sonnet", Some("medium"));
+    assert_eq!((sonnet.change_rounds, sonnet.reviewer_rounds, sonnet.serious_findings), (5, 3, 7), "t1 3, t2 1 and t3 1");
+    assert_eq!(sonnet.mean_change_rounds(), 1.25);
+    let opus = find(&report.by_model, "opus", Some("high"));
+    assert_eq!((opus.change_rounds, opus.serious_findings), (1, 1));
+    assert_eq!(report.attempts.len(), 7, "every attempt, not only the troubled ones");
+}
+
+#[test]
+fn a_change_asked_on_a_delivery_without_a_pr_is_a_round_but_not_a_changed_pr() {
+    let mut f = facts();
+    f.changes.insert("t1".into(), vec![ChangeRound { at: 150, by_reviewer: false, on_pull_request: false }]);
+    let report = report(&f, None, 1_000);
+    let t1 = report.attempts.iter().find(|a| a.task_id == "t1").unwrap();
+    assert_eq!((t1.change_rounds, t1.outcomes.as_slice()), (1, &[][..]));
+}
+
+fn text_delivery(task: &str, id: &str) -> Command {
+    Command::PresentResult {
+        task_id: task.into(), interaction_id: id.into(), body: "Done".into(), targets: vec![DeliveryTarget::Text { text: "The answer".into() }],
+        is_final: true, attachments: vec![], card: CardSpec::delivery("Review the result", &[], true),
+    }
+}
+
+#[test]
+fn the_rounds_and_serious_findings_of_a_review_come_from_the_store() {
+    let (_fixture, mut store) = store();
+    store.record_model_decision(&sonnet_launch()).unwrap();
+    let (user, agent, reviewer) = (Actor::User { user_id: "user-1".into() }, Actor::Agent { agent_id: "agent-1".into() }, Actor::Agent { agent_id: "agent-2".into() });
+    run_command(&mut store, &Actor::System, "agent-2", Command::RegisterAgent { agent_id: "agent-2".into(), name: "Reviewer".into() });
+    run_command(&mut store, &user, "request-title", Command::TitleRequest { request_id: "request-1".into(), title: "Useful work".into() });
+    run_command(&mut store, &user, "task-2", Command::CreateTask {
+        task_id: "task-2".into(), request_id: "request-1".into(), title: "Review".into(), agent_id: Some("agent-2".into()),
+        review_prs: false, dependencies: Default::default(), stack: None,
+    });
+    run_command(&mut store, &user, "relations", Command::SetRelations {
+        task_id: "task-2".into(), delivered_dependencies: ["task-1".into()].into(), blocks: ["task-1".into()].into(),
+    });
+    run_command(&mut store, &agent, "start", Command::StartTask { task_id: "task-1".into() });
+    let verdicts = [
+        Verdict::ChangesRequested { text: "Empty list crashes\nTotal is wrong".into(), serious_findings: Some(2) },
+        Verdict::ChangesRequested { text: "Total is still wrong".into(), serious_findings: Some(1) },
+        Verdict::Approved { summary: "Fine".into(), open_issues: false, serious_findings: 0 },
+    ];
+    for (n, verdict) in verdicts.into_iter().enumerate() {
+        run_command(&mut store, &agent, &format!("present-{n}"), text_delivery("task-1", &format!("delivery-{n}")));
+        if n == 0 {
+            run_command(&mut store, &reviewer, "start-review", Command::StartTask { task_id: "task-2".into() });
+        }
+        run_command(&mut store, &reviewer, &format!("review-{n}"), text_delivery("task-2", &format!("review-{n}")));
+        run_command(&mut store, &reviewer, &format!("verdict-{n}"), Command::RecordVerdict {
+            task_id: "task-2".into(), presentation_id: format!("review-{n}").into(), verdict,
+        });
+    }
+
+    let report = store.model_report(None, alondra_core::now_millis()).unwrap();
+    let attempt = &report.attempts[0];
+    assert_eq!((attempt.task_id.as_str(), attempt.change_rounds, attempt.reviewer_rounds, attempt.serious_findings), ("task-1", 2, 2, 3));
+    let rows: Vec<(String, String, u32)> = store.conn.prepare("SELECT reviewer_task_id,kind,serious_findings FROM review_findings WHERE task_id='task-1' ORDER BY at_revision").unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap().collect::<Result<_, _>>().unwrap();
+    assert_eq!(rows, [
+        ("task-2".to_owned(), "changes_requested".to_owned(), 2),
+        ("task-2".to_owned(), "changes_requested".to_owned(), 1),
+        ("task-2".to_owned(), "approved".to_owned(), 0),
+    ], "one row per round, though the reviewer's verdict is replaced each time");
+    assert!(store.conn.execute("DELETE FROM review_findings", []).is_err(), "rounds are retained");
 }

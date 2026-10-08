@@ -1019,6 +1019,83 @@ fn a_stopped_session_is_one_claude_agents_no_longer_shows_running() {
     }
 }
 
+/// What `alondra models --json` shows after a sonnet task launched by the orchestrator goes
+/// through a review that asks for changes twice, every call made over the daemon's own routes.
+#[tokio::test]
+async fn a_review_that_asks_for_changes_twice_shows_its_rounds_and_serious_findings_in_the_model_report() {
+    let root = std::env::temp_dir().join(format!("alondra-review-rounds-{}", crate::auth::random_hex(8)));
+    let (home, project) = (root.join("home"), root.join("App"));
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::create_dir_all(&project).unwrap();
+    drop(DomainRuntime::open(&home).unwrap());
+    let daemon = crate::domain_bootstrap::DomainDaemon::open(&home).unwrap();
+    let domain = daemon.domain();
+    command(&domain, user(), Command::CreateRequest { request_id: "r".into(), body: "Make the editor readable".into(), auto_merge: false });
+    command(&domain, user(), Command::TitleRequest { request_id: "r".into(), title: "Readable editor".into() });
+    command(&domain, user(), Command::CreateTask { task_id: "t".into(), request_id: "r".into(), title: "Editor colours".into(),
+        agent_id: None, review_prs: false, dependencies: Default::default(), stack: None });
+    command(&domain, Actor::System, Command::RegisterAgent { agent_id: "reviewer".into(), name: "Reviewer".into() });
+    command(&domain, user(), Command::CreateTask { task_id: "review".into(), request_id: "r".into(), title: "Review the editor colours".into(),
+        agent_id: Some("reviewer".into()), review_prs: false, dependencies: Default::default(), stack: None });
+    command(&domain, user(), Command::SetRelations { task_id: "review".into(), delivered_dependencies: ["t".into()].into(), blocks: ["t".into()].into() });
+
+    let orchestrator = the_orchestrator(&domain);
+    let claude = FakeClaude::loading(&domain);
+    let body = serde_json::from_value(json!({"name": "editor", "cwd": project.to_str().unwrap(), "task": "t",
+        "model": "sonnet", "effort": "medium", "reason": "Colour tokens in one file: sonnet"})).unwrap();
+    launch(&domain, &home, &orchestrator, body, |_| None, &claude).await.unwrap();
+    let worker = settings_files(&home)[0]["env"]["ALONDRA_DOMAIN_CAPABILITY"].as_str().unwrap().to_owned();
+    let reviewer = domain.bind_agent("reviewer").unwrap().expose_for_child_environment().to_owned();
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let app = crate::domain_bootstrap::router(daemon.clone()).layer(axum::middleware::from_fn_with_state(daemon.auth(), crate::auth::guard));
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app.into_make_service_with_connect_info::<std::net::SocketAddr>()).await.unwrap();
+    });
+    let client = reqwest::Client::new();
+    let epoch = domain.state().unwrap().data_epoch.0.clone();
+    let mut sent = 0;
+    let mut call = async |bearer: &str, path: String, mut body: Value| {
+        sent += 1;
+        body["data_epoch"] = json!(epoch);
+        body["command_id"] = json!(format!("call-{sent}"));
+        body["expected_revision"] = json!(0);
+        let response = client.post(format!("{base}{path}")).bearer_auth(bearer).json(&body).send().await.unwrap();
+        let status = response.status();
+        assert!(status.is_success(), "{path}: {status} {}", response.text().await.unwrap());
+    };
+    let delivery = |task: &str, id: &str| json!({"task_id": task, "interaction_id": id, "body": "Done", "is_final": true, "attachments": [],
+        "targets": [{"kind": "text", "text": "The result"}],
+        "card": serde_json::to_value(alondra_core::domain::CardSpec::delivery("Review the result", &[], true)).unwrap()});
+
+    call(&worker, "/tasks/t/start".into(), json!({"task_id": "t"})).await;
+    let verdicts = [
+        json!({"kind": "changes_requested", "text": "Empty list crashes\nContrast below 4.5:1", "serious_findings": 2}),
+        json!({"kind": "changes_requested", "text": "Contrast still below 4.5:1", "serious_findings": 1}),
+        json!({"kind": "approved", "summary": "Fixed"}),
+    ];
+    for (round, verdict) in verdicts.into_iter().enumerate() {
+        call(&worker, "/tasks/t/results".into(), delivery("t", &format!("delivery-{round}"))).await;
+        if round == 0 {
+            call(&reviewer, "/tasks/review/start".into(), json!({"task_id": "review"})).await;
+        }
+        call(&reviewer, "/tasks/review/results".into(), delivery("review", &format!("review-{round}"))).await;
+        call(&reviewer, "/tasks/review/verdict".into(), json!({"task_id": "review", "presentation_id": format!("review-{round}"), "verdict": verdict})).await;
+    }
+
+    let report: Value = client.get(format!("{base}/models")).send().await.unwrap().json().await.unwrap();
+    println!("GET /models (what alondra models --json prints):\n{}", serde_json::to_string_pretty(&report).unwrap());
+    let sonnet = &report["by_model"][0];
+    assert_eq!((&sonnet["model"], &sonnet["effort"], &sonnet["tasks"]), (&json!("sonnet"), &json!("medium"), &json!(1)));
+    assert_eq!((&sonnet["change_rounds"], &sonnet["reviewer_rounds"], &sonnet["serious_findings"]), (&json!(2), &json!(2), &json!(3)));
+    let attempt = &report["attempts"][0];
+    assert_eq!((&attempt["task_id"], &attempt["change_rounds"], &attempt["serious_findings"]), (&json!("t"), &json!(2), &json!(3)));
+    assert_eq!(report["sonnet_trouble"][0]["task_id"], "t", "rounds on a delivery without a PR still make a sonnet task go badly");
+    server.abort();
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 async fn until_told(f: &Fixture, prefix: &str) -> Vec<String> {
     for _ in 0..500 {
         let told = told_orchestrator(f, prefix);

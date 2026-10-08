@@ -2,7 +2,7 @@
 //! joined with each Task's history.
 use super::DomainStore;
 use alondra_core::Millis;
-use alondra_core::domain::ModelChooser;
+use alondra_core::domain::{Feedback, ModelChooser};
 use alondra_core::model_report::{Attempt, Group, ModelReport, Outcome};
 use alondra_core::options::Approach;
 use anyhow::Result;
@@ -139,13 +139,22 @@ struct DecisionRow {
     title: String,
 }
 
+#[derive(Clone, Copy)]
+struct ChangeRound {
+    at: Millis,
+    by_reviewer: bool,
+    on_pull_request: bool,
+}
+
 #[derive(Default)]
 struct Facts {
     decisions: Vec<DecisionRow>,
     /// Each Task's states in the order they were entered, with when.
     history: HashMap<String, Vec<(Millis, String)>>,
-    /// When the user asked for changes on a delivery that carried a PR, per Task.
-    changes: HashMap<String, Vec<Millis>>,
+    /// Every time the user or a reviewer asked for changes on a delivery, per Task.
+    changes: HashMap<String, Vec<ChangeRound>>,
+    /// Each reviewer verdict on a Task: when, and how many serious failures it found.
+    findings: HashMap<String, Vec<(Millis, u32)>>,
     /// Session → (Task, cost).
     costs: HashMap<String, (Option<String>, Option<f64>)>,
     /// The role each Task's launch plan names: design, implementation or review.
@@ -166,12 +175,18 @@ impl Facts {
             facts.history.entry(task).or_default().push((at, state));
         }
         let mut statement = c.prepare(
-            "SELECT i.task_id,a.at FROM delivery_feedback f JOIN interactions i ON i.id=f.interaction_id JOIN command_audit a ON a.revision=f.at_revision
-             WHERE f.instruction='changes' AND i.task_id IS NOT NULL AND EXISTS(SELECT 1 FROM delivery_targets t WHERE t.interaction_id=f.interaction_id AND t.kind='pull_request')",
+            "SELECT i.task_id,a.at,f.user_id=?1,EXISTS(SELECT 1 FROM delivery_targets t WHERE t.interaction_id=f.interaction_id AND t.kind='pull_request')
+             FROM delivery_feedback f JOIN interactions i ON i.id=f.interaction_id JOIN command_audit a ON a.revision=f.at_revision
+             WHERE f.instruction='changes' AND i.task_id IS NOT NULL",
         )?;
-        for row in statement.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Millis>(1)?)))? {
-            let (task, at) = row?;
-            facts.changes.entry(task).or_default().push(at);
+        for row in statement.query_map([Feedback::ALONDRA], |r| Ok((r.get::<_, String>(0)?, ChangeRound { at: r.get(1)?, by_reviewer: r.get(2)?, on_pull_request: r.get(3)? })))? {
+            let (task, round) = row?;
+            facts.changes.entry(task).or_default().push(round);
+        }
+        let mut statement = c.prepare("SELECT f.task_id,a.at,f.serious_findings FROM review_findings f JOIN command_audit a ON a.revision=f.at_revision")?;
+        for row in statement.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Millis>(1)?, r.get::<_, u32>(2)?)))? {
+            let (task, at, serious) = row?;
+            facts.findings.entry(task).or_default().push((at, serious));
         }
         let mut statement = c.prepare("SELECT task_id,role FROM task_launch_plans WHERE role IS NOT NULL")?;
         for row in statement.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))? {
@@ -247,7 +262,9 @@ fn run_of(facts: &Facts, d: &DecisionRow, next: Option<&DecisionRow>, attributed
         }
     }
     let relaunched = next.is_some_and(|n| n.kind != "send");
-    let changes = facts.changes.get(&d.task_id).is_some_and(|times| times.iter().any(|at| within(*at)));
+    let rounds: Vec<ChangeRound> = facts.changes.get(&d.task_id).into_iter().flatten().copied().filter(|round| within(round.at)).collect();
+    let changes = rounds.iter().any(|round| round.on_pull_request);
+    let serious_findings = facts.findings.get(&d.task_id).into_iter().flatten().filter(|(at, _)| within(*at)).map(|(_, serious)| serious).sum();
     if reopened { outcomes.push(Outcome::Reopened); }
     if relaunched { outcomes.push(Outcome::Relaunched); }
     if cancelled { outcomes.push(Outcome::Cancelled); }
@@ -262,6 +279,9 @@ fn run_of(facts: &Facts, d: &DecisionRow, next: Option<&DecisionRow>, attributed
         attempt: Attempt {
             task_id: d.task_id.clone(), title: d.title.clone(), at: d.at, model: d.model.clone(), effort: d.effort.clone(),
             reason: d.reason.clone(), outcomes, relaunched_to,
+            change_rounds: rounds.len() as u32,
+            reviewer_rounds: rounds.iter().filter(|round| round.by_reviewer).count() as u32,
+            serious_findings,
         },
         approach: d.approach.clone(),
         done_after,
@@ -280,6 +300,9 @@ fn group(runs: &[&Run]) -> Group {
         g.cancelled += u32::from(has(run, Outcome::Cancelled));
         g.changes_requested += u32::from(has(run, Outcome::ChangesRequested));
         g.questions += run.questions;
+        g.change_rounds += run.attempt.change_rounds;
+        g.reviewer_rounds += run.attempt.reviewer_rounds;
+        g.serious_findings += run.attempt.serious_findings;
         if let Some(to) = run.attempt.relaunched_to.clone().filter(|_| has(run, Outcome::Relaunched)) {
             *g.relaunched_to.entry(to).or_default() += 1;
         }
@@ -319,11 +342,13 @@ fn report(facts: &Facts, since: Option<Millis>, until: Millis) -> ModelReport {
         (!of_role.is_empty()).then(|| Group { role: Some(role.to_owned()), ..group(&of_role) })
     }).collect();
     let mut sonnet_trouble: Vec<Attempt> = runs.iter()
-        .filter(|run| run.attempt.model.as_deref() == Some("sonnet") && !run.attempt.outcomes.is_empty())
+        .filter(|run| run.attempt.model.as_deref() == Some("sonnet") && (!run.attempt.outcomes.is_empty() || run.attempt.change_rounds > 0 || run.attempt.serious_findings > 0))
         .map(|run| run.attempt.clone())
         .collect();
     sonnet_trouble.sort_by(|a, b| b.at.cmp(&a.at));
-    ModelReport { since, until, by_model, by_approach, by_role, sonnet_trouble }
+    let mut attempts: Vec<Attempt> = runs.iter().map(|run| run.attempt.clone()).collect();
+    attempts.sort_by_key(|attempt| attempt.at);
+    ModelReport { since, until, by_model, by_approach, by_role, sonnet_trouble, attempts }
 }
 
 #[cfg(test)]

@@ -78,10 +78,10 @@ fn verdict(s: &mut DomainState, presentation: &str, verdict: Verdict) -> Result<
     exec(s, agent("wb"), Command::RecordVerdict { task_id: "b".into(), presentation_id: presentation.into(), verdict })
 }
 fn changes(text: &str) -> Verdict {
-    Verdict::ChangesRequested { text: text.into() }
+    Verdict::ChangesRequested { text: text.into(), serious_findings: Some(1) }
 }
 fn approved(summary: &str) -> Verdict {
-    Verdict::Approved { summary: summary.into(), open_issues: false }
+    Verdict::Approved { summary: summary.into(), open_issues: false, serious_findings: 0 }
 }
 /// The review is under way: `a` delivered, `b` started and delivered its own result.
 fn reviewing(s: &mut DomainState) {
@@ -149,7 +149,7 @@ fn after_three_rounds_the_reviewers_last_word_closes_the_review_with_its_open_is
     let last = format!("db{}", MAX_REVIEW_ROUNDS + 1);
     let outcome = verdict(&mut s, &last, changes("Two failures remain")).unwrap();
     assert_eq!(notified_user(&outcome), [format!("da{}", MAX_REVIEW_ROUNDS + 1)]);
-    assert_eq!(s.tasks[&"b".into()].verdict, Some(Verdict::Approved { summary: "Two failures remain".into(), open_issues: true }));
+    assert_eq!(s.tasks[&"b".into()].verdict, Some(Verdict::Approved { summary: "Two failures remain".into(), open_issues: true, serious_findings: 1 }));
     assert_eq!(state_of(&s, "a"), TaskState::ForYourReview);
 }
 
@@ -534,4 +534,24 @@ fn a_task_cannot_block_one_that_depends_on_it() {
     assert_eq!(refused(&mut s, user(), Command::SetRelations {
         task_id: "a".into(), delivered_dependencies: BTreeSet::new(), blocks: BTreeSet::from(["b".into()]),
     }), "dependency_cycle");
+}
+
+#[test]
+fn asking_for_changes_needs_the_count_of_serious_findings() {
+    let mut s = pair();
+    reviewing(&mut s);
+    let before = s.clone();
+    let error = verdict(&mut s, "db", Verdict::ChangesRequested { text: "Handle the empty list".into(), serious_findings: None }).unwrap_err();
+    assert_eq!((error.code.as_str(), error.subject.as_deref()), ("invalid_input", Some("serious_findings")));
+    assert_eq!(s, before);
+    verdict(&mut s, "db", Verdict::ChangesRequested { text: "Handle the empty list".into(), serious_findings: Some(0) }).unwrap();
+    assert_eq!(state_of(&s, "a"), TaskState::Running, "0 is a count");
+}
+
+#[test]
+fn a_verdict_recorded_before_the_count_reads_as_no_serious_findings() {
+    let changes: Verdict = serde_json::from_str(r#"{"kind":"changes_requested","text":"Fix it"}"#).unwrap();
+    let approved: Verdict = serde_json::from_str(r#"{"kind":"approved","summary":"Fine"}"#).unwrap();
+    assert_eq!((changes.serious_findings(), approved.serious_findings()), (0, 0));
+    assert_eq!(serde_json::to_string(&approved).unwrap(), r#"{"kind":"approved","summary":"Fine"}"#, "a zero count is not written");
 }
