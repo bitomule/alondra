@@ -223,7 +223,77 @@ final class ClientConcurrencyTests: XCTestCase {
     }
 }
 
+@Reducer
+private struct ReplaceableTasks {
+    @ObservableState
+    struct State: Equatable { var tasks = TasksFeature.State() }
+    enum Action { case tasks(TasksFeature.Action); case replace(TasksFeature.State) }
+    var body: some ReducerOf<Self> {
+        Scope(state: \.tasks, action: \.tasks) { TasksFeature() }
+        Reduce { state, action in
+            if case let .replace(tasks) = action { state.tasks = tasks }
+            return .none
+        }
+    }
+}
+
 final class TasksPageConcurrencyTests: XCTestCase {
+    @MainActor
+    func testReplacingTheChildCannotReuseAnOldPagesRequestIdentity() async throws {
+        let first = try Samples.document("tasks-populated")
+        let newer = try Samples.document("tasks-populated") { $0["version"] = "tasks-newer" }
+        func showing(_ document: ViewDocument) -> TasksFeature.State {
+            var state = TasksFeature.State()
+            state.screen.document = document
+            state.screen.phase = .loaded
+            state.actions.dataEpoch = document.dataEpoch
+            state.pagesVersion = document.version
+            state.expanded = ["finished"]
+            return state
+        }
+        let old = ResponseBarrier()
+        let current = ResponseBarrier()
+        let calls = LockIsolated(0)
+        let store = TestStore(initialState: ReplaceableTasks.State(tasks: showing(first))) {
+            ReplaceableTasks()
+        } withDependencies: {
+            $0.uuid = .incrementing
+            $0.viewsClient.load = { _, _ in
+                let call = calls.withValue { $0 += 1; return $0 }
+                if call == 1 { await old.hold(); return .document(first) }
+                await current.hold()
+                return .document(newer)
+            }
+        }
+        await store.send(.tasks(.showMore("finished"))) {
+            $0.tasks.loadingMore = ["finished"]
+            $0.tasks.pageLoads = ["finished": UUID(uuidString: "00000000-0000-0000-0000-000000000000")!]
+        }
+        await old.entered()
+        await store.send(.replace(showing(newer))) { $0.tasks = showing(newer) }
+        await store.send(.tasks(.showMore("finished"))) {
+            $0.tasks.loadingMore = ["finished"]
+            $0.tasks.pageLoads = ["finished": UUID(uuidString: "00000000-0000-0000-0000-000000000001")!]
+        }
+        await current.entered()
+        await old.release()
+        await store.receive(\.tasks.moreLoaded)
+        XCTAssertTrue(store.state.tasks.pages.isEmpty)
+        XCTAssertEqual(store.state.tasks.loadingMore, ["finished"])
+        await current.release()
+        let section = try XCTUnwrap(newer.sections.first { $0.id == "finished" })
+        let rows = section.items.compactMap { item in
+            if case let .row(row) = item { return row }
+            return nil
+        }
+        await store.receive(\.tasks.moreLoaded) {
+            $0.tasks.loadingMore = []
+            $0.tasks.pageLoads = [:]
+            $0.tasks.pages = ["finished": TasksPage(rows: rows, more: section.more)]
+        }
+        await store.finish()
+    }
+
     @MainActor
     func testAPageCompletingAfterRefreshCannotRepopulateTheOldRows() async throws {
         let first = try Samples.document("tasks-populated")
@@ -236,12 +306,12 @@ final class TasksPageConcurrencyTests: XCTestCase {
         state.pagesVersion = first.version
         state.expanded = ["finished"]
         let store = TestStore(initialState: state) { TasksFeature() } withDependencies: {
+            $0.uuid = .incrementing
             $0.viewsClient.load = { _, _ in await barrier.hold(); return .document(first) }
         }
         await store.send(.showMore("finished")) {
             $0.loadingMore = ["finished"]
-            $0.pageSequence = 1
-            $0.pageLoads = ["finished": 1]
+            $0.pageLoads = ["finished": UUID(uuidString: "00000000-0000-0000-0000-000000000000")!]
         }
         await barrier.entered()
         await store.send(.foldToggled("finished")) { $0.expanded = [] }
@@ -288,6 +358,7 @@ final class TasksPageConcurrencyTests: XCTestCase {
         state.pagesVersion = first.version
         state.expanded = ["finished"]
         let store = TestStore(initialState: state) { TasksFeature() } withDependencies: {
+            $0.uuid = .incrementing
             $0.viewsClient.load = { _, _ in
                 let number = calls.withValue { $0 += 1; return $0 }
                 if number == 1 {
@@ -300,8 +371,7 @@ final class TasksPageConcurrencyTests: XCTestCase {
         }
         await store.send(.showMore("finished")) {
             $0.loadingMore = ["finished"]
-            $0.pageSequence = 1
-            $0.pageLoads = ["finished": 1]
+            $0.pageLoads = ["finished": UUID(uuidString: "00000000-0000-0000-0000-000000000000")!]
         }
         await old.entered()
         await store.send(.foldToggled("finished")) { $0.expanded = [] }
@@ -314,8 +384,7 @@ final class TasksPageConcurrencyTests: XCTestCase {
         await store.send(.foldToggled("finished")) { $0.expanded = ["finished"] }
         await store.receive(\.showMore) {
             $0.loadingMore = ["finished"]
-            $0.pageSequence = 2
-            $0.pageLoads = ["finished": 2]
+            $0.pageLoads = ["finished": UUID(uuidString: "00000000-0000-0000-0000-000000000001")!]
         }
         await current.entered()
         await old.release()

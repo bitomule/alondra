@@ -18,8 +18,7 @@ public struct TasksFeature: Sendable {
         public var pages: [String: TasksPage] = [:]
         public var pagesVersion: String?
         public var loadingMore: Set<String> = []
-        public var pageSequence: UInt64 = 0
-        public var pageLoads: [String: UInt64] = [:]
+        public var pageLoads: [String: UUID] = [:]
         public var optimistic = Optimistic()
         public init() {}
 
@@ -33,8 +32,8 @@ public struct TasksFeature: Sendable {
         case refresh
         case foldToggled(String)
         case showMore(String)
-        case moreLoaded(String, request: UInt64, ViewDocument)
-        case moreFailed(String, request: UInt64)
+        case moreLoaded(String, request: UUID, ViewDocument)
+        case moreFailed(String, request: UUID)
         case open(AlondraContract.Link)
         case archiveCompleted
         case perform(WireAction)
@@ -44,6 +43,7 @@ public struct TasksFeature: Sendable {
     }
 
     @Dependency(\.viewsClient) var viewsClient
+    @Dependency(\.uuid) var uuid
     private enum CancelID: Hashable { case more(String) }
 
     public var body: some ReducerOf<Self> {
@@ -84,8 +84,7 @@ public struct TasksFeature: Sendable {
                 guard let board = state.board, state.loadingMore.insert(id).inserted,
                       let more = [board.active, board.finished, board.archived].first(where: { $0.id == id })?.more
                 else { return .none }
-                state.pageSequence &+= 1
-                let request = state.pageSequence
+                let request = uuid()
                 state.pageLoads[id] = request
                 return .run { [viewsClient] send in
                     do {
