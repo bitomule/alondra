@@ -141,7 +141,7 @@ async fn node_hold(mut stream: UnixStream, domain: &DomainRuntime, card: Value) 
     };
     let reply = match crate::domain_holds::post(domain, &card, domain.live.mods.is_node(&card.session_id))? {
         crate::domain_holds::Posted::NotHeld => json!({"held": false}),
-        crate::domain_holds::Posted::Denied(reason) => json!({"held": true, "allowed": false, "reason": reason}),
+        crate::domain_holds::Posted::Denied(reason) => crate::domain_holds::denied(card.kind, &reason),
         crate::domain_holds::Posted::Held(id) => {
             let answer = tokio::select! {
                 answer = crate::domain_holds::wait(domain, &id) => answer?,
@@ -153,6 +153,9 @@ async fn node_hold(mut stream: UnixStream, domain: &DomainRuntime, card: Value) 
             match (answer, state.holds.get(&id)) {
                 (Some(answer), Some(hold)) => {
                     crate::domain_holds::mod_reply(*hold, &card.input, &card.suggestions, &answer, &crate::domain_messages::user_name())
+                }
+                _ if card.kind == crate::domain_holds::Kind::Plan => {
+                    crate::domain_holds::denied(card.kind, &crate::domain_holds::plan_gone(domain, &card.session_id)?)
                 }
                 _ => json!({"held": false}),
             }
@@ -1672,6 +1675,41 @@ mod tests {
         assert_eq!(domain.state().unwrap().interactions.len(), before, "no card is put to the user");
     }
 
+    #[tokio::test]
+    async fn a_cancelled_tasks_plan_is_turned_down_and_never_left_to_other_plan_hooks() {
+        let fixture = Fixture::new();
+        let domain = fixture.open();
+        working_agent(&domain, "agent-a");
+        command(&domain, Actor::User { user_id: "u".into() }, "cancel", Command::CancelTask { task_id: "task-agent-a".into() });
+        let before = domain.state().unwrap().interactions.len();
+        let (mut client, server) = UnixStream::pair().unwrap();
+        send(&mut client, &json!({"node_hold": plan("agent-a")})).await;
+        let (result, reply) = tokio::join!(handle(server, &domain), reply(&mut client));
+        result.unwrap();
+        assert_eq!((reply["held"].as_bool(), reply["approved"].as_bool()), (Some(true), Some(false)), "{reply}");
+        assert!(reply["feedback"].as_str().unwrap().contains("was cancelled"), "{reply}");
+        assert_eq!(domain.state().unwrap().interactions.len(), before, "no card is put to the user");
+    }
+
+    #[tokio::test]
+    async fn a_plan_waiting_when_its_task_is_cancelled_is_turned_down() {
+        let fixture = Fixture::new();
+        let domain = fixture.open();
+        working_agent(&domain, "agent-a");
+        let (mut client, server) = UnixStream::pair().unwrap();
+        send(&mut client, &json!({"node_hold": plan("agent-a")})).await;
+        let driver = async {
+            let id = open_hold(&domain).await;
+            command(&domain, Actor::User { user_id: "u".into() }, "cancel", Command::CancelTask { task_id: "task-agent-a".into() });
+            (reply(&mut client).await, id)
+        };
+        let (result, (reply, id)) = tokio::join!(handle(server, &domain), driver);
+        result.unwrap();
+        assert!(domain.state().unwrap().interactions[&id].withdrawn);
+        assert_eq!((reply["held"].as_bool(), reply["approved"].as_bool()), (Some(true), Some(false)), "{reply}");
+        assert!(reply["feedback"].as_str().unwrap().contains("was cancelled"), "{reply}");
+    }
+
     #[test]
     fn a_held_prompt_carries_the_card_it_stands_for() {
         let fixture = Fixture::new();
@@ -2032,8 +2070,13 @@ mod tests {
             (plan("agent-a"), json!({"session_id": "agent-a", "event": "turn.complete", "answer": "", "aborted": true})),
             (other_plan, json!({"session_id": "agent-a", "event": "session.end"})),
         ] {
+            let is_plan = card["kind"] == "plan";
             let (body, id) = withdrawn_by(&domain, card, ended).await;
-            assert_eq!(body, json!({"held": false}));
+            if is_plan {
+                assert_eq!((body["held"].as_bool(), body["approved"].as_bool()), (Some(true), Some(false)), "{body}");
+            } else {
+                assert_eq!(body, json!({"held": false}));
+            }
             assert!(domain.state().unwrap().interactions[&id].withdrawn);
         }
 
