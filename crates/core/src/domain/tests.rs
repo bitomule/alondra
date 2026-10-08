@@ -2935,9 +2935,10 @@ fn variant_index(c: &Command) -> usize {
         Command::RecordVerdict { .. } => 54,
         Command::ObservePrMergeMethods { .. } => 55,
         Command::SetPriority { .. } => 56,
+        Command::DeclarePostMergeWork { .. } => 57,
     }
 }
-const COMMAND_KINDS: usize = 57;
+const COMMAND_KINDS: usize = 58;
 /// Every command kind naming the given ids. The flag marks commands that only
 /// create a fresh entity and therefore may succeed with an unknown id.
 fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
@@ -3051,6 +3052,7 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
         (Command::RecordVerdict { task_id: ids.task.into(), presentation_id: ids.interaction.into(), verdict: Verdict::Approved { summary: "ok".into(), open_issues: false, serious_findings: 0 } }, false),
         (Command::ObservePrMergeMethods { pr_id: ids.pr.into(), allowed_methods: vec![MergeMethod::Squash] }, false),
         (Command::SetPriority { task_id: ids.task.into(), priority: TaskPriority::High }, false),
+        (Command::DeclarePostMergeWork { task_id: ids.task.into(), reason: Some("release.sh".into()) }, false),
     ];
     let mut covered = vec![false; COMMAND_KINDS];
     for (command, _) in &list {
@@ -3470,6 +3472,35 @@ fn only_the_tasks_node_confirms_its_cleanup_and_only_while_it_closes() {
     assert_eq!(s.tasks[&"t".into()].wrap_up.cleaned_at, Some(s.revision));
     end_node(&mut s, "t");
     reject_unchanged(&mut s, agent(), Command::ConfirmCleanup { task_id: "t".into() }, "task_not_active");
+}
+fn post_merge_work(reason: Option<&str>) -> Command {
+    Command::DeclarePostMergeWork { task_id: "t".into(), reason: reason.map(str::to_owned) }
+}
+#[test]
+fn only_the_tasks_node_declares_work_after_the_merge_and_cleanup_done_ends_it() {
+    let mut s = fixture();
+    register_b(&mut s);
+    accept_text(&mut s);
+    reject_unchanged(&mut s, agent_b(), post_merge_work(Some("release.sh")), "not_assigned");
+    reject_unchanged(&mut s, user(), post_merge_work(Some("release.sh")), "not_assigned");
+    exec(&mut s, agent(), post_merge_work(Some("  release.sh publishes 0.2.54  "))).unwrap();
+    assert_eq!(s.tasks[&"t".into()].wrap_up.post_merge_work, Some(PostMergeWork { reason: "release.sh publishes 0.2.54".into(), declared_at: s.revision }));
+    exec(&mut s, agent(), post_merge_work(Some(" "))).unwrap();
+    assert_eq!(s.tasks[&"t".into()].wrap_up.post_merge_work, None, "a blank reason ends it");
+    exec(&mut s, agent(), post_merge_work(Some(&"x".repeat(500)))).unwrap();
+    assert!(s.tasks[&"t".into()].wrap_up.post_merge_work.as_ref().unwrap().reason.chars().count() <= rules::POST_MERGE_WORK_MAX);
+    exec(&mut s, agent(), Command::ConfirmCleanup { task_id: "t".into() }).unwrap();
+    assert_eq!(s.tasks[&"t".into()].wrap_up.post_merge_work, None);
+    end_node(&mut s, "t");
+    reject_unchanged(&mut s, agent(), post_merge_work(Some("release.sh")), "task_not_active");
+}
+#[test]
+fn closing_the_node_drops_the_work_it_declared_after_the_merge() {
+    let mut s = fixture();
+    accept_text(&mut s);
+    exec(&mut s, agent(), post_merge_work(Some("release.sh"))).unwrap();
+    end_node(&mut s, "t");
+    assert_eq!(s.tasks[&"t".into()].wrap_up.post_merge_work, None);
 }
 #[test]
 fn a_second_cleanup_confirmation_moves_its_revision() {

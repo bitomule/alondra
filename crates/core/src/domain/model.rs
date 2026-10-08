@@ -205,6 +205,13 @@ impl Verdict {
 fn is_zero_u32(n: &u32) -> bool {
     *n == 0
 }
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PostMergeWork {
+    pub reason: String,
+    /// The revision of the node's last declaration: saying it again, even with the same reason,
+    /// is the node answering that it still works on it.
+    pub declared_at: Revision,
+}
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WrapUp {
     /// The revision at which Alondra asked the node to clean up.
@@ -213,6 +220,9 @@ pub struct WrapUp {
     /// The revision of the node's last `cleanup_done`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cleaned_at: Option<Revision>,
+    /// What the node says it still does after the merge; its session stays open meanwhile.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub post_merge_work: Option<PostMergeWork>,
     /// The task was cancelled while it had a node, so Alondra closes that node.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub close_cancelled: bool,

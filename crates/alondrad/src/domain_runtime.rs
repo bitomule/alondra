@@ -376,6 +376,7 @@ fn command_task(state: &DomainState, command: &Command) -> Option<TaskId> {
         | Command::CancelTask { task_id }
         | Command::ReopenTask { task_id }
         | Command::ConfirmCleanup { task_id }
+        | Command::DeclarePostMergeWork { task_id, .. }
         | Command::RecordNodeEnd { task_id, .. }
         | Command::ArchiveTask { task_id, .. }
         | Command::ReleaseTask { task_id, .. } => Some(task_id.clone()),

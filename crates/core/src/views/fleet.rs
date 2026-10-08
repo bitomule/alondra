@@ -90,6 +90,11 @@ pub(super) fn node_state(agent: &AgentId, context: &RenderContext<'_>) -> super:
         (t!(lang, "Stalled", "Parado"), Tone::Critical)
     } else if key == Some("failed") {
         (t!(lang, "Failed", "Falló"), Tone::Critical)
+    } else if let Some(reason) = post_merge_work(agent, context) {
+        return super::Label {
+            text: tf!(lang, "Finishing after the merge: {reason}", "Terminando tras fusionar: {reason}", reason = reason),
+            tone: Tone::Info,
+        };
     } else if live.is_some_and(|node| node.working) {
         (t!(lang, "Working", "Trabajando"), Tone::Info)
     } else if key == Some("waiting_machine") {
@@ -110,6 +115,13 @@ pub(super) fn node_state(agent: &AgentId, context: &RenderContext<'_>) -> super:
         (t!(lang, "Idle", "Inactivo"), Tone::Neutral)
     };
     super::Label { text: text.into(), tone }
+}
+
+/// What the node says it still does after its task's PR merged.
+fn post_merge_work<'a>(agent: &AgentId, context: &RenderContext<'a>) -> Option<&'a str> {
+    context.domain.tasks.values()
+        .filter(|task| task.agent_id.as_ref() == Some(agent) && !task.state.terminal())
+        .find_map(|task| task.wrap_up.post_merge_work.as_ref().map(|work| work.reason.as_str()))
 }
 
 /// The title, clipped, of the task a node's waiting task is held behind.

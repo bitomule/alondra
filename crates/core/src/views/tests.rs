@@ -4076,6 +4076,26 @@ fn a_node_reads_merging_from_the_claim_of_its_merge_authorization_until_the_merg
 }
 
 #[test]
+fn a_node_working_after_the_merge_says_what_it_does_in_fleet() {
+    let mut state = fixture();
+    state.interactions.clear();
+    let task = state.tasks.keys().next().unwrap().clone();
+    let held = state.tasks.get_mut(&task).unwrap();
+    held.agent_id = Some("a-1".into());
+    held.state = TaskState::Closing;
+    let state_of = |state: &DomainState, lang| {
+        let view = render(state, &LiveSnapshot::default(), Client::Ios, lang, "fleet", "");
+        view.sections.iter().flat_map(|section| &section.items).find_map(|item| {
+            if let Item::Row(row) = item && row.id == "a-1" { Some(row.badges[0].text.clone()) } else { None }
+        }).unwrap()
+    };
+    assert_eq!(state_of(&state, Lang::En), "Done");
+    state.tasks.get_mut(&task).unwrap().wrap_up.post_merge_work = Some(crate::domain::PostMergeWork { reason: "release.sh publishes 0.2.54".into(), declared_at: 1 });
+    assert_eq!(state_of(&state, Lang::En), "Finishing after the merge: release.sh publishes 0.2.54");
+    assert_eq!(state_of(&state, Lang::Es), "Terminando tras fusionar: release.sh publishes 0.2.54");
+}
+
+#[test]
 fn a_push_shows_what_the_card_needs_over_why() {
     use crate::domain::{CardKind, Hold};
     let alert = |state: &DomainState| push_content(state, "i-1", Lang::En).unwrap().alert.unwrap();

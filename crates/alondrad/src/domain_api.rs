@@ -76,7 +76,7 @@ pub fn routes<H: DomainHost>() -> Router<Arc<H>> {
         ("/tasks/{id}/results", "POST"), ("/tasks/{id}/stack-readiness", "POST"),
         ("/tasks/{id}/completion", "POST"), ("/tasks/{id}/cancellation", "POST"),
         ("/tasks/{id}/reopening", "POST"),
-        ("/tasks/{id}/archival", "POST"), ("/tasks/{id}/cleanup", "POST"),
+        ("/tasks/{id}/archival", "POST"), ("/tasks/{id}/cleanup", "POST"), ("/tasks/{id}/post-merge-work", "PUT"),
         ("/interactions/{id}/answers", "POST"),
         ("/interactions/{id}/withdrawal", "POST"), ("/interactions/{id}/clarification", "POST"),
         ("/interactions/{id}/subject", "PUT"),
@@ -837,6 +837,7 @@ pub(crate) fn resource_envelope(
         ("POST", p) if p.starts_with("/tasks/") && p.ends_with("/reopening") => ("reopen_task", Some(("task_id", task?))),
         ("POST", p) if p.starts_with("/tasks/") && p.ends_with("/archival") => ("archive_task", Some(("task_id", task?))),
         ("POST", p) if p.starts_with("/tasks/") && p.ends_with("/cleanup") => ("confirm_cleanup", Some(("task_id", task?))),
+        ("PUT", p) if p.starts_with("/tasks/") && p.ends_with("/post-merge-work") => ("declare_post_merge_work", Some(("task_id", task?))),
         ("POST", p) if p.starts_with("/interactions/") && p.ends_with("/answers") => ("answer_question", Some(("interaction_id", interaction?))),
         ("POST", p) if p.starts_with("/interactions/") && p.ends_with("/withdrawal") => ("withdraw", Some(("interaction_id", interaction?))),
         ("POST", p) if p.starts_with("/interactions/") && p.ends_with("/clarification") => ("request_clarification", Some(("interaction_id", interaction?))),
@@ -901,7 +902,7 @@ pub(crate) fn is_resource_mutation_path(method: &str, path: &str) -> bool {
             | ["tasks", _, "completion"] | ["tasks", _, "cancellation"] | ["tasks", _, "reopening"] | ["tasks", _, "archival"] | ["tasks", _, "cleanup"]
             | ["interactions", _, "answers"] | ["interactions", _, "withdrawal"] | ["interactions", _, "clarification"]
             | ["interactions", _, "feedback"] | ["interactions", _, "acceptance"] | ["interactions", _, "merge-authorizations"]) => true,
-        ("PUT", ["tasks", _, "assignee"] | ["tasks", _, "dependencies"] | ["tasks", _, "relations"] | ["tasks", _, "priority"]
+        ("PUT", ["tasks", _, "assignee"] | ["tasks", _, "post-merge-work"] | ["tasks", _, "dependencies"] | ["tasks", _, "relations"] | ["tasks", _, "priority"]
             | ["tasks", _, "documents", _] | ["tasks", _, "documents", _, "review"]
             | ["interactions", _, "subject"] | ["interactions", _, "read-state"]) => true,
         ("PATCH", ["tasks", _]) => true,
@@ -1351,7 +1352,7 @@ mod tests {
             ("POST", "/requests"), ("POST", "/requests/r-1/tasks"),
             ("POST", "/questions"), ("POST", "/action-requests"), ("POST", "/messages"), ("POST", "/problems"),
             ("PATCH", "/tasks/t-1"), ("PUT", "/tasks/t-1/assignee"),
-            ("POST", "/tasks/t-1/results"), ("PUT", "/interactions/i-1/subject"), ("POST", "/tasks/t-1/cleanup"),
+            ("POST", "/tasks/t-1/results"), ("PUT", "/interactions/i-1/subject"), ("POST", "/tasks/t-1/cleanup"), ("PUT", "/tasks/t-1/post-merge-work"),
             ("POST", "/schedules"),
         ] {
             let schedule = crate::domain_schedule_api::approved_mutation_path(method, path, true);
@@ -1413,6 +1414,12 @@ mod tests {
         assert_eq!(adapted.command, Command::AssignTask { task_id: "task-1".into(), agent_id: "node-1".into(), model: None });
         let adapted = resource_envelope_from_path("POST", "/tasks/task-1/cleanup", meta.clone()).unwrap();
         assert_eq!(adapted.command, Command::ConfirmCleanup { task_id: "task-1".into() });
+        let mut declare = meta.clone();
+        declare["reason"] = json!("release.sh");
+        let adapted = resource_envelope_from_path("PUT", "/tasks/task-1/post-merge-work", declare).unwrap();
+        assert_eq!(adapted.command, Command::DeclarePostMergeWork { task_id: "task-1".into(), reason: Some("release.sh".into()) });
+        let adapted = resource_envelope_from_path("PUT", "/tasks/task-1/post-merge-work", meta.clone()).unwrap();
+        assert_eq!(adapted.command, Command::DeclarePostMergeWork { task_id: "task-1".into(), reason: None });
         let mut mismatched = meta.clone();
         mismatched["task_id"] = json!("other-task");
         mismatched["title"] = json!("Build");

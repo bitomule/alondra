@@ -45,6 +45,7 @@ impl Source {
 }
 /// The option of a Propose card that turns it into a Request.
 pub const REQUEST_TITLE_LIMIT: usize = 60;
+pub const POST_MERGE_WORK_MAX: usize = 120;
 pub const PROPOSAL_ACCEPTED: &str = "do_it";
 /// The notice that a task ended with a card still waiting for the user: this prefix and the card's id.
 pub const ENDED_UNANSWERED_PREFIX: &str = "ended-unanswered-";
@@ -216,7 +217,10 @@ deletes its worktree, delete what you generated for this task that git does not 
 would otherwise stay on this Mac: build outputs, caches and temporary files, including any outside \
 the worktree. Use the project's own tools for it (its clean commands, scripts or build targets). \
 Do not change, commit or push anything else. Then call cleanup_done with task_id {task}. If you do \
-not, Alondra closes the session after a while anyway.", task = task.0)
+not, Alondra closes the session after a while anyway. If something you started for this task is \
+still running after the merge (a deploy, a release script), call post_merge_work with task_id {task} \
+and what it is first: Alondra keeps the session open until you call it again without reason or call \
+cleanup_done.", task = task.0)
 }
 /// What a node that waited on other Tasks is told when they are done.
 pub fn dependencies_done_notice(titles: &[&str]) -> String {
@@ -1515,6 +1519,7 @@ impl DomainState {
             | Command::CancelTask { task_id }
             | Command::ReopenTask { task_id }
             | Command::ConfirmCleanup { task_id }
+            | Command::DeclarePostMergeWork { task_id, .. }
             | Command::RecordNodeEnd { task_id, .. }
             | Command::ArchiveTask { task_id, .. }
             | Command::HoldHook { task_id, .. }
@@ -3378,7 +3383,16 @@ impl DomainState {
                         "Task {} is not closing, so there is nothing to clean up yet: deliver your result with present_result first.", task_id.0));
                 }
                 let revision = self.revision + 1;
-                self.tasks.get_mut(task_id).unwrap().wrap_up.cleaned_at = Some(revision);
+                let wrap_up = &mut self.tasks.get_mut(task_id).unwrap().wrap_up;
+                wrap_up.cleaned_at = Some(revision);
+                wrap_up.post_merge_work = None;
+            }
+            Command::DeclarePostMergeWork { task_id, reason } => {
+                self.assigned(actor, task_id)?;
+                let declared_at = self.revision + 1;
+                let work = reason.as_deref().map(str::trim).filter(|reason| !reason.is_empty())
+                    .map(|reason| PostMergeWork { reason: clip(reason, POST_MERGE_WORK_MAX), declared_at });
+                self.tasks.get_mut(task_id).unwrap().wrap_up.post_merge_work = work;
             }
             Command::RecordNodeEnd { task_id, end, agent_id } => {
                 system(actor)?;
@@ -3402,7 +3416,9 @@ impl DomainState {
                     }
                     return fail("not_closing", &format!("Task {} is not closing", task_id.0));
                 }
-                self.tasks.get_mut(task_id).unwrap().wrap_up.node = Some(*end);
+                let wrap_up = &mut self.tasks.get_mut(task_id).unwrap().wrap_up;
+                wrap_up.node = Some(*end);
+                wrap_up.post_merge_work = None;
             }
             Command::ReleaseTask { task_id, reason } => {
                 system(actor)?;

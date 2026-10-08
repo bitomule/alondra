@@ -710,6 +710,24 @@ fn a_withdrawn_question_a_retitled_task_and_a_closed_requests_answer_survive_res
 }
 
 #[test]
+fn work_declared_after_the_merge_survives_a_restart_and_leaves_no_row_once_it_ends() {
+    let fixture = Fixture::new();
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    seeded(&mut store);
+    present(&mut store);
+    let accept = acceptance(&mut store);
+    store.execute_authenticated(&user(), &accept, None).unwrap();
+    let declare = |reason: Option<&str>| Command::DeclarePostMergeWork { task_id: "task-1".into(), reason: reason.map(str::to_owned) };
+    execute(&mut store, &agent(), "declare", declare(Some("release.sh publishes 0.2.54")));
+    drop(store);
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let work = store.load().unwrap().tasks[&"task-1".into()].wrap_up.post_merge_work.clone().unwrap();
+    assert_eq!(work.reason, "release.sh publishes 0.2.54");
+    execute(&mut store, &agent(), "finished", declare(None));
+    assert_eq!(count(&store, "task_post_merge_work"), 0);
+}
+
+#[test]
 fn a_requests_auto_merge_choice_survives_restart() {
     let fixture = Fixture::new();
     let mut store = DomainStore::open(&fixture.path()).unwrap();
@@ -1482,7 +1500,7 @@ fn a_tasks_wrap_up_survives_a_restart() {
     drop(store);
     let mut store = DomainStore::open(&fixture.path()).unwrap();
     let wrap_up = store.load().unwrap().tasks[&"task-1".into()].wrap_up.clone();
-    assert_eq!(wrap_up, WrapUp { asked_at: None, cleaned_at: None, close_cancelled: true, node: Some(NodeEnd::KeptByUser) });
+    assert_eq!(wrap_up, WrapUp { asked_at: None, cleaned_at: None, close_cancelled: true, node: Some(NodeEnd::KeptByUser), post_merge_work: None });
 
     execute(&mut store, &user(), "reopen", Command::ReopenTask { task_id: "task-1".into() });
     drop(store);

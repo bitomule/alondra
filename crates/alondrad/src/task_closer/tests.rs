@@ -130,7 +130,7 @@ impl Rig {
         domain.live.observe(&hook("Stop"));
         let node = Node::connect(&domain, SESSION);
         let sessions = FakeSessions::listing(&[SHORT]);
-        let rig = Self { _home: Home(home), domain, sessions, node, timing: Timing { wait, retry: RETRY, tick: TICK } };
+        let rig = Self { _home: Home(home), domain, sessions, node, timing: Timing::new(wait) };
         rig.deliver_and_accept();
         rig
     }
@@ -353,10 +353,10 @@ async fn the_wait_is_not_restarted_by_a_daemon_restart() {
     let rig = Rig::new(thirty_minutes());
     rig.pass(T0).await;
     let restarted = FakeSessions::listing(&[SHORT]);
-    pass(&rig.domain, restarted.as_ref(), &Timing { wait: thirty_minutes(), retry: RETRY, tick: TICK }, T0 + 20 * MINUTE).await.unwrap();
+    pass(&rig.domain, restarted.as_ref(), &Timing::new(thirty_minutes()), T0 + 20 * MINUTE).await.unwrap();
     assert_eq!(restarted.removals(), 0);
     assert_eq!(rig.closing().unwrap().since, T0);
-    pass(&rig.domain, restarted.as_ref(), &Timing { wait: thirty_minutes(), retry: RETRY, tick: TICK }, T0 + 30 * MINUTE).await.unwrap();
+    pass(&rig.domain, restarted.as_ref(), &Timing::new(thirty_minutes()), T0 + 30 * MINUTE).await.unwrap();
     assert_eq!(restarted.removals(), 1);
     rig.assert_done(NodeEnd::Closed);
 }
@@ -517,4 +517,142 @@ async fn when_closing_the_session_fails_inside_alondra_the_started_remove_is_for
     assert_eq!(rig.sessions.removals(), 1, "claude rm did run");
     let row = rig.closing().unwrap();
     assert_eq!(row.rm_started_at, None, "nothing is left saying a remove is in flight");
+}
+
+impl Rig {
+    fn declare_post_merge_work(&self, reason: Option<&str>) {
+        let id = format!("post-merge-{}", crate::auth::random_hex(6));
+        command(&self.domain, agent(), &id, Command::DeclarePostMergeWork { task_id: "t".into(), reason: reason.map(str::to_owned) });
+    }
+}
+
+#[tokio::test]
+async fn an_idle_node_that_declares_work_after_the_merge_is_not_closed_when_the_wait_runs_out() {
+    let rig = Rig::new(thirty_minutes());
+    rig.pass(T0).await;
+    rig.declare_post_merge_work(Some("release.sh publishes 0.2.54"));
+    rig.pass(T0 + 30 * MINUTE).await;
+    rig.pass(T0 + 4 * 60 * MINUTE).await;
+    assert_eq!(rig.sessions.removals(), 0);
+    assert_eq!(rig.task().state, TaskState::Closing);
+    assert!(rig.cards().is_empty());
+}
+
+#[tokio::test]
+async fn the_wait_runs_again_in_full_once_the_node_stops_declaring_its_work_after_the_merge() {
+    let rig = Rig::new(thirty_minutes());
+    rig.declare_post_merge_work(Some("release.sh publishes 0.2.54"));
+    rig.pass(T0).await;
+    rig.pass(T0 + 60 * MINUTE).await;
+    rig.declare_post_merge_work(None);
+    rig.pass(T0 + 61 * MINUTE).await;
+    rig.pass(T0 + 89 * MINUTE).await;
+    assert_eq!(rig.sessions.removals(), 0);
+    rig.pass(T0 + 91 * MINUTE).await;
+    assert_eq!(rig.sessions.removals(), 1);
+    rig.assert_done(NodeEnd::Closed);
+}
+
+#[tokio::test]
+async fn a_busy_node_working_after_the_merge_counts_no_failure() {
+    let rig = Rig::new(thirty_minutes());
+    rig.declare_post_merge_work(Some("deploy, brew and release.sh"));
+    rig.domain.live.observe(&hook("UserPromptSubmit"));
+    for minutes in [0, 31, 62, 93, 124, 155] {
+        rig.pass(T0 + minutes * MINUTE).await;
+    }
+    assert_eq!(rig.sessions.removals(), 0);
+    assert_eq!(rig.closing().unwrap().failures, 0);
+    assert!(rig.cards().is_empty());
+}
+
+#[tokio::test]
+async fn cleanup_done_ends_the_work_after_the_merge_and_closes_the_node() {
+    let rig = Rig::new(thirty_minutes());
+    rig.declare_post_merge_work(Some("release.sh publishes 0.2.54"));
+    rig.pass(T0).await;
+    rig.confirm();
+    assert_eq!(rig.task().wrap_up.post_merge_work, None);
+    rig.pass(T0 + MINUTE).await;
+    rig.assert_done(NodeEnd::Closed);
+}
+
+impl Rig {
+    fn post_merge_cards(&self) -> Vec<alondra_core::domain::Interaction> {
+        self.domain.state().unwrap().interactions.values()
+            .filter(|i| i.id.0.starts_with("problem-post-merge-") && !i.withdrawn
+                && matches!(i.payload, InteractionPayload::Question { answer: None, .. }))
+            .cloned().collect()
+    }
+
+    fn answer_post_merge_card(&self, option: &str) {
+        let card = self.post_merge_cards()[0].id.clone();
+        command(&self.domain, user(), &format!("answer-{option}-{}", crate::auth::random_hex(4)), Command::AnswerQuestion {
+            attachments: vec![], interaction_id: card, option_id: option.into(), inputs: Default::default(),
+        });
+    }
+
+    fn asked_whether_it_still_runs(&self) -> usize {
+        self.told().iter().filter(|text| text.contains("still running after the merge")).count()
+    }
+}
+
+const HOUR: i64 = 60 * MINUTE;
+
+#[tokio::test]
+async fn after_three_hours_alondra_asks_the_node_and_an_idle_node_that_does_not_answer_goes_to_the_user() {
+    let rig = Rig::new(thirty_minutes());
+    rig.declare_post_merge_work(Some("release.sh publishes 0.2.54"));
+    rig.pass(T0).await;
+    rig.pass(T0 + 3 * HOUR - MINUTE).await;
+    assert_eq!(rig.asked_whether_it_still_runs(), 0);
+    rig.pass(T0 + 3 * HOUR).await;
+    assert_eq!(rig.asked_whether_it_still_runs(), 1);
+    rig.pass(T0 + 3 * HOUR + 29 * MINUTE).await;
+    assert!(rig.post_merge_cards().is_empty());
+    rig.pass(T0 + 3 * HOUR + 30 * MINUTE).await;
+    let cards = rig.post_merge_cards();
+    assert_eq!(cards.len(), 1);
+    let card = serde_json::to_string(&cards[0]).unwrap();
+    assert!(card.contains("“Result”") && card.contains("3 h 30 min") && card.contains("release.sh publishes 0.2.54")
+        && card.contains("Close the node") && card.contains("Leave it"), "{card}");
+    assert_eq!(rig.sessions.removals(), 0, "nothing is closed without the user");
+    rig.pass(T0 + 5 * HOUR).await;
+    assert_eq!((rig.sessions.removals(), rig.post_merge_cards().len(), rig.asked_whether_it_still_runs()), (0, 1, 1));
+    rig.answer_post_merge_card("close");
+    rig.pass(T0 + 5 * HOUR + MINUTE).await;
+    assert_eq!(rig.sessions.removals(), 1);
+    rig.assert_done(NodeEnd::Closed);
+}
+
+#[tokio::test]
+async fn a_node_that_declares_again_or_is_working_never_reaches_the_user_and_leave_it_starts_another_round() {
+    let rig = Rig::new(thirty_minutes());
+    rig.declare_post_merge_work(Some("release.sh publishes 0.2.54"));
+    rig.pass(T0).await;
+    rig.pass(T0 + 3 * HOUR).await;
+    rig.declare_post_merge_work(Some("release.sh publishes 0.2.54"));
+    rig.pass(T0 + 4 * HOUR).await;
+    assert!(rig.post_merge_cards().is_empty(), "declaring again is the answer");
+    rig.pass(T0 + 7 * HOUR - MINUTE).await;
+    assert_eq!(rig.asked_whether_it_still_runs(), 1, "the next round counts from the new declaration");
+    rig.pass(T0 + 7 * HOUR).await;
+    assert_eq!(rig.asked_whether_it_still_runs(), 2);
+    rig.domain.live.observe(&hook("UserPromptSubmit"));
+    rig.pass(T0 + 8 * HOUR).await;
+    assert!(rig.post_merge_cards().is_empty(), "a working node is not reported");
+    rig.domain.live.observe(&hook("Stop"));
+    rig.pass(T0 + 8 * HOUR + MINUTE).await;
+    assert_eq!(rig.post_merge_cards().len(), 1);
+    rig.answer_post_merge_card("leave");
+    rig.pass(T0 + 8 * HOUR + 2 * MINUTE).await;
+    assert_eq!(rig.sessions.removals(), 0);
+    assert!(rig.post_merge_cards().is_empty());
+    rig.pass(T0 + 11 * HOUR + 2 * MINUTE).await;
+    assert_eq!(rig.asked_whether_it_still_runs(), 3);
+    rig.declare_post_merge_work(None);
+    rig.pass(T0 + 11 * HOUR + 3 * MINUTE).await;
+    assert_eq!(rig.sessions.removals(), 0);
+    rig.pass(T0 + 11 * HOUR + 34 * MINUTE).await;
+    assert_eq!(rig.sessions.removals(), 1, "once the work ends the usual wait closes it");
 }

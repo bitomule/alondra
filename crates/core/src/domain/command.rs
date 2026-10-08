@@ -355,6 +355,13 @@ pub enum Command {
     ConfirmCleanup {
         task_id: TaskId,
     },
+    /// The node says it is still working on something after its PR merged (a deploy, a release);
+    /// Alondra does not close its session while it says so. No reason ends it.
+    DeclarePostMergeWork {
+        task_id: TaskId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+    },
     /// Alondra records what became of a Task's node; a closing Task is done with it.
     RecordNodeEnd {
         task_id: TaskId,

@@ -100,6 +100,14 @@ Pick the tool by what you need:
   nothing else. Alondra then closes this session and its worktree; if you do not answer, it
   closes it after a while anyway. If it tells you something stops it from closing the session,
   fix it and call `cleanup_done` again.
+- `post_merge_work`: something you started for the task still runs after its PR merged (a deploy,
+  a Homebrew publish, a release script), above all in the background, where you look idle. Call
+  it with `task_id` and a one-line `reason` as soon as it starts: the user sees the reason in
+  Fleet and Alondra does not close the session while you say so. When it ends, call it again
+  without `reason` (or call `cleanup_done`): the wait to close the session then starts over.
+  After 3 hours Alondra asks you whether it still runs: call it again with the reason if it
+  does. If you are not working and do not answer within 30 minutes, the user decides whether to
+  close the session.
 - Do not end your turn while your task is open with no result and no question: Alondra sends you
   back to work with the reason, and after three times it tells the user you cannot deliver.
 - `create_document` / `revise_document`: a file the user reviews. Copy it into Alondra's files

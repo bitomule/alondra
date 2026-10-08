@@ -350,6 +350,15 @@ fn save_wrap_up(c: &Connection, t: &Task) -> Result<()> {
          close_cancelled=excluded.close_cancelled,node_end=excluded.node_end",
         params![t.id.0, w.asked_at.map(|r| r as i64), w.cleaned_at.map(|r| r as i64), w.close_cancelled as i64, node_end],
     )?;
+    match &w.post_merge_work {
+        Some(work) => exec(
+            c,
+            "INSERT INTO task_post_merge_work(task_id,reason,declared_at) VALUES(?1,?2,?3) \
+             ON CONFLICT(task_id) DO UPDATE SET reason=excluded.reason,declared_at=excluded.declared_at",
+            params![t.id.0, work.reason, work.declared_at as i64],
+        )?,
+        None => exec(c, "DELETE FROM task_post_merge_work WHERE task_id=?1", [&t.id.0])?,
+    };
     Ok(())
 }
 /// Dependencies and document links; stacks follow the interactions they reference.
@@ -1040,8 +1049,17 @@ pub(super) fn load(c: &Connection) -> Result<DomainState> {
             cleaned_at: row.get::<_, Option<i64>>(2)?.map(|r| r as u64),
             close_cancelled: row.get::<_, i64>(3)? != 0,
             node: node.map(|n| decode(Value::String(n))).transpose()?,
+            post_merge_work: None,
         };
         state.tasks.get_mut(&TaskId::from(id)).context("wrap-up task missing")?.wrap_up = wrap_up;
+    }
+    drop(stored);
+    let mut post_merge = c.prepare("SELECT task_id, reason, declared_at FROM task_post_merge_work")?;
+    let mut stored = post_merge.query([])?;
+    while let Some(row) = stored.next()? {
+        let id: String = row.get(0)?;
+        let work = PostMergeWork { reason: row.get(1)?, declared_at: row.get::<_, i64>(2)? as u64 };
+        state.tasks.get_mut(&TaskId::from(id)).context("post-merge work task missing")?.wrap_up.post_merge_work = Some(work);
     }
     drop(stored);
     let mut priorities = c.prepare("SELECT task_id, priority FROM task_priorities")?;
