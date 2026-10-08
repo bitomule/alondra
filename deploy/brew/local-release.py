@@ -20,6 +20,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 IDENTITY = '137E48D7AF54AAA3DFC56B9820DACC897C20AF15'
 TEAM = '658YBSK6MG'
 LOW_FREE = 8 * 1024**3
+REHEARSAL = 'upgrade-rehearsal.json'
 
 
 def run(*args, capture=False, env=None):
@@ -88,11 +89,29 @@ def manifest(ver, source, output):
                          for target in release.TARGETS}}
 
 
+def rehearse_upgrade(ver, output):
+    """The previous release must replace itself with these bytes on copies of this Mac's HOME."""
+    archive = output / f'alondra-{ver}-{release.TARGETS[0]}.tar.gz'
+    run(sys.executable, ROOT / 'deploy/brew/upgrade-rehearsal.py', '--new', archive, '--output', output / REHEARSAL)
+
+
+def verify_rehearsal(ver, output):
+    path = output / REHEARSAL
+    if not path.is_file():
+        raise RuntimeError('No upgrade rehearsal passed for these artifacts; prepare them again')
+    saved = json.loads(path.read_text())
+    archive = f'alondra-{ver}-{release.TARGETS[0]}.tar.gz'
+    rehearsed = saved.get('archive') or {}
+    if saved.get('to') != ver or rehearsed.get('name') != archive or rehearsed.get('sha256') != release.sha(output / archive):
+        raise RuntimeError('The upgrade rehearsal ran on other bytes than the prepared archive; prepare them again')
+
+
 def verify_prepared(ver, source, output):
     saved = json.loads((output / 'manifest.json').read_text())
     if saved != manifest(ver, source, output):
         raise RuntimeError('Prepared manifest/source/version/checksums differ; never rebuild a published version')
     release.render(ver, output)  # Same strict archive allowlist as the publisher.
+    verify_rehearsal(ver, output)
 
 
 def smoke(ver, target, archive):
@@ -217,6 +236,7 @@ def prepare(ver, source, output, target_dir, *, ephemeral_build_cache=False):
                     sign(payload / name, f'com.bitomule.{name}')
                 run('bash', 'deploy/brew/package-cli.sh', ver, target, payload / 'alondra', payload / 'alondrad', output)
             smoke(ver, target, output / f'alondra-{ver}-{target}.tar.gz')
+    rehearse_upgrade(ver, output)
     (output / 'manifest.json').write_text(json.dumps(manifest(ver, source, output), indent=2) + '\n')
     verify_prepared(ver, source, output)
     print(f'Prepared immutable release artifacts: {output}')

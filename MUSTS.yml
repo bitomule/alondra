@@ -56,6 +56,7 @@ checks:
         - //apple:update_keeps_session_test
         - //:plugin_mod_test
         - //deploy/brew:plugin_payload_test
+        - //deploy/brew:upgrade_rehearsal_test
         - //deploy/apple:prepare_test
         - //deploy/apple:increment_version_test
         - //deploy/apple:version_guard_test

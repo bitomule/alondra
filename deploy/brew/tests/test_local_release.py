@@ -28,6 +28,16 @@ def archives(directory, ver='0.1.2'):
                 output.addfile(item, io.BytesIO(name.encode()))
 
 
+def rehearsed(directory, ver='0.1.2'):
+    archive = directory / f'alondra-{ver}-{l.release.TARGETS[0]}.tar.gz'
+    record = {'schema': 1, 'from': '0.1.1', 'to': ver, 'archive': {'name': archive.name, 'sha256': l.release.sha(archive)}}
+    (directory / l.REHEARSAL).write_text(json.dumps(record))
+
+
+def rehearsal_call(args):
+    return args[0] == sys.executable and str(args[1]).endswith('upgrade-rehearsal.py')
+
+
 class LocalReleaseTests(unittest.TestCase):
     def test_workspace_crate_versions_match_lockfile(self):
         workspace = tomllib.loads((REPO_ROOT / 'Cargo.toml').read_text())['workspace']
@@ -104,6 +114,7 @@ class LocalReleaseTests(unittest.TestCase):
         output = self.root / 'artifacts'
         output.mkdir()
         archives(output)
+        rehearsed(output)
         record = l.manifest('0.1.2', 'source', output)
         (output / 'manifest.json').write_text(json.dumps(record))
         l.verify_prepared('0.1.2', 'source', output)
@@ -168,6 +179,7 @@ class LocalReleaseTests(unittest.TestCase):
         output = self.root / 'artifacts'
         output.mkdir()
         archives(output)
+        rehearsed(output)
         (output / 'manifest.json').write_text(json.dumps(l.manifest('0.1.2', 'source', output)))
         with patch.dict(os.environ, {'ALONDRA_RELEASE_DIR': str(self.root / 'artifacts'), 'CARGO_TARGET_DIR': str(self.root / 'target')}), \
              patch.object(sys, 'argv', ['local-release.py', '0.1.2', '--retry-publish']), \
@@ -182,6 +194,7 @@ class LocalReleaseTests(unittest.TestCase):
         output = self.root / 'artifacts'
         output.mkdir()
         archives(output)
+        rehearsed(output)
         (output / 'manifest.json').write_text(json.dumps(l.manifest('0.1.2', 'source', output)))
         before = {p.name: p.read_bytes() for p in output.iterdir()}
         with patch.object(l, 'preflight', return_value='source'), patch.object(l, 'tag_state', return_value=(False, False)), \
@@ -249,6 +262,7 @@ class LocalReleaseTests(unittest.TestCase):
                     directory.mkdir(parents=True)
                     for name in ('alondra', 'alondrad'): (directory / name).touch()
             elif args[0] == 'security': return f'1) {l.IDENTITY} "local identity"'
+            elif rehearsal_call(args): rehearsed(output)
             elif args[0] == 'bash': archives(output)
             elif args[0] == '/usr/bin/arch': return 'x86_64'
             return ''
@@ -303,6 +317,12 @@ class LocalReleaseTests(unittest.TestCase):
                     directory.mkdir(parents=True)
                     for name in ('alondra', 'alondrad'):
                         (directory / name).write_bytes(f'{arch}:{name}'.encode())
+            elif rehearsal_call(args):
+                self.assertFalse((output / 'manifest.json').exists(), 'the rehearsal runs before the manifest exists')
+                self.assertEqual(args[2:], ('--new', output / 'alondra-0.1.2-aarch64-apple-darwin.tar.gz', '--output', output / l.REHEARSAL))
+                if failure == 'rehearsal':
+                    raise subprocess.CalledProcessError(1, args)
+                rehearsed(output)
             elif args[0] == 'security':
                 return f'1) {l.IDENTITY} "local identity"'
             elif args[0] == '/usr/bin/arch':
@@ -364,6 +384,38 @@ class LocalReleaseTests(unittest.TestCase):
 
     def test_failed_ephemeral_smoke_keeps_original_archive_without_manifest(self):
         self.check_ephemeral_failure('smoke')
+
+    def test_a_failed_upgrade_rehearsal_leaves_nothing_publishable(self):
+        output, target, *_ = self.ephemeral_fixture(failure='rehearsal')
+        with self.assertRaises(subprocess.CalledProcessError):
+            l.prepare('0.1.2', 'source', output, target, ephemeral_build_cache=True)
+        self.assertFalse((output / 'manifest.json').exists())
+        self.assertFalse((output / l.REHEARSAL).exists())
+
+    def test_publishing_requires_a_rehearsal_of_the_exact_prepared_bytes(self):
+        output = self.root / 'artifacts'
+        output.mkdir()
+        archives(output)
+        (output / 'manifest.json').write_text(json.dumps(l.manifest('0.1.2', 'source', output)))
+        with patch.object(l, 'run') as runner, self.assertRaisesRegex(RuntimeError, 'No upgrade rehearsal passed'):
+            l.publish('0.1.2', 'source', output)
+        runner.assert_not_called()
+        rehearsed(output)
+        archive = next(output.glob('*.tar.gz'))
+        record = json.loads((output / l.REHEARSAL).read_text())
+        record['archive']['sha256'] = '0' * 64
+        (output / l.REHEARSAL).write_text(json.dumps(record))
+        with self.assertRaisesRegex(RuntimeError, 'other bytes'):
+            l.verify_prepared('0.1.2', 'source', output)
+        rehearsed(output)
+        record = json.loads((output / l.REHEARSAL).read_text())
+        record['to'] = '0.1.1'
+        (output / l.REHEARSAL).write_text(json.dumps(record))
+        with self.assertRaisesRegex(RuntimeError, 'other bytes'):
+            l.verify_prepared('0.1.2', 'source', output)
+        rehearsed(output)
+        l.verify_prepared('0.1.2', 'source', output)
+        self.assertTrue(archive.exists())
 
     def check_ephemeral_failure(self, phase):
         output, target, sentinel, caches, stages, originals, _ = self.ephemeral_fixture(failure=phase)

@@ -12,7 +12,7 @@ BETA_GROUP := Internal Pilot,Private Pilot
 APPLE_VERSION = $(shell sed -n 's/^ *version = "\(.*\)".*/\1/p' tools/shared.bzl)
 APPLE_BUILD = $(shell sed -n 's/^ *build_number = "\(.*\)".*/\1/p' tools/shared.bzl)
 
-.PHONY: version-guard increment-version build-release snapshots-record snapshots-verify tui-shots mac-snapshots-record mac-snapshots-verify no-holds build test ablation install run tui setup launchd unlaunchd restart status doctor cargo-test mac device device-console e2e-sandbox e2e-sandbox-stop e2e-sandbox-logs soak load-bench tasks-screen rehearse-cutover cutover-live
+.PHONY: version-guard increment-version build-release snapshots-record snapshots-verify tui-shots mac-snapshots-record mac-snapshots-verify no-holds build test ablation install run tui setup launchd unlaunchd restart status doctor cargo-test mac device device-console e2e-sandbox e2e-sandbox-stop e2e-sandbox-logs soak load-bench tasks-screen rehearse-cutover upgrade-rehearsal cutover-live
 
 build:
 	bazelisk build //crates/... //apple:AlondraMac
@@ -160,6 +160,13 @@ e2e-sandbox-logs:
 rehearse-cutover:
 	bazelisk build //crates/alondrad
 	tools/rehearse-cutover.sh $$(bazelisk cquery --output=files //crates/alondrad 2>/dev/null)
+
+# The previous published release must restart into this build on copies of the live HOME
+# (deploy/brew/upgrade-rehearsal.py; the release runs it on the signed archive). Bazel stamps 0.1.0, so the build
+# replaces the newest published release unless FROM=version names another.
+upgrade-rehearsal:
+	bazelisk build //crates/alondrad
+	python3 deploy/brew/upgrade-rehearsal.py --new $$(bazelisk cquery --output=files //crates/alondrad 2>/dev/null) --from $(or $(FROM),latest)
 
 # The one-command cutover of the live HOME to domain v2 (docs/domain-v2-live-cutover.md).
 # BACKUP_ROOT, LEGACY_DAEMON and LEGACY_CLI override the defaults (tools/cutover-live.sh).

@@ -1,4 +1,16 @@
 sh_test(
+    name = "upgrade_rehearsal_test",
+    srcs = ["tests/test_upgrade_rehearsal.py"],
+    data = [
+        "release.py",
+        "upgrade-rehearsal.py",
+        "//launchd:alondra.plist.in",
+    ],
+    size = "small",
+    tags = ["local"],
+)
+
+sh_test(
     name = "plugin_payload_test",
     srcs = ["plugin_payload_test.py"],
     args = [
