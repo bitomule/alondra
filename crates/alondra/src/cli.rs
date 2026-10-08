@@ -218,17 +218,21 @@ fn resolved(client: &Client, name: &str) -> Result<(Option<String>, Option<Strin
 }
 
 /// A Task id sends to the Task's agent, about that Task; anything else names the agent. A
-/// message to the orchestrator is maintenance unless `reply` asks for an answer.
+/// message to the orchestrator, however it is named ("orquestador" resolves to it too), is
+/// maintenance unless `reply` asks for an answer.
 pub fn send(name: &str, text: &str, reply: bool) -> Result<()> {
     let client = Client::for_user(Duration::from_secs(60));
-    let to_orchestrator = name.eq_ignore_ascii_case("orchestrator");
-    let view = if name.starts_with("t-") {
-        client.views(&format!("task:{name}"), None).with_context(|| trf!("No task {name}", "No hay ninguna tarea {name}"))?
-    } else if to_orchestrator {
-        client.views("node:orchestrator", None)?
+    let agent = if name.starts_with("t-") {
+        None
+    } else if name.eq_ignore_ascii_case("orchestrator") {
+        Some("orchestrator".to_owned())
     } else {
-        let agent = resolved(&client, name)?.0.context("Agent not found")?;
-        client.views(&format!("node:{agent}"), None)?
+        Some(resolved(&client, name)?.0.context("Agent not found")?)
+    };
+    let to_orchestrator = agent.as_deref() == Some("orchestrator");
+    let view = match &agent {
+        None => client.views(&format!("task:{name}"), None).with_context(|| trf!("No task {name}", "No hay ninguna tarea {name}"))?,
+        Some(agent) => client.views(&format!("node:{agent}"), None)?,
     };
     let action = view_action(&view, |a| a.id.starts_with("msg:" )).with_context(|| if name.starts_with("t-") {
         trf!("{name} has no node right now, so nothing was sent. Ask the orchestrator to start one for it.",

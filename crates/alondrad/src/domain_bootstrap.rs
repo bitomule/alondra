@@ -20,7 +20,7 @@ pub(crate) struct DomainDaemon {
     home: PathBuf,
     gauges: crate::machine::Gauges,
     /// The one approval list the guard verifies against and the pairing routes extend.
-    auth: Arc<crate::auth::Auth>,
+    pub(crate) auth: Arc<crate::auth::Auth>,
     client: Arc<crate::client_routes::Client>,
     service: std::sync::OnceLock<Arc<crate::service::Service>>,
     direct: std::sync::OnceLock<Arc<crate::direct::Direct>>,

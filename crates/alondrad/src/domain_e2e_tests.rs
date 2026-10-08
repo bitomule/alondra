@@ -32,10 +32,8 @@ impl Daemon {
         let domain = state.domain();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
-        let app = router(state).layer(axum::middleware::from_fn_with_state(
-            Arc::new(crate::auth::Auth::open(home).unwrap()),
-            crate::auth::guard,
-        ));
+        let auth = state.auth.clone();
+        let app = router(state).layer(axum::middleware::from_fn_with_state(auth, crate::auth::guard));
         let server = tokio::spawn(async move {
             axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await.unwrap();
         });
@@ -401,6 +399,53 @@ async fn a_message_after_a_daemon_restart_reaches_the_reconnected_node_under_an_
     assert_ne!(line["id"].as_str().unwrap(), first_id, "the mod would take the reused id for a resend and never submit it");
     helper.kill().unwrap();
     helper.wait().unwrap();
+    daemon.stop().await;
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// What Claude runs for David: the real CLI, inside a Claude Code session, naming the
+/// orchestrator the way the Spanish Fleet screen shows it.
+fn send_as_claude(home: &Path, port: u16, name: &str, text: &str) -> std::process::Output {
+    Process::new(alondra_binary())
+        .args(["send", name, text])
+        .env("ALONDRA_HOME", home)
+        .env("ALONDRA_PORT", port.to_string())
+        .env("ALONDRA_LANG", "es")
+        .env("CLAUDECODE", "1")
+        .env_remove("ALONDRA_ORCHESTRATOR_EXECUTION")
+        .env_remove("ALONDRA_SESSION_ID")
+        .env_remove("CLAUDE_CODE_SESSION_ID")
+        .output().unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn what_claude_sends_the_orchestrator_is_maintenance_and_its_answer_is_no_card() {
+    let root = std::env::temp_dir().join(format!("alondra-v2-claude-send-{}", crate::auth::random_hex(8)));
+    let home = root.join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    let daemon = Daemon::start(&home).await;
+    for (name, text) in [("orquestador", "Sube t-cards a prioridad Alta"), ("orchestrator", "Lanza dos nodos más")] {
+        let sent = send_as_claude(&home, daemon.port, name, text);
+        assert!(sent.status.success(), "{}", String::from_utf8_lossy(&sent.stderr));
+        let state = daemon.domain.state().unwrap();
+        let request = state.requests.values().find(|r| r.body.ends_with(text))
+            .unwrap_or_else(|| panic!("{name}: no request ({})", String::from_utf8_lossy(&sent.stdout)));
+        assert!(request.body.contains("From Claude, for "), "{}", request.body);
+        assert!(request.maintenance, "{name}: a message from Claude to the orchestrator is maintenance");
+        let id = request.id.clone();
+        daemon.execute(Actor::Orchestrator { generation: state.orchestrator_generation }, &format!("close-{name}"), Command::CloseRequest {
+            request_id: id.clone(), answer: Some("Hecho".into()), withdrawn: false, title: None,
+        });
+        let state = daemon.domain.state().unwrap();
+        assert!(state.requests[&id].closed);
+        assert!(!state.interactions.values().any(|i| i.scope == Scope::Orchestrator { request_id: Some(id.clone()) }),
+            "{name}: the answer to maintenance is no card for David");
+    }
+    let requests = daemon.domain.state().unwrap().requests.len();
+    let refused = send_as_claude(&home, daemon.port, "orquestadr", "Para el nodo de release");
+    assert!(!refused.status.success(), "a name no node has is refused, never sent to the orchestrator");
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("Ningún nodo se llama orquestadr"), "{}", String::from_utf8_lossy(&refused.stderr));
+    assert_eq!(daemon.domain.state().unwrap().requests.len(), requests, "nothing reached the orchestrator");
     daemon.stop().await;
     std::fs::remove_dir_all(root).unwrap();
 }
