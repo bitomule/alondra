@@ -212,6 +212,48 @@ class BenchmarkTests(unittest.TestCase):
                 bench.main()
             self.assertEqual(json.loads(output.getvalue())["view_failures"], [])
 
+    def test_partial_burner_creation_cleans_every_owned_process(self):
+        class Burner:
+            exited = False
+            def poll(self): return 0 if self.exited else None
+            def terminate(self): self.exited = True
+            def kill(self): self.exited = True
+            def wait(self, timeout=None): return 0
+        burner = Burner()
+        calls = 0
+        with self.run_fixture() as (processes, _):
+            outer_spawn = bench.subprocess.Popen
+            def spawn(argv, **kwargs):
+                nonlocal calls
+                if argv[0] == "fixture-daemon": return outer_spawn(argv, **kwargs)
+                calls += 1
+                if calls == 1: return burner
+                raise OSError("synthetic process exhaustion")
+            with patch.object(sys, "argv", list(sys.argv) + ["--burn", "2"]), \
+                 patch.object(bench.subprocess, "Popen", side_effect=spawn):
+                with self.assertRaisesRegex(OSError, "synthetic process exhaustion"):
+                    bench.main()
+        self.assertTrue(burner.exited)
+        self.assertIsNotNone(processes[0].poll())
+        self.assertFalse(Path(processes[0].env["HOME"]).exists())
+
+    def test_a_worker_start_failure_is_not_masked_by_joining_unstarted_workers(self):
+        created = []
+        class StartFailure(IdleThread):
+            def __init__(self, **kwargs):
+                self.started = False
+                created.append(self)
+            def start(self):
+                if created.index(self) == 1: raise RuntimeError("synthetic start failure")
+                self.started = True
+            def join(self, timeout=None):
+                if not self.started: raise RuntimeError("cannot join thread before it is started")
+        with self.run_fixture() as (processes, _), patch.object(bench.threading, "Thread", StartFailure):
+            with self.assertRaisesRegex(RuntimeError, "synthetic start failure"):
+                bench.main()
+        self.assertIsNotNone(processes[0].poll())
+        self.assertFalse(Path(processes[0].env["HOME"]).exists())
+
     def test_startup_failure_terminates_only_the_owned_daemon(self):
         with self.run_fixture(initial_status=False) as (processes, _):
             with self.assertRaises(SystemExit):

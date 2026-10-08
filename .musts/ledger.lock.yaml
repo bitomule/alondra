@@ -1365,3 +1365,4 @@ satisfied:
 - {check: "root/bazel-test", scope_hash: "fef92f8b781dc2454efc6b8008f08462fa72aab459d0801af1f869441ead91d5"}
 - {check: "root/bazel-test", scope_hash: "ffe1b9e95435c0669a564d06de1f1df59a2b6e1dfc876ab6eaf2c083e8f1a43d"}
 - {check: "root/load-bench-oracles", scope_hash: "204df4ba01a7225022d7488cb41523113ba95769a6f817f8527e8a020c30b6cf"}
+- {check: "root/load-bench-oracles", scope_hash: "88ecb70ba94ec9b6c51f41cc07c3f1a94a13a00962dc68929243612a7ef675cf"}

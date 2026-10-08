@@ -211,6 +211,7 @@ def main():
     log = None
     stop = threading.Event()
     workers = []
+    started_workers = []
     burners = []
     try:
         seed_env = dict(os.environ, HOME=home, ALONDRA_LOAD_BENCH_DB=os.path.join(home, "domain.db"),
@@ -263,7 +264,9 @@ def main():
         workers.append(threading.Thread(target=prober, daemon=True))
         for w in workers:
             w.start()
-        burners = [subprocess.Popen(["/usr/bin/yes"], stdout=subprocess.DEVNULL) for _ in range(args.burn)]
+            started_workers.append(w)
+        for _ in range(args.burn):
+            burners.append(subprocess.Popen(["/usr/bin/yes"], stdout=subprocess.DEVNULL))
         time.sleep(5)
         with lock:
             for s in samples.values():
@@ -280,12 +283,12 @@ def main():
         for b in burners:
             b.kill()
             b.wait()
-        for w in workers:
+        for w in started_workers:
             w.join(timeout=35)
         daemon.terminate()
         daemon.wait(timeout=30)
         result = {"schema": 1, "probe_endpoint": "/daemon", "label": args.label, "nodes": args.nodes, "burn": args.burn, "seconds": round(wall),
-                  "unfinished_workers": sum(w.is_alive() for w in workers),
+                  "unfinished_workers": sum(w.is_alive() for w in started_workers),
                   "cpu_cores": round(cpu / wall, 2), "load_avg": round(os.getloadavg()[0], 1)}
         result.update({k: summary(v) for k, v in samples.items()})
         result["view_failures"] = sorted(set(FAILURES))[:5]
@@ -295,14 +298,18 @@ def main():
             raise SystemExit(1)
     finally:
         stop.set()
-        for burner in burners:
-            stop_process(burner)
-        stop_process(daemon)
-        for worker in workers:
-            worker.join(timeout=35)
-        if log is not None:
-            log.close()
-        shutil.rmtree(home, ignore_errors=True)
+        try:
+            try:
+                for burner in burners:
+                    stop_process(burner)
+            finally:
+                stop_process(daemon)
+            for worker in started_workers:
+                worker.join(timeout=35)
+        finally:
+            if log is not None:
+                log.close()
+            shutil.rmtree(home, ignore_errors=True)
 
 
 if __name__ == "__main__":
