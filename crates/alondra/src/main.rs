@@ -19,6 +19,7 @@ mod client_pair;
 mod runtime;
 mod setup;
 mod node;
+mod safe_permissions;
 mod setup_projects;
 mod state;
 mod tui;

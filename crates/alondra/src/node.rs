@@ -109,10 +109,20 @@ fn hold(socket: &Path, card: Value) -> Result<()> {
 /// alondrad is down, the session is not a held node or the card was withdrawn. Never an allow the
 /// user did not give.
 pub fn permission_request(payload: &Value) -> Option<Value> {
+    let launched = std::env::var("ALONDRA_LAUNCHED").is_ok_and(|s| !s.is_empty());
+    if let Some(decision) = provably_safe(payload, launched, &crate::client::config().home.join("files")) {
+        return Some(decision);
+    }
     let card = permission_card(payload, &format!("permission-{}", hex(&crate::service_client::random::<12>().ok()?)))?;
     let socket = crate::client::config().home.join("hooks.sock");
     let answer: Value = serde_json::from_str(&hold_from_hook(&socket, &card)?).ok()?;
     permission_decision(&answer)
+}
+
+/// A node's command that provably loses nothing is approved without a card.
+pub(crate) fn provably_safe(payload: &Value, launched: bool, files: &Path) -> Option<Value> {
+    (launched && crate::safe_permissions::approve(payload, files))
+        .then(|| json!({"hookSpecificOutput": {"hookEventName": "PermissionRequest", "decision": {"behavior": "allow"}}}))
 }
 
 /// The prompt has no tool call id, so the card carries the hook run's own id and is withdrawn when
