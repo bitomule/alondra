@@ -38,7 +38,7 @@ fn world() -> Fixture {
     std::fs::create_dir_all(&home).unwrap();
     std::fs::create_dir_all(&project).unwrap();
     let domain = Arc::new(DomainRuntime::open(&home).unwrap());
-    command(&domain, user(), Command::CreateRequest { request_id: "r".into(), body: "Rebuild the editor".into(), auto_merge: false, maintenance: false });
+    command(&domain, user(), Command::CreateRequest { request_id: "r".into(), body: "Rebuild the editor".into(), auto_merge: false, maintenance: false, message: false });
     command(&domain, user(), Command::TitleRequest { request_id: "r".into(), title: "Editor".into() });
     Fixture { root, home, project, domain }
 }
@@ -82,7 +82,7 @@ fn finish(f: &Fixture, id: &str, body: &str, pull_request: bool) {
             repository: "me/app".into(), number: 7, head: "head1".into(), base: "main".into(), allowed_methods: vec![MergeMethod::Squash] });
     }
     command(&f.domain, author, Command::PresentResult { attachments: vec![], task_id: id.into(), interaction_id: format!("final-{id}").into(),
-        body: body.into(), targets: targets.clone(), is_final: true, card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true) });
+        body: body.into(), targets: targets.clone(), is_final: true, nothing_to_review: false, card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true) });
     command(&f.domain, user(), Command::AcceptDelivery { presentation_id: format!("final-{id}").into(), targets });
     if pull_request {
         command(&f.domain, Actor::System, Command::ObservePrState { pr_id: format!("pr-{id}").into(), head: "head1".into(), base: "main".into(),
@@ -213,7 +213,7 @@ async fn a_review_starts_by_itself_when_the_task_it_reviews_delivers_and_its_mis
         repository: "me/app".into(), number: 9, head: "head1".into(), base: "main".into(), allowed_methods: vec![MergeMethod::Squash] });
     command(&f.domain, author, Command::PresentResult { attachments: vec![], task_id: "a".into(), interaction_id: "final-a".into(),
         body: "What a delivered".into(), targets: vec![DeliveryTarget::PullRequest { pr_id: "pr-a".into(), head: "head1".into() }],
-        is_final: true, card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true) });
+        is_final: true, nothing_to_review: false, card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true) });
     pass(&f.domain, &f.home, &claude).await.unwrap();
     assert_eq!(claude.launches(), 1, "the review starts at the delivery, not at the merge");
     let prompt = claude.prompt(0);
@@ -452,4 +452,44 @@ async fn a_manual_and_an_automatic_launch_never_both_start_a_task() {
     pass(&f.domain, &f.home, &claude).await.unwrap();
     assert_eq!(claude.launches(), 1, "a task with a node is not started again");
     let _unused: Option<Value> = None;
+}
+
+#[tokio::test]
+async fn twelve_independent_tasks_with_a_plan_start_four_at_a_time_and_the_next_starts_when_one_closes() {
+    let f = world();
+    let claude = FakeClaude::new(&f);
+    f.domain.live.gate.tune(crate::fleet_gate::Tuning { spacing: 0, limit: Some(4) });
+    let ids: Vec<String> = (1..=12).map(|n| format!("i{n:02}")).collect();
+    for id in &ids {
+        create(&f, id, &[], Some(&plan(&f, &format!("app/{id}"))));
+    }
+    pass(&f.domain, &f.home, &claude).await.unwrap();
+    pass(&f.domain, &f.home, &claude).await.unwrap();
+    assert_eq!(claude.launches(), 4, "the gate lets four start");
+    let started: Vec<&String> = ids.iter().filter(|id| agent_of(&f, id).is_some()).collect();
+    assert_eq!(started, ["i01", "i02", "i03", "i04"], "the oldest plans go first");
+    assert!(told(&f).iter().all(|id| !id.starts_with("auto-launch")), "{:?}", told(&f));
+
+    finish(&f, "i02", "What i02 delivered", false);
+    pass(&f.domain, &f.home, &claude).await.unwrap();
+    assert_eq!(claude.launches(), 5, "a closed task frees its slot for the next");
+    assert!(agent_of(&f, "i05").is_some());
+    pass(&f.domain, &f.home, &claude).await.unwrap();
+    assert_eq!(claude.launches(), 5);
+}
+
+#[tokio::test]
+async fn an_independent_task_without_a_plan_stays_put_without_telling_the_orchestrator() {
+    let f = world();
+    let claude = FakeClaude::new(&f);
+    create(&f, "solo", &[], None);
+    pass(&f.domain, &f.home, &claude).await.unwrap();
+    assert_eq!(claude.launches(), 0);
+    assert_eq!(auto(&f, "solo"), None);
+    assert!(told(&f).iter().all(|id| !id.starts_with("auto-launch")), "{:?}", told(&f));
+
+    let body = serde_json::from_value(json!({"task_id": "solo", "launch": plan(&f, "app/solo")})).unwrap();
+    crate::domain_orchestrator_tools::set_launch_plan(&f.domain, &f.home, body).unwrap();
+    pass(&f.domain, &f.home, &claude).await.unwrap();
+    assert_eq!(claude.launches(), 1);
 }

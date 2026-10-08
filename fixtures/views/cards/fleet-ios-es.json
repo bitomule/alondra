@@ -4,7 +4,7 @@
   "view": "fleet",
   "key": "fleet",
   "client": "ios",
-  "version": "v9789eaa1c882fbc4",
+  "version": "vd90f7bdf879afb3b",
   "cursor": "cursor-1",
   "title": "Flota",
   "status": {
@@ -236,6 +236,23 @@
                 "button": "Interrumpir"
               },
               "enabled": true
+            },
+            {
+              "id": "pause:zeta-worker@6",
+              "label": "Pausar",
+              "style": "secondary",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "confirm": {
+                "title": "¿Pausar este nodo?",
+                "message": "Deja lo que está ejecutando ahora y conserva su tarea. Alondra no lo reanuda solo: solo tú.",
+                "button": "Pausar"
+              },
+              "enabled": true,
+              "stamp": "En pausa"
             },
             {
               "id": "close:zeta-worker@6",

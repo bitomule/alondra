@@ -84,7 +84,17 @@ checks:
         - //apple/Design:AlondraDesignTests
         - //apple/Features:AlondraFeaturesTests
         - //apple/Testing:IssueReportingIntegrationTests
+        - //apple/Testing/Quality:AlondraQualityTests
         - //apple/Testing/Snapshots:AlondraSnapshotTests
         - //apple/Testing/MacSnapshots:AlondraMacSnapshotTests
         - //apple:AlondraMacServiceNavigationTests
         - //apple:AlondraMacWorkspaceOwnerTests
+
+  load-bench-oracles:
+    uses: bazel/test
+    paths:
+      - "tools/load_bench.py"
+      - "tools/tests/test_load_bench.py"
+    with:
+      targets:
+        - //tools:load_bench_test

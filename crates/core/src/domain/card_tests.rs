@@ -58,7 +58,7 @@ fn register_agent(s: &mut DomainState, id: &str) {
 fn fixture() -> DomainState {
     let mut s = DomainState::new("epoch");
     register_agent(&mut s, "a");
-    ok(&mut s, user(), Command::CreateRequest { request_id: "r".into(), body: "Build it".into(), auto_merge: false, maintenance: false });
+    ok(&mut s, user(), Command::CreateRequest { request_id: "r".into(), body: "Build it".into(), auto_merge: false, maintenance: false, message: false });
     s.requests.get_mut(&"r".into()).unwrap().title = Some("Build it".into());
     task(&mut s, "t", "a");
     s
@@ -99,7 +99,7 @@ fn review() -> CardSpec {
 fn present(id: &str, targets: Vec<DeliveryTarget>, is_final: bool, card: CardSpec) -> Command {
     Command::PresentResult {
         attachments: vec![], task_id: "t".into(), interaction_id: id.into(), body: "Result ready".into(),
-        targets, is_final, card,
+        targets, is_final, nothing_to_review: false, card,
     }
 }
 fn register_pr(s: &mut DomainState) {
@@ -293,7 +293,7 @@ fn blocks_points_at_an_open_target_of_the_task() {
     task(&mut s, "t2", "b");
     ok(&mut s, agent_b(), Command::PresentResult {
         attachments: vec![], task_id: "t2".into(), interaction_id: "elsewhere".into(), body: "Done".into(),
-        targets: text(), is_final: false, card: CardSpec::new(CardKind::Know, "Read the result"),
+        targets: text(), is_final: false, nothing_to_review: false, card: CardSpec::new(CardKind::Know, "Read the result"),
     });
     blocking.blocks = vec![CardTarget::Delivery { interaction_id: "elsewhere".into() }];
     assert_eq!(refused(&mut s, agent(), ask("q3", "t", false, blocking)),
@@ -410,7 +410,7 @@ fn only_alondra_raises_a_problem() {
 #[test]
 fn closing_with_an_answer_tells_the_user() {
     let mut s = fixture();
-    ok(&mut s, user(), Command::CreateRequest { request_id: "q-r".into(), body: "Is it in review?".into(), auto_merge: false, maintenance: false });
+    ok(&mut s, user(), Command::CreateRequest { request_id: "q-r".into(), body: "Is it in review?".into(), auto_merge: false, maintenance: false, message: false });
     let out = ok(&mut s, orchestrator(), Command::CloseRequest {
         request_id: "q-r".into(), answer: Some("Yes, since Monday".into()), withdrawn: false, title: Some("Review status".into()),
     });
@@ -420,7 +420,7 @@ fn closing_with_an_answer_tells_the_user() {
     assert_eq!(told.len(), 1);
     assert_eq!((told[0].card.kind, told[0].card.need.as_str(), told[0].body.as_str()), (CardKind::Know, "Review status", "Yes, since Monday"));
     assert!(out.effects.iter().any(|e| matches!(e, DomainEffect::NotifyUser { interaction_id, .. } if interaction_id == &told[0].id)));
-    ok(&mut s, user(), Command::CreateRequest { request_id: "told".into(), body: "Encrypt images?".into(), auto_merge: false, maintenance: false });
+    ok(&mut s, user(), Command::CreateRequest { request_id: "told".into(), body: "Encrypt images?".into(), auto_merge: false, maintenance: false, message: false });
     ok(&mut s, orchestrator(), inform("told-answer", Scope::Orchestrator { request_id: Some("told".into()) }, "Yes, with R2"));
     ok(&mut s, orchestrator(), Command::CloseRequest {
         request_id: "told".into(), answer: Some("Yes, with R2".into()), withdrawn: false, title: None,
@@ -534,9 +534,8 @@ fn no_pending_card_is_left_with_nothing_the_user_can_do_once_its_task_ends() {
     }
     let mut pending: Vec<&str> = items.iter().filter(|item| item.pending).map(|item| item.id.as_str()).collect();
     pending.sort();
-    assert_eq!(pending, ["interaction:ended-unanswered-decide", "interaction:ended-unanswered-do", "interaction:ended-unanswered-provide",
-        "interaction:ended-unanswered-test", "interaction:know", "interaction:p"],
-        "a card nobody can answer leaves the inbox, and the user is told it no longer waits: {pending:?}");
+    assert_eq!(pending, ["interaction:know", "interaction:p"],
+        "a card nobody can answer leaves the inbox in silence: {pending:?}");
     for card in ["decide", "test", "provide", "do"] {
         assert!(s.interactions[&card.into()].withdrawn, "{card} is withdrawn, not left open");
     }
@@ -557,7 +556,7 @@ fn present_pr(s: &mut DomainState, actor: Actor, task: &str, id: &str, pr: &str)
     ok(s, actor, Command::PresentResult {
         attachments: vec![], task_id: task.into(), interaction_id: id.into(), body: "Result ready".into(),
         targets: vec![DeliveryTarget::PullRequest { pr_id: pr.into(), head: format!("head-{pr}") }],
-        is_final: true, card: review(),
+        is_final: true, nothing_to_review: false, card: review(),
     });
 }
 
@@ -595,7 +594,7 @@ fn the_inbox_runs_problem_then_blocking_asks_then_review_provide_propose_know_ol
     task(&mut s, "t3", "c");
     ok(&mut s, Actor::Agent { agent_id: "c".into() }, Command::PresentResult {
         attachments: vec![], task_id: "t3".into(), interaction_id: "review".into(), body: "Done".into(),
-        targets: text(), is_final: true, card: review(),
+        targets: text(), is_final: true, nothing_to_review: false, card: review(),
     });
     ok(&mut s, Actor::System, Command::HoldHook {
         interaction_id: "permission".into(), task_id: "t".into(), agent_id: "a".into(), hold: Hold::Permission,
@@ -628,7 +627,7 @@ fn a_card_that_blocks_sits_right_above_what_it_blocks() {
     task(&mut s, "t2", "b");
     ok(&mut s, agent_b(), Command::PresentResult {
         attachments: vec![], task_id: "t2".into(), interaction_id: "elsewhere".into(), body: "Done".into(),
-        targets: text(), is_final: true, card: review(),
+        targets: text(), is_final: true, nothing_to_review: false, card: review(),
     });
     register_pr(&mut s);
     ok(&mut s, agent(), present("d", pr_target(), true, review()));
@@ -938,4 +937,29 @@ fn open_cards_lists_what_the_reader_may_replace() {
     assert_eq!(ids(agent_b(), Some("t")), Vec::<String>::new());
     assert_eq!(ids(orchestrator(), None), vec!["o1"]);
     assert_eq!(ids(user(), Some("t")), Vec::<String>::new());
+}
+
+fn nothing_to_review(id: &str, targets: Vec<DeliveryTarget>, is_final: bool) -> Command {
+    match present(id, targets, is_final, review()) {
+        Command::PresentResult { attachments, task_id, interaction_id, body, targets, is_final, card, .. } =>
+            Command::PresentResult { attachments, task_id, interaction_id, body, targets, is_final, nothing_to_review: true, card },
+        _ => unreachable!(),
+    }
+}
+
+#[test]
+fn a_final_delivery_with_nothing_to_review_closes_the_task_without_a_card() {
+    let mut s = fixture();
+    ok(&mut s, agent(), nothing_to_review("empty", text(), true));
+    assert_eq!(open_reviews(&s), 0, "nothing to review puts no card in front of the user");
+    assert!(s.interactions.values().all(|i| !s.open(i)));
+    assert!(matches!(s.tasks[&TaskId::from("t")].state, TaskState::Closing | TaskState::Done), "the task ends as if accepted");
+}
+
+#[test]
+fn nothing_to_review_is_refused_for_a_notice_a_pr_or_a_document() {
+    let mut s = fixture();
+    assert_eq!(refused(&mut s, agent(), nothing_to_review("notice", text(), false)).1.as_deref(), Some("nothing_to_review"));
+    register_pr(&mut s);
+    assert_eq!(refused(&mut s, agent(), nothing_to_review("pr", pr_target(), true)).1.as_deref(), Some("nothing_to_review"));
 }

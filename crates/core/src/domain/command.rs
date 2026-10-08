@@ -72,6 +72,8 @@ pub enum Command {
         auto_merge: bool,
         #[serde(default)]
         maintenance: bool,
+        #[serde(default)]
+        message: bool,
     },
     CloseRequest {
         request_id: RequestId,
@@ -96,6 +98,9 @@ pub enum Command {
     },
     AdvanceOrchestratorGeneration {
         generation: u64,
+    },
+    BindOrchestratorSession {
+        session_id: AgentId,
     },
     CreateTask {
         task_id: TaskId,
@@ -290,6 +295,9 @@ pub enum Command {
         body: String,
         targets: Vec<DeliveryTarget>,
         is_final: bool,
+        /// A final delivery that found nothing for the user to look at: the task closes in silence.
+        #[serde(default)]
+        nothing_to_review: bool,
         card: CardSpec,
     },
     SubmitFeedback {

@@ -374,7 +374,7 @@ mod tests {
     /// A Task with a registered PR, a presented final and the user's merge authorization.
     fn authorized(domain: &DomainRuntime) {
         command(domain, Actor::System, "agent", Command::RegisterAgent { agent_id: "a".into(), name: "A".into() });
-        command(domain, Actor::User { user_id: "u".into() }, "request", Command::CreateRequest { request_id: "r".into(), body: "Work".into(), auto_merge: false, maintenance: false });
+        command(domain, Actor::User { user_id: "u".into() }, "request", Command::CreateRequest { request_id: "r".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
         command(domain, Actor::User { user_id: "u".into() }, "task", Command::CreateTask {
             task_id: "t".into(), request_id: "r".into(), title: "Task".into(), agent_id: Some("a".into()),
             review_prs: true, dependencies: BTreeSet::new(), stack: None,
@@ -385,7 +385,7 @@ mod tests {
         });
         command(domain, Actor::Agent { agent_id: "a".into() }, "present", Command::PresentResult {
             attachments: vec![], task_id: "t".into(), interaction_id: "d".into(), body: "Ready".into(),
-            targets: vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: HEAD.into() }], is_final: true, card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
+            targets: vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: HEAD.into() }], is_final: true, nothing_to_review: false, card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
         });
         command(domain, Actor::User { user_id: "u".into() }, "authorize", Command::AuthorizeMerge {
             authorization_id: "auth".into(), presentation_id: "d".into(), pr_id: "pr".into(),
@@ -395,7 +395,7 @@ mod tests {
 
     fn presented(domain: &DomainRuntime, auto_merge: bool) {
         command(domain, Actor::System, "agent", Command::RegisterAgent { agent_id: "a".into(), name: "A".into() });
-        command(domain, Actor::User { user_id: "u".into() }, "request", Command::CreateRequest { request_id: "r".into(), body: "Work".into(), auto_merge, maintenance: false });
+        command(domain, Actor::User { user_id: "u".into() }, "request", Command::CreateRequest { request_id: "r".into(), body: "Work".into(), auto_merge, maintenance: false, message: false });
         command(domain, Actor::User { user_id: "u".into() }, "task", Command::CreateTask {
             task_id: "t".into(), request_id: "r".into(), title: "Task".into(), agent_id: Some("a".into()),
             review_prs: true, dependencies: BTreeSet::new(), stack: None,
@@ -408,7 +408,7 @@ mod tests {
         assert_eq!(crate::domain_api::auto_merge_notice(domain, &register).is_some(), auto_merge);
         command(domain, Actor::Agent { agent_id: "a".into() }, "present", Command::PresentResult {
             attachments: vec![], task_id: "t".into(), interaction_id: "d".into(), body: "Ready".into(),
-            targets: vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: HEAD.into() }], is_final: true, card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
+            targets: vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: HEAD.into() }], is_final: true, nothing_to_review: false, card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
         });
     }
 
@@ -566,7 +566,7 @@ mod tests {
             Command::CreateRequest {
                 request_id: "r-2".into(),
                 body: "Second task".into(),
-                auto_merge: false, maintenance: false,
+                auto_merge: false, maintenance: false, message: false,
             },
         );
         command(&domain, Actor::System, "agent-b", Command::RegisterAgent { agent_id: "b".into(), name: "Instance B".into() });
@@ -670,6 +670,7 @@ mod tests {
         command(&domain, Actor::Agent { agent_id: "a".into() }, "present-2", Command::PresentResult {
             attachments: vec![], task_id: "t".into(), interaction_id: "d2".into(), body: "Conflicts resolved".into(),
             targets: vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: OTHER.into() }], is_final: true,
+            nothing_to_review: false,
             card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
         });
         let projection = domain.state().unwrap().projection();

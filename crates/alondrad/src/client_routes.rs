@@ -343,7 +343,8 @@ impl Client {
     /// A stored copy in verified chunks, for the relay.
     async fn file_chunk(&self, reference: String, offset: u64, version: Option<String>) -> Response {
         let home = self.home.clone();
-        let chunk = tokio::task::spawn_blocking(move || crate::service_files::read_stored_chunk(&home, &reference, offset, version)).await;
+        let reads = self.domain.stored_reads.clone();
+        let chunk = tokio::task::spawn_blocking(move || reads.stored(&home, &reference, offset, version)).await;
         match chunk {
             Ok(Ok(chunk)) => Json(chunk).into_response(),
             _ => crate::domain_api::domain_error(DomainError::new("content_unavailable", "stored file content is unavailable")),

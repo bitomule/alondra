@@ -194,7 +194,7 @@ impl App {
             .find(|action| hint_matches(super::view_render::action_hint(action), key))?;
         let epoch = home.data_epoch.clone();
         let selected = Key(home.key.clone());
-        Some(self.run_view_action(&action, None, &selected, epoch))
+        Some(self.press_card_action(action, None, &selected, epoch))
     }
 
     fn document_action_key(&mut self, key: KeyEvent) -> Option<Flow> {
@@ -297,11 +297,11 @@ impl App {
                 };
                 let (action, option) = (action.clone(), option.clone());
                 self.card_menu = None;
-                let Some(card) = self.card_view.as_ref() else {
+                let Some(view) = self.card_view.as_ref().or(self.home_view.as_ref()) else {
                     return Flow::Go;
                 };
-                let epoch = card.data_epoch.clone();
-                let selected = self.sel.clone().unwrap_or_else(|| Key(card.key.clone()));
+                let epoch = view.data_epoch.clone();
+                let selected = self.sel.clone().unwrap_or_else(|| Key(view.key.clone()));
                 return self.press_card_action(action, option, &selected, epoch);
             }
             _ => {}

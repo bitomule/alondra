@@ -83,6 +83,8 @@ struct Body {
     attachments: Vec<AttachmentRef>,
     #[serde(default)]
     maintenance: bool,
+    #[serde(default)]
+    message: bool,
 }
 
 fn refused(message: impl Into<String>) -> Reply {
@@ -168,7 +170,7 @@ impl Client {
             message.text
         };
         let request = json!({"request_id": format!("request-{}", crate::auth::random_hex(16)),
-            "text": text, "options": {}, "attachments": message.attachments, "maintenance": message.maintenance});
+            "text": text, "options": {}, "attachments": message.attachments, "maintenance": message.maintenance, "message": true});
         self.new_request(user_id, &request, transport, authorize).await
     }
 
@@ -224,7 +226,7 @@ impl Client {
             data_epoch: state.data_epoch.clone(),
             command_id: format!("request-{}", body.request_id).into(),
             expected_revision: 0,
-            command: Command::CreateRequest { request_id: body.request_id.into(), body: body.text, auto_merge, maintenance: body.maintenance },
+            command: Command::CreateRequest { request_id: body.request_id.into(), body: body.text, auto_merge, maintenance: body.maintenance, message: body.message },
         };
         let outcome = self.domain.execute_with(&Actor::User { user_id: user_id.to_owned() }, &envelope, transport, Some(&launch), || {
             authorize().map_err(|_| DomainError::new("forbidden", "device approval was revoked").into())

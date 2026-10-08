@@ -32,10 +32,8 @@ impl Daemon {
         let domain = state.domain();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
-        let app = router(state).layer(axum::middleware::from_fn_with_state(
-            Arc::new(crate::auth::Auth::open(home).unwrap()),
-            crate::auth::guard,
-        ));
+        let auth = state.auth.clone();
+        let app = router(state).layer(axum::middleware::from_fn_with_state(auth, crate::auth::guard));
         let server = tokio::spawn(async move {
             axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await.unwrap();
         });
@@ -170,7 +168,7 @@ fn tool_args(epoch: &str, id: &str, expected_revision: u64, command: Value) -> V
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_scheduled_session_commands_and_receives_its_answer_once_across_a_daemon_restart() {
-    let root = std::env::temp_dir().join(format!("alondra-v2-e2e-{}", crate::auth::random_hex(8)));
+    let root = std::env::temp_dir().join(format!("alondra-e2e-{}", crate::auth::random_hex(8)));
     let home = root.join("home");
     std::fs::create_dir_all(&home).unwrap();
     std::fs::create_dir_all(root.join("projects")).unwrap();
@@ -302,7 +300,7 @@ async fn eventually(what: &str, condition: impl Fn() -> bool) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_node_mod_reports_through_the_cli_and_its_open_connection_is_its_liveness() {
-    let root = std::env::temp_dir().join(format!("alondra-v2-mods-{}", crate::auth::random_hex(8)));
+    let root = std::env::temp_dir().join(format!("alondra-mods-{}", crate::auth::random_hex(8)));
     let home = root.join("home");
     std::fs::create_dir_all(&home).unwrap();
     let daemon = Daemon::start(&home).await;
@@ -374,7 +372,7 @@ async fn a_node_mod_reports_through_the_cli_and_its_open_connection_is_its_liven
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_message_after_a_daemon_restart_reaches_the_reconnected_node_under_an_id_the_mod_has_not_seen() {
-    let root = std::env::temp_dir().join(format!("alondra-v2-restart-{}", crate::auth::random_hex(8)));
+    let root = std::env::temp_dir().join(format!("alondra-restart-{}", crate::auth::random_hex(8)));
     let home = root.join("home");
     std::fs::create_dir_all(&home).unwrap();
     let patience = std::time::Duration::from_secs(10);
@@ -401,6 +399,73 @@ async fn a_message_after_a_daemon_restart_reaches_the_reconnected_node_under_an_
     assert_ne!(line["id"].as_str().unwrap(), first_id, "the mod would take the reused id for a resend and never submit it");
     helper.kill().unwrap();
     helper.wait().unwrap();
+    daemon.stop().await;
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// What Claude runs for David: the real CLI, inside a Claude Code session.
+fn alondra_as_claude(home: &Path, port: u16, lang: &str, args: &[&str]) -> std::process::Output {
+    Process::new(alondra_binary())
+        .args(args)
+        .env("ALONDRA_HOME", home)
+        .env("ALONDRA_PORT", port.to_string())
+        .env("ALONDRA_LANG", lang)
+        .env("CLAUDECODE", "1")
+        .env_remove("ALONDRA_ORCHESTRATOR_EXECUTION")
+        .env_remove("ALONDRA_SESSION_ID")
+        .env_remove("CLAUDE_CODE_SESSION_ID")
+        .output().unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn what_claude_sends_the_orchestrator_is_maintenance_and_its_answer_is_no_card() {
+    let root = std::env::temp_dir().join(format!("alondra-claude-send-{}", crate::auth::random_hex(8)));
+    let home = root.join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    let daemon = Daemon::start(&home).await;
+    const SESSION: &str = "6f1c2b9e-1111-4a2b-9c3d-0123456789ab";
+    daemon.domain.bind_orchestrator_session("an-earlier-session").unwrap();
+    daemon.domain.bind_orchestrator_session(SESSION).unwrap();
+    let cases = [
+        ("orchestrator", "es", false, "Sube t-cards a prioridad Alta"),
+        ("orchestrator", "en", false, "Lanza dos nodos más"),
+        (SESSION, "es", false, "Revisa la cola"),
+        ("0123456789ab", "en", false, "Prioriza t-docs"),
+        ("orchestrator", "es", true, "¿Cuántos nodos quedan?"),
+    ];
+    for (name, lang, reply, text) in cases {
+        let mut args = vec!["send", name, text];
+        if reply { args.push("--reply"); }
+        let sent = alondra_as_claude(&home, daemon.port, lang, &args);
+        assert!(sent.status.success(), "{name}: {}", String::from_utf8_lossy(&sent.stderr));
+        let state = daemon.domain.state().unwrap();
+        let request = state.requests.values().find(|r| r.body.ends_with(text))
+            .unwrap_or_else(|| panic!("{name}: no request ({})", String::from_utf8_lossy(&sent.stdout)));
+        assert!(request.body.contains("From Claude, for "), "{}", request.body);
+        assert_eq!(request.maintenance, !reply, "{name} ({lang}, reply {reply}): only a message to the orchestrator that asks no reply is maintenance");
+        assert!(request.message, "{name} ({lang}, reply {reply}): it is a message, so the Tasks list leaves it out until it makes tasks");
+        if reply { continue; }
+        let id = request.id.clone();
+        daemon.execute(Actor::Orchestrator { generation: state.orchestrator_generation }, &format!("close-{name}-{lang}"), Command::CloseRequest {
+            request_id: id.clone(), answer: Some("Hecho".into()), withdrawn: false, title: None,
+        });
+        let state = daemon.domain.state().unwrap();
+        assert!(state.requests[&id].closed);
+        assert!(!state.interactions.values().any(|i| i.scope == Scope::Orchestrator { request_id: Some(id.clone()) }),
+            "{name}: the answer to maintenance is no card for David");
+    }
+    let requests = daemon.domain.state().unwrap().requests.len();
+    for name in ["orquestador", "Orquestador", "Orchestrator", "orquestadr", "an-earlier-session"] {
+        let refused = alondra_as_claude(&home, daemon.port, "es", &["send", name, "Para el nodo de release"]);
+        assert!(!refused.status.success(), "{name}: a name no node has is refused, never sent to the orchestrator");
+        assert!(String::from_utf8_lossy(&refused.stderr).contains(&format!("Ningún nodo se llama {name}; para el orquestador usa orchestrator")),
+            "{}", String::from_utf8_lossy(&refused.stderr));
+    }
+    assert_eq!(daemon.domain.state().unwrap().requests.len(), requests, "nothing reached the orchestrator");
+    for name in ["orchestrator", SESSION] {
+        let closed = alondra_as_claude(&home, daemon.port, "es", &["close", name]);
+        assert!(String::from_utf8_lossy(&closed.stderr).contains("Alondra gestiona el orquestador"), "{name}: {}", String::from_utf8_lossy(&closed.stderr));
+    }
     daemon.stop().await;
     std::fs::remove_dir_all(root).unwrap();
 }

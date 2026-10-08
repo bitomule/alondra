@@ -45,7 +45,20 @@ const TASK_RELATIONS: &str = "CREATE TABLE IF NOT EXISTS task_relations(\
  review_rounds INTEGER NOT NULL CHECK(review_rounds BETWEEN 0 AND 255));";
 /// The Requests sent as maintenance messages, kept beside them; created on every open like
 /// task_relations.
+const ORCHESTRATOR_SESSION: &str = "CREATE TABLE IF NOT EXISTS orchestrator_session(\
+ singleton INTEGER PRIMARY KEY CHECK(singleton=1),\
+ session_id TEXT NOT NULL CHECK(length(session_id)>0));";
+const ORCHESTRATOR_DELIVERIES: &str = "CREATE TABLE IF NOT EXISTS orchestrator_deliveries(\
+ attempt_id INTEGER PRIMARY KEY REFERENCES delivery_attempts(id),\
+ session_id TEXT NOT NULL CHECK(length(session_id)>0));";
 const MAINTENANCE_REQUESTS: &str = "CREATE TABLE IF NOT EXISTS maintenance_requests(request_id TEXT PRIMARY KEY REFERENCES requests(id));";
+/// The Requests sent as messages to the orchestrator, kept beside them; created on every open like
+/// task_relations. When it is first created, the messages from before it are the maintenance ones and
+/// those with the `request-` + 32 hex id that only the orchestrator message route makes.
+const MESSAGE_REQUESTS: &str = "CREATE TABLE IF NOT EXISTS message_requests(request_id TEXT PRIMARY KEY REFERENCES requests(id));";
+const MESSAGE_REQUESTS_BEFORE: &str = "INSERT OR IGNORE INTO message_requests(request_id) \
+ SELECT request_id FROM maintenance_requests UNION \
+ SELECT id FROM requests WHERE length(id)=40 AND substr(id,1,8)='request-' AND substr(id,9) NOT GLOB '*[^0-9a-f]*';";
 /// What a node says it still does after its PR merged, kept beside the task's wrap-up; created on
 /// every open like task_relations.
 const TASK_POST_MERGE_WORK: &str = "CREATE TABLE IF NOT EXISTS task_post_merge_work(\
@@ -169,6 +182,9 @@ const TASK_WORKTREES: &str = "CREATE TABLE IF NOT EXISTS task_worktrees(\
  task_id TEXT PRIMARY KEY CHECK(length(task_id)>0),\
  dir TEXT NOT NULL CHECK(length(dir)>0),\
  at INTEGER NOT NULL);";
+
+const EVENTS_VIEW: &str = "DROP VIEW IF EXISTS events;\
+ CREATE VIEW events AS SELECT revision AS seq,0 AS at,'domain' AS kind,NULL AS session,command AS body FROM command_audit;";
 
 /// What a command carries into the transaction that commits it.
 pub(crate) enum Attached<'a> {
@@ -422,6 +438,15 @@ impl DomainStore {
         tx.execute_batch(TASK_WRAP_UPS)?;
         tx.execute_batch(TASK_RELATIONS)?;
         tx.execute_batch(MAINTENANCE_REQUESTS)?;
+        let messages_known: bool = tx.query_row(
+            "SELECT count(*) FROM sqlite_schema WHERE type='table' AND name='message_requests'", [], |r| r.get::<_, i64>(0),
+        )? == 1;
+        tx.execute_batch(MESSAGE_REQUESTS)?;
+        if !messages_known {
+            tx.execute_batch(MESSAGE_REQUESTS_BEFORE)?;
+        }
+        tx.execute_batch(ORCHESTRATOR_SESSION)?;
+        tx.execute_batch(ORCHESTRATOR_DELIVERIES)?;
         tx.execute_batch(TASK_POST_MERGE_WORK)?;
         tx.execute_batch(TASK_PRIORITIES)?;
         tx.execute_batch(LAUNCH_QUEUE)?;
@@ -432,6 +457,7 @@ impl DomainStore {
         tx.execute_batch(LAUNCH_REFUSALS)?;
         tx.execute_batch(INHERITED_WORKTREES)?;
         tx.execute_batch(TASK_WORKTREES)?;
+        tx.execute_batch(EVENTS_VIEW)?;
         if version != 0 {
             tx.execute_batch("DROP TRIGGER IF EXISTS schedule_launch_transition;")?;
             tx.execute_batch(SCHEDULE_LAUNCH_TRANSITION)?;
@@ -451,6 +477,7 @@ impl DomainStore {
         tx.commit()?;
         let store = Self::from_connection(conn);
         store.integrity_check()?;
+        store.conn.set_db_config(rusqlite::config::DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, false)?;
         Ok(store)
     }
     fn from_connection(conn: Connection) -> Self {
@@ -927,6 +954,12 @@ impl DomainStore {
         }
         Ok(())
     }
+    /// When each task with a launch plan got it.
+    pub(crate) fn planned_tasks(&self) -> Result<std::collections::BTreeMap<TaskId, i64>> {
+        let mut query = self.conn.prepare("SELECT task_id,at FROM task_launch_plans")?;
+        let rows = query.query_map([], |row| Ok((TaskId(row.get(0)?), row.get(1)?)))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
     /// Every task a launch plan names a role for.
     pub(crate) fn task_roles(&self) -> Result<std::collections::BTreeMap<TaskId, String>> {
         let mut query = self.conn.prepare("SELECT task_id,role FROM task_launch_plans WHERE role IS NOT NULL")?;
@@ -1181,6 +1214,18 @@ impl DomainStore {
     }
     pub(crate) fn claim_orchestrator_message(&mut self, id: i64) -> Result<Option<DeliveryClaim>> {
         self.claim_message_inner(id, true, None)
+    }
+    /// The orchestrator session a claimed message was handed to.
+    pub(crate) fn record_orchestrator_delivery(&mut self, attempt_id: i64, session: &str) -> Result<()> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO orchestrator_deliveries(attempt_id,session_id) VALUES(?1,?2)",
+            params![attempt_id, session],
+        )?;
+        self.note_side_write();
+        Ok(())
+    }
+    pub(crate) fn orchestrator_delivery(&self, attempt_id: i64) -> Result<Option<String>> {
+        Ok(self.conn.query_row("SELECT session_id FROM orchestrator_deliveries WHERE attempt_id=?1", [attempt_id], |r| r.get(0)).optional()?)
     }
     #[cfg(test)]
     pub(crate) fn claim_orchestrator_message_at_for_test(

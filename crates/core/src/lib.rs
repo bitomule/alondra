@@ -16,6 +16,7 @@ pub mod model_report;
 pub mod mods;
 pub mod options;
 pub mod orchestrator;
+pub mod orchestrator_batch;
 pub mod pr;
 pub mod sessions;
 pub mod stack;

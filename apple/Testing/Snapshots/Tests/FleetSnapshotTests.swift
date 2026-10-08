@@ -34,6 +34,13 @@ final class FleetSnapshotTests: XCTestCase {
         assertScreenVariants { view }
     }
 
+    func test_fleet_paceWithQueuedAndPausedTasks() throws {
+        let view = try fleet(document: "fleet-pacing-ios")
+        assertScreen(inWindow: true) { ScreenFrame(height: 1400, growsWithText: false) { view } }
+        let spanish = try fleet(document: "fleet-pacing-ios-es")
+        assertScreen(language: .spanish, inWindow: true) { ScreenFrame(height: 1400, growsWithText: false) { spanish } }
+    }
+
     func test_fleet_idleNodesSitCollapsedAtTheBottom() throws {
         let view = try fleet()
         assertScreen(inWindow: true) { ScreenFrame(height: 1150, growsWithText: false) { view } }

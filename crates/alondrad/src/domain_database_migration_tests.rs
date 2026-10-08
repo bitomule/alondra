@@ -220,7 +220,7 @@ fn committed_migration_allows_normal_writes_and_restarts_without_losing_them() {
         command: alondra_core::domain::Command::CreateRequest {
             request_id: "request-after-migration".into(),
             body: "A normal durable post-migration write".into(),
-            auto_merge: false, maintenance: false,
+            auto_merge: false, maintenance: false, message: false,
         },
     };
     store

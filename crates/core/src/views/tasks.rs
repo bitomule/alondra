@@ -28,8 +28,8 @@ fn state(task: &Task, context: &RenderContext<'_>) -> String {
     plain.into()
 }
 
-/// Why a task that has not started has not, as a fact: what refused its last launch, or that the
-/// orchestrator has not launched it.
+/// Why a task that has not started has not, as a fact: what refused its last launch, the task it
+/// waits for, or that it has no launch plan yet; with one, Alondra starts it when there is room.
 fn not_started(task: &Task, context: &RenderContext<'_>) -> String {
     let lang = context.lang;
     let Some(refusal) = context.live.launch_refusals.get(&task.id.0) else {
@@ -38,7 +38,14 @@ fn not_started(task: &Task, context: &RenderContext<'_>) -> String {
             .find(|dependency| !dependency.state.terminal());
         return match pending {
             Some(dependency) => wait_text(&crate::domain::WaitReason::BlockedBy { task: dependency.id.clone() }, context),
-            None => t!(lang, "Waiting for the orchestrator to launch it", "Esperando a que el orquestador la lance").into(),
+            None => match context.live.start_waits.get(&task.id.0) {
+                Some(super::live::LiveStartWait::Plan) =>
+                    t!(lang, "Waiting for the orchestrator to give it a plan", "Esperando a que el orquestador le dé plan").into(),
+                Some(super::live::LiveStartWait::Room) if context.live.usage_exhausted.is_some() =>
+                    t!(lang, "Won't start: Claude usage ran out", "No arranca: se acabó el uso de Claude").into(),
+                Some(super::live::LiveStartWait::Room) => t!(lang, "Starting", "Arrancando").into(),
+                None => t!(lang, "Waiting for the orchestrator to launch it", "Esperando a que el orquestador la lance").into(),
+            },
         };
     };
     match (refusal.reason.as_str(), refusal.detail.as_deref()) {
@@ -111,6 +118,7 @@ pub(super) fn task_row(task: &Task, context: &RenderContext<'_>) -> super::Row {
     row.badges.push(super::Label { text: state(task, context).into(), tone });
     row.badges.extend(common::scheduled_mark(task, context.domain, context.lang));
     row.actions.extend(relaunch_action(task, context));
+    row.actions.extend(super::pacing::task_actions(task, context));
     if context.client == super::Client::Tui {
         row.subtitle = None;
         row.trailing = context.live.task_history.get(&task.id.0)
@@ -156,14 +164,36 @@ fn task_bucket(task: &Task, request: Bucket) -> Bucket {
     }
 }
 
+/// A message to the orchestrator is listed only once it made tasks: until then, and if it never does, it is
+/// in no section.
 fn request_buckets(domain: &DomainState) -> BTreeMap<&RequestId, Bucket> {
     let mut tasks: BTreeMap<&RequestId, Vec<&Task>> = BTreeMap::new();
     for task in domain.tasks.values() {
         tasks.entry(&task.request_id).or_default().push(task);
     }
     domain.requests.values()
-        .map(|request| (&request.id, bucket(request, tasks.get(&request.id).map_or(&[], Vec::as_slice))))
+        .filter_map(|request| {
+            let own = tasks.get(&request.id).map_or(&[][..], Vec::as_slice);
+            (!request.message || !own.is_empty()).then(|| (&request.id, bucket(request, own)))
+        })
         .collect()
+}
+
+const TITLE_LIMIT: usize = 60;
+
+/// What the user wrote, short enough to read as a title: its first sentence, cut at a word.
+pub(super) fn summary(body: &str) -> String {
+    let line = body.lines().map(str::trim).find(|line| !line.is_empty()).unwrap_or_default();
+    let sentence = line.char_indices()
+        .find(|(at, c)| matches!(c, '.' | '?' | '!') && line[at + c.len_utf8()..].starts_with(' '))
+        .map_or(line, |(at, c)| &line[..at + c.len_utf8()]);
+    let sentence = sentence.trim_end_matches('.');
+    if sentence.chars().count() <= TITLE_LIMIT {
+        return sentence.to_owned();
+    }
+    let cut: String = sentence.chars().take(TITLE_LIMIT).collect();
+    let words = cut.rsplit_once(' ').map_or(cut.as_str(), |(head, _)| head);
+    format!("{}…", words.trim_end_matches([',', ';', ':', ' ']))
 }
 
 /// How the Tasks list places Tasks: under the Task they follow in their own Request, or, when that Task belongs
@@ -267,8 +297,7 @@ impl<'a> Forest<'a> {
 
 fn request_row(request: &Request, forest: &Forest<'_>, context: &RenderContext<'_>) -> super::Row {
     let tasks = forest.tasks_of(&request.id);
-    let title = forest.request_title(&request.id)
-        .unwrap_or_else(|| t!(context.lang, "New request", "Nueva petición").into());
+    let title = forest.request_title(&request.id).unwrap_or_else(|| summary(&request.body));
     let split = forest.split.contains(&request.id);
     let headline = if split {
         t!(context.lang, "The rest is still under way", "El resto sigue en marcha")
@@ -307,6 +336,7 @@ fn request_row(request: &Request, forest: &Forest<'_>, context: &RenderContext<'
                 row.badges.insert(0, super::Label { text: state(task, context).into(), tone });
                 row.badges.extend(common::scheduled_mark(task, context.domain, context.lang));
                 row.actions.extend(relaunch_action(task, context));
+                row.actions.extend(super::pacing::task_actions(task, context));
                 row.children = match children.as_mut_slice() {
                     [only] if only.id == task.id.0 => std::mem::take(&mut only.children),
                     _ => children,
@@ -674,6 +704,7 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
             .or_else(|| request.filter(|_| context.domain.tasks.values().filter(|other| other.request_id == task.request_id).count() == 1)
                 .map(|_| task.title.clone()))
             .unwrap_or_else(|| match request {
+                Some(request) if !request.message => summary(&request.body),
                 Some(_) => t!(context.lang, "Untitled request", "Petición sin título").into(),
                 None => t!(context.lang, "Request details unavailable", "Detalles de la solicitud no disponibles").into(),
             }),
@@ -813,11 +844,16 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
         ));
     }
     let mut task_options = vec![Fact {
+            label: t!(context.lang, "Priority", "Prioridad").into(),
+            value: super::pacing::priority_text(task.priority, context.lang).into(),
+            tone: None,
+            link: None,
+        }, Fact {
             label: t!(context.lang, "PR handling", "Gestión de PR").into(),
             value: if task.review_prs {
-                t!(context.lang, "Review before merge", "Revisar antes de fusionar")
+                t!(context.lang, "You review it; accepting it merges it", "La revisas tú; al aceptarla, Alondra la fusiona")
             } else {
-                t!(context.lang, "No PR review; merge still needs your authorization", "Sin revisión de PR; fusionar sigue requiriendo tu autorización")
+                t!(context.lang, "Auto-merge: Alondra merges it once its checks pass", "Merge automático: Alondra la fusiona al pasar los checks")
             }.into(),
             tone: None,
             link: None,
@@ -921,6 +957,8 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
         }
     }
     actions.extend(relaunch_action(task, context));
+    actions.extend(super::pacing::task_actions(task, context));
+    actions.extend(super::pacing::priority_action(task, context));
     for available in context.domain.task_actions(&task.id).unwrap_or_default() {
         if !available.enabled {
             continue;
@@ -984,7 +1022,7 @@ pub(super) fn request(id: &str, context: &RenderContext<'_>) -> Result<View, Bui
     let mut view = common::view(
         "request",
         &format!("request:{id}"),
-        request.title.clone(),
+        Some(request.title.clone().unwrap_or_else(|| summary(&request.body))),
         context,
         vec![],
     );

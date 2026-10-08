@@ -1,0 +1,196 @@
+{
+  "protocol": 1,
+  "data_epoch": "test-epoch",
+  "view": "task",
+  "key": "task:t-queued-next",
+  "client": "ios",
+  "version": "v961e4f8eb0b2bb71",
+  "cursor": "cursor-1",
+  "title": "Fix the crash when the schedule list is empty",
+  "status": {
+    "version": "v96d9c38b403cb71e",
+    "summary": "2 preguntas · 3 por leer · 0 nodos trabajando",
+    "badge": 5,
+    "counts": [
+      {
+        "id": "inbox",
+        "label": "Bandeja",
+        "value": 5
+      },
+      {
+        "id": "tasks",
+        "label": "Tareas",
+        "value": 7
+      },
+      {
+        "id": "agents",
+        "label": "Flota",
+        "value": 5
+      },
+      {
+        "id": "working",
+        "label": "trabajando",
+        "value": 0
+      },
+      {
+        "id": "waiting",
+        "label": "esperando",
+        "value": 1
+      }
+    ],
+    "gauges": [
+      {
+        "id": "memory",
+        "label": "Memory",
+        "value": 0.38,
+        "text": "6.1 GB of 16 GB",
+        "level": "calm"
+      },
+      {
+        "id": "disk",
+        "label": "Disk available",
+        "value": 0.72,
+        "text": "120 GB",
+        "level": "calm"
+      }
+    ],
+    "orchestrator": {
+      "text": "inactivo",
+      "tone": "neutral"
+    }
+  },
+  "sections": [
+    {
+      "id": "header",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "facts",
+          "items": [
+            {
+              "label": "Estado",
+              "value": "En cola · 1.º de 2 · el Mac va justo de memoria (12 % libre)",
+              "tone": "neutral"
+            },
+            {
+              "label": "Solicitud",
+              "value": "Build the importer"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "request",
+      "title": "Solicitud",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "markdown",
+          "text": "Build the importer",
+          "truncated": false,
+          "commentable": false
+        }
+      ]
+    },
+    {
+      "id": "options",
+      "title": "Opciones",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "facts",
+          "items": [
+            {
+              "label": "Prioridad",
+              "value": "Alta"
+            },
+            {
+              "label": "Gestión de PR",
+              "value": "Merge automático: Alondra la fusiona al pasar los checks"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "actions",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "actions",
+          "actions": [
+            {
+              "id": "pause:t-queued-next@6",
+              "label": "Pausar",
+              "style": "secondary",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "stamp": "En pausa"
+            },
+            {
+              "id": "set_priority:t-queued-next@6",
+              "label": "Prioridad",
+              "style": "secondary",
+              "presentation": "menu",
+              "options": [
+                {
+                  "id": "high",
+                  "label": "Alta · ahora",
+                  "description": "Arranca antes que Normal y Baja",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                },
+                {
+                  "id": "normal",
+                  "label": "Normal",
+                  "description": "La de siempre",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                },
+                {
+                  "id": "low",
+                  "label": "Baja",
+                  "description": "Arranca cuando no espera nada más",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                }
+              ],
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true
+            },
+            {
+              "id": "cancel:t-queued-next@6",
+              "label": "Cancelar tarea",
+              "style": "destructive",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "confirm": {
+                "title": "Cancelar tarea",
+                "message": "¿Cancelar esta tarea?",
+                "button": "Cancelar tarea"
+              },
+              "enabled": true
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

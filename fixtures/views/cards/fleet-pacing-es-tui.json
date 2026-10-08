@@ -1,0 +1,573 @@
+{
+  "protocol": 1,
+  "data_epoch": "test-epoch",
+  "view": "fleet",
+  "key": "fleet",
+  "client": "tui",
+  "version": "vde05e659481d1cbb",
+  "cursor": "cursor-1",
+  "title": "Flota",
+  "status": {
+    "version": "v96d9c38b403cb71e",
+    "summary": "2 preguntas · 3 por leer · 0 nodos trabajando",
+    "badge": 5,
+    "counts": [
+      {
+        "id": "inbox",
+        "label": "Bandeja",
+        "value": 5
+      },
+      {
+        "id": "tasks",
+        "label": "Tareas",
+        "value": 7
+      },
+      {
+        "id": "agents",
+        "label": "Flota",
+        "value": 5
+      },
+      {
+        "id": "working",
+        "label": "trabajando",
+        "value": 0
+      },
+      {
+        "id": "waiting",
+        "label": "esperando",
+        "value": 1
+      }
+    ],
+    "gauges": [
+      {
+        "id": "memory",
+        "label": "Memory",
+        "value": 0.38,
+        "text": "6.1 GB of 16 GB",
+        "level": "calm"
+      },
+      {
+        "id": "disk",
+        "label": "Disk available",
+        "value": 0.72,
+        "text": "120 GB",
+        "level": "calm"
+      }
+    ],
+    "orchestrator": {
+      "text": "inactivo",
+      "tone": "neutral"
+    }
+  },
+  "sections": [
+    {
+      "id": "orchestrator",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "orchestrator",
+          "link": {
+            "kind": "view",
+            "key": "node:orchestrator"
+          },
+          "icon": "orchestrator",
+          "title": "Orquestador",
+          "badges": [
+            {
+              "text": "Inactivo",
+              "tone": "neutral"
+            }
+          ],
+          "trailing": {
+            "kind": "text",
+            "text": "Inactivo"
+          },
+          "depth": 0,
+          "struck": false
+        }
+      ]
+    },
+    {
+      "id": "pacing",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "pacing",
+          "icon": "machine",
+          "title": "Trabajando 6/6 · En cola 2 · En pausa 2 · Mac: memoria 12 % libre (justo)",
+          "subtitle": "Límite: automático (6)",
+          "depth": 0,
+          "struck": false
+        },
+        {
+          "type": "row",
+          "id": "queued:t-queued-next",
+          "link": {
+            "kind": "view",
+            "key": "task:t-queued-next"
+          },
+          "icon": "task",
+          "title": "Fix the crash when the schedule list is empty",
+          "subtitle": "En cola · 1.º de 2 · el Mac va justo de memoria (12 % libre)",
+          "depth": 0,
+          "struck": false,
+          "actions": [
+            {
+              "id": "pause:t-queued-next@6",
+              "label": "Pausar",
+              "style": "secondary",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "stamp": "En pausa",
+              "key": "p"
+            }
+          ]
+        },
+        {
+          "type": "row",
+          "id": "queued:t-queued-later",
+          "link": {
+            "kind": "view",
+            "key": "task:t-queued-later"
+          },
+          "icon": "task",
+          "title": "Translate the onboarding into Spanish",
+          "subtitle": "En cola · 2.º de 2 · el Mac va justo de memoria (12 % libre)",
+          "depth": 0,
+          "struck": false,
+          "actions": [
+            {
+              "id": "pause:t-queued-later@6",
+              "label": "Pausar",
+              "style": "secondary",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "stamp": "En pausa",
+              "key": "p"
+            }
+          ]
+        },
+        {
+          "type": "row",
+          "id": "paused:t-zeta-worker",
+          "link": {
+            "kind": "view",
+            "key": "task:t-zeta-worker"
+          },
+          "icon": "task",
+          "title": "Build the importer",
+          "subtitle": "Pausado desde las 14:05 por memoria · se reanuda cuando el Mac lleve 5 min bien (2 hasta ahora)",
+          "depth": 0,
+          "struck": false,
+          "actions": [
+            {
+              "id": "resume:zeta-worker@6",
+              "label": "Reanudar",
+              "style": "primary",
+              "description": "Ahora, aunque se pase del límite",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "stamp": "Reanudando…",
+              "key": "u"
+            }
+          ]
+        },
+        {
+          "type": "row",
+          "id": "paused:t-held",
+          "link": {
+            "kind": "view",
+            "key": "task:t-held"
+          },
+          "icon": "task",
+          "title": "Refresh the App Store screenshots",
+          "subtitle": "Pausado · lo pausaste a las 11:20",
+          "depth": 0,
+          "struck": false,
+          "actions": [
+            {
+              "id": "resume:t-held@6",
+              "label": "Reanudar",
+              "style": "primary",
+              "description": "Ahora, aunque se pase del límite",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "stamp": "Reanudando…",
+              "key": "u"
+            }
+          ]
+        },
+        {
+          "type": "actions",
+          "actions": [
+            {
+              "id": "set_limit:limit@6",
+              "label": "Nodos a la vez",
+              "style": "secondary",
+              "presentation": "menu",
+              "options": [
+                {
+                  "id": "auto",
+                  "label": "Automático (6) · ahora",
+                  "description": "Según los núcleos y la memoria de este Mac",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                },
+                {
+                  "id": "2",
+                  "label": "2",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                },
+                {
+                  "id": "3",
+                  "label": "3",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                },
+                {
+                  "id": "4",
+                  "label": "4",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                },
+                {
+                  "id": "5",
+                  "label": "5",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                },
+                {
+                  "id": "6",
+                  "label": "6",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                },
+                {
+                  "id": "7",
+                  "label": "7",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                },
+                {
+                  "id": "8",
+                  "label": "8",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                },
+                {
+                  "id": "9",
+                  "label": "9",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                }
+              ],
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "key": "L"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "project:Demo Garden",
+      "title": "Demo Garden",
+      "count": 2,
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "d887a34b-249e-4487-a89b-57de38c26372",
+          "link": {
+            "kind": "view",
+            "key": "node:d887a34b-249e-4487-a89b-57de38c26372"
+          },
+          "icon": "node",
+          "title": "Restore the native review experience",
+          "subtitle": "Alondra · iOS",
+          "badges": [
+            {
+              "text": "Esperando respuesta",
+              "tone": "warning"
+            }
+          ],
+          "depth": 0,
+          "struck": false,
+          "actions": [
+            {
+              "id": "close:d887a34b-249e-4487-a89b-57de38c26372@6",
+              "label": "Cerrar nodo",
+              "style": "destructive",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "confirm": {
+                "title": "Cerrar nodo",
+                "message": "¿Cerrar este nodo?",
+                "button": "Cerrar nodo"
+              },
+              "enabled": true,
+              "key": "x"
+            }
+          ]
+        },
+        {
+          "type": "row",
+          "id": "queued",
+          "link": {
+            "kind": "view",
+            "key": "node:queued"
+          },
+          "icon": "node",
+          "title": "Wire the badge after the review",
+          "subtitle": "queued",
+          "badges": [
+            {
+              "text": "Esperando a Restore the native review experience",
+              "tone": "neutral"
+            }
+          ],
+          "depth": 0,
+          "struck": false,
+          "actions": [
+            {
+              "id": "close:queued@6",
+              "label": "Cerrar nodo",
+              "style": "destructive",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "confirm": {
+                "title": "Cerrar nodo",
+                "message": "¿Cerrar este nodo?",
+                "button": "Cerrar nodo"
+              },
+              "enabled": true,
+              "key": "x"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "project:Alpha",
+      "title": "Alpha",
+      "count": 1,
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "alpha-waiting",
+          "link": {
+            "kind": "view",
+            "key": "node:alpha-waiting"
+          },
+          "icon": "node",
+          "title": "Plan the migration",
+          "subtitle": "alpha-waiting",
+          "badges": [
+            {
+              "text": "En cola",
+              "tone": "neutral"
+            }
+          ],
+          "depth": 0,
+          "struck": false,
+          "actions": [
+            {
+              "id": "close:alpha-waiting@6",
+              "label": "Cerrar nodo",
+              "style": "destructive",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "confirm": {
+                "title": "Cerrar nodo",
+                "message": "¿Cerrar este nodo?",
+                "button": "Cerrar nodo"
+              },
+              "enabled": true,
+              "key": "x"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "project:Zeta",
+      "title": "Zeta",
+      "count": 1,
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "zeta-worker",
+          "link": {
+            "kind": "view",
+            "key": "node:zeta-worker"
+          },
+          "icon": "node",
+          "title": "Build the importer",
+          "subtitle": "zeta-worker",
+          "badges": [
+            {
+              "text": "Inactivo",
+              "tone": "neutral"
+            }
+          ],
+          "depth": 0,
+          "struck": false,
+          "actions": [
+            {
+              "id": "close:zeta-worker@6",
+              "label": "Cerrar nodo",
+              "style": "destructive",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "confirm": {
+                "title": "Cerrar nodo",
+                "message": "¿Cerrar este nodo?",
+                "button": "Cerrar nodo"
+              },
+              "enabled": true,
+              "key": "x"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "idle",
+      "title": "Inactivos",
+      "count": 2,
+      "collapsed": true,
+      "items": [
+        {
+          "type": "row",
+          "id": "finished-today",
+          "link": {
+            "kind": "view",
+            "key": "node:finished-today"
+          },
+          "icon": "node",
+          "title": "Trim the push payload",
+          "subtitle": "finished-today",
+          "badges": [
+            {
+              "text": "Terminado",
+              "tone": "success"
+            }
+          ],
+          "depth": 0,
+          "struck": false,
+          "actions": [
+            {
+              "id": "close:finished-today@6",
+              "label": "Cerrar nodo",
+              "style": "destructive",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "confirm": {
+                "title": "Cerrar nodo",
+                "message": "¿Cerrar este nodo?",
+                "button": "Cerrar nodo"
+              },
+              "enabled": true,
+              "key": "x"
+            }
+          ]
+        },
+        {
+          "type": "row",
+          "id": "finished-yesterday",
+          "link": {
+            "kind": "view",
+            "key": "node:finished-yesterday"
+          },
+          "icon": "node",
+          "title": "Ship the compact editor",
+          "subtitle": "finished-yesterday",
+          "badges": [
+            {
+              "text": "Terminado",
+              "tone": "success"
+            }
+          ],
+          "depth": 0,
+          "struck": false,
+          "actions": [
+            {
+              "id": "close:finished-yesterday@6",
+              "label": "Cerrar nodo",
+              "style": "destructive",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "confirm": {
+                "title": "Cerrar nodo",
+                "message": "¿Cerrar este nodo?",
+                "button": "Cerrar nodo"
+              },
+              "enabled": true,
+              "key": "x"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -4,7 +4,7 @@
   "view": "tasks",
   "key": "tasks?section=finished&after=0",
   "client": "mac",
-  "version": "v3734e1a8fb599d20",
+  "version": "v659accc138503079",
   "cursor": "cursor-1",
   "title": "Tasks",
   "status": {
@@ -276,10 +276,10 @@
           },
           "icon": "task",
           "title": "Write the release notes",
-          "subtitle": "Waiting for the orchestrator to launch it",
+          "subtitle": "Waiting for the orchestrator to give it a plan",
           "badges": [
             {
-              "text": "Waiting for the orchestrator to launch it",
+              "text": "Waiting for the orchestrator to give it a plan",
               "tone": "neutral"
             }
           ],
@@ -294,7 +294,7 @@
           "type": "row",
           "id": "r-new",
           "icon": "mission",
-          "title": "New request",
+          "title": "Import lists from Notes",
           "subtitle": "The orchestrator is splitting it",
           "trailing": {
             "kind": "time",

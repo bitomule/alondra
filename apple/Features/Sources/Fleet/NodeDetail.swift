@@ -30,6 +30,8 @@ public struct NodeDetail: Equatable, Sendable {
     public var background: [Activity] = []
     public var message: WireAction?
     public var interrupt: WireAction?
+    public var pause: WireAction?
+    public var resume: WireAction?
     public var close: WireAction?
     public var orchestratorActions: [WireAction] = []
     public var facts: [Fact] = []
@@ -71,6 +73,12 @@ public struct NodeDetail: Equatable, Sendable {
     /// The node as it is after what was just sent: an orchestrator decision taken here leaves the
     /// screen and the state says what happens next.
     public func hiding(_ optimistic: Optimistic) -> NodeDetail {
+        if let sent = [pause, resume].compactMap({ $0 }).first(where: { optimistic.hides($0.id) }) {
+            var detail = self
+            (detail.pause, detail.resume, detail.interrupt) = (nil, nil, nil)
+            detail.state = sent.stamp ?? detail.state
+            return detail
+        }
         guard let taken = orchestratorActions.first(where: { optimistic.hides($0.id) }) else { return self }
         var detail = self
         detail.orchestratorActions = []
@@ -87,6 +95,8 @@ public struct NodeDetail: Equatable, Sendable {
             switch action.id?.prefix(while: { $0 != ":" }) {
             case "msg": message = action
             case "interrupt": interrupt = action
+            case "pause": pause = action
+            case "resume": resume = action
             case "close": close = action
             case "orch_retry", "orch_ack", "orch_stop": orchestratorActions.append(action)
             default: break

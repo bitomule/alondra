@@ -127,6 +127,13 @@ final class TasksSnapshotTests: XCTestCase {
         assertScreen(language: .spanish) { ScreenFrame(height: 1100) { TaskDetailView(store: task(document)) } }
     }
 
+    func test_taskDetail_queuedWithItsPriority() throws {
+        let document = try ScreenFixtures.document("task-pacing-ios")
+        assertScreen([.light], inWindow: true) { ScreenFrame(height: 1300) { TaskDetailView(store: task(document)) } }
+        let spanish = try ScreenFixtures.document("task-pacing-ios-es")
+        assertScreen([.light], language: .spanish, inWindow: true) { ScreenFrame(height: 1300) { TaskDetailView(store: task(spanish)) } }
+    }
+
     func test_taskDetail_theDaemonsOwnFixture() throws {
         let document = try SampleViews.document("task-ios")
         assertScreen(lightAndDark) { ScreenFrame(height: 1100) { TaskDetailView(store: task(document)) } }

@@ -121,7 +121,7 @@ async fn encrypted(
 async fn signed_loopback_and_sealed_service_share_reads_errors_and_command_receipts() {
     use std::os::unix::fs::PermissionsExt;
     let home = std::env::temp_dir().join(format!(
-        "alondra-domain-v2-parity-{}",
+        "alondra-domain-parity-{}",
         crate::auth::random_hex(8)
     ));
     std::fs::create_dir_all(&home).unwrap();
@@ -150,7 +150,7 @@ async fn signed_loopback_and_sealed_service_share_reads_errors_and_command_recei
         "request",
         Command::CreateRequest {
             request_id: "request-parity".into(),
-            body: "Synthetic request".into(), auto_merge: false, maintenance: false,
+            body: "Synthetic request".into(), auto_merge: false, maintenance: false, message: false,
         },
     );
     execute(

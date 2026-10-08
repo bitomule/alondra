@@ -40,7 +40,7 @@ pub(super) fn fixture_json(name: &str) -> Value {
 
 impl Fixture {
     pub(super) async fn start() -> Self {
-        let home = std::env::temp_dir().join(format!("alondra-v2-client-{}", crate::auth::random_hex(8)));
+        let home = std::env::temp_dir().join(format!("alondra-client-{}", crate::auth::random_hex(8)));
         std::fs::create_dir(&home).unwrap();
         drop(DomainRuntime::open(&home).unwrap());
         let auth = Auth::open(&home).unwrap();
@@ -169,7 +169,7 @@ fn seed_work(fixture: &Fixture) {
         fixture.command(Actor::System, &format!("register-{agent}"), Command::RegisterAgent { agent_id: agent.into(), name: name.into() });
     }
     for request in ["request-1", "request-2"] {
-        fixture.user(request, Command::CreateRequest { request_id: request.into(), body: "Work".into(), auto_merge: false, maintenance: false });
+        fixture.user(request, Command::CreateRequest { request_id: request.into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
     }
     fixture.user("task-1", Command::CreateTask {
         task_id: "task-1".into(), request_id: "request-1".into(), title: "Readable editor colours".into(),
@@ -181,7 +181,7 @@ fn seed_work(fixture: &Fixture) {
         body: "Nothing to change: it already works".into(), card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Know, "Read the update"),
     });
     fixture.user("close-2", Command::CloseRequest { request_id: "request-2".into(), answer: None, withdrawn: false, title: None });
-    fixture.user("request-3", Command::CreateRequest { request_id: "request-3".into(), body: "Never mind".into(), auto_merge: false, maintenance: false });
+    fixture.user("request-3", Command::CreateRequest { request_id: "request-3".into(), body: "Never mind".into(), auto_merge: false, maintenance: false, message: false });
     fixture.user("close-3", Command::CloseRequest { request_id: "request-3".into(), answer: None, withdrawn: true, title: Some("Dropped idea".into()) });
     fixture.agent("agent-a", "pr-1", Command::RegisterPr {
         task_id: "task-1".into(), pr_id: "pr-1".into(), host: "github.com".into(), repository: "me/app".into(),
@@ -1228,7 +1228,7 @@ async fn a_stopped_node_with_an_open_task_stays_in_fleet_under_its_project_with_
     };
     let user = || Actor::User { user_id: "u".into() };
     run(Actor::System, "register-stopped", Command::RegisterAgent { agent_id: "stopped".into(), name: "alondra/stopped".into() });
-    run(user(), "request-stopped", Command::CreateRequest { request_id: "request-stopped".into(), body: "Probe".into(), auto_merge: false, maintenance: false });
+    run(user(), "request-stopped", Command::CreateRequest { request_id: "request-stopped".into(), body: "Probe".into(), auto_merge: false, maintenance: false, message: false });
     run(user(), "task-stopped", Command::CreateTask {
         task_id: "task-stopped".into(), request_id: "request-stopped".into(), title: "Probe".into(), agent_id: Some("stopped".into()),
         review_prs: false, dependencies: Default::default(), stack: None,

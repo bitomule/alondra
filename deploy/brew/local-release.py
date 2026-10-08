@@ -283,7 +283,10 @@ def main():
         source = preflight(ver, retry_source=retry_source)
         tag_state(ver, source, args.retry_publish)
         if not args.retry_publish:
-            prepare(ver, source, output, target, ephemeral_build_cache=args.ephemeral_build_cache)
+            try:
+                prepare(ver, source, output, target, ephemeral_build_cache=args.ephemeral_build_cache)
+            finally:
+                shutil.rmtree(target, ignore_errors=True)
         if not args.prepare:
             publish(ver, source, output, retry=args.retry_publish)
 

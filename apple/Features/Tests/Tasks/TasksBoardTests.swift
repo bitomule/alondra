@@ -134,11 +134,11 @@ final class TasksBoardTests: XCTestCase {
         XCTAssertEqual(loose.map(\.title), ["", ""])
     }
 
-    func testARequestStillBeingSplitIsNamedNewAndNeverByItsPrompt() throws {
+    func testARequestStillBeingSplitIsNamedByItsFirstSentence() throws {
         let board = TasksBoard(document: try Fixtures.document("tasks-ios"))
         let request = try XCTUnwrap(board.active.requests.first { $0.id == "r-new" })
 
-        XCTAssertEqual(request.title, "New request")
+        XCTAssertEqual(request.title, "Import lists from Notes")
         XCTAssertTrue(request.tasks.isEmpty)
     }
 

@@ -120,7 +120,7 @@ async fn sectioned_read<H: DomainHost>(
 }
 fn schedule_read<H: DomainHost>(host: &H, path: &str) -> Response {
     if !host.cutover_committed() {
-        return domain_error(DomainError::new("incompatible_protocol", "Schedule v2 requires v2-only domain authority"));
+        return domain_error(DomainError::new("incompatible_protocol", "Schedules require the domain store's authority"));
     }
     crate::domain_schedule_api::response(crate::domain_schedule_api::read(host.domain(), path))
 }
@@ -202,8 +202,9 @@ pub(crate) async fn document_content_inner(domain: &DomainRuntime, home: &FsPath
     let response_digest = digest.clone();
     let revision_id = revision.id.clone();
     let home = home.to_path_buf();
+    let reads = domain.stored_reads.clone();
     let chunk = tokio::task::spawn_blocking(move || {
-        crate::service_files::read_verified_domain_chunk(&home, &reference, &digest, offset, version)
+        reads.verified(&home, &reference, &digest, offset, version)
     })
     .await;
     match chunk {
@@ -563,7 +564,7 @@ pub(crate) async fn encrypted_read(
 ) -> anyhow::Result<Response> {
     if crate::domain_schedule_api::approved_read_path(path) {
         approved.recheck()?;
-        return Ok(domain_error(DomainError::new("incompatible_protocol", "Schedule v2 requires v2-only domain authority")));
+        return Ok(domain_error(DomainError::new("incompatible_protocol", "Schedules require the domain store's authority")));
     }
     encrypted_read_runtime(&hub.domain, &hub.home, approved, path).await
 }
@@ -692,7 +693,7 @@ pub(crate) fn encrypted_resolve_delivery_runtime(
 /// The legacy daemon keeps v2 reads but never writes its sidecar: a v2 write
 /// here would make the store non-empty and block both cutover and legacy startup.
 pub(crate) fn legacy_write_blocked() -> DomainError {
-    DomainError::new("incompatible_protocol", "domain v2 writes require the committed cutover")
+    DomainError::new("incompatible_protocol", "domain writes require the committed cutover")
 }
 /// What the Agent of an auto-merge Task is told when it registers its PR.
 pub(crate) fn auto_merge_notice(domain: &DomainRuntime, command: &Command) -> Option<String> {
@@ -722,6 +723,11 @@ async fn resource_command<H: DomainHost>(
         Ok(plan) => plan,
         Err(error) => return domain_error(error),
     };
+    if let Ok(state) = host.domain().state()
+        && let Err(error) = crate::pr_heads::check(&state, method.as_str(), uri.path(), &mut body)
+    {
+        return domain_error(error);
+    }
     let Some(envelope) = resource_envelope(method.as_str(), uri.path(), &params, body) else {
         return domain_error(DomainError::new("invalid_input", "unsupported resource operation"));
     };
@@ -1007,7 +1013,7 @@ async fn execute_command<H: DomainHost>(
     {
         return domain_error(DomainError::new(
             "incompatible_protocol",
-            "this producer must resume with a domain v2 capability",
+            "this producer must resume with a domain capability",
         ));
     }
     // A device paired over loopback is the user, locally as over the relay.
@@ -1448,7 +1454,7 @@ mod tests {
                 "request",
                 Command::CreateRequest {
                     request_id: "request-a".into(),
-                    body: "Synthetic request".into(), auto_merge: false, maintenance: false,
+                    body: "Synthetic request".into(), auto_merge: false, maintenance: false, message: false,
                 },
             ),
             (
@@ -1897,7 +1903,7 @@ mod domain_encrypted_tests {
 
     #[test]
     fn encrypted_user_command_replays_receipt_and_revocation_fences_write_without_hub() {
-        let home = std::env::temp_dir().join(format!("alondra-v2-relay-{}", crate::auth::random_hex(8)));
+        let home = std::env::temp_dir().join(format!("alondra-relay-{}", crate::auth::random_hex(8)));
         std::fs::create_dir_all(&home).unwrap();
         let domain = DomainRuntime::open(&home).unwrap();
         let epoch = domain.state().unwrap().data_epoch.clone();
@@ -1908,7 +1914,7 @@ mod domain_encrypted_tests {
             expected_revision: 0,
             command: Command::CreateRequest {
                 request_id: "request-from-phone".into(),
-                body: "Synthetic encrypted request".into(), auto_merge: false, maintenance: false,
+                body: "Synthetic encrypted request".into(), auto_merge: false, maintenance: false, message: false,
             },
         };
         let body = serde_json::to_value(&envelope).unwrap();
@@ -1933,7 +1939,7 @@ mod domain_encrypted_tests {
             expected_revision: 1,
             command: Command::CreateRequest {
                 request_id: "request-after-revocation".into(),
-                body: "Must not commit".into(), auto_merge: false, maintenance: false,
+                body: "Must not commit".into(), auto_merge: false, maintenance: false, message: false,
             },
             ..envelope
         };

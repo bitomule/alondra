@@ -4,7 +4,7 @@
   "view": "tasks",
   "key": "tasks",
   "client": "ios",
-  "version": "vb80d07cbd701c8d0",
+  "version": "v93a4d8c422a1113b",
   "cursor": "cursor-1",
   "title": "Tareas",
   "status": {
@@ -318,10 +318,10 @@
           },
           "icon": "task",
           "title": "Write the release notes",
-          "subtitle": "Esperando a que el orquestador la lance",
+          "subtitle": "Esperando a que el orquestador le dé plan",
           "badges": [
             {
-              "text": "Esperando a que el orquestador la lance",
+              "text": "Esperando a que el orquestador le dé plan",
               "tone": "neutral"
             }
           ],
@@ -336,7 +336,7 @@
           "type": "row",
           "id": "r-new",
           "icon": "mission",
-          "title": "Nueva petición",
+          "title": "Import lists from Notes",
           "subtitle": "El orquestador la está dividiendo",
           "trailing": {
             "kind": "time",

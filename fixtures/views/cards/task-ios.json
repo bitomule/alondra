@@ -4,7 +4,7 @@
   "view": "task",
   "key": "task:t-651c38484cd2f34e74d5107ba05f7f15",
   "client": "ios",
-  "version": "v33eba0bbc8e897fa",
+  "version": "v7d61cc0459ead4e9",
   "cursor": "cursor-1",
   "title": "Restore the native review experience",
   "status": {
@@ -212,16 +212,6 @@
           "need": "Ship the compact schedule editor with this beta?",
           "why": "The review of the pull request waits for your answer.",
           "meta": "Alondra",
-          "blocks": [
-            {
-              "id": "hf-weekly-2026-09-30",
-              "label": "blocks PR #12",
-              "link": {
-                "kind": "view",
-                "key": "card:hf-weekly-2026-09-30"
-              }
-            }
-          ],
           "link": {
             "kind": "view",
             "key": "card:8fa4034b-249e-4487-a89b-57de38c26372"
@@ -252,16 +242,6 @@
             "label": "Changes",
             "summary": "4 files · +120 −30"
           },
-          "blocked_by": [
-            {
-              "id": "8fa4034b-249e-4487-a89b-57de38c26372",
-              "label": "blocked by Ship the compact schedule editor with this beta?",
-              "link": {
-                "kind": "view",
-                "key": "card:8fa4034b-249e-4487-a89b-57de38c26372"
-              }
-            }
-          ],
           "link": {
             "kind": "view",
             "key": "card:hf-weekly-2026-09-30"
@@ -393,6 +373,10 @@
           "type": "facts",
           "items": [
             {
+              "label": "Priority",
+              "value": "Normal"
+            },
+            {
               "label": "PR handling",
               "value": "No PR review; merge still needs your authorization"
             }
@@ -407,6 +391,46 @@
         {
           "type": "actions",
           "actions": [
+            {
+              "id": "set_priority:t-651c38484cd2f34e74d5107ba05f7f15@6",
+              "label": "Priority",
+              "style": "secondary",
+              "presentation": "menu",
+              "options": [
+                {
+                  "id": "high",
+                  "label": "High",
+                  "description": "Starts before Normal and Low",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                },
+                {
+                  "id": "normal",
+                  "label": "Normal · now",
+                  "description": "The default",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                },
+                {
+                  "id": "low",
+                  "label": "Low",
+                  "description": "Starts when nothing else waits",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                }
+              ],
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true
+            },
             {
               "id": "cancel:t-651c38484cd2f34e74d5107ba05f7f15@6",
               "label": "Cancel Task",

@@ -74,7 +74,7 @@ struct TemporaryStore(std::path::PathBuf);
 impl TemporaryStore {
     fn new() -> Self {
         let path = std::env::temp_dir().join(format!(
-            "alondra-v2-acceptance-{}",
+            "alondra-acceptance-{}",
             crate::auth::random_hex(16)
         ));
         std::fs::create_dir(&path).unwrap();
@@ -199,7 +199,7 @@ fn setup_base(store: &mut DomainStore, base: &Value) {
             Command::CreateRequest {
                 request_id: id.into(),
                 body: string(field(request, "content")).into(),
-                auto_merge: false, maintenance: false,
+                auto_merge: false, maintenance: false, message: false,
             },
         );
     }
@@ -370,7 +370,7 @@ fn setup_variant(store: &mut DomainStore, variants: &Value, name: &str) {
                 interaction_id: string(field(variant, "presentation_id")).into(),
                 body: "Synthetic pull request".into(),
                 targets,
-                is_final: field(variant, "final") == true, card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
+                is_final: field(variant, "final") == true, nothing_to_review: false, card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
             },
         );
     } else if name == "authorized-pr" {
@@ -461,7 +461,7 @@ fn setup_variant(store: &mut DomainStore, variants: &Value, name: &str) {
                 }
                 .into(),
                 targets,
-                is_final: variant_field(variants, name, "final") == true, card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
+                is_final: variant_field(variants, name, "final") == true, nothing_to_review: false, card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
             },
         );
     } else if name == "unaccepted-text-final" {
@@ -477,7 +477,7 @@ fn setup_variant(store: &mut DomainStore, variants: &Value, name: &str) {
                 interaction_id: string(field(variant, "presentation_id")).into(),
                 body: "Synthetic answer".into(),
                 targets,
-                is_final: field(variant, "final") == true, card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
+                is_final: field(variant, "final") == true, nothing_to_review: false, card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
             },
         );
     } else {

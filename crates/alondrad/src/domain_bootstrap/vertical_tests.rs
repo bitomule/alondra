@@ -49,7 +49,7 @@ struct Fixture {
 impl Fixture {
     async fn start() -> Self {
         let home = std::env::temp_dir().join(format!(
-            "alondra-v2-vertical-{}",
+            "alondra-vertical-{}",
             crate::auth::random_hex(8)
         ));
         std::fs::create_dir(&home).unwrap();
@@ -352,7 +352,7 @@ async fn http_pr_flow_replays_same_receipt_and_rejects_old_epoch() {
     fixture.task("pr-task", true).await;
     let envelope = fixture.envelope(json!({"kind":"register_pr", "task_id":"pr-task",
         "pr_id":"pr-1", "host":"github.com", "repository":"example/project",
-        "number":7, "head":"0123456789abcdef", "base":"main",
+        "number":7, "head":"0123456789abcdef0123456789abcdef01234567", "base":"main",
         "allowed_methods":["squash"]}));
     let (status, first) = fixture.post(&fixture.agent, &envelope).await;
     assert_eq!(status, StatusCode::OK, "{first}");
@@ -366,7 +366,7 @@ async fn http_pr_flow_replays_same_receipt_and_rejects_old_epoch() {
     );
     let mut stale = fixture.envelope(json!({"kind":"present_result", "task_id":"pr-task",
         "interaction_id":"pr-delivery", "body":"Code ready", "is_final":true,
-        "targets":[{"kind":"pull_request", "pr_id":"pr-1", "head":"0123456789abcdef"}]}));
+        "targets":[{"kind":"pull_request", "pr_id":"pr-1", "head":"0123456789abcdef0123456789abcdef01234567"}]}));
     stale["data_epoch"] = json!("old-epoch");
     let (status, rejected) = fixture.post(&fixture.agent, &stale).await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{rejected}");
@@ -380,13 +380,13 @@ async fn http_pr_flow_replays_same_receipt_and_rejects_old_epoch() {
             false,
             json!({"kind":"present_result", "task_id":"pr-task",
         "interaction_id":"pr-delivery", "body":"Code ready", "is_final":true,
-        "targets":[{"kind":"pull_request", "pr_id":"pr-1", "head":"0123456789abcdef"}]}),
+        "targets":[{"kind":"pull_request", "pr_id":"pr-1", "head":"0123456789abcdef0123456789abcdef01234567"}]}),
         )
         .await;
     let state = fixture.domain.state().unwrap();
     assert_eq!(state.pull_requests.len(), 1);
     assert_eq!(state.pull_requests[&"pr-1".into()].task_id.0, "pr-task");
-    assert_eq!(state.pull_requests[&"pr-1".into()].head, "0123456789abcdef");
+    assert_eq!(state.pull_requests[&"pr-1".into()].head, "0123456789abcdef0123456789abcdef01234567");
     assert!(state.interactions.contains_key(&"pr-delivery".into()));
     assert_ne!(
         fixture.domain.state().unwrap().tasks[&"pr-task".into()].state,
@@ -413,13 +413,13 @@ async fn http_presenting_a_conflicting_pr_is_refused_before_any_card_or_push() {
     fixture.task("pr-task", true).await;
     fixture.producer(false, json!({"kind":"register_pr", "task_id":"pr-task",
         "pr_id":"pr-1", "host":"github.com", "repository":"example/project",
-        "number":7, "head":"0123456789abcdef", "base":"main", "allowed_methods":["squash"]})).await;
+        "number":7, "head":"0123456789abcdef0123456789abcdef01234567", "base":"main", "allowed_methods":["squash"]})).await;
     let pushes_before = user_pushes(&fixture.domain);
-    fixture.pr_view.answer(Some(json!({"state":"OPEN", "headRefOid":"0123456789abcdef",
+    fixture.pr_view.answer(Some(json!({"state":"OPEN", "headRefOid":"0123456789abcdef0123456789abcdef01234567",
         "mergeable":"CONFLICTING", "mergeStateStatus":"DIRTY"})));
     let present = json!({"kind":"present_result", "task_id":"pr-task",
         "interaction_id":"pr-delivery", "body":"Code ready", "is_final":true,
-        "targets":[{"kind":"pull_request", "pr_id":"pr-1", "head":"0123456789abcdef"}]});
+        "targets":[{"kind":"pull_request", "pr_id":"pr-1", "head":"0123456789abcdef0123456789abcdef01234567"}]});
     let envelope = fixture.envelope(present.clone());
     let (status, refused) = fixture.post(&fixture.agent, &envelope).await;
     assert_eq!(status, StatusCode::CONFLICT, "{refused}");
@@ -428,7 +428,7 @@ async fn http_presenting_a_conflicting_pr_is_refused_before_any_card_or_push() {
     assert!(!fixture.domain.state().unwrap().interactions.contains_key(&"pr-delivery".into()), "no card");
     assert_eq!(user_pushes(&fixture.domain), pushes_before, "no push");
 
-    fixture.pr_view.answer(Some(json!({"state":"OPEN", "headRefOid":"0123456789abcdef",
+    fixture.pr_view.answer(Some(json!({"state":"OPEN", "headRefOid":"0123456789abcdef0123456789abcdef01234567",
         "mergeable":"MERGEABLE", "mergeStateStatus":"CLEAN"})));
     fixture.producer(false, present).await;
     let state = fixture.domain.state().unwrap();
@@ -443,10 +443,10 @@ async fn http_presenting_a_pr_github_cannot_report_still_creates_the_card() {
     fixture.task("pr-task", true).await;
     fixture.producer(false, json!({"kind":"register_pr", "task_id":"pr-task",
         "pr_id":"pr-1", "host":"github.com", "repository":"example/project",
-        "number":7, "head":"0123456789abcdef", "base":"main", "allowed_methods":["squash"]})).await;
+        "number":7, "head":"0123456789abcdef0123456789abcdef01234567", "base":"main", "allowed_methods":["squash"]})).await;
     fixture.producer(false, json!({"kind":"present_result", "task_id":"pr-task",
         "interaction_id":"pr-delivery", "body":"Code ready", "is_final":true,
-        "targets":[{"kind":"pull_request", "pr_id":"pr-1", "head":"0123456789abcdef"}]})).await;
+        "targets":[{"kind":"pull_request", "pr_id":"pr-1", "head":"0123456789abcdef0123456789abcdef01234567"}]})).await;
     assert!(fixture.domain.state().unwrap().interactions.contains_key(&"pr-delivery".into()));
     fixture.finish().await;
 }

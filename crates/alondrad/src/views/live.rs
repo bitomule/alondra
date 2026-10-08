@@ -66,9 +66,20 @@ pub(crate) async fn gather(
 ) -> LiveSnapshot {
     let now = alondra_core::now_millis();
     let exhausted = client.domain.live.usage_pause.current();
-    let (launches, refusals) = {
+    let (launches, refusals, planned) = {
         let store = client.domain.store.lock().expect("domain store poisoned");
-        (store.request_launch_summaries().unwrap_or_default(), store.launch_refusals().unwrap_or_default())
+        (store.request_launch_summaries().unwrap_or_default(), store.launch_refusals().unwrap_or_default(), store.planned_tasks().unwrap_or_default())
+    };
+    let start_waits = {
+        let store = client.domain.store.lock().expect("domain store poisoned");
+        state.tasks.values()
+            .filter(|task| task.state == TaskState::NotStarted && !task.archived && task.agent_id.is_none())
+            .filter(|task| client.domain.live.closed_task(&task.id.0).is_none() && !store.task_was_launched(&task.id).unwrap_or(true))
+            .map(|task| {
+                let wait = if planned.contains_key(&task.id) { alondra_core::views::LiveStartWait::Room } else { alondra_core::views::LiveStartWait::Plan };
+                (task.id.0.clone(), wait)
+            })
+            .collect()
     };
     let launch_refusals = refusals.into_iter()
         .filter(|(task, _, _)| state.tasks.get(task).is_some_and(|task| task.state == TaskState::NotStarted))
@@ -390,7 +401,7 @@ pub(crate) async fn gather(
     for id in keys
         .iter()
         .filter_map(|key| key.strip_prefix("node:"))
-        .filter(|id| *id != "orchestrator")
+        .filter(|id| !matches!(state.resolve_target(id), alondra_core::domain::Target::Orchestrator(_)))
     {
         let path = format!("/agents/{id}/activity");
         let activity_revision = activity_source_revision(client, id);
@@ -473,6 +484,7 @@ pub(crate) async fn gather(
             paused_by_user: exhausted.by_user,
         }),
         launch_refusals,
+        start_waits,
         pacing: client.domain.live.gate.live(&client.domain, now),
     }
 }

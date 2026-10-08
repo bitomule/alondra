@@ -206,12 +206,17 @@ impl Auth {
     }
 
     fn verify(&self, headers: &HeaderMap, method: &str, path_and_query: &str, body: &[u8]) -> Result<Signed, &'static str> {
+        self.verify_at(headers, method, path_and_query, body, now_millis())
+    }
+
+    fn verify_at(&self, headers: &HeaderMap, method: &str, path_and_query: &str,
+        body: &[u8], now: i64) -> Result<Signed, &'static str> {
         let h = |k: &str| headers.get(k).and_then(|v| v.to_str().ok());
         let device_id = h("x-alondra-device").ok_or("missing X-Alondra-Device")?;
         let timestamp = h("x-alondra-timestamp").ok_or("missing X-Alondra-Timestamp")?;
         let signature_b64 = h("x-alondra-signature").ok_or("missing X-Alondra-Signature")?;
         let ts: i64 = timestamp.parse().map_err(|_| "invalid timestamp")?;
-        if (now_millis() - ts).abs() > MAX_SKEW_MS {
+        if (now - ts).abs() > MAX_SKEW_MS {
             return Err("timestamp out of range");
         }
         let key_b64 = {
@@ -224,11 +229,12 @@ impl Auth {
         let signature = Signature::from_der(&der).map_err(|_| "malformed signature")?;
         let message = signed_message(method, path_and_query, timestamp, body);
         key.verify(message.as_bytes(), &signature).map_err(|_| "wrong signature")?;
+        let canonical_signature = B64.encode(signature.normalize_s().to_der().as_bytes());
         let mut seen = self.seen.lock().expect("seen lock poisoned");
-        if seen.iter().any(|s| s == signature_b64) {
+        if seen.iter().any(|s| s == &canonical_signature) {
             return Err("replayed request");
         }
-        seen.push_back(signature_b64.to_string());
+        seen.push_back(canonical_signature);
         if seen.len() > REPLAY_MEMORY {
             seen.pop_front();
         }
@@ -313,6 +319,19 @@ mod tests {
         assert_eq!(signed.name, "iPhone");
         assert_eq!(signed.device_id, id);
         assert_eq!(auth.verify(&h, "POST", "/v1/questions/1/answer", b"{\"text\":\"yes\"}").unwrap_err(), "replayed request");
+    }
+
+    #[test]
+    fn an_equivalent_signature_cannot_replay_a_captured_request() {
+        let (auth, key, id) = auth_with_device();
+        let ts = 1000;
+        let message = signed_message("GET", "/views/home", &ts.to_string(), b"");
+        let signature: Signature = key.sign(message.as_bytes());
+        let equivalent = Signature::from_scalars(signature.r().to_bytes(), (-*signature.s()).to_bytes()).unwrap();
+        key.verifying_key().verify(message.as_bytes(), &equivalent).unwrap();
+        auth.verify_at(&headers(&id, ts, &signature), "GET", "/views/home", b"", ts).unwrap();
+        assert_eq!(auth.verify_at(&headers(&id, ts, &equivalent), "GET", "/views/home", b"", ts)
+            .unwrap_err(), "replayed request");
     }
 
     #[test]

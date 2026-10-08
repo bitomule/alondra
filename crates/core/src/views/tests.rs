@@ -636,7 +636,9 @@ fn tasks_fixture() -> (DomainState, LiveSnapshot) {
     add_request(&mut state, "r-legacy", None, "Look at the schedule editor and write the notes for the beta.");
     add_task(&mut state, "t-legacy-editor", "r-legacy", "Review the schedule editor", TaskState::ForYourReview, &[]);
     add_task(&mut state, "t-legacy-notes", "r-legacy", "Write the release notes", TaskState::NotStarted, &[]);
-    add_request(&mut state, "r-new", None, "Import lists from Notes");
+    add_request(&mut state, "r-new", None, "Import lists from Notes. Keep the order and the checked items.");
+    add_request(&mut state, "r-message", None, "[From Claude, for David · 09:58] Launch two more from the queue.");
+    state.requests.get_mut(&"r-message".into()).unwrap().message = true;
     add_request(&mut state, "r-answer", Some("Is main green?"), "Is main green right now?");
     let answered = state.requests.get_mut(&"r-answer".into()).unwrap();
     answered.closed = true;
@@ -661,6 +663,7 @@ fn tasks_fixture() -> (DomainState, LiveSnapshot) {
     live.launch_refusals.insert("t-hf-registry".into(), LiveLaunchRefusal {
         reason: "workspace_untrusted".into(), detail: Some("~/Projects/indie-apps".into()),
     });
+    live.start_waits.insert("t-legacy-notes".into(), LiveStartWait::Plan);
     for (id, at) in [
         ("r-9f2156b5a8894e53901f0af576dff6a2", "2026-09-30T09:40:00.000Z"),
         ("r-badge", "2026-09-30T09:52:00.000Z"),
@@ -746,6 +749,73 @@ fn the_tasks_counter_counts_only_tasks_still_under_way() {
 }
 
 #[test]
+fn a_message_to_the_orchestrator_is_listed_only_once_it_made_tasks() {
+    let (mut state, live) = tasks_fixture();
+    let listed = |state: &DomainState| -> Vec<String> {
+        ["tasks", "tasks?section=finished&after=0", "tasks?section=archived&after=0"].into_iter()
+            .flat_map(|key| render(state, &live, Client::Ios, Lang::En, key, "2026-09-30T10:00:00Z").sections)
+            .flat_map(|section| section.items)
+            .filter_map(|item| if let Item::Row(row) = item { Some(row.id) } else { None })
+            .collect()
+    };
+    let counted = |state: &DomainState| -> u32 {
+        render(state, &live, Client::Ios, Lang::En, "tasks", "2026-09-30T10:00:00Z").sections.iter()
+            .filter(|section| ["active", "finished", "archived"].contains(&section.id.as_str()))
+            .filter_map(|section| section.count).sum()
+    };
+    let before = counted(&state);
+    assert!(!listed(&state).contains(&"r-message".to_string()), "a message still being handled is no request");
+    assert!(listed(&state).contains(&"r-new".to_string()), "a request the user wrote shows before it has tasks");
+    state.requests.get_mut(&"r-message".into()).unwrap().closed = true;
+    assert!(!listed(&state).contains(&"r-message".to_string()), "nor once it was handled");
+    assert_eq!(counted(&state), before, "and no section counts it");
+    let mut task = state.tasks.values().next().unwrap().clone();
+    (task.id, task.request_id, task.title, task.state) = ("t-from-message".into(), "r-message".into(), "Launch the queue".into(), TaskState::NotStarted);
+    state.requests.get_mut(&"r-message".into()).unwrap().closed = false;
+    state.tasks.insert(task.id.clone(), task);
+    assert!(listed(&state).contains(&"r-message".to_string()), "a message that made a task is work like any other");
+}
+
+#[test]
+fn a_new_request_without_a_title_is_named_by_its_text() {
+    let (state, live) = tasks_fixture();
+    for lang in [Lang::En, Lang::Es] {
+        let view = render(&state, &live, Client::Ios, lang, "tasks", "2026-09-30T10:00:00Z");
+        let row = view.sections.iter().flat_map(|section| &section.items)
+            .find_map(|item| if let Item::Row(row) = item { (row.id == "r-new").then_some(row) } else { None })
+            .expect("the new request");
+        assert_eq!(row.title, "Import lists from Notes");
+    }
+    let detail = render(&state, &live, Client::Ios, Lang::Es, "task:t-legacy-notes", "2026-09-30T10:00:00Z");
+    let request = detail.sections.iter().flat_map(|section| &section.items)
+        .find_map(|item| if let Item::Facts(facts) = item { facts.items.iter().find(|fact| fact.label == "Solicitud") } else { None })
+        .expect("the task's request");
+    assert_eq!(request.value, "Look at the schedule editor and write the notes for the beta");
+    assert_eq!(super::tasks::summary("  \nFix the crash when the schedule list is empty? It happens on launch."),
+        "Fix the crash when the schedule list is empty?");
+    assert_eq!(super::tasks::summary("En iOS en la pantalla de nuevo de Alondra deberíamos hacer dismiss del teclado al enviar y además"),
+        "En iOS en la pantalla de nuevo de Alondra deberíamos hacer…");
+    assert_eq!(super::tasks::summary("v0.2.57 is out"), "v0.2.57 is out");
+}
+
+#[test]
+fn pr_handling_says_what_happens_to_the_pr() {
+    let mut state = fixture();
+    let live = LiveSnapshot::default();
+    let handling = |state: &DomainState| -> String {
+        render(state, &live, Client::Ios, Lang::Es, "task:t-1", "").sections.iter().flat_map(|section| &section.items)
+            .find_map(|item| if let Item::Facts(facts) = item {
+                facts.items.iter().find(|fact| fact.label == "Gestión de PR").map(|fact| fact.value.clone())
+            } else { None })
+            .expect("PR handling")
+    };
+    state.tasks.get_mut(&"t-1".into()).unwrap().review_prs = true;
+    assert_eq!(handling(&state), "La revisas tú; al aceptarla, Alondra la fusiona");
+    state.tasks.get_mut(&"t-1".into()).unwrap().review_prs = false;
+    assert_eq!(handling(&state), "Merge automático: Alondra la fusiona al pasar los checks");
+}
+
+#[test]
 fn tasks_views_match_goldens() {
     let (state, live) = tasks_fixture();
     for (filename, client, lang) in TASKS_GOLDENS {
@@ -756,6 +826,9 @@ fn tasks_views_match_goldens() {
             _ => include_str!("../../../../fixtures/views/cards/tasks-tui.json"),
         };
         let actual = render(&state, &live, client, lang, "tasks", "2026-09-30T10:00:00Z");
+        if let Ok(dir) = std::env::var("ALONDRA_GOLDEN_OUT") {
+            std::fs::write(format!("{dir}/{filename}"), format!("{}\n", serde_json::to_string_pretty(&actual).unwrap())).unwrap();
+        }
         assert_golden(filename, &actual, expected);
     }
     for (filename, client, lang, expected) in [
@@ -764,6 +837,9 @@ fn tasks_views_match_goldens() {
         ("tasks-mac-finished.json", Client::Mac, Lang::En, include_str!("../../../../fixtures/views/cards/tasks-mac-finished.json")),
     ] {
         let actual = render(&state, &live, client, lang, "tasks?section=finished&after=0", "2026-09-30T10:00:00Z");
+        if let Ok(dir) = std::env::var("ALONDRA_GOLDEN_OUT") {
+            std::fs::write(format!("{dir}/{filename}"), format!("{}\n", serde_json::to_string_pretty(&actual).unwrap())).unwrap();
+        }
         assert_golden(filename, &actual, expected);
     }
 }
@@ -1370,6 +1446,12 @@ fn a_task_that_has_not_started_says_what_refused_its_launch() {
     let mut live = LiveSnapshot::default();
     assert_eq!(task_state_text(&state, &live, Lang::Es), "Esperando a que el orquestador la lance");
     assert_eq!(task_state_text(&state, &live, Lang::En), "Waiting for the orchestrator to launch it");
+    live.start_waits.insert("t-1".into(), LiveStartWait::Plan);
+    assert_eq!(task_state_text(&state, &live, Lang::Es), "Esperando a que el orquestador le dé plan");
+    assert_eq!(task_state_text(&state, &live, Lang::En), "Waiting for the orchestrator to give it a plan");
+    live.start_waits.insert("t-1".into(), LiveStartWait::Room);
+    assert_eq!(task_state_text(&state, &live, Lang::Es), "Arrancando", "with a plan, Alondra starts it when there is room");
+    live.start_waits.clear();
     let mut base = state.tasks[&"t-1".into()].clone();
     base.id = "t-base".into();
     base.title = "Build the base".into();
@@ -1377,7 +1459,7 @@ fn a_task_that_has_not_started_says_what_refused_its_launch() {
     state.tasks.insert(base.id.clone(), base);
     state.tasks.get_mut(&"t-1".into()).unwrap().dependencies = ["t-base".into()].into();
     let detail = serde_json::to_string(&render(&state, &live, Client::Ios, Lang::Es, "task:t-1", "")).unwrap();
-    assert!(detail.contains("Espera a «Build the base»") && !detail.contains("orquestador la lance"), "{detail}");
+    assert!(detail.contains("Espera a «Build the base»") && !detail.contains("le dé plan"), "{detail}");
     state.tasks.remove(&"t-base".into());
     state.tasks.get_mut(&"t-1".into()).unwrap().dependencies = Default::default();
     live.launch_refusals.insert("t-1".into(), LiveLaunchRefusal {
@@ -1532,7 +1614,7 @@ fn task_detail_offers_only_the_actions_its_state_allows() {
             let case = format!("{task_state:?} archived={archived} request_closed={request_closed} {client:?}");
             assert!(actions.iter().all(|action| action.enabled && action.disabled_reason.is_none()), "{case}: {actions:?}");
             let labels: Vec<&str> = actions.iter().map(|action| action.label.as_str())
-                .filter(|label| *label != "Message").collect();
+                .filter(|label| !["Message", "Priority"].contains(label)).collect();
             assert_eq!(labels, expected, "{case}");
             assert_eq!(actions.iter().any(|action| action.key.is_some()), client == Client::Tui, "{case}: keys are a terminal thing");
         }
@@ -1734,16 +1816,15 @@ fn an_untitled_request_with_several_tasks_has_no_header_and_its_tasks_stand_loos
 }
 
 #[test]
-fn an_untitled_request_with_one_task_is_that_task_and_one_with_none_is_new() {
+fn an_untitled_request_with_one_task_is_that_task_and_one_with_none_is_its_text() {
     let mut state = fixture();
-    state.requests.insert("r-2".into(), Request::new("r-2".into(), "Prompt text that is not a title".into()));
-    for (lang, new_request) in [(Lang::En, "New request"), (Lang::Es, "Nueva petición")] {
+    state.requests.insert("r-2".into(), Request::new("r-2".into(), "Export the logs from settings. Today it needs a cable.".into()));
+    for lang in [Lang::En, Lang::Es] {
         for client in [Client::Ios, Client::Mac, Client::Tui] {
             let rows = tasks_items(&state, client, lang);
             let title = |id: &str| rows.iter().find(|row| row.id == id).unwrap().title.clone();
             assert_eq!(title("r-1"), "Build a feature");
-            assert_eq!(title("r-2"), new_request);
-            assert!(every_text(&rows).iter().all(|text| !text.contains("Prompt text")), "the prompt is never a title");
+            assert_eq!(title("r-2"), "Export the logs from settings");
         }
     }
 }
@@ -2437,6 +2518,42 @@ fn an_orchestrator_problem_is_a_card_like_any_other_and_comes_first() {
     assert!(waiting.items.iter().any(|item| matches!(item, Item::Row(row) if row.id == "problem-orchestrator-run-1")));
 }
 
+#[test]
+fn a_batch_that_stopped_halfway_reads_in_spanish_with_what_it_did_and_how_to_choose() {
+    use crate::domain::CardKind;
+    use crate::orchestrator_batch::*;
+    let mut state = fixture();
+    let problem = BatchProblem {
+        stop: BatchStop::Interrupted, calls: vec!["create_task".into()],
+        subjects: vec!["Make the editor readable".into()], error: "Claude exited without a successful terminal result".into(),
+    };
+    let (need, why) = problem.text(Lang::En);
+    let option = |id: &str, label: &str| QuestionOption { id: id.into(), label: label.into(), description: None, inputs: vec![] };
+    let mut card = spec(CardKind::Problem, &need, &why);
+    card.recommended = Some(BATCH_CONTINUE.into());
+    state.interactions.insert("problem-orchestrator-run-1".into(), Interaction {
+        attachments: vec![], id: "problem-orchestrator-run-1".into(), scope: Scope::Orchestrator { request_id: None },
+        author: Author::System, recipient: Recipient::User, body: problem.to_body(),
+        blocking: false, subject: None,
+        payload: InteractionPayload::Question {
+            options: vec![option(BATCH_CONTINUE, BATCH_CONTINUE_LABEL), option(BATCH_RETRY, BATCH_RETRY_LABEL)],
+            answer: None,
+        },
+        revision: 1, order: 9, withdrawn: false, card, clarification: None,
+    });
+    let view = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::Es, "card:problem-orchestrator-run-1", "");
+    let card = card_of(&view);
+    assert_eq!(card.need.as_deref(), Some("El orquestador se cortó a medias: decide si lo repite"));
+    assert!(card.why.as_deref().is_some_and(|why| why.starts_with("Se detuvo antes de terminar")), "{:?}", card.why);
+    assert_eq!(card.actions.iter().map(|a| (a.option_id.as_deref().unwrap(), a.label.as_str())).collect::<Vec<_>>(),
+        [("continue", "★ Seguir sin repetirlo"), ("retry", "Repetirlo desde el principio")]);
+    let detail = view.sections.iter().find(|section| section.id == "content").expect("the detail is the content");
+    assert!(matches!(&detail.items[0], Item::Markdown(text) if text.text.contains("**Estaba atendiendo:**\n- Make the editor readable")
+        && text.text.contains("**Ya había hecho:** crear una tarea.") && text.text.contains("Error técnico")), "{:?}", detail.items);
+    let english = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::En, "card:problem-orchestrator-run-1", "");
+    assert_eq!(card_of(&english).need.as_deref(), Some(need.as_str()));
+}
+
 fn orchestrator_screen(live: Option<live::LiveOrchestrator>, lang: Lang) -> (Vec<Fact>, Option<String>, Vec<String>) {
     let live = LiveSnapshot { orchestrator: live, ..Default::default() };
     let view = render(&fixture(), &live, Client::Ios, lang, "node:orchestrator", "");
@@ -2874,7 +2991,7 @@ fn an_ios_fleet_item_is_the_node_and_its_one_task_without_readings() {
     assert_eq!(working.children[0].title, "cargo test");
     assert!(matches!(&working.children[0].trailing, Some(Trailing::Time { at, .. }) if at == "2026-09-30T09:55:00Z"));
     let verbs = |row: &Row| row.actions.iter().map(|action| action.id.split(':').next().unwrap().to_owned()).collect::<Vec<_>>();
-    assert_eq!(verbs(&working), ["interrupt", "close"], "a working node can be interrupted or closed from its card");
+    assert_eq!(verbs(&working), ["interrupt", "pause", "close"], "a working node can be interrupted, paused or closed from its card");
     let interrupt = &working.actions[0];
     assert_eq!((interrupt.label.as_str(), interrupt.style), ("Interrumpir", Style::Secondary));
     assert!(interrupt.confirm.is_some());
@@ -3837,7 +3954,7 @@ fn fixed_options() -> Vec<(&'static str, Vec<(&'static str, &'static str)>)> {
         ("request_input", vec![("provide", "Send the file"), ("skip", "I can't provide it")]),
         ("request_input", vec![("provide", "Send the text"), ("skip", "I can't provide it")]),
         ("request_input", vec![("provide", "Send the secret"), ("skip", "I can't provide it")]),
-        ("problem", vec![("retry", "Retry the batch"), ("continue", "Continue without it"), ("stop", "Stop it")]),
+        ("problem", vec![("continue", "Continue without running it again"), ("retry", "Run it again from the start")]),
     ]
 }
 
@@ -3985,7 +4102,7 @@ fn presented_pr() -> DomainState {
     let user = Actor::User { user_id: "u".into() };
     for (actor, command) in [
         (Actor::System, Command::RegisterAgent { agent_id: "a".into(), name: "Node A".into() }),
-        (user.clone(), Command::CreateRequest { request_id: "r".into(), body: "Fix it".into(), auto_merge: false, maintenance: false }),
+        (user.clone(), Command::CreateRequest { request_id: "r".into(), body: "Fix it".into(), auto_merge: false, maintenance: false, message: false }),
         (user.clone(), Command::CreateTask { task_id: "t".into(), request_id: "r".into(), title: "Fix it".into(),
             agent_id: Some("a".into()), review_prs: false, dependencies: BTreeSet::new(), stack: None }),
         (agent.clone(), Command::RegisterPr { task_id: "t".into(), pr_id: "pr".into(), host: "github.com".into(),
@@ -3993,7 +4110,7 @@ fn presented_pr() -> DomainState {
             allowed_methods: vec![MergeMethod::Squash] }),
         (agent, Command::PresentResult { attachments: vec![], task_id: "t".into(), interaction_id: "d".into(),
             body: "Ready".into(), targets: vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: "head1".into() }],
-            is_final: true, card: crate::domain::CardSpec::delivery("Review the result", &[], true) }),
+            is_final: true, nothing_to_review: false, card: crate::domain::CardSpec::delivery("Review the result", &[], true) }),
     ] {
         execute(&mut state, actor, command);
     }
@@ -4329,7 +4446,7 @@ fn answered_and_closed_request() -> DomainState {
     let mut state = DomainState::new("epoch-1");
     let orchestrator = Actor::Orchestrator { generation: 0 };
     run(&mut state, Actor::User { user_id: "u".into() }, Command::CreateRequest {
-        request_id: "a7efd99d".into(), body: "can we encrypt images via R2".into(), auto_merge: false, maintenance: false,
+        request_id: "a7efd99d".into(), body: "can we encrypt images via R2".into(), auto_merge: false, maintenance: false, message: false,
     });
     let published = run(&mut state, orchestrator.clone(), Command::PublishInformation {
         attachments: vec![],
@@ -4988,7 +5105,7 @@ fn fleet_heads_with_the_working_count_and_lists_the_queued_tasks_with_their_plac
     (task.state, task.final_presentation) = (TaskState::NotStarted, None);
     let live = LiveSnapshot {
         pacing: Some(LivePacing {
-            working: 6, limit: 6, memory_free: Some(12), tight: true,
+            working: 6, limit: 6, fixed: None, auto: 6, memory_free: Some(12), tight: true,
             queued: vec![LiveQueued { task_id: "t-1".into(), position: 2, of: 3, hold: LiveHold::Slots { working: 6, limit: 6 } }],
             paused: vec![],
         }),
@@ -5016,7 +5133,7 @@ fn the_terminal_shows_only_the_new_plan_after_the_first_was_sent_back() {
         card: CardSpec::new(CardKind::Review, title).content(ContentKind::Plan, format!("# {title}\n\n1. Do it")),
     };
     execute(&mut state, Actor::System, Command::RegisterAgent { agent_id: "a".into(), name: "Node A".into() });
-    execute(&mut state, user.clone(), Command::CreateRequest { request_id: "r".into(), body: "Weekly cycle".into(), auto_merge: false, maintenance: false });
+    execute(&mut state, user.clone(), Command::CreateRequest { request_id: "r".into(), body: "Weekly cycle".into(), auto_merge: false, maintenance: false, message: false });
     execute(&mut state, user.clone(), Command::CreateTask { task_id: "t".into(), request_id: "r".into(), title: "Weekly cycle".into(),
         agent_id: Some("a".into()), review_prs: false, dependencies: BTreeSet::new(), stack: None });
     execute(&mut state, Actor::System, plan("p1", "First weekly plan"));
@@ -5037,9 +5154,9 @@ fn a_paused_task_says_since_when_why_and_when_it_comes_back_in_both_languages() 
     let mut state = fixture();
     let task = state.tasks.get_mut(&crate::domain::TaskId::from("t-1")).unwrap();
     (task.state, task.final_presentation) = (TaskState::Running, None);
-    let memory = LivePaused { task_id: "t-1".into(), at: "14:05".into(), reason: LivePauseReason::Memory, fine_minutes: Some(2), next: false, waits_for: None };
+    let memory = LivePaused { task_id: "t-1".into(), session: Some("agent-1".into()), at: "14:05".into(), reason: LivePauseReason::Memory, fine_minutes: Some(2), next: false, waits_for: None };
     let live = LiveSnapshot {
-        pacing: Some(LivePacing { working: 5, limit: 6, memory_free: Some(24), tight: true, queued: vec![], paused: vec![memory.clone()] }),
+        pacing: Some(LivePacing { working: 5, limit: 6, fixed: None, auto: 6, memory_free: Some(24), tight: true, queued: vec![], paused: vec![memory.clone()] }),
         ..LiveSnapshot::default()
     };
     let fleet = serde_json::to_string(&render(&state, &live, Client::Ios, Lang::Es, "fleet", "")).unwrap();
@@ -5055,4 +5172,231 @@ fn a_paused_task_says_since_when_why_and_when_it_comes_back_in_both_languages() 
     assert_eq!(common::paused_label(&LivePaused { next: true, ..declared }, Lang::Es), "Esperando: cola de compilación · desde las 14:05 · se reanuda el siguiente");
     let unexplained = LivePaused { reason: LivePauseReason::Machine, ..memory };
     assert_eq!(common::paused_label(&unexplained, Lang::En), "Waiting since 14:05");
+}
+
+fn action_ids(view: &View) -> Vec<String> {
+    let json = serde_json::to_value(view).unwrap();
+    let mut ids = vec![];
+    fn walk(value: &serde_json::Value, ids: &mut Vec<String>) {
+        match value {
+            serde_json::Value::Object(map) => {
+                if let (Some(serde_json::Value::String(id)), Some(_)) = (map.get("id"), map.get("presentation")) {
+                    ids.push(id.split('@').next().unwrap().to_owned());
+                }
+                map.values().for_each(|value| walk(value, ids));
+            }
+            serde_json::Value::Array(items) => items.iter().for_each(|value| walk(value, ids)),
+            _ => {}
+        }
+    }
+    walk(&json, &mut ids);
+    ids
+}
+
+fn find_action<'a>(view: &'a View, prefix: &str) -> Option<&'a super::Action> {
+    fn in_rows<'a>(rows: &'a [super::Row], prefix: &str) -> Option<&'a super::Action> {
+        rows.iter().find_map(|row| row.actions.iter().find(|action| action.id.starts_with(prefix)).or_else(|| in_rows(&row.children, prefix)))
+    }
+    view.sections.iter().flat_map(|section| &section.items).find_map(|item| match item {
+        Item::Row(row) => in_rows(std::slice::from_ref(row), prefix),
+        Item::Actions(bar) => bar.actions.iter().find(|action| action.id.starts_with(prefix)),
+        _ => None,
+    })
+}
+
+fn pacing_live(queued: Vec<LiveQueued>, paused: Vec<LivePaused>, fixed: Option<u32>) -> LiveSnapshot {
+    LiveSnapshot {
+        pacing: Some(LivePacing { working: 6, limit: fixed.unwrap_or(6), fixed, auto: 6, memory_free: Some(30), tight: false, queued, paused }),
+        ..LiveSnapshot::default()
+    }
+}
+
+#[test]
+fn the_fleet_header_says_where_the_limit_comes_from_and_offers_every_value_to_change_it() {
+    let state = fixture();
+    let live = pacing_live(vec![], vec![], None);
+    let fleet = render(&state, &live, Client::Ios, Lang::Es, "fleet", "");
+    let text = serde_json::to_string(&fleet).unwrap();
+    assert!(text.contains("Límite: automático (6)"), "{text}");
+    let limit = find_action(&fleet, "set_limit:limit").expect("the limit is changed from the fleet header");
+    assert_eq!(limit.label, "Nodos a la vez");
+    let labels: Vec<&str> = limit.options.iter().map(|option| option.label.as_str()).collect();
+    assert_eq!(labels.len(), 13, "automatic and 1 to 12: {labels:?}");
+    assert_eq!(labels[0], "Automático (6) · ahora");
+    assert_eq!(limit.options[12].id, "12");
+
+    let live = pacing_live(vec![], vec![], Some(4));
+    let fleet = render(&state, &live, Client::Tui, Lang::En, "fleet", "");
+    assert!(serde_json::to_string(&fleet).unwrap().contains("Limit: 4, set by you · automatic would be 6"));
+    let limit = find_action(&fleet, "set_limit:limit").unwrap();
+    assert_eq!(limit.key.as_deref(), Some("L"));
+    let ids: Vec<&str> = limit.options.iter().map(|option| option.id.as_str()).collect();
+    assert_eq!(ids, ["auto", "1", "2", "3", "4", "5", "6", "7", "8"], "the TUI menu numbers 9 entries around the current value");
+    assert_eq!(limit.options[4].label, "4 · now");
+}
+
+#[test]
+fn a_queued_task_offers_pause_and_a_paused_one_offers_resume_where_it_shows() {
+    let mut state = fixture();
+    let task = state.tasks.get_mut(&crate::domain::TaskId::from("t-1")).unwrap();
+    (task.state, task.final_presentation) = (TaskState::NotStarted, None);
+    let queued = LiveQueued { task_id: "t-1".into(), position: 1, of: 1, hold: LiveHold::Slots { working: 6, limit: 6 } };
+    let live = pacing_live(vec![queued], vec![], None);
+    for client in [Client::Ios, Client::Mac, Client::Tui] {
+        let fleet = render(&state, &live, client, Lang::En, "fleet", "");
+        assert!(find_action(&fleet, "pause:t-1").is_some(), "{client:?}: {:?}", action_ids(&fleet));
+        let detail = render(&state, &live, client, Lang::En, "task:t-1", "");
+        assert!(action_ids(&detail).contains(&"pause:t-1".to_owned()), "{client:?}: {:?}", action_ids(&detail));
+        assert!(!action_ids(&detail).iter().any(|id| id.starts_with("resume:")));
+    }
+
+    let paused = LivePaused { task_id: "t-1".into(), session: None, at: "11:20".into(), reason: LivePauseReason::User, fine_minutes: None, next: false, waits_for: None };
+    let live = pacing_live(vec![], vec![paused], None);
+    let fleet = render(&state, &live, Client::Ios, Lang::Es, "fleet", "");
+    let resume = find_action(&fleet, "resume:t-1").expect("a task taken out of the queue resumes by its id");
+    assert_eq!((resume.label.as_str(), resume.description.as_deref()), ("Reanudar", Some("Ahora, aunque se pase del límite")));
+    let detail = render(&state, &live, Client::Mac, Lang::En, "task:t-1", "");
+    assert!(action_ids(&detail).contains(&"resume:t-1".to_owned()), "{:?}", action_ids(&detail));
+    assert!(!action_ids(&detail).iter().any(|id| id.starts_with("pause:")));
+}
+
+#[test]
+fn a_working_node_offers_pause_with_a_warning_and_a_paused_node_offers_resume_by_its_session() {
+    let mut state = fixture();
+    let task = state.tasks.get_mut(&crate::domain::TaskId::from("t-1")).unwrap();
+    (task.state, task.final_presentation, task.agent_id) = (TaskState::Running, None, Some("a-1".into()));
+    let mut live = pacing_live(vec![], vec![], None);
+    live.nodes.push(LiveNode { agent_id: "a-1".into(), name: "Node One".into(), working: true, ..LiveNode::default() });
+    let node = render(&state, &live, Client::Ios, Lang::Es, "node:a-1", "");
+    let pause = find_action(&node, "pause:a-1").expect("a working node can be paused from its detail");
+    assert_eq!(pause.confirm.as_ref().unwrap().title, "¿Pausar este nodo?");
+    let fleet = render(&state, &live, Client::Ios, Lang::Es, "fleet", "");
+    assert!(find_action(&fleet, "pause:a-1").is_some(), "{:?}", action_ids(&fleet));
+
+    live.nodes[0].working = false;
+    let paused = LivePaused { task_id: "t-1".into(), session: Some("a-1".into()), at: "14:05".into(), reason: LivePauseReason::Memory, fine_minutes: Some(2), next: false, waits_for: None };
+    live.pacing.as_mut().unwrap().paused.push(paused);
+    let node = render(&state, &live, Client::Tui, Lang::En, "node:a-1", "");
+    assert!(action_ids(&node).contains(&"resume:a-1".to_owned()), "{:?}", action_ids(&node));
+    assert!(!action_ids(&node).iter().any(|id| id.starts_with("pause:")));
+    let task = render(&state, &live, Client::Ios, Lang::En, "task:t-1", "");
+    assert!(action_ids(&task).contains(&"resume:a-1".to_owned()), "{:?}", action_ids(&task));
+}
+
+#[test]
+fn a_task_detail_shows_its_priority_and_offers_the_three_levels() {
+    let mut state = fixture();
+    let task = state.tasks.get_mut(&crate::domain::TaskId::from("t-1")).unwrap();
+    (task.state, task.final_presentation, task.priority) = (TaskState::NotStarted, None, crate::domain::TaskPriority::High);
+    let detail = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::Es, "task:t-1", "");
+    let text = serde_json::to_string(&detail).unwrap();
+    assert!(text.contains("\"label\":\"Prioridad\",\"value\":\"Alta\""), "{text}");
+    let priority = find_action(&detail, "set_priority:t-1").expect("priority is changed from the task's detail");
+    let options: Vec<(&str, &str)> = priority.options.iter().map(|option| (option.id.as_str(), option.label.as_str())).collect();
+    assert_eq!(options, [("high", "Alta · ahora"), ("normal", "Normal"), ("low", "Baja")]);
+    let task = state.tasks.get_mut(&crate::domain::TaskId::from("t-1")).unwrap();
+    task.state = TaskState::Done;
+    let done = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::Es, "task:t-1", "");
+    assert!(find_action(&done, "set_priority:").is_none(), "a finished task has no priority to change");
+}
+
+const PACING_GOLDENS: [(&str, &str, Client, Lang); 8] = [
+    ("fleet-pacing-ios.json", "fleet", Client::Ios, Lang::En),
+    ("fleet-pacing-ios-es.json", "fleet", Client::Ios, Lang::Es),
+    ("fleet-pacing-mac.json", "fleet", Client::Mac, Lang::En),
+    ("fleet-pacing-es-mac.json", "fleet", Client::Mac, Lang::Es),
+    ("fleet-pacing-tui.json", "fleet", Client::Tui, Lang::En),
+    ("fleet-pacing-es-tui.json", "fleet", Client::Tui, Lang::Es),
+    ("task-pacing-ios.json", "task:t-queued-next", Client::Ios, Lang::En),
+    ("task-pacing-ios-es.json", "task:t-queued-next", Client::Ios, Lang::Es),
+];
+
+/// The fleet at its limit: 6 of 6 working with the Mac short of memory, two tasks queued, a node
+/// paused for memory and a queued task the user paused.
+fn pacing_fixture() -> (DomainState, LiveSnapshot) {
+    let (mut state, mut live) = fleet_fixture();
+    let template = state.tasks[&"t-zeta-worker".into()].clone();
+    for (id, title, priority) in [
+        ("t-queued-next", "Fix the crash when the schedule list is empty", crate::domain::TaskPriority::High),
+        ("t-queued-later", "Translate the onboarding into Spanish", crate::domain::TaskPriority::Normal),
+        ("t-held", "Refresh the App Store screenshots", crate::domain::TaskPriority::Low),
+    ] {
+        let mut task = template.clone();
+        (task.id, task.title, task.state, task.agent_id, task.priority) = (id.into(), title.into(), TaskState::NotStarted, None, priority);
+        state.tasks.insert(task.id.clone(), task);
+    }
+    live.pacing = Some(LivePacing {
+        working: 6, limit: 6, fixed: None, auto: 6, memory_free: Some(12), tight: true,
+        queued: vec![
+            LiveQueued { task_id: "t-queued-next".into(), position: 1, of: 2, hold: LiveHold::Memory { free: Some(12) } },
+            LiveQueued { task_id: "t-queued-later".into(), position: 2, of: 2, hold: LiveHold::Memory { free: Some(12) } },
+        ],
+        paused: vec![
+            LivePaused { task_id: "t-zeta-worker".into(), session: Some("zeta-worker".into()), at: "14:05".into(),
+                reason: LivePauseReason::Memory, fine_minutes: Some(2), next: false, waits_for: None },
+            LivePaused { task_id: "t-held".into(), session: None, at: "11:20".into(),
+                reason: LivePauseReason::User, fine_minutes: Some(2), next: false, waits_for: None },
+        ],
+    });
+    live.nodes.iter_mut().filter(|node| node.agent_id == "zeta-worker").for_each(|node| node.working = false);
+    (state, live)
+}
+
+#[test]
+fn pacing_views_match_goldens() {
+    let (state, live) = pacing_fixture();
+    for (filename, key, client, lang) in PACING_GOLDENS {
+        let expected = match filename {
+            "fleet-pacing-ios.json" => include_str!("../../../../fixtures/views/cards/fleet-pacing-ios.json"),
+            "fleet-pacing-ios-es.json" => include_str!("../../../../fixtures/views/cards/fleet-pacing-ios-es.json"),
+            "fleet-pacing-mac.json" => include_str!("../../../../fixtures/views/cards/fleet-pacing-mac.json"),
+            "fleet-pacing-es-mac.json" => include_str!("../../../../fixtures/views/cards/fleet-pacing-es-mac.json"),
+            "fleet-pacing-tui.json" => include_str!("../../../../fixtures/views/cards/fleet-pacing-tui.json"),
+            "fleet-pacing-es-tui.json" => include_str!("../../../../fixtures/views/cards/fleet-pacing-es-tui.json"),
+            "task-pacing-ios.json" => include_str!("../../../../fixtures/views/cards/task-pacing-ios.json"),
+            _ => include_str!("../../../../fixtures/views/cards/task-pacing-ios-es.json"),
+        };
+        let actual = render(&state, &live, client, lang, key, "2026-09-30T10:00:00Z");
+        assert_golden(filename, &actual, expected);
+    }
+}
+
+#[test]
+#[ignore = "explicit fixture generation after Bazel authorization"]
+fn generate_pacing_goldens() {
+    let dir = std::env::var("ALONDRA_GOLDEN_OUT").expect("ALONDRA_GOLDEN_OUT required");
+    let (state, live) = pacing_fixture();
+    for (filename, key, client, lang) in PACING_GOLDENS {
+        let view = render(&state, &live, client, lang, key, "2026-09-30T10:00:00Z");
+        std::fs::write(format!("{dir}/{filename}"), format!("{}\n", serde_json::to_string_pretty(&view).unwrap())).unwrap();
+    }
+}
+
+#[test]
+fn the_orchestrator_is_opened_by_its_shortcuts_and_by_the_session_it_runs_in_now() {
+    let mut state = fixture();
+    state.orchestrator_session = Some("6f1c2b9e-1111-4a2b-9c3d-0123456789ab".into());
+    let live = LiveSnapshot::default();
+    for key in ["node:orchestrator", "node:6f1c2b9e-1111-4a2b-9c3d-0123456789ab", "node:0123456789ab"] {
+        let view = render(&state, &live, Client::Ios, Lang::Es, key, "");
+        assert_eq!(view.key, key);
+        let facts: Vec<Fact> = view.sections.iter().filter(|section| section.id == "header").flat_map(|section| &section.items)
+            .flat_map(|item| match item { Item::Facts(facts) => facts.items.clone(), _ => vec![] }).collect();
+        assert!(facts.iter().any(|fact| fact.label == "Sesión" && fact.value == "6f1c2b9e-1111-4a2b-9c3d-0123456789ab"), "{key}: {facts:?}");
+    }
+}
+
+fn a_pr_card_that_cannot_merge_says_why() {
+    let mut state = golden_fixture();
+    let key = "card:hf-weekly-2026-09-30";
+    let reason = |view: &View| card_of(view).context.iter().find(|line| line.icon == Icon::Warning).map(|line| line.text.clone());
+    let offered = render(&state, &golden_live(), Client::Ios, Lang::Es, key, "");
+    assert!(card_of(&offered).actions.iter().any(|action| action.id.starts_with("merge:")));
+    assert_eq!(reason(&offered), None, "a card that merges needs no reason");
+
+    state.pull_requests.get_mut(&"github.com/example/repo#12".into()).unwrap().head = "89abcdef0123456789abcdef0123456789abcdef".into();
+    let moved = render(&state, &golden_live(), Client::Ios, Lang::Es, key, "");
+    assert!(!card_of(&moved).actions.iter().any(|action| action.id.starts_with("merge:")));
+    assert_eq!(reason(&moved).as_deref(), Some(
+        "La PR #12 tiene commits que este resultado no incluye: no se puede fusionar desde aquí hasta que el nodo la vuelva a presentar."));
 }

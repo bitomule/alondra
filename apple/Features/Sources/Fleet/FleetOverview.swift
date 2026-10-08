@@ -2,7 +2,7 @@ import AlondraContract
 import Foundation
 
 /// What the Fleet list reads from the `fleet` view, and from the `search?q=` view that has the same
-/// shape: the orchestrator row, then one group of nodes per project.
+/// shape: the orchestrator row, the pace of the fleet, then one group of nodes per project.
 public struct FleetOverview: Equatable, Sendable {
     /// A node and its one task as one item: the task's title, the node's name when it adds
     /// something, its state, and what it does now or said last.
@@ -20,6 +20,10 @@ public struct FleetOverview: Equatable, Sendable {
         public var activityAt: String?
         public var interrupt: WireAction?
         public var close: WireAction?
+        public var pause: WireAction?
+        public var resume: WireAction?
+        /// What a Pause or Resume just sent says until the daemon's view shows it.
+        public var stamp: String?
 
         init(row: Row) {
             id = row.id
@@ -35,6 +39,49 @@ public struct FleetOverview: Equatable, Sendable {
             if case .time(let at, _)? = activity?.trailing { activityAt = at }
             interrupt = row.actions.first { $0.id?.hasPrefix("interrupt:") == true }
             close = row.actions.first { $0.id?.hasPrefix("close:") == true }
+            pause = row.actions.first { $0.command == "pause" }
+            resume = row.actions.first { $0.command == "resume" }
+        }
+    }
+
+    /// How many nodes work against the limit, where the limit comes from, and every task that
+    /// waits its turn or is paused, in the order it comes back.
+    public struct Pacing: Equatable, Sendable {
+        public struct Waiting: Equatable, Sendable, Identifiable {
+            public var id: String
+            public var title: String
+            public var state: String?
+            public var link: AlondraContract.Link?
+            public var paused: Bool
+            /// Pause for a queued task, Resume for a paused one.
+            public var action: WireAction?
+        }
+
+        public var summary: String
+        public var limitText: String?
+        public var limit: WireAction?
+        public var waiting: [Waiting] = []
+
+        init?(section: ViewSection) {
+            guard section.id == "pacing" else { return nil }
+            var summary: String?
+            for item in section.items {
+                switch item {
+                case .row(let row) where row.id == "pacing":
+                    summary = row.title
+                    limitText = row.subtitle
+                case .row(let row):
+                    let paused = row.id.hasPrefix("paused:")
+                    waiting.append(Waiting(id: row.id, title: row.title, state: row.subtitle, link: row.link, paused: paused,
+                                           action: row.actions.first { $0.command == (paused ? "resume" : "pause") }))
+                case .actions(let bar):
+                    limit = bar.actions.first { $0.command == "set_limit" }
+                default:
+                    break
+                }
+            }
+            guard let summary else { return nil }
+            self.summary = summary
         }
     }
 
@@ -47,12 +94,17 @@ public struct FleetOverview: Equatable, Sendable {
     }
 
     public var orchestrator: Node?
+    public var pacing: Pacing?
     public var groups: [Group] = []
     public var empty: Notice?
 
     public init(document: ViewDocument) {
         empty = document.empty
         for section in document.sections {
+            if let pacing = Pacing(section: section) {
+                self.pacing = pacing
+                continue
+            }
             let nodes = section.items.compactMap { item -> Node? in
                 if case .row(let row) = item { return Node(row: row) }
                 return nil
@@ -68,16 +120,34 @@ public struct FleetOverview: Equatable, Sendable {
     public var isEmpty: Bool { orchestrator == nil && groups.isEmpty }
 
     /// The list as it is after what was just sent: a closing node is gone, an interrupted one no
-    /// longer offers Interrupt.
-    public func hiding(_ optimistic: Optimistic) -> FleetOverview {
+    /// longer offers Interrupt, a paused or resumed one says so, and a new limit shows at once.
+    public func hiding(_ optimistic: Optimistic, choices: [String: String] = [:]) -> FleetOverview {
         guard !optimistic.isEmpty else { return self }
         func shown(_ node: Node) -> Node {
             var node = node
             if optimistic.hides(node.interrupt?.id) { node.interrupt = nil }
+            for action in [node.pause, node.resume].compactMap({ $0 }) where optimistic.hides(action.id) {
+                (node.pause, node.resume, node.interrupt) = (nil, nil, nil)
+                node.stamp = action.stamp
+            }
             return node
         }
         var overview = self
         overview.orchestrator = orchestrator.map(shown)
+        if var pacing {
+            pacing.waiting = pacing.waiting.map { waiting in
+                guard let action = waiting.action, optimistic.hides(action.id) else { return waiting }
+                var waiting = waiting
+                waiting.state = action.stamp ?? waiting.state
+                waiting.paused = action.command == "pause"
+                waiting.action = nil
+                return waiting
+            }
+            if let limit = pacing.limit, optimistic.hides(limit.id) {
+                pacing.limitText = choices[limit.id ?? ""].map { String(localized: "Nodes at once: \($0)") } ?? pacing.limitText
+            }
+            overview.pacing = pacing
+        }
         overview.groups = groups.compactMap { group in
             var group = group
             let before = group.nodes.count

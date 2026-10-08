@@ -1,4 +1,4 @@
-//! The one-command cutover of a stopped HOME to domain v2, and its rollback.
+//! The one-command cutover of a stopped HOME to the domain store, and its rollback.
 //! The marker fences daemon startup before any legacy store moves; it is
 //! committed only after the empty domain database exists and the legacy stores
 //! are archived. Nothing from the legacy data is imported.
@@ -13,7 +13,9 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 
-pub(crate) const MARKER: &str = "domain-v2-cutover.json";
+pub(crate) const MARKER: &str = "domain-cutover.json";
+/// The marker's name before it was renamed; startup moves it to `MARKER`.
+pub(crate) const PREVIOUS_MARKER: &str = "domain-v2-cutover.json";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -35,12 +37,11 @@ pub(crate) struct Marker {
 /// Call while holding the HOME lock, before opening Hub or starting any legacy
 /// loop. A malformed marker must stop startup rather than select legacy mode.
 pub(crate) fn read_marker(home: &Path) -> Result<Option<Marker>> {
-    let path = home.join(MARKER);
-    let file = match OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(&path)
-    {
+    let open = |name: &str| OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW).open(home.join(name));
+    let file = match open(MARKER).or_else(|error| match error.kind() {
+        std::io::ErrorKind::NotFound => open(PREVIOUS_MARKER),
+        _ => Err(error),
+    }) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error.into()),
@@ -78,7 +79,7 @@ pub(crate) fn read_marker(home: &Path) -> Result<Option<Marker>> {
 }
 
 fn write_marker(home: &Path, marker: &Marker, initial: bool) -> Result<()> {
-    let path = home.join("domain-v2-cutover.json.next");
+    let path = home.join(format!("{MARKER}.next"));
     if initial {
         ensure!(
             read_marker(home)?.is_none(),
@@ -305,7 +306,7 @@ pub(crate) struct Cutover {
 }
 
 fn rollback_command(backup: &Path) -> String {
-    format!("alondrad --rollback-domain-v2 {}", backup.display())
+    format!("alondrad --rollback-domain {}", backup.display())
 }
 
 fn sqlite_trio(name: &str) -> [String; 4] {
@@ -462,7 +463,7 @@ fn waiting(attempt: u32) {
 fn rollback_steps(backup: &Path, binaries: &[&Path], label: &str) -> String {
     let mut steps = format!(
         "1. Stop the daemon: launchctl kill SIGTERM gui/$(id -u)/{label}\n\
-         2. Restore the legacy HOME: alondrad --rollback-domain-v2 {}\n\
+         2. Restore the legacy HOME: alondrad --rollback-domain {}\n\
          3. Put the previous binaries back and keep Homebrew from upgrading them:\n",
         backup.display()
     );
@@ -490,14 +491,14 @@ pub(crate) fn cutover_cli(backup: &Path, binaries: &[&Path]) -> Result<()> {
         .map_err(|error| anyhow::anyhow!("config.toml unreadable: {error}"))?;
     let backup = absolute(backup)?;
     eprintln!(
-        "Cutting {} over to domain v2; backup in {}",
+        "Cutting {} over to the domain store; backup in {}",
         config.home.display(),
         backup.display()
     );
     let result = cutover_offline(&config.home, &backup, binaries, &LockWait::LIVE, waiting)?;
     println!("{}", serde_json::to_string_pretty(&result)?);
     eprintln!(
-        "Domain v2 started empty; the legacy data is archived in {} (legacy seq {}). To roll back:\n{}",
+        "The domain store started empty; the legacy data is archived in {} (legacy seq {}). To roll back:\n{}",
         config.home.join(ARCHIVE).display(),
         result.marker.source_seq,
         rollback_steps(&backup, binaries, &config.service_label)
@@ -510,14 +511,14 @@ pub(crate) fn rollback_cli(backup: &Path) -> Result<()> {
         .map_err(|error| anyhow::anyhow!("config.toml unreadable: {error}"))?;
     let aside = rollback_offline(&config.home, &absolute(backup)?, &LockWait::LIVE, waiting)?;
     eprintln!(
-        "Legacy HOME restored. What domain v2 wrote is kept in {}; start the legacy daemon.",
+        "Legacy HOME restored. What the domain store wrote is kept in {}; start the legacy daemon.",
         aside.display()
     );
     Ok(())
 }
 
 /// Puts back exactly what `backup` copied, sets aside what v2 wrote in
-/// `domain-v2-rolled-back-<time>` and removes the marker last. A committed
+/// `domain-rolled-back-<time>` and removes the marker last. A committed
 /// HOME whose daemon ran may have sent messages or merged PRs: those effects
 /// are not undone.
 pub(crate) fn rollback_offline(
@@ -542,7 +543,7 @@ pub(crate) fn rollback_offline(
         "backup does not match the cutover marker"
     );
     let aside = home.join(format!(
-        "domain-v2-rolled-back-{}",
+        "domain-rolled-back-{}",
         alondra_core::now_millis()
     ));
     fs::DirBuilder::new().mode(0o700).create(&aside)?;
@@ -615,12 +616,12 @@ mod tests {
             data_epoch: "b".repeat(64),
         };
         fs::write(
-            home.join("domain-v2-cutover.json.next"),
+            home.join(format!("{MARKER}.next")),
             b"interrupted initial write",
         )
         .unwrap();
         write_marker(&home, &marker, true).unwrap();
-        assert!(!home.join("domain-v2-cutover.json.next").exists());
+        assert!(!home.join(format!("{MARKER}.next")).exists());
         assert_eq!(read_marker(&home).unwrap(), Some(marker));
         fs::set_permissions(home.join(MARKER), fs::Permissions::from_mode(0o644)).unwrap();
         assert!(read_marker(&home).is_err());

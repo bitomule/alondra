@@ -80,6 +80,9 @@ pub(crate) async fn deliver(domain: &DomainRuntime, home: &Path, user: &Actor, n
         return Err(refused("invalid_input", "message text is empty"));
     }
     let state = domain.state().map_err(|_| refused("storage_unavailable", "domain state unavailable"))?;
+    if domain.live.is_closed(&agent.0) {
+        return Err(refused("session_unreachable", "the node is not connected to Alondra: its session is stopped or its Claude Code mod is not running. Nothing was sent"));
+    }
     if !state.agents.contains_key(agent) {
         return Err(refused("not_found", "agent does not exist"));
     }
@@ -199,7 +202,7 @@ mod tests {
     }
 
     fn world() -> (Fixture, Arc<DomainRuntime>) {
-        let home = std::env::temp_dir().join(format!("alondra-v2-messages-{}", crate::auth::random_hex(8)));
+        let home = std::env::temp_dir().join(format!("alondra-messages-{}", crate::auth::random_hex(8)));
         std::fs::create_dir_all(&home).unwrap();
         let domain = Arc::new(DomainRuntime::open(&home).unwrap());
         let run = |actor: Actor, id: &str, command: Command| {
@@ -210,7 +213,7 @@ mod tests {
         };
         run(Actor::System, "a", Command::RegisterAgent { agent_id: "agent-a".into(), name: "A".into() });
         run(Actor::System, "b", Command::RegisterAgent { agent_id: "agent-b".into(), name: "B".into() });
-        run(user(), "r", Command::CreateRequest { request_id: "r".into(), body: "Build".into(), auto_merge: false, maintenance: false });
+        run(user(), "r", Command::CreateRequest { request_id: "r".into(), body: "Build".into(), auto_merge: false, maintenance: false, message: false });
         run(user(), "t", Command::CreateTask { task_id: "t".into(), request_id: "r".into(), title: "Build it".into(),
             agent_id: Some("agent-a".into()), review_prs: false, dependencies: Default::default(), stack: None });
         (Fixture(home), domain)

@@ -90,7 +90,7 @@ impl Rig {
         std::fs::create_dir_all(&home).unwrap();
         std::fs::create_dir_all(claude_home.join("jobs")).unwrap();
         let domain = Arc::new(DomainRuntime::open(&home).unwrap());
-        command(&domain, user(), Command::CreateRequest { request_id: "r".into(), body: "Work".into(), auto_merge: false, maintenance: false });
+        command(&domain, user(), Command::CreateRequest { request_id: "r".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
         command(&domain, user(), Command::TitleRequest { request_id: "r".into(), title: "Work".into() });
         let sessions = Arc::new(FakeSessions { listed: Default::default(), leftovers: Default::default(), calls: Default::default() });
         Self { root, claude_home, domain, sessions, count: 0 }
@@ -124,7 +124,7 @@ impl Rig {
                 let targets = vec![DeliveryTarget::Text { text: "Result".into() }];
                 command(&self.domain, Actor::Agent { agent_id: session.clone().into() }, Command::PresentResult {
                     attachments: vec![], task_id: id.clone().into(), interaction_id: format!("final-{n}").into(), body: "Done".into(),
-                    targets: targets.clone(), is_final: true, card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true) });
+                    targets: targets.clone(), is_final: true, nothing_to_review: false, card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true) });
                 command(&self.domain, user(), Command::AcceptDelivery { presentation_id: format!("final-{n}").into(), targets });
                 command(&self.domain, Actor::System, Command::RecordNodeEnd { task_id: id.clone().into(), end: NodeEnd::Closed, agent_id: None });
                 self.forget_wrap_up(&id);

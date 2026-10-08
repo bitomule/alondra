@@ -10,7 +10,7 @@ The optional package lifecycle reuses the same prepared base and runner:
 python3 tests/system/macos.py --brew-lifecycle --brew-version 0.1.9 \
   --output-dir /private/tmp/alondra-lifecycle-UNIQUE       # plan only
 # After reserving the heavy slot, execute the complete gate:
-TART_HOME=/Volumes/Externo/.tart python3 tests/system/macos.py --run \
+python3 tests/system/macos.py --run \
   --brew-lifecycle --brew-version 0.1.9 \
   --output-dir /absolute/persistent/evidence/lifecycle-UNIQUE
 ```
@@ -205,7 +205,7 @@ After reserving the heavy slot and restoring space, recover to a **new**, persis
 output directory on the same or another volume:
 
 ```sh
-TART_HOME=/Volumes/Externo/.tart python3 tests/system/macos_recover.py \
+python3 tests/system/macos_recover.py \
   --receipt /absolute/original-output/recovery.json \
   --output /absolute/new-persistent-output --run
 ```

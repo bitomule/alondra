@@ -75,6 +75,8 @@ pub fn refusal_text(refusal: &Refusal, lang: Lang) -> String {
             "Elige cómo fusionar la PR #{number}.", number = number),
         Refusal::StaleHead { number } => tf!(lang, "PR #{number} has new commits since you looked. Review them and try again.",
             "La PR #{number} tiene commits nuevos desde que la miraste. Revísalos y vuelve a intentarlo.", number = number),
+        Refusal::ResultBehindPr { number } => tf!(lang, "PR #{number} has commits this result doesn't include, so it can't be merged from here until the node presents it again.",
+            "La PR #{number} tiene commits que este resultado no incluye: no se puede fusionar desde aquí hasta que el nodo la vuelva a presentar.", number = number),
         Refusal::MergeInProgress { number } => tf!(lang, "Alondra is already merging PR #{number}; wait for GitHub to confirm.",
             "Alondra ya está fusionando la PR #{number}; espera a que GitHub lo confirme.", number = number),
         Refusal::PrClosed { number } => tf!(lang, "PR #{number} is closed on GitHub, so it can't be merged.",
@@ -160,7 +162,7 @@ mod tests {
         let all = [
             Refusal::BlockedByQuestion { need: "q".into() }, Refusal::BlockedByTask { title: "t".into() },
             Refusal::UpstreamPrOpen { number: 1 }, Refusal::MethodNotAllowed { method: MergeMethod::Merge, allowed: vec![] },
-            Refusal::NoMethodChosen { number: 1 }, Refusal::StaleHead { number: 1 }, Refusal::MergeInProgress { number: 1 },
+            Refusal::NoMethodChosen { number: 1 }, Refusal::StaleHead { number: 1 }, Refusal::ResultBehindPr { number: 1 }, Refusal::MergeInProgress { number: 1 },
             Refusal::PrClosed { number: 1 }, Refusal::PrAlreadyMerged { number: 1 }, Refusal::NewerResult, Refusal::AlreadyAnswered, Refusal::Withdrawn,
             Refusal::ClarificationPending, Refusal::TaskNotActive, Refusal::TaskClosing, Refusal::Changed, Refusal::NotForYou,
             Refusal::NodeUnreachable { node: "n".into() }, Refusal::DeviceNotApproved, Refusal::StorageUnavailable,

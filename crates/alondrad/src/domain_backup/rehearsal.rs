@@ -369,7 +369,7 @@ pub(crate) fn run(live: &Path, work: &Path, legacy: &Path) -> Result<Report> {
     }
     let calls = sandbox.stub_calls();
     report.numbers.insert("intercepted_commands".into(), json!(calls.lines().collect::<Vec<_>>()));
-    report.check("the empty v2 daemon attempted no outside command", calls.is_empty(), calls.lines().collect::<Vec<_>>().join("; "));
+    report.check("the empty domain daemon attempted no outside command", calls.is_empty(), calls.lines().collect::<Vec<_>>().join("; "));
     Ok(report)
 }
 
@@ -425,7 +425,7 @@ fn rehearse_snapshot(report: &mut Report, sandbox: &Sandbox, legacy: &Path) -> R
     report.check("snapshot integrity", integrity.is_empty(), integrity.join("; "));
 
     let backup = sandbox.work.join("backup");
-    let cutover_args = [Path::new("--cutover-domain-v2"), &backup, legacy, &legacy_cli(legacy)];
+    let cutover_args = [Path::new("--cutover-domain"), &backup, legacy, &legacy_cli(legacy)];
     let (output, elapsed) = sandbox.cli(&sandbox.exe, &cutover_args)?;
     report.time("cutover", elapsed);
     let cutover: Value = serde_json::from_str(&output)?;
@@ -450,7 +450,7 @@ fn rehearse_snapshot(report: &mut Report, sandbox: &Sandbox, legacy: &Path) -> R
     report.check("committed store integrity", integrity == "ok" && foreign == 0, format!("{integrity}, {foreign} foreign key errors"));
     drop(connection);
     let state = DomainRuntime::open(home)?.state()?;
-    report.check("v2 store is empty",
+    report.check("domain store is empty",
         state.revision == 0 && state.requests.is_empty() && state.tasks.is_empty() && state.interactions.is_empty()
             && state.schedule.schedules.is_empty(),
         format!("revision {}, {} requests, {} tasks", state.revision, state.requests.len(), state.tasks.len()));
@@ -467,7 +467,7 @@ fn rehearse_snapshot(report: &mut Report, sandbox: &Sandbox, legacy: &Path) -> R
     run_daemon(report, sandbox, &runtime, "first start")?;
     run_daemon(report, sandbox, &runtime, "restart")?;
 
-    let (_, elapsed) = sandbox.cli(&sandbox.exe, &[Path::new("--rollback-domain-v2"), &backup])?;
+    let (_, elapsed) = sandbox.cli(&sandbox.exe, &[Path::new("--rollback-domain"), &backup])?;
     report.time("rollback", elapsed);
     let differences = home_differences(&reference, home)?;
     report.check("rollback restores the legacy snapshot exactly", differences.is_empty(), differences.join("; "));
@@ -480,8 +480,8 @@ fn rehearse_snapshot(report: &mut Report, sandbox: &Sandbox, legacy: &Path) -> R
         Err(error) => report.check("legacy binary starts on the restored HOME", false, format!("{error:#}")),
     };
     match sandbox.cli(&sandbox.exe, &[Path::new("--preflight")]) {
-        Ok(_) => report.check("the v2 binary refuses the restored legacy HOME", false, "preflight passed"),
-        Err(error) => report.check("the v2 binary refuses the restored legacy HOME",
+        Ok(_) => report.check("the domain binary refuses the restored legacy HOME", false, "preflight passed"),
+        Err(error) => report.check("the domain binary refuses the restored legacy HOME",
             format!("{error:#}").contains("still holds legacy data"), format!("{error:#}")),
     };
     Ok(())

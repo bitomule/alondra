@@ -67,7 +67,7 @@ pub(super) fn seeded(store: &mut DomainStore) {
         "request",
         Command::CreateRequest {
             request_id: "request-1".into(),
-            body: "Do useful work".into(), auto_merge: false, maintenance: false,
+            body: "Do useful work".into(), auto_merge: false, maintenance: false, message: false,
         },
     );
     execute(
@@ -107,6 +107,7 @@ fn present(store: &mut DomainStore) {
                 text: "The answer".into(),
             }],
             is_final: true,
+            nothing_to_review: false,
             attachments: vec![], card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
         },
     );
@@ -324,7 +325,7 @@ fn replay_returns_the_first_outcome() {
     let mut user_zero = envelope(
         &mut store,
         "user-zero",
-        Command::CreateRequest { request_id: "request-2".into(), body: "More".into(), auto_merge: false, maintenance: false },
+        Command::CreateRequest { request_id: "request-2".into(), body: "More".into(), auto_merge: false, maintenance: false, message: false },
     );
     user_zero.expected_revision = 0;
     assert!(matches!(
@@ -538,7 +539,7 @@ fn an_unsupported_schema_is_refused_without_replacing_the_database() {
             let mut store = DomainStore::open(&fixture.path()).unwrap();
             let command = envelope(&mut store, "old", Command::CreateRequest {
                 request_id: "old".into(), body: "Made before".into(),
-                auto_merge: false, maintenance: false,
+                auto_merge: false, maintenance: false, message: false,
             });
             store.execute_authenticated(&user(), &command, None).unwrap();
             let expected = store.load().unwrap();
@@ -568,6 +569,83 @@ fn an_unsupported_schema_is_refused_without_replacing_the_database() {
             assert_eq!(reopened.load().unwrap(), expected);
             let retry = reopened.execute_authenticated(&user(), &command, None).unwrap();
             assert_eq!(retry.state, expected, "the original semantic receipt survives refusal");
+        }
+    }
+}
+
+
+#[test]
+#[ignore = "internal isolated crash fixture"]
+fn crash_domain_transaction_fixture() {
+    let Some(path) = std::env::var_os("ALONDRA_CRASH_DOMAIN") else { return; };
+    let connection = Connection::open(PathBuf::from(path)).unwrap();
+    connection.pragma_update(None, "cache_size", 1).unwrap();
+    connection.pragma_update(None, "wal_autocheckpoint", 0).unwrap();
+    connection.execute_batch("BEGIN IMMEDIATE").unwrap();
+    if std::env::var_os("ALONDRA_UNCOMMITTED_SCHEMA").is_some() {
+        connection.pragma_update(None, "user_version", 99).unwrap();
+    }
+    connection.execute_batch("UPDATE requests SET body='Uncommitted';
+        UPDATE domain_meta SET data_epoch='uncommitted',revision=revision+100;
+        DELETE FROM semantic_receipts;
+        INSERT INTO requests(id,body,closed) VALUES('uncommitted',hex(zeroblob(524288)),0);").unwrap();
+    unsafe { libc::_exit(0); }
+}
+
+#[test]
+fn crash_recovery_preserves_committed_work_and_receipts_before_schema_admission() {
+    use std::os::unix::fs::MetadataExt;
+    for journal in ["WAL", "DELETE"] {
+        for (committed_schema, uncommitted_schema) in [(SCHEMA_VERSION, false), (99, false), (SCHEMA_VERSION, true)] {
+            let fixture = Fixture::new();
+            let mut store = DomainStore::open(&fixture.path()).unwrap();
+            seeded(&mut store);
+            let command = envelope(&mut store, "retained-command", Command::CreateRequest {
+                request_id: "retained".into(), body: "Committed work".into(),
+                auto_merge: false, maintenance: false, message: false,
+            });
+            let committed = store.execute_authenticated(&user(), &command, None).unwrap();
+            let expected = committed.state;
+            let receipt_count: i64 = store.conn.query_row("SELECT count(*) FROM semantic_receipts", [], |r| r.get(0)).unwrap();
+            store.conn.pragma_update(None, "user_version", committed_schema).unwrap();
+            store.conn.pragma_update(None, "journal_mode", journal).unwrap();
+            drop(store);
+            let before = fs::metadata(fixture.path()).unwrap();
+            let mut child = std::process::Command::new(std::env::current_exe().unwrap());
+            child.args(["--ignored", "--exact", "domain_store::tests::crash_domain_transaction_fixture"])
+                .env("ALONDRA_CRASH_DOMAIN", fixture.path()).env("HOME", &fixture.0)
+                .env_remove("CLAUDE_HOME").env_remove("CLAUDE_CONFIG_DIR")
+                .env_remove("ALONDRA_UNCOMMITTED_SCHEMA");
+            if uncommitted_schema { child.env("ALONDRA_UNCOMMITTED_SCHEMA", "1"); }
+            let child = child.output().unwrap();
+            assert!(child.status.success(), "{}", String::from_utf8_lossy(&child.stderr));
+            let sidecar = fixture.path().with_file_name(if journal == "DELETE" { "domain.sqlite-journal" } else { "domain.sqlite-wal" });
+            assert!(fs::metadata(&sidecar).unwrap().len() > 0, "crash did not retain its transaction journal");
+            let opened = DomainStore::open(&fixture.path());
+            if committed_schema == SCHEMA_VERSION {
+                let mut recovered = opened.unwrap();
+                assert_eq!(recovered.load().unwrap(), expected, "compatible stores must recover automatically");
+                drop(recovered);
+            } else {
+                let error = opened.err().expect("unsupported committed schema activated a store");
+                assert!(error.to_string().contains("unsupported domain database schema 99"), "{error:#}");
+            }
+            let after = fs::metadata(fixture.path()).unwrap();
+            assert_eq!((after.dev(), after.ino()), (before.dev(), before.ino()));
+            assert!(!fixture.0.read_dir().unwrap().any(|entry| entry.unwrap().file_name().to_string_lossy().contains(".old-")));
+            let preserved = Connection::open(&fixture.path()).unwrap();
+            assert_eq!(preserved.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), committed_schema);
+            assert_eq!(preserved.query_row("PRAGMA integrity_check", [], |r| r.get::<_, String>(0)).unwrap(), "ok");
+            assert_eq!(preserved.query_row("SELECT body FROM requests WHERE id='retained'", [], |r| r.get::<_, String>(0)).unwrap(), "Committed work");
+            assert_eq!(preserved.query_row("SELECT count(*) FROM requests WHERE id='uncommitted'", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+            assert_eq!(preserved.query_row("SELECT count(*) FROM semantic_receipts", [], |r| r.get::<_, i64>(0)).unwrap(), receipt_count);
+            preserved.pragma_update(None, "user_version", SCHEMA_VERSION).unwrap();
+            drop(preserved);
+            let mut recovered = DomainStore::open(&fixture.path()).unwrap();
+            assert_eq!(recovered.load().unwrap(), expected);
+            let retry = recovered.execute_authenticated(&user(), &command, None).unwrap();
+            assert_eq!(retry.state, expected, "recovery retained the original command receipt");
+            assert_eq!(recovered.load().unwrap().revision, expected.revision);
         }
     }
 }
@@ -715,10 +793,10 @@ fn a_withdrawn_question_a_retitled_task_and_a_closed_requests_answer_survive_res
     execute(&mut store, &agent(), "withdraw", Command::Withdraw { interaction_id: "question-1".into() });
     let orchestrator = Actor::Orchestrator { generation: 0 };
     execute(&mut store, &orchestrator, "retitle", Command::RetitleTask { task_id: "task-1".into(), title: "Editor colours".into() });
-    execute(&mut store, &user(), "request-2", Command::CreateRequest { request_id: "request-2".into(), body: "Is main green?".into(), auto_merge: false, maintenance: false });
+    execute(&mut store, &user(), "request-2", Command::CreateRequest { request_id: "request-2".into(), body: "Is main green?".into(), auto_merge: false, maintenance: false, message: false });
     execute(&mut store, &orchestrator, "close-2", Command::CloseRequest { request_id: "request-2".into(),
         answer: Some("Main is green".into()), withdrawn: false, title: Some("CI status".into()) });
-    execute(&mut store, &user(), "request-3", Command::CreateRequest { request_id: "request-3".into(), body: "Never mind".into(), auto_merge: false, maintenance: false });
+    execute(&mut store, &user(), "request-3", Command::CreateRequest { request_id: "request-3".into(), body: "Never mind".into(), auto_merge: false, maintenance: false, message: false });
     execute(&mut store, &user(), "close-3", Command::CloseRequest { request_id: "request-3".into(), answer: None, withdrawn: true, title: None });
     let before = store.load().unwrap();
     drop(store);
@@ -752,8 +830,8 @@ fn work_declared_after_the_merge_survives_a_restart_and_leaves_no_row_once_it_en
 fn a_requests_auto_merge_choice_survives_restart() {
     let fixture = Fixture::new();
     let mut store = DomainStore::open(&fixture.path()).unwrap();
-    execute(&mut store, &user(), "auto", Command::CreateRequest { request_id: "auto".into(), body: "Merge alone".into(), auto_merge: true, maintenance: false });
-    execute(&mut store, &user(), "manual", Command::CreateRequest { request_id: "manual".into(), body: "Ask me".into(), auto_merge: false, maintenance: false });
+    execute(&mut store, &user(), "auto", Command::CreateRequest { request_id: "auto".into(), body: "Merge alone".into(), auto_merge: true, maintenance: false, message: false });
+    execute(&mut store, &user(), "manual", Command::CreateRequest { request_id: "manual".into(), body: "Ask me".into(), auto_merge: false, maintenance: false, message: false });
     drop(store);
     let reopened = DomainStore::open(&fixture.path()).unwrap().load().unwrap();
     assert_eq!((reopened.requests[&"auto".into()].auto_merge, reopened.requests[&"manual".into()].auto_merge), (true, false));
@@ -855,7 +933,7 @@ fn restart_preserves_decisions_documents_and_relations() {
                     revision_id: "revision-1".into(),
                 },
             ],
-            is_final: true, card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
+            is_final: true, nothing_to_review: false, card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
         },
     );
     execute(
@@ -969,6 +1047,7 @@ fn attachments_of_interaction_answer_feedback_and_delivery_survive_restart() {
                 text: "Result".into(),
             }],
             is_final: true,
+            nothing_to_review: false,
             attachments: vec![attachment("delivery-file")], card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
         },
     );
@@ -1152,7 +1231,7 @@ fn document_package(store: &mut DomainStore, pr: bool) -> Vec<DeliveryTarget> {
             interaction_id: "delivery-1".into(),
             body: "Finished the design".into(),
             targets: targets.clone(),
-            is_final: true,
+            is_final: true, nothing_to_review: false,
             attachments: vec![], card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
         },
     );
@@ -1235,7 +1314,7 @@ fn a_commit_landing_right_after_ours_is_never_served_from_the_cache() {
         "foreign-request",
         Command::CreateRequest {
             request_id: "request-2".into(),
-            body: "Written by another connection".into(), auto_merge: false, maintenance: false,
+            body: "Written by another connection".into(), auto_merge: false, maintenance: false, message: false,
         },
     );
     let mut foreign_writer = Some((second, foreign));
@@ -1251,7 +1330,7 @@ fn a_commit_landing_right_after_ours_is_never_served_from_the_cache() {
         "own-request",
         Command::CreateRequest {
             request_id: "request-3".into(),
-            body: "Written by this connection".into(), auto_merge: false, maintenance: false,
+            body: "Written by this connection".into(), auto_merge: false, maintenance: false, message: false,
         },
     );
     first.execute_authenticated(&user(), &own, None).unwrap();
@@ -1287,6 +1366,7 @@ fn a_new_final_reports_the_acceptance_it_superseded_and_feedback_does_not() {
                 text: "Another answer".into(),
             }],
             is_final: true,
+            nothing_to_review: false,
             attachments: vec![], card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
         },
     );
@@ -1367,7 +1447,7 @@ fn a_request_and_what_the_user_chose_for_its_launch_commit_together_or_not_at_al
         attachments: vec![attachment("att-1")],
     };
     let create = |store: &mut DomainStore, id: &str, request: &str, body: &str| {
-        let mut e = envelope(store, id, Command::CreateRequest { request_id: request.into(), body: body.into(), auto_merge: false, maintenance: false });
+        let mut e = envelope(store, id, Command::CreateRequest { request_id: request.into(), body: body.into(), auto_merge: false, maintenance: false, message: false });
         e.expected_revision = 0;
         store.execute_launching(&user(), &e, None, &launch)
     };
@@ -1383,7 +1463,7 @@ fn a_request_and_what_the_user_chose_for_its_launch_commit_together_or_not_at_al
     assert_eq!(store.request_launch_summaries().unwrap()[&"request-1".into()], (Some("App".to_owned()), Some("auto".to_owned())));
     let again = create(&mut store, "first", "request-1", "Ship it").unwrap();
     assert!(again.replayed, "the same command again is the same request");
-    execute(&mut store, &user(), "plain", Command::CreateRequest { request_id: "request-2".into(), body: "Plain".into(), auto_merge: false, maintenance: false });
+    execute(&mut store, &user(), "plain", Command::CreateRequest { request_id: "request-2".into(), body: "Plain".into(), auto_merge: false, maintenance: false, message: false });
     assert!(store.request_launch(&"request-2".into()).unwrap().is_none(), "a plain request keeps no launch");
 
     assert!(store.conn.execute("UPDATE request_launch SET project='Other'", []).is_err(), "what was asked for is immutable");
@@ -1439,11 +1519,44 @@ fn a_maintenance_message_stays_one_after_a_restart() {
     let mut store = DomainStore::open(&fixture.path()).unwrap();
     seeded(&mut store);
     execute(&mut store, &user(), "maintenance", Command::CreateRequest {
-        request_id: "request-m".into(), body: "Launch two more".into(), auto_merge: false, maintenance: true });
+        request_id: "request-m".into(), body: "Launch two more".into(), auto_merge: false, maintenance: true, message: false });
     drop(store);
     let state = DomainStore::open(&fixture.path()).unwrap().load().unwrap();
     assert!(state.requests[&"request-m".into()].maintenance);
     assert!(!state.requests[&"request-1".into()].maintenance);
+}
+
+#[test]
+fn a_message_to_the_orchestrator_stays_one_after_a_restart() {
+    let fixture = Fixture::new();
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    seeded(&mut store);
+    execute(&mut store, &user(), "message", Command::CreateRequest {
+        request_id: "request-q".into(), body: "Is main green?".into(), auto_merge: false, maintenance: false, message: true });
+    execute(&mut store, &user(), "maintenance", Command::CreateRequest {
+        request_id: "request-m".into(), body: "Launch two more".into(), auto_merge: false, maintenance: true, message: false });
+    drop(store);
+    let state = DomainStore::open(&fixture.path()).unwrap().load().unwrap();
+    assert!(state.requests[&"request-q".into()].message);
+    assert!(state.requests[&"request-m".into()].message, "maintenance is a message too");
+    assert!(!state.requests[&"request-1".into()].message);
+}
+
+#[test]
+fn a_store_made_before_messages_were_marked_marks_the_ones_the_message_route_made() {
+    let fixture = Fixture::new();
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    seeded(&mut store);
+    let routed = "request-0123456789abcdef0123456789abcdef";
+    for (id, maintenance) in [(routed, false), ("request-m", true), ("5f1c2c1e-6d55-4a2e-9a77-0b3c1d7e9f10", false), ("request-0123456789abcdef0123456789abcdeg", false)] {
+        execute(&mut store, &user(), id, Command::CreateRequest {
+            request_id: id.into(), body: "Text".into(), auto_merge: false, maintenance, message: false });
+    }
+    store.conn.execute_batch("DROP TABLE message_requests").unwrap();
+    drop(store);
+    let state = DomainStore::open(&fixture.path()).unwrap().load().unwrap();
+    let marked: BTreeSet<&str> = state.requests.values().filter(|r| r.message).map(|r| r.id.0.as_str()).collect();
+    assert_eq!(marked, BTreeSet::from([routed, "request-m"]));
 }
 
 #[test]
@@ -1466,7 +1579,7 @@ fn task_relations_a_verdict_and_the_split_review_states_survive_a_restart() {
     execute(&mut store, &reviewer, "start-review", Command::StartTask { task_id: "task-2".into() });
     execute(&mut store, &reviewer, "present-review", Command::PresentResult {
         task_id: "task-2".into(), interaction_id: "delivery-2".into(), body: "Reviewed".into(),
-        targets: vec![DeliveryTarget::Text { text: "The review".into() }], is_final: true, attachments: vec![],
+        targets: vec![DeliveryTarget::Text { text: "The review".into() }], is_final: true, nothing_to_review: false, attachments: vec![],
         card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
     });
     execute(&mut store, &reviewer, "changes", Command::RecordVerdict {
@@ -1490,12 +1603,12 @@ fn task_relations_a_verdict_and_the_split_review_states_survive_a_restart() {
     assert_eq!(pushes(&store, "delivery-1"), 0, "no push while a review holds the delivery back");
     execute(&mut store, &agent(), "present-again", Command::PresentResult {
         task_id: "task-1".into(), interaction_id: "delivery-1b".into(), body: "Fixed".into(),
-        targets: vec![DeliveryTarget::Text { text: "The answer".into() }], is_final: true, attachments: vec![],
+        targets: vec![DeliveryTarget::Text { text: "The answer".into() }], is_final: true, nothing_to_review: false, attachments: vec![],
         card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
     });
     execute(&mut store, &reviewer, "present-review-again", Command::PresentResult {
         task_id: "task-2".into(), interaction_id: "delivery-2b".into(), body: "Reviewed again".into(),
-        targets: vec![DeliveryTarget::Text { text: "The review".into() }], is_final: true, attachments: vec![],
+        targets: vec![DeliveryTarget::Text { text: "The review".into() }], is_final: true, nothing_to_review: false, attachments: vec![],
         card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
     });
     execute(&mut store, &reviewer, "approve", Command::RecordVerdict {
@@ -1610,4 +1723,16 @@ fn an_automatic_launch_is_claimed_once_per_task() {
     assert_eq!(store.auto_launches().unwrap().len(), 1, "the claim survives a restart");
     store.forget_auto_launch(&task).unwrap();
     assert_eq!(store.auto_launch(&task).unwrap(), None);
+}
+
+#[test]
+fn the_orchestrators_session_survives_a_restart_and_a_new_one_replaces_it() {
+    let fixture = Fixture::new();
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    assert_eq!(store.load().unwrap().orchestrator_session, None);
+    execute(&mut store, &Actor::System, "bind-1", Command::BindOrchestratorSession { session_id: "session-1".into() });
+    execute(&mut store, &Actor::System, "bind-2", Command::BindOrchestratorSession { session_id: "session-2".into() });
+    drop(store);
+    let mut reopened = DomainStore::open(&fixture.path()).unwrap();
+    assert_eq!(reopened.load().unwrap().orchestrator_session, Some("session-2".into()));
 }

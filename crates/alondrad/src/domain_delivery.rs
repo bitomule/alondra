@@ -314,7 +314,7 @@ mod tests {
     #[tokio::test]
     async fn domain_outbox_exits_on_sql_failure() {
         let home = std::env::temp_dir().join(format!(
-            "alondra-v2-outbox-failure-{}",
+            "alondra-outbox-failure-{}",
             crate::auth::random_hex(8)
         ));
         std::fs::create_dir_all(&home).unwrap();
@@ -395,7 +395,7 @@ mod tests {
     #[tokio::test]
     async fn domain_outbox_hands_user_hint_and_leaves_producer_pending_without_transport() {
         let home = std::env::temp_dir().join(format!(
-            "alondra-v2-only-outbox-{}",
+            "alondra-only-outbox-{}",
             crate::auth::random_hex(8)
         ));
         std::fs::create_dir_all(&home).unwrap();
@@ -423,7 +423,7 @@ mod tests {
             Command::CreateRequest {
                 request_id: "request-a".into(),
                 body: "Request".into(),
-                auto_merge: false, maintenance: false,
+                auto_merge: false, maintenance: false, message: false,
             },
         );
         apply_command(
@@ -604,7 +604,7 @@ mod tests {
     #[tokio::test]
     async fn user_hint_is_handed_without_claiming_a_read_or_acceptance() {
         let home = std::env::temp_dir().join(format!(
-            "alondra-v2-delivery-{}",
+            "alondra-delivery-{}",
             crate::auth::random_hex(16)
         ));
         let config = alondra_core::config::Config::resolve(
@@ -632,7 +632,7 @@ mod tests {
             Command::CreateRequest {
                 request_id: "request-a".into(),
                 body: "Request".into(),
-                auto_merge: false, maintenance: false,
+                auto_merge: false, maintenance: false, message: false,
             },
         );
         command(
@@ -1119,7 +1119,7 @@ mod tests {
         let client = crate::client_routes::Client::open(domain.clone(), &home, Default::default());
         let orchestrator = Actor::Orchestrator { generation: 0 };
         apply_command(&domain, Actor::User { user_id: "u".into() }, "request", Command::CreateRequest {
-            request_id: "a7efd99d".into(), body: "can we encrypt images via R2".into(), auto_merge: false, maintenance: false,
+            request_id: "a7efd99d".into(), body: "can we encrypt images via R2".into(), auto_merge: false, maintenance: false, message: false,
         });
         apply_command(&domain, orchestrator.clone(), "answer", Command::PublishInformation {
             attachments: vec![],
@@ -1163,7 +1163,7 @@ mod tests {
         let agent = Actor::Agent { agent_id: "agent-a".into() };
         apply_command(&domain, Actor::System, "agent", Command::RegisterAgent { agent_id: "agent-a".into(), name: "A".into() });
         apply_command(&domain, Actor::User { user_id: "u".into() }, "request", Command::CreateRequest {
-            request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false });
+            request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
         apply_command(&domain, Actor::User { user_id: "u".into() }, "task", Command::CreateTask {
             task_id: "task-a".into(), request_id: "request".into(), title: "Task".into(), agent_id: Some("agent-a".into()),
             review_prs: false, dependencies: Default::default(), stack: None });
@@ -1197,7 +1197,7 @@ mod tests {
         let domain = open();
         apply_command(&domain, Actor::System, "agent", Command::RegisterAgent { agent_id: "agent-a".into(), name: "A".into() });
         apply_command(&domain, Actor::User { user_id: "u".into() }, "request", Command::CreateRequest {
-            request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false });
+            request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
         apply_command(&domain, Actor::User { user_id: "u".into() }, "task", Command::CreateTask {
             task_id: "task-a".into(), request_id: "request".into(), title: "Task".into(), agent_id: Some("agent-a".into()),
             review_prs: false, dependencies: Default::default(), stack: None });

@@ -63,6 +63,9 @@ pub struct AvailableAction {
     pub kind: String,
     pub enabled: bool,
     pub disabled_reason: Option<String>,
+    /// Why it cannot be used, for the person the card is for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refusal: Option<Refusal>,
     pub expected_revision: Revision,
     pub presentation_id: Option<InteractionId>,
     pub expected_head: Option<String>,
@@ -111,9 +114,8 @@ impl DomainState {
         presentation: Option<InteractionId>,
         head: Option<String>,
     ) -> AvailableAction {
-        let mut scratch = self.clone();
-        let error = scratch
-            .execute(
+        let error = self
+            .preview(
                 &Actor::User {
                     user_id: "projection-user".into(),
                 },
@@ -129,6 +131,7 @@ impl DomainState {
         AvailableAction {
             kind: kind.into(),
             enabled: error.is_none(),
+            refusal: error.as_ref().map(DomainError::why),
             disabled_reason: error.map(|e| e.code),
             expected_revision: self.revision,
             presentation_id: presentation,
@@ -187,6 +190,7 @@ impl DomainState {
                     kind: "mark_read".into(),
                     enabled: read_by.is_empty(),
                     disabled_reason: (!read_by.is_empty()).then(|| "already_read".into()),
+                    refusal: None,
                     expected_revision: self.revision,
                     presentation_id: None,
                     expected_head: None,
@@ -221,6 +225,7 @@ impl DomainState {
                         kind: "answer_question".into(),
                         enabled,
                         disabled_reason: reason,
+                        refusal: None,
                         expected_revision: self.revision,
                         presentation_id: None,
                         expected_head: None,
@@ -338,6 +343,7 @@ impl DomainState {
             kind: "request_clarification".into(),
             enabled: open,
             disabled_reason: (!open).then(|| "invalid_action_for_kind".into()),
+            refusal: None,
             expected_revision: self.revision,
             presentation_id: None,
             expected_head: None,

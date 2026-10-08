@@ -403,7 +403,7 @@ mod tests {
             "bazelisk test //apple:Snapshots --test_output=errors 2>&1 | tail -1; cp bazel-testlogs/shot.png /tmp/ax5.png",
             "bazelisk test //apple:Snapshots | tail -1; cp bazel-testlogs/shot.png snaps/; chmod u+w snaps/*.png",
             "cp bazel-bin/tools/sandbox/alondra-sandbox /tmp/alondra-sbx-f0b/bin/alondra-sandbox.next",
-            "rm -rf /Volumes/Externo/alondra-release-clone /Volumes/Externo/alondra-beta-0.1.2; ls /Volumes/Externo | grep -i alondra",
+            "rm -rf /Volumes/Backup/alondra-release-clone /Volumes/Backup/alondra-beta-0.1.2; ls /Volumes/Backup | grep -i alondra",
         ] {
             assert!(!approves(&r, command), "{command}");
         }

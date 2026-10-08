@@ -214,7 +214,7 @@ fn tasks_list_one_row_per_single_task_request_with_people_times() {
 }
 
 #[test]
-fn the_tasks_list_nests_a_task_under_the_other_requests_task_it_follows_and_never_shows_a_prompt() {
+fn the_tasks_list_nests_a_task_under_the_other_requests_task_it_follows_and_names_a_new_request_by_its_first_sentence() {
     let mut app = app_on(Screen::Tasks, fixture_view("tasks-tui.json"));
     let screen = rendered(&mut app, 120, 30);
     dump("tasks (across requests)", &screen);
@@ -231,8 +231,9 @@ fn the_tasks_list_nests_a_task_under_the_other_requests_task_it_follows_and_neve
     for loose in ["Review the schedule editor", "Write the release notes"] {
         assert!(lines[at(loose)].contains(loose), "{screen}");
     }
-    assert!(screen.contains("New request"), "{screen}");
-    assert!(!screen.contains("Look at the schedule editor") && !screen.contains("Import lists from Notes"), "{screen}");
+    assert!(screen.contains("Import lists from Notes"), "{screen}");
+    assert!(!screen.contains("Keep the order") && !screen.contains("Look at the schedule editor"), "{screen}");
+    assert!(!screen.contains("Launch two more"), "a message to the orchestrator without tasks is not listed: {screen}");
 }
 
 #[test]
@@ -397,7 +398,7 @@ fn held_card(hold: alondra_core::domain::Hold, spec: alondra_core::domain::CardS
         state.execute(&actor, &envelope).unwrap();
     };
     let user = || Actor::User { user_id: "u".into() };
-    run(user(), Command::CreateRequest { request_id: "r".into(), body: "Ship the release".into(), auto_merge: false, maintenance: false });
+    run(user(), Command::CreateRequest { request_id: "r".into(), body: "Ship the release".into(), auto_merge: false, maintenance: false, message: false });
     run(Actor::System, Command::RegisterAgent { agent_id: "agent-a".into(), name: "release".into() });
     run(user(), Command::CreateTask {
         task_id: "t".into(), request_id: "r".into(), title: "Release".into(),
@@ -825,4 +826,21 @@ fn a_blocked_task_action_says_why_instead_of_asking_first() {
     assert_eq!(flash.text, "The task is already closing");
     assert_eq!(flash.kind, FlashKind::Error);
     assert!(app.posted.borrow().is_empty());
+}
+
+#[test]
+fn the_fleet_limit_opens_a_numbered_menu_and_sends_the_chosen_value() {
+    let (domain, mut live) = busy();
+    live.pacing = Some(views::LivePacing { working: 3, limit: 6, fixed: None, auto: 6, memory_free: Some(40), tight: false,
+        queued: vec![], paused: vec![] });
+    let mut app = app_on(Screen::Fleet, build(&domain, &live, "fleet"));
+    app.on_key(KeyEvent::new(KeyCode::Char('L'), KeyModifiers::SHIFT));
+    let menu = app.card_menu.clone().expect("L opens the limit's menu");
+    assert_eq!(menu.entries.len(), 9);
+    assert!(app.posted.borrow().is_empty(), "nothing is sent before a value is chosen");
+    press(&mut app, KeyCode::Char('5'));
+    let sent = app.posted.borrow().clone();
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    assert!(sent[0].1["action_id"].as_str().unwrap().starts_with("set_limit:limit@"), "{sent:?}");
+    assert_eq!(sent[0].1["option_id"], "5", "the menu runs Automatic, then 2 to 9 around the automatic 6");
 }

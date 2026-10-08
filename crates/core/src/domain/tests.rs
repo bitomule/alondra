@@ -61,7 +61,7 @@ fn fixture() -> DomainState {
         user(),
         Command::CreateRequest {
             request_id: "r".into(),
-            body: "Build requested result".into(), auto_merge: false, maintenance: false,
+            body: "Build requested result".into(), auto_merge: false, maintenance: false, message: false,
         },
     )
     .unwrap();
@@ -436,7 +436,7 @@ fn present(s: &mut DomainState, id: &str, targets: Vec<DeliveryTarget>) {
             interaction_id: id.into(),
             body: "Result ready".into(),
             targets,
-            is_final: true, card: crate::domain::CardSpec::delivery("Review the result", &[], true),
+            is_final: true, nothing_to_review: false, card: crate::domain::CardSpec::delivery("Review the result", &[], true),
         },
     )
     .unwrap();
@@ -1090,7 +1090,7 @@ fn orchestrator() -> Actor {
 #[test]
 fn a_request_that_needed_no_task_closes_with_its_answer_title_or_withdrawal() {
     let mut s = fixture();
-    exec(&mut s, user(), Command::CreateRequest { request_id: "q".into(), body: "Is main green?".into(), auto_merge: false, maintenance: false }).unwrap();
+    exec(&mut s, user(), Command::CreateRequest { request_id: "q".into(), body: "Is main green?".into(), auto_merge: false, maintenance: false, message: false }).unwrap();
     reject_unchanged(&mut s, agent(), Command::CloseRequest { request_id: "q".into(), answer: Some("Yes".into()), withdrawn: false, title: None }, "forbidden");
     reject_unchanged(&mut s, orchestrator(), Command::CloseRequest { request_id: "q".into(), answer: Some(" ".into()), withdrawn: false, title: None }, "invalid_input");
     exec(&mut s, orchestrator(), Command::CloseRequest { request_id: "q".into(), answer: Some("Main is green".into()),
@@ -1098,7 +1098,7 @@ fn a_request_that_needed_no_task_closes_with_its_answer_title_or_withdrawal() {
     let closed = &s.requests[&"q".into()];
     assert!(closed.closed && !closed.withdrawn);
     assert_eq!((closed.answer.as_deref(), closed.title.as_deref()), (Some("Main is green"), Some("CI status")));
-    exec(&mut s, user(), Command::CreateRequest { request_id: "w".into(), body: "Never mind".into(), auto_merge: false, maintenance: false }).unwrap();
+    exec(&mut s, user(), Command::CreateRequest { request_id: "w".into(), body: "Never mind".into(), auto_merge: false, maintenance: false, message: false }).unwrap();
     exec(&mut s, user(), Command::CloseRequest { request_id: "w".into(), answer: None, withdrawn: true, title: None }).unwrap();
     assert!(s.requests[&"w".into()].withdrawn);
     reject_unchanged(&mut s, user(), Command::CloseRequest { request_id: "r".into(), answer: None, withdrawn: true, title: None }, "task_not_active");
@@ -1112,7 +1112,7 @@ fn a_maintenance_message_closes_without_a_card_unless_it_asked_for_an_answer() {
         attachments: vec![], interaction_id: id.into(), scope: Scope::Orchestrator { request_id: Some(request.into()) },
         recipient: Recipient::User, body: "Done".into(), card: crate::domain::CardSpec::derived(crate::domain::CardKind::Know, "Done"),
     };
-    exec(&mut s, user(), Command::CreateRequest { request_id: "m".into(), body: "Launch two more".into(), auto_merge: false, maintenance: true }).unwrap();
+    exec(&mut s, user(), Command::CreateRequest { request_id: "m".into(), body: "Launch two more".into(), auto_merge: false, maintenance: true, message: false }).unwrap();
     let error = exec(&mut s, orchestrator(), info("m-info", "m")).unwrap_err();
     assert_eq!(error.code, "maintenance_request");
     assert!(error.message.contains("--reply"), "{error}");
@@ -1120,11 +1120,11 @@ fn a_maintenance_message_closes_without_a_card_unless_it_asked_for_an_answer() {
         withdrawn: false, title: Some("Two more nodes".into()) }).unwrap();
     assert_eq!(cards(&s), 0);
     assert!(!closed.effects.iter().any(|e| matches!(e, DomainEffect::NotifyUser { .. })));
-    exec(&mut s, user(), Command::CreateRequest { request_id: "q".into(), body: "Is main green?".into(), auto_merge: false, maintenance: false }).unwrap();
+    exec(&mut s, user(), Command::CreateRequest { request_id: "q".into(), body: "Is main green?".into(), auto_merge: false, maintenance: false, message: false }).unwrap();
     exec(&mut s, orchestrator(), Command::CloseRequest { request_id: "q".into(), answer: Some("Main is green".into()),
         withdrawn: false, title: None }).unwrap();
     assert_eq!(cards(&s), 1);
-    exec(&mut s, user(), Command::CreateRequest { request_id: "q2".into(), body: "And now?".into(), auto_merge: false, maintenance: false }).unwrap();
+    exec(&mut s, user(), Command::CreateRequest { request_id: "q2".into(), body: "And now?".into(), auto_merge: false, maintenance: false, message: false }).unwrap();
     exec(&mut s, orchestrator(), info("q2-info", "q2")).unwrap();
     assert_eq!(cards(&s), 2);
 }
@@ -1146,7 +1146,7 @@ fn task_in(request: &str, id: &str) -> Command {
 #[test]
 fn a_request_needs_its_title_before_it_gets_a_second_task() {
     let mut s = fixture();
-    exec(&mut s, user(), Command::CreateRequest { request_id: "two".into(), body: "Two things".into(), auto_merge: false, maintenance: false }).unwrap();
+    exec(&mut s, user(), Command::CreateRequest { request_id: "two".into(), body: "Two things".into(), auto_merge: false, maintenance: false, message: false }).unwrap();
     exec(&mut s, orchestrator(), task_in("two", "first")).unwrap();
     let error = exec(&mut s, orchestrator(), task_in("two", "second")).unwrap_err();
     assert_eq!((error.code.as_str(), error.subject.as_deref()), ("request_title_required", Some("request.title")));
@@ -1451,7 +1451,7 @@ fn no_task_stays_closing_without_a_way_out() {
                 }
                 let shown = exec(&mut s, agent(), Command::PresentResult {
                     attachments: vec![], task_id: "t".into(), interaction_id: "d".into(), body: "Result ready".into(),
-                    targets: targets.clone(), is_final: true, card: crate::domain::CardSpec::delivery("Review the result", &[], true),
+                    targets: targets.clone(), is_final: true, nothing_to_review: false, card: crate::domain::CardSpec::delivery("Review the result", &[], true),
                 });
                 if shown.is_err() {
                     assert!(!presented && end == PrState::Open, "only an open PR left out of the delivery is refused");
@@ -2022,7 +2022,7 @@ fn partial_delivery_and_unread_information_do_not_replace_final_or_block() {
             interaction_id: "partial".into(),
             body: "Supplementary partial".into(),
             targets: text(),
-            is_final: false, card: crate::domain::CardSpec::delivery("Review the result", &[], true),
+            is_final: false, nothing_to_review: false, card: crate::domain::CardSpec::delivery("Review the result", &[], true),
         },
     )
     .unwrap();
@@ -2235,7 +2235,7 @@ fn stack_readiness_is_explicit_and_merge_requires_upstream_merge_and_retarget() 
                 pr_id: "pr-down".into(),
                 head: "head-down".into(),
             }],
-            is_final: true, card: crate::domain::CardSpec::delivery("Review the result", &[], true),
+            is_final: true, nothing_to_review: false, card: crate::domain::CardSpec::delivery("Review the result", &[], true),
         },
     )
     .unwrap();
@@ -2650,7 +2650,7 @@ fn a_registered_pr_is_presented_while_open_and_an_accepted_task_settles_once_it_
     let before = open.clone();
     let error = exec(&mut open, agent(), Command::PresentResult {
         attachments: vec![], task_id: "t".into(), interaction_id: "d".into(), body: "Result ready".into(),
-        targets: text(), is_final: true, card: crate::domain::CardSpec::delivery("Review the result", &[], true),
+        targets: text(), is_final: true, nothing_to_review: false, card: crate::domain::CardSpec::delivery("Review the result", &[], true),
     }).unwrap_err();
     assert_eq!((error.code.as_str(), error.subject.as_deref()), ("pr_missing", Some("targets")));
     assert!(error.message.contains("PR #1 is open") && error.message.contains("head1"), "{}", error.message);
@@ -2857,7 +2857,7 @@ fn revision_checks_are_per_subject_and_invalidation_dates_decisions() {
     assert_eq!(s.tasks[&"t".into()].agent_id, Some("b".into()));
     // Commands without a narrower subject still need the current revision.
     assert_eq!(
-        run(&mut s, user(), "r2", seen, Command::CreateRequest { request_id: "r2".into(), body: "More".into(), auto_merge: false, maintenance: false })
+        run(&mut s, user(), "r2", seen, Command::CreateRequest { request_id: "r2".into(), body: "More".into(), auto_merge: false, maintenance: false, message: false })
             .unwrap_err()
             .code,
         "stale_revision"
@@ -2936,9 +2936,10 @@ fn variant_index(c: &Command) -> usize {
         Command::ObservePrMergeMethods { .. } => 55,
         Command::SetPriority { .. } => 56,
         Command::DeclarePostMergeWork { .. } => 57,
+        Command::BindOrchestratorSession { .. } => 58,
     }
 }
-const COMMAND_KINDS: usize = 58;
+const COMMAND_KINDS: usize = 59;
 /// Every command kind naming the given ids. The flag marks commands that only
 /// create a fresh entity and therefore may succeed with an unknown id.
 fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
@@ -2970,11 +2971,12 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
         (Command::RecordScheduleLaunchHanded { run_id: ids.run.into(), session_id: None, agent_id: None, finished_at: 1 }, false),
         (Command::RecordScheduleRunFailed { run_id: ids.run.into(), reason: "boom".into(), finished_at: 1 }, false),
         (Command::InterruptScheduleRunsOnRestart, true),
-        (Command::CreateRequest { request_id: ids.request.into(), body: "Work".into(), auto_merge: false, maintenance: false }, true),
+        (Command::CreateRequest { request_id: ids.request.into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false }, true),
         (Command::CloseRequest { request_id: ids.request.into(), answer: None, withdrawn: false, title: None }, false),
         (Command::RegisterAgent { agent_id: ids.agent.into(), name: "Ghost".into() }, true),
         (Command::ObserveAgent { agent_id: ids.agent.into(), connected: true }, false),
         (Command::AdvanceOrchestratorGeneration { generation: 1 }, true),
+        (Command::BindOrchestratorSession { session_id: ids.agent.into() }, true),
         (Command::CreateTask { task_id: "fresh-task".into(), request_id: ids.request.into(),
             title: "Fresh".into(), agent_id: Some(ids.agent.into()), review_prs: false,
             dependencies: BTreeSet::new(), stack: None }, false),
@@ -3012,7 +3014,7 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
             subject: InteractionSubject::PullRequest { pr_id: ids.pr.into() } }, false),
         (Command::PresentResult { attachments: vec![], task_id: ids.task.into(),
             interaction_id: "fresh-delivery".into(), body: "Done".into(), targets: text(),
-            is_final: true, card: crate::domain::CardSpec::delivery("Review the result", &[], true) }, false),
+            is_final: true, nothing_to_review: false, card: crate::domain::CardSpec::delivery("Review the result", &[], true) }, false),
         (Command::SubmitFeedback { attachments: vec![], presentation_id: ids.interaction.into(),
             targets: text(), body: "Change".into(), instruction: Instruction::Changes }, false),
         (Command::AcceptDelivery { presentation_id: ids.interaction.into(), targets: text() }, false),
@@ -3117,7 +3119,7 @@ fn unknown_and_foreign_ids_are_typed_rejections_never_panics() {
     exec(&mut s, b.clone(), Command::PresentResult { attachments: vec![], task_id: "t2".into(),
         interaction_id: "pres2".into(), body: "Done".into(),
         targets: vec![DeliveryTarget::PullRequest { pr_id: "pr2".into(), head: "head1".into() }],
-        is_final: true, card: crate::domain::CardSpec::delivery("Review the result", &[], true) }).unwrap();
+        is_final: true, nothing_to_review: false, card: crate::domain::CardSpec::delivery("Review the result", &[], true) }).unwrap();
     exec(&mut s, user(), Command::AuthorizeMerge { authorization_id: "auth2".into(),
         presentation_id: "pres2".into(), pr_id: "pr2".into(), expected_head: "head1".into(),
         method: MergeMethod::Squash }).unwrap();
@@ -3681,7 +3683,7 @@ fn a_delivery_stacked_on_an_open_pr_is_no_card_until_that_pr_merges_and_then_one
     let delivered = exec(&mut s, agent_b(), Command::PresentResult {
         attachments: vec![], task_id: "down".into(), interaction_id: "d-down".into(), body: "Downstream ready".into(),
         targets: vec![DeliveryTarget::PullRequest { pr_id: "pr-down".into(), head: "head-down".into() }],
-        is_final: true, card: crate::domain::CardSpec::delivery("Review the result", &[], true),
+        is_final: true, nothing_to_review: false, card: crate::domain::CardSpec::delivery("Review the result", &[], true),
     }).unwrap();
     let notified = |outcome: &CommandOutcome| outcome.effects.iter().filter(|e| matches!(e, DomainEffect::NotifyUser { interaction_id, .. } if interaction_id.0 == "d-down")).count();
     assert_eq!(notified(&delivered), 0, "no push while it waits for the PR of the delivery in front");
@@ -3734,7 +3736,7 @@ fn a_final_delivery_is_refused_while_a_question_of_its_task_waits() {
     let before = s.clone();
     let refused = exec(&mut s, agent(), Command::PresentResult {
         attachments: vec![], task_id: "t".into(), interaction_id: "d".into(), body: "Result ready".into(),
-        targets: pr_targets(), is_final: true, card: crate::domain::CardSpec::delivery("Review the result", &[], true),
+        targets: pr_targets(), is_final: true, nothing_to_review: false, card: crate::domain::CardSpec::delivery("Review the result", &[], true),
     }).unwrap_err();
     assert_eq!(refused.code, "unanswered_questions");
     assert!(refused.message.contains("You have unanswered questions (“Decide whether to cover invalid card numbers”)"), "{}", refused.message);
@@ -3799,18 +3801,51 @@ fn an_accepted_text_delivery_waits_for_a_question_asked_during_cleanup() {
     answer_aside(&mut s, "q");
     assert_eq!(s.tasks[&"t".into()].state, TaskState::Done);
 }
+fn hold_plan(s: &mut DomainState, id: &str) {
+    exec(s, Actor::System, Command::HoldHook { interaction_id: id.into(), task_id: "t".into(), agent_id: "a".into(), hold: Hold::Plan,
+        body: "# Tests without stray temp folders\n\n1. Point TMPDIR at Bazel's".into(), options: Hold::Plan.options(),
+        card: crate::domain::CardSpec::derived(crate::domain::CardKind::Review, "Tests without stray temp folders")
+            .content(crate::domain::ContentKind::Plan, "1. Point TMPDIR at Bazel's") }).unwrap();
+}
+fn notices(s: &DomainState) -> Vec<&Interaction> {
+    s.interactions.values().filter(|i| i.id.0.starts_with(ENDED_UNANSWERED_PREFIX)).collect()
+}
+/// Cancelling “Tests usan TEST_TMPDIR de Bazel” with its plan open told the user the task “ended
+/// before you answered”: the user stopped that work, so its cards just leave.
 #[test]
-fn cancelling_a_task_withdraws_its_open_questions_and_tells_the_user() {
+fn cancelling_a_task_with_its_plan_open_takes_its_cards_away_in_silence() {
     let mut s = fixture();
+    hold_plan(&mut s, "plan");
     ask_aside(&mut s, "q");
     let cancelled = exec(&mut s, user(), Command::CancelTask { task_id: "t".into() }).unwrap();
-    assert!(s.interactions[&"q".into()].withdrawn);
-    let notice: InteractionId = format!("{ENDED_UNANSWERED_PREFIX}q").into();
-    assert!(pending(&s, &notice.0), "the user hears the question no longer waits");
-    assert!(cancelled.effects.contains(&DomainEffect::NotifyUser { task_id: Some("t".into()), interaction_id: notice.clone() }));
-    let card = &s.interactions[&notice].card;
-    assert_eq!(card.why, "No longer waits for an answer: Decide whether to cover invalid card numbers");
-    assert_eq!(card.content.as_ref().unwrap().body, "Cover card numbers that fail Luhn too?");
+    assert!(s.interactions[&"plan".into()].withdrawn && s.interactions[&"q".into()].withdrawn);
+    assert!(!pending(&s, "plan") && !pending(&s, "q"));
+    assert!(notices(&s).is_empty(), "no notice about cards of a cancelled task");
+    assert!(!cancelled.effects.iter().any(|e| matches!(e, DomainEffect::NotifyUser { interaction_id, .. }
+        if interaction_id.0.starts_with(ENDED_UNANSWERED_PREFIX))));
+}
+/// A notice an older daemon left for a cancelled task leaves the inbox on the next change.
+#[test]
+fn a_notice_left_for_a_cancelled_task_is_taken_away() {
+    let mut s = fixture();
+    ask_aside(&mut s, "q");
+    s.tasks.get_mut(&"t".into()).unwrap().state = TaskState::Done;
+    exec(&mut s, Actor::System, Command::ObserveAgent { agent_id: "a".into(), connected: false }).unwrap();
+    let notice = format!("{ENDED_UNANSWERED_PREFIX}q");
+    assert!(pending(&s, &notice));
+    s.tasks.get_mut(&"t".into()).unwrap().state = TaskState::Cancelled;
+    exec(&mut s, Actor::System, Command::ObserveAgent { agent_id: "a".into(), connected: true }).unwrap();
+    assert!(!pending(&s, &notice));
+}
+/// A plan nobody approved for work that is already done changes nothing for the user.
+#[test]
+fn a_task_done_with_its_plan_open_says_nothing_about_the_plan() {
+    let mut s = fixture();
+    hold_plan(&mut s, "plan");
+    s.tasks.get_mut(&"t".into()).unwrap().state = TaskState::Done;
+    exec(&mut s, Actor::System, Command::ObserveAgent { agent_id: "a".into(), connected: false }).unwrap();
+    assert!(s.interactions[&"plan".into()].withdrawn);
+    assert!(notices(&s).is_empty());
 }
 /// The state an older daemon left: a done task with a question nobody answered.
 #[test]
@@ -3821,6 +3856,10 @@ fn a_task_left_done_with_an_open_question_tells_the_user_once() {
     exec(&mut s, Actor::System, Command::ObserveAgent { agent_id: "a".into(), connected: false }).unwrap();
     let notice = format!("{ENDED_UNANSWERED_PREFIX}q");
     assert!(pending(&s, &notice) && !pending(&s, "q"));
+    let card = &s.interactions[&InteractionId(notice.clone())].card;
+    assert_eq!(card.need, "No longer waits for your answer: Decide whether to cover invalid card numbers");
+    assert_eq!(card.why, "The work was finished before you answered");
+    assert_eq!(card.content.as_ref().unwrap().body, "Cover card numbers that fail Luhn too?");
     let again = exec(&mut s, Actor::System, Command::ObserveAgent { agent_id: "a".into(), connected: true }).unwrap();
     assert!(!again.effects.iter().any(|e| matches!(e, DomainEffect::NotifyUser { .. })));
     assert_eq!(s.interactions.keys().filter(|id| id.0.starts_with(ENDED_UNANSWERED_PREFIX)).count(), 1);
@@ -3876,4 +3915,54 @@ fn a_node_waiting_on_a_task_is_resumed_once_when_that_task_is_done() {
     assert_eq!(resumed, vec![(Some("waits".into()), dependencies_done_notice(&["Result"]))]);
     let later = exec(&mut s, Actor::System, Command::ObserveAgent { agent_id: "b".into(), connected: true }).unwrap();
     assert!(!later.effects.iter().any(|e| matches!(e, DomainEffect::NotifyAgent { .. })));
+}
+#[test]
+fn only_the_system_binds_the_orchestrators_session_and_a_new_one_replaces_it() {
+    let mut s = fixture();
+    for actor in [user(), agent(), Actor::Orchestrator { generation: 0 }] {
+        assert_eq!(exec(&mut s.clone(), actor, Command::BindOrchestratorSession { session_id: "s1".into() }).unwrap_err().code, "forbidden");
+    }
+    assert_eq!(exec(&mut s.clone(), Actor::System, Command::BindOrchestratorSession { session_id: " ".into() }).unwrap_err().code, "invalid_input");
+    exec(&mut s, Actor::System, Command::BindOrchestratorSession { session_id: "s1".into() }).unwrap();
+    exec(&mut s, Actor::System, Command::BindOrchestratorSession { session_id: "s2".into() }).unwrap();
+    assert_eq!(s.orchestrator_session, Some("s2".into()));
+}
+#[test]
+fn a_typed_name_resolves_to_the_orchestrators_current_session_a_node_or_nobody() {
+    let mut s = fixture();
+    let node = s.agents.keys().next().unwrap().clone();
+    assert_eq!(s.resolve_target("orchestrator"), Target::Orchestrator(None));
+    exec(&mut s, Actor::System, Command::BindOrchestratorSession { session_id: "6f1c2b9e-1111-4a2b-9c3d-0123456789ab".into() }).unwrap();
+    let session = Target::Orchestrator(Some("6f1c2b9e-1111-4a2b-9c3d-0123456789ab".into()));
+    for name in ["orchestrator", "6f1c2b9e-1111-4a2b-9c3d-0123456789ab", "0123456789ab"] {
+        assert_eq!(s.resolve_target(name), session, "{name}");
+    }
+    assert_eq!(s.resolve_target(&node.0), Target::Agent(node));
+    for name in ["orquestador", "Orquestador", "Orchestrator", " orchestrator", "orchestrador", "orq", "", "ghost", "view"] {
+        assert_eq!(s.resolve_target(name), Target::Unknown, "{name}");
+    }
+}
+
+#[test]
+fn preview_matches_execution_without_changing_the_input() {
+    let state = fixture();
+    let commands = [Command::CancelTask { task_id: "t".into() },
+        Command::ReopenTask { task_id: "t".into() },
+        Command::ArchiveTask { task_id: "t".into(), archived: true },
+        Command::CancelTask { task_id: "missing".into() }];
+    for actor in [user(), agent(), Actor::System, Actor::Orchestrator { generation: 0 }] {
+        for command in &commands {
+            for (protocol, epoch, revision) in [(PROTOCOL_VERSION, state.data_epoch.clone(), state.revision),
+                (0, state.data_epoch.clone(), state.revision),
+                (PROTOCOL_VERSION, "other-epoch".into(), state.revision),
+                (PROTOCOL_VERSION, state.data_epoch.clone(), state.revision + 1)] {
+                let envelope = CommandEnvelope { protocol_version: protocol, data_epoch: epoch,
+                    command_id: "preview-check".into(), expected_revision: revision, command: command.clone() };
+                let untouched = state.clone();
+                let mut applied = state.clone();
+                assert_eq!(state.preview(&actor, &envelope), applied.execute(&actor, &envelope));
+                assert_eq!(state, untouched);
+            }
+        }
+    }
 }

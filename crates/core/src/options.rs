@@ -334,6 +334,37 @@ impl Spec {
     }
 }
 
+/// `text` with `max_working_nodes` set to `limit`, every other line as it was: the key is
+/// replaced where it is, or added above the first table, where top-level keys go.
+pub fn with_node_limit(text: &str, limit: NodeLimit) -> Result<String, String> {
+    let value = match limit {
+        NodeLimit::Auto => format!("\"{AUTO}\""),
+        NodeLimit::Fixed(count) => count.to_string(),
+    };
+    let line = format!("max_working_nodes = {value}");
+    let mut lines: Vec<String> = text.lines().map(str::to_owned).collect();
+    let first_table = lines.iter().position(|line| line.trim_start().starts_with('['));
+    let top = &lines[..first_table.unwrap_or(lines.len())];
+    let existing = top.iter().position(|line| {
+        line.trim_start().strip_prefix("max_working_nodes").is_some_and(|rest| rest.trim_start().starts_with('='))
+    });
+    match (existing, first_table) {
+        (Some(index), _) => lines[index] = line,
+        (None, Some(index)) => {
+            lines.insert(index, String::new());
+            lines.insert(index, line);
+        }
+        (None, None) => lines.push(line),
+    }
+    let mut written = lines.join("\n");
+    written.push('\n');
+    let parsed = OptionsFile::parse(&written)?;
+    if parsed.max_working_nodes != limit {
+        return Err("max_working_nodes did not take the new value".into());
+    }
+    Ok(written)
+}
+
 impl OptionsFile {
     pub fn parse(text: &str) -> Result<Self, String> {
         let file: OptionsFile = toml::from_str(text).map_err(|e| e.to_string())?;
@@ -992,5 +1023,18 @@ mod node_limit_tests {
             assert!(OptionsFile::parse(wrong).unwrap_err().contains("max_working_nodes"), "{wrong}");
         }
         assert_eq!(NodeLimit::Fixed(3).resolve(64, 512 * GB), 3);
+    }
+
+    #[test]
+    fn setting_the_node_limit_keeps_every_other_line() {
+        let text = "# my options\n[defaults]\neffort = \"light\" # keep\n";
+        let fixed = with_node_limit(text, NodeLimit::Fixed(4)).unwrap();
+        assert_eq!(fixed, "# my options\nmax_working_nodes = 4\n\n[defaults]\neffort = \"light\" # keep\n");
+        let auto = with_node_limit(&fixed, NodeLimit::Auto).unwrap();
+        assert_eq!(auto, "# my options\nmax_working_nodes = \"auto\"\n\n[defaults]\neffort = \"light\" # keep\n");
+        assert!(OptionsFile::parse(&auto).unwrap().defaults.contains_key("effort"));
+        assert_eq!(with_node_limit("", NodeLimit::Fixed(12)).unwrap(), "max_working_nodes = 12\n");
+        assert!(with_node_limit("", NodeLimit::Fixed(13)).is_err());
+        assert!(with_node_limit("[defaults\n", NodeLimit::Fixed(2)).is_err());
     }
 }

@@ -44,6 +44,7 @@ pub(super) fn open(path: &Path) -> Result<(Connection, PathBuf)> {
         &path,
         OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NOFOLLOW,
     )?;
+    conn.set_db_config(rusqlite::config::DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, true)?;
     let after = fs::symlink_metadata(&path)?;
     ensure!(
         (before.dev(), before.ino()) == (after.dev(), after.ino()),
@@ -131,4 +132,46 @@ mod tests {
         fs::hard_link(&original, fixture.path()).unwrap();
         assert!(open(&fixture.path()).is_err());
     }
+    #[test]
+    #[ignore = "internal isolated process fixture"]
+    fn crash_schema_fixture() {
+        let Some(path) = std::env::var_os("ALONDRA_SCHEMA_FIXTURE") else { return; };
+        let path = PathBuf::from(path);
+        let conn = Connection::open(&path).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        let mode = std::env::var("ALONDRA_SCHEMA_JOURNAL").unwrap_or_else(|_| "WAL".into());
+        conn.pragma_update(None, "journal_mode", &mode).unwrap();
+        conn.pragma_update(None, "wal_autocheckpoint", 0).unwrap();
+        conn.execute_batch("CREATE TABLE work(id INTEGER PRIMARY KEY, body TEXT); INSERT INTO work VALUES(1,'must remain'); PRAGMA user_version=99;").unwrap();
+        if mode == "DELETE" {
+            conn.pragma_update(None, "cache_size", 1).unwrap();
+            conn.execute_batch("BEGIN IMMEDIATE; UPDATE work SET body='uncommitted'; INSERT INTO work VALUES(2,zeroblob(524288));").unwrap();
+        }
+        unsafe { libc::_exit(0); }
+    }
+
+    #[test]
+    fn a_crashed_unknown_wal_schema_is_refused_without_checkpointing_its_files() {
+        let fixture = Fixture::new();
+        let path = fixture.path();
+        let child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--ignored", "--exact", "domain_store::connection::tests::crash_schema_fixture"])
+            .env("ALONDRA_SCHEMA_FIXTURE", &path)
+            .env("HOME", &fixture.0)
+            .env_remove("CLAUDE_HOME").env_remove("CLAUDE_CONFIG_DIR")
+            .output().unwrap();
+        assert!(child.status.success(), "{}", String::from_utf8_lossy(&child.stderr));
+        let wal = path.with_file_name("domain.sqlite-wal");
+        let before = (fs::read(&path).unwrap(), fs::read(&wal).unwrap());
+        assert!(!before.1.is_empty());
+        let error = open(&path).err().expect("unknown schema was opened");
+        assert!(error.to_string().contains("unsupported domain database schema 99"));
+        assert!(fs::read(&path).unwrap() == before.0, "refusal checkpointed the database");
+        assert!(fs::read(&wal).unwrap() == before.1, "refusal replaced or removed the WAL");
+        let retained = Connection::open(&path).unwrap();
+        assert_eq!(retained.query_row("SELECT body FROM work WHERE id=1", [], |row| row.get::<_, String>(0)).unwrap(), "must remain");
+    }
+
+
+
 }

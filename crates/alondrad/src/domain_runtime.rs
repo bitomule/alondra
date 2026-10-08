@@ -18,6 +18,8 @@ pub struct DomainRuntime {
     changed: watch::Sender<Revision>,
     schedule_changed: watch::Sender<Revision>,
     pub(crate) reads: crate::domain_reads::Cache,
+    pub(crate) stored_reads: Arc<crate::service_files::StoredReads>,
+    pub(crate) local_actions: crate::views::actions::LocalActions,
     pub(crate) live: crate::client_routes::Live,
     /// User messages for sessions in the user's own terminal, handed at their next Stop hook.
     pub(crate) held:
@@ -55,6 +57,8 @@ impl DomainRuntime {
             changed,
             schedule_changed,
             reads: Default::default(),
+            stored_reads: Default::default(),
+            local_actions: Default::default(),
             live: crate::client_routes::Live::persisted_in(home),
             held: Default::default(),
             rejections: Default::default(),
@@ -144,6 +148,29 @@ impl DomainRuntime {
             .map_err(|message| DomainError::new("forbidden", message))?;
         capabilities::persist(&self.home, &authority)?;
         Ok(capability)
+    }
+
+    /// Record the Claude session the orchestrator runs in, unless the domain already has it.
+    pub fn bind_orchestrator_session(&self, session: &str) -> Result<(), StoreError> {
+        let command_id: CommandId = format!("orchestrator-session-{}", crate::auth::random_hex(16)).into();
+        for _ in 0..5 {
+            let state = self.state().map_err(StoreError::Storage)?;
+            if state.orchestrator_session.as_ref().is_some_and(|bound| bound.0 == session) {
+                return Ok(());
+            }
+            let envelope = CommandEnvelope {
+                protocol_version: PROTOCOL_VERSION,
+                data_epoch: state.data_epoch.clone(),
+                command_id: command_id.clone(),
+                expected_revision: state.revision,
+                command: Command::BindOrchestratorSession { session_id: session.into() },
+            };
+            match self.execute(&Actor::System, &envelope, None, || Ok(())) {
+                Err(StoreError::Domain(error)) if error.code == "stale_revision" => continue,
+                result => return result.map(|_| ()),
+            }
+        }
+        Err(DomainError::new("stale_revision", "The domain stayed busy while binding the orchestrator's session").into())
     }
 
     pub fn revoke_agent(&self, session: &str) -> Result<()> {
@@ -432,6 +459,7 @@ fn command_task(state: &DomainState, command: &Command) -> Option<TaskId> {
         | Command::RegisterAgent { .. }
         | Command::ObserveAgent { .. }
         | Command::AdvanceOrchestratorGeneration { .. }
+        | Command::BindOrchestratorSession { .. }
         | Command::HoldHook { .. }
         | Command::HoldQuestions { .. } => None,
     }
@@ -478,7 +506,7 @@ mod approval_tests {
             command: Command::CreateRequest {
                 request_id: "request-lease".into(),
                 body: "Work".into(),
-                auto_merge: false, maintenance: false,
+                auto_merge: false, maintenance: false, message: false,
             },
         };
         let (checked_tx, checked_rx) = mpsc::channel();
@@ -634,7 +662,7 @@ mod producer_revision_tests {
                     Command::CreateRequest {
                         request_id: "request-a".into(),
                         body: "Work".into(),
-                        auto_merge: false, maintenance: false,
+                        auto_merge: false, maintenance: false, message: false,
                     },
                 ),
                 None,
@@ -705,7 +733,7 @@ mod producer_revision_tests {
                     Command::CreateRequest {
                         request_id: "request-b".into(),
                         body: "More".into(),
-                        auto_merge: false, maintenance: false,
+                        auto_merge: false, maintenance: false, message: false,
                     },
                 )
             },

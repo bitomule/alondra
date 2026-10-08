@@ -532,7 +532,7 @@ impl ScheduleState {
             .ok_or_else(|| DomainError::new("not_found", "Schedule run not found"))?;
         if run.state != ScheduleRunState::Sent { return Err(DomainError::new("conflict", "Run is not sent")); }
         let launch = run.launch.as_mut()
-            .ok_or_else(|| DomainError::new("conflict", "Run has no v2 launch intent"))?;
+            .ok_or_else(|| DomainError::new("conflict", "Run has no launch intent"))?;
         if launch.state != ScheduleLaunchState::Pending {
             return Err(DomainError::new("conflict", "Schedule launch was already claimed"));
         }
@@ -551,7 +551,7 @@ impl ScheduleState {
         let run = self.runs.get_mut(run_id)
             .ok_or_else(|| DomainError::new("not_found", "Schedule run not found"))?;
         let launch = run.launch.as_mut()
-            .ok_or_else(|| DomainError::new("conflict", "Run has no v2 launch intent"))?;
+            .ok_or_else(|| DomainError::new("conflict", "Run has no launch intent"))?;
         if run.state != ScheduleRunState::Sent
             || !matches!(launch.state, ScheduleLaunchState::Dispatching | ScheduleLaunchState::Uncertain)
         {

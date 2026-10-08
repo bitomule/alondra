@@ -78,8 +78,7 @@ struct Signer {
 
 static LAST_TIMESTAMP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-/// Signatures are deterministic, so two identical requests signed in the same millisecond
-/// would be byte-identical and alondrad would refuse the second as a replay.
+/// Keep timestamps ordered within this process; signing entropy distinguishes separate processes.
 fn unique_timestamp() -> u64 {
     use std::sync::atomic::Ordering::SeqCst;
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
@@ -96,20 +95,47 @@ fn unique_timestamp() -> u64 {
 const KEY_FILE: &str = "tui-key.pem";
 const DEVICE_FILE: &str = "tui-device";
 
+struct SigningEntropy(ring::rand::SystemRandom);
+impl p256::elliptic_curve::rand_core::TryRng for SigningEntropy {
+    type Error = std::io::Error;
+    fn try_next_u32(&mut self) -> std::io::Result<u32> {
+        let mut bytes = [0; 4]; self.try_fill_bytes(&mut bytes)?; Ok(u32::from_le_bytes(bytes))
+    }
+    fn try_next_u64(&mut self) -> std::io::Result<u64> {
+        let mut bytes = [0; 8]; self.try_fill_bytes(&mut bytes)?; Ok(u64::from_le_bytes(bytes))
+    }
+    fn try_fill_bytes(&mut self, bytes: &mut [u8]) -> std::io::Result<()> {
+        use ring::rand::SecureRandom as _;
+        self.0.fill(bytes).map_err(|_| std::io::Error::other("system entropy unavailable"))
+    }
+}
+impl p256::elliptic_curve::rand_core::TryCryptoRng for SigningEntropy {}
+
 impl Signer {
-    fn sign(&self, method: &str, path: &str, body: &[u8]) -> [(&'static str, String); 3] {
+    fn sign(&self, method: &str, path: &str, body: &[u8]) -> Result<[(&'static str, String); 3]> {
+        self.sign_at(method, path, body, unique_timestamp())
+    }
+
+    fn sign_at(&self, method: &str, path: &str, body: &[u8], timestamp: u64) -> Result<[(&'static str, String); 3]> {
+        self.sign_with_entropy(method, path, body, timestamp, &mut SigningEntropy(ring::rand::SystemRandom::new()))
+    }
+
+    fn sign_with_entropy<R: p256::elliptic_curve::rand_core::TryCryptoRng + ?Sized>(
+        &self, method: &str, path: &str, body: &[u8], timestamp: u64, entropy: &mut R,
+    ) -> Result<[(&'static str, String); 3]> {
         use base64::Engine as _;
-        use p256::ecdsa::signature::Signer as _;
+        use p256::ecdsa::signature::RandomizedSigner as _;
         use sha2::Digest as _;
-        let timestamp = unique_timestamp().to_string();
+        let timestamp = timestamp.to_string();
         let digest: String = sha2::Sha256::digest(body).iter().map(|b| format!("{b:02x}")).collect();
         let message = format!("{method}\n{path}\n{timestamp}\n{digest}");
-        let signature: p256::ecdsa::Signature = self.key.sign(message.as_bytes());
-        [
+        let signature: p256::ecdsa::Signature = self.key.try_sign_with_rng(entropy, message.as_bytes())
+            .map_err(|_| anyhow!(tr!("Could not sign the local request", "No se pudo firmar la solicitud local")))?;
+        Ok([
             ("x-alondra-device", self.device.clone()),
             ("x-alondra-timestamp", timestamp),
             ("x-alondra-signature", base64::engine::general_purpose::STANDARD.encode(signature.to_der().as_bytes())),
-        ]
+        ])
     }
 
     /// The key this terminal signs the user's answers with, paired with alondrad on first use.
@@ -198,12 +224,12 @@ impl Client {
         }
     }
 
-    fn headers<B>(&self, mut req: ureq::RequestBuilder<B>, method: &str, path: &str, body: &[u8]) -> ureq::RequestBuilder<B> {
+    fn headers<B>(&self, mut req: ureq::RequestBuilder<B>, method: &str, path: &str, body: &[u8]) -> Result<ureq::RequestBuilder<B>> {
         if let Ok(run) = std::env::var("ALONDRA_ORCHESTRATOR_EXECUTION") { req = req.header("x-alondra-orchestrator-execution", run); }
         if let Ok(sid) = std::env::var("ALONDRA_SESSION_ID").or_else(|_| std::env::var("CLAUDE_CODE_SESSION_ID")) { req = req.header("x-alondra-session", sid); }
         match &self.signer {
-            Some(s) => s.sign(method, path, body).into_iter().fold(req, |r, (k, v)| r.header(k, v)),
-            None => req,
+            Some(s) => Ok(s.sign(method, path, body)?.into_iter().fold(req, |r, (k, v)| r.header(k, v))),
+            None => Ok(req),
         }
     }
 
@@ -219,10 +245,10 @@ impl Client {
         let not_responding = tr!("alondrad is not responding (is it running?)", "alondrad no responde (¿está arrancado?)");
         let bytes = body.map(serde_json::to_vec).transpose()?.unwrap_or_default();
         let mut resp = match method {
-            "POST" => self.headers(self.agent.post(url).header("content-type", "application/json"), method, path, &bytes).send(&bytes[..]),
-            "PUT" => self.headers(self.agent.put(url).header("content-type", "application/json"), method, path, &bytes).send(&bytes[..]),
-            "DELETE" => self.headers(self.agent.delete(url), method, path, b"").call(),
-            _ => self.headers(self.agent.get(url), method, path, b"").call(),
+            "POST" => self.headers(self.agent.post(url).header("content-type", "application/json"), method, path, &bytes)?.send(&bytes[..]),
+            "PUT" => self.headers(self.agent.put(url).header("content-type", "application/json"), method, path, &bytes)?.send(&bytes[..]),
+            "DELETE" => self.headers(self.agent.delete(url), method, path, b"")?.call(),
+            _ => self.headers(self.agent.get(url), method, path, b"")?.call(),
         }
         .context(not_responding)?;
         let status = resp.status().as_u16();
@@ -401,8 +427,8 @@ impl Client {
         let url = format!("{}{path}", self.base);
         let not_responding = tr!("alondrad is not responding (is it running?)", "alondrad no responde (¿está arrancado?)");
         let mut resp = match method {
-            "POST" => self.headers(self.agent.post(url).header("content-type", "application/octet-stream"), method, path, body).send(body),
-            _ => self.headers(self.agent.get(url), method, path, b"").call(),
+            "POST" => self.headers(self.agent.post(url).header("content-type", "application/octet-stream"), method, path, body)?.send(body),
+            _ => self.headers(self.agent.get(url), method, path, b"")?.call(),
         }
         .context(not_responding)?;
         let status = resp.status().as_u16();
@@ -786,7 +812,7 @@ mod signing_tests {
         let mut timestamps = std::collections::HashSet::new();
         let mut signatures = std::collections::HashSet::new();
         for _ in 0..200 {
-            let headers = signer.sign("GET", "/views/home", b"");
+            let headers = signer.sign("GET", "/views/home", b"").unwrap();
             let timestamp = headers[1].1.clone();
             let signature = headers[2].1.clone();
             let der = base64::engine::general_purpose::STANDARD.decode(&signature).unwrap();
@@ -795,6 +821,37 @@ mod signing_tests {
             assert!(timestamps.insert(timestamp));
             assert!(signatures.insert(signature));
         }
+    }
+
+    #[test]
+    fn independent_signers_at_the_same_timestamp_do_not_repeat_signatures() {
+        use base64::Engine as _;
+        let first = signer();
+        let second = signer();
+        let message = format!("GET\n/views/home\n1000\n{}", sha2::Sha256::digest(b"").iter()
+            .map(|byte| format!("{byte:02x}")).collect::<String>());
+        let mut signatures = std::collections::HashSet::new();
+        for source in [&first, &second].into_iter().cycle().take(32) {
+            let headers = source.sign_at("GET", "/views/home", b"", 1000).unwrap();
+            let encoded = &headers[2].1;
+            let der = base64::engine::general_purpose::STANDARD.decode(encoded).unwrap();
+            source.key.verifying_key().verify(message.as_bytes(),
+                &p256::ecdsa::Signature::from_der(&der).unwrap()).unwrap();
+            assert!(signatures.insert(encoded.clone()), "independent requests must not look like captured replays");
+        }
+    }
+
+    #[test]
+    fn entropy_failure_never_produces_unsigned_or_deterministic_fallback_headers() {
+        struct FailedEntropy;
+        impl p256::elliptic_curve::rand_core::TryRng for FailedEntropy {
+            type Error = std::io::Error;
+            fn try_next_u32(&mut self) -> std::io::Result<u32> { Err(std::io::Error::other("synthetic")) }
+            fn try_next_u64(&mut self) -> std::io::Result<u64> { Err(std::io::Error::other("synthetic")) }
+            fn try_fill_bytes(&mut self, _: &mut [u8]) -> std::io::Result<()> { Err(std::io::Error::other("synthetic")) }
+        }
+        impl p256::elliptic_curve::rand_core::TryCryptoRng for FailedEntropy {}
+        assert!(signer().sign_with_entropy("GET", "/views/home", b"", 1000, &mut FailedEntropy).is_err());
     }
 
     #[test]

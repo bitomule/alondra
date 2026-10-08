@@ -649,6 +649,8 @@ fn kept<K: Ord + std::fmt::Debug, V>(
 /// `save_changes` only inserts and updates. A rule that removed an entry would
 /// leave its row behind, so such a change is refused instead of half-persisted.
 fn ensure_nothing_removed(before: &DomainState, after: &DomainState) -> Result<()> {
+    ensure!(before.orchestrator_session.is_none() || after.orchestrator_session.is_some(),
+        "domain persistence cannot forget the orchestrator's session");
     kept("request", &before.requests, &after.requests)?;
     kept("agent", &before.agents, &after.agents)?;
     kept("task", &before.tasks, &after.tasks)?;
@@ -705,12 +707,20 @@ pub(super) fn save_changes(c: &Connection, before: &DomainState, after: &DomainS
             params![after.revision as i64, after.orchestrator_generation as i64],
         )?;
     }
+    if before.orchestrator_session != after.orchestrator_session {
+        if let Some(session) = &after.orchestrator_session {
+            exec(c, "INSERT INTO orchestrator_session(singleton,session_id) VALUES(1,?1) ON CONFLICT(singleton) DO UPDATE SET session_id=excluded.session_id", params![session.0])?;
+        }
+    }
     for (x, _) in changed(&before.requests, &after.requests) {
         let mut row = object(x)?;
-        strip(&mut row, &["maintenance"]);
+        strip(&mut row, &["maintenance", "message"]);
         upsert(c, "requests", &["id"], row)?;
         if x.maintenance {
             exec(c, "INSERT OR IGNORE INTO maintenance_requests(request_id) VALUES(?1)", params![x.id.0])?;
+        }
+        if x.message {
+            exec(c, "INSERT OR IGNORE INTO message_requests(request_id) VALUES(?1)", params![x.id.0])?;
         }
     }
     for (x, _) in changed(&before.agents, &after.agents) {
@@ -800,6 +810,8 @@ pub(super) fn load(c: &Connection) -> Result<DomainState> {
     let mut state = DomainState::new(epoch);
     state.revision = revision.try_into().context("negative revision")?;
     state.orchestrator_generation = generation.try_into().context("negative generation")?;
+    state.orchestrator_session = c.query_row("SELECT session_id FROM orchestrator_session WHERE singleton=1", [], |r| r.get::<_, String>(0))
+        .optional()?.map(AgentId::from);
     for row in rows(c, "requests", &["closed", "withdrawn", "auto_merge"], &[])? {
         let x: Request = decode(row)?;
         state.requests.insert(x.id.clone(), x);
@@ -812,6 +824,14 @@ pub(super) fn load(c: &Connection) -> Result<DomainState> {
     }
     drop(stored);
     drop(maintenance);
+    let mut messages = c.prepare("SELECT request_id FROM message_requests")?;
+    let mut stored = messages.query([])?;
+    while let Some(row) = stored.next()? {
+        let id: String = row.get(0)?;
+        state.requests.get_mut(&RequestId::from(id)).context("message request missing")?.message = true;
+    }
+    drop(stored);
+    drop(messages);
     for row in rows(c, "agents", &["connected"], &[])? {
         let x: Agent = decode(row)?;
         state.agents.insert(x.id.clone(), x);

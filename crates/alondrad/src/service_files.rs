@@ -247,7 +247,7 @@ impl Transfers {
     }
 }
 impl Transfers {
-    /// A step of an upload as the v2 routes name it. What `finish` answers is the attachment
+    /// A step of an upload as the domain routes name it. What `finish` answers is the attachment
     /// a v2 command carries.
     pub fn dispatch_domain(&self, home: &Path, sender: &str, route: &str, body: Value) -> Result<Value> {
         let finished = self.dispatch(home, sender, route, body)?;
@@ -283,16 +283,103 @@ fn ledger(home: &Path) -> Result<rusqlite::Connection> {
     connection.execute_batch("CREATE TABLE IF NOT EXISTS attempts(sender TEXT NOT NULL, transfer_id TEXT NOT NULL, PRIMARY KEY(sender,transfer_id));")?;
     Ok(connection)
 }
-pub(crate) fn read_verified_domain_chunk(home: &Path, reference: &str, digest: &str,
-    offset: u64, version: Option<String>) -> Result<Value> {
-    read_chunk(home, reference, Some(digest), offset, version).map(|(chunk, _)| chunk)
+const READ_CACHE_BYTES: usize = 2 * crate::uploads::MAX_UPLOAD_BYTES;
+#[derive(Default)]
+pub(crate) struct StoredReads {
+    hashed_bytes: std::sync::atomic::AtomicU64,
+    reserved: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    copies: Mutex<HashMap<(PathBuf, String), CachedCopy>>,
 }
-
-/// A chunk of a stored copy with the digest of the whole file, which the daemon computes.
-pub(crate) fn read_stored_chunk(home: &Path, reference: &str, offset: u64, version: Option<String>) -> Result<Value> {
-    let (mut chunk, digest) = read_chunk(home, reference, None, offset, version)?;
-    chunk["content_digest"] = json!(digest);
-    Ok(chunk)
+struct CachedCopy {
+    copy: std::sync::Arc<VerifiedCopy>,
+    touched: Instant,
+}
+struct ReadReservation {
+    bytes: usize,
+    total: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+impl Drop for ReadReservation {
+    fn drop(&mut self) {
+        self.total.fetch_sub(self.bytes, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+struct VerifiedCopy {
+    data: Vec<u8>,
+    digest: String,
+    _reservation: ReadReservation,
+}
+impl StoredReads {
+    pub(crate) fn verified(&self, home: &Path, reference: &str, digest: &str,
+        offset: u64, version: Option<String>) -> Result<Value> {
+        self.chunk(home, reference, Some(digest), offset, version).map(|(chunk, _)| chunk)
+    }
+    pub(crate) fn stored(&self, home: &Path, reference: &str, offset: u64,
+        version: Option<String>) -> Result<Value> {
+        let (mut chunk, digest) = self.chunk(home, reference, None, offset, version)?;
+        chunk["content_digest"] = json!(digest);
+        Ok(chunk)
+    }
+    fn chunk(&self, home: &Path, reference: &str, expected: Option<&str>,
+        offset: u64, version: Option<String>) -> Result<(Value, String)> {
+        use std::sync::atomic::Ordering;
+        let path = Path::new(reference);
+        let path = if path.is_absolute() { path.to_path_buf() } else { home.join(path) };
+        let mut file = open_stored_file(home, &path)?;
+        let metadata = file.metadata()?;
+        ensure!(metadata.is_file() && metadata.len() <= crate::uploads::MAX_UPLOAD_BYTES as u64,
+            "invalid stored document");
+        let current_version = file_version(&metadata);
+        ensure!(offset <= metadata.len() && (offset == 0 || version.is_some()), "invalid offset");
+        ensure!(version.as_ref().is_none_or(|v| v == &current_version), "file changed; restart download");
+        let key = (path, current_version.clone());
+        let now = Instant::now();
+        let (cached, reservation) = {
+            let mut copies = self.copies.lock().map_err(|_| anyhow::anyhow!("read cache lock poisoned"))?;
+            copies.retain(|_, copy| now.duration_since(copy.touched) < TTL);
+            if let Some(entry) = copies.get_mut(&key) {
+                entry.touched = now;
+                (Some(entry.copy.clone()), None)
+            } else {
+                let size = metadata.len() as usize;
+                while !copies.is_empty() && (copies.len() >= SLOTS
+                    || self.reserved.load(Ordering::Relaxed).saturating_add(size) > READ_CACHE_BYTES) {
+                    let oldest = copies.iter().min_by_key(|(_, copy)| copy.touched).unwrap().0.clone();
+                    copies.remove(&oldest);
+                }
+                let reservation = self.reserved.fetch_update(Ordering::Relaxed, Ordering::Relaxed,
+                    |bytes| bytes.checked_add(size).filter(|total| *total <= READ_CACHE_BYTES)).ok()
+                    .map(|_| ReadReservation { bytes: size, total: self.reserved.clone() });
+                (None, reservation)
+            }
+        };
+        let copy = if let Some(copy) = cached { copy } else if let Some(reservation) = reservation {
+            let mut data = vec![0; metadata.len() as usize];
+            file.read_exact(&mut data)?;
+            let mut extra = [0];
+            ensure!(file.read(&mut extra)? == 0, "file changed during read");
+            let digest = hex_digest(Sha256::digest(&data).as_slice());
+            self.hashed_bytes.fetch_add(data.len() as u64, Ordering::Relaxed);
+            ensure!(file_version(&file.metadata()?) == current_version, "file changed during read");
+            ensure!(expected.is_none_or(|value| value == digest), "stored document digest does not match revision");
+            let copy = std::sync::Arc::new(VerifiedCopy { data, digest, _reservation: reservation });
+            let mut copies = self.copies.lock().map_err(|_| anyhow::anyhow!("read cache lock poisoned"))?;
+            while copies.len() >= SLOTS {
+                let oldest = copies.iter().min_by_key(|(_, entry)| entry.touched).unwrap().0.clone();
+                copies.remove(&oldest);
+            }
+            copies.insert(key, CachedCopy { copy: copy.clone(), touched: Instant::now() });
+            copy
+        } else {
+            // Evicted copies may still be serving another request; their reservations remain live.
+            return read_chunk(home, reference, expected, offset, version, Some(&self.hashed_bytes));
+        };
+        ensure!(expected.is_none_or(|value| value == copy.digest), "stored document digest does not match revision");
+        ensure!(file_version(&file.metadata()?) == current_version, "file changed during read");
+        let start = offset as usize;
+        let end = start.saturating_add(CHUNK).min(copy.data.len());
+        Ok((json!({"version":current_version,"data":URL_SAFE_NO_PAD.encode(&copy.data[start..end]),
+            "offset":offset,"total":copy.data.len(),"next_offset":end,"eof":end==copy.data.len()}), copy.digest.clone()))
+    }
 }
 
 /// The attachment a v2 command carries, for a file the daemon stored: its digest is
@@ -321,7 +408,7 @@ pub(crate) fn attachment_ref(home: &Path, id: String, name: String, stored: &Pat
 }
 
 fn read_chunk(home: &Path, reference: &str, expected: Option<&str>,
-    offset: u64, version: Option<String>) -> Result<(Value, String)> {
+    offset: u64, version: Option<String>, hashed: Option<&std::sync::atomic::AtomicU64>) -> Result<(Value, String)> {
     let path = Path::new(reference);
     let path = if path.is_absolute() { path.to_path_buf() } else { home.join(path) };
     let mut file = open_stored_file(home, &path)?;
@@ -349,6 +436,7 @@ fn read_chunk(home: &Path, reference: &str, expected: Option<&str>,
         position = segment_end;
         ensure!(position <= crate::uploads::MAX_UPLOAD_BYTES as u64, "stored document too large");
     }
+    if let Some(hashed) = hashed { hashed.fetch_add(position, std::sync::atomic::Ordering::Relaxed); }
     let actual = hex_digest(hash.finalize().as_slice());
     ensure!(position == metadata.len() && expected.is_none_or(|digest| actual == digest),
         "stored document digest does not match revision");
@@ -512,6 +600,137 @@ mod tests {
             json!({"transfer_id":ID}),
         )
     }
+    #[test]
+    #[ignore = "opt-in isolated stored-file profiling"]
+    fn profile_verified_download() {
+        fn cpu() -> f64 {
+            let mut value = std::mem::MaybeUninit::<libc::rusage>::uninit();
+            assert_eq!(unsafe { libc::getrusage(libc::RUSAGE_SELF, value.as_mut_ptr()) }, 0);
+            let value = unsafe { value.assume_init() };
+            value.ru_utime.tv_sec as f64 + value.ru_stime.tv_sec as f64
+                + (value.ru_utime.tv_usec + value.ru_stime.tv_usec) as f64 / 1_000_000.0
+        }
+        let h = home();
+        std::fs::create_dir(h.join("files")).unwrap();
+        let bytes = vec![37u8; 2 * 1024 * 1024];
+        std::fs::write(h.join("files/fixture.bin"), &bytes).unwrap();
+        let digest = hex_digest(Sha256::digest(&bytes).as_slice());
+        let mut samples = Vec::new();
+        for _ in 0..10 {
+            let reads = StoredReads::default();
+            let start = Instant::now(); let cpu_start = cpu();
+            let mut version = None; let mut offset = 0; let mut actual = Vec::new();
+            loop {
+                let reply = reads.verified(&h, "files/fixture.bin", &digest, offset, version.clone()).unwrap();
+                actual.extend(URL_SAFE_NO_PAD.decode(reply["data"].as_str().unwrap()).unwrap());
+                version = Some(reply["version"].as_str().unwrap().to_owned());
+                offset = reply["next_offset"].as_u64().unwrap();
+                if reply["eof"].as_bool().unwrap() { break; }
+            }
+            let cpu_ms = (cpu() - cpu_start) * 1000.0;
+            let wall_ms = start.elapsed().as_secs_f64() * 1000.0;
+            assert_eq!(actual, bytes);
+            samples.push(json!({"cpu_ms":cpu_ms,"wall_ms":wall_ms,
+                "hashed_bytes":reads.hashed_bytes.load(std::sync::atomic::Ordering::Relaxed),
+                "retained_snapshot_bytes":reads.reserved.load(std::sync::atomic::Ordering::Relaxed)}));
+        }
+        println!("{}",json!({"scope":"verified-file-download","bytes":bytes.len(),"chunks":bytes.len()/CHUNK,"errors":0,"samples":samples}));
+        std::fs::remove_dir_all(h).unwrap();
+    }
+
+    #[test]
+    fn cached_download_still_checks_digest_mutation_and_path_scope() {
+        let h = home();
+        std::fs::create_dir(h.join("files")).unwrap();
+        let path = h.join("files/fixture.bin");
+        let bytes = vec![37u8; CHUNK * 2];
+        std::fs::write(&path, &bytes).unwrap();
+        let digest = hex_digest(Sha256::digest(&bytes).as_slice());
+        let reads = StoredReads::default();
+        let first = reads.stored(&h, "files/fixture.bin", 0, None).unwrap();
+        assert_eq!(first["content_digest"], digest);
+        let version = Some(first["version"].as_str().unwrap().to_owned());
+        assert!(reads.verified(&h, "files/fixture.bin", "wrong", CHUNK as u64, version.clone()).is_err());
+        std::fs::write(&path, vec![91u8; bytes.len()]).unwrap();
+        std::fs::File::options().write(true).open(&path).unwrap().set_times(
+            std::fs::FileTimes::new().set_modified(SystemTime::UNIX_EPOCH)).unwrap();
+        assert!(reads.verified(&h, "files/fixture.bin", &digest, CHUNK as u64, version).is_err());
+        assert!(reads.verified(&h, "files/fixture.bin", &digest, 0, None).is_err());
+        let replacement = vec![91u8; bytes.len()];
+        let replacement_digest = hex_digest(Sha256::digest(&replacement).as_slice());
+        let fresh = reads.verified(&h, "files/fixture.bin", &replacement_digest, 0, None).unwrap();
+        assert_eq!(URL_SAFE_NO_PAD.decode(fresh["data"].as_str().unwrap()).unwrap(), replacement[..CHUNK]);
+        std::fs::rename(&path, h.join("outside.bin")).unwrap();
+        assert!(reads.stored(&h, "outside.bin", 0, None).is_err());
+        assert!(reads.stored(&h, "files/fixture.bin", 0, None).is_err());
+        std::fs::remove_dir_all(h).unwrap();
+    }
+
+    #[test]
+    fn read_cache_limits_include_evicted_copies_still_in_use() {
+        use std::sync::atomic::Ordering;
+        let h = home();
+        std::fs::create_dir(h.join("files")).unwrap();
+        let reads = StoredReads::default();
+        let bytes = vec![1u8; crate::uploads::MAX_UPLOAD_BYTES];
+        let digest = hex_digest(Sha256::digest(&bytes).as_slice());
+        for name in ["a", "b", "c"] { std::fs::write(h.join("files").join(name), &bytes).unwrap(); }
+        reads.verified(&h, "files/a", &digest, 0, None).unwrap();
+        let pinned_a = reads.copies.lock().unwrap().values().next().unwrap().copy.clone();
+        reads.verified(&h, "files/b", &digest, 0, None).unwrap();
+        let pinned_b = reads.copies.lock().unwrap().values().find(|entry|
+            !std::sync::Arc::ptr_eq(&entry.copy, &pinned_a)).unwrap().copy.clone();
+        assert_eq!(reads.reserved.load(Ordering::Relaxed), READ_CACHE_BYTES);
+        let fallback = reads.verified(&h, "files/c", &digest, 0, None).unwrap();
+        assert_eq!(URL_SAFE_NO_PAD.decode(fallback["data"].as_str().unwrap()).unwrap(), bytes[..CHUNK]);
+        assert!(reads.copies.lock().unwrap().is_empty());
+        assert_eq!(reads.reserved.load(Ordering::Relaxed), READ_CACHE_BYTES);
+        drop(pinned_a); drop(pinned_b);
+        assert_eq!(reads.reserved.load(Ordering::Relaxed), 0);
+        reads.verified(&h, "files/c", &digest, 0, None).unwrap();
+        assert_eq!(reads.copies.lock().unwrap().len(), 1);
+        assert_eq!(reads.reserved.load(Ordering::Relaxed), bytes.len());
+        drop(reads);
+        std::fs::remove_dir_all(h).unwrap();
+    }
+
+    #[test]
+    fn failed_digest_read_releases_its_cache_reservation() {
+        use std::sync::atomic::Ordering;
+        let h = home();
+        std::fs::create_dir(h.join("files")).unwrap();
+        std::fs::write(h.join("files/fixture.bin"), b"contents").unwrap();
+        let reads = StoredReads::default();
+        assert!(reads.verified(&h, "files/fixture.bin", "wrong", 0, None).is_err());
+        assert_eq!(reads.reserved.load(Ordering::Relaxed), 0);
+        assert!(reads.copies.lock().unwrap().is_empty());
+        std::fs::remove_dir_all(h).unwrap();
+    }
+
+    #[test]
+    fn verified_download_hashes_a_stable_copy_once_not_once_per_chunk() {
+        let h = home();
+        std::fs::create_dir(h.join("files")).unwrap();
+        let bytes = vec![37u8; 1024 * 1024];
+        std::fs::write(h.join("files/fixture.bin"), &bytes).unwrap();
+        let digest = hex_digest(Sha256::digest(&bytes).as_slice());
+        let reads = StoredReads::default();
+        let mut version = None;
+        let mut offset = 0;
+        let mut downloaded = Vec::new();
+        loop {
+            let reply = reads.verified(&h, "files/fixture.bin", &digest, offset, version.clone()).unwrap();
+            downloaded.extend(URL_SAFE_NO_PAD.decode(reply["data"].as_str().unwrap()).unwrap());
+            version = Some(reply["version"].as_str().unwrap().to_owned());
+            offset = reply["next_offset"].as_u64().unwrap();
+            if reply["eof"].as_bool().unwrap() { break; }
+        }
+        assert_eq!(downloaded, bytes);
+        assert_eq!(reads.hashed_bytes.load(std::sync::atomic::Ordering::Relaxed), bytes.len() as u64,
+            "a stable full download should not hash the same megabyte sixteen times");
+        std::fs::remove_dir_all(h).unwrap();
+    }
+
     #[test]
     fn failed_store_after_tombstone_remains_uncertain_across_retries_and_restart() {
         let h = home();

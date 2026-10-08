@@ -398,7 +398,7 @@ mod tests {
         let user = || Actor::User { user_id: "u".into() };
         command(&domain, Actor::System, "register", Command::RegisterAgent { agent_id: SESSION.into(), name: "alondra/probe".into() });
         if with_task {
-            command(&domain, user(), "request", Command::CreateRequest { request_id: "r".into(), body: "Work".into(), auto_merge: false, maintenance: false });
+            command(&domain, user(), "request", Command::CreateRequest { request_id: "r".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
             command(&domain, user(), "task", Command::CreateTask { task_id: "t".into(), request_id: "r".into(), title: "Probe".into(),
                 agent_id: Some(SESSION.into()), review_prs: false, dependencies: Default::default(), stack: None });
         }
@@ -477,7 +477,7 @@ mod tests {
         let text = || vec![DeliveryTarget::Text { text: "The result".into() }];
         command(&domain, Actor::Agent { agent_id: SESSION.into() }, "present", Command::PresentResult {
             attachments: vec![], task_id: "t".into(), interaction_id: "final".into(), body: "Done".into(), targets: text(),
-            is_final: true, card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
+            is_final: true, nothing_to_review: false, card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
         });
         assert!(needed(&domain, SESSION), "a task under review still needs its node");
         command(&domain, Actor::User { user_id: "u".into() }, "accept", Command::AcceptDelivery { presentation_id: "final".into(), targets: text() });

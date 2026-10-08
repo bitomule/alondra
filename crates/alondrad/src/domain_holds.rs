@@ -24,7 +24,7 @@ pub(crate) struct Held {
     pub input: Value,
 }
 
-#[derive(Clone, Copy, Deserialize)]
+#[derive(Clone, Copy, PartialEq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum Kind {
     Question,
@@ -72,14 +72,16 @@ pub(crate) fn hold_elicitation(domain: &DomainRuntime, payload: &Value, backgrou
 
 pub(crate) enum Posted {
     Held(InteractionId),
-    /// R3: the node's Task was cancelled, so its permission is denied without asking.
+    /// R3: the node's Task was cancelled, so its permission or plan is denied without asking.
     Denied(String),
     NotHeld,
 }
 
-/// The card the mod posted, held for its session's active Task; a permission of a node whose
-/// Task was cancelled is denied; anything else of a session that is not a background one working
-/// on a Task is not held. A card posted again is the card already open.
+/// The card the mod posted, held for its session's active Task; a permission or plan of a node
+/// whose Task was cancelled is denied, and so is a node's plan no Task can review: a node's plan
+/// never falls through to the other plan hooks of the user's machine. Anything else of a session
+/// that is not a background one working on a Task is not held. A card posted again is the card
+/// already open.
 pub(crate) fn post(domain: &DomainRuntime, card: &Card, background: bool) -> Result<Posted> {
     let (hold, kind) = match card.kind {
         Kind::Question => (Hold::Question, KINDS[0]),
@@ -98,15 +100,32 @@ pub(crate) fn post(domain: &DomainRuntime, card: &Card, background: bool) -> Res
     if !background {
         return Ok(Posted::NotHeld);
     }
-    if hold == Hold::Permission
+    if hold != Hold::Question
         && let Some(reason) = cancelled_task(&state, &card.session_id)
     {
         return Ok(Posted::Denied(reason));
     }
     Ok(match open(domain, &card.session_id, id, hold, card.tool.clone(), card.input.clone(), &card.suggestions, None)? {
         Some(held) => Posted::Held(held.id),
+        None if hold == Hold::Plan => Posted::Denied(NO_TASK_FOR_PLAN.into()),
         None => Posted::NotHeld,
     })
+}
+
+const NO_TASK_FOR_PLAN: &str = "No open Alondra task can review this plan: do not go on with it. Stop.";
+
+/// Why a node's plan whose card stopped waiting is turned down rather than left to Claude Code.
+pub(crate) fn plan_gone(domain: &DomainRuntime, session_id: &str) -> Result<String> {
+    Ok(cancelled_task(&*domain.state()?, session_id)
+        .unwrap_or_else(|| "This plan is no longer waiting for the user's review: do not go on with it.".into()))
+}
+
+/// The mod's reply to a card Alondra turns down without asking, in the shape its kind reads.
+pub(crate) fn denied(kind: Kind, reason: &str) -> Value {
+    match kind {
+        Kind::Plan => json!({"held": true, "approved": false, "feedback": reason}),
+        _ => json!({"held": true, "allowed": false, "reason": reason}),
+    }
 }
 
 /// Why a node with no active Task but a cancelled one must stop instead of asking.

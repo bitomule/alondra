@@ -20,7 +20,7 @@ pub(crate) struct DomainDaemon {
     home: PathBuf,
     gauges: crate::machine::Gauges,
     /// The one approval list the guard verifies against and the pairing routes extend.
-    auth: Arc<crate::auth::Auth>,
+    pub(crate) auth: Arc<crate::auth::Auth>,
     client: Arc<crate::client_routes::Client>,
     service: std::sync::OnceLock<Arc<crate::service::Service>>,
     direct: std::sync::OnceLock<Arc<crate::direct::Direct>>,
@@ -1110,7 +1110,7 @@ mod tests {
     async fn pair_approves_a_service_phone_with_the_macs_signature() {
         use base64::engine::general_purpose::URL_SAFE_NO_PAD;
         let home = std::env::temp_dir().join(format!(
-            "alondra-v2-service-approval-{}",
+            "alondra-service-approval-{}",
             crate::auth::random_hex(8)
         ));
         std::fs::create_dir_all(home.join("service-keys")).unwrap();
@@ -1154,7 +1154,7 @@ mod tests {
         use base64::engine::general_purpose::URL_SAFE_NO_PAD;
         use std::os::unix::fs::PermissionsExt;
         let home = std::env::temp_dir().join(format!(
-            "alondra-v2-service-reload-{}",
+            "alondra-service-reload-{}",
             crate::auth::random_hex(8)
         ));
         std::fs::create_dir_all(home.join("service-keys")).unwrap();
@@ -1227,7 +1227,7 @@ mod tests {
             protocol_version: PROTOCOL_VERSION, data_epoch: before.data_epoch.clone(),
             command_id: "preserved-request".into(), expected_revision: before.revision,
             command: Command::CreateRequest { request_id: "preserved".into(),
-                body: "Existing work".into(), auto_merge: false, maintenance: false },
+                body: "Existing work".into(), auto_merge: false, maintenance: false, message: false },
         }, None, || Ok(())).unwrap();
         let expected = domain.state().unwrap();
         drop(domain);
@@ -1258,7 +1258,7 @@ mod tests {
     #[tokio::test]
     async fn standalone_router_reads_real_domain_and_has_no_legacy_routes() {
         let home = std::env::temp_dir().join(format!(
-            "alondra-v2-bootstrap-{}",
+            "alondra-bootstrap-{}",
             crate::auth::random_hex(8)
         ));
         std::fs::create_dir(&home).unwrap();
@@ -1718,7 +1718,7 @@ mod tests {
     #[tokio::test]
     async fn a_paired_local_device_is_the_user_for_commands_and_schedule_writes() {
         let home = std::env::temp_dir().join(format!(
-            "alondra-v2-local-user-{}",
+            "alondra-local-user-{}",
             crate::auth::random_hex(8)
         ));
         std::fs::create_dir(&home).unwrap();
@@ -2279,7 +2279,7 @@ mod tests {
     #[test]
     fn committed_boot_requires_existing_database() {
         let home = std::env::temp_dir().join(format!(
-            "alondra-v2-bootstrap-missing-{}",
+            "alondra-bootstrap-missing-{}",
             crate::auth::random_hex(8)
         ));
         std::fs::create_dir(&home).unwrap();

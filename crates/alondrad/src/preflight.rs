@@ -27,6 +27,7 @@ pub fn run(config: &Config) -> Result<String> {
 
 /// The same canonical bootstrap `run` performs, on a HOME it may freely write.
 fn start(config: &Config) -> Result<String> {
+    crate::home_renames::apply(&config.home)?;
     let (_, _source_fence) = crate::domain_database_migration::migrate_and_fence(&config.home)?;
     crate::retire_empty_older_sidecar(&config.home)?;
     crate::ensure_domain_protocol(&config.home)?;
@@ -62,8 +63,11 @@ fn snapshot(home: &Path, into: &Path) -> Result<()> {
     for source in crate::domain_database_migration::preflight_staging_files(home)? {
         copy_private_file(&source, &into.join(source.file_name().unwrap()))?;
     }
-    let marker = home.join(crate::domain_cutover::MARKER);
-    if marker.exists() {
+    let marker = [crate::domain_cutover::MARKER, crate::domain_cutover::PREVIOUS_MARKER]
+        .map(|name| home.join(name))
+        .into_iter()
+        .find(|path| path.exists());
+    if let Some(marker) = marker {
         std::fs::copy(&marker, into.join(crate::domain_cutover::MARKER))?;
     }
     let migration_marker = home.join(crate::domain_database_migration::MARKER);

@@ -39,7 +39,7 @@ pub(crate) async fn serve(listener: UnixListener, domain: Arc<DomainRuntime>) ->
         let domain = domain.clone();
         tokio::spawn(async move {
             if let Err(error) = handle(stream, &domain).await {
-                log!("v2 local hook failed: {error:#}");
+                log!("local hook failed: {error:#}");
             }
         });
     }
@@ -141,7 +141,7 @@ async fn node_hold(mut stream: UnixStream, domain: &DomainRuntime, card: Value) 
     };
     let reply = match crate::domain_holds::post(domain, &card, domain.live.mods.is_node(&card.session_id))? {
         crate::domain_holds::Posted::NotHeld => json!({"held": false}),
-        crate::domain_holds::Posted::Denied(reason) => json!({"held": true, "allowed": false, "reason": reason}),
+        crate::domain_holds::Posted::Denied(reason) => crate::domain_holds::denied(card.kind, &reason),
         crate::domain_holds::Posted::Held(id) => {
             let answer = tokio::select! {
                 answer = crate::domain_holds::wait(domain, &id) => answer?,
@@ -153,6 +153,9 @@ async fn node_hold(mut stream: UnixStream, domain: &DomainRuntime, card: Value) 
             match (answer, state.holds.get(&id)) {
                 (Some(answer), Some(hold)) => {
                     crate::domain_holds::mod_reply(*hold, &card.input, &card.suggestions, &answer, &crate::domain_messages::user_name())
+                }
+                _ if card.kind == crate::domain_holds::Kind::Plan => {
+                    crate::domain_holds::denied(card.kind, &crate::domain_holds::plan_gone(domain, &card.session_id)?)
                 }
                 _ => json!({"held": false}),
             }
@@ -232,7 +235,7 @@ fn register_probe(domain: &DomainRuntime, session: &str) -> Result<()> {
     let steps = [
         (Actor::System, "register", Command::RegisterAgent { agent_id: session.into(), name: format!("test/{short}") }),
         (user(), "request", Command::CreateRequest {
-            request_id: format!("sandbox-probe-{session}").into(), body: "Probe".into(), auto_merge: false, maintenance: false,
+            request_id: format!("sandbox-probe-{session}").into(), body: "Probe".into(), auto_merge: false, maintenance: false, message: false,
         }),
         (user(), "task", Command::CreateTask {
             task_id: format!("sandbox-probe-{session}").into(), request_id: format!("sandbox-probe-{session}").into(),
@@ -699,7 +702,7 @@ mod tests {
     struct Fixture(PathBuf);
     impl Fixture {
         fn new() -> Self {
-            let home = std::env::temp_dir().join(format!("alondra-v2-transport-{}", crate::auth::random_hex(8)));
+            let home = std::env::temp_dir().join(format!("alondra-transport-{}", crate::auth::random_hex(8)));
             std::fs::create_dir(&home).unwrap();
             Self(home)
         }
@@ -728,7 +731,7 @@ mod tests {
             agent_id: agent.into(), name: agent.into(),
         });
         command(domain, Actor::User { user_id: "u".into() }, &format!("request-{agent}"),
-            Command::CreateRequest { request_id: format!("request-{agent}").into(), body: "Work".into(), auto_merge: false, maintenance: false });
+            Command::CreateRequest { request_id: format!("request-{agent}").into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
         command(domain, Actor::User { user_id: "u".into() }, &format!("task-{agent}"), Command::CreateTask {
             task_id: format!("task-{agent}").into(), request_id: format!("request-{agent}").into(),
             title: "Task".into(), agent_id: Some(agent.into()), review_prs: false,
@@ -775,7 +778,7 @@ mod tests {
             agent_id: "agent-a".into(), name: "Agent A".into(),
         });
         command(&domain, Actor::User { user_id: "u".into() }, "request", Command::CreateRequest {
-            request_id: "request".into(), body: "Build a widget".into(), auto_merge: false, maintenance: false,
+            request_id: "request".into(), body: "Build a widget".into(), auto_merge: false, maintenance: false, message: false,
         });
         command(&domain, Actor::User { user_id: "u".into() }, "task", Command::CreateTask {
             task_id: "task".into(), request_id: "request".into(), title: "Widget".into(),
@@ -848,7 +851,7 @@ mod tests {
             agent_id: "agent-a".into(), name: "Agent A".into(),
         });
         command(&domain, Actor::User { user_id: "u".into() }, "request", Command::CreateRequest {
-            request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false,
+            request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false,
         });
         command(&domain, Actor::User { user_id: "u".into() }, "task", Command::CreateTask {
             task_id: "task".into(), request_id: "request".into(), title: "Task".into(),
@@ -942,7 +945,7 @@ mod tests {
             agent_id: "agent-a".into(), name: "Agent A".into(),
         });
         command(domain, Actor::User { user_id: "u".into() }, "request", Command::CreateRequest {
-            request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false,
+            request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false,
         });
         command(domain, Actor::User { user_id: "u".into() }, "task", Command::CreateTask {
             task_id: "task".into(), request_id: "request".into(), title: "Task".into(),
@@ -1083,7 +1086,7 @@ mod tests {
         command(&domain, Actor::Agent { agent_id: "session-a".into() }, "present", Command::PresentResult {
             attachments: vec![], task_id: "task-session-a".into(), interaction_id: "delivery".into(),
             body: "Ready".into(), targets: vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: head.into() }],
-            is_final: true, card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
+            is_final: true, nothing_to_review: false, card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
         });
         command(&domain, Actor::User { user_id: "u".into() }, "authorize", Command::AuthorizeMerge {
             authorization_id: "auth".into(), presentation_id: "delivery".into(), pr_id: "pr".into(),
@@ -1320,6 +1323,7 @@ mod tests {
         command(&domain, agent_actor(), "present", Command::PresentResult {
             attachments: vec![], task_id: "task".into(), interaction_id: "delivery".into(),
             body: "Done".into(), targets: vec![DeliveryTarget::Text { text: "The answer".into() }], is_final: true,
+            nothing_to_review: false,
             card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
         });
         let stop = json!({"session_id": "agent-a", "hook_event_name": "Stop"});
@@ -1355,7 +1359,7 @@ mod tests {
         node_with_task(&domain);
         command(&domain, agent_actor(), "present", Command::PresentResult {
             attachments: vec![], task_id: "task".into(), interaction_id: "delivery".into(),
-            body: "Done".into(), targets: vec![DeliveryTarget::Text { text: "The answer".into() }], is_final: true, card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
+            body: "Done".into(), targets: vec![DeliveryTarget::Text { text: "The answer".into() }], is_final: true, nothing_to_review: false, card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
         });
         let (reply, _) = hook(&domain, json!({"session_id": "agent-a", "hook_event_name": "Stop"}), Some(6)).await;
         assert_eq!(reply, json!({}), "a presented result already tells the user");
@@ -1501,7 +1505,7 @@ mod tests {
         let user = || Actor::User { user_id: "u".into() };
         command(domain, Actor::System, &format!("register-{agent}"), Command::RegisterAgent { agent_id: agent.into(), name: agent.into() });
         command(domain, user(), &format!("request-{agent}"),
-            Command::CreateRequest { request_id: format!("request-{agent}").into(), body: "Work".into(), auto_merge: false, maintenance: false });
+            Command::CreateRequest { request_id: format!("request-{agent}").into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
         command(domain, user(), &format!("task-{agent}"), Command::CreateTask {
             task_id: format!("task-{agent}").into(), request_id: format!("request-{agent}").into(),
             title: "Task".into(), agent_id: Some(agent.into()), review_prs: false, dependencies: BTreeSet::new(), stack: None,
@@ -1669,6 +1673,41 @@ mod tests {
         assert_eq!((reply["held"].as_bool(), reply["allowed"].as_bool()), (Some(true), Some(false)), "{reply}");
         assert!(reply["reason"].as_str().unwrap().contains("was cancelled"), "{reply}");
         assert_eq!(domain.state().unwrap().interactions.len(), before, "no card is put to the user");
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_tasks_plan_is_turned_down_and_never_left_to_other_plan_hooks() {
+        let fixture = Fixture::new();
+        let domain = fixture.open();
+        working_agent(&domain, "agent-a");
+        command(&domain, Actor::User { user_id: "u".into() }, "cancel", Command::CancelTask { task_id: "task-agent-a".into() });
+        let before = domain.state().unwrap().interactions.len();
+        let (mut client, server) = UnixStream::pair().unwrap();
+        send(&mut client, &json!({"node_hold": plan("agent-a")})).await;
+        let (result, reply) = tokio::join!(handle(server, &domain), reply(&mut client));
+        result.unwrap();
+        assert_eq!((reply["held"].as_bool(), reply["approved"].as_bool()), (Some(true), Some(false)), "{reply}");
+        assert!(reply["feedback"].as_str().unwrap().contains("was cancelled"), "{reply}");
+        assert_eq!(domain.state().unwrap().interactions.len(), before, "no card is put to the user");
+    }
+
+    #[tokio::test]
+    async fn a_plan_waiting_when_its_task_is_cancelled_is_turned_down() {
+        let fixture = Fixture::new();
+        let domain = fixture.open();
+        working_agent(&domain, "agent-a");
+        let (mut client, server) = UnixStream::pair().unwrap();
+        send(&mut client, &json!({"node_hold": plan("agent-a")})).await;
+        let driver = async {
+            let id = open_hold(&domain).await;
+            command(&domain, Actor::User { user_id: "u".into() }, "cancel", Command::CancelTask { task_id: "task-agent-a".into() });
+            (reply(&mut client).await, id)
+        };
+        let (result, (reply, id)) = tokio::join!(handle(server, &domain), driver);
+        result.unwrap();
+        assert!(domain.state().unwrap().interactions[&id].withdrawn);
+        assert_eq!((reply["held"].as_bool(), reply["approved"].as_bool()), (Some(true), Some(false)), "{reply}");
+        assert!(reply["feedback"].as_str().unwrap().contains("was cancelled"), "{reply}");
     }
 
     #[test]
@@ -2031,8 +2070,13 @@ mod tests {
             (plan("agent-a"), json!({"session_id": "agent-a", "event": "turn.complete", "answer": "", "aborted": true})),
             (other_plan, json!({"session_id": "agent-a", "event": "session.end"})),
         ] {
+            let is_plan = card["kind"] == "plan";
             let (body, id) = withdrawn_by(&domain, card, ended).await;
-            assert_eq!(body, json!({"held": false}));
+            if is_plan {
+                assert_eq!((body["held"].as_bool(), body["approved"].as_bool()), (Some(true), Some(false)), "{body}");
+            } else {
+                assert_eq!(body, json!({"held": false}));
+            }
             assert!(domain.state().unwrap().interactions[&id].withdrawn);
         }
 

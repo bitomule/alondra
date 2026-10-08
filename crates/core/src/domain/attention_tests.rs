@@ -50,7 +50,7 @@ fn pair() -> DomainState {
     for agent_id in ["wa", "wb"] {
         ok(&mut s, Actor::System, Command::RegisterAgent { agent_id: agent_id.into(), name: agent_id.into() });
     }
-    ok(&mut s, user(), Command::CreateRequest { request_id: "r".into(), body: "Build it".into(), auto_merge: false, maintenance: false });
+    ok(&mut s, user(), Command::CreateRequest { request_id: "r".into(), body: "Build it".into(), auto_merge: false, maintenance: false, message: false });
     ok(&mut s, user(), Command::TitleRequest { request_id: "r".into(), title: "Build it".into() });
     for (id, node) in [("a", "wa"), ("b", "wb")] {
         ok(&mut s, user(), Command::CreateTask {
@@ -71,7 +71,7 @@ fn present(s: &mut DomainState, who: &str, task: &str, id: &str) -> CommandOutco
     ok(s, agent(who), Command::PresentResult {
         attachments: vec![], task_id: task.into(), interaction_id: id.into(), body: "Done".into(),
         targets: vec![DeliveryTarget::Text { text: "The result".into() }],
-        is_final: true, card: CardSpec::delivery("Review the result", &[], true),
+        is_final: true, nothing_to_review: false, card: CardSpec::delivery("Review the result", &[], true),
     })
 }
 fn verdict(s: &mut DomainState, presentation: &str, verdict: Verdict) -> Result<CommandOutcome, DomainError> {
@@ -297,7 +297,7 @@ fn pr_target() -> Vec<DeliveryTarget> {
 fn present_pr(s: &mut DomainState, task: &str, who: &str, id: &str) -> CommandOutcome {
     ok(s, agent(who), Command::PresentResult {
         attachments: vec![], task_id: task.into(), interaction_id: id.into(), body: "Done".into(), targets: pr_target(),
-        is_final: true, card: CardSpec::delivery("Review the result", &[], true),
+        is_final: true, nothing_to_review: false, card: CardSpec::delivery("Review the result", &[], true),
     })
 }
 fn merged_outside(s: &mut DomainState) -> CommandOutcome {
@@ -309,7 +309,7 @@ fn merged_outside(s: &mut DomainState) -> CommandOutcome {
 #[test]
 fn nothing_is_merged_or_accepted_while_a_review_of_the_task_is_open() {
     let mut s = pair();
-    ok(&mut s, user(), Command::CreateRequest { request_id: "auto".into(), body: "Auto".into(), auto_merge: true, maintenance: false });
+    ok(&mut s, user(), Command::CreateRequest { request_id: "auto".into(), body: "Auto".into(), auto_merge: true, maintenance: false, message: false });
     ok(&mut s, user(), Command::CreateTask {
         task_id: "c".into(), request_id: "auto".into(), title: "C".into(), agent_id: None, review_prs: false,
         dependencies: BTreeSet::new(), stack: None,

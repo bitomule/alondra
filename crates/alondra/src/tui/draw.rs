@@ -687,6 +687,10 @@ fn draw_views_card(f: &mut Frame, app: &mut App, area: Rect) {
     let inner = block.inner(area);
     f.render_widget(block, area);
     let Some(document) = document else {
+        if let Some(menu) = &app.card_menu {
+            f.render_widget(Paragraph::new(super::view_render::menu_lines(menu)), inner);
+            return;
+        }
         let message = if app.card_view_asked.is_some() {
             if selected
                 .as_deref()
@@ -720,7 +724,9 @@ fn draw_views_card(f: &mut Frame, app: &mut App, area: Rect) {
         };
     } else {
         let actions = visible_detail_actions(document);
-        if !actions.is_empty() {
+        if let Some(menu) = &app.card_menu {
+            keys = super::view_render::menu_lines(menu);
+        } else if !actions.is_empty() {
             lines.push(Line::default());
             lines.extend(action_menu(&actions));
         }

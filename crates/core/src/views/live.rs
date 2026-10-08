@@ -50,8 +50,21 @@ pub struct LiveSnapshot {
     /// Why the last launch of a task that has not started was refused, by task id.
     #[serde(default)]
     pub launch_refusals: BTreeMap<String, LiveLaunchRefusal>,
+    /// Whether a task never started is started by Alondra itself or lacks its launch plan, by task id.
+    #[serde(default)]
+    pub start_waits: BTreeMap<String, LiveStartWait>,
     #[serde(default)]
     pub pacing: Option<LivePacing>,
+}
+
+/// What a task never started waits for before Alondra starts it by itself.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LiveStartWait {
+    /// It has its launch plan: it starts when the gate has room.
+    Room,
+    /// The orchestrator has not given it a launch plan.
+    Plan,
 }
 
 /// How many nodes work against the limit, how the Mac is, and the place of every queued task.
@@ -59,6 +72,12 @@ pub struct LiveSnapshot {
 pub struct LivePacing {
     pub working: usize,
     pub limit: u32,
+    /// What `max_working_nodes` in `options.toml` says: a number, or `None` for automatic.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fixed: Option<u32>,
+    /// The limit automatic gives on this Mac.
+    #[serde(default)]
+    pub auto: u32,
     pub memory_free: Option<u32>,
     /// The Mac is short of memory: Tight or at its limit.
     pub tight: bool,
@@ -71,6 +90,9 @@ pub struct LivePacing {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LivePaused {
     pub task_id: String,
+    /// The paused node; `None` for a queued task the user took out of the queue.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<String>,
     /// Local clock time it was paused at, "14:05".
     pub at: String,
     pub reason: LivePauseReason,

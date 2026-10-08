@@ -46,11 +46,14 @@ impl DomainRuntime {
         why: String,
         body: String,
         options: Vec<QuestionOption>,
+        recommended: Option<&str>,
     ) -> Result<CommandOutcome, StoreError> {
         let state = self.state().map_err(StoreError::Storage)?;
         if state.interactions.contains_key(&InteractionId(id.to_owned())) {
             return Err(DomainError::new("invalid_input", "Problem already raised").into());
         }
+        let mut card = CardSpec::new(CardKind::Problem, need).why(why);
+        card.recommended = recommended.map(str::to_owned);
         self.execute_as_system(CommandEnvelope {
             protocol_version: PROTOCOL_VERSION,
             data_epoch: state.data_epoch.clone(),
@@ -62,7 +65,7 @@ impl DomainRuntime {
                 scope: Scope::Orchestrator { request_id: None },
                 body,
                 options,
-                card: CardSpec::new(CardKind::Problem, need).why(why).cause(cause),
+                card: card.cause(cause),
             },
         })
     }

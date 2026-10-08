@@ -418,7 +418,22 @@ fn context_lines(item: &InboxItem, context: &RenderContext<'_>) -> Vec<ContextLi
         });
     }
     lines.extend(review_lines(item, context));
+    lines.extend(merge_unavailable(item, context).map(|text| ContextLine { icon: Icon::Warning, text, link: None, chip: None, state: None }));
     lines
+}
+
+/// Why a pull request's card offers no merge, when nothing else on it says so already.
+fn merge_unavailable(item: &InboxItem, context: &RenderContext<'_>) -> Option<String> {
+    let interaction = interaction_of(item, context.domain)?;
+    let pr = pr_target(interaction, context.domain).filter(|pr| pr.state == PrState::Open)?;
+    let live = live_pr(pr, context);
+    if blocked_reason(item, context).is_some() || live.is_some_and(|detail| detail.conflicts || detail.stacked_on.is_some()) {
+        return None;
+    }
+    let merge = item.available_actions.iter().find(|action| action.kind == "authorize_merge" && !action.enabled)?;
+    let refusal = merge.refusal.clone()
+        .unwrap_or_else(|| crate::domain::Refusal::for_code(merge.disabled_reason.as_deref().unwrap_or_default()));
+    Some(super::messages::refusal_text(&refusal, context.lang))
 }
 
 pub(super) fn from_item(item: &InboxItem, context: &RenderContext<'_>, included: bool) -> Result<Card, BuildError> {
@@ -748,18 +763,17 @@ fn pace_text(interaction: &Interaction, domain: &DomainState, lang: Lang) -> Opt
     }
     if let Some(question) = interaction.id.0.strip_prefix(crate::domain::ENDED_UNANSWERED_PREFIX) {
         let question = domain.interactions.get(&InteractionId(question.into()))?;
-        let title = match &question.scope {
-            Scope::Task { task_id } => domain.tasks.get(task_id)?.title.clone(),
-            Scope::Orchestrator { .. } => return None,
-        };
         let need = humanize_task_ids(&question.card.need, domain);
         return Some((
-            tf!(lang, "“{title}” ended before you answered", "«{title}» terminó sin tu respuesta", title = title),
-            tf!(lang, "No longer waits for an answer: {need}", "Ya no espera respuesta: {need}", need = need),
+            clip(&tf!(lang, "No longer waits for your answer: {need}", "Ya no espera tu respuesta: {need}", need = need), CardSpec::NEED_MAX),
+            t!(lang, "The work was finished before you answered", "El trabajo se terminó antes de que respondieras").into(),
         ));
     }
     if interaction.id.0.starts_with(crate::machine_incident::MACHINE_PREFIX) {
         return crate::machine_incident::MachineCard::from_body(&interaction.body).map(|card| card.text(lang));
+    }
+    if interaction.id.0.starts_with(crate::orchestrator_batch::BATCH_PROBLEM_PREFIX) {
+        return crate::orchestrator_batch::BatchProblem::from_body(&interaction.body).map(|card| card.text(lang));
     }
     if interaction.id.0.starts_with(OVER_PACE_PREFIX) {
         let numbers = PaceNumbers::from_body(&interaction.body)?;
@@ -802,17 +816,17 @@ fn fixed_option_text(option: &QuestionOption, lang: Lang) -> (String, Option<Str
         ("provide", "Send the file") => (t!(lang, "Send the file", "Enviar el archivo"), None),
         ("provide", "Send the text") => (t!(lang, "Send the text", "Enviar el texto"), None),
         ("provide", "Send the secret") => (t!(lang, "Send the secret", "Enviar el secreto"), None),
-        ("retry", "Retry the batch") => (
-            t!(lang, "Retry the batch", "Reintentar el lote"),
-            Some(t!(lang, "Run the same batch again; check its effects first", "Ejecuta el mismo lote otra vez; revisa antes sus efectos")),
+        (crate::orchestrator_batch::BATCH_CONTINUE, crate::orchestrator_batch::BATCH_CONTINUE_LABEL) => (
+            t!(lang, "Continue without running it again", "Seguir sin repetirlo"),
+            Some(t!(lang,
+                "Nothing is done twice. The orchestrator knows it stopped and picks up the requests still without a task.",
+                "No se hace nada dos veces. El orquestador sabe que se cortó y retoma las peticiones que sigan sin tarea.")),
         ),
-        ("continue", "Continue without it") => (
-            t!(lang, "Continue without it", "Continuar sin él"),
-            Some(t!(lang, "Do not replay it; the orchestrator is told it was interrupted", "No se repite; al orquestador se le avisa de que se interrumpió")),
-        ),
-        ("stop", "Stop it") => (
-            t!(lang, "Stop it", "Detenerlo"),
-            Some(t!(lang, "Drop the batch and leave the orchestrator idle", "Descarta el lote y deja al orquestador en reposo")),
+        (crate::orchestrator_batch::BATCH_RETRY, crate::orchestrator_batch::BATCH_RETRY_LABEL) => (
+            t!(lang, "Run it again from the start", "Repetirlo desde el principio"),
+            Some(t!(lang,
+                "It handles the same messages again. Choose it only if the fleet shows none of what it did; otherwise it is done twice.",
+                "Vuelve a atender los mismos mensajes. Elígelo solo si en la flota no ves nada de lo que hizo; si no, se hará dos veces.")),
         ),
         _ => return (option.label.clone(), option.description.clone()),
     };
@@ -1233,6 +1247,13 @@ fn content_items(item: &InboxItem, context: &RenderContext<'_>) -> Vec<Item> {
             fetch: format!("/document-revisions/{revision_id}/content"),
             commentable: true,
         }));
+        return out;
+    }
+    if interaction.author == Author::System
+        && interaction.id.0.starts_with(crate::orchestrator_batch::BATCH_PROBLEM_PREFIX)
+        && let Some(card) = crate::orchestrator_batch::BatchProblem::from_body(&interaction.body)
+    {
+        out.push(markdown(card.detail(lang)));
         return out;
     }
     let plan_held = domain.holds.get(&interaction.id) == Some(&Hold::Plan);

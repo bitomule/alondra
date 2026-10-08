@@ -10,6 +10,7 @@ pub mod live;
 pub mod review_export;
 mod messages;
 mod misc;
+mod pacing;
 mod schedules;
 mod sidebar;
 mod status;

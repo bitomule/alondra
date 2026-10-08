@@ -437,7 +437,7 @@ impl DomainState {
                         return fail("forbidden", "PR belongs to another Task");
                     };
                     if &p.head != expected {
-                        return fail("stale_head", "PR head changed");
+                        return fail("stale_head", "PR head changed").map_err(|e| e.because(Refusal::ResultBehindPr { number: p.number }));
                     }
                 }
             }
@@ -1270,24 +1270,35 @@ impl DomainState {
             }
         }
     }
-    /// A task that ended anyway (cancelled, or left done by an older daemon) never drops the cards
-    /// still waiting for the user in silence: each is withdrawn and the user told so, with the
-    /// card's own text.
+    /// The cards of a task that ended leave the user's queue. A cancelled task takes them away in
+    /// silence: the user stopped the work, so nothing it asked matters any more. A task that ended
+    /// with its work done tells the user once about a question it left behind, unless it only
+    /// asked to approve a plan or document for work that is already done.
     fn retire_cards_of_ended_tasks(&mut self, effects: &mut Vec<DomainEffect>) {
         let left: Vec<(TaskId, InteractionId)> = self.tasks.values()
             .filter(|t| t.state.terminal())
             .flat_map(|t| self.interactions.values().filter(|i| self.unanswered_card(i, &t.id)).map(|i| (t.id.clone(), i.id.clone())))
             .collect();
+        let stale_notices: Vec<InteractionId> = self.interactions.values()
+            .filter(|i| i.author == Author::System && !i.withdrawn && i.id.0.starts_with(ENDED_UNANSWERED_PREFIX))
+            .filter(|i| matches!(&i.scope, Scope::Task { task_id } if self.tasks.get(task_id).is_some_and(|t| t.state == TaskState::Cancelled)))
+            .map(|i| i.id.clone())
+            .collect();
+        for notice in stale_notices {
+            self.retire(&notice);
+        }
         for (task_id, question) in left {
             self.retire(&question);
             let q = &self.interactions[&question];
+            if self.tasks[&task_id].state == TaskState::Cancelled || q.card.kind == CardKind::Review {
+                continue;
+            }
             let id = InteractionId(format!("{ENDED_UNANSWERED_PREFIX}{}", question.0));
             if self.interactions.contains_key(&id) {
                 continue;
             }
-            let title = self.tasks[&task_id].title.clone();
-            let need = clip(&format!("“{title}” ended before you answered"), CardSpec::NEED_MAX);
-            let why = clip(&format!("No longer waits for an answer: {}", q.card.need), CardSpec::WHY_MAX);
+            let need = clip(&format!("No longer waits for your answer: {}", q.card.need), CardSpec::NEED_MAX);
+            let why = clip("The work was finished before you answered", CardSpec::WHY_MAX);
             let body = q.card.content.as_ref().map_or_else(|| q.body.clone(), |c| c.body.clone());
             let card = CardSpec::new(CardKind::Know, need).why(&why).content(ContentKind::Report, &body);
             let interaction = Interaction {
@@ -1615,6 +1626,16 @@ impl DomainState {
     /// The current state was validated when it was loaded or committed; only the result is checked.
     /// Semantic receipts belong to the SQL transaction and are looked up before this method.
     pub fn execute(&mut self, actor: &Actor, envelope: &CommandEnvelope) -> Result<CommandOutcome> {
+        let (next, outcome) = self.prepare_transition(actor, envelope)?;
+        *self = next;
+        Ok(outcome)
+    }
+
+    pub(super) fn preview(&self, actor: &Actor, envelope: &CommandEnvelope) -> Result<CommandOutcome> {
+        self.prepare_transition(actor, envelope).map(|(_, outcome)| outcome)
+    }
+
+    fn prepare_transition(&self, actor: &Actor, envelope: &CommandEnvelope) -> Result<(Self, CommandOutcome)> {
         if envelope.protocol_version != PROTOCOL_VERSION {
             return fail("incompatible_protocol", "Protocol version 2 is required");
         };
@@ -1678,8 +1699,7 @@ impl DomainState {
             created_ids: created,
             superseded_acceptances,
         };
-        *self = next;
-        Ok(outcome)
+        Ok((next, outcome))
     }
     fn apply(
         &mut self,
@@ -1914,7 +1934,7 @@ impl DomainState {
                 system(actor)?;
                 self.schedule.interrupt_on_restart();
             }
-            Command::CreateRequest { request_id, body, auto_merge, maintenance } => {
+            Command::CreateRequest { request_id, body, auto_merge, maintenance, message } => {
                 self.manager(actor)?;
                 id(&request_id.0)?;
                 nonempty(body)?;
@@ -1923,7 +1943,7 @@ impl DomainState {
                 };
                 self.requests.insert(
                     request_id.clone(),
-                    Request { auto_merge: *auto_merge, maintenance: *maintenance, ..Request::new(request_id.clone(), body.clone()) },
+                    Request { auto_merge: *auto_merge, maintenance: *maintenance, message: *message || *maintenance, ..Request::new(request_id.clone(), body.clone()) },
                 );
                 created.push(request_id.0.clone());
                 // 8ccd131 handed every new request of the user to the orchestrator.
@@ -1992,6 +2012,13 @@ impl DomainState {
                     return fail("stale_generation", "Generation must advance monotonically");
                 };
                 self.orchestrator_generation = *generation;
+            }
+            Command::BindOrchestratorSession { session_id } => {
+                system(actor)?;
+                if session_id.0.trim().is_empty() {
+                    return fail("invalid_input", "The orchestrator's session id is empty");
+                }
+                self.orchestrator_session = Some(session_id.clone());
             }
             Command::CreateTask {
                 task_id,
@@ -2963,9 +2990,14 @@ impl DomainState {
                 body,
                 targets,
                 is_final,
+                nothing_to_review,
                 card,
             } => {
                 self.assigned(actor, task_id)?;
+                if *nothing_to_review && (!*is_final || targets.iter().any(|t| !matches!(t, DeliveryTarget::Text { .. }))) {
+                    return refuse("invalid_input", "nothing_to_review",
+                        "nothing_to_review is only for a final delivery without a pull request or document: it closes the task without a card");
+                }
                 self.current_pr_targets(task_id, targets)?;
                 self.targets(task_id, targets)?;
                 if *is_final && self.blockers(task_id) {
@@ -3025,6 +3057,9 @@ impl DomainState {
                         .collect();
                     for reviewer in reviewers {
                         self.notify(&reviewer, Some(interaction_id.clone()), "The task you review delivered again: review its new final delivery, present your result again and then give your verdict.", effects)?;
+                    }
+                    if *nothing_to_review {
+                        self.accept(interaction_id, Feedback::ALONDRA)?;
                     }
                 }
                 created.push(interaction_id.0.clone());

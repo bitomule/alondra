@@ -53,6 +53,72 @@ final class FleetFeatureTests: XCTestCase {
         XCTAssertNil(overview.orchestrator?.close)
     }
 
+    func testReadsThePaceOfTheFleetApartFromTheNodeGroups() throws {
+        let overview = FleetOverview(document: try Fixtures.document("fleet-pacing-ios-es"))
+
+        let pacing = try XCTUnwrap(overview.pacing)
+        XCTAssertEqual(pacing.summary, "Trabajando 6/6 · En cola 2 · En pausa 2 · Mac: memoria 12 % libre (justo)")
+        XCTAssertEqual(pacing.limitText, "Límite: automático (6)")
+        XCTAssertEqual(pacing.limit?.label, "Nodos a la vez")
+        XCTAssertEqual(pacing.limit?.options.map(\.id), ["auto"] + (1...12).map(String.init))
+        XCTAssertEqual(pacing.waiting.map(\.title), [
+            "Fix the crash when the schedule list is empty", "Translate the onboarding into Spanish",
+            "Build the importer", "Refresh the App Store screenshots",
+        ])
+        XCTAssertEqual(pacing.waiting.first?.state, "En cola · 1.º de 2 · el Mac va justo de memoria (12 % libre)")
+        XCTAssertEqual(pacing.waiting.map { $0.action?.command }, ["pause", "pause", "resume", "resume"])
+        XCTAssertEqual(pacing.waiting.map(\.paused), [false, false, true, true])
+        XCTAssertFalse(overview.groups.contains { $0.id == "pacing" }, "the pace is not a group of nodes")
+        let paused = overview.groups.flatMap(\.nodes).first { $0.id == "zeta-worker" }
+        XCTAssertEqual(paused?.resume?.id?.hasPrefix("resume:zeta-worker@"), true)
+        XCTAssertNil(paused?.pause)
+    }
+
+    func testResumingAPausedTaskShowsAtOnceAndARefusalBringsItBack() async throws {
+        let gate = Gate()
+        let store = gated(gate, reply: #"{"protocol":1,"outcome":"rejected","message":"Este nodo o esta tarea no está en pausa"}"#)
+        await store.send(.screen(.loaded(try Fixtures.document("fleet-pacing-ios-es"))))
+        let held = try XCTUnwrap(store.state.overview?.pacing?.waiting.last)
+        let resume = try XCTUnwrap(held.action)
+
+        await store.send(.perform(resume))
+        await store.receive(\.actions.sent)
+        let shown = try XCTUnwrap(store.state.overview?.pacing?.waiting.last)
+        XCTAssertEqual(shown.state, "Reanudando…", "it says so before the daemon answers")
+        XCTAssertNil(shown.action)
+        XCTAssertFalse(shown.paused)
+
+        await gate.open()
+        await store.receive(\.actions.settled)
+        XCTAssertEqual(store.state.overview?.pacing?.waiting.last, held, "a refused resume puts the row back")
+    }
+
+    func testChoosingALimitSendsItsOptionAndShowsTheNewLimitAtOnce() async throws {
+        let gate = Gate()
+        let requests = LockIsolated<[ActionRequest]>([])
+        let store = TestStore(initialState: FleetFeature.State()) { FleetFeature() } withDependencies: {
+            $0.uuid = .incrementing
+            $0.viewsClient.perform = { request in
+                requests.withValue { $0.append(request) }
+                await gate.wait()
+                return try Fixtures.response(#"{"protocol":1,"outcome":"applied","message":"Límite actualizado"}"#)
+            }
+        }
+        store.exhaustivity = .off
+        await store.send(.screen(.loaded(try Fixtures.document("fleet-pacing-ios-es"))))
+        let limit = try XCTUnwrap(store.state.overview?.pacing?.limit)
+        let four = try XCTUnwrap(limit.options.first { $0.id == "4" })
+
+        await store.send(.choose(limit, four))
+        await store.receive(\.actions.sent)
+        XCTAssertEqual(store.state.overview?.pacing?.limitText, String(localized: "Nodes at once: 4"))
+        await gate.open()
+        await store.receive(\.actions.settled)
+
+        XCTAssertEqual(requests.value.map(\.actionId), [limit.id])
+        XCTAssertEqual(requests.value.map(\.optionId), ["4"])
+    }
+
     func testObservesTheFleetWhenTheTabAppears() async throws {
         let observed = LockIsolated<[ViewKey]>([])
         let store = store(observed: observed)

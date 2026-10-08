@@ -35,7 +35,7 @@ fn world() -> Fixture {
     std::fs::create_dir_all(&project).unwrap();
     let domain = Arc::new(DomainRuntime::open(&home).unwrap());
     command(&domain, Actor::System, Command::RegisterAgent { agent_id: "agent-b".into(), name: "Instance B".into() });
-    command(&domain, user(), Command::CreateRequest { request_id: "r".into(), body: "Make the editor readable".into(), auto_merge: false, maintenance: false });
+    command(&domain, user(), Command::CreateRequest { request_id: "r".into(), body: "Make the editor readable".into(), auto_merge: false, maintenance: false, message: false });
     command(&domain, user(), Command::TitleRequest { request_id: "r".into(), title: "Readable editor".into() });
     command(&domain, user(), Command::CreateTask { task_id: "t".into(), request_id: "r".into(), title: "Editor colours".into(),
         agent_id: None, review_prs: false, dependencies: Default::default(), stack: None });
@@ -401,7 +401,7 @@ fn the_choices_are_the_ones_recorded_with_the_request() {
     let f = world();
     let state = f.domain.state().unwrap();
     let envelope = CommandEnvelope { protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: "asked".into(),
-        expected_revision: state.revision, command: Command::CreateRequest { request_id: "r2".into(), body: "Fix the crash".into(), auto_merge: false, maintenance: false } };
+        expected_revision: state.revision, command: Command::CreateRequest { request_id: "r2".into(), body: "Fix the crash".into(), auto_merge: false, maintenance: false, message: false } };
     f.domain.execute_with(&user(), &envelope, None, Some(&hard_choices()), || Ok(())).unwrap();
     assert_eq!(request_choices(&f.domain, &"r2".into()).unwrap(), Some(hard_choices()));
     assert_eq!(request_choices(&f.domain, &"r".into()).unwrap(), None);
@@ -660,7 +660,7 @@ async fn a_launch_of_a_follow_up_task_carries_the_earlier_result_and_pull_reques
         repository: "me/app".into(), number: 12, head: "head1".into(), base: "main".into(), allowed_methods: vec![alondra_core::domain::MergeMethod::Squash] });
     let targets = || vec![alondra_core::domain::DeliveryTarget::PullRequest { pr_id: "pr".into(), head: "head1".into() }];
     command(&f.domain, author, Command::PresentResult { attachments: vec![], task_id: "t".into(), interaction_id: "final".into(),
-        body: "  The colours live in one file now.  ".into(), targets: targets(), is_final: true,
+        body: "  The colours live in one file now.  ".into(), targets: targets(), is_final: true, nothing_to_review: false,
         card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true) });
     command(&f.domain, user(), Command::AcceptDelivery { presentation_id: "final".into(), targets: targets() });
     command(&f.domain, Actor::System, Command::ObservePrState { pr_id: "pr".into(), head: "head1".into(), base: "main".into(),
@@ -756,7 +756,7 @@ async fn the_changes_the_user_asked_for_reach_the_node_that_takes_the_task_over(
     give(&f, "t", "agent-b");
     let targets = || vec![alondra_core::domain::DeliveryTarget::Text { text: "Result".into() }];
     command(&f.domain, Actor::Agent { agent_id: "agent-b".into() }, Command::PresentResult { attachments: vec![], task_id: "t".into(),
-        interaction_id: "final".into(), body: "Done".into(), targets: targets(), is_final: true,
+        interaction_id: "final".into(), body: "Done".into(), targets: targets(), is_final: true, nothing_to_review: false,
         card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true) });
     command(&f.domain, user(), Command::SubmitFeedback { attachments: vec![], presentation_id: "final".into(), targets: targets(),
         body: "  Use the new palette  ".into(), instruction: alondra_core::domain::Instruction::Changes });
@@ -1102,7 +1102,7 @@ async fn a_review_that_asks_for_changes_twice_shows_its_rounds_and_serious_findi
     drop(DomainRuntime::open(&home).unwrap());
     let daemon = crate::domain_bootstrap::DomainDaemon::open(&home).unwrap();
     let domain = daemon.domain();
-    command(&domain, user(), Command::CreateRequest { request_id: "r".into(), body: "Make the editor readable".into(), auto_merge: false, maintenance: false });
+    command(&domain, user(), Command::CreateRequest { request_id: "r".into(), body: "Make the editor readable".into(), auto_merge: false, maintenance: false, message: false });
     command(&domain, user(), Command::TitleRequest { request_id: "r".into(), title: "Readable editor".into() });
     command(&domain, user(), Command::CreateTask { task_id: "t".into(), request_id: "r".into(), title: "Editor colours".into(),
         agent_id: None, review_prs: false, dependencies: Default::default(), stack: None });

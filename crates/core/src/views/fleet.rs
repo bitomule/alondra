@@ -56,6 +56,7 @@ fn interrupt_action(id: &str, context: &RenderContext<'_>) -> Option<super::Acti
 /// is not, and neither is one the user closed.
 pub(super) fn in_fleet(agent: &crate::domain::Agent, context: &RenderContext<'_>) -> bool {
     agent.id.0 != "orchestrator"
+        && context.domain.orchestrator_session.as_ref() != Some(&agent.id)
         && !context.live.closed_nodes.contains(&agent.id.0)
         && (agent.connected || common::current_task(context.domain, &agent.id).is_some()
             || context.live.nodes.iter().any(|node| node.agent_id == agent.id.0))
@@ -326,6 +327,7 @@ pub(super) fn node_row(agent: &crate::domain::Agent, context: &RenderContext<'_>
         }
         row.children.extend(live.and_then(activity));
         row.actions.extend(interrupt_action(&agent.id.0, context));
+        row.actions.extend(super::pacing::node_actions(&agent.id, context));
     } else {
         if let Some(task) = task {
             row.title = task.title.clone();
@@ -440,19 +442,25 @@ fn pacing_section(context: &RenderContext<'_>) -> Option<super::Section> {
             false => tf!(lang, "Mac: memory {free}% free", "Mac: memoria {free} % libre"),
         });
     }
-    let mut header = common::row("pacing", "fleet", Icon::Machine, parts.join(" · "), None);
+    let mut header = common::row("pacing", "fleet", Icon::Machine, parts.join(" · "), Some(super::pacing::limit_text(pacing, lang)));
     header.link = None;
     let mut items = vec![Item::Row(header)];
     for place in &pacing.queued {
         let Some(task) = context.domain.tasks.get(&crate::domain::TaskId(place.task_id.clone())) else { continue };
-        items.push(Item::Row(common::row(&format!("queued:{}", task.id.0), &format!("task:{}", task.id.0), Icon::Task,
-            task.title.clone(), Some(common::queued_label(place, lang)))));
+        let mut row = common::row(&format!("queued:{}", task.id.0), &format!("task:{}", task.id.0), Icon::Task,
+            task.title.clone(), Some(common::queued_label(place, lang)));
+        row.actions.extend(super::pacing::pause_queued_action(task, context));
+        items.push(Item::Row(row));
     }
     for paused in &pacing.paused {
         let Some(task) = context.domain.tasks.get(&crate::domain::TaskId(paused.task_id.clone())) else { continue };
-        items.push(Item::Row(common::row(&format!("paused:{}", task.id.0), &format!("task:{}", task.id.0), Icon::Task,
-            task.title.clone(), Some(common::paused_label(paused, lang)))));
+        let mut row = common::row(&format!("paused:{}", task.id.0), &format!("task:{}", task.id.0), Icon::Task,
+            task.title.clone(), Some(common::paused_label(paused, lang)));
+        row.actions.extend(super::pacing::resume_action(paused, context));
+        items.push(Item::Row(row));
     }
+    let limit = super::pacing::limit_action(pacing, context).into_iter().collect();
+    items.push(Item::Actions(super::ActionBar { actions: limit }));
     Some(common::section("pacing", None, items))
 }
 
@@ -512,8 +520,8 @@ fn project_of(agent: &AgentId, context: &RenderContext<'_>) -> String {
 
 pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, BuildError> {
     common::id(id)?;
-    if id == "orchestrator" {
-        return orchestrator(context);
+    if let crate::domain::Target::Orchestrator(_) = context.domain.resolve_target(id) {
+        return orchestrator(id, context);
     }
     let agent = context
         .domain
@@ -722,6 +730,7 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
     }
     let mut actions: Vec<_> = message_action(id, context).into_iter().collect();
     actions.extend(interrupt_action(id, context));
+    actions.extend(super::pacing::node_actions(&AgentId(id.into()), context));
     actions.extend(close_action(id, context));
     if !actions.is_empty() {
         view.sections.push(common::section(
@@ -733,10 +742,10 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
     Ok(view)
 }
 
-fn orchestrator(context: &RenderContext<'_>) -> Result<View, BuildError> {
+fn orchestrator(id: &str, context: &RenderContext<'_>) -> Result<View, BuildError> {
     let mut view = common::view(
         "node",
-        "node:orchestrator",
+        &format!("node:{id}"),
         Some(t!(context.lang, "Orchestrator", "Orquestador").into()),
         context,
         vec![],
@@ -757,7 +766,12 @@ fn orchestrator(context: &RenderContext<'_>) -> Result<View, BuildError> {
                 value: live.map_or(0, |o| o.queue_depth).to_string(),
                 tone: None,
                 link: None,
-            }],
+            }].into_iter().chain(context.domain.orchestrator_session.as_ref().map(|session| Fact {
+                label: t!(context.lang, "Session", "Sesión").into(),
+                value: session.0.clone(),
+                tone: None,
+                link: None,
+            })).collect(),
         })],
     ));
     if let Some(failure) = common::orchestrator_failure(context) {
