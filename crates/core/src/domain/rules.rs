@@ -1615,6 +1615,16 @@ impl DomainState {
     /// The current state was validated when it was loaded or committed; only the result is checked.
     /// Semantic receipts belong to the SQL transaction and are looked up before this method.
     pub fn execute(&mut self, actor: &Actor, envelope: &CommandEnvelope) -> Result<CommandOutcome> {
+        let (next, outcome) = self.prepare_transition(actor, envelope)?;
+        *self = next;
+        Ok(outcome)
+    }
+
+    pub(super) fn preview(&self, actor: &Actor, envelope: &CommandEnvelope) -> Result<CommandOutcome> {
+        self.prepare_transition(actor, envelope).map(|(_, outcome)| outcome)
+    }
+
+    fn prepare_transition(&self, actor: &Actor, envelope: &CommandEnvelope) -> Result<(Self, CommandOutcome)> {
         if envelope.protocol_version != PROTOCOL_VERSION {
             return fail("incompatible_protocol", "Protocol version 2 is required");
         };
@@ -1678,8 +1688,7 @@ impl DomainState {
             created_ids: created,
             superseded_acceptances,
         };
-        *self = next;
-        Ok(outcome)
+        Ok((next, outcome))
     }
     fn apply(
         &mut self,
