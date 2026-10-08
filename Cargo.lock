@@ -53,20 +53,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "alondra-ablation"
-version = "0.2.56"
-dependencies = [
- "anyhow",
- "libc",
- "proc-macro2",
- "quote",
- "sha2 0.10.9",
- "signal-hook",
- "syn 2.0.119",
- "tempfile",
-]
-
-[[package]]
 name = "alondra-core"
 version = "0.2.56"
 dependencies = [

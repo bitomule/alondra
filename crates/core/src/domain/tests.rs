@@ -3075,7 +3075,6 @@ fn assert_all_rejected(base: &DomainState, actors: &[Actor], ids: &Ids) {
         }
     }
 }
-// ablation: passes-on-base: the merge is authorized before the question, which would now withdraw the delivery
 #[test]
 fn unknown_and_foreign_ids_are_typed_rejections_never_panics() {
     let actors = [

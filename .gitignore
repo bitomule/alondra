@@ -22,5 +22,3 @@ __pycache__/
 # Apple release artifacts (make build-release)
 /.beta-build/
 
-# make ablation output, attached as musts evidence
-/ablation.log

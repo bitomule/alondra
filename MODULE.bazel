@@ -50,7 +50,6 @@ crate.from_cargo(
         "//crates/e2e:Cargo.toml",
         "//crates/alondra:Cargo.toml",
         "//crates/relay:Cargo.toml",
-        "//crates/ablation:Cargo.toml",
     ],
 )
 use_repo(crate, "crates")

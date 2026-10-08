@@ -580,7 +580,6 @@ fn the_inbox_has_one_item_per_interaction_and_never_groups_by_pr_or_document() {
     }
 }
 
-// ablation: passes-on-base: the review moved to its own task, since a task's open questions keep it from delivering
 #[test]
 fn the_inbox_runs_problem_then_blocking_asks_then_review_provide_propose_know_oldest_first() {
     let mut s = fixture();
