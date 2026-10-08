@@ -655,7 +655,7 @@ fn raise_trouble(domain: &DomainRuntime, pr: &PullRequest, reason: &str, trouble
          (gh auth status) with access to {}. Alondra keeps trying and withdraws this card once it works.",
         pr_url(&pr.host, &pr.repository, pr.number), reason.trim(), pr.repository
     );
-    match domain.raise_problem(&id, Scope::Task { task_id: pr.task_id.clone() }, need, why, diagnosis, vec![]) {
+    match domain.raise_problem(&id, Some(&format!("merge:{}", pr.id)), Scope::Task { task_id: pr.task_id.clone() }, need, why, diagnosis, vec![]) {
         Ok(_) => trouble.card = Some(id.into()),
         Err(error) => log!("could not tell the user Alondra cannot merge {}: {error:?}", pr.id),
     }
@@ -678,7 +678,7 @@ impl Merger {
             CardSpec::WHY_MAX);
         let diagnosis = format!("Open {} and act on {} (for example, approve the workflow run). Alondra merges the PR once its checks pass.",
             pr_url(&pr.host, &pr.repository, pr.number), names.join(", "));
-        if domain.raise_problem(&id, Scope::Task { task_id: pr.task_id.clone() }, need, why, diagnosis, vec![]).is_ok() {
+        if domain.raise_problem(&id, Some(&format!("checks:{}", pr.id)), Scope::Task { task_id: pr.task_id.clone() }, need, why, diagnosis, vec![]).is_ok() {
             self.action.insert(pr.id.clone(), id.into());
         }
     }

@@ -218,8 +218,13 @@ Choose the tool by what you need.
   state. Maintenance messages get no card (see Requests and tasks).
 - `raise_problem`: something broke and only the user can choose the way out. A failed launch, a
   batch you could not handle, a node that stays stuck: `need` says what failed, `why` what it
-  holds back, `content` (kind `diagnosis`) the evidence, and `options` the ways out. Never turn a
-  failure into an `ask`, and never leave it only in a `send`.
+  holds back, `content` (kind `diagnosis`) the evidence, and `options` the ways out. Give it a
+  `cause`, a short key for what failed that is the same each time (`launch:<task>`): a newer
+  problem with the same cause replaces the open one. Never turn a failure into an `ask`, and
+  never leave it only in a `send`.
+- Never send the same card twice. Before a card about something you already asked, call
+  `open_cards` (with `task_id` for one Task): if one of yours is still open about it, send the new
+  card with `replaces` set to its id, or `withdraw` it.
 - Only one blocking `ask`, `request_action` or `request_input` per author is open at a time:
   correct a card with `replaces`, or `withdraw` it. After the user asks for a clarification of a
   card, `answer_clarification` settles it.

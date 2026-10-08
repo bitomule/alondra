@@ -58,6 +58,15 @@ fn validate_card(card: &CardSpec, options: &[QuestionOption], source: Source, bl
     if card.kind == CardKind::Problem && source != Source::Problem {
         return refuse("forbidden", "card.kind", "Only Alondra and the orchestrator raise a problem: describe it with ask instead");
     }
+    match &card.cause {
+        Some(_) if card.kind != CardKind::Problem => {
+            return refuse("invalid_input", "card.cause", "Only a problem names its cause: remove cause, or use replaces to replace your own open card");
+        }
+        Some(cause) if cause.trim().is_empty() || cause.chars().count() > CardSlot::CAUSE_MAX => {
+            return refuse("invalid_input", "card.cause", &format!("Name what failed in a short key of at most {} characters, the same each time it fails", CardSlot::CAUSE_MAX));
+        }
+        _ => {}
+    }
     if !source.kinds().contains(&card.kind) {
         let allowed: Vec<String> = source.kinds().iter().map(|k| kind_name(*k)).collect();
         return refuse("invalid_input", "card.kind", &format!("{} does not send a {kind} card: use one of {}", source.command(), allowed.join(", ")));
@@ -485,8 +494,8 @@ impl DomainState {
             self.replaceable(&author, old)?;
             self.retire(old);
         }
-        if card.content.as_ref().is_some_and(|c| c.kind == ContentKind::Plan) {
-            for old in self.open_plans(&author) {
+        if let Some(slot) = CardSlot::of(card, &payload) {
+            for old in self.slot_holders(scope, &author, &slot) {
                 self.retire(&old);
             }
         }
@@ -698,13 +707,33 @@ impl DomainState {
         }
         Ok(())
     }
-    /// R14: the author's open plans, which a new plan replaces.
-    fn open_plans(&self, author: &Author) -> Vec<InteractionId> {
+    /// R14: the open cards in `slot`, which a new card in it replaces. On a Task the slot is the
+    /// Task's, whichever node wrote them; elsewhere it is the author's.
+    fn slot_holders(&self, scope: &Scope, author: &Author, slot: &CardSlot) -> Vec<InteractionId> {
         self.interactions.values()
-            .filter(|i| &i.author == author && self.open(i))
-            .filter(|i| i.card.content.as_ref().is_some_and(|c| c.kind == ContentKind::Plan))
+            .filter(|i| self.open(i) && CardSlot::of(&i.card, &i.payload).as_ref() == Some(slot))
+            .filter(|i| match (scope, &i.scope) {
+                (Scope::Task { task_id }, Scope::Task { task_id: other }) => task_id == other,
+                (Scope::Orchestrator { .. }, Scope::Orchestrator { .. }) => &i.author == author,
+                _ => false,
+            })
             .map(|i| i.id.clone())
             .collect()
+    }
+    /// The open cards a reader may replace: the node's on its Task, or the orchestrator's own,
+    /// oldest first.
+    pub fn open_cards(&self, reader: &Actor, task: Option<&TaskId>) -> Vec<&Interaction> {
+        let mut cards: Vec<&Interaction> = self.interactions.values()
+            .filter(|i| self.open(i))
+            .filter(|i| match reader {
+                Actor::Agent { agent_id } => matches!(&i.author, Author::Agent { agent_id: a } if a == agent_id),
+                Actor::Orchestrator { .. } => matches!(i.author, Author::Orchestrator { .. }),
+                _ => false,
+            })
+            .filter(|i| task.is_none_or(|t| matches!(&i.scope, Scope::Task { task_id } if task_id == t)))
+            .collect();
+        cards.sort_by_key(|i| i.order);
+        cards
     }
     /// R15: a card holds back only an open PR, document or delivery of its Task or of a Task it
     /// depends on.
@@ -2959,8 +2988,6 @@ impl DomainState {
                 {
                     card.kind = CardKind::Know;
                 }
-                let previous = self.task(task_id)?.final_presentation.clone()
-                    .filter(|p| *is_final && self.interactions.get(p).is_some_and(|p| !self.accepted(p)));
                 self.insert_interaction(
                     actor,
                     interaction_id,
@@ -2986,9 +3013,6 @@ impl DomainState {
                         .map(|i| format!("“{}”", i.card.need)).collect::<Vec<_>>().join(", ");
                     return refuse("unanswered_questions", "is_final", &format!(
                         "You have unanswered questions ({open}): wait for the answers before you deliver, or withdraw the ones you no longer need"));
-                }
-                if let Some(previous) = previous {
-                    self.retire(&previous);
                 }
                 if *is_final {
                     self.invalidate(task_id);

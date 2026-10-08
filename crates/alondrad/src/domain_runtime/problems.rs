@@ -3,10 +3,13 @@
 use super::*;
 
 impl DomainRuntime {
-    /// A Problem authored by Alondra. `id` names it: raising it twice leaves the first.
+    /// A Problem authored by Alondra. `id` names it: raising it twice leaves the first. A newer
+    /// Problem with the same `cause` in the same place replaces the open one.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn raise_problem(
         &self,
         id: &str,
+        cause: Option<&str>,
         scope: Scope,
         need: String,
         why: String,
@@ -28,7 +31,7 @@ impl DomainRuntime {
                 scope,
                 body: diagnosis.clone(),
                 options,
-                card: CardSpec::new(CardKind::Problem, need).why(why).content(ContentKind::Diagnosis, diagnosis),
+                card: CardSpec { cause: cause.map(str::to_owned), ..CardSpec::new(CardKind::Problem, need).why(why).content(ContentKind::Diagnosis, diagnosis) },
             },
         })
     }
@@ -38,6 +41,7 @@ impl DomainRuntime {
     pub(crate) fn raise_worded_problem(
         &self,
         id: &str,
+        cause: &str,
         need: String,
         why: String,
         body: String,
@@ -58,7 +62,7 @@ impl DomainRuntime {
                 scope: Scope::Orchestrator { request_id: None },
                 body,
                 options,
-                card: CardSpec::new(CardKind::Problem, need).why(why),
+                card: CardSpec::new(CardKind::Problem, need).why(why).cause(cause),
             },
         })
     }

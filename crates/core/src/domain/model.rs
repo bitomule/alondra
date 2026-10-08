@@ -564,6 +564,34 @@ pub struct CardSpec {
     /// gets every answer at once when the last one is answered.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group: Option<QuestionGroup>,
+    /// What failed, for a Problem: a newer Problem with the same cause in the same place replaces
+    /// the open one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cause: Option<String>,
+}
+/// A place that holds one open card at a time: a new card in it replaces the open one.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum CardSlot {
+    Plan,
+    FinalResult,
+    Problem { cause: String },
+}
+impl CardSlot {
+    pub const CAUSE_MAX: usize = 120;
+
+    pub fn of(card: &CardSpec, payload: &InteractionPayload) -> Option<Self> {
+        if matches!(payload, InteractionPayload::Delivery { is_final: true, .. }) {
+            return Some(Self::FinalResult);
+        }
+        if card.content.as_ref().is_some_and(|c| c.kind == ContentKind::Plan) {
+            return Some(Self::Plan);
+        }
+        match (&card.kind, &card.cause) {
+            (CardKind::Problem, Some(cause)) => Some(Self::Problem { cause: cause.clone() }),
+            _ => None,
+        }
+    }
 }
 /// Where a card stands among the questions asked together.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -624,7 +652,12 @@ impl CardSpec {
             replaces: None,
             verify: None,
             group: None,
+            cause: None,
         }
+    }
+    pub fn cause(mut self, cause: impl Into<String>) -> Self {
+        self.cause = Some(cause.into());
+        self
     }
     pub fn why(mut self, why: impl Into<String>) -> Self {
         self.why = why.into();

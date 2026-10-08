@@ -828,3 +828,114 @@ fn only_alondra_wakes_the_orchestrator_with_information() {
     let from_alondra = ok(&mut s, Actor::System, to_orchestrator("machine", Scope::Orchestrator { request_id: None }));
     assert!(matches!(&from_alondra.effects[..], [DomainEffect::NotifyOrchestrator { interaction_id: Some(id), request_id: None }] if id.0 == "machine"));
 }
+
+fn held_plan(id: &str, agent: &str, title: &str) -> Command {
+    Command::HoldHook {
+        interaction_id: id.into(), task_id: "t".into(), agent_id: agent.into(), hold: Hold::Plan,
+        body: format!("# {title}\n\n1. Do it"), options: Hold::Plan.options(),
+        card: CardSpec::new(CardKind::Review, title).content(ContentKind::Plan, format!("# {title}\n\n1. Do it")),
+    }
+}
+fn waiting_for_user(s: &DomainState) -> Vec<String> {
+    s.projection().inbox.iter().filter(|item| item.pending).map(|item| item.id.clone()).collect()
+}
+
+#[test]
+fn a_plan_sent_back_with_changes_leaves_only_the_new_plan_waiting() {
+    let mut s = fixture();
+    ok(&mut s, Actor::System, held_plan("p1", "a", "Weekly cycle plan"));
+    let inputs = BTreeMap::from([("text".to_owned(), InputValue::Text("Drop the plates idea".into()))]);
+    ok(&mut s, user(), Command::AnswerQuestion { attachments: vec![], interaction_id: "p1".into(), option_id: Hold::REQUEST_CHANGES.into(), inputs });
+    ok(&mut s, Actor::System, held_plan("p2", "a", "Weekly cycle plan"));
+    assert_eq!(waiting_for_user(&s), vec!["interaction:p2".to_owned()]);
+}
+
+#[test]
+fn a_plan_from_the_task_s_next_node_replaces_the_one_its_old_node_left_open() {
+    let mut s = fixture();
+    ok(&mut s, Actor::System, held_plan("p1", "a", "Weekly cycle plan"));
+    register_agent(&mut s, "b");
+    s.tasks.get_mut(&"t".into()).unwrap().agent_id = Some("b".into());
+    ok(&mut s, Actor::System, held_plan("p2", "b", "Weekly cycle plan"));
+    assert!(s.interactions[&"p1".into()].withdrawn);
+    assert_eq!(waiting_for_user(&s), vec!["interaction:p2".to_owned()]);
+}
+
+#[test]
+fn a_plan_on_another_task_is_left_alone() {
+    let mut s = fixture();
+    register_agent(&mut s, "b");
+    task(&mut s, "t2", "b");
+    ok(&mut s, Actor::System, held_plan("p1", "a", "Weekly cycle plan"));
+    let mut other = held_plan("p2", "b", "Another plan");
+    if let Command::HoldHook { task_id, .. } = &mut other {
+        *task_id = "t2".into();
+    }
+    ok(&mut s, Actor::System, other);
+    assert!(s.open(&s.interactions[&"p1".into()]));
+    assert!(s.open(&s.interactions[&"p2".into()]));
+}
+
+#[test]
+fn a_new_final_result_retires_the_one_waiting() {
+    let mut s = fixture();
+    ok(&mut s, agent(), present("d1", text(), true, review()));
+    ok(&mut s, agent(), present("d2", text(), true, review()));
+    assert!(s.interactions[&"d1".into()].withdrawn);
+    assert_eq!(waiting_for_user(&s), vec!["interaction:d2".to_owned()]);
+}
+
+fn problem(id: &str, cause: Option<&str>) -> Command {
+    let card = CardSpec::new(CardKind::Problem, "Alondra can't merge PR #7").why("GitHub keeps failing");
+    Command::RaiseProblem {
+        attachments: vec![], interaction_id: id.into(), scope: scope("t"), body: "Last error: 502".into(), options: vec![],
+        card: CardSpec { cause: cause.map(str::to_owned), ..card },
+    }
+}
+
+#[test]
+fn a_problem_with_the_same_cause_replaces_the_open_one() {
+    let mut s = fixture();
+    ok(&mut s, Actor::System, problem("m1", Some("merge:pr")));
+    ok(&mut s, Actor::System, problem("m2", Some("merge:pr")));
+    assert!(s.interactions[&"m1".into()].withdrawn);
+    assert_eq!(waiting_for_user(&s), vec!["interaction:m2".to_owned()]);
+}
+
+#[test]
+fn problems_with_other_causes_or_none_stay_side_by_side() {
+    let mut s = fixture();
+    ok(&mut s, Actor::System, problem("m1", Some("merge:pr")));
+    ok(&mut s, Actor::System, problem("c1", Some("checks:pr")));
+    ok(&mut s, Actor::System, problem("x1", None));
+    ok(&mut s, Actor::System, problem("x2", None));
+    assert_eq!(waiting_for_user(&s).len(), 4);
+}
+
+#[test]
+fn only_a_problem_names_a_cause() {
+    let mut s = fixture();
+    let mut card = decide("Pick a name");
+    card.cause = Some("naming".into());
+    assert_eq!(refused(&mut s, agent(), ask("q", "t", false, card)), ("invalid_input".into(), Some("card.cause".into())));
+    assert_eq!(refused(&mut s, Actor::System, problem("m", Some(" "))), ("invalid_input".into(), Some("card.cause".into())));
+}
+
+#[test]
+fn open_cards_lists_what_the_reader_may_replace() {
+    let mut s = fixture();
+    register_agent(&mut s, "b");
+    task(&mut s, "t2", "b");
+    ok(&mut s, agent(), ask("q1", "t", false, decide("Pick a name")));
+    ok(&mut s, agent(), ask("q2", "t", false, decide("Pick a color")));
+    ok(&mut s, user(), answer("q2"));
+    ok(&mut s, agent_b(), ask("other", "t2", false, decide("Pick a name")));
+    ok(&mut s, orchestrator(), ask("o1", "t", false, decide("Pick an icon")));
+    let ids = |actor: Actor, task: Option<&str>| -> Vec<String> {
+        s.open_cards(&actor, task.map(TaskId::from).as_ref()).iter().map(|i| i.id.0.clone()).collect()
+    };
+    assert_eq!(ids(agent(), Some("t")), vec!["q1"]);
+    assert_eq!(ids(agent_b(), Some("t")), Vec::<String>::new());
+    assert_eq!(ids(orchestrator(), None), vec!["o1"]);
+    assert_eq!(ids(user(), Some("t")), Vec::<String>::new());
+}

@@ -222,6 +222,7 @@ impl ObservationFailures {
         );
         let _ = domain.raise_problem(
             &format!("problem-pr-unreadable-{}", pr.id),
+            Some(&format!("pr-unreadable:{}", pr.id)),
             Scope::Task { task_id: pr.task_id.clone() },
             need, why, diagnosis, vec![],
         );

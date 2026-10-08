@@ -550,7 +550,7 @@ fn raise_undelivered(domain: &DomainRuntime, task: &TaskId, marker: i64, name: &
         "The node working on “{title}” tried to stop {STOP_BLOCKS} times in a row without presenting a result or asking anything. \
          Alondra sent it back to work each time and now lets it stop. Open the node to see where it is stuck, send it a message, or cancel the task."
     );
-    domain.raise_problem(&undelivered_problem_id(task, marker), Scope::Task { task_id: task.clone() }, need, why, diagnosis, vec![]).map(|_| ())
+    domain.raise_problem(&undelivered_problem_id(task, marker), Some(&format!("undelivered:{task}")), Scope::Task { task_id: task.clone() }, need, why, diagnosis, vec![]).map(|_| ())
 }
 
 pub(crate) fn block_text(user: &str, title: &str) -> String {

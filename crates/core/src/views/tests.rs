@@ -5006,6 +5006,33 @@ fn fleet_heads_with_the_working_count_and_lists_the_queued_tasks_with_their_plac
 }
 
 #[test]
+fn the_terminal_shows_only_the_new_plan_after_the_first_was_sent_back() {
+    use crate::domain::{Actor, CardKind, CardSpec, Command, ContentKind, Hold, InputValue};
+    let mut state = DomainState::new("test-epoch");
+    let user = Actor::User { user_id: "u".into() };
+    let plan = |id: &str, title: &str| Command::HoldHook {
+        interaction_id: id.into(), task_id: "t".into(), agent_id: "a".into(), hold: Hold::Plan,
+        body: format!("# {title}\n\n1. Do it"), options: Hold::Plan.options(),
+        card: CardSpec::new(CardKind::Review, title).content(ContentKind::Plan, format!("# {title}\n\n1. Do it")),
+    };
+    execute(&mut state, Actor::System, Command::RegisterAgent { agent_id: "a".into(), name: "Node A".into() });
+    execute(&mut state, user.clone(), Command::CreateRequest { request_id: "r".into(), body: "Weekly cycle".into(), auto_merge: false, maintenance: false });
+    execute(&mut state, user.clone(), Command::CreateTask { task_id: "t".into(), request_id: "r".into(), title: "Weekly cycle".into(),
+        agent_id: Some("a".into()), review_prs: false, dependencies: BTreeSet::new(), stack: None });
+    execute(&mut state, Actor::System, plan("p1", "First weekly plan"));
+    execute(&mut state, user, Command::AnswerQuestion { attachments: vec![], interaction_id: "p1".into(), option_id: Hold::REQUEST_CHANGES.into(),
+        inputs: [("text".to_owned(), InputValue::Text("Drop the plates idea".into()))].into() });
+    execute(&mut state, Actor::System, plan("p2", "Second weekly plan"));
+    let live = LiveSnapshot::default();
+    for key in ["home", "task:t", "tasks"] {
+        let view = serde_json::to_string(&render(&state, &live, Client::Tui, Lang::En, key, "")).unwrap();
+        assert!(!view.contains("First weekly plan"), "{key} still shows the plan sent back: {view}");
+    }
+    let home = serde_json::to_string(&render(&state, &live, Client::Tui, Lang::En, "home", "")).unwrap();
+    assert!(home.contains("Second weekly plan"), "{home}");
+}
+
+#[test]
 fn a_paused_task_says_since_when_why_and_when_it_comes_back_in_both_languages() {
     let mut state = fixture();
     let task = state.tasks.get_mut(&crate::domain::TaskId::from("t-1")).unwrap();

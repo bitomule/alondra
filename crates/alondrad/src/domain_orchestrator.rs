@@ -387,6 +387,7 @@ impl Executor {
         };
         let raised = self.domain.raise_problem(
             &format!("{PROBLEM_PREFIX}{run_id}"),
+            None,
             Scope::Orchestrator { request_id: None },
             "Decide what to do with the orchestrator's failed batch".into(),
             alondra_core::domain::clip(error, CardSpec::WHY_MAX),

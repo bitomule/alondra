@@ -91,6 +91,6 @@ impl DomainRuntime {
         );
         let need = clip(&format!("{name} is stuck: Alondra refused its card"), CardSpec::NEED_MAX);
         let why = clip(&format!("{} ({})", last.message, last.code), CardSpec::WHY_MAX);
-        let _ = self.raise_problem(&format!("problem-{owner}-{card}"), scope, need, why, detail, vec![]);
+        let _ = self.raise_problem(&format!("problem-{owner}-{card}"), Some(&format!("refused-cards:{owner}")), scope, need, why, detail, vec![]);
     }
 }

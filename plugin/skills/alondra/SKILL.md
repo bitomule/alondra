@@ -38,6 +38,11 @@ id such as `t-foo`: the user reads `why` on the card. Anything longer goes in `c
 `body`), never in `why`: the user sees `need` and `why` on the card and `content` in its detail.
 Prefer a recommendation whenever you can make one.
 
+Never send the same card twice. Before a card about something you already asked, call
+`open_cards` with your task: if one of yours is still open about it, send the new card with
+`replaces` set to its id (or `withdraw` it). A new plan or a new final result replaces the open
+one of your task by itself.
+
 Everything the user reads must be clear on its own: a card's `need`, `why` and `content`, and a
 result's title and summary. Say the work or the decision itself, never process jargon, steps
 Alondra takes itself (merging, authorizing or re-authorizing a merge, retrying) or internal ids.

@@ -338,7 +338,7 @@ a few hours.",
         QuestionOption { id: "close".into(), label: "Close the node".into(), description: None, inputs: vec![] },
         QuestionOption { id: "leave".into(), label: "Leave it".into(), description: None, inputs: vec![] },
     ];
-    match domain.raise_problem(&id, Scope::Task { task_id: task.id.clone() }, need, why, diagnosis, options) {
+    match domain.raise_problem(&id, Some(&format!("post-merge:{}", task.id)), Scope::Task { task_id: task.id.clone() }, need, why, diagnosis, options) {
         Ok(_) => Some(id),
         Err(error) => {
             log!("could not ask the user whether to close the session of {} after its work after the merge: {error:?}", task.id);
@@ -409,7 +409,7 @@ fn raise_card(domain: &DomainRuntime, task: &Task, reason: &str, cleanup: bool) 
         QuestionOption { id: "retry".into(), label: "Try again".into(), description: None, inputs: vec![] },
         QuestionOption { id: "leave".into(), label: "Leave it open".into(), description: None, inputs: vec![] },
     ];
-    match domain.raise_problem(&id, scope, need, why, diagnosis, options) {
+    match domain.raise_problem(&id, Some(&format!("close-session:{}", task.id)), scope, need, why, diagnosis, options) {
         Ok(_) => Some(id),
         Err(error) => {
             log!("could not tell the user Alondra cannot close the session of {}: {error:?}", task.id);

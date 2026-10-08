@@ -130,6 +130,7 @@ pub(crate) fn router(state: Arc<DomainDaemon>) -> Router {
         .route("/orchestrator/fleet", get(orchestrator_fleet))
         .route("/orchestrator/node", get(orchestrator_node))
         .route("/agents/waiting-machine", post(agent_waiting_machine))
+        .route("/cards/open", get(open_cards))
         .merge(crate::domain_api::routes())
         .merge(crate::views::routes::router())
         .merge(crate::notices::router())
@@ -851,6 +852,45 @@ async fn agent_waiting_machine(
         reason: body.reason,
     });
     Json(json!({"ok": true})).into_response()
+}
+
+#[derive(Deserialize)]
+struct OpenCardsQuery {
+    task_id: Option<String>,
+}
+
+/// The caller's own open cards, so it replaces one instead of sending the same card again: a
+/// node's on its Task, the orchestrator's on one Task or everywhere.
+async fn open_cards(
+    State(state): State<Arc<DomainDaemon>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Query(query): Query<OpenCardsQuery>,
+) -> Response {
+    if let Some(refused) = local_only(&peer, &headers) {
+        return refused;
+    }
+    let bearer = headers
+        .get("authorization")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "));
+    let (reader, bound) = match bearer.map(|token| state.domain.resolve_bearer(token)) {
+        Some(Ok(crate::domain_authority::Principal::Agent { session_id, task_binding, .. })) => {
+            (alondra_core::domain::Actor::Agent { agent_id: session_id.into() }, task_binding)
+        }
+        Some(Ok(crate::domain_authority::Principal::Orchestrator { generation, .. })) => {
+            (alondra_core::domain::Actor::Orchestrator { generation }, None)
+        }
+        _ => return forbidden("an Agent's or the orchestrator's capability is required"),
+    };
+    let task = match (bound, query.task_id) {
+        (Some(bound), Some(asked)) if bound != asked => return forbidden("this node is bound to another task"),
+        (bound, asked) => asked.or(bound).map(alondra_core::domain::TaskId),
+    };
+    match state.domain.state() {
+        Ok(domain) => Json(json!({"cards": domain.open_card_rows(&reader, task.as_ref())})).into_response(),
+        Err(error) => crate::domain_api::domain_error(DomainError::new("unavailable", error.to_string())),
+    }
 }
 
 /// Machine capacity and the subscription's usage, as the `/daemon` gauges hold them.
