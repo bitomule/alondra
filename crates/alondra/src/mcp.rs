@@ -13,13 +13,18 @@ pub enum Role {
     Orchestrator,
 }
 
+fn self_contained_card(user: &str) -> String {
+    format!("Every card is decided without reading your chat: {user} sees only the card. It says what is decided and the minimum context, and carries in content the whole thing being decided (the proposed text and the current one, the design or screenshot, the command, the list, the numbers), never a summary or \"what I showed you\". Each option says what happens if it is chosen, and the recommended one why. Never refer to the chat (\"as I said\", \"the earlier one\", \"the plan\"): repeat what is needed. Before sending, ask yourself whether someone who sees only this card can decide, and add what is missing: \"Approve the new promotional text for Quill's App Store listing\" goes with the proposed text and the current one in content.")
+}
+
 fn instructions(role: Role, user: &str) -> String {
     let language = match crate::i18n::lang() {
         crate::i18n::Lang::Es => "Spanish",
         crate::i18n::Lang::En => "English",
     };
+    let self_contained = self_contained_card(user);
     let common = format!(
-        "Alondra manages durable task state. The user is {user}; write user-facing content in {language}, and your replies in this terminal too: the apps show your last one beside your work. Use the Alondra tools for durable changes; Alondra supplies their protocol metadata internally. A published result is not task completion: a task is done when the user accepts its final result or, for a pull request, when it is merged. Everything the user reads (a card's need, why and content, a result's title and summary) must be clear on its own: say the work or the decision itself, never process jargon, steps Alondra takes itself (merging, authorizing, retrying) or internal ids. An old session without a daemon-issued capability must resume with the current plugin; public session IDs and process ancestry never grant task authority."
+        "Alondra manages durable task state. The user is {user}; write user-facing content in {language}, and your replies in this terminal too: the apps show your last one beside your work. Use the Alondra tools for durable changes; Alondra supplies their protocol metadata internally. A published result is not task completion: a task is done when the user accepts its final result or, for a pull request, when it is merged. Everything the user reads (a card's need, why and content, a result's title and summary) must be clear on its own: say the work or the decision itself, never process jargon, steps Alondra takes itself (merging, authorizing, retrying) or internal ids. {self_contained} An old session without a daemon-issued capability must resume with the current plugin; public session IDs and process ancestry never grant task authority."
     );
     match role {
         Role::Node => format!(
@@ -131,7 +136,7 @@ fn questions_schema(options: &Value) -> Value {
 }
 
 fn content_schema() -> Value {
-    json!({"type":"object","description":"The long part of the card, shown only in its detail: the document, diff, command, report, steps, options, diagnosis or attachments. Put anything longer than a sentence here, never in why. Use steps for an ordered list and report for prose; the plan kind belongs to a plan Claude Code holds for approval, never to a card you send","properties":{
+    json!({"type":"object","description":"The long part of the card, shown only in its detail: the document, diff, command, report, steps, options, diagnosis or attachments. It holds the whole thing being decided, never a summary of it. Put anything longer than a sentence here, never in why. Use steps for an ordered list and report for prose; the plan kind belongs to a plan Claude Code holds for approval, never to a card you send","properties":{
         "kind":{"enum":["document","diff","command","report","steps","options","diagnosis","attachments"]},
         "summary":{"type":"string","maxLength":60,"description":"Optional one-line label such as \"6 files · +120 −40\"; Alondra computes one when you leave it out"},
         "body":{"type":"string"}
@@ -173,6 +178,7 @@ fn place<'a>(interaction: &Value, extra: Value, required: &[&'a str]) -> (Value,
 fn card_tools(user: &str, interaction: &Value, node: bool) -> Vec<Value> {
     let attachments = interaction["attachments"].clone();
     let blocking = json!({"type":"boolean","description":"true when you cannot go on until the answer arrives"});
+    let rule = self_contained_card(user);
     let mut tools = vec![];
     let mut add = |name: &str, description: String, extra: Value, required: &[&str]| {
         let (fields, needed) = place(interaction, extra, required);
@@ -180,14 +186,14 @@ fn card_tools(user: &str, interaction: &Value, node: bool) -> Vec<Value> {
     };
     add(
         "ask",
-        format!("Put a decision in front of {user} (or the orchestrator): a Decide card with 2 to 8 options. Prefer a recommendation: set recommended to the option you would pick; never write \"(Recommended)\" in a label. Explain each choice in its description. To ask several related things at once send `questions` (2 to 4, each {{question, options, recommended, why}}) instead of options: each becomes its own card, {user} answers them one by one, and all the answers reach you together once the last is answered. Every question must stand on its own and be clear without any context from your work; why only says what {user} needs to know to answer it, never another question or option. To collect text or a file use request_input, to hand over a task use request_action. Long context goes in content, never in why. A node holds one blocking ask at a time: replace it with replaces."),
+        format!("Put a decision in front of {user} (or the orchestrator): a Decide card with 2 to 8 options. Prefer a recommendation: set recommended to the option you would pick; never write \"(Recommended)\" in a label. Explain each choice in its description. To ask several related things at once send `questions` (2 to 4, each {{question, options, recommended, why}}) instead of options: each becomes its own card, {user} answers them one by one, and all the answers reach you together once the last is answered. Every question must stand on its own and be clear without any context from your work; why only says what {user} needs to know to answer it, never another question or option. To collect text or a file use request_input, to hand over a task use request_action. Long context goes in content, never in why. A node holds one blocking ask at a time: replace it with replaces. {rule}"),
         json!({"need":need_schema(),"why":why_schema(),"options":interaction["options"],"recommended":{"type":"string","description":"The id of the option you recommend"},
             "questions":questions_schema(&interaction["options"]),"blocking":blocking,"blocks":blocks_schema(),"replaces":replaces_schema(),"content":content_schema(),"attachments":attachments}),
         &["why", "blocking"],
     );
     add(
         "request_action",
-        format!("Hand {user} something to do outside Alondra (a Do card). Say how you will check it was done in verify; when {user} answers Done you run that check. Put the instructions in steps or content, not in why."),
+        format!("Hand {user} something to do outside Alondra (a Do card). Say how you will check it was done in verify; when {user} answers Done you run that check. Put the instructions in steps or content, not in why. {rule}"),
         json!({"need":need_schema(),"why":why_schema(),"verify":{"type":"string","description":"How you will check it was done"},"steps":{"type":"array","items":{"type":"string"},"description":"The steps to follow, in order"},"options":interaction["options"],"blocking":blocking,"blocks":blocks_schema(),"replaces":replaces_schema(),"content":content_schema(),"attachments":attachments}),
         &["need", "why", "verify", "blocking"],
     );
@@ -208,7 +214,7 @@ fn card_tools(user: &str, interaction: &Value, node: bool) -> Vec<Value> {
     if !node {
         add(
         "publish_information",
-        format!("Tell {user} (or the orchestrator) something they only need to read (a Know card): need is the headline, body the update. It never holds anyone back. Only for two things: the answer to a Request without a Task, and a Task finished without {user} stepping in. Never to confirm something routine (launching, reassigning, cancelling, adding to a design): Tasks already shows it; a maintenance message (a Request sent with alondra send without --reply) gets no card, and one about it is refused; never status chatter, never a question or a request: anything that needs {user} to answer or do something is an ask, request_input or request_action, never a note that you are waiting. To correct an earlier notice of yours that is still open, send the correction with replaces set to its id: it takes the old card's place instead of adding a card. Sending the same unread notice twice returns the first one."),
+        format!("Tell {user} (or the orchestrator) something they only need to read (a Know card): need is the headline, body the update. It never holds anyone back. Only for two things: the answer to a Request without a Task, and a Task finished without {user} stepping in. Never to confirm something routine (launching, reassigning, cancelling, adding to a design): Tasks already shows it; a maintenance message (a Request sent with alondra send without --reply) gets no card, and one about it is refused; never status chatter, never a question or a request: anything that needs {user} to answer or do something is an ask, request_input or request_action, never a note that you are waiting. To correct an earlier notice of yours that is still open, send the correction with replaces set to its id: it takes the old card's place instead of adding a card. Sending the same unread notice twice returns the first one. Send a notice only when knowing it helps {user}, and say its effect for them in plain words (\"You can update Alondra to 0.2.56: it brings X and Y\"), never script names, task ids or internal steps (\"release.sh + tag finished: release 0.2.56 published\" is wrong). An answer to a message from Claude or a maintenance message never becomes a notice for {user}. {rule}"),
         json!({"need":need_schema(),"why":why_schema(),"body":interaction["body"],"replaces":replaces_schema(),"content":content_schema(),"attachments":attachments}),
         &["need", "body"],
         );
@@ -221,7 +227,7 @@ fn card_tools(user: &str, interaction: &Value, node: bool) -> Vec<Value> {
         ]}});
         tools.push(domain_tool(
             "present_result",
-            &format!("Present a result to {user}. With is_final true it is a Review card: {user} accepts it, and for a PR Alondra then merges it and tells you (with auto-merge, once its checks pass); a PR merged on GitHub also completes the Task. With is_final false it is a progress notice. need says what to review and content carries the report, diff or document (a final result needs content): both describe the change itself, never the merge or an approval to give. A final result is refused while your worktree holds uncommitted or unpushed work, or work outside the default branch and your registered PR. Final results are refused while one of your cards still blocks the Task."),
+            &format!("Present a result to {user}. With is_final true it is a Review card: {user} accepts it, and for a PR Alondra then merges it and tells you (with auto-merge, once its checks pass); a PR merged on GitHub also completes the Task. With is_final false it is a progress notice. need says what to review and content carries the report, diff or document (a final result needs content): both describe the change itself, never the merge or an approval to give. A final result is refused while your worktree holds uncommitted or unpushed work, or work outside the default branch and your registered PR. Final results are refused while one of your cards still blocks the Task. need and content say what the result means for {user} in plain words, never script names, task ids or internal steps. {rule}"),
             json!({"task_id":{"type":"string"},"interaction_id":interaction["interaction_id"],"need":need_schema(),"why":why_schema(),"content":content_schema(),"targets":target,"is_final":{"type":"boolean"},"body":interaction["body"],"attachments":attachments}),
             &["task_id", "interaction_id", "need", "targets", "is_final"],
         ));
@@ -2060,6 +2066,29 @@ mod card_tool_tests {
         assert!(node.contains("never in `why`") && node.contains("never a permission") && node.contains("do not proceed"));
         let orchestrator = instructions(Role::Orchestrator, "Ana");
         assert!(orchestrator.contains("publish_information") && orchestrator.contains("before close_request") && orchestrator.contains("raise_problem"));
+    }
+
+    #[test]
+    fn every_card_is_decided_from_the_card_alone_never_from_the_chat() {
+        let cards = [(Role::Node, "ask"), (Role::Node, "request_action"), (Role::Node, "present_result"), (Role::Orchestrator, "ask"), (Role::Orchestrator, "request_action"), (Role::Orchestrator, "publish_information")];
+        let texts = cards.iter().map(|(role, name)| tool(*role, name)["description"].as_str().unwrap().to_owned())
+            .chain([instructions(Role::Node, "Ana"), instructions(Role::Orchestrator, "Ana")]);
+        for text in texts {
+            assert!(text.contains("Every card is decided without reading your chat: Ana sees only the card"), "{text}");
+            assert!(text.contains("the proposed text and the current one") && text.contains("never a summary"), "{text}");
+            assert!(text.contains("Each option says what happens if it is chosen, and the recommended one why"), "{text}");
+            assert!(text.contains("Never refer to the chat") && text.contains("whether someone who sees only this card can decide"), "{text}");
+            assert!(text.contains("promotional text for Quill"), "{text}");
+        }
+    }
+
+    #[test]
+    fn a_notice_says_what_it_means_for_the_user_and_never_answers_claude_or_maintenance() {
+        let notice = tool(Role::Orchestrator, "publish_information")["description"].as_str().unwrap().to_owned();
+        assert!(notice.contains("only when knowing it helps Ana") && notice.contains("never script names, task ids or internal steps"), "{notice}");
+        assert!(notice.contains("An answer to a message from Claude or a maintenance message never becomes a notice for Ana"), "{notice}");
+        let result = tool(Role::Node, "present_result")["description"].as_str().unwrap().to_owned();
+        assert!(result.contains("what the result means for Ana in plain words, never script names, task ids or internal steps"), "{result}");
     }
 
     #[test]

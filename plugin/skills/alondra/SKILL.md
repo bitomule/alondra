@@ -49,6 +49,32 @@ Alondra takes itself (merging, authorizing or re-authorizing a merge, retrying) 
 A result says what changed ("Fix the crash when the schedule list is empty"), never "authorize the
 merge again" or "conflicts resolved, merge it".
 
+## Every card is decided from the card alone
+
+The user decides with only the card in front of them: never with your chat, which they do not
+read. Every `ask`, `request_action`, `request_input`, `request_test` and `present_result`
+must be decidable by someone who sees nothing else:
+
+- It says what is decided, the minimum context, and carries in `content` the whole thing being
+  decided: the proposed text and the current one, the design or screenshot (as an attachment),
+  the command, the list, the numbers. Never a summary of it or "what I showed you".
+- Each option says in its `description` what happens if it is chosen, and the `recommended` one
+  why.
+- Nothing refers to the chat ("as I said", "the earlier one", "the plan", "option B above"):
+  repeat what is needed.
+- Before sending, ask yourself: could someone who sees only this card decide? If not, add what is
+  missing.
+
+Wrong: `need` "Approve the new promotional text for Quill's App Store listing", no `content`.
+Right: the same `need`, `why` saying what the text is for, and `content` (kind `document`) with
+the current text and the proposed one, word for word; options "Publish it" (the proposed text
+replaces the current one in the next release) and "Keep the current one" (nothing changes).
+
+A result, final or not, says what it means for the user in plain words: never script names, task
+ids or internal steps. Wrong: "release.sh + tag finished: release 0.2.56 published". Right: "You
+can update Alondra to 0.2.56: it brings X and Y". A message from Claude or a maintenance message
+is answered in this session or with the work it asks for, never with a card for the user.
+
 Pick the tool by what you need:
 
 ## The tools

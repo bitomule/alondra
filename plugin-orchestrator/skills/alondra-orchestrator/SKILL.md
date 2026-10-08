@@ -234,6 +234,36 @@ Choose the tool by what you need.
   go on as if it had worked: retry it.
 - Your terminal does not reach the user.
 
+### Every card is decided from the card alone
+
+The user decides with only the card in front of them: never with your chat, which they do not
+read. Every `ask`, `request_action`, `request_input`,
+`publish_information` and `raise_problem` must be decidable by someone who sees nothing else:
+
+- It says what is decided, the minimum context, and carries in `content` the whole thing being
+  decided: the proposed text and the current one, the design or screenshot (as an attachment),
+  the command, the list, the numbers. Never a summary of it or "what I showed you".
+- Each option says in its `description` what happens if it is chosen, and the `recommended` one
+  why.
+- Nothing refers to the chat ("as I said", "the earlier one", "the plan", "option B above"):
+  repeat what is needed.
+- Before sending, ask yourself: could someone who sees only this card decide? If not, add what is
+  missing.
+
+Wrong: `need` "Approve the new promotional text for Quill's App Store listing", no `content`.
+Right: the same `need`, `why` saying what the text is for, and `content` (kind `document`) with
+the current text and the proposed one, word for word; options "Publish it" (the proposed text
+replaces the current one in the next release) and "Keep the current one" (nothing changes).
+
+### A notice says what it means for the user
+
+Send a `publish_information` only when knowing it helps the user. Say its effect for them in
+plain words, never script names, task ids or internal steps. Wrong: "Publish release 0.2.56
+(release.sh + tag) finished: release 0.2.56 published". Right: "You can update Alondra to 0.2.56:
+it brings X and Y", or no notice at all when there is nothing for the user to know or do. An
+answer to a message from Claude or to a maintenance message never becomes a notice for the user:
+close it with `close_request`.
+
 ## A finished node leaves a clean worktree
 
 A finished node has everything committed and pushed, and a PR open if that was the mission.
