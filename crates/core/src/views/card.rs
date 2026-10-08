@@ -418,7 +418,22 @@ fn context_lines(item: &InboxItem, context: &RenderContext<'_>) -> Vec<ContextLi
         });
     }
     lines.extend(review_lines(item, context));
+    lines.extend(merge_unavailable(item, context).map(|text| ContextLine { icon: Icon::Warning, text, link: None, chip: None, state: None }));
     lines
+}
+
+/// Why a pull request's card offers no merge, when nothing else on it says so already.
+fn merge_unavailable(item: &InboxItem, context: &RenderContext<'_>) -> Option<String> {
+    let interaction = interaction_of(item, context.domain)?;
+    let pr = pr_target(interaction, context.domain).filter(|pr| pr.state == PrState::Open)?;
+    let live = live_pr(pr, context);
+    if blocked_reason(item, context).is_some() || live.is_some_and(|detail| detail.conflicts || detail.stacked_on.is_some()) {
+        return None;
+    }
+    let merge = item.available_actions.iter().find(|action| action.kind == "authorize_merge" && !action.enabled)?;
+    let refusal = merge.refusal.clone()
+        .unwrap_or_else(|| crate::domain::Refusal::for_code(merge.disabled_reason.as_deref().unwrap_or_default()));
+    Some(super::messages::refusal_text(&refusal, context.lang))
 }
 
 pub(super) fn from_item(item: &InboxItem, context: &RenderContext<'_>, included: bool) -> Result<Card, BuildError> {

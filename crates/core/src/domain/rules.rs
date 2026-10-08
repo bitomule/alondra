@@ -437,7 +437,7 @@ impl DomainState {
                         return fail("forbidden", "PR belongs to another Task");
                     };
                     if &p.head != expected {
-                        return fail("stale_head", "PR head changed");
+                        return fail("stale_head", "PR head changed").map_err(|e| e.because(Refusal::ResultBehindPr { number: p.number }));
                     }
                 }
             }

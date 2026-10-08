@@ -22,6 +22,8 @@ pub enum Refusal {
     NoMethodChosen { number: u64 },
     /// The PR moved since the user looked.
     StaleHead { number: u64 },
+    /// The PR has commits the presented result does not include.
+    ResultBehindPr { number: u64 },
     /// Alondra is already merging it.
     MergeInProgress { number: u64 },
     /// The PR is closed or merged on GitHub.

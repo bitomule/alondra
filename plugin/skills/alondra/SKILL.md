@@ -182,11 +182,13 @@ Pick the tool by what you need:
 
 - Right after opening a PR, call `register_pr` with the task, a short `pr_id` such as `pr-123`
   (letters, digits, `-` and `_` only, never `owner/repo#123`), its host, `owner/repo`, number,
-  head and base, and the merge methods allowed. A task owns exactly one PR for its whole life:
+  head (the full 40-character commit sha you pushed, `git rev-parse HEAD`, never a branch name)
+  and base, and the merge methods allowed. A task owns exactly one PR for its whole life:
   more work for the task goes on that PR, and work that needs another PR is another task, which
   you ask the orchestrator for (`ask` with recipient kind `orchestrator`). A second `register_pr`
   for the task is refused.
-- Present it with `present_result`, the PR and its head in `targets`, as your final result. The
+- Present it with `present_result`, the PR in `targets`, as your final result: leave its `head`
+  out and Alondra uses the commit the PR is at, or give that full commit sha. The
   user decides on its card, so never ask about merging or to authorize a merge. When they accept
   it, Alondra merges the PR itself and then asks you to clean up; a PR merged on GitHub also
   completes the task. Never merge a PR yourself.

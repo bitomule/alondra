@@ -722,6 +722,11 @@ async fn resource_command<H: DomainHost>(
         Ok(plan) => plan,
         Err(error) => return domain_error(error),
     };
+    if let Ok(state) = host.domain().state()
+        && let Err(error) = crate::pr_heads::check(&state, method.as_str(), uri.path(), &mut body)
+    {
+        return domain_error(error);
+    }
     let Some(envelope) = resource_envelope(method.as_str(), uri.path(), &params, body) else {
         return domain_error(DomainError::new("invalid_input", "unsupported resource operation"));
     };

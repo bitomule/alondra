@@ -5290,3 +5290,19 @@ fn generate_pacing_goldens() {
         std::fs::write(format!("{dir}/{filename}"), format!("{}\n", serde_json::to_string_pretty(&view).unwrap())).unwrap();
     }
 }
+
+#[test]
+fn a_pr_card_that_cannot_merge_says_why() {
+    let mut state = golden_fixture();
+    let key = "card:hf-weekly-2026-09-30";
+    let reason = |view: &View| card_of(view).context.iter().find(|line| line.icon == Icon::Warning).map(|line| line.text.clone());
+    let offered = render(&state, &golden_live(), Client::Ios, Lang::Es, key, "");
+    assert!(card_of(&offered).actions.iter().any(|action| action.id.starts_with("merge:")));
+    assert_eq!(reason(&offered), None, "a card that merges needs no reason");
+
+    state.pull_requests.get_mut(&"github.com/example/repo#12".into()).unwrap().head = "89abcdef0123456789abcdef0123456789abcdef".into();
+    let moved = render(&state, &golden_live(), Client::Ios, Lang::Es, key, "");
+    assert!(!card_of(&moved).actions.iter().any(|action| action.id.starts_with("merge:")));
+    assert_eq!(reason(&moved).as_deref(), Some(
+        "La PR #12 tiene commits que este resultado no incluye: no se puede fusionar desde aquí hasta que el nodo la vuelva a presentar."));
+}
