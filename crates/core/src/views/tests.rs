@@ -1492,6 +1492,28 @@ fn a_running_task_whose_node_does_nothing_says_no_activity_instead_of_working() 
 }
 
 #[test]
+fn a_running_task_whose_node_lost_its_connection_says_so_instead_of_working() {
+    let mut state = fixture();
+    state.interactions.clear();
+    let task = state.tasks.get_mut(&"t-1".into()).unwrap();
+    task.state = TaskState::Running;
+    task.agent_id = Some("a-1".into());
+    let mut live = LiveSnapshot::default();
+    live.nodes.push(LiveNode { agent_id: "a-1".into(), name: "Node One".into(), quiet: true, disconnected: true, ..LiveNode::default() });
+    assert_eq!(task_state_text(&state, &live, Lang::Es), "Sin conexión");
+    assert_eq!(task_state_text(&state, &live, Lang::En), "No connection");
+    live.nodes[0].disconnected = false;
+    live.nodes[0].reconnecting = true;
+    assert_eq!(task_state_text(&state, &live, Lang::Es), "Reconectando");
+    let fleet = render(&state, &live, Client::Mac, Lang::Es, "fleet", "");
+    assert!(format!("{fleet:?}").contains("Reconectando"));
+    live.nodes[0].reconnecting = false;
+    live.nodes[0].disconnected = true;
+    let fleet = format!("{:?}", render(&state, &live, Client::Mac, Lang::Es, "fleet", ""));
+    assert!(fleet.contains("Sin conexión"), "{fleet}");
+}
+
+#[test]
 fn the_ended_tasks_of_a_request_still_under_way_fold_away_from_the_active_list() {
     let mut state = fixture();
     state.tasks.get_mut(&"t-1".into()).unwrap().state = TaskState::Running;

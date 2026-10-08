@@ -154,6 +154,8 @@ pub(crate) struct Reported {
     pub started_at: Option<Millis>,
     /// The current connection, by the number it was given; none while the session is unreachable.
     pub connection: Option<u64>,
+    /// When the connection it held last closed, while it has none.
+    pub disconnected_at: Option<Millis>,
     pub ended: bool,
     pub working_since: Option<Millis>,
     /// When the mod last reported anything or connected: a turn that goes quiet is a session that
@@ -461,6 +463,7 @@ impl Reports {
         }
         let session = sessions.entry(hello.session_id).or_default();
         session.connection = Some(number);
+        session.disconnected_at = None;
         session.ended = false;
         session.working_since = hello.working.then_some(now);
         session.last_event_at = Some(now);
@@ -479,6 +482,7 @@ impl Reports {
         match sessions.get_mut(session_id) {
             Some(session) if session.connection == Some(number) => {
                 session.connection = None;
+                session.disconnected_at = Some(alondra_core::now_millis());
                 true
             }
             _ => false,

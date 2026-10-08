@@ -44,6 +44,8 @@ pub(crate) struct Live {
     watching: Mutex<std::collections::HashSet<String>>,
     launching: Mutex<std::collections::HashSet<String>>,
     reconnecting: Mutex<std::collections::HashSet<String>>,
+    /// When Alondra last cut the turn of a session it has to close, by session.
+    close_interrupts: Mutex<HashMap<String, i64>>,
     closed: Mutex<std::collections::BTreeSet<String>>,
     closed_file: Option<std::path::PathBuf>,
     closed_tasks: Mutex<std::collections::BTreeMap<String, ClosedNode>>,
@@ -153,6 +155,19 @@ impl Live {
 
     pub(crate) fn end_watch(&self, session_id: &str) {
         self.watching.lock().expect("revivals poisoned").remove(session_id);
+    }
+
+    /// When Alondra last cut the session's turn to close it, if it did.
+    pub(crate) fn close_interrupted_at(&self, session_id: &str) -> Option<i64> {
+        self.close_interrupts.lock().expect("close interrupts poisoned").get(session_id).copied()
+    }
+
+    pub(crate) fn set_close_interrupted(&self, session_id: &str, at: Option<i64>) {
+        let mut interrupts = self.close_interrupts.lock().expect("close interrupts poisoned");
+        match at {
+            Some(at) => interrupts.insert(session_id.to_owned(), at),
+            None => interrupts.remove(session_id),
+        };
     }
 
     /// A restart of the session is running.

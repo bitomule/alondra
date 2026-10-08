@@ -77,7 +77,7 @@ enum Cmd {
         #[arg(long, help = tr!("Machine-readable output", "Salida para máquinas"))]
         json: bool,
     },
-    #[command(about = tr!("Close the sessions of finished tasks and the ones stopped without a task", "Cierra las sesiones de tareas terminadas y las paradas sin tarea"))]
+    #[command(about = tr!("Close the sessions of finished tasks, also the ones stuck working, and the ones stopped without a task; free the tasks of stopped sessions", "Cierra las sesiones de tareas terminadas, también las atascadas trabajando, y las paradas sin tarea; libera las tareas de sesiones paradas"))]
     Cleanup {
         #[arg(long, help = tr!("Only show what it would close", "Solo enseña lo que cerraría"))]
         dry_run: bool,

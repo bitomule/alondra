@@ -439,7 +439,7 @@ async fn cleanup(
         return crate::domain_api::domain_error(DomainError::new("invalid_input", "invalid cleanup request"));
     };
     let sessions = state.client().sessions();
-    match crate::cleanup::run(&state.domain, sessions.as_ref(), &crate::watcher::claude_home(), body.dry_run, alondra_core::now_millis()).await {
+    match crate::cleanup::run(&state.domain, sessions.as_ref(), &crate::watcher::claude_home(), body.dry_run, alondra_core::now_millis(), crate::cleanup::STOP_WAIT).await {
         Ok(report) => Json(report).into_response(),
         Err((status, error)) => (status, Json(json!({"error": error}))).into_response(),
     }

@@ -231,6 +231,8 @@ pub(crate) async fn gather(
                 cost_cents: reported.cost_usd.map(|usd| (usd * 100.0).round().max(0.0) as u64),
                 model: reported.model.clone(),
                 reconnecting,
+                disconnected: !reconnecting && reported.connection.is_none()
+                    && reported.disconnected_at.is_some_and(|at| now - at > crate::node_revival::Timing::LIVE.grace.as_millis() as i64),
                 waiting_until: exhausted.as_ref().filter(|_| node.usage_limited).map(|exhausted| timestamp(exhausted.until)),
             })
         })

@@ -85,6 +85,8 @@ pub(super) fn node_state(agent: &AgentId, context: &RenderContext<'_>) -> super:
         (t!(lang, "Waiting for an answer", "Esperando respuesta"), Tone::Warning)
     } else if live.is_some_and(|node| node.reconnecting) {
         (t!(lang, "Reconnecting", "Reconectando"), Tone::Info)
+    } else if live.is_some_and(|node| node.disconnected) && tasks.iter().any(|state| !state.terminal()) {
+        (t!(lang, "No connection", "Sin conexión"), Tone::Warning)
     } else if merging {
         (t!(lang, "Merging", "Fusionando"), Tone::Info)
     } else if key == Some("stalled") {

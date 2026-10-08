@@ -7,6 +7,7 @@ use alondra_core::domain::{
 use alondra_core::{DaemonObservation, Event};
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 /// 2026-01-02T00:00:00Z.
 fn now() -> i64 {
@@ -155,7 +156,15 @@ impl Rig {
     }
 
     async fn run(&self, dry_run: bool) -> Value {
-        run(&self.domain, self.sessions.as_ref(), &self.claude_home, dry_run, now()).await.unwrap()
+        self.run_waiting(dry_run, Duration::from_millis(50)).await
+    }
+
+    async fn run_waiting(&self, dry_run: bool, stop_wait: Duration) -> Value {
+        run(&self.domain, self.sessions.as_ref(), &self.claude_home, dry_run, now(), stop_wait).await.unwrap()
+    }
+
+    fn busy(&self, session: &str) {
+        self.domain.live.observe(&serde_json::json!({"session_id": session, "hook_event_name": "UserPromptSubmit", "prompt": "go"}));
     }
 }
 
@@ -278,7 +287,7 @@ async fn when_claude_agents_cannot_run_nothing_is_closed() {
         }
     }
     let rig = Rig::new();
-    let refused = run(&rig.domain, &Broken, &rig.claude_home, false, now()).await.unwrap_err();
+    let refused = run(&rig.domain, &Broken, &rig.claude_home, false, now(), Duration::ZERO).await.unwrap_err();
     assert_eq!((refused.0, refused.1.as_str()), (StatusCode::BAD_GATEWAY, "claude is not installed"));
 }
 
@@ -367,4 +376,72 @@ async fn cleanup_right_after_the_daemon_starts_closes_finished_sessions_whose_mo
     starting.abort();
     assert_eq!(names(&report["closed"]), ["Node 1", "Node 2"], "{report}");
     assert!(report["kept"].as_array().unwrap().is_empty(), "{report}");
+}
+
+#[tokio::test]
+async fn a_node_still_working_after_its_task_ended_has_its_turn_cut_and_is_closed() {
+    let mut rig = Rig::new();
+    let stuck = rig.session(Task::Done, true);
+    rig.busy(&stuck);
+    let node = crate::node_push::testing::Node::connect(&rig.domain, &stuck);
+    let dry = rig.run(true).await;
+    assert_eq!((names(&dry["close"]), dry["close"][0]["stuck"].clone()), (vec!["Node 1".to_owned()], Value::Bool(true)));
+    assert_eq!(node.interrupts(), 0, "a dry run cuts nothing");
+    let stops = tokio::spawn({
+        let (domain, lines, session) = (rig.domain.clone(), node.lines.clone(), stuck.clone());
+        async move {
+            while !lines.lock().unwrap().iter().any(|line| line["interrupt"] == true) {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+            domain.live.observe(&serde_json::json!({"session_id": session, "hook_event_name": "Stop"}));
+        }
+    });
+    let report = rig.run_waiting(false, Duration::from_secs(10)).await;
+    stops.abort();
+    assert_eq!(node.interrupts(), 1);
+    assert_eq!(names(&report["closed"]), ["Node 1"]);
+    assert_eq!(rig.sessions.removals(), ["a0000001"]);
+}
+
+#[tokio::test]
+async fn a_node_that_declared_work_after_the_merge_is_neither_cut_nor_closed() {
+    let mut rig = Rig::new();
+    let releasing = rig.session(Task::Open, true);
+    let agent = || Actor::Agent { agent_id: releasing.clone().into() };
+    let targets = vec![DeliveryTarget::Text { text: "Result".into() }];
+    command(&rig.domain, agent(), Command::PresentResult {
+        attachments: vec![], task_id: "t1".into(), interaction_id: "final-1".into(), body: "Done".into(), targets: targets.clone(),
+        is_final: true, nothing_to_review: false, card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true) });
+    command(&rig.domain, user(), Command::AcceptDelivery { presentation_id: "final-1".into(), targets });
+    command(&rig.domain, agent(), Command::DeclarePostMergeWork { task_id: "t1".into(), reason: Some("release.sh publishes 0.2.58".into()) });
+    rig.busy(&releasing);
+    let node = crate::node_push::testing::Node::connect(&rig.domain, &releasing);
+    let report = rig.run(false).await;
+    assert_eq!(node.interrupts(), 0);
+    assert!(rig.sessions.removals().is_empty());
+    for list in ["closed", "kept", "failed", "freed"] {
+        assert!(report[list].as_array().unwrap().is_empty(), "{list}: {report}");
+    }
+}
+
+#[tokio::test]
+async fn a_session_stopped_in_claude_agents_while_its_task_was_open_frees_the_task() {
+    let mut rig = Rig::new();
+    let stopped = rig.session(Task::Open, true);
+    let alive = rig.session(Task::Open, true);
+    command(&rig.domain, Actor::Agent { agent_id: stopped.clone().into() }, Command::StartTask { task_id: "t1".into() });
+    rig.job(&stopped, "stopped", "2026-01-01T23:00:00.000Z");
+    rig.job(&alive, "stopped", "2026-01-01T23:00:00.000Z");
+    let connection = rig.domain.live.mods.connect(serde_json::from_value(json!({"session_id": alive, "version": "2.1.287"})).unwrap(), 1);
+    let _ = connection;
+    let dry = rig.run(true).await;
+    assert_eq!(names(&dry["free"]), ["Node 1"], "a session still connected is not taken as stopped");
+    assert_eq!(dry["free"][0]["tasks"], json!(["Task 1"]));
+    assert_eq!(rig.domain.state().unwrap().tasks[&alondra_core::domain::TaskId::from("t1")].state, alondra_core::domain::TaskState::Running);
+    let report = rig.run(false).await;
+    assert_eq!(names(&report["freed"]), ["Node 1"]);
+    let state = rig.domain.state().unwrap();
+    let task = &state.tasks[&alondra_core::domain::TaskId::from("t1")];
+    assert_eq!((task.state, task.agent_id.clone()), (alondra_core::domain::TaskState::NotStarted, None), "it waits for a relaunch");
+    assert!(rig.sessions.removals().is_empty(), "a stopped session is freed, not removed");
 }

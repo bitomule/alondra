@@ -114,8 +114,13 @@ fn look_at_job(domain: &DomainRuntime, session: &str) {
 /// `stopped`, or the job folder Alondra last saw is gone. A session whose job was never seen is
 /// not known to be closed.
 pub(crate) fn session_ended(domain: &DomainRuntime, session: &str) -> bool {
+    session_ended_in(domain, &crate::watcher::claude_home(), session)
+}
+
+/// `session_ended` with Claude Code's home at `claude_home`.
+pub(crate) fn session_ended_in(domain: &DomainRuntime, claude_home: &std::path::Path, session: &str) -> bool {
     let known = domain.live.mods.session(session).and_then(|reported| reported.job_dir);
-    let Some(dir) = known.or_else(|| crate::job_state::locate(&crate::watcher::claude_home(), session)) else { return false };
+    let Some(dir) = known.or_else(|| crate::job_state::locate(claude_home, session)) else { return false };
     !dir.exists() || crate::job_state::read_in(&dir, session).is_some_and(|job| job.phase == crate::job_state::Phase::Stopped)
 }
 
@@ -257,14 +262,12 @@ async fn restart_until_back(domain: &DomainRuntime, session: &str, launcher: &im
             if attempt > 0 {
                 tokio::time::sleep(timing.pauses[attempt - 1]).await;
             }
-            domain.live.usage_pause.until_clear().await;
-            if !until_admitted(domain, session, || needed(domain, session)).await {
+            if closed_by_user(domain, session) || !until_usage_clear(domain, session).await {
                 return;
             }
-            if session_ended(domain, session) {
-                if let Err(failure) = user_closed(domain, session) {
-                    log!("could not record that {session} was closed by the user: {failure:#}");
-                }
+            if !until_admitted(domain, session, || needed(domain, session) && !session_ended(domain, session)).await
+                || closed_by_user(domain, session)
+            {
                 return;
             }
             domain.live.set_reconnecting(session, true);
@@ -277,6 +280,32 @@ async fn restart_until_back(domain: &DomainRuntime, session: &str, launcher: &im
         }
         if !needed(domain, session) || !ask_to_retry(domain, session, &error).await {
             return;
+        }
+    }
+}
+
+/// A session the user stopped or deleted is never waited for: it leaves the fleet and frees its
+/// task at once, whatever the usage limit or the fleet gate say.
+fn closed_by_user(domain: &DomainRuntime, session: &str) -> bool {
+    if !session_ended(domain, session) {
+        return false;
+    }
+    if let Err(failure) = user_closed(domain, session) {
+        log!("could not record that {session} was closed by the user: {failure:#}");
+    }
+    true
+}
+
+/// Waits for the usage limit to clear; false once the session turns out to be closed meanwhile.
+async fn until_usage_clear(domain: &DomainRuntime, session: &str) -> bool {
+    loop {
+        tokio::select! {
+            () = domain.live.usage_pause.until_clear() => return true,
+            () = tokio::time::sleep(GATE_RECHECK) => {
+                if closed_by_user(domain, session) {
+                    return false;
+                }
+            }
         }
     }
 }
@@ -705,6 +734,19 @@ mod tests {
         assert_eq!(claude.calls(), 0, "no `claude respawn`");
         freed(&domain);
         assert!(!domain.live.mods.connected(SESSION) && !domain.live.is_reconnecting(SESSION));
+    }
+
+    #[tokio::test]
+    async fn a_node_the_user_stopped_while_usage_is_exhausted_frees_its_task_without_waiting_for_usage() {
+        let (home, domain) = world(true);
+        working(&domain);
+        job_folder(&home, &domain, "stopped");
+        domain.live.usage_pause.exhaust(Some(alondra_core::now_millis() + 3_600_000), alondra_core::now_millis());
+        let claude = Respawner::new(&domain, 1);
+        tokio::time::timeout(Duration::from_secs(2), revive(&domain, SESSION, &claude, &FAST)).await
+            .expect("a stopped session does not wait for the usage limit to clear");
+        assert_eq!(claude.calls(), 0);
+        freed(&domain);
     }
 
     #[tokio::test]

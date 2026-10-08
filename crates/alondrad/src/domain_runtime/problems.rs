@@ -48,6 +48,22 @@ impl DomainRuntime {
         options: Vec<QuestionOption>,
         recommended: Option<&str>,
     ) -> Result<CommandOutcome, StoreError> {
+        self.raise_worded_problem_in(Scope::Orchestrator { request_id: None }, id, cause, need, why, body, options, recommended)
+    }
+
+    /// `raise_worded_problem` where `scope` says.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn raise_worded_problem_in(
+        &self,
+        scope: Scope,
+        id: &str,
+        cause: &str,
+        need: String,
+        why: String,
+        body: String,
+        options: Vec<QuestionOption>,
+        recommended: Option<&str>,
+    ) -> Result<CommandOutcome, StoreError> {
         let state = self.state().map_err(StoreError::Storage)?;
         if state.interactions.contains_key(&InteractionId(id.to_owned())) {
             return Err(DomainError::new("invalid_input", "Problem already raised").into());
@@ -62,7 +78,7 @@ impl DomainRuntime {
             command: Command::RaiseProblem {
                 attachments: vec![],
                 interaction_id: id.to_owned().into(),
-                scope: Scope::Orchestrator { request_id: None },
+                scope,
                 body,
                 options,
                 card: card.cause(cause),

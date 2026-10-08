@@ -775,6 +775,11 @@ fn pace_text(interaction: &Interaction, domain: &DomainState, lang: Lang) -> Opt
     if interaction.id.0.starts_with(crate::orchestrator_batch::BATCH_PROBLEM_PREFIX) {
         return crate::orchestrator_batch::BatchProblem::from_body(&interaction.body).map(|card| card.text(lang));
     }
+    if interaction.id.0.starts_with(crate::close_problem::CLOSE_PROBLEM_PREFIX)
+        && let Some(card) = crate::close_problem::CloseProblem::from_body(&interaction.body)
+    {
+        return Some(card.text(lang));
+    }
     if interaction.id.0.starts_with(OVER_PACE_PREFIX) {
         let numbers = PaceNumbers::from_body(&interaction.body)?;
         return Some((
@@ -794,6 +799,9 @@ fn pace_text(interaction: &Interaction, domain: &DomainState, lang: Lang) -> Opt
 /// The words of an option the system writes itself, keyed by the id and English text it was
 /// built with, in the viewer's language. An option someone worded keeps its own label.
 fn fixed_option_text(option: &QuestionOption, lang: Lang) -> (String, Option<String>) {
+    if let Some((label, description)) = crate::close_problem::option_text(&option.id, &option.label, lang) {
+        return (label.into(), Some(description.into()));
+    }
     let (label, description): (&str, Option<&str>) = match (option.id.as_str(), option.label.as_str()) {
         ("pause_until_tomorrow", "Pause until tomorrow") => (
             t!(lang, "Pause until tomorrow", "Pausar hasta mañana"),
@@ -1247,6 +1255,13 @@ fn content_items(item: &InboxItem, context: &RenderContext<'_>) -> Vec<Item> {
             fetch: format!("/document-revisions/{revision_id}/content"),
             commentable: true,
         }));
+        return out;
+    }
+    if interaction.author == Author::System
+        && interaction.id.0.starts_with(crate::close_problem::CLOSE_PROBLEM_PREFIX)
+        && let Some(card) = crate::close_problem::CloseProblem::from_body(&interaction.body)
+    {
+        out.push(markdown(card.detail(lang)));
         return out;
     }
     if interaction.author == Author::System

@@ -1,7 +1,10 @@
 //! `alondra cleanup`: closes the sessions Alondra launched whose tasks ended before tasks closed
-//! their own node, and the ones stopped without a task for more than a day. It looks only at
-//! sessions Alondra launched and `claude agents` lists, and never closes one that works, waits for
-//! a permission, has work that is not saved or that the user chose to leave open.
+//! their own node, and the ones stopped without a task for more than a day; a session stopped in
+//! Claude agents while its task was open frees that task for a relaunch. It looks only at sessions
+//! Alondra launched, and closes only what `claude agents` lists. One that still works after its task
+//! ended has its turn cut first; a task whose node declared work after the merge has not ended, so
+//! that node is never touched. It never closes one that waits for a permission, has work that is
+//! not saved or that the user chose to leave open.
 use crate::domain_runtime::DomainRuntime;
 use crate::domain_github::execute_system;
 use crate::node_close::{CloseOutcome, Sessions, close_node, listed};
@@ -9,6 +12,7 @@ use alondra_core::domain::{AgentId, Command, DomainState, NodeEnd, Task, TaskSta
 use axum::http::StatusCode;
 use serde_json::{Value, json};
 use std::path::Path;
+use std::time::Duration;
 
 const STOPPED_FOR_MS: i64 = 24 * 60 * 60 * 1_000;
 
@@ -76,11 +80,60 @@ fn worked_in(state: &DomainState, domain: &DomainRuntime, agent: &AgentId, dir: 
         .any(|cwd| Path::new(&cwd).starts_with(dir))
 }
 
+/// How long a session whose turn was cut gets to stop before it is left as working.
+pub(crate) const STOP_WAIT: Duration = Duration::from_secs(20);
+
+/// Cuts the session's turn and waits up to `wait` for it to stop; true once it no longer works.
+async fn stop_turn(domain: &DomainRuntime, agent: &AgentId, wait: Duration) -> bool {
+    let _ = domain.live.pushes.interrupt(&agent.0);
+    let until = tokio::time::Instant::now() + wait;
+    loop {
+        if !domain.live.node(&agent.0).is_some_and(|node| node.busy) {
+            return true;
+        }
+        if tokio::time::Instant::now() >= until {
+            return false;
+        }
+        tokio::time::sleep(Duration::from_millis(100).min(wait)).await;
+    }
+}
+
+/// Sessions Alondra launched that were stopped or deleted in Claude agents while their task was
+/// open: their tasks go back to not started, waiting for a relaunch.
+fn free_stopped(domain: &DomainRuntime, state: &DomainState, claude_home: &Path, dry_run: bool) -> Vec<Value> {
+    let mut rows = vec![];
+    for known in state.agents.values() {
+        let session = known.id.0.as_str();
+        let node = domain.live.node(session);
+        if node.as_ref().is_some_and(|node| node.is_orchestrator) || !domain.launched_by_alondra(&known.id).unwrap_or(false)
+            || !crate::node_revival::has_open_task(domain, session) || domain.live.mods.connected(session)
+            || !crate::node_revival::session_ended_in(domain, claude_home, session)
+        {
+            continue;
+        }
+        let short: String = node.as_ref().map_or_else(|| session.chars().take(8).collect(), |node| node.short_id.clone());
+        let name = node.and_then(|node| node.name).unwrap_or_else(|| known.name.clone());
+        let titles: Vec<String> = state.tasks.values()
+            .filter(|task| task.agent_id.as_ref() == Some(&known.id) && !task.state.terminal() && !task.archived)
+            .map(|task| task.title.clone()).collect();
+        if !dry_run && let Err(error) = crate::node_revival::user_closed(domain, session) {
+            log!("could not free the tasks of {session}, stopped in Claude agents: {error:#}");
+            continue;
+        }
+        rows.push(json!({"session": session, "short_id": short, "name": name, "tasks": titles}));
+    }
+    rows.sort_by(|a, b| a["session"].as_str().cmp(&b["session"].as_str()));
+    rows
+}
+
 /// What would be closed (`dry_run`) or what was closed, kept and failed.
-pub(crate) async fn run(domain: &DomainRuntime, sessions: &dyn Sessions, claude_home: &Path, dry_run: bool, now: i64) -> Result<Value, (StatusCode, String)> {
+pub(crate) async fn run(
+    domain: &DomainRuntime, sessions: &dyn Sessions, claude_home: &Path, dry_run: bool, now: i64, stop_wait: Duration,
+) -> Result<Value, (StatusCode, String)> {
     let listing = sessions.claude(vec!["agents".into(), "--json".into(), "--all".into()]).await
         .map_err(|error| (StatusCode::BAD_GATEWAY, error))?;
     let state = domain.state().map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "the domain could not be read".to_owned()))?;
+    let freed = free_stopped(domain, &state, claude_home, dry_run);
     let mut candidates = vec![];
     for known in state.agents.values() {
         let node = domain.live.node(&known.id.0);
@@ -95,10 +148,15 @@ pub(crate) async fn run(domain: &DomainRuntime, sessions: &dyn Sessions, claude_
     candidates.sort_by(|a, b| a.agent.0.cmp(&b.agent.0));
     let (mut close, mut closed, mut left, mut failed) = (vec![], vec![], vec![], vec![]);
     for candidate in candidates {
-        let node = domain.live.node(&candidate.agent.0);
+        let mut node = domain.live.node(&candidate.agent.0);
+        let mut stuck = false;
         if node.as_ref().is_some_and(|node| node.busy) {
-            left.push(kept(&candidate, "busy", None));
-            continue;
+            if !dry_run && !stop_turn(domain, &candidate.agent, stop_wait).await {
+                left.push(kept(&candidate, "busy", None));
+                continue;
+            }
+            stuck = true;
+            node = domain.live.node(&candidate.agent.0);
         }
         if node.as_ref().is_some_and(|node| node.waiting_permission) || crate::domain_holds::waits_on_user(&state, &candidate.agent.0) {
             left.push(kept(&candidate, "permission", None));
@@ -108,8 +166,10 @@ pub(crate) async fn run(domain: &DomainRuntime, sessions: &dyn Sessions, claude_
             left.push(kept(&candidate, "worktree", Some(&detail)));
             continue;
         }
+        let mut row = candidate.row();
+        row["stuck"] = json!(stuck);
         if dry_run {
-            close.push(candidate.row());
+            close.push(row);
             continue;
         }
         if !domain.live.begin_watch(&candidate.agent.0) {
@@ -125,7 +185,7 @@ pub(crate) async fn run(domain: &DomainRuntime, sessions: &dyn Sessions, claude_
                         log!("could not record that the node of {} was closed: {error:?}", task.id);
                     }
                 }
-                closed.push(candidate.row());
+                closed.push(row);
             }
             Ok(CloseOutcome::NotListed) => {}
             Ok(CloseOutcome::Refused { message, .. }) => failed.push(failure(&candidate, &message)),
@@ -133,7 +193,8 @@ pub(crate) async fn run(domain: &DomainRuntime, sessions: &dyn Sessions, claude_
             Err(error) => failed.push(failure(&candidate, &format!("{error:#}"))),
         }
     }
-    Ok(json!({"dry_run": dry_run, "close": close, "closed": closed, "kept": left, "failed": failed}))
+    let (free, freed) = if dry_run { (freed, vec![]) } else { (vec![], freed) };
+    Ok(json!({"dry_run": dry_run, "free": free, "freed": freed, "close": close, "closed": closed, "kept": left, "failed": failed}))
 }
 
 fn failure(candidate: &Candidate, error: &str) -> Value {

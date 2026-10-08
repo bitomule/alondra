@@ -1,12 +1,15 @@
 //! Closing the node of a task that is finished or cancelled: Alondra asks the node to clean up,
 //! waits for it to say so (or for the wait to run out), closes its session with `claude rm` and
-//! records what became of it, which is what makes a closing task done. A close that keeps
-//! failing ends in a card the user answers; nothing is closed while the node still works or waits
-//! for the user.
+//! records what became of it, which is what makes a closing task done. A node that still works
+//! once its margin is over (at once for a cancelled task) has its turn cut, unless it declared work
+//! after the merge; a close that keeps failing ends in a card the user answers. Nothing is closed
+//! while the node waits for the user.
 use crate::domain_github::execute_system;
 use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::{PostMergeCheck, TaskClosing};
 use crate::node_close::{CloseOutcome, Sessions, close_node};
+use alondra_core::close_problem::{CLOSE_PROBLEM_PREFIX, CloseProblem, CloseStop};
+use alondra_core::views::Lang;
 use alondra_core::domain::{
     AgentId, CardSpec, Command, DomainState, InteractionId, InteractionPayload, NodeEnd, PostMergeWork, QuestionOption,
     Scope, Task, TaskId, TaskState, clip,
@@ -19,6 +22,7 @@ pub(crate) const RETRY: Duration = Duration::from_secs(5 * 60);
 pub(crate) const TICK: Duration = Duration::from_secs(30);
 const MAX_FAILURES: u32 = 3;
 const BUSY_FALLBACK: Duration = Duration::from_secs(30 * 60);
+const STILL_WORKING: &str = "it is still working";
 const FIRST_BACKOFF: Duration = Duration::from_secs(5);
 const LAST_BACKOFF: Duration = Duration::from_secs(5 * 60);
 pub(crate) const POST_MERGE_ASK: Duration = Duration::from_secs(3 * 60 * 60);
@@ -145,6 +149,9 @@ fn record_end(domain: &DomainRuntime, task_id: &TaskId, end: NodeEnd, agent: Opt
 }
 
 fn finish(domain: &DomainRuntime, row: &TaskClosing, agent: Option<&AgentId>, end: NodeEnd) -> Result<()> {
+    if let Some(agent) = agent {
+        domain.live.set_close_interrupted(&agent.0, None);
+    }
     record_end(domain, &row.task_id, end, agent);
     forget_post_merge_check(domain, &row.task_id)?;
     if let Some(card) = &row.problem_id {
@@ -169,6 +176,7 @@ async fn close_one(domain: &DomainRuntime, sessions: &dyn Sessions, timing: &Tim
         match card(&state, &card_id) {
             Card::Leave => return finish(domain, &row, Some(&agent), NodeEnd::KeptByUser),
             Card::Retry | Card::Withdrawn => {
+                domain.live.set_close_interrupted(&agent.0, None);
                 row.failures = 0;
                 row.problem_id = None;
                 row.next_attempt = 0;
@@ -207,10 +215,25 @@ async fn close_one(domain: &DomainRuntime, sessions: &dyn Sessions, timing: &Tim
         if first {
             domain.store.lock().expect("domain store poisoned").save_task_closing(&row)?;
         }
-        if now - waiting_since > millis(timing.wait.unwrap_or(BUSY_FALLBACK)) {
-            return failure(domain, timing, now, task, &agent, row, "it is still working", matches!(kind, Due::Cleanup));
+        let margin = match kind {
+            Due::Cancelled => 0,
+            Due::Cleanup => millis(timing.wait.unwrap_or(BUSY_FALLBACK)),
+        };
+        if now - waiting_since < margin {
+            return Ok(());
         }
-        return Ok(());
+        return match domain.live.close_interrupted_at(&agent.0) {
+            None => {
+                let _ = domain.live.pushes.interrupt(&agent.0);
+                domain.live.set_close_interrupted(&agent.0, Some(now));
+                Ok(())
+            }
+            Some(at) if now - at < millis(timing.retry) => Ok(()),
+            Some(_) => {
+                domain.live.set_close_interrupted(&agent.0, None);
+                failure(domain, timing, now, task, &agent, row, STILL_WORKING, (CloseStop::Working, ""), matches!(kind, Due::Cleanup))
+            }
+        };
     }
     if !domain.live.begin_watch(&agent.0) {
         return Ok(());
@@ -237,8 +260,16 @@ async fn close_one(domain: &DomainRuntime, sessions: &dyn Sessions, timing: &Tim
             crate::node_revival::user_closed(domain, &agent.0)?;
             finish(domain, &row, Some(&agent), if interrupted { NodeEnd::Closed } else { NodeEnd::Gone })
         }
-        CloseOutcome::Refused { message, .. } | CloseOutcome::Failed { message, .. } => {
-            failure(domain, timing, now, task, &agent, row, &message, matches!(kind, Due::Cleanup))
+        CloseOutcome::Refused { reasons, message } => {
+            let (stop, detail) = match reasons.iter().find(|reason| reason.kind != "permission") {
+                Some(reason) if reason.kind == "busy" => (CloseStop::Working, String::new()),
+                Some(reason) if reason.kind == "worktree" => (CloseStop::Unsaved, reason.detail.clone().unwrap_or_default()),
+                _ => (CloseStop::Error, message.clone()),
+            };
+            failure(domain, timing, now, task, &agent, row, &message, (stop, &detail), matches!(kind, Due::Cleanup))
+        }
+        CloseOutcome::Failed { message, .. } => {
+            failure(domain, timing, now, task, &agent, row, &message, (CloseStop::Error, &message), matches!(kind, Due::Cleanup))
         }
     }
 }
@@ -359,7 +390,10 @@ fn hold_while_working_after_merge(domain: &DomainRuntime, now: i64, mut row: Tas
 }
 
 #[allow(clippy::too_many_arguments)]
-fn failure(domain: &DomainRuntime, timing: &Timing, now: i64, task: &Task, agent: &AgentId, mut row: TaskClosing, reason: &str, cleanup: bool) -> Result<()> {
+fn failure(
+    domain: &DomainRuntime, timing: &Timing, now: i64, task: &Task, agent: &AgentId, mut row: TaskClosing, reason: &str,
+    (stop, detail): (CloseStop, &str), cleanup: bool,
+) -> Result<()> {
     row.failures += 1;
     row.last_error = Some(reason.to_owned());
     row.next_attempt = now + millis(timing.retry);
@@ -370,7 +404,7 @@ fn failure(domain: &DomainRuntime, timing: &Timing, now: i64, task: &Task, agent
         let _ = domain.live.pushes.message(&agent.0, crate::node_push::ALONDRA, &text, false);
     }
     if row.failures >= MAX_FAILURES && row.problem_id.is_none() {
-        row.problem_id = raise_card(domain, task, reason, cleanup);
+        row.problem_id = raise_card(domain, task, stop, detail, cleanup);
     }
     domain.store.lock().expect("domain store poisoned").save_task_closing(&row)?;
     Ok(())
@@ -388,28 +422,17 @@ orchestrator about it (ask with recipient orchestrator). Then call cleanup_done 
     )
 }
 
-fn raise_card(domain: &DomainRuntime, task: &Task, reason: &str, cleanup: bool) -> Option<String> {
-    let id = format!("problem-close-{}-{}", task.id, crate::auth::random_hex(6));
+fn raise_card(domain: &DomainRuntime, task: &Task, stop: CloseStop, detail: &str, cleanup: bool) -> Option<String> {
+    let id = format!("{CLOSE_PROBLEM_PREFIX}{}-{}", task.id, crate::auth::random_hex(6));
     let scope = if cleanup {
         Scope::Task { task_id: task.id.clone() }
     } else {
         Scope::Orchestrator { request_id: Some(task.request_id.clone()) }
     };
-    let need = clip(&format!("Alondra can't close the session of “{}”", task.title), CardSpec::NEED_MAX);
-    let why = if cleanup {
-        clip("It tried 3 times and failed each time, so the task stays open until the session is closed or you leave it open.", CardSpec::WHY_MAX)
-    } else {
-        clip("It tried 3 times and failed each time.", CardSpec::WHY_MAX)
-    };
-    let diagnosis = format!(
-        "Last error: {}. Try again once that is fixed, or leave the session open: the task then finishes and you can close the session yourself later from Fleet.",
-        reason.trim()
-    );
-    let options = vec![
-        QuestionOption { id: "retry".into(), label: "Try again".into(), description: None, inputs: vec![] },
-        QuestionOption { id: "leave".into(), label: "Leave it open".into(), description: None, inputs: vec![] },
-    ];
-    match domain.raise_problem(&id, Some(&format!("close-session:{}", task.id)), scope, need, why, diagnosis, options) {
+    let card = CloseProblem { title: task.title.clone(), cancelled: !cleanup, stop, detail: detail.trim().to_owned() };
+    let (need, why) = card.text(Lang::En);
+    let (options, recommended) = card.options();
+    match domain.raise_worded_problem_in(scope, &id, &format!("close-session:{}", task.id), need, why, card.to_body(), options, Some(recommended)) {
         Ok(_) => Some(id),
         Err(error) => {
             log!("could not tell the user Alondra cannot close the session of {}: {error:?}", task.id);

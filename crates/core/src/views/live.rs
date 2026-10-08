@@ -202,6 +202,10 @@ pub struct LiveNode {
     pub model: Option<String>,
     #[serde(default)]
     pub reconnecting: bool,
+    /// Its connection to Alondra has been gone for longer than it takes to come back by itself, and
+    /// no restart runs: whatever it showed last is stale.
+    #[serde(default)]
+    pub disconnected: bool,
     /// A node stopped by the usage limit waits for the machine until this local ISO time.
     #[serde(default)]
     pub waiting_until: Option<String>,

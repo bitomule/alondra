@@ -282,6 +282,9 @@ async fn three_failed_closes_raise_one_card_with_try_again_and_leave_it_open() {
     let InteractionPayload::Question { options, answer: None } = &cards[0].payload else { panic!("a question card") };
     assert_eq!(options.iter().map(|o| (o.id.as_str(), o.label.as_str())).collect::<Vec<_>>(),
         vec![("retry", "Try again"), ("leave", "Leave it open")]);
+    let card = alondra_core::close_problem::CloseProblem::from_body(&cards[0].body).expect("the body holds what clients word");
+    assert_eq!((card.stop, card.detail.as_str(), card.cancelled), (alondra_core::close_problem::CloseStop::Unsaved, "work", false));
+    assert_eq!(cards[0].card.recommended.as_deref(), Some("leave"), "closing would lose the unsaved work");
     assert_eq!(rig.closing().unwrap().problem_id.as_deref(), Some(cards[0].id.0.as_str()));
     let told = rig.told().len();
     rig.pass(T0 + 15 * MINUTE).await;
@@ -362,13 +365,14 @@ async fn the_wait_is_not_restarted_by_a_daemon_restart() {
 }
 
 #[tokio::test]
-async fn a_cancelled_tasks_node_is_closed_once_idle_and_gets_no_message() {
+async fn a_cancelled_tasks_busy_node_has_its_turn_cut_is_closed_once_idle_and_gets_no_message() {
     let rig = Rig::new(thirty_minutes());
     command(&rig.domain, user(), "cancel", Command::CancelTask { task_id: "t".into() });
     let told = rig.told().len();
     rig.domain.live.observe(&hook("UserPromptSubmit"));
     rig.pass(T0).await;
     assert_eq!(rig.sessions.removals(), 0, "not while it works");
+    assert_eq!(rig.node.interrupts(), 1, "its turn is cut at once: the task no longer exists");
     rig.domain.live.observe(&hook("Stop"));
     rig.pass(T0 + MINUTE).await;
     assert_eq!(rig.sessions.removals(), 1);
@@ -444,10 +448,58 @@ async fn a_node_that_is_busy_gets_the_margin_from_when_it_was_ready_not_from_whe
     rig.pass(T0 + 69 * MINUTE).await;
     assert_eq!(rig.closing().unwrap().failures, 0);
     assert_eq!(rig.sessions.removals(), 0);
+    assert_eq!(rig.node.interrupts(), 0);
     rig.pass(T0 + 71 * MINUTE).await;
+    assert_eq!(rig.node.interrupts(), 1, "past the margin its turn is cut");
+    assert_eq!(rig.closing().unwrap().failures, 0, "cutting the turn is not a failure yet");
+    rig.pass(T0 + 72 * MINUTE).await;
+    assert_eq!(rig.node.interrupts(), 1, "cut once, then it gets time to stop");
+    rig.pass(T0 + 76 * MINUTE).await;
     let row = rig.closing().unwrap();
     assert_eq!((row.failures, row.last_error.as_deref()), (1, Some("it is still working")));
     assert!(rig.told().last().unwrap().contains("it is still working"));
+}
+
+#[tokio::test]
+async fn a_node_stuck_in_its_cleanup_past_the_margin_has_its_turn_cut_and_is_closed_without_a_card() {
+    let rig = Rig::new(thirty_minutes());
+    rig.domain.live.observe(&hook("UserPromptSubmit"));
+    rig.pass(T0).await;
+    rig.pass(T0 + 31 * MINUTE).await;
+    assert_eq!(rig.node.interrupts(), 0, "the margin starts once the close is due");
+    rig.pass(T0 + 62 * MINUTE).await;
+    assert_eq!(rig.node.interrupts(), 1);
+    rig.domain.live.observe(&hook("Stop"));
+    rig.pass(T0 + 63 * MINUTE).await;
+    assert_eq!(rig.sessions.removals(), 1);
+    rig.assert_done(NodeEnd::Closed);
+    assert!(rig.cards().is_empty());
+}
+
+#[tokio::test]
+async fn a_node_that_keeps_working_after_its_turn_is_cut_ends_in_the_card_after_three_failures() {
+    let rig = Rig::new(thirty_minutes());
+    rig.domain.live.observe(&hook("UserPromptSubmit"));
+    rig.pass(T0).await;
+    for minutes in [31, 62, 68, 74, 80, 86, 92] {
+        rig.pass(T0 + minutes * MINUTE).await;
+    }
+    assert_eq!(rig.node.interrupts(), 3, "each attempt cuts its turn first");
+    assert_eq!(rig.closing().unwrap().failures, 3);
+    assert_eq!(rig.cards().len(), 1);
+    assert_eq!(rig.sessions.removals(), 0);
+}
+
+#[tokio::test]
+async fn a_busy_node_that_declared_work_after_the_merge_never_has_its_turn_cut() {
+    let rig = Rig::new(thirty_minutes());
+    rig.declare_post_merge_work(Some("release.sh publishes 0.2.58"));
+    rig.domain.live.observe(&hook("UserPromptSubmit"));
+    for minutes in [0, 31, 62, 120, 179] {
+        rig.pass(T0 + minutes * MINUTE).await;
+    }
+    assert_eq!(rig.node.interrupts(), 0);
+    assert_eq!(rig.sessions.removals(), 0);
 }
 
 #[tokio::test]

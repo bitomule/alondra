@@ -22,8 +22,13 @@ fn state(task: &Task, context: &RenderContext<'_>) -> String {
     if plain == t!(context.lang, "Not started", "Sin empezar") {
         return not_started(task, context);
     }
-    if task.state == TaskState::Running && plain == t!(context.lang, "Working", "Trabajando") && quiet(task, context) {
-        return t!(context.lang, "No activity", "Sin actividad").into();
+    if task.state == TaskState::Running && plain == t!(context.lang, "Working", "Trabajando") {
+        match node(task, context) {
+            Some(node) if node.reconnecting => return t!(context.lang, "Reconnecting", "Reconectando").into(),
+            Some(node) if node.disconnected => return t!(context.lang, "No connection", "Sin conexión").into(),
+            Some(node) if node.quiet => return t!(context.lang, "No activity", "Sin actividad").into(),
+            _ => {}
+        }
     }
     plain.into()
 }
@@ -60,11 +65,10 @@ fn not_started(task: &Task, context: &RenderContext<'_>) -> String {
     }
 }
 
-/// The node of a running task has done nothing for long enough to say so; the row's time says how long.
-fn quiet(task: &Task, context: &RenderContext<'_>) -> bool {
-    task.agent_id.as_ref()
-        .and_then(|id| context.live.nodes.iter().find(|node| node.agent_id == id.0))
-        .is_some_and(|node| node.quiet)
+/// What Alondra sees of the task's node now: reconnecting, without a connection, or quiet for
+/// long enough to say so (the row's time says how long).
+fn node<'a>(task: &Task, context: &RenderContext<'a>) -> Option<&'a super::live::LiveNode> {
+    task.agent_id.as_ref().and_then(|id| context.live.nodes.iter().find(|node| node.agent_id == id.0))
 }
 
 fn plain_state(task: &Task, context: &RenderContext<'_>) -> &'static str {
