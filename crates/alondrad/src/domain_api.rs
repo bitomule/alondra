@@ -202,8 +202,9 @@ pub(crate) async fn document_content_inner(domain: &DomainRuntime, home: &FsPath
     let response_digest = digest.clone();
     let revision_id = revision.id.clone();
     let home = home.to_path_buf();
+    let reads = domain.stored_reads.clone();
     let chunk = tokio::task::spawn_blocking(move || {
-        crate::service_files::read_verified_domain_chunk(&home, &reference, &digest, offset, version)
+        reads.verified(&home, &reference, &digest, offset, version)
     })
     .await;
     match chunk {

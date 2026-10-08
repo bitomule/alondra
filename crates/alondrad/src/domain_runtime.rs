@@ -18,6 +18,7 @@ pub struct DomainRuntime {
     changed: watch::Sender<Revision>,
     schedule_changed: watch::Sender<Revision>,
     pub(crate) reads: crate::domain_reads::Cache,
+    pub(crate) stored_reads: Arc<crate::service_files::StoredReads>,
     pub(crate) live: crate::client_routes::Live,
     /// User messages for sessions in the user's own terminal, handed at their next Stop hook.
     pub(crate) held:
@@ -55,6 +56,7 @@ impl DomainRuntime {
             changed,
             schedule_changed,
             reads: Default::default(),
+            stored_reads: Default::default(),
             live: crate::client_routes::Live::persisted_in(home),
             held: Default::default(),
             rejections: Default::default(),
