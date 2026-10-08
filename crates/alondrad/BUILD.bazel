@@ -32,6 +32,8 @@ rust_test(
         "//fixtures/domain-v2:acceptance.json",
     ],
     crate = ":alondrad",
+    # Bazel test-setup resolves a relative HOME to this test's TEST_TMPDIR.
+    env = {"HOME": "."},
     data = ["//crates/alondra:alondra", "//fixtures/client-v2", "//fixtures/views:all"],
     edition = "2024",
     rustc_env = {"CARGO_BIN_EXE_alondra": "$(rootpath //crates/alondra:alondra)"},

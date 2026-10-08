@@ -116,34 +116,71 @@ async fn execute(
     identity: Option<(&str, &str, &[u8; 32])>,
     authorize: impl Fn() -> anyhow::Result<()> + Sync,
 ) -> Response {
-    // Domain commands have durable receipts. The remaining loopback operations use the
-    // short-lived per-device receipt table promised by the views protocol. Holding this
-    // async lock through dispatch also coalesces simultaneous retries of one command.
-    let external = ActionId::parse(&request.action_id).is_ok_and(|action| is_external(action.verb));
+    let action = ActionId::parse(&request.action_id).ok();
+    let external = action.as_ref().is_some_and(|action| is_external(action.verb));
     let spanish = request.lang == "es";
     let receipt_key = (device.to_owned(), request.command_id.clone());
     let body = serde_json::to_vec(&request).unwrap_or_default();
-    let mut receipts = if identity.is_none() && external {
-        Some(action_receipts().lock().await)
+    let gate = if identity.is_none() && external {
+        match domain.local_actions.gate(&receipt_key) {
+            Some(gate) => Some(gate),
+            None => {
+                if authorize().is_err() { return error("forbidden", "device approval was revoked"); }
+                if let Some(entry) = domain.local_actions.cached(&receipt_key) {
+                    if entry.body != body { return error("idempotency_conflict", if spanish {
+                        "El identificador del comando ya se usó con otra acción"
+                    } else { "command_id was reused with different input" }); }
+                    return (StatusCode::OK, Json(entry.reply.clone())).into_response();
+                }
+                let lang = if spanish { Lang::Es } else { Lang::En };
+                let reply = with_result(error_value_lang(lang, "busy", "Alondra has too many pending actions. Try again."),
+                    lang, action.as_ref(), Accepted::Result);
+                return (StatusCode::OK, Json(reply)).into_response();
+            },
+        }
     } else { None };
-    if let Some(receipts) = receipts.as_mut() {
-        receipts.retain(|_, entry| entry.at.elapsed() < std::time::Duration::from_secs(600));
-        if let Some(entry) = receipts.get(&receipt_key) {
+    let mut command = match &gate {
+        Some(gate) => Some(gate.lock.lock().await),
+        None => None,
+    };
+    if gate.is_some() {
+        if authorize().is_err() { return error("forbidden", "device approval was revoked"); }
+        let entry = command.as_ref().and_then(|guard| guard.as_ref().cloned())
+            .or_else(|| domain.local_actions.cached(&receipt_key));
+        if let Some(entry) = entry {
             if entry.body != body { return error("idempotency_conflict", if spanish {
                 "El identificador del comando ya se usó con otra acción"
             } else { "command_id was reused with different input" }); }
+            **command.as_mut().expect("local command gate missing") = Some(entry.clone());
             return (StatusCode::OK, Json(entry.reply.clone())).into_response();
         }
     }
+    let (_resources, _worker) = if gate.is_some() {
+        loop {
+            let requested = action.as_ref().map_or_else(Vec::new,
+                |action| LocalActionResource::of(&domain.state().expect("domain snapshot unavailable"), action));
+            let mut held = Vec::with_capacity(requested.len());
+            for (key, exclusive) in &requested {
+                let resource = domain.local_actions.resource(key.clone());
+                held.push(if *exclusive {
+                    LocalResourceGuard::Write { _guard: resource.write_owned().await }
+                } else {
+                    LocalResourceGuard::Read { _guard: resource.read_owned().await }
+                });
+            }
+            let worker = domain.local_actions.workers.acquire().await.expect("local action workers closed");
+            let current = action.as_ref().map_or_else(Vec::new,
+                |action| LocalActionResource::of(&domain.state().expect("domain snapshot unavailable"), action));
+            if current == requested { break (held, Some(worker)); }
+        }
+    } else { (Vec::new(), None) };
     match execute_action(domain, client, home, device, request, identity, authorize).await {
         Ok(reply) => {
-            if let Some(receipts) = receipts.as_mut() {
-                if receipts.len() >= 1024 {
-                    if let Some(oldest) = receipts.iter().min_by_key(|(_, entry)| entry.at).map(|(key, _)| key.clone()) {
-                        receipts.remove(&oldest);
-                    }
-                }
-                receipts.insert(receipt_key, LocalActionReceipt { body, reply: reply.clone(), at: std::time::Instant::now() });
+            if gate.is_some() {
+                let entry = domain.local_actions.remember(receipt_key, LocalActionReceipt {
+                    body, reply: reply.clone(), at: std::time::Instant::now(),
+                });
+                **command.as_mut().expect("local command gate missing") = Some(entry);
             }
             (StatusCode::OK, Json(reply)).into_response()
         },
@@ -159,9 +196,128 @@ struct LocalActionReceipt {
     at: std::time::Instant,
 }
 
-fn action_receipts() -> &'static tokio::sync::Mutex<std::collections::HashMap<(String, String), LocalActionReceipt>> {
-    static RECEIPTS: std::sync::OnceLock<tokio::sync::Mutex<std::collections::HashMap<(String, String), LocalActionReceipt>>> = std::sync::OnceLock::new();
-    RECEIPTS.get_or_init(|| tokio::sync::Mutex::new(std::collections::HashMap::new()))
+type LocalActionKey = (String, String);
+struct LocalActionGate {
+    lock: tokio::sync::Mutex<Option<std::sync::Arc<LocalActionReceipt>>>,
+    _slot: tokio::sync::OwnedSemaphorePermit,
+}
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+enum LocalActionResource {
+    Interaction(String),
+    Agent(String),
+    Task(String),
+    PullRequest(String),
+    OrchestratorDecision,
+    NodeLimitSettings,
+}
+enum LocalResourceGuard {
+    Read { _guard: tokio::sync::OwnedRwLockReadGuard<()> },
+    Write { _guard: tokio::sync::OwnedRwLockWriteGuard<()> },
+}
+impl LocalActionResource {
+    fn of(state: &alondra_core::domain::DomainState, action: &ActionId) -> Vec<(Self, bool)> {
+        use alondra_core::domain::{AgentId, PrId, Scope};
+        let mut keys = std::collections::BTreeMap::new();
+        let mut add = |key, exclusive| { keys.entry(key).and_modify(|write| *write |= exclusive).or_insert(exclusive); };
+        match action.verb {
+            Verb::Reply => {
+                add(Self::Interaction(action.subject.clone()), true);
+                if let Some(interaction) = state.interactions.get(&InteractionId(action.subject.clone()))
+                    && let Scope::Task { task_id } = &interaction.scope
+                {
+                    add(Self::Task(task_id.0.clone()), false);
+                    if let Some(agent) = state.tasks.get(task_id).and_then(|task| task.agent_id.as_ref()) {
+                        add(Self::Agent(agent.0.clone()), false);
+                    }
+                }
+            },
+            Verb::Msg if action.subject != "view" => {
+                add(Self::Agent(action.subject.clone()), false);
+                if let Some(task) = &action.extra { add(Self::Task(task.clone()), false); }
+            },
+            Verb::AskPr | Verb::Conflicts => {
+                if let Some(pr) = state.pull_requests.get(&PrId(action.subject.clone())) {
+                    add(Self::Task(pr.task_id.0.clone()), false);
+                    if let Some(agent) = state.tasks.get(&pr.task_id).and_then(|task| task.agent_id.as_ref()) {
+                        add(Self::Agent(agent.0.clone()), false);
+                    }
+                }
+            },
+            Verb::Close => add(Self::Agent(action.subject.clone()), true),
+            Verb::Relaunch | Verb::Resume | Verb::Pause => {
+                if state.agents.contains_key(&AgentId(action.subject.clone())) {
+                    add(Self::Agent(action.subject.clone()), true);
+                } else {
+                    add(Self::Task(action.subject.clone()), true);
+                    if let Some(agent) = state.tasks.get(&TaskId(action.subject.clone())).and_then(|task| task.agent_id.as_ref()) {
+                        add(Self::Agent(agent.0.clone()), true);
+                    }
+                }
+            },
+            Verb::CloseUnmerged => {
+                if let Some(interaction) = state.interactions.get(&InteractionId(action.subject.clone()))
+                    && let Some(pr) = pr_of(state, current_delivery(state, interaction))
+                {
+                    add(Self::PullRequest(pr.id.0.clone()), true);
+                    add(Self::Task(pr.task_id.0.clone()), true);
+                }
+            },
+            Verb::OrchRetry | Verb::OrchAck | Verb::OrchStop => add(Self::OrchestratorDecision, true),
+            Verb::SetLimit => add(Self::NodeLimitSettings, true),
+            _ => {},
+        }
+        keys.into_iter().collect()
+    }
+}
+pub(crate) struct LocalActions {
+    receipts: std::sync::Mutex<std::collections::HashMap<LocalActionKey, std::sync::Arc<LocalActionReceipt>>>,
+    gates: std::sync::Mutex<std::collections::HashMap<LocalActionKey, std::sync::Weak<LocalActionGate>>>,
+    slots: std::sync::Arc<tokio::sync::Semaphore>,
+    workers: tokio::sync::Semaphore,
+    resources: std::sync::Mutex<std::collections::HashMap<LocalActionResource, std::sync::Weak<tokio::sync::RwLock<()>>>>,
+}
+impl Default for LocalActions {
+    fn default() -> Self {
+        Self {
+            receipts: Default::default(), gates: Default::default(),
+            slots: std::sync::Arc::new(tokio::sync::Semaphore::new(1024)),
+            workers: tokio::sync::Semaphore::new(2), resources: Default::default(),
+        }
+    }
+}
+impl LocalActions {
+    fn gate(&self, key: &LocalActionKey) -> Option<std::sync::Arc<LocalActionGate>> {
+        let mut gates = self.gates.lock().expect("local action gates poisoned");
+        gates.retain(|_, gate| gate.strong_count() > 0);
+        if let Some(gate) = gates.get(key).and_then(std::sync::Weak::upgrade) { return Some(gate); }
+        let slot = self.slots.clone().try_acquire_owned().ok()?;
+        let gate = std::sync::Arc::new(LocalActionGate { lock: Default::default(), _slot: slot });
+        gates.insert(key.clone(), std::sync::Arc::downgrade(&gate));
+        Some(gate)
+    }
+    fn resource(&self, key: LocalActionResource) -> std::sync::Arc<tokio::sync::RwLock<()>> {
+        let mut resources = self.resources.lock().expect("local action resources poisoned");
+        resources.retain(|_, gate| gate.strong_count() > 0);
+        if let Some(gate) = resources.get(&key).and_then(std::sync::Weak::upgrade) { return gate; }
+        let gate = std::sync::Arc::new(tokio::sync::RwLock::new(()));
+        resources.insert(key, std::sync::Arc::downgrade(&gate));
+        gate
+    }
+    fn cached(&self, key: &LocalActionKey) -> Option<std::sync::Arc<LocalActionReceipt>> {
+        let mut receipts = self.receipts.lock().expect("local action receipts poisoned");
+        receipts.retain(|_, entry| entry.at.elapsed() < std::time::Duration::from_secs(600));
+        receipts.get(key).cloned()
+    }
+    fn remember(&self, key: LocalActionKey, receipt: LocalActionReceipt) -> std::sync::Arc<LocalActionReceipt> {
+        let mut receipts = self.receipts.lock().expect("local action receipts poisoned");
+        if receipts.len() >= 1024 {
+            let oldest = receipts.iter().min_by_key(|(_, entry)| entry.at).map(|(key, _)| key.clone());
+            if let Some(oldest) = oldest { receipts.remove(&oldest); }
+        }
+        let receipt = std::sync::Arc::new(receipt);
+        receipts.insert(key, receipt.clone());
+        receipt
+    }
 }
 
 fn is_external(verb: Verb) -> bool {
@@ -1513,6 +1669,7 @@ fn localize<'a>(lang: Lang, message: &'a str) -> &'a str {
         "invalid action_id" => "Acción no válida",
         "Update Alondra" => "Actualiza Alondra",
         "invalid action request" => "Solicitud de acción no válida",
+        "Alondra has too many pending actions. Try again." => "Alondra tiene demasiadas acciones pendientes. Vuelve a intentarlo.",
         "invalid client" => "Cliente no válido",
         "device approval was revoked" => "Se ha revocado la aprobación del dispositivo",
         "text is required" | "This option needs text" => "Escribe un texto",
@@ -2078,6 +2235,449 @@ mod tests {
                 ..Default::default()
             },
         }
+    }
+
+    #[tokio::test]
+    async fn an_independent_local_action_finishes_while_a_message_waits_for_acknowledgement() {
+        use std::future::Future;
+        use std::task::{Context, Poll, Waker};
+        let test_root = std::path::PathBuf::from(std::env::var_os("TEST_TMPDIR").expect("run through Bazel"));
+        assert!(std::path::PathBuf::from(std::env::var_os("HOME").unwrap()).starts_with(&test_root),
+            "message formatting must not read the installed profile");
+        if let Some(home) = std::env::var_os("ALONDRA_HOME") {
+            assert!(std::path::PathBuf::from(home).starts_with(&test_root));
+        }
+        let (home, domain, client) = action_home();
+        apply_seed_command(&domain, Actor::System, "register-agent", Command::RegisterAgent {
+            agent_id: "agent-a".into(), name: "Agent A".into(),
+        });
+        let mut node = domain.live.pushes.attach("agent-a", 1);
+        let state = domain.state().unwrap();
+        let mut message = pacing_request(&state, Verb::Msg, "agent-a", "", "en");
+        message.input.text = Some("A message for the isolated test peer".into());
+        let mut first = Box::pin(execute(&domain, &client, &home.0, "test-device", message,
+            None, || Ok(())));
+        let mut context = Context::from_waker(Waker::noop());
+        assert!(first.as_mut().poll(&mut context).is_pending());
+        let sent: Value = serde_json::from_str(&node.try_recv().expect("message was dispatched before waiting")).unwrap();
+        let limit = pacing_request(&state, Verb::SetLimit, "limit", "4", "en");
+        let mut independent = Box::pin(execute(&domain, &client, &home.0, "test-device", limit,
+            None, || Ok(())));
+        let Poll::Ready(reply) = independent.as_mut().poll(&mut context) else {
+            panic!("a message waiting for its peer must not block an independent local action");
+        };
+        assert_eq!(reply.status(), StatusCode::OK);
+        assert!(std::fs::read_to_string(alondra_core::options::path_in(&home.0)).unwrap()
+            .contains("max_working_nodes = 4"));
+        domain.live.pushes.acknowledged("agent-a", &[sent["id"].as_str().unwrap().to_owned()]);
+        let Poll::Ready(reply) = first.as_mut().poll(&mut context) else {
+            panic!("the acknowledged message must complete");
+        };
+        assert_eq!(reply.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn simultaneous_local_retries_and_a_lost_reply_send_only_one_message() {
+        use std::future::Future;
+        use std::task::{Context, Poll, Waker};
+        let (home, domain, client) = action_home();
+        apply_seed_command(&domain, Actor::System, "register-agent", Command::RegisterAgent {
+            agent_id: "agent-a".into(), name: "Agent A".into(),
+        });
+        let mut node = domain.live.pushes.attach("agent-a", 1);
+        let mut request = pacing_request(&domain.state().unwrap(), Verb::Msg, "agent-a", "", "en");
+        request.input.text = Some("One message".into());
+        let mut first = Box::pin(execute(&domain, &client, &home.0, "test-device", request.clone(), None, || Ok(())));
+        let mut retry = Box::pin(execute(&domain, &client, &home.0, "test-device", request.clone(), None, || Ok(())));
+        let mut context = Context::from_waker(Waker::noop());
+        assert!(first.as_mut().poll(&mut context).is_pending());
+        let sent: Value = serde_json::from_str(&node.try_recv().unwrap()).unwrap();
+        assert!(retry.as_mut().poll(&mut context).is_pending());
+        assert!(matches!(node.try_recv(), Err(tokio::sync::mpsc::error::TryRecvError::Empty)));
+        domain.live.pushes.acknowledged("agent-a", &[sent["id"].as_str().unwrap().to_owned()]);
+        let Poll::Ready(reply) = first.as_mut().poll(&mut context) else { panic!("message not completed"); };
+        drop(reply);
+        let Poll::Ready(reply) = retry.as_mut().poll(&mut context) else { panic!("coalesced retry not completed"); };
+        assert_eq!(reply.status(), StatusCode::OK);
+        let reply = axum::body::to_bytes(reply.into_body(), 1024 * 1024).await.unwrap();
+        let replay = execute(&domain, &client, &home.0, "test-device", request.clone(), None, || Ok(())).await;
+        assert_eq!(axum::body::to_bytes(replay.into_body(), 1024 * 1024).await.unwrap(), reply);
+        request.input.text = Some("Different input".into());
+        let conflict = execute(&domain, &client, &home.0, "test-device", request, None, || Ok(())).await;
+        assert_eq!(conflict.status(), StatusCode::CONFLICT);
+        assert!(matches!(node.try_recv(), Err(tokio::sync::mpsc::error::TryRecvError::Empty)));
+    }
+
+    #[tokio::test]
+    async fn a_cached_local_action_rechecks_device_approval() {
+        let (home, domain, client) = action_home();
+        let request = pacing_request(&domain.state().unwrap(), Verb::SetLimit, "limit", "4", "en");
+        assert_eq!(execute(&domain, &client, &home.0, "test-device", request.clone(), None, || Ok(())).await.status(), StatusCode::OK);
+        let denied = execute(&domain, &client, &home.0, "test-device", request, None,
+            || anyhow::bail!("device approval was revoked")).await;
+        assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn local_receipts_do_not_cross_domain_homes() {
+        let (first_home, first_domain, first_client) = action_home();
+        let (second_home, second_domain, second_client) = action_home();
+        let request = pacing_request(&first_domain.state().unwrap(), Verb::SetLimit, "limit", "4", "en");
+        assert_eq!(execute(&first_domain, &first_client, &first_home.0, "test-device", request.clone(), None, || Ok(())).await.status(), StatusCode::OK);
+        let mut other = pacing_request(&second_domain.state().unwrap(), Verb::SetLimit, "limit", "6", "en");
+        other.command_id = request.command_id;
+        assert_eq!(execute(&second_domain, &second_client, &second_home.0, "test-device", other, None, || Ok(())).await.status(), StatusCode::OK);
+        assert!(std::fs::read_to_string(alondra_core::options::path_in(&second_home.0)).unwrap().contains("max_working_nodes = 6"));
+    }
+
+    #[tokio::test]
+    async fn local_external_execution_is_bounded_and_a_finished_action_releases_capacity() {
+        use std::future::Future;
+        use std::task::{Context, Poll, Waker};
+        let (home, domain, client) = action_home();
+        apply_seed_command(&domain, Actor::System, "register-agent", Command::RegisterAgent {
+            agent_id: "agent-a".into(), name: "Agent A".into(),
+        });
+        let mut node = domain.live.pushes.attach("agent-a", 1);
+        let state = domain.state().unwrap();
+        let mut message = pacing_request(&state, Verb::Msg, "agent-a", "", "en");
+        message.input.text = Some("First".into());
+        let mut another = pacing_request(&state, Verb::Msg, "agent-a", "", "en");
+        another.input.text = Some("Second".into());
+        let mut first = Box::pin(execute(&domain, &client, &home.0, "test-device", message, None, || Ok(())));
+        let mut second = Box::pin(execute(&domain, &client, &home.0, "test-device", another, None, || Ok(())));
+        let mut context = Context::from_waker(Waker::noop());
+        assert!(first.as_mut().poll(&mut context).is_pending());
+        let sent: Value = serde_json::from_str(&node.try_recv().unwrap()).unwrap();
+        assert!(second.as_mut().poll(&mut context).is_pending());
+        let other: Value = serde_json::from_str(&node.try_recv().unwrap()).unwrap();
+        let limit = pacing_request(&state, Verb::SetLimit, "limit", "4", "en");
+        let mut queued = Box::pin(execute(&domain, &client, &home.0, "test-device", limit, None, || Ok(())));
+        assert!(queued.as_mut().poll(&mut context).is_pending());
+        assert!(!alondra_core::options::path_in(&home.0).exists());
+        domain.live.pushes.acknowledged("agent-a", &[sent["id"].as_str().unwrap().to_owned()]);
+        assert!(matches!(first.as_mut().poll(&mut context), Poll::Ready(_)));
+        let Poll::Ready(reply) = queued.as_mut().poll(&mut context) else { panic!("capacity was not released"); };
+        assert_eq!(reply.status(), StatusCode::OK);
+        assert!(second.as_mut().poll(&mut context).is_pending());
+        domain.live.pushes.acknowledged("agent-a", &[other["id"].as_str().unwrap().to_owned()]);
+        assert!(matches!(second.as_mut().poll(&mut context), Poll::Ready(_)));
+    }
+
+    #[tokio::test]
+    async fn a_waiting_retry_keeps_its_reply_when_other_commands_evict_the_cache() {
+        use std::future::Future;
+        use std::task::{Context, Poll, Waker};
+        let (home, domain, client) = action_home();
+        apply_seed_command(&domain, Actor::System, "register-agent", Command::RegisterAgent {
+            agent_id: "agent-a".into(), name: "Agent A".into(),
+        });
+        let mut node = domain.live.pushes.attach("agent-a", 1);
+        let mut request = pacing_request(&domain.state().unwrap(), Verb::Msg, "agent-a", "", "en");
+        request.input.text = Some("One message".into());
+        let mut first = Box::pin(execute(&domain, &client, &home.0, "test-device", request.clone(), None, || Ok(())));
+        let mut retry = Box::pin(execute(&domain, &client, &home.0, "test-device", request, None, || Ok(())));
+        let mut context = Context::from_waker(Waker::noop());
+        assert!(first.as_mut().poll(&mut context).is_pending());
+        let sent: Value = serde_json::from_str(&node.try_recv().unwrap()).unwrap();
+        assert!(retry.as_mut().poll(&mut context).is_pending());
+        domain.live.pushes.acknowledged("agent-a", &[sent["id"].as_str().unwrap().to_owned()]);
+        assert!(matches!(first.as_mut().poll(&mut context), Poll::Ready(_)));
+        let newer = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        for index in 0..1024 {
+            domain.local_actions.remember(("other-device".into(), index.to_string()), LocalActionReceipt {
+                body: vec![], reply: json!({}), at: newer,
+            });
+        }
+        let Poll::Ready(reply) = retry.as_mut().poll(&mut context) else { panic!("cache eviction redispatched a waiting retry"); };
+        assert_eq!(reply.status(), StatusCode::OK);
+        assert!(matches!(node.try_recv(), Err(tokio::sync::mpsc::error::TryRecvError::Empty)));
+    }
+
+    #[tokio::test]
+    async fn different_commands_cannot_reply_to_the_same_stale_information_card() {
+        use std::future::Future;
+        use std::task::{Context, Poll, Waker};
+        let (home, domain, client) = action_home();
+        apply_seed_command(&domain, Actor::System, "register-agent", Command::RegisterAgent {
+            agent_id: "agent-a".into(), name: "Agent A".into(),
+        });
+        apply_seed_command(&domain, Actor::User { user_id:"user".into() }, "request", Command::CreateRequest {
+            request_id:"request".into(), body:"Work".into(), message:false, auto_merge:false, maintenance:false,
+        });
+        apply_seed_command(&domain, Actor::User { user_id:"user".into() }, "task", Command::CreateTask {
+            task_id:"task".into(), request_id:"request".into(), title:"Work".into(), agent_id:Some("agent-a".into()),
+            review_prs:false, dependencies:Default::default(), stack:None,
+        });
+        apply_seed_command(&domain, Actor::System, "info", Command::PublishInformation {
+            attachments:vec![], interaction_id:"info".into(), scope:alondra_core::domain::Scope::Task { task_id:"task".into() },
+            recipient:alondra_core::domain::Recipient::User, body:"Update".into(),
+            card:alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Know, "Read the update"),
+        });
+        let state = domain.state().unwrap();
+        let mut request = pacing_request(&state, Verb::Reply, "info", "", "en");
+        request.input.text = Some("First reply".into());
+        let mut other = pacing_request(&state, Verb::Reply, "info", "", "en");
+        other.input.text = Some("Stale reply".into());
+        let mut node = domain.live.pushes.attach("agent-a", 1);
+        let mut first = Box::pin(execute(&domain, &client, &home.0, "test-device", request, None, || Ok(())));
+        let mut second = Box::pin(execute(&domain, &client, &home.0, "test-device", other, None, || Ok(())));
+        let mut context = Context::from_waker(Waker::noop());
+        assert!(first.as_mut().poll(&mut context).is_pending());
+        let sent: Value = serde_json::from_str(&node.try_recv().unwrap()).unwrap();
+        assert!(second.as_mut().poll(&mut context).is_pending());
+        assert!(matches!(node.try_recv(), Err(tokio::sync::mpsc::error::TryRecvError::Empty)), "a stale card sent a second reply");
+        domain.live.pushes.acknowledged("agent-a", &[sent["id"].as_str().unwrap().to_owned()]);
+        assert!(matches!(first.as_mut().poll(&mut context), Poll::Ready(_)));
+        let Poll::Ready(reply) = second.as_mut().poll(&mut context) else { panic!("stale reply did not finish"); };
+        let body: Value = serde_json::from_slice(&axum::body::to_bytes(reply.into_body(), 1024 * 1024).await.unwrap()).unwrap();
+        assert_eq!(body["outcome"], "no_longer_available");
+        assert!(matches!(node.try_recv(), Err(tokio::sync::mpsc::error::TryRecvError::Empty)));
+    }
+
+    struct HeldClose {
+        removes: std::sync::atomic::AtomicUsize,
+        listed: std::sync::atomic::AtomicBool,
+        release: tokio::sync::Semaphore,
+    }
+    impl crate::node_close::Sessions for HeldClose {
+        fn claude<'a>(&'a self, args: Vec<String>) -> crate::node_close::Answer<'a, Result<String, String>> {
+            Box::pin(async move {
+                use std::sync::atomic::Ordering;
+                match args[0].as_str() {
+                    "agents" => Ok(if self.listed.load(Ordering::Relaxed) { json!([{"id":"agent-a"}]).to_string() } else { "[]".into() }),
+                    "rm" => {
+                        self.removes.fetch_add(1, Ordering::Relaxed);
+                        self.release.acquire().await.unwrap().forget();
+                        self.listed.store(false, Ordering::Relaxed);
+                        Ok("removed agent-a".into())
+                    },
+                    _ => panic!("unexpected synthetic session operation"),
+                }
+            })
+        }
+        fn leftovers<'a>(&'a self, _: &'a str) -> crate::node_close::Answer<'a, Option<String>> {
+            Box::pin(async { None })
+        }
+    }
+
+    #[tokio::test]
+    async fn distinct_close_commands_do_not_remove_one_node_concurrently() {
+        use std::future::Future;
+        use std::task::{Context, Poll, Waker};
+        let (home, domain, client) = action_home();
+        apply_seed_command(&domain, Actor::System, "register-agent", Command::RegisterAgent {
+            agent_id:"agent-a".into(), name:"Agent A".into(),
+        });
+        let sessions = std::sync::Arc::new(HeldClose { removes:Default::default(), listed:true.into(), release:tokio::sync::Semaphore::new(0) });
+        client.use_sessions(sessions.clone());
+        let state = domain.state().unwrap();
+        let first_request = pacing_request(&state, Verb::Close, "agent-a", "", "en");
+        let second_request = pacing_request(&state, Verb::Close, "agent-a", "", "en");
+        let mut first = Box::pin(execute(&domain, &client, &home.0, "test-device", first_request, None, || Ok(())));
+        let mut second = Box::pin(execute(&domain, &client, &home.0, "test-device", second_request, None, || Ok(())));
+        let mut context = Context::from_waker(Waker::noop());
+        assert!(first.as_mut().poll(&mut context).is_pending());
+        assert!(second.as_mut().poll(&mut context).is_pending());
+        assert_eq!(sessions.removes.load(std::sync::atomic::Ordering::Relaxed), 1, "both commands entered node removal");
+        let limit = pacing_request(&state, Verb::SetLimit, "limit", "4", "en");
+        let mut independent = Box::pin(execute(&domain, &client, &home.0, "test-device", limit, None, || Ok(())));
+        assert!(matches!(independent.as_mut().poll(&mut context), Poll::Ready(_)), "waiting for a node close consumed another executor");
+        sessions.release.add_permits(1);
+        assert!(matches!(first.as_mut().poll(&mut context), Poll::Ready(_)));
+        assert!(matches!(second.as_mut().poll(&mut context), Poll::Ready(_)));
+        assert_eq!(sessions.removes.load(std::sync::atomic::Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn local_orchestrator_decisions_share_one_resource_lane() {
+        use std::future::Future;
+        use std::task::{Context, Waker};
+        struct DecisionThread {
+            resume: Option<std::sync::mpsc::Sender<()>>,
+            thread: Option<std::thread::JoinHandle<Response>>,
+        }
+        impl Drop for DecisionThread {
+            fn drop(&mut self) {
+                if let Some(resume) = self.resume.take() { let _ = resume.send(()); }
+                if let Some(thread) = self.thread.take() { let _ = thread.join(); }
+            }
+        }
+        let (home, domain, client) = action_home();
+        let runtime = crate::domain_orchestrator::Runtime {
+            active_run:Some(crate::domain_orchestrator::Run { id:"run".into(), message_ids:vec![], attempts:vec![], started_at:0, spawned:true }),
+            ..Default::default()
+        };
+        std::fs::write(home.0.join(crate::domain_orchestrator::FILE), serde_json::to_vec(&runtime).unwrap()).unwrap();
+        let state = domain.state().unwrap();
+        let mut first_request = pacing_request(&state, Verb::OrchStop, "orchestrator", "", "en");
+        first_request.action_id = ActionId::new(Verb::OrchStop, "orchestrator", state.revision, Some("run".into())).unwrap().to_string();
+        let mut second_request = first_request.clone();
+        second_request.command_id = pacing_request(&state, Verb::OrchStop, "orchestrator", "", "en").command_id;
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (resume_tx, resume_rx) = std::sync::mpsc::channel();
+        let (thread_domain, thread_client, thread_home) = (domain.clone(), client.clone(), home.0.clone());
+        let thread = std::thread::spawn(move || {
+            let calls = std::sync::atomic::AtomicUsize::new(0);
+            let resume = std::sync::Mutex::new(resume_rx);
+            tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(execute(
+                &thread_domain, &thread_client, &thread_home, "test-device", first_request, None, || {
+                    if calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed) == 1 {
+                        entered_tx.send(()).unwrap();
+                        resume.lock().unwrap().recv().unwrap();
+                    }
+                    Ok(())
+                }))
+        });
+        let mut owner = DecisionThread { resume:Some(resume_tx), thread:Some(thread) };
+        entered_rx.recv().unwrap();
+        let mut second = Box::pin(execute(&domain, &client, &home.0, "test-device", second_request, None, || Ok(())));
+        let mut context = Context::from_waker(Waker::noop());
+        assert!(second.as_mut().poll(&mut context).is_pending(), "a second decision entered the shared runtime transaction");
+        owner.resume.take().unwrap().send(()).unwrap();
+        assert_eq!(owner.thread.take().unwrap().join().unwrap().status(), StatusCode::OK);
+        assert_eq!(second.await.status(), StatusCode::OK);
+        assert!(crate::domain_orchestrator::load(&home.0).unwrap().cancel_requested);
+    }
+
+    #[tokio::test]
+    async fn full_local_admission_rejects_without_dispatching_or_leaving_an_ambiguous_wait() {
+        use std::future::Future;
+        use std::task::{Context, Poll, Waker};
+        let (home, domain, client) = action_home();
+        apply_seed_command(&domain, Actor::System, "agent", Command::RegisterAgent { agent_id:"agent-a".into(), name:"Agent".into() });
+        let mut node = domain.live.pushes.attach("agent-a", 1);
+        let full = domain.local_actions.slots.clone().acquire_many_owned(1024).await.unwrap();
+        let mut request = pacing_request(&domain.state().unwrap(), Verb::Msg, "agent-a", "", "en");
+        request.input.text = Some("Not admitted".into());
+        let mut pending = Box::pin(execute(&domain, &client, &home.0, "test-device", request.clone(), None, || Ok(())));
+        let mut context = Context::from_waker(Waker::noop());
+        let Poll::Ready(reply) = pending.as_mut().poll(&mut context) else { panic!("capacity created an unregistered ambiguous wait"); };
+        assert_eq!(reply.status(), StatusCode::OK);
+        let body: Value = serde_json::from_slice(&axum::body::to_bytes(reply.into_body(), 1024 * 1024).await.unwrap()).unwrap();
+        assert_eq!(body["outcome"], "rejected");
+        assert_eq!(body["code"], "busy");
+        assert_eq!(body["result"]["kind"], "refused");
+        assert!(matches!(node.try_recv(), Err(tokio::sync::mpsc::error::TryRecvError::Empty)));
+        drop(full);
+        let mut retry = Box::pin(execute(&domain, &client, &home.0, "test-device", request, None, || Ok(())));
+        assert!(retry.as_mut().poll(&mut context).is_pending());
+        let sent: Value = serde_json::from_str(&node.try_recv().unwrap()).unwrap();
+        domain.live.pushes.acknowledged("agent-a", &[sent["id"].as_str().unwrap().to_owned()]);
+        assert!(matches!(retry.as_mut().poll(&mut context), Poll::Ready(_)));
+    }
+
+    #[tokio::test]
+    async fn a_message_waits_for_its_node_close_without_blocking_an_independent_action() {
+        use std::future::Future;
+        use std::task::{Context, Poll, Waker};
+        let (home, domain, client) = action_home();
+        apply_seed_command(&domain, Actor::System, "agent", Command::RegisterAgent { agent_id:"agent-a".into(), name:"Agent".into() });
+        let sessions = std::sync::Arc::new(HeldClose { removes:Default::default(), listed:true.into(), release:tokio::sync::Semaphore::new(0) });
+        client.use_sessions(sessions.clone());
+        let mut node = domain.live.pushes.attach("agent-a", 1);
+        let state = domain.state().unwrap();
+        let close = pacing_request(&state, Verb::Close, "agent-a", "", "en");
+        let mut message = pacing_request(&state, Verb::Msg, "agent-a", "", "en");
+        message.input.text = Some("Do not send into removal".into());
+        let mut closing = Box::pin(execute(&domain, &client, &home.0, "test-device", close, None, || Ok(())));
+        let mut sending = Box::pin(execute(&domain, &client, &home.0, "test-device", message, None, || Ok(())));
+        let mut context = Context::from_waker(Waker::noop());
+        assert!(closing.as_mut().poll(&mut context).is_pending());
+        assert!(sending.as_mut().poll(&mut context).is_pending());
+        assert!(matches!(node.try_recv(), Err(tokio::sync::mpsc::error::TryRecvError::Empty)), "a message entered a node during removal");
+        let limit = pacing_request(&state, Verb::SetLimit, "limit", "4", "en");
+        let mut independent = Box::pin(execute(&domain, &client, &home.0, "test-device", limit, None, || Ok(())));
+        assert!(matches!(independent.as_mut().poll(&mut context), Poll::Ready(_)));
+        sessions.release.add_permits(1);
+        assert!(matches!(closing.as_mut().poll(&mut context), Poll::Ready(_)));
+        let Poll::Ready(reply) = sending.as_mut().poll(&mut context) else { panic!("message did not finish after removal"); };
+        let body: Value = serde_json::from_slice(&axum::body::to_bytes(reply.into_body(), 1024 * 1024).await.unwrap()).unwrap();
+        assert_eq!(body["outcome"], "rejected");
+        assert_eq!(body["code"], "session_unreachable");
+        assert!(matches!(node.try_recv(), Err(tokio::sync::mpsc::error::TryRecvError::Empty) | Err(tokio::sync::mpsc::error::TryRecvError::Disconnected)));
+    }
+
+    struct HeldPrClose {
+        calls: std::sync::atomic::AtomicUsize,
+        release: tokio::sync::Semaphore,
+    }
+    impl crate::client_routes::Github for HeldPrClose {
+        fn search_issues<'a>(&'a self, _: &'a [String]) -> crate::node_close::Answer<'a, Result<Value, String>> { Box::pin(async { Err("not used".into()) }) }
+        fn issue_view<'a>(&'a self, _: &'a str, _: u64) -> crate::node_close::Answer<'a, Result<Value, String>> { Box::pin(async { Err("not used".into()) }) }
+        fn close_pr<'a>(&'a self, _: &'a str, _: &'a str, _: u64) -> crate::node_close::Answer<'a, Result<(), String>> {
+            Box::pin(async move {
+                self.calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                self.release.acquire().await.unwrap().forget();
+                Ok(())
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn different_delivery_ids_cannot_close_the_same_resolved_pr_concurrently() {
+        use std::future::Future;
+        use std::task::{Context, Poll, Waker};
+        let (home, domain, client) = action_home();
+        presented_pr(&domain);
+        present_again(&domain, "result-latest");
+        let github = std::sync::Arc::new(HeldPrClose { calls:Default::default(), release:tokio::sync::Semaphore::new(0) });
+        client.use_github(github.clone());
+        let state = domain.state().unwrap();
+        let old = pacing_request(&state, Verb::CloseUnmerged, "result", "", "en");
+        let current = pacing_request(&state, Verb::CloseUnmerged, "result-latest", "", "en");
+        let mut first = Box::pin(execute(&domain, &client, &home.0, "test-device", old, None, || Ok(())));
+        let mut second = Box::pin(execute(&domain, &client, &home.0, "test-device", current, None, || Ok(())));
+        let mut context = Context::from_waker(Waker::noop());
+        assert!(first.as_mut().poll(&mut context).is_pending());
+        assert!(second.as_mut().poll(&mut context).is_pending());
+        assert_eq!(github.calls.load(std::sync::atomic::Ordering::Relaxed), 1, "both delivery IDs entered the same GitHub close");
+        github.release.add_permits(1);
+        assert!(matches!(first.as_mut().poll(&mut context), Poll::Ready(_)));
+        let Poll::Ready(reply) = second.as_mut().poll(&mut context) else { panic!("second close did not finish"); };
+        let body: Value = serde_json::from_slice(&axum::body::to_bytes(reply.into_body(), 1024 * 1024).await.unwrap()).unwrap();
+        assert_eq!(body["outcome"], "no_longer_available");
+        assert_eq!(github.calls.load(std::sync::atomic::Ordering::Relaxed), 1);
+        assert_eq!(domain.state().unwrap().tasks[&"task".into()].state, alondra_core::domain::TaskState::Cancelled);
+    }
+
+    #[tokio::test]
+    async fn a_closed_node_with_a_lingering_connection_does_not_accept_a_message() {
+        use std::future::Future;
+        use std::task::{Context, Poll, Waker};
+        let (home, domain, client) = action_home();
+        apply_seed_command(&domain, Actor::System, "agent", Command::RegisterAgent { agent_id:"agent-a".into(), name:"Agent".into() });
+        let mut node = domain.live.pushes.attach("agent-a", 1);
+        domain.live.mark_closed("agent-a");
+        let mut request = pacing_request(&domain.state().unwrap(), Verb::Msg, "agent-a", "", "en");
+        request.input.text = Some("Do not reach a closed node".into());
+        let mut pending = Box::pin(execute(&domain, &client, &home.0, "test-device", request, None, || Ok(())));
+        let mut context = Context::from_waker(Waker::noop());
+        let Poll::Ready(reply) = pending.as_mut().poll(&mut context) else { panic!("closed node accepted a message on its lingering connection"); };
+        let body: Value = serde_json::from_slice(&axum::body::to_bytes(reply.into_body(), 1024 * 1024).await.unwrap()).unwrap();
+        assert_eq!(body["outcome"], "rejected");
+        assert_eq!(body["code"], "session_unreachable");
+        assert!(matches!(node.try_recv(), Err(tokio::sync::mpsc::error::TryRecvError::Empty)));
+    }
+
+    #[tokio::test]
+    async fn completed_local_receipts_replay_under_full_admission_with_conflict_and_approval_checks() {
+        let (home, domain, client) = action_home();
+        let request = pacing_request(&domain.state().unwrap(), Verb::SetLimit, "limit", "4", "en");
+        let original = execute(&domain, &client, &home.0, "test-device", request.clone(), None, || Ok(())).await;
+        let bytes = axum::body::to_bytes(original.into_body(), 1024 * 1024).await.unwrap();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["outcome"], "applied");
+        let _full = domain.local_actions.slots.clone().acquire_many_owned(1024).await.unwrap();
+        let recovered = execute(&domain, &client, &home.0, "test-device", request.clone(), None, || Ok(())).await;
+        assert_eq!(axum::body::to_bytes(recovered.into_body(), 1024 * 1024).await.unwrap(), bytes,
+            "admission must not replace an available applied receipt with busy");
+        let mut different = request.clone();
+        different.option_id = Some("6".into());
+        assert_eq!(execute(&domain, &client, &home.0, "test-device", different, None, || Ok(())).await.status(), StatusCode::CONFLICT);
+        assert_eq!(execute(&domain, &client, &home.0, "test-device", request, None,
+            || anyhow::bail!("revoked")).await.status(), StatusCode::FORBIDDEN);
+        assert!(std::fs::read_to_string(alondra_core::options::path_in(&home.0)).unwrap().contains("max_working_nodes = 4"));
     }
 
     #[tokio::test]
