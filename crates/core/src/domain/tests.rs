@@ -2936,9 +2936,10 @@ fn variant_index(c: &Command) -> usize {
         Command::ObservePrMergeMethods { .. } => 55,
         Command::SetPriority { .. } => 56,
         Command::DeclarePostMergeWork { .. } => 57,
+        Command::BindOrchestratorSession { .. } => 58,
     }
 }
-const COMMAND_KINDS: usize = 58;
+const COMMAND_KINDS: usize = 59;
 /// Every command kind naming the given ids. The flag marks commands that only
 /// create a fresh entity and therefore may succeed with an unknown id.
 fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
@@ -2975,6 +2976,7 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
         (Command::RegisterAgent { agent_id: ids.agent.into(), name: "Ghost".into() }, true),
         (Command::ObserveAgent { agent_id: ids.agent.into(), connected: true }, false),
         (Command::AdvanceOrchestratorGeneration { generation: 1 }, true),
+        (Command::BindOrchestratorSession { session_id: ids.agent.into() }, true),
         (Command::CreateTask { task_id: "fresh-task".into(), request_id: ids.request.into(),
             title: "Fresh".into(), agent_id: Some(ids.agent.into()), review_prs: false,
             dependencies: BTreeSet::new(), stack: None }, false),
@@ -3913,6 +3915,32 @@ fn a_node_waiting_on_a_task_is_resumed_once_when_that_task_is_done() {
     assert_eq!(resumed, vec![(Some("waits".into()), dependencies_done_notice(&["Result"]))]);
     let later = exec(&mut s, Actor::System, Command::ObserveAgent { agent_id: "b".into(), connected: true }).unwrap();
     assert!(!later.effects.iter().any(|e| matches!(e, DomainEffect::NotifyAgent { .. })));
+}
+#[test]
+fn only_the_system_binds_the_orchestrators_session_and_a_new_one_replaces_it() {
+    let mut s = fixture();
+    for actor in [user(), agent(), Actor::Orchestrator { generation: 0 }] {
+        assert_eq!(exec(&mut s.clone(), actor, Command::BindOrchestratorSession { session_id: "s1".into() }).unwrap_err().code, "forbidden");
+    }
+    assert_eq!(exec(&mut s.clone(), Actor::System, Command::BindOrchestratorSession { session_id: " ".into() }).unwrap_err().code, "invalid_input");
+    exec(&mut s, Actor::System, Command::BindOrchestratorSession { session_id: "s1".into() }).unwrap();
+    exec(&mut s, Actor::System, Command::BindOrchestratorSession { session_id: "s2".into() }).unwrap();
+    assert_eq!(s.orchestrator_session, Some("s2".into()));
+}
+#[test]
+fn a_typed_name_resolves_to_the_orchestrators_current_session_a_node_or_nobody() {
+    let mut s = fixture();
+    let node = s.agents.keys().next().unwrap().clone();
+    assert_eq!(s.resolve_target("orchestrator"), Target::Orchestrator(None));
+    exec(&mut s, Actor::System, Command::BindOrchestratorSession { session_id: "6f1c2b9e-1111-4a2b-9c3d-0123456789ab".into() }).unwrap();
+    let session = Target::Orchestrator(Some("6f1c2b9e-1111-4a2b-9c3d-0123456789ab".into()));
+    for name in ["orchestrator", "6f1c2b9e-1111-4a2b-9c3d-0123456789ab", "0123456789ab"] {
+        assert_eq!(s.resolve_target(name), session, "{name}");
+    }
+    assert_eq!(s.resolve_target(&node.0), Target::Agent(node));
+    for name in ["orquestador", "Orquestador", "Orchestrator", " orchestrator", "orchestrador", "orq", "", "ghost", "view"] {
+        assert_eq!(s.resolve_target(name), Target::Unknown, "{name}");
+    }
 }
 
 #[test]

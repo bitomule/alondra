@@ -4,14 +4,13 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-use alondra_core::domain::{AgentId, Command, DomainProjection, InboxItem, InputKind, InputValue, Interaction, InteractionId, InteractionPayload, QuestionOption, Revision, TaskId};
+use alondra_core::domain::{Command, DomainProjection, InboxItem, InputKind, InputValue, Interaction, InteractionId, InteractionPayload, QuestionOption, Revision, TaskId};
 use alondra_core::views::{Action, Item, Link, View};
 use anyhow::{Context, Result, anyhow, bail};
 use serde_json::Value;
 
 use crate::client::Client;
 use crate::ops::{self, Recovery};
-use crate::runtime::Runtime;
 
 fn view_action(view: &View, predicate: impl Fn(&Action) -> bool) -> Option<Action> {
     fn scan(items: &[Item], predicate: &impl Fn(&Action) -> bool) -> Option<Action> {
@@ -58,24 +57,6 @@ fn local_attach(view: &View) -> Option<String> {
 fn submit(client: &Client, view: &View, action: &Action, option: Option<&str>, input: Value) -> Result<Value> {
     anyhow::ensure!(action.enabled, "{}", action.disabled_reason.as_deref().unwrap_or("This action is unavailable"));
     client.action(&view.data_epoch, &action.id, option, input)
-}
-
-/// The agent a name, short id or session id names; `None` for the orchestrator.
-pub fn agent(d: &DomainProjection, runtime: Option<&Runtime>, name: &str) -> Result<Option<AgentId>> {
-    if name.eq_ignore_ascii_case("orchestrator") || runtime.and_then(Runtime::orchestrator_node).is_some_and(|o| o.session_id == name || o.short_id == name) {
-        return Ok(None);
-    }
-    let short = |id: &AgentId| runtime.and_then(|r| r.node(id)).map(|n| n.short_id.clone());
-    let exact: Vec<&AgentId> = d.agents.iter().filter(|a| a.id.0 == name || a.name.eq_ignore_ascii_case(name) || short(&a.id).as_deref() == Some(name)).map(|a| &a.id).collect();
-    let found: Vec<&AgentId> = if exact.is_empty() { d.agents.iter().filter(|a| a.id.0.starts_with(name)).map(|a| &a.id).collect() } else { exact };
-    match found.as_slice() {
-        [one] => Ok(Some((*one).clone())),
-        [] => bail!(trf!("No node is called {name}", "Ningún nodo se llama {name}")),
-        many => {
-            let names = many.iter().map(|a| a.0.as_str()).collect::<Vec<_>>().join(", ");
-            bail!(trf!("{name} names several nodes: {names}", "{name} nombra varios nodos: {names}"))
-        }
-    }
 }
 
 fn inbox_item<'a>(d: &'a DomainProjection, id: &InteractionId) -> Option<&'a InboxItem> {
@@ -185,7 +166,6 @@ pub fn cancel(tasks: &[String], reason: Option<&str>) -> Result<()> {
 }
 
 fn resolved(client: &Client, name: &str) -> Result<(Option<String>, Option<String>)> {
-    if name.eq_ignore_ascii_case("orchestrator") { return Ok((None, None)); }
     let fleet = client.views("fleet", None)?;
     let mut found = Vec::new();
     fn rows(items: &[Item], out: &mut Vec<(String, String)>) {
@@ -197,6 +177,7 @@ fn resolved(client: &Client, name: &str) -> Result<(Option<String>, Option<Strin
         }}
     }
     for section in &fleet.sections { rows(&section.items, &mut found); }
+    found.retain(|(id, _)| id != "orchestrator");
     let exact: Vec<_> = found.iter().filter(|(id, title)| id == name || title.eq_ignore_ascii_case(name) || id.rsplit('-').next() == Some(name)).collect();
     let mut matches: Vec<(String, String)> = if exact.is_empty() {
         found.iter().filter(|(id, _)| id.starts_with(name)).cloned().collect()
@@ -212,27 +193,30 @@ fn resolved(client: &Client, name: &str) -> Result<(Option<String>, Option<Strin
     }
     match matches.as_slice() {
         [one] => Ok((Some(one.0.clone()), Some(one.0.clone()))),
-        [] => bail!(trf!("No node is called {name}", "Ningún nodo se llama {name}")),
+        [] => bail!(trf!("No node is called {name}; for the orchestrator use orchestrator", "Ningún nodo se llama {name}; para el orquestador usa orchestrator")),
         _ => bail!(trf!("{name} names several nodes", "{name} nombra varios nodos")),
     }
 }
 
-/// A Task id sends to the Task's agent, about that Task; anything else names the agent. A
-/// message to the orchestrator, however it is named ("orquestador" resolves to it too), is
-/// maintenance unless `reply` asks for an answer.
+/// The orchestrator's view when the daemon resolves `name` to it: "orchestrator", or the
+/// session the orchestrator runs in now.
+fn orchestrator_view(client: &Client, name: &str) -> Option<View> {
+    let view = client.views(&format!("node:{name}"), None).ok()?;
+    view_action(&view, |action| action.id.starts_with("msg:view@")).is_some().then_some(view)
+}
+
+/// A Task id sends to the Task's agent, about that Task; a name the daemon resolves to the
+/// orchestrator sends to it, and the daemon makes that maintenance unless `reply` asks for an
+/// answer; any other name must be a node's.
 pub fn send(name: &str, text: &str, reply: bool) -> Result<()> {
     let client = Client::for_user(Duration::from_secs(60));
-    let agent = if name.starts_with("t-") {
-        None
-    } else if name.eq_ignore_ascii_case("orchestrator") {
-        Some("orchestrator".to_owned())
+    let view = if name.starts_with("t-") {
+        client.views(&format!("task:{name}"), None).with_context(|| trf!("No task {name}", "No hay ninguna tarea {name}"))?
+    } else if let Some(view) = orchestrator_view(&client, name) {
+        view
     } else {
-        Some(resolved(&client, name)?.0.context("Agent not found")?)
-    };
-    let to_orchestrator = agent.as_deref() == Some("orchestrator");
-    let view = match &agent {
-        None => client.views(&format!("task:{name}"), None).with_context(|| trf!("No task {name}", "No hay ninguna tarea {name}"))?,
-        Some(agent) => client.views(&format!("node:{agent}"), None)?,
+        let agent = resolved(&client, name)?.0.with_context(|| trf!("No node is called {name}", "Ningún nodo se llama {name}"))?;
+        client.views(&format!("node:{agent}"), None)?
     };
     let action = view_action(&view, |a| a.id.starts_with("msg:" )).with_context(|| if name.starts_with("t-") {
         trf!("{name} has no node right now, so nothing was sent. Ask the orchestrator to start one for it.",
@@ -240,7 +224,7 @@ pub fn send(name: &str, text: &str, reply: bool) -> Result<()> {
     } else {
         tr!("Message action unavailable", "No se puede mandar un mensaje").into()
     })?;
-    let fields = serde_json::json!({"maintenance": to_orchestrator && !reply, "from_claude": std::env::var_os("CLAUDECODE").is_some()});
+    let fields = serde_json::json!({"from_cli": true, "reply": reply, "from_claude": std::env::var_os("CLAUDECODE").is_some()});
     let answer = submit(&client, &view, &action, None, serde_json::json!({"text":text,"fields":fields}))?;
     anyhow::ensure!(answer.get("outcome").and_then(Value::as_str) == Some("applied"), "{}",
         answer.get("message").and_then(Value::as_str).map(str::to_owned)
@@ -264,6 +248,9 @@ fn sent_notice(answer: &Value, name: &str) -> String {
 
 pub fn close(name: &str) -> Result<()> {
     let client = Client::for_user(Duration::from_secs(90));
+    if orchestrator_view(&client, name).is_some() {
+        bail!(tr!("Alondra manages the orchestrator automatically", "Alondra gestiona el orquestador automáticamente"));
+    }
     let Some(agent) = resolved(&client, name)?.0 else { bail!(tr!("Alondra manages the orchestrator automatically", "Alondra gestiona el orquestador automáticamente")) };
     let view = client.views(&format!("node:{agent}"), None)?;
     let action = view_action(&view, |a| a.id.starts_with("close:" )).context("Close action unavailable")?;
@@ -286,7 +273,7 @@ fn closed_notice(answer: &Value, name: &str) -> Result<String> {
 
 pub fn attach(name: &str) -> Result<()> {
     let client = Client::for_user(Duration::from_secs(10));
-    let (agent, _runtime) = resolved(&client, name)?;
+    let (agent, _runtime) = if orchestrator_view(&client, name).is_some() { (None, None) } else { resolved(&client, name)? };
     let Some(agent) = agent else { bail!(tr!("Alondra manages the orchestrator automatically; open its activity in the Fleet screen", "Alondra gestiona el orquestador automáticamente; abre su actividad en la pantalla Flota")) };
     let view = client.views(&format!("node:{agent}"), None)?;
     let session = local_attach(&view).context("This node has no attachable session")?;
@@ -359,18 +346,4 @@ mod tests {
         assert!(closed_notice(&serde_json::json!({"outcome": "applied", "detail": {"interactive": true}}), "nodo").unwrap().contains("/exit"));
     }
 
-    #[test]
-    fn an_agent_is_named_by_id_name_short_id_or_a_unique_prefix() {
-        crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
-        let d = world().projection();
-        let runtime: Runtime = serde_json::from_value(crate::runtime::fixture("runtime.json")).unwrap();
-        let named = |n: &str| agent(&d, Some(&runtime), n).map(|a| a.map(|a| a.0));
-        assert_eq!(named("agent-a").unwrap(), Some("agent-a".into()));
-        assert_eq!(named("instance ab").unwrap(), Some("agent-ab".into()));
-        assert_eq!(named("a1b2c3").unwrap(), Some("agent-a".into()), "the short id from the runtime");
-        assert_eq!(named("orchestrator").unwrap(), None);
-        assert_eq!(named("alondra-orchestrator").unwrap(), None);
-        assert!(named("agent").unwrap_err().to_string().contains("several nodes"));
-        assert!(named("nobody").unwrap_err().to_string().contains("No node"));
-    }
 }

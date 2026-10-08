@@ -97,6 +97,9 @@ pub enum Command {
     AdvanceOrchestratorGeneration {
         generation: u64,
     },
+    BindOrchestratorSession {
+        session_id: AgentId,
+    },
     CreateTask {
         task_id: TaskId,
         request_id: RequestId,

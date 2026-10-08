@@ -6,7 +6,7 @@
 
 use alondra_core::domain::{
     Actor, AuthorizationId, Command, CommandEnvelope, CommandId, DataEpoch, DomainError, Hold, Instruction,
-    InteractionId, InteractionPayload, MergeMethod, Refusal, Revision, TaskId,
+    InteractionId, InteractionPayload, MergeMethod, Refusal, Revision, Target, TaskId,
 };
 use alondra_core::views::{action_id::{ActionId, Verb}, Lang, Outcome, OutcomeKind, VIEWS_PROTOCOL, refusal_text};
 use axum::{extract::{rejection::JsonRejection, State}, http::StatusCode, response::{IntoResponse, Response}, Extension, Json};
@@ -53,6 +53,12 @@ pub(crate) struct Comment {
 /// A yes/no field the CLI sets on a message (`maintenance`, `from_claude`); the apps never do.
 fn flag(input: &ActionInput, name: &str) -> bool {
     input.fields.get(name).and_then(Value::as_bool).unwrap_or(false)
+}
+
+/// What the CLI's send writes to the orchestrator is maintenance unless it asks for a reply;
+/// a message typed in an app never is. Older CLIs still say so with `maintenance`.
+fn maintenance(input: &ActionInput) -> bool {
+    flag(input, "maintenance") || (flag(input, "from_cli") && !flag(input, "reply"))
 }
 
 /// Whether an encrypted relay write is the exact protocol route handled here.
@@ -378,11 +384,11 @@ async fn execute_external(
             let reply = client.write(&user_id, Write::ResolveConflicts(pr_id.0), &json!({}), transport, &authorize).await?;
             Ok(to_applied(reply.status.as_u16(), reply.body))
         }
-        Verb::Msg if action.subject == "view" => {
+        Verb::Msg if action.subject == "view" || matches!(state.resolve_target(&action.subject), Target::Orchestrator(_)) => {
             let text = request.input.text.as_deref().unwrap_or_default().trim();
             if text.is_empty() { return Ok(error_value_lang(lang, "invalid_input", "text is required")); }
             let body = json!({"text":text,"attachments":attachments,
-                "maintenance":flag(&request.input, "maintenance"),"from_claude":flag(&request.input, "from_claude")});
+                "maintenance":maintenance(&request.input),"from_claude":flag(&request.input, "from_claude")});
             let reply = client.write(&user_id, Write::OrchestratorMessage, &body, transport, &authorize).await?;
             Ok(to_applied(reply.status.as_u16(), reply.body))
         }

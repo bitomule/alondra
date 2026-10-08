@@ -5292,6 +5292,19 @@ fn generate_pacing_goldens() {
 }
 
 #[test]
+fn the_orchestrator_is_opened_by_its_shortcuts_and_by_the_session_it_runs_in_now() {
+    let mut state = fixture();
+    state.orchestrator_session = Some("6f1c2b9e-1111-4a2b-9c3d-0123456789ab".into());
+    let live = LiveSnapshot::default();
+    for key in ["node:orchestrator", "node:6f1c2b9e-1111-4a2b-9c3d-0123456789ab", "node:0123456789ab"] {
+        let view = render(&state, &live, Client::Ios, Lang::Es, key, "");
+        assert_eq!(view.key, key);
+        let facts: Vec<Fact> = view.sections.iter().filter(|section| section.id == "header").flat_map(|section| &section.items)
+            .flat_map(|item| match item { Item::Facts(facts) => facts.items.clone(), _ => vec![] }).collect();
+        assert!(facts.iter().any(|fact| fact.label == "Sesión" && fact.value == "6f1c2b9e-1111-4a2b-9c3d-0123456789ab"), "{key}: {facts:?}");
+    }
+}
+
 fn a_pr_card_that_cannot_merge_says_why() {
     let mut state = golden_fixture();
     let key = "card:hf-weekly-2026-09-30";

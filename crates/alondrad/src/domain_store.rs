@@ -45,6 +45,12 @@ const TASK_RELATIONS: &str = "CREATE TABLE IF NOT EXISTS task_relations(\
  review_rounds INTEGER NOT NULL CHECK(review_rounds BETWEEN 0 AND 255));";
 /// The Requests sent as maintenance messages, kept beside them; created on every open like
 /// task_relations.
+const ORCHESTRATOR_SESSION: &str = "CREATE TABLE IF NOT EXISTS orchestrator_session(\
+ singleton INTEGER PRIMARY KEY CHECK(singleton=1),\
+ session_id TEXT NOT NULL CHECK(length(session_id)>0));";
+const ORCHESTRATOR_DELIVERIES: &str = "CREATE TABLE IF NOT EXISTS orchestrator_deliveries(\
+ attempt_id INTEGER PRIMARY KEY REFERENCES delivery_attempts(id),\
+ session_id TEXT NOT NULL CHECK(length(session_id)>0));";
 const MAINTENANCE_REQUESTS: &str = "CREATE TABLE IF NOT EXISTS maintenance_requests(request_id TEXT PRIMARY KEY REFERENCES requests(id));";
 /// What a node says it still does after its PR merged, kept beside the task's wrap-up; created on
 /// every open like task_relations.
@@ -426,6 +432,8 @@ impl DomainStore {
         tx.execute_batch(TASK_WRAP_UPS)?;
         tx.execute_batch(TASK_RELATIONS)?;
         tx.execute_batch(MAINTENANCE_REQUESTS)?;
+        tx.execute_batch(ORCHESTRATOR_SESSION)?;
+        tx.execute_batch(ORCHESTRATOR_DELIVERIES)?;
         tx.execute_batch(TASK_POST_MERGE_WORK)?;
         tx.execute_batch(TASK_PRIORITIES)?;
         tx.execute_batch(LAUNCH_QUEUE)?;
@@ -1185,6 +1193,18 @@ impl DomainStore {
     }
     pub(crate) fn claim_orchestrator_message(&mut self, id: i64) -> Result<Option<DeliveryClaim>> {
         self.claim_message_inner(id, true, None)
+    }
+    /// The orchestrator session a claimed message was handed to.
+    pub(crate) fn record_orchestrator_delivery(&mut self, attempt_id: i64, session: &str) -> Result<()> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO orchestrator_deliveries(attempt_id,session_id) VALUES(?1,?2)",
+            params![attempt_id, session],
+        )?;
+        self.note_side_write();
+        Ok(())
+    }
+    pub(crate) fn orchestrator_delivery(&self, attempt_id: i64) -> Result<Option<String>> {
+        Ok(self.conn.query_row("SELECT session_id FROM orchestrator_deliveries WHERE attempt_id=?1", [attempt_id], |r| r.get(0)).optional()?)
     }
     #[cfg(test)]
     pub(crate) fn claim_orchestrator_message_at_for_test(

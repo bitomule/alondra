@@ -211,6 +211,13 @@ impl Executor {
         Ok(text)
     }
 
+    /// The domain names the orchestrator by this session; a failure never holds back the run.
+    fn bind_session(&self, session: &str) {
+        if let Err(error) = self.domain.bind_orchestrator_session(session) {
+            log!("cannot record the orchestrator's session {session}: {error}");
+        }
+    }
+
     /// One batch: claim, bind a bearer to this execution, run Claude, finish.
     pub(crate) async fn tick(&self, ownership: &Ownership) -> Result<()> {
         self.apply_problem_answers()?;
@@ -270,6 +277,15 @@ impl Executor {
         runtime.session_id = Some(session.clone());
         runtime.cancel_requested = false;
         save(&self.home, &runtime)?;
+        self.bind_session(&session);
+        {
+            let mut store = self.domain.store.lock().expect("domain store poisoned");
+            for (attempt, _) in &run.attempts {
+                if let Err(error) = store.record_orchestrator_delivery(*attempt, &session) {
+                    log!("orchestrator delivery {attempt} to {session}: {error:#}");
+                }
+            }
+        }
         let projects_root = crate::domain_schedule_runner::options_at(&self.home).ok()
             .map(|file| file.projects_root(&crate::options::user_home()))
             .filter(|root| root.is_dir());
@@ -569,6 +585,9 @@ pub(crate) async fn run(domain: Arc<DomainRuntime>, home: PathBuf, claude_home: 
     if let Err(error) = executor.recover() {
         return Err(error.context("v2 orchestrator recovery failed"));
     }
+    if let Some(session) = load(&home).ok().and_then(|runtime| runtime.session_id) {
+        executor.bind_session(&session);
+    }
     let mut changed = executor.domain.subscribe();
     let mut usage = executor.domain.live.usage_pause.subscribe();
     loop {
@@ -708,6 +727,14 @@ exit 1"#;
         assert!(attempts(domain).iter().all(|(_, state, _)| state == "handed"));
         let runtime = load(&f.executor.home).unwrap();
         assert!(runtime.active_run.is_none() && runtime.session_id.is_some() && runtime.last_error.is_none());
+        let session = runtime.session_id.clone().unwrap();
+        assert_eq!(domain.state().unwrap().orchestrator_session, Some(session.as_str().into()), "the domain names the orchestrator by its session");
+        {
+            let store = domain.store.lock().unwrap();
+            for item in store.delivery_evidence_page(0).unwrap().into_iter().filter(|i| i.recipient_kind == "orchestrator") {
+                assert_eq!(store.orchestrator_delivery(item.attempt_id).unwrap().as_deref(), Some(session.as_str()), "each message records the session it was handed to");
+            }
+        }
         let token = std::fs::read_to_string(dir.join("capabilities")).unwrap().trim().to_owned();
         assert_eq!(token.len(), 64);
         assert!(domain.resolve_bearer(&token).is_err(), "the execution's bearer is revoked when it ends");

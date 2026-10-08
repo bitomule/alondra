@@ -649,6 +649,8 @@ fn kept<K: Ord + std::fmt::Debug, V>(
 /// `save_changes` only inserts and updates. A rule that removed an entry would
 /// leave its row behind, so such a change is refused instead of half-persisted.
 fn ensure_nothing_removed(before: &DomainState, after: &DomainState) -> Result<()> {
+    ensure!(before.orchestrator_session.is_none() || after.orchestrator_session.is_some(),
+        "domain persistence cannot forget the orchestrator's session");
     kept("request", &before.requests, &after.requests)?;
     kept("agent", &before.agents, &after.agents)?;
     kept("task", &before.tasks, &after.tasks)?;
@@ -704,6 +706,11 @@ pub(super) fn save_changes(c: &Connection, before: &DomainState, after: &DomainS
             "UPDATE domain_meta SET revision=?1,orchestrator_generation=?2 WHERE singleton=1",
             params![after.revision as i64, after.orchestrator_generation as i64],
         )?;
+    }
+    if before.orchestrator_session != after.orchestrator_session {
+        if let Some(session) = &after.orchestrator_session {
+            exec(c, "INSERT INTO orchestrator_session(singleton,session_id) VALUES(1,?1) ON CONFLICT(singleton) DO UPDATE SET session_id=excluded.session_id", params![session.0])?;
+        }
     }
     for (x, _) in changed(&before.requests, &after.requests) {
         let mut row = object(x)?;
@@ -800,6 +807,8 @@ pub(super) fn load(c: &Connection) -> Result<DomainState> {
     let mut state = DomainState::new(epoch);
     state.revision = revision.try_into().context("negative revision")?;
     state.orchestrator_generation = generation.try_into().context("negative generation")?;
+    state.orchestrator_session = c.query_row("SELECT session_id FROM orchestrator_session WHERE singleton=1", [], |r| r.get::<_, String>(0))
+        .optional()?.map(AgentId::from);
     for row in rows(c, "requests", &["closed", "withdrawn", "auto_merge"], &[])? {
         let x: Request = decode(row)?;
         state.requests.insert(x.id.clone(), x);

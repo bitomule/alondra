@@ -1593,3 +1593,15 @@ fn an_automatic_launch_is_claimed_once_per_task() {
     store.forget_auto_launch(&task).unwrap();
     assert_eq!(store.auto_launch(&task).unwrap(), None);
 }
+
+#[test]
+fn the_orchestrators_session_survives_a_restart_and_a_new_one_replaces_it() {
+    let fixture = Fixture::new();
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    assert_eq!(store.load().unwrap().orchestrator_session, None);
+    execute(&mut store, &Actor::System, "bind-1", Command::BindOrchestratorSession { session_id: "session-1".into() });
+    execute(&mut store, &Actor::System, "bind-2", Command::BindOrchestratorSession { session_id: "session-2".into() });
+    drop(store);
+    let mut reopened = DomainStore::open(&fixture.path()).unwrap();
+    assert_eq!(reopened.load().unwrap().orchestrator_session, Some("session-2".into()));
+}

@@ -403,14 +403,13 @@ async fn a_message_after_a_daemon_restart_reaches_the_reconnected_node_under_an_
     std::fs::remove_dir_all(root).unwrap();
 }
 
-/// What Claude runs for David: the real CLI, inside a Claude Code session, naming the
-/// orchestrator the way the Spanish Fleet screen shows it.
-fn send_as_claude(home: &Path, port: u16, name: &str, text: &str) -> std::process::Output {
+/// What Claude runs for David: the real CLI, inside a Claude Code session.
+fn alondra_as_claude(home: &Path, port: u16, lang: &str, args: &[&str]) -> std::process::Output {
     Process::new(alondra_binary())
-        .args(["send", name, text])
+        .args(args)
         .env("ALONDRA_HOME", home)
         .env("ALONDRA_PORT", port.to_string())
-        .env("ALONDRA_LANG", "es")
+        .env("ALONDRA_LANG", lang)
         .env("CLAUDECODE", "1")
         .env_remove("ALONDRA_ORCHESTRATOR_EXECUTION")
         .env_remove("ALONDRA_SESSION_ID")
@@ -424,16 +423,29 @@ async fn what_claude_sends_the_orchestrator_is_maintenance_and_its_answer_is_no_
     let home = root.join("home");
     std::fs::create_dir_all(&home).unwrap();
     let daemon = Daemon::start(&home).await;
-    for (name, text) in [("orquestador", "Sube t-cards a prioridad Alta"), ("orchestrator", "Lanza dos nodos más")] {
-        let sent = send_as_claude(&home, daemon.port, name, text);
-        assert!(sent.status.success(), "{}", String::from_utf8_lossy(&sent.stderr));
+    const SESSION: &str = "6f1c2b9e-1111-4a2b-9c3d-0123456789ab";
+    daemon.domain.bind_orchestrator_session("an-earlier-session").unwrap();
+    daemon.domain.bind_orchestrator_session(SESSION).unwrap();
+    let cases = [
+        ("orchestrator", "es", false, "Sube t-cards a prioridad Alta"),
+        ("orchestrator", "en", false, "Lanza dos nodos más"),
+        (SESSION, "es", false, "Revisa la cola"),
+        ("0123456789ab", "en", false, "Prioriza t-docs"),
+        ("orchestrator", "es", true, "¿Cuántos nodos quedan?"),
+    ];
+    for (name, lang, reply, text) in cases {
+        let mut args = vec!["send", name, text];
+        if reply { args.push("--reply"); }
+        let sent = alondra_as_claude(&home, daemon.port, lang, &args);
+        assert!(sent.status.success(), "{name}: {}", String::from_utf8_lossy(&sent.stderr));
         let state = daemon.domain.state().unwrap();
         let request = state.requests.values().find(|r| r.body.ends_with(text))
             .unwrap_or_else(|| panic!("{name}: no request ({})", String::from_utf8_lossy(&sent.stdout)));
         assert!(request.body.contains("From Claude, for "), "{}", request.body);
-        assert!(request.maintenance, "{name}: a message from Claude to the orchestrator is maintenance");
+        assert_eq!(request.maintenance, !reply, "{name} ({lang}, reply {reply}): only a message to the orchestrator that asks no reply is maintenance");
+        if reply { continue; }
         let id = request.id.clone();
-        daemon.execute(Actor::Orchestrator { generation: state.orchestrator_generation }, &format!("close-{name}"), Command::CloseRequest {
+        daemon.execute(Actor::Orchestrator { generation: state.orchestrator_generation }, &format!("close-{name}-{lang}"), Command::CloseRequest {
             request_id: id.clone(), answer: Some("Hecho".into()), withdrawn: false, title: None,
         });
         let state = daemon.domain.state().unwrap();
@@ -442,10 +454,17 @@ async fn what_claude_sends_the_orchestrator_is_maintenance_and_its_answer_is_no_
             "{name}: the answer to maintenance is no card for David");
     }
     let requests = daemon.domain.state().unwrap().requests.len();
-    let refused = send_as_claude(&home, daemon.port, "orquestadr", "Para el nodo de release");
-    assert!(!refused.status.success(), "a name no node has is refused, never sent to the orchestrator");
-    assert!(String::from_utf8_lossy(&refused.stderr).contains("Ningún nodo se llama orquestadr"), "{}", String::from_utf8_lossy(&refused.stderr));
+    for name in ["orquestador", "Orquestador", "Orchestrator", "orquestadr", "an-earlier-session"] {
+        let refused = alondra_as_claude(&home, daemon.port, "es", &["send", name, "Para el nodo de release"]);
+        assert!(!refused.status.success(), "{name}: a name no node has is refused, never sent to the orchestrator");
+        assert!(String::from_utf8_lossy(&refused.stderr).contains(&format!("Ningún nodo se llama {name}; para el orquestador usa orchestrator")),
+            "{}", String::from_utf8_lossy(&refused.stderr));
+    }
     assert_eq!(daemon.domain.state().unwrap().requests.len(), requests, "nothing reached the orchestrator");
+    for name in ["orchestrator", SESSION] {
+        let closed = alondra_as_claude(&home, daemon.port, "es", &["close", name]);
+        assert!(String::from_utf8_lossy(&closed.stderr).contains("Alondra gestiona el orquestador"), "{name}: {}", String::from_utf8_lossy(&closed.stderr));
+    }
     daemon.stop().await;
     std::fs::remove_dir_all(root).unwrap();
 }

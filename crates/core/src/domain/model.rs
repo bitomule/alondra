@@ -893,6 +893,9 @@ pub struct DomainState {
     pub data_epoch: DataEpoch,
     pub revision: Revision,
     pub orchestrator_generation: u64,
+    /// The Claude session the orchestrator runs in now; Alondra rebinds it on every new session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub orchestrator_session: Option<AgentId>,
     pub requests: BTreeMap<RequestId, Request>,
     pub agents: BTreeMap<AgentId, Agent>,
     pub tasks: BTreeMap<TaskId, Task>,
@@ -915,6 +918,7 @@ impl DomainState {
             data_epoch: epoch.into(),
             revision: 0,
             orchestrator_generation: 0,
+            orchestrator_session: None,
             requests: BTreeMap::new(),
             agents: BTreeMap::new(),
             tasks: BTreeMap::new(),
@@ -939,3 +943,34 @@ impl DomainState {
 pub const NODES_DO_NOT_NOTIFY: &str = "Nodes don't send notices. To ask/decide use ask; to need an action use request_action; for input use request_input; to have the user try something use request_test; report results in present_result.";
 /// What the orchestrator is told when it answers a maintenance message with a card.
 pub const MAINTENANCE_GETS_NO_CARD: &str = "this Request is a maintenance message sent with alondra send: act on it and close it with close_request, without a card for the user. It is answered only when sent with --reply.";
+
+/// The one name that always means the orchestrator, whatever session it runs in now.
+pub const ORCHESTRATOR: &str = "orchestrator";
+
+/// Who a typed name addresses: the orchestrator, a node, or nobody.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Target {
+    /// The orchestrator, with the session it runs in, if one was ever launched.
+    Orchestrator(Option<AgentId>),
+    Agent(AgentId),
+    Unknown,
+}
+
+impl DomainState {
+    /// Resolves "orchestrator", the orchestrator's session id or its last segment to the
+    /// orchestrator; an exact agent id to that agent; anything else, translations included,
+    /// to nobody.
+    pub fn resolve_target(&self, name: &str) -> Target {
+        if name == ORCHESTRATOR {
+            return Target::Orchestrator(self.orchestrator_session.clone());
+        }
+        let names_session = |id: &AgentId| id.0 == name || (!name.is_empty() && id.0.contains('-') && id.0.rsplit('-').next() == Some(name));
+        if let Some(session) = self.orchestrator_session.as_ref().filter(|session| names_session(session)) {
+            return Target::Orchestrator(Some(session.clone()));
+        }
+        match self.agents.get(&AgentId::from(name)) {
+            Some(agent) => Target::Agent(agent.id.clone()),
+            None => Target::Unknown,
+        }
+    }
+}

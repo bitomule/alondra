@@ -56,6 +56,7 @@ fn interrupt_action(id: &str, context: &RenderContext<'_>) -> Option<super::Acti
 /// is not, and neither is one the user closed.
 pub(super) fn in_fleet(agent: &crate::domain::Agent, context: &RenderContext<'_>) -> bool {
     agent.id.0 != "orchestrator"
+        && context.domain.orchestrator_session.as_ref() != Some(&agent.id)
         && !context.live.closed_nodes.contains(&agent.id.0)
         && (agent.connected || common::current_task(context.domain, &agent.id).is_some()
             || context.live.nodes.iter().any(|node| node.agent_id == agent.id.0))
@@ -519,8 +520,8 @@ fn project_of(agent: &AgentId, context: &RenderContext<'_>) -> String {
 
 pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, BuildError> {
     common::id(id)?;
-    if id == "orchestrator" {
-        return orchestrator(context);
+    if let crate::domain::Target::Orchestrator(_) = context.domain.resolve_target(id) {
+        return orchestrator(id, context);
     }
     let agent = context
         .domain
@@ -741,10 +742,10 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
     Ok(view)
 }
 
-fn orchestrator(context: &RenderContext<'_>) -> Result<View, BuildError> {
+fn orchestrator(id: &str, context: &RenderContext<'_>) -> Result<View, BuildError> {
     let mut view = common::view(
         "node",
-        "node:orchestrator",
+        &format!("node:{id}"),
         Some(t!(context.lang, "Orchestrator", "Orquestador").into()),
         context,
         vec![],
@@ -765,7 +766,12 @@ fn orchestrator(context: &RenderContext<'_>) -> Result<View, BuildError> {
                 value: live.map_or(0, |o| o.queue_depth).to_string(),
                 tone: None,
                 link: None,
-            }],
+            }].into_iter().chain(context.domain.orchestrator_session.as_ref().map(|session| Fact {
+                label: t!(context.lang, "Session", "Sesión").into(),
+                value: session.0.clone(),
+                tone: None,
+                link: None,
+            })).collect(),
         })],
     ));
     if let Some(failure) = common::orchestrator_failure(context) {

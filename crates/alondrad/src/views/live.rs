@@ -390,7 +390,7 @@ pub(crate) async fn gather(
     for id in keys
         .iter()
         .filter_map(|key| key.strip_prefix("node:"))
-        .filter(|id| *id != "orchestrator")
+        .filter(|id| !matches!(state.resolve_target(id), alondra_core::domain::Target::Orchestrator(_)))
     {
         let path = format!("/agents/{id}/activity");
         let activity_revision = activity_source_revision(client, id);

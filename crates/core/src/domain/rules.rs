@@ -2013,6 +2013,13 @@ impl DomainState {
                 };
                 self.orchestrator_generation = *generation;
             }
+            Command::BindOrchestratorSession { session_id } => {
+                system(actor)?;
+                if session_id.0.trim().is_empty() {
+                    return fail("invalid_input", "The orchestrator's session id is empty");
+                }
+                self.orchestrator_session = Some(session_id.clone());
+            }
             Command::CreateTask {
                 task_id,
                 request_id,
