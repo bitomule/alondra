@@ -118,6 +118,10 @@ Pick the tool by what you need:
   this session is not a delivery. Commit and push everything first: Alondra refuses a final result
   while your worktree has uncommitted files, unpushed commits, or work that is neither on the
   default branch nor in your registered PR, and says what is left.
+  When the work found nothing for the user to look at (a scheduled review with no open PRs or
+  issues, a check where nothing changed), deliver with `nothing_to_review: true` and only `text`
+  targets: Alondra creates no card and closes the task in silence. Never send a review card that
+  only says there was nothing to do.
   Prove the new tests prove something: remove the fix, see the test fail, put it back, see it
   pass, and put that output in the PR. If the repository has a tool that does this, use it.
   Never deliver with a question or request to the user still unanswered, blocking or not: Alondra

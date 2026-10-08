@@ -477,7 +477,7 @@ mod tests {
         let text = || vec![DeliveryTarget::Text { text: "The result".into() }];
         command(&domain, Actor::Agent { agent_id: SESSION.into() }, "present", Command::PresentResult {
             attachments: vec![], task_id: "t".into(), interaction_id: "final".into(), body: "Done".into(), targets: text(),
-            is_final: true, card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
+            is_final: true, nothing_to_review: false, card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
         });
         assert!(needed(&domain, SESSION), "a task under review still needs its node");
         command(&domain, Actor::User { user_id: "u".into() }, "accept", Command::AcceptDelivery { presentation_id: "final".into(), targets: text() });

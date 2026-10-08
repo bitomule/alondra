@@ -2983,9 +2983,14 @@ impl DomainState {
                 body,
                 targets,
                 is_final,
+                nothing_to_review,
                 card,
             } => {
                 self.assigned(actor, task_id)?;
+                if *nothing_to_review && (!*is_final || targets.iter().any(|t| !matches!(t, DeliveryTarget::Text { .. }))) {
+                    return refuse("invalid_input", "nothing_to_review",
+                        "nothing_to_review is only for a final delivery without a pull request or document: it closes the task without a card");
+                }
                 self.current_pr_targets(task_id, targets)?;
                 self.targets(task_id, targets)?;
                 if *is_final && self.blockers(task_id) {
@@ -3045,6 +3050,9 @@ impl DomainState {
                         .collect();
                     for reviewer in reviewers {
                         self.notify(&reviewer, Some(interaction_id.clone()), "The task you review delivered again: review its new final delivery, present your result again and then give your verdict.", effects)?;
+                    }
+                    if *nothing_to_review {
+                        self.accept(interaction_id, Feedback::ALONDRA)?;
                     }
                 }
                 created.push(interaction_id.0.clone());

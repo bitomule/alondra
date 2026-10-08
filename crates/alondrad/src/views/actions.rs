@@ -1728,7 +1728,7 @@ mod tests {
             apply_seed_command(&domain, Actor::Agent { agent_id: "agent-a".into() }, &format!("present-{task_id}"), Command::PresentResult {
                 attachments: vec![], task_id: task_id.into(), interaction_id: delivery_id.clone().into(),
                 body: "Complete".into(), targets: vec![DeliveryTarget::Text { text: "Complete".into() }],
-                is_final: true, card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
+                is_final: true, nothing_to_review: false, card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
             });
             apply_seed_command(&domain, Actor::User { user_id: "user".into() }, &format!("accept-{task_id}"), Command::AcceptDelivery {
                 presentation_id: delivery_id.clone().into(),
@@ -2128,7 +2128,7 @@ mod tests {
         apply_seed_command(domain, agent, "present", Command::PresentResult {
             attachments: vec![], task_id: "task".into(), interaction_id: "result".into(), body: "Ready".into(),
             targets: vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: "0123456789abcdef".into() }],
-            is_final: true, card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
+            is_final: true, nothing_to_review: false, card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
         });
     }
 
@@ -2297,7 +2297,7 @@ mod tests {
         apply_seed_command(domain, Actor::Agent { agent_id: "agent-a".into() }, interaction, Command::PresentResult {
             attachments: vec![], task_id: "task".into(), interaction_id: interaction.into(), body: "Ready again".into(),
             targets: vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: "0123456789abcdef".into() }],
-            is_final: true, card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
+            is_final: true, nothing_to_review: false, card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
         });
     }
 
@@ -2398,7 +2398,7 @@ mod tests {
         apply_seed_command(&domain, Actor::Agent { agent_id: "agent-a".into() }, "present-moved", Command::PresentResult {
             attachments: vec![], task_id: "task".into(), interaction_id: "result-2".into(), body: "Pushed again".into(),
             targets: vec![alondra_core::domain::DeliveryTarget::PullRequest { pr_id: "pr".into(), head: moved.into() }],
-            is_final: true, card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
+            is_final: true, nothing_to_review: false, card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
         });
         let revision = domain.state().unwrap().revision;
         let reply = act(&home, &domain, &client, FIRST, old_card, Some("squash"), None).await;

@@ -138,7 +138,7 @@ impl Rig {
     fn deliver_and_accept(&self) {
         command(&self.domain, agent(), "present", Command::PresentResult {
             attachments: vec![], task_id: "t".into(), interaction_id: "final".into(), body: "Done".into(), targets: text(),
-            is_final: true, card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
+            is_final: true, nothing_to_review: false, card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
         });
         command(&self.domain, user(), "accept", Command::AcceptDelivery { presentation_id: "final".into(), targets: text() });
     }

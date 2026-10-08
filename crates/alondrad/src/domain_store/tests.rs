@@ -107,6 +107,7 @@ fn present(store: &mut DomainStore) {
                 text: "The answer".into(),
             }],
             is_final: true,
+            nothing_to_review: false,
             attachments: vec![], card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
         },
     );
@@ -834,7 +835,7 @@ fn restart_preserves_decisions_documents_and_relations() {
                     revision_id: "revision-1".into(),
                 },
             ],
-            is_final: true, card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
+            is_final: true, nothing_to_review: false, card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
         },
     );
     execute(
@@ -948,6 +949,7 @@ fn attachments_of_interaction_answer_feedback_and_delivery_survive_restart() {
                 text: "Result".into(),
             }],
             is_final: true,
+            nothing_to_review: false,
             attachments: vec![attachment("delivery-file")], card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
         },
     );
@@ -1131,7 +1133,7 @@ fn document_package(store: &mut DomainStore, pr: bool) -> Vec<DeliveryTarget> {
             interaction_id: "delivery-1".into(),
             body: "Finished the design".into(),
             targets: targets.clone(),
-            is_final: true,
+            is_final: true, nothing_to_review: false,
             attachments: vec![], card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
         },
     );
@@ -1266,6 +1268,7 @@ fn a_new_final_reports_the_acceptance_it_superseded_and_feedback_does_not() {
                 text: "Another answer".into(),
             }],
             is_final: true,
+            nothing_to_review: false,
             attachments: vec![], card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
         },
     );
@@ -1445,7 +1448,7 @@ fn task_relations_a_verdict_and_the_split_review_states_survive_a_restart() {
     execute(&mut store, &reviewer, "start-review", Command::StartTask { task_id: "task-2".into() });
     execute(&mut store, &reviewer, "present-review", Command::PresentResult {
         task_id: "task-2".into(), interaction_id: "delivery-2".into(), body: "Reviewed".into(),
-        targets: vec![DeliveryTarget::Text { text: "The review".into() }], is_final: true, attachments: vec![],
+        targets: vec![DeliveryTarget::Text { text: "The review".into() }], is_final: true, nothing_to_review: false, attachments: vec![],
         card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
     });
     execute(&mut store, &reviewer, "changes", Command::RecordVerdict {
@@ -1469,12 +1472,12 @@ fn task_relations_a_verdict_and_the_split_review_states_survive_a_restart() {
     assert_eq!(pushes(&store, "delivery-1"), 0, "no push while a review holds the delivery back");
     execute(&mut store, &agent(), "present-again", Command::PresentResult {
         task_id: "task-1".into(), interaction_id: "delivery-1b".into(), body: "Fixed".into(),
-        targets: vec![DeliveryTarget::Text { text: "The answer".into() }], is_final: true, attachments: vec![],
+        targets: vec![DeliveryTarget::Text { text: "The answer".into() }], is_final: true, nothing_to_review: false, attachments: vec![],
         card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
     });
     execute(&mut store, &reviewer, "present-review-again", Command::PresentResult {
         task_id: "task-2".into(), interaction_id: "delivery-2b".into(), body: "Reviewed again".into(),
-        targets: vec![DeliveryTarget::Text { text: "The review".into() }], is_final: true, attachments: vec![],
+        targets: vec![DeliveryTarget::Text { text: "The review".into() }], is_final: true, nothing_to_review: false, attachments: vec![],
         card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
     });
     execute(&mut store, &reviewer, "approve", Command::RecordVerdict {

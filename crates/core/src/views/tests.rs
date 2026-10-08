@@ -4029,7 +4029,7 @@ fn presented_pr() -> DomainState {
             allowed_methods: vec![MergeMethod::Squash] }),
         (agent, Command::PresentResult { attachments: vec![], task_id: "t".into(), interaction_id: "d".into(),
             body: "Ready".into(), targets: vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: "head1".into() }],
-            is_final: true, card: crate::domain::CardSpec::delivery("Review the result", &[], true) }),
+            is_final: true, nothing_to_review: false, card: crate::domain::CardSpec::delivery("Review the result", &[], true) }),
     ] {
         execute(&mut state, actor, command);
     }

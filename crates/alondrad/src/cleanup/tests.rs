@@ -124,7 +124,7 @@ impl Rig {
                 let targets = vec![DeliveryTarget::Text { text: "Result".into() }];
                 command(&self.domain, Actor::Agent { agent_id: session.clone().into() }, Command::PresentResult {
                     attachments: vec![], task_id: id.clone().into(), interaction_id: format!("final-{n}").into(), body: "Done".into(),
-                    targets: targets.clone(), is_final: true, card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true) });
+                    targets: targets.clone(), is_final: true, nothing_to_review: false, card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true) });
                 command(&self.domain, user(), Command::AcceptDelivery { presentation_id: format!("final-{n}").into(), targets });
                 command(&self.domain, Actor::System, Command::RecordNodeEnd { task_id: id.clone().into(), end: NodeEnd::Closed, agent_id: None });
                 self.forget_wrap_up(&id);

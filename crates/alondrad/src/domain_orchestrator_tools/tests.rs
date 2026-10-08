@@ -660,7 +660,7 @@ async fn a_launch_of_a_follow_up_task_carries_the_earlier_result_and_pull_reques
         repository: "me/app".into(), number: 12, head: "head1".into(), base: "main".into(), allowed_methods: vec![alondra_core::domain::MergeMethod::Squash] });
     let targets = || vec![alondra_core::domain::DeliveryTarget::PullRequest { pr_id: "pr".into(), head: "head1".into() }];
     command(&f.domain, author, Command::PresentResult { attachments: vec![], task_id: "t".into(), interaction_id: "final".into(),
-        body: "  The colours live in one file now.  ".into(), targets: targets(), is_final: true,
+        body: "  The colours live in one file now.  ".into(), targets: targets(), is_final: true, nothing_to_review: false,
         card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true) });
     command(&f.domain, user(), Command::AcceptDelivery { presentation_id: "final".into(), targets: targets() });
     command(&f.domain, Actor::System, Command::ObservePrState { pr_id: "pr".into(), head: "head1".into(), base: "main".into(),
@@ -756,7 +756,7 @@ async fn the_changes_the_user_asked_for_reach_the_node_that_takes_the_task_over(
     give(&f, "t", "agent-b");
     let targets = || vec![alondra_core::domain::DeliveryTarget::Text { text: "Result".into() }];
     command(&f.domain, Actor::Agent { agent_id: "agent-b".into() }, Command::PresentResult { attachments: vec![], task_id: "t".into(),
-        interaction_id: "final".into(), body: "Done".into(), targets: targets(), is_final: true,
+        interaction_id: "final".into(), body: "Done".into(), targets: targets(), is_final: true, nothing_to_review: false,
         card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true) });
     command(&f.domain, user(), Command::SubmitFeedback { attachments: vec![], presentation_id: "final".into(), targets: targets(),
         body: "  Use the new palette  ".into(), instruction: alondra_core::domain::Instruction::Changes });

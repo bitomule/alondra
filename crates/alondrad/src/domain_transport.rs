@@ -1083,7 +1083,7 @@ mod tests {
         command(&domain, Actor::Agent { agent_id: "session-a".into() }, "present", Command::PresentResult {
             attachments: vec![], task_id: "task-session-a".into(), interaction_id: "delivery".into(),
             body: "Ready".into(), targets: vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: head.into() }],
-            is_final: true, card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
+            is_final: true, nothing_to_review: false, card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
         });
         command(&domain, Actor::User { user_id: "u".into() }, "authorize", Command::AuthorizeMerge {
             authorization_id: "auth".into(), presentation_id: "delivery".into(), pr_id: "pr".into(),
@@ -1320,6 +1320,7 @@ mod tests {
         command(&domain, agent_actor(), "present", Command::PresentResult {
             attachments: vec![], task_id: "task".into(), interaction_id: "delivery".into(),
             body: "Done".into(), targets: vec![DeliveryTarget::Text { text: "The answer".into() }], is_final: true,
+            nothing_to_review: false,
             card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
         });
         let stop = json!({"session_id": "agent-a", "hook_event_name": "Stop"});
@@ -1355,7 +1356,7 @@ mod tests {
         node_with_task(&domain);
         command(&domain, agent_actor(), "present", Command::PresentResult {
             attachments: vec![], task_id: "task".into(), interaction_id: "delivery".into(),
-            body: "Done".into(), targets: vec![DeliveryTarget::Text { text: "The answer".into() }], is_final: true, card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
+            body: "Done".into(), targets: vec![DeliveryTarget::Text { text: "The answer".into() }], is_final: true, nothing_to_review: false, card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
         });
         let (reply, _) = hook(&domain, json!({"session_id": "agent-a", "hook_event_name": "Stop"}), Some(6)).await;
         assert_eq!(reply, json!({}), "a presented result already tells the user");

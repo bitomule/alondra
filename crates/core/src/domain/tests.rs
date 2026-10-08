@@ -436,7 +436,7 @@ fn present(s: &mut DomainState, id: &str, targets: Vec<DeliveryTarget>) {
             interaction_id: id.into(),
             body: "Result ready".into(),
             targets,
-            is_final: true, card: crate::domain::CardSpec::delivery("Review the result", &[], true),
+            is_final: true, nothing_to_review: false, card: crate::domain::CardSpec::delivery("Review the result", &[], true),
         },
     )
     .unwrap();
@@ -1451,7 +1451,7 @@ fn no_task_stays_closing_without_a_way_out() {
                 }
                 let shown = exec(&mut s, agent(), Command::PresentResult {
                     attachments: vec![], task_id: "t".into(), interaction_id: "d".into(), body: "Result ready".into(),
-                    targets: targets.clone(), is_final: true, card: crate::domain::CardSpec::delivery("Review the result", &[], true),
+                    targets: targets.clone(), is_final: true, nothing_to_review: false, card: crate::domain::CardSpec::delivery("Review the result", &[], true),
                 });
                 if shown.is_err() {
                     assert!(!presented && end == PrState::Open, "only an open PR left out of the delivery is refused");
@@ -2022,7 +2022,7 @@ fn partial_delivery_and_unread_information_do_not_replace_final_or_block() {
             interaction_id: "partial".into(),
             body: "Supplementary partial".into(),
             targets: text(),
-            is_final: false, card: crate::domain::CardSpec::delivery("Review the result", &[], true),
+            is_final: false, nothing_to_review: false, card: crate::domain::CardSpec::delivery("Review the result", &[], true),
         },
     )
     .unwrap();
@@ -2235,7 +2235,7 @@ fn stack_readiness_is_explicit_and_merge_requires_upstream_merge_and_retarget() 
                 pr_id: "pr-down".into(),
                 head: "head-down".into(),
             }],
-            is_final: true, card: crate::domain::CardSpec::delivery("Review the result", &[], true),
+            is_final: true, nothing_to_review: false, card: crate::domain::CardSpec::delivery("Review the result", &[], true),
         },
     )
     .unwrap();
@@ -2650,7 +2650,7 @@ fn a_registered_pr_is_presented_while_open_and_an_accepted_task_settles_once_it_
     let before = open.clone();
     let error = exec(&mut open, agent(), Command::PresentResult {
         attachments: vec![], task_id: "t".into(), interaction_id: "d".into(), body: "Result ready".into(),
-        targets: text(), is_final: true, card: crate::domain::CardSpec::delivery("Review the result", &[], true),
+        targets: text(), is_final: true, nothing_to_review: false, card: crate::domain::CardSpec::delivery("Review the result", &[], true),
     }).unwrap_err();
     assert_eq!((error.code.as_str(), error.subject.as_deref()), ("pr_missing", Some("targets")));
     assert!(error.message.contains("PR #1 is open") && error.message.contains("head1"), "{}", error.message);
@@ -3012,7 +3012,7 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
             subject: InteractionSubject::PullRequest { pr_id: ids.pr.into() } }, false),
         (Command::PresentResult { attachments: vec![], task_id: ids.task.into(),
             interaction_id: "fresh-delivery".into(), body: "Done".into(), targets: text(),
-            is_final: true, card: crate::domain::CardSpec::delivery("Review the result", &[], true) }, false),
+            is_final: true, nothing_to_review: false, card: crate::domain::CardSpec::delivery("Review the result", &[], true) }, false),
         (Command::SubmitFeedback { attachments: vec![], presentation_id: ids.interaction.into(),
             targets: text(), body: "Change".into(), instruction: Instruction::Changes }, false),
         (Command::AcceptDelivery { presentation_id: ids.interaction.into(), targets: text() }, false),
@@ -3117,7 +3117,7 @@ fn unknown_and_foreign_ids_are_typed_rejections_never_panics() {
     exec(&mut s, b.clone(), Command::PresentResult { attachments: vec![], task_id: "t2".into(),
         interaction_id: "pres2".into(), body: "Done".into(),
         targets: vec![DeliveryTarget::PullRequest { pr_id: "pr2".into(), head: "head1".into() }],
-        is_final: true, card: crate::domain::CardSpec::delivery("Review the result", &[], true) }).unwrap();
+        is_final: true, nothing_to_review: false, card: crate::domain::CardSpec::delivery("Review the result", &[], true) }).unwrap();
     exec(&mut s, user(), Command::AuthorizeMerge { authorization_id: "auth2".into(),
         presentation_id: "pres2".into(), pr_id: "pr2".into(), expected_head: "head1".into(),
         method: MergeMethod::Squash }).unwrap();
@@ -3681,7 +3681,7 @@ fn a_delivery_stacked_on_an_open_pr_is_no_card_until_that_pr_merges_and_then_one
     let delivered = exec(&mut s, agent_b(), Command::PresentResult {
         attachments: vec![], task_id: "down".into(), interaction_id: "d-down".into(), body: "Downstream ready".into(),
         targets: vec![DeliveryTarget::PullRequest { pr_id: "pr-down".into(), head: "head-down".into() }],
-        is_final: true, card: crate::domain::CardSpec::delivery("Review the result", &[], true),
+        is_final: true, nothing_to_review: false, card: crate::domain::CardSpec::delivery("Review the result", &[], true),
     }).unwrap();
     let notified = |outcome: &CommandOutcome| outcome.effects.iter().filter(|e| matches!(e, DomainEffect::NotifyUser { interaction_id, .. } if interaction_id.0 == "d-down")).count();
     assert_eq!(notified(&delivered), 0, "no push while it waits for the PR of the delivery in front");
@@ -3734,7 +3734,7 @@ fn a_final_delivery_is_refused_while_a_question_of_its_task_waits() {
     let before = s.clone();
     let refused = exec(&mut s, agent(), Command::PresentResult {
         attachments: vec![], task_id: "t".into(), interaction_id: "d".into(), body: "Result ready".into(),
-        targets: pr_targets(), is_final: true, card: crate::domain::CardSpec::delivery("Review the result", &[], true),
+        targets: pr_targets(), is_final: true, nothing_to_review: false, card: crate::domain::CardSpec::delivery("Review the result", &[], true),
     }).unwrap_err();
     assert_eq!(refused.code, "unanswered_questions");
     assert!(refused.message.contains("You have unanswered questions (“Decide whether to cover invalid card numbers”)"), "{}", refused.message);

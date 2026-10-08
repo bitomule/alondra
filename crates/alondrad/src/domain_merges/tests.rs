@@ -58,7 +58,7 @@ fn presented(tag: &str, auto_merge: bool) -> (Home, Arc<DomainRuntime>, FakeGith
     });
     command(&domain, Actor::Agent { agent_id: "a".into() }, "present", Command::PresentResult {
         attachments: vec![], task_id: "t".into(), interaction_id: "d".into(), body: "Ready".into(),
-        targets: targets(), is_final: true, card: CardSpec::delivery("Review the result", &[], true),
+        targets: targets(), is_final: true, nothing_to_review: false, card: CardSpec::delivery("Review the result", &[], true),
     });
     let github = FakeGithub::new();
     github.open(7, HEAD, Checks::Passed);
@@ -183,6 +183,7 @@ async fn an_auto_merge_waits_for_the_task_that_reviews_it_and_merges_once_it_app
     command(&domain, reviewer(), "present-review", Command::PresentResult {
         attachments: vec![], task_id: "review".into(), interaction_id: "rd".into(), body: "Looked at it".into(),
         targets: vec![DeliveryTarget::Text { text: "The review".into() }], is_final: true,
+        nothing_to_review: false,
         card: CardSpec::delivery("Review the result", &[], true),
     });
     let mut merger = now();

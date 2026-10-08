@@ -290,6 +290,9 @@ pub enum Command {
         body: String,
         targets: Vec<DeliveryTarget>,
         is_final: bool,
+        /// A final delivery that found nothing for the user to look at: the task closes in silence.
+        #[serde(default)]
+        nothing_to_review: bool,
         card: CardSpec,
     },
     SubmitFeedback {
