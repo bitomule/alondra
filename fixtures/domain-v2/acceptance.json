@@ -229,7 +229,7 @@
         "valid": true
       },
       "accepted": true,
-      "task_status": "closing"
+      "task_status": "waiting_dependency"
     },
     "pr-with-question-child": {
       "extends": "pr-final",
@@ -1368,7 +1368,7 @@
         {
           "path": "tasks.task-1.status",
           "op": "eq",
-          "value": "closing"
+          "value": "waiting_dependency"
         },
         {
           "path": "ui.result",

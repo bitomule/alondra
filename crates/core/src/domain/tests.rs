@@ -538,7 +538,7 @@ fn reassigning_a_task_waiting_for_its_merge_needs_fresh_acceptance() {
     register(&mut s);
     present(&mut s, "d", pr_targets());
     authorize(&mut s);
-    assert_eq!(s.tasks[&"t".into()].state, TaskState::Closing);
+    assert_eq!(s.tasks[&"t".into()].state, TaskState::WaitingDependency, "accepted, waiting for Alondra's merge");
     exec(
         &mut s,
         Actor::System,
@@ -851,7 +851,7 @@ fn accepting_a_pr_delivery_authorizes_alondra_to_merge_it() {
     let authorization = s.merge_authorizations.values().next().expect("an authorization for the PR");
     assert_eq!((authorization.head.as_str(), authorization.method, authorization.attempt, authorization.valid),
         ("head1", MergeMethod::Squash, MergeAttemptState::Unclaimed, true));
-    assert_eq!(s.tasks[&"t".into()].state, TaskState::Closing, "accepted, waiting for Alondra's merge");
+    assert_eq!(s.tasks[&"t".into()].state, TaskState::WaitingDependency, "accepted, waiting for Alondra's merge");
     assert!(matches!(&out.effects[..], [DomainEffect::NotifyAgent { message, .. }] if message.contains("Alondra is merging")),
         "{:?}", out.effects);
 }
@@ -928,7 +928,7 @@ fn a_claimed_attempt_of_a_superseded_delivery_does_not_hold_back_the_new_merge()
         state: PrState::Open, merged_head: None }).unwrap();
     present(&mut s, "d2", vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: "head2".into() }]);
     exec(&mut s, user(), again("auth2", "d2", "head2")).unwrap();
-    assert_eq!(s.tasks[&"t".into()].state, TaskState::Closing);
+    assert_eq!(s.tasks[&"t".into()].state, TaskState::WaitingDependency);
 }
 #[test]
 fn authorization_merge_and_completion_are_three_distinct_steps() {
@@ -1396,7 +1396,7 @@ fn a_presented_pr_closed_after_the_user_accepted_it_closes_the_node() {
     register(&mut state);
     present(&mut state, "d", pr_targets());
     exec(&mut state, user(), Command::AcceptDelivery { presentation_id: "d".into(), targets: pr_targets() }).unwrap();
-    assert_eq!((state.tasks[&"t".into()].state, state.tasks[&"t".into()].wrap_up.asked_at), (TaskState::Closing, None), "Alondra merges it first");
+    assert_eq!((state.tasks[&"t".into()].state, state.tasks[&"t".into()].wrap_up.asked_at), (TaskState::WaitingDependency, None), "Alondra merges it first");
     exec(&mut state, Actor::System, Command::ObservePrState { pr_id: "pr".into(), head: "head1".into(), base: "main".into(),
         state: PrState::Closed, merged_head: None }).unwrap();
     assert!(state.tasks[&"t".into()].wrap_up.asked_at.is_some(), "nothing will merge it, so the node is asked to clean up");
@@ -2508,7 +2508,7 @@ fn mixed_package_needs_merge_authorization_and_document_decision() {
     )
     .unwrap();
     assert!(accepted(&s), "PR authorized and document approved: package accepted");
-    assert_eq!(s.tasks[&"t".into()].state, TaskState::Closing);
+    assert_eq!(s.tasks[&"t".into()].state, TaskState::WaitingDependency);
     assert_eq!(complete(&mut s).unwrap_err().code, "merge_not_confirmed");
     // Feedback dates the document approval; re-authorizing the PR is not enough.
     exec(
@@ -3373,7 +3373,7 @@ fn a_merged_pr_closes_the_task_with_the_merged_notice_before_the_cleanup_request
     register(&mut s);
     present(&mut s, "d", pr_targets());
     let accepted = exec(&mut s, user(), Command::AcceptDelivery { presentation_id: "d".into(), targets: pr_targets() }).unwrap();
-    assert_eq!(s.tasks[&"t".into()].state, TaskState::Closing);
+    assert_eq!(s.tasks[&"t".into()].state, TaskState::WaitingDependency);
     assert!(s.tasks[&"t".into()].wrap_up.asked_at.is_none(), "merge pending: no cleanup yet");
     assert!(!sent_to_node(&accepted).iter().any(|m| m.contains("cleanup_done")));
     let merged = merge_observed(&mut s);

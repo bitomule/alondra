@@ -2214,14 +2214,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn merging_a_closing_task_presses_again_while_it_waits_and_is_told_when_the_merge_is_in_flight() {
+    async fn merging_an_accepted_task_presses_again_while_it_waits_and_is_told_when_the_merge_is_in_flight() {
         let (home, domain, client) = action_home();
         presented_pr(&domain);
         let revision = domain.state().unwrap().revision;
         let accept = ActionId::new(Verb::Accept, "result", revision, None).unwrap();
         assert_eq!(act(&home, &domain, &client, FIRST, accept, None, None).await["outcome"], "applied");
         let state = domain.state().unwrap();
-        assert_eq!(state.tasks[&"task".into()].state, alondra_core::domain::TaskState::Closing);
+        assert_eq!(state.tasks[&"task".into()].state, alondra_core::domain::TaskState::WaitingDependency);
         assert!(crate::domain_merges::due(&state).iter().any(|item| item.pr.id.0 == "pr" && item.method == MergeMethod::Squash),
             "accepting already queued the merge");
         // Alondra has not claimed it yet (it waits for the checks): pressing again makes it look now.

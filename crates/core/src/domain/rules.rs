@@ -1350,7 +1350,7 @@ impl DomainState {
                     } else if self.settled(t, p) {
                         if self.wraps_up(t) { TaskState::Closing } else { TaskState::Done }
                     } else if self.accepted(p) {
-                        TaskState::Closing
+                        TaskState::WaitingDependency
                     } else if self.handed_back(p).is_some() || !t.blocks.is_empty() {
                         if t.started || t.agent_id.is_some() { TaskState::Running } else { TaskState::NotStarted }
                     } else if !self.open_blockers(&t.id).is_empty() {

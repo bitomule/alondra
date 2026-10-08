@@ -36,8 +36,31 @@ pub(crate) struct Status {
     pub head: String,
     pub base: String,
     pub checks: Checks,
-    /// GitHub's `mergeStateStatus` is CLEAN: nothing the base requires is missing, required checks included.
-    pub clean: bool,
+    pub merge_state: MergeState,
+}
+
+/// What GitHub's `mergeable` and `mergeStateStatus` say about merging the PR into its base.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum MergeState {
+    /// CLEAN: nothing the base requires is missing, required checks included.
+    Clean,
+    /// `mergeable` CONFLICTING or `mergeStateStatus` DIRTY: it conflicts with its base.
+    Conflicting,
+    /// UNKNOWN: GitHub has not worked it out yet.
+    Computing,
+    /// BLOCKED, BEHIND, UNSTABLE or HAS_HOOKS: only GitHub's answer to the merge tells.
+    Other,
+}
+
+impl MergeState {
+    fn of(value: &Value) -> Self {
+        match (value["mergeable"].as_str(), value["mergeStateStatus"].as_str()) {
+            (Some("CONFLICTING"), _) | (_, Some("DIRTY")) => Self::Conflicting,
+            (_, Some("CLEAN")) => Self::Clean,
+            (_, Some("UNKNOWN") | None) => Self::Computing,
+            _ => Self::Other,
+        }
+    }
 }
 
 type Pending<'a, T> = Pin<Box<dyn Future<Output = Result<T, String>> + Send + 'a>>;
@@ -79,12 +102,11 @@ impl PrMerger for GhCli {
     fn status<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, Status> {
         Box::pin(async move {
             let url = pr_url(&pr.host, &pr.repository, pr.number);
-            let out = self.run(&["pr", "view", &url, "--json", "state,headRefOid,baseRefName,statusCheckRollup,mergeStateStatus"], None,
+            let out = self.run(&["pr", "view", &url, "--json", "state,headRefOid,baseRefName,statusCheckRollup,mergeStateStatus,mergeable"], None,
                 Duration::from_secs(30)).await?;
             let value: Value = serde_json::from_slice(&out).map_err(|e| e.to_string())?;
             let facts = crate::domain_github::parse(&value)?;
-            Ok(Status { state: facts.state, head: facts.head, base: facts.base, checks: rollup(&value),
-                clean: value["mergeStateStatus"].as_str() == Some("CLEAN") })
+            Ok(Status { state: facts.state, head: facts.head, base: facts.base, checks: rollup(&value), merge_state: MergeState::of(&value) })
         })
     }
     fn merge<'a>(&'a self, pr: &'a PullRequest, head: &'a str, method: MergeMethod) -> Pending<'a, ()> {
@@ -119,13 +141,18 @@ impl PrMerger for GhCli {
         Box::pin(async move {
             let host = alondra_core::domain::normalize_pr_host(&pr.host);
             let repo = format!("repos/{}", pr.repository);
-            let rules = self.run(&["api", "--hostname", &host, &format!("{repo}/rules/branches/{base}?per_page=100")], None, Duration::from_secs(30)).await?;
-            let mut required = ruleset_checks(&serde_json::from_slice(&rules).map_err(|e| e.to_string())?);
+            let mut required = match self.run(&["api", "--hostname", &host, &format!("{repo}/rules/branches/{base}?per_page=100")], None,
+                Duration::from_secs(30)).await
+            {
+                Ok(rules) => ruleset_checks(&serde_json::from_slice(&rules).map_err(|e| e.to_string())?),
+                Err(reason) if no_rules(&reason) => vec![],
+                Err(reason) => return Err(reason),
+            };
             match self.run(&["api", "--hostname", &host, &format!("{repo}/branches/{base}/protection/required_status_checks")], None,
                 Duration::from_secs(30)).await
             {
                 Ok(classic) => required.extend(classic_checks(&serde_json::from_slice(&classic).map_err(|e| e.to_string())?)),
-                Err(reason) if reason.contains("404") => {}
+                Err(reason) if no_rules(&reason) => {}
                 Err(reason) => return Err(reason),
             }
             required.sort();
@@ -156,6 +183,12 @@ pub(crate) fn ruleset_checks(rules: &Value) -> Vec<String> {
     rules.as_array().into_iter().flatten().filter(|rule| rule["type"].as_str() == Some("required_status_checks"))
         .flat_map(|rule| rule["parameters"]["required_status_checks"].as_array().into_iter().flatten())
         .filter_map(|check| check["context"].as_str().map(str::to_owned)).collect()
+}
+
+/// GitHub has no rules to show: none set (404), or a private repository whose plan has no branch
+/// protection (403). Either way no required check is known, and `mergeStateStatus` decides.
+fn no_rules(reason: &str) -> bool {
+    has(reason, &["http 404", "http 403"])
 }
 
 /// The checks a branch's classic protection requires (`.../protection/required_status_checks`).
@@ -438,6 +471,12 @@ impl Merger {
                 }
             };
         }
+        if status.merge_state == MergeState::Conflicting {
+            self.clear_action(domain, pr);
+            hand_back(domain, item, &format!("it has conflicts with {base}: merge {base} into its branch and resolve them",
+                base = status.base))?;
+            return Ok(Step::Settled);
+        }
         match &status.checks {
             Checks::Failed(names) => {
                 self.clear_action(domain, pr);
@@ -449,7 +488,8 @@ impl Merger {
                 return Ok(Step::Wait);
             }
             Checks::Pending => return Ok(Step::Wait),
-            Checks::None if !status.clean => match github.required_checks(pr, &status.base).await {
+            Checks::None if status.merge_state == MergeState::Computing => return Ok(Step::Wait),
+            Checks::None if status.merge_state != MergeState::Clean => match github.required_checks(pr, &status.base).await {
                 Ok(required) if !required.is_empty() => return Ok(Step::Wait),
                 Ok(_) => self.clear_action(domain, pr),
                 Err(reason) => {
@@ -745,13 +785,14 @@ impl FakeGithub {
             required: Default::default() }
     }
     pub(crate) fn open(&self, number: u64, head: &str, checks: Checks) {
-        self.statuses.lock().unwrap().insert(number, Ok(Status { state: PrState::Open, head: head.into(), base: "main".into(), checks, clean: true }));
+        self.statuses.lock().unwrap().insert(number, Ok(Status { state: PrState::Open, head: head.into(), base: "main".into(), checks,
+            merge_state: MergeState::Clean }));
     }
-    /// An open PR whose `mergeStateStatus` is not CLEAN.
+    /// An open PR whose `mergeStateStatus` is BLOCKED.
     pub(crate) fn open_blocked(&self, number: u64, head: &str, checks: Checks) {
         self.open(number, head, checks);
         if let Some(Ok(status)) = self.statuses.lock().unwrap().get_mut(&number) {
-            status.clean = false;
+            status.merge_state = MergeState::Other;
         }
     }
 }

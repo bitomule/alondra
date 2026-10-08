@@ -101,7 +101,7 @@ async fn an_accepted_delivery_is_merged_by_alondra_and_the_node_is_told() {
     assert!(!merger.merge_due(&domain, &github).await.unwrap());
     assert!(github.merged.lock().unwrap().is_empty(), "nothing is merged before the user accepts");
     accept(&domain);
-    assert_eq!(task(&domain), TaskState::Closing);
+    assert_eq!(task(&domain), TaskState::WaitingDependency, "accepted, waiting for Alondra's merge");
     merger.merge_due(&domain, &github).await.unwrap();
     assert_eq!(*github.merged.lock().unwrap(), vec![(7, HEAD.to_owned(), MergeMethod::Squash)]);
     let state = domain.state().unwrap();
@@ -181,7 +181,7 @@ async fn an_auto_merge_waits_for_the_task_that_reviews_it_and_merges_once_it_app
 #[tokio::test]
 async fn an_auto_merge_goes_through_the_claims_checks() {
     let (_home, domain, github) = presented("auto-base", true);
-    github.statuses.lock().unwrap().insert(7, Ok(Status { state: PrState::Open, head: HEAD.into(), base: "develop".into(), checks: Checks::Passed, clean: true }));
+    github.statuses.lock().unwrap().insert(7, Ok(Status { state: PrState::Open, head: HEAD.into(), base: "develop".into(), checks: Checks::Passed, merge_state: MergeState::Clean }));
     assert!(now().merge_due(&domain, &github).await.unwrap());
     assert!(github.merged.lock().unwrap().is_empty(), "GitHub's base differs from the registered one: the claim refuses");
     assert_eq!(domain.state().unwrap().merge_authorizations.values().next().unwrap().attempt, MergeAttemptState::Unclaimed);
@@ -246,12 +246,98 @@ async fn blocked_without_required_checks_is_left_to_githubs_answer() {
 }
 
 #[tokio::test]
-async fn unreadable_rules_make_it_wait_instead_of_merging_blind() {
+async fn rules_github_does_not_answer_make_it_wait_instead_of_merging_blind() {
     let (_home, domain, github) = presented("rules-unreadable", true);
     github.open_blocked(7, HEAD, Checks::None);
-    github.required.lock().unwrap().insert(7, Err("HTTP 403: Resource not accessible".into()));
+    github.required.lock().unwrap().insert(7, Err("error connecting to api.github.com".into()));
     assert!(now().merge_due(&domain, &github).await.unwrap());
     assert!(github.merged.lock().unwrap().is_empty());
+}
+
+/// A `gh` that answers like GitHub does for a private repository without a paid plan: no
+/// rulesets, and a 403 for the classic branch protection. `view` is its answer to `gh pr view`
+/// until `gh pr merge` runs; after that the PR reads as merged.
+fn private_repo_gh(home: &Home, view: &str) -> (GhCli, std::path::PathBuf) {
+    let program = home.0.join("gh");
+    let log = home.0.join("calls");
+    let merged = home.0.join("merged");
+    std::fs::write(&program, format!(r#"#!/bin/sh
+printf '%s\n' "$*" >> {log}
+case "$*" in
+  *protection*) echo 'gh: Upgrade to GitHub Pro or make this repository public to enable this feature. (HTTP 403)' >&2; exit 1;;
+  *rules/branches*) echo '[]';;
+  *isDraft*) echo false;;
+  *"pr merge"*) touch {merged};;
+  *statusCheckRollup*) if [ -f {merged} ]; then printf '%s' '{{"state":"MERGED","headRefOid":"{HEAD}","baseRefName":"main","statusCheckRollup":[]}}'; else printf '%s' '{view}'; fi;;
+esac
+"#, log = log.display(), merged = merged.display())).unwrap();
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+    (GhCli::at(program), log)
+}
+
+fn private_repo_pr(home: &Home, merge_state: &str, mergeable: &str) -> (GhCli, std::path::PathBuf) {
+    private_repo_gh(home, &format!(r#"{{"state":"OPEN","headRefOid":"{HEAD}","baseRefName":"main","statusCheckRollup":[],"mergeable":"{mergeable}","mergeStateStatus":"{merge_state}"}}"#))
+}
+
+#[tokio::test]
+async fn an_accepted_pr_is_not_closing_until_github_says_it_is_merged() {
+    let (_home, domain, github) = presented("closing-after-merge", false);
+    github.open(7, HEAD, Checks::Pending);
+    accept(&domain);
+    let mut merger = now();
+    assert!(merger.merge_due(&domain, &github).await.unwrap(), "the merge waits for the checks");
+    assert_ne!(task(&domain), TaskState::Closing, "accepted is not merged");
+    let state = domain.state().unwrap();
+    assert_eq!(state.attention(&state.tasks[&TaskId::from("t")]), Attention::Wait(WaitReason::Merging { pr: 7 }));
+    github.open(7, HEAD, Checks::Passed);
+    merger.merge_due(&domain, &github).await.unwrap();
+    assert_eq!(task(&domain), TaskState::Closing, "GitHub confirmed the merge");
+}
+
+/// The #778 case: accepted while it conflicted with #772, with no checks run and the base's
+/// branch protection unreadable (403).
+#[tokio::test]
+async fn a_conflicting_pr_goes_back_to_its_node_to_resolve_conflicts_with_main() {
+    for (merge_state, mergeable) in [("DIRTY", "CONFLICTING"), ("DIRTY", "UNKNOWN"), ("UNKNOWN", "CONFLICTING")] {
+        let (home, domain, _) = presented("conflicting", false);
+        let (gh, log) = private_repo_pr(&home, merge_state, mergeable);
+        accept(&domain);
+        let mut merger = Merger::with(Duration::from_secs(3600), Duration::from_secs(3600));
+        assert!(!merger.merge_due(&domain, &gh).await.unwrap(), "nothing is left waiting ({merge_state}, {mergeable})");
+        assert_eq!(task(&domain), TaskState::Running, "the node resolves the conflicts");
+        let feedback = feedback(&domain);
+        assert!(feedback.len() == 1 && feedback[0].contains("conflicts with main"), "{feedback:?}");
+        merger.merge_due(&domain, &gh).await.unwrap();
+        let calls = std::fs::read_to_string(&log).unwrap();
+        assert!(!calls.contains("pr merge") && !calls.contains("protection"), "{calls}");
+        assert_eq!(self::feedback(&domain).len(), 1, "handed back once");
+    }
+}
+
+#[tokio::test]
+async fn branch_protection_github_refuses_to_show_counts_as_no_required_checks() {
+    let home = Home(std::env::temp_dir().join(format!("alondra-merges-403-{}", crate::auth::random_hex(8))));
+    std::fs::create_dir(&home.0).unwrap();
+    let (gh, _) = private_repo_gh(&home, "{}");
+    let pr = PullRequest { id: "pr".into(), task_id: "t".into(), host: "github".into(), repository: "owner/repo".into(),
+        number: 7, head: HEAD.into(), base: "main".into(), state: PrState::Open, merged_head: None,
+        allowed_methods: vec![MergeMethod::Squash], review: None };
+    assert_eq!(gh.required_checks(&pr, "main").await, Ok(vec![]));
+}
+
+/// A blocked PR with no checks in a private repository without a paid plan: the 403 on its
+/// branch protection does not hold the merge, which is decided on the first pass.
+#[tokio::test]
+async fn a_403_on_branch_protection_is_decided_by_the_merge_state_and_never_retried() {
+    let (home, domain, _) = presented("protection-403", false);
+    let (gh, log) = private_repo_pr(&home, "BLOCKED", "MERGEABLE");
+    accept(&domain);
+    let mut merger = Merger::with(Duration::from_secs(3600), Duration::from_secs(3600));
+    assert!(!merger.merge_due(&domain, &gh).await.unwrap(), "nothing is left waiting");
+    assert_eq!(domain.state().unwrap().pull_requests[&PrId::from("pr")].state, PrState::Merged);
+    assert_eq!(task(&domain), TaskState::Closing);
+    let calls = std::fs::read_to_string(&log).unwrap();
+    assert_eq!(calls.matches("protection").count(), 1, "{calls}");
 }
 
 #[test]
@@ -273,7 +359,7 @@ async fn pressing_merge_again_while_the_checks_wait_is_acted_on_at_once() {
     let (_home, domain, github) = presented("pressed", false);
     github.open(7, HEAD, Checks::Pending);
     accept(&domain);
-    assert_eq!(task(&domain), TaskState::Closing);
+    assert_eq!(task(&domain), TaskState::WaitingDependency);
     let mut merger = Merger::with(Duration::from_secs(3600), Duration::from_secs(3600));
     assert!(merger.merge_due(&domain, &github).await.unwrap(), "the checks are pending: Alondra waits");
     github.open(7, HEAD, Checks::Passed);
@@ -305,7 +391,7 @@ async fn github_waiting_for_required_checks_keeps_the_acceptance() {
     assert!(merger.merge_due(&domain, &github).await.unwrap());
     assert!(merger.merge_due(&domain, &github).await.unwrap());
     assert!(feedback(&domain).is_empty() && accepted(&domain));
-    assert_eq!(task(&domain), TaskState::Closing);
+    assert_eq!(task(&domain), TaskState::WaitingDependency);
     github.merges.lock().unwrap().remove(&7);
     merger.merge_due(&domain, &github).await.unwrap();
     end_node(&domain);
@@ -372,7 +458,7 @@ async fn a_merge_refused_for_access_raises_one_card_while_reads_work_until_a_mer
     assert_eq!(raised.len(), 1, "the successful reads in between do not clear it");
     assert!(raised[0].card.need.starts_with("Alondra can't merge PR #7: GraphQL: must have admin rights"), "{}", raised[0].card.need);
     assert!(!raised[0].withdrawn);
-    assert_eq!(task(&domain), TaskState::Closing, "not handed back: only the user can grant access");
+    assert_eq!(task(&domain), TaskState::WaitingDependency, "not handed back: only the user can grant access");
     github.merges.lock().unwrap().remove(&7);
     merger.merge_due(&domain, &github).await.unwrap();
     assert!(problems(&domain).iter().all(|card| card.withdrawn));
@@ -528,7 +614,7 @@ async fn a_merge_github_keeps_failing_on_its_side_goes_back_after_the_last_try()
     for _ in 1..TRANSIENT_MERGE_TRIES {
         assert!(merger.merge_due(&domain, &gh).await.unwrap());
     }
-    assert_eq!(task(&domain), TaskState::Closing, "still Alondra's to merge");
+    assert_eq!(task(&domain), TaskState::WaitingDependency, "still Alondra's to merge");
     assert!(feedback(&domain).is_empty());
     merger.merge_due(&domain, &gh).await.unwrap();
     assert_eq!(tries(&log), TRANSIENT_MERGE_TRIES as usize);
@@ -599,7 +685,7 @@ async fn gh_that_cannot_work_raises_one_card_until_it_works_again() {
     assert_eq!(raised.len(), 1, "one card however long it fails");
     assert!(raised[0].card.need.starts_with("Alondra can't merge PR #7: To get started"), "{}", raised[0].card.need);
     assert_eq!(raised[0].scope, Scope::Task { task_id: "t".into() });
-    assert_eq!(task(&domain), TaskState::Closing, "the acceptance stands");
+    assert_eq!(task(&domain), TaskState::WaitingDependency, "the acceptance stands");
     github.open(7, HEAD, Checks::Passed);
     merger.merge_due(&domain, &github).await.unwrap();
     assert!(problems(&domain).iter().all(|card| card.withdrawn));
