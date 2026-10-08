@@ -406,16 +406,12 @@ impl DomainStore {
     }
 
     pub(crate) fn open(path: &Path) -> Result<Self> {
-        let (mut conn, resolved) = connection::open(path)?;
-        let found: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
-        if found != 0 && found != SCHEMA_VERSION {
-            drop(conn);
-            let kept = connection::set_aside(&resolved, crate::unix_seconds())?;
-            log!("domain database has schema {found}, this build uses {SCHEMA_VERSION}; moved it to {} and started an empty one", kept.display());
-            conn = connection::open(&resolved)?.0;
-        }
+        let (mut conn, _) = connection::open(path)?;
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let version: i64 = tx.pragma_query_value(None, "user_version", |r| r.get(0))?;
+        ensure!(version == 0 || version == SCHEMA_VERSION,
+            "unsupported domain database schema {version}; this build requires {SCHEMA_VERSION}; database preserved at {}",
+            path.display());
         let application: i64 = tx.pragma_query_value(None, "application_id", |r| r.get(0))?;
         if version == 0 {
             let existing: i64 = tx.query_row(
@@ -481,6 +477,7 @@ impl DomainStore {
         tx.commit()?;
         let store = Self::from_connection(conn);
         store.integrity_check()?;
+        store.conn.set_db_config(rusqlite::config::DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, false)?;
         Ok(store)
     }
     fn from_connection(conn: Connection) -> Self {

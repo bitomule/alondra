@@ -528,24 +528,122 @@ fn a_legacy_writer_is_rejected_and_a_current_store_keeps_its_rows() {
 }
 
 #[test]
-fn a_store_with_another_schema_version_is_moved_aside_and_replaced_by_an_empty_one() {
-    for other in [1, 7, 8, SCHEMA_VERSION + 1] {
-        let fixture = Fixture::new();
-        let mut store = DomainStore::open(&fixture.path()).unwrap();
-        execute(&mut store, &user(), "old", Command::CreateRequest { request_id: "old".into(), body: "Made before".into(), auto_merge: false, maintenance: false, message: false });
-        let old_epoch = store.load().unwrap().data_epoch.clone();
-        store.conn.pragma_update(None, "user_version", other).unwrap();
-        drop(store);
-        let mut fresh = DomainStore::open(&fixture.path()).unwrap();
-        let state = fresh.load().unwrap();
-        assert!(state.requests.is_empty() && state.revision == 0 && state.data_epoch != old_epoch);
-        assert_eq!(fresh.conn.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), SCHEMA_VERSION);
-        let kept: Vec<_> = fixture.0.read_dir().unwrap().map(|e| e.unwrap().path())
-            .filter(|p| p.to_string_lossy().contains("domain.sqlite.old-")).collect();
-        assert_eq!(kept.len(), 1, "one moved-aside database for schema {other}");
-        let old = Connection::open(&kept[0]).unwrap();
-        assert_eq!(old.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), other);
-        assert_eq!(old.query_row("SELECT body FROM requests", [], |r| r.get::<_, String>(0)).unwrap(), "Made before");
+fn an_unsupported_schema_is_refused_without_replacing_the_database() {
+    use std::os::unix::fs::MetadataExt;
+    for journal in ["wal", "delete"] {
+        for other in [1, 7, 8, SCHEMA_VERSION + 1] {
+            let fixture = Fixture::new();
+            let mut store = DomainStore::open(&fixture.path()).unwrap();
+            let command = envelope(&mut store, "old", Command::CreateRequest {
+                request_id: "old".into(), body: "Made before".into(),
+                auto_merge: false, maintenance: false, message: false,
+            });
+            store.execute_authenticated(&user(), &command, None).unwrap();
+            let expected = store.load().unwrap();
+            store.conn.pragma_update(None, "user_version", other).unwrap();
+            store.conn.pragma_update(None, "journal_mode", journal).unwrap();
+            drop(store);
+            let before = fs::metadata(fixture.path()).unwrap();
+            let bytes = fs::read(fixture.path()).unwrap();
+            let error = match DomainStore::open(&fixture.path()) {
+                Ok(_) => panic!("schema {other} must not activate an empty replacement"),
+                Err(error) => error,
+            };
+            assert!(error.to_string().contains("unsupported domain database schema"), "{error:#}");
+            let after = fs::metadata(fixture.path()).unwrap();
+            assert_eq!((after.dev(), after.ino()), (before.dev(), before.ino()));
+            assert_eq!(fs::read(fixture.path()).unwrap(), bytes);
+            assert!(!fixture.0.read_dir().unwrap().any(|entry|
+                entry.unwrap().file_name().to_string_lossy().contains(".old-")));
+            let preserved = Connection::open(&fixture.path()).unwrap();
+            assert_eq!(preserved.pragma_query_value(None, "user_version", |row|
+                row.get::<_, i64>(0)).unwrap(), other);
+            assert_eq!(preserved.query_row("SELECT body FROM requests", [], |row|
+                row.get::<_, String>(0)).unwrap(), "Made before");
+            preserved.pragma_update(None, "user_version", SCHEMA_VERSION).unwrap();
+            drop(preserved);
+            let mut reopened = DomainStore::open(&fixture.path()).unwrap();
+            assert_eq!(reopened.load().unwrap(), expected);
+            let retry = reopened.execute_authenticated(&user(), &command, None).unwrap();
+            assert_eq!(retry.state, expected, "the original semantic receipt survives refusal");
+        }
+    }
+}
+
+
+#[test]
+#[ignore = "internal isolated crash fixture"]
+fn crash_domain_transaction_fixture() {
+    let Some(path) = std::env::var_os("ALONDRA_CRASH_DOMAIN") else { return; };
+    let connection = Connection::open(PathBuf::from(path)).unwrap();
+    connection.pragma_update(None, "cache_size", 1).unwrap();
+    connection.pragma_update(None, "wal_autocheckpoint", 0).unwrap();
+    connection.execute_batch("BEGIN IMMEDIATE").unwrap();
+    if std::env::var_os("ALONDRA_UNCOMMITTED_SCHEMA").is_some() {
+        connection.pragma_update(None, "user_version", 99).unwrap();
+    }
+    connection.execute_batch("UPDATE requests SET body='Uncommitted';
+        UPDATE domain_meta SET data_epoch='uncommitted',revision=revision+100;
+        DELETE FROM semantic_receipts;
+        INSERT INTO requests(id,body,closed) VALUES('uncommitted',hex(zeroblob(524288)),0);").unwrap();
+    unsafe { libc::_exit(0); }
+}
+
+#[test]
+fn crash_recovery_preserves_committed_work_and_receipts_before_schema_admission() {
+    use std::os::unix::fs::MetadataExt;
+    for journal in ["WAL", "DELETE"] {
+        for (committed_schema, uncommitted_schema) in [(SCHEMA_VERSION, false), (99, false), (SCHEMA_VERSION, true)] {
+            let fixture = Fixture::new();
+            let mut store = DomainStore::open(&fixture.path()).unwrap();
+            seeded(&mut store);
+            let command = envelope(&mut store, "retained-command", Command::CreateRequest {
+                request_id: "retained".into(), body: "Committed work".into(),
+                auto_merge: false, maintenance: false, message: false,
+            });
+            let committed = store.execute_authenticated(&user(), &command, None).unwrap();
+            let expected = committed.state;
+            let receipt_count: i64 = store.conn.query_row("SELECT count(*) FROM semantic_receipts", [], |r| r.get(0)).unwrap();
+            store.conn.pragma_update(None, "user_version", committed_schema).unwrap();
+            store.conn.pragma_update(None, "journal_mode", journal).unwrap();
+            drop(store);
+            let before = fs::metadata(fixture.path()).unwrap();
+            let mut child = std::process::Command::new(std::env::current_exe().unwrap());
+            child.args(["--ignored", "--exact", "domain_store::tests::crash_domain_transaction_fixture"])
+                .env("ALONDRA_CRASH_DOMAIN", fixture.path()).env("HOME", &fixture.0)
+                .env_remove("CLAUDE_HOME").env_remove("CLAUDE_CONFIG_DIR")
+                .env_remove("ALONDRA_UNCOMMITTED_SCHEMA");
+            if uncommitted_schema { child.env("ALONDRA_UNCOMMITTED_SCHEMA", "1"); }
+            let child = child.output().unwrap();
+            assert!(child.status.success(), "{}", String::from_utf8_lossy(&child.stderr));
+            let sidecar = fixture.path().with_file_name(if journal == "DELETE" { "domain.sqlite-journal" } else { "domain.sqlite-wal" });
+            assert!(fs::metadata(&sidecar).unwrap().len() > 0, "crash did not retain its transaction journal");
+            let opened = DomainStore::open(&fixture.path());
+            if committed_schema == SCHEMA_VERSION {
+                let mut recovered = opened.unwrap();
+                assert_eq!(recovered.load().unwrap(), expected, "compatible stores must recover automatically");
+                drop(recovered);
+            } else {
+                let error = opened.err().expect("unsupported committed schema activated a store");
+                assert!(error.to_string().contains("unsupported domain database schema 99"), "{error:#}");
+            }
+            let after = fs::metadata(fixture.path()).unwrap();
+            assert_eq!((after.dev(), after.ino()), (before.dev(), before.ino()));
+            assert!(!fixture.0.read_dir().unwrap().any(|entry| entry.unwrap().file_name().to_string_lossy().contains(".old-")));
+            let preserved = Connection::open(&fixture.path()).unwrap();
+            assert_eq!(preserved.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), committed_schema);
+            assert_eq!(preserved.query_row("PRAGMA integrity_check", [], |r| r.get::<_, String>(0)).unwrap(), "ok");
+            assert_eq!(preserved.query_row("SELECT body FROM requests WHERE id='retained'", [], |r| r.get::<_, String>(0)).unwrap(), "Committed work");
+            assert_eq!(preserved.query_row("SELECT count(*) FROM requests WHERE id='uncommitted'", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+            assert_eq!(preserved.query_row("SELECT count(*) FROM semantic_receipts", [], |r| r.get::<_, i64>(0)).unwrap(), receipt_count);
+            preserved.pragma_update(None, "user_version", SCHEMA_VERSION).unwrap();
+            drop(preserved);
+            let mut recovered = DomainStore::open(&fixture.path()).unwrap();
+            assert_eq!(recovered.load().unwrap(), expected);
+            let retry = recovered.execute_authenticated(&user(), &command, None).unwrap();
+            assert_eq!(retry.state, expected, "recovery retained the original command receipt");
+            assert_eq!(recovered.load().unwrap().revision, expected.revision);
+        }
     }
 }
 
