@@ -407,7 +407,7 @@ struct MacSectionView: View {
                 Text(title).font(.headline).accessibilityAddTraits(.isHeader)
             }
             if !section.collapsed {
-                ForEach(Array(section.items.enumerated()), id: \.offset) { _, item in
+                ForEach(identifiedItems, id: \.id) { _, item in
                     if case let .card(card) = item, card.need != nil {
                         MacCardView(card: card, returnReason: returnReasons[card.id], onAction: onAction, onReply: onReply, onLink: onLink, onContent: onContentRow)
                     } else if case let .actions(bar) = item {
@@ -421,6 +421,14 @@ struct MacSectionView: View {
                         .font(.footnote.weight(.semibold))
                 }
             }
+        }
+    }
+
+    /// A card is identified by its id, so a card that arrives above it in a refresh never takes over
+    /// its reply draft or its keyboard focus.
+    private var identifiedItems: [(id: String, item: ViewItem)] {
+        section.items.enumerated().map { offset, item in
+            if case let .card(card) = item { ("card:\(card.id)", item) } else { ("item:\(offset)", item) }
         }
     }
 }

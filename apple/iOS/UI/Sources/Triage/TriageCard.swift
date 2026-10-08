@@ -18,6 +18,8 @@ struct TriageCard: View {
     let onSkip: (() -> Void)?
     @Environment(\.openURL) private var openURL
     @FocusState private var replyFocused: Bool
+    @FocusState private var roomFocused: Bool
+    @State private var room: ComposerRoom?
     @Environment(\.dynamicTypeSize) private var typeSize
 
     private var kind: Kind { Kind(card) }
@@ -56,7 +58,7 @@ struct TriageCard: View {
         }
     }
 
-    private struct Fit {
+    private struct Fit: Equatable {
         var why = true
         var meta = true
         var chips = true
@@ -67,6 +69,9 @@ struct TriageCard: View {
         static let compact = Fit(why: false, meta: false, chips: false, row: false, state: false, reply: false)
     }
 
+    /// Each layout only keeps room for the reply field; the field itself is drawn once, over that
+    /// room. A field inside the layouts would be rebuilt, and lose the keyboard, whenever the
+    /// keyboard shrinks the card and another layout is picked.
     private var content: some View {
         ViewThatFits(in: .vertical) {
             layout(Fit())
@@ -79,6 +84,46 @@ struct TriageCard: View {
             layout(Fit.compact).dynamicTypeSize(...DynamicTypeSize.accessibility2)
             layout(Fit.compact).dynamicTypeSize(...DynamicTypeSize.xxxLarge)
         }
+        .coordinateSpace(.named(ComposerRoom.space))
+        .overlay(alignment: room == nil ? .bottomLeading : .topLeading) {
+            if let reply = store.replyAction { placedComposer(reply) }
+        }
+    }
+
+    /// Where the picked layout keeps room for the reply field, and the text size it has there.
+    private struct ComposerRoom: Equatable {
+        static let space = "composer-room"
+        let fit: Fit
+        let frame: CGRect
+        let typeSize: DynamicTypeSize
+
+        struct Placeholder<Content: View>: View {
+            let fit: Fit
+            let content: Content
+            @Binding var room: ComposerRoom?
+            @Environment(\.dynamicTypeSize) private var typeSize
+
+            var body: some View {
+                content.hidden()
+                    .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(space)) } action: { frame in
+                        room = ComposerRoom(fit: fit, frame: frame, typeSize: typeSize)
+                    }
+                    .onDisappear { if room?.fit == fit { room = nil } }
+            }
+        }
+    }
+
+    /// With no room in the picked layout the field stays over the bottom of the card while it has
+    /// the keyboard, so the person keeps writing; once they leave it, the buttons show again.
+    private func placedComposer(_ reply: AlondraContract.Action) -> some View {
+        let shown = room != nil || replyFocused
+        return composer(reply, live: true)
+            .dynamicTypeSize(room?.typeSize ?? typeSize)
+            .frame(width: room?.frame.width)
+            .offset(x: room?.frame.minX ?? 0, y: room?.frame.minY ?? 0)
+            .opacity(shown ? 1 : 0)
+            .allowsHitTesting(shown)
+            .accessibilityHidden(!shown)
     }
 
     private func layout(_ fit: Fit) -> some View {
@@ -99,7 +144,7 @@ struct TriageCard: View {
             buttons
             if fit.reply, let reply = store.replyAction {
                 AttachmentStrip(store: store.scope(state: \.attachments, action: \.attachments))
-                composer(reply)
+                ComposerRoom.Placeholder(fit: fit, content: composer(reply, live: false), room: $room)
             }
         }
     }
@@ -227,7 +272,7 @@ struct TriageCard: View {
         store.send(.actionTapped(action))
     }
 
-    private func composer(_ action: AlondraContract.Action) -> some View {
+    private func composer(_ action: AlondraContract.Action, live: Bool) -> some View {
         let placeholder: String = {
             if case .text(let placeholder, _, _) = action.input, let placeholder { return placeholder }
             return String(localized: "Reply to the node…")
@@ -240,7 +285,7 @@ struct TriageCard: View {
             TextField(placeholder, text: Binding(
                 get: { store.replyDraft }, set: { store.send(.replyChanged($0)) }
             ), axis: .vertical)
-                .lineLimit(1...5).focused($replyFocused)
+                .lineLimit(1...5).focused(live ? $replyFocused : $roomFocused)
                 .padding(.leading, 16).padding(.vertical, 12)
             Button {
                 replyFocused = false
