@@ -439,7 +439,7 @@ async fn act(domain: &DomainRuntime, alerts: &impl Alerts, actions: Vec<Action>)
             Action::Raise { id, card } => {
                 let (need, why) = card.text(Lang::En);
                 let option = alondra_core::domain::QuestionOption { id: MACHINE_FIXED_OPTION.into(), label: MACHINE_FIXED_LABEL.into(), description: None, inputs: vec![] };
-                if let Err(error) = domain.raise_worded_problem(&id, MACHINE_CAUSE, need, why, card.to_body(), vec![option]) {
+                if let Err(error) = domain.raise_worded_problem(&id, MACHINE_CAUSE, need, why, card.to_body(), vec![option], None) {
                     log!("could not put the machine's card in front of the user, pushing it instead: {error:?}");
                     alerts.tell(push_text(card), false).await;
                 }
@@ -857,7 +857,7 @@ mod tests {
         // The card's id is taken already, so the domain refuses it as a full disk would.
         domain.raise_worded_problem("machine-0-2", MACHINE_CAUSE, "taken".into(), "taken".into(), "{}".into(), vec![
             alondra_core::domain::QuestionOption { id: "x".into(), label: "x".into(), description: None, inputs: vec![] },
-        ]).unwrap();
+        ], None).unwrap();
         let watcher = tokio::spawn(watch(domain.clone(), || Some(machine(0, 50)), told.clone(), Duration::from_millis(20)));
         until("the push", || !told.0.lock().unwrap().is_empty()).await;
         watcher.abort();

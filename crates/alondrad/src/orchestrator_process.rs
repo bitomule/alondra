@@ -4,7 +4,7 @@ use std::process::Stdio;
 use std::os::fd::AsRawFd;
 use anyhow::{Context as _, Result, bail};
 use serde_json::Value;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 
 const MAX_LINE: usize = 4 * 1024 * 1024;
 const MAX_DIAGNOSTIC: usize = 8192;
@@ -136,8 +136,15 @@ pub struct Stream {
     pub limit_reset: Option<i64>,
     /// The model answered at least once, so the batch may have done something.
     pub worked: bool,
+    /// The Alondra tools Claude called that change something, in order.
+    pub alondra_calls: Vec<String>,
 }
 impl Stream {
+    /// Whether the run may have changed something: it called a tool that does, or Claude was
+    /// answering when the run ended without its result, so what came next is unknown.
+    pub fn may_have_effects(&self) -> bool {
+        !self.alondra_calls.is_empty() || (self.acted && !self.result)
+    }
     /// Session fencing applies to every session-bearing record, including terminal results.
     pub fn accept(&mut self, line: &[u8], session: &str) -> Result<bool> {
         let v: Value = serde_json::from_slice(line).context("invalid Claude JSONL")?;
@@ -198,6 +205,12 @@ impl Stream {
             }
             (Some("assistant"), _) => {
                 self.acted = true;
+                let calls = v.pointer("/message/content").and_then(Value::as_array).into_iter().flatten()
+                    .filter(|block| block["type"] == "tool_use")
+                    .filter_map(|block| block["name"].as_str().filter(|name| alondra_tool(name)))
+                    .filter_map(|name| name.rsplit("__").next())
+                    .filter(|tool| alondra_core::orchestrator_batch::changes_something(tool));
+                self.alondra_calls.extend(calls.map(str::to_owned));
                 if v["error"] == "rate_limit" {
                     self.limited = true;
                 } else {
@@ -347,7 +360,11 @@ pub struct Output { pub stream: Stream, pub diagnostic: String, pub exit_ok: boo
 pub async fn execute(invocation: Invocation<'_>, mut spawned: impl FnMut(u32) -> Result<()>, mut initialized: impl FnMut() -> Result<()>, cancel: impl std::future::Future<Output = ()>) -> Output {
     let mut stream = Stream::default();
     stream.restricted = invocation.domain;
-    let mut child = match invocation.command().spawn() {
+    let stdin = match prompt_input(invocation.cwd, invocation.execution, invocation.prompt) {
+        Ok(stdin) => stdin,
+        Err(e) => return Output { stream, diagnostic: bounded(format!("cannot prepare the Claude prompt: {e}")), exit_ok: false, spawned: false },
+    };
+    let mut child = match invocation.command().stdin(stdin).spawn() {
         Ok(child) => child,
         Err(e) => return Output { stream, diagnostic: bounded(format!("cannot launch Claude: {e}")), exit_ok: false, spawned: false },
     };
@@ -368,7 +385,6 @@ pub async fn execute(invocation: Invocation<'_>, mut spawned: impl FnMut(u32) ->
             }
         }
     }
-    let mut stdin = child.stdin.take().expect("piped stdin");
     let mut stdout = BufReader::new(child.stdout.take().expect("piped stdout"));
     let mut stderr = child.stderr.take().expect("piped stderr");
     // Drain indefinitely, retain only a bounded prefix. Pipe backpressure must never block Claude.
@@ -381,7 +397,6 @@ pub async fn execute(invocation: Invocation<'_>, mut spawned: impl FnMut(u32) ->
         }}
         String::from_utf8_lossy(&retained).into_owned()
     });
-    let write = async move { stdin.write_all(invocation.prompt.as_bytes()).await?; stdin.shutdown().await?; drop(stdin); Ok::<_, std::io::Error>(()) };
     let read = async {
         let mut line = Vec::new();
         loop {
@@ -402,7 +417,7 @@ pub async fn execute(invocation: Invocation<'_>, mut spawned: impl FnMut(u32) ->
         Ok::<_, anyhow::Error>(())
     };
     let process = async {
-        tokio::try_join!(async { write.await.context("writing Claude prompt") }, read)?;
+        read.await?;
         let status = child.wait().await?;
         Ok::<_, anyhow::Error>(status.success())
     };
@@ -430,6 +445,17 @@ pub async fn execute(invocation: Invocation<'_>, mut spawned: impl FnMut(u32) ->
     };
     let _ = std::fs::remove_file(invocation.cwd.join("owner.json"));
     Output { stream, diagnostic: bounded(diagnostic), exit_ok, spawned: true }
+}
+
+/// Claude reads a piped prompt only if it arrives within 3 seconds; after that it runs
+/// without one, and a resumed conversation then fails. A file is readable at once.
+fn prompt_input(cwd: &Path, execution: &str, prompt: &str) -> std::io::Result<std::fs::File> {
+    use std::io::{Seek, Write};
+    let path = cwd.join(format!("prompt-{execution}"));
+    let mut file = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(true).open(&path)?;
+    let written = file.write_all(prompt.as_bytes()).and_then(|()| file.rewind());
+    std::fs::remove_file(&path)?;
+    written.map(|()| file)
 }
 
 pub fn missing_session(output: &Output, session: &str) -> bool {
@@ -671,6 +697,20 @@ printf '%s\n' '{"type":"result","session_id":"test-session","subtype":"success",
         assert_eq!(output.stream.input_tokens, Some(31));
         assert_eq!(starts, 1);
         assert_eq!(output.diagnostic.len(), MAX_DIAGNOSTIC);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[tokio::test]
+    async fn the_prompt_is_readable_the_moment_claude_starts() {
+        let dir = std::env::temp_dir().join(uuid().unwrap());
+        let lock = Ownership::acquire(&dir).unwrap().unwrap();
+        let exe = fake(&dir, r#"test -f /dev/stdin || exit 70
+cat > received
+printf '%s\n' '{"type":"result","session_id":"test-session","subtype":"success","is_error":false}'"#);
+        let output = execute(invocation(&dir, &exe, &lock), |_| Ok(()), || Ok(()), std::future::pending()).await;
+        assert!(output.exit_ok, "{}", output.diagnostic);
+        assert_eq!(std::fs::read_to_string(dir.join("received")).unwrap(), "work");
+        assert!(!std::fs::read_dir(&dir).unwrap().any(|entry| entry.unwrap().file_name().to_string_lossy().starts_with("prompt-")),
+            "the prompt leaves no file behind");
         std::fs::remove_dir_all(dir).unwrap();
     }
     #[tokio::test]

@@ -7,8 +7,9 @@ use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::OutboxMessage;
 use crate::orchestrator_process::{self as process, Invocation, Ownership};
 use alondra_core::delivery::State;
-use alondra_core::domain::{CardSpec, DomainError, DomainState, InteractionPayload, QuestionOption, Scope};
+use alondra_core::domain::{DomainError, DomainState, InteractionId, InteractionPayload, QuestionOption, Scope};
 use alondra_core::now_millis;
+use alondra_core::orchestrator_batch::{BATCH_CONTINUE, BATCH_CONTINUE_LABEL, BATCH_PROBLEM_PREFIX, BATCH_RETRY, BATCH_RETRY_LABEL, BatchProblem, BatchStop};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -41,7 +42,7 @@ pub(crate) struct Runtime {
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum Failure {
-    /// Claude did not start; the batch is offered again on its own.
+    /// Claude did not start, or ended without changing anything; the batch is offered again on its own.
     Launch,
     /// Claude ran but did not finish; some of its actions may have happened.
     Interrupted,
@@ -84,10 +85,12 @@ fn save(home: &Path, runtime: &Runtime) -> Result<()> {
 }
 
 /// A failed batch's Problem is `problem-orchestrator-<run id>`; its options are the decisions.
-const PROBLEM_PREFIX: &str = "problem-orchestrator-";
-const PROBLEM_RETRY: &str = "retry";
-const PROBLEM_CONTINUE: &str = "continue";
+const PROBLEM_PREFIX: &str = BATCH_PROBLEM_PREFIX;
+/// The answer to cards raised before "continue" and "stop" became one choice.
 const PROBLEM_STOP: &str = "stop";
+const SUBJECT_LINE: usize = 120;
+/// A newer batch card replaces an open one.
+const BATCH_CAUSE: &str = "orchestrator_batch";
 
 pub(crate) struct Executor {
     pub domain: Arc<DomainRuntime>,
@@ -275,7 +278,7 @@ impl Executor {
             .and_then(|capability| Ok((capability, self.prompt(&runtime, resume, projects_root.as_deref(), &claimed)?)));
         let (capability, prompt) = match prepared {
             Ok(prepared) => prepared,
-            Err(error) => return self.failed(runtime, &run, format!("{error:#}"), false),
+            Err(error) => return self.failed(runtime, &run, format!("{error:#}"), None),
         };
         let directory = self.home.join("runtime/orchestrator");
         let home = self.home.clone();
@@ -302,13 +305,25 @@ impl Executor {
         let Some(run) = runtime.active_run.clone() else { return Ok(()) };
         let succeeded = output.exit_ok && output.stream.success && output.stream.result
             && output.stream.initialized && output.stream.error.is_none();
+        let effects = |stop: BatchStop| output.stream.may_have_effects().then(|| BatchProblem {
+            stop, calls: output.stream.alondra_calls.clone(), subjects: self.subjects(&claimed), error: String::new(),
+        });
         if runtime.cancel_requested {
+            let Some(problem) = effects(BatchStop::Cancelled) else {
+                self.give_up(&run, "orchestrator_cancelled")?;
+                runtime.active_run = None;
+                runtime.pending_resolutions.push(Resolution { run_id: run.id, message_ids: run.message_ids });
+                runtime.last_error = None;
+                runtime.failure = None;
+                runtime.cancel_requested = false;
+                return save(&self.home, &runtime);
+            };
             self.finish(&run, State::Uncertain, Some("orchestrator_cancelled"))?;
             runtime.last_error = Some("Orchestrator execution was cancelled; check its effects before retrying".into());
             runtime.failure = Some(Failure::Cancelled);
             runtime.consecutive_failures = runtime.consecutive_failures.saturating_add(1);
             save(&self.home, &runtime)?;
-            self.raise_batch_problem(&run.id, runtime.last_error.as_deref().unwrap_or_default());
+            self.raise_batch_problem(&run.id, problem, runtime.last_error.as_deref().unwrap_or_default());
             return Ok(());
         }
         if resume && process::missing_session(&output, &session) {
@@ -340,13 +355,37 @@ impl Executor {
             runtime.pending_resolutions.clear();
             return save(&self.home, &runtime);
         }
-        let denied = output.stream.denied;
+        let problem = effects(if output.stream.denied { BatchStop::Denied } else { BatchStop::Interrupted });
         let error = output.stream.error.unwrap_or_else(|| if !output.diagnostic.trim().is_empty() {
             output.diagnostic
         } else {
             "Claude exited without a successful terminal result".into()
         });
-        self.failed(runtime, &run, error, denied)
+        self.failed(runtime, &run, error, problem)
+    }
+
+    /// What a batch was about, as the user knows it: the cards and tasks its messages came from.
+    fn subjects(&self, messages: &[OutboxMessage]) -> Vec<String> {
+        let Ok(state) = self.domain.state() else { return vec![] };
+        let mut subjects: Vec<String> = vec![];
+        for message in messages {
+            let interaction = message.interaction_id.as_ref().and_then(|id| state.interactions.get(&InteractionId(id.clone())));
+            let task_id = message.task_id.clone().or_else(|| match interaction.map(|interaction| &interaction.scope) {
+                Some(Scope::Task { task_id }) => Some(task_id.0.clone()),
+                _ => None,
+            });
+            let task = task_id.and_then(|id| state.tasks.values().find(|task| task.id.0 == id));
+            let subject = match (interaction, task) {
+                (Some(interaction), Some(task)) => format!("{}: {}", task.title, interaction.card.need),
+                (Some(interaction), None) => interaction.card.need.clone(),
+                (None, Some(task)) => task.title.clone(),
+                (None, None) => message.message.lines().next().unwrap_or_default().chars().take(SUBJECT_LINE).collect(),
+            };
+            if !subject.trim().is_empty() && !subjects.contains(&subject) {
+                subjects.push(subject);
+            }
+        }
+        subjects
     }
 
     /// Whether the run failed because usage ran out, with the reset Claude reported if it did.
@@ -358,45 +397,40 @@ impl Executor {
         output.stream.error.as_deref().and_then(said).or_else(|| said(&output.diagnostic))
     }
 
-    fn failed(&self, mut runtime: Runtime, run: &Run, error: String, denied: bool) -> Result<()> {
+    /// A run that changed nothing (`problem` is None) is offered again with a fresh prompt; one
+    /// that may have changed something is the user's call.
+    fn failed(&self, mut runtime: Runtime, run: &Run, error: String, problem: Option<BatchProblem>) -> Result<()> {
         runtime.consecutive_failures = runtime.consecutive_failures.saturating_add(1);
         runtime.last_error = Some(error);
-        // Before Claude ran, nothing happened and the batch may be offered
-        // again; once spawned, its effects are unknown and the user decides.
-        if !run.spawned && runtime.consecutive_failures < 3 {
+        let Some(problem) = problem else {
             self.finish(run, State::Retryable, Some("orchestrator_launch_failed"))?;
             runtime.active_run = None;
             let delay = 30_000_i64.saturating_mul(1_i64 << runtime.consecutive_failures.min(5));
             runtime.retry_at = Some(now_millis().saturating_add(delay));
             runtime.failure = Some(Failure::Launch);
-        } else {
-            self.finish(run, State::Uncertain, Some("orchestrator_execution_ambiguous"))?;
-            runtime.failure = Some(if denied { Failure::Denied } else { Failure::Interrupted });
-            save(&self.home, &runtime)?;
-            self.raise_batch_problem(&run.id, runtime.last_error.as_deref().unwrap_or_default());
-            return Ok(());
-        }
-        save(&self.home, &runtime)
+            return save(&self.home, &runtime);
+        };
+        self.finish(run, State::Uncertain, Some("orchestrator_execution_ambiguous"))?;
+        runtime.failure = Some(if problem.stop == BatchStop::Denied { Failure::Denied } else { Failure::Interrupted });
+        save(&self.home, &runtime)?;
+        self.raise_batch_problem(&run.id, problem, runtime.last_error.as_deref().unwrap_or_default());
+        Ok(())
     }
 
     /// A batch whose effects are unknown is the user's call: a Problem card with the ways out,
     /// which `apply_problem_answers` carries out.
-    fn raise_batch_problem(&self, run_id: &str, error: &str) {
-        let option = |id: &str, label: &str, description: &str| QuestionOption {
-            id: id.into(), label: label.into(), description: Some(description.into()), inputs: vec![],
-        };
-        let raised = self.domain.raise_problem(
+    fn raise_batch_problem(&self, run_id: &str, mut problem: BatchProblem, error: &str) {
+        let option = |id: &str, label: &str| QuestionOption { id: id.into(), label: label.into(), description: None, inputs: vec![] };
+        problem.error = error.to_owned();
+        let (need, why) = problem.text(alondra_core::views::Lang::En);
+        let raised = self.domain.raise_worded_problem(
             &format!("{PROBLEM_PREFIX}{run_id}"),
-            None,
-            Scope::Orchestrator { request_id: None },
-            "Decide what to do with the orchestrator's failed batch".into(),
-            alondra_core::domain::clip(error, CardSpec::WHY_MAX),
-            format!("The orchestrator's batch failed and some of its effects may have happened. Last error: {error}"),
-            vec![
-                option(PROBLEM_RETRY, "Retry the batch", "Run the same batch again; check its effects first"),
-                option(PROBLEM_CONTINUE, "Continue without it", "Do not replay it; the orchestrator is told it was interrupted"),
-                option(PROBLEM_STOP, "Stop it", "Drop the batch and leave the orchestrator idle"),
-            ],
+            BATCH_CAUSE,
+            need,
+            why,
+            problem.to_body(),
+            vec![option(BATCH_CONTINUE, BATCH_CONTINUE_LABEL), option(BATCH_RETRY, BATCH_RETRY_LABEL)],
+            Some(BATCH_CONTINUE),
         );
         if let Err(error) = raised {
             log!("v2 orchestrator: could not raise the failed batch's Problem: {error:?}");
@@ -415,10 +449,11 @@ impl Executor {
                 continue;
             }
             match answer {
+                Some(_) if active.as_deref() != Some(run_id) => {}
                 Some(answer) => {
                     let applied = match answer.option_id.as_str() {
-                        PROBLEM_RETRY => self.retry(run_id),
-                        PROBLEM_CONTINUE => self.acknowledge(run_id),
+                        BATCH_RETRY => self.retry(run_id),
+                        BATCH_CONTINUE => self.acknowledge(run_id),
                         PROBLEM_STOP => self.cancel(run_id),
                         other => Err(anyhow::anyhow!("unknown option {other}")),
                     };
@@ -592,6 +627,16 @@ mod tests {
     use std::collections::BTreeSet;
 
     const SUCCESS: &str = STUB_SUCCESS;
+
+    /// Claude created a task and then died: the batch changed something.
+    const CREATED_THEN_EXIT: &str = r#"printf '%s\n' '{"type":"assistant","session_id":"'"$session"'","message":{"model":"opus","content":[{"type":"tool_use","id":"toolu_create","name":"mcp__plugin_alondra-orchestrator_alondra-orchestrator__create_task","input":{"request_id":"r","title":"Push badge"}}],"usage":{"input_tokens":3}}}'
+exit 1"#;
+
+    /// Recorded from the 2026-10-08 runs 5e2de560, 6d5f82fa and c5d61e48: the prompt reached
+    /// Claude too late and the resumed conversation had nothing to continue.
+    const NO_DEFERRED_MARKER: &str = r#"printf '%s\n' 'Warning: no stdin data received in 3s, proceeding without it. If piping from a slow command, redirect stdin explicitly: < /dev/null to skip, or wait longer.' >&2
+printf '%s\n' 'Error: No deferred tool marker found in the resumed session. Either the session was not deferred, the marker is stale (tool already ran), or it exceeds the tail-scan window. Provide a prompt to continue the conversation.' >&2
+exit 1"#;
 
     struct Fixture { root: PathBuf, executor: Executor, ownership: Ownership }
     impl Drop for Fixture {
@@ -817,8 +862,8 @@ printf '%s\n' '{"type":"result","session_id":"'"$session"'","subtype":"success",
 
     #[tokio::test]
     async fn a_failed_batch_is_a_problem_card_and_its_answer_is_the_decision() {
-        for (option, replays) in [("retry", true), ("continue", false), ("stop", false)] {
-            let f = fixture("exit 1");
+        for (option, replays) in [("retry", true), ("continue", false)] {
+            let f = fixture(CREATED_THEN_EXIT);
             let domain = &f.executor.domain;
             ask_orchestrator(domain, 1);
             f.executor.tick(&f.ownership).await.unwrap();
@@ -828,8 +873,13 @@ printf '%s\n' '{"type":"result","session_id":"'"$session"'","subtype":"success",
             assert_eq!(problem.card.kind, alondra_core::domain::CardKind::Problem);
             assert_eq!(problem.author, alondra_core::domain::Author::System);
             let InteractionPayload::Question { options, .. } = &problem.payload else { panic!("a Problem is asked like a question") };
-            assert_eq!(options.iter().map(|o| o.id.as_str()).collect::<Vec<_>>(), ["retry", "continue", "stop"]);
-            assert!(problem.card.why.contains("Claude exited") || !problem.card.why.is_empty(), "{:?}", problem.card);
+            assert_eq!(options.iter().map(|o| o.id.as_str()).collect::<Vec<_>>(), ["continue", "retry"]);
+            assert_eq!(problem.card.recommended.as_deref(), Some("continue"));
+            let body = BatchProblem::from_body(&problem.body).expect("the body words the card in every language");
+            assert_eq!(body.stop, BatchStop::Interrupted);
+            assert_eq!(body.calls, ["create_task"]);
+            assert_eq!(body.subjects, ["Task: Answer the question"]);
+            assert!(body.error.contains("Claude exited"), "{body:?}");
             answer_problem(domain, &run.id, option);
             f.executor.apply_problem_answers().unwrap();
             let runtime = load(&f.executor.home).unwrap();
@@ -840,8 +890,58 @@ printf '%s\n' '{"type":"result","session_id":"'"$session"'","subtype":"success",
     }
 
     #[tokio::test]
+    async fn a_resumed_run_that_changed_nothing_runs_the_batch_again_with_its_prompt_and_asks_nobody() {
+        let f = fixture(NO_DEFERRED_MARKER);
+        let domain = &f.executor.domain;
+        save(&f.executor.home, &Runtime { session_id: Some("saved".into()), ..Runtime::default() }).unwrap();
+        ask_orchestrator(domain, 1);
+        f.executor.tick(&f.ownership).await.unwrap();
+        assert!(!domain.state().unwrap().interactions.keys().any(|id| id.0.starts_with(PROBLEM_PREFIX)),
+            "a run that changed nothing is not a decision for the user");
+        let runtime = load(&f.executor.home).unwrap();
+        assert!(runtime.active_run.is_none() && runtime.retry_at.is_some(), "{runtime:?}");
+        assert_eq!(runtime.failure, Some(Failure::Launch));
+        assert!(runtime.last_error.as_deref().is_some_and(|error| error.contains("No deferred tool marker")), "{runtime:?}");
+        assert!(attempts(domain).iter().all(|(_, state, _)| state == "retryable"));
+
+        let script = std::fs::read_to_string(&f.executor.executable).unwrap().replace(NO_DEFERRED_MARKER, SUCCESS);
+        std::fs::write(&f.executor.executable, script).unwrap();
+        let mut runtime = load(&f.executor.home).unwrap();
+        runtime.retry_at = None;
+        save(&f.executor.home, &runtime).unwrap();
+        f.executor.tick(&f.ownership).await.unwrap();
+        let prompt = std::fs::read_to_string(f.executor.home.join("runtime/orchestrator/received-prompt")).unwrap();
+        assert!(prompt.contains("Where do I put change 1?") && !prompt.contains("new conversation"), "{prompt}");
+        let runtime = load(&f.executor.home).unwrap();
+        assert!(runtime.active_run.is_none() && runtime.last_error.is_none() && runtime.session_id.as_deref() == Some("saved"), "{runtime:?}");
+        assert!(outbox(domain).is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_run_stopped_before_it_changed_anything_is_settled_without_a_card() {
+        let f = fixture("printf 'cancel\\n' > cancel-now\nexec sleep 30");
+        let domain = &f.executor.domain;
+        ask_orchestrator(domain, 1);
+        let home = f.executor.home.clone();
+        let canceller = tokio::spawn(async move {
+            let marker = home.join("runtime/orchestrator/cancel-now");
+            while !marker.exists() { tokio::time::sleep(Duration::from_millis(20)).await; }
+            let mut runtime = load(&home).unwrap();
+            runtime.cancel_requested = true;
+            save(&home, &runtime).unwrap();
+        });
+        f.executor.tick(&f.ownership).await.unwrap();
+        canceller.await.unwrap();
+        assert!(!domain.state().unwrap().interactions.keys().any(|id| id.0.starts_with(PROBLEM_PREFIX)));
+        let runtime = load(&f.executor.home).unwrap();
+        assert!(runtime.active_run.is_none() && runtime.last_error.is_none() && !runtime.cancel_requested, "{runtime:?}");
+        assert_eq!(runtime.pending_resolutions.len(), 1, "the orchestrator hears it was stopped");
+        assert!(outbox(domain).is_empty(), "a stopped batch is not replayed");
+    }
+
+    #[tokio::test]
     async fn a_batch_settled_elsewhere_withdraws_its_problem() {
-        let f = fixture("exit 1");
+        let f = fixture(CREATED_THEN_EXIT);
         let domain = &f.executor.domain;
         ask_orchestrator(domain, 1);
         f.executor.tick(&f.ownership).await.unwrap();
@@ -853,7 +953,7 @@ printf '%s\n' '{"type":"result","session_id":"'"$session"'","subtype":"success",
 
     #[tokio::test]
     async fn a_failed_execution_is_ambiguous_until_acknowledged_and_resolved_at_restart() {
-        let f = fixture("exit 1");
+        let f = fixture(CREATED_THEN_EXIT);
         let domain = &f.executor.domain;
         ask_orchestrator(domain, 1);
         f.executor.tick(&f.ownership).await.unwrap();
@@ -953,7 +1053,7 @@ printf '%s\n' '{"type":"result","session_id":"'"$session"'","subtype":"success",
 
     #[tokio::test]
     async fn the_user_decides_on_an_ambiguous_execution_through_its_status() {
-        let f = fixture("exit 1");
+        let f = fixture(CREATED_THEN_EXIT);
         let domain = &f.executor.domain;
         assert_eq!(status(&f.executor).unwrap()["phase"], "idle");
         ask_orchestrator(domain, 1);
@@ -979,7 +1079,7 @@ printf '%s\n' '{"type":"result","session_id":"'"$session"'","subtype":"success",
 
     #[tokio::test]
     async fn a_retry_offers_the_batch_again_and_a_cancel_is_ambiguous() {
-        let f = fixture("exit 1");
+        let f = fixture(CREATED_THEN_EXIT);
         let domain = &f.executor.domain;
         ask_orchestrator(domain, 1);
         f.executor.tick(&f.ownership).await.unwrap();

@@ -761,6 +761,9 @@ fn pace_text(interaction: &Interaction, domain: &DomainState, lang: Lang) -> Opt
     if interaction.id.0.starts_with(crate::machine_incident::MACHINE_PREFIX) {
         return crate::machine_incident::MachineCard::from_body(&interaction.body).map(|card| card.text(lang));
     }
+    if interaction.id.0.starts_with(crate::orchestrator_batch::BATCH_PROBLEM_PREFIX) {
+        return crate::orchestrator_batch::BatchProblem::from_body(&interaction.body).map(|card| card.text(lang));
+    }
     if interaction.id.0.starts_with(OVER_PACE_PREFIX) {
         let numbers = PaceNumbers::from_body(&interaction.body)?;
         return Some((
@@ -802,17 +805,17 @@ fn fixed_option_text(option: &QuestionOption, lang: Lang) -> (String, Option<Str
         ("provide", "Send the file") => (t!(lang, "Send the file", "Enviar el archivo"), None),
         ("provide", "Send the text") => (t!(lang, "Send the text", "Enviar el texto"), None),
         ("provide", "Send the secret") => (t!(lang, "Send the secret", "Enviar el secreto"), None),
-        ("retry", "Retry the batch") => (
-            t!(lang, "Retry the batch", "Reintentar el lote"),
-            Some(t!(lang, "Run the same batch again; check its effects first", "Ejecuta el mismo lote otra vez; revisa antes sus efectos")),
+        (crate::orchestrator_batch::BATCH_CONTINUE, crate::orchestrator_batch::BATCH_CONTINUE_LABEL) => (
+            t!(lang, "Continue without running it again", "Seguir sin repetirlo"),
+            Some(t!(lang,
+                "Nothing is done twice. The orchestrator knows it stopped and picks up the requests still without a task.",
+                "No se hace nada dos veces. El orquestador sabe que se cortó y retoma las peticiones que sigan sin tarea.")),
         ),
-        ("continue", "Continue without it") => (
-            t!(lang, "Continue without it", "Continuar sin él"),
-            Some(t!(lang, "Do not replay it; the orchestrator is told it was interrupted", "No se repite; al orquestador se le avisa de que se interrumpió")),
-        ),
-        ("stop", "Stop it") => (
-            t!(lang, "Stop it", "Detenerlo"),
-            Some(t!(lang, "Drop the batch and leave the orchestrator idle", "Descarta el lote y deja al orquestador en reposo")),
+        (crate::orchestrator_batch::BATCH_RETRY, crate::orchestrator_batch::BATCH_RETRY_LABEL) => (
+            t!(lang, "Run it again from the start", "Repetirlo desde el principio"),
+            Some(t!(lang,
+                "It handles the same messages again. Choose it only if the fleet shows none of what it did; otherwise it is done twice.",
+                "Vuelve a atender los mismos mensajes. Elígelo solo si en la flota no ves nada de lo que hizo; si no, se hará dos veces.")),
         ),
         _ => return (option.label.clone(), option.description.clone()),
     };
@@ -1233,6 +1236,13 @@ fn content_items(item: &InboxItem, context: &RenderContext<'_>) -> Vec<Item> {
             fetch: format!("/document-revisions/{revision_id}/content"),
             commentable: true,
         }));
+        return out;
+    }
+    if interaction.author == Author::System
+        && interaction.id.0.starts_with(crate::orchestrator_batch::BATCH_PROBLEM_PREFIX)
+        && let Some(card) = crate::orchestrator_batch::BatchProblem::from_body(&interaction.body)
+    {
+        out.push(markdown(card.detail(lang)));
         return out;
     }
     let plan_held = domain.holds.get(&interaction.id) == Some(&Hold::Plan);

@@ -2437,6 +2437,42 @@ fn an_orchestrator_problem_is_a_card_like_any_other_and_comes_first() {
     assert!(waiting.items.iter().any(|item| matches!(item, Item::Row(row) if row.id == "problem-orchestrator-run-1")));
 }
 
+#[test]
+fn a_batch_that_stopped_halfway_reads_in_spanish_with_what_it_did_and_how_to_choose() {
+    use crate::domain::CardKind;
+    use crate::orchestrator_batch::*;
+    let mut state = fixture();
+    let problem = BatchProblem {
+        stop: BatchStop::Interrupted, calls: vec!["create_task".into()],
+        subjects: vec!["Make the editor readable".into()], error: "Claude exited without a successful terminal result".into(),
+    };
+    let (need, why) = problem.text(Lang::En);
+    let option = |id: &str, label: &str| QuestionOption { id: id.into(), label: label.into(), description: None, inputs: vec![] };
+    let mut card = spec(CardKind::Problem, &need, &why);
+    card.recommended = Some(BATCH_CONTINUE.into());
+    state.interactions.insert("problem-orchestrator-run-1".into(), Interaction {
+        attachments: vec![], id: "problem-orchestrator-run-1".into(), scope: Scope::Orchestrator { request_id: None },
+        author: Author::System, recipient: Recipient::User, body: problem.to_body(),
+        blocking: false, subject: None,
+        payload: InteractionPayload::Question {
+            options: vec![option(BATCH_CONTINUE, BATCH_CONTINUE_LABEL), option(BATCH_RETRY, BATCH_RETRY_LABEL)],
+            answer: None,
+        },
+        revision: 1, order: 9, withdrawn: false, card, clarification: None,
+    });
+    let view = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::Es, "card:problem-orchestrator-run-1", "");
+    let card = card_of(&view);
+    assert_eq!(card.need.as_deref(), Some("El orquestador se cortó a medias: decide si lo repite"));
+    assert!(card.why.as_deref().is_some_and(|why| why.starts_with("Se detuvo antes de terminar")), "{:?}", card.why);
+    assert_eq!(card.actions.iter().map(|a| (a.option_id.as_deref().unwrap(), a.label.as_str())).collect::<Vec<_>>(),
+        [("continue", "★ Seguir sin repetirlo"), ("retry", "Repetirlo desde el principio")]);
+    let detail = view.sections.iter().find(|section| section.id == "content").expect("the detail is the content");
+    assert!(matches!(&detail.items[0], Item::Markdown(text) if text.text.contains("**Estaba atendiendo:**\n- Make the editor readable")
+        && text.text.contains("**Ya había hecho:** crear una tarea.") && text.text.contains("Error técnico")), "{:?}", detail.items);
+    let english = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::En, "card:problem-orchestrator-run-1", "");
+    assert_eq!(card_of(&english).need.as_deref(), Some(need.as_str()));
+}
+
 fn orchestrator_screen(live: Option<live::LiveOrchestrator>, lang: Lang) -> (Vec<Fact>, Option<String>, Vec<String>) {
     let live = LiveSnapshot { orchestrator: live, ..Default::default() };
     let view = render(&fixture(), &live, Client::Ios, lang, "node:orchestrator", "");
@@ -3837,7 +3873,7 @@ fn fixed_options() -> Vec<(&'static str, Vec<(&'static str, &'static str)>)> {
         ("request_input", vec![("provide", "Send the file"), ("skip", "I can't provide it")]),
         ("request_input", vec![("provide", "Send the text"), ("skip", "I can't provide it")]),
         ("request_input", vec![("provide", "Send the secret"), ("skip", "I can't provide it")]),
-        ("problem", vec![("retry", "Retry the batch"), ("continue", "Continue without it"), ("stop", "Stop it")]),
+        ("problem", vec![("continue", "Continue without running it again"), ("retry", "Run it again from the start")]),
     ]
 }
 
