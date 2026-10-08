@@ -112,6 +112,18 @@ final class AccountSnapshotTests: XCTestCase {
         assertScreen([.light], language: .spanish, inWindow: true) { ScreenFrame(height: 1000) { SettingsView(store: store) } }
     }
 
+    func test_settings_nodesAtOnce() throws {
+        let limit = NodeLimitSetting(document: try ScreenFixtures.document("machine-settings-ios"))
+        let store = settings { $0.nodeLimit.setting = limit }
+        assertScreen([.light, .dark], inWindow: true) { ScreenFrame(height: 1100) { SettingsView(store: store) } }
+    }
+
+    func test_settings_nodesAtOnce_spanish() throws {
+        let limit = NodeLimitSetting(document: try ScreenFixtures.document("machine-settings-ios-es"))
+        let store = settings { $0.nodeLimit.setting = limit }
+        assertScreen([.light], language: .spanish, inWindow: true) { ScreenFrame(height: 1100) { SettingsView(store: store) } }
+    }
+
     func test_settings_alertsOffAndNothingToSelect() {
         let store = settings {
             $0.notifications = NotificationSettings(permission: .denied, delivery: .idle, quietHours: QuietHours())

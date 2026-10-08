@@ -4,7 +4,7 @@
   "view": "fleet",
   "key": "fleet",
   "client": "ios",
-  "version": "v6ec8b56c3c63461f",
+  "version": "v7533d661265ec8b2",
   "cursor": "cursor-1",
   "title": "Flota",
   "status": {
@@ -208,129 +208,6 @@
               "attachments": false,
               "enabled": true,
               "stamp": "Reanudando…"
-            }
-          ]
-        },
-        {
-          "type": "actions",
-          "actions": [
-            {
-              "id": "set_limit:limit@6",
-              "label": "Nodos a la vez",
-              "style": "secondary",
-              "presentation": "menu",
-              "options": [
-                {
-                  "id": "auto",
-                  "label": "Automático (6) · ahora",
-                  "description": "Según los núcleos y la memoria de este Mac",
-                  "style": "secondary",
-                  "input": {
-                    "kind": "none"
-                  }
-                },
-                {
-                  "id": "1",
-                  "label": "1",
-                  "style": "secondary",
-                  "input": {
-                    "kind": "none"
-                  }
-                },
-                {
-                  "id": "2",
-                  "label": "2",
-                  "style": "secondary",
-                  "input": {
-                    "kind": "none"
-                  }
-                },
-                {
-                  "id": "3",
-                  "label": "3",
-                  "style": "secondary",
-                  "input": {
-                    "kind": "none"
-                  }
-                },
-                {
-                  "id": "4",
-                  "label": "4",
-                  "style": "secondary",
-                  "input": {
-                    "kind": "none"
-                  }
-                },
-                {
-                  "id": "5",
-                  "label": "5",
-                  "style": "secondary",
-                  "input": {
-                    "kind": "none"
-                  }
-                },
-                {
-                  "id": "6",
-                  "label": "6",
-                  "style": "secondary",
-                  "input": {
-                    "kind": "none"
-                  }
-                },
-                {
-                  "id": "7",
-                  "label": "7",
-                  "style": "secondary",
-                  "input": {
-                    "kind": "none"
-                  }
-                },
-                {
-                  "id": "8",
-                  "label": "8",
-                  "style": "secondary",
-                  "input": {
-                    "kind": "none"
-                  }
-                },
-                {
-                  "id": "9",
-                  "label": "9",
-                  "style": "secondary",
-                  "input": {
-                    "kind": "none"
-                  }
-                },
-                {
-                  "id": "10",
-                  "label": "10",
-                  "style": "secondary",
-                  "input": {
-                    "kind": "none"
-                  }
-                },
-                {
-                  "id": "11",
-                  "label": "11",
-                  "style": "secondary",
-                  "input": {
-                    "kind": "none"
-                  }
-                },
-                {
-                  "id": "12",
-                  "label": "12",
-                  "style": "secondary",
-                  "input": {
-                    "kind": "none"
-                  }
-                }
-              ],
-              "input": {
-                "kind": "none"
-              },
-              "attachments": false,
-              "enabled": true
             }
           ]
         }

@@ -51,7 +51,7 @@ public struct FleetView: View {
             }
             if let pacing = overview.pacing {
                 PacingSection(pacing: pacing, open: { store.send(.follow($0)) },
-                              perform: { store.send(.perform($0)) }, choose: { store.send(.choose($0, $1)) })
+                              perform: { store.send(.perform($0)) })
             }
             ForEach(overview.groups) { group in
                 let shown = !group.collapsed || opened.contains(group.id)
@@ -191,13 +191,11 @@ private struct ProjectHeader: View {
 }
 
 /// The fleet's pace: how many nodes work against the limit and how the Mac is, the limit and where
-/// it comes from with a menu to change it, then every task waiting its turn or paused, each with
-/// Pause or Resume.
+/// it comes from, then every task waiting its turn or paused, each with Pause or Resume.
 private struct PacingSection: View {
     let pacing: FleetOverview.Pacing
     let open: (AlondraContract.Link) -> Void
     let perform: (WireAction) -> Void
-    let choose: (WireAction, ActionOption) -> Void
 
     var body: some View {
         Section {
@@ -207,22 +205,6 @@ private struct PacingSection: View {
                     Text(pacing.summary).font(.subheadline.weight(.semibold)).foregroundStyle(Palette.ink)
                     if let limitText = pacing.limitText {
                         Text(limitText).font(.footnote).foregroundStyle(.secondary)
-                    }
-                    if let limit = pacing.limit {
-                        Menu {
-                            ForEach(limit.options, id: \.id) { option in
-                                Button { choose(limit, option) } label: {
-                                    Text(option.label)
-                                    if let description = option.description { Text(description) }
-                                }
-                            }
-                        } label: {
-                            Label(limit.label, systemImage: "slider.horizontal.3")
-                                .font(.footnote.weight(.semibold))
-                        }
-                        .buttonStyle(.bordered)
-                        .tint(Palette.dawn)
-                        .accessibilityIdentifier("fleet.pacing.limit")
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)

@@ -45,7 +45,7 @@ public struct FleetOverview: Equatable, Sendable {
     }
 
     /// How many nodes work against the limit, where the limit comes from, and every task that
-    /// waits its turn or is paused, in the order it comes back.
+    /// waits its turn or is paused, in the order it comes back. The limit changes in Settings.
     public struct Pacing: Equatable, Sendable {
         public struct Waiting: Equatable, Sendable, Identifiable {
             public var id: String
@@ -59,7 +59,6 @@ public struct FleetOverview: Equatable, Sendable {
 
         public var summary: String
         public var limitText: String?
-        public var limit: WireAction?
         public var waiting: [Waiting] = []
 
         init?(section: ViewSection) {
@@ -74,8 +73,6 @@ public struct FleetOverview: Equatable, Sendable {
                     let paused = row.id.hasPrefix("paused:")
                     waiting.append(Waiting(id: row.id, title: row.title, state: row.subtitle, link: row.link, paused: paused,
                                            action: row.actions.first { $0.command == (paused ? "resume" : "pause") }))
-                case .actions(let bar):
-                    limit = bar.actions.first { $0.command == "set_limit" }
                 default:
                     break
                 }
@@ -120,8 +117,8 @@ public struct FleetOverview: Equatable, Sendable {
     public var isEmpty: Bool { orchestrator == nil && groups.isEmpty }
 
     /// The list as it is after what was just sent: a closing node is gone, an interrupted one no
-    /// longer offers Interrupt, a paused or resumed one says so, and a new limit shows at once.
-    public func hiding(_ optimistic: Optimistic, choices: [String: String] = [:]) -> FleetOverview {
+    /// longer offers Interrupt, and a paused or resumed one says so.
+    public func hiding(_ optimistic: Optimistic) -> FleetOverview {
         guard !optimistic.isEmpty else { return self }
         func shown(_ node: Node) -> Node {
             var node = node
@@ -142,9 +139,6 @@ public struct FleetOverview: Equatable, Sendable {
                 waiting.paused = action.command == "pause"
                 waiting.action = nil
                 return waiting
-            }
-            if let limit = pacing.limit, optimistic.hides(limit.id) {
-                pacing.limitText = choices[limit.id ?? ""].map { String(localized: "Nodes at once: \($0)") } ?? pacing.limitText
             }
             overview.pacing = pacing
         }

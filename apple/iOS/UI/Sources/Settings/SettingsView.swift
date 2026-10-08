@@ -14,6 +14,7 @@ public struct SettingsView: View {
     public var body: some View {
         Form {
             account
+            NodeLimitSection(store: store.scope(state: \.nodeLimit, action: \.nodeLimit))
             if store.supportsNotifications { notifications }
             about
         }
@@ -50,6 +51,7 @@ public struct SettingsView: View {
             Text("This iPhone deletes its keys for this Mac. To use it again, find it and pair it again.")
         }
         .task { await store.send(.appeared).finish() }
+        .task { await store.send(.nodeLimit(.task)).finish() }
         .onDisappear { store.send(.disappeared) }
         .onChange(of: phase) { _, phase in if phase == .active { store.send(.refreshPermission) } }
     }

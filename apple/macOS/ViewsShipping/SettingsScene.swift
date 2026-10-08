@@ -1,5 +1,6 @@
 import AlondraAccount
 import AlondraFeatures
+import AlondraFeed
 import ComposableArchitecture
 import Observation
 import SwiftUI
@@ -38,6 +39,8 @@ struct MacServiceSettingsScene: View {
     func connect(services: Connection, owner: AccountSession?, workspace: MacWorkspaceOwner) async {
         guard store == nil else { return }
         let api = await services.api
+        let viewsFeed = await services.viewsFeed
+        let sender = await services.viewActionSender
         let account = workspace.account
         var client = SettingsClient(observe: { AsyncStream { $0.finish() } },
             save: { _, _ in throw CancellationError() }, requestPermission: {}, openSystemSettings: {},
@@ -67,8 +70,10 @@ struct MacServiceSettingsScene: View {
         state.macs = workspace.macChoices
         state.selectedMacID = workspace.selectedChoiceID
         state.showsSignOutWithMacs = owner == nil && account.macs.contains { !$0.local }
+        state.nodeLimit = NodeLimitFeature.State(client: .mac)
         store = Store(initialState: state) { SettingsFeature() } withDependencies: {
                 $0.serviceSettings = client
+                $0.viewsClient = ViewsClient.live(session: viewsFeed, sender: sender)
                 $0.cloudPairing = account.additionalMacPairing
                 $0.findMac = account.findMacClient
             }

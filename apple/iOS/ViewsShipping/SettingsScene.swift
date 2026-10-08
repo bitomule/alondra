@@ -1,6 +1,7 @@
 import AlondraiOSUI
 import AlondraAccount
 import AlondraFeatures
+import AlondraFeed
 import ComposableArchitecture
 import Observation
 import SwiftUI
@@ -37,6 +38,8 @@ struct SettingsScene: View {
     func connect(services: Connection, owner: AccountSession, notifications: NotificationRuntime) async {
         guard store == nil else { return }
         let api = await services.api
+        let viewsFeed = await services.viewsFeed
+        let sender = await services.viewActionSender
         let client = notifications.settingsClient(services: services, owner: owner)
         guard !Task.isCancelled else { return }
         // Without the relay there is no push, so there is nothing to turn on here.
@@ -48,6 +51,7 @@ struct SettingsScene: View {
         state.selectedMacID = owner.selectedMacID
         store = Store(initialState: state) { SettingsFeature() } withDependencies: {
                 $0.serviceSettings = client
+                $0.viewsClient = ViewsClient.live(session: viewsFeed, sender: sender)
                 $0.cloudPairing = owner.additionalMacPairing
                 $0.findMac = owner.findMacClient
             }

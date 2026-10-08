@@ -8,9 +8,6 @@ use super::{
 use crate::domain::{AgentId, Task, TaskPriority};
 use crate::options::MAX_WORKING_NODES;
 
-/// The TUI numbers a menu's entries 1 to 9.
-const TUI_MENU: u32 = 9;
-
 fn option(id: String, label: String, description: Option<String>) -> ActionOption {
     ActionOption { id, label, description, style: Style::Secondary, input: Input::None, key: None }
 }
@@ -25,24 +22,17 @@ pub(super) fn limit_text(pacing: &LivePacing, lang: super::Lang) -> String {
     }
 }
 
-/// "Nodes at once": automatic or a fixed number from 1 to 12, written to `options.toml`.
+/// "Nodes at once": automatic or a fixed number from 1 to 12, written to `options.toml`. It lives
+/// in this Mac's settings, never in the fleet header.
 pub(super) fn limit_action(pacing: &LivePacing, context: &RenderContext<'_>) -> Option<super::Action> {
     let lang = context.lang;
     let mut action = common::action(Verb::SetLimit, "limit", context.domain.revision,
         t!(lang, "Nodes at once", "Nodos a la vez"), Style::Secondary)?;
     action.presentation = Presentation::Menu;
     let auto = pacing.auto;
-    let mut fixed: Vec<u32> = (1..=MAX_WORKING_NODES).collect();
-    if context.client == super::Client::Tui {
-        let window = TUI_MENU - 1;
-        let current = pacing.fixed.unwrap_or(auto);
-        let start = current.saturating_sub(window / 2).clamp(1, MAX_WORKING_NODES - window + 1);
-        fixed = (start..start + window).collect();
-        action.key = Some("L".into());
-    }
     action.options.push(option("auto".into(), tf!(lang, "Automatic ({auto})", "Automático ({auto})"),
         Some(t!(lang, "From this Mac's cores and memory", "Según los núcleos y la memoria de este Mac").into())));
-    action.options.extend(fixed.into_iter().map(|count| {
+    action.options.extend((1..=MAX_WORKING_NODES).map(|count| {
         let label = match pacing.fixed == Some(count) {
             true => tf!(lang, "{count} · now", "{count} · ahora"),
             false => count.to_string(),

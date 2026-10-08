@@ -5234,26 +5234,31 @@ fn pacing_live(queued: Vec<LiveQueued>, paused: Vec<LivePaused>, fixed: Option<u
 }
 
 #[test]
-fn the_fleet_header_says_where_the_limit_comes_from_and_offers_every_value_to_change_it() {
+fn the_fleet_header_says_where_the_limit_comes_from_and_this_macs_settings_change_it() {
     let state = fixture();
     let live = pacing_live(vec![], vec![], None);
-    let fleet = render(&state, &live, Client::Ios, Lang::Es, "fleet", "");
-    let text = serde_json::to_string(&fleet).unwrap();
-    assert!(text.contains("Límite: automático (6)"), "{text}");
-    let limit = find_action(&fleet, "set_limit:limit").expect("the limit is changed from the fleet header");
-    assert_eq!(limit.label, "Nodos a la vez");
+    for client in [Client::Ios, Client::Mac, Client::Tui] {
+        let fleet = render(&state, &live, client, Lang::Es, "fleet", "");
+        let text = serde_json::to_string(&fleet).unwrap();
+        assert!(text.contains("Límite: automático (6)"), "{text}");
+        assert!(find_action(&fleet, "set_limit:").is_none(), "{client:?}: the fleet header only shows the limit");
+    }
+
+    let machine = render(&state, &live, Client::Ios, Lang::Es, "machine", "");
+    let settings = machine.sections.iter().find(|section| section.id == "settings").expect("this Mac's settings");
+    let Item::Row(row) = &settings.items[0] else { panic!("{settings:?}") };
+    assert_eq!((row.title.as_str(), row.subtitle.as_deref()), ("Nodos a la vez", Some("Límite: automático (6)")));
+    let limit = find_action(&machine, "set_limit:limit").expect("the limit is changed from this Mac's settings");
     let labels: Vec<&str> = limit.options.iter().map(|option| option.label.as_str()).collect();
     assert_eq!(labels.len(), 13, "automatic and 1 to 12: {labels:?}");
     assert_eq!(labels[0], "Automático (6) · ahora");
     assert_eq!(limit.options[12].id, "12");
 
     let live = pacing_live(vec![], vec![], Some(4));
-    let fleet = render(&state, &live, Client::Tui, Lang::En, "fleet", "");
-    assert!(serde_json::to_string(&fleet).unwrap().contains("Limit: 4, set by you · automatic would be 6"));
-    let limit = find_action(&fleet, "set_limit:limit").unwrap();
-    assert_eq!(limit.key.as_deref(), Some("L"));
-    let ids: Vec<&str> = limit.options.iter().map(|option| option.id.as_str()).collect();
-    assert_eq!(ids, ["auto", "1", "2", "3", "4", "5", "6", "7", "8"], "the TUI menu numbers 9 entries around the current value");
+    let machine = render(&state, &live, Client::Mac, Lang::En, "machine", "");
+    assert!(serde_json::to_string(&machine).unwrap().contains("Limit: 4, set by you · automatic would be 6"));
+    let limit = find_action(&machine, "set_limit:limit").unwrap();
+    assert_eq!(limit.options.len(), 13);
     assert_eq!(limit.options[4].label, "4 · now");
 }
 
@@ -5322,7 +5327,7 @@ fn a_task_detail_shows_its_priority_and_offers_the_three_levels() {
     assert!(find_action(&done, "set_priority:").is_none(), "a finished task has no priority to change");
 }
 
-const PACING_GOLDENS: [(&str, &str, Client, Lang); 8] = [
+const PACING_GOLDENS: [(&str, &str, Client, Lang); 11] = [
     ("fleet-pacing-ios.json", "fleet", Client::Ios, Lang::En),
     ("fleet-pacing-ios-es.json", "fleet", Client::Ios, Lang::Es),
     ("fleet-pacing-mac.json", "fleet", Client::Mac, Lang::En),
@@ -5331,6 +5336,9 @@ const PACING_GOLDENS: [(&str, &str, Client, Lang); 8] = [
     ("fleet-pacing-es-tui.json", "fleet", Client::Tui, Lang::Es),
     ("task-pacing-ios.json", "task:t-queued-next", Client::Ios, Lang::En),
     ("task-pacing-ios-es.json", "task:t-queued-next", Client::Ios, Lang::Es),
+    ("machine-settings-ios.json", "machine", Client::Ios, Lang::En),
+    ("machine-settings-ios-es.json", "machine", Client::Ios, Lang::Es),
+    ("machine-settings-mac.json", "machine", Client::Mac, Lang::En),
 ];
 
 /// The fleet at its limit: 6 of 6 working with the Mac short of memory, two tasks queued, a node
@@ -5376,6 +5384,9 @@ fn pacing_views_match_goldens() {
             "fleet-pacing-tui.json" => include_str!("../../../../fixtures/views/cards/fleet-pacing-tui.json"),
             "fleet-pacing-es-tui.json" => include_str!("../../../../fixtures/views/cards/fleet-pacing-es-tui.json"),
             "task-pacing-ios.json" => include_str!("../../../../fixtures/views/cards/task-pacing-ios.json"),
+            "machine-settings-ios.json" => include_str!("../../../../fixtures/views/cards/machine-settings-ios.json"),
+            "machine-settings-ios-es.json" => include_str!("../../../../fixtures/views/cards/machine-settings-ios-es.json"),
+            "machine-settings-mac.json" => include_str!("../../../../fixtures/views/cards/machine-settings-mac.json"),
             _ => include_str!("../../../../fixtures/views/cards/task-pacing-ios-es.json"),
         };
         let actual = render(&state, &live, client, lang, key, "2026-09-30T10:00:00Z");

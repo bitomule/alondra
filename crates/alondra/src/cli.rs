@@ -176,6 +176,38 @@ pub fn answer_cmd(interaction: &str, option: Option<&str>, text: &str) -> Result
     Ok(())
 }
 
+/// The option the daemon's `set_limit` takes for what was typed: `auto` or 1 to 12.
+fn node_limit_option(value: &str) -> Result<String> {
+    use alondra_core::options::{AUTO, MAX_WORKING_NODES};
+    let value = value.trim().to_ascii_lowercase();
+    if value == AUTO {
+        return Ok(value);
+    }
+    match value.parse::<u32>() {
+        Ok(count) if (1..=MAX_WORKING_NODES).contains(&count) => Ok(count.to_string()),
+        _ => bail!(trf!("max_working_nodes takes auto or a number from 1 to {MAX_WORKING_NODES}",
+            "max_working_nodes admite auto o un número del 1 al {MAX_WORKING_NODES}")),
+    }
+}
+
+fn node_limit_action(view: &View) -> Option<Action> {
+    view_action(view, |action| action.id.starts_with("set_limit:"))
+}
+
+/// How many nodes work at once on this Mac. The daemon writes it to `options.toml`, as when it
+/// is changed from Settings in the apps.
+pub fn set_node_limit(value: &str) -> Result<()> {
+    let option = node_limit_option(value)?;
+    let client = user();
+    let view = client.views("machine", None)
+        .context(tr!("Alondra is not running on this Mac: start it and try again", "Alondra no está en marcha en este Mac: arráncalo y vuelve a probar"))?;
+    let action = node_limit_action(&view)
+        .context(tr!("This Alondra cannot change the limit yet: update it", "Este Alondra aún no puede cambiar el límite: actualízalo"))?;
+    submit(&client, &view, &action, Some(&option), serde_json::json!({}))?;
+    println!("max_working_nodes = {option}");
+    Ok(())
+}
+
 /// Cancels each task, one command each against the revision the previous one left; a reason
 /// is recorded beside a cancelled task.
 pub fn cancel(tasks: &[String], reason: Option<&str>) -> Result<()> {
@@ -404,4 +436,28 @@ mod tests {
         assert!(closed_notice(&serde_json::json!({"outcome": "applied", "detail": {"interactive": true}}), "nodo").unwrap().contains("/exit"));
     }
 
+
+    #[test]
+    fn the_node_limit_is_set_through_the_action_this_macs_settings_offer() {
+        crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+        assert_eq!(node_limit_option(" Auto ").unwrap(), "auto");
+        assert_eq!(node_limit_option("12").unwrap(), "12");
+        for refused in ["0", "13", "four", ""] {
+            let error = node_limit_option(refused).unwrap_err().to_string();
+            assert!(error.contains("auto or a number from 1 to 12"), "{refused}: {error}");
+        }
+
+        let s = world();
+        let d = s.projection();
+        let live = alondra_core::views::LiveSnapshot {
+            pacing: Some(alondra_core::views::LivePacing { working: 2, limit: 6, fixed: None, auto: 6, memory_free: Some(40), tight: false,
+                queued: vec![], paused: vec![] }),
+            ..Default::default()
+        };
+        let context = alondra_core::views::RenderContext { domain: &s, projection: &d, live: &live, client: alondra_core::views::Client::Tui, lang: alondra_core::views::Lang::En, transport: alondra_core::views::Transport::Loopback, cursor: "c", rendered_at: "" };
+        let view = alondra_core::views::build("machine", context).unwrap();
+        let action = node_limit_action(&view).expect("the machine view offers the limit");
+        assert!(action.id.starts_with("set_limit:limit@"), "{}", action.id);
+        assert!(action.options.iter().any(|option| option.id == node_limit_option("4").unwrap()));
+    }
 }

@@ -169,6 +169,8 @@ enum Cmd {
     Config {
         #[arg(long, help = tr!("Print a single value", "Imprime un solo valor"))]
         get: Option<String>,
+        #[command(subcommand)]
+        command: Option<ConfigCmd>,
     },
     /// Node MCP server, started by the node plugin.
     #[command(hide = true)]
@@ -191,6 +193,15 @@ enum Cmd {
     /// Prints the raw bytes and the parsed key of every key pressed, to debug terminal input
     #[command(hide = true)]
     Keys,
+}
+
+#[derive(Subcommand)]
+enum ConfigCmd {
+    #[command(about = tr!(
+        "Change a setting through the daemon: max_working_nodes <auto|1-12>",
+        "Cambia un ajuste a través del daemon: max_working_nodes <auto|1-12>"
+    ))]
+    Set { key: String, value: String },
 }
 
 #[derive(Subcommand)]
@@ -249,7 +260,8 @@ fn main() -> Result<()> {
             Ok(())
         }
         Some(Cmd::Setup(args)) => setup::run(*args),
-        Some(Cmd::Config { get }) => show_config(get.as_deref()),
+        Some(Cmd::Config { command: Some(ConfigCmd::Set { key, value }), .. }) => set_config(&key, &value),
+        Some(Cmd::Config { get, command: None }) => show_config(get.as_deref()),
         Some(Cmd::McpNode) => mcp::serve_node(),
         Some(Cmd::McpOrchestrator) => mcp::serve_orchestrator(),
         Some(Cmd::Hook) => hook(),
@@ -277,6 +289,7 @@ fn show_config(get: Option<&str>) -> Result<()> {
         ("compact_orchestrator_at", c.compact_orchestrator_at.map(|p| format!("{p}%")).unwrap_or_else(|| "off".into())),
         ("archived_tasks_days", c.archived_tasks_days.to_string()),
         ("auto_update", c.auto_update.to_string()),
+        ("max_working_nodes", node_limit(&c.home)),
     ];
     match get {
         Some(key) => match rows.iter().find(|(k, _)| *k == key) {
@@ -286,6 +299,26 @@ fn show_config(get: Option<&str>) -> Result<()> {
         None => rows.iter().for_each(|(k, v)| println!("{k} = {v}")),
     }
     Ok(())
+}
+
+fn set_config(key: &str, value: &str) -> Result<()> {
+    match key {
+        "max_working_nodes" => cli::set_node_limit(value),
+        _ => anyhow::bail!(trf!("{key} cannot be changed here; settable: max_working_nodes", "{key} no se cambia aquí; se puede cambiar: max_working_nodes")),
+    }
+}
+
+/// What `options.toml` says; the daemon turns `auto` into a number from this Mac's size.
+fn node_limit(home: &std::path::Path) -> String {
+    let text = std::fs::read_to_string(alondra_core::options::path_in(home)).unwrap_or_default();
+    match alondra_core::options::OptionsFile::parse(&text).map(|file| file.max_working_nodes) {
+        Ok(alondra_core::options::NodeLimit::Fixed(count)) => count.to_string(),
+        Ok(alondra_core::options::NodeLimit::Auto) => alondra_core::options::AUTO.into(),
+        Err(_) => {
+            let file = alondra_core::options::FILE_NAME;
+            trf!("unreadable: {file} has an error", "ilegible: {file} tiene un error")
+        }
+    }
 }
 
 fn hook() -> Result<()> {

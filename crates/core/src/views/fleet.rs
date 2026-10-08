@@ -461,8 +461,6 @@ fn pacing_section(context: &RenderContext<'_>) -> Option<super::Section> {
         row.actions.extend(super::pacing::resume_action(paused, context));
         items.push(Item::Row(row));
     }
-    let limit = super::pacing::limit_action(pacing, context).into_iter().collect();
-    items.push(Item::Actions(super::ActionBar { actions: limit }));
     Some(common::section("pacing", None, items))
 }
 

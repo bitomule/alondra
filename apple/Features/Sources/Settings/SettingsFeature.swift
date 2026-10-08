@@ -115,6 +115,7 @@ public extension DependencyValues {
         /// The Mac app on its own daemon, with an account behind some of its paired Macs.
         public var showsSignOutWithMacs = false
         public var confirmLogout = false
+        public var nodeLimit = NodeLimitFeature.State()
         public var generation: UInt64 = 0
         public let cancellation = UUID()
         public init(service: String, device: String, supportsNotifications: Bool, automaticallySavesQuietHours: Bool = false,
@@ -140,6 +141,7 @@ public extension DependencyValues {
         case loadDevices, devicesLoaded([TrustedDevice]), devicesFailed(String)
         case revokeDeviceTapped(String), cancelRevokeDevice, confirmRevokeDevice, deviceRevoked(String), revokeFailed(String)
         case logoutTapped, cancelLogout, confirmLogout
+        case nodeLimit(NodeLimitFeature.Action)
     }
     @Dependency(\.serviceSettings) var client
     @Dependency(\.cloudPairing) var pairingService
@@ -152,8 +154,10 @@ public extension DependencyValues {
     }
 
     public var body: some ReducerOf<Self> {
+        Scope(state: \.nodeLimit, action: \.nodeLimit) { NodeLimitFeature() }
         Reduce { state, action in
             switch action {
+            case .nodeLimit: return .none
             case .appeared:
                 guard state.supportsNotifications else { return .none }
                 return .run { send in

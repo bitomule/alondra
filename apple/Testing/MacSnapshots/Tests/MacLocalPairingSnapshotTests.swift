@@ -7,7 +7,7 @@ import SwiftUI
 import XCTest
 
 /// What this Mac shows about other devices: the request to allow one, and the list of the
-/// devices and Macs it works with.
+/// devices and Macs it works with, beside how many nodes work at once.
 @MainActor
 final class MacLocalPairingSnapshotTests: XCTestCase {
     override func setUp() async throws {
@@ -47,15 +47,25 @@ final class MacLocalPairingSnapshotTests: XCTestCase {
                                error: nil, decide: { _ in })
     }
 
-    func test_settings_thisMacItsPairedMacsAndItsDevices() {
-        assertWindow(size: CGSize(width: 560, height: 760)) { settings(thisMac: "This Mac") }
+    func test_settings_thisMacItsPairedMacsAndItsDevices() throws {
+        let limit = try machine("machine-settings-mac")
+        assertWindow(size: CGSize(width: 560, height: 900)) { settings(thisMac: "This Mac", limit: limit) }
     }
 
-    func test_settings_thisMacItsPairedMacsAndItsDevices_spanish() {
-        assertWindow(size: CGSize(width: 560, height: 800), spanish: true, variants: light) { settings(thisMac: "Este Mac") }
+    func test_settings_thisMacItsPairedMacsAndItsDevices_spanish() throws {
+        let limit = try machine("machine-settings-ios-es")
+        assertWindow(size: CGSize(width: 560, height: 940), spanish: true, variants: light) { settings(thisMac: "Este Mac", limit: limit) }
     }
 
-    private func settings(thisMac: String) -> some View {
+    private func machine(_ name: String) throws -> NodeLimitSetting? {
+        let environment = ProcessInfo.processInfo.environment
+        let url = URL(fileURLWithPath: try XCTUnwrap(environment["TEST_SRCDIR"]))
+            .appendingPathComponent(environment["TEST_WORKSPACE"] ?? "_main")
+            .appendingPathComponent("fixtures/views/cards/\(name).json")
+        return NodeLimitSetting(document: try ContractCodec.decode(ViewDocument.self, from: Data(contentsOf: url)))
+    }
+
+    private func settings(thisMac: String, limit: NodeLimitSetting?) -> some View {
         var state = SettingsFeature.State(service: "127.0.0.1", device: "mac", supportsNotifications: false, usesAccount: false)
         let ids = (1...3).map { UUID(uuidString: "00000000-0000-0000-0000-00000000000\($0)")! }
         state.macs = [
@@ -65,6 +75,7 @@ final class MacLocalPairingSnapshotTests: XCTestCase {
         ]
         state.selectedMacID = ids[0]
         state.showsSignOutWithMacs = true
+        state.nodeLimit.setting = limit
         state.macStatuses = [ids[0]: .route(.thisMac), ids[1]: .route(.localNetwork), ids[2]: .problem(.macNotOnNetwork)]
         state.devices = [
             TrustedDevice(id: "phone-1", name: "iPhone de David", origin: .direct),

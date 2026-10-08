@@ -395,8 +395,22 @@ pub(super) fn machine(context: &RenderContext<'_>) -> View {
                 .collect(),
         })],
     ));
+    if let Some(section) = settings_section(context) {
+        view.sections.push(section);
+    }
     if let Some(update) = &context.live.update {
         view.notices.push(update.clone());
     }
     view
+}
+
+/// This Mac's settings the apps show in Settings: for now, how many nodes work at once.
+fn settings_section(context: &RenderContext<'_>) -> Option<super::Section> {
+    let pacing = context.live.pacing.as_ref()?;
+    let limit = super::pacing::limit_action(pacing, context)?;
+    let mut row = common::row("node_limit", "machine", Icon::Machine, limit.label.clone(),
+        Some(super::pacing::limit_text(pacing, context.lang)));
+    row.link = None;
+    row.actions.push(limit);
+    Some(common::section("settings", None, vec![Item::Row(row)]))
 }

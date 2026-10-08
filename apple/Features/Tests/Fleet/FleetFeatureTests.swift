@@ -59,8 +59,6 @@ final class FleetFeatureTests: XCTestCase {
         let pacing = try XCTUnwrap(overview.pacing)
         XCTAssertEqual(pacing.summary, "Trabajando 6/6 · En cola 2 · En pausa 2 · Mac: memoria 12 % libre (justo)")
         XCTAssertEqual(pacing.limitText, "Límite: automático (6)")
-        XCTAssertEqual(pacing.limit?.label, "Nodos a la vez")
-        XCTAssertEqual(pacing.limit?.options.map(\.id), ["auto"] + (1...12).map(String.init))
         XCTAssertEqual(pacing.waiting.map(\.title), [
             "Fix the crash when the schedule list is empty", "Translate the onboarding into Spanish",
             "Build the importer", "Refresh the App Store screenshots",
@@ -93,30 +91,17 @@ final class FleetFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.overview?.pacing?.waiting.last, held, "a refused resume puts the row back")
     }
 
-    func testChoosingALimitSendsItsOptionAndShowsTheNewLimitAtOnce() async throws {
-        let gate = Gate()
-        let requests = LockIsolated<[ActionRequest]>([])
-        let store = TestStore(initialState: FleetFeature.State()) { FleetFeature() } withDependencies: {
-            $0.uuid = .incrementing
-            $0.viewsClient.perform = { request in
-                requests.withValue { $0.append(request) }
-                await gate.wait()
-                return try Fixtures.response(#"{"protocol":1,"outcome":"applied","message":"Límite actualizado"}"#)
+    func testTheFleetShowsTheLimitButLeavesChangingItToSettings() throws {
+        let document = try Fixtures.document("fleet-pacing-ios-es")
+        let actions = document.sections.flatMap(\.items).flatMap { item -> [WireAction] in
+            switch item {
+            case .actions(let bar): bar.actions
+            case .row(let row): row.actions
+            default: []
             }
         }
-        store.exhaustivity = .off
-        await store.send(.screen(.loaded(try Fixtures.document("fleet-pacing-ios-es"))))
-        let limit = try XCTUnwrap(store.state.overview?.pacing?.limit)
-        let four = try XCTUnwrap(limit.options.first { $0.id == "4" })
-
-        await store.send(.choose(limit, four))
-        await store.receive(\.actions.sent)
-        XCTAssertEqual(store.state.overview?.pacing?.limitText, String(localized: "Nodes at once: 4"))
-        await gate.open()
-        await store.receive(\.actions.settled)
-
-        XCTAssertEqual(requests.value.map(\.actionId), [limit.id])
-        XCTAssertEqual(requests.value.map(\.optionId), ["4"])
+        XCTAssertFalse(actions.contains { $0.command == "set_limit" }, "Nodes at once lives in Settings")
+        XCTAssertEqual(FleetOverview(document: document).pacing?.limitText, "Límite: automático (6)")
     }
 
     func testObservesTheFleetWhenTheTabAppears() async throws {
