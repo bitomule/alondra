@@ -1,0 +1,18 @@
+load("@build_bazel_rules_swift//swift:swift.bzl", "swift_test")
+load("//apple:swift.bzl", "STRICT_SWIFT_CONCURRENCY_COPTS")
+
+swift_test(
+    name = "AlondraQualityTests",
+    copts = STRICT_SWIFT_CONCURRENCY_COPTS,
+    srcs = ["ClientConcurrencyTests.swift"] + ["//apple/Testing/Fixtures:sources"],
+    data = ["//apple/Testing/Samples:all", "//fixtures/views:all", "//fixtures/views:cards"],
+    linkopts = ["-Wl,-export_dynamic"],
+    deps = [
+        "//apple/Contract:AlondraContract",
+        "//apple/Data/Feed:AlondraFeed",
+        "//apple/Data/Transport:AlondraTransport",
+        "//apple/Features:AlondraFeatures",
+        "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
+        "@swiftpkg_xctest_dynamic_overlay//:IssueReportingTestSupport",
+    ],
+)

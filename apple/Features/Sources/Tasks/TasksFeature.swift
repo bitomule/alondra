@@ -18,6 +18,8 @@ public struct TasksFeature: Sendable {
         public var pages: [String: TasksPage] = [:]
         public var pagesVersion: String?
         public var loadingMore: Set<String> = []
+        public var pageSequence: UInt64 = 0
+        public var pageLoads: [String: UInt64] = [:]
         public var optimistic = Optimistic()
         public init() {}
 
@@ -31,8 +33,8 @@ public struct TasksFeature: Sendable {
         case refresh
         case foldToggled(String)
         case showMore(String)
-        case moreLoaded(String, ViewDocument)
-        case moreFailed(String)
+        case moreLoaded(String, request: UInt64, ViewDocument)
+        case moreFailed(String, request: UInt64)
         case open(AlondraContract.Link)
         case archiveCompleted
         case perform(WireAction)
@@ -69,6 +71,7 @@ public struct TasksFeature: Sendable {
                 state.pages = [:]
                 state.pagesVersion = nil
                 state.loadingMore = []
+                state.pageLoads = [:]
                 return .merge(state.expanded.sorted().map { .send(.showMore($0)) })
             case .foldToggled(let id):
                 guard state.expanded.insert(id).inserted else {
@@ -81,19 +84,24 @@ public struct TasksFeature: Sendable {
                 guard let board = state.board, state.loadingMore.insert(id).inserted,
                       let more = [board.active, board.finished, board.archived].first(where: { $0.id == id })?.more
                 else { return .none }
+                state.pageSequence &+= 1
+                let request = state.pageSequence
+                state.pageLoads[id] = request
                 return .run { [viewsClient] send in
                     do {
                         guard case .document(let page) = try await viewsClient.load(ViewKey(rawValue: more.key), nil)
                         else { return }
-                        await send(.moreLoaded(id, page))
+                        await send(.moreLoaded(id, request: request, page))
                     } catch is CancellationError {
                         return
                     } catch {
-                        await send(.moreFailed(id))
+                        await send(.moreFailed(id, request: request))
                     }
                 }
                 .cancellable(id: CancelID.more(id))
-            case .moreLoaded(let id, let document):
+            case .moreLoaded(let id, let request, let document):
+                guard state.pageLoads[id] == request else { return .none }
+                state.pageLoads[id] = nil
                 state.loadingMore.remove(id)
                 guard let section = document.sections.first(where: { $0.id == id }) else { return .none }
                 var page = state.pages[id] ?? TasksPage(rows: [], more: nil)
@@ -102,7 +110,9 @@ public struct TasksFeature: Sendable {
                 state.pages[id] = page
                 state.pagesVersion = state.screen.document?.version
                 return .none
-            case .moreFailed(let id):
+            case .moreFailed(let id, let request):
+                guard state.pageLoads[id] == request else { return .none }
+                state.pageLoads[id] = nil
                 state.loadingMore.remove(id)
                 return .send(.delegate(.failed(String(localized: "Couldn’t load this from your Mac. Try again."))))
             case .open(let link):
