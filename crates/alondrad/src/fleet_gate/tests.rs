@@ -156,7 +156,7 @@ fn memory_back_above_20_percent_for_5_minutes_recovers_once_and_lets_the_queue_g
     assert_eq!(notices[1], "The Mac has memory again (30% free): Alondra resumes the paused nodes and starts the queued launches one by one.");
 }
 
-struct Home(PathBuf);
+struct Home(crate::test_support::Directory);
 impl Drop for Home {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
@@ -164,7 +164,7 @@ impl Drop for Home {
 }
 
 fn world() -> (Home, Arc<DomainRuntime>) {
-    let home = std::env::temp_dir().join(format!("alondra-gate-{}", crate::auth::random_hex(8)));
+    let home = crate::test_support::Directory::new();
     std::fs::create_dir_all(&home).unwrap();
     let domain = Arc::new(DomainRuntime::open(&home).unwrap());
     run(&domain, Actor::User { user_id: "u".into() }, Command::CreateRequest { request_id: "r".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });

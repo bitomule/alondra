@@ -231,8 +231,8 @@ mod tests {
     use alondra_core::{HookEvent, states, upkeep};
     use std::collections::BTreeSet;
 
-    fn legacy_backup_fixture() -> (PathBuf, Connection) {
-        let home = std::env::temp_dir().join(format!("alondra-migration-backup-{}", crate::auth::random_hex(8)));
+    fn legacy_backup_fixture() -> (crate::test_support::Directory, Connection) {
+        let home = crate::test_support::Directory::new();
         fs::DirBuilder::new().mode(0o700).create(&home).unwrap();
         let db = Connection::open(home.join("alondra.db")).unwrap();
         db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0;
@@ -332,10 +332,11 @@ mod tests {
     #[test]
     #[ignore = "requires ALONDRA_LEGACY_DAEMON_TEST pointing to released 0.1.4 daemon"]
     fn delivery_released_014_daemon_refuses_migrated_database_before_event_mutation() {
+        let scratch_directory = crate::test_support::Directory::new();
         let binary=std::env::var_os("ALONDRA_LEGACY_DAEMON_TEST").expect("provide released daemon path");
         let version=std::process::Command::new(&binary).arg("--version").output().unwrap();
         assert_eq!(String::from_utf8_lossy(&version.stdout).trim(),"alondrad 0.1.4");
-        let home=std::env::temp_dir().join(format!("delivery-old-writer-{}",crate::auth::random_hex(6)));
+        let home=scratch_directory.parent().unwrap().join(format!("delivery-old-writer-{}",crate::auth::random_hex(6)));
         std::fs::create_dir(&home).unwrap();
         let mut store=Store::open(&home.join("alondra.db")).unwrap();
         store.append(1,&Event::Clock {machine_strained:false}).unwrap();
@@ -360,13 +361,14 @@ mod tests {
     #[test]
     #[ignore = "requires ALONDRA_MENU_LEGACY_DAEMON_TEST pointing to released 0.1.5 daemon"]
     fn menu_released_015_daemon_refuses_events_and_snapshots_before_processing_hooks() {
+        let scratch_directory = crate::test_support::Directory::new();
         use std::os::unix::fs::PermissionsExt;
         let binary=std::env::var_os("ALONDRA_MENU_LEGACY_DAEMON_TEST").expect("provide released 0.1.5 daemon path");
         let version=std::process::Command::new(&binary).arg("--version").output().unwrap();
         assert!(version.status.success());
         assert_eq!(String::from_utf8_lossy(&version.stdout).trim(),"alondrad 0.1.5");
         for snapshot in [false,true] {
-            let home=std::env::temp_dir().join(format!("menu-old-reader-{}",crate::auth::random_hex(6)));
+            let home=scratch_directory.parent().unwrap().join(format!("menu-old-reader-{}",crate::auth::random_hex(6)));
             std::fs::create_dir(&home).unwrap();
             struct Cleanup(PathBuf);
             impl Drop for Cleanup {fn drop(&mut self){let _=std::fs::remove_dir_all(&self.0);}}
@@ -422,7 +424,8 @@ mod tests {
 
     #[test]
     fn delivery_schema_migration_preserves_rows_snapshots_and_blocks_previous_writer() {
-        let path=std::env::temp_dir().join(format!("delivery-migration-{}.db",crate::auth::random_hex(6)));
+        let scratch_directory = crate::test_support::Directory::new();
+        let path=scratch_directory.parent().unwrap().join(format!("delivery-migration-{}.db",crate::auth::random_hex(6)));
         let old=Connection::open(&path).unwrap();
         old.execute_batch("CREATE TABLE events(seq INTEGER PRIMARY KEY,at INTEGER NOT NULL,kind TEXT NOT NULL,session TEXT,body TEXT NOT NULL); CREATE INDEX events_session ON events(session); CREATE TABLE snapshots(seq INTEGER PRIMARY KEY,at INTEGER NOT NULL,body TEXT NOT NULL);").unwrap();
         let event=serde_json::to_string(&Event::Clock {machine_strained:false}).unwrap();
@@ -442,7 +445,8 @@ mod tests {
 
     #[test]
     fn delivery_schema_failure_rolls_back_rename_index_and_rows() {
-        let path=std::env::temp_dir().join(format!("delivery-migration-failure-{}.db",crate::auth::random_hex(6)));
+        let scratch_directory = crate::test_support::Directory::new();
+        let path=scratch_directory.parent().unwrap().join(format!("delivery-migration-failure-{}.db",crate::auth::random_hex(6)));
         let db=Connection::open(&path).unwrap();
         db.execute_batch("CREATE TABLE events(seq INTEGER PRIMARY KEY,at INTEGER NOT NULL,kind TEXT NOT NULL,session TEXT,body TEXT NOT NULL); CREATE INDEX events_session ON events(session); INSERT INTO events VALUES(7,42,'clock',NULL,'original bytes'); CREATE TABLE event_log_session(x);").unwrap();
         assert!(Store::open(&path).is_err(),"index namespace collision injects failure after rename");
@@ -455,7 +459,8 @@ mod tests {
 
     #[test]
     fn append_then_replay_rebuilds_same_events() {
-        let dir = std::env::temp_dir().join(format!("alondra-store-{}", std::process::id()));
+        let scratch_directory = crate::test_support::Directory::new();
+        let dir = scratch_directory.parent().unwrap().join(format!("alondra-store-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("t.db");
         let _ = std::fs::remove_file(&path);
@@ -470,7 +475,8 @@ mod tests {
 
     #[test]
     fn sequence_stays_above_snapshot_after_all_events_are_compacted() {
-        let dir = std::env::temp_dir().join(format!("alondra-sequence-{}", std::process::id()));
+        let scratch_directory = crate::test_support::Directory::new();
+        let dir = scratch_directory.parent().unwrap().join(format!("alondra-sequence-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("t.db");
         let _ = std::fs::remove_file(&path);
@@ -496,7 +502,8 @@ mod tests {
 
     #[test]
     fn failed_batch_does_not_leave_a_source_event_without_its_task_move() {
-        let dir = std::env::temp_dir().join(format!("alondra-rollback-{}", std::process::id()));
+        let scratch_directory = crate::test_support::Directory::new();
+        let dir = scratch_directory.parent().unwrap().join(format!("alondra-rollback-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("t.db");
         let _ = std::fs::remove_file(&path);
@@ -514,7 +521,8 @@ mod tests {
 
     #[test]
     fn a_session_timeline_pages_back_from_a_sequence_number() {
-        let dir = std::env::temp_dir().join(format!("alondra-timeline-{}", std::process::id()));
+        let scratch_directory = crate::test_support::Directory::new();
+        let dir = scratch_directory.parent().unwrap().join(format!("alondra-timeline-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("t.db");
         let _ = std::fs::remove_file(&path);
@@ -534,7 +542,8 @@ mod tests {
 
     #[test]
     fn compaction_leaves_the_write_ahead_log_empty() {
-        let dir = std::env::temp_dir().join(format!("alondra-wal-{}", std::process::id()));
+        let scratch_directory = crate::test_support::Directory::new();
+        let dir = scratch_directory.parent().unwrap().join(format!("alondra-wal-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("t.db");
         let _ = std::fs::remove_file(&path);
@@ -710,7 +719,8 @@ mod tests {
 
     #[test]
     fn compaction_keeps_what_replay_needs_and_drops_old_events() {
-        let dir = std::env::temp_dir().join(format!("alondra-compact-{}", std::process::id()));
+        let scratch_directory = crate::test_support::Directory::new();
+        let dir = scratch_directory.parent().unwrap().join(format!("alondra-compact-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("t.db");
         let _ = std::fs::remove_file(&path);

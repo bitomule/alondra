@@ -522,7 +522,8 @@ mod tests {
 
     #[test]
     fn the_projects_root_is_readable_and_never_writable() {
-        let dir = std::env::temp_dir().join(uuid().unwrap());
+        let scratch_directory = crate::test_support::Directory::new();
+        let dir = scratch_directory.parent().unwrap().join(uuid().unwrap());
         let lock = Ownership::acquire(&dir).unwrap().unwrap();
         let root = Path::new("/Users/someone/Projects");
         let mut i = invocation(&dir, Path::new("claude"), &lock);
@@ -620,7 +621,8 @@ mod tests {
     }
     #[test]
     fn ownership_is_exclusive() {
-        let dir = std::env::temp_dir().join(uuid().unwrap());
+        let scratch_directory = crate::test_support::Directory::new();
+        let dir = scratch_directory.parent().unwrap().join(uuid().unwrap());
         let a = Ownership::acquire(&dir).unwrap().unwrap();
         assert!(Ownership::acquire(&dir).unwrap().is_none());
         drop(a);
@@ -656,7 +658,8 @@ mod tests {
     }
     #[test]
     fn dropped_ownership_is_free_while_another_thread_is_forking() {
-        let dir = std::env::temp_dir().join(uuid().unwrap());
+        let scratch_directory = crate::test_support::Directory::new();
+        let dir = scratch_directory.parent().unwrap().join(uuid().unwrap());
         let ownership = Ownership::acquire(&dir).unwrap().unwrap();
         let (child, release) = paused_fork();
         drop(ownership);
@@ -682,7 +685,8 @@ mod tests {
     }
     #[tokio::test]
     async fn real_process_drains_stderr_and_checks_terminal_result() {
-        let dir = std::env::temp_dir().join(uuid().unwrap());
+        let scratch_directory = crate::test_support::Directory::new();
+        let dir = scratch_directory.parent().unwrap().join(uuid().unwrap());
         let lock = Ownership::acquire(&dir).unwrap().unwrap();
         let exe = fake(&dir, r#"cat >/dev/null
 printf '%s\n' '{"type":"system","subtype":"init","session_id":"test-session","permissionMode":"auto","mcp_servers":[{"name":"plugin:alondra-orchestrator:alondra-orchestrator","status":"connected"}],"tools":["Skill","Read","mcp__plugin_alondra-orchestrator_alondra-orchestrator__create_task","mcp__plugin_alondra-orchestrator_alondra-orchestrator__ask"]}'
@@ -701,7 +705,8 @@ printf '%s\n' '{"type":"result","session_id":"test-session","subtype":"success",
     }
     #[tokio::test]
     async fn the_prompt_is_readable_the_moment_claude_starts() {
-        let dir = std::env::temp_dir().join(uuid().unwrap());
+        let scratch_directory = crate::test_support::Directory::new();
+        let dir = scratch_directory.parent().unwrap().join(uuid().unwrap());
         let lock = Ownership::acquire(&dir).unwrap().unwrap();
         let exe = fake(&dir, r#"test -f /dev/stdin || exit 70
 cat > received
@@ -715,7 +720,8 @@ printf '%s\n' '{"type":"result","session_id":"test-session","subtype":"success",
     }
     #[tokio::test]
     async fn malformed_output_kills_process_without_waiting_for_timeout() {
-        let dir = std::env::temp_dir().join(uuid().unwrap());
+        let scratch_directory = crate::test_support::Directory::new();
+        let dir = scratch_directory.parent().unwrap().join(uuid().unwrap());
         let lock = Ownership::acquire(&dir).unwrap().unwrap();
         let exe = fake(&dir, "cat >/dev/null\nprintf 'invalid-json\\n'\nexec sleep 30");
         let output = tokio::time::timeout(std::time::Duration::from_secs(25), execute(invocation(&dir, &exe, &lock), |_| Ok(()), || Ok(()), std::future::pending())).await.unwrap();
@@ -725,7 +731,8 @@ printf '%s\n' '{"type":"result","session_id":"test-session","subtype":"success",
     }
     #[tokio::test]
     async fn inherited_lock_survives_parent_ownership_drop() {
-        let dir = std::env::temp_dir().join(uuid().unwrap());
+        let scratch_directory = crate::test_support::Directory::new();
+        let dir = scratch_directory.parent().unwrap().join(uuid().unwrap());
         let lock = Ownership::acquire(&dir).unwrap().unwrap();
         let exe = fake(&dir, "sleep 1");
         let mut child = invocation(&dir, &exe, &lock).command().spawn().unwrap();
@@ -737,7 +744,8 @@ printf '%s\n' '{"type":"result","session_id":"test-session","subtype":"success",
     }
     #[test]
     fn every_launch_including_resume_and_compaction_is_auto_and_unattended() {
-        let dir = std::env::temp_dir().join(uuid().unwrap());
+        let scratch_directory = crate::test_support::Directory::new();
+        let dir = scratch_directory.parent().unwrap().join(uuid().unwrap());
         let lock = Ownership::acquire(&dir).unwrap().unwrap();
         for resume in [false, true] {
             let mut i = invocation(&dir, Path::new("claude"), &lock);
@@ -755,7 +763,8 @@ printf '%s\n' '{"type":"result","session_id":"test-session","subtype":"success",
 
     #[tokio::test]
     async fn orphan_cleanup_requires_dead_daemon_and_exact_child_identity() {
-        let dir = std::env::temp_dir().join(uuid().unwrap());
+        let scratch_directory = crate::test_support::Directory::new();
+        let dir = scratch_directory.parent().unwrap().join(uuid().unwrap());
         let lock = Ownership::acquire(&dir).unwrap().unwrap();
         let exe = fake(&dir, "exec sleep 30");
         let mut child = invocation(&dir, &exe, &lock).command().spawn().unwrap();

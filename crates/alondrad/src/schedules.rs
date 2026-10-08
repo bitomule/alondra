@@ -505,7 +505,8 @@ mod tests {
 
     #[test]
     fn schedule_receipts_recover_crud_and_reject_changed_digest() {
-        let path = std::env::temp_dir().join(format!("schedule-receipts-{}.db", crate::auth::random_hex(6)));
+        let scratch_directory = crate::test_support::Directory::new();
+        let path = scratch_directory.parent().unwrap().join(format!("schedule-receipts-{}.db", crate::auth::random_hex(6)));
         // The previous schema has no receipt table. Opening must preserve its schedules.
         let legacy = Connection::open(&path).unwrap();
         legacy.execute_batch("CREATE TABLE schedules(id TEXT PRIMARY KEY,body TEXT NOT NULL);").unwrap();
@@ -542,7 +543,8 @@ mod tests {
 
     #[test]
     fn schedule_receipt_failure_rolls_back_create_update_delete() {
-        let path = std::env::temp_dir().join(format!("schedule-rollback-{}.db", crate::auth::random_hex(6)));
+        let scratch_directory = crate::test_support::Directory::new();
+        let path = scratch_directory.parent().unwrap().join(format!("schedule-rollback-{}.db", crate::auth::random_hex(6)));
         let store = Schedules::open(&path).unwrap();
         let original = receipt_draft().into_schedule("existing".into(), 1);
         store.save(&original).unwrap();
@@ -603,7 +605,8 @@ mod tests {
 
     #[test]
     fn claim_is_durable_and_never_claims_twice() {
-        let path = std::env::temp_dir().join(format!("schedule-{}.db", crate::auth::random_hex(6)));
+        let scratch_directory = crate::test_support::Directory::new();
+        let path = scratch_directory.parent().unwrap().join(format!("schedule-{}.db", crate::auth::random_hex(6)));
         let store = Schedules::open(&path).unwrap();
         let s = Draft { title: "Review".into(), text: "Review project".into(), project: None, disallowed_tools: vec![],
             options: Default::default(), frequency: Frequency::Daily, hour: 0, minute: 0,
@@ -619,7 +622,8 @@ mod tests {
 
     #[test]
     fn scheduled_tool_policy_survives_a_restart_and_is_scoped_to_its_request() {
-        let path = std::env::temp_dir().join(format!("schedule-tools-{}.db", crate::auth::random_hex(6)));
+        let scratch_directory = crate::test_support::Directory::new();
+        let path = scratch_directory.parent().unwrap().join(format!("schedule-tools-{}.db", crate::auth::random_hex(6)));
         let policy = vec!["mcp__revenuecat__create-*".to_string(), "mcp__revenuecat__update-*".to_string()];
         {
             let store = Schedules::open(&path).unwrap();
@@ -646,7 +650,8 @@ mod tests {
             fn plugin(&self) -> Option<std::path::PathBuf> { Some("/tmp/alondra-test-plugin".into()) }
         }
 
-        let home = std::env::temp_dir().join(format!("schedule-e2e-{}", crate::auth::random_hex(6)));
+        let scratch_directory = crate::test_support::Directory::new();
+        let home = scratch_directory.parent().unwrap().join(format!("schedule-e2e-{}", crate::auth::random_hex(6)));
         let config = alondra_core::config::Config::resolve(home.clone(), &Default::default(), |_| None, || Some("Tester".into()));
         let hub = Arc::new(Hub::open(config).unwrap());
         fixture_projects(&hub);
@@ -694,7 +699,8 @@ mod tests {
             fn plugin(&self) -> Option<std::path::PathBuf> { Some("/tmp/alondra-test-plugin".into()) }
         }
 
-        let home = std::env::temp_dir().join(format!("schedule-failure-{}", crate::auth::random_hex(6)));
+        let scratch_directory = crate::test_support::Directory::new();
+        let home = scratch_directory.parent().unwrap().join(format!("schedule-failure-{}", crate::auth::random_hex(6)));
         let config = alondra_core::config::Config::resolve(home.clone(), &Default::default(), |_| None, || Some("Tester".into()));
         let hub = Arc::new(Hub::open(config.clone()).unwrap());
         fixture_projects(&hub);
@@ -718,7 +724,8 @@ mod tests {
 
     #[tokio::test]
     async fn a_due_run_creates_only_one_task_without_an_orchestrator() {
-        let home = std::env::temp_dir().join(format!("schedule-retry-{}", crate::auth::random_hex(6)));
+        let scratch_directory = crate::test_support::Directory::new();
+        let home = scratch_directory.parent().unwrap().join(format!("schedule-retry-{}", crate::auth::random_hex(6)));
         let config = alondra_core::config::Config::resolve(home.clone(), &Default::default(), |_| None, || Some("Tester".into()));
         let hub = Arc::new(Hub::open(config).unwrap());
         fixture_projects(&hub);

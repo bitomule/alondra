@@ -30,6 +30,7 @@ swift_test(
     copts = STRICT_SWIFT_CONCURRENCY_COPTS,
     srcs = glob(["Tests/**/*.swift"]),
     deps = [
+        "//apple/Testing:AlondraTestSupport",
         ":AlondraAccount",
     ],
 )

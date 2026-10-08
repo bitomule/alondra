@@ -128,7 +128,8 @@ mod tests {
 
     #[test]
     fn the_bearer_joins_a_private_settings_file_that_goes_with_its_agent() {
-        let home = std::env::temp_dir().join(format!("alondra-session-settings-{}", crate::auth::random_hex(8)));
+        let scratch_directory = crate::test_support::Directory::new();
+        let home = scratch_directory.parent().unwrap().join(format!("alondra-session-settings-{}", crate::auth::random_hex(8)));
         std::fs::create_dir_all(&home).unwrap();
         let path = prepare(&home, "run-1").unwrap();
         assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);

@@ -981,6 +981,7 @@ on = "Run /review-loop before the merge."
 
     #[test]
     fn projects_are_the_first_folder_under_the_root() {
+        let scratch_directory = crate::test_support::Directory::new();
         let root = Path::new("/u/Projects");
         assert_eq!(project_of(root, Path::new("/u/Projects/App/.claude/worktrees/x")).as_deref(), Some("App"));
         assert_eq!(project_of(root, Path::new("/elsewhere/App")), None);
@@ -988,7 +989,7 @@ on = "Run /review-loop before the merge."
         assert_eq!(f.projects_root(Path::new("/u")), PathBuf::from("/u/code"));
         assert_eq!(OptionsFile::default().projects_root(Path::new("/u")), PathBuf::from("/u/Projects"));
 
-        let dir = std::env::temp_dir().join(format!("alondra-projects-{}-{}", std::process::id(), crate::now_millis()));
+        let dir = scratch_directory.parent().unwrap().join(format!("alondra-projects-{}-{}", std::process::id(), crate::now_millis()));
         std::fs::create_dir_all(dir.join("b-repo/.git")).unwrap();
         std::fs::create_dir_all(dir.join("A-repo")).unwrap();
         std::fs::write(dir.join("A-repo/.git"), "gitdir: x").unwrap();

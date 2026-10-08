@@ -1,4 +1,4 @@
-load("@build_bazel_rules_swift//swift:swift.bzl", "swift_test")
+load("@build_bazel_rules_swift//swift:swift.bzl", "swift_library", "swift_test")
 load("//apple:swift.bzl", "STRICT_SWIFT_CONCURRENCY_COPTS")
 
 swift_test(
@@ -10,4 +10,20 @@ swift_test(
         "@swiftpkg_xctest_dynamic_overlay//:IssueReportingTestSupport",
     ],
     linkopts = ["-Wl,-export_dynamic"],
+)
+
+swift_library(
+    name = "AlondraTestSupport",
+    testonly = True,
+    srcs = ["TemporaryFiles.swift"],
+    module_name = "AlondraTestSupport",
+    copts = STRICT_SWIFT_CONCURRENCY_COPTS,
+    visibility = ["//visibility:public"],
+)
+
+swift_test(
+    name = "TemporaryFilesTests",
+    srcs = ["TemporaryFilesTests.swift"],
+    copts = STRICT_SWIFT_CONCURRENCY_COPTS,
+    deps = [":AlondraTestSupport"],
 )

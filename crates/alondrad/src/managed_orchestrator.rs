@@ -89,11 +89,10 @@ async fn confirmed_absent(executable: &Path, session: &str, short: Option<&str>)
 mod tests {
     use super::*;
     use alondra_core::{Event, HookEvent, config::Config, model::{Message, MessageFrom}};
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static NEXT: AtomicU64 = AtomicU64::new(0);
     fn hub() -> Hub {
-        let home = std::env::temp_dir().join(format!("alondra-migration-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
-        Hub::open(Config::resolve(home, &Default::default(), |_| None, || Some("Test".into()))).unwrap()
+        let directory = crate::test_support::Directory::new();
+        let home = directory.to_path_buf();
+        Hub::open(Config::resolve(home, &Default::default(), |_| None, || Some("Test".into()))).unwrap().with_test_directory(directory)
     }
     fn append(hub: &Hub, e: Event) { hub.append_with(|_| Some(e)).unwrap(); }
     fn legacy(hub: &Hub) {

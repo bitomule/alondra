@@ -224,8 +224,8 @@ mod tests {
             "behavior": "allow", "destination": "localSettings"})
     }
 
-    fn scratch() -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("alondra-node-{}", hex(&crate::service_client::random::<6>().unwrap())));
+    fn scratch() -> crate::test_support::Directory {
+        let dir = crate::test_support::Directory::new();
         std::fs::create_dir_all(&dir).unwrap();
         dir
     }

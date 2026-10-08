@@ -3,13 +3,10 @@ use rusqlite::params;
 use sha2::{Digest, Sha256};
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 
-struct Home(PathBuf);
+struct Home(crate::test_support::Directory);
 impl Home {
     fn new() -> Self {
-        let path = std::env::temp_dir().join(format!(
-            "alondra-database-migration-{}",
-            crate::auth::random_hex(12)
-        ));
+        let path = crate::test_support::Directory::new();
         fs::DirBuilder::new().mode(0o700).create(&path).unwrap();
         Self(path)
     }

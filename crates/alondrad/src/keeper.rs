@@ -185,9 +185,10 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
 
     fn fixture(body: &str) -> (Hub, PathBuf, PathBuf, PathBuf, Ownership) {
-        let home = std::env::temp_dir().join(process::uuid().unwrap());
+        let directory = crate::test_support::Directory::new();
+        let home = directory.to_path_buf();
         let config = alondra_core::config::Config::resolve(home.clone(), &Default::default(), |_| None, || Some("Test".into()));
-        let hub = Hub::open(config).unwrap();
+        let hub = Hub::open(config).unwrap().with_test_directory(directory);
         transition(&hub, Transition::Enabled { session_id: None }).unwrap();
         let claude_home = home.join("claude-home");
         let repo = home.join("assets");

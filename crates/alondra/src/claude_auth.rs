@@ -289,8 +289,9 @@ mod tests {
     }
     #[test]
     fn status_executes_daemon_binary_in_its_home_and_config() {
+        let scratch_directory = crate::test_support::Directory::new();
         use std::os::unix::fs::PermissionsExt;
-        let dir = std::env::temp_dir().join(format!("alondra-claude-auth-{}", std::process::id()));
+        let dir = scratch_directory.parent().unwrap().join(format!("alondra-claude-auth-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let dir = dir.canonicalize().unwrap();
         let script = dir.join("claude");
@@ -313,8 +314,9 @@ fi
     }
     #[test]
     fn os_identity_unlocks_mock_auth_without_inheriting_credentials() {
+        let scratch_directory = crate::test_support::Directory::new();
         use std::os::unix::fs::PermissionsExt;
-        let dir = std::env::temp_dir().join(format!(
+        let dir = scratch_directory.parent().unwrap().join(format!(
             "alondra-claude-user-{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)

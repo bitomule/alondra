@@ -228,7 +228,8 @@ mod tests {
 
     #[test]
     fn a_replacement_relaunches_only_after_preflight_passes() {
-        let dir = Dir(std::env::temp_dir().join(format!("alondra-relaunch-{}", crate::auth::random_hex(8))));
+        let scratch_directory = crate::test_support::Directory::new();
+        let dir = Dir(scratch_directory.parent().unwrap().join(format!("alondra-relaunch-{}", crate::auth::random_hex(8))));
         std::fs::create_dir(&dir.0).unwrap();
         let bin = dir.0.join("alondrad");
         std::fs::write(&bin, "old").unwrap();
@@ -254,7 +255,8 @@ mod tests {
 
     #[test]
     fn a_rejected_binary_is_checked_again_once_the_retry_interval_passes() {
-        let dir = Dir(std::env::temp_dir().join(format!("alondra-relaunch-retry-{}", crate::auth::random_hex(8))));
+        let scratch_directory = crate::test_support::Directory::new();
+        let dir = Dir(scratch_directory.parent().unwrap().join(format!("alondra-relaunch-retry-{}", crate::auth::random_hex(8))));
         std::fs::create_dir(&dir.0).unwrap();
         let bin = dir.0.join("alondrad");
         std::fs::write(&bin, "old").unwrap();
@@ -268,7 +270,8 @@ mod tests {
 
     #[test]
     fn a_binary_replaced_again_during_preflight_is_checked_next_time() {
-        let dir = Dir(std::env::temp_dir().join(format!("alondra-relaunch-race-{}", crate::auth::random_hex(8))));
+        let scratch_directory = crate::test_support::Directory::new();
+        let dir = Dir(scratch_directory.parent().unwrap().join(format!("alondra-relaunch-race-{}", crate::auth::random_hex(8))));
         std::fs::create_dir(&dir.0).unwrap();
         let bin = dir.0.join("alondrad");
         std::fs::write(&bin, "old").unwrap();
@@ -280,7 +283,8 @@ mod tests {
 
     #[test]
     fn a_missing_binary_mid_upgrade_is_not_a_change() {
-        let dir = Dir(std::env::temp_dir().join(format!("alondra-relaunch-gone-{}", crate::auth::random_hex(8))));
+        let scratch_directory = crate::test_support::Directory::new();
+        let dir = Dir(scratch_directory.parent().unwrap().join(format!("alondra-relaunch-gone-{}", crate::auth::random_hex(8))));
         std::fs::create_dir(&dir.0).unwrap();
         let bin = dir.0.join("alondrad");
         std::fs::write(&bin, "old").unwrap();
@@ -291,8 +295,9 @@ mod tests {
 
     #[test]
     fn preflight_reports_the_last_line_the_binary_printed() {
+        let scratch_directory = crate::test_support::Directory::new();
         use std::os::unix::fs::PermissionsExt;
-        let dir = Dir(std::env::temp_dir().join(format!("alondra-relaunch-script-{}", crate::auth::random_hex(8))));
+        let dir = Dir(scratch_directory.parent().unwrap().join(format!("alondra-relaunch-script-{}", crate::auth::random_hex(8))));
         std::fs::create_dir(&dir.0).unwrap();
         let bin = dir.0.join("alondrad");
         std::fs::write(&bin, "#!/bin/sh\n[ \"$1\" = --version ] && { echo 'alondrad 0.2.0'; exit 0; }\necho 'replayed 10 events' >&2\necho 'preflight failed: bootstrap failed integrity audit' >&2\nexit 1\n").unwrap();

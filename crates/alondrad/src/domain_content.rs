@@ -253,7 +253,8 @@ mod tests {
 
     #[test]
     fn rejected_copy_cannot_remove_a_second_runtime_admission() {
-        let home = std::env::temp_dir().join(format!(
+        let scratch_directory = crate::test_support::Directory::new();
+        let home = scratch_directory.parent().unwrap().join(format!(
             "alondra-domain-copy-lease-{}", crate::auth::random_hex(16)));
         std::fs::create_dir_all(home.join("files")).unwrap();
         let body = b"A reviewed document";

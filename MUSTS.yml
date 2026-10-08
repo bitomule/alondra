@@ -16,6 +16,7 @@ checks:
       - ".bazelversion"
       - "Cargo.toml"
       - "Cargo.lock"
+      - "clippy.toml"
       - "Makefile"
     with:
       target: //crates/...
@@ -32,6 +33,7 @@ checks:
       - ".bazelversion"
       - "Cargo.toml"
       - "Cargo.lock"
+      - "clippy.toml"
       - "Makefile"
       - "apple/**/*.xcstrings"
       - "apple/no_sleep_wording_test.sh"
@@ -83,6 +85,7 @@ checks:
         - //apple/Demo:AlondraDemoTests
         - //apple/Design:AlondraDesignTests
         - //apple/Features:AlondraFeaturesTests
+        - //apple/Testing:TemporaryFilesTests
         - //apple/Testing:IssueReportingIntegrationTests
         - //apple/Testing/Quality:AlondraQualityTests
         - //apple/Testing/Snapshots:AlondraSnapshotTests

@@ -80,8 +80,8 @@ pub fn wait_before_exit(failures: u32) -> Option<Duration> {
 mod tests {
     use super::*;
 
-    fn home(name: &str) -> PathBuf {
-        let home = std::env::temp_dir().join(format!("alondra-startup-{name}-{}-{}", std::process::id(), crate::now_millis()));
+    fn home(_name: &str) -> crate::test_support::Directory {
+        let home = crate::test_support::Directory::new();
         std::fs::create_dir_all(&home).unwrap();
         home
     }

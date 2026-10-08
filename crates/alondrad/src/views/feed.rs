@@ -447,16 +447,16 @@ mod tests {
     use alondra_core::domain::{
         Actor, Command, CommandEnvelope, QuestionOption, Recipient, Scope,
     };
-    use std::{fs, path::PathBuf, sync::Arc};
+    use std::{fs, sync::Arc};
 
     struct FeedFixture {
-        home: PathBuf,
+        home: crate::test_support::Directory,
         client: Arc<crate::client_routes::Client>,
     }
 
     impl FeedFixture {
         fn new() -> Self {
-            let home = std::env::temp_dir().join(format!("alondra-feed-{}", crate::auth::random_hex(16)));
+            let home = crate::test_support::Directory::new();
             fs::create_dir(&home).unwrap();
             let domain = Arc::new(crate::domain_runtime::DomainRuntime::open(&home).unwrap());
             let client = crate::client_routes::Client::open(

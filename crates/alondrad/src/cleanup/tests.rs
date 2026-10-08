@@ -46,7 +46,7 @@ impl Sessions for FakeSessions {
 }
 
 struct Rig {
-    root: std::path::PathBuf,
+    root: crate::test_support::Directory,
     claude_home: std::path::PathBuf,
     domain: Arc<DomainRuntime>,
     sessions: Arc<FakeSessions>,
@@ -84,7 +84,7 @@ enum Task {
 
 impl Rig {
     fn new() -> Self {
-        let root = std::env::temp_dir().join(format!("alondra-cleanup-{}", crate::auth::random_hex(8)));
+        let root = crate::test_support::Directory::new();
         let home = root.join("home");
         let claude_home = root.join("claude");
         std::fs::create_dir_all(&home).unwrap();

@@ -33,6 +33,10 @@
 
 #![forbid(unsafe_code)]
 
+#[cfg(test)]
+#[path = "../../test_support.rs"]
+mod test_support;
+
 pub mod pairing;
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};

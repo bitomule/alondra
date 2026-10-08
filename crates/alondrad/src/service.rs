@@ -2498,10 +2498,11 @@ mod tests {
     }
     #[tokio::test]
     async fn revocation_waits_until_approved_response_ack_finishes() {
+        let scratch_directory = crate::test_support::Directory::new();
         use std::sync::mpsc;
         use std::time::Duration;
 
-        let home = std::env::temp_dir().join(format!(
+        let home = scratch_directory.parent().unwrap().join(format!(
             "alondra-response-lease-{}",
             crate::auth::random_hex(16)
         ));
@@ -2590,10 +2591,11 @@ mod tests {
     }
     #[test]
     fn push_binding_commit_cannot_follow_completed_revocation() {
+        let scratch_directory = crate::test_support::Directory::new();
         use std::sync::mpsc;
         use std::time::Duration;
 
-        let home = std::env::temp_dir().join(format!(
+        let home = scratch_directory.parent().unwrap().join(format!(
             "alondra-push-lease-{}",
             crate::auth::random_hex(16)
         ));
@@ -2706,7 +2708,8 @@ mod tests {
     }
     #[test]
     fn legacy_receipt_schema_migrates_without_reexecuting_ambiguous_work() {
-        let home = std::env::temp_dir().join(format!(
+        let scratch_directory = crate::test_support::Directory::new();
+        let home = scratch_directory.parent().unwrap().join(format!(
             "alondra-legacy-receipts-{}-{}",
             std::process::id(),
             now_ms()
@@ -2777,7 +2780,8 @@ mod tests {
 
     #[test]
     fn atomic_push_preferences_roll_back_with_receipt_and_recover_once() {
-        let home = std::env::temp_dir().join(format!(
+        let scratch_directory = crate::test_support::Directory::new();
+        let home = scratch_directory.parent().unwrap().join(format!(
             "alondra-atomic-preferences-{}-{}",
             std::process::id(),
             now_ms()
@@ -2873,9 +2877,10 @@ mod tests {
 
     #[test]
     fn journal_rejects_final_symlink_without_touching_target_on_open_or_reopen() {
+        let scratch_directory = crate::test_support::Directory::new();
         use std::os::unix::fs::{PermissionsExt, symlink};
         let home =
-            std::env::temp_dir().join(format!("journal-no-follow-{}", crate::auth::random_hex(8)));
+            scratch_directory.parent().unwrap().join(format!("journal-no-follow-{}", crate::auth::random_hex(8)));
         std::fs::create_dir_all(&home).unwrap();
         let target = home.join("preserved-old.sqlite");
         let db = Connection::open(&target).unwrap();
@@ -2922,7 +2927,8 @@ mod tests {
 
     #[test]
     fn push_binding_rotates_persists_and_is_removed_on_revocation() {
-        let path = std::env::temp_dir().join(format!(
+        let scratch_directory = crate::test_support::Directory::new();
+        let path = scratch_directory.parent().unwrap().join(format!(
             "alondra-push-bindings-{}-{}.sqlite",
             std::process::id(),
             now_ms()
@@ -3018,7 +3024,8 @@ mod tests {
 
     #[test]
     fn quiet_hours_persist_per_device_rotate_clear_and_revoke() {
-        let path = std::env::temp_dir().join(format!(
+        let scratch_directory = crate::test_support::Directory::new();
+        let path = scratch_directory.parent().unwrap().join(format!(
             "alondra-quiet-{}-{}.sqlite",
             std::process::id(),
             now_ms()
@@ -3076,7 +3083,8 @@ mod tests {
 
     #[test]
     fn quiet_hours_reordered_retries_cannot_restore_stale_preferences() {
-        let path = std::env::temp_dir().join(format!(
+        let scratch_directory = crate::test_support::Directory::new();
+        let path = scratch_directory.parent().unwrap().join(format!(
             "alondra-quiet-revision-{}-{}.sqlite",
             std::process::id(),
             now_ms()
@@ -3162,12 +3170,8 @@ mod tests {
         assert!(approved_method(&request("GET", Some(json!({})))).is_err());
     }
 
-    fn push_fixture() -> (Service, SecretKey) {
-        let home = std::env::temp_dir().join(format!(
-            "alondra-encrypted-push-{}-{}",
-            std::process::id(),
-            crate::auth::random_hex(8)
-        ));
+    fn push_fixture() -> (crate::test_support::Directory, Service, SecretKey) {
+        let home = crate::test_support::Directory::new();
         std::fs::create_dir_all(&home).unwrap();
         let phone_signing = SigningKey::from_slice(&[33u8; 32]).unwrap();
         let phone_agreement = SecretKey::from_slice(&[34u8; 32]).unwrap();
@@ -3209,12 +3213,12 @@ agreement_key = "{}"
         let service = Service::open(&home, 0, Arc::new(Auth::open(&home).unwrap()))
             .unwrap()
             .unwrap();
-        (service, phone_agreement)
+        (home, service, phone_agreement)
     }
 
     #[tokio::test]
     async fn encrypted_resource_read_receipts_are_approval_generation_bound() {
-        let (mut service, phone) = push_fixture();
+        let (_directory, mut service, phone) = push_fixture();
         activate_push(&service);
         let home = service.home.clone();
         let config = alondra_core::config::Config::resolve(
@@ -3273,7 +3277,7 @@ agreement_key = "{}"
 
     #[tokio::test]
     async fn atomic_local_service_recovers_commit_before_transport_receipt() {
-        let (mut service, phone) = push_fixture();
+        let (_directory, mut service, phone) = push_fixture();
         activate_push(&service);
         let home = service.home.clone();
         let config = alondra_core::config::Config::resolve(
@@ -3425,7 +3429,7 @@ agreement_key = "{}"
         use alondra_core::{Event, HookEvent};
         for route in ["/v1/requests", "/v1/prs/1/changes", "/v1/prs/1/ask"] {
             for revoke in ["none", "approval", "enrollment"] {
-                let (mut service, _) = push_fixture();
+                let (_directory, mut service, _) = push_fixture();
                 activate_push(&service);
                 let home = service.home.clone();
                 let config = alondra_core::config::Config::resolve(
@@ -3551,7 +3555,7 @@ agreement_key = "{}"
     #[tokio::test]
     async fn atomic_composed_message_rechecks_revocation_after_waiting_for_start_lock() {
         for revoke in ["none", "approval", "enrollment"] {
-            let (mut service, _) = push_fixture();
+            let (_directory, mut service, _) = push_fixture();
             activate_push(&service);
             let home = service.home.clone();
             let config = alondra_core::config::Config::resolve(
@@ -3648,7 +3652,7 @@ agreement_key = "{}"
 
     #[tokio::test]
     async fn atomic_composed_review_recovers_commit_before_transport_receipt() {
-        let (mut service, phone) = push_fixture();
+        let (_directory, mut service, phone) = push_fixture();
         activate_push(&service);
         let home = service.home.clone();
         let config = alondra_core::config::Config::resolve(
@@ -3773,7 +3777,7 @@ agreement_key = "{}"
 
     #[tokio::test]
     async fn atomic_schedule_recovers_commit_before_transport_receipt() {
-        let (mut service, phone) = push_fixture();
+        let (_directory, mut service, phone) = push_fixture();
         activate_push(&service);
         let home = service.home.clone();
         let config = alondra_core::config::Config::resolve(
@@ -3889,7 +3893,7 @@ agreement_key = "{}"
 
     #[tokio::test]
     async fn service_push_contains_only_ciphertext_outside_and_enforces_budget() {
-        let (service, phone_agreement) = push_fixture();
+        let (_directory, service, phone_agreement) = push_fixture();
         let phone_signing = SigningKey::from_slice(&[33u8; 32]).unwrap();
         let device = service.devices.get("phone-1").unwrap();
         assert!(
@@ -4066,7 +4070,7 @@ agreement_key = "{}"
     #[tokio::test]
     async fn work_epoch_is_reused_until_failure_and_revocations_resync_after_restart() {
         use axum::{Json, http::HeaderMap, routing::delete};
-        let (mut service, _) = push_fixture();
+        let (_directory, mut service, _) = push_fixture();
         activate_push(&service);
         let boots = Arc::new(AtomicUsize::new(0));
         let polls = Arc::new(AtomicUsize::new(0));
@@ -4212,7 +4216,7 @@ agreement_key = "{}"
 
     #[tokio::test]
     async fn receipt_and_response_ack_bodies_are_drained_for_connection_reuse() {
-        let (mut service, _) = push_fixture();
+        let (_directory, mut service, _) = push_fixture();
         activate_push(&service);
         let (url, connections, paths, server) =
             ack_server(vec![(200, br#"{"ok":true}"#.to_vec()); 4]).await;
@@ -4243,7 +4247,7 @@ agreement_key = "{}"
     #[tokio::test]
     async fn invalid_receipt_ack_is_bounded_and_never_reposted() {
         for (status, body) in [(200, vec![b'a'; 4097]), (500, b"{}".to_vec())] {
-            let (mut service, _) = push_fixture();
+            let (_directory, mut service, _) = push_fixture();
             activate_push(&service);
             let (url, _, paths, server) = ack_server(vec![(status, body)]).await;
             service.set_relay_url(url);
@@ -4280,7 +4284,7 @@ agreement_key = "{}"
 
     #[tokio::test]
     async fn diagnostic_push_refuses_wrong_unenrolled_unbound_and_revoked_devices() {
-        let (service, _) = push_fixture();
+        let (_directory, service, _) = push_fixture();
         assert!(
             service
                 .test_push("wrong")
@@ -4340,7 +4344,7 @@ agreement_key = "{}"
             routing::{get, post},
         };
         use std::sync::atomic::{AtomicUsize, Ordering};
-        let (mut service, phone_agreement) = push_fixture();
+        let (_directory, mut service, phone_agreement) = push_fixture();
         activate_push(&service);
         let now = local_minutes();
         let time = |m: u32| format!("{:02}:{:02}", m / 60, m % 60);
@@ -4438,7 +4442,7 @@ agreement_key = "{}"
         };
         use std::sync::atomic::{AtomicUsize, Ordering};
         for revoke in [false, true] {
-            let (mut service, _) = push_fixture();
+            let (_directory, mut service, _) = push_fixture();
             activate_push(&service);
             let home = service.home.clone();
             let sent = Arc::new(AtomicUsize::new(0));
@@ -4494,7 +4498,7 @@ agreement_key = "{}"
 
     #[tokio::test]
     async fn domain_push_report_counts_relay_rejections() {
-        let (mut service, _) = push_fixture();
+        let (_directory, mut service, _) = push_fixture();
         activate_push(&service);
         let router = Router::new()
             .route(
@@ -4528,7 +4532,7 @@ agreement_key = "{}"
             (StatusCode::NOT_FOUND, "not_found", false),
             (StatusCode::SERVICE_UNAVAILABLE, "push_registration_failed", false),
         ] {
-            let (mut service, _) = push_fixture();
+            let (_directory, mut service, _) = push_fixture();
             activate_push(&service);
             let calls = Arc::new(AtomicUsize::new(0));
             let counted = calls.clone();
@@ -4560,7 +4564,7 @@ agreement_key = "{}"
 
     #[test]
     fn a_binding_the_phone_registered_after_the_relay_dropped_the_old_one_stays() {
-        let (service, _) = push_fixture();
+        let (_directory, service, _) = push_fixture();
         activate_push(&service);
         let old = URL_SAFE_NO_PAD.encode([4u8; 32]);
         let new = URL_SAFE_NO_PAD.encode([5u8; 32]);
@@ -4588,7 +4592,7 @@ agreement_key = "{}"
     #[tokio::test]
     async fn pushes_carry_collapse_id_or_background_type_and_alerts_survive_an_older_relay() {
         use std::sync::atomic::{AtomicBool, Ordering};
-        let (mut service, phone_agreement) = push_fixture();
+        let (_directory, mut service, phone_agreement) = push_fixture();
         activate_push(&service);
         let binding = URL_SAFE_NO_PAD.encode([5u8; 32]);
         service.journal.set_push_preferences("phone-1", &binding, None).unwrap();
@@ -4687,7 +4691,7 @@ agreement_key = "{}"
 
     #[test]
     fn completed_domain_read_is_not_redelivered_after_persisted_revocation() {
-        let (service, _) = push_fixture();
+        let (_directory, service, _) = push_fixture();
         activate_push(&service);
         let home = service.home.clone();
         let config = alondra_core::config::Config::resolve(
@@ -4766,7 +4770,7 @@ agreement_key = "{}"
     #[tokio::test]
     async fn a_domain_service_registers_the_phones_push_preferences_and_the_legacy_one_refuses_the_route()
      {
-        let (service, phone_agreement) = push_fixture();
+        let (_directory, service, phone_agreement) = push_fixture();
         let phone_signing = SigningKey::from_slice(&[33u8; 32]).unwrap();
         let home = service.home.clone();
         let sealed = |service: &Service, request_id: &str, path: &str, body: Value| Work {
@@ -5077,7 +5081,7 @@ agreement_key = "{}"
 
     #[tokio::test]
     async fn changes_wait_does_not_block_mutation_or_misclassify_live_redelivery() {
-        let (mut service, phone) = push_fixture();
+        let (_directory, mut service, phone) = push_fixture();
         activate_push(&service);
         let entered = Arc::new(tokio::sync::Semaphore::new(0));
         let release = Arc::new(tokio::sync::Semaphore::new(0));
@@ -5298,7 +5302,7 @@ agreement_key = "{}"
 
     #[tokio::test]
     async fn changes_global_limit_releases_on_drop_and_does_not_limit_mutations() {
-        let (service, _) = push_fixture();
+        let (_directory, service, _) = push_fixture();
         activate_push(&service);
         let first = changes_work(
             &service,
@@ -5351,7 +5355,7 @@ agreement_key = "{}"
     // authorization cannot be trusted as the Mac's content authorization.
     #[tokio::test]
     async fn malicious_relay_key_substitution_and_false_revocation_ack_cannot_dispatch() {
-        let (mut service, phone) = push_fixture();
+        let (_directory, mut service, phone) = push_fixture();
         activate_push(&service);
         let home = service.home.clone();
         let config = alondra_core::config::Config::resolve(
@@ -5522,7 +5526,7 @@ agreement_key = "{}"
 
     #[tokio::test]
     async fn changes_rechecks_persisted_revocation_after_receipt_before_dispatch() {
-        let (mut service, _) = push_fixture();
+        let (_directory, mut service, _) = push_fixture();
         activate_push(&service);
         let received = Arc::new(tokio::sync::Semaphore::new(0));
         let release = Arc::new(tokio::sync::Semaphore::new(0));
@@ -5687,6 +5691,7 @@ agreement_key = "{}"
 
     #[tokio::test]
     async fn dispatch_preserves_json_file_text_without_wrapping_json_endpoints_or_errors() {
+        let scratch_directory = crate::test_support::Directory::new();
         const JSON_FILE: &str = "{\n  \"text\": \"contenido á\", \"count\": 3\n}\n";
         const MARKDOWN_FILE: &str = "# Documento\n\nTexto **literal**: á.\n";
         let router = Router::new()
@@ -5704,7 +5709,7 @@ agreement_key = "{}"
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let local_port = listener.local_addr().unwrap().port();
         let task = tokio::spawn(axum::serve(listener, router).into_future());
-        let home = std::env::temp_dir().join(format!(
+        let home = scratch_directory.parent().unwrap().join(format!(
             "alondra-file-contract-{}-{}",
             std::process::id(),
             now_ms()
@@ -5784,6 +5789,7 @@ agreement_key = "{}"
 
     #[tokio::test]
     async fn oversized_diff_snapshot_is_cut_to_the_relay_budget_instead_of_failing() {
+        let scratch_directory = crate::test_support::Directory::new();
         let large = "+".repeat(MAX_LOCAL_RESPONSE * 4);
         let local = large.clone();
         let router = Router::new().route(
@@ -5798,7 +5804,7 @@ agreement_key = "{}"
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let local_port = listener.local_addr().unwrap().port();
         let task = tokio::spawn(axum::serve(listener, router).into_future());
-        let home = std::env::temp_dir().join(format!(
+        let home = scratch_directory.parent().unwrap().join(format!(
             "alondra-diff-budget-{}-{}",
             std::process::id(),
             now_ms()
@@ -5927,7 +5933,7 @@ agreement_key = "{}"
             Event,
             pr::{MergeMethod, PrState},
         };
-        let (mut service, phone) = push_fixture();
+        let (_directory, mut service, phone) = push_fixture();
         activate_push(&service);
         let config = alondra_core::config::Config::resolve(
             service.home.clone(),
@@ -6149,7 +6155,8 @@ agreement_key = "{}"
 
     #[test]
     fn revocation_waits_for_in_flight_delivery_without_stalling_the_runtime() {
-        let home = std::env::temp_dir().join(format!(
+        let scratch_directory = crate::test_support::Directory::new();
+        let home = scratch_directory.parent().unwrap().join(format!(
             "alondra-revoke-during-delivery-{}-{}",
             std::process::id(),
             now_ms()
@@ -6241,7 +6248,8 @@ agreement_key = "{}"
 
     #[test]
     fn durable_receipt_rejects_changed_bytes_and_never_reruns_executing() {
-        let path = std::env::temp_dir().join(format!(
+        let scratch_directory = crate::test_support::Directory::new();
+        let path = scratch_directory.parent().unwrap().join(format!(
             "alondra-service-receipt-{}-{}.sqlite",
             std::process::id(),
             now_ms()
@@ -6273,6 +6281,7 @@ agreement_key = "{}"
 
     #[tokio::test]
     async fn ambiguous_enrollment_is_deleted_and_never_retried() {
+        let scratch_directory = crate::test_support::Directory::new();
         let registered = Arc::new(AtomicBool::new(false));
         let posts = Arc::new(AtomicUsize::new(0));
         let post_registered = registered.clone();
@@ -6307,7 +6316,7 @@ agreement_key = "{}"
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
         let task = tokio::spawn(axum::serve(listener, relay).into_future());
-        let home = std::env::temp_dir().join(format!(
+        let home = scratch_directory.parent().unwrap().join(format!(
             "alondra-pending-enrollment-{}-{}",
             std::process::id(),
             now_ms()
@@ -6401,6 +6410,7 @@ agreement_key = "{}"
 
     #[tokio::test]
     async fn encrypted_work_executes_once_and_replays_exact_response() {
+        let scratch_directory = crate::test_support::Directory::new();
         let calls = Arc::new(AtomicUsize::new(0));
         let local_calls = calls.clone();
         let local = Router::new().route(
@@ -6469,7 +6479,7 @@ agreement_key = "{}"
         let mac_agreement = SecretKey::from_slice(&[2u8; 32]).unwrap();
         let phone_signing = SigningKey::from_slice(&[3u8; 32]).unwrap();
         let phone_agreement = SecretKey::from_slice(&[4u8; 32]).unwrap();
-        let home = std::env::temp_dir().join(format!(
+        let home = scratch_directory.parent().unwrap().join(format!(
             "alondra-service-e2e-home-{}-{}",
             std::process::id(),
             now_ms()
@@ -6781,8 +6791,9 @@ agreement_key = "{}"
     }
     #[tokio::test]
     async fn reloading_service_toml_adds_and_removes_a_phone_without_a_restart() {
+        let scratch_directory = crate::test_support::Directory::new();
         use std::os::unix::fs::PermissionsExt;
-        let home = std::env::temp_dir().join(format!(
+        let home = scratch_directory.parent().unwrap().join(format!(
             "alondra-service-reload-{}",
             crate::auth::random_hex(8)
         ));
@@ -6872,9 +6883,10 @@ agreement_key = "{}"
 
     #[tokio::test]
     async fn committed_service_accepts_only_encrypted_domain_routes_and_fences_revoked_reader() {
+        let scratch_directory = crate::test_support::Directory::new();
         use std::os::unix::fs::PermissionsExt;
         let home =
-            std::env::temp_dir().join(format!("alondra-service-{}", crate::auth::random_hex(8)));
+            scratch_directory.parent().unwrap().join(format!("alondra-service-{}", crate::auth::random_hex(8)));
         std::fs::create_dir_all(&home).unwrap();
         let domain = Arc::new(crate::domain_runtime::DomainRuntime::open(&home).unwrap());
         let phone_signing = SigningKey::from_slice(&[3u8; 32]).unwrap();
@@ -6967,8 +6979,9 @@ agreement_key = "{}"
 
     #[tokio::test]
     async fn committed_service_relays_the_client_reads_and_nothing_else_outside_the_domain() {
+        let scratch_directory = crate::test_support::Directory::new();
         use std::os::unix::fs::PermissionsExt;
-        let home = std::env::temp_dir().join(format!(
+        let home = scratch_directory.parent().unwrap().join(format!(
             "alondra-client-relay-{}",
             crate::auth::random_hex(8)
         ));

@@ -81,7 +81,7 @@ mod tests {
     use serde_json::json;
 
     struct World {
-        root: std::path::PathBuf,
+        root: crate::test_support::Directory,
         home: std::path::PathBuf,
         project: std::path::PathBuf,
         domain: DomainRuntime,
@@ -93,7 +93,7 @@ mod tests {
     }
 
     fn world() -> World {
-        let root = std::env::temp_dir().join(format!("alondra-launch-plans-{}", crate::auth::random_hex(8)));
+        let root = crate::test_support::Directory::new();
         let home = root.join("home");
         let project = root.join("App");
         std::fs::create_dir_all(&home).unwrap();

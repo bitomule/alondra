@@ -747,7 +747,8 @@ mod tests {
 
     #[test]
     fn substituted_candidate_cannot_persist_approval_with_original_client_code() {
-        let home=std::env::temp_dir().join(format!("alondra-pairing-substitution-{}",URL_SAFE_NO_PAD.encode(random::<8>().unwrap())));
+        let scratch_directory = crate::test_support::Directory::new();
+        let home=scratch_directory.parent().unwrap().join(format!("alondra-pairing-substitution-{}",URL_SAFE_NO_PAD.encode(random::<8>().unwrap())));
         fs::create_dir(&home).unwrap();
         let mac=SigningKey::from_slice(&[21;32]).unwrap();
         let agreement=SecretKey::from_slice(&[22;32]).unwrap();
@@ -783,11 +784,8 @@ mod tests {
         fs::remove_dir_all(home).unwrap();
     }
 
-    fn temp_home(name: &str) -> std::path::PathBuf {
-        let home = std::env::temp_dir().join(format!(
-            "alondra-{name}-{}",
-            URL_SAFE_NO_PAD.encode(random::<8>().unwrap())
-        ));
+    fn temp_home(_name: &str) -> crate::test_support::Directory {
+        let home = crate::test_support::Directory::new();
         fs::create_dir(&home).unwrap();
         home
     }
@@ -929,7 +927,8 @@ mod tests {
 
     #[test]
     fn setup_skips_qr_only_for_matching_local_and_service_approval() {
-        let dir = std::env::temp_dir().join(format!(
+        let scratch_directory = crate::test_support::Directory::new();
+        let dir = scratch_directory.parent().unwrap().join(format!(
             "alondra-pair-status-{}",
             URL_SAFE_NO_PAD.encode(random::<8>().unwrap())
         ));
@@ -977,7 +976,8 @@ mod tests {
 
     #[test]
     fn a_device_paired_without_relay_counts_as_paired() {
-        let dir = std::env::temp_dir().join(format!(
+        let scratch_directory = crate::test_support::Directory::new();
+        let dir = scratch_directory.parent().unwrap().join(format!(
             "alondra-pair-local-{}",
             URL_SAFE_NO_PAD.encode(random::<8>().unwrap())
         ));

@@ -610,7 +610,8 @@ mod tests {
     #[test]
     fn no_node_starts_while_the_disk_is_low_and_one_does_once_it_recovers() {
         let watch = MachineWatch::default();
-        let here = std::env::temp_dir();
+        let here = crate::test_support::Directory::new();
+        std::fs::create_dir(&here).unwrap();
         assert_eq!(watch.refuse_launch(&here), None, "a healthy disk starts nodes");
         let (incident, _) = step(None, &machine(GB, 50), &[], false, 0);
         watch.set_incident(incident);
@@ -624,7 +625,8 @@ mod tests {
     #[test]
     fn a_launch_on_another_volume_watches_it_from_then_on() {
         let watch = MachineWatch::default();
-        let here = std::env::temp_dir();
+        let here = crate::test_support::Directory::new();
+        std::fs::create_dir(&here).unwrap();
         watch.refuse_launch(&here);
         let mount = crate::disk::mount_point(&here).unwrap();
         let watched = watch.record.lock().unwrap().volumes.clone();
@@ -778,7 +780,7 @@ mod tests {
         assert_eq!(raised(&actions)[0].nodes, ["Lumo", "Quill"], "the reminder names both");
     }
 
-    struct Home(PathBuf);
+    struct Home(crate::test_support::Directory);
     impl Drop for Home {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
@@ -786,9 +788,10 @@ mod tests {
     }
 
     fn world() -> (Home, Arc<DomainRuntime>) {
-        let home = std::env::temp_dir().join(format!("alondra-machine-{}", crate::auth::random_hex(8)));
+        let home = crate::test_support::Directory::new();
         std::fs::create_dir_all(&home).unwrap();
-        (Home(home.clone()), Arc::new(DomainRuntime::open(&home).unwrap()))
+        let domain = Arc::new(DomainRuntime::open(&home).unwrap());
+        (Home(home), domain)
     }
 
     struct Told(Mutex<Vec<String>>);

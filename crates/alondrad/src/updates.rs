@@ -187,7 +187,8 @@ mod tests {
 
     #[tokio::test]
     async fn a_newer_release_is_installed_once_and_the_outcome_kept() {
-        let home = std::env::temp_dir().join(format!("alondra-updates-{}", crate::auth::random_hex(6)));
+        let scratch_directory = crate::test_support::Directory::new();
+        let home = scratch_directory.parent().unwrap().join(format!("alondra-updates-{}", crate::auth::random_hex(6)));
         std::fs::create_dir_all(&home).unwrap();
         let url = releases_server(serde_json::json!([
             {"tag_name": format!("alondra-v{NEWER}"), "draft": false, "prerelease": false},

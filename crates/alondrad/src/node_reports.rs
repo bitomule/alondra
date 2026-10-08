@@ -764,7 +764,8 @@ mod tests {
 
     #[test]
     fn the_last_reading_and_the_days_start_survive_a_restart() {
-        let home = std::env::temp_dir().join(format!("alondra-usage-{}", std::process::id()));
+        let scratch_directory = crate::test_support::Directory::new();
+        let home = scratch_directory.parent().unwrap().join(format!("alondra-usage-{}", std::process::id()));
         std::fs::create_dir_all(&home).unwrap();
         let measure = |week: f64| report(json!({"session_id": "s", "event": "session.measure",
             "rate_limits": [{"kind": "five_hour", "percent_used": 10, "resets_at": "2026-10-02T16:40:00Z"},
@@ -789,7 +790,8 @@ mod tests {
 
     #[test]
     fn a_missing_or_broken_usage_file_starts_empty() {
-        let home = std::env::temp_dir().join(format!("alondra-usage-broken-{}", std::process::id()));
+        let scratch_directory = crate::test_support::Directory::new();
+        let home = scratch_directory.parent().unwrap().join(format!("alondra-usage-broken-{}", std::process::id()));
         std::fs::create_dir_all(&home).unwrap();
         assert!(Reports::persisted_in(&home).usage(1).is_none());
         std::fs::write(home.join(USAGE_FILE), "{not json").unwrap();

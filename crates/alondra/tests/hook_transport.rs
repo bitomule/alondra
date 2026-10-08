@@ -1,4 +1,7 @@
 use std::io::{Read, Write};
+#[path = "../../test_support.rs"]
+mod test_support;
+
 use std::os::unix::net::UnixListener;
 use std::process::{Command, Stdio};
 
@@ -25,7 +28,8 @@ fn the_orchestrator_is_sent_to_schedule_create_and_a_node_to_the_orchestrator() 
 
 #[test]
 fn hook_cli_sends_json_to_local_daemon_and_returns_its_reply() {
-    let home = std::env::temp_dir().join(format!("alondra-cli-hook-{}", std::process::id()));
+    let scratch_directory = crate::test_support::Directory::new();
+    let home = scratch_directory.parent().unwrap().join(format!("alondra-cli-hook-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&home);
     std::fs::create_dir_all(&home).unwrap();
     let listener = UnixListener::bind(home.join("hooks.sock")).unwrap();
@@ -64,7 +68,8 @@ fn hook_cli_sends_json_to_local_daemon_and_returns_its_reply() {
 
 #[test]
 fn intermediate_message_batch_does_not_contact_daemon() {
-    let home = std::env::temp_dir().join(format!("alondra-no-socket-{}", std::process::id()));
+    let scratch_directory = crate::test_support::Directory::new();
+    let home = scratch_directory.parent().unwrap().join(format!("alondra-no-socket-{}", std::process::id()));
     let mut child = Command::new(env!("CARGO_BIN_EXE_alondra"))
         .arg("hook")
         .env("ALONDRA_HOME", home)
@@ -87,7 +92,8 @@ enum Daemon {
 }
 
 fn run_hook(name: &str, daemon: Daemon, launched: bool, input: &[u8]) -> std::process::Output {
-    let home = std::env::temp_dir().join(format!("alondra-hook-{name}-{}", std::process::id()));
+    let scratch_directory = crate::test_support::Directory::new();
+    let home = scratch_directory.parent().unwrap().join(format!("alondra-hook-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&home);
     std::fs::create_dir_all(&home).unwrap();
     let server = match daemon {
@@ -203,7 +209,8 @@ fn a_subagent_runs_without_alondra_whether_or_not_alondra_launched_its_session()
 
 #[test]
 fn post_tool_hook_sends_only_the_last_stdout_line() {
-    let home = std::env::temp_dir().join(format!("alondra-compact-hook-{}", std::process::id()));
+    let scratch_directory = crate::test_support::Directory::new();
+    let home = scratch_directory.parent().unwrap().join(format!("alondra-compact-hook-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&home);
     std::fs::create_dir_all(&home).unwrap();
     let listener = UnixListener::bind(home.join("hooks.sock")).unwrap();
@@ -236,8 +243,9 @@ fn post_tool_hook_sends_only_the_last_stdout_line() {
 /// one that is not there yet, must end the helper with an exit code, never a signal.
 #[test]
 fn node_connect_ends_with_an_exit_code_when_the_daemon_goes_away_or_is_not_there() {
+    let scratch_directory = crate::test_support::Directory::new();
     use std::os::unix::process::ExitStatusExt;
-    let home = std::env::temp_dir().join(format!("alondra-cli-connect-{}", std::process::id()));
+    let home = scratch_directory.parent().unwrap().join(format!("alondra-cli-connect-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&home);
     std::fs::create_dir_all(&home).unwrap();
     let connect = || {
@@ -273,7 +281,8 @@ fn node_connect_ends_with_an_exit_code_when_the_daemon_goes_away_or_is_not_there
 
 #[test]
 fn a_permission_prompt_is_held_as_a_card_and_answered_with_claude_codes_decision_or_left_to_claude_code() {
-    let home = std::env::temp_dir().join(format!("alondra-cli-permission-{}", std::process::id()));
+    let scratch_directory = crate::test_support::Directory::new();
+    let home = scratch_directory.parent().unwrap().join(format!("alondra-cli-permission-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&home);
     std::fs::create_dir_all(&home).unwrap();
     let prompt = br#"{"session_id":"s","hook_event_name":"PermissionRequest","permission_mode":"auto","tool_name":"Bash","tool_input":{"command":"git push"}}"#;

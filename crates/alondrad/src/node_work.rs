@@ -349,7 +349,8 @@ mod tests {
 
     #[test]
     fn a_workflow_counts_the_agent_transcripts_in_its_folder() {
-        let dir = std::env::temp_dir().join(format!("alondra-workflow-{}", std::process::id()));
+        let scratch_directory = crate::test_support::Directory::new();
+        let dir = scratch_directory.parent().unwrap().join(format!("alondra-workflow-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         assert_eq!(workflow_agents(&dir), None);
         for name in ["agent-1.jsonl", "agent-2.jsonl", "script.js"] {

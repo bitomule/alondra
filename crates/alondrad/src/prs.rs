@@ -615,11 +615,12 @@ mod tests {
         }
     }
 
-    fn hub(tag: &str) -> Hub {
-        let home = std::env::temp_dir().join(format!("alondra-train-{tag}-{}", std::process::id()));
+    fn hub(_tag: &str) -> Hub {
+        let directory = crate::test_support::Directory::new();
+        let home = directory.to_path_buf();
         let _ = std::fs::remove_dir_all(&home);
         let config = alondra_core::config::Config::resolve(home, &Default::default(), |_| None, || Some("David".into()));
-        Hub::open(config).unwrap()
+        Hub::open(config).unwrap().with_test_directory(directory)
     }
 
     #[tokio::test]

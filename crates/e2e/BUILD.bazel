@@ -3,7 +3,7 @@ load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 
 rust_library(
     name = "alondra_e2e",
-    srcs = glob(["src/**/*.rs"]),
+    srcs = glob(["src/**/*.rs"]) + ["//crates:test_support.rs"],
     crate_name = "alondra_e2e",
     edition = "2024",
     version = "0.1.0",
@@ -14,6 +14,6 @@ rust_library(
 rust_test(
     name = "alondra_e2e_test",
     crate = ":alondra_e2e",
-    edition = "2024",
     deps = all_crate_deps(normal_dev = True),
+    edition = "2024",
 )

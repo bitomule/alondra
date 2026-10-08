@@ -20,6 +20,7 @@ swift_test(
     srcs = glob(["Tests/**/*.swift"]),
     data = ["//fixtures/push", "//fixtures/views:all"],
     deps = [
+        "//apple/Testing:AlondraTestSupport",
         ":AlondraNotifications",
         "//apple/Data/Transport:AlondraTransport",
         "//apple/Contract:AlondraContract",

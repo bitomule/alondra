@@ -324,8 +324,9 @@ mod tests {
     }
     #[test]
     fn challenge_reads_bound_inode_and_reject_symlink_or_partial_publication() {
+        let scratch_directory = crate::test_support::Directory::new();
         let directory =
-            std::env::temp_dir().join(format!("lab-challenge-{}", uuid::Uuid::new_v4()));
+            scratch_directory.parent().unwrap().join(format!("lab-challenge-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir(&directory).unwrap();
         let path = directory.join("challenge");
         std::fs::write(&path, "a".repeat(32)).unwrap();
@@ -351,8 +352,9 @@ mod tests {
     }
     #[test]
     fn atomic_challenge_replacements_keep_reads_complete() {
+        let scratch_directory = crate::test_support::Directory::new();
         let directory =
-            std::env::temp_dir().join(format!("lab-challenge-{}", uuid::Uuid::new_v4()));
+            scratch_directory.parent().unwrap().join(format!("lab-challenge-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir(&directory).unwrap();
         std::fs::write(directory.join("challenge"), "a".repeat(32)).unwrap();
         let publish = directory.clone();

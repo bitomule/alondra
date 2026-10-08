@@ -1,5 +1,8 @@
 #![cfg(target_os = "macos")]
 
+#[path = "../../test_support.rs"]
+mod test_support;
+
 use alondra_e2e::http_challenge_bytes;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use p256::ecdsa::{Signature, VerifyingKey, signature::Verifier};
@@ -7,8 +10,9 @@ use std::{path::PathBuf, process::Command};
 
 #[test]
 fn freshly_generated_cryptokit_signature_verifies_in_rust() {
+    let scratch_directory = crate::test_support::Directory::new();
     let script = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/cryptokit_vector.swift");
-    let cache = std::env::temp_dir().join(format!("alondra-cryptokit-test-{}", std::process::id()));
+    let cache = scratch_directory.parent().unwrap().join(format!("alondra-cryptokit-test-{}", std::process::id()));
     let output = Command::new("swift")
         .arg(script)
         .env("SWIFT_MODULE_CACHE_PATH", cache.join("swift"))

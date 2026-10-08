@@ -211,6 +211,7 @@ async fn discard_if_identical(dir: &std::path::Path, branch: &str) -> Result<(),
 }
 
 /// A private index per call: two closes in the same millisecond must not share one.
+#[expect(clippy::disallowed_methods, reason = "Production Git scratch indexes are removed by the close operation.")]
 fn scratch_index() -> PathBuf {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);

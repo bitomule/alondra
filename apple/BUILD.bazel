@@ -99,6 +99,7 @@ swift_test(
     name = "AlondraMacWorkspaceOwnerTests",
     srcs = ["macOS/Tests/MacWorkspaceOwnerTests.swift"],
     deps = [
+        "//apple/Testing:AlondraTestSupport",
         "//apple/Data/Account:AlondraAccount",
         "//apple/Data/Transport:AlondraTransport",
         "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",

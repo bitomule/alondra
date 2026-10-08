@@ -489,7 +489,8 @@ mod tests {
 
     #[test]
     fn an_exhaustion_is_recorded_extended_and_resumed_and_survives_a_restart() {
-        let home = std::env::temp_dir().join(format!("alondra-usage-pause-{}", crate::auth::random_hex(6)));
+        let scratch_directory = crate::test_support::Directory::new();
+        let home = scratch_directory.parent().unwrap().join(format!("alondra-usage-pause-{}", crate::auth::random_hex(6)));
         std::fs::create_dir_all(&home).unwrap();
         let pause = UsagePause::persisted_in(&home);
         assert!(!pause.is_active());
@@ -568,8 +569,8 @@ mod tests {
     use serde_json::json;
     use std::sync::{Arc, Mutex};
 
-    fn domain() -> (Arc<DomainRuntime>, std::path::PathBuf) {
-        let home = std::env::temp_dir().join(format!("alondra-usage-domain-{}", crate::auth::random_hex(6)));
+    fn domain() -> (Arc<DomainRuntime>, crate::test_support::Directory) {
+        let home = crate::test_support::Directory::new();
         std::fs::create_dir_all(&home).unwrap();
         (Arc::new(DomainRuntime::open(&home).unwrap()), home)
     }
@@ -681,7 +682,7 @@ mod tests {
         std::fs::remove_dir_all(home).unwrap();
     }
 
-    fn over_pace_domain() -> (Arc<DomainRuntime>, std::path::PathBuf) {
+    fn over_pace_domain() -> (Arc<DomainRuntime>, crate::test_support::Directory) {
         let (domain, home) = domain();
         let reset = rfc3339(now_millis() + 5 * 86_400_000);
         for percent in [12.0, 53.0] {

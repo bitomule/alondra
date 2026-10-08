@@ -1,3 +1,4 @@
+import AlondraTestSupport
 import AlondraAccount
 import AlondraContract
 import AlondraFeatures
@@ -79,6 +80,7 @@ private func waitUntil(_ condition: @MainActor () -> Bool) async throws {
 }
 
 @MainActor
+@Suite(.temporaryFiles)
 struct AppUpdateTests {
     /// First launch of the new build: new process, new AuthSession and AccountSession, the
     /// Keychain items the previous build left.
@@ -88,7 +90,7 @@ struct AppUpdateTests {
         let auth = AuthSession(transport: Issuer(userInfoStatus: userInfoStatus), browser: NoBrowser(),
                                storage: credential, diagnostics: { _, _ in })
         let account = AccountSession(auth: auth, displayName: "iPhone",
-                                     storageDirectory: FileManager.default.temporaryDirectory.appending(path: "update-\(UUID().uuidString)"),
+                                     storageDirectory: try TestFiles.directory(),
                                      pairingStore: pairings, browse: { AsyncStream { $0.finish() } })
         return (account, credential, pairings)
     }

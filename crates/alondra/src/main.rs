@@ -1,3 +1,7 @@
+#[cfg(test)]
+#[path = "../../test_support.rs"]
+mod test_support;
+
 #[macro_use]
 mod i18n;
 mod attach;

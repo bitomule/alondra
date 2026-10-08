@@ -1024,6 +1024,7 @@ mod tests {
 
     #[tokio::test]
     async fn cleanup_needs_a_local_paired_device() {
+        let scratch_directory = crate::test_support::Directory::new();
         use crate::node_close::{Answer, Sessions};
         struct Untouchable(std::sync::atomic::AtomicUsize);
         impl Sessions for Untouchable {
@@ -1035,7 +1036,7 @@ mod tests {
                 Box::pin(async { None })
             }
         }
-        let home = std::env::temp_dir().join(format!("alondra-cleanup-route-{}", crate::auth::random_hex(8)));
+        let home = scratch_directory.parent().unwrap().join(format!("alondra-cleanup-route-{}", crate::auth::random_hex(8)));
         std::fs::create_dir_all(&home).unwrap();
         drop(DomainRuntime::open(&home).unwrap());
         let state = DomainDaemon::open(&home).unwrap();
@@ -1058,8 +1059,9 @@ mod tests {
 
     #[tokio::test]
     async fn the_old_code_pairing_answers_only_on_loopback() {
+        let scratch_directory = crate::test_support::Directory::new();
         use axum::extract::connect_info::MockConnectInfo;
-        let home = std::env::temp_dir().join(format!("alondra-pair-loopback-{}", crate::auth::random_hex(8)));
+        let home = scratch_directory.parent().unwrap().join(format!("alondra-pair-loopback-{}", crate::auth::random_hex(8)));
         std::fs::create_dir_all(&home).unwrap();
         drop(DomainRuntime::open(&home).unwrap());
         for (peer, refused) in [("192.168.1.5:5000", true), ("127.0.0.1:5000", false)] {
@@ -1108,8 +1110,9 @@ mod tests {
 
     #[tokio::test]
     async fn pair_approves_a_service_phone_with_the_macs_signature() {
+        let scratch_directory = crate::test_support::Directory::new();
         use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-        let home = std::env::temp_dir().join(format!(
+        let home = scratch_directory.parent().unwrap().join(format!(
             "alondra-service-approval-{}",
             crate::auth::random_hex(8)
         ));
@@ -1151,9 +1154,10 @@ mod tests {
 
     #[tokio::test]
     async fn approving_and_revoking_a_phone_reloads_the_running_service() {
+        let scratch_directory = crate::test_support::Directory::new();
         use base64::engine::general_purpose::URL_SAFE_NO_PAD;
         use std::os::unix::fs::PermissionsExt;
-        let home = std::env::temp_dir().join(format!(
+        let home = scratch_directory.parent().unwrap().join(format!(
             "alondra-service-reload-{}",
             crate::auth::random_hex(8)
         ));
@@ -1218,7 +1222,8 @@ mod tests {
     #[test]
     fn bootstrap_refuses_an_unsupported_schema_and_preserves_the_domain() {
         use alondra_core::domain::{Actor, Command, CommandEnvelope, PROTOCOL_VERSION};
-        let home = std::env::temp_dir().join(format!(
+        let scratch_directory = crate::test_support::Directory::new();
+        let home = scratch_directory.parent().unwrap().join(format!(
             "alondra-domain-bootstrap-schema-{}", crate::auth::random_hex(8)));
         std::fs::create_dir(&home).unwrap();
         let domain = DomainRuntime::open(&home).unwrap();
@@ -1257,7 +1262,8 @@ mod tests {
 
     #[tokio::test]
     async fn standalone_router_reads_real_domain_and_has_no_legacy_routes() {
-        let home = std::env::temp_dir().join(format!(
+        let scratch_directory = crate::test_support::Directory::new();
+        let home = scratch_directory.parent().unwrap().join(format!(
             "alondra-bootstrap-{}",
             crate::auth::random_hex(8)
         ));
@@ -1717,7 +1723,8 @@ mod tests {
 
     #[tokio::test]
     async fn a_paired_local_device_is_the_user_for_commands_and_schedule_writes() {
-        let home = std::env::temp_dir().join(format!(
+        let scratch_directory = crate::test_support::Directory::new();
+        let home = scratch_directory.parent().unwrap().join(format!(
             "alondra-local-user-{}",
             crate::auth::random_hex(8)
         ));
@@ -2278,7 +2285,8 @@ mod tests {
 
     #[test]
     fn committed_boot_requires_existing_database() {
-        let home = std::env::temp_dir().join(format!(
+        let scratch_directory = crate::test_support::Directory::new();
+        let home = scratch_directory.parent().unwrap().join(format!(
             "alondra-bootstrap-missing-{}",
             crate::auth::random_hex(8)
         ));

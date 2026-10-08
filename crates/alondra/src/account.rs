@@ -1005,7 +1005,8 @@ mod account_lock_tests {
     }
     #[test]
     fn account_lock_is_shared_across_processes_and_profile_homes() {
-        let dir = std::env::temp_dir().join(format!(
+        let scratch_directory = crate::test_support::Directory::new();
+        let dir = scratch_directory.parent().unwrap().join(format!(
             "alondra-account-lock-test-{}-{}",
             std::process::id(),
             crate::service_client::now_ms().unwrap()

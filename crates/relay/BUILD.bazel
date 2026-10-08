@@ -3,7 +3,7 @@ load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_test")
 
 rust_binary(
     name = "alondra-relay",
-    srcs = glob(["src/**/*.rs"]),
+    srcs = glob(["src/**/*.rs"]) + ["//crates:test_support.rs"],
     compile_data = glob(["migrations/*.sql"]),
     crate_name = "alondra_relay",
     edition = "2024",

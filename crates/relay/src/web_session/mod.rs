@@ -685,7 +685,8 @@ mod tests {
         sqlx_core::raw_sql::raw_sql(include_str!("../../migrations/0002_web_sessions.sql"))
             .execute(&db.pool)
             .await?;
-        let registry = std::env::temp_dir().join(format!(
+        let scratch_directory = crate::test_support::Directory::new();
+        let registry = scratch_directory.parent().unwrap().join(format!(
             "alondra-web-logout-test-{}.json",
             uuid::Uuid::new_v4()
         ));
@@ -733,6 +734,7 @@ mod tests {
             device_gate: Arc::new(tokio::sync::RwLock::new(())),
             waitlist: crate::management::waitlist::Limiter::new(None),
             epoch: "synthetic".into(),
+            test_directory: Some(scratch_directory),
             lab_waiters: Arc::default(),
         });
         let run = tokio::spawn(async move {

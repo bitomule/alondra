@@ -165,9 +165,8 @@ mod tests {
     }
 
     /// A main checkout with one commit, cloned from a bare `origin` so it has a default branch.
-    fn repository(tag: &str) -> (PathBuf, PathBuf) {
-        let root = std::env::temp_dir().canonicalize().unwrap()
-            .join(format!("alondra-launch-wt-{tag}-{}-{}", std::process::id(), crate::auth::random_hex(4)));
+    fn repository(_tag: &str) -> (crate::test_support::Directory, PathBuf) {
+        let root = crate::test_support::Directory::new();
         std::fs::create_dir_all(&root).unwrap();
         sh(&root, &["init", "-q", "--bare", "-b", "main", "origin.git"]);
         sh(&root, &["clone", "-q", "origin.git", "repo"]);
@@ -260,7 +259,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_main_checkout_git_cannot_read_is_refused_never_launched_in() {
-        let root = std::env::temp_dir().canonicalize().unwrap().join(format!("alondra-launch-wt-broken-{}", crate::auth::random_hex(4)));
+        let root = crate::test_support::Directory::new();
         std::fs::create_dir_all(root.join(".git")).unwrap();
         let refused = isolate(&root, "t", None, None).await.unwrap_err();
         assert!(refused.contains("main checkout"), "{refused}");

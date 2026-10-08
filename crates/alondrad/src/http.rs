@@ -2203,6 +2203,7 @@ fn forget_interactive(hub: &Hub, session: &str, name: &str) -> Response {
 }
 
 /// A private index per call: two closes in the same millisecond must not share one.
+#[expect(clippy::disallowed_methods, reason = "Production Git scratch indexes are removed by discard_if_identical.")]
 fn scratch_index() -> PathBuf {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -4181,11 +4182,12 @@ mod tests {
         hub_on(tag, sandbox, FakeGithub::default())
     }
 
-    fn hub_on(tag: &str, sandbox: bool, github: FakeGithub) -> Arc<Hub> {
-        let home = std::env::temp_dir().join(format!("alondra-http-{tag}-{}-{}", std::process::id(), now_millis()));
+    fn hub_on(_tag: &str, sandbox: bool, github: FakeGithub) -> Arc<Hub> {
+        let directory = crate::test_support::Directory::new();
+        let home = directory.to_path_buf();
         let env = move |k: &str| (sandbox && k == "ALONDRA_SANDBOX").then(|| "1".to_string());
         let config = alondra_core::config::Config::resolve(home, &alondra_core::config::FileConfig::default(), env, || Some("Ana".into()));
-        Arc::new(Hub::open(config).unwrap().with_github(github))
+        Arc::new(Hub::open(config).unwrap().with_test_directory(directory).with_github(github))
     }
 
     /// GitHub as the tests see it: every PR exists but the `missing` ones.
@@ -4432,7 +4434,7 @@ mod tests {
             let result = atomic_local_request(&restarted,"phone","command",&[1;32],path,Some(&body),|| Ok(())).await.unwrap();
             assert_eq!(result["status"],200,"{path}: {result}");
             assert_eq!(restarted.read(|v|v.messages.len()),1,"one durable delivery intent");
-            let home=hub.home.clone(); drop(db); drop(hub); drop(restarted); std::fs::remove_dir_all(home).unwrap();
+            drop(db); drop(restarted); drop(hub);
         }
     }
 
@@ -4458,7 +4460,7 @@ mod tests {
             if index==0 { assert!(restarted.read(|v|v.reports[&1].read)); }
             if index==1 { assert_eq!(restarted.read(|v|v.board.requests["r-close"].title.clone()),Some("Withdrawn title".into())); }
             if index==2 { assert!(restarted.read(|v|v.board.tasks["t-assign"].is_assigned_to("s"))); }
-            let home=hub.home.clone(); drop(hub); drop(restarted); std::fs::remove_dir_all(home).unwrap();
+            drop(restarted); drop(hub);
         }
     }
 
@@ -4690,14 +4692,15 @@ mod broken_worktree_tests {
         assert!(ok, "{cmd}");
     }
 
-    fn broken_worktree(tag: &str) -> (PathBuf, PathBuf) {
-        let root = std::env::temp_dir().join(format!("alondra-wt-{tag}-{}", std::process::id()));
+    fn broken_worktree(_tag: &str) -> (crate::test_support::Directory, PathBuf) {
+        let root = crate::test_support::Directory::new();
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
         sh(&root, "git init -q --bare origin.git && git init -q repo && cd repo && git commit -q --allow-empty -m a && git remote add origin ../origin.git");
         sh(&root.join("repo"), "git worktree add -q -b wt ../wt && cd ../wt && echo x > f && git add f && git commit -q -m f && git push -q origin wt");
         sh(&root.join("repo"), "rm -rf .git/worktrees/wt");
-        (root.clone(), root.join("wt"))
+        let worktree = root.join("wt");
+        (root, worktree)
     }
 
     #[test]

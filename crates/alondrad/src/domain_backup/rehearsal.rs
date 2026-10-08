@@ -491,8 +491,8 @@ fn rehearse_snapshot(report: &mut Report, sandbox: &Sandbox, legacy: &Path) -> R
 mod tests {
     use super::*;
 
-    fn root(name: &str) -> PathBuf {
-        let root = std::env::temp_dir().join(format!("alondra-rehearsal-{name}-{}", crate::auth::random_hex(8)));
+    fn root(_name: &str) -> crate::test_support::Directory {
+        let root = crate::test_support::Directory::new();
         fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
         root
     }

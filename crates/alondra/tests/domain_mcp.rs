@@ -1,5 +1,8 @@
 //! Exercise the two MCP entrypoints over JSON-RPC and their shared domain HTTP adapter.
 //! The local HTTP peer is synthetic; domain authorization is tested by alondrad.
+#[path = "../../test_support.rs"]
+mod test_support;
+
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::process::{Command, Stdio};
@@ -42,6 +45,7 @@ fn respond(mut stream: std::net::TcpStream, body: &[u8]) {
 }
 
 fn mcp_exchange(entrypoint: &str, tool: &str, arguments: Value) -> (Vec<Value>, (String, Value)) {
+    let scratch_directory = crate::test_support::Directory::new();
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let server = std::thread::spawn(move || {
@@ -57,7 +61,7 @@ fn mcp_exchange(entrypoint: &str, tool: &str, arguments: Value) -> (Vec<Value>, 
     });
     let mut child = Command::new(env!("CARGO_BIN_EXE_alondra"))
         .arg(entrypoint)
-        .env("ALONDRA_HOME", std::env::temp_dir().join(format!("alondra-domain-mcp-{}-{port}", std::process::id())))
+        .env("ALONDRA_HOME", scratch_directory.parent().unwrap().join(format!("alondra-domain-mcp-{}-{port}", std::process::id())))
         .env("ALONDRA_PORT", port.to_string())
         .env("ALONDRA_DOMAIN_CAPABILITY", BEARER)
         .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
@@ -198,11 +202,12 @@ fn named_tools_construct_commands_and_publish_separate_catalogs() {
 
 #[test]
 fn mcp_without_a_producer_capability_fails_closed() {
+    let scratch_directory = crate::test_support::Directory::new();
     let mut child = Command::new(env!("CARGO_BIN_EXE_alondra"))
         .arg("mcp-node")
         .env(
             "ALONDRA_HOME",
-            std::env::temp_dir().join(format!("alondra-domain-mcp-missing-{}", std::process::id())),
+            scratch_directory.parent().unwrap().join(format!("alondra-domain-mcp-missing-{}", std::process::id())),
         )
         .env_remove("ALONDRA_DOMAIN_CAPABILITY")
         .stdin(Stdio::piped())
@@ -239,6 +244,7 @@ fn mcp_without_a_producer_capability_fails_closed() {
 /// One MCP session whose tool calls reach a daemon that answers each request with `reply`;
 /// returns every reply to a tool call and the commands the daemon received.
 fn mcp_session(calls: &[(&str, Value)], reply: impl Fn(&str) -> (u16, Value) + Send + 'static) -> (Vec<Value>, Vec<(String, Value)>) {
+    let scratch_directory = crate::test_support::Directory::new();
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     listener.set_nonblocking(true).unwrap();
@@ -266,7 +272,7 @@ fn mcp_session(calls: &[(&str, Value)], reply: impl Fn(&str) -> (u16, Value) + S
     });
     let mut child = Command::new(env!("CARGO_BIN_EXE_alondra"))
         .arg("mcp-node")
-        .env("ALONDRA_HOME", std::env::temp_dir().join(format!("alondra-domain-mcp-session-{}-{port}", std::process::id())))
+        .env("ALONDRA_HOME", scratch_directory.parent().unwrap().join(format!("alondra-domain-mcp-session-{}-{port}", std::process::id())))
         .env("ALONDRA_PORT", port.to_string())
         .env("ALONDRA_DOMAIN_CAPABILITY", BEARER)
         .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
@@ -315,10 +321,11 @@ fn a_retry_after_a_timeout_is_the_same_command() {
 
 #[test]
 fn a_daemon_that_is_down_says_not_to_proceed() {
+    let scratch_directory = crate::test_support::Directory::new();
     let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
     let mut child = Command::new(env!("CARGO_BIN_EXE_alondra"))
         .arg("mcp-node")
-        .env("ALONDRA_HOME", std::env::temp_dir().join(format!("alondra-domain-mcp-down-{}-{port}", std::process::id())))
+        .env("ALONDRA_HOME", scratch_directory.parent().unwrap().join(format!("alondra-domain-mcp-down-{}-{port}", std::process::id())))
         .env("ALONDRA_PORT", port.to_string())
         .env("ALONDRA_DOMAIN_CAPABILITY", BEARER)
         .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();

@@ -985,6 +985,7 @@ fn open_with_mac(target: &str) {
 
 /// A stored file handed to the Mac's app for it: always a private local copy, never a path of
 /// the daemon's, so a remote destination and the local Mac read the same bytes.
+#[expect(clippy::disallowed_methods, reason = "User-opened attachments must outlive the CLI process.")]
 fn open_stored(target: &MacTarget, name: &str, route: &str) -> Result<()> {
     use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
     let bytes = Client::for_target(target, Duration::from_secs(120)).content(route)?;

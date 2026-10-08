@@ -566,21 +566,11 @@ fn download(home: &Path, b: Download) -> Result<Value> {
 mod tests {
     use super::*;
     const ID: &str = "01234567-89ab-cdef-0123-456789abcdef";
-    fn home() -> PathBuf {
-        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-        let nonce = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!(
-            "alondra-transfer-{}-{nonce}-{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+    fn home() -> crate::test_support::Directory {
+        let path = crate::test_support::Directory::new();
         std::fs::create_dir_all(&path).unwrap();
         path
     }
-    use std::time::SystemTime;
     fn start(t: &Transfers, h: &Path, bytes: &[u8]) -> Result<Value> {
         t.dispatch(h,"phone-1","/v1/service/uploads/start",json!({"transfer_id":ID,"name":"../../file.bin","bytes":bytes.len(),"sha256":Sha256::digest(bytes).iter().map(|b|format!("{b:02x}")).collect::<String>()}))
     }
@@ -653,7 +643,7 @@ mod tests {
         assert!(reads.verified(&h, "files/fixture.bin", "wrong", CHUNK as u64, version.clone()).is_err());
         std::fs::write(&path, vec![91u8; bytes.len()]).unwrap();
         std::fs::File::options().write(true).open(&path).unwrap().set_times(
-            std::fs::FileTimes::new().set_modified(SystemTime::UNIX_EPOCH)).unwrap();
+            std::fs::FileTimes::new().set_modified(std::time::SystemTime::UNIX_EPOCH)).unwrap();
         assert!(reads.verified(&h, "files/fixture.bin", &digest, CHUNK as u64, version).is_err());
         assert!(reads.verified(&h, "files/fixture.bin", &digest, 0, None).is_err());
         let replacement = vec![91u8; bytes.len()];

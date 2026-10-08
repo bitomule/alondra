@@ -182,8 +182,8 @@ pub fn sweep(home: &Path, referenced: &HashSet<PathBuf>, grace: Duration) -> usi
 mod tests {
     use super::*;
 
-    fn home(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("alondra-uploads-{tag}-{}", std::process::id()));
+    fn home(_tag: &str) -> crate::test_support::Directory {
+        let dir = crate::test_support::Directory::new();
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir

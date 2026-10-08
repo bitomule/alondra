@@ -81,10 +81,11 @@ mod resume_tests {
         }
     }
 
-    fn hub(tag: &str) -> Hub {
-        let home = std::env::temp_dir().join(format!("alondra-resume-{tag}-{}-{}", std::process::id(), now_millis()));
+    fn hub(_tag: &str) -> Hub {
+        let directory = crate::test_support::Directory::new();
+        let home = directory.to_path_buf();
         let config = alondra_core::config::Config::resolve(home, &Default::default(), |_| None, || Some("Ana".into()));
-        Hub::open(config).unwrap()
+        Hub::open(config).unwrap().with_test_directory(directory)
     }
 
     fn seen(session: &str, state: &str, pid: Option<i32>) -> Event {

@@ -482,7 +482,8 @@ mod approval_tests {
 
     #[test]
     fn external_revocation_waits_for_authorized_domain_commit() {
-        let home = std::env::temp_dir().join(format!(
+        let scratch_directory = crate::test_support::Directory::new();
+        let home = scratch_directory.parent().unwrap().join(format!(
             "alondra-domain-lease-{}",
             crate::auth::random_hex(8)
         ));
@@ -584,7 +585,8 @@ mod snapshot_tests {
 
     #[test]
     fn reads_never_wait_for_the_store_and_see_each_commit() {
-        let home = std::env::temp_dir().join(format!("alondra-domain-snapshot-{}", crate::auth::random_hex(8)));
+        let scratch_directory = crate::test_support::Directory::new();
+        let home = scratch_directory.parent().unwrap().join(format!("alondra-domain-snapshot-{}", crate::auth::random_hex(8)));
         std::fs::create_dir_all(&home).unwrap();
         let runtime = Arc::new(DomainRuntime::open(&home).unwrap());
         let before = runtime.state().unwrap();
@@ -617,7 +619,8 @@ mod producer_revision_tests {
 
     #[test]
     fn a_bearer_producer_may_omit_the_revision_and_retries_replay_its_receipt() {
-        let home = std::env::temp_dir().join(format!(
+        let scratch_directory = crate::test_support::Directory::new();
+        let home = scratch_directory.parent().unwrap().join(format!(
             "alondra-domain-producer-revision-{}",
             crate::auth::random_hex(8)
         ));

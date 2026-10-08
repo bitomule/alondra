@@ -3,7 +3,7 @@ load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_test")
 
 rust_binary(
     name = "alondra",
-    srcs = glob(["src/**/*.rs"]),
+    srcs = glob(["src/**/*.rs"]) + ["//crates:test_support.rs"],
     compile_data = ["//launchd:alondra.plist.in"],
     edition = "2024",
     version = "0.1.0",
@@ -14,6 +14,7 @@ rust_binary(
 rust_test(
     name = "alondra_test",
     crate = ":alondra",
+    deps = all_crate_deps(normal_dev = True),
     data = ["//fixtures/client-v2", "//fixtures/markdown", "//fixtures/views:all", "//fixtures/views:cards", "//fixtures/domain-v2:text-completion.commands.json"],
     edition = "2024",
 )
@@ -22,7 +23,8 @@ rust_test(
 # workspace root inside runfiles.
 [rust_test(
     name = name + "_test",
-    srcs = ["tests/" + name + ".rs"],
+    srcs = ["tests/" + name + ".rs", "//crates:test_support.rs"],
+    crate_root = "tests/" + name + ".rs",
     data = [":alondra"],
     edition = "2024",
     rustc_env = {"CARGO_BIN_EXE_alondra": "$(rootpath :alondra)"},

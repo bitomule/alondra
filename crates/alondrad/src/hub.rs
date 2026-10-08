@@ -59,6 +59,8 @@ pub struct Hub {
     /// Runs once as clients are about to be told of a change, so a test can record something then.
     #[cfg(test)]
     before_telling: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    #[cfg(test)]
+    pub test_directory: Option<std::sync::Arc<crate::test_support::Directory>>,
 }
 
 impl Hub {
@@ -139,7 +141,15 @@ impl Hub {
             schedules,
             #[cfg(test)]
             before_telling: Mutex::new(None),
+            #[cfg(test)]
+            test_directory: None,
         })
+    }
+
+    #[cfg(test)]
+    pub fn with_test_directory(mut self, directory: crate::test_support::Directory) -> Self {
+        self.test_directory = Some(std::sync::Arc::new(directory));
+        self
     }
 
     #[cfg(test)]
@@ -487,11 +497,12 @@ mod tests {
     use std::sync::Arc;
     use std::sync::mpsc;
 
-    fn hub(tag: &str) -> Arc<Hub> {
-        let home = std::env::temp_dir().join(format!("alondra-hub-{tag}-{}", std::process::id()));
+    fn hub(_tag: &str) -> Arc<Hub> {
+        let directory = crate::test_support::Directory::new();
+        let home = directory.to_path_buf();
         let _ = std::fs::remove_dir_all(&home);
         let config = Config::resolve(home, &Default::default(), |_| None, || Some("David".into()));
-        Arc::new(Hub::open(config).unwrap())
+        Arc::new(Hub::open(config).unwrap().with_test_directory(directory))
     }
 
     fn prompt(session: &str) -> Event {
@@ -511,8 +522,10 @@ mod tests {
         let blocked = |hub: &Hub| hub.read(|v| v.board.tasks.values().any(|t| t.blocker.is_some()));
         assert!(blocked(&hub));
         let config = hub.config.clone();
+        let directory = hub.test_directory.clone();
         drop(hub);
-        let hub = Hub::open(config).unwrap();
+        let mut hub = Hub::open(config).unwrap();
+        hub.test_directory = directory;
         assert!(!blocked(&hub));
         assert!(hub.read(|v| v.questions.values().all(|q| q.status == alondra_core::QuestionStatus::Orphaned)));
     }

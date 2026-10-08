@@ -471,7 +471,8 @@ mod tests {
 
     #[test]
     fn a_present_service_configuration_replaces_the_apns_file_check() {
-        let home = std::env::temp_dir().join(format!("alondra-doctor-service-{}-{}", std::process::id(), alondra_core::now_millis()));
+        let scratch_directory = crate::test_support::Directory::new();
+        let home = scratch_directory.parent().unwrap().join(format!("alondra-doctor-service-{}-{}", std::process::id(), alondra_core::now_millis()));
         std::fs::create_dir_all(&home).unwrap();
         std::fs::write(home.join("service.toml"), "invalid configuration").unwrap();
         let key = home.join("test-key.p8");

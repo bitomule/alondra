@@ -1,9 +1,11 @@
+import AlondraTestSupport
 import AlondraAccount
 import AlondraTransport
 import Foundation
 import Testing
 
 @MainActor
+@Suite(.temporaryFiles)
 struct MacWorkspaceOwnerTests {
     @Test
     func localDaemonIsShownAndTheOtherSavedMacsAreRestoredOnce() async throws {
@@ -62,7 +64,7 @@ struct MacWorkspaceOwnerTests {
     }
 
     private func makeOwner(probes: [Bool], remoteStarts: Recorder) throws -> MacWorkspaceOwner {
-        let directory = FileManager.default.temporaryDirectory.appending(path: "mac-owner-\(UUID().uuidString)")
+        let directory = try TestFiles.directory()
         let account = AccountSession(auth: AuthSession(browser: UnusedBrowser()), displayName: "Mac", storageDirectory: directory)
         let identity = LoopbackIdentityStore(directory: directory.appending(path: "identity"), makeKey: { .software(.init()) })
         let answers = ProbeAnswers(probes)

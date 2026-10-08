@@ -342,7 +342,7 @@ mod tests {
     use std::collections::BTreeSet;
     use std::os::unix::fs::PermissionsExt;
 
-    struct Fixture(PathBuf);
+    struct Fixture(crate::test_support::Directory);
     impl Drop for Fixture {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
@@ -480,8 +480,8 @@ mod tests {
         }
     }
 
-    fn open(tag: &str) -> (Fixture, DomainRuntime) {
-        let home = std::env::temp_dir().join(format!("alondra-github-{tag}-{}", crate::auth::random_hex(8)));
+    fn open(_tag: &str) -> (Fixture, DomainRuntime) {
+        let home = crate::test_support::Directory::new();
         std::fs::create_dir(&home).unwrap();
         let domain = DomainRuntime::open(&home).unwrap();
         (Fixture(home), domain)

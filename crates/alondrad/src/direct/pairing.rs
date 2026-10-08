@@ -594,13 +594,10 @@ mod tests {
         }
     }
 
-    fn book() -> PairingBook {
-        let home = std::env::temp_dir().join(format!(
-            "alondra-direct-pairing-{}",
-            crate::auth::random_hex(8)
-        ));
+    fn book() -> crate::test_support::Owned<PairingBook> {
+        let home = crate::test_support::Directory::new();
         std::fs::create_dir_all(&home).unwrap();
-        PairingBook::new(&home)
+        crate::test_support::Owned::new(PairingBook::new(&home), home)
     }
 
     const LAN: IpAddr = IpAddr::V4(std::net::Ipv4Addr::new(192, 168, 1, 20));

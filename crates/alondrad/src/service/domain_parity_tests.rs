@@ -119,8 +119,9 @@ async fn encrypted(
 
 #[tokio::test]
 async fn signed_loopback_and_sealed_service_share_reads_errors_and_command_receipts() {
+    let scratch_directory = crate::test_support::Directory::new();
     use std::os::unix::fs::PermissionsExt;
-    let home = std::env::temp_dir().join(format!(
+    let home = scratch_directory.parent().unwrap().join(format!(
         "alondra-domain-parity-{}",
         crate::auth::random_hex(8)
     ));

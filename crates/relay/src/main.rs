@@ -1,3 +1,7 @@
+#[cfg(test)]
+#[path = "../../test_support.rs"]
+mod test_support;
+
 #[cfg(any(test, feature = "lab-waiter-metrics"))]
 mod lab_waiters;
 mod auth;
@@ -45,6 +49,8 @@ struct Server {
     device_gate: Arc<RwLock<()>>,
     waitlist: management::waitlist::Limiter,
     epoch: String,
+    #[cfg(test)]
+    test_directory: Option<crate::test_support::Directory>,
 }
 
 fn router(server: Arc<Server>) -> Router {
@@ -926,6 +932,8 @@ async fn main() -> anyhow::Result<()> {
         device_gate: Arc::new(RwLock::new(())),
         waitlist: management::waitlist::Limiter::from_env()?,
         epoch,
+        #[cfg(test)]
+        test_directory: None,
     });
     #[cfg(feature = "lab-waiter-metrics")]
     server.lab_waiters.start(server.epoch.clone())?;
@@ -1074,7 +1082,8 @@ mod http_tests {
     }
 
     async fn test_server_with_management(mac_key:&SigningKey,apns_endpoint:Option<String>,management:Option<management::Management>)->(String,Arc<Server>,tokio::task::JoinHandle<()>) {
-        let registry = std::env::temp_dir().join(format!(
+        let directory = crate::test_support::Directory::new();
+        let registry = directory.parent().unwrap().join(format!(
             "alondra-relay-test-registry-{}-{}-{}.json",
             std::process::id(),
             now_ms(),
@@ -1111,6 +1120,8 @@ mod http_tests {
             device_gate: Arc::new(RwLock::new(())),
             waitlist: management::waitlist::Limiter::new(None),
             epoch,
+            #[cfg(test)]
+            test_directory: Some(directory),
         });
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
@@ -3153,6 +3164,7 @@ mod http_tests {
 
     #[tokio::test]
     async fn keycloak_jwks_rotation_fetches_unknown_kid_and_removes_retired_key() {
+        let scratch_directory = crate::test_support::Directory::new();
         let current = Arc::new(std::sync::RwLock::new(
             include_bytes!("../tests/fixtures/jwks.json").to_vec(),
         ));
@@ -3179,7 +3191,7 @@ mod http_tests {
             owner_sub: "owner".into(),
             mac_id: "mac-1".into(),
             mac_signing_key: key_bytes(&mac_key),
-            device_registry_path: std::env::temp_dir().join(format!(
+            device_registry_path: scratch_directory.parent().unwrap().join(format!(
                 "alondra-jwks-rotation-{}-{}.json",
                 std::process::id(),
                 NEXT_TEST_REGISTRY.fetch_add(1, Ordering::Relaxed)

@@ -74,12 +74,12 @@ mod tests {
     use super::*;
 
     struct Fixture {
-        dir: PathBuf,
+        dir: crate::test_support::Directory,
     }
 
     impl Fixture {
         fn new() -> Self {
-            let dir = std::env::temp_dir().canonicalize().unwrap().join(format!("alondra-claude-trust-{}", crate::auth::random_hex(8)));
+            let dir = crate::test_support::Directory::new();
             std::fs::create_dir_all(&dir).unwrap();
             Self { dir }
         }

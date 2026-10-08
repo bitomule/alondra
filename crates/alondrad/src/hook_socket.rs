@@ -61,8 +61,8 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::UnixStream as AsyncStream;
 
-    fn scratch(name: &str) -> std::path::PathBuf {
-        let home = std::env::temp_dir().join(format!("alondra-{name}-{}", crate::auth::random_hex(8)));
+    fn scratch(_name: &str) -> crate::test_support::Directory {
+        let home = crate::test_support::Directory::new();
         std::fs::create_dir_all(&home).unwrap();
         home
     }

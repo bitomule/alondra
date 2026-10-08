@@ -2,13 +2,10 @@ use super::*;
 use std::collections::BTreeSet;
 use std::os::unix::fs::DirBuilderExt;
 use std::{fs, path::PathBuf};
-pub(super) struct Fixture(pub(super) PathBuf);
+pub(super) struct Fixture(pub(super) crate::test_support::Directory);
 impl Fixture {
     pub(super) fn new() -> Self {
-        let p = std::env::temp_dir().join(format!(
-            "alondra-domain-store-{}",
-            crate::auth::random_hex(16)
-        ));
+        let p = crate::test_support::Directory::new();
         fs::DirBuilder::new().mode(0o700).create(&p).unwrap();
         Self(p)
     }

@@ -260,8 +260,8 @@ mod tests {
     }
 
     /// A repo with one commit and a linked worktree at `name` beside it, plus a Claude home.
-    fn repo_with_worktree(tag: &str, name: &str) -> (PathBuf, PathBuf, PathBuf) {
-        let root = std::env::temp_dir().join(format!("alondra-{tag}-{}-{}", std::process::id(), alondra_core::now_millis()));
+    fn repo_with_worktree(_tag: &str, name: &str) -> (crate::test_support::Directory, PathBuf, PathBuf) {
+        let root = crate::test_support::Directory::new();
         std::fs::create_dir_all(&root).unwrap();
         run(&root, &["init", "-q", "repo"]);
         let repo = root.join("repo");
@@ -270,7 +270,8 @@ mod tests {
         run(&repo, &["commit", "-q", "--allow-empty", "-m", "base"]);
         let wt = root.join(name);
         run(&repo, &["worktree", "add", "-q", "-b", name, wt.to_str().unwrap()]);
-        (root.clone(), wt, root.join("claude"))
+        let claude_home = root.join("claude");
+        (root, wt, claude_home)
     }
 
     fn job(home: &Path, short: &str, state: Value) {
@@ -358,7 +359,8 @@ mod tests {
     /// records only on the old session's job: the successor's own launch folder names it.
     #[tokio::test]
     async fn a_node_launched_in_an_inherited_worktree_keeps_its_protections() {
-        let root = std::env::temp_dir().join(format!("alondra-inherited-{}-{}", std::process::id(), alondra_core::now_millis()));
+        let scratch_directory = crate::test_support::Directory::new();
+        let root = scratch_directory.parent().unwrap().join(format!("alondra-inherited-{}-{}", std::process::id(), alondra_core::now_millis()));
         std::fs::create_dir_all(&root).unwrap();
         run(&root, &["init", "-q", "repo"]);
         let repo = root.join("repo");
@@ -392,7 +394,8 @@ mod tests {
     /// Pushed is not enough to close a node: its commits must be on the remote's default branch.
     #[tokio::test]
     async fn work_counts_as_merged_only_once_the_default_branch_on_the_remote_has_it() {
-        let root = std::env::temp_dir().join(format!("alondra-unmerged-{}-{}", std::process::id(), alondra_core::now_millis()));
+        let scratch_directory = crate::test_support::Directory::new();
+        let root = scratch_directory.parent().unwrap().join(format!("alondra-unmerged-{}-{}", std::process::id(), alondra_core::now_millis()));
         let (remote, clone) = (root.join("remote.git"), root.join("clone"));
         std::fs::create_dir_all(&root).unwrap();
         run(&root, &["init", "-q", "--bare", "-b", "main", remote.to_str().unwrap()]);
@@ -416,7 +419,8 @@ mod tests {
 
     #[tokio::test]
     async fn a_final_delivery_needs_the_work_pushed_and_on_the_default_branch_or_in_the_tasks_pr() {
-        let root = std::env::temp_dir().join(format!("alondra-final-{}-{}", std::process::id(), alondra_core::now_millis()));
+        let scratch_directory = crate::test_support::Directory::new();
+        let root = scratch_directory.parent().unwrap().join(format!("alondra-final-{}-{}", std::process::id(), alondra_core::now_millis()));
         let (remote, clone) = (root.join("remote.git"), root.join("clone"));
         std::fs::create_dir_all(&root).unwrap();
         run(&root, &["init", "-q", "--bare", "-b", "main", remote.to_str().unwrap()]);

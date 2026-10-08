@@ -1,3 +1,7 @@
+#[cfg(test)]
+#[path = "../../test_support.rs"]
+mod test_support;
+
 #[macro_use]
 mod log;
 mod approval_lease;
@@ -699,8 +703,9 @@ mod argument_tests {
 
     #[test]
     fn empty_new_home_selects_domain_startup() {
+        let scratch_directory = crate::test_support::Directory::new();
         let home =
-            std::env::temp_dir().join(format!("alondra-domain-start-{}", auth::random_hex(8)));
+            scratch_directory.parent().unwrap().join(format!("alondra-domain-start-{}", auth::random_hex(8)));
         std::fs::create_dir(&home).unwrap();
         domain_cutover::refuse_legacy_home(&home).unwrap();
         ensure_domain_protocol(&home).unwrap();
@@ -713,8 +718,9 @@ mod argument_tests {
 
     #[test]
     fn legacy_only_home_fails_closed_without_creating_domain_database() {
+        let scratch_directory = crate::test_support::Directory::new();
         let home =
-            std::env::temp_dir().join(format!("alondra-domain-legacy-{}", auth::random_hex(8)));
+            scratch_directory.parent().unwrap().join(format!("alondra-domain-legacy-{}", auth::random_hex(8)));
         std::fs::create_dir(&home).unwrap();
         std::fs::write(home.join("alondra.db"), b"preserve legacy bytes").unwrap();
         let error = domain_cutover::refuse_legacy_home(&home).unwrap_err();
@@ -729,9 +735,10 @@ mod argument_tests {
 
     #[test]
     fn markerless_domain_rows_and_prepared_cutover_refuse_startup() {
+        let scratch_directory = crate::test_support::Directory::new();
         use std::os::unix::fs::PermissionsExt;
         let home =
-            std::env::temp_dir().join(format!("alondra-domain-guard-{}", auth::random_hex(8)));
+            scratch_directory.parent().unwrap().join(format!("alondra-domain-guard-{}", auth::random_hex(8)));
         std::fs::create_dir(&home).unwrap();
         let legacy_domain = home.join("domain-v2.db");
         drop(domain_store::DomainStore::open(&legacy_domain).unwrap());

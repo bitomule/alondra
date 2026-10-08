@@ -105,12 +105,8 @@ fn write_atomically(path: &Path, bytes: &[u8]) -> io::Result<()> {
 mod tests {
     use super::*;
 
-    fn home() -> std::path::PathBuf {
-        let home = std::env::temp_dir().join(format!(
-            "alondra-service-config-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
-        ));
+    fn home() -> crate::test_support::Directory {
+        let home = crate::test_support::Directory::new();
         fs::create_dir_all(&home).unwrap();
         home
     }

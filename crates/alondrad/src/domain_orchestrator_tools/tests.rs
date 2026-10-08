@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 const SESSION: &str = "ab1234cd-0000-4000-8000-000000000000";
 
 struct Fixture {
-    root: PathBuf,
+    root: crate::test_support::Directory,
     home: PathBuf,
     project: PathBuf,
     domain: Arc<DomainRuntime>,
@@ -28,7 +28,7 @@ fn user() -> Actor {
 }
 
 fn world() -> Fixture {
-    let root = std::env::temp_dir().join(format!("alondra-orchestrator-tools-{}", crate::auth::random_hex(8)));
+    let root = crate::test_support::Directory::new();
     let home = root.join("home");
     let project = root.join("App");
     std::fs::create_dir_all(&home).unwrap();
@@ -1095,7 +1095,8 @@ fn a_stopped_session_is_one_claude_agents_no_longer_shows_running() {
 /// through a review that asks for changes twice, every call made over the daemon's own routes.
 #[tokio::test]
 async fn a_review_that_asks_for_changes_twice_shows_its_rounds_and_serious_findings_in_the_model_report() {
-    let root = std::env::temp_dir().join(format!("alondra-review-rounds-{}", crate::auth::random_hex(8)));
+    let scratch_directory = crate::test_support::Directory::new();
+    let root = scratch_directory.parent().unwrap().join(format!("alondra-review-rounds-{}", crate::auth::random_hex(8)));
     let (home, project) = (root.join("home"), root.join("App"));
     std::fs::create_dir_all(&home).unwrap();
     std::fs::create_dir_all(&project).unwrap();

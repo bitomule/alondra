@@ -1,3 +1,4 @@
+import AlondraTestSupport
 import AlondraTransport
 import Foundation
 import Synchronization
@@ -16,13 +17,12 @@ private actor RelayCalls {
     func record(_ binding: String) { sent.append(binding) }
 }
 
-private func temporaryFile() -> URL {
-    FileManager.default.temporaryDirectory
-        .appendingPathComponent("alondra-unregistration-\(UUID().uuidString)", isDirectory: true)
+private func temporaryFile() throws -> URL {
+    try TestFiles.directory()
         .appendingPathComponent("push-unregistration.json")
 }
 
-private func temporaryLedger() -> PushUnregistrationLedger { PushUnregistrationLedger(file: temporaryFile()) }
+private func temporaryLedger() throws -> PushUnregistrationLedger { PushUnregistrationLedger(file: try temporaryFile()) }
 
 private func binding(_ n: UInt8) -> NotificationPayload.Binding {
     NotificationPayload.Binding(Data(repeating: n, count: 32).base64EncodedString()
@@ -36,9 +36,9 @@ private func entry(_ n: UInt8) -> PushUnregistrationLedger.Entry {
     PushUnregistrationLedger.Entry(relayURL: relay, pushBinding: binding(n).value)
 }
 
-@Suite struct PushUnregistrationTests {
+@Suite(.temporaryFiles) struct PushUnregistrationTests {
     @Test func ledgerSurvivesNewInstancesAndKeepsOneEntryPerBinding() throws {
-        let file = temporaryFile()
+        let file = try temporaryFile()
         let ledger = PushUnregistrationLedger(file: file)
         try ledger.enqueue([entry(1), entry(2), entry(1)])
         try ledger.enqueue([entry(2)])
@@ -54,7 +54,7 @@ private func entry(_ n: UInt8) -> PushUnregistrationLedger.Entry {
         (.retry, true),
     ])
     func drainKeepsOnlyEntriesToRetry(outcome: RelayPushUnregistration.Outcome, kept: Bool) async throws {
-        let ledger = temporaryLedger()
+        let ledger = try temporaryLedger()
         try ledger.enqueue([entry(1)])
         let calls = RelayCalls()
         let unregistrar = PushUnregistrar(ledger: ledger) { entry in
@@ -67,7 +67,7 @@ private func entry(_ n: UInt8) -> PushUnregistrationLedger.Entry {
     }
 
     @Test func drainNeverUnregistersTheLiveBinding() async throws {
-        let ledger = temporaryLedger()
+        let ledger = try temporaryLedger()
         try ledger.enqueue([entry(1), entry(2)])
         let calls = RelayCalls()
         let unregistrar = PushUnregistrar(ledger: ledger) { entry in
@@ -81,7 +81,7 @@ private func entry(_ n: UInt8) -> PushUnregistrationLedger.Entry {
 
     @Test func orphanPromotionSkipsLiveBindingsAndWaitsForARelay() throws {
         let orphans = OrphanBindingStore(item: MemoryOrphanItem())
-        let ledger = temporaryLedger()
+        let ledger = try temporaryLedger()
         try orphans.append(binding(1))
         try orphans.append(binding(2))
         try PushUnregistrar.promote(orphans, into: ledger, live: [binding(1)], relay: nil)
@@ -94,7 +94,7 @@ private func entry(_ n: UInt8) -> PushUnregistrationLedger.Entry {
 
     @Test func anOrphanLeavesItsStoreOnlyOnceTheRelaySettledIt() async throws {
         let orphans = OrphanBindingStore(item: MemoryOrphanItem())
-        let ledger = temporaryLedger()
+        let ledger = try temporaryLedger()
         try orphans.append(binding(2))
         try PushUnregistrar.promote(orphans, into: ledger, live: [], relay: relay)
         let answers = RelayCalls()
@@ -112,7 +112,7 @@ private func entry(_ n: UInt8) -> PushUnregistrationLedger.Entry {
 
     @Test func orphanPromotionFallsBackToTheLastQueuedRelay() throws {
         let orphans = OrphanBindingStore(item: MemoryOrphanItem())
-        let ledger = temporaryLedger()
+        let ledger = try temporaryLedger()
         try ledger.enqueue([entry(1)])
         try orphans.append(binding(2))
         try PushUnregistrar.promote(orphans, into: ledger, live: [], relay: nil)
@@ -143,7 +143,7 @@ private func entry(_ n: UInt8) -> PushUnregistrationLedger.Entry {
         }
         let issued = scopes.compactMap { store.binding(scope: $0) }
         #expect(store.live == Set(issued))
-        let ledger = temporaryLedger()
+        let ledger = try temporaryLedger()
         store.retire(into: ledger)
         #expect(try ledger.pending() == issued.map { PushUnregistrationLedger.Entry(relayURL: relay, pushBinding: $0.value) })
         #expect(store.live.isEmpty)
