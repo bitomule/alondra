@@ -111,6 +111,12 @@ const INHERITED_WORKTREES: &str = "CREATE TABLE IF NOT EXISTS inherited_worktree
  dir TEXT NOT NULL CHECK(length(dir)>0),\
  from_agent TEXT NOT NULL,\
  at INTEGER NOT NULL);";
+/// The worktree a task's nodes work in, kept after they end so the next node of the task starts
+/// there instead of the repository's main checkout.
+const TASK_WORKTREES: &str = "CREATE TABLE IF NOT EXISTS task_worktrees(\
+ task_id TEXT PRIMARY KEY CHECK(length(task_id)>0),\
+ dir TEXT NOT NULL CHECK(length(dir)>0),\
+ at INTEGER NOT NULL);";
 
 /// What a command carries into the transaction that commits it.
 pub(crate) enum Attached<'a> {
@@ -362,6 +368,7 @@ impl DomainStore {
         tx.execute_batch(TASK_LAUNCH_PLANS)?;
         tx.execute_batch(AUTO_LAUNCHES)?;
         tx.execute_batch(INHERITED_WORKTREES)?;
+        tx.execute_batch(TASK_WORKTREES)?;
         if version != 0 {
             tx.execute_batch("DROP TRIGGER IF EXISTS schedule_launch_transition;")?;
             tx.execute_batch(SCHEDULE_LAUNCH_TRANSITION)?;
@@ -836,6 +843,16 @@ impl DomainStore {
         self.conn.execute(
             "INSERT INTO inherited_worktrees(agent_id,dir,from_agent,at) VALUES(?1,?2,?3,?4) ON CONFLICT(agent_id) DO UPDATE SET dir=excluded.dir,from_agent=excluded.from_agent,at=excluded.at",
             params![agent_id, dir, from_agent, now])?;
+        self.note_side_write();
+        Ok(())
+    }
+    pub(crate) fn task_worktree(&self, task_id: &TaskId) -> Result<Option<String>> {
+        Ok(self.conn.query_row("SELECT dir FROM task_worktrees WHERE task_id=?1", [&task_id.0], |row| row.get(0)).optional()?)
+    }
+    pub(crate) fn set_task_worktree(&mut self, task_id: &TaskId, dir: &str, now: i64) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO task_worktrees(task_id,dir,at) VALUES(?1,?2,?3) ON CONFLICT(task_id) DO UPDATE SET dir=excluded.dir,at=excluded.at",
+            params![task_id.0, dir, now])?;
         self.note_side_write();
         Ok(())
     }

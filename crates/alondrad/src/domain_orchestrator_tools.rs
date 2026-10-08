@@ -4,6 +4,7 @@
 //! implies (the new Agent, an assignment, a reopened Task) are that orchestrator's commands.
 use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::model_metrics::{Decision, DecisionKind};
+use crate::launch_worktree::Workplace;
 use alondra_core::domain::{Actor, AgentId, Command, CommandEnvelope, DomainError, DomainState, ModelChooser, RequestId, TaskId, PROTOCOL_VERSION};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -290,6 +291,11 @@ async fn launch_guarded(domain: &DomainRuntime, home: &Path, actor: &Actor, body
     if let Some(repository) = crate::claude_trust::check(Path::new(&cwd)) {
         return Err(DomainError::new("workspace_untrusted", crate::claude_trust::instructions(&repository)));
     }
+    let known = domain.task_worktree(&task.id).ok().flatten().map(PathBuf::from);
+    let pr_head = current.pull_requests.values().filter(|pr| pr.task_id == task.id).map(|pr| pr.head.as_str()).last();
+    let workplace = crate::launch_worktree::isolate(Path::new(&cwd), &crate::launch_worktree::slug(&task.id.0), known.as_deref(), pr_head).await
+        .map_err(|why| DomainError::new("main_checkout", format!("{why}. {} stays as it is and was not launched", task.id)))?;
+    let cwd = workplace.dir().to_string_lossy().into_owned();
     let Some(plugin) = launcher.plugin() else {
         return Err(DomainError::new("unavailable", "Alondra's plugin was not found: run `alondra setup` in the Alondra repo"));
     };
@@ -321,9 +327,10 @@ async fn launch_guarded(domain: &DomainRuntime, home: &Path, actor: &Actor, body
         text
     });
     let mission = format!("{mission}{}{}", prefixed("\n\n", follow_up_context(&current, task)), prefixed("\n\n", asked_changes(&current, task)));
-    let mission = match &replaced {
-        Some(_) => format!("{mission}\n\n{}", continuing_in(Path::new(&cwd)).await),
-        None => mission,
+    let mission = match (&workplace, &replaced) {
+        (Workplace::Made(dir), _) => format!("{mission}\n\n{}", made_for(dir).await),
+        (Workplace::Reused(_), _) | (_, Some(_)) => format!("{mission}\n\n{}", continuing_in(Path::new(&cwd)).await),
+        (Workplace::Given(_), None) => mission,
     };
     let prompt = crate::domain_schedule_runner::producer_prompt(&mission, &resolved, &task.id, body.approach.unwrap_or_default());
     let key = format!("launch-{}", crate::auth::random_hex(8));
@@ -383,8 +390,12 @@ async fn launch_guarded(domain: &DomainRuntime, home: &Path, actor: &Actor, body
         Err(error) if error.code == "invalid_input" => (),
         Err(error) => return Err(discard(error)),
     }
-    if let (Some(old), Some(dir)) = (&replaced, &inherited)
-        && let Err(error) = domain.set_inherited_worktree(&session, dir, &old.0)
+    let owned = match (&replaced, &inherited) {
+        (Some(old), Some(dir)) => Some((dir.clone(), old.0.clone())),
+        _ => workplace.chosen().map(|dir| (dir.to_string_lossy().into_owned(), "alondra".to_owned())),
+    };
+    if let Some((dir, from)) = owned
+        && let Err(error) = domain.set_inherited_worktree(&session, &dir, &from)
     {
         log!("could not record that {session} took over {dir}: {error:#}");
     }
@@ -408,6 +419,11 @@ async fn launch_guarded(domain: &DomainRuntime, home: &Path, actor: &Actor, body
         let _ = domain.revoke_agent(&session);
         crate::domain_sessions::release(&settings);
         return Err(error);
+    }
+    if workplace.dir().join(".git").is_file()
+        && let Err(error) = domain.set_task_worktree(&task.id, &cwd)
+    {
+        log!("could not record that {} works in {cwd}: {error:#}", task.id);
     }
     if origin == Origin::Auto {
         let _ = domain.store.lock().expect("domain store poisoned")
@@ -473,6 +489,12 @@ async fn continuing_in(dir: &Path) -> String {
         Some(branch) => format!("You continue in {}, branch {branch}: its files are the earlier node's work. Do not create another worktree and do not use EnterWorktree.", dir.display()),
         None => format!("You continue in {}: its files are the earlier node's work. Do not create another worktree and do not use EnterWorktree.", dir.display()),
     }
+}
+
+/// What the node Alondra made a worktree for is told about where it works.
+async fn made_for(dir: &Path) -> String {
+    let branch = crate::worktree::branch_in(dir).await.map(|branch| format!(", branch {branch}")).unwrap_or_default();
+    format!("You work in {}{branch}, the worktree Alondra made for this task. Do not create another worktree and do not use EnterWorktree.", dir.display())
 }
 
 /// The worktree Alondra may delete with the node: the one Claude Code made for it, or the one it

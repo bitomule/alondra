@@ -83,7 +83,7 @@ pub async fn unmerged_in(dir: &Path) -> Option<String> {
 }
 
 /// The remote's default branch as `origin/<name>`: origin/HEAD, else what GitHub names it.
-async fn default_branch(dir: &Path) -> Option<String> {
+pub(crate) async fn default_branch(dir: &Path) -> Option<String> {
     if let Some(head) = git(dir, &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]).await {
         return Some(head);
     }

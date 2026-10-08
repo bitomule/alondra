@@ -3,6 +3,7 @@
 //! a technical launch claim can call Claude.
 use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::StoreError;
+use crate::launch_worktree::Workplace;
 use alondra_core::domain::{
     Actor, AgentId, Command, CommandEnvelope, CommandOutcome, DomainState, PROTOCOL_VERSION,
     Request, RequestId, ScheduleLaunchState, ScheduleRunOrigin, ScheduleRunState, Task,
@@ -134,7 +135,7 @@ async fn invoke_claimed(
     home: &Path,
     key: &str,
     launcher: &impl crate::orchestrate::Launcher,
-) -> Result<(String, PathBuf), crate::orchestrate::Refusal> {
+) -> Result<(String, PathBuf, Workplace), crate::orchestrate::Refusal> {
     if !Path::new(&launch.cwd).is_dir() {
         return Err((
             StatusCode::BAD_REQUEST,
@@ -147,6 +148,9 @@ async fn invoke_claimed(
             crate::claude_trust::instructions(&repository),
         ));
     }
+    let workplace = crate::launch_worktree::isolate(Path::new(&launch.cwd), &crate::launch_worktree::slug(&task.0), None, None)
+        .await
+        .map_err(|why| (StatusCode::CONFLICT, why))?;
     let Some(plugin) = launcher.plugin() else {
         return Err((
             StatusCode::SERVICE_UNAVAILABLE,
@@ -175,8 +179,8 @@ async fn invoke_claimed(
     }
     args.push("--".into());
     args.push(producer_prompt(&launch.prompt, &resolved, task, alondra_core::options::Approach::Solo));
-    match launcher.run(&launch.cwd, &args).await {
-        Ok(output) => Ok((output, settings)),
+    match launcher.run(&workplace.dir().to_string_lossy(), &args).await {
+        Ok(output) => Ok((output, settings, workplace)),
         Err(refusal) => {
             crate::domain_sessions::release(&settings);
             Err(refusal)
@@ -364,7 +368,7 @@ async fn dispatch_pending(
         Err(error) if ordinary_conflict(&error) => return Ok(()),
         Err(error) => return Err(error.into()),
     }
-    let (output, settings) =
+    let (output, settings, workplace) =
         match invoke_claimed(&intent, &task, &policy, home, &run_id.0, launcher).await {
             Ok(launched) => launched,
             Err((_, reason)) => {
@@ -384,6 +388,14 @@ async fn dispatch_pending(
             return Ok(());
         }
     };
+    if let Some(dir) = workplace.chosen().map(|dir| dir.to_string_lossy().into_owned()) {
+        if let Err(error) = domain.set_inherited_worktree(&session, &dir, "alondra") {
+            log!("could not record that {session} works in {dir}: {error:#}");
+        }
+        if let Err(error) = domain.set_task_worktree(&task, &dir) {
+            log!("could not record that {task} works in {dir}: {error:#}");
+        }
+    }
     hand_over(domain, run_id, &intent.name, &session, &settings)
 }
 
@@ -983,7 +995,10 @@ mod tests {
             crate::auth::random_hex(8)
         ));
         let project = root.join("App");
-        std::fs::create_dir_all(project.join(".git")).unwrap();
+        std::fs::create_dir_all(&project).unwrap();
+        for args in [&["init", "-q", "-b", "main"][..], &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "start"]] {
+            assert!(std::process::Command::new("git").arg("-C").arg(&project).args(args).status().unwrap().success());
+        }
         let definition = ScheduleDefinitionSnapshot {
             title: "Review".into(),
             text: "Review project".into(),
@@ -1001,7 +1016,7 @@ mod tests {
         .unwrap();
         let fake = FakeLauncher(Mutex::new(vec![]));
         let home = root.join("home");
-        let (_, settings) = invoke_claimed(
+        let (_, settings, _) = invoke_claimed(
             &intent,
             &TaskId::from("task-1"),
             &definition.disallowed_tools,
@@ -1013,7 +1028,11 @@ mod tests {
         .unwrap();
         let calls = fake.0.lock().unwrap();
         assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].0, project.to_str().unwrap());
+        assert_eq!(
+            Path::new(&calls[0].0).canonicalize().unwrap(),
+            project.join(".claude/worktrees/task-1").canonicalize().unwrap(),
+            "a scheduled node works in a worktree of its own, never the main checkout"
+        );
         let args = &calls[0].1;
         assert!(
             args.windows(2)

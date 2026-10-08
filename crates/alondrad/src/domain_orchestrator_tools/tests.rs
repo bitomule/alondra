@@ -999,15 +999,83 @@ async fn the_replacing_node_is_told_to_continue_in_the_worktree_without_making_a
     let f = world();
     let actor = the_orchestrator(&f.domain);
     connected_node_on_the_task(&f);
-    let git = |args: &[&str]| assert!(std::process::Command::new("git").arg("-C").arg(&f.project).args(args).output().unwrap().status.success(), "git {args:?}");
-    git(&["init", "-q", "-b", "worktree-t-cards-3"]);
-    git(&["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "start"]);
+    let repo = f.root.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    git_in(&repo, &["init", "-q", "-b", "main"]);
+    git_in(&repo, &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "start"]);
+    git_in(&repo, &["worktree", "add", "-q", "-b", "worktree-t-cards-3", f.project.to_str().unwrap()]);
     let claude = FakeClaude::loading(&f.domain);
     let body = serde_json::from_value(json!({"task": "t", "replace": true, "model": "opus", "reason": "Needs opus"})).unwrap();
     launch(&f.domain, &f.home, &actor, body, |_| None, &claude).await.unwrap();
     let prompt = claude.calls.lock().unwrap()[0].1.last().unwrap().clone();
     let expected = format!("You continue in {}, branch worktree-t-cards-3", f.project.display());
     assert!(prompt.contains(&expected) && prompt.contains("Do not create another worktree and do not use EnterWorktree"), "{prompt}");
+}
+
+fn git_in(dir: &Path, args: &[&str]) {
+    let out = std::process::Command::new("git").arg("-C").arg(dir).args(args).output().unwrap();
+    assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+}
+
+/// The project folder as a main checkout with one commit.
+fn main_checkout(f: &Fixture) {
+    git_in(&f.project, &["init", "-q", "-b", "main"]);
+    git_in(&f.project, &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "start"]);
+}
+
+fn same(a: &Path, b: &Path) -> bool {
+    a.canonicalize().unwrap() == b.canonicalize().unwrap()
+}
+
+/// The bug: David stopped the node of a task, so it had no node to replace, and the orchestrator
+/// launched it again with the repository's root as the folder while the task's worktree, with the
+/// earlier node's work, was still there. The new node started in the main checkout.
+#[tokio::test]
+async fn a_relaunch_of_a_task_whose_earlier_worktree_exists_starts_there_not_in_the_main_checkout() {
+    let f = world();
+    main_checkout(&f);
+    let earlier = f.project.join(".claude/worktrees/safe-permissions");
+    git_in(&f.project, &["worktree", "add", "-q", "-b", "worktree-safe-permissions", earlier.to_str().unwrap()]);
+    std::fs::write(earlier.join("half-done.rs"), "work").unwrap();
+    f.domain.set_task_worktree(&TaskId::from("t"), earlier.to_str().unwrap()).unwrap();
+    let actor = the_orchestrator(&f.domain);
+    let claude = FakeClaude::loading(&f.domain);
+    launch(&f.domain, &f.home, &actor, launch_body(&f, json!({"model": "sonnet"})), |_| None, &claude).await.unwrap();
+    let (cwd, args) = claude.calls.lock().unwrap()[0].clone();
+    assert!(same(Path::new(&cwd), &earlier), "the new node starts in the task's worktree, not {cwd}");
+    assert!(earlier.join("half-done.rs").exists(), "with the earlier node's work in it");
+    assert!(args.last().unwrap().contains("You continue in"), "and is told so: {}", args.last().unwrap());
+    assert!(same(Path::new(&f.domain.inherited_worktree(SESSION).unwrap().unwrap()), &earlier), "Alondra deletes it with the task");
+}
+
+#[tokio::test]
+async fn a_first_launch_in_a_main_checkout_gets_a_worktree_of_its_own_and_the_next_launch_reuses_it() {
+    let f = world();
+    main_checkout(&f);
+    let actor = the_orchestrator(&f.domain);
+    let claude = FakeClaude::loading(&f.domain);
+    launch(&f.domain, &f.home, &actor, launch_body(&f, json!({"model": "sonnet"})), |_| None, &claude).await.unwrap();
+    let made = f.project.join(".claude/worktrees/t");
+    let (cwd, args) = claude.calls.lock().unwrap()[0].clone();
+    assert!(same(Path::new(&cwd), &made), "{cwd}");
+    assert!(args.last().unwrap().contains("the worktree Alondra made for this task"), "{}", args.last().unwrap());
+    let recorded = f.domain.task_worktree(&TaskId::from("t")).unwrap().unwrap();
+    assert!(same(Path::new(&recorded), &made));
+    crate::node_revival::take_out(&f.domain, SESSION, "node closed by the user", None).unwrap();
+    let again = FakeClaude::loading(&f.domain);
+    launch(&f.domain, &f.home, &actor, launch_body(&f, json!({"model": "sonnet"})), |_| None, &again).await.unwrap();
+    assert!(same(Path::new(&again.calls.lock().unwrap()[0].0), &made), "the relaunch works in the same worktree");
+}
+
+#[tokio::test]
+async fn no_node_is_launched_in_a_main_checkout_alondra_cannot_isolate() {
+    let f = world();
+    std::fs::create_dir_all(f.project.join(".git")).unwrap();
+    let actor = the_orchestrator(&f.domain);
+    let claude = FakeClaude::loading(&f.domain);
+    let refused = launch(&f.domain, &f.home, &actor, launch_body(&f, json!({"model": "sonnet"})), |_| None, &claude).await.unwrap_err();
+    assert_eq!(refused.code, "main_checkout", "{}", refused.message);
+    assert!(claude.calls.lock().unwrap().is_empty(), "claude never ran");
 }
 
 #[test]

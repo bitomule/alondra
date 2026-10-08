@@ -213,6 +213,9 @@ pub async fn launch(hub: &Hub, l: Launch, launcher: &impl Launcher) -> Result<Va
     if !Path::new(&l.cwd).is_dir() {
         return Err((StatusCode::BAD_REQUEST, format!("directory {} does not exist", l.cwd)));
     }
+    let slug = crate::launch_worktree::slug(l.task.as_deref().unwrap_or(&l.name));
+    let workplace = crate::launch_worktree::isolate(Path::new(&l.cwd), &slug, None, None).await.map_err(|why| (StatusCode::CONFLICT, why))?;
+    let cwd = workplace.dir().to_string_lossy().into_owned();
     let Some(plugin) = launcher.plugin() else {
         return Err((
             StatusCode::SERVICE_UNAVAILABLE,
@@ -230,7 +233,7 @@ pub async fn launch(hub: &Hub, l: Launch, launcher: &impl Launcher) -> Result<Va
         }
     }
     let _launching = hub.launching();
-    let output = launcher.run(&l.cwd, &args).await?;
+    let output = launcher.run(&cwd, &args).await?;
     let session = alondra_core::sessions::launched_short(&output);
     let launched = Event::Launched { name: l.name.clone(), request_id: l.request_id.clone(), auto_merge: l.options.auto_merge, task: l.task.clone(), title: l.title.clone(), session: session.clone() };
     let internal = |e: anyhow::Error| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string());

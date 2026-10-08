@@ -195,6 +195,12 @@ impl DomainRuntime {
     pub(crate) fn set_inherited_worktree(&self, agent: &str, dir: &str, from_agent: &str) -> Result<()> {
         self.store.lock().expect("domain store poisoned").set_inherited_worktree(agent, dir, from_agent, alondra_core::now_millis())
     }
+    pub(crate) fn task_worktree(&self, task: &TaskId) -> Result<Option<String>> {
+        self.store.lock().expect("domain store poisoned").task_worktree(task)
+    }
+    pub(crate) fn set_task_worktree(&self, task: &TaskId, dir: &str) -> Result<()> {
+        self.store.lock().expect("domain store poisoned").set_task_worktree(task, dir, alondra_core::now_millis())
+    }
     /// What Alondra kept about a session only while it lives: the worktree it inherited and why
     /// its replacement stopped short.
     pub(crate) fn forget_ended_session(&self, agent: &str) -> Result<()> {
