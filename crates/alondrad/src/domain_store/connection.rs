@@ -50,6 +50,11 @@ pub(super) fn open(path: &Path) -> Result<(Connection, PathBuf)> {
         "domain database replaced while opening"
     );
     conn.busy_timeout(std::time::Duration::from_secs(5))?;
+    // journal_mode can rewrite the database header; reject incompatible stores first.
+    let found: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+    ensure!(found == 0 || found == super::SCHEMA_VERSION,
+        "unsupported domain database schema {found}; this build requires {}; database preserved at {}. Use a compatible Alondra build or an explicit migration",
+        super::SCHEMA_VERSION, path.display());
     conn.pragma_update(None, "foreign_keys", "ON")?;
     conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.pragma_update(None, "synchronous", "FULL")?;
@@ -58,27 +63,6 @@ pub(super) fn open(path: &Path) -> Result<(Connection, PathBuf)> {
         "foreign keys unavailable"
     );
     Ok((conn, path))
-}
-
-/// Moves a database with a foreign schema version aside, with its -wal and -shm, so a
-/// fresh store can take its place. The caller must hold no connection to it.
-pub(super) fn set_aside(path: &Path, unix_seconds: u64) -> Result<PathBuf> {
-    let name = path.file_name().context("database filename required")?;
-    let moved = |suffix: &str| {
-        let mut file = name.to_os_string();
-        file.push(suffix);
-        path.with_file_name(file)
-    };
-    let kept = moved(&format!(".old-{unix_seconds}"));
-    ensure!(!kept.exists(), "{} already exists", kept.display());
-    for suffix in ["", "-wal", "-shm"] {
-        match fs::rename(moved(suffix), moved(&format!(".old-{unix_seconds}{suffix}"))) {
-            Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(error.into()),
-            _ => (),
-        }
-    }
-    File::open(path.parent().context("database parent required")?)?.sync_all()?;
-    Ok(kept)
 }
 
 #[cfg(test)]

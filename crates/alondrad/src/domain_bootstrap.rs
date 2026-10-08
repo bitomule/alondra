@@ -1216,19 +1216,42 @@ mod tests {
     }
 
     #[test]
-    fn a_store_reset_for_another_schema_still_boots() {
+    fn bootstrap_refuses_an_unsupported_schema_and_preserves_the_domain() {
+        use alondra_core::domain::{Actor, Command, CommandEnvelope, PROTOCOL_VERSION};
         let home = std::env::temp_dir().join(format!(
-            "alondra-v2-bootstrap-reset-{}",
-            crate::auth::random_hex(8)
-        ));
+            "alondra-domain-bootstrap-schema-{}", crate::auth::random_hex(8)));
         std::fs::create_dir(&home).unwrap();
-        drop(DomainRuntime::open(&home).unwrap());
-        rusqlite::Connection::open(home.join("domain.db"))
-            .unwrap()
-            .pragma_update(None, "user_version", 99)
-            .unwrap();
+        let domain = DomainRuntime::open(&home).unwrap();
+        let before = domain.state().unwrap();
+        domain.execute(&Actor::User { user_id: "bootstrap-test".into() }, &CommandEnvelope {
+            protocol_version: PROTOCOL_VERSION, data_epoch: before.data_epoch.clone(),
+            command_id: "preserved-request".into(), expected_revision: before.revision,
+            command: Command::CreateRequest { request_id: "preserved".into(),
+                body: "Existing work".into(), auto_merge: false, maintenance: false },
+        }, None, || Ok(())).unwrap();
+        let expected = domain.state().unwrap();
+        drop(domain);
+        let path = home.join("domain.db");
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.pragma_update(None, "user_version", 99).unwrap();
+        drop(conn);
+        let bytes = std::fs::read(&path).unwrap();
+        let error = match DomainDaemon::open(&home) {
+            Ok(_) => panic!("bootstrap must refuse an unsupported domain schema"),
+            Err(error) => error,
+        };
+        assert!(format!("{error:#}").contains("unsupported domain database schema"));
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        assert_eq!(conn.query_row("SELECT body FROM requests", [], |row|
+            row.get::<_, String>(0)).unwrap(), "Existing work");
+        assert_eq!(conn.pragma_query_value(None, "user_version", |row|
+            row.get::<_, i64>(0)).unwrap(), 99);
+        conn.pragma_update(None, "user_version", crate::domain_store::SCHEMA_VERSION).unwrap();
+        drop(conn);
         let state = DomainDaemon::open(&home).unwrap();
-        assert_eq!(state.domain().state().unwrap().revision, 0);
+        assert_eq!(state.domain().state().unwrap(), expected);
+        drop(state);
         std::fs::remove_dir_all(&home).unwrap();
     }
 

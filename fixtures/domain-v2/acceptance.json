@@ -2821,7 +2821,7 @@
           "value": false
         }
       ],
-      "cs_evidence": ["domain::tests::old_epoch_revision_generation_and_actor_rejected", "domain_store::tests::a_legacy_writer_is_rejected_and_a_current_store_keeps_its_rows", "domain_store::tests::a_store_with_another_schema_version_is_moved_aside_and_replaced_by_an_empty_one"],
+      "cs_evidence": ["domain::tests::old_epoch_revision_generation_and_actor_rejected", "domain_store::tests::a_legacy_writer_is_rejected_and_a_current_store_keeps_its_rows", "domain_store::tests::an_unsupported_schema_is_refused_without_replacing_the_database"],
       "cs_evidence_status": "passed",
       "execution_status": "test_evidence"
     },
