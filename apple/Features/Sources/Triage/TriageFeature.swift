@@ -116,7 +116,9 @@ public struct TriageFeature: Sendable {
         @CasePathable
         public enum Delegate: Equatable, Sendable {
             case open(ViewKey)
-            case noLongerPending
+            /// A card opened from a notification, or shown in the queue, no longer waits: why, when
+            /// the daemon said.
+            case noLongerPending(String?)
         }
     }
 
@@ -132,6 +134,7 @@ public struct TriageFeature: Sendable {
     public static let loadDeadline = Duration.seconds(20)
 
     @Dependency(\.continuousClock) var clock
+    @Dependency(\.viewsClient) var viewsClient
     private enum CancelID: Hashable { case stamp, swipe, loadDeadline, sendDeadline(String), answered(String) }
     public static var loadFailure: String { String(localized: "Couldn’t load this from your Mac. Try again.") }
 
@@ -218,6 +221,10 @@ public struct TriageFeature: Sendable {
             case .machinePresented(let presented):
                 state.machinePresented = presented
                 return .none
+            case .cards(.element(id: let id, action: .delegate(.settled(let why)))):
+                guard !state.answered.contains(id), !state.optimistic.hides(id) else { return .none }
+                state.answered.insert(id)
+                return .merge(showQueue(&state), .send(.delegate(.noLongerPending(why))), answeredTimer(id))
             case .cards(.element(id: _, action: .delegate(.open(let key)))):
                 guard state.swipe == nil else { return .none }
                 return .send(.delegate(.open(key)))
@@ -283,7 +290,11 @@ public struct TriageFeature: Sendable {
             state.focusedID = nil
             if ids.first != focused {
                 state.index = min(state.index, max(ids.count - 1, 0))
-                effects.append(.send(.delegate(.noLongerPending)))
+                effects.append(.run { [viewsClient] send in
+                    let fetch = try? await viewsClient.load(.card(focused), nil)
+                    guard case .document(let document)? = fetch else { return await send(.delegate(.noLongerPending(nil))) }
+                    await send(.delegate(.noLongerPending(document.settledNotice)))
+                })
             }
         }
         return .merge(effects)

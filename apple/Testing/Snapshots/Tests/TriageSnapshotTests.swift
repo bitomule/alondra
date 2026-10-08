@@ -227,6 +227,27 @@ final class TriageSnapshotTests: XCTestCase {
         }
     }
 
+    /// A notification for a card answered elsewhere: the card is never drawn, the queue shows what
+    /// still waits and the toast says what happened, in the words the daemon sent.
+    func test_aSettledCardIsNotShownAndTheToastSaysWhy() throws {
+        for spanish in [false, true] {
+            let settled = try Fixtures.document(spanish ? "card-settled-ios-es" : "card-settled-ios")
+            let notices = Store(initialState: AppFeature.State()) { AppFeature() } withDependencies: {
+                $0.continuousClock = TestClock()
+            }
+            notices.send(.triage(.delegate(.noLongerPending(settled.settledNotice))))
+            XCTAssertEqual(notices.notice?.event, .actionCompleted(spanish ? "Ya respondida" : "Already answered"))
+            let waiting = spanish ? try Fixtures.spanishCard(Fixtures.informationID) : try Fixtures.card(Fixtures.informationID)
+            let store = try single(waiting, spanish: spanish)
+            assertScreen([.light], language: language(spanish), inWindow: true) {
+                ZStack(alignment: .bottom) {
+                    Harness(store: store)
+                    NoticeToast(store: notices)
+                }
+            }
+        }
+    }
+
     // MARK: An answer that did not go through
 
     func test_aPullRequestBackSaysWhy() throws {

@@ -212,6 +212,32 @@ final class MacWorkspaceSnapshotTests: XCTestCase {
         }
     }
 
+    /// A notification for a card answered elsewhere: the card is never drawn, the detail closes and
+    /// the toast says what happened, in the words the daemon sent.
+    func test_aSettledCardClosesSayingWhy() async throws {
+        for spanish in [false, true] {
+            let settled = try document(spanish ? "card-settled-mac-es" : "card-settled-mac")
+            let why = try XCTUnwrap(settled.settledNotice)
+            let presentation = TestStore(initialState: MacPresentationFeature.State()) { MacPresentationFeature() } withDependencies: {
+                $0.viewsClient.load = { _, _ in .document(settled) }
+                $0.viewsClient.openScreen = { _, _ in }
+            }
+            presentation.exhaustivity = .off
+            await presentation.send(.select(.viewKey(settled.key)))
+            await presentation.receive(\.settled, why)
+            XCTAssertNil(presentation.state.detailDocument)
+            var state = MacAppFeature.State()
+            state.macPresentation = presentation.state
+            state.notice = WorkspaceNotice(event: .actionCompleted(why))
+            let store = Store(initialState: state) { EmptyReducer<MacAppFeature.State, MacAppFeature.Action>() }
+            assertWindow(size: CGSize(width: 900, height: 520), spanish: spanish, variants: [.light]) {
+                MacServiceDetail(presentation: store.scope(state: \.macPresentation, action: \.macPresentation))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .overlay(alignment: .bottom) { MacNoticeToast(store: store) }
+            }
+        }
+    }
+
     func test_card_noticeThatBlocksNothing() throws {
         let store = try presentation(detail: "card-information-mac")
         assertWindow(size: CGSize(width: 900, height: 520)) { MacServiceDetail(presentation: store) }

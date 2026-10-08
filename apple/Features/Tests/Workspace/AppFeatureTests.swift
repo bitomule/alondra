@@ -56,8 +56,15 @@ final class AppFeatureTests: XCTestCase {
     @MainActor
     func testACardThatIsNoLongerPendingSaysSoInAToast() async {
         let store = makeStore()
-        await store.send(.triage(.delegate(.noLongerPending)))
+        await store.send(.triage(.delegate(.noLongerPending(nil))))
         XCTAssertEqual(store.state.notice?.event, .actionCompleted("That’s no longer pending"))
+    }
+
+    @MainActor
+    func testACardSettledElsewhereSaysWhatHappenedInTheToast() async {
+        let store = makeStore()
+        await store.send(.triage(.delegate(.noLongerPending("Ya aceptada"))))
+        XCTAssertEqual(store.state.notice?.event, .actionCompleted("Ya aceptada"))
     }
 
     @MainActor

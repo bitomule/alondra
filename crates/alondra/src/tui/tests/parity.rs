@@ -2003,6 +2003,40 @@ fn merge_from_a_pull_request_detail_sends_the_only_method_directly() {
     assert_eq!(sent[0].1["option_id"], "squash");
 }
 
+fn settled(card: &serde_json::Value, why: &str) -> ViewDocument {
+    let mut view = card.clone();
+    view["view"] = alondra_core::views::SETTLED_VIEW.into();
+    view["sections"] = serde_json::json!([]);
+    view["empty"] = serde_json::json!({"text": why, "tone": "neutral"});
+    serde_json::from_value(view).unwrap()
+}
+
+#[test]
+fn a_card_settled_elsewhere_closes_and_says_why_instead_of_drawing_it() {
+    let card = view_fixture("card-question.json");
+    let key = card["key"].as_str().unwrap().to_owned();
+    let need = card["sections"][0]["items"][0]["need"].as_str().unwrap().to_owned();
+    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
+    let mut app = App::new(tx);
+    app.navigate_view(&key);
+    app.on_msg(Msg::ViewCard { key: key.clone(), result: Ok(serde_json::from_value(card.clone()).unwrap()) });
+    assert!(app.card_view.is_some());
+    app.on_msg(Msg::ViewCard { key: key.clone(), result: Ok(settled(&card, "Ya respondida")) });
+    assert!(app.card_view.is_none());
+    assert!(app.view_navigation.is_empty(), "{:?}", app.view_navigation);
+    assert_eq!(flash(&app), "Ya respondida");
+    assert!(!screen(&mut app, 120, 30).contains(&need));
+
+    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
+    let mut app = App::new(tx);
+    app.screen = Screen::Inbox;
+    app.sel = Some(Key(question_id()));
+    app.on_msg(Msg::ViewCard { key, result: Ok(settled(&card, "Ya no hace falta")) });
+    assert!(app.card_view.is_none());
+    assert_eq!(flash(&app), "Ya no hace falta");
+    assert!(app.hidden.contains_key(&Key(question_id())), "the inbox leaves the settled card");
+}
+
 #[test]
 fn a_know_card_detail_shows_its_whole_body_with_the_command_block() {
     crate::i18n::set_for_this_thread(crate::i18n::Lang::Es);

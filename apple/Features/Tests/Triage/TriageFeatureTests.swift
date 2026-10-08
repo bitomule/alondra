@@ -18,6 +18,7 @@ final class TriageFeatureTests: XCTestCase {
         let store = TestStore(initialState: TriageFeature.State()) { TriageFeature() } withDependencies: {
             $0.continuousClock = clock
             $0.viewsClient.observe = feed.observe
+            $0.viewsClient.load = feed.load
             $0.viewsClient.perform = feed.perform()
         }
         store.exhaustivity = .off
@@ -306,6 +307,30 @@ final class TriageFeatureTests: XCTestCase {
         await store.receive(\.delegate.noLongerPending)
         XCTAssertNil(store.state.focusedID)
         XCTAssertEqual(store.state.screen.key, .focusedHome("gone"))
+    }
+
+    @MainActor
+    func testOpeningANotificationForACardSettledElsewhereSaysWhyItWent() async throws {
+        let waiting = [ids.information, ids.delivery, ids.pullRequest]
+        let feed = FeedStub([try Fixtures.home(queue: waiting, focus: ids.question), try Fixtures.document("card-settled-ios-es")]
+            + (try waiting.map(Fixtures.card)))
+        let store = store(feed)
+
+        await store.send(.focus(ids.question))
+        await store.receive(\.delegate.noLongerPending, "Ya respondida")
+        XCTAssertEqual(store.state.orderedIDs, waiting)
+    }
+
+    @MainActor
+    func testACardSettledElsewhereLeavesTheQueueSayingWhy() async throws {
+        let store = store(try fullFeed())
+        await store.send(.task)
+        await store.skipReceivedActions()
+
+        let settled = try Fixtures.document("card-settled-ios-es")
+        await store.send(.cards(.element(id: ids.question, action: .screen(.loaded(settled)))))
+        await store.receive(\.delegate.noLongerPending, "Ya respondida")
+        XCTAssertEqual(store.state.orderedIDs, [ids.information, ids.delivery, ids.pullRequest])
     }
 
     // MARK: Live queue (0.2.33): the daemon answers 404 for `home?focus=` of a card no longer waiting

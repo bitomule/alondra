@@ -49,6 +49,31 @@ pub enum BuildError {
     NotFound,
     UnsupportedClient,
 }
+/// The view a card key renders once the card no longer waits for the user: no card, only the
+/// short notice in `empty` that says why, for the client to show as it closes the screen.
+pub const SETTLED_VIEW: &str = "settled_card";
+/// Why a card reached by its link is gone: answered, withdrawn, accepted, read, or its task ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Settled {
+    Answered,
+    Withdrawn,
+    Accepted,
+    Read,
+    TaskOver,
+}
+impl Settled {
+    /// The short notice a client shows as it closes the card.
+    pub fn notice(self, lang: Lang) -> &'static str {
+        use text::t;
+        match self {
+            Self::Answered => t!(lang, "Already answered", "Ya respondida"),
+            Self::Withdrawn => t!(lang, "No longer needed", "Ya no hace falta"),
+            Self::Accepted => t!(lang, "Already accepted", "Ya aceptada"),
+            Self::Read => t!(lang, "Already read", "Ya leída"),
+            Self::TaskOver => t!(lang, "Its task is over", "Su tarea ya terminó"),
+        }
+    }
+}
 /// The app icon badge: the same count as the Waiting for You queue and `Status::badge`.
 pub fn inbox_badge(domain: &crate::domain::DomainState) -> u32 {
     home::waiting(&domain.projection()).len() as u32

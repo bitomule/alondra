@@ -39,6 +39,13 @@ final class FeedStub: @unchecked Sendable {
         }
     }
 
+    var load: @Sendable (ViewKey, String?) async throws -> ViewFetch {
+        { [self] key, _ in
+            guard let document = lock.withLock({ documents[key.rawValue] }) else { throw ViewsClientError.missingView }
+            return .document(document)
+        }
+    }
+
     func perform(_ outcome: String = #"{"protocol":1,"outcome":"applied","message":"Done","stamp":"Answered"}"#)
         -> @Sendable (ActionRequest) async throws -> ActionResponse {
         { [self] request in

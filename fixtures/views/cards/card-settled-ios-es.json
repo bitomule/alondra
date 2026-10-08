@@ -1,0 +1,66 @@
+{
+  "protocol": 1,
+  "data_epoch": "test-epoch",
+  "view": "settled_card",
+  "key": "card:a98d034b-249e-4487-a89b-57de38c26372",
+  "client": "ios",
+  "version": "v8c8c8374ab3b68e7",
+  "cursor": "cursor-1",
+  "status": {
+    "version": "v5f95846fedddaaaa",
+    "summary": "1 pregunta · 3 por leer · 0 nodos trabajando",
+    "badge": 4,
+    "counts": [
+      {
+        "id": "inbox",
+        "label": "Bandeja",
+        "value": 4
+      },
+      {
+        "id": "tasks",
+        "label": "Tareas",
+        "value": 1
+      },
+      {
+        "id": "agents",
+        "label": "Flota",
+        "value": 1
+      },
+      {
+        "id": "working",
+        "label": "trabajando",
+        "value": 0
+      },
+      {
+        "id": "waiting",
+        "label": "esperando",
+        "value": 1
+      }
+    ],
+    "gauges": [
+      {
+        "id": "memory",
+        "label": "Memory",
+        "value": 0.38,
+        "text": "6.1 GB of 16 GB",
+        "level": "calm"
+      },
+      {
+        "id": "disk",
+        "label": "Disk available",
+        "value": 0.72,
+        "text": "120 GB",
+        "level": "calm"
+      }
+    ],
+    "orchestrator": {
+      "text": "inactivo",
+      "tone": "neutral"
+    }
+  },
+  "sections": [],
+  "empty": {
+    "text": "Ya respondida",
+    "tone": "neutral"
+  }
+}

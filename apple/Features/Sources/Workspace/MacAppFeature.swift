@@ -64,6 +64,13 @@ public struct MacAppFeature: Sendable {
                     try await clock.sleep(for: .seconds(notice.failure ? 4 : 2.2))
                     await send(.dismissNotice(notice.id))
                 }.cancellable(id: CancelID.notice, cancelInFlight: true)
+            case .macPresentation(.settled(let why)):
+                let notice = WorkspaceNotice(event: .actionCompleted(why))
+                state.notice = notice
+                return .run { send in
+                    try await clock.sleep(for: .seconds(2.2))
+                    await send(.dismissNotice(notice.id))
+                }.cancellable(id: CancelID.notice, cancelInFlight: true)
             case .macPresentation(.viewFailed(_, let message)):
                 let notice = WorkspaceNotice(event: .failure(message))
                 state.macError = notice

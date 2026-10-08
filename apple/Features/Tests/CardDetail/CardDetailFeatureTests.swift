@@ -57,6 +57,18 @@ final class CardDetailFeatureTests: XCTestCase {
     // MARK: What the detail shows
 
     @MainActor
+    func testACardSettledElsewhereClosesSayingWhyInsteadOfShowingIt() async throws {
+        let dismissed = LockIsolated(0)
+        let store = store(try Fixtures.card(Fixtures.questionID), dismissed: dismissed)
+        let settled = try Fixtures.document("card-settled-ios-es")
+        await store.send(.screen(.loaded(settled)))
+        await store.receive(\.delegate.settled, "Ya respondida")
+        await store.finish()
+        XCTAssertEqual(dismissed.value, 1)
+        XCTAssertEqual(DetailRoute.Action.cardDetail(.delegate(.settled("Ya respondida"))).delegate, .completed("Ya respondida"))
+    }
+
+    @MainActor
     func testAnActionTheServerHoldsBackCannotBePressedAndSendsNothing() async throws {
         let feed = FeedStub()
         let document = try Fixtures.document("pull-request-ios")

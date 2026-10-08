@@ -146,6 +146,8 @@ public struct CardDetailFeature: Sendable {
         public enum Delegate: Equatable, Sendable {
             case open(ViewKey)
             case handOff(ActionRequest)
+            /// The card no longer waits for the user: the screen leaves, saying why.
+            case settled(String)
         }
     }
 
@@ -162,6 +164,9 @@ public struct CardDetailFeature: Sendable {
                 return .send(.screen(.task))
             case .screen(.loaded(let document)):
                 guard document.key == state.screen.key.rawValue else { return .none }
+                if let why = document.settledNotice {
+                    return .merge(.send(.delegate(.settled(why))), .run { [dismiss] _ in await dismiss() })
+                }
                 state.actions.dataEpoch = document.dataEpoch
                 if let inline = Self.commentableText(of: document) {
                     state.content = inline

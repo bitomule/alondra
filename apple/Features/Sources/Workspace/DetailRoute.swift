@@ -80,6 +80,7 @@ public extension DetailRoute.Action {
         case .legacy(.action(.delegate(let outcome))): ScreenDelegate(outcome)
         case .cardDetail(.delegate(.open(let key))): .open(key)
         case .cardDetail(.delegate(.handOff(let request))): .handOff(request)
+        case .cardDetail(.delegate(.settled(let why))): .completed(why)
         case .cardDetail(.actions(.delegate(let outcome))): ScreenDelegate(outcome)
         case .taskDetail(.delegate(let delegate)),
              .schedules(.delegate(let delegate)),

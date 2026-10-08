@@ -5,7 +5,7 @@ use super::{
     CardAction,
     Action, ActionOption, Attachment, AttachmentKind, BlockChip, BuildError, Card, Check, CheckState,
     Checks, Client, CommentSpec, ContentRef, ContentRow, ContextLine, Detail, Fact, Facts, Icon, Input, Item,
-    Label, Lang, Link, LocalLink, Markdown, Presentation, RenderContext, Role, Row, Stamp, Style,
+    Label, Lang, Link, LocalLink, Markdown, Notice, Presentation, RenderContext, Role, Row, SETTLED_VIEW, Settled, Stamp, Style,
     TimeFormat, Tone, VIEWS_PROTOCOL, View,
     action_id::{ActionId, Verb},
     summary,
@@ -13,7 +13,7 @@ use super::{
 };
 use crate::domain::{
     AvailableAction, Author, CardKind, CardSpec, ClarificationReason, ContentKind as DomainContent,
-    DeliveryTarget, DomainProjection, DomainState, Hold, InboxItem, InboxSubject, Interaction, InteractionId,
+    DeliveryTarget, DomainProjection, DomainState, Hold, InboxItem, InboxSubject, Instruction, Interaction, InteractionId,
     InteractionPayload, InteractionSubject, MergeMethod, PrId, PrState, PullRequest, QuestionGroup, QuestionOption, Recipient, Scope, clip,
 };
 
@@ -109,6 +109,9 @@ pub(super) fn build(id: &str, context: &RenderContext<'_>) -> Result<View, Build
             &fallback
         }
     };
+    if let Some(settled) = interaction_of(item, domain).and_then(|interaction| settled(item, interaction, domain)) {
+        return Ok(settled_view(key, settled, &projection, context));
+    }
     let card = from_item(item, context, true)?;
     let title = card.title.clone();
     let mut sections = vec![super::common::section("card", None, vec![Item::Card(card)])];
@@ -143,6 +146,52 @@ pub(super) fn build(id: &str, context: &RenderContext<'_>) -> Result<View, Build
         empty: None,
         notices: vec![],
     })
+}
+
+/// A settled card is never shown: its view carries only why it went, for the client to say as it
+/// closes the screen.
+fn settled_view(key: String, settled: Settled, projection: &DomainProjection, context: &RenderContext<'_>) -> View {
+    View {
+        protocol: VIEWS_PROTOCOL,
+        data_epoch: context.domain.data_epoch.0.clone(),
+        view: SETTLED_VIEW.into(),
+        key,
+        client: context.client,
+        version: String::new(),
+        cursor: context.cursor.into(),
+        title: None,
+        status: super::status::build(projection, context),
+        sections: vec![],
+        empty: Some(Notice { text: settled.notice(context.lang).into(), tone: Tone::Neutral, action: None }),
+        notices: vec![],
+    }
+}
+
+/// Why a card no longer waits for the user: answered, withdrawn, accepted, read, or its task is
+/// over. A card that still waits, or that went quiet another way, is none of these.
+fn settled(item: &InboxItem, interaction: &Interaction, domain: &DomainState) -> Option<Settled> {
+    if item.pending {
+        return None;
+    }
+    let answered = match &interaction.payload {
+        _ if interaction.withdrawn => return Some(Settled::Withdrawn),
+        InteractionPayload::Question { answer, .. } | InteractionPayload::ActionRequest { answer, .. } => {
+            answer.is_some().then_some(Settled::Answered)
+        }
+        InteractionPayload::Information { read_by } => (!read_by.is_empty()).then_some(Settled::Read),
+        InteractionPayload::Delivery { acceptance, .. } if acceptance.as_ref().is_some_and(|acceptance| acceptance.valid) => {
+            Some(Settled::Accepted)
+        }
+        InteractionPayload::Delivery { .. } => domain
+            .handed_back(interaction)
+            .filter(|instruction| *instruction != Instruction::Conflicts)
+            .map(|_| Settled::Answered),
+    };
+    let task_over = || match &interaction.scope {
+        Scope::Task { task_id } => domain.tasks.get(task_id).is_some_and(|task| task.state.terminal()).then_some(Settled::TaskOver),
+        Scope::Orchestrator { .. } => None,
+    };
+    answered.or_else(task_over)
 }
 
 /// The card a pull request or a document revision is about, for old links to them: its
@@ -312,38 +361,14 @@ fn state_label(item: &InboxItem, interaction: Option<&Interaction>, context: &Re
         parts.extend(mark.map(str::to_owned));
         return (!parts.is_empty()).then(|| Label { text: parts.join(" · "), tone });
     }
-    if let InteractionPayload::Delivery { acceptance, .. } = &interaction.payload {
-        let accepted = acceptance.as_ref().is_some_and(|acceptance| acceptance.valid);
-        return accepted.then(|| Label {
-            text: if is_document_review(interaction) { t!(lang, "Approved", "Aprobada") } else { t!(lang, "Accepted", "Aceptada") }.into(),
-            tone: Tone::Success,
-        });
-    }
-    if !item.pending {
-        return Some(settled_label(interaction, lang));
+    if matches!(interaction.payload, InteractionPayload::Delivery { .. }) {
+        return None;
     }
     Some(if interaction.blocking {
         Label { text: tf!(lang, "Blocks {node}", "Bloquea a {node}", node = node_name(item, context)), tone: Tone::Warning }
     } else {
         Label { text: t!(lang, "Doesn't block", "No bloquea").into(), tone: Tone::Neutral }
     })
-}
-
-/// Why a card no longer waits for the user, so one reached by its link never reads as open.
-fn settled_label(interaction: &Interaction, lang: Lang) -> Label {
-    let text = match &interaction.payload {
-        _ if interaction.withdrawn => t!(lang, "Withdrawn: no longer needed", "Retirada: ya no hace falta").to_owned(),
-        InteractionPayload::Question { options, answer: Some(answer) }
-        | InteractionPayload::ActionRequest { options, answer: Some(answer) } => {
-            match options.iter().find(|option| option.id == answer.option_id) {
-                Some(option) => tf!(lang, "Answered · {option}", "Respondida · {option}", option = fixed_option_text(option, lang).0),
-                None => t!(lang, "Answered", "Respondida").to_owned(),
-            }
-        }
-        InteractionPayload::Information { read_by } if !read_by.is_empty() => t!(lang, "Read", "Leída").to_owned(),
-        _ => t!(lang, "Its task is over", "Su tarea ya terminó").to_owned(),
-    };
-    Label { text, tone: Tone::Neutral }
 }
 
 /// What the tasks that reviewed this one concluded: the line of each approval and, when the
@@ -942,7 +967,7 @@ fn delivery_actions(
         if accepted {
             return None;
         }
-        let id =action_id(Verb::Accept, &interaction.id.0, interaction.revision, None)?;
+        let id = action_id(Verb::Accept, &interaction.id.0, interaction.revision, None)?;
         let mut action = button(id.to_string(), label, role);
         action.stamp = Some(if document { t!(lang, "Approved", "Aprobada") } else { t!(lang, "Accepted", "Aceptada") }.into());
         Some(with_availability(action, find("accept_delivery"), lang))

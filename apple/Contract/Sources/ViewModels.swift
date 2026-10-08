@@ -94,6 +94,18 @@ public struct ViewDocument: Codable, Equatable, Sendable {
     }
 }
 
+public extension ViewDocument {
+    /// The view a card key renders once the card no longer waits for the user.
+    static let settledCardView = "settled_card"
+
+    /// Why a card went (answered, withdrawn, accepted…), when the daemon says the card is settled
+    /// instead of sending it. A settled card is never shown: its screen closes with these words.
+    var settledNotice: String? {
+        guard view == Self.settledCardView else { return nil }
+        return empty?.text ?? ""
+    }
+}
+
 public struct ViewStatus: Codable, Equatable, Sendable {
     public let version: String
     public let summary: String

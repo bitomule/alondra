@@ -13,6 +13,11 @@ private func makeDocument(key: String, version: String, sections: String = "[]")
     return try JSONDecoder().decode(ViewDocument.self, from: Data(json.utf8))
 }
 
+private func settledCard(_ key: String, why: String) throws -> ViewDocument {
+    let json = #"{"protocol":1,"view":"settled_card","key":"\#(key)","client":"mac","version":"vs","cursor":"c1.abc","data_epoch":"epoch-vs","status":\#(status),"sections":[],"empty":{"text":"\#(why)","tone":"neutral"}}"#
+    return try JSONDecoder().decode(ViewDocument.self, from: Data(json.utf8))
+}
+
 private func cardRows(_ ids: [String]) -> String {
     ids.map {
         #"{"type":"row","id":"\#($0)","icon":"question","title":"Card \#($0)","depth":0,"struck":false,"link":{"kind":"view","key":"card:\#($0)"},"children":[]}"#
@@ -169,6 +174,37 @@ struct MacServiceNavigationTests {
         await store.send(.viewsStale(["sidebar", "card:z", "card:a"]))
         await store.skipReceivedActions()
         #expect(Set(loaded.value) == ["sidebar", "card:a"])
+    }
+
+    @Test
+    func aCardSettledElsewhereLeavesForTheNextOneAndSaysWhy() async throws {
+        let store = try makeStore(waiting: ["a", "b"], selected: "card:a") { key in
+            key.rawValue == "card:a" ? .document(try settledCard(key.rawValue, why: "Ya respondida")) : .document(try makeDocument(key: key.rawValue, version: "d1"))
+        }
+        await store.send(.viewsStale(["card:a"]))
+        await store.receive(\.settled, "Ya respondida")
+        await store.skipReceivedActions()
+        #expect(store.state.selectedViewKey == "card:b")
+        #expect(store.state.detailDocument?.key == "card:b")
+    }
+
+    @Test
+    func anOldNotificationForASettledCardShowsNothingButWhy() async throws {
+        let store = try makeStore(waiting: []) { .document(try settledCard($0.rawValue, why: "Ya no hace falta")) }
+        await store.send(.select(.viewKey("card:gone")))
+        await store.receive(\.settled, "Ya no hace falta")
+        #expect(store.state.selection == nil)
+        #expect(store.state.selectedViewKey == nil)
+        #expect(store.state.detailDocument == nil)
+    }
+
+    @Test
+    func theWindowSaysWhyASettledCardLeft() {
+        let store = Store(initialState: MacAppFeature.State()) { MacAppFeature() } withDependencies: {
+            $0.continuousClock = TestClock()
+        }
+        store.send(.macPresentation(.settled("Ya aceptada")))
+        #expect(store.notice?.event == .actionCompleted("Ya aceptada"))
     }
 
     @Test

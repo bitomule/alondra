@@ -97,6 +97,8 @@ public struct TriageCardFeature: Sendable {
         @CasePathable
         public enum Delegate: Equatable, Sendable {
             case open(ViewKey)
+            /// The card was settled elsewhere: it leaves the queue, saying why.
+            case settled(String)
         }
     }
 
@@ -113,7 +115,8 @@ public struct TriageCardFeature: Sendable {
                     return .none
                 }
                 state.actions.dataEpoch = document.dataEpoch
-                return .cancel(id: CancelID.loadDeadline)
+                guard let why = document.settledNotice else { return .cancel(id: CancelID.loadDeadline) }
+                return .merge(.cancel(id: CancelID.loadDeadline), .send(.delegate(.settled(why))))
             case .screen(.task), .screen(.retry):
                 guard state.screen.document == nil else { return .none }
                 return .run { [clock] send in

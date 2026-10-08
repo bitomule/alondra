@@ -98,6 +98,8 @@
     "You can reply, allow or approve from the Lock Screen.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Puedes responder, permitir o aprobar desde la pantalla bloqueada."}}}},
     "Server": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Servidor"}}}},
     "This attachment can’t be previewed as text.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Este adjunto no se puede previsualizar como texto."}}}},
+    "Nothing selected": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Nada seleccionado"}}}},
+    "Choose something in the sidebar.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Elige algo en la barra lateral."}}}},
     "No results": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Sin resultados"}}}},
     "Search results": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Resultados de la búsqueda"}}}},
     "More…": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Más…"}}}},

@@ -742,6 +742,25 @@ fn tasks_views_match_goldens() {
     }
 }
 
+const SETTLED_GOLDENS: [(&str, Client, Lang); 4] = [
+    ("card-settled-ios.json", Client::Ios, Lang::En),
+    ("card-settled-ios-es.json", Client::Ios, Lang::Es),
+    ("card-settled-mac.json", Client::Mac, Lang::En),
+    ("card-settled-mac-es.json", Client::Mac, Lang::Es),
+];
+const SETTLED_CARD: &str = "a98d034b-249e-4487-a89b-57de38c26372";
+
+/// The golden question once answered from another device: its key renders only why it went.
+fn settled_fixture() -> DomainState {
+    let mut state = golden_fixture();
+    let question = state.interactions.get_mut(&SETTLED_CARD.into()).unwrap();
+    let InteractionPayload::Question { options, answer } = &mut question.payload else { panic!("the golden question") };
+    *answer = Some(crate::domain::Answer {
+        attachments: vec![], option_id: options[0].id.clone(), inputs: Default::default(), responder: "device:2".into(), at_revision: 1,
+    });
+    state
+}
+
 const NODE_CLOSED_GOLDENS: [(&str, Lang); 2] = [("task-closed-ios.json", Lang::En), ("task-closed-ios-es.json", Lang::Es)];
 const NODE_CLOSED_TASK: &str = "t-651c38484cd2f34e74d5107ba05f7f15";
 
@@ -1912,6 +1931,25 @@ fn spanish_cards_match_goldens() {
         ("card-delivery-es.json", Client::Ios, "card:hf-weekly-2026-09-30", include_str!("../../../../fixtures/views/cards/card-delivery-es.json")),
     ] {
         let actual = render(&state, &live, client, Lang::Es, key, "2026-09-30T10:00:00Z");
+        assert_golden(filename, &actual, expected);
+    }
+}
+
+#[test]
+fn a_settled_card_matches_its_goldens_in_every_apple_client() {
+    let state = settled_fixture();
+    let live = golden_live();
+    let expected = [
+        include_str!("../../../../fixtures/views/cards/card-settled-ios.json"),
+        include_str!("../../../../fixtures/views/cards/card-settled-ios-es.json"),
+        include_str!("../../../../fixtures/views/cards/card-settled-mac.json"),
+        include_str!("../../../../fixtures/views/cards/card-settled-mac-es.json"),
+    ];
+    for ((filename, client, lang), expected) in SETTLED_GOLDENS.into_iter().zip(expected) {
+        let actual = render(&state, &live, client, lang, &format!("card:{SETTLED_CARD}"), "2026-09-30T10:00:00Z");
+        if let Ok(dir) = std::env::var("ALONDRA_GOLDEN_OUT") {
+            std::fs::write(format!("{dir}/{filename}"), format!("{}\n", serde_json::to_string_pretty(&actual).unwrap())).unwrap();
+        }
         assert_golden(filename, &actual, expected);
     }
 }
@@ -4482,19 +4520,27 @@ fn answer_to(option_id: &str) -> crate::domain::Answer {
     crate::domain::Answer { attachments: vec![], option_id: option_id.into(), inputs: Default::default(), responder: "device:1".into(), at_revision: 1 }
 }
 
-fn card_state(card: &Card) -> String {
-    card.state.as_ref().map(|state| state.text.clone()).unwrap_or_default()
+/// What a card key renders: the card, or only why a settled one went.
+fn card_or_notice(view: &View) -> Result<&Card, &str> {
+    if view.view == super::SETTLED_VIEW {
+        assert!(view.sections.is_empty(), "a settled card renders sections: {:?}", view.sections);
+        return Err(view.empty.as_ref().map(|notice| notice.text.as_str()).expect("a settled card says why"));
+    }
+    match view.sections.first().and_then(|section| section.items.first()) {
+        Some(Item::Card(card)) => Ok(card),
+        other => panic!("a card view without its card: {other:?}"),
+    }
 }
 
 #[test]
-fn every_open_card_with_options_or_input_can_be_answered_and_a_settled_one_says_so_in_every_client() {
+fn every_open_card_with_options_or_input_can_be_answered_and_a_settled_one_is_never_shown_in_any_client() {
     use crate::domain::{CardKind, Hold, InputKind, InputSpec};
     let note = || vec![InputSpec { id: "note".into(), kind: InputKind::Text, required: false }];
     let option_sets = [vec![], vec![opt("retry", vec![]), opt("later", vec![])], vec![opt("a", note()), opt("b", vec![]), opt("c", vec![])]];
     let kinds = [CardKind::Decide, CardKind::Problem, CardKind::Propose, CardKind::Do, CardKind::Provide, CardKind::Test];
     let holds = [None, Some(Hold::Question), Some(Hold::Permission), Some(Hold::Elicitation)];
     let task_states = [TaskState::NotStarted, TaskState::Running, TaskState::NeedsYou, TaskState::WaitingDependency, TaskState::Done];
-    let mut checked = 0;
+    let (mut open, mut settled) = (0, 0);
     for options in &option_sets {
         for kind in kinds {
             for hold in holds {
@@ -4522,19 +4568,27 @@ fn every_open_card_with_options_or_input_can_be_answered_and_a_settled_one_says_
                                 }
                                 let pending = with_cards(&state).projection().inbox.iter()
                                     .find(|item| item.id == "interaction:i-1").expect("the card is in the inbox").pending;
+                                let why = match settle {
+                                    "answered" => "Ya respondida",
+                                    "withdrawn" => "Ya no hace falta",
+                                    _ => "Su tarea ya terminó",
+                                };
                                 for client in [Client::Ios, Client::Mac, Client::Tui] {
                                     let view = render(&state, &LiveSnapshot::default(), client, Lang::Es, "card:i-1", "");
-                                    let Item::Card(card) = &view.sections[0].items[0] else { panic!("question card") };
-                                    let answers = card.actions.iter().chain(&card.more).any(|action| action.id.starts_with("ans:"));
-                                    let label = card_state(card);
                                     let case = format!("{kind:?} {hold:?} {task_state:?} orchestrator={orchestrator} blocking={blocking} {settle} options={} {client:?}", options.len());
-                                    if pending {
-                                        assert!(answers, "an open card has no answer: {case}");
-                                    } else {
-                                        assert!(!answers, "a settled card offers an answer: {case}");
-                                        assert!(!label.starts_with("No bloquea") && !label.starts_with("Bloquea"), "a settled card reads as open ({label}): {case}");
+                                    match card_or_notice(&view) {
+                                        Ok(card) => {
+                                            assert!(pending, "a settled card is shown: {case}");
+                                            let answers = card.actions.iter().chain(&card.more).any(|action| action.id.starts_with("ans:"));
+                                            assert!(answers, "an open card has no answer: {case}");
+                                            open += 1;
+                                        }
+                                        Err(notice) => {
+                                            assert!(!pending, "an open card is hidden: {case}");
+                                            assert_eq!(notice, why, "{case}");
+                                            settled += 1;
+                                        }
                                     }
-                                    checked += 1;
                                 }
                             }
                         }
@@ -4543,44 +4597,46 @@ fn every_open_card_with_options_or_input_can_be_answered_and_a_settled_one_says_
             }
         }
     }
-    assert!(checked > 1000, "{checked}");
+    assert!(open > 500 && settled > 500, "{open} open, {settled} settled");
 }
 
 #[test]
-fn an_open_text_delivery_can_be_accepted_or_sent_back_and_an_accepted_one_says_so_in_every_client() {
+fn an_open_text_delivery_can_be_accepted_or_sent_back_and_an_accepted_one_is_never_shown_in_any_client() {
     use crate::domain::{Acceptance, DeliveryTarget};
     let mut open = 0;
     let cases = [(TaskState::ForYourReview, false), (TaskState::NeedsYou, false), (TaskState::Running, false), (TaskState::Closing, true), (TaskState::Done, true)];
     for (task_state, accepted) in cases {
-        {
-            let mut state = fixture();
-            state.interactions.retain(|id, _| id.0 == "i-3");
-            state.revision = 10;
-            state.tasks.get_mut(&"t-1".into()).unwrap().state = task_state;
-            let delivery = state.interactions.get_mut(&"i-3".into()).unwrap();
-            delivery.author = Author::Agent { agent_id: "a-1".into() };
-            delivery.blocking = false;
-            delivery.payload = InteractionPayload::Delivery {
-                targets: vec![DeliveryTarget::Text { text: "No hay reservas acumuladas.".into() }],
-                is_final: true,
-                acceptance: accepted.then(|| Acceptance { user_id: "device:1".into(), at_revision: 1, valid: true }),
-                feedback: vec![],
-            };
-            let pending = with_cards(&state).projection().inbox.iter()
-                .find(|item| item.id == "interaction:i-3").expect("the delivery is in the inbox").pending;
-            open += usize::from(pending);
-            for client in [Client::Ios, Client::Mac, Client::Tui] {
-                let view = render(&state, &LiveSnapshot::default(), client, Lang::Es, "card:i-3", "");
-                let Item::Card(card) = &view.sections[0].items[0] else { panic!("delivery card") };
-                let ids: Vec<&str> = card.actions.iter().chain(&card.more).map(|action| action.id.as_str()).collect();
-                let case = format!("{task_state:?} accepted={accepted} {client:?} {ids:?}");
-                if pending {
-                    assert!(ids.iter().any(|id| id.starts_with("accept:")), "an open delivery has no accept: {case}");
-                    assert!(ids.iter().any(|id| id.starts_with("changes:")), "an open delivery cannot be sent back: {case}");
+        let mut state = fixture();
+        state.interactions.retain(|id, _| id.0 == "i-3");
+        state.revision = 10;
+        state.tasks.get_mut(&"t-1".into()).unwrap().state = task_state;
+        let delivery = state.interactions.get_mut(&"i-3".into()).unwrap();
+        delivery.author = Author::Agent { agent_id: "a-1".into() };
+        delivery.blocking = false;
+        delivery.payload = InteractionPayload::Delivery {
+            targets: vec![DeliveryTarget::Text { text: "No hay reservas acumuladas.".into() }],
+            is_final: true,
+            acceptance: accepted.then(|| Acceptance { user_id: "device:1".into(), at_revision: 1, valid: true }),
+            feedback: vec![],
+        };
+        let pending = with_cards(&state).projection().inbox.iter()
+            .find(|item| item.id == "interaction:i-3").expect("the delivery is in the inbox").pending;
+        open += usize::from(pending);
+        for client in [Client::Ios, Client::Mac, Client::Tui] {
+            let view = render(&state, &LiveSnapshot::default(), client, Lang::Es, "card:i-3", "");
+            let case = format!("{task_state:?} accepted={accepted} {client:?}");
+            match card_or_notice(&view) {
+                Ok(card) => {
+                    assert!(!accepted, "an accepted delivery is shown: {case}");
+                    let ids: Vec<&str> = card.actions.iter().chain(&card.more).map(|action| action.id.as_str()).collect();
+                    if pending {
+                        assert!(ids.iter().any(|id| id.starts_with("accept:")), "an open delivery has no accept: {case} {ids:?}");
+                        assert!(ids.iter().any(|id| id.starts_with("changes:")), "an open delivery cannot be sent back: {case} {ids:?}");
+                    }
                 }
-                if accepted {
-                    assert!(!ids.iter().any(|id| id.starts_with("accept:")), "an accepted delivery offers accept again: {case}");
-                    assert_eq!(card_state(card), "Aceptada", "{case}");
+                Err(notice) => {
+                    assert!(accepted, "an open delivery is hidden: {case}");
+                    assert_eq!(notice, "Ya aceptada", "{case}");
                 }
             }
         }
@@ -4589,34 +4645,57 @@ fn an_open_text_delivery_can_be_accepted_or_sent_back_and_an_accepted_one_says_s
 }
 
 #[test]
-fn a_withdrawn_problem_and_an_answered_question_say_why_they_wait_for_nothing() {
-    use crate::domain::CardKind;
-    let mut state = fixture();
-    state.tasks.get_mut(&"t-1".into()).unwrap().state = TaskState::NotStarted;
-    let problem = state.interactions.get_mut(&"i-1".into()).unwrap();
-    problem.author = Author::Orchestrator { generation: 1 };
-    problem.blocking = false;
-    problem.card = spec(CardKind::Problem, "No consigo arrancar la tarea", "Cuatro intentos fallan.");
-    problem.payload = InteractionPayload::Question {
-        options: vec![opt("retry_later", vec![]), opt("user_freed", vec![]), opt("wait_launch_fix", vec![])],
-        answer: None,
+fn a_settled_card_says_only_why_it_went_in_english_and_spanish() {
+    use crate::domain::{CardKind, Feedback, Instruction};
+    let notice = |state: &DomainState, key: &str, lang| {
+        card_or_notice(&render(state, &LiveSnapshot::default(), Client::Ios, lang, key, "")).err().map(str::to_owned)
     };
-    problem.withdrawn = true;
-    let view = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::Es, "card:i-1", "");
-    let Item::Card(card) = &view.sections[0].items[0] else { panic!("problem card") };
-    assert_eq!(card_state(card), "Retirada: ya no hace falta");
+    let mut state = fixture();
+    state.tasks.get_mut(&"t-1".into()).unwrap().state = TaskState::Running;
+    let question = state.interactions.get_mut(&"i-1".into()).unwrap();
+    question.card = spec(CardKind::Decide, "Decide si repito el grabado de snapshots", "Sin ellos no puedo abrir la PR.");
+    question.payload = InteractionPayload::Question { options: vec![opt("retry", vec![]), opt("later", vec![])], answer: None };
+    assert_eq!(notice(&state, "card:i-1", Lang::Es), None);
 
     let question = state.interactions.get_mut(&"i-1".into()).unwrap();
-    question.withdrawn = false;
-    question.blocking = true;
+    question.payload = InteractionPayload::Question { options: vec![opt("retry", vec![]), opt("later", vec![])], answer: Some(answer_to("retry")) };
+    assert_eq!(notice(&state, "card:i-1", Lang::Es).as_deref(), Some("Ya respondida"));
+    assert_eq!(notice(&state, "card:i-1", Lang::En).as_deref(), Some("Already answered"));
+
+    state.interactions.get_mut(&"i-1".into()).unwrap().withdrawn = true;
+    assert_eq!(notice(&state, "card:i-1", Lang::Es).as_deref(), Some("Ya no hace falta"));
+    assert_eq!(notice(&state, "card:i-1", Lang::En).as_deref(), Some("No longer needed"));
+
+    let information = state.interactions.get_mut(&"i-1".into()).unwrap();
+    information.withdrawn = false;
+    information.card = spec(CardKind::Know, "El tag ya está publicado", "Por si lo buscas.");
+    information.payload = InteractionPayload::Information { read_by: ["device:1".to_owned()].into() };
+    assert_eq!(notice(&state, "card:i-1", Lang::Es).as_deref(), Some("Ya leída"));
+    assert_eq!(notice(&state, "card:i-1", Lang::En).as_deref(), Some("Already read"));
+
+    let question = state.interactions.get_mut(&"i-1".into()).unwrap();
     question.card = spec(CardKind::Decide, "Decide si repito el grabado de snapshots", "Sin ellos no puedo abrir la PR.");
-    question.payload = InteractionPayload::Question {
-        options: vec![QuestionOption { label: "Repetir ahora".into(), ..opt("retry", vec![]) }, opt("later", vec![])],
-        answer: Some(answer_to("retry")),
+    question.payload = InteractionPayload::Question { options: vec![opt("retry", vec![])], answer: None };
+    state.tasks.get_mut(&"t-1".into()).unwrap().state = TaskState::Done;
+    assert_eq!(notice(&state, "card:i-1", Lang::Es).as_deref(), Some("Su tarea ya terminó"));
+    assert_eq!(notice(&state, "card:i-1", Lang::En).as_deref(), Some("Its task is over"));
+
+    let mut state = fixture();
+    state.interactions.retain(|id, _| id.0 == "i-3");
+    state.revision = 10;
+    state.tasks.get_mut(&"t-1".into()).unwrap().state = TaskState::Running;
+    let delivery = state.interactions.get_mut(&"i-3".into()).unwrap();
+    delivery.payload = InteractionPayload::Delivery {
+        targets: vec![crate::domain::DeliveryTarget::Text { text: "No hay reservas acumuladas.".into() }],
+        is_final: true,
+        acceptance: None,
+        feedback: vec![Feedback { attachments: vec![], user_id: "device:1".into(), body: "Falta el caso vacío".into(), at_revision: 9, instruction: Instruction::Changes }],
     };
-    let view = render(&state, &LiveSnapshot::default(), Client::Tui, Lang::Es, "card:i-1", "");
-    let Item::Card(card) = &view.sections[0].items[0] else { panic!("question card") };
-    assert_eq!(card_state(card), "Respondida · Repetir ahora");
+    assert_eq!(notice(&state, "card:i-3", Lang::Es).as_deref(), Some("Ya respondida"));
+
+    let InteractionPayload::Delivery { feedback, .. } = &mut state.interactions.get_mut(&"i-3".into()).unwrap().payload else { unreachable!() };
+    feedback[0].instruction = Instruction::Conflicts;
+    assert_eq!(notice(&state, "card:i-3", Lang::Es), None, "a delivery Alondra sent back itself still says why");
 }
 
 /// The number the Waiting for You header states: every segment of its summary but the last, which
@@ -4657,8 +4736,10 @@ fn the_waiting_header_counts_exactly_the_cards_the_inbox_lists_and_each_one_open
             assert_eq!(home.status.summary.starts_with(&format!("{questions} ")), questions > 0, "{name}: {}", home.status.summary);
             assert_eq!(home.status.badge as usize, queue.card_ids.len(), "{name}");
             for id in &queue.card_ids {
+                let domain = with_cards(state);
+                let projection = domain.projection();
                 let card = build(&format!("card:{id}"), RenderContext {
-                    domain: &with_cards(state), live: &live, client: Client::Ios, lang,
+                    domain: &domain, projection: &projection, live: &live, client: Client::Ios, lang,
                     transport: Transport::Loopback, cursor: "cursor-1", rendered_at: "2026-09-30T10:00:00Z",
                 });
                 assert!(card.is_ok(), "{name}: card {id} is counted but does not open");

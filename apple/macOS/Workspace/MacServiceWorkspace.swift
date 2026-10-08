@@ -275,6 +275,9 @@ public struct MacServiceDetail: View {
                 }
             } else if let error = presentation.viewError {
                 ContentUnavailableView("Couldn’t load this view", systemImage: "exclamationmark.triangle", description: Text(error))
+            } else if presentation.selectedViewKey == nil {
+                ContentUnavailableView("Nothing selected", systemImage: "sidebar.left",
+                                       description: Text("Choose something in the sidebar."))
             } else { ProgressView("Loading…") }
         }
     }

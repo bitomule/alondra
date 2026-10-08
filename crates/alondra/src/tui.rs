@@ -1437,6 +1437,21 @@ impl App {
         });
     }
 
+    /// A card that no longer waits for the user is never drawn: its pane closes and the flash
+    /// says why it went.
+    fn close_settled_card(&mut self, key: &str, view: ViewDocument) {
+        self.card_view = None;
+        self.card_view_asked = None;
+        if self.view_navigation.last().map(String::as_str) == Some(key) {
+            self.view_navigation.pop();
+            self.load_selected_view();
+        } else if let Some(id) = key.strip_prefix("card:") {
+            self.hide(Key(id.to_owned()));
+        }
+        self.sync_open_views();
+        self.flash(view.empty.map(|notice| notice.text).unwrap_or_default());
+    }
+
     fn hide(&mut self, key: Key) {
         self.hidden.insert(key, now_millis());
         self.reconcile();
@@ -1747,7 +1762,11 @@ impl App {
                 key,
                 result: Ok(view),
             } => {
-                if self.selected_view_key().as_deref() == Some(&key) {
+                if view.view == alondra_core::views::SETTLED_VIEW {
+                    if self.selected_view_key().as_deref() == Some(&key) {
+                        self.close_settled_card(&key, view);
+                    }
+                } else if self.selected_view_key().as_deref() == Some(&key) {
                     if key.starts_with("search") {
                         if let Some(search) = self.search.as_mut() {
                             let query = search.query();

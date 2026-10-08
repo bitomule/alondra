@@ -216,8 +216,8 @@ public struct AppFeature: Sendable {
             delegate = value
         case .tasks(.delegate(let value)), .fleet(.delegate(.screen(let value))), .newRequest(.delegate(let value)):
             return value.event
-        case .triage(.delegate(.noLongerPending)):
-            return .actionCompleted(String(localized: "That’s no longer pending"))
+        case .triage(.delegate(.noLongerPending(let why))):
+            return .actionCompleted(why ?? String(localized: "That’s no longer pending"))
         case .handOffAnswered(_, let reply):
             switch OutcomeStyle(reply) {
             case .success(let message): return .actionCompleted(message)

@@ -77,6 +77,8 @@ public struct MacPresentationFeature: Sendable {
         case viewsReset
         case viewLoaded(String, ViewFetch)
         case viewFailed(String, String)
+        /// The selected card no longer waits for the user: it is never shown, and the window says why.
+        case settled(String)
         case beginViewAction(AlondraContract.Action, target: String? = nil)
         case sendReply(AlondraContract.Action, text: String)
         case beginViewForm(AlondraContract.Form)
@@ -330,6 +332,9 @@ public struct MacPresentationFeature: Sendable {
                             return loadAndOpenView(first, visibleKeys: visibleViewKeys(state))
                         }
                     }
+                    if key == state.selectedViewKey, let why = document.settledNotice {
+                        return closeSettled(key, why: why, &state)
+                    }
                     if key == state.selectedViewKey {
                         state.detailDocument = document
                         state.actionFeature.dataEpoch = document.dataEpoch
@@ -346,6 +351,7 @@ public struct MacPresentationFeature: Sendable {
                     }
                 }
             case let .viewFailed(_, message): state.viewError = message
+            case .settled: break
             case .queryChanged(let query):
                 state.query = query
                 state.smartMatches = nil
@@ -420,6 +426,17 @@ public struct MacPresentationFeature: Sendable {
         state.selectedViewKey = key
         state.detailDocument = nil
         return loadAndOpenView(key, visibleKeys: visibleViewKeys(state))
+    }
+
+    /// A settled card leaves the detail for the next waiting one, or for nothing.
+    private func closeSettled(_ key: String, why: String, _ state: inout State) -> Effect<Action> {
+        let available = Set(Self.waitingEntries(in: state.sidebarDocument).map(\.key)).subtracting([key])
+        let next = Self.nextKey(after: key, in: state.sidebarDocument, available: available)
+        state.selection = next.map(Selection.viewKey)
+        state.selectedViewKey = next
+        state.detailDocument = nil
+        let move = next.map { loadAndOpenView($0, visibleKeys: visibleViewKeys(state)) } ?? openVisibleViews(&state)
+        return .merge(move, .send(.settled(why)))
     }
 
     private func leaveCard(_ id: String, _ state: inout State) -> Effect<Action> {
