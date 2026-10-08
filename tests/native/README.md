@@ -69,8 +69,7 @@ Tart platform acceptance.
 Both commands require 8 GiB free on output and cache volumes, use one build job
 and a dedicated locked Bazel cache, ignore home/system bazelrc and disable remote
 cache/BES. The default persistent cache is
-`~/Library/Caches/Alondra/native-harness`; use `--build-cache /Volumes/Externo/bazel/alondra-native-harness`
-to place it on external storage. It must be new or carry this runner's ownership
+`~/Library/Caches/Alondra/native-harness`; `--build-cache` places it elsewhere. It must be new or carry this runner's ownership
 marker; an arbitrary existing Apple cache is rejected. Concurrent users of the
 same cache are refused. The server is stopped but the persistent cache is never
 deleted. Only explicit `--fresh-build` creates/removes a disposable per-run cache.

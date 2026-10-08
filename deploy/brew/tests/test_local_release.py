@@ -190,6 +190,21 @@ class LocalReleaseTests(unittest.TestCase):
             tags.assert_called_once_with('0.1.2', 'source', True)
             publish.assert_called_once_with('0.1.2', 'source', self.root / 'artifacts', retry=True)
 
+    def test_release_deletes_its_build_directory_even_when_preparation_fails(self):
+        target = self.root / 'target'
+        for failure in (None, RuntimeError('build')):
+            target.mkdir(exist_ok=True)
+            (target / 'artifact').write_text('x')
+            with patch.dict(os.environ, {'ALONDRA_RELEASE_DIR': str(self.root / 'artifacts'), 'CARGO_TARGET_DIR': str(target)}), \
+                 patch.object(sys, 'argv', ['local-release.py', '0.1.2', '--prepare']), \
+                 patch.object(l, 'preflight', return_value='source'), patch.object(l, 'tag_state'), \
+                 patch.object(l, 'prepare', side_effect=failure):
+                if failure:
+                    with self.assertRaises(RuntimeError): l.main()
+                else:
+                    l.main()
+            self.assertFalse(target.exists())
+
     def test_publish_validates_before_tag_and_keeps_bytes_after_failure(self):
         output = self.root / 'artifacts'
         output.mkdir()
