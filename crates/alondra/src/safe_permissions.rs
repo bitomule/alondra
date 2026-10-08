@@ -239,7 +239,7 @@ mod tests {
     use std::sync::atomic::{AtomicU32, Ordering};
 
     struct Repo {
-        root: PathBuf,
+        root: crate::test_support::Directory,
         main: PathBuf,
         worktree: PathBuf,
         files: PathBuf,
@@ -252,10 +252,9 @@ mod tests {
 
     fn repo() -> Repo {
         static NEXT: AtomicU32 = AtomicU32::new(0);
-        let root = std::env::temp_dir().join(format!("alondra-safe-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+        let root = crate::test_support::Directory::new();
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
-        let root = root.canonicalize().unwrap();
         run(&root, &["init", "-q", "--bare", "-b", "main", "remote.git"]);
         run(&root, &["init", "-q", "-b", "main", "repo"]);
         let main = root.join("repo");

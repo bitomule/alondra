@@ -14,7 +14,7 @@ use p256::ecdsa::{Signature, SigningKey, signature::Signer};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-struct Cleanup(PathBuf);
+struct Cleanup(crate::test_support::Directory);
 impl Drop for Cleanup {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
@@ -48,10 +48,7 @@ struct Fixture {
 
 impl Fixture {
     async fn start() -> Self {
-        let home = std::env::temp_dir().join(format!(
-            "alondra-vertical-{}",
-            crate::auth::random_hex(8)
-        ));
+        let home = crate::test_support::Directory::new();
         std::fs::create_dir(&home).unwrap();
         let store = DomainRuntime::open(&home).unwrap();
         let epoch = store.state().unwrap().data_epoch.0.clone();
@@ -115,7 +112,7 @@ impl Fixture {
             .unwrap();
         })));
         Self {
-            home: home.clone(),
+            home: home.to_path_buf(),
             base,
             server,
             client: reqwest::Client::new(),

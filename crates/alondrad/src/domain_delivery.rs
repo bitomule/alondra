@@ -313,7 +313,8 @@ mod tests {
 
     #[tokio::test]
     async fn domain_outbox_exits_on_sql_failure() {
-        let home = std::env::temp_dir().join(format!(
+        let scratch_directory = crate::test_support::Directory::new();
+        let home = scratch_directory.parent().unwrap().join(format!(
             "alondra-outbox-failure-{}",
             crate::auth::random_hex(8)
         ));
@@ -394,7 +395,8 @@ mod tests {
 
     #[tokio::test]
     async fn domain_outbox_hands_user_hint_and_leaves_producer_pending_without_transport() {
-        let home = std::env::temp_dir().join(format!(
+        let scratch_directory = crate::test_support::Directory::new();
+        let home = scratch_directory.parent().unwrap().join(format!(
             "alondra-only-outbox-{}",
             crate::auth::random_hex(8)
         ));
@@ -603,7 +605,8 @@ mod tests {
 
     #[tokio::test]
     async fn user_hint_is_handed_without_claiming_a_read_or_acceptance() {
-        let home = std::env::temp_dir().join(format!(
+        let scratch_directory = crate::test_support::Directory::new();
+        let home = scratch_directory.parent().unwrap().join(format!(
             "alondra-delivery-{}",
             crate::auth::random_hex(16)
         ));
@@ -1113,7 +1116,8 @@ mod tests {
 
     #[tokio::test]
     async fn an_orchestrator_answer_is_pushed_and_badged_even_when_its_request_closes_with_it() {
-        let home = std::env::temp_dir().join(format!("alondra-orchestrator-answer-{}", crate::auth::random_hex(8)));
+        let scratch_directory = crate::test_support::Directory::new();
+        let home = scratch_directory.parent().unwrap().join(format!("alondra-orchestrator-answer-{}", crate::auth::random_hex(8)));
         std::fs::create_dir_all(&home).unwrap();
         let domain = Arc::new(DomainRuntime::open(&home).unwrap());
         let client = crate::client_routes::Client::open(domain.clone(), &home, Default::default());
@@ -1156,7 +1160,8 @@ mod tests {
 
     #[tokio::test]
     async fn the_push_of_a_card_withdrawn_before_it_leaves_is_discarded_unsent() {
-        let home = std::env::temp_dir().join(format!("alondra-withdrawn-push-{}", crate::auth::random_hex(8)));
+        let scratch_directory = crate::test_support::Directory::new();
+        let home = scratch_directory.parent().unwrap().join(format!("alondra-withdrawn-push-{}", crate::auth::random_hex(8)));
         std::fs::create_dir_all(&home).unwrap();
         let domain = Arc::new(DomainRuntime::open(&home).unwrap());
         let client = crate::client_routes::Client::open(domain.clone(), &home, Default::default());
@@ -1191,7 +1196,8 @@ mod tests {
     /// restart too. A plan that changed, or one asked again after it was answered, is told.
     #[tokio::test]
     async fn a_card_put_again_unchanged_after_its_call_was_cut_is_not_pushed_twice() {
-        let home = std::env::temp_dir().join(format!("alondra-repeated-push-{}", crate::auth::random_hex(8)));
+        let scratch_directory = crate::test_support::Directory::new();
+        let home = scratch_directory.parent().unwrap().join(format!("alondra-repeated-push-{}", crate::auth::random_hex(8)));
         std::fs::create_dir_all(&home).unwrap();
         let open = || Arc::new(DomainRuntime::open(&home).unwrap());
         let domain = open();

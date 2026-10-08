@@ -395,17 +395,14 @@ fn interactive_with(
 #[cfg(test)]
 mod tests {
     use super::*;
-    struct Fixture(PathBuf);
+    struct Fixture(crate::test_support::Directory);
     impl Drop for Fixture {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
     }
     fn fixture() -> Fixture {
-        let home = std::env::temp_dir().join(format!(
-            "alondra-recovery-{}",
-            URL_SAFE_NO_PAD.encode(random::<16>().unwrap())
-        ));
+        let home = crate::test_support::Directory::new();
         fs::create_dir_all(&home).unwrap();
         let (identity, _) = load_or_create_keys(&home).unwrap();
         service_file(&home, &identity, "owner", true).unwrap();

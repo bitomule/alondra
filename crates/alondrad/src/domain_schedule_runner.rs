@@ -1005,7 +1005,8 @@ mod tests {
 
     #[tokio::test]
     async fn captured_launch_uses_request_policy_and_explicit_new_node_command() {
-        let root = std::env::temp_dir().join(format!(
+        let scratch_directory = crate::test_support::Directory::new();
+        let root = scratch_directory.parent().unwrap().join(format!(
             "alondra-schedule-prep-{}",
             crate::auth::random_hex(8)
         ));
@@ -1084,16 +1085,13 @@ mod tests {
     }
 
     struct Fixture {
-        root: PathBuf,
+        root: crate::test_support::Directory,
         home: PathBuf,
         domain: DomainRuntime,
     }
     impl Fixture {
         fn new() -> Self {
-            let root = std::env::temp_dir().join(format!(
-                "alondra-schedule-runner-{}",
-                crate::auth::random_hex(8)
-            ));
+            let root = crate::test_support::Directory::new();
             let home = root.join("home");
             let projects = root.join("projects");
             std::fs::create_dir_all(&home).unwrap();

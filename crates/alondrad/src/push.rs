@@ -424,7 +424,8 @@ mod tests {
 
     #[test]
     fn configured_service_never_falls_back_to_plaintext_push() {
-        let home = std::env::temp_dir().join(format!("alondra-push-mode-{}-{}", std::process::id(), now_millis()));
+        let scratch_directory = crate::test_support::Directory::new();
+        let home = scratch_directory.parent().unwrap().join(format!("alondra-push-mode-{}-{}", std::process::id(), now_millis()));
         std::fs::create_dir_all(&home).unwrap();
         assert!(legacy_push_allowed(&home, false));
         assert!(!legacy_push_allowed(&home, true));

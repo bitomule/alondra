@@ -270,7 +270,8 @@ mod tests {
 
     #[test]
     fn a_conflicting_presented_pr_goes_back_to_its_node_once_per_head() {
-        let home = Home(std::env::temp_dir().join(format!("alondra-conflicts-{}", crate::auth::random_hex(8))));
+        let scratch_directory = crate::test_support::Directory::new();
+        let home = Home(scratch_directory.parent().unwrap().join(format!("alondra-conflicts-{}", crate::auth::random_hex(8))));
         std::fs::create_dir(&home.0).unwrap();
         let domain = crate::domain_runtime::DomainRuntime::open(&home.0).unwrap();
         let user = Actor::User { user_id: "user".into() };
@@ -308,7 +309,8 @@ mod tests {
 
     #[test]
     fn a_merge_failure_is_not_a_conflict_already_sent() {
-        let home = Home(std::env::temp_dir().join(format!("alondra-conflicts-merge-{}", crate::auth::random_hex(8))));
+        let scratch_directory = crate::test_support::Directory::new();
+        let home = Home(scratch_directory.parent().unwrap().join(format!("alondra-conflicts-merge-{}", crate::auth::random_hex(8))));
         std::fs::create_dir(&home.0).unwrap();
         let domain = crate::domain_runtime::DomainRuntime::open(&home.0).unwrap();
         let user = Actor::User { user_id: "user".into() };

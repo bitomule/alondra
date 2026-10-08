@@ -283,11 +283,11 @@ mod tests {
         }
     }
 
-    struct Session(PathBuf);
+    struct Session(crate::test_support::Directory);
 
     impl Session {
-        fn new(name: &str) -> Self {
-            let root = std::env::temp_dir().join(format!("alondra-workflow-state-{name}-{}", std::process::id()));
+        fn new(_name: &str) -> Self {
+            let root = crate::test_support::Directory::new();
             let _ = std::fs::remove_dir_all(&root);
             std::fs::create_dir_all(root.join("subagents/workflows").join(RUN)).unwrap();
             std::fs::create_dir_all(root.join("workflows/scripts")).unwrap();

@@ -1,3 +1,4 @@
+import AlondraTestSupport
 import AlondraAccount
 import AlondraPairing
 import AlondraTransport
@@ -82,7 +83,7 @@ private func account(credential: RefreshCredential?, pairings: [ApprovedServiceP
                      browse: (@Sendable () -> AsyncStream<MacBrowser.Update>)? = nil) throws -> AccountSession {
     let auth = AuthSession(transport: Offline(), browser: NoBrowser(), storage: MemoryCredential(credential))
     return AccountSession(auth: auth, displayName: "iPhone",
-                          storageDirectory: FileManager.default.temporaryDirectory.appending(path: "restore-\(UUID().uuidString)"),
+                          storageDirectory: try TestFiles.directory(),
                           pairingStore: try MemoryPairings(pairings), browse: browse ?? {
                               AsyncStream { continuation in
                                   continuation.yield(.found(advertised))
@@ -102,6 +103,7 @@ private func waitUntil(_ condition: @MainActor () -> Bool) async throws {
 }
 
 @MainActor
+@Suite(.temporaryFiles)
 struct AccountRestoreTests {
     @Test func startingWithoutNetworkKeepsBothKindsOfMac() async throws {
         let owner = try account(credential: RefreshCredential(token: "refresh"),
@@ -170,7 +172,7 @@ struct AccountRestoreTests {
 
 /// Both write the one saved permission state, so they never run at the same time.
 @MainActor
-@Suite(.serialized)
+@Suite(.serialized, .temporaryFiles)
 struct LocalNetworkAccessTests {
     @Test func aRefusalWhileTheSystemAlertIsUpIsNotTheAnswer() async throws {
         let browsed = Shared(0)

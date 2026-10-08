@@ -128,12 +128,10 @@ impl Selection {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    struct Fixture(PathBuf);
+    struct Fixture(crate::test_support::Directory);
     impl Fixture {
         fn new() -> Self {
-            static NEXT: AtomicUsize = AtomicUsize::new(0);
-            let dir = std::env::temp_dir().join(format!("alondra-root-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+            let dir = crate::test_support::Directory::new();
             fs::create_dir_all(&dir).unwrap(); Self(dir)
         }
         fn file(&self) -> PathBuf { self.0.join("config/options.toml") }

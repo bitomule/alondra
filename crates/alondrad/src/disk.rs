@@ -66,7 +66,8 @@ mod tests {
 
     #[test]
     fn the_free_space_of_a_real_folder_is_what_df_reports() {
-        let dir = std::env::temp_dir();
+        let dir = crate::test_support::Directory::new();
+        std::fs::create_dir(&dir).unwrap();
         let measured = space(&dir).unwrap();
         assert!(measured.total > 0 && measured.free > 0 && measured.free <= measured.total, "{measured:?}");
         let df = std::process::Command::new("df").arg("-k").arg(&dir).output().unwrap();
@@ -85,7 +86,8 @@ mod tests {
 
     #[test]
     fn a_folder_and_its_mount_point_are_on_the_same_volume() {
-        let dir = std::env::temp_dir();
+        let dir = crate::test_support::Directory::new();
+        std::fs::create_dir(&dir).unwrap();
         let mount = mount_point(&dir).unwrap();
         assert!(dir.canonicalize().unwrap().starts_with(&mount));
         assert!(same_volume(&dir, &mount));

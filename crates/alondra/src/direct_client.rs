@@ -669,7 +669,8 @@ mod tests {
 
     #[test]
     fn the_store_is_owner_only_and_keeps_one_pairing_per_mac() {
-        let home = std::env::temp_dir().join(format!("alondra-direct-store-{}", B64.encode(random::<6>().unwrap())));
+        let scratch_directory = crate::test_support::Directory::new();
+        let home = scratch_directory.parent().unwrap().join(format!("alondra-direct-store-{}", B64.encode(random::<6>().unwrap())));
         fs::create_dir_all(&home).unwrap();
         remember(&home, mac("mac-a", "sk", "ak")).unwrap();
         remember(&home, mac("mac-b", "sk2", "ak2")).unwrap();

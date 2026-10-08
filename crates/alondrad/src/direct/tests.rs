@@ -60,10 +60,15 @@ struct Fixture {
     direct: Arc<Direct>,
     base: String,
     _server: tokio::task::JoinHandle<()>,
+    _directory: crate::test_support::Directory,
 }
 
-fn home_with(devices: &[&Phone], relay: Option<&str>) -> PathBuf {
-    let home = std::env::temp_dir().join(format!("alondra-direct-{}", crate::auth::random_hex(8)));
+impl Drop for Fixture {
+    fn drop(&mut self) { self._server.abort(); }
+}
+
+fn home_with(devices: &[&Phone], relay: Option<&str>) -> crate::test_support::Directory {
+        let home = crate::test_support::Directory::new();
     std::fs::create_dir_all(&home).unwrap();
     for (name, bytes) in [("signing.key", [1u8; 32]), ("agreement.key", [2u8; 32])] {
         let path = home.join(name);
@@ -97,10 +102,10 @@ fn home_with(devices: &[&Phone], relay: Option<&str>) -> PathBuf {
     home
 }
 
-async fn serve(home: &std::path::Path, service: Arc<Service>, auth: Arc<Auth>) -> Fixture {
+async fn serve(home: crate::test_support::Directory, service: Arc<Service>, auth: Arc<Auth>) -> Fixture {
     let direct = Arc::new(Direct::new(
         service.clone(),
-        Arc::new(PairingBook::new(home)),
+        Arc::new(PairingBook::new(&home)),
         "Mac de prueba".into(),
         crate::direct_approval(home.to_path_buf(), auth, service),
     ));
@@ -108,14 +113,14 @@ async fn serve(home: &std::path::Path, service: Arc<Service>, auth: Arc<Auth>) -
     let base = format!("http://{}", listener.local_addr().unwrap());
     let app = router(direct.clone()).into_make_service_with_connect_info::<SocketAddr>();
     let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-    Fixture { home: home.to_path_buf(), direct, base, _server: server }
+    Fixture { home: home.to_path_buf(), direct, base, _server: server, _directory: home }
 }
 
 async fn fixture(devices: &[&Phone]) -> Fixture {
     let home = home_with(devices, None);
     let auth = Arc::new(Auth::open(&home).unwrap());
     let service = Service::open(&home, 0, auth.clone()).unwrap().unwrap();
-    serve(&home, Arc::new(service), auth).await
+    serve(home, Arc::new(service), auth).await
 }
 
 async fn send(base: &str, path: &str, body: &impl serde::Serialize) -> (u16, Vec<u8>) {
@@ -324,7 +329,7 @@ async fn the_same_envelope_through_the_relay_and_directly_gets_the_same_answer()
     let service = Service::open(&home, 0, auth.clone()).unwrap().unwrap();
     service.enroll_with_relay_for_tests("client-a");
     let service = Arc::new(service);
-    let f = serve(&home, service.clone(), auth).await;
+    let f = serve(home, service.clone(), auth).await;
 
     let envelope = phone.request("op-both", routes::PATH);
     service.handle_relay_for_tests(envelope.clone(), &[9u8; 16]).await.unwrap();

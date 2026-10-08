@@ -1,10 +1,13 @@
 //! Verify the executable's early-exit boundary, including invalid configuration and occupied ports.
-use std::{fs, io::Read, net::TcpListener, path::PathBuf, process::{Command, Stdio}, time::{Duration, Instant}};
+#[path = "../../test_support.rs"]
+mod test_support;
 
-struct Fixture(PathBuf);
+use std::{fs, io::Read, net::TcpListener, process::{Command, Stdio}, time::{Duration, Instant}};
+
+struct Fixture(crate::test_support::Directory);
 impl Fixture {
     fn new() -> Self {
-        let root = std::env::temp_dir().join(format!("alondrad-info-{}", std::process::id()));
+        let root = crate::test_support::Directory::new();
         fs::create_dir(&root).unwrap();
         fs::write(root.join("config.toml"), "not valid TOML {{{").unwrap();
         Self(root)
@@ -62,9 +65,10 @@ fn help_and_version_exit_before_config_runtime_and_daemon_side_effects() {
 
 #[test]
 fn a_legacy_home_is_refused_before_the_daemon_takes_its_lock() {
-    let root = std::env::temp_dir().join(format!("alondrad-legacy-refusal-{}", std::process::id()));
+    let root = crate::test_support::Directory::new();
     fs::create_dir(&root).unwrap();
-    let fixture = Fixture(root.clone());
+    let fixture = Fixture(root);
+    let root = &fixture.0;
     fs::write(root.join("alondra.db"), b"legacy bytes").unwrap();
     let cutover = fs::OpenOptions::new().create(true).truncate(false).write(true)
         .open(root.join("service-home.lock")).unwrap();

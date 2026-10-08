@@ -3,7 +3,7 @@ use alondra_core::domain::{Actor, Command, CommandEnvelope, QuestionOption, Scop
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
-struct Fixture(PathBuf, DomainRuntime);
+struct Fixture(crate::test_support::Directory, DomainRuntime);
 impl Drop for Fixture {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
@@ -32,7 +32,7 @@ fn ask(domain: &DomainRuntime, id: &str, recipient: Recipient, scope: Scope, act
 
 /// Agent A runs Task t1 in App; t2 builds on t1 and nobody has it yet.
 fn world() -> Fixture {
-    let home = std::env::temp_dir().join(format!("alondra-orchestrator-reads-{}", crate::auth::random_hex(8)));
+    let home = crate::test_support::Directory::new();
     std::fs::create_dir_all(&home).unwrap();
     let domain = DomainRuntime::open(&home).unwrap();
     for (id, name) in [("agent-a", "Instance A"), ("agent-b", "Instance B")] {

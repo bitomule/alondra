@@ -63,7 +63,7 @@ impl Sessions for FakeSessions {
     }
 }
 
-struct Home(std::path::PathBuf);
+struct Home(crate::test_support::Directory);
 impl Drop for Home {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
@@ -114,7 +114,7 @@ impl Rig {
     }
 
     fn without_a_launch(wait: Option<Duration>) -> Self {
-        let home = std::env::temp_dir().join(format!("alondra-closer-{}", crate::auth::random_hex(8)));
+        let home = crate::test_support::Directory::new();
         std::fs::create_dir(&home).unwrap();
         let domain = Arc::new(DomainRuntime::open(&home).unwrap());
         command(&domain, Actor::System, "agent", Command::RegisterAgent { agent_id: SESSION.into(), name: "Node".into() });

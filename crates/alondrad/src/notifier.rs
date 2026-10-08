@@ -72,7 +72,8 @@ mod tests {
     use super::*;
     #[test]
     fn durable_digest_survives_restart_without_losing_or_repeating_reports() {
-        let home = std::env::temp_dir().join(format!("alondra-notifier-{}-{}", std::process::id(), now_millis()));
+        let scratch_directory = crate::test_support::Directory::new();
+        let home = scratch_directory.parent().unwrap().join(format!("alondra-notifier-{}-{}", std::process::id(), now_millis()));
         let config = alondra_core::config::Config::resolve(home.clone(), &Default::default(), |_|None, ||Some("Ana".into()));
         let hub = Hub::open(config.clone()).unwrap();
         hub.append(Event::Orchestrator(Transition::Enabled {session_id:None})).unwrap();
@@ -90,7 +91,8 @@ mod tests {
     /// On 27-sep the migrated orchestrator started from report 0 and got #1-#265 again as news.
     #[test]
     fn enabling_the_orchestrator_does_not_resend_reports_it_already_had() {
-        let home = std::env::temp_dir().join(crate::orchestrator_process::uuid().unwrap());
+        let scratch_directory = crate::test_support::Directory::new();
+        let home = scratch_directory.parent().unwrap().join(crate::orchestrator_process::uuid().unwrap());
         let config = alondra_core::config::Config::resolve(home.clone(), &Default::default(), |_| None, || Some("Test".into()));
         let hub = Hub::open(config).unwrap();
         let report = |id, title: &str| alondra_core::Report { id, session_id: "worker".into(), node_name: Some("worker".into()), title: title.into(), body: None, links: vec![], attachments: vec![], kind: alondra_core::ReportKind::Final, created_at: 1, read: false, to_orchestrator: false, mission: None, looks_like_question: false, task: None };
@@ -109,7 +111,8 @@ mod tests {
     }
     #[test]
     fn report_ids_and_handoffs_advance_after_retention_and_snapshot_restart() {
-        let home = std::env::temp_dir().join(crate::orchestrator_process::uuid().unwrap());
+        let scratch_directory = crate::test_support::Directory::new();
+        let home = scratch_directory.parent().unwrap().join(crate::orchestrator_process::uuid().unwrap());
         let config = alondra_core::config::Config::resolve(home.clone(), &Default::default(), |_| None, || Some("Test".into()));
         let hub = Hub::open(config.clone()).unwrap();
         hub.append(Event::Orchestrator(Transition::Enabled { session_id: None })).unwrap();

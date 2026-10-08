@@ -3,7 +3,7 @@ load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
 
 rust_library(
     name = "alondra_core",
-    srcs = glob(["src/**/*.rs"]),
+    srcs = glob(["src/**/*.rs"]) + ["//crates:test_support.rs"],
     crate_name = "alondra_core",
     edition = "2024",
     version = "0.1.0",
@@ -17,6 +17,7 @@ rust_test(
     name = "alondra_core_test",
     compile_data = glob(["fixtures/*.jsonl", "fixtures/*.json"]) + ["//fixtures/views:all", "//fixtures/views:cards"],
     crate = ":alondra_core",
+    deps = all_crate_deps(normal_dev = True),
     edition = "2024",
 )
 

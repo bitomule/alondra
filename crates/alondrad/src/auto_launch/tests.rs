@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 use std::sync::Mutex;
 
 struct Fixture {
-    root: PathBuf,
+    root: crate::test_support::Directory,
     home: PathBuf,
     project: PathBuf,
     domain: Arc<DomainRuntime>,
@@ -32,7 +32,7 @@ fn command(domain: &DomainRuntime, actor: Actor, command: Command) {
 }
 
 fn world() -> Fixture {
-    let root = std::env::temp_dir().join(format!("alondra-auto-launch-{}", crate::auth::random_hex(8)));
+    let root = crate::test_support::Directory::new();
     let home = root.join("home");
     let project = root.join("App");
     std::fs::create_dir_all(&home).unwrap();

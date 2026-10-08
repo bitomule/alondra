@@ -372,7 +372,7 @@ mod tests {
     const SESSION: &str = "ab1234cd-0000-4000-8000-000000000000";
     const FAST: Timing = Timing { grace: Duration::from_millis(30), settle: Duration::from_millis(60), pauses: [Duration::from_millis(5), Duration::from_millis(5)] };
 
-    struct Home(std::path::PathBuf);
+    struct Home(crate::test_support::Directory);
     impl Drop for Home {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
@@ -392,7 +392,7 @@ mod tests {
 
     /// A node whose mod connected once and then lost its connection.
     fn world(with_task: bool) -> (Home, Arc<DomainRuntime>) {
-        let home = std::env::temp_dir().join(format!("alondra-revival-{}", crate::auth::random_hex(8)));
+        let home = crate::test_support::Directory::new();
         std::fs::create_dir_all(&home).unwrap();
         let domain = Arc::new(DomainRuntime::open(&home).unwrap());
         let user = || Actor::User { user_id: "u".into() };

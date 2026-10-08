@@ -77,7 +77,8 @@ mod tests {
 
     #[test]
     fn corrupt_snapshot_can_be_replaced_from_complete_log_after_backup() {
-        let home = std::env::temp_dir().join(format!("alondra-state-repair-{}", std::process::id()));
+        let scratch_directory = crate::test_support::Directory::new();
+        let home = scratch_directory.parent().unwrap().join(format!("alondra-state-repair-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&home);
         std::fs::create_dir_all(&home).unwrap();
         let db = home.join("alondra.db");
@@ -97,7 +98,8 @@ mod tests {
 
     #[test]
     fn repair_refuses_a_log_pruned_below_the_snapshot() {
-        let home = std::env::temp_dir().join(format!("alondra-state-gap-{}", std::process::id()));
+        let scratch_directory = crate::test_support::Directory::new();
+        let home = scratch_directory.parent().unwrap().join(format!("alondra-state-gap-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&home);
         std::fs::create_dir_all(&home).unwrap();
         let conn = Connection::open(home.join("alondra.db")).unwrap();
@@ -109,7 +111,8 @@ mod tests {
 
     #[test]
     fn repair_never_creates_a_missing_database() {
-        let home = std::env::temp_dir().join(format!("alondra-state-missing-{}", std::process::id()));
+        let scratch_directory = crate::test_support::Directory::new();
+        let home = scratch_directory.parent().unwrap().join(format!("alondra-state-missing-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&home);
         std::fs::create_dir_all(&home).unwrap();
         assert!(repair_from_events(&home).is_err());

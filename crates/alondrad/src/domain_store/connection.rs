@@ -85,13 +85,10 @@ pub(super) fn set_aside(path: &Path, unix_seconds: u64) -> Result<PathBuf> {
 mod tests {
     use super::*;
     use std::os::unix::fs::{PermissionsExt, symlink};
-    struct Fixture(PathBuf);
+    struct Fixture(crate::test_support::Directory);
     impl Fixture {
         fn new() -> Self {
-            let p = std::env::temp_dir().join(format!(
-                "alondra-domain-sql-{}",
-                crate::auth::random_hex(16)
-            ));
+            let p = crate::test_support::Directory::new();
             fs::DirBuilder::new().mode(0o700).create(&p).unwrap();
             Self(p)
         }

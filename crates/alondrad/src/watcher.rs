@@ -16,11 +16,12 @@ pub fn claude_home() -> PathBuf {
 #[cfg(test)]
 pub fn claude_home() -> PathBuf {
     TEST_CLAUDE_HOME.with(|home| home.borrow().clone())
-        .unwrap_or_else(|| std::env::temp_dir().join(format!("alondra-test-claude-home-{}", std::process::id())))
+        .unwrap_or_else(|| EMPTY_CLAUDE_HOME.with(|home| home.to_path_buf()))
 }
 
 #[cfg(test)]
 thread_local! {
+    static EMPTY_CLAUDE_HOME: crate::test_support::Directory = crate::test_support::Directory::new();
     static TEST_CLAUDE_HOME: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
 }
 

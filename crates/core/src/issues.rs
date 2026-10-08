@@ -173,6 +173,7 @@ mod tests {
 
     #[test]
     fn remotes_name_their_repo() {
+        let scratch_directory = crate::test_support::Directory::new();
         for (url, repo) in [
             ("https://github.com/o/App.git", Some("o/App")),
             ("git@github.com:o/App.git", Some("o/App")),
@@ -182,7 +183,7 @@ mod tests {
         ] {
             assert_eq!(repo_of_remote(url).as_deref(), repo, "{url}");
         }
-        let dir = std::env::temp_dir().join(format!("alondra-origin-{}-{}", std::process::id(), crate::now_millis()));
+        let dir = scratch_directory.parent().unwrap().join(format!("alondra-origin-{}-{}", std::process::id(), crate::now_millis()));
         std::fs::create_dir_all(dir.join(".git")).unwrap();
         std::fs::write(dir.join(".git/config"), "[core]\n\tbare = false\n[remote \"upstream\"]\n\turl = https://github.com/up/App.git\n[remote \"origin\"]\n\turl = git@github.com:me/App.git\n").unwrap();
         assert_eq!(origin_of(&dir).as_deref(), Some("me/App"));

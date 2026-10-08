@@ -659,13 +659,13 @@ exit 1"#;
 printf '%s\n' 'Error: No deferred tool marker found in the resumed session. Either the session was not deferred, the marker is stale (tool already ran), or it exceeds the tail-scan window. Provide a prompt to continue the conversation.' >&2
 exit 1"#;
 
-    struct Fixture { root: PathBuf, executor: Executor, ownership: Ownership }
+    struct Fixture { root: crate::test_support::Directory, executor: Executor, ownership: Ownership }
     impl Drop for Fixture {
         fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.root); }
     }
 
     fn fixture(body: &str) -> Fixture {
-        let root = std::env::temp_dir().join(format!("alondra-orchestrator-{}", crate::auth::random_hex(8)));
+        let root = crate::test_support::Directory::new();
         let home = root.join("home");
         std::fs::create_dir_all(&home).unwrap();
         let (claude_home, executable) = stub_claude(&root, body);

@@ -354,10 +354,10 @@ mod tests {
     use super::*;
     use std::fs;
 
-    struct Fixture { root: std::path::PathBuf, home: std::path::PathBuf, domain: DomainRuntime }
+    struct Fixture { root: crate::test_support::Directory, home: std::path::PathBuf, domain: DomainRuntime }
     impl Fixture {
         fn new() -> Self {
-            let root = std::env::temp_dir().join(format!("alondra-schedule-api-{}", crate::auth::random_hex(8)));
+            let root = crate::test_support::Directory::new();
             let home = root.join("alondra");
             let projects = root.join("projects");
             fs::create_dir_all(&home).unwrap();

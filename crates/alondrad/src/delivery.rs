@@ -428,14 +428,15 @@ mod tests {
         assert_eq!(orphaned, vec![1, 2, 3, 4]);
     }
     fn fixture() -> Arc<Hub> {
-        let home = std::env::temp_dir().join(format!("delivery-{}", crate::auth::random_hex(8)));
+        let directory = crate::test_support::Directory::new();
+        let home = directory.to_path_buf();
         let config = alondra_core::config::Config::resolve(
             home,
             &Default::default(),
             |_| None,
             || Some("Test".into()),
         );
-        let hub = Arc::new(Hub::open(config).unwrap());
+        let hub = Arc::new(Hub::open(config).unwrap().with_test_directory(directory));
         hub.append(Event::DaemonSeen(alondra_core::DaemonObservation {
             session_id: "s".into(),
             short_id: "s".into(),
@@ -497,6 +498,7 @@ mod tests {
     #[test]
     fn delivery_retention_never_reuses_message_identity_after_snapshot() {
         let hub = fixture();
+        let _directory = hub.test_directory.clone();
         let attempt = claim(&hub, "s", Channel::Terminal).unwrap().unwrap();
         finish(&hub, attempt.id, Outcome::Handed).unwrap();
         hub.append(Event::Pruned {
@@ -522,6 +524,7 @@ mod tests {
     #[test]
     fn delivery_superseded_retry_does_not_retain_payload_or_terminal_metadata_forever() {
         let hub = fixture();
+        let _directory = hub.test_directory.clone();
         let first = claim(&hub, "s", Channel::Terminal).unwrap().unwrap();
         finish(&hub, first.id, Outcome::NotStarted("menu_open")).unwrap();
         let last = claim(&hub, "s", Channel::Terminal).unwrap().unwrap();
@@ -546,6 +549,7 @@ mod tests {
     #[test]
     fn delivery_retention_preserves_answer_target_and_question_identity() {
         let hub = fixture();
+        let _directory = hub.test_directory.clone();
         let question = |id| {
             serde_json::from_value::<alondra_core::Question>(json!({
                 "id":id,"session_id":"s","node_name":null,"title":"question","blocking":false,
@@ -607,6 +611,7 @@ mod tests {
     #[test]
     fn delivery_resolution_receipt_survives_attempt_retention() {
         let hub = fixture();
+        let _directory = hub.test_directory.clone();
         let attempt = claim(&hub, "s", Channel::Terminal).unwrap().unwrap();
         finish(&hub, attempt.id, Outcome::Uncertain("write_unknown")).unwrap();
         let digest = [42; 32];
@@ -635,6 +640,7 @@ mod tests {
     #[test]
     fn delivery_uncertainty_changes_long_poll_digest_and_message_status_without_fake_delivery() {
         let hub = fixture();
+        let _directory = hub.test_directory.clone();
         let at = now_millis();
         let before = hub.read(|v| crate::http::overview_digest(v, at));
         let attempt = claim(&hub, "s", Channel::Terminal).unwrap().unwrap();
@@ -659,6 +665,7 @@ mod tests {
     fn delivery_compaction_timeout_rechecks_post_compact_before_marking_uncertain() {
         for completed in [false, true] {
             let hub = fixture();
+            let _directory = hub.test_directory.clone();
             hub.append(Event::Compaction {
                 session_id: "s".into(),
                 step: alondra_core::event::CompactionStep::Requested,
@@ -694,6 +701,7 @@ mod tests {
     #[test]
     fn delivery_compaction_uncertainty_blocks_messages_until_explicit_resolution() {
         let hub = fixture();
+        let _directory = hub.test_directory.clone();
         hub.append(Event::Compaction {
             session_id: "s".into(),
             step: alondra_core::event::CompactionStep::Requested,
@@ -729,6 +737,7 @@ mod tests {
     #[test]
     fn delivery_claim_and_completion_are_atomic_before_and_after_external_write() {
         let hub = fixture();
+        let _directory = hub.test_directory.clone();
         let db = rusqlite::Connection::open(hub.home.join("alondra.db")).unwrap();
         db.execute_batch("CREATE TRIGGER fail_delivery BEFORE INSERT ON event_log WHEN NEW.kind='delivery_attempt_recorded' BEGIN SELECT RAISE(ABORT,'injected delivery failure'); END;").unwrap();
         let before = hub.read(|v| v.seq);
@@ -765,6 +774,7 @@ mod tests {
     #[test]
     fn delivery_restart_retry_and_discard_preserve_intent_without_fake_delivery() {
         let hub = fixture();
+        let _directory = hub.test_directory.clone();
         let first = claim(&hub, "s", Channel::Terminal).unwrap().unwrap();
         let hub2 = reopen(&hub);
         assert_eq!(hub2.read(|v| v.deliverable_messages("s").count()), 0);
@@ -814,6 +824,7 @@ mod tests {
     #[test]
     fn delivery_concurrent_consumers_claim_one_batch_and_safe_failure_can_retry() {
         let hub = fixture();
+        let _directory = hub.test_directory.clone();
         let gate = Arc::new(std::sync::Barrier::new(3));
         let workers = (0..2)
             .map(|_| {
@@ -848,6 +859,7 @@ mod tests {
     #[test]
     fn delivery_legacy_migration_blocks_messages_and_compaction_without_marking_handed() {
         let hub = fixture();
+        let _directory = hub.test_directory.clone();
         hub.append(Event::Compaction {
             session_id: "s".into(),
             step: alondra_core::event::CompactionStep::Requested,

@@ -5,7 +5,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
 
-struct Cleanup(PathBuf);
+struct Cleanup(crate::test_support::Directory);
 impl Drop for Cleanup {
     fn drop(&mut self) {
         std::fs::remove_dir_all(&self.0).unwrap();
@@ -24,10 +24,7 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Self {
-        let home = std::env::temp_dir().join(format!(
-            "alondra-mcp-domain-flow-{}",
-            crate::auth::random_hex(8)
-        ));
+        let home = crate::test_support::Directory::new();
         std::fs::create_dir(&home).unwrap();
         let runtime = DomainRuntime::open(&home).unwrap();
         let state = runtime.state().unwrap();
@@ -50,7 +47,7 @@ impl Fixture {
             task_binding: None,
             provider_agent_id: None,
         }).unwrap().expose_for_child_environment().to_owned();
-        Self { runtime, _cleanup: Cleanup(home.clone()), home, manager, agent, sequence: 0 }
+        Self { runtime, home: home.to_path_buf(), _cleanup: Cleanup(home), manager, agent, sequence: 0 }
     }
 
     fn envelope(&mut self, mut command: Value) -> CommandEnvelope {

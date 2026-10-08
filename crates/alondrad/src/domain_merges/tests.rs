@@ -5,7 +5,7 @@ use std::os::unix::fs::PermissionsExt;
 
 const HEAD: &str = "0123456789abcdef0123456789abcdef01234567";
 
-struct Home(std::path::PathBuf);
+struct Home(crate::test_support::Directory);
 impl Drop for Home {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
@@ -42,8 +42,8 @@ fn now() -> Merger {
 
 /// A node's Task with its PR #7 presented as the final result, which GitHub reports open with
 /// its checks passed.
-fn presented(tag: &str, auto_merge: bool) -> (Home, Arc<DomainRuntime>, FakeGithub) {
-    let home = Home(std::env::temp_dir().join(format!("alondra-merges-{tag}-{}", crate::auth::random_hex(8))));
+fn presented(_tag: &str, auto_merge: bool) -> (Home, Arc<DomainRuntime>, FakeGithub) {
+    let home = Home(crate::test_support::Directory::new());
     std::fs::create_dir(&home.0).unwrap();
     let domain = Arc::new(DomainRuntime::open(&home.0).unwrap());
     command(&domain, Actor::System, "agent", Command::RegisterAgent { agent_id: "a".into(), name: "A".into() });
@@ -335,7 +335,7 @@ async fn a_conflicting_pr_goes_back_to_its_node_to_resolve_conflicts_with_main()
 
 #[tokio::test]
 async fn branch_protection_github_refuses_to_show_counts_as_no_required_checks() {
-    let home = Home(std::env::temp_dir().join(format!("alondra-merges-403-{}", crate::auth::random_hex(8))));
+    let home = Home(crate::test_support::Directory::new());
     std::fs::create_dir(&home.0).unwrap();
     let (gh, _) = private_repo_gh(&home, "{}");
     let pr = PullRequest { id: "pr".into(), task_id: "t".into(), host: "github".into(), repository: "owner/repo".into(),
@@ -746,7 +746,7 @@ async fn the_merge_loop_survives_a_storage_failure() {
 
 #[tokio::test]
 async fn gh_merges_with_the_method_only_at_the_presented_head_and_reads_status_and_queue() {
-    let home = Home(std::env::temp_dir().join(format!("alondra-merges-gh-{}", crate::auth::random_hex(8))));
+    let home = Home(crate::test_support::Directory::new());
     std::fs::create_dir(&home.0).unwrap();
     let program = home.0.join("gh");
     let log = home.0.join("calls");

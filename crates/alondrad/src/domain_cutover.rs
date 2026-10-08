@@ -602,7 +602,8 @@ mod tests {
 
     #[test]
     fn marker_is_bounded_private_and_fail_closed() {
-        let home = std::env::temp_dir().join(format!(
+        let scratch_directory = crate::test_support::Directory::new();
+        let home = scratch_directory.parent().unwrap().join(format!(
             "alondra-domain-cutover-marker-{}",
             crate::auth::random_hex(8)
         ));
@@ -649,13 +650,9 @@ mod tests {
         drop(lock);
     }
 
-    fn legacy_home(name: &str) -> (std::path::PathBuf, std::path::PathBuf) {
-        let root = std::env::temp_dir().join(format!(
-            "alondra-cutover-{name}-{}",
-            crate::auth::random_hex(8)
-        ));
+    fn legacy_home(_name: &str) -> (crate::test_support::Directory, std::path::PathBuf) {
+        let root = crate::test_support::Directory::new();
         fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
-        let root = root.canonicalize().unwrap();
         let home = root.join("home");
         fs::DirBuilder::new().mode(0o700).create(&home).unwrap();
         let events = Connection::open(home.join("alondra.db")).unwrap();
@@ -877,7 +874,8 @@ mod tests {
 
     #[test]
     fn an_empty_or_tableless_legacy_store_does_not_block_startup() {
-        let root = std::env::temp_dir().join(format!("alondra-empty-legacy-{}", crate::auth::random_hex(8)));
+        let scratch_directory = crate::test_support::Directory::new();
+        let root = scratch_directory.parent().unwrap().join(format!("alondra-empty-legacy-{}", crate::auth::random_hex(8)));
         fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
         let root = root.canonicalize().unwrap();
         fs::write(root.join("alondra.db"), b"").unwrap();
@@ -892,7 +890,8 @@ mod tests {
 
     #[test]
     fn an_empty_store_with_a_journal_and_unreadable_bytes_still_block_startup_naming_the_file() {
-        let root = std::env::temp_dir().join(format!("alondra-journal-legacy-{}", crate::auth::random_hex(8)));
+        let scratch_directory = crate::test_support::Directory::new();
+        let root = scratch_directory.parent().unwrap().join(format!("alondra-journal-legacy-{}", crate::auth::random_hex(8)));
         fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
         fs::write(root.join("alondra.db"), b"").unwrap();
         fs::write(root.join("alondra.db-wal"), b"uncheckpointed frames").unwrap();

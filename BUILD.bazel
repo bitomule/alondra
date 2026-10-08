@@ -1,4 +1,4 @@
-exports_files(["Cargo.toml", "Cargo.lock"])
+exports_files(["Cargo.toml", "Cargo.lock", "clippy.toml"])
 
 exports_files(
     ["Makefile"],

@@ -117,13 +117,11 @@ fn submit(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::auth::random_hex;
 
-    struct Fixture(std::path::PathBuf);
+    struct Fixture(crate::test_support::Directory);
     impl Fixture {
         fn new() -> Self {
-            let home =
-                std::env::temp_dir().join(format!("alondra-agent-lifecycle-{}", random_hex(8)));
+            let home = crate::test_support::Directory::new();
             std::fs::create_dir(&home).unwrap();
             Self(home)
         }

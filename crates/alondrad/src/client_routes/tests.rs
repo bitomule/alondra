@@ -12,7 +12,7 @@ use std::collections::BTreeSet;
 use std::net::SocketAddr;
 
 pub(super) struct Fixture {
-    pub home: PathBuf,
+    pub home: crate::test_support::Directory,
     pub base: String,
     http: reqwest::Client,
     key: SigningKey,
@@ -40,7 +40,7 @@ pub(super) fn fixture_json(name: &str) -> Value {
 
 impl Fixture {
     pub(super) async fn start() -> Self {
-        let home = std::env::temp_dir().join(format!("alondra-client-{}", crate::auth::random_hex(8)));
+        let home = crate::test_support::Directory::new();
         std::fs::create_dir(&home).unwrap();
         drop(DomainRuntime::open(&home).unwrap());
         let auth = Auth::open(&home).unwrap();
@@ -457,6 +457,7 @@ async fn closing_a_background_session_runs_claude_rm_and_takes_it_out_of_the_fle
 
 #[tokio::test]
 async fn a_node_the_user_closed_leaves_fleet_stays_gone_after_a_restart_and_is_not_revived() {
+    let scratch_directory = crate::test_support::Directory::new();
     let fixture = Fixture::start().await;
     seed_work(&fixture);
     observe_sessions(&fixture);
@@ -473,7 +474,7 @@ async fn a_node_the_user_closed_leaves_fleet_stays_gone_after_a_restart_and_is_n
     let restarted = Live::persisted_in(&fixture.home);
     assert!(restarted.is_closed("agent-a"), "the daemon remembers the close after a restart");
     assert_eq!(restarted.closed_sessions(), ["agent-a"]);
-    assert!(!Live::persisted_in(&std::env::temp_dir().join("alondra-no-such-home")).is_closed("agent-a"));
+    assert!(!Live::persisted_in(&scratch_directory.parent().unwrap().join("alondra-no-such-home")).is_closed("agent-a"));
 }
 
 #[tokio::test]
@@ -771,7 +772,7 @@ async fn a_new_request_reaches_the_orchestrators_next_batch() {
     let root = fixture.home.join("stub");
     std::fs::create_dir_all(&root).unwrap();
     let (claude_home, executable) = crate::domain_orchestrator::stub_claude(&root, crate::domain_orchestrator::STUB_SUCCESS);
-    let executor = crate::domain_orchestrator::Executor { domain: fixture.domain.clone(), home: fixture.home.clone(), claude_home, executable };
+    let executor = crate::domain_orchestrator::Executor { domain: fixture.domain.clone(), home: fixture.home.to_path_buf(), claude_home, executable };
     let ownership = crate::orchestrator_process::Ownership::acquire(&fixture.home.join("runtime/orchestrator")).unwrap().unwrap();
     executor.tick(&ownership).await.unwrap();
     let prompt = std::fs::read_to_string(fixture.home.join("runtime/orchestrator/received-prompt")).unwrap();

@@ -1816,7 +1816,8 @@ mod tests {
     #[tokio::test]
     async fn the_limit_chosen_in_an_app_is_written_to_options_and_a_task_priority_changes_from_its_detail() {
         use std::fs;
-        let home = std::env::temp_dir().join(format!("alondra-pacing-action-{}", crate::auth::random_hex(8)));
+        let scratch_directory = crate::test_support::Directory::new();
+        let home = scratch_directory.parent().unwrap().join(format!("alondra-pacing-action-{}", crate::auth::random_hex(8)));
         fs::create_dir(&home).unwrap();
         struct TestHome(std::path::PathBuf);
         impl Drop for TestHome {
@@ -1867,9 +1868,9 @@ mod tests {
             fn drop(&mut self) { let _ = fs::remove_dir_all(&self.0); }
         }
 
-        let home = std::env::temp_dir().join(format!("alondra-archive-action-{}", crate::auth::random_hex(8)));
+        let home = crate::test_support::Directory::new();
         fs::create_dir(&home).unwrap();
-        let _home = TestHome(home.clone());
+        let _home = TestHome(home.to_path_buf());
         let domain = std::sync::Arc::new(crate::domain_runtime::DomainRuntime::open(&home).unwrap());
         let client = crate::client_routes::Client::open(domain.clone(), &home, Default::default());
         apply_seed_command(&domain, Actor::System, "register-agent", Command::RegisterAgent {
@@ -2207,13 +2208,13 @@ mod tests {
         assert_eq!(accept_title(&state, "result", Lang::Es), "Resultado aceptado.");
     }
 
-    struct ActionHome(std::path::PathBuf);
+    struct ActionHome(crate::test_support::Directory);
     impl Drop for ActionHome {
         fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); }
     }
 
     fn action_home() -> (ActionHome, std::sync::Arc<crate::domain_runtime::DomainRuntime>, std::sync::Arc<crate::client_routes::Client>) {
-        let home = std::env::temp_dir().join(format!("alondra-view-actions-{}", crate::auth::random_hex(8)));
+        let home = crate::test_support::Directory::new();
         std::fs::create_dir(&home).unwrap();
         let domain = std::sync::Arc::new(crate::domain_runtime::DomainRuntime::open(&home).unwrap());
         let client = crate::client_routes::Client::open(domain.clone(), &home, Default::default());
@@ -2516,7 +2517,7 @@ mod tests {
         second_request.command_id = pacing_request(&state, Verb::OrchStop, "orchestrator", "", "en").command_id;
         let (entered_tx, entered_rx) = std::sync::mpsc::channel();
         let (resume_tx, resume_rx) = std::sync::mpsc::channel();
-        let (thread_domain, thread_client, thread_home) = (domain.clone(), client.clone(), home.0.clone());
+        let (thread_domain, thread_client, thread_home) = (domain.clone(), client.clone(), home.0.to_path_buf());
         let thread = std::thread::spawn(move || {
             let calls = std::sync::atomic::AtomicUsize::new(0);
             let resume = std::sync::Mutex::new(resume_rx);

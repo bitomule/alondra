@@ -151,7 +151,8 @@ mod tests {
 
     #[test]
     fn the_plugins_are_found_through_the_registered_marketplace() {
-        let root = std::env::temp_dir().join(format!("alondra-plugins-{}", std::process::id()));
+        let scratch_directory = crate::test_support::Directory::new();
+        let root = scratch_directory.parent().unwrap().join(format!("alondra-plugins-{}", std::process::id()));
         let repo = root.join("repo");
         std::fs::create_dir_all(repo.join("plugin-orchestrator/.claude-plugin")).unwrap();
         std::fs::create_dir_all(repo.join("plugin/.claude-plugin")).unwrap();
@@ -180,8 +181,9 @@ mod tests {
 
     #[test]
     fn an_upgrade_updates_the_daemons_plugin_copy_in_place_so_running_sessions_keep_their_mod() {
+        let scratch_directory = crate::test_support::Directory::new();
         use std::os::unix::fs::MetadataExt;
-        let root = std::env::temp_dir().join(format!("alondra-plugin-copy-{}", crate::auth::random_hex(8)));
+        let root = scratch_directory.parent().unwrap().join(format!("alondra-plugin-copy-{}", crate::auth::random_hex(8)));
         let (old, new, home) = (root.join("Cellar/0.2.22/plugin"), root.join("Cellar/0.2.23/plugin"), root.join("home"));
         for (keg, mod_text) in [(&old, "old mod"), (&new, "new mod")] {
             std::fs::create_dir_all(keg.join(".claude-plugin")).unwrap();

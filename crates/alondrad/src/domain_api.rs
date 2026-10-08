@@ -1191,7 +1191,8 @@ mod tests {
 
     #[tokio::test]
     async fn committed_local_changes_accepts_only_views_queries() {
-        let home = std::env::temp_dir().join(format!(
+        let scratch_directory = crate::test_support::Directory::new();
+        let home = scratch_directory.parent().unwrap().join(format!(
             "alondra-changes-dispatch-{}",
             crate::auth::random_hex(8)
         ));
@@ -1242,6 +1243,7 @@ mod tests {
     #[test]
     fn encrypted_delivery_resolution_requires_authorized_exact_decision_and_replays() {
         let (home, hub) = fixture();
+        let _directory = hub.test_directory.clone();
         let mut store = hub.domain.store.lock().unwrap();
         let message = store.pending_messages().unwrap().into_iter()
             .find(|item| item.recipient_kind == "user").unwrap();
@@ -1277,6 +1279,8 @@ mod tests {
         use std::time::Duration;
 
         let (home, hub) = fixture();
+
+        let _directory = hub.test_directory.clone();
         let auth = crate::auth::Auth::open(&home).unwrap();
         let key = SigningKey::from_slice(&[77u8; 32]).unwrap();
         let code = auth.new_pairing_code();
@@ -1492,19 +1496,16 @@ mod tests {
         }
     }
     fn fixture() -> (std::path::PathBuf, Arc<Hub>) {
-        let home = std::env::temp_dir().join(format!(
-            "alondra-domain-api-{}",
-            crate::auth::random_hex(16)
-        ));
+        let home = crate::test_support::Directory::new();
         let config = alondra_core::config::Config::resolve(
-            home.clone(),
+            home.to_path_buf(),
             &Default::default(),
             |_| None,
             || Some("Fixture".into()),
         );
-        let hub = Arc::new(Hub::open(config).unwrap());
+        let hub = Arc::new(Hub::open(config).unwrap().with_test_directory(home));
         seeded(&hub);
-        (home, hub)
+        (hub.home.clone(), hub)
     }
     async fn server(hub: Arc<Hub>) -> (String, tokio::task::JoinHandle<()>, SigningKey, String) {
         let auth = Arc::new(crate::auth::Auth::open(&hub.home).unwrap());
@@ -1569,6 +1570,7 @@ mod tests {
     #[tokio::test]
     async fn local_user_write_waits_for_cutover_while_encrypted_receipts_and_capabilities_work() {
         let (home, hub) = fixture();
+        let _directory = hub.test_directory.clone();
         let (base, server, key, device_id) = server(hub.clone()).await;
         let client = reqwest::Client::new();
         let request = envelope(
@@ -1700,6 +1702,7 @@ mod tests {
     #[tokio::test]
     async fn a_producer_cannot_choose_user_authority_or_spoof_an_actor() {
         let (home, hub) = fixture();
+        let _directory = hub.test_directory.clone();
         let (base, server, _, _) = server(hub.clone()).await;
         let client = reqwest::Client::new();
         let token = hub
@@ -1781,6 +1784,7 @@ mod tests {
     #[tokio::test]
     async fn document_chunks_use_registered_domain_identity() {
         let (home, hub) = fixture();
+        let _directory = hub.test_directory.clone();
         let data = b"# Synthetic design\n";
         std::fs::write(home.join("files/design.md"), data).unwrap();
         let before_bad_document = hub.domain.state().unwrap();
@@ -1903,7 +1907,8 @@ mod domain_encrypted_tests {
 
     #[test]
     fn encrypted_user_command_replays_receipt_and_revocation_fences_write_without_hub() {
-        let home = std::env::temp_dir().join(format!("alondra-relay-{}", crate::auth::random_hex(8)));
+        let scratch_directory = crate::test_support::Directory::new();
+        let home = scratch_directory.parent().unwrap().join(format!("alondra-relay-{}", crate::auth::random_hex(8)));
         std::fs::create_dir_all(&home).unwrap();
         let domain = DomainRuntime::open(&home).unwrap();
         let epoch = domain.state().unwrap().data_epoch.clone();

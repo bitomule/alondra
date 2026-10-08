@@ -190,7 +190,7 @@ mod tests {
     use crate::node_push::testing::Node;
     use std::sync::Arc;
 
-    struct Fixture(std::path::PathBuf);
+    struct Fixture(crate::test_support::Directory);
     impl Drop for Fixture {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
@@ -202,7 +202,7 @@ mod tests {
     }
 
     fn world() -> (Fixture, Arc<DomainRuntime>) {
-        let home = std::env::temp_dir().join(format!("alondra-messages-{}", crate::auth::random_hex(8)));
+        let home = crate::test_support::Directory::new();
         std::fs::create_dir_all(&home).unwrap();
         let domain = Arc::new(DomainRuntime::open(&home).unwrap());
         let run = |actor: Actor, id: &str, command: Command| {

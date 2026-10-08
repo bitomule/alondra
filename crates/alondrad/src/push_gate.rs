@@ -97,7 +97,7 @@ mod tests {
     const HEAD: &str = "0123456789abcdef0123456789abcdef01234567";
 
     struct Fixture {
-        home: std::path::PathBuf,
+        home: crate::test_support::Directory,
         domain: Arc<DomainRuntime>,
         client: Arc<Client>,
         github: Arc<FakePrView>,
@@ -111,7 +111,7 @@ mod tests {
 
     impl Fixture {
         fn presented() -> Self {
-            let home = std::env::temp_dir().join(format!("alondra-push-gate-{}", crate::auth::random_hex(8)));
+            let home = crate::test_support::Directory::new();
             std::fs::create_dir(&home).unwrap();
             let domain = Arc::new(DomainRuntime::open(&home).unwrap());
             let client = Client::open(domain.clone(), &home, Default::default());

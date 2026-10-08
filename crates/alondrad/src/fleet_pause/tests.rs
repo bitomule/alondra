@@ -70,7 +70,7 @@ fn the_resume_message_says_when_and_what_was_cut() {
     assert!(text.ends_with("carry on with your task and run again what was cut."), "{text}");
 }
 
-struct Home(PathBuf);
+struct Home(crate::test_support::Directory);
 impl Drop for Home {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
@@ -117,7 +117,7 @@ struct Fleet {
 
 impl Fleet {
     fn new(tasks: &[(&str, TaskPriority)], limit: u32, started: Millis) -> Self {
-        let home = std::env::temp_dir().join(format!("alondra-pause-{}", crate::auth::random_hex(8)));
+        let home = crate::test_support::Directory::new();
         std::fs::create_dir_all(&home).unwrap();
         let domain = Arc::new(DomainRuntime::open(&home).unwrap());
         domain.live.gate.tune(Tuning { spacing: crate::fleet_gate::SPACING, limit: Some(limit) });

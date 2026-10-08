@@ -100,10 +100,10 @@ mod tests {
     use crate::domain_runtime::DomainRuntime;
     use alondra_core::domain::*;
 
-    struct Fixture(std::path::PathBuf);
+    struct Fixture(crate::test_support::Directory);
     impl Fixture {
         fn new() -> Self {
-            let home = std::env::temp_dir().join(format!("alondra-capabilities-{}", crate::auth::random_hex(8)));
+            let home = crate::test_support::Directory::new();
             std::fs::create_dir(&home).unwrap();
             Self(home)
         }

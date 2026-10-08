@@ -991,8 +991,9 @@ mod tests {
 
     #[test]
     fn legacy_default_profile_resolution_uses_actual_child_environment() {
+        let scratch_directory = crate::test_support::Directory::new();
         use std::os::unix::fs::PermissionsExt;
-        let root = std::env::temp_dir().join(format!("alondra-profile-resolution-{}", std::process::id()));
+        let root = scratch_directory.parent().unwrap().join(format!("alondra-profile-resolution-{}", std::process::id()));
         std::fs::create_dir_all(root.join("bin")).unwrap();
         let root = root.canonicalize().unwrap();
         let script = root.join("bin/claude");
@@ -1046,8 +1047,9 @@ printf '{"loggedIn":%s}' "$state"
 
     #[test]
     fn custom_profile_retry_keeps_auth_plugins_and_watcher_together() {
+        let scratch_directory = crate::test_support::Directory::new();
         use std::os::unix::fs::PermissionsExt;
-        let root = std::env::temp_dir().join(format!("alondra-profile-retry-{}", std::process::id()));
+        let root = scratch_directory.parent().unwrap().join(format!("alondra-profile-retry-{}", std::process::id()));
         std::fs::create_dir_all(root.join("bin")).unwrap();
         let root = root.canonicalize().unwrap();
         let mut paths = paths();
@@ -1084,7 +1086,8 @@ esac
 
     #[test]
     fn homebrew_formula_uses_stable_opt_paths_for_daemon_and_plugins() {
-        let root = std::env::temp_dir().join(format!("alondra-brew-package-test-{}", std::process::id()));
+        let scratch_directory = crate::test_support::Directory::new();
+        let root = scratch_directory.parent().unwrap().join(format!("alondra-brew-package-test-{}", std::process::id()));
         let keg = root.join("Cellar/alondra/0.1.0");
         let bin = keg.join("bin");
         let assets = keg.join("libexec/alondra");
@@ -1301,7 +1304,8 @@ esac
 
     #[test]
     fn the_repo_is_found_from_any_subdirectory() {
-        let root = std::env::temp_dir().join(format!("alondra-repo-{}", std::process::id()));
+        let scratch_directory = crate::test_support::Directory::new();
+        let root = scratch_directory.parent().unwrap().join(format!("alondra-repo-{}", std::process::id()));
         std::fs::create_dir_all(root.join(".claude-plugin")).unwrap();
         std::fs::create_dir_all(root.join("plugin")).unwrap();
         std::fs::create_dir_all(root.join("crates/x")).unwrap();
@@ -1383,31 +1387,27 @@ mod brew_upgrade_tests {
         "program = /opt/homebrew/opt/alondra/bin/alondrad\n pid = 123\n environment = {\n ALONDRA_HOME => /tmp/alondra-owned\n }".into()
     }
 
-    fn fixture_home() -> PathBuf {
+    fn fixture_home() -> crate::test_support::Directory {
         let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
         fixture_home_with_nonce(nonce)
     }
 
-    fn fixture_home_with_nonce(nonce: u128) -> PathBuf {
-        use std::os::unix::ffi::{OsStrExt, OsStringExt};
-        let template = std::env::temp_dir().join(format!("alondra-upgrade-stop-{nonce}-XXXXXX"));
-        let mut bytes = std::ffi::CString::new(template.as_os_str().as_bytes()).unwrap().into_bytes_with_nul();
-        let created = unsafe { libc::mkdtemp(bytes.as_mut_ptr().cast()) };
-        assert!(!created.is_null(), "{}", std::io::Error::last_os_error());
-        bytes.pop();
-        PathBuf::from(std::ffi::OsString::from_vec(bytes))
+    fn fixture_home_with_nonce(_nonce: u128) -> crate::test_support::Directory {
+        let home = crate::test_support::Directory::new();
+        std::fs::create_dir(&home).unwrap();
+        home
     }
 
     #[test]
     fn fixture_homes_do_not_collide_when_clock_repeats() {
-        struct Homes(Vec<PathBuf>);
+        struct Homes(Vec<crate::test_support::Directory>);
         impl Drop for Homes {
             fn drop(&mut self) { for path in &self.0 { let _ = std::fs::remove_dir_all(path); } }
         }
         let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
         let mut homes = Homes(vec![fixture_home_with_nonce(nonce)]);
         homes.0.push(fixture_home_with_nonce(nonce));
-        assert_ne!(homes.0[0], homes.0[1]);
+        assert_ne!(homes.0[0].to_path_buf(), homes.0[1].to_path_buf());
         assert!(homes.0.iter().all(|path| path.is_dir()));
     }
 

@@ -1,0 +1,5 @@
+disallowed-methods = [
+    { path = "std::env::temp_dir", reason = "Tests must retain crate::test_support::Directory; a PathBuf does not clean itself up." },
+    { path = "tempfile::TempDir::keep", reason = "Test scratch must be removed when its owner is dropped." },
+    { path = "tempfile::TempDir::into_path", reason = "Test scratch must be removed when its owner is dropped." },
+]

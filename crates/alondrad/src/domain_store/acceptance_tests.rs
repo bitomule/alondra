@@ -70,13 +70,10 @@ fn observation(operation: &str, parameters: &Value, state: &DomainState) -> Comm
     }
 }
 
-struct TemporaryStore(std::path::PathBuf);
+struct TemporaryStore(crate::test_support::Directory);
 impl TemporaryStore {
     fn new() -> Self {
-        let path = std::env::temp_dir().join(format!(
-            "alondra-acceptance-{}",
-            crate::auth::random_hex(16)
-        ));
+        let path = crate::test_support::Directory::new();
         std::fs::create_dir(&path).unwrap();
         Self(path)
     }

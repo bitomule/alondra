@@ -107,7 +107,8 @@ mod tests {
 
     #[test]
     fn a_homebrew_binary_is_recognised_through_its_links() {
-        let root = std::env::temp_dir().join(format!("alondra-brew-{}-{}", std::process::id(), crate::now_millis()));
+        let scratch_directory = crate::test_support::Directory::new();
+        let root = scratch_directory.parent().unwrap().join(format!("alondra-brew-{}-{}", std::process::id(), crate::now_millis()));
         let keg = root.join("Cellar/alondra/0.1.12/bin");
         std::fs::create_dir_all(&keg).unwrap();
         std::fs::write(keg.join("alondra"), "").unwrap();

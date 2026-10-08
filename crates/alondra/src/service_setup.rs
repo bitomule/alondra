@@ -437,8 +437,9 @@ mod tests {
 
     #[test]
     fn generated_public_keys_match_private_files_and_survive_reopen() {
+        let scratch_directory = crate::test_support::Directory::new();
         let home =
-            std::env::temp_dir().join(format!("alondra-service-keys-test-{}", std::process::id()));
+            scratch_directory.parent().unwrap().join(format!("alondra-service-keys-test-{}", std::process::id()));
         fs::create_dir_all(&home).unwrap();
         let (first, _) = load_or_create_keys(&home).unwrap();
         let (second, _) = load_or_create_keys(&home).unwrap();
@@ -458,7 +459,8 @@ mod tests {
 
     #[test]
     fn interrupted_staging_does_not_block_a_new_complete_identity() {
-        let home = std::env::temp_dir().join(format!(
+        let scratch_directory = crate::test_support::Directory::new();
+        let home = scratch_directory.parent().unwrap().join(format!(
             "alondra-service-staging-test-{}",
             std::process::id()
         ));
@@ -476,7 +478,8 @@ mod tests {
 
     #[test]
     fn existing_config_is_checked_before_enrollment() {
-        let home = std::env::temp_dir().join(format!(
+        let scratch_directory = crate::test_support::Directory::new();
+        let home = scratch_directory.parent().unwrap().join(format!(
             "alondra-service-config-test-{}",
             std::process::id()
         ));
@@ -496,7 +499,8 @@ mod tests {
 
     #[test]
     fn a_new_mac_is_ready_for_local_devices_without_an_account() {
-        let home = std::env::temp_dir().join(format!("alondra-service-local-{}", SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()));
+        let scratch_directory = crate::test_support::Directory::new();
+        let home = scratch_directory.parent().unwrap().join(format!("alondra-service-local-{}", SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()));
         fs::create_dir_all(&home).unwrap();
         assert!(prepare_local(&home).unwrap());
         assert!(!prepare_local(&home).unwrap());
@@ -509,7 +513,8 @@ mod tests {
 
     #[test]
     fn enrolling_a_local_mac_adds_the_relay_and_keeps_its_devices() {
-        let home = std::env::temp_dir().join(format!("alondra-service-upgrade-{}", SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()));
+        let scratch_directory = crate::test_support::Directory::new();
+        let home = scratch_directory.parent().unwrap().join(format!("alondra-service-upgrade-{}", SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()));
         fs::create_dir_all(&home).unwrap();
         prepare_local(&home).unwrap();
         let (identity, _) = load_or_create_keys(&home).unwrap();

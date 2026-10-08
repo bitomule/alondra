@@ -110,6 +110,7 @@ fn copy_private_file(source: &Path, target: &Path) -> Result<()> {
 struct Scratch(PathBuf);
 
 impl Scratch {
+    #[expect(clippy::disallowed_methods, reason = "Production Scratch owns and removes the directory in Drop.")]
     fn new() -> Result<Self> {
         let path = std::env::temp_dir().join(format!(
             "alondrad-preflight-{}-{}",
@@ -138,14 +139,11 @@ mod tests {
     use super::*;
     use std::collections::BTreeMap;
 
-    fn home(name: &str) -> (PathBuf, Config) {
-        let home = std::env::temp_dir().join(format!(
-            "alondra-preflight-{name}-{}",
-            crate::auth::random_hex(8)
-        ));
+    fn home(_name: &str) -> (crate::test_support::Directory, Config) {
+        let home = crate::test_support::Directory::new();
         std::fs::create_dir(&home).unwrap();
         let config = Config::resolve(
-            home.clone(),
+            home.to_path_buf(),
             &Default::default(),
             |_| None,
             || Some("Test".into()),
@@ -197,7 +195,7 @@ mod tests {
         std::fs::remove_dir_all(home).unwrap();
     }
 
-    fn committed_domain_home(name: &str) -> (PathBuf, Config) {
+    fn committed_domain_home(name: &str) -> (crate::test_support::Directory, Config) {
         let (home, config) = home(name);
         let path = home.join("domain-v2.db");
         let _store = crate::domain_store::DomainStore::open(&path).unwrap();

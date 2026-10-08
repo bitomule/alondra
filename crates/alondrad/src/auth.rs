@@ -289,15 +289,15 @@ mod tests {
     use p256::ecdsa::SigningKey;
     use p256::ecdsa::signature::Signer;
 
-    fn auth_with_device() -> (Auth, SigningKey, String) {
-        let dir = std::env::temp_dir().join(format!("alondra-auth-{}", random_hex(4)));
+    fn auth_with_device() -> (crate::test_support::Owned<Auth>, SigningKey, String) {
+        let dir = crate::test_support::Directory::new();
         std::fs::create_dir_all(&dir).unwrap();
         let auth = Auth::open(&dir).unwrap();
         let signing = SigningKey::from_slice(&[7u8; 32]).unwrap();
         let public = B64.encode(signing.verifying_key().to_sec1_bytes());
         let code = auth.new_pairing_code();
         let device = auth.pair(&code, "iPhone", &public).unwrap();
-        (auth, signing, device.id)
+        (crate::test_support::Owned::new(auth, dir), signing, device.id)
     }
 
     fn headers(device: &str, ts: i64, sig: &Signature) -> HeaderMap {
@@ -360,7 +360,8 @@ mod tests {
 
     #[test]
     fn pairing_code_is_single_use() {
-        let dir = std::env::temp_dir().join(format!("alondra-auth-{}", random_hex(4)));
+        let scratch_directory = crate::test_support::Directory::new();
+        let dir = scratch_directory.parent().unwrap().join(format!("alondra-auth-{}", random_hex(4)));
         std::fs::create_dir_all(&dir).unwrap();
         let auth = Auth::open(&dir).unwrap();
         let key = SigningKey::from_slice(&[9u8; 32]).unwrap();
@@ -372,7 +373,8 @@ mod tests {
 
     #[test]
     fn service_approval_is_idempotent_for_same_key_and_rejects_replacement() {
-        let dir = std::env::temp_dir().join(format!("alondra-service-approval-{}", random_hex(4)));
+        let scratch_directory = crate::test_support::Directory::new();
+        let dir = scratch_directory.parent().unwrap().join(format!("alondra-service-approval-{}", random_hex(4)));
         std::fs::create_dir_all(&dir).unwrap();
         let auth = Auth::open(&dir).unwrap();
         let first = SigningKey::from_slice(&[7u8; 32]).unwrap();
@@ -391,7 +393,8 @@ mod tests {
 
     #[test]
     fn local_service_approval_requires_mac_key_and_fresh_challenge() {
-        let dir = std::env::temp_dir().join(format!("alondra-service-proof-{}", random_hex(4)));
+        let scratch_directory = crate::test_support::Directory::new();
+        let dir = scratch_directory.parent().unwrap().join(format!("alondra-service-proof-{}", random_hex(4)));
         std::fs::create_dir_all(dir.join("service-keys")).unwrap();
         let mac = SigningKey::from_slice(&[7u8; 32]).unwrap();
         let public = URL_SAFE_NO_PAD.encode(mac.verifying_key().to_sec1_bytes());

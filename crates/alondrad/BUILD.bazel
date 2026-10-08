@@ -3,7 +3,7 @@ load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_test")
 
 rust_binary(
     name = "alondrad",
-    srcs = glob(["src/**/*.rs"]),
+    srcs = glob(["src/**/*.rs"]) + ["//crates:test_support.rs"],
     compile_data = [
         "Info.plist",
         "src/domain_store/schema.sql",
@@ -34,6 +34,7 @@ rust_test(
     crate = ":alondrad",
     # Bazel test-setup resolves a relative HOME to this test's TEST_TMPDIR.
     env = {"HOME": "."},
+    deps = all_crate_deps(normal_dev = True),
     data = ["//crates/alondra:alondra", "//fixtures/client-v2", "//fixtures/views:all"],
     edition = "2024",
     rustc_env = {"CARGO_BIN_EXE_alondra": "$(rootpath //crates/alondra:alondra)"},
@@ -51,7 +52,8 @@ rust_test(
 
 rust_test(
     name = "info_commands_test",
-    srcs = ["tests/info_commands.rs"],
+    srcs = ["tests/info_commands.rs", "//crates:test_support.rs"],
+    crate_root = "tests/info_commands.rs",
     data = [":alondrad"],
     edition = "2024",
     rustc_env = {"CARGO_BIN_EXE_alondrad": "$(rootpath :alondrad)"},

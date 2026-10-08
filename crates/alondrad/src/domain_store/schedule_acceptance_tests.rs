@@ -8,15 +8,12 @@ use std::os::unix::fs::DirBuilderExt;
 const CATALOG: &str = include_str!("../../../../fixtures/domain-v2/acceptance.json");
 
 struct Fixture {
-    directory: std::path::PathBuf,
+    directory: crate::test_support::Directory,
     path: std::path::PathBuf,
 }
 impl Fixture {
     fn new() -> Self {
-        let directory = std::env::temp_dir().join(format!(
-            "alondra-schedule-cs-{}",
-            crate::auth::random_hex(12)
-        ));
+        let directory = crate::test_support::Directory::new();
         std::fs::DirBuilder::new()
             .mode(0o700)
             .create(&directory)

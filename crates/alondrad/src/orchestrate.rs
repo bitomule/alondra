@@ -895,8 +895,8 @@ mod tests {
     }
 
     /// A fleet with an orchestrator, a live node `app/old`, a closed one, and request r-1.
-    fn fleet(tag: &str) -> (Arc<Hub>, std::path::PathBuf) {
-        let home = std::env::temp_dir().join(format!("alondra-orchestrate-{tag}-{}-{}", std::process::id(), now_millis()));
+    fn fleet(_tag: &str) -> (Arc<Hub>, crate::test_support::Directory) {
+        let home = crate::test_support::Directory::new();
         let hub = hub_at(&home);
         hub.append(seen("orch", "orchestrator")).unwrap();
         hub.append(Event::MarkedOrchestrator { session_id: "orch".into() }).unwrap();

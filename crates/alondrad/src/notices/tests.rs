@@ -15,7 +15,7 @@ use std::time::Duration;
 const FIXTURE: &str = "fixtures/views/local-notices.json";
 
 struct Fixture {
-    home: PathBuf,
+    home: crate::test_support::Directory,
     domain: Arc<DomainRuntime>,
 }
 
@@ -27,7 +27,7 @@ impl Drop for Fixture {
 
 impl Fixture {
     fn new() -> Self {
-        let home = std::env::temp_dir().join(format!("alondra-notices-{}", crate::auth::random_hex(8)));
+        let home = crate::test_support::Directory::new();
         std::fs::create_dir_all(&home).unwrap();
         let domain = Arc::new(DomainRuntime::open(&home).unwrap());
         let fixture = Self { home, domain };

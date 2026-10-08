@@ -344,7 +344,8 @@ mod tests {
     /// Whatever the sweeps, the orchestrator hears once about a request its turn left defining.
     #[test]
     fn the_sweep_nudges_the_orchestrator_once_about_a_request_left_defining() {
-        let home = std::env::temp_dir().join(format!("alondra-sentinel-defining-{}-{}", std::process::id(), now_millis()));
+        let scratch_directory = crate::test_support::Directory::new();
+        let home = scratch_directory.parent().unwrap().join(format!("alondra-sentinel-defining-{}-{}", std::process::id(), now_millis()));
         let config = alondra_core::config::Config::resolve(home, &Default::default(), |_| None, || Some("Ana".into()));
         let hub = Hub::open(config).unwrap();
         let hook = |event: &str| Event::Hook(HookEvent { session_id: "o".into(), event: event.into(), prompt: Some("go".into()), ..Default::default() });
@@ -684,7 +685,8 @@ mod tests {
     /// do with it; the orchestrator is never touched.
     #[tokio::test]
     async fn a_node_idle_for_the_set_time_is_closed_only_with_its_work_merged_and_otherwise_the_user_is_asked() {
-        let home = std::env::temp_dir().join(format!("alondra-sentinel-idle-{}-{}", std::process::id(), now_millis()));
+        let scratch_directory = crate::test_support::Directory::new();
+        let home = scratch_directory.parent().unwrap().join(format!("alondra-sentinel-idle-{}-{}", std::process::id(), now_millis()));
         let config = alondra_core::config::Config::resolve(home, &alondra_core::config::FileConfig::default(), |_| None, || Some("Ana".into()));
         assert_eq!(config.close_free_nodes_after, Some(Duration::from_secs(30 * 60)), "30 minutes unless set");
         let hub = Hub::open(config).unwrap();
@@ -738,9 +740,10 @@ mod tests {
     /// node once, naming the beta.
     #[test]
     fn a_sweep_follows_the_merge_a_dependent_task_waits_for() {
+        let scratch_directory = crate::test_support::Directory::new();
         use alondra_core::tasks::{NewTask, Start, TaskOptions, TaskState};
         use alondra_core::{MessageAbout, Report, ReportKind};
-        let home = std::env::temp_dir().join(format!("alondra-sentinel-merges-{}-{}", std::process::id(), now_millis()));
+        let home = scratch_directory.parent().unwrap().join(format!("alondra-sentinel-merges-{}-{}", std::process::id(), now_millis()));
         let config = alondra_core::config::Config::resolve(home, &Default::default(), |_| None, || Some("David".into()));
         let hub = Hub::open(config).unwrap();
         let u = "a7e1d69b";

@@ -478,11 +478,8 @@ fn error_lang(lang: Lang, code: &str, message: &'static str) -> Response {
 mod tests {
     use super::*;
 
-    fn fixture() -> (std::path::PathBuf, Arc<DomainDaemon>) {
-        let home = std::env::temp_dir().join(format!(
-            "alondra-views-route-{}",
-            crate::auth::random_hex(8)
-        ));
+    fn fixture() -> (crate::test_support::Directory, Arc<DomainDaemon>) {
+        let home = crate::test_support::Directory::new();
         std::fs::create_dir_all(&home).unwrap();
         drop(crate::domain_runtime::DomainRuntime::open(&home).unwrap());
         let state = DomainDaemon::open(&home).unwrap();

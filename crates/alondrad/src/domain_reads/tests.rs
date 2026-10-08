@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 
 struct Fixture {
-    root: PathBuf,
+    root: crate::test_support::Directory,
     runtime: DomainRuntime,
 }
 impl Drop for Fixture {
@@ -60,7 +60,7 @@ fn run(runtime: &DomainRuntime, actor: &Actor, id: &str, command: Command) {
 /// A live-sized domain v2 store: one Request, Agent and Task per index, then
 /// enough report-sized bodies to exercise resource pagination.
 fn live_shaped() -> Fixture {
-    let root = std::env::temp_dir().join(format!("alondra-reads-{}", crate::auth::random_hex(8)));
+    let root = crate::test_support::Directory::new();
     std::fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
     let runtime = DomainRuntime::open(&root).unwrap();
     let user = Actor::User { user_id: "device:phone".into() };

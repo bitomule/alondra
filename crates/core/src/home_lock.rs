@@ -75,7 +75,8 @@ mod tests {
     use super::*;
     #[test]
     fn exclusive_recovery_blocks_daemon_and_shared_readers_block_recovery() {
-        let home = std::env::temp_dir().join(format!("alondra-home-lock-{}", std::process::id()));
+        let scratch_directory = crate::test_support::Directory::new();
+        let home = scratch_directory.parent().unwrap().join(format!("alondra-home-lock-{}", std::process::id()));
         fs::create_dir_all(&home).unwrap();
         let a = HomeLock::shared(&home).unwrap();
         let b = HomeLock::shared(&home).unwrap();
@@ -121,7 +122,8 @@ mod tests {
 
     #[test]
     fn dropped_lock_is_free_while_another_thread_is_forking() {
-        let home = std::env::temp_dir().join(format!("alondra-home-lock-fork-{}", std::process::id()));
+        let scratch_directory = crate::test_support::Directory::new();
+        let home = scratch_directory.parent().unwrap().join(format!("alondra-home-lock-fork-{}", std::process::id()));
         let recovery = HomeLock::recovery(&home).unwrap();
         let (child, release) = paused_fork();
         drop(recovery);

@@ -47,6 +47,7 @@ dependencies = [
  "serde_json",
  "sha2 0.11.0",
  "subtle",
+ "tempfile",
  "toml",
  "ureq",
  "url",
@@ -60,6 +61,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "tempfile",
  "toml",
 ]
 
@@ -74,6 +76,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "tempfile",
 ]
 
 [[package]]
@@ -95,6 +98,7 @@ dependencies = [
  "sqlx-core",
  "sqlx-postgres",
  "subtle",
+ "tempfile",
  "tokio",
  "unicode-normalization",
  "unicode-properties",
@@ -124,6 +128,7 @@ dependencies = [
  "serde_json",
  "sha2 0.11.0",
  "sysinfo",
+ "tempfile",
  "tokio",
  "toml",
  "url",

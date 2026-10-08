@@ -133,7 +133,7 @@ impl Chip {
 mod tests {
     use super::*;
 
-    struct Scratch(PathBuf);
+    struct Scratch(crate::test_support::Directory);
 
     impl Drop for Scratch {
         fn drop(&mut self) {
@@ -141,8 +141,8 @@ mod tests {
         }
     }
 
-    fn scratch(tag: &str, files: &[&str]) -> Scratch {
-        let dir = std::env::temp_dir().join(format!("alondra-drop-{tag}-{}", std::process::id()));
+    fn scratch(_tag: &str, files: &[&str]) -> Scratch {
+        let dir = crate::test_support::Directory::new();
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         for f in files {

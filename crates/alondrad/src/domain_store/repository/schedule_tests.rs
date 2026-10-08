@@ -2,11 +2,8 @@ use super::*;
 use std::collections::{BTreeMap, BTreeSet};
 use std::os::unix::fs::DirBuilderExt;
 
-fn temporary_database(label: &str) -> (std::path::PathBuf, std::path::PathBuf) {
-    let directory = std::env::temp_dir().join(format!(
-        "alondra-schedule-{label}-{}",
-        crate::auth::random_hex(16)
-    ));
+fn temporary_database(_label: &str) -> (crate::test_support::Directory, std::path::PathBuf) {
+    let directory = crate::test_support::Directory::new();
     std::fs::DirBuilder::new()
         .mode(0o700)
         .create(&directory)

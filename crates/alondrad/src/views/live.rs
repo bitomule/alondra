@@ -629,7 +629,8 @@ mod cache_tests {
 
     #[tokio::test]
     async fn activity_and_search_reads_are_reused_until_their_sources_change() {
-        let home = std::env::temp_dir().join(format!("alondra-live-cache-{}", crate::auth::random_hex(8)));
+        let scratch_directory = crate::test_support::Directory::new();
+        let home = scratch_directory.parent().unwrap().join(format!("alondra-live-cache-{}", crate::auth::random_hex(8)));
         fs::create_dir(&home).unwrap();
         let domain = Arc::new(crate::domain_runtime::DomainRuntime::open(&home).unwrap());
         let client = crate::client_routes::Client::open(domain.clone(), &home, Arc::new(std::sync::Mutex::new(None)));
