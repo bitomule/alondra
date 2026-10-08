@@ -250,9 +250,11 @@ fn has(reason: &str, signs: &[&str]) -> bool {
     signs.iter().any(|sign| reason.contains(sign))
 }
 
-/// GitHub or the network did not answer.
+/// GitHub or the network did not answer, or GitHub failed on its side: "GraphQL: Something went
+/// wrong while executing your query. This may be the result of a timeout, or it could be a GitHub bug."
 fn transient(reason: &str) -> bool {
-    has(reason, &["error connecting", "timed out", "did not finish", "could not resolve", "connection", "http 5", "502", "503", "504", "rate limit"])
+    has(reason, &["error connecting", "timed out", "timeout", "did not finish", "could not resolve", "connection", "http 5", "502", "503",
+        "504", "rate limit", "something went wrong", "internal server error", "bad gateway", "service unavailable"])
 }
 
 /// A final delivery whose PR GitHub confirms is still a draft cannot be merged, so it is refused;
@@ -286,6 +288,8 @@ fn already_merged(reason: &str) -> bool {
 
 enum Step {
     Wait,
+    /// A merge GitHub failed transiently, tried again once its backoff is over rather than after the poll.
+    Retry,
     Settled,
 }
 
@@ -296,15 +300,30 @@ struct Trouble {
 }
 
 const NON_TRANSIENT_FAILURES_BEFORE_CARD: u32 = 3;
-const TRANSIENT_MERGE_FAILURES_BEFORE_HANDING_BACK: u32 = 3;
+/// Tries of `gh pr merge` that fail transiently before the delivery goes back to its node.
+const TRANSIENT_MERGE_TRIES: u32 = 6;
+const FIRST_MERGE_RETRY: Duration = Duration::from_secs(30);
+
+/// The wait before retrying a merge that failed transiently `failures` times: 30 s doubling,
+/// about 15 minutes across all tries.
+fn merge_retry_wait(first: Duration, failures: u32) -> Duration {
+    first * 2u32.pow(failures.saturating_sub(1))
+}
+
+struct Retry {
+    failures: u32,
+    at: Instant,
+}
 
 pub(crate) struct Merger {
     /// At most one GitHub read per PR this often while it waits.
     pub poll: Duration,
     /// How long GitHub may keep failing before the user is told.
     pub give_up: Duration,
+    /// The wait before the first retry of a merge GitHub failed transiently; doubled after each.
+    pub first_retry: Duration,
     waited: BTreeMap<PrId, Instant>,
-    transient: BTreeMap<PrId, u32>,
+    transient: BTreeMap<PrId, Retry>,
     trouble: BTreeMap<PrId, Trouble>,
     /// `gh pr merge` refused for lack of access while reads work: cleared only by a merge.
     merge_trouble: BTreeMap<PrId, Trouble>,
@@ -322,7 +341,7 @@ impl Default for Merger {
 
 impl Merger {
     pub(crate) fn with(poll: Duration, give_up: Duration) -> Self {
-        Self { poll, give_up, waited: BTreeMap::new(), transient: BTreeMap::new(),
+        Self { poll, give_up, first_retry: FIRST_MERGE_RETRY, waited: BTreeMap::new(), transient: BTreeMap::new(),
             trouble: BTreeMap::new(), merge_trouble: BTreeMap::new(), queued: BTreeSet::new(), action: BTreeMap::new(),
             pressed: BTreeMap::new() }
     }
@@ -342,7 +361,9 @@ impl Merger {
             {
                 self.waited.remove(&item.pr.id);
             }
-            if self.waited.get(&item.pr.id).is_some_and(|at| now.duration_since(*at) < self.poll) {
+            if self.transient.get(&item.pr.id).is_some_and(|retry| now < retry.at)
+                || self.waited.get(&item.pr.id).is_some_and(|at| now.duration_since(*at) < self.poll)
+            {
                 waiting = true;
                 continue;
             }
@@ -351,12 +372,22 @@ impl Merger {
                     waiting = true;
                     self.waited.insert(item.pr.id.clone(), now);
                 }
+                Step::Retry => {
+                    waiting = true;
+                    self.waited.remove(&item.pr.id);
+                }
                 Step::Settled => {
                     self.waited.remove(&item.pr.id);
                 }
             }
         }
         Ok(waiting)
+    }
+
+    /// How long the loop sleeps while something waits: the poll, or less when a merge retry is due sooner.
+    pub(crate) fn pause(&self) -> Duration {
+        let now = Instant::now();
+        self.transient.values().filter(|retry| retry.at > now).map(|retry| retry.at - now).fold(self.poll, Duration::min)
     }
 
     async fn step(&mut self, domain: &DomainRuntime, github: &impl PrMerger, item: &Due) -> Result<Step> {
@@ -480,13 +511,19 @@ impl Merger {
                 self.merge_troubled(domain, pr, &reason);
                 Ok(Step::Wait)
             }
-            Err(reason) => {
-                let count = self.transient.entry(pr.id.clone()).or_default();
-                *count += 1;
-                if transient(&reason) && *count < TRANSIENT_MERGE_FAILURES_BEFORE_HANDING_BACK {
-                    log!("merging {} failed, trying again: {reason}", pr.id);
-                    return Ok(Step::Wait);
+            Err(reason) if transient(&reason) => {
+                let failures = self.transient.get(&pr.id).map_or(0, |retry| retry.failures) + 1;
+                if failures < TRANSIENT_MERGE_TRIES {
+                    let wait = merge_retry_wait(self.first_retry, failures);
+                    log!("merging {} failed, trying again in {} s: {reason}", pr.id, wait.as_secs());
+                    self.transient.insert(pr.id.clone(), Retry { failures, at: Instant::now() + wait });
+                    return Ok(Step::Retry);
                 }
+                self.transient.remove(&pr.id);
+                self.failed(domain, item, &format!("GitHub kept failing after {failures} tries: {reason}"))?;
+                Ok(Step::Settled)
+            }
+            Err(reason) => {
                 self.transient.remove(&pr.id);
                 self.failed(domain, item, &reason)?;
                 Ok(Step::Settled)
@@ -657,7 +694,7 @@ pub(crate) async fn run(domain: Arc<DomainRuntime>, github: Arc<impl PrMerger>) 
         let pause = match merger.merge_due(&domain, &*github).await {
             Ok(waiting) => {
                 backoff = FIRST_BACKOFF;
-                waiting.then_some(merger.poll)
+                waiting.then(|| merger.pause())
             }
             Err(error) => {
                 log!("merging pull requests failed, trying again in {} s: {error:#}", backoff.as_secs());

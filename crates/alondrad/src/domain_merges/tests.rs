@@ -35,7 +35,9 @@ fn targets() -> Vec<DeliveryTarget> {
 }
 
 fn now() -> Merger {
-    Merger::with(Duration::ZERO, Duration::from_secs(3600))
+    let mut merger = Merger::with(Duration::ZERO, Duration::from_secs(3600));
+    merger.first_retry = Duration::ZERO;
+    merger
 }
 
 /// A node's Task with its PR #7 presented as the final result, which GitHub reports open with
@@ -471,17 +473,113 @@ async fn a_pr_github_says_is_already_merged_is_recorded_not_handed_back() {
     assert_eq!(task(&domain), TaskState::Done);
 }
 
+const SOMETHING_WENT_WRONG: &str =
+    "GraphQL: Something went wrong while executing your query. This may be the result of a timeout, or it could be a GitHub bug.";
+
+/// A `gh` that reports PR #7 open at `HEAD` with its checks passed, and whose `gh pr merge` fails
+/// with `error` its first `failures` times, then merges it. Returns it and the file each merge
+/// try is logged to.
+fn scripted_gh(home: &Home, failures: u32, error: &str) -> (GhCli, std::path::PathBuf) {
+    let program = home.0.join("gh");
+    let tries = home.0.join("merge-tries");
+    let merged = home.0.join("merged");
+    std::fs::write(&program, format!(r#"#!/bin/sh
+case "$*" in
+  *"pr merge"*)
+    echo try >> '{tries}'
+    if [ "$(wc -l < '{tries}')" -le {failures} ]; then echo '{error}' >&2; exit 1; fi
+    touch '{merged}';;
+  *isDraft*) echo false;;
+  *statusCheckRollup*)
+    state=OPEN; [ -e '{merged}' ] && state=MERGED
+    printf '{{"state":"%s","headRefOid":"{HEAD}","baseRefName":"main","mergeStateStatus":"CLEAN","statusCheckRollup":[{{"name":"build","status":"COMPLETED","conclusion":"SUCCESS"}}]}}' "$state";;
+esac
+"#, tries = tries.display(), merged = merged.display())).unwrap();
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+    (GhCli::at(program), tries)
+}
+
+fn tries(log: &std::path::Path) -> usize {
+    std::fs::read_to_string(log).map_or(0, |log| log.lines().count())
+}
+
 #[tokio::test]
-async fn github_not_answering_is_retried_before_the_task_goes_back() {
-    let (_home, domain, github) = presented("transient", false);
-    github.merges.lock().unwrap().insert(7, Err("error connecting to api.github.com".into()));
+async fn a_merge_github_fails_on_its_side_is_retried_and_merged_without_the_node() {
+    let (home, domain, _) = presented("transient-then-merged", false);
+    let (gh, log) = scripted_gh(&home, 2, SOMETHING_WENT_WRONG);
     accept(&domain);
     let mut merger = now();
-    assert!(merger.merge_due(&domain, &github).await.unwrap());
-    assert!(merger.merge_due(&domain, &github).await.unwrap());
+    for _ in 0..3 {
+        merger.merge_due(&domain, &gh).await.unwrap();
+    }
+    assert_eq!(tries(&log), 3);
+    assert!(feedback(&domain).is_empty(), "{:?}", feedback(&domain));
+    assert_eq!(domain.state().unwrap().pull_requests[&PrId::from("pr")].state, PrState::Merged);
+    end_node(&domain);
+    assert_eq!(task(&domain), TaskState::Done);
+}
+
+#[tokio::test]
+async fn a_merge_github_keeps_failing_on_its_side_goes_back_after_the_last_try() {
+    let (home, domain, _) = presented("transient-forever", false);
+    let (gh, log) = scripted_gh(&home, u32::MAX, SOMETHING_WENT_WRONG);
+    accept(&domain);
+    let mut merger = now();
+    for _ in 1..TRANSIENT_MERGE_TRIES {
+        assert!(merger.merge_due(&domain, &gh).await.unwrap());
+    }
     assert_eq!(task(&domain), TaskState::Closing, "still Alondra's to merge");
-    merger.merge_due(&domain, &github).await.unwrap();
+    assert!(feedback(&domain).is_empty());
+    merger.merge_due(&domain, &gh).await.unwrap();
+    assert_eq!(tries(&log), TRANSIENT_MERGE_TRIES as usize);
     assert_eq!(task(&domain), TaskState::Running);
+    let feedback = feedback(&domain);
+    assert!(feedback[0].contains("GitHub kept failing after 6 tries") && feedback[0].contains("Something went wrong"), "{feedback:?}");
+    merger.merge_due(&domain, &gh).await.unwrap();
+    assert_eq!(tries(&log), TRANSIENT_MERGE_TRIES as usize, "a handed back delivery is not retried");
+}
+
+#[tokio::test]
+async fn a_merge_github_refuses_goes_back_at_once_with_its_reason() {
+    let (home, domain, _) = presented("refused-at-once", false);
+    let (gh, log) = scripted_gh(&home, u32::MAX, "Pull request owner/repo#7 is not mergeable: the merge commit cannot be cleanly created.");
+    accept(&domain);
+    now().merge_due(&domain, &gh).await.unwrap();
+    assert_eq!(tries(&log), 1);
+    assert_eq!(task(&domain), TaskState::Running);
+    assert!(feedback(&domain)[0].contains("the merge commit cannot be cleanly created"), "{:?}", feedback(&domain));
+}
+
+#[tokio::test]
+async fn a_transient_merge_failure_waits_its_backoff_not_the_poll() {
+    let (_home, domain, github) = presented("backoff", false);
+    github.merges.lock().unwrap().insert(7, Err("HTTP 502: Bad Gateway (https://api.github.com/graphql)".into()));
+    accept(&domain);
+    let mut merger = Merger::with(Duration::from_secs(3600), Duration::from_secs(3600));
+    merger.merge_due(&domain, &github).await.unwrap();
+    assert!(merger.pause() <= FIRST_MERGE_RETRY && merger.pause() > FIRST_MERGE_RETRY - Duration::from_secs(5), "{:?}", merger.pause());
+    merger.merge_due(&domain, &github).await.unwrap();
+    assert_eq!(*github.calls.lock().unwrap(), ["merge 7"], "not tried again before its backoff");
+}
+
+#[test]
+fn transient_merge_retries_double_from_thirty_seconds() {
+    let waits: Vec<u64> = (1..TRANSIENT_MERGE_TRIES).map(|failures| merge_retry_wait(FIRST_MERGE_RETRY, failures).as_secs()).collect();
+    assert_eq!(waits, [30, 60, 120, 240, 480]);
+}
+
+#[test]
+fn github_failing_on_its_side_is_transient_and_a_real_refusal_is_not() {
+    for reason in [SOMETHING_WENT_WRONG, "HTTP 502: Bad Gateway", "HTTP 503: Service Unavailable", "gh pr did not finish within 120 s",
+        "error connecting to api.github.com"]
+    {
+        assert!(transient(reason), "{reason}");
+    }
+    for reason in ["Pull request owner/repo#7 is not mergeable: the merge commit cannot be cleanly created.",
+        "Pull request owner/repo#7 is still a draft", "GraphQL: Base branch was modified. Review and try the merge again."]
+    {
+        assert!(!transient(reason), "{reason}");
+    }
 }
 
 #[tokio::test]
