@@ -83,6 +83,68 @@ class DaemonFixtureTests(unittest.TestCase):
             {'reason':'synthetic: bootstrap failed integrity audit'})
 
 
+class UpgradeMachine:
+    def __init__(self, readiness_delay=0.2):
+        self.now = 0.0
+        self.readiness_delay = readiness_delay
+        self.processes = []
+        self.waits = []
+
+    def popen(self, argv, **kwargs):
+        import ast
+        from types import SimpleNamespace
+        launch = pathlib.Path(argv[-1])
+        assignment = next(node for node in ast.parse(launch.read_text()).body
+                          if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Tuple))
+        version, mode = ast.literal_eval(assignment.value)
+        process = SimpleNamespace(launch=launch, version=version, mode=mode,
+                                  inode=launch.stat().st_ino, port=int(kwargs['env']['ALONDRA_PORT']),
+                                  ready=self.now + self.readiness_delay, returncode=None)
+        process.poll = lambda: process.returncode
+        def wait(timeout=None):
+            if process.returncode is not None:
+                return process.returncode
+            if mode == 'relaunch' and launch.stat().st_ino != process.inode:
+                process.returncode = u.RELAUNCH
+                return process.returncode
+            raise subprocess.TimeoutExpired(str(launch), timeout)
+        def signal(_signal):
+            process.returncode = -15
+        process.wait = wait
+        process.send_signal = signal
+        process.kill = lambda: signal(9)
+        self.processes.append(process)
+        return process
+
+    def urlopen(self, url, **kwargs):
+        import io
+        port = int(url.split(':')[2].split('/')[0])
+        process = next(process for process in reversed(self.processes)
+                       if process.port == port and process.returncode is None)
+        if self.now < process.ready:
+            raise OSError('synthetic startup is not ready')
+        return io.BytesIO(json.dumps({'version': process.version}).encode())
+
+    def sleep(self, duration):
+        self.now += duration
+
+    def boundaries(self):
+        from contextlib import ExitStack
+        stack = ExitStack()
+        original = u.Daemon.wait_for_version
+        def observed(daemon, version, within):
+            self.waits.append((version, within))
+            return original(daemon, version, within)
+        for boundary in (patch.object(u.subprocess, 'Popen', side_effect=self.popen),
+                         patch.object(u.urllib.request, 'urlopen', side_effect=self.urlopen),
+                         patch.object(u, 'free_port', return_value=50000),
+                         patch.object(u.time, 'monotonic', side_effect=lambda: self.now),
+                         patch.object(u.time, 'sleep', side_effect=self.sleep),
+                         patch.object(u.Daemon, 'wait_for_version', observed)):
+            stack.enter_context(boundary)
+        return stack
+
+
 class Fixture(unittest.TestCase):
     def setUp(self):
         self.root = pathlib.Path(tempfile.mkdtemp(prefix='ur-test-', dir='/private/tmp')).resolve()
@@ -251,11 +313,26 @@ class UpgradeTests(Fixture):
     def test_the_previous_daemon_restarts_into_the_new_one_through_the_opt_link(self):
         old, new = self.old_and_new('relaunch')
         changed = []
-        with patch.object(u, 'STAY_UP', 1):
+        machine = UpgradeMachine()
+        with machine.boundaries(), patch.object(u, 'STAY_UP', 1):
             timings = u.upgrade(self.rehearsal, 'case', self.home, old, new, changed.append)
         self.assertEqual(changed, [self.home])
         self.assertLess(timings['answered_ms'], u.HEALTH_WITHIN * 1000)
         self.assertEqual((self.work / 'case/opt/alondra').readlink(), self.work / 'case/Cellar/alondra/1.0.1')
+        self.assertEqual(machine.waits, [('1.0.0', u.SERVE_WITHIN), ('1.0.1', 1.0)])
+        self.assertEqual([process.version for process in machine.processes], ['1.0.0', '1.0.1'])
+        self.assertEqual(machine.processes[0].launch, machine.processes[1].launch)
+        self.assertEqual(machine.processes[0].port, machine.processes[1].port)
+        self.assertEqual(machine.processes[0].returncode, 75)
+        self.assertTrue(all(process.returncode is not None for process in machine.processes))
+
+    def test_the_new_daemon_must_answer_within_one_second_under_a_controlled_clock(self):
+        old, new = self.old_and_new('relaunch')
+        machine = UpgradeMachine(readiness_delay=1.5)
+        with machine.boundaries(), self.assertRaisesRegex(u.Failed, 'did not answer as 1.0.1 within 1.0 s'):
+            u.upgrade(self.rehearsal, 'case', self.home, old, new)
+        self.assertEqual(machine.waits[-1], ('1.0.1', 1.0))
+        self.assertTrue(all(process.returncode is not None for process in machine.processes))
 
     def test_a_rejected_upgrade_fails_with_the_daemons_reason(self):
         old, new = self.old_and_new('reject')
