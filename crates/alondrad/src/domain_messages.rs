@@ -80,6 +80,9 @@ pub(crate) async fn deliver(domain: &DomainRuntime, home: &Path, user: &Actor, n
         return Err(refused("invalid_input", "message text is empty"));
     }
     let state = domain.state().map_err(|_| refused("storage_unavailable", "domain state unavailable"))?;
+    if domain.live.is_closed(&agent.0) {
+        return Err(refused("session_unreachable", "the node is not connected to Alondra: its session is stopped or its Claude Code mod is not running. Nothing was sent"));
+    }
     if !state.agents.contains_key(agent) {
         return Err(refused("not_found", "agent does not exist"));
     }
