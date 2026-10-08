@@ -26,6 +26,7 @@ launch = sys.argv[0]
 def identity():
     meta = os.stat(launch)
     return meta.st_ino, meta.st_size, meta.st_mtime_ns
+running = identity()
 status = {{"version": VERSION}}
 class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
@@ -38,7 +39,6 @@ class Handler(http.server.BaseHTTPRequestHandler):
         pass
 server = http.server.HTTPServer(("127.0.0.1", int(os.environ["ALONDRA_PORT"])), Handler)
 threading.Thread(target=server.serve_forever, daemon=True).start()
-running = identity()
 while True:
     time.sleep(0.05)
     if MODE == "serve" or identity() == running:
@@ -54,6 +54,33 @@ def fake_daemon(path, version, mode):
     path.write_text(FAKE_DAEMON.format(python=sys.executable, version=version, mode=mode))
     path.chmod(0o755)
     return path
+
+
+class DaemonFixtureTests(unittest.TestCase):
+    def test_replacement_after_readiness_is_not_used_as_the_initial_fingerprint(self):
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+
+        class StopLoop(Exception):
+            pass
+
+        generation = [1]
+        def identity(_path):
+            return SimpleNamespace(st_ino=generation[0], st_size=1, st_mtime_ns=1)
+        def ready():
+            generation[0] = 2
+
+        thread = Mock()
+        thread.start.side_effect = ready
+        namespace = {}
+        fixture = FAKE_DAEMON.format(python=sys.executable, version='1.0.0', mode='reject')
+        with patch('http.server.HTTPServer'), patch('threading.Thread', return_value=thread), \
+             patch('os.stat', side_effect=identity), patch.dict(os.environ, {'ALONDRA_PORT':'50000'}), \
+             patch('time.sleep', side_effect=[None, StopLoop]):
+            with self.assertRaises(StopLoop):
+                exec(fixture, namespace)
+        self.assertEqual(namespace['status'].get('preflight_rejected'),
+            {'reason':'synthetic: bootstrap failed integrity audit'})
 
 
 class Fixture(unittest.TestCase):
