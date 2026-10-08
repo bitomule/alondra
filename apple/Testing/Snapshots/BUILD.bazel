@@ -12,13 +12,21 @@ exports_files(
 # `-collect-test-diagnostics never`: a target with a `test_host` is driven through `xcodebuild`,
 # which afterwards runs `xcrun simctl diagnose --timeout=600` against the pool simulator; that
 # collection never completes and holds the pool slot for its whole timeout.
+# Left alone, `xcodebuild` writes each run's result bundle into a new
+# `~/Library/Developer/Xcode/DerivedData/temporary-*` folder that nothing deletes: 440 MB per
+# failing or recording run, because every snapshot is attached. The bundle goes to the test's
+# own outputs instead (replaced on every run, dropped on success by `KEEP_XCRESULT_ON_SUCCESS=0`),
+# and the rest of DerivedData to the test's temporary directory. simpool splices
+# `xcodebuild_args` unquoted into a bash array, so `$TEST_TMPDIR` expands when the test runs.
 simpool_ios_test_runner(
     name = "iphone_17_pro_runner",
+    create_xcresult_bundle = True,
     device_type = "iPhone 17 Pro",
     os_version = "26.3",
     xcodebuild_args = [
         "-collect-test-diagnostics",
         "never",
+        "-IDECustomDerivedDataLocation=\"$TEST_TMPDIR/DerivedData\"",
     ],
 )
 
@@ -76,7 +84,10 @@ ios_unit_test(
         "//fixtures/views:all",
         "//fixtures/views:cards",
     ],
-    env = {"SNAPSHOT_ROOT": "apple/Testing/Snapshots/Tests/__Snapshots__"},
+    env = {
+        "KEEP_XCRESULT_ON_SUCCESS": "0",
+        "SNAPSHOT_ROOT": "apple/Testing/Snapshots/Tests/__Snapshots__",
+    },
     minimum_os_version = "26.0",
     runner = ":iphone_17_pro_runner",
     test_host = ":SnapshotTestHost",

@@ -348,7 +348,7 @@ async fn dispatch_pending(
             return Ok(());
         }
     };
-    if domain.live.usage_pause.is_active() {
+    if domain.live.usage_pause.is_active() || domain.live.machine_watch.disk_low() {
         return Ok(());
     }
     let intent = launch.intent.clone();
@@ -629,7 +629,7 @@ pub(crate) async fn run_cycle(
         }
     }
     answer_failed_launches(domain, home)?;
-    let paused = domain.live.usage_pause.is_active();
+    let paused = domain.live.usage_pause.is_active() || domain.live.machine_watch.disk_low();
     if due_enabled && !paused {
         let now = alondra_core::now_millis();
         let state = domain.state()?;
@@ -1700,5 +1700,32 @@ mod tests {
         assert_eq!(runs(), 2);
         let state = fixture.domain.state().unwrap();
         assert!(state.schedule.runs.values().all(|run| run.launch.as_ref().is_some_and(|launch| launch.state == ScheduleLaunchState::Handed)));
+    }
+
+    #[tokio::test]
+    async fn a_due_schedule_and_a_pending_launch_wait_while_the_disk_is_nearly_full() {
+        let fixture = Fixture::new();
+        fixture.claim("manual-1");
+        let now = alondra_core::now_millis();
+        fixture.domain.live.machine_watch.set_disk_low(true);
+        let launcher = LoadingLauncher(&fixture.domain, Mutex::new(0));
+        let launches = || *launcher.1.lock().unwrap();
+        run_cycle(&fixture.domain, &fixture.home, false, &launcher).await.unwrap();
+        let mut due = fixture.domain.state().unwrap().schedule.schedules[&ScheduleId::from("schedule-1")].clone();
+        due.enabled = true;
+        due.next_run = Some(now);
+        due.revision += 1;
+        execute_system(&fixture.domain, Command::UpdateSchedule { schedule: due }).unwrap();
+
+        run_cycle(&fixture.domain, &fixture.home, true, &launcher).await.unwrap();
+        run_cycle(&fixture.domain, &fixture.home, true, &launcher).await.unwrap();
+        assert_eq!(launches(), 0, "no node starts on a nearly full disk");
+        let state = fixture.domain.state().unwrap();
+        assert_eq!(state.schedule.runs[&ScheduleRunId::from("manual-1")].launch.as_ref().unwrap().state, ScheduleLaunchState::Pending);
+        assert!(state.schedule.runs.values().all(|run| run.state != ScheduleRunState::Failed), "nothing is recorded as failed");
+
+        fixture.domain.live.machine_watch.set_disk_low(false);
+        run_cycle(&fixture.domain, &fixture.home, true, &launcher).await.unwrap();
+        assert_eq!(launches(), 2, "space again: the deferred launch and the due schedule go");
     }
 }

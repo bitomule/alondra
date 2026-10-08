@@ -284,6 +284,9 @@ async fn launch_guarded(domain: &DomainRuntime, home: &Path, actor: &Actor, body
     if !Path::new(&cwd).is_dir() {
         return Err(DomainError::new("invalid_input", format!("directory {cwd} does not exist")));
     }
+    if let Some(why) = domain.live.machine_watch.refuse_launch(Path::new(&cwd)) {
+        return Err(DomainError::new("disk_low", format!("{why}. {} stays as it is and can be launched after that", body.task)));
+    }
     if let Some(repository) = crate::claude_trust::check(Path::new(&cwd)) {
         return Err(DomainError::new("workspace_untrusted", crate::claude_trust::instructions(&repository)));
     }

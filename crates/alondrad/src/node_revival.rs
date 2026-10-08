@@ -18,6 +18,7 @@ use tokio::sync::mpsc;
 
 const RETRY: &str = "retry";
 const STALL_CHECK: Duration = Duration::from_secs(30);
+const DISK_RECHECK: Duration = Duration::from_secs(10);
 const CONTINUE: &str = "Alondra restarted your session because it had stopped processing in the middle of a turn. Check where you were and continue your task.";
 
 pub(crate) struct Timing {
@@ -155,6 +156,9 @@ pub(crate) async fn revive_stalled(domain: &DomainRuntime, session: &str, launch
                 tokio::time::sleep(timing.pauses[attempt - 1]).await;
             }
             domain.live.usage_pause.until_clear().await;
+            while domain.live.machine_watch.disk_low() {
+                tokio::time::sleep(DISK_RECHECK).await;
+            }
             if !still_stalled(domain, session) {
                 break 'rounds;
             }

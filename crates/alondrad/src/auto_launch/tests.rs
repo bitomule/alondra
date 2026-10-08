@@ -276,6 +276,25 @@ async fn while_usage_is_exhausted_a_ready_task_waits_and_starts_when_usage_is_ba
 }
 
 #[tokio::test]
+async fn while_the_disk_is_nearly_full_a_ready_task_waits_and_starts_once_there_is_space() {
+    let f = world();
+    let claude = FakeClaude::new(&f);
+    done_task(&f, "f0");
+    create(&f, "f1", &["f0"], Some(&plan(&f, "app/f1")));
+    f.domain.live.machine_watch.set_disk_low(true);
+    pass(&f.domain, &f.home, &claude).await.unwrap();
+    pass(&f.domain, &f.home, &claude).await.unwrap();
+    assert_eq!(claude.launches(), 0);
+    assert_eq!(auto(&f, "f1"), None, "not claimed: it starts by itself once there is space");
+    assert!(told(&f).iter().all(|id| !id.starts_with("auto-launch")), "the orchestrator is not told: the user has the disk card");
+
+    f.domain.live.machine_watch.set_disk_low(false);
+    pass(&f.domain, &f.home, &claude).await.unwrap();
+    assert_eq!(claude.launches(), 1);
+    assert_eq!(auto(&f, "f1").unwrap().state, AutoLaunchState::Launched);
+}
+
+#[tokio::test]
 async fn an_untrusted_repository_blocks_the_launch_and_tells_the_orchestrator_the_steps() {
     let f = world();
     let claude = FakeClaude::new(&f);

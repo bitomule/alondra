@@ -7,6 +7,7 @@ mod cleanup;
 mod claude_trust;
 mod delivery;
 mod direct;
+mod disk;
 mod domain_agent_lifecycle;
 mod domain_api;
 mod domain_authority;

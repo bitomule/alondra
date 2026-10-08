@@ -1,11 +1,14 @@
+use std::path::Path;
 use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
 
 use alondra_core::{Machine, now_millis};
-use sysinfo::{Disks, System};
+use sysinfo::System;
 
 const UNRELIABLE_LOAD: f64 = 50.0;
+/// Where a Mac keeps its writable data; `/` on any other system.
+pub(crate) const BOOT_DATA: &str = "/System/Volumes/Data";
 
 /// The latest gauges of the resource API daemon, read by `/daemon` for the TUI header.
 pub(crate) type Gauges = Arc<std::sync::Mutex<Option<(Machine, Option<alondra_core::usage::Usage>)>>>;
@@ -20,22 +23,16 @@ pub(crate) async fn run(gauges: Gauges, domain: Arc<crate::domain_runtime::Domai
 
 async fn sample_loop(mut publish: impl FnMut(Machine)) {
     let mut sys = System::new();
-    let mut disks = Disks::new_with_refreshed_list();
     let mut pressure: Option<u32> = None;
     let mut round: u64 = 0;
     loop {
         sys.refresh_memory();
         sys.refresh_cpu_usage();
-        disks.refresh(true);
         if round.is_multiple_of(3) {
             pressure = tokio::task::spawn_blocking(memory_free_percent).await.ok().flatten();
         }
         let load = System::load_average();
-        let root = disks
-            .list()
-            .iter()
-            .find(|d| d.mount_point() == std::path::Path::new("/System/Volumes/Data"))
-            .or_else(|| disks.list().iter().find(|d| d.mount_point() == std::path::Path::new("/")));
+        let root = crate::disk::space(Path::new(BOOT_DATA)).or_else(|| crate::disk::space(Path::new("/")));
         let machine = Machine {
             at: now_millis(),
             memory_total: sys.total_memory(),
@@ -44,8 +41,8 @@ async fn sample_loop(mut publish: impl FnMut(Machine)) {
             load: [load.one, load.five, load.fifteen],
             cpus: sys.cpus().len(),
             cpu_usage: sys.global_cpu_usage(),
-            disk_total: root.map(|d| d.total_space()).unwrap_or(0),
-            disk_available: root.map(|d| d.available_space()).unwrap_or(0),
+            disk_total: root.map_or(0, |space| space.total),
+            disk_available: root.map_or(0, |space| space.free),
             unreliable: load.one > UNRELIABLE_LOAD,
         };
         publish(machine);

@@ -3,7 +3,9 @@
 //! a time puts one Problem in front of the user, tells the orchestrator, reminds once after
 //! `REMIND_AFTER_MS` and, once the Mac recovers, withdraws the card and wakes the nodes that
 //! waited: all at once after a full disk, one by one after memory or CPU, so they do not bring the
-//! Mac back to its limit. A disk below `LOW_DISK_BYTES` opens an incident before any node fails.
+//! Mac back to its limit. A disk below `disk::low_line()` opens an incident before any node fails,
+//! and while it is open no node starts. The disk watched is the Mac's own and every volume a node
+//! was launched on, so a repository on an external disk is watched too.
 //!
 //! With the disk full the domain may not be able to write the card, so the user then hears it by
 //! a push, which writes nothing to disk.
@@ -11,7 +13,7 @@ use alondra_core::machine_incident::{MACHINE_FIXED_LABEL, MACHINE_FIXED_OPTION, 
 use alondra_core::views::Lang;
 use alondra_core::{Machine, Millis, STRAINED_FREE_PERCENT, now_millis};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
@@ -20,8 +22,6 @@ use crate::domain_runtime::DomainRuntime;
 use crate::usage_pause::Alerts;
 
 pub(crate) const FILE: &str = "machine-incident.json";
-pub(crate) const LOW_DISK_BYTES: u64 = 5_000_000_000;
-const RECOVERED_DISK_BYTES: u64 = 7_000_000_000;
 const HEALTHY_SAMPLES: u32 = 2;
 /// A wait no gauge explains, such as a build queue, gets this long before a healthy Mac wakes it.
 const DECLARED_GRACE_MS: Millis = 5 * 60_000;
@@ -54,6 +54,9 @@ pub(crate) struct Incident {
 struct Record {
     incident: Option<Incident>,
     declared: BTreeMap<String, Declared>,
+    /// Mount points of the volumes nodes were launched on, other than the Mac's own disk.
+    #[serde(default)]
+    volumes: BTreeSet<PathBuf>,
 }
 
 /// A node stopped for the machine, as the card names it.
@@ -75,9 +78,9 @@ pub(crate) enum Action {
 }
 
 /// What the gauges say is wrong. Once the disk was the cause it must climb past
-/// `RECOVERED_DISK_BYTES` to count as fine, so a disk hovering at the line does not flap.
+/// `disk::recovered_line()` to count as fine, so a disk hovering at the line does not flap.
 pub(crate) fn failing(machine: &Machine, disk_was_low: bool) -> Option<MachineCause> {
-    let line = if disk_was_low { RECOVERED_DISK_BYTES } else { LOW_DISK_BYTES };
+    let line = if disk_was_low { crate::disk::recovered_line() } else { crate::disk::low_line() };
     if machine.disk_total > 0 && machine.disk_available < line {
         Some(MachineCause::Disk)
     } else if machine.memory_free_percent.is_some_and(|free| free < STRAINED_FREE_PERCENT) {
@@ -89,7 +92,7 @@ pub(crate) fn failing(machine: &Machine, disk_was_low: bool) -> Option<MachineCa
     }
 }
 
-fn card_for(cause: MachineCause, machine: &Machine, waiting: &[Waiter], minutes: Option<u64>) -> MachineCard {
+fn card_for(cause: MachineCause, machine: &Machine, disk: Option<&str>, waiting: &[Waiter], minutes: Option<u64>) -> MachineCard {
     MachineCard {
         cause,
         disk_free: machine.disk_available,
@@ -97,6 +100,17 @@ fn card_for(cause: MachineCause, machine: &Machine, waiting: &[Waiter], minutes:
         nodes: waiting.iter().map(|waiter| waiter.name.clone()).collect(),
         reason: (cause == MachineCause::Declared).then(|| waiting.first().map(|waiter| waiter.reason.clone())).flatten(),
         minutes,
+        disk: disk.filter(|_| cause == MachineCause::Disk).map(str::to_owned),
+    }
+}
+
+/// The machine with the disk gauge of its fullest volume: the Mac's own, or one a node works on,
+/// named when it is not the Mac's own.
+pub(crate) fn tightest(machine: Machine, volumes: &[(String, crate::disk::Space)]) -> (Machine, Option<String>) {
+    match volumes.iter().min_by_key(|(_, space)| space.free) {
+        Some((name, space)) if space.free < machine.disk_available || machine.disk_total == 0 =>
+            (Machine { disk_available: space.free, disk_total: space.total, ..machine }, Some(name.clone())),
+        _ => (machine, None),
     }
 }
 
@@ -111,12 +125,18 @@ fn orchestrator_text(card: &MachineCard, opening: bool) -> String {
 
 /// One sample of the incident: the gauges, the nodes waiting, and whether the user just said they
 /// fixed it. Pure, so every turn of it is tested without a clock.
+#[cfg(test)]
 pub(crate) fn step(previous: Option<Incident>, machine: &Machine, waiting: &[Waiter], fixed: bool, now: Millis) -> (Option<Incident>, Vec<Action>) {
+    step_on(previous, machine, None, waiting, fixed, now)
+}
+
+/// `step` with the name of the volume the disk gauge measured, when it is not the Mac's own.
+pub(crate) fn step_on(previous: Option<Incident>, machine: &Machine, disk: Option<&str>, waiting: &[Waiter], fixed: bool, now: Millis) -> (Option<Incident>, Vec<Action>) {
     let disk_was_low = previous.as_ref().is_some_and(|incident| incident.cause == MachineCause::Disk);
     let measured = failing(machine, disk_was_low);
     let Some(mut incident) = previous else {
         let Some(cause) = measured.or_else(|| (!waiting.is_empty()).then_some(MachineCause::Declared)) else { return (None, vec![]) };
-        let card = card_for(cause, machine, waiting, None);
+        let card = card_for(cause, machine, disk, waiting, None);
         let id = format!("{MACHINE_PREFIX}{now}");
         let incident = Incident { since: now, cause, card: Some(id.clone()), cards: 1, nodes_shown: waiting.len(), reminded: false, healthy: 0 };
         return (Some(incident), vec![Action::TellOrchestrator(orchestrator_text(&card, true)), Action::Raise { id, card }]);
@@ -146,7 +166,7 @@ pub(crate) fn step(previous: Option<Incident>, machine: &Machine, waiting: &[Wai
     let first_stop = incident.nodes_shown == 0 && !waiting.is_empty();
     let mut actions = vec![];
     if remind || first_stop || cause != incident.cause || fixed {
-        let card = card_for(cause, machine, waiting, remind.then(|| longest.unwrap_or(0) as u64 / 60_000));
+        let card = card_for(cause, machine, disk, waiting, remind.then(|| longest.unwrap_or(0) as u64 / 60_000));
         actions.extend(incident.card.take().map(Action::Withdraw));
         if remind {
             incident.reminded = true;
@@ -161,6 +181,12 @@ pub(crate) fn step(previous: Option<Incident>, machine: &Machine, waiting: &[Wai
         actions.push(Action::Raise { id, card });
     }
     (Some(incident), actions)
+}
+
+/// The volume the machine's own disk gauge measures.
+fn own_disk() -> &'static Path {
+    let data = Path::new(crate::machine::BOOT_DATA);
+    if data.exists() { data } else { Path::new("/") }
 }
 
 pub(crate) struct MachineWatch {
@@ -204,6 +230,54 @@ impl MachineWatch {
 
     pub(crate) fn incident(&self) -> Option<Incident> {
         self.record.lock().expect("machine watch poisoned").incident.clone()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_disk_low(&self, low: bool) {
+        let disk = Machine { disk_total: 500_000_000_000, disk_available: if low { 1_000_000_000 } else { 400_000_000_000 }, ..Machine::default() };
+        self.set_incident(step(None, &disk, &[], false, 0).0);
+    }
+
+    pub(crate) fn disk_low(&self) -> bool {
+        self.incident().is_some_and(|incident| incident.cause == MachineCause::Disk)
+    }
+
+    /// Why no node may start in `cwd` now, if the disk is nearly full there or on the Mac. The
+    /// folder's volume is watched from now on, and measured at once so a launch never waits for
+    /// the next sample; the watcher then puts the card in front of the user.
+    pub(crate) fn refuse_launch(&self, cwd: &Path) -> Option<String> {
+        self.watch_volume(cwd);
+        let space = crate::disk::space(cwd);
+        let low_here = space.is_some_and(|space| space.free < crate::disk::low_line());
+        if !self.disk_low() && !low_here {
+            return None;
+        }
+        if low_here {
+            self.changed.notify_one();
+        }
+        let free = space.filter(|_| low_here).map(|space| format!(" ({} free where it works)", alondra_core::machine_incident::bytes_text(space.free, Lang::En))).unwrap_or_default();
+        Some(format!("The disk is nearly full{free}: Alondra starts no node until there is space again, and {} has a card about it", crate::domain_messages::user_name()))
+    }
+
+    fn watch_volume(&self, dir: &Path) {
+        let Some(mount) = crate::disk::mount_point(dir) else { return };
+        if crate::disk::same_volume(&mount, own_disk()) {
+            return;
+        }
+        let mut record = self.record.lock().expect("machine watch poisoned");
+        if record.volumes.insert(mount) {
+            self.save(&record);
+        }
+    }
+
+    /// The free space of every watched volume still mounted, by name.
+    fn volumes(&self) -> Vec<(String, crate::disk::Space)> {
+        let volumes = self.record.lock().expect("machine watch poisoned").volumes.clone();
+        volumes.iter().filter_map(|mount| {
+            let space = crate::disk::space(mount)?;
+            let name = mount.file_name().map_or_else(|| mount.display().to_string(), |name| name.to_string_lossy().into_owned());
+            Some((name, space))
+        }).collect()
     }
 
     fn declared(&self) -> BTreeMap<String, Declared> {
@@ -330,9 +404,10 @@ async fn watch(domain: std::sync::Arc<DomainRuntime>, sample: impl Fn() -> Optio
     loop {
         if let Some(machine) = sample() {
             let watch = &domain.live.machine_watch;
+            let (machine, disk) = tightest(machine, &watch.volumes());
             let previous = watch.incident();
             let fixed = fixed(&domain, previous.as_ref());
-            let (next, actions) = step(previous, &machine, &waiters(&domain), fixed, now_millis());
+            let (next, actions) = step_on(previous, &machine, disk.as_deref(), &waiters(&domain), fixed, now_millis());
             watch.set_incident(next);
             act(&domain, &alerts, &sample, actions).await;
         }
@@ -377,7 +452,7 @@ mod tests {
         assert_eq!(cards.len(), 1);
         assert_eq!(cards[0].text(Lang::Es).0, "Libera espacio en disco: quedan 0 B");
         assert_eq!(cards[0].nodes, ["Fase 0: quitar versión de identificadores"]);
-        assert!(actions.iter().any(|action| matches!(action, Action::TellOrchestrator(text) if text.starts_with("Machine at its limit: Disk nearly full (0 B free). Stopped: Fase 0"))));
+        assert!(actions.iter().any(|action| matches!(action, Action::TellOrchestrator(text) if text.starts_with("Machine at its limit: Disk nearly full (0 B free). Alondra starts no new node until there is space. Stopped: Fase 0"))));
 
         let both = [phase0[0].clone(), waiter("s2", "Lumo", 2_000)];
         let (still, actions) = step(Some(incident), &machine(0, 50), &both, false, 11_000);
@@ -395,6 +470,50 @@ mod tests {
         assert_eq!(actions[0], Action::Withdraw("machine-0".into()));
         assert_eq!(raised(&actions)[0].nodes, ["Lumo"]);
         assert_eq!(incident.unwrap().card.as_deref(), Some("machine-0-2"));
+    }
+
+    #[test]
+    fn a_volume_nodes_work_on_running_low_opens_the_card_and_names_it_while_the_macs_own_disk_is_fine() {
+        let external = [("Externo".to_owned(), crate::disk::Space { free: 3 * GB, total: 900 * GB }),
+            ("Fotos".to_owned(), crate::disk::Space { free: 400 * GB, total: 900 * GB })];
+        let (measured, disk) = tightest(machine(80 * GB, 50), &external);
+        assert_eq!((measured.disk_available, disk.as_deref()), (3 * GB, Some("Externo")));
+        let (incident, actions) = step_on(None, &measured, disk.as_deref(), &[], false, 0);
+        assert_eq!(incident.unwrap().cause, MachineCause::Disk);
+        assert_eq!(raised(&actions)[0].text(Lang::Es).0, "Libera espacio en disco: solo quedan 3,0 GB en Externo");
+
+        let (measured, disk) = tightest(machine(2 * GB, 50), &external);
+        assert_eq!((measured.disk_available, disk), (2 * GB, None), "the Mac's own disk is the fuller one: not named");
+        assert_eq!(tightest(machine(80 * GB, 50), &[]).1, None);
+    }
+
+    #[test]
+    fn no_node_starts_while_the_disk_is_low_and_one_does_once_it_recovers() {
+        let watch = MachineWatch::default();
+        let here = std::env::temp_dir();
+        assert_eq!(watch.refuse_launch(&here), None, "a healthy disk starts nodes");
+        let (incident, _) = step(None, &machine(GB, 50), &[], false, 0);
+        watch.set_incident(incident);
+        let refused = watch.refuse_launch(&here).expect("refused while the disk is low");
+        assert!(refused.starts_with("The disk is nearly full: Alondra starts no node until there is space again, and "), "{refused}");
+        assert!(refused.ends_with(" has a card about it"), "{refused}");
+        watch.set_incident(None);
+        assert_eq!(watch.refuse_launch(&here), None);
+    }
+
+    #[test]
+    fn a_launch_on_another_volume_watches_it_from_then_on() {
+        let watch = MachineWatch::default();
+        let here = std::env::temp_dir();
+        watch.refuse_launch(&here);
+        let mount = crate::disk::mount_point(&here).unwrap();
+        let watched = watch.record.lock().unwrap().volumes.clone();
+        if crate::disk::same_volume(&mount, own_disk()) {
+            assert!(watched.is_empty(), "the Mac's own disk already has its gauge: {watched:?}");
+        } else {
+            assert_eq!(watched.into_iter().collect::<Vec<_>>(), [mount]);
+            assert_eq!(watch.volumes().len(), 1);
+        }
     }
 
     #[test]
@@ -525,7 +644,7 @@ mod tests {
         let cards = open_machine_cards(&domain);
         assert_eq!(cards.len(), 1, "one card for the incident, not one per sample");
         assert_eq!(cards[0].card.need, "Free up disk space: 0 B left");
-        assert!(orchestrator_inbox(&domain).iter().any(|text| text.starts_with("Machine at its limit: Disk nearly full (0 B free). Stopped: fase0.")),
+        assert!(orchestrator_inbox(&domain).iter().any(|text| text.starts_with("Machine at its limit: Disk nearly full (0 B free). Alondra starts no new node until there is space. Stopped: fase0.")),
             "{:?}", orchestrator_inbox(&domain));
         assert!(told.0.lock().unwrap().is_empty(), "the card got through: no push in its place");
 
@@ -581,12 +700,12 @@ mod tests {
         let watcher = tokio::spawn(watch(domain.clone(), || Some(machine(0, 50)), told.clone(), Duration::from_millis(20)));
         until("the push", || !told.0.lock().unwrap().is_empty()).await;
         watcher.abort();
-        assert_eq!(told.0.lock().unwrap()[0], "Libera espacio en disco: quedan 0 B. Disco casi lleno (0 B libres). Parados: fase0. Continúan solos cuando se recupere.");
+        assert_eq!(told.0.lock().unwrap()[0], "Libera espacio en disco: quedan 0 B. Disco casi lleno (0 B libres). Alondra no lanzará nodos nuevos hasta que haya espacio. Parados: fase0. Continúan solos cuando se recupere.");
     }
 
     #[test]
     fn the_orchestrator_is_not_told_of_a_card_for_a_cpu_load_that_makes_none() {
-        let load = MachineCard { cause: MachineCause::Load, disk_free: 0, memory_free_percent: None, nodes: vec![], reason: None, minutes: None };
+        let load = MachineCard { cause: MachineCause::Load, disk_free: 0, memory_free_percent: None, nodes: vec![], reason: None, minutes: None, disk: None };
         let disk = MachineCard { cause: MachineCause::Disk, ..load.clone() };
         assert!(!orchestrator_text(&load, true).contains("card"), "{}", orchestrator_text(&load, true));
         assert!(orchestrator_text(&disk, true).contains("has a card about it"));

@@ -12,7 +12,7 @@ BETA_GROUP := Internal Pilot,Private Pilot
 APPLE_VERSION = $(shell sed -n 's/^ *version = "\(.*\)".*/\1/p' tools/shared.bzl)
 APPLE_BUILD = $(shell sed -n 's/^ *build_number = "\(.*\)".*/\1/p' tools/shared.bzl)
 
-.PHONY: version-guard increment-version build-release snapshots-record snapshots-verify tui-shots mac-snapshots-record mac-snapshots-verify no-holds build test ablation install run tui setup launchd unlaunchd restart status doctor cargo-test mac device device-console e2e-sandbox e2e-sandbox-stop e2e-sandbox-logs soak load-bench tasks-screen rehearse-cutover upgrade-rehearsal cutover-live
+.PHONY: version-guard increment-version build-release snapshots-record snapshots-verify tui-shots mac-snapshots-record mac-snapshots-verify no-holds build test ablation install run tui setup launchd unlaunchd restart status doctor cargo-test mac device device-console e2e-sandbox e2e-sandbox-stop e2e-sandbox-logs soak load-bench tasks-screen rehearse-cutover upgrade-rehearsal cutover-live clean-xcode-test-results
 
 build:
 	bazelisk build //crates/... //apple:AlondraMac
@@ -67,6 +67,14 @@ tui-shots:
 			--screenshot="$(TUI_SHOTS)/$$(basename $$page .html).png" "file://$(CURDIR)/$$page" >/dev/null 2>&1; \
 	done
 	@ls $(TUI_SHOTS)
+
+# Result bundles `xcodebuild` left in DerivedData before the iOS test runner kept them in Bazel's
+# own outputs: logs only, nothing builds from them.
+clean-xcode-test-results:
+	@before=$$(du -sk "$(HOME)/Library/Developer/Xcode/DerivedData" 2>/dev/null | cut -f1); \
+	find "$(HOME)/Library/Developer/Xcode/DerivedData" -maxdepth 1 -type d -name 'temporary-*' -exec rm -rf {} +; \
+	after=$$(du -sk "$(HOME)/Library/Developer/Xcode/DerivedData" 2>/dev/null | cut -f1); \
+	echo "DerivedData: $$((before / 1024)) MB -> $$((after / 1024)) MB"
 
 MAC_SNAPSHOT_TARGET := //apple/Testing/MacSnapshots:AlondraMacSnapshotTests
 MAC_SNAPSHOT_ROOT := apple/Testing/MacSnapshots/Tests/__Snapshots__

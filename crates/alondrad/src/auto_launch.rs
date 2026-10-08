@@ -84,6 +84,7 @@ pub(crate) async fn pass(domain: &DomainRuntime, home: &Path, launcher: &impl La
             (store.auto_launch(&task.id)?, store.launch_plan(&task.id)?)
         };
         let usage_out = domain.live.usage_pause.current().is_some();
+        let disk_low = domain.live.machine_watch.disk_low();
         let retry = match row.as_ref().map(|row| (row.state, row.reason)) {
             None => false,
             Some((AutoLaunchState::Launched | AutoLaunchState::Launching, _)) => continue,
@@ -107,6 +108,10 @@ pub(crate) async fn pass(domain: &DomainRuntime, home: &Path, launcher: &impl La
             block(AutoLaunchReason::UsageExhausted, None)?;
             continue;
         }
+        // The user has the disk card; the task stays unclaimed and starts on a pass after it clears.
+        if disk_low {
+            continue;
+        }
         if !domain.store.lock().expect("domain store poisoned").claim_auto_launch(&task.id, now, retry)? {
             continue;
         }
@@ -121,6 +126,7 @@ pub(crate) async fn pass(domain: &DomainRuntime, home: &Path, launcher: &impl La
             Ok(_) => {}
             Err(error) => match error.code.as_str() {
                 "usage_exhausted" => block(AutoLaunchReason::UsageExhausted, None)?,
+                "disk_low" => domain.store.lock().expect("domain store poisoned").forget_auto_launch(&task.id)?,
                 "workspace_untrusted" => {
                     block(AutoLaunchReason::WorkspaceUntrusted, Some(&error.message))?;
                     tell(domain, &format!("auto-launch-untrusted-{}", task.id), format!(

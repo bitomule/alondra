@@ -470,6 +470,24 @@ async fn a_launch_is_refused_while_usage_is_exhausted_and_goes_ahead_once_it_is_
 }
 
 #[tokio::test]
+async fn a_launch_is_refused_while_the_disk_is_nearly_full_and_goes_ahead_once_it_has_space() {
+    let f = world();
+    let actor = the_orchestrator(&f.domain);
+    let claude = FakeClaude::loading(&f.domain);
+    f.domain.live.machine_watch.set_disk_low(true);
+    let refused = launch(&f.domain, &f.home, &actor, launch_body(&f, json!({"model": "sonnet"})), |_| None, &claude).await.unwrap_err();
+    assert_eq!(refused.code, "disk_low");
+    assert!(refused.message.starts_with("The disk is nearly full: Alondra starts no node until there is space again"), "{}", refused.message);
+    assert!(refused.message.ends_with("t stays as it is and can be launched after that"), "{}", refused.message);
+    assert!(claude.calls.lock().unwrap().is_empty());
+    assert!(f.domain.state().unwrap().tasks[&TaskId::from("t")].agent_id.is_none(), "the task is left as it was");
+
+    f.domain.live.machine_watch.set_disk_low(false);
+    launch(&f.domain, &f.home, &actor, launch_body(&f, json!({"model": "sonnet"})), |_| None, &claude).await.unwrap();
+    assert_eq!(claude.calls.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
 async fn a_task_whose_node_the_user_closed_is_relaunched_for_that_task_in_the_closed_nodes_folder() {
     let f = world();
     command(&f.domain, user(), Command::AssignTask { task_id: "t".into(), agent_id: "agent-b".into(), model: None });

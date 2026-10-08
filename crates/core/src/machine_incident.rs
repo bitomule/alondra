@@ -37,6 +37,9 @@ pub struct MachineCard {
     /// Minutes the nodes have waited, on the reminder.
     #[serde(default)]
     pub minutes: Option<u64>,
+    /// The volume that is nearly full, when it is not the Mac's own disk.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disk: Option<String>,
 }
 
 /// "0 B", "450 MB", "4.2 GB".
@@ -75,10 +78,11 @@ impl MachineCard {
     /// The card's `need` and `why`.
     pub fn text(&self, lang: Lang) -> (String, String) {
         let free = bytes_text(self.disk_free, lang);
+        let on = self.disk.as_ref().map(|disk| tf!(lang, " on {disk}", " en {disk}")).unwrap_or_default();
         let memory = self.memory_free_percent.unwrap_or(0);
         let need = match self.cause {
-            MachineCause::Disk if self.nodes.is_empty() => tf!(lang, "Free up disk space: only {free} left", "Libera espacio en disco: solo quedan {free}"),
-            MachineCause::Disk => tf!(lang, "Free up disk space: {free} left", "Libera espacio en disco: quedan {free}"),
+            MachineCause::Disk if self.nodes.is_empty() => tf!(lang, "Free up disk space: only {free} left{on}", "Libera espacio en disco: solo quedan {free}{on}"),
+            MachineCause::Disk => tf!(lang, "Free up disk space: {free} left{on}", "Libera espacio en disco: quedan {free}{on}"),
             MachineCause::Memory => tf!(lang, "Free up memory: {memory}% free", "Libera memoria: {memory}% libre"),
             MachineCause::Load => t!(lang, "Lighten the Mac's load: the CPU is at its limit", "Alivia la carga del Mac: la CPU está al límite").into(),
             MachineCause::Declared => t!(lang, "Check the Mac: nodes are waiting for the machine", "Revisa el Mac: hay nodos esperando a la máquina").into(),
@@ -89,7 +93,12 @@ impl MachineCard {
             _ => tf!(lang, "Stopped: {names}.", "Parados: {names}.", names = self.names(lang)),
         };
         let cause = match self.cause {
-            MachineCause::Disk => tf!(lang, "Disk nearly full ({free} free).", "Disco casi lleno ({free} libres)."),
+            MachineCause::Disk => match &self.disk {
+                Some(disk) => tf!(lang, "{disk} nearly full ({free} free). Alondra starts no new node until there is space.",
+                    "{disk} casi lleno ({free} libres). Alondra no lanzará nodos nuevos hasta que haya espacio."),
+                None => tf!(lang, "Disk nearly full ({free} free). Alondra starts no new node until there is space.",
+                    "Disco casi lleno ({free} libres). Alondra no lanzará nodos nuevos hasta que haya espacio."),
+            },
             MachineCause::Memory => tf!(lang, "Memory at its limit ({memory}% free).", "Memoria al límite ({memory}% libre)."),
             MachineCause::Load => t!(lang, "CPU at its limit.", "CPU al límite.").into(),
             MachineCause::Declared => match &self.reason {
@@ -108,7 +117,7 @@ mod tests {
     use super::*;
 
     fn card(cause: MachineCause, nodes: &[&str]) -> MachineCard {
-        MachineCard { cause, disk_free: 0, memory_free_percent: Some(9), nodes: nodes.iter().map(|n| n.to_string()).collect(), reason: None, minutes: None }
+        MachineCard { cause, disk_free: 0, memory_free_percent: Some(9), nodes: nodes.iter().map(|n| n.to_string()).collect(), reason: None, minutes: None, disk: None }
     }
 
     #[test]
@@ -117,7 +126,7 @@ mod tests {
         assert_eq!(MachineCard::from_body(&full.to_body()), Some(full.clone()));
         let (need, why) = full.text(Lang::Es);
         assert_eq!(need, "Libera espacio en disco: quedan 0 B");
-        assert_eq!(why, "Disco casi lleno (0 B libres). Parados: Fase 0: quitar versión de identificadores, Lumo. Continúan solos cuando se recupere.");
+        assert_eq!(why, "Disco casi lleno (0 B libres). Alondra no lanzará nodos nuevos hasta que haya espacio. Parados: Fase 0: quitar versión de identificadores, Lumo. Continúan solos cuando se recupere.");
         assert_eq!(full.text(Lang::En).0, "Free up disk space: 0 B left");
     }
 
@@ -129,6 +138,21 @@ mod tests {
         let reminder = MachineCard { minutes: Some(30), ..card(MachineCause::Memory, &["a", "b", "c", "d", "e"]) };
         assert_eq!(reminder.text(Lang::En), ("Free up memory: 9% free".into(),
             "Memory at its limit (9% free). Still stopped after 30 min: a, b, c and 2 more. They carry on by themselves once it recovers.".into()));
+    }
+
+    #[test]
+    fn a_nearly_full_external_disk_is_named_and_the_card_says_no_node_starts() {
+        let external = MachineCard { disk_free: 3_200_000_000, disk: Some("Externo".into()), ..card(MachineCause::Disk, &[]) };
+        assert_eq!(MachineCard::from_body(&external.to_body()), Some(external.clone()));
+        assert_eq!(external.text(Lang::Es), ("Libera espacio en disco: solo quedan 3,2 GB en Externo".into(),
+            "Externo casi lleno (3,2 GB libres). Alondra no lanzará nodos nuevos hasta que haya espacio. Aún no se ha parado ningún nodo; a partir de aquí empiezan a fallar. Continúan solos cuando se recupere.".into()));
+        assert_eq!(external.text(Lang::En).0, "Free up disk space: only 3.2 GB left on Externo");
+        assert!(external.text(Lang::En).1.starts_with("Externo nearly full (3.2 GB free). Alondra starts no new node until there is space."));
+    }
+
+    #[test]
+    fn a_card_written_before_the_disk_field_still_reads() {
+        assert_eq!(MachineCard::from_body(r#"{"cause":"disk","disk_free":0}"#).unwrap().disk, None);
     }
 
     #[test]
