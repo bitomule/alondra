@@ -28,8 +28,8 @@ fn state(task: &Task, context: &RenderContext<'_>) -> String {
     plain.into()
 }
 
-/// Why a task that has not started has not, as a fact: what refused its last launch, or that the
-/// orchestrator has not launched it.
+/// Why a task that has not started has not, as a fact: what refused its last launch, the task it
+/// waits for, or that it has no launch plan yet; with one, Alondra starts it when there is room.
 fn not_started(task: &Task, context: &RenderContext<'_>) -> String {
     let lang = context.lang;
     let Some(refusal) = context.live.launch_refusals.get(&task.id.0) else {
@@ -38,7 +38,14 @@ fn not_started(task: &Task, context: &RenderContext<'_>) -> String {
             .find(|dependency| !dependency.state.terminal());
         return match pending {
             Some(dependency) => wait_text(&crate::domain::WaitReason::BlockedBy { task: dependency.id.clone() }, context),
-            None => t!(lang, "Waiting for the orchestrator to launch it", "Esperando a que el orquestador la lance").into(),
+            None => match context.live.start_waits.get(&task.id.0) {
+                Some(super::live::LiveStartWait::Plan) =>
+                    t!(lang, "Waiting for the orchestrator to give it a plan", "Esperando a que el orquestador le dé plan").into(),
+                Some(super::live::LiveStartWait::Room) if context.live.usage_exhausted.is_some() =>
+                    t!(lang, "Won't start: Claude usage ran out", "No arranca: se acabó el uso de Claude").into(),
+                Some(super::live::LiveStartWait::Room) => t!(lang, "Starting", "Arrancando").into(),
+                None => t!(lang, "Waiting for the orchestrator to launch it", "Esperando a que el orquestador la lance").into(),
+            },
         };
     };
     match (refusal.reason.as_str(), refusal.detail.as_deref()) {

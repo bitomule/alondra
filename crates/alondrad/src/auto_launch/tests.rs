@@ -453,3 +453,43 @@ async fn a_manual_and_an_automatic_launch_never_both_start_a_task() {
     assert_eq!(claude.launches(), 1, "a task with a node is not started again");
     let _unused: Option<Value> = None;
 }
+
+#[tokio::test]
+async fn twelve_independent_tasks_with_a_plan_start_four_at_a_time_and_the_next_starts_when_one_closes() {
+    let f = world();
+    let claude = FakeClaude::new(&f);
+    f.domain.live.gate.tune(crate::fleet_gate::Tuning { spacing: 0, limit: Some(4) });
+    let ids: Vec<String> = (1..=12).map(|n| format!("i{n:02}")).collect();
+    for id in &ids {
+        create(&f, id, &[], Some(&plan(&f, &format!("app/{id}"))));
+    }
+    pass(&f.domain, &f.home, &claude).await.unwrap();
+    pass(&f.domain, &f.home, &claude).await.unwrap();
+    assert_eq!(claude.launches(), 4, "the gate lets four start");
+    let started: Vec<&String> = ids.iter().filter(|id| agent_of(&f, id).is_some()).collect();
+    assert_eq!(started, ["i01", "i02", "i03", "i04"], "the oldest plans go first");
+    assert!(told(&f).iter().all(|id| !id.starts_with("auto-launch")), "{:?}", told(&f));
+
+    finish(&f, "i02", "What i02 delivered", false);
+    pass(&f.domain, &f.home, &claude).await.unwrap();
+    assert_eq!(claude.launches(), 5, "a closed task frees its slot for the next");
+    assert!(agent_of(&f, "i05").is_some());
+    pass(&f.domain, &f.home, &claude).await.unwrap();
+    assert_eq!(claude.launches(), 5);
+}
+
+#[tokio::test]
+async fn an_independent_task_without_a_plan_stays_put_without_telling_the_orchestrator() {
+    let f = world();
+    let claude = FakeClaude::new(&f);
+    create(&f, "solo", &[], None);
+    pass(&f.domain, &f.home, &claude).await.unwrap();
+    assert_eq!(claude.launches(), 0);
+    assert_eq!(auto(&f, "solo"), None);
+    assert!(told(&f).iter().all(|id| !id.starts_with("auto-launch")), "{:?}", told(&f));
+
+    let body = serde_json::from_value(json!({"task_id": "solo", "launch": plan(&f, "app/solo")})).unwrap();
+    crate::domain_orchestrator_tools::set_launch_plan(&f.domain, &f.home, body).unwrap();
+    pass(&f.domain, &f.home, &claude).await.unwrap();
+    assert_eq!(claude.launches(), 1);
+}

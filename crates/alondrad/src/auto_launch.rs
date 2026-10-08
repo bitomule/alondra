@@ -1,6 +1,7 @@
-//! Starting a task as soon as it is ready: a task that waited on others is launched by Alondra
-//! itself with the launch plan its orchestrator gave it, and its mission carries what the earlier
-//! tasks delivered. One automatic launch per task, ever: the claim is a durable row written before
+//! Starting a task as soon as it is ready: every task not started yet that has the launch plan its
+//! orchestrator gave it is launched by Alondra itself, when the fleet gate has room for it, by
+//! priority then by how long it has had its plan; the mission of a task that waited on others
+//! carries what they delivered. One automatic launch per task, ever: the claim is a durable row written before
 //! `claude` runs, so a restart or a second pass never starts it twice.
 use crate::domain_orchestrator_tools::{LaunchBody, Origin, launch_from, request_choices};
 use crate::domain_runtime::DomainRuntime;
@@ -68,16 +69,22 @@ fn candidate(state: &DomainState, task: &Task) -> bool {
         && !task.started
         && task.agent_id.is_none()
         && !task.archived
-        && (!task.dependencies.is_empty() || !task.delivered_dependencies.is_empty() || task.stack.is_some())
         && state.requests.get(&task.request_id).is_some_and(|request| !request.closed)
         && !state.schedule.runs.values().any(|run| run.task_id.as_ref() == Some(&task.id))
+}
+
+fn waits_on_others(task: &Task) -> bool {
+    !task.dependencies.is_empty() || !task.delivered_dependencies.is_empty() || task.stack.is_some()
 }
 
 pub(crate) async fn pass(domain: &DomainRuntime, home: &Path, launcher: &impl Launcher) -> Result<()> {
     let state = domain.state()?;
     tell_about_cancelled_dependencies(domain, &state);
     let now = alondra_core::now_millis();
-    for task in state.tasks.values().filter(|task| candidate(&state, task)) {
+    let planned = domain.store.lock().expect("domain store poisoned").planned_tasks()?;
+    let mut ready: Vec<&Task> = state.tasks.values().filter(|task| candidate(&state, task)).collect();
+    ready.sort_by_key(|task| (task.priority, planned.get(&task.id).copied().unwrap_or(now), &task.id));
+    for task in ready {
         if domain.live.closed_task(&task.id.0).is_some() || domain.store.lock().expect("domain store poisoned").task_was_launched(&task.id)? {
             continue;
         }
@@ -98,7 +105,7 @@ pub(crate) async fn pass(domain: &DomainRuntime, home: &Path, launcher: &impl La
             domain.store.lock().expect("domain store poisoned").set_auto_launch(&task.id, AutoLaunchState::Blocked, Some(reason), detail, now)
         };
         let Some(plan) = plan else {
-            if row.is_none() {
+            if row.is_none() && waits_on_others(task) {
                 block(AutoLaunchReason::NoPlan, None)?;
                 tell(domain, &format!("auto-launch-no-plan-{}", task.id), format!(
                     "“{}” ({}) can start now: everything it depends on is done. Alondra did not start it because it has no launch plan. Start it with launch (task {}), or give it a plan with set_launch_plan and Alondra starts it.",
@@ -114,7 +121,8 @@ pub(crate) async fn pass(domain: &DomainRuntime, home: &Path, launcher: &impl La
         if disk_low {
             continue;
         }
-        let waiting = crate::fleet_gate::Waiting { key: crate::fleet_gate::Key::Task(task.id.clone()), priority: task.priority, resuming: false, since: now };
+        let waiting = crate::fleet_gate::Waiting { key: crate::fleet_gate::Key::Task(task.id.clone()), priority: task.priority, resuming: false,
+            since: planned.get(&task.id).copied().unwrap_or(now) };
         if domain.live.gate.ask(domain, waiting, now).is_err() {
             continue;
         }

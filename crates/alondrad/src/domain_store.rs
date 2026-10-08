@@ -957,6 +957,12 @@ impl DomainStore {
         }
         Ok(())
     }
+    /// When each task with a launch plan got it.
+    pub(crate) fn planned_tasks(&self) -> Result<std::collections::BTreeMap<TaskId, i64>> {
+        let mut query = self.conn.prepare("SELECT task_id,at FROM task_launch_plans")?;
+        let rows = query.query_map([], |row| Ok((TaskId(row.get(0)?), row.get(1)?)))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
     /// Every task a launch plan names a role for.
     pub(crate) fn task_roles(&self) -> Result<std::collections::BTreeMap<TaskId, String>> {
         let mut query = self.conn.prepare("SELECT task_id,role FROM task_launch_plans WHERE role IS NOT NULL")?;

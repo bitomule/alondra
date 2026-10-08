@@ -4,7 +4,7 @@
   "view": "tasks",
   "key": "tasks",
   "client": "ios",
-  "version": "v75bb4119ddd023ae",
+  "version": "v3c65a4c917dac158",
   "cursor": "cursor-1",
   "title": "Tasks",
   "status": {
@@ -318,10 +318,10 @@
           },
           "icon": "task",
           "title": "Write the release notes",
-          "subtitle": "Waiting for the orchestrator to launch it",
+          "subtitle": "Waiting for the orchestrator to give it a plan",
           "badges": [
             {
-              "text": "Waiting for the orchestrator to launch it",
+              "text": "Waiting for the orchestrator to give it a plan",
               "tone": "neutral"
             }
           ],

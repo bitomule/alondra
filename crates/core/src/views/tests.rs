@@ -663,6 +663,7 @@ fn tasks_fixture() -> (DomainState, LiveSnapshot) {
     live.launch_refusals.insert("t-hf-registry".into(), LiveLaunchRefusal {
         reason: "workspace_untrusted".into(), detail: Some("~/Projects/indie-apps".into()),
     });
+    live.start_waits.insert("t-legacy-notes".into(), LiveStartWait::Plan);
     for (id, at) in [
         ("r-9f2156b5a8894e53901f0af576dff6a2", "2026-09-30T09:40:00.000Z"),
         ("r-badge", "2026-09-30T09:52:00.000Z"),
@@ -825,6 +826,9 @@ fn tasks_views_match_goldens() {
             _ => include_str!("../../../../fixtures/views/cards/tasks-tui.json"),
         };
         let actual = render(&state, &live, client, lang, "tasks", "2026-09-30T10:00:00Z");
+        if let Ok(dir) = std::env::var("ALONDRA_GOLDEN_OUT") {
+            std::fs::write(format!("{dir}/{filename}"), format!("{}\n", serde_json::to_string_pretty(&actual).unwrap())).unwrap();
+        }
         assert_golden(filename, &actual, expected);
     }
     for (filename, client, lang, expected) in [
@@ -833,6 +837,9 @@ fn tasks_views_match_goldens() {
         ("tasks-mac-finished.json", Client::Mac, Lang::En, include_str!("../../../../fixtures/views/cards/tasks-mac-finished.json")),
     ] {
         let actual = render(&state, &live, client, lang, "tasks?section=finished&after=0", "2026-09-30T10:00:00Z");
+        if let Ok(dir) = std::env::var("ALONDRA_GOLDEN_OUT") {
+            std::fs::write(format!("{dir}/{filename}"), format!("{}\n", serde_json::to_string_pretty(&actual).unwrap())).unwrap();
+        }
         assert_golden(filename, &actual, expected);
     }
 }
@@ -1439,6 +1446,12 @@ fn a_task_that_has_not_started_says_what_refused_its_launch() {
     let mut live = LiveSnapshot::default();
     assert_eq!(task_state_text(&state, &live, Lang::Es), "Esperando a que el orquestador la lance");
     assert_eq!(task_state_text(&state, &live, Lang::En), "Waiting for the orchestrator to launch it");
+    live.start_waits.insert("t-1".into(), LiveStartWait::Plan);
+    assert_eq!(task_state_text(&state, &live, Lang::Es), "Esperando a que el orquestador le dé plan");
+    assert_eq!(task_state_text(&state, &live, Lang::En), "Waiting for the orchestrator to give it a plan");
+    live.start_waits.insert("t-1".into(), LiveStartWait::Room);
+    assert_eq!(task_state_text(&state, &live, Lang::Es), "Arrancando", "with a plan, Alondra starts it when there is room");
+    live.start_waits.clear();
     let mut base = state.tasks[&"t-1".into()].clone();
     base.id = "t-base".into();
     base.title = "Build the base".into();
@@ -1446,7 +1459,7 @@ fn a_task_that_has_not_started_says_what_refused_its_launch() {
     state.tasks.insert(base.id.clone(), base);
     state.tasks.get_mut(&"t-1".into()).unwrap().dependencies = ["t-base".into()].into();
     let detail = serde_json::to_string(&render(&state, &live, Client::Ios, Lang::Es, "task:t-1", "")).unwrap();
-    assert!(detail.contains("Espera a «Build the base»") && !detail.contains("orquestador la lance"), "{detail}");
+    assert!(detail.contains("Espera a «Build the base»") && !detail.contains("le dé plan"), "{detail}");
     state.tasks.remove(&"t-base".into());
     state.tasks.get_mut(&"t-1".into()).unwrap().dependencies = Default::default();
     live.launch_refusals.insert("t-1".into(), LiveLaunchRefusal {
