@@ -6,6 +6,7 @@ import io
 import json
 from pathlib import Path
 import subprocess
+import threading
 import sys
 import unittest
 from unittest.mock import Mock, patch
@@ -154,6 +155,76 @@ class BenchmarkTests(unittest.TestCase):
             self.assertTrue(bench.frame("/synthetic", {"probe": True}))
         self.assertEqual(connection.sendall.call_args_list[-1], unittest.mock.call(b"\x06"))
 
+    def test_offered_work_is_visible_before_completion(self):
+        records = []
+        def action():
+            self.assertEqual(len(records), 1)
+            self.assertIsNone(records[0]["finished"])
+            return True
+        with patch.object(bench.time, "monotonic", side_effect=[101.0, 102.0]):
+            bench.timed(records, threading.Lock(), action)
+        self.assertEqual(records, [{"started": 101.0, "finished": 102.0, "ok": True, "error": None}])
+
+    def test_an_exception_is_a_completed_failure_not_missing_work(self):
+        records = []
+        with patch.object(bench.time, "monotonic", side_effect=[101.0, 102.0]):
+            bench.timed(records, threading.Lock(), Mock(side_effect=OSError("synthetic")))
+        self.assertFalse(records[0]["ok"])
+        self.assertEqual(records[0]["error"], "OSError")
+        self.assertEqual(records[0]["finished"], 102.0)
+
+    def test_measurement_separates_warmup_steady_drain_and_unfinished_work(self):
+        records = [
+            {"started": 99.0, "finished": 101.0, "ok": True},
+            {"started": 101.0, "finished": 102.0, "ok": True},
+            {"started": 119.0, "finished": 121.0, "ok": False},
+            {"started": 120.0, "finished": 121.0, "ok": True},
+            {"started": 110.0, "finished": None, "ok": None},
+        ]
+        result = bench.window_summary(records, 100.0, 120.0)
+        self.assertEqual(result["offered"], 3)
+        self.assertEqual(result["n"], 1)
+        self.assertEqual(result["p95_ms"], 1000)
+        self.assertEqual(result["pending_at_boundary"], 2)
+        self.assertEqual(result["drain"]["n"], 1)
+        self.assertEqual(result["drain"]["failed"], 1)
+        self.assertEqual(result["unfinished"], 1)
+        self.assertEqual(result["excluded"], 2)
+
+    def test_drain_errors_reports_and_worker_exceptions_make_the_run_fail(self):
+        healthy = bench.window_summary([
+            {"started": 101.0, "finished": 102.0, "ok": True}], 100.0, 120.0)
+        result = {name: healthy for name in ("health", "view", "hook", "report")}
+        self.assertTrue(bench.verdict(result)["passed"])
+        late = dict(healthy, drain=bench.summary([(2.0, False)]))
+        self.assertFalse(bench.verdict(dict(result, view=late))["passed"])
+        self.assertFalse(bench.verdict(dict(result, report=bench.summary([(1.0, False)])))["passed"])
+        self.assertFalse(bench.verdict(dict(result, worker_failures=["mod: OSError"]))["passed"])
+        self.assertFalse(bench.verdict(dict(result, hook=dict(healthy, unfinished=1)))["passed"])
+
+    def test_worker_exceptions_are_recorded(self):
+        failures = []
+        bench.run_worker(failures, threading.Lock(), "mod-0", Mock(side_effect=RuntimeError("synthetic")))
+        self.assertEqual(failures, ["mod-0: RuntimeError"])
+
+    def test_persistent_mod_workers_are_tracked_and_joined(self):
+        created = []
+        class TrackedThread(IdleThread):
+            def __init__(self, **kwargs):
+                self.label = kwargs["args"][2]
+                self.joins = 0
+                created.append(self)
+            def join(self, timeout=None):
+                self.joins += 1
+        with self.run_fixture() as (_, output), patch.object(bench.threading, "Thread", TrackedThread):
+            with self.assertRaises(SystemExit):
+                bench.main()
+        self.assertEqual([worker.label for worker in created], ["mod-0", "node-0", "client-0", "prober"])
+        self.assertTrue(all(worker.joins for worker in created))
+        result = json.loads(output.getvalue())
+        self.assertEqual(result["phases"], {"warmup_seconds": 5, "steady_seconds": 20.0, "drain_seconds": 1.0})
+        self.assertEqual(result["report"]["offered"], 0)
+
     @contextmanager
     def run_fixture(self, initial_status=True):
         processes = []
@@ -171,7 +242,7 @@ class BenchmarkTests(unittest.TestCase):
              patch.object(bench.subprocess, "Popen", side_effect=spawn), \
              patch.object(bench.threading, "Thread", IdleThread), \
              patch.object(bench.time, "sleep"), \
-             patch.object(bench.time, "monotonic", side_effect=[100.0, 120.0]), \
+             patch.object(bench.time, "monotonic", side_effect=[100.0, 120.0, 121.0]), \
              patch.object(bench, "cpu_seconds", return_value=0), \
              patch.object(bench, "owns_listener", return_value=True, create=True), \
              patch.object(bench, "health", return_value=True), \

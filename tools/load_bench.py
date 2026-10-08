@@ -32,10 +32,26 @@ def cpu_seconds(pid):
 
 
 def timed(samples, lock, action):
-    start = time.monotonic()
-    ok = action()
+    record = {"started": time.monotonic(), "finished": None, "ok": None, "error": None}
     with lock:
-        samples.append((time.monotonic() - start, ok))
+        samples.append(record)
+    ok, error = False, None
+    try:
+        ok = bool(action())
+    except Exception as caught:
+        ok, error = False, type(caught).__name__
+    finally:
+        finished = time.monotonic()
+        with lock:
+            record.update(finished=finished, ok=ok, error=error)
+
+
+def run_worker(failures, lock, name, target, *args):
+    try:
+        target(*args)
+    except Exception as error:
+        with lock:
+            failures.append(f"{name}: {type(error).__name__}")
 
 
 class NoRedirects(urllib.request.HTTPRedirectHandler):
@@ -133,9 +149,9 @@ def mod_connection(home, session, stop):
     wire = json.dumps({"node_connect": {"session_id": session, "version": "bench"}}).encode()
     try:
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+            connection.settimeout(1)
             connection.connect(os.path.join(home, "hooks.sock"))
             connection.sendall(struct.pack(">I", len(wire)) + wire)
-            connection.settimeout(1)
             while not stop.is_set():
                 try:
                     if not connection.recv(65536):
@@ -175,16 +191,37 @@ def summary(samples):
             **accepted, "error_latency": errors}
 
 
+def window_summary(records, start, end):
+    offered = [record for record in records if start <= record["started"] < end]
+    steady = [record for record in offered if record["finished"] is not None and record["finished"] <= end]
+    drain = [record for record in offered if record["finished"] is not None and record["finished"] > end]
+    def latencies(rows):
+        return summary([(row["finished"] - row["started"], row["ok"]) for row in rows])
+    return {**latencies(steady), "offered": len(offered),
+            "pending_at_boundary": len(offered) - len(steady),
+            "drain": latencies(drain), "unfinished": len(offered) - len(steady) - len(drain),
+            "excluded": len(records) - len(offered)}
+
+
 def verdict(result):
     reasons = []
-    for cohort in ("health", "view", "hook"):
+    cohorts = ["health", "view", "hook"] + (["report"] if "report" in result else [])
+    for cohort in cohorts:
         measured = result[cohort]
         if not measured["accepted_n"]:
-            reasons.append(f"{cohort}: no successful samples")
+            reasons.append(f"{cohort}: no successful steady samples")
         if measured["failed"]:
             reasons.append(f"{cohort}: {measured['failed']} failed requests")
+        if measured.get("drain", {}).get("failed", 0):
+            reasons.append(f"{cohort}: failed requests during drain")
+        if measured.get("unfinished", 0):
+            reasons.append(f"{cohort}: unfinished requests")
     if result.get("unfinished_workers", 0):
         reasons.append("workers did not finish")
+    if result.get("worker_failures"):
+        reasons.append("workers failed")
+    if result.get("daemon_exited_during_load", False):
+        reasons.append("daemon exited during load")
     return {"passed": not reasons, "reasons": reasons}
 
 
@@ -232,20 +269,20 @@ def main():
             raise SystemExit("alondra status failed against the bench daemon")
 
         lock = threading.Lock()
-        samples = {"health": [], "view": [], "hook": []}
+        samples = {"health": [], "view": [], "hook": [], "report": []}
+        worker_failures = []
 
         def node(n):
             session = f"bench-node-{n}"
-            threading.Thread(target=mod_connection, args=(home, session, stop), daemon=True).start()
             i = 0
             while not stop.is_set():
                 call = f"{session}-{i // len(EVENTS)}"
                 event = EVENTS[i % len(EVENTS)]
                 if event == "PreToolUse":
-                    report(home, session, "tool.start", call)
+                    timed(samples["report"], lock, lambda: report(home, session, "tool.start", call))
                 timed(samples["hook"], lock, lambda: hook(home, session, event, call))
                 if event == "PostToolUse":
-                    report(home, session, "tool.end", call)
+                    timed(samples["report"], lock, lambda: report(home, session, "tool.end", call))
                 i += 1
                 time.sleep(args.hook_every)
 
@@ -259,38 +296,56 @@ def main():
                 timed(samples["health"], lock, lambda: health(args.port))
                 time.sleep(0.5)
 
-        workers = [threading.Thread(target=node, args=(n,), daemon=True) for n in range(args.nodes)]
-        workers += [threading.Thread(target=client, daemon=True) for _ in range(args.clients)]
-        workers.append(threading.Thread(target=prober, daemon=True))
+        def mod(n):
+            mod_connection(home, f"bench-node-{n}", stop)
+            if not stop.is_set():
+                with lock:
+                    worker_failures.append(f"mod-{n}: connection ended during load")
+
+        def worker(name, target, *args):
+            return threading.Thread(target=run_worker,
+                args=(worker_failures, lock, name, target, *args), daemon=True)
+
+        workers = [worker(f"mod-{n}", mod, n) for n in range(args.nodes)]
+        workers += [worker(f"node-{n}", node, n) for n in range(args.nodes)]
+        workers += [worker(f"client-{n}", client) for n in range(args.clients)]
+        workers.append(worker("prober", prober))
         for w in workers:
             w.start()
             started_workers.append(w)
         for _ in range(args.burn):
             burners.append(subprocess.Popen(["/usr/bin/yes"], stdout=subprocess.DEVNULL))
         time.sleep(5)
-        with lock:
-            for s in samples.values():
-                s.clear()
         cpu_before, wall_before = cpu_seconds(daemon.pid), time.monotonic()
         if args.sample:
             subprocess.run(["sample", str(daemon.pid), "10", "-file", args.sample], capture_output=True)
             time.sleep(max(0, args.seconds - 10))
         else:
             time.sleep(args.seconds)
+        wall_after = time.monotonic()
         cpu = cpu_seconds(daemon.pid) - cpu_before
-        wall = time.monotonic() - wall_before
+        wall = wall_after - wall_before
+        daemon_exited = daemon.poll() is not None
         stop.set()
         for b in burners:
             b.kill()
             b.wait()
         for w in started_workers:
             w.join(timeout=35)
-        daemon.terminate()
-        daemon.wait(timeout=30)
-        result = {"schema": 1, "probe_endpoint": "/daemon", "label": args.label, "nodes": args.nodes, "burn": args.burn, "seconds": round(wall),
+        stop_process(daemon)
+        drain_seconds = time.monotonic() - wall_after
+        result = {"schema": 1, "probe_endpoint": "/daemon", "label": args.label, "nodes": args.nodes, "burn": args.burn, "seconds": round(wall, 3),
+                  "phases": {"warmup_seconds": 5, "steady_seconds": round(wall, 3), "drain_seconds": round(drain_seconds, 3)},
+                  "worker_failures": list(worker_failures), "daemon_exited_during_load": daemon_exited,
+                  "cpu_seconds": round(cpu, 3),
                   "unfinished_workers": sum(w.is_alive() for w in started_workers),
                   "cpu_cores": round(cpu / wall, 2), "load_avg": round(os.getloadavg()[0], 1)}
-        result.update({k: summary(v) for k, v in samples.items()})
+        with lock:
+            recorded = {name: [dict(row) for row in rows] for name, rows in samples.items()}
+        result.update({name: window_summary(rows, wall_before, wall_after) for name, rows in recorded.items()})
+        result["samples"] = {name: [{"started_s": row["started"] - wall_before,
+            "finished_s": None if row["finished"] is None else row["finished"] - wall_before,
+            "ok": row["ok"], "error": row["error"]} for row in rows] for name, rows in recorded.items()}
         result["view_failures"] = sorted(set(FAILURES))[:5]
         result["verdict"] = verdict(result)
         print(json.dumps(result))
