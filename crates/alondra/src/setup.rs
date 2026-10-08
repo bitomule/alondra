@@ -1385,9 +1385,30 @@ mod brew_upgrade_tests {
 
     fn fixture_home() -> PathBuf {
         let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
-        let home = std::env::temp_dir().join(format!("alondra-upgrade-stop-{nonce}"));
-        std::fs::create_dir(&home).unwrap();
-        home
+        fixture_home_with_nonce(nonce)
+    }
+
+    fn fixture_home_with_nonce(nonce: u128) -> PathBuf {
+        use std::os::unix::ffi::{OsStrExt, OsStringExt};
+        let template = std::env::temp_dir().join(format!("alondra-upgrade-stop-{nonce}-XXXXXX"));
+        let mut bytes = std::ffi::CString::new(template.as_os_str().as_bytes()).unwrap().into_bytes_with_nul();
+        let created = unsafe { libc::mkdtemp(bytes.as_mut_ptr().cast()) };
+        assert!(!created.is_null(), "{}", std::io::Error::last_os_error());
+        bytes.pop();
+        PathBuf::from(std::ffi::OsString::from_vec(bytes))
+    }
+
+    #[test]
+    fn fixture_homes_do_not_collide_when_clock_repeats() {
+        struct Homes(Vec<PathBuf>);
+        impl Drop for Homes {
+            fn drop(&mut self) { for path in &self.0 { let _ = std::fs::remove_dir_all(path); } }
+        }
+        let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let mut homes = Homes(vec![fixture_home_with_nonce(nonce)]);
+        homes.0.push(fixture_home_with_nonce(nonce));
+        assert_ne!(homes.0[0], homes.0[1]);
+        assert!(homes.0.iter().all(|path| path.is_dir()));
     }
 
     #[test]
