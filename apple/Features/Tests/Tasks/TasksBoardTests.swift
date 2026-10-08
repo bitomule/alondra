@@ -76,11 +76,15 @@ final class TasksBoardTests: XCTestCase {
     }
 
     func testWithoutTerminalTasksThereIsNothingToArchive() throws {
-        let board = TasksBoard(document: try Fixtures.document("tasks-ios"))
-
+        let board = TasksBoard(document: try Samples.document("tasks-populated") { object in
+            object["sections"] = (object["sections"] as? [[String: Any]] ?? []).filter { $0["id"] as? String != "actions" }
+        })
         XCTAssertNil(board.archiveCompleted)
-        XCTAssertEqual(board.schedules?.count, 0, "the daemon sends no count when nothing is scheduled")
-        XCTAssertEqual(board.active.requests.count, 6)
+
+        let daemons = TasksBoard(document: try Fixtures.document("tasks-ios"))
+        XCTAssertNotNil(daemons.archiveCompleted, "the BlurCamera request has finished tasks")
+        XCTAssertEqual(daemons.schedules?.count, 0, "the daemon sends no count when nothing is scheduled")
+        XCTAssertEqual(daemons.active.requests.count, 7)
     }
 
     func testAScheduledRunInProgressIsAnActiveRequestMarkedScheduled() throws {
@@ -139,9 +143,28 @@ final class TasksBoardTests: XCTestCase {
     }
 
     func testARequestThatOnlyAnsweredIsFinishedAsAnswered() throws {
-        let board = TasksBoard(document: try Fixtures.document("tasks-ios"))
+        let page = try Fixtures.document("tasks-ios-finished")
+        let rows = page.sections.first { $0.id == "finished" }?.items.compactMap { item -> Row? in
+            if case .row(let row) = item { row } else { nil }
+        } ?? []
+        let board = TasksBoard(document: try Fixtures.document("tasks-ios"), pages: ["finished": TasksPage(rows: rows, more: nil)])
 
-        XCTAssertEqual(board.finished.requests.map(\.state), ["Answered"])
+        XCTAssertEqual(board.finished.requests.first { $0.id == "r-answer" }?.state, "Answered")
+    }
+
+    func testTheListCarriesOnlyHowMuchIsFinishedAndTheEndedTasksOfLiveRequestsFoldThere() throws {
+        let board = TasksBoard(document: try Fixtures.document("tasks-ios"))
+        XCTAssertTrue(board.finished.requests.isEmpty)
+        XCTAssertEqual(board.finished.more?.remaining, UInt32(board.finished.count))
+        let live = try XCTUnwrap(board.active.requests.first { $0.id == "r-blurcamera" })
+        XCTAssertEqual(live.tasks.map(\.title), ["Link the website in app.json", "Photos extension hint after the first blur"])
+        XCTAssertEqual(live.tasks.map(\.state), ["Won't start: Claude Code doesn't trust ~/Projects/indie-apps", "No activity"])
+
+        let page = try Fixtures.document("tasks-ios-finished")
+        let ended = page.sections.first { $0.id == "finished" }?.items.compactMap { item -> String? in
+            if case .row(let row) = item { row.id } else { nil }
+        }
+        XCTAssertEqual(ended?.contains("r-blurcamera:ended"), true)
     }
 
     func testAnEmptyBoardSaysSo() throws {

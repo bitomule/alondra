@@ -175,11 +175,28 @@ pub(crate) async fn launch(domain: &DomainRuntime, home: &Path, actor: &Actor, b
 /// `launch`, for either origin. An automatic launch holds the task's launch guard already.
 pub(crate) async fn launch_from(domain: &DomainRuntime, home: &Path, actor: &Actor, body: LaunchBody,
     choices: impl FnOnce(&RequestId) -> Option<Choices>, launcher: &impl crate::orchestrate::Launcher, origin: Origin) -> Result<Value, DomainError> {
-    if matches!(origin, Origin::Orchestrator | Origin::Admitted) {
+    let task = body.task.clone();
+    let launched = if matches!(origin, Origin::Orchestrator | Origin::Admitted) {
         let _launching = Launching::begin(domain, &body.task)?;
-        return launch_guarded(domain, home, actor, body, choices, launcher, origin, None).await;
+        launch_guarded(domain, home, actor, body, choices, launcher, origin, None).await
+    } else {
+        launch_guarded(domain, home, actor, body, choices, launcher, origin, None).await
+    };
+    match &launched {
+        Ok(_) => remember_refusal(domain, &task, None),
+        Err(error) if error.code == "launch_failed" => remember_refusal(domain, &task, Some(("launch_failed", Some(&error.message)))),
+        Err(_) => {}
     }
-    launch_guarded(domain, home, actor, body, choices, launcher, origin, None).await
+    launched
+}
+
+/// What the Tasks list says about a task that did not start: kept until it starts.
+fn remember_refusal(domain: &DomainRuntime, task: &TaskId, refusal: Option<(&str, Option<&str>)>) {
+    let recorded = domain.store.lock().expect("domain store poisoned")
+        .set_launch_refusal(task, refusal, alondra_core::now_millis());
+    if let Err(error) = recorded {
+        log!("could not record why {task} did not start: {error:?}");
+    }
 }
 
 /// The right to launch a task's node, given back however the launch ends, a panic included.
@@ -291,6 +308,7 @@ async fn launch_guarded(domain: &DomainRuntime, home: &Path, actor: &Actor, body
         return Err(conflict(format!("{} already has a connected agent; send it what to do", body.task)));
     }
     if let Some(exhausted) = domain.live.usage_pause.current() {
+        remember_refusal(domain, &task.id, Some(("usage_exhausted", None)));
         let why = if exhausted.by_user { "The user paused Claude work" } else { "Claude usage ran out on this Mac" };
         return Err(DomainError::new("usage_exhausted", format!(
             "{why} until {}: {} stays as it is and can be launched after that",
@@ -300,9 +318,11 @@ async fn launch_guarded(domain: &DomainRuntime, home: &Path, actor: &Actor, body
         return Err(DomainError::new("invalid_input", format!("directory {cwd} does not exist")));
     }
     if let Some(why) = domain.live.machine_watch.refuse_launch(Path::new(&cwd)) {
+        remember_refusal(domain, &task.id, Some(("disk_low", None)));
         return Err(DomainError::new("disk_low", format!("{why}. {} stays as it is and can be launched after that", body.task)));
     }
     if let Some(repository) = crate::claude_trust::check(Path::new(&cwd)) {
+        remember_refusal(domain, &task.id, Some(("workspace_untrusted", Some(&repository.to_string_lossy()))));
         return Err(DomainError::new("workspace_untrusted", crate::claude_trust::instructions(&repository)));
     }
     let known = domain.task_worktree(&task.id).ok().flatten().map(PathBuf::from);

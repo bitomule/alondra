@@ -4,11 +4,11 @@
   "view": "tasks",
   "key": "tasks",
   "client": "tui",
-  "version": "v366395a592a26dff",
+  "version": "v162646afefff35f4",
   "cursor": "cursor-1",
   "title": "Tasks",
   "status": {
-    "version": "v716dae2f2714c8bd",
+    "version": "v1ac3a1e39f0643d1",
     "summary": "2 questions · 3 to read · 0 nodes working",
     "badge": 5,
     "counts": [
@@ -20,12 +20,12 @@
       {
         "id": "tasks",
         "label": "Tasks",
-        "value": 6
+        "value": 8
       },
       {
         "id": "agents",
         "label": "Fleet",
-        "value": 1
+        "value": 2
       },
       {
         "id": "working",
@@ -81,7 +81,7 @@
     {
       "id": "active",
       "title": "Active",
-      "count": 5,
+      "count": 6,
       "collapsed": false,
       "items": [
         {
@@ -118,7 +118,7 @@
               "subtitle": "from: Badge accuracy",
               "badges": [
                 {
-                  "text": "Not started",
+                  "text": "Waits for “Restore the native review experience”",
                   "tone": "neutral"
                 }
               ],
@@ -183,6 +183,60 @@
         },
         {
           "type": "row",
+          "id": "r-blurcamera",
+          "link": {
+            "kind": "view",
+            "key": "task:t-hf-share-hint"
+          },
+          "icon": "mission",
+          "title": "BlurCamera · weekly improvement",
+          "badges": [
+            {
+              "text": "2 of 4",
+              "tone": "neutral"
+            }
+          ],
+          "depth": 0,
+          "struck": false,
+          "children": [
+            {
+              "id": "t-hf-registry",
+              "link": {
+                "kind": "view",
+                "key": "task:t-hf-registry"
+              },
+              "icon": "task",
+              "title": "Link the website in app.json",
+              "badges": [
+                {
+                  "text": "Won't start: Claude Code doesn't trust ~/Projects/indie-apps",
+                  "tone": "neutral"
+                }
+              ],
+              "depth": 1,
+              "struck": false
+            },
+            {
+              "id": "t-hf-share-hint",
+              "link": {
+                "kind": "view",
+                "key": "task:t-hf-share-hint"
+              },
+              "icon": "mission",
+              "title": "Photos extension hint after the first blur",
+              "badges": [
+                {
+                  "text": "No activity",
+                  "tone": "accent"
+                }
+              ],
+              "depth": 1,
+              "struck": false
+            }
+          ]
+        },
+        {
+          "type": "row",
           "id": "t-legacy-editor",
           "link": {
             "kind": "view",
@@ -210,7 +264,7 @@
           "title": "Write the release notes",
           "badges": [
             {
-              "text": "Not started",
+              "text": "Waiting for the orchestrator to launch it",
               "tone": "neutral"
             }
           ],
@@ -258,19 +312,13 @@
     {
       "id": "finished",
       "title": "Finished",
-      "count": 1,
+      "count": 2,
       "collapsed": true,
-      "items": [
-        {
-          "type": "row",
-          "id": "r-answer",
-          "icon": "check",
-          "title": "Is main green?",
-          "subtitle": "Answered",
-          "depth": 0,
-          "struck": false
-        }
-      ]
+      "items": [],
+      "more": {
+        "key": "tasks?section=finished&after=0",
+        "remaining": 2
+      }
     },
     {
       "id": "archived",
@@ -278,6 +326,29 @@
       "count": 0,
       "collapsed": true,
       "items": []
+    },
+    {
+      "id": "actions",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "actions",
+          "actions": [
+            {
+              "id": "archive_done:view@6",
+              "label": "Archive Completed",
+              "style": "secondary",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "key": "A"
+            }
+          ]
+        }
+      ]
     }
   ]
 }

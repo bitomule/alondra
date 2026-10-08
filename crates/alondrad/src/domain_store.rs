@@ -118,6 +118,13 @@ const AUTO_LAUNCHES: &str = "CREATE TABLE IF NOT EXISTS auto_launches(\
  reason TEXT CHECK(reason IS NULL OR reason IN('usage_exhausted','workspace_untrusted','no_plan','launch_failed')),\
  detail TEXT,\
  at INTEGER NOT NULL);";
+/// Why the last launch of a task that has not started was refused, whoever asked for it, so its
+/// state says it. `detail` is the folder Claude Code does not trust, or the error.
+const LAUNCH_REFUSALS: &str = "CREATE TABLE IF NOT EXISTS launch_refusals(\
+ task_id TEXT PRIMARY KEY REFERENCES tasks(id),\
+ reason TEXT NOT NULL CHECK(reason IN('usage_exhausted','disk_low','workspace_untrusted','launch_failed')),\
+ detail TEXT,\
+ at INTEGER NOT NULL);";
 /// The worktree a node took over from the node it replaced: Alondra may delete it with the node,
 /// as it may the worktree Claude Code made for a node, never a folder it was only launched in.
 const INHERITED_WORKTREES: &str = "CREATE TABLE IF NOT EXISTS inherited_worktrees(\
@@ -393,6 +400,7 @@ impl DomainStore {
         tx.execute_batch(TASK_CLOSINGS)?;
         tx.execute_batch(TASK_LAUNCH_PLANS)?;
         tx.execute_batch(AUTO_LAUNCHES)?;
+        tx.execute_batch(LAUNCH_REFUSALS)?;
         tx.execute_batch(INHERITED_WORKTREES)?;
         tx.execute_batch(TASK_WORKTREES)?;
         if version != 0 {
@@ -922,6 +930,22 @@ impl DomainStore {
         self.note_side_write();
         Ok(())
     }
+    pub(crate) fn launch_refusals(&self) -> Result<Vec<(TaskId, String, Option<String>)>> {
+        let mut query = self.conn.prepare("SELECT task_id,reason,detail FROM launch_refusals ORDER BY task_id")?;
+        let rows = query.query_map([], |row| Ok((TaskId(row.get(0)?), row.get(1)?, row.get(2)?)))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+    pub(crate) fn set_launch_refusal(&mut self, task_id: &TaskId, refusal: Option<(&str, Option<&str>)>, now: i64) -> Result<()> {
+        match refusal {
+            Some((reason, detail)) => self.conn.execute(
+                "INSERT INTO launch_refusals(task_id,reason,detail,at) VALUES(?1,?2,?3,?4) ON CONFLICT(task_id) DO UPDATE SET reason=excluded.reason,detail=excluded.detail,at=excluded.at",
+                params![task_id.0, reason, detail, now])?,
+            None => self.conn.execute("DELETE FROM launch_refusals WHERE task_id=?1", [&task_id.0])?,
+        };
+        self.note_side_write();
+        Ok(())
+    }
+
     pub(crate) fn launch_queue(&self) -> Result<Vec<QueuedLaunch>> {
         let mut query = self.conn.prepare("SELECT task_id,body,origin,enqueued_at FROM launch_queue ORDER BY enqueued_at,task_id")?;
         let rows = query.query_map([], |row| {

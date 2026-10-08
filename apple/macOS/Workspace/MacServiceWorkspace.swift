@@ -231,11 +231,20 @@ public struct MacServiceDetail: View {
                                                onAction: perform,
                                                onReply: { presentation.send(.sendReply($0, text: $1)) },
                                                onLink: openLink,
-                                               onMore: { presentation.send(.select(.viewKey($0))) },
+                                               onMore: { key in
+                                                   if section.collapsed && section.items.isEmpty {
+                                                       presentation.send(.sectionMore(section.id, key: key))
+                                                   } else {
+                                                       presentation.send(.select(.viewKey(key)))
+                                                   }
+                                               },
                                                onForm: { presentation.send(.beginViewForm($0)) },
                                                onContent: { presentation.send(.contentRequested($0)) },
                                                onAttachment: { presentation.send(.attachmentRequested($0)) },
-                                               onContentRow: { showContent(of: document, scrollTo: proxy) })
+                                               onContentRow: { showContent(of: document, scrollTo: proxy) },
+                                               opened: presentation.openSections.contains(section.id),
+                                               page: presentation.sectionPages[section.id],
+                                               onToggle: { presentation.send(.sectionToggled(section)) })
                                     .id(section.id)
                             }
                         }.frame(maxWidth: 900, alignment: .leading).padding(24)

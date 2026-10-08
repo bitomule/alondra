@@ -4,11 +4,11 @@
   "view": "tasks",
   "key": "tasks",
   "client": "ios",
-  "version": "v38c9341a9e9d5ac2",
+  "version": "vb80d07cbd701c8d0",
   "cursor": "cursor-1",
   "title": "Tareas",
   "status": {
-    "version": "vefbd97604ad4892a",
+    "version": "v10d4baf30216fb80",
     "summary": "2 preguntas · 3 por leer · 0 nodos trabajando",
     "badge": 5,
     "counts": [
@@ -20,12 +20,12 @@
       {
         "id": "tasks",
         "label": "Tareas",
-        "value": 6
+        "value": 8
       },
       {
         "id": "agents",
         "label": "Flota",
-        "value": 1
+        "value": 2
       },
       {
         "id": "working",
@@ -81,7 +81,7 @@
     {
       "id": "active",
       "title": "Activas",
-      "count": 5,
+      "count": 6,
       "collapsed": false,
       "items": [
         {
@@ -132,10 +132,10 @@
                   },
                   "icon": "task",
                   "title": "Decrement the badge on retraction",
-                  "subtitle": "Sin empezar",
+                  "subtitle": "Espera a «Restore the native review experience»",
                   "badges": [
                     {
-                      "text": "Sin empezar",
+                      "text": "Espera a «Restore the native review experience»",
                       "tone": "neutral"
                     }
                   ],
@@ -215,6 +215,79 @@
         },
         {
           "type": "row",
+          "id": "r-blurcamera",
+          "link": {
+            "kind": "view",
+            "key": "task:t-hf-share-hint"
+          },
+          "icon": "mission",
+          "title": "BlurCamera · weekly improvement",
+          "subtitle": "Activa",
+          "depth": 0,
+          "struck": false,
+          "children": [
+            {
+              "id": "t-hf-registry",
+              "link": {
+                "kind": "view",
+                "key": "task:t-hf-registry"
+              },
+              "icon": "task",
+              "title": "Link the website in app.json",
+              "subtitle": "No arranca: Claude Code no confía en ~/Projects/indie-apps",
+              "badges": [
+                {
+                  "text": "No arranca: Claude Code no confía en ~/Projects/indie-apps",
+                  "tone": "neutral"
+                }
+              ],
+              "trailing": {
+                "kind": "count",
+                "value": 0
+              },
+              "depth": 1,
+              "struck": false
+            },
+            {
+              "id": "t-hf-share-hint",
+              "link": {
+                "kind": "view",
+                "key": "task:t-hf-share-hint"
+              },
+              "icon": "mission",
+              "title": "Photos extension hint after the first blur",
+              "subtitle": "Sin actividad",
+              "badges": [
+                {
+                  "text": "Sin actividad",
+                  "tone": "accent"
+                }
+              ],
+              "trailing": {
+                "kind": "count",
+                "value": 0
+              },
+              "depth": 1,
+              "struck": false,
+              "children": [
+                {
+                  "id": "activity",
+                  "icon": "notice",
+                  "title": "Waiting for the snapshot run to finish.",
+                  "trailing": {
+                    "kind": "time",
+                    "at": "2026-09-30T07:00:00.000Z",
+                    "format": "relative"
+                  },
+                  "depth": 0,
+                  "struck": false
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "row",
           "id": "t-legacy-editor",
           "link": {
             "kind": "view",
@@ -245,10 +318,10 @@
           },
           "icon": "task",
           "title": "Write the release notes",
-          "subtitle": "Sin empezar",
+          "subtitle": "Esperando a que el orquestador la lance",
           "badges": [
             {
-              "text": "Sin empezar",
+              "text": "Esperando a que el orquestador la lance",
               "tone": "neutral"
             }
           ],
@@ -319,19 +392,13 @@
     {
       "id": "finished",
       "title": "Terminadas",
-      "count": 1,
+      "count": 2,
       "collapsed": true,
-      "items": [
-        {
-          "type": "row",
-          "id": "r-answer",
-          "icon": "check",
-          "title": "Is main green?",
-          "subtitle": "Respondida",
-          "depth": 0,
-          "struck": false
-        }
-      ]
+      "items": [],
+      "more": {
+        "key": "tasks?section=finished&after=0",
+        "remaining": 2
+      }
     },
     {
       "id": "archived",
@@ -339,6 +406,28 @@
       "count": 0,
       "collapsed": true,
       "items": []
+    },
+    {
+      "id": "actions",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "actions",
+          "actions": [
+            {
+              "id": "archive_done:view@6",
+              "label": "Archivar terminadas",
+              "style": "secondary",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true
+            }
+          ]
+        }
+      ]
     }
   ]
 }

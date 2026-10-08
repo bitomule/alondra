@@ -219,10 +219,14 @@ async fn a_launch_in_a_repository_claude_does_not_trust_is_refused_before_claude
     assert!(refused.message.contains(project.to_str().unwrap()), "{}", refused.message);
     assert!(claude.calls.lock().unwrap().is_empty());
     assert!(f.domain.state().unwrap().tasks[&TaskId::from("t")].agent_id.is_none());
+    let refusals = || f.domain.store.lock().unwrap().launch_refusals().unwrap();
+    assert_eq!(refusals(), [(TaskId::from("t"), "workspace_untrusted".to_owned(), Some(project.to_str().unwrap().to_owned()))],
+        "the Tasks list says why it did not start");
 
     trust(true);
     launch(&f.domain, &f.home, &actor, launch_body(&f, json!({"model": "sonnet"})), |_| None, &claude).await.unwrap();
     assert_eq!(claude.calls.lock().unwrap().len(), 1);
+    assert!(refusals().is_empty(), "a task that started has nothing left to explain");
 }
 
 #[tokio::test]

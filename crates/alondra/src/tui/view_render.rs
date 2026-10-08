@@ -21,12 +21,12 @@ fn opens_schedules(view: &View, id: &str) -> bool {
 
 pub fn sections(view: &View) -> impl Iterator<Item = &Section> {
     view.sections.iter().filter(|section| {
-        !section.id.eq("detail")
+        header_key(view, section).is_some() || (!section.id.eq("detail")
             && !section.items.is_empty()
             && !(view.key == "tasks"
                 && section.items.iter().all(
                     |item| matches!(item, Item::Row(row) if opens_schedules(view, &row.id)),
-                ))
+                )))
     })
 }
 
@@ -41,7 +41,7 @@ fn folds(view: &View, section: &Section) -> bool {
 
 /// The list key of a section header the user opens and closes: one the daemon sends folded.
 pub fn header_key(view: &View, section: &Section) -> Option<String> {
-    (folds(view, section) && section.title.is_some() && !section.items.is_empty())
+    (folds(view, section) && section.title.is_some() && (!section.items.is_empty() || section.more.is_some()))
         .then(|| format!("{SECTION_HEADER}{}", section.id))
 }
 

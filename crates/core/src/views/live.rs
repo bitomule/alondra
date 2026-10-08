@@ -47,6 +47,9 @@ pub struct LiveSnapshot {
     pub search_matches: Option<Vec<String>>,
     #[serde(default)]
     pub usage_exhausted: Option<LiveUsageExhausted>,
+    /// Why the last launch of a task that has not started was refused, by task id.
+    #[serde(default)]
+    pub launch_refusals: BTreeMap<String, LiveLaunchRefusal>,
     #[serde(default)]
     pub pacing: Option<LivePacing>,
 }
@@ -79,6 +82,14 @@ pub enum LiveHold {
     Cpu { load: u32, cpus: usize },
     /// Nothing holds it but the minute between two starts.
     Next,
+}
+/// `reason` is `usage_exhausted`, `disk_low`, `workspace_untrusted` (with the folder as `detail`)
+/// or `launch_failed` (with the error).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LiveLaunchRefusal {
+    pub reason: String,
+    #[serde(default)]
+    pub detail: Option<String>,
 }
 /// When Claude usage ran out on this Mac and when Claude said it comes back, as local ISO times.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -115,6 +126,9 @@ pub struct LiveNode {
     pub working: bool,
     #[serde(default)]
     pub waiting: bool,
+    /// Not working nor waiting on anything, and nothing new for `states::NODE_QUIET_MS` or longer.
+    #[serde(default)]
+    pub quiet: bool,
     #[serde(default)]
     pub state_since: Option<String>,
     pub last_message: Option<String>,

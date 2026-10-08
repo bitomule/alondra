@@ -16,7 +16,45 @@ fn state(task: &Task, context: &RenderContext<'_>) -> String {
     {
         return wait_text(&reason, context);
     }
+    if plain == t!(context.lang, "Not started", "Sin empezar") {
+        return not_started(task, context);
+    }
+    if task.state == TaskState::Running && plain == t!(context.lang, "Working", "Trabajando") && quiet(task, context) {
+        return t!(context.lang, "No activity", "Sin actividad").into();
+    }
     plain.into()
+}
+
+/// Why a task that has not started has not, as a fact: what refused its last launch, or that the
+/// orchestrator has not launched it.
+fn not_started(task: &Task, context: &RenderContext<'_>) -> String {
+    let lang = context.lang;
+    let Some(refusal) = context.live.launch_refusals.get(&task.id.0) else {
+        let pending = task.dependencies.iter().chain(&task.delivered_dependencies)
+            .filter_map(|id| context.domain.tasks.get(id))
+            .find(|dependency| !dependency.state.terminal());
+        return match pending {
+            Some(dependency) => wait_text(&crate::domain::WaitReason::BlockedBy { task: dependency.id.clone() }, context),
+            None => t!(lang, "Waiting for the orchestrator to launch it", "Esperando a que el orquestador la lance").into(),
+        };
+    };
+    match (refusal.reason.as_str(), refusal.detail.as_deref()) {
+        ("workspace_untrusted", Some(folder)) => tf!(lang, "Won't start: Claude Code doesn't trust {folder}",
+            "No arranca: Claude Code no confía en {folder}", folder = folder),
+        ("workspace_untrusted", None) => t!(lang, "Won't start: Claude Code doesn't trust its folder",
+            "No arranca: Claude Code no confía en su carpeta").into(),
+        ("usage_exhausted", _) => t!(lang, "Won't start: Claude usage ran out", "No arranca: se acabó el uso de Claude").into(),
+        ("disk_low", _) => t!(lang, "Won't start: the disk is almost full", "No arranca: el disco está casi lleno").into(),
+        (_, Some(error)) => tf!(lang, "Didn't start: {error}", "No arrancó: {error}", error = error.lines().next().unwrap_or(error)),
+        _ => t!(lang, "Didn't start", "No arrancó").into(),
+    }
+}
+
+/// The node of a running task has done nothing for long enough to say so; the row's time says how long.
+fn quiet(task: &Task, context: &RenderContext<'_>) -> bool {
+    task.agent_id.as_ref()
+        .and_then(|id| context.live.nodes.iter().find(|node| node.agent_id == id.0))
+        .is_some_and(|node| node.quiet)
 }
 
 fn plain_state(task: &Task, context: &RenderContext<'_>) -> &'static str {
@@ -105,6 +143,26 @@ fn bucket(request: &Request, tasks: &[&Task]) -> Bucket {
     }
 }
 
+/// Where one task is listed: with its whole request when the request is finished or archived; otherwise
+/// a task still under way stays with the active request and the ones that ended fold away at the bottom.
+fn task_bucket(task: &Task, request: Bucket) -> Bucket {
+    match request {
+        Bucket::Active if task.state.terminal() && task.archived => Bucket::Archived,
+        Bucket::Active if task.state.terminal() => Bucket::Finished,
+        whole => whole,
+    }
+}
+
+fn request_buckets(domain: &DomainState) -> BTreeMap<&RequestId, Bucket> {
+    let mut tasks: BTreeMap<&RequestId, Vec<&Task>> = BTreeMap::new();
+    for task in domain.tasks.values() {
+        tasks.entry(&task.request_id).or_default().push(task);
+    }
+    domain.requests.values()
+        .map(|request| (&request.id, bucket(request, tasks.get(&request.id).map_or(&[], Vec::as_slice))))
+        .collect()
+}
+
 /// How the Tasks list places Tasks: under the Task they follow in their own Request, or, when that Task belongs
 /// to another Request still in the active list, under it there.
 struct Forest<'a> {
@@ -113,17 +171,23 @@ struct Forest<'a> {
     same_parent: BTreeMap<&'a TaskId, &'a Task>,
     nested_under: BTreeMap<&'a TaskId, &'a Task>,
     dependents: BTreeMap<&'a TaskId, Vec<&'a Task>>,
+    /// Requests still under way whose ended tasks this section lists apart from the rest.
+    split: BTreeSet<&'a RequestId>,
 }
 
 impl<'a> Forest<'a> {
-    fn new(domain: &'a DomainState) -> Self {
+    /// The tasks one section lists, each request's tree made only of its tasks in that section.
+    fn new(domain: &'a DomainState, section: Bucket, buckets: &BTreeMap<&'a RequestId, Bucket>) -> Self {
         let mut by_request: BTreeMap<&RequestId, Vec<&Task>> = BTreeMap::new();
-        for task in domain.tasks.values() {
+        for task in domain.tasks.values()
+            .filter(|task| buckets.get(&task.request_id).is_some_and(|whole| task_bucket(task, *whole) == section))
+        {
             by_request.entry(&task.request_id).or_default().push(task);
         }
-        let active: BTreeSet<&RequestId> = domain.requests.values()
-            .filter(|request| bucket(request, by_request.get(&request.id).map_or(&[], Vec::as_slice)) == Bucket::Active)
-            .map(|request| &request.id)
+        let listed: BTreeSet<&TaskId> = by_request.values().flatten().map(|task| &task.id).collect();
+        let active: BTreeSet<&RequestId> = buckets.iter()
+            .filter(|(_, whole)| section == Bucket::Active && **whole == Bucket::Active)
+            .map(|(id, _)| *id)
             .collect();
         let mut same_parent = BTreeMap::new();
         let mut nested_under = BTreeMap::new();
@@ -142,6 +206,7 @@ impl<'a> Forest<'a> {
                 let across = task.dependencies.iter().filter_map(|id| domain.tasks.get(id))
                     .find(|dependency| dependency.request_id != task.request_id
                         && active.contains(&dependency.request_id)
+                        && listed.contains(&dependency.id)
                         && !Self::reaches(domain, dependency, &task.id));
                 if let Some(parent) = across {
                     nested_under.insert(&task.id, parent);
@@ -149,7 +214,10 @@ impl<'a> Forest<'a> {
                 }
             }
         }
-        Self { domain, by_request, same_parent, nested_under, dependents }
+        let split = by_request.keys().copied()
+            .filter(|id| section != Bucket::Active && buckets.get(id) == Some(&Bucket::Active))
+            .collect();
+        Self { domain, by_request, same_parent, nested_under, dependents, split }
     }
 
     fn reaches(domain: &DomainState, from: &Task, target: &TaskId) -> bool {
@@ -198,13 +266,14 @@ fn request_row(request: &Request, forest: &Forest<'_>, context: &RenderContext<'
     let tasks = forest.tasks_of(&request.id);
     let title = forest.request_title(&request.id)
         .unwrap_or_else(|| t!(context.lang, "New request", "Nueva petición").into());
-    let mut row = common::row(
-        &request.id.0,
-        &format!("request:{}", request.id),
-        Icon::Mission,
-        title,
-        Some(request_state(request, tasks, context).into()),
-    );
+    let split = forest.split.contains(&request.id);
+    let headline = if split {
+        t!(context.lang, "The rest is still under way", "El resto sigue en marcha")
+    } else {
+        request_state(request, tasks, context)
+    };
+    let id = if split { format!("{}:ended", request.id) } else { request.id.0.clone() };
+    let mut row = common::row(&id, &format!("request:{}", request.id), Icon::Mission, title, Some(headline.into()));
     row.trailing = context
         .live
         .request_times
@@ -225,7 +294,7 @@ fn request_row(request: &Request, forest: &Forest<'_>, context: &RenderContext<'
         row.icon = Icon::Check;
     }
     let mut children = task_tree(tasks, forest, context);
-    if context.client != super::Client::Ios {
+    if context.client != super::Client::Ios && !split {
         match tasks {
             [task] => {
                 let (icon, tone) = common::task_presentation(task.state);
@@ -242,11 +311,12 @@ fn request_row(request: &Request, forest: &Forest<'_>, context: &RenderContext<'
                 return row;
             }
             [] => {}
-            many if context.client == super::Client::Tui => {
-                let done = many.iter().filter(|task| task.state.terminal()).count();
+            _ if context.client == super::Client::Tui => {
+                let all: Vec<_> = context.domain.tasks.values().filter(|task| task.request_id == request.id).collect();
+                let done = all.iter().filter(|task| task.state.terminal()).count();
                 row.subtitle = None;
                 row.badges.insert(0, super::Label {
-                    text: tf!(context.lang, "{done} of {total}", "{done} de {total}", done = done, total = many.len()),
+                    text: tf!(context.lang, "{done} of {total}", "{done} de {total}", done = done, total = all.len()),
                     tone: Tone::Neutral,
                 });
             }
@@ -417,34 +487,39 @@ pub(super) fn list(key: &str, context: &RenderContext<'_>) -> Result<View, Build
         .filter(|schedule| schedule.deleted_at.is_none()).count() as u32;
     scheduled.count = (scheduled_count > 0).then_some(scheduled_count);
     view.sections.push(scheduled);
-    let forest = Forest::new(context.domain);
-    for (id, title) in [
-        ("active", t!(context.lang, "Active", "Activas")),
-        ("finished", t!(context.lang, "Finished", "Terminadas")),
-        ("archived", t!(context.lang, "Archived", "Archivadas")),
+    let buckets = request_buckets(context.domain);
+    for (id, title, section) in [
+        ("active", t!(context.lang, "Active", "Activas"), Bucket::Active),
+        ("finished", t!(context.lang, "Finished", "Terminadas"), Bucket::Finished),
+        ("archived", t!(context.lang, "Archived", "Archivadas"), Bucket::Archived),
     ] {
+        let forest = Forest::new(context.domain, section, &buckets);
         let requests: Vec<_> = context
             .domain
             .requests
             .values()
-            .filter(|request| {
-                let bucket = bucket(request, forest.tasks_of(&request.id));
-                matches!((id, bucket), ("archived", Bucket::Archived) | ("finished", Bucket::Finished) | ("active", Bucket::Active))
-            })
+            .filter(|request| buckets.get(&request.id) == Some(&section) || !forest.tasks_of(&request.id).is_empty())
             .collect();
-        let after = page
-            .filter(|(part, _)| *part == id)
-            .map_or(0, |(_, after)| after);
-        let shown: Vec<_> = requests
-            .iter()
-            .skip(after)
-            .take(20)
-            .flat_map(|request| request_items(request, &forest, context))
-            .collect();
+        let asked = page.filter(|(part, _)| *part == id);
+        let after = asked.map_or(0, |(_, after)| after);
+        // Ended work is folded: only its title and count travel, and its rows come when it is opened.
+        let folded = id != "active" && asked.is_none();
+        let shown: Vec<_> = if folded {
+            Vec::new()
+        } else {
+            requests.iter().skip(after).take(20)
+                .flat_map(|request| request_items(request, &forest, context))
+                .collect()
+        };
         let mut section = common::section(id, Some(title.into()), shown);
         section.count = Some(requests.len() as u32);
-        section.collapsed = id != "active" && page.is_none();
-        if requests.len() > after + 20 {
+        section.collapsed = folded;
+        if folded && !requests.is_empty() {
+            section.more = Some(super::More {
+                key: format!("tasks?section={id}&after=0"),
+                remaining: requests.len() as u32,
+            });
+        } else if requests.len() > after + 20 {
             section.more = Some(super::More {
                 key: format!("tasks?section={id}&after={}", after + 20),
                 remaining: (requests.len() - after - 20) as u32,

@@ -36,7 +36,10 @@ struct FoldedRequests: View {
             .padding(.horizontal, 20)
             .padding(.top, 26)
             .padding(.bottom, 8)
-            if expanded {
+            if expanded && fold.requests.isEmpty && loading {
+                ProgressView()
+                    .frame(maxWidth: .infinity, minHeight: 44)
+            } else if expanded {
                 VStack(spacing: 0) {
                     ForEach(Array(fold.requests.enumerated()), id: \.element.id) { index, request in
                         FinishedRequestRow(request: request, first: index == 0, open: open)

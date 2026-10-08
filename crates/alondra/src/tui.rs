@@ -78,7 +78,7 @@ fn diff_reader_text(diff: crate::client::PullRequestDiff, truncated_notice: &str
     }
 }
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::io::stdout;
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::time::Duration;
@@ -521,6 +521,11 @@ impl Search {
 
 enum Msg {
     ViewHome(Result<ViewDocument, String>),
+    /// The rows of a folded section, asked for when the user opened it.
+    ViewSection {
+        section: String,
+        result: Result<ViewDocument, String>,
+    },
     ViewCard {
         key: String,
         result: Result<ViewDocument, String>,
@@ -695,6 +700,8 @@ pub struct App {
     pub task_zoom: bool,
     /// Sections the daemon sends folded that the user opened.
     pub open_sections: BTreeSet<String>,
+    /// The rows of each opened section, fetched apart: the list view only says how many there are.
+    pub section_pages: BTreeMap<String, alondra_core::views::Section>,
     /// The selected task's controls as the daemon computed them, by the revision they were read at.
     pub task_actions: HashMap<TaskId, (Revision, Vec<AvailableAction>)>,
     task_actions_asked: HashSet<(TaskId, Revision)>,
@@ -1099,6 +1106,7 @@ impl App {
             task_view: View::default(),
             task_zoom: false,
             open_sections: BTreeSet::new(),
+            section_pages: BTreeMap::new(),
             task_actions: HashMap::new(),
             task_actions_asked: HashSet::new(),
             interactions: HashMap::new(),
@@ -1305,6 +1313,25 @@ impl App {
                 .views(&key, None)
                 .map_err(|e| format!("{e:#}"));
             let _ = tx.send(Msg::ViewHome(result));
+        });
+    }
+
+    /// Asks for the rows of a folded section of the list on screen.
+    pub(super) fn load_section(&mut self, id: &str) {
+        let Some(key) = self.home_view.as_ref()
+            .and_then(|home| home.sections.iter().find(|section| section.id == id))
+            .filter(|section| section.collapsed && section.items.is_empty())
+            .and_then(|section| section.more.as_ref())
+            .map(|more| more.key.clone())
+        else {
+            return;
+        };
+        let section = id.to_owned();
+        self.spawn(move |tx, target| {
+            let result = Client::for_target(target, Duration::from_secs(25))
+                .views(&key, None)
+                .map_err(|e| format!("{e:#}"));
+            let _ = tx.send(Msg::ViewSection { section, result });
         });
     }
 
@@ -1744,12 +1771,27 @@ impl App {
                 self.screen_view_asked = None;
                 self.view_data_epoch = Some(view.data_epoch.clone());
                 self.view_status = Some(view.status.clone());
+                let changed = self.home_view.as_ref().is_none_or(|home| home.key != view.key || home.version != view.version);
                 self.home_view = Some(view);
+                if changed {
+                    for section in self.open_sections.clone() {
+                        self.load_section(&section);
+                    }
+                }
                 self.loaded = true;
                 self.connected = true;
                 self.offline = false;
                 self.reconcile();
             }
+            Msg::ViewSection { section, result } => match result {
+                Ok(page) => {
+                    if let Some(rows) = page.sections.into_iter().find(|part| part.id == section) {
+                        self.section_pages.insert(section, rows);
+                        self.reconcile();
+                    }
+                }
+                Err(error) => self.fail(error),
+            },
             Msg::ViewHome(Err(error)) => {
                 self.connected = false;
                 self.offline = true;
@@ -2100,12 +2142,18 @@ impl App {
     /// The home view as the user sees it: cards whose action is in flight are not there.
     pub(super) fn shown_home(&self) -> Option<std::borrow::Cow<'_, ViewDocument>> {
         let home = self.home_view.as_ref()?;
-        if self.hidden.is_empty() && self.in_flight.is_empty() {
+        let paged = |section: &alondra_core::views::Section| section.collapsed && section.items.is_empty()
+            && self.open_sections.contains(&section.id) && self.section_pages.contains_key(&section.id);
+        if self.hidden.is_empty() && self.in_flight.is_empty() && !home.sections.iter().any(paged) {
             return Some(std::borrow::Cow::Borrowed(home));
         }
         let now = now_millis();
         let mut shown = home.clone();
         for section in &mut shown.sections {
+            if paged(section) && let Some(page) = self.section_pages.get(&section.id) {
+                section.items = page.items.clone();
+                section.more = page.more.clone();
+            }
             section.items.retain(|item| match item {
                 alondra_core::views::Item::Card(card) => !self.is_hidden(&Key(card.id.clone()), now),
                 _ => true,

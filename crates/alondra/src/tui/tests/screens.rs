@@ -10,9 +10,18 @@ const NIGHTLY: &str = "Por qué se atascó la tarea nocturna";
 const ODD_STATE: &str = "Estado raro del nodo Parcel";
 const WEEKLY: &str = "Parcel · mejora semanal";
 
+/// Opens Finished the way Enter on its header does, with the rows the daemon sends for it.
+fn open_finished(app: &mut App, domain: &DomainState, live: &LiveSnapshot) {
+    app.open_sections.insert("finished".into());
+    app.on_msg(Msg::ViewSection {
+        section: "finished".into(),
+        result: Ok(build(domain, live, "tasks?section=finished&after=0")),
+    });
+}
+
 fn task_screen(domain: &DomainState, live: &LiveSnapshot, request: &str, task: &str) -> App {
     let mut app = app_on(Screen::Tasks, build(domain, live, "tasks"));
-    app.open_sections.insert("finished".into());
+    open_finished(&mut app, domain, live);
     app.sel = Some(Key(request.into()));
     app.on_msg(Msg::ViewCard {
         key: format!("task:{task}"),
@@ -192,7 +201,7 @@ fn fleet_lists_each_node_once_with_its_state_and_no_zero_counters() {
 fn tasks_list_one_row_per_single_task_request_with_people_times() {
     let (domain, live) = busy();
     let mut app = app_on(Screen::Tasks, build(&domain, &live, "tasks"));
-    app.open_sections.insert("finished".into());
+    open_finished(&mut app, &domain, &live);
     let screen = rendered(&mut app, 100, 24);
     dump("tasks", &screen);
     for title in [ODD_STATE, WEEKLY] {
@@ -214,7 +223,8 @@ fn the_tasks_list_nests_a_task_under_the_other_requests_task_it_follows_and_neve
     let parent = at("Restore the native review experience").min(at("Polish the Alondra beta"));
     let nested = at("Decrement the badge on retraction");
     assert!(nested > parent && lines[nested].contains("↳"), "the dependent hangs under its parent: {screen}");
-    assert!(lines[nested + 1].contains("from: Badge accuracy"), "{screen}");
+    assert!(lines[nested + 1].contains("Waits for “Restore the native review experience”"), "its state says what it waits for: {screen}");
+    assert!(lines[nested + 2].contains("from: Badge accuracy"), "{screen}");
     let waits = at("waits for Restore the native review experience");
     assert!(lines[waits].contains("↳") && waits > at("Badge accuracy"), "{screen}");
     assert!(lines[waits + 1].contains("Decrement the badge on retraction"), "{screen}");
@@ -234,10 +244,16 @@ fn finished_and_archived_start_folded_and_enter_on_the_header_opens_and_folds_th
     dump("tasks (finished folded)", &folded);
     assert!(folded.contains("▸ TERMINADAS"), "{folded}");
     assert!(!folded.contains(WEEKLY), "{folded}");
+    let finished = app.home_view.as_ref().unwrap().sections.iter().find(|section| section.id == "finished").unwrap();
+    assert!(finished.items.is_empty(), "the list view only says how many finished requests there are");
 
     let header = app.inbox_keys().iter().position(|key| key.0 == "section:finished").unwrap();
     app.move_inbox(header as isize);
     press(&mut app, KeyCode::Enter);
+    app.on_msg(Msg::ViewSection {
+        section: "finished".into(),
+        result: Ok(build(&domain, &live, "tasks?section=finished&after=0")),
+    });
     let open = rendered(&mut app, 100, 30);
     dump("tasks (finished open)", &open);
     assert!(open.contains("▾ TERMINADAS") && open.contains(WEEKLY), "{open}");

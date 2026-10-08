@@ -1,0 +1,498 @@
+{
+  "protocol": 1,
+  "data_epoch": "test-epoch",
+  "view": "tasks",
+  "key": "tasks?section=finished&after=0",
+  "client": "ios",
+  "version": "vcf68e9fdf3eb6e96",
+  "cursor": "cursor-1",
+  "title": "Tareas",
+  "status": {
+    "version": "v10d4baf30216fb80",
+    "summary": "2 preguntas · 3 por leer · 0 nodos trabajando",
+    "badge": 5,
+    "counts": [
+      {
+        "id": "inbox",
+        "label": "Bandeja",
+        "value": 5
+      },
+      {
+        "id": "tasks",
+        "label": "Tareas",
+        "value": 8
+      },
+      {
+        "id": "agents",
+        "label": "Flota",
+        "value": 2
+      },
+      {
+        "id": "working",
+        "label": "trabajando",
+        "value": 0
+      },
+      {
+        "id": "waiting",
+        "label": "esperando",
+        "value": 1
+      }
+    ],
+    "gauges": [
+      {
+        "id": "memory",
+        "label": "Memory",
+        "value": 0.38,
+        "text": "6.1 GB of 16 GB",
+        "level": "calm"
+      },
+      {
+        "id": "disk",
+        "label": "Disk available",
+        "value": 0.72,
+        "text": "120 GB",
+        "level": "calm"
+      }
+    ],
+    "orchestrator": {
+      "text": "inactivo",
+      "tone": "neutral"
+    }
+  },
+  "sections": [
+    {
+      "id": "scheduled",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "schedules",
+          "link": {
+            "kind": "view",
+            "key": "schedules"
+          },
+          "icon": "schedule",
+          "title": "Tareas programadas",
+          "depth": 0,
+          "struck": false
+        }
+      ]
+    },
+    {
+      "id": "active",
+      "title": "Activas",
+      "count": 6,
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "r-9f2156b5a8894e53901f0af576dff6a2",
+          "link": {
+            "kind": "view",
+            "key": "task:t-651c38484cd2f34e74d5107ba05f7f15"
+          },
+          "icon": "mission",
+          "title": "Polish the Alondra beta",
+          "subtitle": "Activa",
+          "trailing": {
+            "kind": "time",
+            "at": "2026-09-30T09:40:00.000Z",
+            "format": "relative"
+          },
+          "depth": 0,
+          "struck": false,
+          "children": [
+            {
+              "id": "t-651c38484cd2f34e74d5107ba05f7f15",
+              "link": {
+                "kind": "view",
+                "key": "task:t-651c38484cd2f34e74d5107ba05f7f15"
+              },
+              "icon": "action",
+              "title": "Restore the native review experience",
+              "subtitle": "Te necesita",
+              "badges": [
+                {
+                  "text": "Te necesita",
+                  "tone": "warning"
+                }
+              ],
+              "trailing": {
+                "kind": "count",
+                "value": 5
+              },
+              "depth": 1,
+              "struck": false,
+              "children": [
+                {
+                  "id": "t-badge-decrement",
+                  "link": {
+                    "kind": "view",
+                    "key": "task:t-badge-decrement"
+                  },
+                  "icon": "task",
+                  "title": "Decrement the badge on retraction",
+                  "subtitle": "Espera a «Restore the native review experience»",
+                  "badges": [
+                    {
+                      "text": "Espera a «Restore the native review experience»",
+                      "tone": "neutral"
+                    }
+                  ],
+                  "trailing": {
+                    "kind": "count",
+                    "value": 0
+                  },
+                  "depth": 2,
+                  "struck": false,
+                  "children": [
+                    {
+                      "id": "from",
+                      "icon": "request",
+                      "title": "de: Badge accuracy",
+                      "depth": 0,
+                      "struck": false
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "row",
+          "id": "r-badge",
+          "link": {
+            "kind": "view",
+            "key": "task:t-badge-decrement"
+          },
+          "icon": "mission",
+          "title": "Badge accuracy",
+          "subtitle": "Activa",
+          "trailing": {
+            "kind": "time",
+            "at": "2026-09-30T09:52:00.000Z",
+            "format": "relative"
+          },
+          "depth": 0,
+          "struck": false,
+          "children": [
+            {
+              "id": "t-badge-count",
+              "link": {
+                "kind": "view",
+                "key": "task:t-badge-count"
+              },
+              "icon": "mission",
+              "title": "Count the retracted pushes",
+              "subtitle": "Trabajando",
+              "badges": [
+                {
+                  "text": "Trabajando",
+                  "tone": "accent"
+                }
+              ],
+              "trailing": {
+                "kind": "count",
+                "value": 0
+              },
+              "depth": 1,
+              "struck": false
+            },
+            {
+              "id": "waits:t-badge-decrement:t-651c38484cd2f34e74d5107ba05f7f15",
+              "link": {
+                "kind": "view",
+                "key": "task:t-badge-decrement"
+              },
+              "icon": "branch",
+              "title": "espera a Restore the native review experience",
+              "subtitle": "Decrement the badge on retraction",
+              "depth": 1,
+              "struck": false
+            }
+          ]
+        },
+        {
+          "type": "row",
+          "id": "r-blurcamera",
+          "link": {
+            "kind": "view",
+            "key": "task:t-hf-share-hint"
+          },
+          "icon": "mission",
+          "title": "BlurCamera · weekly improvement",
+          "subtitle": "Activa",
+          "depth": 0,
+          "struck": false,
+          "children": [
+            {
+              "id": "t-hf-registry",
+              "link": {
+                "kind": "view",
+                "key": "task:t-hf-registry"
+              },
+              "icon": "task",
+              "title": "Link the website in app.json",
+              "subtitle": "No arranca: Claude Code no confía en ~/Projects/indie-apps",
+              "badges": [
+                {
+                  "text": "No arranca: Claude Code no confía en ~/Projects/indie-apps",
+                  "tone": "neutral"
+                }
+              ],
+              "trailing": {
+                "kind": "count",
+                "value": 0
+              },
+              "depth": 1,
+              "struck": false
+            },
+            {
+              "id": "t-hf-share-hint",
+              "link": {
+                "kind": "view",
+                "key": "task:t-hf-share-hint"
+              },
+              "icon": "mission",
+              "title": "Photos extension hint after the first blur",
+              "subtitle": "Sin actividad",
+              "badges": [
+                {
+                  "text": "Sin actividad",
+                  "tone": "accent"
+                }
+              ],
+              "trailing": {
+                "kind": "count",
+                "value": 0
+              },
+              "depth": 1,
+              "struck": false,
+              "children": [
+                {
+                  "id": "activity",
+                  "icon": "notice",
+                  "title": "Waiting for the snapshot run to finish.",
+                  "trailing": {
+                    "kind": "time",
+                    "at": "2026-09-30T07:00:00.000Z",
+                    "format": "relative"
+                  },
+                  "depth": 0,
+                  "struck": false
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "row",
+          "id": "t-legacy-editor",
+          "link": {
+            "kind": "view",
+            "key": "task:t-legacy-editor"
+          },
+          "icon": "pull_request",
+          "title": "Review the schedule editor",
+          "subtitle": "En revisión",
+          "badges": [
+            {
+              "text": "En revisión",
+              "tone": "info"
+            }
+          ],
+          "trailing": {
+            "kind": "count",
+            "value": 0
+          },
+          "depth": 1,
+          "struck": false
+        },
+        {
+          "type": "row",
+          "id": "t-legacy-notes",
+          "link": {
+            "kind": "view",
+            "key": "task:t-legacy-notes"
+          },
+          "icon": "task",
+          "title": "Write the release notes",
+          "subtitle": "Esperando a que el orquestador la lance",
+          "badges": [
+            {
+              "text": "Esperando a que el orquestador la lance",
+              "tone": "neutral"
+            }
+          ],
+          "trailing": {
+            "kind": "count",
+            "value": 0
+          },
+          "depth": 1,
+          "struck": false
+        },
+        {
+          "type": "row",
+          "id": "r-new",
+          "icon": "mission",
+          "title": "Nueva petición",
+          "subtitle": "El orquestador la está dividiendo",
+          "trailing": {
+            "kind": "time",
+            "at": "2026-09-30T09:59:00.000Z",
+            "format": "relative"
+          },
+          "depth": 0,
+          "struck": false
+        },
+        {
+          "type": "row",
+          "id": "r-scheduled",
+          "link": {
+            "kind": "view",
+            "key": "task:t-scheduled-lumo"
+          },
+          "icon": "mission",
+          "title": "Lumo · weekly improvement",
+          "subtitle": "Activa",
+          "depth": 0,
+          "struck": false,
+          "children": [
+            {
+              "id": "t-scheduled-lumo",
+              "link": {
+                "kind": "view",
+                "key": "task:t-scheduled-lumo"
+              },
+              "icon": "mission",
+              "title": "Lumo · weekly improvement",
+              "subtitle": "Trabajando",
+              "badges": [
+                {
+                  "text": "Trabajando",
+                  "tone": "accent"
+                },
+                {
+                  "text": "Programada",
+                  "tone": "neutral"
+                }
+              ],
+              "trailing": {
+                "kind": "count",
+                "value": 0
+              },
+              "depth": 1,
+              "struck": false
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "finished",
+      "title": "Terminadas",
+      "count": 2,
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "r-answer",
+          "icon": "check",
+          "title": "Is main green?",
+          "subtitle": "Respondida",
+          "depth": 0,
+          "struck": false
+        },
+        {
+          "type": "row",
+          "id": "r-blurcamera:ended",
+          "link": {
+            "kind": "view",
+            "key": "task:t-hf-post"
+          },
+          "icon": "mission",
+          "title": "BlurCamera · weekly improvement",
+          "subtitle": "El resto sigue en marcha",
+          "depth": 0,
+          "struck": false,
+          "children": [
+            {
+              "id": "t-hf-paywall",
+              "link": {
+                "kind": "view",
+                "key": "task:t-hf-paywall"
+              },
+              "icon": "check",
+              "title": "Lifetime offer when the paywall closes",
+              "subtitle": "Terminado",
+              "badges": [
+                {
+                  "text": "Terminado",
+                  "tone": "success"
+                }
+              ],
+              "trailing": {
+                "kind": "count",
+                "value": 0
+              },
+              "depth": 1,
+              "struck": false
+            },
+            {
+              "id": "t-hf-post",
+              "link": {
+                "kind": "view",
+                "key": "task:t-hf-post"
+              },
+              "icon": "check",
+              "title": "Post: blur faces in a video on iPhone",
+              "subtitle": "Terminado",
+              "badges": [
+                {
+                  "text": "Terminado",
+                  "tone": "success"
+                }
+              ],
+              "trailing": {
+                "kind": "count",
+                "value": 0
+              },
+              "depth": 1,
+              "struck": false
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "archived",
+      "title": "Archivadas",
+      "count": 0,
+      "collapsed": true,
+      "items": []
+    },
+    {
+      "id": "actions",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "actions",
+          "actions": [
+            {
+              "id": "archive_done:view@6",
+              "label": "Archivar terminadas",
+              "style": "secondary",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

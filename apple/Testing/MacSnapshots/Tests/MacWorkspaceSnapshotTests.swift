@@ -273,7 +273,16 @@ final class MacWorkspaceSnapshotTests: XCTestCase {
 
     func test_tasks_board() throws {
         let store = try presentation(detail: "tasks-mac")
-        assertWindow(size: CGSize(width: 900, height: 520)) { MacServiceDetail(presentation: store) }
+        assertWindow(size: CGSize(width: 900, height: 1150)) { MacServiceDetail(presentation: store) }
+    }
+
+    func test_tasks_board_finishedOpen() throws {
+        let finished = try document("tasks-mac-finished").sections.first { $0.id == "finished" }
+        let store = try presentation(detail: "tasks-mac") { state in
+            state.openSections = ["finished"]
+            state.sectionPages["finished"] = SectionPage(items: finished?.items ?? [], more: finished?.more)
+        }
+        assertWindow(size: CGSize(width: 900, height: 1500)) { MacServiceDetail(presentation: store) }
     }
 
     func test_fleet_overview() throws {

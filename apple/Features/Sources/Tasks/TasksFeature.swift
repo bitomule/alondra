@@ -16,7 +16,7 @@ public struct TasksFeature: Sendable {
         public var actions = ActionFeature.State.ios()
         public var expanded: Set<String> = []
         public var pages: [String: TasksPage] = [:]
-        var pagesVersion: String?
+        public var pagesVersion: String?
         public var loadingMore: Set<String> = []
         public var optimistic = Optimistic()
         public init() {}
@@ -42,7 +42,7 @@ public struct TasksFeature: Sendable {
     }
 
     @Dependency(\.viewsClient) var viewsClient
-    private enum CancelID { case more }
+    private enum CancelID: Hashable { case more(String) }
 
     public var body: some ReducerOf<Self> {
         Scope(state: \.screen, action: \.screen) { ScreenFeature() }
@@ -65,14 +65,18 @@ public struct TasksFeature: Sendable {
             case .screen(.loaded(let document)):
                 state.actions.dataEpoch = document.dataEpoch
                 state.optimistic.reconcile(document.version)
-                if state.pagesVersion != document.version {
-                    state.pages = [:]
-                    state.pagesVersion = nil
-                }
-                return .none
+                guard state.pagesVersion != document.version else { return .none }
+                state.pages = [:]
+                state.pagesVersion = nil
+                state.loadingMore = []
+                return .merge(state.expanded.sorted().map { .send(.showMore($0)) })
             case .foldToggled(let id):
-                if !state.expanded.insert(id).inserted { state.expanded.remove(id) }
-                return .none
+                guard state.expanded.insert(id).inserted else {
+                    state.expanded.remove(id)
+                    return .none
+                }
+                guard state.pages[id] == nil else { return .none }
+                return .send(.showMore(id))
             case .showMore(let id):
                 guard let board = state.board, state.loadingMore.insert(id).inserted,
                       let more = [board.active, board.finished, board.archived].first(where: { $0.id == id })?.more
@@ -88,7 +92,7 @@ public struct TasksFeature: Sendable {
                         await send(.moreFailed(id))
                     }
                 }
-                .cancellable(id: CancelID.more)
+                .cancellable(id: CancelID.more(id))
             case .moreLoaded(let id, let document):
                 state.loadingMore.remove(id)
                 guard let section = document.sections.first(where: { $0.id == id }) else { return .none }

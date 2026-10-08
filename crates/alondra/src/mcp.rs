@@ -19,7 +19,7 @@ fn instructions(role: Role, user: &str) -> String {
         crate::i18n::Lang::En => "English",
     };
     let common = format!(
-        "Alondra manages durable task state. The user is {user}; write user-facing content in {language}. Use the Alondra tools for durable changes; Alondra supplies their protocol metadata internally. A published result is not task completion: a task is done when the user accepts its final result or, for a pull request, when it is merged. Everything the user reads (a card's need, why and content, a result's title and summary) must be clear on its own: say the work or the decision itself, never process jargon, steps Alondra takes itself (merging, authorizing, retrying) or internal ids. An old session without a daemon-issued capability must resume with the current plugin; public session IDs and process ancestry never grant task authority."
+        "Alondra manages durable task state. The user is {user}; write user-facing content in {language}, and your replies in this terminal too: the apps show your last one beside your work. Use the Alondra tools for durable changes; Alondra supplies their protocol metadata internally. A published result is not task completion: a task is done when the user accepts its final result or, for a pull request, when it is merged. Everything the user reads (a card's need, why and content, a result's title and summary) must be clear on its own: say the work or the decision itself, never process jargon, steps Alondra takes itself (merging, authorizing, retrying) or internal ids. An old session without a daemon-issued capability must resume with the current plugin; public session IDs and process ancestry never grant task authority."
     );
     match role {
         Role::Node => format!(
@@ -1484,6 +1484,9 @@ mod tests {
         assert!(instructions(Role::Node, "User").contains("A Task owns exactly one PR for its whole life"));
         assert!(instructions(Role::Node, "User").contains("never ask User to authorize or re-authorize a merge"));
         assert!(instructions(Role::Node, "Ana").contains("Your terminal does not reach Ana: these tools do"));
+        for role in [Role::Node, Role::Orchestrator] {
+            assert!(instructions(role, "Ana").contains("and your replies in this terminal too: the apps show your last one"));
+        }
         assert!(instructions(Role::Node, "Ana").contains("deliver with present_result and is_final true"));
         assert!(instructions(Role::Node, "Ana").contains("never install, restart or replace the Alondra daemon or CLI"));
         assert!(instructions(Role::Node, "Ana").contains("A plan goes through plan mode: EnterPlanMode, then ExitPlanMode"));

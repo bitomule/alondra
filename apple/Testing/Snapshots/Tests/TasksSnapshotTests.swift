@@ -12,10 +12,18 @@ import XCTest
 final class TasksSnapshotTests: XCTestCase {
     private let lightAndDark: [SnapshotVariant] = [.light, .dark]
 
-    private func tasks(_ document: ViewDocument, expanded: Set<String> = []) -> StoreOf<TasksFeature> {
+    /// `opened` are the pages the daemon sends for a fold when it is opened.
+    private func tasks(_ document: ViewDocument, expanded: Set<String> = [], opened: [ViewDocument] = []) -> StoreOf<TasksFeature> {
         var state = TasksFeature.State()
         state.screen = .showing(document, key: .tasks)
         state.expanded = expanded
+        for page in opened {
+            for section in page.sections where expanded.contains(section.id) {
+                let rows = section.items.compactMap { if case .row(let row) = $0 { row } else { nil } }
+                state.pages[section.id] = TasksPage(rows: rows, more: section.more)
+            }
+        }
+        state.pagesVersion = opened.isEmpty ? nil : document.version
         return Store(initialState: state) { TasksFeature() } withDependencies: {
             $0.viewsClient.observe = ViewsClient.serving(document)
         }
@@ -76,26 +84,36 @@ final class TasksSnapshotTests: XCTestCase {
         }
     }
 
-    private func daemonsOwnTasks(_ document: ViewDocument, expanded: Set<String> = [], height: CGFloat) -> some View {
+    private func daemonsOwnTasks(_ document: ViewDocument, expanded: Set<String> = [], opened: [ViewDocument] = [],
+                                 height: CGFloat) -> some View {
         ScreenFrame(height: height) {
-            TasksView(store: tasks(document, expanded: expanded)).environment(\.referenceDate, screenReferenceDate)
+            TasksView(store: tasks(document, expanded: expanded, opened: opened)).environment(\.referenceDate, screenReferenceDate)
         }
     }
 
     func test_tasks_theDaemonsOwnFixture() throws {
         let document = try SampleViews.document("tasks-ios")
-        assertScreen(lightAndDark, inWindow: true) { daemonsOwnTasks(document, height: 1100) }
+        assertScreen(lightAndDark, inWindow: true) { daemonsOwnTasks(document, height: 1650) }
     }
 
     func test_tasks_theDaemonsOwnFixture_spanish() throws {
         let document = try SampleViews.document("tasks-ios-es")
-        assertScreen(lightAndDark, language: .spanish, inWindow: true) { daemonsOwnTasks(document, height: 1200) }
+        assertScreen(lightAndDark, language: .spanish, inWindow: true) { daemonsOwnTasks(document, height: 1750) }
     }
 
     func test_tasks_theDaemonsOwnFixture_foldsOpen() throws {
         let document = try SampleViews.document("tasks-ios")
+        let finished = try SampleViews.document("tasks-ios-finished")
         assertScreen(lightAndDark, inWindow: true) {
-            daemonsOwnTasks(document, expanded: ["finished"], height: 1300)
+            daemonsOwnTasks(document, expanded: ["finished"], opened: [finished], height: 2000)
+        }
+    }
+
+    func test_tasks_theDaemonsOwnFixture_foldsOpen_spanish() throws {
+        let document = try SampleViews.document("tasks-ios-es")
+        let finished = try SampleViews.document("tasks-ios-es-finished")
+        assertScreen(lightAndDark, language: .spanish, inWindow: true) {
+            daemonsOwnTasks(document, expanded: ["finished"], opened: [finished], height: 2100)
         }
     }
 

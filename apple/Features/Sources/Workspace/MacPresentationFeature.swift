@@ -5,6 +5,17 @@ import AlondraFeed
 
 /// Per-window navigation and disclosure state. The service graph remains the sole
 /// owner of snapshots, drafts and mutations.
+/// The rows of a folded section, fetched when it is opened, and the page after them if there is one.
+public struct SectionPage: Equatable, Sendable {
+    public var items: [ViewItem]
+    public var more: More?
+
+    public init(items: [ViewItem], more: More?) {
+        self.items = items
+        self.more = more
+    }
+}
+
 @Reducer
 public struct MacPresentationFeature: Sendable {
     public init() {}
@@ -24,6 +35,9 @@ public struct MacPresentationFeature: Sendable {
         public var searchRevision: UInt64 = 0
         public var sidebarDocument: ViewDocument?
         public var detailDocument: ViewDocument?
+        /// Folded sections of the detail view the user opened, and the rows they were sent when opened.
+        public var openSections: Set<String> = []
+        public var sectionPages: [String: SectionPage] = [:]
         public var selectedViewKey: String?
         public var viewError: String?
         public var actionFeature = ActionFeature.State(dataEpoch: "", client: .mac, lang: "en")
@@ -77,6 +91,9 @@ public struct MacPresentationFeature: Sendable {
         case viewsReset
         case viewLoaded(String, ViewFetch)
         case viewFailed(String, String)
+        case sectionToggled(ViewSection)
+        case sectionMore(String, key: String)
+        case sectionLoaded(String, ViewFetch, appending: Bool)
         /// The selected card no longer waits for the user: it is never shown, and the window says why.
         case settled(String)
         case beginViewAction(AlondraContract.Action, target: String? = nil)
@@ -295,7 +312,23 @@ public struct MacPresentationFeature: Sendable {
                 state.selection = .viewKey(key)
                 state.selectedViewKey = key
                 state.detailDocument = nil
+                state.openSections = []
+                state.sectionPages = [:]
                 return loadAndOpenView(key, visibleKeys: visibleViewKeys(state))
+            case .sectionToggled(let section):
+                guard state.openSections.insert(section.id).inserted else {
+                    state.openSections.remove(section.id)
+                    return .none
+                }
+                guard state.sectionPages[section.id] == nil, section.items.isEmpty, let more = section.more else { return .none }
+                return loadSection(section.id, key: more.key, appending: false)
+            case let .sectionMore(id, key):
+                return loadSection(id, key: key, appending: true)
+            case let .sectionLoaded(id, fetch, appending):
+                guard case let .document(document) = fetch,
+                      let loaded = document.sections.first(where: { $0.id == id }) else { return .none }
+                let before = appending ? state.sectionPages[id]?.items ?? [] : []
+                state.sectionPages[id] = SectionPage(items: before + loaded.items, more: loaded.more)
             case .appeared:
                 return loadAndOpenView("sidebar", visibleKeys: visibleViewKeys(state))
             case .viewsStale(let keys):
@@ -336,6 +369,9 @@ public struct MacPresentationFeature: Sendable {
                         return closeSettled(key, why: why, &state)
                     }
                     if key == state.selectedViewKey {
+                        let reopen = state.detailDocument?.version == document.version ? [] : document.sections.filter {
+                            state.openSections.contains($0.id) && state.sectionPages[$0.id] != nil
+                        }
                         state.detailDocument = document
                         state.actionFeature.dataEpoch = document.dataEpoch
                         if state.activeForm != nil,
@@ -348,6 +384,9 @@ public struct MacPresentationFeature: Sendable {
                                 ($0.id, state.actionFeature.fields[$0.id] ?? $0.value)
                             })
                         }
+                        return .merge(reopen.compactMap { section in
+                            section.more.map { loadSection(section.id, key: $0.key, appending: false) }
+                        })
                     }
                 }
             case let .viewFailed(_, message): state.viewError = message
@@ -487,6 +526,14 @@ public struct MacPresentationFeature: Sendable {
         .run { [viewsClient] send in
             do {
                 await send(.viewLoaded(key, try await viewsClient.load(ViewKey(rawValue: key), known)))
+            } catch { await send(.viewFailed(key, String(localized: "Couldn’t load this from your Mac. Try again."))) }
+        }
+    }
+
+    private func loadSection(_ id: String, key: String, appending: Bool) -> Effect<Action> {
+        .run { [viewsClient] send in
+            do {
+                await send(.sectionLoaded(id, try await viewsClient.load(ViewKey(rawValue: key), nil), appending: appending))
             } catch { await send(.viewFailed(key, String(localized: "Couldn’t load this from your Mac. Try again."))) }
         }
     }

@@ -66,8 +66,17 @@ pub(crate) async fn gather(
 ) -> LiveSnapshot {
     let now = alondra_core::now_millis();
     let exhausted = client.domain.live.usage_pause.current();
-    let launches = client.domain.store.lock().expect("domain store poisoned")
-        .request_launch_summaries().unwrap_or_default();
+    let (launches, refusals) = {
+        let store = client.domain.store.lock().expect("domain store poisoned");
+        (store.request_launch_summaries().unwrap_or_default(), store.launch_refusals().unwrap_or_default())
+    };
+    let launch_refusals = refusals.into_iter()
+        .filter(|(task, _, _)| state.tasks.get(task).is_some_and(|task| task.state == TaskState::NotStarted))
+        .map(|(task, reason, detail)| {
+            let detail = if reason == "workspace_untrusted" { detail.map(|folder| home_relative(&folder)) } else { detail };
+            (task.0, alondra_core::views::LiveLaunchRefusal { reason, detail })
+        })
+        .collect();
     let nodes = state
         .agents
         .values()
@@ -196,6 +205,11 @@ pub(crate) async fn gather(
                 waiting: matches!(node.state, alondra_core::NodeState::WaitingAnswer |
                     alondra_core::NodeState::YourTurn | alondra_core::NodeState::WaitingMerge |
                     alondra_core::NodeState::WaitingMachine),
+                quiet: !matches!(activity, Activity::Working | Activity::Stalled)
+                    && !matches!(node.state, alondra_core::NodeState::WaitingAnswer
+                        | alondra_core::NodeState::WaitingMerge | alondra_core::NodeState::WaitingMachine)
+                    && now.saturating_sub(node.state_since.max(answer.map_or(0, |answer| answer.at)))
+                        >= alondra_core::states::NODE_QUIET_MS,
                 state_since: Some(timestamp(node.state_since)),
                 last_message: answer.map(|answer| answer.text.clone()),
                 last_message_at: answer.map(|answer| timestamp(answer.at)),
@@ -458,7 +472,15 @@ pub(crate) async fn gather(
             until: timestamp(exhausted.until),
             paused_by_user: exhausted.by_user,
         }),
+        launch_refusals,
         pacing: client.domain.live.gate.live(&client.domain, now),
+    }
+}
+
+fn home_relative(folder: &str) -> String {
+    match std::env::var("HOME").ok().filter(|home| !home.is_empty()).and_then(|home| folder.strip_prefix(&home).map(str::to_owned)) {
+        Some(rest) if rest.starts_with('/') => format!("~{rest}"),
+        _ => folder.to_owned(),
     }
 }
 

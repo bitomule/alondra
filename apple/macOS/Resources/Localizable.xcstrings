@@ -111,6 +111,8 @@
     "What should it clarify?": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "¿Qué debería aclarar?"}}}},
     "Request clarification": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Pedir aclaración"}}}},
     "Show %lld more": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Mostrar %lld más"}}}},
+    "Hides them": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Las oculta"}}}},
+    "Shows them": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Las muestra"}}}},
     "Advanced": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Avanzado"}}}},
     "Anchor": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Ancla"}}}},
     "Ask for new work (⌘N)": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Pedir trabajo nuevo (⌘N)"}}}},

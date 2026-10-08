@@ -80,6 +80,9 @@ impl App {
             return false;
         };
         if !self.open_sections.remove(&id) {
+            if !self.section_pages.contains_key(&id) {
+                self.load_section(&id);
+            }
             self.open_sections.insert(id);
         }
         true

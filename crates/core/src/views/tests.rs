@@ -644,6 +644,23 @@ fn tasks_fixture() -> (DomainState, LiveSnapshot) {
     add_request(&mut state, "r-scheduled", None, "This run belongs to a scheduled task of Alondra. Run the weekly improvement cycle for Lumo.");
     add_task(&mut state, "t-scheduled-lumo", "r-scheduled", "Lumo · weekly improvement", TaskState::Running, &[]);
     scheduled_run(&mut state, "r-scheduled", "t-scheduled-lumo");
+    add_request(&mut state, "r-blurcamera", Some("BlurCamera · weekly improvement"), "Run the weekly improvement cycle for BlurCamera.");
+    add_task(&mut state, "t-hf-share-hint", "r-blurcamera", "Photos extension hint after the first blur", TaskState::Running, &[]);
+    add_task(&mut state, "t-hf-registry", "r-blurcamera", "Link the website in app.json", TaskState::NotStarted, &[]);
+    add_task(&mut state, "t-hf-paywall", "r-blurcamera", "Lifetime offer when the paywall closes", TaskState::Done, &[]);
+    add_task(&mut state, "t-hf-post", "r-blurcamera", "Post: blur faces in a video on iPhone", TaskState::Done, &[]);
+    state.agents.insert("a-hf".into(), Agent { id: "a-hf".into(), name: "BlurCamera hint".into(), connected: true });
+    state.tasks.get_mut(&"t-hf-share-hint".into()).unwrap().agent_id = Some("a-hf".into());
+    live.nodes.push(LiveNode {
+        agent_id: "a-hf".into(), name: "BlurCamera hint".into(), quiet: true,
+        state_since: Some("2026-09-30T07:00:00.000Z".into()),
+        last_message: Some("Waiting for the snapshot run to finish.".into()),
+        last_message_at: Some("2026-09-30T07:00:00.000Z".into()),
+        ..LiveNode::default()
+    });
+    live.launch_refusals.insert("t-hf-registry".into(), LiveLaunchRefusal {
+        reason: "workspace_untrusted".into(), detail: Some("~/Projects/indie-apps".into()),
+    });
     for (id, at) in [
         ("r-9f2156b5a8894e53901f0af576dff6a2", "2026-09-30T09:40:00.000Z"),
         ("r-badge", "2026-09-30T09:52:00.000Z"),
@@ -702,6 +719,7 @@ fn a_scheduled_run_in_progress_is_an_active_task_marked_scheduled_and_finishes_l
     state.tasks.get_mut(&"t-scheduled-lumo".into()).unwrap().state = TaskState::Done;
     let view = render(&state, &live, Client::Ios, Lang::En, "tasks", "");
     assert!(!active_titles(&view).iter().any(|title| title == "Lumo · weekly improvement"));
+    let view = render(&state, &live, Client::Ios, Lang::En, "tasks?section=finished&after=0", "");
     let finished = view.sections.iter().find(|section| section.id == "finished").unwrap();
     assert!(serde_json::to_string(finished).unwrap().contains("Lumo · weekly improvement"));
 }
@@ -713,8 +731,8 @@ fn the_tasks_counter_counts_only_tasks_still_under_way() {
         render(state, &live, Client::Tui, Lang::En, "tasks", "").status.counts.iter()
             .find(|count| count.id == "tasks").unwrap().value
     };
-    let all = state.tasks.len() as u32;
-    assert!(state.tasks.values().all(|task| task.active()));
+    let all = state.tasks.values().filter(|task| task.active()).count() as u32;
+    assert_eq!(all, state.tasks.values().filter(|task| !task.state.terminal()).count() as u32);
     assert_eq!(count(&state), all);
     state.tasks.get_mut(&"t-legacy-editor".into()).unwrap().state = TaskState::Done;
     state.tasks.get_mut(&"t-legacy-notes".into()).unwrap().state = TaskState::Cancelled;
@@ -738,6 +756,14 @@ fn tasks_views_match_goldens() {
             _ => include_str!("../../../../fixtures/views/cards/tasks-tui.json"),
         };
         let actual = render(&state, &live, client, lang, "tasks", "2026-09-30T10:00:00Z");
+        assert_golden(filename, &actual, expected);
+    }
+    for (filename, client, lang, expected) in [
+        ("tasks-ios-finished.json", Client::Ios, Lang::En, include_str!("../../../../fixtures/views/cards/tasks-ios-finished.json")),
+        ("tasks-ios-es-finished.json", Client::Ios, Lang::Es, include_str!("../../../../fixtures/views/cards/tasks-ios-es-finished.json")),
+        ("tasks-mac-finished.json", Client::Mac, Lang::En, include_str!("../../../../fixtures/views/cards/tasks-mac-finished.json")),
+    ] {
+        let actual = render(&state, &live, client, lang, "tasks?section=finished&after=0", "2026-09-30T10:00:00Z");
         assert_golden(filename, &actual, expected);
     }
 }
@@ -929,8 +955,8 @@ fn agent_uuid_keeps_message_and_close_actions() {
     assert!(actions.iter().any(|action| action.id.starts_with(&format!("msg:{id}@"))));
     assert!(actions.iter().any(|action| action.id.starts_with(&format!("close:{id}@"))));
 }
-fn assert_golden(filename: &str, actual: &View, expected: &str) {
-    let actual = serde_json::to_value(actual).unwrap();
+fn assert_golden(filename: &str, view: &View, expected: &str) {
+    let actual = serde_json::to_value(view).unwrap();
     let expected: serde_json::Value = serde_json::from_str(expected).unwrap();
     assert_eq!(actual, expected, "{filename}");
 }
@@ -1328,6 +1354,109 @@ fn a_tui_fleet_node_is_one_row_named_by_its_task_with_its_state_and_since_when()
     assert!(view.sections.iter().any(|section| section.title.as_deref() == Some("App")));
 }
 
+fn task_state_text(state: &DomainState, live: &LiveSnapshot, lang: Lang) -> String {
+    let view = render(state, live, Client::Mac, lang, "tasks", "");
+    let row = view.sections.iter().flat_map(|section| &section.items).find_map(|item| match item {
+        Item::Row(row) if row.id == "r-1" => Some(row.clone()),
+        _ => None,
+    }).unwrap();
+    row.badges.first().map(|badge| badge.text.clone()).unwrap()
+}
+
+#[test]
+fn a_task_that_has_not_started_says_what_refused_its_launch() {
+    let mut state = fixture();
+    state.tasks.get_mut(&"t-1".into()).unwrap().state = TaskState::NotStarted;
+    let mut live = LiveSnapshot::default();
+    assert_eq!(task_state_text(&state, &live, Lang::Es), "Esperando a que el orquestador la lance");
+    assert_eq!(task_state_text(&state, &live, Lang::En), "Waiting for the orchestrator to launch it");
+    let mut base = state.tasks[&"t-1".into()].clone();
+    base.id = "t-base".into();
+    base.title = "Build the base".into();
+    base.state = TaskState::Running;
+    state.tasks.insert(base.id.clone(), base);
+    state.tasks.get_mut(&"t-1".into()).unwrap().dependencies = ["t-base".into()].into();
+    let detail = serde_json::to_string(&render(&state, &live, Client::Ios, Lang::Es, "task:t-1", "")).unwrap();
+    assert!(detail.contains("Espera a «Build the base»") && !detail.contains("orquestador la lance"), "{detail}");
+    state.tasks.remove(&"t-base".into());
+    state.tasks.get_mut(&"t-1".into()).unwrap().dependencies = Default::default();
+    live.launch_refusals.insert("t-1".into(), LiveLaunchRefusal {
+        reason: "workspace_untrusted".into(), detail: Some("~/Projects/indie-apps".into()),
+    });
+    assert_eq!(task_state_text(&state, &live, Lang::Es), "No arranca: Claude Code no confía en ~/Projects/indie-apps");
+    assert_eq!(task_state_text(&state, &live, Lang::En), "Won't start: Claude Code doesn't trust ~/Projects/indie-apps");
+    live.launch_refusals.insert("t-1".into(), LiveLaunchRefusal { reason: "usage_exhausted".into(), detail: None });
+    assert_eq!(task_state_text(&state, &live, Lang::Es), "No arranca: se acabó el uso de Claude");
+    live.launch_refusals.insert("t-1".into(), LiveLaunchRefusal {
+        reason: "launch_failed".into(), detail: Some("claude exited with 1\nmore".into()),
+    });
+    assert_eq!(task_state_text(&state, &live, Lang::Es), "No arrancó: claude exited with 1");
+    assert!(!task_state_text(&state, &live, Lang::Es).contains("Sin empezar"));
+}
+
+#[test]
+fn a_running_task_whose_node_does_nothing_says_no_activity_instead_of_working() {
+    let mut state = fixture();
+    state.interactions.clear();
+    let task = state.tasks.get_mut(&"t-1".into()).unwrap();
+    task.state = TaskState::Running;
+    task.agent_id = Some("a-1".into());
+    let mut live = LiveSnapshot::default();
+    live.nodes.push(LiveNode { agent_id: "a-1".into(), name: "Node One".into(), ..LiveNode::default() });
+    assert_eq!(task_state_text(&state, &live, Lang::Es), "Trabajando");
+    live.nodes[0].quiet = true;
+    assert_eq!(task_state_text(&state, &live, Lang::Es), "Sin actividad");
+    assert_eq!(task_state_text(&state, &live, Lang::En), "No activity");
+}
+
+#[test]
+fn the_ended_tasks_of_a_request_still_under_way_fold_away_from_the_active_list() {
+    let mut state = fixture();
+    state.tasks.get_mut(&"t-1".into()).unwrap().state = TaskState::Running;
+    state.requests.get_mut(&"r-1".into()).unwrap().title = Some("Weekly improvement".into());
+    for (id, task_state, archived) in [("t-2", TaskState::Running, false), ("t-3", TaskState::Done, false),
+        ("t-4", TaskState::Cancelled, true)] {
+        let mut task = state.tasks[&"t-1".into()].clone();
+        task.id = id.into();
+        task.title = format!("Task {id}");
+        task.state = task_state;
+        task.archived = archived;
+        task.dependencies = Default::default();
+        state.tasks.insert(task.id.clone(), task);
+    }
+    state.tasks.get_mut(&"t-2".into()).unwrap().dependencies = ["t-3".into()].into();
+    let ids = |rows: &[Row]| rows.iter().flat_map(|row| std::iter::once(row).chain(&row.children))
+        .map(|row| row.id.clone()).collect::<Vec<_>>();
+    for client in [Client::Ios, Client::Mac, Client::Tui] {
+        let view = render(&state, &LiveSnapshot::default(), client, Lang::Es, "tasks", "");
+        let page = |id: &str| render(&state, &LiveSnapshot::default(), client, Lang::Es, &format!("tasks?section={id}&after=0"), "");
+        let rows_of = |view: &View, id: &str| view.sections.iter().find(|section| section.id == id).unwrap().items.iter()
+            .filter_map(|item| if let Item::Row(row) = item { Some(row.clone()) } else { None }).collect::<Vec<_>>();
+        let section = |id: &str| view.sections.iter().find(|section| section.id == id).unwrap();
+        let rows = |id: &str| rows_of(&page(id), id);
+        let active = ids(&rows_of(&view, "active"));
+        assert!(active.contains(&"t-1".into()) && active.contains(&"t-2".into()), "{client:?}: {active:?}");
+        assert!(!active.contains(&"t-3".into()) && !active.contains(&"t-4".into()), "{client:?}: {active:?}");
+        for folded in ["finished", "archived"] {
+            assert!(section(folded).items.is_empty(), "{client:?}: the main view carries no {folded} work");
+            assert_eq!(section(folded).more.as_ref().map(|more| (more.key.as_str(), more.remaining)),
+                Some((format!("tasks?section={folded}&after=0").as_str(), 1)), "{client:?}");
+        }
+        let finished = rows("finished");
+        assert_eq!(finished.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(), ["r-1:ended"], "{client:?}");
+        assert_eq!(finished[0].title, "Weekly improvement");
+        assert!(ids(&finished).contains(&"t-3".into()) || finished[0].link == Some(Link::View { key: "task:t-3".into() }),
+            "{client:?}");
+        assert!(section("finished").collapsed);
+        assert_eq!(section("finished").count, Some(1));
+        assert_eq!(rows("archived").iter().map(|row| row.id.as_str()).collect::<Vec<_>>(), ["r-1:ended"], "{client:?}");
+        if client != Client::Tui {
+            assert_eq!(finished[0].subtitle.as_deref().or(finished[0].badges.first().map(|badge| badge.text.as_str())),
+                Some("El resto sigue en marcha"), "{client:?}");
+        }
+    }
+}
+
 #[test]
 fn a_tui_task_list_shows_a_request_with_one_task_as_that_task_and_nests_only_several() {
     let mut state = fixture();
@@ -1351,11 +1480,16 @@ fn a_tui_task_list_shows_a_request_with_one_task_as_that_task_and_nests_only_sev
     second.id = "t-2".into();
     second.title = "Write the docs".into();
     second.state = TaskState::Done;
+    second.state = TaskState::Running;
+    let mut third = second.clone();
+    third.id = "t-3".into();
+    third.state = TaskState::Done;
     state.tasks.insert(second.id.clone(), second);
+    state.tasks.insert(third.id.clone(), third);
     state.requests.get_mut(&"r-1".into()).unwrap().title = Some("Docs and feature".into());
     let several = row(&state);
     assert_eq!(several.children.iter().map(|task| task.id.as_str()).collect::<Vec<_>>(), ["t-1", "t-2"]);
-    assert_eq!(several.badges.first().map(|badge| badge.text.as_str()), Some("1 de 2"));
+    assert_eq!(several.badges.first().map(|badge| badge.text.as_str()), Some("1 de 3"));
     assert!(several.children.iter().all(|task| !matches!(task.trailing, Some(Trailing::Count { .. }))));
 }
 
@@ -1622,13 +1756,13 @@ fn a_closed_request_that_only_answered_says_so() {
     request.closed = true;
     request.answer = Some("Yes, since Monday".into());
     for (lang, label) in [(Lang::En, "Answered"), (Lang::Es, "Respondida")] {
-        let view = render(&state, &LiveSnapshot::default(), Client::Ios, lang, "tasks", "");
+        let view = render(&state, &LiveSnapshot::default(), Client::Ios, lang, "tasks?section=finished&after=0", "");
         let finished = view.sections.iter().find(|section| section.id == "finished").unwrap();
         let Item::Row(row) = &finished.items[0] else { panic!("request row") };
         assert_eq!((row.subtitle.as_deref(), row.icon), (Some(label), Icon::Check));
     }
     state.requests.get_mut(&"r-1".into()).unwrap().answer = None;
-    let view = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::En, "tasks", "");
+    let view = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::En, "tasks?section=finished&after=0", "");
     let finished = view.sections.iter().find(|section| section.id == "finished").unwrap();
     let Item::Row(row) = &finished.items[0] else { panic!("request row") };
     assert_eq!(row.subtitle.as_deref(), Some("Finished"));
@@ -3041,7 +3175,12 @@ fn more_loads_the_next_finished_page() {
         state.requests.insert(id.into(), request);
     }
     let live = LiveSnapshot::default();
-    let first = render(&state, &live, Client::Ios, Lang::En, "tasks", "");
+    let folded = render(&state, &live, Client::Ios, Lang::En, "tasks", "");
+    let finished = folded.sections.iter().find(|section| section.id == "finished").unwrap();
+    assert!(finished.items.is_empty(), "the list only says how many finished requests there are");
+    let more = finished.more.as_ref().unwrap();
+    assert_eq!((more.key.as_str(), more.remaining, finished.count), ("tasks?section=finished&after=0", 25, Some(25)));
+    let first = render(&state, &live, Client::Ios, Lang::En, &more.key, "");
     let finished = first.sections.iter().find(|section| section.id == "finished").unwrap();
     assert_eq!(finished.items.len(), 20);
     let more = finished.more.as_ref().unwrap();
@@ -4098,7 +4237,7 @@ fn a_task_without_a_failed_launch_is_still_not_started() {
     let mut state = failed_launch_fixture("boom");
     state.schedule.runs.clear();
     let detail = serde_json::to_string(&render(&state, &LiveSnapshot::default(), Client::Tui, Lang::En, "task:t-1", "")).unwrap();
-    assert!(detail.contains("Not started") && !detail.contains("Did not start"), "{detail}");
+    assert!(detail.contains("Waiting for the orchestrator to launch it") && !detail.contains("Did not start"), "{detail}");
 }
 
 fn waiting_for_a_relaunch(live: &LiveSnapshot, client: Client, lang: Lang, key: &str) -> (String, Option<Action>) {
@@ -4133,7 +4272,7 @@ fn a_task_whose_node_the_user_closed_reads_node_closed_and_offers_relaunch_in_it
 #[test]
 fn a_task_is_not_offered_a_relaunch_unless_it_is_not_started_with_no_node_and_its_node_was_closed() {
     let (detail, relaunch) = waiting_for_a_relaunch(&LiveSnapshot::default(), Client::Tui, Lang::En, "task:t-1");
-    assert!(relaunch.is_none() && detail.contains("Not started"), "a task nobody closed: {detail}");
+    assert!(relaunch.is_none() && detail.contains("Waiting for the orchestrator to launch it"), "a task nobody closed: {detail}");
     let closed = LiveSnapshot { closed_tasks: vec!["t-1".into()], ..LiveSnapshot::default() };
     let mut state = failed_launch_fixture("boom");
     state.schedule.runs.clear();

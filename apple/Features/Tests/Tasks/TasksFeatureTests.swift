@@ -62,6 +62,39 @@ final class TasksFeatureTests: XCTestCase {
     }
 
     @MainActor
+    func testOpeningAFoldSentWithoutItsRowsAsksForThemOnce() async throws {
+        let document = try Samples.document("tasks-populated") { object in
+            var sections = object["sections"] as? [[String: Any]] ?? []
+            for index in sections.indices where sections[index]["id"] as? String == "finished" {
+                sections[index]["items"] = [[String: Any]]()
+                sections[index]["more"] = ["key": "tasks?section=finished&after=0", "remaining": 27]
+            }
+            object["sections"] = sections
+        }
+        let page = try Samples.document("tasks-populated")
+        let asked = LockIsolated<[ViewKey]>([])
+        let store = await loaded(document, load: { key, _ in
+            asked.withValue { $0.append(key) }
+            return .document(page)
+        })
+        XCTAssertEqual(store.state.board?.finished.requests.count, 0)
+        XCTAssertEqual(store.state.board?.finished.count, 27)
+
+        await store.send(.foldToggled("finished"))
+        await store.receive(\.showMore)
+        await store.receive(\.moreLoaded)
+
+        XCTAssertEqual(asked.value, [ViewKey(rawValue: "tasks?section=finished&after=0")])
+        XCTAssertEqual(store.state.board?.finished.requests.count, 2)
+        XCTAssertEqual(store.state.board?.finished.more?.remaining, 7)
+
+        await store.send(.foldToggled("finished"))
+        await store.send(.foldToggled("finished"))
+        await store.finish()
+        XCTAssertEqual(asked.value.count, 1, "rows already fetched are shown again without asking")
+    }
+
+    @MainActor
     func testShowMoreLoadsTheNextPageOfThatSectionOnly() async throws {
         let document = try Samples.document("tasks-populated")
         let page = try Samples.document("tasks-populated") { object in
@@ -201,7 +234,10 @@ final class TasksFeatureTests: XCTestCase {
     @MainActor
     func testWithNothingToArchiveTheButtonDoesNothing() async throws {
         let sent = SentActions()
-        let store = await loaded(try Fixtures.document("tasks-ios"), sent: sent)
+        let nothingToArchive = try Samples.document("tasks-populated") { object in
+            object["sections"] = (object["sections"] as? [[String: Any]] ?? []).filter { $0["id"] as? String != "actions" }
+        }
+        let store = await loaded(nothingToArchive, sent: sent)
 
         await store.send(.archiveCompleted)
 
