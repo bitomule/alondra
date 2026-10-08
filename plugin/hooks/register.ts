@@ -30,6 +30,21 @@ const submitting = new Set<string>()
 const submitted = new Set<string>()
 
 type Push = { id?: string; text?: string; as_user?: boolean; interrupt?: boolean }
+type Message = { id: string; text: string; asUser: boolean }
+
+// Claude Code runs a plugin's prompt only once the session is idle, so a message that arrives
+// mid-turn waits here and rides on the next tool result of the main loop.
+const waiting = new Map<string, Message>()
+
+const CARD_TOOLS = new Set([
+  'mcp__plugin_alondra_alondra__ask',
+  'mcp__plugin_alondra_alondra__request_test',
+  'mcp__plugin_alondra_alondra__request_action',
+  'mcp__plugin_alondra_alondra__request_input',
+  'mcp__plugin_alondra_alondra__present_result',
+  'AskUserQuestion',
+  'ExitPlanMode',
+])
 
 function hello(current: Session): string {
   return JSON.stringify({
@@ -117,8 +132,38 @@ async function receive($: EngineInterface, line: string): Promise<void> {
   if (push.interrupt) {
     if (turnId !== undefined) await $.turn.abort({ turnId })
   } else if (typeof push.id === 'string' && typeof push.text === 'string') {
-    void submit($, push.id, push.text, push.as_user === true)
+    if (turnId !== undefined && !submitted.has(push.id)) {
+      waiting.set(push.id, { id: push.id, text: push.text, asUser: push.as_user === true })
+    } else {
+      void submit($, push.id, push.text, push.as_user === true)
+    }
   }
+}
+
+function takeWaiting(): Message[] {
+  const messages = [...waiting.values()]
+  waiting.clear()
+  return messages
+}
+
+function said(messages: Message[]): string {
+  return messages.map((message) => message.text).join('\n\n')
+}
+
+// The model has the messages in front of it: they show in the session as a notice and count as
+// read for alondrad.
+async function delivered($: EngineInterface, messages: Message[]): Promise<void> {
+  for (const message of messages) submitted.add(message.id)
+  try {
+    await $.session.append({ message: { type: 'system', content: [{ type: 'text', text: said(messages) }] } })
+  } catch (error) {
+    $.ui.log(`Alondra messages were not shown in the session: ${error}`, { to: 'debug' })
+  }
+  for (const message of messages) await acknowledge($, message.id)
+}
+
+function flushWaiting($: EngineInterface): void {
+  for (const message of takeWaiting()) void submit($, message.id, message.text, message.asUser)
 }
 
 // The wait lives inside `$.process.run`, which the hook's 10 s budget does not count. Claude Code
@@ -278,7 +323,10 @@ export const register: Register = (on) => {
   })
 
   on('turn.complete', async ($, e, next) => {
-    if (e.turnId === turnId) turnId = undefined
+    if (e.turnId === turnId) {
+      turnId = undefined
+      flushWaiting($)
+    }
     if (e.agentId === undefined) {
       queue($, {
         event: 'turn.complete',
@@ -327,11 +375,25 @@ export const register: Register = (on) => {
     if (e.agentId !== undefined) return next(e)
     queue($, { event: 'tool.start', tool: e.tool, tool_use_id: e.tool_use_id, input: summaryInput(e) })
     try {
+      if (CARD_TOOLS.has(e.tool) && waiting.size > 0) {
+        const unread = takeWaiting()
+        void delivered($, unread)
+        return {
+          deny: 'Not sent: messages reached you while you worked and you had not read them yet. ' +
+            `Read them and decide whether this is still needed:\n\n${said(unread)}`,
+        }
+      }
       const result = await next(e)
       if (e.tool === 'Bash' && e.run_in_background === true && !result.deny && !result.isError) {
         queue($, { event: 'shell.start', id: e.tool_use_id, command: String(e.command) })
       }
-      return result
+      if (result.deny !== undefined || waiting.size === 0) return result
+      const arrived = takeWaiting()
+      void delivered($, arrived)
+      return {
+        ...result,
+        context: [...(result.context ?? []), `Messages reached you while this tool ran; act on them before you go on:\n\n${said(arrived)}`],
+      }
     } finally {
       queue($, { event: 'tool.end', tool_use_id: e.tool_use_id })
     }

@@ -217,6 +217,10 @@ recent instruction from whoever directs you (the user, Claude on their behalf, t
 replaces earlier ones that contradict it: a later "push your work" overrides an earlier "do not
 touch anything", whoever sent each.
 
+A message that arrives while you work reaches you at once, right after the result of the tool
+that was running, or as the refusal of a card you were about to send: act on it before you go
+on with your plan.
+
 ## One task at a time
 
 You work on one task for your whole life: Alondra closes this session with it. Your subagents work on your task; they need no task of their own. Something new the user asks

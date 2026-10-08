@@ -413,3 +413,127 @@ test('an interrupt aborts the running turn by its id, and does nothing between t
   await settle()
   expect(aborts).toEqual(['turn-7'])
 })
+
+type Delivery = { submits: string[]; acks: string[]; push: (line: Record<string, unknown>) => void }
+
+async function startDelivering(
+  $: Parameters<Parameters<typeof test>[1]>[0],
+  on: Parameters<Parameters<typeof test>[1]>[1],
+  tool: (e: { tool: string }) => Record<string, unknown> = () => ({ result: 'ok' }),
+): Promise<Delivery> {
+  mock.clock(on)
+  const delivery: Delivery = { submits: [], acks: [], push: () => {} }
+  const lines: string[] = []
+  let wake: () => void = () => {}
+  delivery.push = (line) => {
+    lines.push(JSON.stringify(line) + '\n')
+    wake()
+  }
+  on('session.start', () => ({ cwd: '/work' }))
+  on('session.id', () => ({ value: 'session-1' }))
+  on('session.version', () => ({ value: { version: '2.1.287' } }))
+  on('env.get', () => ({ value: undefined }))
+  on('process.run', ($, e) => {
+    if (e.argv.includes('ack')) delivery.acks.push(e.argv[e.argv.length - 1])
+    return { value: { exitCode: 0, stdout: '', stderr: '' } }
+  })
+  on('process.spawn', async function* () {
+    yield { stream: 'stdout' as const, text: 'connected\n' }
+    for (;;) {
+      while (lines.length > 0) yield { stream: 'stdout' as const, text: lines.shift()! }
+      await new Promise<void>((resolve) => (wake = resolve))
+    }
+  })
+  on('prompt.submit', ($, e) => {
+    delivery.submits.push(e.text)
+    return { text: e.text }
+  })
+  on('turn.start', ($, e) => ({ turnId: e.turnId }))
+  on('turn.complete', () => ({ text: '' }))
+  on('tool.call', ($, e) => tool(e))
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+  await settle()
+  return delivery
+}
+
+const ANSWER = '[From David · 11:37] funciona, aunque hay que quitar el onboarding forzado'
+
+test('an answer that arrives while a long build runs reaches the model with that build result and only then counts as read', async ($, on) => {
+  let finishBuild: () => void = () => {}
+  const build = new Promise<void>((resolve) => (finishBuild = resolve))
+  const delivery = await startDelivering($, on, (e) => (e.tool === 'Bash' ? build.then(() => ({ result: 'Build finished' })) : { result: 'ok' }) as never)
+  await $.turn.start({ text: 'go', turnId: 'turn-1' })
+
+  const running = $.tool.call({ tool: 'Bash', tool_use_id: 'build', command: 'make device', timeout: 600000 } as never)
+  delivery.push({ id: 'o-1369', text: ANSWER, as_user: true })
+  await settle()
+  expect(delivery.submits).toEqual([])
+  expect(delivery.acks).toEqual([])
+
+  finishBuild()
+  const out = await running
+  await settle()
+  expect(out.result).toBe('Build finished')
+  expect(out.context).toEqual([`Messages reached you while this tool ran; act on them before you go on:\n\n${ANSWER}`])
+  expect(delivery.acks).toEqual(['o-1369'])
+
+  const later = await $.tool.call({ tool: 'Read', tool_use_id: 'read', file_path: '/x' } as never)
+  expect(later.context).toBeUndefined()
+  await $.turn.complete({ turnId: 'turn-1', answer: 'Done.', durationMs: 1, isAborted: false, reason: 'answer' })
+  delivery.push({ id: 'o-1369', text: ANSWER, as_user: true })
+  await settle()
+  expect(delivery.submits).toEqual([])
+  expect(delivery.acks).toEqual(['o-1369', 'o-1369'])
+})
+
+test('a tool that fails still carries the message, and a subagent tool never takes it', async ($, on) => {
+  const delivery = await startDelivering($, on, (e) => (e.tool === 'Bash' ? { isError: true, result: 'exit 2', text: 'exit 2' } : { result: 'ok' }))
+  await $.turn.start({ text: 'go', turnId: 'turn-1' })
+  delivery.push({ id: 'd-7', text: ANSWER, as_user: true })
+  await settle()
+
+  const subagent = await $.tool.call({ tool: 'Read', tool_use_id: 'sub-read', file_path: '/x', agentId: 'sub-1' } as never)
+  expect(subagent.context).toBeUndefined()
+  expect(delivery.acks).toEqual([])
+
+  const failed = await $.tool.call({ tool: 'Bash', tool_use_id: 'build', command: 'make', timeout: 5 } as never)
+  await settle()
+  expect(failed.isError).toBe(true)
+  expect(failed.context?.[0]).toContain(ANSWER)
+  expect(delivery.acks).toEqual(['d-7'])
+})
+
+test('a card asked with an unread answer waiting is refused with the answer, and never reaches Alondra', async ($, on) => {
+  const ran: string[] = []
+  const delivery = await startDelivering($, on, (e) => {
+    ran.push(e.tool)
+    return { result: 'Recorded.' }
+  })
+  await $.turn.start({ text: 'go', turnId: 'turn-1' })
+  delivery.push({ id: 'o-1369', text: ANSWER, as_user: true })
+  await settle()
+
+  const card = await $.tool.call({ tool: 'mcp__plugin_alondra_alondra__request_test', tool_use_id: 'test-3', interaction_id: 't-3' } as never)
+  await settle()
+  expect(ran).toEqual([])
+  expect(card.deny).toContain('Not sent')
+  expect(card.deny).toContain(ANSWER)
+  expect(delivery.acks).toEqual(['o-1369'])
+
+  const again = await $.tool.call({ tool: 'mcp__plugin_alondra_alondra__request_test', tool_use_id: 'test-4', interaction_id: 't-4' } as never)
+  expect(again).toEqual({ result: 'Recorded.' })
+  expect(ran).toEqual(['mcp__plugin_alondra_alondra__request_test'])
+})
+
+test('messages still waiting when the turn ends are submitted, and acknowledged once submitted', async ($, on) => {
+  const delivery = await startDelivering($, on)
+  await $.turn.start({ text: 'go', turnId: 'turn-1' })
+  delivery.push({ id: 'o-1', text: ANSWER, as_user: true })
+  await settle()
+  expect(delivery.submits).toEqual([])
+
+  await $.turn.complete({ turnId: 'turn-1', answer: 'Done.', durationMs: 1, isAborted: false, reason: 'answer' })
+  await settle()
+  expect(delivery.submits).toEqual([ANSWER])
+  expect(delivery.acks).toEqual(['o-1'])
+})
