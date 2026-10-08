@@ -748,14 +748,10 @@ fn pace_text(interaction: &Interaction, domain: &DomainState, lang: Lang) -> Opt
     }
     if let Some(question) = interaction.id.0.strip_prefix(crate::domain::ENDED_UNANSWERED_PREFIX) {
         let question = domain.interactions.get(&InteractionId(question.into()))?;
-        let title = match &question.scope {
-            Scope::Task { task_id } => domain.tasks.get(task_id)?.title.clone(),
-            Scope::Orchestrator { .. } => return None,
-        };
         let need = humanize_task_ids(&question.card.need, domain);
         return Some((
-            tf!(lang, "“{title}” ended before you answered", "«{title}» terminó sin tu respuesta", title = title),
-            tf!(lang, "No longer waits for an answer: {need}", "Ya no espera respuesta: {need}", need = need),
+            clip(&tf!(lang, "No longer waits for your answer: {need}", "Ya no espera tu respuesta: {need}", need = need), CardSpec::NEED_MAX),
+            t!(lang, "The work was finished before you answered", "El trabajo se terminó antes de que respondieras").into(),
         ));
     }
     if interaction.id.0.starts_with(crate::machine_incident::MACHINE_PREFIX) {

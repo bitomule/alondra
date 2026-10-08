@@ -534,9 +534,8 @@ fn no_pending_card_is_left_with_nothing_the_user_can_do_once_its_task_ends() {
     }
     let mut pending: Vec<&str> = items.iter().filter(|item| item.pending).map(|item| item.id.as_str()).collect();
     pending.sort();
-    assert_eq!(pending, ["interaction:ended-unanswered-decide", "interaction:ended-unanswered-do", "interaction:ended-unanswered-provide",
-        "interaction:ended-unanswered-test", "interaction:know", "interaction:p"],
-        "a card nobody can answer leaves the inbox, and the user is told it no longer waits: {pending:?}");
+    assert_eq!(pending, ["interaction:know", "interaction:p"],
+        "a card nobody can answer leaves the inbox in silence: {pending:?}");
     for card in ["decide", "test", "provide", "do"] {
         assert!(s.interactions[&card.into()].withdrawn, "{card} is withdrawn, not left open");
     }

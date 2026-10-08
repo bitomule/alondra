@@ -1270,24 +1270,35 @@ impl DomainState {
             }
         }
     }
-    /// A task that ended anyway (cancelled, or left done by an older daemon) never drops the cards
-    /// still waiting for the user in silence: each is withdrawn and the user told so, with the
-    /// card's own text.
+    /// The cards of a task that ended leave the user's queue. A cancelled task takes them away in
+    /// silence: the user stopped the work, so nothing it asked matters any more. A task that ended
+    /// with its work done tells the user once about a question it left behind, unless it only
+    /// asked to approve a plan or document for work that is already done.
     fn retire_cards_of_ended_tasks(&mut self, effects: &mut Vec<DomainEffect>) {
         let left: Vec<(TaskId, InteractionId)> = self.tasks.values()
             .filter(|t| t.state.terminal())
             .flat_map(|t| self.interactions.values().filter(|i| self.unanswered_card(i, &t.id)).map(|i| (t.id.clone(), i.id.clone())))
             .collect();
+        let stale_notices: Vec<InteractionId> = self.interactions.values()
+            .filter(|i| i.author == Author::System && !i.withdrawn && i.id.0.starts_with(ENDED_UNANSWERED_PREFIX))
+            .filter(|i| matches!(&i.scope, Scope::Task { task_id } if self.tasks.get(task_id).is_some_and(|t| t.state == TaskState::Cancelled)))
+            .map(|i| i.id.clone())
+            .collect();
+        for notice in stale_notices {
+            self.retire(&notice);
+        }
         for (task_id, question) in left {
             self.retire(&question);
             let q = &self.interactions[&question];
+            if self.tasks[&task_id].state == TaskState::Cancelled || q.card.kind == CardKind::Review {
+                continue;
+            }
             let id = InteractionId(format!("{ENDED_UNANSWERED_PREFIX}{}", question.0));
             if self.interactions.contains_key(&id) {
                 continue;
             }
-            let title = self.tasks[&task_id].title.clone();
-            let need = clip(&format!("“{title}” ended before you answered"), CardSpec::NEED_MAX);
-            let why = clip(&format!("No longer waits for an answer: {}", q.card.need), CardSpec::WHY_MAX);
+            let need = clip(&format!("No longer waits for your answer: {}", q.card.need), CardSpec::NEED_MAX);
+            let why = clip("The work was finished before you answered", CardSpec::WHY_MAX);
             let body = q.card.content.as_ref().map_or_else(|| q.body.clone(), |c| c.body.clone());
             let card = CardSpec::new(CardKind::Know, need).why(&why).content(ContentKind::Report, &body);
             let interaction = Interaction {

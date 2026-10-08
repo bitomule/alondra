@@ -3799,18 +3799,51 @@ fn an_accepted_text_delivery_waits_for_a_question_asked_during_cleanup() {
     answer_aside(&mut s, "q");
     assert_eq!(s.tasks[&"t".into()].state, TaskState::Done);
 }
+fn hold_plan(s: &mut DomainState, id: &str) {
+    exec(s, Actor::System, Command::HoldHook { interaction_id: id.into(), task_id: "t".into(), agent_id: "a".into(), hold: Hold::Plan,
+        body: "# Tests without stray temp folders\n\n1. Point TMPDIR at Bazel's".into(), options: Hold::Plan.options(),
+        card: crate::domain::CardSpec::derived(crate::domain::CardKind::Review, "Tests without stray temp folders")
+            .content(crate::domain::ContentKind::Plan, "1. Point TMPDIR at Bazel's") }).unwrap();
+}
+fn notices(s: &DomainState) -> Vec<&Interaction> {
+    s.interactions.values().filter(|i| i.id.0.starts_with(ENDED_UNANSWERED_PREFIX)).collect()
+}
+/// Cancelling “Tests usan TEST_TMPDIR de Bazel” with its plan open told the user the task “ended
+/// before you answered”: the user stopped that work, so its cards just leave.
 #[test]
-fn cancelling_a_task_withdraws_its_open_questions_and_tells_the_user() {
+fn cancelling_a_task_with_its_plan_open_takes_its_cards_away_in_silence() {
     let mut s = fixture();
+    hold_plan(&mut s, "plan");
     ask_aside(&mut s, "q");
     let cancelled = exec(&mut s, user(), Command::CancelTask { task_id: "t".into() }).unwrap();
-    assert!(s.interactions[&"q".into()].withdrawn);
-    let notice: InteractionId = format!("{ENDED_UNANSWERED_PREFIX}q").into();
-    assert!(pending(&s, &notice.0), "the user hears the question no longer waits");
-    assert!(cancelled.effects.contains(&DomainEffect::NotifyUser { task_id: Some("t".into()), interaction_id: notice.clone() }));
-    let card = &s.interactions[&notice].card;
-    assert_eq!(card.why, "No longer waits for an answer: Decide whether to cover invalid card numbers");
-    assert_eq!(card.content.as_ref().unwrap().body, "Cover card numbers that fail Luhn too?");
+    assert!(s.interactions[&"plan".into()].withdrawn && s.interactions[&"q".into()].withdrawn);
+    assert!(!pending(&s, "plan") && !pending(&s, "q"));
+    assert!(notices(&s).is_empty(), "no notice about cards of a cancelled task");
+    assert!(!cancelled.effects.iter().any(|e| matches!(e, DomainEffect::NotifyUser { interaction_id, .. }
+        if interaction_id.0.starts_with(ENDED_UNANSWERED_PREFIX))));
+}
+/// A notice an older daemon left for a cancelled task leaves the inbox on the next change.
+#[test]
+fn a_notice_left_for_a_cancelled_task_is_taken_away() {
+    let mut s = fixture();
+    ask_aside(&mut s, "q");
+    s.tasks.get_mut(&"t".into()).unwrap().state = TaskState::Done;
+    exec(&mut s, Actor::System, Command::ObserveAgent { agent_id: "a".into(), connected: false }).unwrap();
+    let notice = format!("{ENDED_UNANSWERED_PREFIX}q");
+    assert!(pending(&s, &notice));
+    s.tasks.get_mut(&"t".into()).unwrap().state = TaskState::Cancelled;
+    exec(&mut s, Actor::System, Command::ObserveAgent { agent_id: "a".into(), connected: true }).unwrap();
+    assert!(!pending(&s, &notice));
+}
+/// A plan nobody approved for work that is already done changes nothing for the user.
+#[test]
+fn a_task_done_with_its_plan_open_says_nothing_about_the_plan() {
+    let mut s = fixture();
+    hold_plan(&mut s, "plan");
+    s.tasks.get_mut(&"t".into()).unwrap().state = TaskState::Done;
+    exec(&mut s, Actor::System, Command::ObserveAgent { agent_id: "a".into(), connected: false }).unwrap();
+    assert!(s.interactions[&"plan".into()].withdrawn);
+    assert!(notices(&s).is_empty());
 }
 /// The state an older daemon left: a done task with a question nobody answered.
 #[test]
@@ -3821,6 +3854,10 @@ fn a_task_left_done_with_an_open_question_tells_the_user_once() {
     exec(&mut s, Actor::System, Command::ObserveAgent { agent_id: "a".into(), connected: false }).unwrap();
     let notice = format!("{ENDED_UNANSWERED_PREFIX}q");
     assert!(pending(&s, &notice) && !pending(&s, "q"));
+    let card = &s.interactions[&InteractionId(notice.clone())].card;
+    assert_eq!(card.need, "No longer waits for your answer: Decide whether to cover invalid card numbers");
+    assert_eq!(card.why, "The work was finished before you answered");
+    assert_eq!(card.content.as_ref().unwrap().body, "Cover card numbers that fail Luhn too?");
     let again = exec(&mut s, Actor::System, Command::ObserveAgent { agent_id: "a".into(), connected: true }).unwrap();
     assert!(!again.effects.iter().any(|e| matches!(e, DomainEffect::NotifyUser { .. })));
     assert_eq!(s.interactions.keys().filter(|id| id.0.starts_with(ENDED_UNANSWERED_PREFIX)).count(), 1);
