@@ -36,6 +36,7 @@ async fn held_response_profile() -> (bool, bool, usize) {
     ])));
     let entered = Arc::new(tokio::sync::Semaphore::new(0));
     let release = Arc::new(tokio::sync::Semaphore::new(0));
+    let first_held = Arc::new(tokio::sync::Semaphore::new(0));
     let replies = Arc::new(Mutex::new(Vec::new()));
     let receipts = Arc::new(AtomicUsize::new(0));
     let active = Arc::new(AtomicUsize::new(0));
@@ -45,9 +46,14 @@ async fn held_response_profile() -> (bool, bool, usize) {
         .route("/v1/bootstrap", get(|| async { axum::Json(json!({"epoch":URL_SAFE_NO_PAD.encode([7;16])})) }))
         .route("/v1/work", get({
             let work = work.clone();
+            let first_held = first_held.clone();
             move || {
                 let next = work.lock().unwrap().pop_front().unwrap();
-                async move { axum::Json(json!({"request_id":next.request_id,"envelope":next.envelope})) }
+                let first_held = first_held.clone();
+                async move {
+                    if next.request_id == "independent" { first_held.acquire().await.unwrap().forget(); }
+                    axum::Json(json!({"request_id":next.request_id,"envelope":next.envelope}))
+                }
             }
         }))
         .route("/v1/work/{id}/receipt", post({
@@ -59,12 +65,14 @@ async fn held_response_profile() -> (bool, bool, usize) {
         }))
         .route("/v1/work/{id}/response", post({
             let entered = entered.clone();
+            let first_held = first_held.clone();
             let release = release.clone();
             let replies = replies.clone();
             let active = active.clone();
             let peak = peak.clone();
             move |Path(id): Path<String>, body: Bytes| {
                 let entered = entered.clone();
+                let first_held = first_held.clone();
                 let release = release.clone();
                 let replies = replies.clone();
                 let active = active.clone();
@@ -74,6 +82,7 @@ async fn held_response_profile() -> (bool, bool, usize) {
                     let count = active.fetch_add(1, Ordering::SeqCst) + 1;
                     peak.fetch_max(count, Ordering::SeqCst);
                     if id == "held-upload" {
+                        first_held.add_permits(1);
                         entered.add_permits(1);
                         release.acquire().await.unwrap().forget();
                     }
@@ -527,8 +536,13 @@ async fn a_pending_domain_read_delivery_cannot_cross_an_approval_generation() {
     let device = service.devices.get("phone-1").unwrap();
     let binding = service.read_receipt_binding("phone-1", &device, Transport::Relay).unwrap();
     let digest = approval_bound_read_digest(&serde_json::to_vec(&work.envelope).unwrap(), &binding);
+    let prepared = service.prepare_work(&work, Transport::Relay).unwrap().unwrap();
+    let delivery = service.execute_relay(&work, &[7;16], prepared).await.unwrap();
     let mut tasks = tokio::task::JoinSet::new();
-    service.schedule_work(work, [7;16], &mut tasks).await.unwrap();
+    tasks.spawn({
+        let service = service.clone();
+        async move { service.deliver_response(work, &[7;16], delivery).await }
+    });
     let sent_before = responses.lock().unwrap().len();
     let approvals = home.join("devices.json");
     let mut approved: Value = serde_json::from_slice(&std::fs::read(&approvals).unwrap()).unwrap();
@@ -543,4 +557,439 @@ async fn a_pending_domain_read_delivery_cannot_cross_an_approval_generation() {
     assert!(completed, "the already applied read keeps its durable original receipt");
     assert_eq!(reserved, 0);
     assert_eq!(sent_after, sent_before, "a pending read must not upload old-generation ciphertext after reapproval");
+}
+#[tokio::test]
+async fn a_held_external_dispatch_does_not_block_an_independent_short_relay_read() {
+    let mut samples = Vec::new();
+    for _ in 0..3 { samples.push(held_dispatch_profile(false).await); }
+    for (advanced, completed_before_release, _) in samples {
+        assert!(advanced, "a held external dispatch must not retain ordinary relay intake");
+        assert!(completed_before_release, "the independent short read must complete before external dispatch release");
+    }
+}
+
+async fn held_dispatch_profile(slow_read: bool) -> (bool, bool, usize) {
+    let cpu_start = cpu_micros();
+    let (_directory, mut service, phone) = push_fixture();
+    activate_push(&service);
+    let entered = Arc::new(tokio::sync::Semaphore::new(0));
+    let release = Arc::new(tokio::sync::Semaphore::new(0));
+    let first_held = Arc::new(tokio::sync::Semaphore::new(0));
+    struct ActiveLocal(Arc<AtomicUsize>);
+    impl Drop for ActiveLocal {
+        fn drop(&mut self) { self.0.fetch_sub(1, Ordering::SeqCst); }
+    }
+    let local_active = Arc::new(AtomicUsize::new(0));
+    let local_peak = Arc::new(AtomicUsize::new(0));
+    let local_calls = Arc::new(AtomicUsize::new(0));
+    let local = Router::new().route("/v1/options", get({
+        let calls = local_calls.clone();
+        let active = local_active.clone();
+        let peak = local_peak.clone();
+        let entered = entered.clone();
+        let first_held = first_held.clone();
+        let release = release.clone();
+        move || {
+            let call = calls.fetch_add(1, Ordering::SeqCst);
+            let active = active.clone();
+            let peak = peak.clone();
+            let entered = entered.clone();
+            let first_held = first_held.clone();
+            let release = release.clone();
+            async move {
+                let count = active.fetch_add(1, Ordering::SeqCst) + 1;
+                let _active = ActiveLocal(active);
+                peak.fetch_max(count, Ordering::SeqCst);
+                if slow_read && call == 0 {
+                    first_held.add_permits(1);
+                    entered.add_permits(1);
+                    release.acquire().await.unwrap().forget();
+                }
+                axum::Json(json!({"protocol_version":2}))
+            }
+        }
+    })).route("/v1/questions/1/answer", post({
+        let calls = local_calls.clone();
+        let entered = entered.clone();
+        let first_held = first_held.clone();
+        let release = release.clone();
+        let active = local_active.clone();
+        let peak = local_peak.clone();
+        move || {
+            let calls = calls.clone();
+            let entered = entered.clone();
+            let first_held = first_held.clone();
+            let release = release.clone();
+            let active = active.clone();
+            let peak = peak.clone();
+            async move {
+                let count = active.fetch_add(1, Ordering::SeqCst) + 1;
+                let _active = ActiveLocal(active);
+                peak.fetch_max(count, Ordering::SeqCst);
+                calls.fetch_add(1, Ordering::SeqCst);
+                first_held.add_permits(1);
+                entered.add_permits(1);
+                release.acquire().await.unwrap().forget();
+                axum::Json(json!({"saved":true}))
+            }
+        }
+    }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    service.local_port = listener.local_addr().unwrap().port();
+    let local_server = tokio::spawn(axum::serve(listener, local).into_future());
+    let work = Arc::new(Mutex::new(VecDeque::from([
+        changes_work(&service, "held-dispatch", if slow_read { json!({"method":"GET","path":"/v1/options"}) } else { json!({"method":"POST","path":"/v1/questions/1/answer","body":{"text":"synthetic"}}) }),
+        changes_work(&service, "independent", json!({"method":"GET","path":"/v1/options"})),
+    ])));
+    let replies = Arc::new(Mutex::new(Vec::new()));
+    let receipts = Arc::new(AtomicUsize::new(0));
+    let active = Arc::new(AtomicUsize::new(0));
+    let peak = Arc::new(AtomicUsize::new(0));
+    let (delivered, mut completions) = tokio::sync::mpsc::unbounded_channel();
+    let relay = Router::new()
+        .route("/v1/bootstrap", get(|| async { axum::Json(json!({"epoch":URL_SAFE_NO_PAD.encode([7;16])})) }))
+        .route("/v1/work", get({
+            let work = work.clone();
+            let first_held = first_held.clone();
+            move || {
+                let next = work.lock().unwrap().pop_front().unwrap();
+                let first_held = first_held.clone();
+                async move {
+                    if next.request_id == "independent" { first_held.acquire().await.unwrap().forget(); }
+                    axum::Json(json!({"request_id":next.request_id,"envelope":next.envelope}))
+                }
+            }
+        }))
+        .route("/v1/work/{id}/receipt", post({
+            let receipts = receipts.clone();
+            move || {
+                receipts.fetch_add(1, Ordering::SeqCst);
+                async { StatusCode::ACCEPTED }
+            }
+        }))
+        .route("/v1/work/{id}/response", post({
+            let replies = replies.clone();
+            let active = active.clone();
+            let peak = peak.clone();
+            move |Path(id): Path<String>, body: Bytes| {
+                let replies = replies.clone();
+                let active = active.clone();
+                let peak = peak.clone();
+                let delivered = delivered.clone();
+                async move {
+                    let count = active.fetch_add(1, Ordering::SeqCst) + 1;
+                    peak.fetch_max(count, Ordering::SeqCst);
+                    replies.lock().unwrap().push(body.to_vec());
+                    delivered.send(id).unwrap();
+                    active.fetch_sub(1, Ordering::SeqCst);
+                    StatusCode::ACCEPTED
+                }
+            }
+        }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    service.set_relay_url(Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap());
+    let relay_server = tokio::spawn(axum::serve(listener, relay).into_future());
+    let service = Arc::new(service);
+    let (scheduled, mut admitted) = tokio::sync::mpsc::unbounded_channel();
+    let (worker_done, completed_worker) = tokio::sync::oneshot::channel();
+    let producer = tokio::spawn({
+        let service = service.clone();
+        async move {
+            let mut epoch = None;
+            let mut revoked = HashSet::new();
+            let mut tasks = tokio::task::JoinSet::new();
+            for id in ["held-dispatch", "independent"] {
+                service.poll_work(&mut epoch, &mut revoked, &mut tasks).await.unwrap();
+                scheduled.send(id).unwrap();
+            }
+            if let Some(result) = tasks.join_next().await {
+                result.unwrap().unwrap();
+                worker_done.send(()).unwrap();
+            }
+            while let Some(result) = tasks.join_next().await { result.unwrap().unwrap(); }
+        }
+    });
+    entered.acquire().await.unwrap().forget();
+    let intake_advanced = admitted.try_recv() == Ok("held-dispatch");
+    let independent_before_release = if intake_advanced {
+        let independent = completions.recv().await.unwrap() == "independent";
+        completed_worker.await.unwrap();
+        assert_eq!(service.inflight.lock().unwrap().len(), 1, "the completed independent worker releases its reservation while the first delivery retains its own");
+        independent
+    } else { false };
+    release.add_permits(1);
+    producer.await.unwrap();
+    let results = opened_results(&service, &phone, &replies);
+    let peak = peak.load(Ordering::SeqCst);
+    let reply_bytes: usize = replies.lock().unwrap().iter().map(Vec::len).sum();
+    println!("relay-dispatch profile slow_read={slow_read} offered=2 completed={} errors={} local_calls={} peak_uploads={peak} peak_local_dispatches={} reply_bytes={reply_bytes} cpu_us={} independent_before_release={independent_before_release}",
+        results.len(), results.iter().filter(|value| value["status"] != 200).count(), local_calls.load(Ordering::SeqCst), local_peak.load(Ordering::SeqCst), cpu_micros() - cpu_start);
+    assert_eq!(results.len(), 2);
+    assert!(results.contains(&json!({"status":200,"body":{"protocol_version":2}})));
+    if slow_read {
+        assert!(results.iter().all(|value| value == &json!({"status":200,"body":{"protocol_version":2}})));
+    } else { assert!(results.contains(&json!({"status":200,"body":{"saved":true}}))); }
+    assert_eq!(receipts.load(Ordering::SeqCst), 2);
+    assert_eq!(local_calls.load(Ordering::SeqCst), 2);
+    assert!(service.inflight.lock().unwrap().is_empty());
+    assert!(work.lock().unwrap().is_empty());
+    local_server.abort();
+    relay_server.abort();
+    let _ = local_server.await;
+    let _ = relay_server.await;
+    assert_eq!(local_active.load(Ordering::SeqCst), 0);
+    (intake_advanced, independent_before_release, local_peak.load(Ordering::SeqCst))
+}
+
+
+#[tokio::test]
+async fn a_held_slow_read_does_not_block_an_independent_short_relay_read() {
+    let mut samples = Vec::new();
+    for _ in 0..3 { samples.push(held_dispatch_profile(true).await); }
+    for (advanced, completed_before_release, peak) in samples {
+        assert!(advanced, "a held slow read must not retain ordinary relay intake");
+        assert!(completed_before_release, "independent read result must arrive before releasing the slow read");
+        assert_eq!(peak, 2);
+    }
+}
+
+#[tokio::test]
+async fn a_queued_mutation_ticket_cancels_without_leaving_a_turn_or_permit() {
+    let (scheduled, _) = queued_ticket_profile(true).await;
+    assert!(scheduled, "a mutation waiting for its turn must leave intake owned by the scheduler");
+}
+
+#[tokio::test]
+async fn a_new_lane_waiter_cannot_jump_an_earlier_scheduled_mutation() {
+    let (scheduled, jumped) = queued_ticket_profile(false).await;
+    assert!(scheduled, "mutation scheduling must return before its blocked turn");
+    assert!(!jumped, "a new lane waiter must not jump a mutation reserved before spawn");
+}
+
+async fn queued_ticket_profile(cancel: bool) -> (bool, bool) {
+    use std::{future::Future, task::Poll};
+    let (_directory, mut service, phone) = push_fixture();
+    activate_push(&service);
+    let replies = Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
+    let receipts = Arc::new(Mutex::new(Vec::<String>::new()));
+    let relay = Router::new()
+        .route("/v1/work/{id}/receipt", post({
+            let receipts = receipts.clone();
+            move |Path(id): Path<String>| {
+                receipts.lock().unwrap().push(id);
+                async { StatusCode::ACCEPTED }
+            }
+        }))
+        .route("/v1/work/{id}/response", post({
+            let replies = replies.clone();
+            move |body: Bytes| {
+                replies.lock().unwrap().push(body.to_vec());
+                async { StatusCode::ACCEPTED }
+            }
+        }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    service.set_relay_url(Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap());
+    let server = tokio::spawn(axum::serve(listener, relay).into_future());
+    let service = Arc::new(service);
+    let mut held = Some(service.lane.lock().await);
+    let mut tasks = tokio::task::JoinSet::new();
+    let scheduled = {
+        let work = changes_work(&service, "queued-turn", json!({"method":"POST","path":"/v1/service/push-binding","body":{"push_binding":URL_SAFE_NO_PAD.encode([7;32])}}));
+        let schedule = service.schedule_work(work, [7;16], &mut tasks);
+        let mut schedule = std::pin::pin!(schedule);
+        match std::future::poll_fn(|cx| Poll::Ready(schedule.as_mut().poll(cx))).await {
+            Poll::Ready(result) => { result.unwrap(); true },
+            Poll::Pending => false,
+        }
+    };
+    let mut jumped = false;
+    if cancel {
+        tasks.abort_all();
+        while tasks.join_next().await.is_some() {}
+        drop(held.take());
+    } else if scheduled {
+        let waiter = service.lane.lock();
+        let mut waiter = std::pin::pin!(waiter);
+        let before = std::future::poll_fn(|cx| Poll::Ready(waiter.as_mut().poll(cx))).await;
+        assert!(matches!(before, Poll::Pending));
+        drop(before);
+        drop(held.take());
+        let after = std::future::poll_fn(|cx| Poll::Ready(waiter.as_mut().poll(cx))).await;
+        jumped = matches!(after, Poll::Ready(_));
+        drop(after);
+    } else { drop(held.take()); }
+    while let Some(result) = tasks.join_next().await { result.unwrap().unwrap(); }
+    service.schedule_work(changes_work(&service, "fresh-turn", json!({"method":"POST","path":"/v1/service/push-binding","body":{"push_binding":URL_SAFE_NO_PAD.encode([8;32])}})), [7;16], &mut tasks).await.unwrap();
+    while let Some(result) = tasks.join_next().await { result.unwrap().unwrap(); }
+    let results = opened_results(&service, &phone, &replies);
+    let expected = if scheduled && !cancel { vec!["queued-turn", "fresh-turn"] } else { vec!["fresh-turn"] };
+    let received = receipts.lock().unwrap().clone();
+    let reserved = service.inflight.lock().unwrap().len();
+    let binding = service.journal.push_binding("phone-1").unwrap();
+    server.abort();
+    let _ = server.await;
+    assert_eq!(received, expected);
+    assert_eq!(results.len(), expected.len());
+    assert!(results.iter().all(|value| value == &json!({"status":204})));
+    assert_eq!(reserved, 0);
+    assert_eq!(binding, Some(URL_SAFE_NO_PAD.encode([8;32])));
+    (scheduled, jumped)
+}
+
+#[tokio::test]
+async fn a_waiting_preference_mutation_leaves_intake_at_the_two_pipeline_budget() {
+    let (_directory, mut service, phone) = push_fixture();
+    activate_push(&service);
+    let entered = Arc::new(tokio::sync::Semaphore::new(0));
+    let release = Arc::new(tokio::sync::Semaphore::new(0));
+    let released = Arc::new(AtomicBool::new(false));
+    let effect = Arc::new(AtomicUsize::new(0));
+    let early_read = Arc::new(AtomicBool::new(false));
+    let local = Router::new()
+        .route("/v1/questions/1/answer", post({
+            let entered = entered.clone(); let release = release.clone(); let effect = effect.clone();
+            move || {
+                let entered = entered.clone(); let release = release.clone(); let effect = effect.clone();
+                async move {
+                    entered.add_permits(1);
+                    release.acquire().await.unwrap().forget();
+                    effect.store(1, Ordering::SeqCst);
+                    axum::Json(json!({"saved":true}))
+                }
+            }
+        }))
+        .route("/v1/options", get({
+            let released = released.clone(); let early_read = early_read.clone();
+            move || {
+                if !released.load(Ordering::SeqCst) { early_read.store(true, Ordering::SeqCst); }
+                async { axum::Json(json!({"short":true})) }
+            }
+        }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    service.local_port = listener.local_addr().unwrap().port();
+    let local_server = tokio::spawn(axum::serve(listener, local).into_future());
+    let work = Arc::new(Mutex::new(VecDeque::from([
+        changes_work(&service, "budget-held", json!({"method":"POST","path":"/v1/questions/1/answer","body":{"text":"synthetic"}})),
+        changes_work(&service, "budget-pref", json!({"method":"POST","path":"/v1/service/push-binding","body":{"push_binding":URL_SAFE_NO_PAD.encode([7;32])}})),
+        changes_work(&service, "budget-read", json!({"method":"GET","path":"/v1/options"})),
+    ])));
+    let third = Arc::new(tokio::sync::Semaphore::new(0));
+    let receipts = Arc::new(AtomicUsize::new(0));
+    let early_preference = Arc::new(AtomicBool::new(false));
+    let replies = Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
+    let relay = Router::new()
+        .route("/v1/bootstrap", get(|| async { axum::Json(json!({"epoch":URL_SAFE_NO_PAD.encode([7;16])})) }))
+        .route("/v1/work", get({
+            let work = work.clone(); let third = third.clone();
+            move || {
+                let next = work.lock().unwrap().pop_front().unwrap();
+                if next.request_id == "budget-read" { third.add_permits(1); }
+                async move { axum::Json(json!({"request_id":next.request_id,"envelope":next.envelope})) }
+            }
+        }))
+        .route("/v1/work/{id}/receipt", post({
+            let receipts = receipts.clone(); let effect = effect.clone(); let early_preference = early_preference.clone();
+            move |Path(id): Path<String>| {
+                receipts.fetch_add(1, Ordering::SeqCst);
+                if id == "budget-pref" && effect.load(Ordering::SeqCst) == 0 { early_preference.store(true, Ordering::SeqCst); }
+                async { StatusCode::ACCEPTED }
+            }
+        }))
+        .route("/v1/work/{id}/response", post({
+            let replies = replies.clone();
+            move |body: Bytes| {
+                replies.lock().unwrap().push(body.to_vec());
+                async { StatusCode::ACCEPTED }
+            }
+        }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    service.set_relay_url(Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap());
+    let relay_server = tokio::spawn(axum::serve(listener, relay).into_future());
+    let service = Arc::new(service);
+    let (scheduled, mut observed) = tokio::sync::mpsc::unbounded_channel();
+    let producer = tokio::spawn({
+        let service = service.clone();
+        async move {
+            let mut tasks = tokio::task::JoinSet::new(); let mut epoch = None; let mut revoked = HashSet::new();
+            for id in ["budget-held", "budget-pref", "budget-read"] {
+                service.poll_work(&mut epoch, &mut revoked, &mut tasks).await.unwrap();
+                scheduled.send(id).unwrap();
+            }
+            while let Some(result) = tasks.join_next().await { result.unwrap().unwrap(); }
+        }
+    });
+    entered.acquire().await.unwrap().forget();
+    let advanced = observed.try_recv() == Ok("budget-held");
+    let mut second_scheduled = false;
+    let mut receipts_at_budget = None;
+    if advanced {
+        second_scheduled = observed.recv().await == Some("budget-pref");
+        third.acquire().await.unwrap().forget();
+        receipts_at_budget = Some(receipts.load(Ordering::SeqCst));
+    }
+    released.store(true, Ordering::SeqCst);
+    release.add_permits(1);
+    producer.await.unwrap();
+    let results = opened_results(&service, &phone, &replies);
+    let binding = service.journal.push_binding("phone-1").unwrap();
+    let reserved = service.inflight.lock().unwrap().len();
+    local_server.abort(); relay_server.abort();
+    let _ = local_server.await; let _ = relay_server.await;
+    assert_eq!(results.len(), 3);
+    assert!(results.contains(&json!({"status":200,"body":{"saved":true}})));
+    assert!(results.contains(&json!({"status":204})));
+    assert!(results.contains(&json!({"status":200,"body":{"short":true}})));
+    assert_eq!(effect.load(Ordering::SeqCst), 1);
+    assert_eq!(binding, Some(URL_SAFE_NO_PAD.encode([7;32])));
+    assert_eq!(reserved, 0);
+    assert!(!early_preference.load(Ordering::SeqCst), "the queued preference must not jump the held mutation");
+    assert!(!early_read.load(Ordering::SeqCst), "the existing two occupied pipelines leave no third read admission");
+    assert!(advanced, "held mutation execution must leave intake available");
+    assert!(second_scheduled, "the preference waiting for its turn must not retain intake");
+    assert_eq!(receipts_at_budget, Some(1));
+}
+
+#[tokio::test]
+async fn a_saturated_changes_rejection_does_not_wait_for_the_mutation_lane() {
+    use std::{future::Future, task::Poll};
+    let (_directory, mut service, phone) = push_fixture();
+    activate_push(&service);
+    let replies = Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
+    let relay = Router::new()
+        .route("/v1/work/{id}/receipt", post(|| async { StatusCode::ACCEPTED }))
+        .route("/v1/work/{id}/response", post({
+            let replies = replies.clone();
+            move |body: Bytes| {
+                replies.lock().unwrap().push(body.to_vec());
+                async { StatusCode::ACCEPTED }
+            }
+        }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    service.set_relay_url(Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap());
+    let server = tokio::spawn(axum::serve(listener, relay).into_future());
+    let service = Arc::new(service);
+    let request = json!({"method":"GET","path":"/v1/changes?after=0&wait=50"});
+    let live = service.prepare_work(&changes_work(&service, "active-changes", request.clone()), Transport::Relay).unwrap().unwrap();
+    let mut held = Some(service.lane.lock().await);
+    let mut tasks = tokio::task::JoinSet::new();
+    let accepted_before_write_release = {
+        let busy = service.schedule_work(changes_work(&service, "busy-changes", request), [7;16], &mut tasks);
+        let mut busy = std::pin::pin!(busy);
+        let pending = std::future::poll_fn(|cx| Poll::Ready(busy.as_mut().poll(cx).is_pending())).await;
+        assert!(pending);
+        let accepted: i64 = service.journal.db().unwrap().query_row(
+            "SELECT count(*) FROM service_receipts WHERE sender='phone-1' AND request_id='busy-changes'", [], |row| row.get(0),
+        ).unwrap();
+        drop(held.take());
+        busy.await.unwrap();
+        accepted
+    };
+    while let Some(result) = tasks.join_next().await { result.unwrap().unwrap(); }
+    drop(live);
+    let results = opened_results(&service, &phone, &replies);
+    let reserved = service.inflight.lock().unwrap().len();
+    server.abort(); let _ = server.await;
+    assert_eq!(results, vec![json!({"status":429,"error":"changes_busy"})]);
+    assert_eq!(reserved, 0);
+    assert_eq!(accepted_before_write_release, 1, "a busy rejection must not queue behind a mutation before acknowledging its read");
 }

@@ -105,10 +105,28 @@ impl Drop for WorkGuard {
     }
 }
 
+enum MutationTurn {
+    Acquired(tokio::sync::OwnedMutexGuard<()>),
+    Waiting(std::pin::Pin<Box<dyn std::future::Future<Output = tokio::sync::OwnedMutexGuard<()>> + Send>>),
+}
+
+impl MutationTurn {
+    async fn acquire(self) -> tokio::sync::OwnedMutexGuard<()> {
+        match self { Self::Acquired(guard) => guard, Self::Waiting(waiting) => waiting.await }
+    }
+}
+
+enum ExecutionLane {
+    Serial,
+    Read,
+    Mutation(MutationTurn),
+}
+
 struct PreparedWork {
     request: LocalRequest,
     digest: [u8; 32],
     guard: WorkGuard,
+    execution: ExecutionLane,
 }
 
 /// Device preferences are stored on the executor and travel only inside E2E
@@ -290,8 +308,8 @@ pub struct Service {
     domain: Option<Arc<crate::domain_runtime::DomainRuntime>>,
     routes: Option<Arc<crate::client_routes::Client>>,
     direct: DirectConfig,
-    /// Commands from either transport run one at a time; only changes reads run beside them.
-    lane: tokio::sync::Mutex<()>,
+    /// Writers from either transport share their turn; scheduled relay reads bypass it.
+    lane: Arc<tokio::sync::Mutex<()>>,
 }
 
 /// A verified encrypted sender with persisted approval (and, through the relay, enrollment).
@@ -770,7 +788,7 @@ impl Service {
             domain: None,
             routes: None,
             direct: config.direct,
-            lane: tokio::sync::Mutex::new(()),
+            lane: Arc::new(tokio::sync::Mutex::new(())),
         }))
     }
 
@@ -969,6 +987,7 @@ impl Service {
         Ok(Some(PreparedWork {
             request,
             digest,
+            execution: ExecutionLane::Serial,
             guard: WorkGuard {
                 inflight: self.inflight.clone(),
                 key,
@@ -992,11 +1011,7 @@ impl Service {
         A: FnOnce() -> F,
         F: std::future::Future<Output = Result<()>>,
     {
-        let PreparedWork {
-            request,
-            digest,
-            guard,
-        } = prepared;
+        let PreparedWork { request, digest, guard, execution } = prepared;
         let device = self
             .devices
             .get(&e.sender)
@@ -1004,7 +1019,11 @@ impl Service {
         let _lane = if guard.changes {
             None
         } else {
-            Some(self.lane.lock().await)
+            match execution {
+                ExecutionLane::Read => None,
+                ExecutionLane::Serial => Some(self.lane.clone().lock_owned().await),
+                ExecutionLane::Mutation(turn) => Some(turn.acquire().await),
+            }
         };
         let disposition = self.journal.accept(&e.sender, &e.request_id, &digest)?;
         accepted().await?;
@@ -5226,6 +5245,7 @@ agreement_key = "{}"
         .await
         .unwrap()
         .unwrap();
+        tasks.join_next().await.unwrap().unwrap().unwrap();
         assert_eq!(
             writes.load(Ordering::SeqCst),
             1,
@@ -5243,7 +5263,7 @@ agreement_key = "{}"
             )
             .await
             .unwrap();
-        for _ in 0..2 { tasks.join_next().await.unwrap().unwrap().unwrap(); }
+        tasks.join_next().await.unwrap().unwrap().unwrap();
         assert_eq!(tasks.len(), 1, "the original changes read remains held while ordinary replies complete");
         assert!(
             opened_results(&service, &phone, &responses)
@@ -5723,7 +5743,7 @@ agreement_key = "{}"
         let service = Service {
             relay: Some(relay::RelayConnector::new(Url::parse("http://127.0.0.1:1/").unwrap(), "owner".into())),
             direct: DirectConfig::default(),
-            lane: tokio::sync::Mutex::new(()),
+            lane: Arc::new(tokio::sync::Mutex::new(())),
             client: Client::new(),
             mac_id: "mac-test".into(),
             signing: SigningKey::from_slice(&[1u8; 32]).unwrap(),
@@ -5818,7 +5838,7 @@ agreement_key = "{}"
         let service = Service {
             relay: Some(relay::RelayConnector::new(Url::parse("http://127.0.0.1:1/").unwrap(), "owner".into())),
             direct: DirectConfig::default(),
-            lane: tokio::sync::Mutex::new(()),
+            lane: Arc::new(tokio::sync::Mutex::new(())),
             client: Client::new(),
             mac_id: "mac-test".into(),
             signing: SigningKey::from_slice(&[1u8; 32]).unwrap(),
@@ -6193,7 +6213,7 @@ agreement_key = "{}"
                 let service = Service {
                     relay: Some(relay::RelayConnector::new(Url::parse(&format!("http://127.0.0.1:{port}/")).unwrap(), "owner".into())),
                     direct: DirectConfig::default(),
-                    lane: tokio::sync::Mutex::new(()),
+                    lane: Arc::new(tokio::sync::Mutex::new(())),
                     client: Client::new(),
                     mac_id: "mac-1".into(),
                     signing: SigningKey::from_slice(&[1u8; 32]).unwrap(),
@@ -6336,7 +6356,7 @@ agreement_key = "{}"
         let service = Service {
             relay: Some(relay::RelayConnector::new(Url::parse(&format!("http://127.0.0.1:{port}/")).unwrap(), "owner".into())),
             direct: DirectConfig::default(),
-            lane: tokio::sync::Mutex::new(()),
+            lane: Arc::new(tokio::sync::Mutex::new(())),
             client: Client::new(),
             mac_id: "mac-1".into(),
             signing: SigningKey::from_slice(&[1u8; 32]).unwrap(),
@@ -6499,7 +6519,7 @@ agreement_key = "{}"
         let service = Service {
             relay: Some(relay::RelayConnector::new(Url::parse(&format!("http://127.0.0.1:{relay_port}/")).unwrap(), "owner".into())),
             direct: DirectConfig::default(),
-            lane: tokio::sync::Mutex::new(()),
+            lane: Arc::new(tokio::sync::Mutex::new(())),
             client: Client::new(),
             mac_id: "mac-1".into(),
             signing: mac_signing,
@@ -6536,7 +6556,7 @@ agreement_key = "{}"
         let restarted = Service {
             relay: Some(relay::RelayConnector::new(service.relay_url(), "owner".into())),
             direct: DirectConfig::default(),
-            lane: tokio::sync::Mutex::new(()),
+            lane: Arc::new(tokio::sync::Mutex::new(())),
             client: Client::new(),
             mac_id: service.mac_id.clone(),
             signing: SigningKey::from_slice(&[1u8; 32]).unwrap(),
@@ -6738,7 +6758,7 @@ agreement_key = "{}"
         let removed_from_config = Service {
             relay: Some(relay::RelayConnector::new(service.relay_url(), "owner".into())),
             direct: DirectConfig::default(),
-            lane: tokio::sync::Mutex::new(()),
+            lane: Arc::new(tokio::sync::Mutex::new(())),
             client: Client::new(),
             mac_id: service.mac_id.clone(),
             signing: SigningKey::from_slice(&[1u8; 32]).unwrap(),
