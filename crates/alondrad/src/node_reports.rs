@@ -279,6 +279,16 @@ impl Reported {
             .collect()
     }
 
+    /// Everything the node has in the background may never end, so it is no reason to wait for
+    /// the node: a subagent past `SUBAGENT_CALL_LIMIT_MS`, anything else past
+    /// `BACKGROUND_SUSPECT_MS` with no shell call alive.
+    pub(crate) fn background_hung(&self, now: Millis) -> bool {
+        !self.background.is_empty() && self.background.iter().all(|(_, item)| match item.kind {
+            BackgroundKind::Agent => now - item.started_at > alondra_core::states::SUBAGENT_CALL_LIMIT_MS,
+            _ => !self.shell_running() && now - item.started_at > alondra_core::states::BACKGROUND_SUSPECT_MS,
+        })
+    }
+
     /// The mod loaded and its session has not ended, yet its connection is closed: what brings
     /// the node back (`node_revival`), never something Fleet shows as the node's state.
     pub(crate) fn connection_lost(&self) -> bool {

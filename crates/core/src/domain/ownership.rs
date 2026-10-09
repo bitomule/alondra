@@ -75,6 +75,9 @@ pub enum NodeFact {
     Asking,
     /// Its session is gone and nothing brings it back.
     Gone,
+    /// It ended its turn with nothing running that will wake it, neither a result nor a question;
+    /// `sent_back` while Alondra still sends it back to its task, before its cap tells the user.
+    Stopped { sent_back: bool },
 }
 
 /// Why a task cannot start by itself, as the card that puts it in front of the user says.
@@ -185,6 +188,8 @@ impl DomainState {
                 NodeFact::Alive | NodeFact::Reviving => Ok(Holder::Node),
                 NodeFact::Asking => ownerless("its node is lost and the card about it is not open"),
                 NodeFact::Gone => ownerless("its node is gone and nothing brings it back"),
+                NodeFact::Stopped { sent_back: true } => Ok(Holder::Node),
+                NodeFact::Stopped { sent_back: false } => ownerless("its node stopped without a result or a question and nobody was told"),
             };
         }
         if t.started {
