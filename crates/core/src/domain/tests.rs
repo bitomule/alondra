@@ -1009,8 +1009,10 @@ fn head_push_invalidates_authorization_and_merge_external_does_not_accept() {
             remote_base: "main".into(),
             base_verified: true,
         },
-        "stale_head",
+        "acceptance_stale",
     );
+    assert!(s.interactions[&"d".into()].withdrawn, "the delivery behind the PR is withdrawn");
+
     assert!(!s.merge_authorizations[&"auth".into()].valid);
 }
 #[test]
@@ -3789,6 +3791,40 @@ fn a_final_delivery_is_refused_while_a_question_of_its_task_waits() {
     answer_aside(&mut s, "q");
     present(&mut s, "d", pr_targets());
     assert!(pending(&s, "d"), "once answered, the delivery reaches the user");
+}
+/// 9 Oct: PR #845's node pushed after its final delivery and kept working; the user got its card
+/// with no way to accept it, only a note that the PR had commits the result did not include.
+#[test]
+fn a_push_after_the_final_delivery_withdraws_it_until_the_node_presents_the_new_head() {
+    let mut s = fixture();
+    register(&mut s);
+    present(&mut s, "d", pr_targets());
+    assert!(pending(&s, "d"));
+    let pushed = exec(&mut s, Actor::System, Command::ObservePrState { pr_id: "pr".into(), head: "head2".into(),
+        base: "main".into(), state: PrState::Open, merged_head: None }).unwrap();
+    let t = &s.tasks[&"t".into()];
+    assert_eq!((t.state, t.final_presentation.as_ref()), (TaskState::Running, None), "the task is in progress again");
+    assert!(s.interactions[&"d".into()].withdrawn);
+    assert!(!pending(&s, "d"), "no card the user cannot accept");
+    assert_eq!(sent_to_node(&pushed), vec![delivery_withdrawn_behind_pr(1)], "the node hears why");
+    let merge = |presentation: &str, head: &str| Command::AuthorizeMerge { authorization_id: format!("auth-{presentation}").into(),
+        presentation_id: presentation.into(), pr_id: "pr".into(), expected_head: head.into(), method: MergeMethod::Squash };
+    let before = s.clone();
+    assert!(exec(&mut s, user(), merge("d", "head1")).is_err(), "the withdrawn delivery cannot be merged");
+    assert_eq!(s, before);
+    present(&mut s, "d2", vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: "head2".into() }]);
+    assert!(pending(&s, "d2"), "presenting the new head brings the card back");
+    exec(&mut s, user(), merge("d2", "head2")).unwrap();
+}
+#[test]
+fn observing_the_head_a_delivery_presented_keeps_it() {
+    let mut s = fixture();
+    register(&mut s);
+    present(&mut s, "d", pr_targets());
+    let out = exec(&mut s, Actor::System, Command::ObservePrState { pr_id: "pr".into(), head: "head1".into(),
+        base: "main".into(), state: PrState::Open, merged_head: None }).unwrap();
+    assert!(pending(&s, "d") && sent_to_node(&out).is_empty());
+    assert_eq!(s.tasks[&"t".into()].state, TaskState::ForYourReview);
 }
 /// Revisions 1522-1570: BlurCamera's keywords task asked a question after its final delivery, the
 /// PR was merged and the task closed, and the question left the inbox unanswered.
