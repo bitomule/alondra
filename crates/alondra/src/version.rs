@@ -42,6 +42,30 @@ pub fn install(path: &Path, home: &Path) -> &'static str {
     }
 }
 
+/// `cli.older`, when the daemon this run talked to is newer than this binary.
+pub fn older_warning() -> Option<String> {
+    older_than(crate::client::service_version()?)
+}
+
+fn older_than(service: &str) -> Option<String> {
+    alondra_core::update::newer(service, CLI).then(|| trf!(
+        "This alondra ({CLI}) is older than the service ({service}): run `alondra update`",
+        "Este alondra ({CLI}) es más antiguo que el servicio ({service}): ejecuta `alondra update`"
+    ))
+}
+
+/// A `--json` answer carries the warning in itself instead of on stderr.
+pub fn with_warning(value: Value) -> Value {
+    warned(value, older_warning())
+}
+
+fn warned(mut value: Value, warning: Option<String>) -> Value {
+    if let (Some(warning), Some(object)) = (warning, value.as_object_mut()) {
+        object.insert("warning".into(), json!(warning));
+    }
+    value
+}
+
 fn line(service: Option<&str>) -> String {
     match service {
         None => trf!("alondra {CLI} · service not running", "alondra {CLI} · servicio parado"),
@@ -104,6 +128,31 @@ mod tests {
         assert_eq!(install(&keg.join("alondra"), &home), "homebrew");
         assert_eq!(install(&home.join(".local/bin/alondra"), &home), "source");
         assert_eq!(install(Path::new("/opt/elsewhere/alondra"), &home), "other");
+    }
+
+    #[test]
+    fn only_a_newer_service_warns_this_binary_is_older() {
+        set_for_this_thread(Lang::En);
+        assert_eq!(
+            older_than("999.0.0"),
+            Some(format!("This alondra ({CLI}) is older than the service (999.0.0): run `alondra update`"))
+        );
+        assert_eq!(older_than(CLI), None);
+        assert_eq!(older_than("0.0.1"), None);
+        set_for_this_thread(Lang::Es);
+        assert_eq!(
+            older_than("999.0.0"),
+            Some(format!("Este alondra ({CLI}) es más antiguo que el servicio (999.0.0): ejecuta `alondra update`"))
+        );
+    }
+
+    #[test]
+    fn a_json_answer_carries_the_warning_only_when_the_service_is_newer() {
+        set_for_this_thread(Lang::En);
+        let doc = warned(json!({"ok": true}), older_than("999.0.0"));
+        assert_eq!(doc["ok"], true);
+        assert!(doc["warning"].as_str().unwrap().contains("run `alondra update`"));
+        assert_eq!(warned(json!({"ok": true}), older_than(CLI)), json!({"ok": true}));
     }
 
     #[test]

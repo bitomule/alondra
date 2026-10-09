@@ -11,7 +11,7 @@ use crate::client::Client;
 pub fn run(dry_run: bool, json: bool) -> Result<()> {
     let report = Client::for_user(Duration::from_secs(300)).post("/cleanup", &json!({"dry_run": dry_run}))?;
     if json {
-        println!("{}", serde_json::to_string_pretty(&report)?);
+        println!("{}", serde_json::to_string_pretty(&crate::version::with_warning(report))?);
     } else {
         print!("{}", render(&report));
     }

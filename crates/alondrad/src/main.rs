@@ -483,7 +483,8 @@ async fn run_domain(config: &Config) -> Result<()> {
     }
     tokio::spawn(device_expiry::run(state.clone(), config.home.clone(), config.device_expiry_days));
     let app = domain_bootstrap::router(state)
-        .layer(axum::middleware::from_fn_with_state(auth, auth::guard));
+        .layer(axum::middleware::from_fn_with_state(auth, auth::guard))
+        .layer(axum::middleware::from_fn(views::stamp_version));
     log!(
         "domain listener on http://{addr}, data in {}",
         config.home.display()

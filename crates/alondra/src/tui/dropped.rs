@@ -97,7 +97,7 @@ pub fn is_image(name: &str) -> bool {
     .contains(&ext.as_str())
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Upload {
     Sending,
     Stored(alondra_core::domain::AttachmentRef),
@@ -115,7 +115,7 @@ pub fn stored(chips: &[Chip]) -> Vec<alondra_core::domain::AttachmentRef> {
 }
 
 /// A file attached in the composer: its upload goes on while the user keeps typing.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Chip {
     pub seq: u64,
     pub name: String,

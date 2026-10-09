@@ -5483,6 +5483,22 @@ fn a_pr_card_that_cannot_merge_says_why() {
         "La PR #12 tiene commits que este resultado no incluye: no se puede fusionar desde aquí hasta que el nodo la vuelva a presentar."));
 }
 
+#[test]
+fn an_item_kind_from_a_newer_daemon_becomes_one_unknown_row_and_keeps_the_rest_of_the_view() {
+    let mut json: serde_json::Value = serde_json::from_str(include_str!("../../../../fixtures/views/cards/home-tui.json")).unwrap();
+    let section = json["sections"].as_array_mut().unwrap().iter_mut().find(|s| !s["items"].as_array().unwrap().is_empty()).unwrap();
+    let known = section["items"].as_array().unwrap().len();
+    section["items"].as_array_mut().unwrap().push(serde_json::json!({"type": "gauge_wall", "bars": [1, 2, 3]}));
+    let id = section["id"].clone();
+
+    let view: View = serde_json::from_value(json).expect("a newer item kind must not fail the whole view");
+
+    let items = &view.sections.iter().find(|s| serde_json::json!(s.id) == id).unwrap().items;
+    assert_eq!(items.len(), known + 1);
+    assert_eq!(items.last(), Some(&Item::Unknown));
+    assert!(items[..known].iter().all(|item| *item != Item::Unknown));
+}
+
 fn task_in(state: &mut DomainState, id: &str, request: &str, task_state: TaskState) {
     let mut task = fixture().tasks[&"t-1".into()].clone();
     (task.id, task.request_id, task.title, task.state, task.final_presentation) =

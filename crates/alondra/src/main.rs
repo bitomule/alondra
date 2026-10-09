@@ -234,7 +234,20 @@ fn main() -> Result<()> {
     if cli.version {
         return version::run(cli.json);
     }
-    match cli.command {
+    let warns = match &cli.command {
+        None | Some(Cmd::McpNode | Cmd::McpOrchestrator | Cmd::Hook | Cmd::Node { .. } | Cmd::Inbox | Cmd::Keys) => false,
+        Some(Cmd::Doctor { json, .. } | Cmd::Models { json, .. } | Cmd::Cleanup { json, .. }) => !json,
+        Some(_) => true,
+    };
+    let result = run(cli.command);
+    if warns && let Some(warning) = version::older_warning() {
+        eprintln!("{warning}");
+    }
+    result
+}
+
+fn run(command: Option<Cmd>) -> Result<()> {
+    match command {
         Some(Cmd::Delivery(options)) => delivery::run(options),
         Some(Cmd::Machines) => service_client::list(),
         Some(Cmd::Connect { mac: Some(mac), repair, .. }) => service_client::connect(&mac, repair),

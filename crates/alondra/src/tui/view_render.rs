@@ -157,7 +157,8 @@ pub fn rows(view: &View) -> Vec<(&Row, bool)> {
                 | Item::Timeline(_)
                 | Item::Form(_)
                 | Item::Notice(_)
-                | Item::Actions(_) => {}
+                | Item::Actions(_)
+                | Item::Unknown => {}
             }
         }
     }
@@ -597,11 +598,36 @@ pub fn document_lines(view: &View, width: usize) -> Vec<Line<'static>> {
                         tone: notice.tone,
                     }),
                 ))),
-                Item::Actions(_) => {}
+                Item::Actions(_) | Item::Unknown => {}
             }
         }
     }
     lines
+}
+
+/// An item kind this terminal does not know, from a newer daemon, as a row asking to update.
+pub fn placeholders(view: &mut alondra_core::views::View) {
+    let mut n = 0;
+    for item in view.sections.iter_mut().flat_map(|section| section.items.iter_mut()) {
+        if *item == Item::Unknown {
+            n += 1;
+            *item = Item::Row(Row {
+                id: format!("unknown-{n}"),
+                link: None,
+                icon: alondra_core::views::Icon::Notice,
+                title: tr!("Update the TUI to see this", "Actualiza la TUI para ver esto").to_owned(),
+                subtitle: None,
+                badges: vec![],
+                trailing: None,
+                depth: 0,
+                struck: false,
+                kind: None,
+                children: vec![],
+                folded: false,
+                actions: vec![],
+            });
+        }
+    }
 }
 
 pub(super) fn action_line(action: &Action) -> String {

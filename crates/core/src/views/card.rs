@@ -145,6 +145,7 @@ pub(super) fn build(id: &str, context: &RenderContext<'_>) -> Result<View, Build
         sections,
         empty: None,
         notices: vec![],
+        service: None,
     })
 }
 
@@ -164,6 +165,7 @@ fn settled_view(key: String, settled: Settled, projection: &DomainProjection, co
         sections: vec![],
         empty: Some(Notice { text: settled.notice(context.lang).into(), tone: Tone::Neutral, action: None }),
         notices: vec![],
+        service: None,
     }
 }
 

@@ -25,6 +25,7 @@ pub(super) fn view(
         sections,
         empty: None,
         notices: vec![],
+        service: None,
     }
 }
 

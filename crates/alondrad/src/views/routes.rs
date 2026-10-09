@@ -109,15 +109,12 @@ async fn respond(
     let Some(protocol) = protocol.as_deref().and_then(|s| s.parse::<u32>().ok()) else {
         return error_lang(requested_language, "invalid_input", "protocol is required");
     };
-    if protocol != VIEWS_PROTOCOL {
-        return error(
-            "incompatible_protocol",
-            if lang.as_deref() == Some("es") {
-                "Actualiza Alondra"
-            } else {
-                "Update Alondra"
-            },
-        );
+    if !super::serves(protocol) {
+        return super::incompatible(if lang.as_deref() == Some("es") {
+            "Actualiza Alondra"
+        } else {
+            "Update Alondra"
+        });
     }
     let client_kind = match kind.as_deref() {
         Some("ios") => Client::Ios,
@@ -154,7 +151,7 @@ async fn respond(
     if key == "issue_picker?refresh=1" {
         client.feeds.wake();
     }
-    let view = match client
+    let mut view = match client
         .views
         .render(&key, &state, &live, client_kind, language, transport)
     {
@@ -168,13 +165,15 @@ async fn respond(
             return error_lang(language, "invalid_input", "invalid view key");
         }
     };
+    let service = crate::views::this_service();
     if known.as_deref() == Some(view.version.as_str()) {
         return Json(
             json!({"protocol":VIEWS_PROTOCOL,"unchanged":true,"cursor":view.cursor,
-            "data_epoch":view.data_epoch}),
+            "data_epoch":view.data_epoch,"service":service}),
         )
         .into_response();
     }
+    view.service = Some(service);
     let bytes = match serde_json::to_vec(&view) {
         Ok(bytes) => bytes,
         Err(_) => return error_lang(language, "storage_unavailable", "view serialization failed"),

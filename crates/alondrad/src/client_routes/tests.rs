@@ -1270,3 +1270,32 @@ async fn an_agent_with_no_connection_no_task_and_nothing_live_has_left_fleet() {
         .flat_map(|section| section["items"].as_array().unwrap()).any(|item| item["id"] == "bare");
     assert!(!listed, "a node that left with nothing open is not a row of Fleet");
 }
+
+#[tokio::test]
+async fn views_and_changes_say_which_daemon_answered_and_an_unserved_protocol_gets_409_with_it() {
+    let fixture = Fixture::start().await;
+    let service = json!({"version": env!("CARGO_PKG_VERSION"),
+        "views_protocol": {"min": alondra_core::views::VIEWS_PROTOCOL_MIN, "max": alondra_core::views::VIEWS_PROTOCOL}});
+    assert_eq!(view_json(&fixture, "home", "en").await["service"], service);
+
+    let changes = format!("/changes?protocol={}&client=tui&lang=en&wait=0", alondra_core::views::VIEWS_PROTOCOL);
+    let response = crate::views::routes::relay_feed(&fixture.client, "device:test", &changes).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: Value = serde_json::from_slice(&axum::body::to_bytes(response.into_body(), 1 << 20).await.unwrap()).unwrap();
+    assert_eq!(body["service"], service);
+
+    let unserved = alondra_core::views::VIEWS_PROTOCOL + 1;
+    for path in [
+        format!("/views/home?protocol={unserved}&client=tui&lang=en"),
+        format!("/changes?protocol={unserved}&client=tui&lang=en&wait=0"),
+    ] {
+        let response = if path.starts_with("/views/") {
+            crate::views::routes::relay(&fixture.client, "device:test", &path).await
+        } else {
+            crate::views::routes::relay_feed(&fixture.client, "device:test", &path).await
+        };
+        assert_eq!(response.status(), StatusCode::CONFLICT, "{path}");
+        let body: Value = serde_json::from_slice(&axum::body::to_bytes(response.into_body(), 1 << 20).await.unwrap()).unwrap();
+        assert_eq!((body["code"].as_str(), &body["service"]), (Some("incompatible_protocol"), &service), "{path}");
+    }
+}

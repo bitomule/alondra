@@ -424,7 +424,7 @@ fn check(options: Options) -> Result<i32> {
         diagnose(&env)
     };
     if options.json {
-        println!("{}", serde_json::to_string_pretty(&report(&outcomes))?);
+        println!("{}", serde_json::to_string_pretty(&crate::version::with_warning(report(&outcomes)))?);
     } else if !options.fix {
         for line in render::grouped(&header(), &outcomes) {
             println!("{line}");

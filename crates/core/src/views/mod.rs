@@ -26,7 +26,18 @@ pub use card::answer_label;
 pub use messages::{Outcome, OutcomeKind, refusal_text, send_anyway, transport_failure};
 pub use live::*;
 pub use text::Lang;
+/// The newest views protocol this build speaks.
 pub const VIEWS_PROTOCOL: u32 = 1;
+/// The oldest one a daemon still serves: kept at least two releases after `VIEWS_PROTOCOL` rises.
+pub const VIEWS_PROTOCOL_MIN: u32 = 1;
+pub const VIEWS_PROTOCOLS: ProtocolRange = ProtocolRange { min: VIEWS_PROTOCOL_MIN, max: VIEWS_PROTOCOL };
+
+impl Service {
+    /// A daemon of `version` serving every protocol this build knows.
+    pub fn serving(version: &str) -> Self {
+        Service { version: version.to_owned(), views_protocol: VIEWS_PROTOCOLS }
+    }
+}
 
 use crate::domain::{DomainProjection, DomainState};
 use sha2::{Digest, Sha256};

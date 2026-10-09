@@ -272,7 +272,7 @@ async fn daemon(
     };
     Json(
         json!({"version": env!("CARGO_PKG_VERSION"),
-        "views_protocol": {"min": alondra_core::views::VIEWS_PROTOCOL, "max": alondra_core::views::VIEWS_PROTOCOL},
+        "views_protocol": crate::views::this_service().views_protocol,
         "update":crate::updates::status(&state.home),
         "preflight_rejected": crate::relaunch::rejected(), "machine": machine, "usage": usage,
         "mods": crate::mods_check::status(),

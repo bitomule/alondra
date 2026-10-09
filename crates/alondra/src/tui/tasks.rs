@@ -2,7 +2,7 @@
 
 use alondra_core::domain::{RequestId, TaskId, TaskState};
 
-#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug, serde::Serialize, serde::Deserialize)]
 pub enum TaskKey {
     Task(TaskId),
     Request(RequestId),

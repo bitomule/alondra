@@ -35,6 +35,14 @@ pub struct Client {
     service: Option<std::sync::Arc<crate::service_client::Profile>>,
     direct: Option<std::sync::Arc<crate::direct_client::Connection>>,
     timeout: Duration,
+    protocol: u32,
+}
+
+/// The version the local daemon stamped on the first answer this process got from it.
+static SERVICE_VERSION: OnceLock<String> = OnceLock::new();
+
+pub fn service_version() -> Option<&'static str> {
+    SERVICE_VERSION.get().map(String::as_str)
 }
 
 /// Which Mac a TUI instance talks to: this one over loopback, or one paired directly.
@@ -64,6 +72,8 @@ pub struct ViewsFeed {
     pub reset: bool,
     #[serde(default)]
     pub superseded: bool,
+    #[serde(default)]
+    pub service: Option<alondra_core::views::Service>,
 }
 
 pub struct PullRequestDiff {
@@ -182,7 +192,7 @@ impl Client {
             .http_status_as_error(false)
             .build()
             .into();
-        Client { base: format!("http://{host}:{port}"), agent, signer: None, service: None, direct: None, timeout }
+        Client { base: format!("http://{host}:{port}"), agent, signer: None, service: None, direct: None, timeout, protocol: VIEWS_PROTOCOL }
     }
 
     #[cfg(test)]
@@ -224,7 +234,14 @@ impl Client {
         }
     }
 
+    /// The views protocol this client asks for, once the daemon's range is known.
+    pub fn with_protocol(mut self, protocol: u32) -> Self {
+        self.protocol = protocol;
+        self
+    }
+
     fn headers<B>(&self, mut req: ureq::RequestBuilder<B>, method: &str, path: &str, body: &[u8]) -> Result<ureq::RequestBuilder<B>> {
+        req = req.header("x-alondra-client-version", env!("CARGO_PKG_VERSION"));
         if let Ok(run) = std::env::var("ALONDRA_ORCHESTRATOR_EXECUTION") { req = req.header("x-alondra-orchestrator-execution", run); }
         if let Ok(sid) = std::env::var("ALONDRA_SESSION_ID").or_else(|_| std::env::var("CLAUDE_CODE_SESSION_ID")) { req = req.header("x-alondra-session", sid); }
         match &self.signer {
@@ -251,6 +268,9 @@ impl Client {
             _ => self.headers(self.agent.get(url), method, path, b"")?.call(),
         }
         .context(not_responding)?;
+        if let Some(version) = resp.headers().get("x-alondra-version").and_then(|v| v.to_str().ok()) {
+            let _ = SERVICE_VERSION.set(version.to_owned());
+        }
         let status = resp.status().as_u16();
         let text = resp.body_mut().read_to_string().unwrap_or_default();
         Ok((status, serde_json::from_str(&text).unwrap_or(Value::Null)))
@@ -283,7 +303,7 @@ impl Client {
     /// Fetch one server-rendered TUI view. The key is encoded by the URL form encoder
     /// because card identifiers and view parameters may contain reserved characters.
     pub fn views(&self, key: &str, known: Option<&str>) -> Result<ViewDocument> {
-        let mut query = vec![("protocol", VIEWS_PROTOCOL.to_string()), ("client", "tui".to_owned()), ("lang", lang_name(crate::i18n::lang()).to_owned())];
+        let mut query = vec![("protocol", self.protocol.to_string()), ("client", "tui".to_owned()), ("lang", lang_name(crate::i18n::lang()).to_owned())];
         if let Some(version) = known { query.push(("known", version.to_owned())); }
         let query = url::form_urlencoded::Serializer::new(String::new()).extend_pairs(query).finish();
         let path = format!("/views/{}?{query}", crate::mcp::urlencode(key));
@@ -294,7 +314,7 @@ impl Client {
     /// supersedes this one at the daemon.
     pub fn feed(&self, cursor: Option<&str>, views: &[(&str, &str)], wait: u64) -> Result<ViewsFeed> {
         let mut query = vec![
-            ("protocol", VIEWS_PROTOCOL.to_string()),
+            ("protocol", self.protocol.to_string()),
             ("client", "tui".to_owned()),
             ("lang", lang_name(crate::i18n::lang()).to_owned()),
             ("wait", wait.min(50).to_string()),
@@ -546,6 +566,10 @@ fn failure(status: u16, body: &Value) -> anyhow::Error {
     if status == 404 && (body.is_null() || body.as_object().is_some_and(|o| o.is_empty())) {
         return anyhow::Error::new(Missing);
     }
+    if body["code"] == "incompatible_protocol" {
+        let service = serde_json::from_value(body["service"].clone()).ok();
+        return anyhow::Error::new(Incompatible { service });
+    }
     if let Ok(error) = serde_json::from_value::<DomainError>(body.clone()) {
         return anyhow::Error::new(Refused(error));
     }
@@ -554,6 +578,31 @@ fn failure(status: u16, body: &Value) -> anyhow::Error {
         _ => body.get("error").and_then(Value::as_str).map(str::to_string).unwrap_or_else(|| body.to_string()),
     };
     anyhow::Error::new(Answered { status, message })
+}
+
+/// The daemon no longer (or not yet) serves the views protocol this terminal speaks; a daemon
+/// that announces itself says its version and range.
+#[derive(Debug)]
+pub struct Incompatible {
+    pub service: Option<alondra_core::views::Service>,
+}
+
+impl std::fmt::Display for Incompatible {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let version = self.service.as_ref().map_or("?", |s| s.version.as_str());
+        f.write_str(&trf!(
+            "Alondra was updated ({version}): restart the TUI · R",
+            "Alondra se ha actualizado ({version}): reinicia la TUI · R"
+        ))
+    }
+}
+
+impl std::error::Error for Incompatible {}
+
+/// The newest protocol this terminal speaks inside the range the daemon serves.
+pub fn pick_protocol(serves: alondra_core::views::ProtocolRange) -> Option<u32> {
+    let top = VIEWS_PROTOCOL.min(serves.max);
+    (top >= alondra_core::views::VIEWS_PROTOCOL_MIN.max(serves.min)).then_some(top)
 }
 
 /// alondrad was reached and answered with an error of its own.

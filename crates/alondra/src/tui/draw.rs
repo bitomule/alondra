@@ -374,9 +374,20 @@ fn draw_head(f: &mut Frame, app: &App, area: Rect) {
     let fits = |spans: &[Span]| {
         lw + spans.iter().map(Span::width).sum::<usize>() + 2 <= area.width as usize
     };
+    let notice: Vec<Span<'static>> = app.updated.notice.iter().map(|n| Span::styled(
+        if n.restarting { format!("↻ {}", n.text) } else { n.text.clone() },
+        Style::new().fg(ACCENT),
+    )).collect();
+    let with_notice = |mut spans: Vec<Span<'static>>| {
+        if !notice.is_empty() {
+            spans.splice(0..0, notice.iter().cloned().chain([Span::raw("  ")]));
+        }
+        spans
+    };
     let right = [
-        bars(&status.gauges, working.as_ref(), true),
-        bars(&status.gauges, working.as_ref(), false),
+        with_notice(bars(&status.gauges, working.as_ref(), true)),
+        with_notice(bars(&status.gauges, working.as_ref(), false)),
+        notice.clone(),
     ]
     .into_iter()
     .find(|r| fits(r));

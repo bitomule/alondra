@@ -112,6 +112,7 @@ pub(super) fn build(key: &str, context: &RenderContext<'_>) -> Result<View, Buil
         sections,
         empty,
         notices: vec![],
+        service: None,
     })
 }
 /// What waits for the user: the home queue, its count and the app icon badge. The inbox only

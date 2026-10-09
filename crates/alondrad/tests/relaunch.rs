@@ -59,6 +59,10 @@ impl Fixture {
     }
 
     fn get(&self, path: &str) -> Option<String> {
+        self.exchange(path).map(|(_, body)| body)
+    }
+
+    fn exchange(&self, path: &str) -> Option<(String, String)> {
         let mut stream = TcpStream::connect(("127.0.0.1", self.port)).ok()?;
         stream.set_read_timeout(Some(Duration::from_secs(5))).ok()?;
         stream
@@ -71,7 +75,7 @@ impl Fixture {
         stream.read_to_string(&mut response).ok()?;
         response
             .split_once("\r\n\r\n")
-            .map(|(_, body)| body.to_string())
+            .map(|(head, body)| (head.to_ascii_lowercase(), body.to_string()))
     }
 }
 
@@ -250,8 +254,19 @@ fn the_daemon_says_which_views_protocols_it_serves() {
     let mut fixture = Fixture::new("protocol");
     let _daemon = serve(&mut fixture, false);
     let body: serde_json::Value = serde_json::from_str(&fixture.get("/daemon").expect("/daemon answers")).unwrap();
-    let protocol = alondra_core::views::VIEWS_PROTOCOL;
-    assert_eq!(body["views_protocol"], serde_json::json!({"min": protocol, "max": protocol}));
+    let range = serde_json::json!({"min": alondra_core::views::VIEWS_PROTOCOL_MIN, "max": alondra_core::views::VIEWS_PROTOCOL});
+    assert_eq!(body["views_protocol"], range);
+}
+
+#[test]
+fn every_daemon_answer_says_its_version_even_a_refusal() {
+    let mut fixture = Fixture::new("stamp");
+    let _daemon = serve(&mut fixture, false);
+    let stamp = format!("x-alondra-version: {}", env!("CARGO_PKG_VERSION"));
+    for path in ["/daemon", "/views/home?protocol=1&client=tui&lang=en", "/no-such-route"] {
+        let (head, _) = fixture.exchange(path).expect("the daemon answers");
+        assert!(head.lines().any(|line| line.trim() == stamp), "{path}: {head}");
+    }
 }
 
 #[test]

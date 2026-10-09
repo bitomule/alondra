@@ -6,8 +6,11 @@ mod inbox;
 mod input;
 mod keys;
 mod md;
+mod restore;
 mod tasks;
+mod updated;
 mod usage_banner;
+mod version_watch;
 mod view_feed;
 mod view_render;
 mod work;
@@ -25,7 +28,7 @@ mod shots;
 mod views_tests;
 
 /// The card an action came from and what it says while it runs.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Acting {
     pub origin: Key,
     pub stamp: Option<String>,
@@ -123,7 +126,7 @@ const PREVIEW_PIXELS: u32 = 480;
 const PAIRING_POLL: Duration = Duration::from_secs(2);
 
 /// An inbox item by the id the daemon gave it.
-#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Key(pub String);
 
 #[derive(Clone, Copy, PartialEq)]
@@ -432,6 +435,7 @@ impl Reader {
 
 /// What the composer's text becomes. Each carries the subject and revision it was opened on, so a
 /// change elsewhere never sends the text to something else.
+#[derive(serde::Serialize, serde::Deserialize)]
 pub enum Target {
     ViewAction {
         action_id: String,
@@ -531,6 +535,13 @@ enum Msg {
         result: Result<ViewDocument, String>,
     },
     ViewFeed(Result<crate::client::ViewsFeed, String>),
+    /// The daemon said which version it is and which views protocols it serves.
+    Service(alondra_core::views::Service),
+    /// What the binary a restart would run says it is, for that daemon version.
+    DiskVersion {
+        version: String,
+        disk: version_watch::Disk,
+    },
     ViewAction {
         request: Value,
         result: Result<ViewActionReply, Delivery>,
@@ -719,9 +730,12 @@ pub struct App {
     view_navigation: Vec<String>,
     compose_orchestrator_on_load: bool,
     reader_after_view: Option<String>,
+    /// Whether this terminal is behind its daemon, and what to do about it.
+    pub updated: updated::Watch,
 }
 
 pub fn run() -> Result<()> {
+    let restored = restore::take();
     crate::attach::reset_terminal_modes();
     let mut terminal = ratatui::init();
     let _ = execute!(stdout(), EnableBracketedPaste);
@@ -744,6 +758,9 @@ pub fn run() -> Result<()> {
         })
         .collect();
     let local = &mut macs[0].0;
+    if let Some(state) = restored {
+        local.restore(state);
+    }
     local.start_pairing_feed();
     if let Some(e) = unreadable {
         local.fail(trf!(
@@ -885,6 +902,10 @@ fn main_loop(terminal: &mut DefaultTerminal, mut macs: Vec<(App, Receiver<Msg>)>
             }
             dirty |= app.on_timers();
         }
+        if macs[0].0.updated.restart && !macs.iter().any(|(app, _)| app.holds_restart()) {
+            restart(terminal, &mut macs[0].0)?;
+            dirty = true;
+        }
         let local = &macs[0].0;
         if !chosen && macs.len() > 1 && local.offline && !local.loaded {
             active = 1;
@@ -892,6 +913,28 @@ fn main_loop(terminal: &mut DefaultTerminal, mut macs: Vec<(App, Receiver<Msg>)>
             dirty = true;
         }
     }
+}
+
+/// Hands the screen and the draft to the new binary and becomes it. Only comes back when `exec`
+/// failed, with the terminal and the composer where they were.
+fn restart(terminal: &mut DefaultTerminal, app: &mut App) -> Result<()> {
+    let state = app.to_restore();
+    let file = match restore::save(&state) {
+        Ok(file) => file,
+        Err(error) => {
+            app.exec_failed(state, &error);
+            return Ok(());
+        }
+    };
+    let _ = execute!(stdout(), DisableBracketedPaste);
+    ratatui::restore();
+    crate::attach::reset_terminal_modes();
+    let error = updated::exec(&updated::stable_path(), &file);
+    let _ = std::fs::remove_file(&file);
+    *terminal = ratatui::init();
+    let _ = execute!(stdout(), EnableBracketedPaste);
+    app.exec_failed(state, &error);
+    repaint(terminal, app)
 }
 
 fn validate_view_fields(fields: &[alondra_core::views::Field], values: &Value) -> Result<()> {
@@ -1124,6 +1167,7 @@ impl App {
             view_navigation: vec![],
             compose_orchestrator_on_load: false,
             reader_after_view: None,
+            updated: updated::Watch::default(),
         }
     }
 
@@ -1388,6 +1432,7 @@ impl App {
         self.posted
             .borrow_mut()
             .push(("/actions".into(), request.clone()));
+        self.action_sent();
         self.spawn(move |tx, target| {
             let result = Client::for_target(target, Duration::from_secs(30))
                 .post("/actions", &request)
@@ -1526,6 +1571,7 @@ impl App {
         #[cfg(test)]
         self.posted.borrow_mut().push((path.clone(), body.clone()));
         let mac = self.remote_mac();
+        self.action_sent();
         self.spawn(move |tx, target| {
             let result = Client::for_target(target, Duration::from_secs(15))
                 .post(&path, &body)
@@ -1766,7 +1812,15 @@ impl App {
         self.sync_open_views();
     }
 
-    fn on_msg(&mut self, m: Msg) {
+    fn on_msg(&mut self, mut m: Msg) {
+        if let Msg::ViewHome(Ok(view)) | Msg::ViewCard { result: Ok(view), .. } | Msg::ViewSection { result: Ok(view), .. }
+        | Msg::FormView { result: Ok(view), .. } = &mut m
+        {
+            view_render::placeholders(view);
+        }
+        if matches!(m, Msg::Posted { .. }) {
+            self.action_answered();
+        }
         match m {
             Msg::ViewHome(Ok(view)) => {
                 if view.key != self.screen_view_key() {
@@ -1891,7 +1945,12 @@ impl App {
                     self.fail(error);
                 }
             }
-            Msg::ViewAction { request, result } => self.view_action_done(request, result),
+            Msg::ViewAction { request, result } => {
+                self.action_answered();
+                self.view_action_done(request, result);
+            }
+            Msg::Service(service) => self.service_seen(service),
+            Msg::DiskVersion { version, disk } => self.disk_checked(version, disk),
             Msg::SyncError(error) => self.fail(error),
             Msg::Offline => {
                 self.connected = false;
@@ -2189,6 +2248,7 @@ impl App {
         let waiting = self.pairing.len();
         self.pairing.retain(|d| d.expires_at_ms > now);
         dirty |= self.pairing.len() != waiting;
+        dirty |= self.version_tick();
         self.load_threads();
         dirty
     }
@@ -2247,6 +2307,9 @@ impl App {
         self.pressed = k.code;
         if k.modifiers.contains(KeyModifiers::CONTROL) && k.code == KeyCode::Char('c') {
             return Flow::Quit;
+        }
+        if let Some(flow) = self.version_key(&k) {
+            return flow;
         }
         if self.modal.is_some() {
             return self.modal_key(k);

@@ -90,6 +90,7 @@ fn failed_views_feed_marks_cached_status_offline_until_recovery() {
         stale: vec![],
         reset: false,
         superseded: false,
+        service: None,
     })));
     assert!(!app.offline);
 }
@@ -182,4 +183,21 @@ fn the_switch_key_asks_for_the_next_mac_unless_typing() {
     assert!(matches!(app.on_key(key), Flow::NextMac));
     app.cmdline = Some(TextInput::default());
     assert!(!matches!(app.on_key(key), Flow::NextMac));
+}
+
+#[test]
+fn an_item_kind_from_a_newer_daemon_shows_as_a_row_asking_to_update() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+    let mut json = super::parity::view_fixture("home-tui.json");
+    let section = json["sections"].as_array_mut().unwrap().iter_mut().find(|s| !s["items"].as_array().unwrap().is_empty()).unwrap();
+    section["items"].as_array_mut().unwrap().push(serde_json::json!({"type": "gauge_wall"}));
+    let mut view: alondra_core::views::View = serde_json::from_value(json).unwrap();
+
+    view_render::placeholders(&mut view);
+
+    let rows: Vec<_> = view.sections.iter().flat_map(|s| &s.items).filter_map(|item| match item {
+        alondra_core::views::Item::Row(row) if row.id.starts_with("unknown-") => Some(row.title.as_str()),
+        _ => None,
+    }).collect();
+    assert_eq!(rows, ["Update the TUI to see this"]);
 }

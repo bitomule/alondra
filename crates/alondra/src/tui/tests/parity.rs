@@ -327,6 +327,7 @@ fn failed_views_feed_marks_cached_fleet_as_outdated_until_recovery() {
         stale: vec![],
         reset: false,
         superseded: false,
+        service: None,
     })));
     assert!(!app.offline);
 }

@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 use crate::mcp::urlencode;
 
 /// Why a message goes to an agent: the daemon words it for the agent from this.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
 pub enum MessageKind {
     Message,
     Reply,
@@ -30,7 +30,7 @@ impl MessageKind {
 }
 
 /// A message from the user; `agent: None` is the orchestrator.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Message {
     pub agent: Option<AgentId>,
     pub kind: MessageKind,

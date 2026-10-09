@@ -126,6 +126,7 @@ struct Reply {
     stale: Vec<String>,
     reset: bool,
     superseded: bool,
+    service: alondra_core::views::Service,
 }
 
 #[derive(Clone)]
@@ -152,7 +153,7 @@ pub(crate) async fn handle(
             let lang = query_language(query);
             return match parse_error {
                 QueryError::Invalid => error("invalid_input", "invalid changes query", "consulta de cambios no válida", lang),
-                QueryError::IncompatibleProtocol => error("incompatible_protocol", "incompatible views protocol", "protocolo de vistas incompatible", lang),
+                QueryError::IncompatibleProtocol => super::incompatible(if lang == Lang::Es { "protocolo de vistas incompatible" } else { "incompatible views protocol" }),
             };
         }
     };
@@ -200,6 +201,7 @@ pub(crate) async fn handle(
                 stale: current.stale,
                 reset,
                 superseded: false,
+                service: crate::views::this_service(),
             })
             .into_response();
         }
@@ -209,13 +211,13 @@ pub(crate) async fn handle(
         tokio::select! {
             _ = &mut cancel_rx => {
                 remove_waiter(client, device, generation);
-                return Json(Reply { protocol: VIEWS_PROTOCOL, cursor: current.cursor, data_epoch: current.epoch, status: current.status, stale: vec![], reset: false, superseded: true }).into_response();
+                return Json(Reply { protocol: VIEWS_PROTOCOL, cursor: current.cursor, data_epoch: current.epoch, status: current.status, stale: vec![], reset: false, superseded: true, service: crate::views::this_service() }).into_response();
             },
             _ = domain_changes.changed() => {},
             _ = live_changes.changed() => {},
             _ = &mut timeout => {
                 remove_waiter(client, device, generation);
-                return Json(Reply { protocol: VIEWS_PROTOCOL, cursor: current.cursor, data_epoch: current.epoch, status: current.status, stale: vec![], reset: false, superseded: false }).into_response();
+                return Json(Reply { protocol: VIEWS_PROTOCOL, cursor: current.cursor, data_epoch: current.epoch, status: current.status, stale: vec![], reset: false, superseded: false, service: crate::views::this_service() }).into_response();
             },
         }
     }
@@ -372,7 +374,7 @@ fn parse(query: &str) -> Result<(Client, Lang, u64, Option<String>, Vec<(String,
     }
     let protocol = protocol.ok_or(QueryError::Invalid)?
         .parse::<u32>().map_err(|_| QueryError::Invalid)?;
-    let incompatible_protocol = protocol != VIEWS_PROTOCOL;
+    let incompatible_protocol = !super::serves(protocol);
     let kind = match client.ok_or(QueryError::Invalid)?.as_str() {
         "ios" => Client::Ios,
         "mac" => Client::Mac,

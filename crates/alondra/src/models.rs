@@ -14,7 +14,7 @@ pub fn run(since: Option<&str>, json: bool) -> Result<()> {
     };
     let report: ModelReport = Client::new(Duration::from_secs(10)).get(&path)?;
     if json {
-        println!("{}", serde_json::to_string_pretty(&report)?);
+        println!("{}", serde_json::to_string_pretty(&crate::version::with_warning(serde_json::to_value(&report)?))?);
     } else {
         print!("{}", render(&report, since));
     }

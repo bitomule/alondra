@@ -122,6 +122,20 @@ pub struct View {
     pub empty: Option<Notice>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notices: Vec<Notice>,
+    /// The daemon that served this view; the renderers leave it out and the route fills it in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service: Option<Service>,
+}
+/// Which daemon answered and which views protocols it serves, so a client can tell it is behind.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Service {
+    pub version: String,
+    pub views_protocol: ProtocolRange,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProtocolRange {
+    pub min: u32,
+    pub max: u32,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Status {
@@ -205,6 +219,10 @@ pub enum Item {
     Form(Form),
     Notice(Notice),
     Actions(ActionBar),
+    /// A kind of item added by a newer daemon: an older client draws a row asking to update
+    /// instead of failing the whole view. Never sent.
+    #[serde(other)]
+    Unknown,
 }
 /// What a card asks of the user; the stable string clients draw the label, colour and icon from.
 pub use crate::domain::CardKind;
