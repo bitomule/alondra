@@ -323,30 +323,62 @@ fn stable_for(exe: &Path, home: &Path) -> PathBuf {
     exe.to_path_buf()
 }
 
-/// `<path> --version --json` within 2 s: the version a restart would really run.
-pub fn disk_version(path: &Path) -> Result<String, String> {
-    use std::io::Read;
-    let mut child = std::process::Command::new(path)
+trait ProbeProcess {
+    fn poll(&mut self) -> std::io::Result<Option<std::process::ExitStatus>>;
+    fn output(&mut self) -> String;
+    fn kill(&mut self) -> std::io::Result<()>;
+    fn reap(&mut self) -> std::io::Result<std::process::ExitStatus>;
+}
+
+impl ProbeProcess for std::process::Child {
+    fn poll(&mut self) -> std::io::Result<Option<std::process::ExitStatus>> {
+        self.try_wait()
+    }
+    fn output(&mut self) -> String {
+        use std::io::Read;
+        let mut out = String::new();
+        self.stdout
+            .take()
+            .map(|mut stdout| stdout.read_to_string(&mut out));
+        out
+    }
+    fn kill(&mut self) -> std::io::Result<()> {
+        std::process::Child::kill(self)
+    }
+    fn reap(&mut self) -> std::io::Result<std::process::ExitStatus> {
+        self.wait()
+    }
+}
+
+trait ProbeClock {
+    fn now(&mut self) -> Instant;
+    fn pause(&mut self, duration: Duration);
+}
+struct RealProbeClock;
+impl ProbeClock for RealProbeClock {
+    fn now(&mut self) -> Instant {
+        Instant::now()
+    }
+    fn pause(&mut self, duration: Duration) {
+        std::thread::sleep(duration);
+    }
+}
+
+fn spawn_probe(path: &Path) -> Result<std::process::Child, String> {
+    std::process::Command::new(path)
         .args(["--version", "--json"])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .spawn()
-        .map_err(|e| e.to_string())?;
-    let deadline = Instant::now() + Duration::from_secs(2);
-    let status = loop {
-        if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
-            break status;
-        }
-        if Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(tr!("it did not answer within 2 s", "no respondió en 2 s").to_owned());
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    };
-    let mut out = String::new();
-    child.stdout.take().map(|mut s| s.read_to_string(&mut out));
+        .map_err(|error| error.to_string())
+}
+
+fn probe_output(
+    child: &mut impl ProbeProcess,
+    status: std::process::ExitStatus,
+) -> Result<String, String> {
+    let out = child.output();
     if !status.success() {
         return Err(trf!("it exited with {status}", "salió con {status}"));
     }
@@ -354,6 +386,31 @@ pub fn disk_version(path: &Path) -> Result<String, String> {
         .ok()
         .and_then(|doc| doc["cli"]["version"].as_str().map(str::to_owned))
         .ok_or_else(|| tr!("it did not say its version", "no dijo su versión").to_owned())
+}
+
+fn probe_version(
+    child: &mut impl ProbeProcess,
+    clock: &mut impl ProbeClock,
+) -> Result<String, String> {
+    let deadline = clock.now() + Duration::from_secs(2);
+    let status = loop {
+        if let Some(status) = child.poll().map_err(|error| error.to_string())? {
+            break status;
+        }
+        if clock.now() >= deadline {
+            let _ = child.kill();
+            let _ = child.reap();
+            return Err(tr!("it did not answer within 2 s", "no respondió en 2 s").to_owned());
+        }
+        clock.pause(Duration::from_millis(20));
+    };
+    probe_output(child, status)
+}
+
+/// The version a restart would run, using the two-second production probe policy.
+pub fn disk_version(path: &Path) -> Result<String, String> {
+    let mut child = spawn_probe(path)?;
+    probe_version(&mut child, &mut RealProbeClock)
 }
 
 /// Replaces this process with `path`, same arguments, handing it the restore file. Returns only
@@ -474,6 +531,81 @@ mod tests {
         assert_eq!(stable_for(Path::new("/tmp/sandbox/bin/alondra"), &home), PathBuf::from("/tmp/sandbox/bin/alondra"));
     }
 
+    #[derive(Debug, PartialEq, Eq)]
+    enum ProbeEvent {
+        Poll,
+        Output,
+        Kill,
+        Reap,
+        Pause(Duration),
+    }
+
+    struct FakeProbe {
+        events: std::rc::Rc<std::cell::RefCell<Vec<ProbeEvent>>>,
+        polls: std::collections::VecDeque<Option<std::process::ExitStatus>>,
+        output: String,
+        kill_error: bool,
+    }
+    impl ProbeProcess for FakeProbe {
+        fn poll(&mut self) -> std::io::Result<Option<std::process::ExitStatus>> {
+            self.events.borrow_mut().push(ProbeEvent::Poll);
+            Ok(self.polls.pop_front().expect("scripted process poll"))
+        }
+        fn output(&mut self) -> String {
+            self.events.borrow_mut().push(ProbeEvent::Output);
+            self.output.clone()
+        }
+        fn kill(&mut self) -> std::io::Result<()> {
+            self.events.borrow_mut().push(ProbeEvent::Kill);
+            if self.kill_error {
+                Err(std::io::Error::other("scripted kill error"))
+            } else {
+                Ok(())
+            }
+        }
+        fn reap(&mut self) -> std::io::Result<std::process::ExitStatus> {
+            self.events.borrow_mut().push(ProbeEvent::Reap);
+            Ok(exit_status(9))
+        }
+    }
+    struct FakeProbeClock {
+        events: std::rc::Rc<std::cell::RefCell<Vec<ProbeEvent>>>,
+        base: Instant,
+        ticks: std::collections::VecDeque<Duration>,
+    }
+    impl ProbeClock for FakeProbeClock {
+        fn now(&mut self) -> Instant {
+            self.base + self.ticks.pop_front().expect("scripted clock read")
+        }
+        fn pause(&mut self, duration: Duration) {
+            self.events.borrow_mut().push(ProbeEvent::Pause(duration));
+        }
+    }
+    fn exit_status(code: i32) -> std::process::ExitStatus {
+        use std::os::unix::process::ExitStatusExt;
+        std::process::ExitStatus::from_raw(code << 8)
+    }
+    fn probe_fixture(
+        polls: Vec<Option<std::process::ExitStatus>>,
+        ticks: Vec<Duration>,
+        output: &str,
+    ) -> (FakeProbe, FakeProbeClock) {
+        let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        (
+            FakeProbe {
+                events: events.clone(),
+                polls: polls.into(),
+                output: output.into(),
+                kill_error: false,
+            },
+            FakeProbeClock {
+                events,
+                base: Instant::now(),
+                ticks: ticks.into(),
+            },
+        )
+    }
+
     #[test]
     fn the_binary_on_disk_says_its_version_or_why_it_could_not() {
         let root = crate::test_support::Directory::new();
@@ -486,9 +618,80 @@ mod tests {
             path
         };
         let good = script("good", r#"echo '{"cli":{"version":"0.2.53"}}'"#);
-        assert_eq!(disk_version(&good), Ok("0.2.53".into()));
-        assert!(disk_version(&script("old", "echo 'error: unexpected argument'; exit 2")).is_err());
-        assert!(disk_version(&script("slow", "sleep 5")).is_err());
+        let mut child = spawn_probe(&good).unwrap();
+        let status = child.reap().unwrap();
+        assert_eq!(probe_output(&mut child, status), Ok("0.2.53".into()));
+        let mut child =
+            spawn_probe(&script("old", "echo 'error: unexpected argument'; exit 2")).unwrap();
+        let status = child.reap().unwrap();
+        assert!(probe_output(&mut child, status).is_err());
+        let (mut child, mut clock) =
+            probe_fixture(vec![None], vec![Duration::ZERO, Duration::from_secs(2)], "");
+        assert!(probe_version(&mut child, &mut clock).is_err());
         assert!(disk_version(&root.join("missing")).is_err());
+    }
+
+    #[test]
+    fn the_two_second_boundary_kills_then_reaps_even_when_kill_fails() {
+        for kill_error in [false, true] {
+            let (mut child, mut clock) =
+                probe_fixture(vec![None], vec![Duration::ZERO, Duration::from_secs(2)], "");
+            child.kill_error = kill_error;
+            assert!(probe_version(&mut child, &mut clock).is_err());
+            assert_eq!(
+                *child.events.borrow(),
+                [ProbeEvent::Poll, ProbeEvent::Kill, ProbeEvent::Reap]
+            );
+            assert!(clock.ticks.is_empty());
+        }
+    }
+
+    #[test]
+    fn pending_poll_keeps_the_twenty_millisecond_policy_without_real_sleep() {
+        let (mut child, mut clock) = probe_fixture(
+            vec![None, Some(exit_status(0))],
+            vec![Duration::ZERO, Duration::from_millis(1999)],
+            r#"{"cli":{"version":"0.2.53"}}"#,
+        );
+        assert_eq!(probe_version(&mut child, &mut clock), Ok("0.2.53".into()));
+        assert_eq!(
+            *child.events.borrow(),
+            [
+                ProbeEvent::Poll,
+                ProbeEvent::Pause(Duration::from_millis(20)),
+                ProbeEvent::Poll,
+                ProbeEvent::Output
+            ]
+        );
+    }
+
+    #[test]
+    fn a_completed_process_is_checked_before_the_deadline_and_json_is_required() {
+        let (mut child, mut clock) = probe_fixture(
+            vec![Some(exit_status(0))],
+            vec![Duration::ZERO, Duration::from_secs(2)],
+            r#"{"cli":{"version":"0.2.53"}}"#,
+        );
+        assert_eq!(probe_version(&mut child, &mut clock), Ok("0.2.53".into()));
+        assert_eq!(clock.ticks, [Duration::from_secs(2)]);
+        assert_eq!(
+            *child.events.borrow(),
+            [ProbeEvent::Poll, ProbeEvent::Output]
+        );
+        for output in ["not json", r#"{"cli":{}}"#, r#"{"cli":{"version":2}}"#] {
+            let (mut child, mut clock) =
+                probe_fixture(vec![Some(exit_status(0))], vec![Duration::ZERO], output);
+            assert!(probe_version(&mut child, &mut clock).is_err());
+        }
+        let (mut child, mut clock) = probe_fixture(
+            vec![Some(exit_status(2))],
+            vec![Duration::ZERO],
+            r#"{"cli":{"version":"0.2.53"}}"#,
+        );
+        assert!(probe_version(&mut child, &mut clock).is_err());
+        assert_eq!(
+            *child.events.borrow(),
+            [ProbeEvent::Poll, ProbeEvent::Output]
+        );
     }
 }
