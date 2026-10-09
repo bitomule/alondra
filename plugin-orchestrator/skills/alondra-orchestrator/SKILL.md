@@ -170,7 +170,9 @@ service) is three tasks, each depending on the one before:
 
 1. **Design** (`role: design`, opus, effort `high`). It delivers a document, not code: the
    decisions; every edge case and failure mode with its expected behaviour; the list of tests;
-   the files to touch. It presents the document for review.
+   the files to touch. Its mission says: decisions for the user are asked with `ask` before the
+   document is presented, each with the recommended option, and the document records the
+   answers; the review never carries a choice. It presents the document for review.
 2. **Implementation** (`role: implementation`, sonnet). It implements exactly that document and
    its tests. Its mission says: when the document does not cover something, ask instead of
    deciding.
