@@ -4,7 +4,7 @@
   "view": "tasks",
   "key": "tasks",
   "client": "ios",
-  "version": "v93a4d8c422a1113b",
+  "version": "v91ed56e30ebf86fd",
   "cursor": "cursor-1",
   "title": "Tareas",
   "status": {
@@ -318,10 +318,10 @@
           },
           "icon": "task",
           "title": "Write the release notes",
-          "subtitle": "Esperando a que el orquestador le dé plan",
+          "subtitle": "No arrancó: reintento a las 10:15",
           "badges": [
             {
-              "text": "Esperando a que el orquestador le dé plan",
+              "text": "No arrancó: reintento a las 10:15",
               "tone": "neutral"
             }
           ],

@@ -515,7 +515,7 @@ mod tests {
             let agent_id = format!("agent-agent-{suffix}");
             let state = self.client.domain.state().unwrap();
             self.client.domain.execute(
-                &Actor::User { user_id: "feed-test".into() },
+                &Actor::Orchestrator { generation: 0 },
                 &CommandEnvelope {
                     protocol_version: 2,
                     data_epoch: state.data_epoch.clone(),
@@ -529,6 +529,7 @@ mod tests {
                         review_prs: false,
                         dependencies: Default::default(),
                         stack: None,
+                        launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),
                     },
                 },
                 None,

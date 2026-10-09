@@ -72,14 +72,18 @@ user follows tasks, not nodes.
   delivery, not at its completion) and `blocks` (the blocked task has no card for the user while
   this one is open). An adversarial review is a task B with `delivered_dependencies: [A]` and
   `blocks: [A]`; create it only when you or the user decide a piece of work needs one.
-- Every task gets its launch plan on `create_task`: `launch` with `name`, `cwd`, and the
-  `model`, `effort`, `approach` and `reason` you would pass to `launch` (with auto effort `model`
-  and `reason` are required), plus `mission` when the title and request are not enough. Alondra
+- Every task is created with its launch plan: `create_task` refuses a task without `launch`
+  (`name`, `cwd`, and the `model`, `effort`, `approach` and `reason` you would pass to `launch`;
+  with auto effort `model` and `reason` are required), plus `mission` when the title and request
+  are not enough. For a request a schedule made, its options are the schedule's: with an effort
+  the schedule chose, leave `model` and `effort` out and the task gets the schedule's. Alondra
   starts it by itself when the node limit has room, by priority then by age, and a task with
   `dependencies` once everything it depends on is done, with their final results and pull
   requests added to its mission. Do not launch tasks yourself or keep count of working nodes: the
-  gate does. A task without a plan does not start; give it one with `set_launch_plan`. If Alondra
-  tells you it could not start one, fix the cause and `launch` it.
+  gate does. A start that fails is tried again by itself a few times and then goes to the user as
+  a card (try again or cancel), as do a folder Claude Code does not trust, a node the user closed
+  and a task whose dependency was cancelled: you are told, but you do not need to act on it.
+  `set_launch_plan` replaces the plan of a task that has not started.
 - One task, one node. Every task gets a new node of its own; a node is never given a second task, and it is closed with its task, worktree included. When
   a new task touches what another node is doing (the same screen, file or PR), say in its
   mission which node works on what (`fleet` shows them), so they do not step on each other.
@@ -174,9 +178,8 @@ service) is three tasks, each depending on the one before:
    the document and against how the service really behaves. What it finds becomes a new implementation task that
    depends on the review, with its own node.
 
-Create the three at once: the first with `launch`, the other two with their launch plan on
-`create_task` (`dependencies` on the one before), so Alondra starts each as soon as the one
-before is done. A change whose files, changes and tests are already written down, or a literal
+Create the three at once, each with its launch plan on `create_task` and the last two with
+`dependencies` on the one before, so Alondra starts each as soon as the one before is done. A change whose files, changes and tests are already written down, or a literal
 one, stays one sonnet task.
 
 ## What else is yours

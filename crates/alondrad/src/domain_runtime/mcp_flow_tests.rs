@@ -89,10 +89,11 @@ impl Fixture {
     fn task(&mut self, id: &str, review_prs: bool) {
         self.manager(json!({"kind":"create_request", "request_id":format!("request-{id}"),
             "body":format!("Work on {id}")})).unwrap();
-        self.user(json!({"kind":"create_task", "task_id":id,
+        self.manager(json!({"kind":"create_task", "task_id":id,
             "request_id":format!("request-{id}"), "title":format!("Task {id}"),
-            "agent_id":"agent-a", "review_prs":review_prs,
-            "dependencies":[], "stack":null})).unwrap();
+            "agent_id":null, "review_prs":review_prs,
+            "dependencies":[], "stack":null, "launch":{"name":format!("app/{id}"), "cwd":"/tmp"}})).unwrap();
+        self.user(json!({"kind":"assign_task", "task_id":id, "agent_id":"agent-a"})).unwrap();
     }
 }
 
@@ -261,7 +262,7 @@ fn the_orchestrator_gives_a_task_to_a_fresh_node_and_cannot_hand_the_same_node_a
     fixture.manager(json!({"kind":"create_request", "request_id":"request-o", "body":"Work"})).unwrap();
     fixture.manager(json!({"kind":"title_request", "request_id":"request-o", "title":"Work"})).unwrap();
     let create = |id: &str| json!({"kind":"create_task", "task_id":id, "request_id":"request-o", "title":id,
-        "agent_id":"agent-a", "review_prs":false, "dependencies":[], "stack":null});
+        "agent_id":"agent-a", "review_prs":false, "dependencies":[], "stack":null, "launch":{"name":format!("app/{id}"), "cwd":"/tmp"}});
     fixture.manager(create("first")).unwrap();
     assert_eq!(domain_code(fixture.manager(create("second")).unwrap_err()), "agent_busy", "still on its first task");
     fixture.manager(json!({"kind":"cancel_task", "task_id":"first"})).unwrap();

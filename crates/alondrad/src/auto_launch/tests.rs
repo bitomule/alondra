@@ -5,6 +5,7 @@ use alondra_core::domain::{
     Command, CommandEnvelope, DeliveryTarget, InteractionId, MergeMethod, NodeEnd, PROTOCOL_VERSION, PrState, TaskId,
 };
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
 use std::sync::Mutex;
 
 struct Fixture {
@@ -59,9 +60,10 @@ fn create(f: &Fixture, id: &str, after: &[&str], plan: Option<&LaunchPlan>) {
         command: Command::CreateTask {
             task_id: id.into(), request_id: "r".into(), title: format!("Task {id}"), agent_id: None, review_prs: false,
             dependencies: after.iter().map(|dep| TaskId::from(*dep)).collect(), stack: None,
+            launch: plan.cloned(),
         },
     };
-    f.domain.execute_bearer_planned(&bearer, &envelope, plan).unwrap();
+    f.domain.execute_bearer(&bearer, &envelope).unwrap();
 }
 
 fn text() -> Vec<DeliveryTarget> {
@@ -95,8 +97,9 @@ fn finish(f: &Fixture, id: &str, body: &str, pull_request: bool) {
 /// A task an earlier node works on, which was never launched by Alondra.
 fn open_task(f: &Fixture, id: &str) {
     command(&f.domain, Actor::System, Command::RegisterAgent { agent_id: format!("seed-{id}").into(), name: format!("Seed {id}").into() });
-    command(&f.domain, user(), Command::CreateTask { task_id: id.into(), request_id: "r".into(), title: format!("Task {id}"),
-        agent_id: Some(format!("seed-{id}").into()), review_prs: false, dependencies: Default::default(), stack: None });
+    command(&f.domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { task_id: id.into(), request_id: "r".into(), title: format!("Task {id}"),
+        agent_id: Some(format!("seed-{id}").into()), review_prs: false, dependencies: Default::default(), stack: None,
+        launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")), });
 }
 
 /// A finished earlier task for the others to wait on.
@@ -223,39 +226,6 @@ async fn a_review_starts_by_itself_when_the_task_it_reviews_delivers_and_its_mis
 }
 
 #[tokio::test]
-async fn a_cancelled_task_a_delivery_dependency_waits_on_is_told_to_the_orchestrator() {
-    let f = world();
-    let claude = FakeClaude::new(&f);
-    open_task(&f, "a");
-    create(&f, "after", &[], Some(&plan(&f, "app/after")));
-    command(&f.domain, user(), Command::SetRelations { task_id: "after".into(), delivered_dependencies: ["a".into()].into(), blocks: Default::default() });
-    command(&f.domain, user(), Command::CancelTask { task_id: "a".into() });
-    pass(&f.domain, &f.home, &claude).await.unwrap();
-    assert_eq!(claude.launches(), 0);
-    assert!(told(&f).contains(&"dependency-cancelled-after-a".to_owned()), "{:?}", told(&f));
-}
-
-#[tokio::test]
-async fn a_ready_task_without_a_plan_tells_the_orchestrator_once_and_starts_after_set_launch_plan() {
-    let f = world();
-    let claude = FakeClaude::new(&f);
-    done_task(&f, "f0");
-    create(&f, "f1", &["f0"], None);
-    pass(&f.domain, &f.home, &claude).await.unwrap();
-    pass(&f.domain, &f.home, &claude).await.unwrap();
-    assert_eq!(claude.launches(), 0);
-    assert_eq!(told(&f).iter().filter(|id| id.as_str() == "auto-launch-no-plan-f1").count(), 1);
-    let notice = &f.domain.state().unwrap().interactions[&InteractionId::from("auto-launch-no-plan-f1")].body;
-    assert!(notice.contains("“Task f1” (f1) can start now") && notice.contains("set_launch_plan"), "{notice}");
-    assert_eq!(auto(&f, "f1").unwrap().reason, Some(AutoLaunchReason::NoPlan));
-
-    let body = serde_json::from_value(json!({"task_id": "f1", "launch": plan(&f, "app/f1")})).unwrap();
-    crate::domain_orchestrator_tools::set_launch_plan(&f.domain, &f.home, body).unwrap();
-    pass(&f.domain, &f.home, &claude).await.unwrap();
-    assert_eq!(claude.launches(), 1);
-}
-
-#[tokio::test]
 async fn while_usage_is_exhausted_a_ready_task_waits_and_starts_when_usage_is_back() {
     let f = world();
     let claude = FakeClaude::new(&f);
@@ -292,41 +262,6 @@ async fn while_the_disk_is_nearly_full_a_ready_task_waits_and_starts_once_there_
     pass(&f.domain, &f.home, &claude).await.unwrap();
     assert_eq!(claude.launches(), 1);
     assert_eq!(auto(&f, "f1").unwrap().state, AutoLaunchState::Launched);
-}
-
-#[tokio::test]
-async fn an_untrusted_repository_blocks_the_launch_and_tells_the_orchestrator_the_steps() {
-    let f = world();
-    let claude = FakeClaude::new(&f);
-    done_task(&f, "f0");
-    create(&f, "f1", &["f0"], Some(&plan(&f, "app/f1")));
-    let project = f.project.canonicalize().unwrap();
-    let config = f.root.join(".claude.json");
-    crate::claude_trust::use_config_for_test(&config);
-    std::fs::write(&config, json!({"projects": {project.to_str().unwrap(): {"hasTrustDialogAccepted": false}}}).to_string()).unwrap();
-    pass(&f.domain, &f.home, &claude).await.unwrap();
-    assert_eq!(claude.launches(), 0);
-    assert_eq!(auto(&f, "f1").unwrap().reason, Some(AutoLaunchReason::WorkspaceUntrusted));
-    let notice = &f.domain.state().unwrap().interactions[&InteractionId::from("auto-launch-untrusted-f1")].body;
-    assert!(notice.contains("could not start “Task f1” (f1) by itself") && notice.contains(project.to_str().unwrap()) && notice.contains("start it with launch (task f1)"), "{notice}");
-    pass(&f.domain, &f.home, &claude).await.unwrap();
-    assert_eq!(claude.launches(), 0, "the orchestrator launches it once the user trusts the repository");
-}
-
-#[tokio::test]
-async fn a_failed_launch_tells_the_orchestrator_and_is_not_retried_by_itself() {
-    let f = world();
-    let claude = FakeClaude::new(&f);
-    done_task(&f, "f0");
-    create(&f, "f1", &["f0"], Some(&plan(&f, "app/f1")));
-    *claude.refuse.lock().unwrap() = Some("claude is not logged in".into());
-    pass(&f.domain, &f.home, &claude).await.unwrap();
-    assert_eq!(auto(&f, "f1").unwrap().reason, Some(AutoLaunchReason::LaunchFailed));
-    let notice = &f.domain.state().unwrap().interactions[&InteractionId::from("auto-launch-failed-f1")].body;
-    assert!(notice.contains("claude is not logged in.") && notice.contains("raise_problem"), "{notice}");
-    *claude.refuse.lock().unwrap() = None;
-    pass(&f.domain, &f.home, &claude).await.unwrap();
-    assert_eq!(claude.launches(), 0, "it is not tried again by itself");
 }
 
 #[tokio::test]
@@ -399,21 +334,6 @@ async fn a_launch_interrupted_by_a_restart_is_tried_again_once() {
 }
 
 #[tokio::test]
-async fn a_cancelled_dependency_tells_the_orchestrator_once() {
-    let f = world();
-    let claude = FakeClaude::new(&f);
-    create(&f, "f0", &[], None);
-    create(&f, "f1", &["f0"], Some(&plan(&f, "app/f1")));
-    command(&f.domain, user(), Command::CancelTask { task_id: "f0".into() });
-    pass(&f.domain, &f.home, &claude).await.unwrap();
-    pass(&f.domain, &f.home, &claude).await.unwrap();
-    assert_eq!(told(&f).iter().filter(|id| id.as_str() == "dependency-cancelled-f1-f0").count(), 1);
-    let notice = &f.domain.state().unwrap().interactions[&InteractionId::from("dependency-cancelled-f1-f0")].body;
-    assert_eq!(notice, "“Task f0” was cancelled, so “Task f1” (f1), which depends on it, cannot start. Change its dependencies with set_dependencies, or cancel it with cancel_task.");
-    assert_eq!(claude.launches(), 0);
-}
-
-#[tokio::test]
 async fn a_task_of_a_closed_request_or_archived_is_not_started() {
     let f = world();
     done_task(&f, "f0");
@@ -478,18 +398,194 @@ async fn twelve_independent_tasks_with_a_plan_start_four_at_a_time_and_the_next_
     assert_eq!(claude.launches(), 5);
 }
 
+fn problem(f: &Fixture, task: &str) -> Option<alondra_core::domain::Interaction> {
+    f.domain.state().unwrap().open_start_problem(&task.into()).cloned()
+}
+
+fn answer(f: &Fixture, card: &InteractionId, option: &str) {
+    command(&f.domain, user(), Command::AnswerQuestion { attachments: vec![], interaction_id: card.clone(), option_id: option.into(), inputs: Default::default() });
+}
+
+fn retry_now(f: &Fixture, task: &str) {
+    let mut store = f.domain.store.lock().unwrap();
+    let (attempts, _) = store.start_retries().unwrap()[&TaskId::from(task)];
+    store.set_start_retry(&task.into(), Some((attempts, 0))).unwrap();
+}
+
+/// What the BlurCamera weekly improvement did today: its request comes from a schedule, and the
+/// orchestrator split it into tasks. One without a launch plan is refused and never exists; with a
+/// plan that leaves model and effort to the schedule, it gets the schedule's and starts by itself.
 #[tokio::test]
-async fn an_independent_task_without_a_plan_stays_put_without_telling_the_orchestrator() {
+async fn a_task_of_a_scheduled_request_needs_its_plan_and_takes_the_schedules_model_and_effort() {
     let f = world();
     let claude = FakeClaude::new(&f);
-    create(&f, "solo", &[], None);
+    let options = BTreeMap::from([("effort".to_owned(), alondra_core::options::Choice::Value("hard".into()))]);
+    command(&f.domain, Actor::System, Command::CreateSchedule { schedule: alondra_core::domain::Schedule {
+        id: "weekly".into(), title: "BlurCamera · weekly improvement".into(), text: "Improve BlurCamera".into(), project: Some("App".into()),
+        options: options.clone(), disallowed_tools: vec![], frequency: alondra_core::domain::ScheduleFrequency::Daily, hour: 9, minute: 0,
+        weekday: None, interval: None, start_at: None, enabled: true, next_run: Some(100), revision: 1, deleted_at: None,
+    } });
+    command(&f.domain, Actor::System, Command::ClaimScheduleRun { schedule_id: "weekly".into(), run_id: "run".into(),
+        origin: alondra_core::domain::ScheduleRunOrigin::Due, now: 100, next_after_now: Some(200), expected_schedule_revision: None });
+    let resolved = alondra_core::options::OptionsFile::default().resolve(Some("App"), &options).unwrap();
+    let mut request = alondra_core::domain::Request::new("weekly".into(), "Improve BlurCamera".into());
+    request.title = Some("BlurCamera · weekly improvement".into());
+    let task = alondra_core::domain::Task {
+        id: "run".into(), request_id: "weekly".into(), agent_id: None, title: "BlurCamera · weekly improvement".into(), state: TaskState::NotStarted,
+        revision: 0, started: false, review_prs: false, final_presentation: None, pr_id: None, dependencies: Default::default(), stack: None,
+        documents: Default::default(), archived: false, model: None, delivered_dependencies: Default::default(), blocks: Default::default(),
+        verdict: None, review_rounds: 0, wrap_up: Default::default(), priority: Default::default(),
+    };
+    command(&f.domain, Actor::System, Command::RecordScheduleRunSent { run_id: "run".into(), request, task, finished_at: 101,
+        launch: alondra_core::domain::ScheduleLaunchIntent { name: "scheduled/weekly-run".into(), cwd: f.project.to_str().unwrap().into(),
+            prompt: "Improve BlurCamera".into(), options_json: serde_json::to_string(&resolved).unwrap() } });
+    let choices = crate::domain_orchestrator_tools::request_choices(&f.domain, &"weekly".into()).unwrap().expect("the schedule's options are the request's");
+    assert_eq!(choices.options.effort, "hard");
+
+    let bearer = f.domain.bind_orchestrator("execution-weekly").unwrap().expose_for_child_environment().to_owned();
+    let create = |id: &str, launch: Option<LaunchPlan>| {
+        let state = f.domain.state().unwrap();
+        f.domain.execute_bearer(&bearer, &CommandEnvelope {
+            protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: format!("create-{id}").into(), expected_revision: 0,
+            command: Command::CreateTask { task_id: id.into(), request_id: "weekly".into(), title: "Register blurcamera.app".into(), agent_id: None,
+                review_prs: true, dependencies: Default::default(), stack: None, launch },
+        })
+    };
+    let refused = create("t-hf-web-registry-skills", None).unwrap_err();
+    let crate::domain_store::StoreError::Domain(refused) = refused else { panic!("{refused:?}") };
+    assert_eq!(refused.code, "launch_plan_required");
+    assert!(!f.domain.state().unwrap().tasks.contains_key(&TaskId::from("t-hf-web-registry-skills")));
+
+    let leave_it_to_the_schedule = LaunchPlan { model: None, reason: None, ..plan(&f, "agent-skills/hf-web-registry-skills") };
+    crate::launch_plans::validate(&f.domain, &f.home, &"weekly".into(), &leave_it_to_the_schedule).unwrap();
+    create("t-hf-web-registry-skills", Some(leave_it_to_the_schedule)).unwrap();
+    pass(&f.domain, &f.home, &claude).await.unwrap();
+    assert_eq!(claude.launches(), 1, "it starts by itself");
+    let args = claude.calls.lock().unwrap()[0].1.clone();
+    let model = choices.options.flags.model.clone().expect("hard effort sets a model");
+    assert!(args.windows(2).any(|pair| pair[0] == "--model" && pair[1] == model), "{args:?}");
+}
+
+/// A task an older daemon let exist without a plan is cancelled with that reason, and the
+/// orchestrator is told it can create it again.
+#[tokio::test]
+async fn a_task_left_without_a_plan_is_cancelled_saying_why() {
+    let f = world();
+    create(&f, "old", &[], Some(&plan(&f, "app/old")));
+    f.domain.store.lock().unwrap().forget_launch_plan(&"old".into()).unwrap();
+    recover(&f.domain).unwrap();
+    assert_eq!(f.domain.state().unwrap().tasks[&TaskId::from("old")].state, TaskState::Cancelled);
+    assert_eq!(f.domain.store.lock().unwrap().cancel_reasons().unwrap()[&TaskId::from("old")], PLANLESS);
+    assert!(told(&f).contains(&"planless-cancelled-old".to_owned()), "{:?}", told(&f));
+}
+
+#[tokio::test]
+async fn a_failed_start_is_tried_again_by_itself_then_put_to_the_user_who_can_try_again() {
+    let f = world();
+    let claude = FakeClaude::new(&f);
+    create(&f, "f1", &[], Some(&plan(&f, "app/f1")));
+    *claude.refuse.lock().unwrap() = Some("claude is not logged in".into());
+    for attempt in 1..=alondra_core::domain::START_RETRIES.len() as u8 {
+        pass(&f.domain, &f.home, &claude).await.unwrap();
+        assert_eq!(f.domain.store.lock().unwrap().start_retries().unwrap()[&TaskId::from("f1")].0, attempt);
+        assert!(problem(&f, "f1").is_none(), "no card while Alondra tries again");
+        pass(&f.domain, &f.home, &claude).await.unwrap();
+        assert_eq!(f.domain.store.lock().unwrap().start_retries().unwrap()[&TaskId::from("f1")].0, attempt, "not before its time");
+        retry_now(&f, "f1");
+    }
+    pass(&f.domain, &f.home, &claude).await.unwrap();
+    let card = problem(&f, "f1").expect("the user is asked once the retries are spent");
+    assert_eq!(card.card.need, "“Task f1” does not start");
+    assert_eq!(card.card.content.as_ref().unwrap().body, "claude is not logged in");
+    pass(&f.domain, &f.home, &claude).await.unwrap();
+    assert_eq!(f.domain.state().unwrap().interactions.keys().filter(|id| id.0.starts_with("start-problem-f1")).count(), 1, "one card");
+
+    *claude.refuse.lock().unwrap() = None;
+    answer(&f, &card.id, alondra_core::domain::START_RETRY);
+    pass(&f.domain, &f.home, &claude).await.unwrap();
+    pass(&f.domain, &f.home, &claude).await.unwrap();
+    assert!(agent_of(&f, "f1").is_some(), "the user's try again starts it");
+}
+
+#[tokio::test]
+async fn an_untrusted_repository_asks_the_user_at_once_with_the_steps() {
+    let f = world();
+    let claude = FakeClaude::new(&f);
+    create(&f, "f1", &[], Some(&plan(&f, "app/f1")));
+    let project = f.project.canonicalize().unwrap();
+    let config = f.root.join(".claude.json");
+    crate::claude_trust::use_config_for_test(&config);
+    std::fs::write(&config, json!({"projects": {project.to_str().unwrap(): {"hasTrustDialogAccepted": false}}}).to_string()).unwrap();
     pass(&f.domain, &f.home, &claude).await.unwrap();
     assert_eq!(claude.launches(), 0);
-    assert_eq!(auto(&f, "solo"), None);
-    assert!(told(&f).iter().all(|id| !id.starts_with("auto-launch")), "{:?}", told(&f));
+    assert_eq!(auto(&f, "f1").unwrap().reason, Some(AutoLaunchReason::WorkspaceUntrusted));
+    let card = problem(&f, "f1").expect("only the user can trust it");
+    assert!(card.card.need.starts_with("Trust ") && card.card.content.as_ref().unwrap().body.contains("Run `claude`"), "{:?}", card.card);
 
-    let body = serde_json::from_value(json!({"task_id": "solo", "launch": plan(&f, "app/solo")})).unwrap();
-    crate::domain_orchestrator_tools::set_launch_plan(&f.domain, &f.home, body).unwrap();
+    std::fs::write(&config, json!({"projects": {project.to_str().unwrap(): {"hasTrustDialogAccepted": true}}}).to_string()).unwrap();
+    answer(&f, &card.id, alondra_core::domain::START_RETRY);
+    pass(&f.domain, &f.home, &claude).await.unwrap();
     pass(&f.domain, &f.home, &claude).await.unwrap();
     assert_eq!(claude.launches(), 1);
+}
+
+#[tokio::test]
+async fn a_cancelled_dependency_asks_the_user_once_and_starting_without_it_starts_the_task() {
+    let f = world();
+    let claude = FakeClaude::new(&f);
+    open_task(&f, "f0");
+    create(&f, "f1", &["f0"], Some(&plan(&f, "app/f1")));
+    command(&f.domain, user(), Command::CancelTask { task_id: "f0".into() });
+    pass(&f.domain, &f.home, &claude).await.unwrap();
+    pass(&f.domain, &f.home, &claude).await.unwrap();
+    assert_eq!(claude.launches(), 0);
+    let card = problem(&f, "f1").expect("the user decides");
+    assert_eq!(card.card.need, "“Task f0” was cancelled: start “Task f1” without it?");
+    assert_eq!(f.domain.state().unwrap().interactions.keys().filter(|id| id.0.starts_with("start-problem-f1")).count(), 1);
+    assert_eq!(told(&f).iter().filter(|id| id.as_str() == "dependency-cancelled-f1-f0").count(), 1);
+
+    answer(&f, &card.id, alondra_core::domain::START_WITHOUT);
+    pass(&f.domain, &f.home, &claude).await.unwrap();
+    assert_eq!(claude.launches(), 1);
+}
+
+#[tokio::test]
+async fn a_delivery_dependency_cancelled_asks_the_user_and_cancel_closes_the_task() {
+    let f = world();
+    let claude = FakeClaude::new(&f);
+    open_task(&f, "a");
+    create(&f, "after", &[], Some(&plan(&f, "app/after")));
+    command(&f.domain, user(), Command::SetRelations { task_id: "after".into(), delivered_dependencies: ["a".into()].into(), blocks: Default::default() });
+    command(&f.domain, user(), Command::CancelTask { task_id: "a".into() });
+    pass(&f.domain, &f.home, &claude).await.unwrap();
+    let card = problem(&f, "after").expect("the user decides");
+    answer(&f, &card.id, alondra_core::domain::START_CANCEL);
+    assert_eq!(f.domain.state().unwrap().tasks[&TaskId::from("after")].state, TaskState::Cancelled);
+    pass(&f.domain, &f.home, &claude).await.unwrap();
+    assert_eq!(claude.launches(), 0);
+}
+
+/// The user closed the node of an open task: they are asked to relaunch it or cancel it, and a
+/// relaunch starts a new node in the closed one's folder.
+#[tokio::test]
+async fn a_node_the_user_closes_asks_to_relaunch_and_the_relaunch_starts_a_new_node() {
+    let f = world();
+    let claude = FakeClaude::new(&f);
+    create(&f, "f1", &[], Some(&plan(&f, "app/f1")));
+    pass(&f.domain, &f.home, &claude).await.unwrap();
+    let node = agent_of(&f, "f1").expect("started");
+    crate::node_revival::take_out(&f.domain, &node.0, "node closed by the user", Some(f.project.to_str().unwrap().into())).unwrap();
+    assert!(agent_of(&f, "f1").is_none());
+    pass(&f.domain, &f.home, &claude).await.unwrap();
+    let card = problem(&f, "f1").expect("the user decides");
+    assert_eq!(card.card.need, "Relaunch “Task f1” or cancel it");
+    pass(&f.domain, &f.home, &claude).await.unwrap();
+    assert_eq!(f.domain.state().unwrap().interactions.keys().filter(|id| id.0.starts_with("start-problem-f1")).count(), 1, "one card");
+
+    answer(&f, &card.id, alondra_core::domain::START_RETRY);
+    pass(&f.domain, &f.home, &claude).await.unwrap();
+    assert_eq!(claude.launches(), 2, "a new node");
+    assert!(agent_of(&f, "f1").is_some_and(|agent| agent != node));
+    pass(&f.domain, &f.home, &claude).await.unwrap();
+    assert!(problem(&f, "f1").is_none(), "nothing more to ask");
 }

@@ -2,6 +2,8 @@
 mod attention;
 mod command;
 mod model;
+mod ownership;
+mod plan;
 mod projection;
 mod refusal;
 pub mod reads;
@@ -13,9 +15,13 @@ mod attention_tests;
 mod card_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod ownership_tests;
 pub use attention::*;
 pub use command::*;
 pub use model::*;
+pub use ownership::*;
+pub use plan::*;
 pub use projection::*;
 pub use refusal::*;
 pub use schedule::*;

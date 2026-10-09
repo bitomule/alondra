@@ -126,9 +126,10 @@ impl Fleet {
         let mut nodes = vec![];
         for (index, (id, priority)) in tasks.iter().enumerate() {
             let agent = format!("agent-{id}");
-            run(&domain, user(), Command::CreateTask {
+            run(&domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask {
                 task_id: (*id).into(), request_id: "r".into(), title: format!("Task {id}"), agent_id: None, review_prs: false,
                 dependencies: Default::default(), stack: None,
+                launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),
             });
             run(&domain, user(), Command::SetPriority { task_id: (*id).into(), priority: *priority });
             run(&domain, Actor::System, Command::RegisterAgent { agent_id: AgentId(agent.clone()), name: agent.clone() });

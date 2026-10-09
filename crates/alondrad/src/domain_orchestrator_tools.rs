@@ -176,6 +176,7 @@ pub(crate) async fn launch(domain: &DomainRuntime, home: &Path, actor: &Actor, b
 pub(crate) async fn launch_from(domain: &DomainRuntime, home: &Path, actor: &Actor, body: LaunchBody,
     choices: impl FnOnce(&RequestId) -> Option<Choices>, launcher: &impl crate::orchestrate::Launcher, origin: Origin) -> Result<Value, DomainError> {
     let task = body.task.clone();
+    let cwd = body.cwd.clone().or_else(|| domain.launch_plan(&task).ok().flatten().map(|plan| plan.cwd));
     let launched = if matches!(origin, Origin::Orchestrator | Origin::Admitted) {
         let _launching = Launching::begin(domain, &body.task)?;
         launch_guarded(domain, home, actor, body, choices, launcher, origin, None).await
@@ -186,6 +187,13 @@ pub(crate) async fn launch_from(domain: &DomainRuntime, home: &Path, actor: &Act
         Ok(_) => remember_refusal(domain, &task, None),
         Err(error) if error.code == "launch_failed" => remember_refusal(domain, &task, Some(("launch_failed", Some(&error.message)))),
         Err(_) => {}
+    }
+    if let (Err(error), false) = (&launched, matches!(origin, Origin::Auto))
+        && matches!(error.code.as_str(), "launch_failed" | "workspace_untrusted")
+        && let Some(problem) = crate::start_failures::problem_of(&error.code, &error.message, cwd.as_deref())
+        && let Err(failure) = crate::start_failures::failed(domain, &task, problem, alondra_core::now_millis())
+    {
+        log!("could not record that the start of {task} failed: {failure:#}");
     }
     launched
 }
@@ -727,8 +735,7 @@ pub(crate) struct LaunchPlanBody {
     launch: crate::launch_plans::LaunchPlan,
 }
 
-/// Gives a task the plan Alondra starts it with by itself; a task waiting for one is started at
-/// the next pass.
+/// Replaces the plan Alondra starts a task with by itself.
 pub(crate) fn set_launch_plan(domain: &DomainRuntime, home: &Path, body: LaunchPlanBody) -> Result<Value, DomainError> {
     let current = state(domain)?;
     let task = current.tasks.get(&body.task_id).ok_or_else(|| DomainError::new("not_found", "task does not exist"))?;
@@ -739,11 +746,6 @@ pub(crate) fn set_launch_plan(domain: &DomainRuntime, home: &Path, body: LaunchP
     let stored = |error: anyhow::Error| { log!("could not store the launch plan of {}: {error:#}", task.id); DomainError::new("storage_unavailable", "the launch plan could not be stored") };
     let mut store = domain.store.lock().expect("domain store poisoned");
     store.set_launch_plan(&task.id, &body.launch, alondra_core::now_millis()).map_err(stored)?;
-    let waiting = store.auto_launch(&task.id).map_err(stored)?
-        .is_some_and(|row| row.state == crate::domain_store::AutoLaunchState::Blocked && row.reason == Some(crate::domain_store::AutoLaunchReason::NoPlan));
-    if waiting {
-        store.forget_auto_launch(&task.id).map_err(stored)?;
-    }
     Ok(json!({"task": task.id, "stored": true}))
 }
 

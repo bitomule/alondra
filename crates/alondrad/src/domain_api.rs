@@ -719,10 +719,9 @@ async fn resource_command<H: DomainHost>(
     let Ok(Json(mut body)) = body else {
         return domain_error(DomainError::new("invalid_input", "invalid resource command body"));
     };
-    let plan = match take_launch_plan(method.as_str(), uri.path(), &mut body) {
-        Ok(plan) => plan,
-        Err(error) => return domain_error(error),
-    };
+    if let Err(error) = check_launch_shape(method.as_str(), uri.path(), &body) {
+        return domain_error(error);
+    }
     if let Ok(state) = host.domain().state()
         && let Err(error) = crate::pr_heads::check(&state, method.as_str(), uri.path(), &mut body)
     {
@@ -731,20 +730,18 @@ async fn resource_command<H: DomainHost>(
     let Some(envelope) = resource_envelope(method.as_str(), uri.path(), &params, body) else {
         return domain_error(DomainError::new("invalid_input", "unsupported resource operation"));
     };
-    execute_command(host, peer, signed, headers, envelope, plan).await
+    execute_command(host, peer, signed, headers, envelope).await
 }
 
-/// The launch plan a new Task carries beside its typed command, taken out of the body so the
-/// command stays strict.
-pub(crate) fn take_launch_plan(method: &str, path: &str, body: &mut Value) -> Result<Option<crate::launch_plans::LaunchPlan>, DomainError> {
+/// A new Task's launch plan, read on its own so a malformed one is refused saying what is wrong
+/// with it rather than as an unknown command.
+pub(crate) fn check_launch_shape(method: &str, path: &str, body: &Value) -> Result<(), DomainError> {
     let creates_task = method == "POST" && path.starts_with("/requests/") && path.ends_with("/tasks");
-    let Some(launch) = creates_task.then(|| body.as_object_mut().and_then(|object| object.remove("launch"))).flatten() else {
-        return Ok(None);
-    };
-    if launch.is_null() {
-        return Ok(None);
+    match body.get("launch").filter(|launch| creates_task && !launch.is_null()) {
+        Some(launch) => serde_json::from_value::<crate::launch_plans::LaunchPlan>(launch.clone()).map(drop)
+            .map_err(|error| DomainError::new("invalid_input", format!("launch: {error}"))),
+        None => Ok(()),
     }
-    serde_json::from_value(launch).map(Some).map_err(|error| DomainError::new("invalid_input", format!("launch: {error}")))
 }
 
 /// `POST /requests` accepts the resource form for producers and the established
@@ -789,7 +786,7 @@ async fn request_resource<H: DomainHost>(
     let Some(envelope) = resource_envelope(method.as_str(), uri.path(), &params, body) else {
         return domain_error(DomainError::new("invalid_input", "invalid Request resource"));
     };
-    execute_command(host, peer, signed, headers, envelope, None).await
+    execute_command(host, peer, signed, headers, envelope).await
 }
 
 pub(crate) fn resource_envelope(
@@ -956,7 +953,7 @@ fn decode_path_id(value: &str) -> Option<String> {
 
 async fn execute_command<H: DomainHost>(
     host: Arc<H>, peer: SocketAddr, signed: Option<Extension<Signed>>, headers: HeaderMap,
-    envelope: CommandEnvelope, plan: Option<crate::launch_plans::LaunchPlan>,
+    envelope: CommandEnvelope,
 ) -> Response {
     if let Some(header) = headers.get("authorization") {
         if signed.is_some() || !is_local(&peer, &headers) {
@@ -994,10 +991,10 @@ async fn execute_command<H: DomainHost>(
         {
             return domain_error(refusal);
         }
-        if let Err(error) = check_launch_plan(host.domain(), host.home(), &principal, &envelope.command, plan.as_ref()) {
+        if let Err(error) = check_launch_plan(host.domain(), host.home(), &envelope.command) {
             return domain_error(error);
         }
-        return match host.domain().execute_bearer_planned(token, &envelope, plan.as_ref()) {
+        return match host.domain().execute_bearer(token, &envelope) {
             Ok(outcome) => {
                 let mut answer = json!(outcome);
                 if let Some(notice) = auto_merge_notice(host.domain(), &envelope.command) {
@@ -1156,19 +1153,12 @@ fn storage_error() -> Response {
         "domain transaction could not be completed",
     ))
 }
-/// A task that waits on others is started by Alondra, so the orchestrator that creates one says
-/// how; any plan given must be one a launch would accept.
-pub(crate) fn check_launch_plan(domain: &DomainRuntime, home: &std::path::Path, principal: &Principal, command: &Command, plan: Option<&crate::launch_plans::LaunchPlan>) -> Result<(), DomainError> {
-    let Command::CreateTask { request_id, dependencies, stack, .. } = command else { return Ok(()) };
-    if plan.is_none() && matches!(principal, Principal::Orchestrator { .. }) && (!dependencies.is_empty() || stack.is_some()) {
-        let waits_on: Vec<String> = dependencies.iter().map(|id| id.0.clone()).chain(stack.iter().map(|stack| stack.upstream_task.0.clone())).collect();
-        return Err(DomainError::new("launch_plan_required", format!(
-            "This task depends on {}: pass launch with at least name and cwd (and, with auto effort, model and reason) so Alondra starts it by itself as soon as they are done.",
-            waits_on.join(", "))));
-    }
-    match plan {
-        Some(plan) => crate::launch_plans::validate(domain, home, request_id, plan),
-        None => Ok(()),
+/// Whether the launch plan of a new Task is one a launch would accept: its folder exists and its
+/// model and effort fit the request. A Task without a plan is refused by the domain itself.
+pub(crate) fn check_launch_plan(domain: &DomainRuntime, home: &std::path::Path, command: &Command) -> Result<(), DomainError> {
+    match command {
+        Command::CreateTask { request_id, launch: Some(plan), .. } => crate::launch_plans::validate(domain, home, request_id, plan),
+        _ => Ok(()),
     }
 }
 fn store_error(error: StoreError) -> Response {
@@ -1416,7 +1406,7 @@ mod tests {
         let adapted = resource_envelope_from_path("POST", "/requests/r-1/tasks", create_task).unwrap();
         assert_eq!(adapted.command, Command::CreateTask {
             task_id: "task-1".into(), request_id: "r-1".into(), title: "Build".into(),
-            agent_id: None, review_prs: false, dependencies: Default::default(), stack: None,
+            agent_id: None, review_prs: false, dependencies: Default::default(), stack: None, launch: None,
         });
         let mut assign = meta.clone();
         assign["agent_id"] = json!("node-1");
@@ -1462,9 +1452,7 @@ mod tests {
                 },
             ),
             (
-                Actor::User {
-                    user_id: "local-user".into(),
-                },
+                Actor::Orchestrator { generation: 0 },
                 "task",
                 Command::CreateTask {
                     task_id: "task-a".into(),
@@ -1474,6 +1462,7 @@ mod tests {
                     review_prs: true,
                     dependencies: BTreeSet::new(),
                     stack: None,
+                    launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),
                 },
             ),
             (

@@ -50,7 +50,7 @@ pub struct LiveSnapshot {
     /// Why the last launch of a task that has not started was refused, by task id.
     #[serde(default)]
     pub launch_refusals: BTreeMap<String, LiveLaunchRefusal>,
-    /// Whether a task never started is started by Alondra itself or lacks its launch plan, by task id.
+    /// What a task never started waits for before Alondra starts it by itself, by task id.
     #[serde(default)]
     pub start_waits: BTreeMap<String, LiveStartWait>,
     #[serde(default)]
@@ -58,13 +58,13 @@ pub struct LiveSnapshot {
 }
 
 /// What a task never started waits for before Alondra starts it by itself.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LiveStartWait {
-    /// It has its launch plan: it starts when the gate has room.
+    /// It starts when the gate has room.
     Room,
-    /// The orchestrator has not given it a launch plan.
-    Plan,
+    /// Its last start failed; Alondra tries again at this time of day.
+    Retry { at: String },
 }
 
 /// How many nodes work against the limit, how the Mac is, and the place of every queued task.

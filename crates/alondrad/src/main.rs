@@ -55,6 +55,7 @@ mod mods_check;
 mod mods_wait;
 mod auto_launch;
 mod launch_plans;
+mod start_failures;
 mod launch_worktree;
 mod node_close;
 mod revoked_devices;

@@ -17,6 +17,7 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 
 const RETRY: &str = "retry";
+const CANCEL: &str = "cancel";
 const STALL_CHECK: Duration = Duration::from_secs(30);
 const DISK_RECHECK: Duration = Duration::from_secs(10);
 const GATE_RECHECK: Duration = Duration::from_secs(30);
@@ -339,7 +340,8 @@ pub(crate) const REPLACE_ABORTED: &str = "node ended after the orchestrator's re
 pub(crate) fn take_out(domain: &DomainRuntime, session: &str, reason: &str, cwd: Option<String>) -> anyhow::Result<Vec<TaskId>> {
     let agent = AgentId(session.to_owned());
     let state = domain.state()?;
-    let node = state.agents.get(&agent).map(|known| crate::client_routes::ClosedNode { name: known.name.clone(), cwd });
+    let name = state.agents.get(&agent).map_or_else(|| format!("node/{}", &session[..session.len().min(8)]), |known| known.name.clone());
+    let node = crate::client_routes::ClosedNode { name, cwd };
     let released: Vec<_> = state.tasks.values()
         .filter(|task| task.agent_id.as_ref() == Some(&agent) && !task.state.terminal() && !task.archived && task.final_presentation.is_none())
         .map(|task| task.id.clone())
@@ -353,9 +355,7 @@ pub(crate) fn take_out(domain: &DomainRuntime, session: &str, reason: &str, cwd:
         };
         match domain.execute(&Actor::System, &envelope, None, || Ok(())) {
             Ok(_) => {
-                if let Some(node) = &node {
-                    domain.live.remember_closed_task(&task_id.0, node.clone());
-                }
+                domain.live.remember_closed_task(&task_id.0, node.clone());
                 freed.push(task_id);
             }
             Err(failure) => log!("could not free {task_id} after its node was closed: {failure:?}"),
@@ -371,14 +371,15 @@ pub(crate) fn take_out(domain: &DomainRuntime, session: &str, reason: &str, cwd:
     Ok(freed)
 }
 
-/// The card for the user once restarts keep failing; true when they ask for another round.
+/// The card for the user once restarts keep failing; true when they ask for another round. The
+/// other way out cancels the node's open tasks, so none is left with a node nothing brings back.
 async fn ask_to_retry(domain: &DomainRuntime, session: &str, error: &str) -> bool {
     let name = domain.state().ok().and_then(|state| state.agents.get(&AgentId(session.to_owned())).map(|agent| agent.name.clone()))
         .unwrap_or_else(|| session.to_owned());
     let body = format!("{name} is not responding to Alondra while its task is open, and restarting its session with `claude respawn` failed: {error}");
     let options = vec![
         QuestionOption { id: RETRY.into(), label: "Try again".into(), description: None, inputs: vec![] },
-        QuestionOption { id: "leave".into(), label: "Leave it".into(), description: None, inputs: vec![] },
+        QuestionOption { id: CANCEL.into(), label: "Cancel its task".into(), description: Some("The task closes and Alondra closes the node".into()), inputs: vec![] },
     ];
     let card = match crate::domain_holds::ask(domain, session, body, options) {
         Ok(Some(card)) => card,
@@ -388,7 +389,31 @@ async fn ask_to_retry(domain: &DomainRuntime, session: &str, error: &str) -> boo
             return false;
         }
     };
-    matches!(crate::domain_holds::wait(domain, &card).await, Ok(Some(answers)) if answers[0].option_id == RETRY)
+    match crate::domain_holds::wait(domain, &card).await {
+        Ok(Some(answers)) if answers[0].option_id == RETRY => true,
+        Ok(Some(answers)) if answers[0].option_id == CANCEL => {
+            cancel_tasks_of(domain, session, &answers[0].responder);
+            false
+        }
+        _ => false,
+    }
+}
+
+/// The user chose to cancel what the node could not be brought back for: done in their name.
+fn cancel_tasks_of(domain: &DomainRuntime, session: &str, user: &str) {
+    let agent = AgentId(session.to_owned());
+    let Ok(state) = domain.state() else { return };
+    for task in state.tasks.values().filter(|task| task.agent_id.as_ref() == Some(&agent) && !task.state.terminal()) {
+        let Ok(current) = domain.state() else { return };
+        let envelope = CommandEnvelope {
+            protocol_version: PROTOCOL_VERSION, data_epoch: current.data_epoch.clone(),
+            command_id: format!("revival-cancel-{}-{}", task.id.0, crate::auth::random_hex(8)).into(),
+            expected_revision: current.revision, command: Command::CancelTask { task_id: task.id.clone() },
+        };
+        if let Err(error) = domain.execute(&Actor::User { user_id: user.to_owned() }, &envelope, None, || Ok(())) {
+            log!("could not cancel {} after its node could not be restarted: {error:?}", task.id);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -428,8 +453,9 @@ mod tests {
         command(&domain, Actor::System, "register", Command::RegisterAgent { agent_id: SESSION.into(), name: "alondra/probe".into() });
         if with_task {
             command(&domain, user(), "request", Command::CreateRequest { request_id: "r".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
-            command(&domain, user(), "task", Command::CreateTask { task_id: "t".into(), request_id: "r".into(), title: "Probe".into(),
-                agent_id: Some(SESSION.into()), review_prs: false, dependencies: Default::default(), stack: None });
+            command(&domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { task_id: "t".into(), request_id: "r".into(), title: "Probe".into(),
+                agent_id: Some(SESSION.into()), review_prs: false, dependencies: Default::default(), stack: None,
+                launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")), });
         }
         let connection = domain.live.mods.connect(hello(), 1);
         domain.live.mods.disconnect(SESSION, connection);
@@ -611,7 +637,7 @@ mod tests {
         });
         let card = the_card(&domain).await;
         assert_eq!(claude.calls(), 3);
-        answer(&domain, card, "leave");
+        answer(&domain, card, "cancel");
         watching.await.unwrap();
     }
 
@@ -659,10 +685,12 @@ mod tests {
         let state = domain.state().unwrap();
         assert!(state.interactions[&card].body.contains("no such session"), "the error reaches the user: {}", state.interactions[&card].body);
         assert!(state.interactions[&card].body.contains("alondra/probe"));
-        answer(&domain, card, "leave");
+        answer(&domain, card, "cancel");
         watching.await.unwrap();
-        assert_eq!(claude.calls(), 3, "leaving it stops");
+        assert_eq!(claude.calls(), 3, "cancelling stops");
         assert!(!domain.live.is_reconnecting(SESSION));
+        let state = domain.state().unwrap();
+        assert!(state.tasks.values().all(|task| task.state.terminal()), "no task is left with a node nothing brings back");
     }
 
     #[tokio::test]

@@ -1,8 +1,9 @@
-//! Starting a task as soon as it is ready: every task not started yet that has the launch plan its
-//! orchestrator gave it is launched by Alondra itself, when the fleet gate has room for it, by
-//! priority then by how long it has had its plan; the mission of a task that waited on others
-//! carries what they delivered. One automatic launch per task, ever: the claim is a durable row written before
-//! `claude` runs, so a restart or a second pass never starts it twice.
+//! Starting a task as soon as it is ready: every task not started yet is launched by Alondra itself
+//! with the launch plan it was created with, when the fleet gate has room for it, by priority then
+//! by how long it has had its plan; the mission of a task that waited on others carries what they
+//! delivered. One automatic launch per task, ever: the claim is a durable row written before
+//! `claude` runs, so a restart or a second pass never starts it twice. A start that fails is tried
+//! again by itself and then put in front of the user (`start_failures`).
 use crate::domain_orchestrator_tools::{LaunchBody, Origin, launch_from, request_choices};
 use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::{AutoLaunchReason, AutoLaunchState};
@@ -49,6 +50,8 @@ pub(crate) async fn run(domain: Arc<DomainRuntime>, home: PathBuf, launcher: imp
 }
 
 /// A launch the daemon stopped in the middle of: kept when its node was assigned, else tried again.
+/// A task an older daemon let exist without a launch plan is cancelled, saying so, and the
+/// orchestrator is told to create it again with one if it is still needed.
 pub(crate) fn recover(domain: &DomainRuntime) -> Result<()> {
     let state = domain.state()?;
     let rows = domain.store.lock().expect("domain store poisoned").auto_launches()?;
@@ -60,6 +63,29 @@ pub(crate) fn recover(domain: &DomainRuntime) -> Result<()> {
             log!("retrying the automatic launch of {}, interrupted by a restart", row.task_id);
             store.forget_auto_launch(&row.task_id)?;
         }
+    }
+    domain.store.lock().expect("domain store poisoned").forget_planless_blocks()?;
+    cancel_planless(domain, &state)
+}
+
+const PLANLESS: &str = "It had no launch plan, so nothing would ever start it";
+
+fn cancel_planless(domain: &DomainRuntime, state: &DomainState) -> Result<()> {
+    let planned = domain.store.lock().expect("domain store poisoned").planned_tasks()?;
+    let planless: Vec<&Task> = state.tasks.values()
+        .filter(|task| matches!(task.state, TaskState::NotStarted | TaskState::WaitingDependency) && !task.started && task.agent_id.is_none() && !task.archived)
+        .filter(|task| !planned.contains_key(&task.id) && !state.schedule.runs.values().any(|run| run.task_id.as_ref() == Some(&task.id)))
+        .collect();
+    for task in planless {
+        let cancelled = crate::domain_github::execute_system(domain, alondra_core::domain::Command::CancelTask { task_id: task.id.clone() });
+        if let Err(error) = cancelled {
+            log!("could not cancel {}, which has no launch plan: {error:?}", task.id);
+            continue;
+        }
+        domain.store.lock().expect("domain store poisoned").set_cancel_reason(&task.id, PLANLESS)?;
+        tell(domain, &format!("planless-cancelled-{}", task.id), format!(
+            "Alondra cancelled “{}” ({}): it had no launch plan, so nothing would ever start it. If it is still needed, create it again with create_task and its launch plan.",
+            task.title, task.id));
     }
     Ok(())
 }
@@ -73,15 +99,14 @@ fn candidate(state: &DomainState, task: &Task) -> bool {
         && !state.schedule.runs.values().any(|run| run.task_id.as_ref() == Some(&task.id))
 }
 
-fn waits_on_others(task: &Task) -> bool {
-    !task.dependencies.is_empty() || !task.delivered_dependencies.is_empty() || task.stack.is_some()
-}
-
 pub(crate) async fn pass(domain: &DomainRuntime, home: &Path, launcher: &impl Launcher) -> Result<()> {
+    crate::start_failures::react(domain, home, launcher).await?;
     let state = domain.state()?;
-    tell_about_cancelled_dependencies(domain, &state);
     let now = alondra_core::now_millis();
-    let planned = domain.store.lock().expect("domain store poisoned").planned_tasks()?;
+    let (planned, retries) = {
+        let store = domain.store.lock().expect("domain store poisoned");
+        (store.planned_tasks()?, store.start_retries()?)
+    };
     let mut ready: Vec<&Task> = state.tasks.values().filter(|task| candidate(&state, task)).collect();
     ready.sort_by_key(|task| (task.priority, planned.get(&task.id).copied().unwrap_or(now), &task.id));
     for task in ready {
@@ -92,27 +117,21 @@ pub(crate) async fn pass(domain: &DomainRuntime, home: &Path, launcher: &impl La
             let store = domain.store.lock().expect("domain store poisoned");
             (store.auto_launch(&task.id)?, store.launch_plan(&task.id)?)
         };
+        if retries.get(&task.id).is_some_and(|(_, at)| *at > now) {
+            continue;
+        }
         let usage_out = domain.live.usage_pause.current().is_some();
         let disk_low = domain.live.machine_watch.disk_low();
         let retry = match row.as_ref().map(|row| (row.state, row.reason)) {
             None => false,
             Some((AutoLaunchState::Launched | AutoLaunchState::Launching, _)) => continue,
             Some((AutoLaunchState::Blocked, Some(AutoLaunchReason::UsageExhausted))) if !usage_out => true,
-            Some((AutoLaunchState::Blocked, Some(AutoLaunchReason::NoPlan))) if plan.is_some() => true,
             Some((AutoLaunchState::Blocked, _)) => continue,
         };
         let block = |reason: AutoLaunchReason, detail: Option<&str>| -> Result<()> {
             domain.store.lock().expect("domain store poisoned").set_auto_launch(&task.id, AutoLaunchState::Blocked, Some(reason), detail, now)
         };
-        let Some(plan) = plan else {
-            if row.is_none() && waits_on_others(task) {
-                block(AutoLaunchReason::NoPlan, None)?;
-                tell(domain, &format!("auto-launch-no-plan-{}", task.id), format!(
-                    "“{}” ({}) can start now: everything it depends on is done. Alondra did not start it because it has no launch plan. Start it with launch (task {}), or give it a plan with set_launch_plan and Alondra starts it.",
-                    task.title, task.id, task.id));
-            }
-            continue;
-        };
+        let Some(plan) = plan else { continue };
         if usage_out {
             block(AutoLaunchReason::UsageExhausted, None)?;
             continue;
@@ -137,16 +156,10 @@ pub(crate) async fn pass(domain: &DomainRuntime, home: &Path, launcher: &impl La
         let launched = launch_from(domain, home, &Actor::System, LaunchBody::from_plan(task.id.clone(), &plan), choices, launcher, Origin::Auto).await;
         domain.live.end_launch(&task.id.0);
         match launched {
-            Ok(_) => {}
+            Ok(_) => domain.store.lock().expect("domain store poisoned").set_start_retry(&task.id, None)?,
             Err(error) => match error.code.as_str() {
                 "usage_exhausted" => block(AutoLaunchReason::UsageExhausted, None)?,
                 "disk_low" => domain.store.lock().expect("domain store poisoned").forget_auto_launch(&task.id)?,
-                "workspace_untrusted" => {
-                    block(AutoLaunchReason::WorkspaceUntrusted, Some(&error.message))?;
-                    tell(domain, &format!("auto-launch-untrusted-{}", task.id), format!(
-                        "Alondra could not start “{}” ({}) by itself: {} Ask the user to trust the repository (ask, with those steps), then start it with launch (task {}).",
-                        task.title, task.id, sentence(&error.message), task.id));
-                }
                 "conflict" => {
                     let taken = domain.state()?.tasks.get(&task.id).is_some_and(|task| task.agent_id.is_some());
                     let mut store = domain.store.lock().expect("domain store poisoned");
@@ -156,11 +169,13 @@ pub(crate) async fn pass(domain: &DomainRuntime, home: &Path, launcher: &impl La
                         store.forget_auto_launch(&task.id)?;
                     }
                 }
-                _ => {
-                    block(AutoLaunchReason::LaunchFailed, Some(&error.message))?;
-                    tell(domain, &format!("auto-launch-failed-{}", task.id), format!(
-                        "Alondra could not start “{}” ({}) by itself: {} Start it with launch (task {}) once the cause is fixed, or raise_problem if only the user can fix it.",
-                        task.title, task.id, sentence(&error.message), task.id));
+                code => {
+                    if let Some(problem) = crate::start_failures::problem_of(code, &error.message, Some(&plan.cwd)) {
+                        crate::start_failures::failed(domain, &task.id, problem, now)?;
+                    }
+                    tell(domain, &format!("auto-launch-failed-{}-{}", task.id, crate::auth::random_hex(4)), format!(
+                        "Alondra could not start “{}” ({}) by itself: {} It tries again by itself, and then asks the user.",
+                        task.title, task.id, sentence(&error.message)));
                 }
             },
         }
@@ -176,21 +191,6 @@ fn sentence(message: &str) -> String {
 fn tell(domain: &DomainRuntime, id: &str, body: String) {
     if let Err(error) = domain.tell_orchestrator(id, body) {
         log!("could not tell the orchestrator about {id}: {error:?}");
-    }
-}
-
-/// A task whose dependency was cancelled waits forever: the orchestrator decides what to do.
-fn tell_about_cancelled_dependencies(domain: &DomainRuntime, state: &DomainState) {
-    for task in state.tasks.values().filter(|task| task.state == TaskState::WaitingDependency) {
-        for dependency in task.dependencies.iter().chain(&task.delivered_dependencies).filter_map(|id| state.tasks.get(id)).filter(|dep| dep.state == TaskState::Cancelled) {
-            let id = format!("dependency-cancelled-{}-{}", task.id, dependency.id);
-            if state.interactions.contains_key(&alondra_core::domain::InteractionId(id.clone())) {
-                continue;
-            }
-            tell(domain, &id, format!(
-                "“{}” was cancelled, so “{}” ({}), which depends on it, cannot start. Change its dependencies with set_dependencies, or cancel it with cancel_task.",
-                dependency.title, task.title, task.id));
-        }
     }
 }
 

@@ -300,18 +300,7 @@ impl DomainRuntime {
         bearer: &str,
         envelope: &CommandEnvelope,
     ) -> Result<CommandOutcome, StoreError> {
-        self.execute_bearer_planned(bearer, envelope, None)
-    }
-
-    /// A producer's command; a `CreateTask` may carry how Alondra starts the Task by itself,
-    /// stored in the same transaction.
-    pub(crate) fn execute_bearer_planned(
-        &self,
-        bearer: &str,
-        envelope: &CommandEnvelope,
-        plan: Option<&crate::launch_plans::LaunchPlan>,
-    ) -> Result<CommandOutcome, StoreError> {
-        let result = self.execute_bearer_once(bearer, envelope, plan);
+        let result = self.execute_bearer_once(bearer, envelope);
         self.count_rejections(bearer, envelope, &result);
         result
     }
@@ -320,7 +309,6 @@ impl DomainRuntime {
         &self,
         bearer: &str,
         envelope: &CommandEnvelope,
-        plan: Option<&crate::launch_plans::LaunchPlan>,
     ) -> Result<CommandOutcome, StoreError> {
         // Keep the capability lease until commit: concurrent revocation cannot pass this write.
         let authority = self.authority.lock().expect("domain authority poisoned");
@@ -352,10 +340,7 @@ impl DomainRuntime {
             Principal::Orchestrator { generation, .. } => Actor::Orchestrator { generation },
         };
         let prepared = crate::domain_content::prepare(&self.home, envelope)?;
-        let commit = match plan {
-            Some(plan) => store.execute_planned(&actor, &prepared.envelope, plan),
-            None => store.execute_filling_revision(&actor, &prepared.envelope),
-        };
+        let commit = store.execute_filling_revision(&actor, &prepared.envelope);
         if matches!(&commit, Err(StoreError::Domain(_))) {
             prepared.discard_uncommitted(&self.home);
         }
@@ -406,7 +391,8 @@ fn command_task(state: &DomainState, command: &Command) -> Option<TaskId> {
         | Command::DeclarePostMergeWork { task_id, .. }
         | Command::RecordNodeEnd { task_id, .. }
         | Command::ArchiveTask { task_id, .. }
-        | Command::ReleaseTask { task_id, .. } => Some(task_id.clone()),
+        | Command::ReleaseTask { task_id, .. }
+        | Command::RaiseStartProblem { task_id, .. } => Some(task_id.clone()),
         Command::PublishInformation { scope, .. }
         | Command::AskQuestion { scope, .. }
         | Command::AskQuestions { scope, .. }
@@ -674,7 +660,7 @@ mod producer_revision_tests {
             .unwrap();
         runtime
             .execute(
-                &user,
+                &Actor::Orchestrator { generation: 0 },
                 &envelope(
                     &runtime,
                     "task",
@@ -687,6 +673,7 @@ mod producer_revision_tests {
                         review_prs: false,
                         dependencies: Default::default(),
                         stack: None,
+                        launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),
                     },
                 ),
                 None,

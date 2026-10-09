@@ -162,6 +162,11 @@ const AUTO_LAUNCHES: &str = "CREATE TABLE IF NOT EXISTS auto_launches(\
  reason TEXT CHECK(reason IS NULL OR reason IN('usage_exhausted','workspace_untrusted','no_plan','launch_failed')),\
  detail TEXT,\
  at INTEGER NOT NULL);";
+/// A start that failed and that Alondra tries again by itself: how many times so far and when next.
+const START_RETRIES: &str = "CREATE TABLE IF NOT EXISTS start_retries(\
+ task_id TEXT PRIMARY KEY REFERENCES tasks(id),\
+ attempts INTEGER NOT NULL CHECK(attempts > 0),\
+ retry_at INTEGER NOT NULL);";
 /// Why the last launch of a task that has not started was refused, whoever asked for it, so its
 /// state says it. `detail` is the folder Claude Code does not trust, or the error.
 const LAUNCH_REFUSALS: &str = "CREATE TABLE IF NOT EXISTS launch_refusals(\
@@ -191,8 +196,6 @@ pub(crate) enum Attached<'a> {
     None,
     /// What the user chose for the launch of the Request a `CreateRequest` makes.
     Request(&'a RequestLaunch),
-    /// How Alondra starts the Task a `CreateTask` makes by itself.
-    Plan(&'a crate::launch_plans::LaunchPlan),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -222,7 +225,6 @@ impl AutoLaunchState {
 pub(crate) enum AutoLaunchReason {
     UsageExhausted,
     WorkspaceUntrusted,
-    NoPlan,
     LaunchFailed,
 }
 impl AutoLaunchReason {
@@ -230,7 +232,6 @@ impl AutoLaunchReason {
         match self {
             Self::UsageExhausted => "usage_exhausted",
             Self::WorkspaceUntrusted => "workspace_untrusted",
-            Self::NoPlan => "no_plan",
             Self::LaunchFailed => "launch_failed",
         }
     }
@@ -238,7 +239,6 @@ impl AutoLaunchReason {
         Some(match text {
             "usage_exhausted" => Self::UsageExhausted,
             "workspace_untrusted" => Self::WorkspaceUntrusted,
-            "no_plan" => Self::NoPlan,
             "launch_failed" => Self::LaunchFailed,
             _ => return None,
         })
@@ -454,6 +454,7 @@ impl DomainStore {
         tx.execute_batch(POST_MERGE_CHECKS)?;
         tx.execute_batch(TASK_LAUNCH_PLANS)?;
         tx.execute_batch(AUTO_LAUNCHES)?;
+        tx.execute_batch(START_RETRIES)?;
         tx.execute_batch(LAUNCH_REFUSALS)?;
         tx.execute_batch(INHERITED_WORKTREES)?;
         tx.execute_batch(TASK_WORKTREES)?;
@@ -611,17 +612,6 @@ impl DomainStore {
         self.execute_envelope(actor, envelope, None, true, Attached::None)
     }
     /// A `CreateTask` that also stores how Alondra starts the Task, in the same transaction.
-    pub(crate) fn execute_planned(
-        &mut self,
-        actor: &Actor,
-        envelope: &CommandEnvelope,
-        plan: &crate::launch_plans::LaunchPlan,
-    ) -> std::result::Result<Commit, StoreError> {
-        if !matches!(envelope.command, Command::CreateTask { .. }) {
-            return Err(DomainError::new("invalid_input", "only a new Task has a launch plan").into());
-        }
-        self.execute_envelope(actor, envelope, None, true, Attached::Plan(plan))
-    }
     fn execute_envelope(
         &mut self,
         actor: &Actor,
@@ -729,7 +719,15 @@ impl DomainStore {
                 (Attached::Request(launch), Command::CreateRequest { request_id, .. }) => {
                     repository::remember_request_launch(&tx, request_id, launch)?;
                 }
-                (Attached::Plan(plan), Command::CreateTask { task_id, .. }) => {
+                (_, Command::RecordScheduleRunSent { run_id, request, launch, .. }) => {
+                    if let Ok(options) = serde_json::from_str::<alondra_core::options::Resolved>(&launch.options_json) {
+                        let project = next.schedule.runs.get(run_id).and_then(|run| run.definition_snapshot.as_ref()).and_then(|definition| definition.project.clone());
+                        repository::remember_request_launch(&tx, &request.id, &RequestLaunch {
+                            project, options, issue: None, issue_text: None, attachments: vec![],
+                        })?;
+                    }
+                }
+                (_, Command::CreateTask { task_id, launch: Some(plan), .. }) => {
                     repository::exec(
                         &tx,
                         "INSERT INTO task_launch_plans(task_id,plan,role,at) VALUES(?1,?2,?3,?4)",
@@ -1034,6 +1032,35 @@ impl DomainStore {
         Ok(())
     }
 
+    #[cfg(test)]
+    pub(crate) fn forget_launch_plan(&mut self, task_id: &TaskId) -> Result<()> {
+        self.conn.execute("DELETE FROM task_launch_plans WHERE task_id=?1", [&task_id.0])?;
+        self.note_side_write();
+        Ok(())
+    }
+    /// Every start Alondra tries again by itself: attempts so far and when next, by task.
+    pub(crate) fn start_retries(&self) -> Result<std::collections::BTreeMap<TaskId, (u8, i64)>> {
+        let mut query = self.conn.prepare("SELECT task_id,attempts,retry_at FROM start_retries")?;
+        let rows = query.query_map([], |row| Ok((TaskId(row.get(0)?), (row.get::<_, i64>(1)?.clamp(1, 255) as u8, row.get(2)?))))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+    pub(crate) fn set_start_retry(&mut self, task_id: &TaskId, retry: Option<(u8, i64)>) -> Result<()> {
+        match retry {
+            Some((attempts, at)) => self.conn.execute(
+                "INSERT INTO start_retries(task_id,attempts,retry_at) VALUES(?1,?2,?3) ON CONFLICT(task_id) DO UPDATE SET attempts=excluded.attempts,retry_at=excluded.retry_at",
+                params![task_id.0, i64::from(attempts), at])?,
+            None => self.conn.execute("DELETE FROM start_retries WHERE task_id=?1", [&task_id.0])?,
+        };
+        self.note_side_write();
+        Ok(())
+    }
+    /// The blocks an older daemon left on tasks it found without a launch plan: every task has one
+    /// now, so they start again.
+    pub(crate) fn forget_planless_blocks(&mut self) -> Result<usize> {
+        let forgotten = self.conn.execute("DELETE FROM auto_launches WHERE reason='no_plan'", [])?;
+        self.note_side_write();
+        Ok(forgotten)
+    }
     pub(crate) fn forget_auto_launch(&mut self, task_id: &TaskId) -> Result<()> {
         self.conn.execute("DELETE FROM auto_launches WHERE task_id=?1", [&task_id.0])?;
         self.note_side_write();

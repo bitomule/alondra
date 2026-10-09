@@ -156,7 +156,7 @@ async fn signed_loopback_and_sealed_service_share_reads_errors_and_command_recei
     );
     execute(
         &hub,
-        user,
+        Actor::Orchestrator { generation: 0 },
         "task",
         Command::CreateTask {
             task_id: "task-parity".into(),
@@ -166,6 +166,7 @@ async fn signed_loopback_and_sealed_service_share_reads_errors_and_command_recei
             review_prs: true,
             dependencies: BTreeSet::new(),
             stack: None,
+            launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),
         },
     );
     execute(

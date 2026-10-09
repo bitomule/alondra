@@ -78,7 +78,7 @@ pub(super) fn seeded(store: &mut DomainStore) {
     );
     execute(
         store,
-        &user(),
+        &Actor::Orchestrator { generation: 0 },
         "task",
         Command::CreateTask {
             task_id: "task-1".into(),
@@ -88,6 +88,7 @@ pub(super) fn seeded(store: &mut DomainStore) {
             review_prs: true,
             dependencies: BTreeSet::new(),
             stack: None,
+            launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),
         },
     );
 }
@@ -1563,9 +1564,10 @@ fn task_relations_a_verdict_and_the_split_review_states_survive_a_restart() {
     seeded(&mut store);
     execute(&mut store, &Actor::System, "agent-2", Command::RegisterAgent { agent_id: "agent-2".into(), name: "Reviewer".into() });
     execute(&mut store, &user(), "request-title", Command::TitleRequest { request_id: "request-1".into(), title: "Useful work".into() });
-    execute(&mut store, &user(), "task-2", Command::CreateTask {
+    execute(&mut store, &Actor::Orchestrator { generation: 0 }, "task-2", Command::CreateTask {
         task_id: "task-2".into(), request_id: "request-1".into(), title: "Review".into(), agent_id: Some("agent-2".into()),
         review_prs: false, dependencies: BTreeSet::new(), stack: None,
+        launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),
     });
     execute(&mut store, &user(), "relations", Command::SetRelations {
         task_id: "task-2".into(), delivered_dependencies: BTreeSet::from(["task-1".into()]), blocks: BTreeSet::from(["task-1".into()]),
@@ -1664,15 +1666,15 @@ fn task_closings_keep_their_wait_failures_and_card_across_a_restart() {
 fn plan() -> crate::launch_plans::LaunchPlan {
     crate::launch_plans::LaunchPlan {
         name: "app/next".into(), cwd: "/synthetic/App".into(), mission: None, model: Some("sonnet".into()), effort: None,
-        approach: None, reason: Some("clear".into()), role: Some(crate::launch_plans::TaskRole::Implementation),
+        approach: None, reason: Some("clear".into()), role: Some(alondra_core::domain::TaskRole::Implementation),
     }
 }
 
-fn planned_task(id: &str, request: &str, epoch: &alondra_core::domain::DataEpoch) -> CommandEnvelope {
+fn planned_task(id: &str, request: &str, epoch: &alondra_core::domain::DataEpoch, plan: crate::launch_plans::LaunchPlan) -> CommandEnvelope {
     CommandEnvelope {
         protocol_version: 2, data_epoch: epoch.clone(), command_id: format!("plan-{id}").into(), expected_revision: 0,
         command: Command::CreateTask { task_id: id.into(), request_id: request.into(), title: "Next".into(), agent_id: None,
-            review_prs: false, dependencies: Default::default(), stack: None },
+            review_prs: false, dependencies: Default::default(), stack: None, launch: Some(plan) },
     }
 }
 
@@ -1683,23 +1685,38 @@ fn a_launch_plan_is_stored_with_its_task_in_one_transaction() {
     seeded(&mut store);
     execute(&mut store, &user(), "title", Command::TitleRequest { request_id: "request-1".into(), title: "Work".into() });
     let epoch = store.load().unwrap().data_epoch.clone();
-    let envelope = |id: &str, request: &str| planned_task(id, request, &epoch);
+    let orchestrator = Actor::Orchestrator { generation: 0 };
 
-    let refused = store.execute_planned(&user(), &envelope("next-1", "no-such-request"), &plan());
+    let refused = store.execute_filling_revision(&orchestrator, &planned_task("next-1", "no-such-request", &epoch, plan()));
     assert!(matches!(refused, Err(StoreError::Domain(_))));
     assert_eq!(store.launch_plan(&"next-1".into()).unwrap(), None, "a refused command stores no plan");
 
-    store.execute_planned(&user(), &envelope("next-1", "request-1"), &plan()).unwrap();
+    store.execute_filling_revision(&orchestrator, &planned_task("next-1", "request-1", &epoch, plan())).unwrap();
     assert_eq!(store.launch_plan(&"next-1".into()).unwrap(), Some(plan()));
     assert_eq!(store.task_roles().unwrap().get(&TaskId::from("next-1")).map(String::as_str), Some("implementation"));
 
-    let other = crate::launch_plans::LaunchPlan { name: "app/other".into(), ..plan() };
-    let replay = store.execute_planned(&user(), &envelope("next-1", "request-1"), &other).unwrap();
+    let replay = store.execute_filling_revision(&orchestrator, &planned_task("next-1", "request-1", &epoch, plan())).unwrap();
     assert!(replay.replayed);
+    let other = crate::launch_plans::LaunchPlan { name: "app/other".into(), ..plan() };
+    assert!(store.execute_filling_revision(&orchestrator, &planned_task("next-1", "request-1", &epoch, other)).is_err(), "the same command with another plan");
     assert_eq!(store.launch_plan(&"next-1".into()).unwrap(), Some(plan()), "a replay does not write the plan again");
     drop(store);
     let reopened = DomainStore::open(&fixture.path()).unwrap();
     assert_eq!(reopened.launch_plan(&"next-1".into()).unwrap(), Some(plan()), "the plan survives a restart");
+}
+
+#[test]
+fn a_failed_start_retry_is_kept_until_it_is_cleared() {
+    let fixture = Fixture::new();
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    seeded(&mut store);
+    let task: TaskId = "task-1".into();
+    store.set_start_retry(&task, Some((2, 900))).unwrap();
+    drop(store);
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    assert_eq!(store.start_retries().unwrap().get(&task), Some(&(2, 900)), "it survives a restart");
+    store.set_start_retry(&task, None).unwrap();
+    assert!(store.start_retries().unwrap().is_empty());
 }
 
 #[test]

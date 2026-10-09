@@ -1421,8 +1421,9 @@ fn held_plan_card() -> alondra_core::views::View {
     let user = || Actor::User { user_id: "u".into() };
     run(user(), Command::CreateRequest { request_id: "r".into(), body: "Build it".into(), auto_merge: false, maintenance: false, message: false });
     run(Actor::System, Command::RegisterAgent { agent_id: "agent-a".into(), name: "Instance A".into() });
-    run(user(), Command::CreateTask { task_id: "t".into(), request_id: "r".into(), title: "Build".into(),
-        agent_id: Some("agent-a".into()), review_prs: false, dependencies: Default::default(), stack: None });
+    run(Actor::Orchestrator { generation: 0 }, Command::CreateTask { task_id: "t".into(), request_id: "r".into(), title: "Build".into(),
+        agent_id: Some("agent-a".into()), review_prs: false, dependencies: Default::default(), stack: None,
+        launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")), });
     run(Actor::System, Command::HoldHook { interaction_id: "hold-1".into(), task_id: "t".into(),
         agent_id: "agent-a".into(), hold: Hold::Plan, body: "# Ship the parser\n\n1. Split the lexer".into(),
         options: Hold::Plan.options(), card: alondra_core::domain::CardSpec::new(alondra_core::domain::CardKind::Review, "Ship the parser")

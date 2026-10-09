@@ -52,7 +52,7 @@ fn main() {
     let mut state = DomainState::new("synthetic-projection-epoch");
     commit(&mut state, Actor::System, Command::RegisterAgent { agent_id: "agent".into(), name: "Synthetic agent".into() });
     commit(&mut state, user(), Command::CreateRequest { request_id: "request".into(), body: "Synthetic request".into(), auto_merge: false, maintenance: false, message: false });
-    commit(&mut state, user(), Command::CreateTask { task_id: "task".into(), request_id: "request".into(), title: "Synthetic task".into(), agent_id: Some("agent".into()), review_prs: true, dependencies: BTreeSet::new(), stack: None });
+    commit(&mut state, Actor::Orchestrator { generation: 0 }, Command::CreateTask { task_id: "task".into(), request_id: "request".into(), title: "Synthetic task".into(), agent_id: Some("agent".into()), review_prs: true, dependencies: BTreeSet::new(), stack: None, launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")) });
     for index in 0..500 {
         commit(&mut state, Actor::System, Command::PublishInformation { interaction_id: format!("information-{index}").into(), scope: Scope::Task { task_id: "task".into() }, recipient: Recipient::User,
             body: format!("Synthetic item {index}. {}", "Synthetic measurement content. ".repeat(256)), attachments: vec![], card: CardSpec::derived(CardKind::Know, "Read synthetic update") });

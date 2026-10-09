@@ -69,7 +69,7 @@ fn live_shaped() -> Fixture {
             Command::CreateRequest { request_id: format!("r-{index}").into(), body: format!("Request {index}"), auto_merge: false, maintenance: false, message: false });
         run(&runtime, &Actor::System, &format!("agent-{index}"),
             Command::RegisterAgent { agent_id: format!("node-{index}").into(), name: format!("Node {index}") });
-        run(&runtime, &user, &format!("task-{index}"), Command::CreateTask {
+        run(&runtime, &Actor::Orchestrator { generation: 0 }, &format!("task-{index}"), Command::CreateTask {
             task_id: format!("t-{index}").into(),
             request_id: format!("r-{index}").into(),
             title: format!("Task {index}"),
@@ -77,6 +77,7 @@ fn live_shaped() -> Fixture {
             review_prs: true,
             dependencies: Default::default(),
             stack: None,
+            launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),
         });
     }
     let mut index = 0;

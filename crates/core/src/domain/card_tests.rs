@@ -47,9 +47,10 @@ fn refused(s: &mut DomainState, a: Actor, c: Command) -> (String, Option<String>
     (error.code, error.subject)
 }
 fn task(s: &mut DomainState, id: &str, agent: &str) {
-    ok(s, user(), Command::CreateTask {
+    ok(s, Actor::Orchestrator { generation: 0 }, Command::CreateTask {
         task_id: id.into(), request_id: "r".into(), title: format!("Task {id}"), agent_id: Some(agent.into()),
         review_prs: true, dependencies: BTreeSet::new(), stack: None,
+        launch: Some(crate::domain::LaunchPlan::new("node", "/tmp")),
     });
 }
 fn register_agent(s: &mut DomainState, id: &str) {
@@ -129,6 +130,8 @@ fn only_the_assigned_node_sends_cards() {
 fn a_closed_task_accepts_only_a_closing_notice() {
     let mut s = fixture();
     ok(&mut s, user(), Command::CancelTask { task_id: "t".into() });
+    ok(&mut s, agent(), ask("winding-down", "t", false, decide("Keep or drop the half-done work")));
+    ok(&mut s, Actor::System, Command::RecordNodeEnd { task_id: "t".into(), end: NodeEnd::Closed, agent_id: Some("a".into()) });
     assert_eq!(refused(&mut s, agent(), ask("q", "t", false, decide("Pick a name"))),
         ("task_not_active".into(), Some("scope.task_id".into())));
     assert_eq!(refused(&mut s, agent(), inform("closing", scope("t"), "I stopped: the task was cancelled")),

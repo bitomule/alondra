@@ -663,7 +663,7 @@ fn tasks_fixture() -> (DomainState, LiveSnapshot) {
     live.launch_refusals.insert("t-hf-registry".into(), LiveLaunchRefusal {
         reason: "workspace_untrusted".into(), detail: Some("~/Projects/indie-apps".into()),
     });
-    live.start_waits.insert("t-legacy-notes".into(), LiveStartWait::Plan);
+    live.start_waits.insert("t-legacy-notes".into(), LiveStartWait::Retry { at: "10:15".into() });
     for (id, at) in [
         ("r-9f2156b5a8894e53901f0af576dff6a2", "2026-09-30T09:40:00.000Z"),
         ("r-badge", "2026-09-30T09:52:00.000Z"),
@@ -1446,9 +1446,11 @@ fn a_task_that_has_not_started_says_what_refused_its_launch() {
     let mut live = LiveSnapshot::default();
     assert_eq!(task_state_text(&state, &live, Lang::Es), "Esperando a que el orquestador la lance");
     assert_eq!(task_state_text(&state, &live, Lang::En), "Waiting for the orchestrator to launch it");
-    live.start_waits.insert("t-1".into(), LiveStartWait::Plan);
-    assert_eq!(task_state_text(&state, &live, Lang::Es), "Esperando a que el orquestador le dé plan");
-    assert_eq!(task_state_text(&state, &live, Lang::En), "Waiting for the orchestrator to give it a plan");
+    live.start_waits.insert("t-1".into(), LiveStartWait::Retry { at: "14:05".into() });
+    live.launch_refusals.insert("t-1".into(), LiveLaunchRefusal { reason: "launch_failed".into(), detail: Some("claude exited".into()) });
+    assert_eq!(task_state_text(&state, &live, Lang::Es), "No arrancó: reintento a las 14:05");
+    assert_eq!(task_state_text(&state, &live, Lang::En), "Didn't start: trying again at 14:05");
+    live.launch_refusals.clear();
     live.start_waits.insert("t-1".into(), LiveStartWait::Room);
     assert_eq!(task_state_text(&state, &live, Lang::Es), "Arrancando", "with a plan, Alondra starts it when there is room");
     live.start_waits.clear();
@@ -1459,7 +1461,7 @@ fn a_task_that_has_not_started_says_what_refused_its_launch() {
     state.tasks.insert(base.id.clone(), base);
     state.tasks.get_mut(&"t-1".into()).unwrap().dependencies = ["t-base".into()].into();
     let detail = serde_json::to_string(&render(&state, &live, Client::Ios, Lang::Es, "task:t-1", "")).unwrap();
-    assert!(detail.contains("Espera a «Build the base»") && !detail.contains("le dé plan"), "{detail}");
+    assert!(detail.contains("Espera a «Build the base»"), "{detail}");
     state.tasks.remove(&"t-base".into());
     state.tasks.get_mut(&"t-1".into()).unwrap().dependencies = Default::default();
     live.launch_refusals.insert("t-1".into(), LiveLaunchRefusal {
@@ -4125,8 +4127,9 @@ fn presented_pr() -> DomainState {
     for (actor, command) in [
         (Actor::System, Command::RegisterAgent { agent_id: "a".into(), name: "Node A".into() }),
         (user.clone(), Command::CreateRequest { request_id: "r".into(), body: "Fix it".into(), auto_merge: false, maintenance: false, message: false }),
-        (user.clone(), Command::CreateTask { task_id: "t".into(), request_id: "r".into(), title: "Fix it".into(),
-            agent_id: Some("a".into()), review_prs: false, dependencies: BTreeSet::new(), stack: None }),
+        (Actor::Orchestrator { generation: 0 }.clone(), Command::CreateTask { task_id: "t".into(), request_id: "r".into(), title: "Fix it".into(),
+            agent_id: Some("a".into()), review_prs: false, dependencies: BTreeSet::new(), stack: None,
+            launch: Some(crate::domain::LaunchPlan::new("node", "/tmp")), }),
         (agent.clone(), Command::RegisterPr { task_id: "t".into(), pr_id: "pr".into(), host: "github.com".into(),
             repository: "owner/repo".into(), number: 1, head: "head1".into(), base: "main".into(),
             allowed_methods: vec![MergeMethod::Squash] }),
@@ -5156,8 +5159,9 @@ fn the_terminal_shows_only_the_new_plan_after_the_first_was_sent_back() {
     };
     execute(&mut state, Actor::System, Command::RegisterAgent { agent_id: "a".into(), name: "Node A".into() });
     execute(&mut state, user.clone(), Command::CreateRequest { request_id: "r".into(), body: "Weekly cycle".into(), auto_merge: false, maintenance: false, message: false });
-    execute(&mut state, user.clone(), Command::CreateTask { task_id: "t".into(), request_id: "r".into(), title: "Weekly cycle".into(),
-        agent_id: Some("a".into()), review_prs: false, dependencies: BTreeSet::new(), stack: None });
+    execute(&mut state, Actor::Orchestrator { generation: 0 }.clone(), Command::CreateTask { task_id: "t".into(), request_id: "r".into(), title: "Weekly cycle".into(),
+        agent_id: Some("a".into()), review_prs: false, dependencies: BTreeSet::new(), stack: None,
+        launch: Some(crate::domain::LaunchPlan::new("node", "/tmp")), });
     execute(&mut state, Actor::System, plan("p1", "First weekly plan"));
     execute(&mut state, user, Command::AnswerQuestion { attachments: vec![], interaction_id: "p1".into(), option_id: Hold::REQUEST_CHANGES.into(),
         inputs: [("text".to_owned(), InputValue::Text("Drop the plates idea".into()))].into() });

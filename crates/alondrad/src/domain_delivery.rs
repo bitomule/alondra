@@ -430,9 +430,7 @@ mod tests {
         );
         apply_command(
             &domain,
-            Actor::User {
-                user_id: "u".into(),
-            },
+            Actor::Orchestrator { generation: 0 },
             "task",
             Command::CreateTask {
                 task_id: "task-a".into(),
@@ -442,6 +440,7 @@ mod tests {
                 review_prs: false,
                 dependencies: BTreeSet::new(),
                 stack: None,
+                launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),
             },
         );
         apply_command(
@@ -640,9 +639,7 @@ mod tests {
         );
         command(
             &hub,
-            Actor::User {
-                user_id: "u".into(),
-            },
+            Actor::Orchestrator { generation: 0 },
             "task",
             Command::CreateTask {
                 task_id: "task-a".into(),
@@ -652,6 +649,7 @@ mod tests {
                 review_prs: false,
                 dependencies: BTreeSet::new(),
                 stack: None,
+                launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),
             },
         );
         command(
@@ -1169,9 +1167,10 @@ mod tests {
         apply_command(&domain, Actor::System, "agent", Command::RegisterAgent { agent_id: "agent-a".into(), name: "A".into() });
         apply_command(&domain, Actor::User { user_id: "u".into() }, "request", Command::CreateRequest {
             request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
-        apply_command(&domain, Actor::User { user_id: "u".into() }, "task", Command::CreateTask {
+        apply_command(&domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask {
             task_id: "task-a".into(), request_id: "request".into(), title: "Task".into(), agent_id: Some("agent-a".into()),
-            review_prs: false, dependencies: Default::default(), stack: None });
+            review_prs: false, dependencies: Default::default(), stack: None,
+            launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")), });
         apply_command(&domain, agent.clone(), "question", Command::AskQuestion {
             attachments: vec![], interaction_id: "question-a".into(), scope: Scope::Task { task_id: "task-a".into() },
             recipient: Recipient::User, body: "Choose".into(), blocking: true,
@@ -1204,9 +1203,10 @@ mod tests {
         apply_command(&domain, Actor::System, "agent", Command::RegisterAgent { agent_id: "agent-a".into(), name: "A".into() });
         apply_command(&domain, Actor::User { user_id: "u".into() }, "request", Command::CreateRequest {
             request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
-        apply_command(&domain, Actor::User { user_id: "u".into() }, "task", Command::CreateTask {
+        apply_command(&domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask {
             task_id: "task-a".into(), request_id: "request".into(), title: "Task".into(), agent_id: Some("agent-a".into()),
-            review_prs: false, dependencies: Default::default(), stack: None });
+            review_prs: false, dependencies: Default::default(), stack: None,
+            launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")), });
         let plan = |domain: &DomainRuntime, call: &str, text: &str| {
             let card = serde_json::from_value(json!({"session_id": "agent-a", "id": call, "kind": "plan", "input": {"plan": text}})).unwrap();
             match crate::domain_holds::post(domain, &card, true).unwrap() {

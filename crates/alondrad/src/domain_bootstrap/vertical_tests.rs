@@ -232,10 +232,12 @@ impl Fixture {
             "body":format!("Work on {id}")}),
         )
         .await;
-        self.user(json!({"kind":"create_task", "task_id":id,
+        let cwd = self.home.to_str().unwrap().to_owned();
+        self.producer(true, json!({"kind":"create_task", "task_id":id,
             "request_id":format!("request-{id}"), "title":format!("Task {id}"),
-            "agent_id":"agent-a", "review_prs":review_prs,
-            "dependencies":[], "stack":null}));
+            "agent_id":null, "review_prs":review_prs,
+            "dependencies":[], "stack":null, "launch":{"name":format!("app/{id}"), "cwd":cwd, "model":"sonnet", "reason":"clear change"}})).await;
+        self.user(json!({"kind":"assign_task", "task_id":id, "agent_id":"agent-a"}));
     }
 
     async fn finish(mut self) {
@@ -483,7 +485,7 @@ async fn http_an_accepted_pr_is_merged_by_alondra_and_a_node_can_neither_claim_n
 }
 
 #[tokio::test]
-async fn http_the_orchestrator_creates_tasks_for_fresh_nodes_and_plans_the_ones_that_wait() {
+async fn http_the_orchestrator_creates_every_task_with_its_plan() {
     let mut fixture = Fixture::start().await;
     let epoch = fixture.domain.state().unwrap().data_epoch.clone();
     let register = CommandEnvelope {
@@ -500,10 +502,16 @@ async fn http_the_orchestrator_creates_tasks_for_fresh_nodes_and_plans_the_ones_
         if !launch.is_null() { command["launch"] = launch; }
         command
     };
-    fixture.producer(true, task("first", json!("agent-b"), json!([]), Value::Null)).await;
-
+    let cwd = fixture.home.to_str().unwrap().to_owned();
+    let plan = |name: &str| json!({"name": name, "cwd": cwd, "model": "sonnet", "reason": "clear change"});
+    let envelope = fixture.envelope(task("first", json!("agent-b"), json!([]), Value::Null));
     let orchestrator = fixture.orchestrator.clone();
-    let envelope = fixture.envelope(task("second", json!("agent-b"), json!([]), Value::Null));
+    let (status, body) = fixture.post(&orchestrator, &envelope).await;
+    assert_eq!((status, body["code"].as_str()), (StatusCode::UNPROCESSABLE_ENTITY, Some("launch_plan_required")), "{body}");
+    assert!(fixture.domain.state().unwrap().tasks.get(&"first".into()).is_none(), "even a task for a fresh node needs its plan");
+    fixture.producer(true, task("first", json!("agent-b"), json!([]), plan("app/first"))).await;
+
+    let envelope = fixture.envelope(task("second", json!("agent-b"), json!([]), plan("app/second")));
     let (status, body) = fixture.post(&orchestrator, &envelope).await;
     assert_eq!((status, body["code"].as_str()), (StatusCode::CONFLICT, Some("agent_busy")), "{body}");
 
@@ -512,9 +520,7 @@ async fn http_the_orchestrator_creates_tasks_for_fresh_nodes_and_plans_the_ones_
     assert_eq!((status, body["code"].as_str()), (StatusCode::UNPROCESSABLE_ENTITY, Some("launch_plan_required")), "{body}");
     assert!(fixture.domain.state().unwrap().tasks.get(&"later".into()).is_none(), "nothing was created");
 
-    let cwd = fixture.home.to_str().unwrap().to_owned();
-    let launch = json!({"name": "app/later", "cwd": cwd, "model": "sonnet", "reason": "clear change"});
-    fixture.producer(true, task("later", Value::Null, json!(["first"]), launch)).await;
+    fixture.producer(true, task("later", Value::Null, json!(["first"]), plan("app/later"))).await;
     let stored = fixture.domain.launch_plan(&"later".into()).unwrap().unwrap();
     assert_eq!((stored.name.as_str(), stored.model.as_deref()), ("app/later", Some("sonnet")));
 }

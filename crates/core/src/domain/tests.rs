@@ -67,7 +67,7 @@ fn fixture() -> DomainState {
     .unwrap();
     exec(
         &mut s,
-        user(),
+        orchestrator(),
         Command::CreateTask {
             task_id: "t".into(),
             request_id: "r".into(),
@@ -76,6 +76,7 @@ fn fixture() -> DomainState {
             review_prs: true,
             dependencies: BTreeSet::new(),
             stack: None,
+            launch: Some(crate::domain::LaunchPlan::new("node", "/tmp")),
         },
     )
     .unwrap();
@@ -1141,7 +1142,39 @@ fn the_orchestrator_names_a_request_with_a_short_title() {
 }
 fn task_in(request: &str, id: &str) -> Command {
     Command::CreateTask { task_id: id.into(), request_id: request.into(), title: id.into(), agent_id: None,
-        review_prs: false, dependencies: Default::default(), stack: None }
+        review_prs: false, dependencies: Default::default(), stack: None,
+        launch: Some(crate::domain::LaunchPlan::new("node", "/tmp")), }
+}
+#[test]
+fn a_task_never_exists_without_its_launch_plan() {
+    let mut s = fixture();
+    exec(&mut s, user(), Command::CreateRequest { request_id: "weekly".into(), body: "Weekly improvement".into(), auto_merge: false, maintenance: false, message: false }).unwrap();
+    let mut planless = task_in("weekly", "registry");
+    if let Command::CreateTask { launch, .. } = &mut planless {
+        *launch = None;
+    }
+    let before = s.clone();
+    let error = exec(&mut s, orchestrator(), planless).unwrap_err();
+    assert_eq!((error.code.as_str(), error.subject.as_deref()), ("launch_plan_required", Some("launch")));
+    assert!(error.message.contains("name and cwd"), "{error}");
+    assert_eq!(s, before, "no task is left behind");
+    let mut folderless = task_in("weekly", "registry");
+    if let Command::CreateTask { launch: Some(plan), .. } = &mut folderless {
+        plan.cwd = "  ".into();
+    }
+    let error = exec(&mut s, orchestrator(), folderless).unwrap_err();
+    assert_eq!((error.code.as_str(), error.subject.as_deref()), ("launch_plan_required", Some("launch.cwd")));
+    exec(&mut s, orchestrator(), task_in("weekly", "registry")).unwrap();
+    assert!(s.tasks.contains_key(&"registry".into()));
+}
+#[test]
+fn only_the_orchestrator_creates_tasks() {
+    let mut s = fixture();
+    exec(&mut s, user(), Command::CreateRequest { request_id: "two".into(), body: "Two things".into(), auto_merge: false, maintenance: false, message: false }).unwrap();
+    reject_unchanged(&mut s, user(), task_in("two", "mine"), "forbidden");
+    reject_unchanged(&mut s, agent(), task_in("two", "mine"), "forbidden");
+    reject_unchanged(&mut s, Actor::System, task_in("two", "mine"), "forbidden");
+    exec(&mut s, orchestrator(), task_in("two", "mine")).unwrap();
 }
 #[test]
 fn a_request_needs_its_title_before_it_gets_a_second_task() {
@@ -1279,7 +1312,7 @@ fn only_a_manager_can_link_another_tasks_document() {
     .unwrap();
     exec(
         &mut s,
-        user(),
+        orchestrator(),
         Command::CreateTask {
             task_id: "t2".into(),
             request_id: "r".into(),
@@ -1288,6 +1321,7 @@ fn only_a_manager_can_link_another_tasks_document() {
             review_prs: false,
             dependencies: BTreeSet::new(),
             stack: None,
+            launch: Some(crate::domain::LaunchPlan::new("node", "/tmp")),
         },
     )
     .unwrap();
@@ -1476,7 +1510,7 @@ fn cross_task_delivery_and_dependency_cycle_roll_back() {
     register_b(&mut s);
     exec(
         &mut s,
-        user(),
+        orchestrator(),
         Command::CreateTask {
             task_id: "t2".into(),
             request_id: "r".into(),
@@ -1485,6 +1519,7 @@ fn cross_task_delivery_and_dependency_cycle_roll_back() {
             review_prs: false,
             dependencies: BTreeSet::from(["t".into()]),
             stack: None,
+            launch: Some(crate::domain::LaunchPlan::new("node", "/tmp")),
         },
     )
     .unwrap();
@@ -1525,13 +1560,14 @@ fn second(agent_id: Option<&str>) -> Command {
         review_prs: false,
         dependencies: BTreeSet::new(),
         stack: None,
+        launch: Some(crate::domain::LaunchPlan::new("node", "/tmp")),
     }
 }
 #[test]
 fn an_agent_works_on_one_task_until_it_ends() {
     let mut s = fixture();
-    reject_unchanged(&mut s, user(), second(Some("a")), "agent_busy");
-    exec(&mut s, user(), second(None)).unwrap();
+    reject_unchanged(&mut s, orchestrator(), second(Some("a")), "agent_busy");
+    exec(&mut s, orchestrator(), second(None)).unwrap();
     let take = Command::AssignTask { task_id: "t2".into(), agent_id: "a".into(), model: None };
     reject_unchanged(&mut s, user(), take.clone(), "agent_busy");
     exec(&mut s, user(), Command::AssignTask { task_id: "t".into(), agent_id: "a".into(), model: None }).unwrap();
@@ -1570,12 +1606,13 @@ fn an_assignment_records_the_model_and_who_chose_it_and_old_records_still_load()
 #[test]
 fn state_saved_with_several_open_tasks_on_one_agent_still_loads() {
     let mut s = fixture();
-    exec(&mut s, user(), second(None)).unwrap();
+    exec(&mut s, orchestrator(), second(None)).unwrap();
     s.tasks.get_mut(&"t2".into()).unwrap().agent_id = Some("a".into());
     s.validate().unwrap();
     exec(&mut s, agent(), Command::StartTask { task_id: "t2".into() }).unwrap();
-    exec(&mut s, user(), Command::CreateTask { task_id: "t3".into(), request_id: "r".into(), title: "Third".into(),
-        agent_id: None, review_prs: false, dependencies: BTreeSet::new(), stack: None }).unwrap();
+    exec(&mut s, orchestrator(), Command::CreateTask { task_id: "t3".into(), request_id: "r".into(), title: "Third".into(),
+        agent_id: None, review_prs: false, dependencies: BTreeSet::new(), stack: None,
+        launch: Some(crate::domain::LaunchPlan::new("node", "/tmp")), }).unwrap();
     reject_unchanged(&mut s, user(), Command::AssignTask { task_id: "t3".into(), agent_id: "a".into(), model: None }, "agent_busy");
 }
 #[test]
@@ -2168,7 +2205,7 @@ fn stack_readiness_is_explicit_and_merge_requires_upstream_merge_and_retarget() 
     };
     exec(
         &mut s,
-        user(),
+        orchestrator(),
         Command::CreateTask {
             task_id: "down".into(),
             request_id: "r".into(),
@@ -2177,6 +2214,7 @@ fn stack_readiness_is_explicit_and_merge_requires_upstream_merge_and_retarget() 
             review_prs: true,
             dependencies: BTreeSet::new(),
             stack: Some(stack),
+            launch: Some(crate::domain::LaunchPlan::new("node", "/tmp")),
         },
     )
     .unwrap();
@@ -2937,9 +2975,10 @@ fn variant_index(c: &Command) -> usize {
         Command::SetPriority { .. } => 56,
         Command::DeclarePostMergeWork { .. } => 57,
         Command::BindOrchestratorSession { .. } => 58,
+        Command::RaiseStartProblem { .. } => 59,
     }
 }
-const COMMAND_KINDS: usize = 59;
+const COMMAND_KINDS: usize = 60;
 /// Every command kind naming the given ids. The flag marks commands that only
 /// create a fresh entity and therefore may succeed with an unknown id.
 fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
@@ -2970,6 +3009,7 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
         (Command::ClaimScheduleLaunch { run_id: ids.run.into(), now: 1 }, false),
         (Command::RecordScheduleLaunchHanded { run_id: ids.run.into(), session_id: None, agent_id: None, finished_at: 1 }, false),
         (Command::RecordScheduleRunFailed { run_id: ids.run.into(), reason: "boom".into(), finished_at: 1 }, false),
+        (Command::RaiseStartProblem { task_id: ids.task.into(), problem: StartProblem::NodeClosed }, false),
         (Command::InterruptScheduleRunsOnRestart, true),
         (Command::CreateRequest { request_id: ids.request.into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false }, true),
         (Command::CloseRequest { request_id: ids.request.into(), answer: None, withdrawn: false, title: None }, false),
@@ -2979,7 +3019,8 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
         (Command::BindOrchestratorSession { session_id: ids.agent.into() }, true),
         (Command::CreateTask { task_id: "fresh-task".into(), request_id: ids.request.into(),
             title: "Fresh".into(), agent_id: Some(ids.agent.into()), review_prs: false,
-            dependencies: BTreeSet::new(), stack: None }, false),
+            dependencies: BTreeSet::new(), stack: None,
+            launch: Some(crate::domain::LaunchPlan::new("node", "/tmp")), }, false),
         (Command::TitleRequest { request_id: ids.request.into(), title: "Named".into() }, false),
         (Command::AssignTask { task_id: ids.task.into(), agent_id: ids.agent.into(), model: None }, false),
         (Command::RetitleTask { task_id: ids.task.into(), title: "Renamed".into() }, false),
@@ -3105,9 +3146,10 @@ fn unknown_and_foreign_ids_are_typed_rejections_never_panics() {
     assert_all_rejected(&s, &actors, &unknown);
 
     exec(&mut s, Actor::System, Command::RegisterAgent { agent_id: "b".into(), name: "Instance B".into() }).unwrap();
-    exec(&mut s, user(), Command::CreateTask { task_id: "t2".into(), request_id: "r".into(),
+    exec(&mut s, orchestrator(), Command::CreateTask { task_id: "t2".into(), request_id: "r".into(),
         title: "Other".into(), agent_id: Some("b".into()), review_prs: true,
-        dependencies: BTreeSet::new(), stack: None }).unwrap();
+        dependencies: BTreeSet::new(), stack: None,
+        launch: Some(crate::domain::LaunchPlan::new("node", "/tmp")), }).unwrap();
     let b = Actor::Agent { agent_id: "b".into() };
     exec(&mut s, b.clone(), Command::StartTask { task_id: "t2".into() }).unwrap();
     exec(&mut s, b.clone(), Command::RegisterPr { task_id: "t2".into(), pr_id: "pr2".into(),
@@ -3392,8 +3434,9 @@ fn accept_text(s: &mut DomainState) -> CommandOutcome {
     exec(s, user(), Command::AcceptDelivery { presentation_id: "final".into(), targets: text() }).unwrap()
 }
 fn second_task(s: &mut DomainState, id: &str, agent_id: Option<&str>) {
-    exec(s, user(), Command::CreateTask { task_id: id.into(), request_id: "r".into(), title: "Second".into(),
-        agent_id: agent_id.map(Into::into), review_prs: false, dependencies: BTreeSet::new(), stack: None }).unwrap();
+    exec(s, orchestrator(), Command::CreateTask { task_id: id.into(), request_id: "r".into(), title: "Second".into(),
+        agent_id: agent_id.map(Into::into), review_prs: false, dependencies: BTreeSet::new(), stack: None,
+        launch: Some(crate::domain::LaunchPlan::new("node", "/tmp")), }).unwrap();
 }
 #[test]
 fn accepting_and_merging_a_pr_wakes_the_node_only_to_clean_up() {
@@ -3606,7 +3649,8 @@ fn the_orchestrator_cannot_give_a_node_a_second_task() {
     second_task(&mut s, "u", None);
     reject_unchanged(&mut s, orchestrator(), Command::AssignTask { task_id: "u".into(), agent_id: "a".into(), model: None }, "agent_used");
     reject_unchanged(&mut s, orchestrator(), Command::CreateTask { task_id: "v".into(), request_id: "r".into(), title: "Third".into(),
-        agent_id: Some("a".into()), review_prs: false, dependencies: BTreeSet::new(), stack: None }, "agent_used");
+        agent_id: Some("a".into()), review_prs: false, dependencies: BTreeSet::new(), stack: None,
+        launch: Some(crate::domain::LaunchPlan::new("node", "/tmp")), }, "agent_used");
 }
 #[test]
 fn the_user_may_still_assign_a_node_whose_task_ended() {
@@ -3668,9 +3712,10 @@ fn a_delivery_stacked_on_an_open_pr_is_no_card_until_that_pr_merges_and_then_one
     register_b(&mut s);
     present(&mut s, "d", pr_targets());
     let stack = StackDependency { upstream_task: "t".into(), presentation_id: "d".into(), pr_id: "pr".into(), head: "head1".into() };
-    exec(&mut s, user(), Command::CreateTask {
+    exec(&mut s, orchestrator(), Command::CreateTask {
         task_id: "down".into(), request_id: "r".into(), title: "Downstream".into(), agent_id: Some("b".into()),
         review_prs: true, dependencies: BTreeSet::new(), stack: Some(stack),
+        launch: Some(crate::domain::LaunchPlan::new("node", "/tmp")),
     }).unwrap();
     exec(&mut s, agent(), Command::PublishStackReadiness {
         task_id: "t".into(), presentation_id: "d".into(), pr_id: "pr".into(), head: "head1".into(), ready: true,
@@ -3823,6 +3868,29 @@ fn cancelling_a_task_with_its_plan_open_takes_its_cards_away_in_silence() {
     assert!(notices(&s).is_empty(), "no notice about cards of a cancelled task");
     assert!(!cancelled.effects.iter().any(|e| matches!(e, DomainEffect::NotifyUser { interaction_id, .. }
         if interaction_id.0.starts_with(ENDED_UNANSWERED_PREFIX))));
+}
+/// The node of a cancelled task asked what to do because a hook kept it from committing its
+/// half-done work: the question was withdrawn in silence and the node sat blocked, unseen. What a
+/// node asks while it winds down stays with the user until Alondra has closed it.
+#[test]
+fn a_question_the_node_of_a_cancelled_task_asks_while_it_winds_down_reaches_the_user() {
+    let mut s = fixture();
+    ask_aside(&mut s, "before");
+    exec(&mut s, user(), Command::CancelTask { task_id: "t".into() }).unwrap();
+    assert!(s.interactions[&"before".into()].withdrawn, "what it asked about the work the user stopped leaves");
+    ask_aside(&mut s, "stuck");
+    exec(&mut s, Actor::System, Command::ObserveAgent { agent_id: "a".into(), connected: false }).unwrap();
+    assert!(!s.interactions[&"stuck".into()].withdrawn);
+    assert!(pending(&s, "stuck"), "the user sees what the node asks while it winds down");
+    let item = s.projection().inbox.into_iter().find(|item| item.id == "interaction:stuck").unwrap();
+    assert!(item.available_actions.iter().any(|action| action.kind == "answer_question" && action.enabled), "{:?}", item.available_actions);
+    exec(&mut s, user(), Command::AnswerQuestion { attachments: vec![], interaction_id: "stuck".into(),
+        option_id: "keep".into(), inputs: BTreeMap::new() }).unwrap();
+
+    ask_aside(&mut s, "late");
+    exec(&mut s, Actor::System, Command::RecordNodeEnd { task_id: "t".into(), end: NodeEnd::Closed, agent_id: Some("a".into()) }).unwrap();
+    assert!(s.interactions[&"late".into()].withdrawn, "once the node is gone, nothing waits for the answer");
+    assert!(!pending(&s, "late"));
 }
 /// A notice an older daemon left for a cancelled task leaves the inbox on the next change.
 #[test]

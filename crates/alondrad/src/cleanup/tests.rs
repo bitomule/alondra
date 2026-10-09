@@ -112,8 +112,9 @@ impl Rig {
         self.domain.live.observe(&serde_json::json!({"session_id": session, "hook_event_name": "Stop"}));
         self.sessions.listed.lock().unwrap().push(short);
         let id = format!("t{n}");
-        command(&self.domain, user(), Command::CreateTask { task_id: id.clone().into(), request_id: "r".into(), title: format!("Task {n}"),
-            agent_id: Some(session.clone().into()), review_prs: false, dependencies: Default::default(), stack: None });
+        command(&self.domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { task_id: id.clone().into(), request_id: "r".into(), title: format!("Task {n}"),
+            agent_id: Some(session.clone().into()), review_prs: false, dependencies: Default::default(), stack: None,
+            launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")), });
         if launched {
             self.domain.record_model_decision(&Decision {
                 task_id: id.clone(), request_id: "r".into(), agent_id: Some(session.clone()), at: 1, kind: DecisionKind::Launch,
@@ -315,8 +316,9 @@ impl Rig {
         self.sessions.listed.lock().unwrap().push(short);
         let id = format!("t{n}");
         let given = assign_as.is_some();
-        command(&self.domain, user(), Command::CreateTask { task_id: id.clone().into(), request_id: "r".into(), title: format!("Task {n}"),
-            agent_id: (!given).then(|| session.clone().into()), review_prs: false, dependencies: Default::default(), stack: None });
+        command(&self.domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { task_id: id.clone().into(), request_id: "r".into(), title: format!("Task {n}"),
+            agent_id: (!given).then(|| session.clone().into()), review_prs: false, dependencies: Default::default(), stack: None,
+            launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")), });
         if let Some(actor) = assign_as {
             command_as(&self.domain, actor, assign_id, Command::AssignTask { task_id: id.clone().into(), agent_id: session.clone().into(), model: None });
         }

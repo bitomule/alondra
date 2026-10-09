@@ -181,7 +181,7 @@ impl DomainState {
             Author::Agent { agent_id } => Some(agent_id.clone()),
             _ => None,
         };
-        let active = task.is_none_or(|t| !t.state.terminal());
+        let active = task.is_none_or(|t| !t.state.terminal() || Self::winding_down(t));
         let (kind, pending, mut actions) = match &i.payload {
             InteractionPayload::Information { read_by } => (
                 "information",

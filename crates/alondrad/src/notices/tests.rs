@@ -34,9 +34,10 @@ impl Fixture {
         fixture.command(Actor::System, "agent", Command::RegisterAgent { agent_id: "agent-a".into(), name: "A".into() });
         fixture.command(Actor::User { user_id: "u".into() }, "request", Command::CreateRequest {
             request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
-        fixture.command(Actor::User { user_id: "u".into() }, "task", Command::CreateTask {
+        fixture.command(Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask {
             task_id: "task-a".into(), request_id: "request".into(), title: "Task".into(),
-            agent_id: Some("agent-a".into()), review_prs: false, dependencies: Default::default(), stack: None });
+            agent_id: Some("agent-a".into()), review_prs: false, dependencies: Default::default(), stack: None,
+            launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")), });
         fixture
     }
 

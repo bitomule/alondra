@@ -34,9 +34,12 @@ fn state(task: &Task, context: &RenderContext<'_>) -> String {
 }
 
 /// Why a task that has not started has not, as a fact: what refused its last launch, the task it
-/// waits for, or that it has no launch plan yet; with one, Alondra starts it when there is room.
+/// waits for, or when Alondra tries again; otherwise Alondra starts it when there is room.
 fn not_started(task: &Task, context: &RenderContext<'_>) -> String {
     let lang = context.lang;
+    if let Some(super::live::LiveStartWait::Retry { at }) = context.live.start_waits.get(&task.id.0) {
+        return tf!(lang, "Didn't start: trying again at {at}", "No arrancó: reintento a las {at}", at = at);
+    }
     let Some(refusal) = context.live.launch_refusals.get(&task.id.0) else {
         let pending = task.dependencies.iter().chain(&task.delivered_dependencies)
             .filter_map(|id| context.domain.tasks.get(id))
@@ -44,12 +47,11 @@ fn not_started(task: &Task, context: &RenderContext<'_>) -> String {
         return match pending {
             Some(dependency) => wait_text(&crate::domain::WaitReason::BlockedBy { task: dependency.id.clone() }, context),
             None => match context.live.start_waits.get(&task.id.0) {
-                Some(super::live::LiveStartWait::Plan) =>
-                    t!(lang, "Waiting for the orchestrator to give it a plan", "Esperando a que el orquestador le dé plan").into(),
                 Some(super::live::LiveStartWait::Room) if context.live.usage_exhausted.is_some() =>
                     t!(lang, "Won't start: Claude usage ran out", "No arranca: se acabó el uso de Claude").into(),
                 Some(super::live::LiveStartWait::Room) => t!(lang, "Starting", "Arrancando").into(),
-                None => t!(lang, "Waiting for the orchestrator to launch it", "Esperando a que el orquestador la lance").into(),
+                Some(super::live::LiveStartWait::Retry { .. }) | None =>
+                    t!(lang, "Waiting for the orchestrator to launch it", "Esperando a que el orquestador la lance").into(),
             },
         };
     };

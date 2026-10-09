@@ -49,7 +49,7 @@ fn seed_load_bench() {
         });
     }
     for t in 0..TASKS {
-        run(&mut store, &user, format!("task-{t}"), Command::CreateTask {
+        run(&mut store, &Actor::Orchestrator { generation: 0 }, format!("task-{t}"), Command::CreateTask {
             task_id: format!("task-{t}").into(),
             request_id: format!("request-{}", t % REQUESTS).into(),
             title: format!("Bench task {t}"),
@@ -57,6 +57,7 @@ fn seed_load_bench() {
             review_prs: true,
             dependencies: BTreeSet::new(),
             stack: None,
+            launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),
         });
     }
     for i in 0..INTERACTIONS {

@@ -498,6 +498,11 @@ fn summary(state: &DomainState, choices: impl Fn(&alondra_core::domain::RequestI
         let unsplit = !state.tasks.values().any(|task| task.request_id == request.id);
         let body = if unsplit { request.body.trim().to_owned() } else { one_line(&request.body) };
         text.push_str(&format!("request {}: {body}\n", request.id));
+        let schedule = state.schedule.runs.values().find(|run| run.request_id.as_ref() == Some(&request.id))
+            .and_then(|run| state.schedule.schedules.get(&run.schedule_id));
+        if let Some(schedule) = schedule {
+            text.push_str(&format!("  made by the schedule “{}”: its options below are the plan of every task you create for it\n", one_line(&schedule.title)));
+        }
         if let Some(chosen) = choices(&request.id) {
             text.push_str(&chosen);
             text.push('\n');
@@ -688,9 +693,10 @@ exit 1"#;
         if n == 1 {
             command(domain, Actor::System, "agent", Command::RegisterAgent { agent_id: "a".into(), name: "A".into() });
             command(domain, Actor::Orchestrator { generation: 0 }, "request", Command::CreateRequest { request_id: "r".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
-            command(domain, Actor::User { user_id: "u".into() }, "task", Command::CreateTask {
+            command(domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask {
                 task_id: "t".into(), request_id: "r".into(), title: "Task".into(), agent_id: Some("a".into()),
                 review_prs: false, dependencies: BTreeSet::new(), stack: None,
+                launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),
             });
         }
         command(domain, Actor::Agent { agent_id: "a".into() }, &format!("question-{n}"), Command::AskQuestion {

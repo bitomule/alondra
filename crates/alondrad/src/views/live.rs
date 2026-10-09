@@ -66,9 +66,9 @@ pub(crate) async fn gather(
 ) -> LiveSnapshot {
     let now = alondra_core::now_millis();
     let exhausted = client.domain.live.usage_pause.current();
-    let (launches, refusals, planned) = {
+    let (launches, refusals, retries) = {
         let store = client.domain.store.lock().expect("domain store poisoned");
-        (store.request_launch_summaries().unwrap_or_default(), store.launch_refusals().unwrap_or_default(), store.planned_tasks().unwrap_or_default())
+        (store.request_launch_summaries().unwrap_or_default(), store.launch_refusals().unwrap_or_default(), store.start_retries().unwrap_or_default())
     };
     let start_waits = {
         let store = client.domain.store.lock().expect("domain store poisoned");
@@ -76,7 +76,10 @@ pub(crate) async fn gather(
             .filter(|task| task.state == TaskState::NotStarted && !task.archived && task.agent_id.is_none())
             .filter(|task| client.domain.live.closed_task(&task.id.0).is_none() && !store.task_was_launched(&task.id).unwrap_or(true))
             .map(|task| {
-                let wait = if planned.contains_key(&task.id) { alondra_core::views::LiveStartWait::Room } else { alondra_core::views::LiveStartWait::Plan };
+                let wait = match retries.get(&task.id) {
+                    Some((_, at)) => alondra_core::views::LiveStartWait::Retry { at: crate::usage_pause::clock_text(*at, now, lang == Lang::Es) },
+                    None => alondra_core::views::LiveStartWait::Room,
+                };
                 (task.id.0.clone(), wait)
             })
             .collect()

@@ -37,8 +37,9 @@ fn world() -> Fixture {
     command(&domain, Actor::System, Command::RegisterAgent { agent_id: "agent-b".into(), name: "Instance B".into() });
     command(&domain, user(), Command::CreateRequest { request_id: "r".into(), body: "Make the editor readable".into(), auto_merge: false, maintenance: false, message: false });
     command(&domain, user(), Command::TitleRequest { request_id: "r".into(), title: "Readable editor".into() });
-    command(&domain, user(), Command::CreateTask { task_id: "t".into(), request_id: "r".into(), title: "Editor colours".into(),
-        agent_id: None, review_prs: false, dependencies: Default::default(), stack: None });
+    command(&domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { task_id: "t".into(), request_id: "r".into(), title: "Editor colours".into(),
+        agent_id: None, review_prs: false, dependencies: Default::default(), stack: None,
+        launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")), });
     Fixture { root, home, project, domain }
 }
 
@@ -323,8 +324,9 @@ async fn a_message_with_a_task_reaches_only_that_tasks_node() {
     let actor = the_orchestrator(&f.domain);
     let node = Node::connect(&f.domain, "agent-b");
     give(&f, "t", "agent-b");
-    command(&f.domain, user(), Command::CreateTask { task_id: "t2".into(), request_id: "r".into(), title: "Editor fonts".into(),
-        agent_id: None, review_prs: false, dependencies: Default::default(), stack: None });
+    command(&f.domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { task_id: "t2".into(), request_id: "r".into(), title: "Editor fonts".into(),
+        agent_id: None, review_prs: false, dependencies: Default::default(), stack: None,
+        launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")), });
     let body = |task: &str, text: &str| -> SendBody { serde_json::from_value(json!({"node": "Instance B", "text": text, "task": task})).unwrap() };
     let answer = send(&f.domain, &f.home, &actor, body("t", "Take the editor colours")).await.unwrap();
     assert_eq!(answer["delivery_state"], "handed");
@@ -363,8 +365,9 @@ async fn a_node_on_a_task_takes_no_other_but_still_gets_plain_messages() {
     let actor = the_orchestrator(&f.domain);
     let node = Node::connect(&f.domain, "agent-b");
     give(&f, "t", "agent-b");
-    command(&f.domain, user(), Command::CreateTask { task_id: "t2".into(), request_id: "r".into(), title: "Editor fonts".into(),
-        agent_id: None, review_prs: false, dependencies: Default::default(), stack: None });
+    command(&f.domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { task_id: "t2".into(), request_id: "r".into(), title: "Editor fonts".into(),
+        agent_id: None, review_prs: false, dependencies: Default::default(), stack: None,
+        launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")), });
     let body = |task: Option<&str>| -> SendBody { serde_json::from_value(json!({"node": "Instance B", "text": "Go", "task": task})).unwrap() };
     assert_eq!(send(&f.domain, &f.home, &actor, body(Some("t2"))).await.unwrap_err().code, "not_assigned");
     send(&f.domain, &f.home, &actor, body(None)).await.unwrap();
@@ -667,8 +670,9 @@ async fn a_launch_of_a_follow_up_task_carries_the_earlier_result_and_pull_reques
         state: alondra_core::domain::PrState::Merged, merged_head: Some("head1".into()) });
     command(&f.domain, Actor::System, Command::RecordNodeEnd { task_id: "t".into(), end: alondra_core::domain::NodeEnd::Closed, agent_id: None });
     assert_eq!(f.domain.state().unwrap().tasks[&TaskId::from("t")].state, TaskState::Done);
-    command(&f.domain, user(), Command::CreateTask { task_id: "t2".into(), request_id: "r".into(), title: "Editor fonts".into(),
-        agent_id: None, review_prs: false, dependencies: ["t".into()].into(), stack: None });
+    command(&f.domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { task_id: "t2".into(), request_id: "r".into(), title: "Editor fonts".into(),
+        agent_id: None, review_prs: false, dependencies: ["t".into()].into(), stack: None,
+        launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")), });
 
     let claude = FakeClaude::loading(&f.domain);
     launch(&f.domain, &f.home, &actor, launch_body(&f, json!({"task": "t2", "model": "sonnet"})), |_| None, &claude).await.unwrap();
@@ -708,10 +712,11 @@ async fn a_launch_of_a_task_with_a_plan_needs_no_name_or_cwd() {
 }
 
 #[tokio::test]
-async fn a_launch_without_a_plan_or_a_name_is_refused() {
+async fn a_launch_of_a_task_left_without_a_plan_needs_a_name_and_a_folder() {
     let f = world();
     let actor = the_orchestrator(&f.domain);
     let claude = FakeClaude::loading(&f.domain);
+    f.domain.store.lock().unwrap().forget_launch_plan(&"t".into()).unwrap();
     let body: LaunchBody = serde_json::from_value(json!({"task": "t", "model": "sonnet", "reason": "x"})).unwrap();
     let refused = launch(&f.domain, &f.home, &actor, body, |_| None, &claude).await.unwrap_err();
     assert_eq!(refused.code, "invalid_input");
@@ -839,8 +844,9 @@ async fn a_replacement_that_cannot_launch_leaves_the_old_node_working() {
     assert_eq!(state.tasks[&TaskId::from("t")].agent_id, Some(AgentId::from("agent-b")));
     assert!(state.agents[&AgentId::from("agent-b")].connected);
 
-    command(&f.domain, user(), Command::CreateTask { task_id: "free".into(), request_id: "r".into(), title: "Free".into(),
-        agent_id: None, review_prs: false, dependencies: Default::default(), stack: None });
+    command(&f.domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { task_id: "free".into(), request_id: "r".into(), title: "Free".into(),
+        agent_id: None, review_prs: false, dependencies: Default::default(), stack: None,
+        launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")), });
     let body = serde_json::from_value(json!({"task": "free", "replace": true, "model": "opus", "reason": "Needs opus", "name": "x", "cwd": f.project.to_str().unwrap()})).unwrap();
     let nothing = launch(&f.domain, &f.home, &actor, body, |_| None, &claude).await.unwrap_err();
     assert!(nothing.message.contains("no node to replace"), "{}", nothing.message);
@@ -1105,11 +1111,13 @@ async fn a_review_that_asks_for_changes_twice_shows_its_rounds_and_serious_findi
     let domain = daemon.domain();
     command(&domain, user(), Command::CreateRequest { request_id: "r".into(), body: "Make the editor readable".into(), auto_merge: false, maintenance: false, message: false });
     command(&domain, user(), Command::TitleRequest { request_id: "r".into(), title: "Readable editor".into() });
-    command(&domain, user(), Command::CreateTask { task_id: "t".into(), request_id: "r".into(), title: "Editor colours".into(),
-        agent_id: None, review_prs: false, dependencies: Default::default(), stack: None });
+    command(&domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { task_id: "t".into(), request_id: "r".into(), title: "Editor colours".into(),
+        agent_id: None, review_prs: false, dependencies: Default::default(), stack: None,
+        launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")), });
     command(&domain, Actor::System, Command::RegisterAgent { agent_id: "reviewer".into(), name: "Reviewer".into() });
-    command(&domain, user(), Command::CreateTask { task_id: "review".into(), request_id: "r".into(), title: "Review the editor colours".into(),
-        agent_id: Some("reviewer".into()), review_prs: false, dependencies: Default::default(), stack: None });
+    command(&domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { task_id: "review".into(), request_id: "r".into(), title: "Review the editor colours".into(),
+        agent_id: Some("reviewer".into()), review_prs: false, dependencies: Default::default(), stack: None,
+        launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")), });
     command(&domain, user(), Command::SetRelations { task_id: "review".into(), delivered_dependencies: ["t".into()].into(), blocks: ["t".into()].into() });
 
     let orchestrator = the_orchestrator(&domain);

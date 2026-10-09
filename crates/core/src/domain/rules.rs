@@ -242,6 +242,41 @@ pub fn delivery_withdrawn_for_questions() -> String {
 is in progress again. When the answers arrive, present your result again as it is if nothing changes, or \
 update the work first and then present it.".into()
 }
+/// The card that tells the user why a task cannot start by itself, with the ways out.
+fn start_problem_card(title: &str, problem: &StartProblem, dependency: Option<&str>) -> (CardSpec, Vec<QuestionOption>) {
+    let option = |id: &str, label: &str, description: &str| QuestionOption { id: id.into(), label: label.into(), description: Some(description.into()), inputs: vec![] };
+    let cancel = option(START_CANCEL, "Cancel the task", "The task closes without starting");
+    let retry = |label: &str| option(START_RETRY, label, "Alondra starts it again as soon as there is room");
+    let need = |text: String| clip(&text, CardSpec::NEED_MAX);
+    match problem {
+        StartProblem::LaunchFailed { error } => (
+            CardSpec::new(CardKind::Problem, need(format!("“{title}” does not start")))
+                .why(clip(&format!("Alondra tried to start it {} times and it failed every time.", START_RETRIES.len() + 1), CardSpec::WHY_MAX))
+                .content(ContentKind::Diagnosis, error.trim()),
+            vec![retry("Try again"), cancel],
+        ),
+        StartProblem::Untrusted { folder } => (
+            CardSpec::new(CardKind::Problem, need(format!("Trust {folder} so “{title}” can start")))
+                .why(clip("Claude Code does not trust this folder yet, and only you can trust it.", CardSpec::WHY_MAX))
+                .content(ContentKind::Steps, &format!("1. Open a terminal in {folder}.\n2. Run `claude` and accept that you trust the folder.\n3. Choose «I trust it, try again» here.")),
+            vec![retry("I trust it, try again"), cancel],
+        ),
+        StartProblem::NodeClosed => (
+            CardSpec::new(CardKind::Problem, need(format!("Relaunch “{title}” or cancel it")))
+                .why(clip("Its node was closed while the task was still open. A relaunch starts a new node in the same folder, with its files.", CardSpec::WHY_MAX)),
+            vec![option(START_RETRY, "Relaunch", "A new node starts it in the folder the closed one worked in"), cancel],
+        ),
+        StartProblem::DependencyCancelled { .. } => {
+            let other = dependency.unwrap_or("A task it depends on");
+            (
+                CardSpec::new(CardKind::Problem, need(format!("“{other}” was cancelled: start “{title}” without it?")))
+                    .why(clip(&format!("“{title}” was waiting for “{other}” to finish, and it will not."), CardSpec::WHY_MAX)),
+                vec![option(START_WITHOUT, "Start without it", "It no longer waits for that task and starts when there is room"),
+                    option(START_CANCEL, "Cancel this task", "It closes without starting")],
+            )
+        }
+    }
+}
 pub fn cancelled_notice(title: &str) -> String {
     format!("Your task “{title}” was cancelled. Stop working on it now and do not start anything new \
 for it: do not commit, push, register a pull request or deliver anything. Before you end your \
@@ -534,8 +569,9 @@ impl DomainState {
                     Scope::Task { task_id } => Some(self.task(task_id)?).filter(|t| holds(t)),
                     Scope::Orchestrator { .. } => None,
                 };
+                let winding_down_question = |t: &Task| Self::winding_down(t) && matches!(source, Source::Question | Source::Action | Source::Hold);
                 match owned {
-                    Some(t) if t.state.terminal() && !notice => refuse(
+                    Some(t) if t.state.terminal() && !notice && !winding_down_question(t) => refuse(
                         "task_not_active",
                         "scope.task_id",
                         &format!("Task {} is {}: it accepts only a closing notice. Ask the orchestrator for a new Task", t.id, if t.archived { "archived" } else if t.state == TaskState::Cancelled { "cancelled" } else { "done" }),
@@ -1074,7 +1110,7 @@ impl DomainState {
         }
         Ok(())
     }
-    fn stack_ready(&self, t: &Task) -> Result<()> {
+    pub(crate) fn stack_ready(&self, t: &Task) -> Result<()> {
         if let Some(stack) = &t.stack {
             let up = self.task(&stack.upstream_task)?;
             if up.state == TaskState::Cancelled {
@@ -1203,6 +1239,70 @@ impl DomainState {
     /// waits, blocking or not. A proposal is new work, not part of the task's: it outlives the task
     /// and holds nothing back. Alondra's own cards (problems, held prompts) are about what Alondra
     /// does with the task, which they would otherwise hold back themselves.
+    /// Ends a task the user, the orchestrator or Alondra stopped: its cards leave in silence and a
+    /// node it had is told to stop and is closed.
+    fn cancel(&mut self, task_id: &TaskId, effects: &mut Vec<DomainEffect>) {
+        self.invalidate(task_id);
+        let closing_cards: Vec<InteractionId> = self.interactions.values().filter(|i| {
+            i.id.0.starts_with("problem-close-") && i.scope == (Scope::Task { task_id: task_id.clone() })
+                && !i.withdrawn && matches!(&i.payload, InteractionPayload::Question { answer: None, .. })
+        }).map(|i| i.id.clone()).collect();
+        for card in &closing_cards {
+            self.retire(card);
+        }
+        let start_problems: Vec<InteractionId> = self.open_start_problem(task_id).map(|i| i.id.clone()).into_iter().collect();
+        for card in &start_problems {
+            self.retire(card);
+        }
+        self.retire_cards_of(task_id);
+        let t = self.tasks.get_mut(task_id).unwrap();
+        t.state = TaskState::Cancelled;
+        if let Some(agent_id) = t.agent_id.clone() {
+            t.wrap_up.close_cancelled = true;
+            let message = cancelled_notice(&t.title);
+            effects.push(DomainEffect::NotifyAgent {
+                agent_id,
+                task_id: Some(task_id.clone()),
+                interaction_id: None,
+                message,
+            });
+        }
+    }
+    /// What the user chose on a start problem card that the domain does itself: cancel the task, or
+    /// let it start without the cancelled task it waited for. "Try again" is the daemon's to do.
+    fn settle_start_problem(&mut self, card: &InteractionId, option: &str, effects: &mut Vec<DomainEffect>) {
+        let Some(i) = self.interactions.get(card).filter(|i| i.id.0.starts_with(START_PROBLEM_PREFIX) && i.author == Author::System) else { return };
+        let Scope::Task { task_id } = i.scope.clone() else { return };
+        let Ok(problem) = serde_json::from_str::<StartProblem>(&i.body) else { return };
+        if self.tasks.get(&task_id).is_none_or(|t| t.state.terminal()) {
+            return;
+        }
+        match (option, problem) {
+            (START_CANCEL, _) => self.cancel(&task_id, effects),
+            (START_WITHOUT, StartProblem::DependencyCancelled { dependency }) => {
+                self.invalidate(&task_id);
+                let t = self.tasks.get_mut(&task_id).unwrap();
+                t.dependencies.remove(&dependency);
+                t.delivered_dependencies.remove(&dependency);
+                if t.stack.as_ref().is_some_and(|stack| stack.upstream_task == dependency) {
+                    t.stack = None;
+                }
+            }
+            _ => {}
+        }
+    }
+    /// A cancelled task whose node Alondra has not closed yet: its open cards were taken away when
+    /// it was cancelled, so any it has now were asked after. Its node can still ask the user what
+    /// to do with work it cannot leave as it is.
+    pub(crate) fn winding_down(t: &Task) -> bool {
+        t.state == TaskState::Cancelled && t.wrap_up.close_cancelled && t.wrap_up.node.is_none()
+    }
+    fn retire_cards_of(&mut self, task_id: &TaskId) {
+        let open: Vec<InteractionId> = self.interactions.values().filter(|i| self.unanswered_card(i, task_id)).map(|i| i.id.clone()).collect();
+        for card in &open {
+            self.retire(card);
+        }
+    }
     fn unanswered_card(&self, i: &Interaction, t: &TaskId) -> bool {
         matches!(&i.scope, Scope::Task { task_id } if task_id == t)
             && i.recipient == Recipient::User
@@ -1273,10 +1373,12 @@ impl DomainState {
     /// The cards of a task that ended leave the user's queue. A cancelled task takes them away in
     /// silence: the user stopped the work, so nothing it asked matters any more. A task that ended
     /// with its work done tells the user once about a question it left behind, unless it only
-    /// asked to approve a plan or document for work that is already done.
+    /// asked to approve a plan or document for work that is already done. What the node of a
+    /// cancelled task asks while it still winds down is about that ending, such as work it cannot
+    /// leave as it is: it stays with the user until the node is gone.
     fn retire_cards_of_ended_tasks(&mut self, effects: &mut Vec<DomainEffect>) {
         let left: Vec<(TaskId, InteractionId)> = self.tasks.values()
-            .filter(|t| t.state.terminal())
+            .filter(|t| t.state.terminal() && !Self::winding_down(t))
             .flat_map(|t| self.interactions.values().filter(|i| self.unanswered_card(i, &t.id)).map(|i| (t.id.clone(), i.id.clone())))
             .collect();
         let stale_notices: Vec<InteractionId> = self.interactions.values()
@@ -1457,6 +1559,7 @@ impl DomainState {
             .collect();
         for id in &orphans {
             self.invalidate(id);
+            self.retire_cards_of(id);
             let t = self.tasks.get_mut(id).unwrap();
             t.state = TaskState::Cancelled;
             if let Some(agent_id) = t.agent_id.clone() {
@@ -1888,6 +1991,37 @@ impl DomainState {
                     self.schedule.record_launch_handed(run_id, session_id.clone(), None, *finished_at)?;
                 }
             }
+            Command::RaiseStartProblem { task_id, problem } => {
+                system(actor)?;
+                let task = self.task(task_id)?;
+                if task.state.terminal() {
+                    return fail("task_not_active", "A closed Task has nothing to start");
+                }
+                if self.open_start_problem(task_id).is_some() {
+                    return Ok(());
+                }
+                let title = task.title.clone();
+                let n = self.interactions.keys().filter(|i| i.0.starts_with(&format!("{START_PROBLEM_PREFIX}{}-", task_id.0))).count() + 1;
+                let problem_id = InteractionId(format!("{START_PROBLEM_PREFIX}{}-{n}", task_id.0));
+                let (card, options) = start_problem_card(&title, problem, self.tasks.get(match problem {
+                    StartProblem::DependencyCancelled { dependency } => dependency,
+                    _ => task_id,
+                }).map(|t| t.title.as_str()));
+                self.insert_interaction(
+                    actor,
+                    &problem_id,
+                    &Scope::Task { task_id: task_id.clone() },
+                    &Recipient::User,
+                    &serde_json::to_string(problem).map_err(|e| DomainError::new("invalid_input", e.to_string()))?,
+                    false,
+                    &[],
+                    InteractionPayload::Question { options, answer: None },
+                    &card,
+                    Source::Problem,
+                )?;
+                created.push(problem_id.0.clone());
+                effects.push(DomainEffect::NotifyUser { task_id: Some(task_id.clone()), interaction_id: problem_id });
+            }
             Command::RecordScheduleRunFailed {
                 run_id,
                 reason,
@@ -1919,7 +2053,7 @@ impl DomainState {
                         InteractionPayload::Question {
                             options: vec![
                                 QuestionOption { id: LAUNCH_RETRY_OPTION.into(), label: "Try again".into(), description: Some("Launch this schedule once more".into()), inputs: vec![] },
-                                QuestionOption { id: "seen".into(), label: "Skip it".into(), description: Some("It stays not started; ask the orchestrator to start it again".into()), inputs: vec![] },
+                                QuestionOption { id: "seen".into(), label: "Skip it".into(), description: Some("Its task is cancelled; the schedule runs again at its next time".into()), inputs: vec![] },
                             ],
                             answer: None,
                         },
@@ -2028,10 +2162,20 @@ impl DomainState {
                 review_prs,
                 dependencies,
                 stack,
+                launch,
             } => {
-                self.manager(actor)?;
+                self.fence(actor)?;
+                if !matches!(actor, Actor::Orchestrator { .. }) {
+                    return fail("forbidden", "Only the orchestrator creates Tasks: the user asks for work with a Request, which the orchestrator splits into Tasks");
+                }
                 id(&task_id.0)?;
                 nonempty(title)?;
+                match launch.as_ref().map(LaunchPlan::missing) {
+                    None => return refuse("launch_plan_required", "launch",
+                        "every Task is created with its launch plan: pass launch with at least name and cwd (and, with auto effort, model and reason), so Alondra starts it by itself when there is room and what it depends on is done"),
+                    Some(Some(field)) => return refuse("launch_plan_required", field, "a launch plan needs a name and a folder to start the node in"),
+                    Some(None) => {}
+                }
                 if self.tasks.contains_key(task_id) {
                     return fail("invalid_input", "Task already exists");
                 };
@@ -2472,7 +2616,10 @@ impl DomainState {
                 }
                 validate_options(options)?;
                 let scope = Scope::Task { task_id: task_id.clone() };
-                self.assigned(&Actor::Agent { agent_id: agent_id.clone() }, task_id)?;
+                let winding_down = self.tasks.get(task_id).is_some_and(|t| Self::winding_down(t) && t.agent_id.as_ref() == Some(agent_id));
+                if !winding_down {
+                    self.assigned(&Actor::Agent { agent_id: agent_id.clone() }, task_id)?;
+                }
                 self.insert_interaction(
                     &Actor::Agent { agent_id: agent_id.clone() },
                     interaction_id,
@@ -2633,7 +2780,9 @@ impl DomainState {
                     }
                     _ => return fail("forbidden", "Only the intended recipient can answer"),
                 };
-                if let (Scope::Task { task_id }, false) = (&i.scope, i.card.kind == CardKind::Propose) {
+                if let (Scope::Task { task_id }, false) = (&i.scope, i.card.kind == CardKind::Propose)
+                    && !self.tasks.get(task_id).is_some_and(Self::winding_down)
+                {
                     self.active(task_id)?;
                 }
                 let (options, answer) = match &i.payload {
@@ -2671,6 +2820,7 @@ impl DomainState {
                 if i.card.kind == CardKind::Propose && option_id == PROPOSAL_ACCEPTED {
                     self.start_proposal(interaction_id, created, effects);
                 }
+                self.settle_start_problem(interaction_id, option_id, effects);
                 // D05: the answer reaches whoever holds the Task now, not the
                 // session that asked and may since have been replaced.
                 let complete = self.group_complete(&self.interactions[interaction_id]);
@@ -3376,32 +3526,13 @@ impl DomainState {
             }
             Command::CancelTask { task_id } => {
                 let unstarted = self.tasks.get(task_id).is_some_and(|task| {
-                    task.state == TaskState::NotStarted && !task.started && task.agent_id.is_none()
+                    matches!(task.state, TaskState::NotStarted | TaskState::WaitingDependency) && !task.started && task.agent_id.is_none()
                 });
                 if !(matches!(actor, Actor::System) && unstarted) {
                     self.manager(actor)?;
                 }
                 self.active(task_id)?;
-                self.invalidate(task_id);
-                let closing_cards: Vec<InteractionId> = self.interactions.values().filter(|i| {
-                    i.id.0.starts_with("problem-close-") && i.scope == (Scope::Task { task_id: task_id.clone() })
-                        && !i.withdrawn && matches!(&i.payload, InteractionPayload::Question { answer: None, .. })
-                }).map(|i| i.id.clone()).collect();
-                for card in &closing_cards {
-                    self.retire(card);
-                }
-                let t = self.tasks.get_mut(task_id).unwrap();
-                t.state = TaskState::Cancelled;
-                if let Some(agent_id) = t.agent_id.clone() {
-                    t.wrap_up.close_cancelled = true;
-                    let message = cancelled_notice(&t.title);
-                    effects.push(DomainEffect::NotifyAgent {
-                        agent_id,
-                        task_id: Some(task_id.clone()),
-                        interaction_id: None,
-                        message,
-                    });
-                }
+                self.cancel(task_id, effects);
             }
             Command::ReopenTask { task_id } => {
                 self.manager(actor)?;

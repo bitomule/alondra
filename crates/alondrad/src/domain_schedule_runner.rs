@@ -551,13 +551,21 @@ fn answer_failed_launches(domain: &DomainRuntime, home: &Path) -> Result<()> {
             continue;
         }
         let Some(run) = state.schedule.runs.get(&ScheduleRunId::from(failed)) else { continue };
-        let retried = if answer.option_id == LAUNCH_RETRY_OPTION {
-            retry_launch(domain, home, &state, failed, run)
+        let (retried, gone) = if answer.option_id == LAUNCH_RETRY_OPTION {
+            match retry_launch(domain, home, &state, failed, run) {
+                Some(retried) => (retried, false),
+                None => (true, true),
+            }
         } else {
-            true
+            (true, false)
         };
         let Some(task) = run.task_id.as_ref().filter(|_| retried) else { continue };
         match execute_system(domain, Command::CancelTask { task_id: task.clone() }) {
+            Ok(_) if gone => {
+                if let Err(error) = domain.store.lock().expect("domain store poisoned").set_cancel_reason(task, "Its schedule no longer exists, so it cannot be launched again") {
+                    log!("could not say why {task} was cancelled: {error:#}");
+                }
+            }
             Ok(_) => (),
             Err(StoreError::Domain(error)) if error.code == "task_not_active" || ordinary_conflict_code(&error.code) => (),
             Err(error) => log!("could not cancel the unstarted Task of scheduled run {failed}: {error}"),
@@ -570,26 +578,24 @@ fn ordinary_conflict_code(code: &str) -> bool {
     matches!(code, "conflict" | "not_found" | "stale_revision")
 }
 
-/// Whether the schedule is launching again: the retry run exists or was just claimed.
+/// Whether the schedule is launching again: the retry run exists or was just claimed. `None` when
+/// its schedule is gone, so nothing can launch it again.
 fn retry_launch(
     domain: &DomainRuntime,
     home: &Path,
     state: &DomainState,
     failed: &str,
     run: &alondra_core::domain::ScheduleRun,
-) -> bool {
+) -> Option<bool> {
     let retry: ScheduleRunId = format!("retry-{failed}").into();
     if state.schedule.runs.contains_key(&retry) {
-        return true;
+        return Some(true);
     }
-    let Some(schedule) = state
+    let schedule = state
         .schedule
         .schedules
         .get(&run.schedule_id)
-        .filter(|schedule| schedule.deleted_at.is_none())
-    else {
-        return false;
-    };
+        .filter(|schedule| schedule.deleted_at.is_none())?;
     let now = alondra_core::now_millis();
     let claimed = execute_system(
         domain,
@@ -607,11 +613,11 @@ fn retry_launch(
             if let Err(error) = finish_claim(domain, home, &retry) {
                 log!("retry {retry} of scheduled run {failed} could not be prepared: {error:#}");
             }
-            true
+            Some(true)
         }
         Err(error) => {
             log!("retry of scheduled run {failed} refused: {error}");
-            false
+            Some(false)
         }
     }
 }

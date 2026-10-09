@@ -4,7 +4,7 @@
   "view": "tasks",
   "key": "tasks",
   "client": "tui",
-  "version": "v681d4ea85ad4c384",
+  "version": "v66418979ea7a5be9",
   "cursor": "cursor-1",
   "title": "Tasks",
   "status": {
@@ -264,7 +264,7 @@
           "title": "Write the release notes",
           "badges": [
             {
-              "text": "Waiting for the orchestrator to give it a plan",
+              "text": "Didn't start: trying again at 10:15",
               "tone": "neutral"
             }
           ],

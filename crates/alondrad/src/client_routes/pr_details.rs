@@ -277,8 +277,9 @@ mod tests {
         let user = Actor::User { user_id: "user".into() };
         run(&domain, Actor::System, "agent", Command::RegisterAgent { agent_id: "agent".into(), name: "Agent".into() });
         run(&domain, user.clone(), "request", Command::CreateRequest { request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
-        run(&domain, user, "task", Command::CreateTask { task_id: "task".into(), request_id: "request".into(), title: "Task".into(),
-            agent_id: Some("agent".into()), review_prs: false, dependencies: Default::default(), stack: None });
+        run(&domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { task_id: "task".into(), request_id: "request".into(), title: "Task".into(),
+            agent_id: Some("agent".into()), review_prs: false, dependencies: Default::default(), stack: None,
+            launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")), });
         run(&domain, Actor::Agent { agent_id: "agent".into() }, "pr", Command::RegisterPr { task_id: "task".into(),
             pr_id: "pr".into(), host: "github.com".into(), repository: "me/app".into(), number: 7, head: "head1".into(),
             base: "main".into(), allowed_methods: vec![MergeMethod::Squash] });
@@ -316,8 +317,9 @@ mod tests {
         let user = Actor::User { user_id: "user".into() };
         run(&domain, Actor::System, "agent", Command::RegisterAgent { agent_id: "agent".into(), name: "Agent".into() });
         run(&domain, user.clone(), "request", Command::CreateRequest { request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
-        run(&domain, user, "task", Command::CreateTask { task_id: "task".into(), request_id: "request".into(), title: "Task".into(),
-            agent_id: Some("agent".into()), review_prs: false, dependencies: Default::default(), stack: None });
+        run(&domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { task_id: "task".into(), request_id: "request".into(), title: "Task".into(),
+            agent_id: Some("agent".into()), review_prs: false, dependencies: Default::default(), stack: None,
+            launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")), });
         run(&domain, Actor::Agent { agent_id: "agent".into() }, "pr", Command::RegisterPr { task_id: "task".into(),
             pr_id: "pr".into(), host: "github.com".into(), repository: "me/app".into(), number: 7, head: "head1".into(),
             base: "main".into(), allowed_methods: vec![MergeMethod::Squash] });

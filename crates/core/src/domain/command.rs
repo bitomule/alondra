@@ -59,6 +59,11 @@ pub enum Command {
         agent_id: Option<AgentId>,
         finished_at: i64,
     },
+    /// A task cannot start by itself: Alondra puts why in front of the user with the ways out.
+    RaiseStartProblem {
+        task_id: TaskId,
+        problem: StartProblem,
+    },
     RecordScheduleRunFailed {
         run_id: ScheduleRunId,
         reason: String,
@@ -110,6 +115,10 @@ pub enum Command {
         review_prs: bool,
         dependencies: BTreeSet<TaskId>,
         stack: Option<StackDependency>,
+        /// Optional on the wire only so commands recorded before it read back; the rule refuses
+        /// a new Task without it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        launch: Option<LaunchPlan>,
     },
     AssignTask {
         task_id: TaskId,

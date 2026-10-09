@@ -53,9 +53,10 @@ fn pair() -> DomainState {
     ok(&mut s, user(), Command::CreateRequest { request_id: "r".into(), body: "Build it".into(), auto_merge: false, maintenance: false, message: false });
     ok(&mut s, user(), Command::TitleRequest { request_id: "r".into(), title: "Build it".into() });
     for (id, node) in [("a", "wa"), ("b", "wb")] {
-        ok(&mut s, user(), Command::CreateTask {
+        ok(&mut s, Actor::Orchestrator { generation: 0 }, Command::CreateTask {
             task_id: id.into(), request_id: "r".into(), title: id.to_uppercase(), agent_id: Some(node.into()),
             review_prs: false, dependencies: BTreeSet::new(), stack: None,
+            launch: Some(crate::domain::LaunchPlan::new("node", "/tmp")),
         });
     }
     s
@@ -310,9 +311,10 @@ fn merged_outside(s: &mut DomainState) -> CommandOutcome {
 fn nothing_is_merged_or_accepted_while_a_review_of_the_task_is_open() {
     let mut s = pair();
     ok(&mut s, user(), Command::CreateRequest { request_id: "auto".into(), body: "Auto".into(), auto_merge: true, maintenance: false, message: false });
-    ok(&mut s, user(), Command::CreateTask {
+    ok(&mut s, Actor::Orchestrator { generation: 0 }, Command::CreateTask {
         task_id: "c".into(), request_id: "auto".into(), title: "C".into(), agent_id: None, review_prs: false,
         dependencies: BTreeSet::new(), stack: None,
+        launch: Some(crate::domain::LaunchPlan::new("node", "/tmp")),
     });
     ok(&mut s, Actor::System, Command::RegisterAgent { agent_id: "wc".into(), name: "wc".into() });
     ok(&mut s, user(), Command::AssignTask { task_id: "c".into(), agent_id: "wc".into(), model: None });
@@ -461,9 +463,10 @@ fn the_node_resolving_conflicts_is_named_with_its_pr() {
 fn the_rounds_are_counted_per_reviewed_task_across_all_its_reviewers() {
     let mut s = pair();
     ok(&mut s, Actor::System, Command::RegisterAgent { agent_id: "wc".into(), name: "wc".into() });
-    ok(&mut s, user(), Command::CreateTask {
+    ok(&mut s, Actor::Orchestrator { generation: 0 }, Command::CreateTask {
         task_id: "c".into(), request_id: "r".into(), title: "C".into(), agent_id: Some("wc".into()),
         review_prs: false, dependencies: BTreeSet::new(), stack: None,
+        launch: Some(crate::domain::LaunchPlan::new("node", "/tmp")),
     });
     for reviewer in ["b", "c"] {
         ok(&mut s, user(), Command::SetRelations {

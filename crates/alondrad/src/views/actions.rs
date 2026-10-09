@@ -1847,9 +1847,10 @@ mod tests {
         apply_seed_command(&domain, Actor::User { user_id: "user".into() }, "create-request", Command::CreateRequest {
             request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false,
         });
-        apply_seed_command(&domain, Actor::User { user_id: "user".into() }, "create-task", Command::CreateTask {
+        apply_seed_command(&domain, Actor::Orchestrator { generation: 0 }, "create-task", Command::CreateTask {
             task_id: "task-a".into(), request_id: "request".into(), title: "Work".into(),
             agent_id: None, review_prs: false, dependencies: Default::default(), stack: None,
+            launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),
         });
         let state = domain.state().unwrap();
         let reply = execute_action(&domain, &client, &home, "test-device", pacing_request(&state, Verb::SetPriority, "task-a", "high", "es"), None, || Ok(())).await.unwrap();
@@ -1883,13 +1884,18 @@ mod tests {
             request_id: "request".into(), title: "Work".into(),
         });
         for task_id in ["task-a", "task-b"] {
-            apply_seed_command(&domain, Actor::User { user_id: "user".into() }, &format!("create-{task_id}"), Command::CreateTask {
+            let agent = format!("agent-{task_id}");
+            apply_seed_command(&domain, Actor::System, &format!("register-{task_id}"), Command::RegisterAgent {
+                agent_id: agent.clone().into(), name: agent.clone(),
+            });
+            apply_seed_command(&domain, Actor::Orchestrator { generation: 0 }, &format!("create-{task_id}"), Command::CreateTask {
                 task_id: task_id.into(), request_id: "request".into(), title: task_id.into(),
-                agent_id: Some("agent-a".into()), review_prs: false,
+                agent_id: Some(agent.clone().into()), review_prs: false,
                 dependencies: Default::default(), stack: None,
+                launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),
             });
             let delivery_id = format!("delivery-{task_id}");
-            apply_seed_command(&domain, Actor::Agent { agent_id: "agent-a".into() }, &format!("present-{task_id}"), Command::PresentResult {
+            apply_seed_command(&domain, Actor::Agent { agent_id: agent.clone().into() }, &format!("present-{task_id}"), Command::PresentResult {
                 attachments: vec![], task_id: task_id.into(), interaction_id: delivery_id.clone().into(),
                 body: "Complete".into(), targets: vec![DeliveryTarget::Text { text: "Complete".into() }],
                 is_final: true, nothing_to_review: false, card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
@@ -2406,9 +2412,10 @@ mod tests {
         apply_seed_command(&domain, Actor::User { user_id:"user".into() }, "request", Command::CreateRequest {
             request_id:"request".into(), body:"Work".into(), message:false, auto_merge:false, maintenance:false,
         });
-        apply_seed_command(&domain, Actor::User { user_id:"user".into() }, "task", Command::CreateTask {
+        apply_seed_command(&domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask {
             task_id:"task".into(), request_id:"request".into(), title:"Work".into(), agent_id:Some("agent-a".into()),
             review_prs:false, dependencies:Default::default(), stack:None,
+            launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),
         });
         apply_seed_command(&domain, Actor::System, "info", Command::PublishInformation {
             attachments:vec![], interaction_id:"info".into(), scope:alondra_core::domain::Scope::Task { task_id:"task".into() },
@@ -2692,9 +2699,10 @@ mod tests {
         apply_seed_command(&domain, user.clone(), "create-request", Command::CreateRequest {
             request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false,
         });
-        apply_seed_command(&domain, user, "create-task", Command::CreateTask {
+        apply_seed_command(&domain, Actor::Orchestrator { generation: 0 }, "create-task", Command::CreateTask {
             task_id: "task".into(), request_id: "request".into(), title: "Task".into(),
             agent_id: Some("agent-a".into()), review_prs: false, dependencies: Default::default(), stack: None,
+            launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),
         });
         apply_seed_command(&domain, Actor::Agent { agent_id: "agent-a".into() }, "ask", Command::AskQuestion {
             attachments: vec![], interaction_id: "question".into(), scope: Scope::Task { task_id: "task".into() },
@@ -2724,9 +2732,10 @@ mod tests {
         apply_seed_command(domain, user.clone(), "create-request", Command::CreateRequest {
             request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false,
         });
-        apply_seed_command(domain, user, "create-task", Command::CreateTask {
+        apply_seed_command(domain, Actor::Orchestrator { generation: 0 }, "create-task", Command::CreateTask {
             task_id: "task".into(), request_id: "request".into(), title: "Task".into(),
             agent_id: Some("agent-a".into()), review_prs: false, dependencies: Default::default(), stack: None,
+            launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),
         });
         apply_seed_command(domain, agent.clone(), "register-pr", Command::RegisterPr {
             task_id: "task".into(), pr_id: "pr".into(), host: "github.com".into(), repository: "me/app".into(),

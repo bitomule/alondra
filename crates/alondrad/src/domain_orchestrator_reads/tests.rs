@@ -42,9 +42,10 @@ fn world() -> Fixture {
     run(&domain, user(), Command::TitleRequest { request_id: "r".into(), title: "Readable editor".into() });
     let task = |id: &str, agent: Option<&str>, deps: &[&str]| Command::CreateTask { task_id: id.into(), request_id: "r".into(),
         title: format!("Title {id}"), agent_id: agent.map(Into::into), review_prs: false,
-        dependencies: deps.iter().map(|d| TaskId::from(*d)).collect::<BTreeSet<_>>(), stack: None };
-    run(&domain, user(), task("t1", Some("agent-a"), &[]));
-    run(&domain, user(), task("t2", None, &["t1"]));
+        dependencies: deps.iter().map(|d| TaskId::from(*d)).collect::<BTreeSet<_>>(), stack: None,
+        launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")), };
+    run(&domain, Actor::Orchestrator { generation: 0 }, task("t1", Some("agent-a"), &[]));
+    run(&domain, Actor::Orchestrator { generation: 0 }, task("t2", None, &["t1"]));
     domain.live.observe(&json!({"session_id": "agent-a", "hook_event_name": "UserPromptSubmit", "cwd": "/Users/me/Projects/App", "prompt": "go"}));
     domain.live.mods.apply(serde_json::from_value(json!({"session_id": "agent-a", "event": "model", "model": "claude-sonnet-5-5"})).unwrap(), 1);
     domain.live.observe(&json!({"session_id": "stranger", "hook_event_name": "UserPromptSubmit", "cwd": "/Users/me/Projects/App", "prompt": "go"}));
@@ -82,8 +83,9 @@ fn the_fleet_lists_live_agents_what_waits_on_someone_and_the_requests() {
 #[test]
 fn the_fleet_shows_the_orchestrator_the_relations_the_verdict_and_the_rounds_of_each_task() {
     let f = world();
-    run(&f.1, user(), Command::CreateTask { task_id: "t3".into(), request_id: "r".into(), title: "Review".into(), agent_id: Some("agent-b".into()),
-        review_prs: false, dependencies: BTreeSet::new(), stack: None });
+    run(&f.1, Actor::Orchestrator { generation: 0 }, Command::CreateTask { task_id: "t3".into(), request_id: "r".into(), title: "Review".into(), agent_id: Some("agent-b".into()),
+        review_prs: false, dependencies: BTreeSet::new(), stack: None,
+        launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")), });
     run(&f.1, user(), Command::SetRelations {
         task_id: "t3".into(), delivered_dependencies: BTreeSet::from(["t1".into()]), blocks: BTreeSet::from(["t1".into()]),
     });

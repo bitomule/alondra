@@ -247,7 +247,7 @@ fn setup_base(store: &mut DomainStore, base: &Value) {
         setup_command(
             store,
             &format!("setup-task-{id}"),
-            actor("user-a"),
+            Actor::Orchestrator { generation: 0 },
             Command::CreateTask {
                 task_id: id.into(),
                 request_id: string(field(task, "request_id")).into(),
@@ -256,6 +256,7 @@ fn setup_base(store: &mut DomainStore, base: &Value) {
                 review_prs: field(task, "review_prs") == true,
                 dependencies,
                 stack: None,
+                launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),
             },
         );
         if field(task, "status") == "running" {

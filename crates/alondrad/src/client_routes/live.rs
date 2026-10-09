@@ -145,6 +145,10 @@ impl Live {
         self.launching.lock().expect("launches poisoned").insert(task_id.to_owned())
     }
 
+    pub(crate) fn is_launching(&self, task_id: &str) -> bool {
+        self.launching.lock().expect("launches poisoned").contains(task_id)
+    }
+
     pub(crate) fn end_launch(&self, task_id: &str) {
         self.launching.lock().expect("launches poisoned").remove(task_id);
     }
