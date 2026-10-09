@@ -213,15 +213,25 @@ pub(crate) fn stop(domain: &DomainRuntime, pauses: &mut Pauses, session: &str, t
     pauses.paused.insert(session.to_owned(), Paused { task, reason, since: now, cut, turn_since, cleanup: Cleanup::Pending, released: false });
 }
 
-/// One look at the pauses: forgets the nodes that went on or ended, stops what interrupted nodes
-/// left running, and pauses one more node while the Mac is AtLimit.
+/// One look at the pauses: forgets the nodes that went on or ended, stops again a node the user
+/// paused that started a turn without them, stops what interrupted nodes left running, and pauses
+/// one more node while the Mac is AtLimit.
 pub(crate) fn look(domain: &DomainRuntime, state: &DomainState, pauses: &mut Pauses, health: Health, now: Millis) {
     pauses.paused.retain(|session, paused| {
         let open = state.tasks.get(&paused.task).is_some_and(|task| !task.archived && !task.state.terminal() && !matches!(task.state, TaskState::Closing))
             && session_of(state, &paused.task).as_deref() == Some(session.as_str())
             && !domain.live.is_closed(session);
-        let went_on = domain.live.mods.session(session).and_then(|reported| reported.working_since)
-            .is_some_and(|since| since > paused.since && Some(since) != paused.turn_since);
+        let new_turn = domain.live.mods.session(session).and_then(|reported| reported.working_since)
+            .filter(|since| *since > paused.since && Some(*since) != paused.turn_since);
+        if open && paused.reason == Reason::ByUser && let Some(since) = new_turn {
+            log!("{session} started a turn while the user paused it: stopping it again");
+            if domain.live.pushes.interrupt(session).is_err() {
+                log!("could not interrupt {session} to keep it paused: it is not connected");
+            }
+            paused.turn_since = Some(since);
+            return true;
+        }
+        let went_on = new_turn.is_some();
         if !open || went_on {
             log!("{session} is no longer paused: {}", if open { "it went on" } else { "its task ended" });
         }

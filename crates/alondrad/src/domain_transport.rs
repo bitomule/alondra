@@ -370,6 +370,10 @@ fn respond(domain: &DomainRuntime, payload: &Value) -> Result<Reply> {
     };
     let event = text(payload, "hook_event_name").unwrap_or_default();
     let tool = text(payload, "tool_name");
+    if event == "PreToolUse" && domain.live.gate.paused_by_user(&session_id) {
+        return Ok(Reply::Plain(json!({"hookSpecificOutput": {"hookEventName": "PreToolUse",
+            "permissionDecision": "deny", "permissionDecisionReason": PAUSED_BY_USER}})));
+    }
     if event == "PreToolUse" && tool.as_deref().is_some_and(|t| t.starts_with("mcp__plugin_alondra")) {
         return Ok(Reply::Plain(json!({"hookSpecificOutput": {"hookEventName": "PreToolUse",
             "permissionDecision": "allow", "permissionDecisionReason": "Alondra tool"}})));
@@ -408,6 +412,7 @@ fn respond(domain: &DomainRuntime, payload: &Value) -> Result<Reply> {
     }
     match event.as_str() {
         "SessionStart" | "SessionEnd" => Ok(Reply::Plain(json!({}))),
+        "Stop" if domain.live.gate.paused_by_user(&session_id) => Ok(Reply::Plain(json!({}))),
         "Stop" => {
             let held = crate::domain_messages::take_held(domain, &agent_id);
             if !held.is_empty() {
@@ -421,6 +426,10 @@ fn respond(domain: &DomainRuntime, payload: &Value) -> Result<Reply> {
         _ => Ok(Reply::Plain(json!({}))),
     }
 }
+
+/// A node the user paused may run nothing until the user resumes it or writes to it, whatever
+/// started its turn.
+pub(crate) const PAUSED_BY_USER: &str = "The user paused you: do nothing and end your turn; only the user can resume you.";
 
 const USER_KEY_FILE: &str = "tui-key.pem";
 const USER_ONLY_COMMANDS: &[&str] = &["answer", "send", "pair", "devices", "orchestrator-retry", "orchestrator-cancel", "orchestrator-acknowledge"];
@@ -1287,6 +1296,28 @@ mod tests {
         assert!(problems(&domain).is_empty());
         assert_eq!(hook(&domain, continued, Some(6)).await.0, json!({}), "the cap lets it stop");
         assert_eq!(problems(&domain).len(), 1);
+    }
+
+    /// Whatever starts a turn of a node the user paused (a background command ending, a queued
+    /// message), it may run no tool, Alondra's included, and its turn end is not held back.
+    #[tokio::test]
+    async fn a_node_the_user_paused_runs_no_tool_and_may_end_its_turn() {
+        let fixture = Fixture::new();
+        let domain = fixture.open();
+        node_with_task(&domain);
+        domain.live.gate.pause_by_user(&domain, "agent-a", alondra_core::now_millis()).unwrap();
+        for tool in ["Bash", "mcp__plugin_alondra_alondra__present_result"] {
+            let (reply, result) = hook(&domain, json!({"session_id": "agent-a", "hook_event_name": "PreToolUse", "tool_name": tool}), Some(6)).await;
+            result.unwrap();
+            assert_eq!(reply["hookSpecificOutput"]["permissionDecision"], "deny", "{tool}: {reply}");
+            assert_eq!(reply["hookSpecificOutput"]["permissionDecisionReason"], PAUSED_BY_USER);
+        }
+        assert_eq!(hook(&domain, json!({"session_id": "agent-a", "hook_event_name": "Stop"}), Some(6)).await.0, json!({}));
+
+        domain.live.gate.release_by_user_message("agent-a");
+        let (reply, _) = hook(&domain, json!({"session_id": "agent-a", "hook_event_name": "PreToolUse", "tool_name": "Bash"}), Some(6)).await;
+        assert_ne!(reply["hookSpecificOutput"]["permissionDecision"], "deny", "{reply}");
+        assert_eq!(hook(&domain, json!({"session_id": "agent-a", "hook_event_name": "Stop"}), Some(6)).await.0["decision"], "block");
     }
 
     #[tokio::test]

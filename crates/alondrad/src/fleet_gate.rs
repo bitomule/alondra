@@ -272,6 +272,21 @@ impl FleetGate {
         true
     }
 
+    pub(crate) fn paused_by_user(&self, session: &str) -> bool {
+        self.lock().saved.pauses.paused.get(session).is_some_and(|paused| paused.reason == Reason::ByUser)
+    }
+
+    /// The user wrote to a node they paused: their message is what it goes on with, so the pause
+    /// ends without the resume notice.
+    pub(crate) fn release_by_user_message(&self, session: &str) {
+        let mut inner = self.lock();
+        if inner.saved.pauses.paused.get(session).is_some_and(|paused| paused.reason == Reason::ByUser) {
+            inner.saved.pauses.paused.remove(session);
+            log!("{session} is no longer paused: the user wrote to it");
+            self.save(&inner);
+        }
+    }
+
     /// The user said they fixed what the machine lacked: declared waits no longer wait out their grace.
     pub(crate) fn release_declared(&self) {
         let mut inner = self.lock();

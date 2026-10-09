@@ -72,8 +72,8 @@ fn wording(body: &MessageBody, task_title: Option<(&TaskId, &str)>, user: &str, 
 /// Writes the message down the Agent's connection and answers how far it got: `handed` once the
 /// session took it, `dispatching` while it is queued behind a turn in progress (the daemon keeps
 /// writing it until the session takes it). An Agent with no connection is refused, so the user
-/// can send again. `as_user` is for the user's own words; Alondra's notices go without it, so
-/// the model sees who sent them.
+/// can send again. `as_user` is for the user's own words, which also end a pause the user put on
+/// the node; Alondra's notices go without it, so the model sees who sent them.
 pub(crate) async fn deliver(domain: &DomainRuntime, home: &Path, user: &Actor, name: &str, agent: &AgentId, body: MessageBody,
     as_user: bool) -> Result<Value, DomainError> {
     if body.text.trim().is_empty() {
@@ -105,6 +105,9 @@ pub(crate) async fn deliver(domain: &DomainRuntime, home: &Path, user: &Actor, n
     let author = if body.from_claude { format!("Claude, for {name}") } else { name.to_owned() };
     let acked = domain.live.pushes.message(&agent.0, &author, &text, as_user)
         .map_err(|_| refused("session_unreachable", "the node is not connected to Alondra: its session is stopped or its Claude Code mod is not running. Nothing was sent"))?;
+    if as_user {
+        domain.live.gate.release_by_user_message(&agent.0);
+    }
     let delivered = match tokio::time::timeout(ACK_WAIT, acked).await {
         Ok(Ok(())) => State::Handed,
         _ => State::Dispatching,

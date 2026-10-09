@@ -375,3 +375,60 @@ async fn the_usage_limit_reset_brings_nodes_back_one_at_a_time() {
     assert_eq!(resumes.len(), 3);
     assert!(resumes.windows(2).all(|pair| pair[1].0 - pair[0].0 >= STEP), "{resumes:?}");
 }
+
+/// The night three paused nodes went back to work: the pause cut each turn, then Alondra stopped
+/// what their shells left running, and the end of those background commands started a new turn.
+/// A node the user paused is stopped again whenever it starts a turn by itself, and stays paused.
+#[tokio::test]
+async fn a_node_the_user_paused_that_starts_a_turn_by_itself_is_stopped_again_and_stays_paused() {
+    use TaskPriority::Normal;
+    let base = alondra_core::now_millis();
+    let mut fleet = Fleet::new(&[("t1", Normal), ("t2", Normal)], 6, base - 10 * MIN);
+    fleet.domain.live.gate.pause_by_user(&fleet.domain, "agent-t2", base).unwrap();
+    fleet.tick(50, base).await;
+    assert_eq!(tasks(&fleet.events("pause")), ["t2"]);
+
+    fleet.domain.live.mods.apply(Envelope { session_id: "agent-t2".into(), report: Report::TurnStart }, base + 12_000);
+    fleet.tick(50, base + 20_000).await;
+    assert_eq!(tasks(&fleet.events("pause")), ["t2", "t2"], "its new turn is cut");
+    assert_eq!(fleet.domain.live.gate.paused("agent-t2").map(|paused| paused.reason), Some(Reason::ByUser));
+
+    fleet.hold(50, base + 30_000, 20 * MIN).await;
+    assert_eq!(tasks(&fleet.events("pause")), ["t2", "t2"], "a turn already cut is not cut again");
+    assert!(fleet.events("resume").is_empty(), "only the user resumes it");
+    assert!(fleet.domain.live.gate.paused_by_user("agent-t2"));
+}
+
+/// A node Alondra paused for memory that starts a turn by itself went on: it is no longer paused.
+#[tokio::test]
+async fn a_node_paused_for_memory_that_starts_a_turn_by_itself_is_no_longer_paused() {
+    use TaskPriority::Normal;
+    let base = alondra_core::now_millis();
+    let mut fleet = Fleet::new(&[("t1", Normal), ("t2", Normal)], 6, base - 10 * MIN);
+    fleet.tick(3, base).await;
+    assert_eq!(tasks(&fleet.events("pause")), ["t2"]);
+    fleet.domain.live.mods.apply(Envelope { session_id: "agent-t2".into(), report: Report::TurnStart }, base + 12_000);
+    fleet.tick(50, base + 20_000).await;
+    assert!(fleet.domain.live.gate.paused("agent-t2").is_none());
+    assert_eq!(tasks(&fleet.events("pause")), ["t2"]);
+}
+
+/// The user's own message ends their pause, since it is what the node goes on with; the
+/// orchestrator cannot write to it at all.
+#[tokio::test]
+async fn the_users_message_ends_their_pause_and_the_orchestrators_does_not() {
+    use TaskPriority::Normal;
+    let base = alondra_core::now_millis();
+    let mut fleet = Fleet::new(&[("t1", Normal), ("t2", Normal)], 6, base - 10 * MIN);
+    fleet.domain.live.gate.pause_by_user(&fleet.domain, "agent-t2", base).unwrap();
+    fleet.tick(50, base).await;
+
+    let body = serde_json::from_value(serde_json::json!({"node": "agent-t2", "text": "carry on"})).unwrap();
+    let refused = crate::domain_orchestrator_tools::send(&fleet.domain, &fleet.home.0, &Actor::Orchestrator { generation: 1 }, body).await.unwrap_err();
+    assert_eq!(refused.code, "node_paused");
+    assert!(fleet.domain.live.gate.paused_by_user("agent-t2"));
+
+    let body = serde_json::from_value(serde_json::json!({"text": "Use the new API"})).unwrap();
+    crate::domain_messages::deliver(&fleet.domain, &fleet.home.0, &user(), "The user", &AgentId("agent-t2".into()), body, true).await.unwrap();
+    assert!(fleet.domain.live.gate.paused("agent-t2").is_none());
+}
