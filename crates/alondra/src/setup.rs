@@ -954,6 +954,120 @@ pub fn pairing_url(config: &Config) -> Option<String> {
     config.public_url.clone().or_else(|| (!config.listen.is_loopback()).then(|| lan_url(config.port)).flatten())
 }
 
+/// The installation as `alondra setup` with no flags would leave it: what is there, and the steps
+/// that would change it. `alondra doctor` reads it and `doctor --fix` applies parts of it.
+pub(crate) struct Installation {
+    pub paths: Paths,
+    pub label: String,
+    pub context: crate::claude_auth::ContextEnv,
+    pub seen: Observed,
+    pub plan: Plan,
+    pub dev_over_brew: bool,
+    brew_executable: Option<PathBuf>,
+}
+
+pub(crate) fn inspect() -> Installation {
+    let env = |k: &str| std::env::var(k).ok();
+    let brew_executable = std::env::current_exe().ok().and_then(|p| p.canonicalize().ok())
+        .filter(|p| brew_package_for_executable(p).is_some());
+    let dev_over_brew = dev_setup_over_brew(
+        brew_executable.is_some(),
+        BREW_PREFIXES.iter().any(|p| Path::new(p).exists()),
+        env("FORCE_DEV_INSTALL").is_some_and(|v| !v.is_empty()),
+    );
+    let home = config::home_dir(&env);
+    let packaged = installed_package();
+    let paths = Paths {
+        bin: packaged.as_ref().map(|(bin, _)| bin.clone()).unwrap_or_else(|| home.join(".local/bin")),
+        repo: packaged.as_ref().map(|(_, assets)| assets.clone()).or_else(|| std::env::current_dir().ok().and_then(|d| find_repo(&d))),
+        uid: unsafe { libc::getuid() },
+        home,
+        alondra_home: config::alondra_home(&env),
+    };
+    let existing = std::fs::read_to_string(paths.config()).ok().and_then(|t| FileConfig::parse(&t).ok());
+    let args = Args::default();
+    let wanted = wanted_from(&args, existing.as_ref()).unwrap_or_default();
+    let label = existing.as_ref().and_then(|e| e.service_label.clone()).unwrap_or_else(|| config::DEFAULT_LABEL.into());
+    let context = claude_context(&paths, &label);
+    let mut seen = observe(&paths, &label, None, &args, &context);
+    // Another service is a question for the user, never a reason to stop planning.
+    let others = std::mem::take(&mut seen.other_services);
+    let plan = plan_with_context(&wanted, None, &args, &paths, &seen, Some(&context));
+    seen.other_services = others;
+    Installation { paths, label, context, seen, plan, dev_over_brew, brew_executable }
+}
+
+impl Installation {
+    fn is_service_step(&self, step: &Step) -> bool {
+        match step {
+            Step::Write { path, .. } => *path == self.paths.config() || *path == self.paths.plist(&self.label),
+            Step::Run { program, .. } => program == "launchctl",
+            _ => false,
+        }
+    }
+
+    /// Whether `config.toml` or the service file differ from what setup writes, or launchd
+    /// would have to load or restart the service.
+    pub(crate) fn service_pending(&self) -> bool {
+        self.plan.steps.iter().any(|s| self.is_service_step(s))
+    }
+
+    /// Where Alondra's marketplace is registered, when that is not this installation.
+    pub(crate) fn marketplace_elsewhere(&self) -> Option<PathBuf> {
+        self.seen.marketplace_path.clone().filter(|p| self.paths.repo.as_ref().is_some_and(|wanted| p != wanted))
+    }
+
+    /// Writes the files while sharing HOME, then hands HOME back before launchd starts the
+    /// daemon, which needs it. Returns whether launchd was asked to start it.
+    pub(crate) fn install_service(&self) -> Result<bool> {
+        let lock = alondra_core::home_lock::HomeLock::shared(&self.paths.alondra_home)?;
+        alondra_core::home_lock::ensure_ready(&self.paths.alondra_home)?;
+        let steps: Vec<&Step> = self.plan.steps.iter().filter(|s| self.is_service_step(s)).collect();
+        for step in steps.iter().filter(|s| !is_launchd_lifecycle_step(s)) {
+            execute(step, &self.context)?;
+        }
+        drop(lock);
+        let mut started = false;
+        for step in steps.iter().filter(|s| is_launchd_lifecycle_step(s)) {
+            execute(step, &self.context)?;
+            started = true;
+        }
+        if let Some(executable) = &self.brew_executable {
+            execute(&Step::Write {
+                path: self.paths.alondra_home.join("brew-keg-path"),
+                contents: executable.to_string_lossy().into_owned(),
+                private: true,
+            }, &self.context)?;
+        }
+        Ok(started)
+    }
+
+    pub(crate) fn repair_plugin(&self) -> Result<()> {
+        for step in self.plan.steps.iter().filter(|s| matches!(s, Step::Run { program, .. } if program == "claude")) {
+            execute(step, &self.context)?;
+        }
+        Ok(())
+    }
+
+    /// Stops every other service that starts alondrad and sets its file aside, where launchd no
+    /// longer loads it.
+    pub(crate) fn retire_other_services(&self) -> Result<()> {
+        for other in &self.seen.other_services {
+            let label = other.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+            let _ = launchctl(&["bootout", &format!("gui/{}/{label}", self.paths.uid)]);
+            std::fs::rename(other, other.with_extension("plist.replaced"))?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn restart_service(&self) -> Result<()> {
+        execute(&Step::Run {
+            program: "launchctl".into(),
+            args: vec!["kickstart".into(), "-k".into(), format!("gui/{}/{}", self.paths.uid, self.label)],
+        }, &self.context)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #[test]

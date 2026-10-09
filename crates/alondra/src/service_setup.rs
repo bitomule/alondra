@@ -403,14 +403,21 @@ pub fn has_relay(home: &Path) -> Result<bool> {
 /// Gives this Mac its service keys and a relay-free `service.toml`, so devices on the local
 /// network can pair with it. Returns whether the file is new and the daemon must restart.
 pub fn prepare_local(home: &Path) -> Result<bool> {
+    let (created, mac_id) = prepare_local_quietly(home)?;
+    if created {
+        println!("Mac {mac_id} is ready for devices on the local network.");
+    }
+    Ok(created)
+}
+
+/// `prepare_local` without a word on stdout, for `alondra doctor --fix --json`. Returns whether
+/// the file is new, and this Mac's id.
+pub fn prepare_local_quietly(home: &Path) -> Result<(bool, String)> {
     let _lock = alondra_core::home_lock::HomeLock::shared(home)?;
     alondra_core::home_lock::ensure_ready(home)?;
     let (identity, _) = load_or_create_keys(&identity_base(home)?)?;
     let created = local_service_file(home, &identity)?;
-    if created {
-        println!("Mac {} is ready for devices on the local network.", identity.mac_id);
-    }
-    Ok(created)
+    Ok((created, identity.mac_id.to_string()))
 }
 
 /// Returns whether service.toml was newly created and an existing daemon must restart.

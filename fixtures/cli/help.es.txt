@@ -22,7 +22,7 @@ Comandos:
   attach                    Abre el terminal de un nodo (← con la línea vacía, Ctrl+Z o /exit vuelven)
   pair                      Vincula un iPhone o iPad: enseña un QR con la URL pública y un código de un solo uso
   devices                   Dispositivos vinculados y peticiones de emparejamiento pendientes en este Mac; --approve, --deny o --revoke uno
-  doctor                    Comprueba toda la instalación: servidor, servicio, plugin, notificaciones, tmux
+  doctor                    Lo comprueba todo; --fix arregla o termina la instalación
   update                    Instala la última versión con Homebrew y espera a que el servidor la ejecute
   state                     Audita o reconstruye de forma segura el estado local derivado de eventos
   setup                     Configura o repara Alondra: login, alta del Mac, daemon, plugin de Claude Code y vinculación
