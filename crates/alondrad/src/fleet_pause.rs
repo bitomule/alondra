@@ -173,7 +173,7 @@ fn cut_of(domain: &DomainRuntime, session: &str) -> Option<String> {
     Some(crate::node_reports::short_label(tool.summary.as_deref().unwrap_or(&tool.name)))
 }
 
-fn waits_on_user(domain: &DomainRuntime, state: &DomainState, task: &TaskId, session: &str) -> bool {
+pub(crate) fn waits_on_user(domain: &DomainRuntime, state: &DomainState, task: &TaskId, session: &str) -> bool {
     state.tasks.get(task).is_some_and(|task| task.state == TaskState::NeedsYou)
         || crate::domain_holds::waits_on_user(state, session)
         || domain.live.node(session).is_some_and(|node| node.waiting_permission)

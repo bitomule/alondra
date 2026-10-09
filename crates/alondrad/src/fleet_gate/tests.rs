@@ -294,3 +294,54 @@ fn a_macos_warning_held_with_31_percent_free_and_6_nodes_working_lowers_the_limi
     assert_eq!(snapshot.mac.health, Health::AtLimit);
     assert_eq!((snapshot.working, snapshot.limit), (6, 5));
 }
+
+#[test]
+fn a_node_waiting_for_the_user_to_approve_its_plan_leaves_its_slot_to_the_queue_until_the_user_answers() {
+    let (_home, domain) = world();
+    let gate = &domain.live.gate;
+    gate.tune(Tuning { spacing: 0, limit: Some(1) });
+    let now = alondra_core::now_millis();
+    for id in ["t1", "t2", "t3"] {
+        create(&domain, id);
+    }
+    start(&domain, "t1", now);
+    domain.live.mods.apply(Envelope { session_id: "agent-t1".into(), report: Report::ToolStart {
+        tool: "ExitPlanMode".into(), tool_use_id: Some("plan-call".into()), input: serde_json::json!({"plan": "Fix it"}) } }, now);
+    let t2 = Waiting { key: Key::Task("t2".into()), priority: TaskPriority::Normal, resuming: false, since: now };
+    assert!(matches!(gate.ask(&domain, t2.clone(), now), Err(Hold::Slots { working: 1, limit: 1 })), "t1 is at work");
+
+    let card: crate::domain_holds::Card = serde_json::from_value(serde_json::json!({
+        "session_id": "agent-t1", "id": "plan-call", "kind": "plan", "tool": "ExitPlanMode", "input": {"plan": "Fix it"}})).unwrap();
+    let crate::domain_holds::Posted::Held(plan) = crate::domain_holds::post(&domain, &card, true).unwrap() else { panic!("the plan is held") };
+    assert_eq!(gate.snapshot(&domain, now).unwrap().working, 0, "t1 waits for the user to approve its plan");
+    assert_eq!(gate.ask(&domain, t2, now), Ok(()), "its slot goes to the queue");
+    start(&domain, "t2", now);
+
+    run(&domain, Actor::User { user_id: "u".into() }, Command::AnswerQuestion {
+        attachments: vec![], interaction_id: plan, option_id: alondra_core::domain::Hold::APPROVE.into(), inputs: Default::default() });
+    let t3 = Waiting { key: Key::Task("t3".into()), priority: TaskPriority::Normal, resuming: false, since: now };
+    assert!(matches!(gate.ask(&domain, t3, now), Err(Hold::Slots { working: 2, limit: 1 })), "approved, t1 counts again");
+}
+
+#[test]
+fn the_log_says_why_the_queue_waits_and_repeats_it_only_when_it_changes_or_every_10_minutes() {
+    let working: Vec<TaskId> = vec!["t-a".into(), "t-b".into()];
+    let on_user: Vec<TaskId> = vec!["t-c".into()];
+    let slots = Hold::Slots { working: 3, limit: 3 };
+    assert_eq!(hold_line(4, "t-x", TaskPriority::High, &slots, &working, &on_user, 0).unwrap(),
+        "the fleet gate holds 4 waiting (next t-x, High): 3 of 3 working (t-a, t-b, 1 starting); waiting on the user, not counted: t-c");
+    assert_eq!(hold_line(1, "t-x", TaskPriority::Low, &Hold::Memory { health: Health::Tight, free: Some(12) }, &[], &[], 2).unwrap(),
+        "the fleet gate holds 1 waiting (next t-x, Low): the Mac's memory is Tight (12% free); 2 node(s) paused");
+    assert_eq!(hold_line(1, "t-x", TaskPriority::Normal, &Hold::Cpu { load: 52.4, cpus: 11 }, &[], &[], 0).unwrap(),
+        "the fleet gate holds 1 waiting (next t-x, Normal): the CPU is overloaded (load 52 on 11 cores), which holds new starts");
+    assert_eq!(hold_line(1, "t-x", TaskPriority::Normal, &Hold::Spacing { until: 5 }, &[], &[], 0), None, "the minute between starts is not news");
+
+    let mut told = Told::default();
+    let line = || Some("slots".to_owned());
+    assert!(told.due(line(), 0));
+    assert!(!told.due(line(), 9 * MIN), "the same reason within 10 minutes");
+    assert!(told.due(line(), 10 * MIN), "said again after 10 minutes");
+    assert!(told.due(Some("memory".into()), 10 * MIN + 1), "a new reason at once");
+    assert!(!told.due(None, 11 * MIN));
+    assert!(told.due(Some("memory".into()), 11 * MIN + 1), "after the queue moved, the next wait is told");
+}

@@ -28,6 +28,8 @@ pub(crate) const SPACING: Millis = 60_000;
 const IN_FLIGHT: Millis = 3 * 60_000;
 const LEARN_STEP: Millis = 15 * 60_000;
 const TICK: Duration = Duration::from_secs(10);
+/// How often the log repeats why the queue waits while the reason stays the same.
+const HOLD_LOG_EVERY: Millis = 10 * 60_000;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub(crate) enum Key {
@@ -144,6 +146,26 @@ struct Inner {
     /// Starts whose caller keeps them durable and asks again when woken.
     asking: BTreeMap<Key, Waiting>,
     tuning: Tuning,
+    told: Told,
+}
+
+/// The last reason the log gave for a queue that does not move, so it is said again only when it
+/// changes or every `HOLD_LOG_EVERY`.
+#[derive(Default)]
+pub(crate) struct Told(Option<(String, Millis)>);
+
+impl Told {
+    pub(crate) fn due(&mut self, reason: Option<String>, now: Millis) -> bool {
+        let Some(reason) = reason else {
+            self.0 = None;
+            return false;
+        };
+        if self.0.as_ref().is_some_and(|(said, at)| *said == reason && now - at < HOLD_LOG_EVERY) {
+            return false;
+        }
+        self.0 = Some((reason, now));
+        true
+    }
 }
 
 pub(crate) struct FleetGate {
@@ -321,6 +343,7 @@ impl FleetGate {
             return Err(snapshot.hold.unwrap_or(Hold::Slots { working: snapshot.working, limit: snapshot.limit }));
         };
         hold_of(&inner, head, &snapshot, now)?;
+        log!("the fleet gate lets {} start", key_text(&state, &key));
         inner.asking.remove(&key);
         if let Key::Resume(session) = &key {
             resume_locked(domain, &mut inner, session, now);
@@ -453,6 +476,36 @@ fn live_hold(hold: &Hold) -> LiveHold {
     }
 }
 
+fn key_text(state: &DomainState, key: &Key) -> String {
+    match key {
+        Key::Task(task) => task.0.clone(),
+        Key::Run(run) => format!("scheduled run {run}"),
+        Key::Resume(session) => format!("{} coming back", open_task_of(state, session).map_or_else(|| session.clone(), |task| task.0)),
+    }
+}
+
+/// Why the queue does not move, worded for the log; none for the minute between two starts.
+pub(crate) fn hold_line(queued: usize, head: &str, priority: TaskPriority, hold: &Hold, working: &[TaskId], on_user: &[TaskId], paused: usize) -> Option<String> {
+    let list = |tasks: &[TaskId]| tasks.iter().map(|task| task.0.as_str()).collect::<Vec<_>>().join(", ");
+    let why = match hold {
+        Hold::Spacing { .. } => return None,
+        Hold::Slots { working: count, limit } => {
+            let starting = count.saturating_sub(working.len());
+            let mut why = format!("{count} of {limit} working ({}{})", list(working),
+                if starting > 0 { format!(", {starting} starting") } else { String::new() });
+            if !on_user.is_empty() {
+                why.push_str(&format!("; waiting on the user, not counted: {}", list(on_user)));
+            }
+            why
+        }
+        Hold::Memory { health, free } => format!("the Mac's memory is {health:?} ({} free)", free.map_or_else(|| "unknown".into(), |free| format!("{free}%"))),
+        Hold::Cpu { load, cpus } => format!("the CPU is overloaded (load {load:.0} on {cpus} cores), which holds new starts"),
+        Hold::Disk => "the disk is nearly full".into(),
+    };
+    let paused = if paused > 0 { format!("; {paused} node(s) paused") } else { String::new() };
+    Some(format!("the fleet gate holds {queued} waiting (next {head}, {priority:?}): {why}{paused}"))
+}
+
 fn task_of(state: &DomainState, key: &Key) -> Option<TaskId> {
     match key {
         Key::Task(task) => Some(task.clone()),
@@ -501,6 +554,15 @@ pub(crate) fn busy_tasks(domain: &DomainRuntime, state: &DomainState, now: Milli
         .filter(|task| task.agent_id.as_ref().and_then(|agent| domain.live.mods.session(&agent.0))
             .is_some_and(|reported| matches!(reported.activity(now), Activity::Working | Activity::Stalled)))
         .map(|task| task.id.clone())
+        .collect()
+}
+
+/// The busy nodes that take a slot: a node that waits on the user (a held plan or permission,
+/// a question) is busy with a call, yet only the user moves it, so it leaves its slot to the queue.
+pub(crate) fn working_tasks(domain: &DomainRuntime, state: &DomainState, now: Millis) -> BTreeSet<TaskId> {
+    busy_tasks(domain, state, now).into_iter()
+        .filter(|task| crate::fleet_pause::session_of(state, task)
+            .is_none_or(|session| !crate::fleet_pause::waits_on_user(domain, state, task, &session)))
         .collect()
 }
 
@@ -559,7 +621,7 @@ fn machine_size() -> (usize, u64) {
 }
 
 fn snapshot_locked(domain: &DomainRuntime, state: &DomainState, inner: &Inner, queued: Vec<Waiting>, now: Millis) -> Snapshot {
-    let busy = busy_tasks(domain, state, now);
+    let busy = working_tasks(domain, state, now);
     let in_flight = inner.admitted.iter()
         .filter(|(_, at)| now - at < IN_FLIGHT)
         .filter(|(key, _)| task_of(state, key).is_none_or(|task| !busy.contains(&task)
@@ -686,6 +748,14 @@ pub(crate) async fn pass_at(domain: &DomainRuntime, home: &Path, launcher: &impl
         let configured = snapshot.configured;
         inner.saved.learned.learn(configured, snapshot.mac.health, !snapshot.queue.is_empty(), now);
         gate.save(&inner);
+        let held = snapshot.queue.first().zip(snapshot.hold.as_ref()).and_then(|(head, hold)| {
+            let working: Vec<TaskId> = working_tasks(domain, &state, now).into_iter().collect();
+            let on_user: Vec<TaskId> = busy_tasks(domain, &state, now).into_iter().filter(|task| !working.contains(task)).collect();
+            hold_line(snapshot.queue.len(), &key_text(&state, &head.key), head.priority, hold, &working, &on_user, inner.saved.pauses.paused.len())
+        });
+        if inner.told.due(held.clone(), now) && let Some(line) = held {
+            log!("{line}");
+        }
         match (snapshot.queue.first(), snapshot.hold) {
             (Some(head), None) if inner.asking.contains_key(&head.key) => {
                 gate.turn.send_modify(|turn| *turn += 1);

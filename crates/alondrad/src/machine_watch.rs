@@ -487,7 +487,7 @@ pub(crate) fn pace(domain: &DomainRuntime, machine: &Machine) {
     let change = watch.sample(machine);
     let mac = watch.mac();
     let now = if machine.at == 0 { now_millis() } else { machine.at };
-    let working = domain.state().map(|state| crate::fleet_gate::busy_tasks(domain, &state, now).len()).unwrap_or(0);
+    let working = domain.state().map(|state| crate::fleet_gate::working_tasks(domain, &state, now).len()).unwrap_or(0);
     if let Some(home) = watch.home() {
         crate::machine_state::record(&home.join(crate::machine_state::SAMPLES_DIR), now, &mac, working);
     }
