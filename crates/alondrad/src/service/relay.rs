@@ -2,12 +2,12 @@
 //! envelopes, acknowledges and delivers responses, and hands encrypted pushes to APNs through it.
 //! Present only when `service.toml` names a relay.
 use super::{
-    Device, EnrollmentDecision, PreparedWork, PushDelivery, Service, Transport, Work,
-    approval_bound_delivery, decoded, now_ms, registration_ended, relay_error_code, without_relay_extensions,
+    Device, EnrollmentDecision, PreparedWork, PushDelivery, Service, Transport, Work, WorkGuard,
+    approval_bound_delivery, bounded_response_within, decoded, domain_read_route, now_ms, registration_ended, relay_error_code, without_relay_extensions,
 };
 use crate::push::local_minutes;
 use alondra_e2e::sign_http_challenge;
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use reqwest::{Method, StatusCode, Url};
 use ring::rand::{SecureRandom, SystemRandom};
@@ -22,11 +22,23 @@ use std::{
     time::Duration,
 };
 
+// The relay accepts a 256 KiB envelope; its work wrapper adds routing metadata.
+const MAX_WORK_BYTES: usize = 256 * 1024 + 4096;
+const MAX_ORDINARY_DELIVERIES: usize = 2;
+
 pub(crate) struct RelayConnector {
     url: Url,
     owner_sub: String,
     resync: AtomicBool,
     wake: tokio::sync::Notify,
+    deliveries: Arc<tokio::sync::Semaphore>,
+}
+
+struct RelayDelivery {
+    response: Vec<u8>,
+    device: Arc<Device>,
+    guard: WorkGuard,
+    approval_binding: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -52,7 +64,10 @@ pub(super) fn checked_origin(url: &str) -> Result<Url> {
 
 impl RelayConnector {
     pub(super) fn new(url: Url, owner_sub: String) -> Self {
-        Self { url, owner_sub, resync: AtomicBool::new(false), wake: tokio::sync::Notify::new() }
+        Self {
+            url, owner_sub, resync: AtomicBool::new(false), wake: tokio::sync::Notify::new(),
+            deliveries: Arc::new(tokio::sync::Semaphore::new(MAX_ORDINARY_DELIVERIES)),
+        }
     }
 
     /// The device list changed: re-enroll and re-sync revocations on the next iteration.
@@ -224,19 +239,19 @@ impl Service {
     }
 
     pub async fn run(self: Arc<Self>) {
-        let mut changes = tokio::task::JoinSet::new();
+        let mut work = tokio::task::JoinSet::new();
         let mut enrolled_epoch: Option<[u8; 16]> = None;
         let mut revoked_this_epoch = HashSet::new();
         loop {
-            while let Some(result) = changes.try_join_next() {
+            while let Some(result) = work.try_join_next() {
                 match result {
                     Ok(Ok(())) => {}
-                    Ok(Err(error)) => log!("service changes: {error:#}"),
-                    Err(error) => log!("service changes task: {error}"),
+                    Ok(Err(error)) => log!("service work: {error:#}"),
+                    Err(error) => log!("service work task: {error}"),
                 }
             }
             let result = self
-                .poll_work(&mut enrolled_epoch, &mut revoked_this_epoch, &mut changes)
+                .poll_work(&mut enrolled_epoch, &mut revoked_this_epoch, &mut work)
                 .await;
             if let Err(e) = result {
                 log!("service connector: {e:#}");
@@ -279,7 +294,9 @@ impl Service {
                 if response.status() == StatusCode::NO_CONTENT {
                     return Ok::<_, anyhow::Error>(());
                 }
-                let work: Work = response.json().await?;
+                let bytes = bounded_response_within(response, MAX_WORK_BYTES).await?;
+                let work: Work = serde_json::from_slice(&bytes)?;
+                drop(bytes);
                 self.schedule_work(work, epoch, changes).await
         }.await;
         if result.is_err() {
@@ -300,8 +317,8 @@ impl Service {
         Ok(())
     }
 
-    /// Only validated changes reads leave the serial work loop. The guard is
-    /// acquired synchronously before spawning, including for lease redelivery.
+    /// Execution retains intake order; completed ordinary responses upload separately.
+    /// Delivery admission precedes execution, and reservation precedes any task spawn.
     pub(super) async fn schedule_work(
         self: &Arc<Self>,
         work: Work,
@@ -315,8 +332,19 @@ impl Service {
             let service = self.clone();
             changes.spawn(async move { service.handle_prepared(work, &epoch, prepared).await });
             Ok(())
-        } else {
+        } else if prepared.guard.saturated {
             self.handle_prepared(work, &epoch, prepared).await
+        } else {
+            let permit = self.relay()?.deliveries.clone().acquire_owned().await?;
+            let delivery = self.execute_relay(&work, &epoch, prepared).await?;
+            let service = self.clone();
+            changes.spawn(async move {
+                let _permit = permit;
+                let result = service.deliver_response(work, &epoch, delivery).await;
+                if result.is_err() { service.relay()?.resync(); }
+                result
+            });
+            Ok(())
         }
     }
 
@@ -336,10 +364,23 @@ impl Service {
         epoch: &[u8; 16],
         prepared: PreparedWork,
     ) -> Result<()> {
+        let delivery = self.execute_relay(&work, epoch, prepared).await?;
+        self.deliver_response(work, epoch, delivery).await
+    }
+
+    async fn execute_relay(
+        &self,
+        work: &Work,
+        epoch: &[u8; 16],
+        prepared: PreparedWork,
+    ) -> Result<RelayDelivery> {
         let e = &work.envelope;
+        let approval_binding = if prepared.request.body.is_none() && domain_read_route(&prepared.request) {
+            let device = self.devices.get(&e.sender).context("work from unapproved device")?;
+            Some(self.approval_binding(&e.sender, &device, Transport::Relay)?)
+        } else { None };
         let receipt_path = format!("/v1/work/{}/receipt", e.request_id);
-        let (response, device, _guard) = self
-            .execute(e, prepared, Transport::Relay, || async {
+        let (response, device, guard) = self.execute(e, prepared, Transport::Relay, || async {
                 Self::drain_ack(
                     self.signed(Method::POST, &receipt_path, Vec::new(), epoch)
                         .await?,
@@ -347,10 +388,29 @@ impl Service {
                 .await
             })
             .await?;
+        Ok(RelayDelivery { response, device, guard, approval_binding })
+    }
+
+    async fn deliver_response(
+        &self,
+        work: Work,
+        epoch: &[u8; 16],
+        delivery: RelayDelivery,
+    ) -> Result<()> {
+        let RelayDelivery { response, device, guard: _guard, approval_binding } = delivery;
+        let e = &work.envelope;
         let response_path = format!("/v1/work/{}/response", e.request_id);
         approval_bound_delivery(
             &self.home,
-            || self.require_device_approval(&e.sender, &device, Transport::Relay),
+            || {
+                if let Some(expected) = approval_binding {
+                    anyhow::ensure!(
+                        self.approval_binding(&e.sender, &device, Transport::Relay)? == expected,
+                        "resource read approval generation changed before delivery"
+                    );
+                    Ok(())
+                } else { self.require_device_approval(&e.sender, &device, Transport::Relay) }
+            },
             || async {
                 Self::drain_ack(
                     self.signed(Method::POST, &response_path, response, epoch)
