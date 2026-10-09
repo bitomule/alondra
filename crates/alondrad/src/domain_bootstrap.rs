@@ -2217,6 +2217,7 @@ mod tests {
                 memory_total: 16,
                 memory_available: 8,
                 memory_free_percent: Some(50),
+                memory_pressure: None,
                 load: [1.0, 1.0, 1.0],
                 cpus: 8,
                 cpu_usage: 12.5,

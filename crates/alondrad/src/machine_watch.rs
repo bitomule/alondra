@@ -11,7 +11,7 @@
 //! a push, which writes nothing to disk.
 use alondra_core::machine_incident::{MACHINE_FIXED_LABEL, MACHINE_FIXED_OPTION, MACHINE_PREFIX, MachineCard, MachineCause};
 use alondra_core::views::Lang;
-use alondra_core::{Machine, Millis, now_millis};
+use alondra_core::{Machine, MemoryPressure, Millis, now_millis};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -108,8 +108,12 @@ pub(crate) fn failing(machine: &Machine, health: Health, previous: Option<Machin
 
 /// What the orchestrator hears when memory changes for real: entering pressure and being Fine
 /// again, never the swings between Tight and AtLimit.
-pub(crate) fn pacing_notice(from: Health, to: Health, free: Option<u32>) -> Option<String> {
+pub(crate) fn pacing_notice(from: Health, to: Health, free: Option<u32>, pressure: Option<MemoryPressure>) -> Option<String> {
     let free = free.map(|free| format!(" ({free}% free)")).unwrap_or_default();
+    let free = match pressure {
+        Some(MemoryPressure::Warning | MemoryPressure::Critical) if to != Health::Fine => format!("{free}, and macOS reports memory pressure"),
+        _ => free,
+    };
     match (from, to) {
         (Health::Fine, _) => Some(format!(
             "The Mac is short of memory{free}: Alondra keeps new launches in the queue and pauses working nodes, lowest priority first, until it has been fine for 5 minutes; then it resumes and starts them one by one. Launch as usual; do not hold launches back, wake or message paused nodes yourself.")),
@@ -123,6 +127,7 @@ fn card_for(cause: MachineCause, machine: &Machine, disk: Option<&str>, waiting:
         cause,
         disk_free: machine.disk_available,
         memory_free_percent: machine.memory_free_percent,
+        memory_pressure: cause == MachineCause::Memory && machine.memory_pressure.is_some_and(|pressure| pressure != MemoryPressure::Normal),
         nodes: waiting.iter().map(|waiter| waiter.name.clone()).collect(),
         reason: (cause == MachineCause::Declared).then(|| waiting.first().map(|waiter| waiter.reason.clone())).flatten(),
         minutes,
@@ -494,7 +499,7 @@ pub(crate) fn pace(domain: &DomainRuntime, machine: &Machine) {
     if worse(from, to) {
         domain.live.gate.saturated(working, now);
     }
-    if let Some(text) = pacing_notice(from, to, mac.free_percent) {
+    if let Some(text) = pacing_notice(from, to, mac.free_percent, mac.pressure) {
         let id = format!("{MACHINE_PREFIX}pacing-{}", crate::auth::random_hex(6));
         if let Err(error) = domain.tell_orchestrator(&id, text) {
             log!("could not tell the orchestrator about the Mac's memory: {error:?}");
@@ -550,7 +555,7 @@ mod tests {
     const MIN: Millis = 60_000;
 
     fn machine(disk_free: u64, memory_free: u32) -> Machine {
-        Machine { at: 0, memory_total: 100, memory_available: 50, memory_free_percent: Some(memory_free), load: [1.0; 3], cpus: 8,
+        Machine { at: 0, memory_total: 100, memory_available: 50, memory_free_percent: Some(memory_free), memory_pressure: None, load: [1.0; 3], cpus: 8,
             cpu_usage: 10.0, disk_total: 500 * GB, disk_available: disk_free, unreliable: false }
     }
 

@@ -104,7 +104,7 @@ fn swing(low: u32, high: u32) -> Hour {
         let free = if (now / (3 * MIN)) % 2 == 0 { low } else { high };
         let machine = Machine { at: now, memory_free_percent: Some(free), cpus: 11, load: [5.0; 3], ..Machine::default() };
         if let Some((from, to)) = mac.step(&machine, now) {
-            hour.notices.extend(pacing_notice(from, to, mac.free_percent));
+            hour.notices.extend(pacing_notice(from, to, mac.free_percent, mac.pressure));
         }
         let (next, actions) = step_on(incident, &machine, mac.health, None, &[], false, now);
         incident = next;
@@ -147,7 +147,7 @@ fn memory_back_above_20_percent_for_5_minutes_recovers_once_and_lets_the_queue_g
     let mut now = 0;
     for free in std::iter::repeat_n(8, 6).chain(std::iter::repeat_n(30, 32)) {
         if let Some((from, to)) = mac.step(&Machine { memory_free_percent: Some(free), cpus: 11, load: [5.0; 3], ..Machine::default() }, now) {
-            notices.extend(pacing_notice(from, to, mac.free_percent));
+            notices.extend(pacing_notice(from, to, mac.free_percent, mac.pressure));
         }
         now += SAMPLE;
     }
@@ -271,4 +271,25 @@ fn a_review_follows_the_priority_of_the_task_it_reviews() {
     assert_eq!(domain.state().unwrap().tasks[&TaskId::from("review")].priority, TaskPriority::High);
     let reopened = DomainRuntime::open(domain.home()).unwrap();
     assert_eq!(reopened.state().unwrap().tasks[&TaskId::from("review")].priority, TaskPriority::High, "kept in the store");
+}
+
+#[test]
+fn a_macos_warning_held_with_31_percent_free_and_6_nodes_working_lowers_the_limit_to_5() {
+    let (_home, domain) = world();
+    domain.live.gate.tune(Tuning { spacing: SPACING, limit: Some(6) });
+    let base = alondra_core::now_millis();
+    for id in ["t1", "t2", "t3", "t4", "t5", "t6"] {
+        create(&domain, id);
+        start(&domain, id, base);
+    }
+    let mut now = base;
+    while now <= base + 2 * MIN {
+        let machine = Machine { at: now, memory_free_percent: Some(31), memory_pressure: Some(alondra_core::MemoryPressure::Warning),
+            cpus: 11, load: [14.0; 3], ..Machine::default() };
+        crate::machine_watch::pace(&domain, &machine);
+        now += SAMPLE;
+    }
+    let snapshot = domain.live.gate.snapshot(&domain, now).unwrap();
+    assert_eq!(snapshot.mac.health, Health::AtLimit);
+    assert_eq!((snapshot.working, snapshot.limit), (6, 5));
 }

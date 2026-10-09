@@ -699,6 +699,10 @@ pub struct Machine {
     pub memory_total: u64,
     pub memory_available: u64,
     pub memory_free_percent: Option<u32>,
+    /// The pressure level macOS itself reports, which follows the compressor and swap rather than
+    /// the free percentage: memory can be under pressure with a third of it free.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_pressure: Option<MemoryPressure>,
     pub load: [f64; 3],
     pub cpus: usize,
     pub cpu_usage: f32,
@@ -707,11 +711,33 @@ pub struct Machine {
     pub unreliable: bool,
 }
 
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryPressure {
+    Normal,
+    Warning,
+    Critical,
+}
+
+impl MemoryPressure {
+    /// The values of `kern.memorystatus_vm_pressure_level`, the `DISPATCH_MEMORYPRESSURE_*` masks.
+    pub fn from_kernel_level(level: i32) -> Option<Self> {
+        match level {
+            1 => Some(Self::Normal),
+            2 => Some(Self::Warning),
+            4 => Some(Self::Critical),
+            _ => None,
+        }
+    }
+}
+
 pub const STRAINED_FREE_PERCENT: u32 = 15;
 
 impl Machine {
     pub fn strained(&self) -> bool {
-        self.unreliable || self.memory_free_percent.is_some_and(|p| p < STRAINED_FREE_PERCENT)
+        self.unreliable
+            || self.memory_free_percent.is_some_and(|p| p < STRAINED_FREE_PERCENT)
+            || self.memory_pressure.is_some_and(|pressure| pressure != MemoryPressure::Normal)
     }
 }
 

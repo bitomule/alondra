@@ -3,7 +3,7 @@ use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
 
-use alondra_core::{Machine, now_millis};
+use alondra_core::{Machine, MemoryPressure, now_millis};
 use sysinfo::System;
 
 const UNRELIABLE_LOAD: f64 = 50.0;
@@ -40,6 +40,7 @@ async fn sample_loop(mut publish: impl FnMut(Machine)) {
             memory_total: sys.total_memory(),
             memory_available: sys.available_memory(),
             memory_free_percent: pressure,
+            memory_pressure: memorystatus_vm_pressure_level().and_then(MemoryPressure::from_kernel_level),
             load: [load.one, load.five, load.fifteen],
             cpus: sys.cpus().len(),
             cpu_usage: sys.global_cpu_usage(),
@@ -54,19 +55,27 @@ async fn sample_loop(mut publish: impl FnMut(Machine)) {
 }
 
 /// The free memory percentage `memory_pressure` prints, read from the kernel without a process.
-#[cfg(target_os = "macos")]
 fn memorystatus_level() -> Option<u32> {
-    let mut level: libc::c_int = 0;
+    let level = sysctl_int(c"kern.memorystatus_level")?;
+    (0..=100).contains(&level).then_some(level as u32)
+}
+
+/// The pressure level macOS tells apps about: 1 normal, 2 warning, 4 critical.
+fn memorystatus_vm_pressure_level() -> Option<i32> {
+    sysctl_int(c"kern.memorystatus_vm_pressure_level")
+}
+
+#[cfg(target_os = "macos")]
+fn sysctl_int(name: &std::ffi::CStr) -> Option<i32> {
+    let mut value: libc::c_int = 0;
     let mut size = std::mem::size_of::<libc::c_int>();
-    // SAFETY: the name is NUL-terminated and `level` is a c_int whose size is passed in `size`.
-    let status = unsafe {
-        libc::sysctlbyname(c"kern.memorystatus_level".as_ptr(), (&raw mut level).cast(), &raw mut size, std::ptr::null_mut(), 0)
-    };
-    (status == 0 && (0..=100).contains(&level)).then_some(level as u32)
+    // SAFETY: the name is NUL-terminated and `value` is a c_int whose size is passed in `size`.
+    let status = unsafe { libc::sysctlbyname(name.as_ptr(), (&raw mut value).cast(), &raw mut size, std::ptr::null_mut(), 0) };
+    (status == 0).then_some(value)
 }
 
 #[cfg(not(target_os = "macos"))]
-fn memorystatus_level() -> Option<u32> {
+fn sysctl_int(_name: &std::ffi::CStr) -> Option<i32> {
     None
 }
 
