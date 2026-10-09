@@ -38,6 +38,15 @@ public actor DirectRouter {
         rejected[endpoint] = nil
     }
 
+    func isProven(_ endpoint: DirectEndpoint, in context: RequestContext) -> Bool {
+        context.generation == generation && context.network == network() && proven[endpoint] == context.network
+    }
+
+    func reject(_ endpoint: DirectEndpoint, in context: RequestContext) {
+        guard context.generation == generation, context.network == network() else { return }
+        reject(endpoint, on: context.network)
+    }
+
     static let maxBonjour = 4
     static let maxFromMac = 8
     private static let rejectionTime: Duration = .seconds(600)
@@ -123,7 +132,10 @@ public actor DirectRouter {
     /// This address answered with something that is not this Mac, or with an unsigned refusal:
     /// skip it, and only it.
     public func reject(_ endpoint: DirectEndpoint) {
-        let rejectedOn = network()
+        reject(endpoint, on: network())
+    }
+
+    private func reject(_ endpoint: DirectEndpoint, on rejectedOn: String) {
         rejected[endpoint] = (clock.now, rejectedOn)
         if proven[endpoint] == rejectedOn { proven[endpoint] = nil }
         if current == endpoint {

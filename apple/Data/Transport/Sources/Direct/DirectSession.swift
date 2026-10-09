@@ -109,22 +109,22 @@ public actor DirectSession: OperationAPI {
                     if Self.saysRevoked(response) { throw DirectSessionError.deviceRevoked }
                     return response
                 }
-                await router.reject(endpoint)
+                await router.reject(endpoint, in: context)
                 continue
             }
             // A bare status is not signed, so it never says anything about the Mac or this
             // device: a refusal rules out only that address, and the Mac stays as not answering.
             // From an address proved on this network, a conflict or a rejection is believed.
-            guard reply.status != 401, await router.isProven(endpoint) else {
-                await router.reject(endpoint)
+            guard reply.status != 401, await router.isProven(endpoint, in: context) else {
+                await router.reject(endpoint, in: context)
                 continue
             }
             switch reply.status {
             case 409: throw RelaySessionError.operationIdentityConflict
-            case 421: await router.reject(endpoint)
+            case 421: await router.reject(endpoint, in: context)
             case 429, 503: continue
             case 400: return .completed(status: 400, body: reply.body)
-            default: await router.reject(endpoint)
+            default: await router.reject(endpoint, in: context)
             }
         }
         if mutation && mayHaveArrived { return .unknown }

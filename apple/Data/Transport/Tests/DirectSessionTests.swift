@@ -499,13 +499,15 @@ extension DirectRouterTests {
 
 private actor HeldPostedReply: HTTPTransport {
     private let mac: FakeDirectMac
+    private let firstReply: HTTPReply?
     private let entered: AsyncStream<Void>
     private let signal: AsyncStream<Void>.Continuation
     private var hold = true
     private var pending: (HTTPReply, CheckedContinuation<HTTPReply, any Error>)?
 
-    init(mac: FakeDirectMac) {
+    init(mac: FakeDirectMac, firstReply: HTTPReply? = nil) {
         self.mac = mac
+        self.firstReply = firstReply
         let pair = AsyncStream<Void>.makeStream()
         entered = pair.stream; signal = pair.continuation
     }
@@ -517,7 +519,7 @@ private actor HeldPostedReply: HTTPTransport {
         guard request.url?.path == "/direct/request", hold else { return reply }
         hold = false
         return try await withCheckedThrowingContinuation { continuation in
-            pending = (reply, continuation)
+            pending = (firstReply ?? reply, continuation)
             signal.yield(())
         }
     }
@@ -547,5 +549,40 @@ extension DirectSessionTests {
         #expect(await !f.router.isProven(lan), "an old-network response cannot authenticate an address on the new network")
         #expect(try await session.perform(f.read()) == answered)
         #expect(await f.router.isProven(lan), "a fresh sealed request on the current network can prove it")
+    }
+}
+
+
+extension DirectSessionTests {
+    @Test(arguments: [200, 401, 409, 421, 400, 429, 503, 500], [0, 1, 2])
+    func aLateUnsignedReplyCannotUseOrRejectAReplacementRoute(status: Int, transition: Int) async throws {
+        let f = try await Fixture()
+        #expect(try await f.session.perform(f.read()) == answered)
+        let held = HeldPostedReply(mac: f.mac, firstReply: HTTPReply(status: status, body: Data("{}".utf8)))
+        let session = DirectSession(macID: "mac-1", deviceID: "phone-1", signing: f.mac.device,
+            agreement: f.mac.deviceAgreement, macSigning: f.mac.macSigning.publicKey,
+            macAgreement: f.mac.macAgreement.publicKey, router: f.router,
+            http: DirectHTTP(transport: held), pause: { _ in })
+        var starts = await held.starts().makeAsyncIterator()
+        let request = try f.action("held-unsigned")
+        let pending = Task { () -> Result<APIResponse, any Error> in
+            do { return .success(try await session.perform(request)) }
+            catch { return .failure(error) }
+        }
+        #expect(await starts.next() != nil)
+        if transition != 2 { f.network.join("new-network") }
+        if transition != 0 { await f.router.invalidate() }
+        #expect(try await f.session.perform(f.read()) == answered)
+        #expect(await f.router.isProven(lan))
+        await held.release()
+        let result = await pending.value
+        let response = try? result.get()
+        #expect(response == answered, "a superseded unsigned status cannot become the operation result: \(result)")
+        #expect(await f.router.isProven(lan), "the late unsigned reply cannot remove the replacement route's proof")
+        #expect(await f.router.route == .localNetwork)
+        #expect(await f.mac.executions(of: request.operationID) == 1, "the original applied action must not execute twice")
+        let bodies = await f.mac.requestBodies
+        #expect(bodies.count == 4, "one original action plus its exact-byte retry, alongside two proof requests")
+        if bodies.count == 4 { #expect(bodies[1] == bodies[3]) }
     }
 }
