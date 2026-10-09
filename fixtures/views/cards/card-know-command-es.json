@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:cc2d034b-249e-4487-a89b-57de38c26372",
   "client": "ios",
-  "version": "vc9b42ba2af3bc9ef",
+  "version": "vff664c09146a94ba",
   "cursor": "cursor-1",
   "title": "Pega este comando en el terminal: confía en todos los repos de ~/Projects",
   "status": {
@@ -90,7 +90,8 @@
             },
             "attachments": true,
             "enabled": true,
-            "stamp": "Enviado"
+            "stamp": "Enviado",
+            "resolves_card": false
           },
           "more": [
             {
@@ -133,7 +134,8 @@
               },
               "attachments": false,
               "enabled": true,
-              "stamp": "Aclaración solicitada"
+              "stamp": "Aclaración solicitada",
+              "resolves_card": false
             }
           ],
           "link": {
@@ -181,7 +183,8 @@
               },
               "attachments": false,
               "enabled": true,
-              "stamp": "Leída"
+              "stamp": "Leída",
+              "resolves_card": true
             }
           ]
         }

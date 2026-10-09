@@ -4,7 +4,7 @@
   "view": "task",
   "key": "task:t-queued-next",
   "client": "ios",
-  "version": "v25b1d28b9f72188b",
+  "version": "v467bd02ef5db1551",
   "cursor": "cursor-1",
   "title": "Fix the crash when the schedule list is empty",
   "status": {
@@ -130,7 +130,8 @@
               },
               "attachments": false,
               "enabled": true,
-              "stamp": "En pausa"
+              "stamp": "En pausa",
+              "resolves_card": false
             },
             {
               "id": "set_priority:t-queued-next@6",
@@ -170,7 +171,8 @@
                 "kind": "none"
               },
               "attachments": false,
-              "enabled": true
+              "enabled": true,
+              "resolves_card": false
             },
             {
               "id": "cancel:t-queued-next@6",
@@ -186,7 +188,8 @@
                 "message": "¿Cancelar esta tarea?",
                 "button": "Cancelar tarea"
               },
-              "enabled": true
+              "enabled": true,
+              "resolves_card": false
             }
           ]
         }

@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:a98d034b-249e-4487-a89b-57de38c26372",
   "client": "mac",
-  "version": "ve28cd9a986f4a0e7",
+  "version": "v72fb877e00a24bbc",
   "cursor": "cursor-1",
   "title": "Choose the welcome copy",
   "status": {
@@ -92,7 +92,8 @@
             "attachments": true,
             "enabled": true,
             "stamp": "Sent",
-            "key": "r"
+            "key": "r",
+            "resolves_card": true
           },
           "more": [
             {
@@ -110,7 +111,8 @@
               "attachments": true,
               "enabled": true,
               "stamp": "Answered",
-              "key": "3"
+              "key": "3",
+              "resolves_card": true
             },
             {
               "id": "clarify:a98d034b-249e-4487-a89b-57de38c26372@1",
@@ -153,7 +155,8 @@
               "attachments": false,
               "enabled": true,
               "stamp": "Clarification requested",
-              "key": "c"
+              "key": "c",
+              "resolves_card": false
             }
           ],
           "link": {
@@ -205,7 +208,8 @@
               "attachments": false,
               "enabled": true,
               "stamp": "Answered",
-              "key": "1"
+              "key": "1",
+              "resolves_card": true
             },
             {
               "id": "ans:a98d034b-249e-4487-a89b-57de38c26372@1",
@@ -221,7 +225,8 @@
               "attachments": false,
               "enabled": true,
               "stamp": "Answered",
-              "key": "2"
+              "key": "2",
+              "resolves_card": true
             }
           ]
         }

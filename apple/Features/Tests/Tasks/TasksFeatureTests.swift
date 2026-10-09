@@ -47,6 +47,7 @@ final class TasksFeatureTests: XCTestCase {
             $0.screen.phase = .loaded
             $0.actions.dataEpoch = "sample-epoch"
         }
+        await store.receive(\.screen.ended)
         await store.finish()
 
         XCTAssertEqual(store.state.board?.active.requests.map(\.id), ["r-5", "r-1", "r-2"])

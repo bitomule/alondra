@@ -4,7 +4,7 @@
   "view": "fleet",
   "key": "fleet",
   "client": "mac",
-  "version": "v38e2906f96b4b0d0",
+  "version": "v8bb8d093027dd681",
   "cursor": "cursor-1",
   "title": "Fleet",
   "status": {
@@ -131,7 +131,8 @@
                 "message": "Close this node?",
                 "button": "Close Node"
               },
-              "enabled": true
+              "enabled": true,
+              "resolves_card": false
             }
           ]
         },
@@ -172,7 +173,8 @@
                 "message": "Close this node?",
                 "button": "Close Node"
               },
-              "enabled": true
+              "enabled": true,
+              "resolves_card": false
             }
           ]
         }
@@ -221,7 +223,8 @@
                 "message": "Close this node?",
                 "button": "Close Node"
               },
-              "enabled": true
+              "enabled": true,
+              "resolves_card": false
             }
           ]
         }
@@ -270,7 +273,8 @@
                 "message": "Close this node?",
                 "button": "Close Node"
               },
-              "enabled": true
+              "enabled": true,
+              "resolves_card": false
             }
           ]
         }
@@ -319,7 +323,8 @@
                 "message": "Close this node?",
                 "button": "Close Node"
               },
-              "enabled": true
+              "enabled": true,
+              "resolves_card": false
             }
           ]
         },
@@ -360,7 +365,8 @@
                 "message": "Close this node?",
                 "button": "Close Node"
               },
-              "enabled": true
+              "enabled": true,
+              "resolves_card": false
             }
           ]
         }

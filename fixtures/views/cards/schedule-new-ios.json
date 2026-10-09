@@ -4,7 +4,7 @@
   "view": "schedule",
   "key": "schedule:new",
   "client": "ios",
-  "version": "vbd531eacca2d6627",
+  "version": "v20b4c80f341a8f4a",
   "cursor": "cursor-1",
   "title": "New Schedule",
   "status": {
@@ -331,7 +331,8 @@
               "kind": "none"
             },
             "attachments": false,
-            "enabled": true
+            "enabled": true,
+            "resolves_card": false
           }
         }
       ]

@@ -184,7 +184,9 @@ public struct TriageFeature: Sendable {
                 guard document.key == state.screen.key.rawValue else { return .none }
                 state.optimistic.reconcile(document.version)
                 let listed = Set(document.sections.first { $0.id == "queue" }?.cardIds ?? [])
-                let gone = state.answered.subtracting(listed)
+                // A card answered here is forgotten once it is no longer drawn: until then its own
+                // view still arrives, settled, and must not announce what the person just did.
+                let gone = state.answered.subtracting(listed).filter { state.cards[id: $0] == nil }
                 state.answered.subtract(gone)
                 let forgotten: Effect<Action> = .merge(gone.map { .cancel(id: CancelID.answered($0)) })
                 if state.stampShowing {

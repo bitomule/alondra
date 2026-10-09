@@ -4,7 +4,7 @@
   "view": "fleet",
   "key": "fleet",
   "client": "tui",
-  "version": "vfce12e26bb51d147",
+  "version": "v6c553c4c509f9677",
   "cursor": "cursor-1",
   "title": "Fleet",
   "status": {
@@ -128,7 +128,8 @@
                 "button": "Close Node"
               },
               "enabled": true,
-              "key": "x"
+              "key": "x",
+              "resolves_card": false
             }
           ]
         },
@@ -166,7 +167,8 @@
                 "button": "Close Node"
               },
               "enabled": true,
-              "key": "x"
+              "key": "x",
+              "resolves_card": false
             }
           ]
         }
@@ -212,7 +214,8 @@
                 "button": "Close Node"
               },
               "enabled": true,
-              "key": "x"
+              "key": "x",
+              "resolves_card": false
             }
           ]
         }
@@ -258,7 +261,8 @@
                 "button": "Close Node"
               },
               "enabled": true,
-              "key": "x"
+              "key": "x",
+              "resolves_card": false
             }
           ]
         }
@@ -304,7 +308,8 @@
                 "button": "Close Node"
               },
               "enabled": true,
-              "key": "x"
+              "key": "x",
+              "resolves_card": false
             }
           ]
         },
@@ -342,7 +347,8 @@
                 "button": "Close Node"
               },
               "enabled": true,
-              "key": "x"
+              "key": "x",
+              "resolves_card": false
             }
           ]
         }

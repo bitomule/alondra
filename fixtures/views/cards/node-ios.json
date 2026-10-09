@@ -4,7 +4,7 @@
   "view": "node",
   "key": "node:d887a34b-249e-4487-a89b-57de38c26372",
   "client": "ios",
-  "version": "v58694700fb71c469",
+  "version": "v8f56bff864dba47a",
   "cursor": "cursor-1",
   "title": "Alondra · iOS",
   "status": {
@@ -280,7 +280,8 @@
                 "multiline": true
               },
               "attachments": true,
-              "enabled": true
+              "enabled": true,
+              "resolves_card": false
             },
             {
               "id": "close:d887a34b-249e-4487-a89b-57de38c26372@6",
@@ -296,7 +297,8 @@
                 "message": "Close this node?",
                 "button": "Close Node"
               },
-              "enabled": true
+              "enabled": true,
+              "resolves_card": false
             }
           ]
         }

@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:g-q2",
   "client": "ios",
-  "version": "vd3da2d31f0a6fba0",
+  "version": "v6fde32d0b1485c46",
   "cursor": "cursor-1",
   "title": "Ship it today?",
   "status": {
@@ -70,7 +70,8 @@
             },
             "attachments": true,
             "enabled": true,
-            "stamp": "Sent"
+            "stamp": "Sent",
+            "resolves_card": true
           },
           "more": [
             {
@@ -87,7 +88,8 @@
               },
               "attachments": true,
               "enabled": true,
-              "stamp": "Answered"
+              "stamp": "Answered",
+              "resolves_card": true
             },
             {
               "id": "clarify:g-q2@1",
@@ -129,7 +131,8 @@
               },
               "attachments": false,
               "enabled": true,
-              "stamp": "Clarification requested"
+              "stamp": "Clarification requested",
+              "resolves_card": false
             },
             {
               "id": "retake:g-q2@1",
@@ -152,7 +155,8 @@
               },
               "attachments": false,
               "enabled": true,
-              "stamp": "Question reopened"
+              "stamp": "Question reopened",
+              "resolves_card": false
             }
           ],
           "link": {
@@ -194,7 +198,8 @@
               },
               "attachments": false,
               "enabled": true,
-              "stamp": "Answered"
+              "stamp": "Answered",
+              "resolves_card": true
             },
             {
               "id": "ans:g-q2@1",
@@ -208,7 +213,8 @@
               },
               "attachments": false,
               "enabled": true,
-              "stamp": "Answered"
+              "stamp": "Answered",
+              "resolves_card": true
             }
           ]
         }

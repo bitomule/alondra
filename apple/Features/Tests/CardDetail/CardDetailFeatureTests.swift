@@ -486,6 +486,7 @@ final class CardDetailFeatureTests: XCTestCase {
         let state = CardDetailFeature.State(key: ViewKey(rawValue: card.key))
         let store = TestStore(initialState: state) { CardDetailFeature() } withDependencies: {
             $0.viewsClient.observe = feed.observe
+            $0.continuousClock = TestClock()
         }
         store.exhaustivity = .off
 
@@ -493,5 +494,40 @@ final class CardDetailFeatureTests: XCTestCase {
         await store.skipReceivedActions()
         XCTAssertEqual(store.state.subject?.title, "Choose the welcome copy")
         XCTAssertEqual(store.state.actions.dataEpoch, "test-epoch")
+    }
+}
+
+final class CardDetailLoadingTests: XCTestCase {
+    /// A card's screen never stays on its placeholder: when its view does not arrive it says it
+    /// could not load and Try Again observes it once more.
+    @MainActor
+    func testAViewThatNeverArrivesEndsInAnErrorWithTryAgain() async throws {
+        let clock = TestClock()
+        let card = try Fixtures.card(Fixtures.questionID)
+        let streams = LockIsolated([
+            AsyncThrowingStream<ViewFetch, any Error> { _ in },
+            AsyncThrowingStream<ViewFetch, any Error> { $0.yield(.document(card)) },
+        ])
+        let store = TestStore(initialState: CardDetailFeature.State(key: .card(Fixtures.questionID))) {
+            CardDetailFeature()
+        } withDependencies: {
+            $0.continuousClock = clock
+            $0.viewsClient.observe = { _ in streams.withValue { $0.removeFirst() } }
+        }
+        store.exhaustivity = .off
+
+        await store.send(.task)
+        await clock.advance(by: .seconds(19))
+        XCTAssertEqual(store.state.screen.phase, .loading)
+        await clock.advance(by: .seconds(1))
+        await store.receive(\.loadTimedOut)
+        XCTAssertEqual(store.state.screen.phase, .failed("Couldn’t load this from your Mac. Try again."))
+
+        await store.send(.screen(.retry))
+        await store.receive(\.screen.loaded)
+        XCTAssertEqual(store.state.screen.phase, .loaded)
+        await clock.advance(by: .seconds(30))
+        XCTAssertEqual(store.state.screen.phase, .loaded, "a view that arrived is never replaced by the error")
+        await store.send(.screen(.stop))
     }
 }

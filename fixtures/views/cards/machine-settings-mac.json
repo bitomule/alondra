@@ -4,7 +4,7 @@
   "view": "machine",
   "key": "machine",
   "client": "mac",
-  "version": "v83d26dd89e097f7b",
+  "version": "v39a95d7ab86d8c59",
   "cursor": "cursor-1",
   "title": "Machine",
   "status": {
@@ -208,7 +208,8 @@
                 "kind": "none"
               },
               "attachments": false,
-              "enabled": true
+              "enabled": true,
+              "resolves_card": false
             }
           ]
         }

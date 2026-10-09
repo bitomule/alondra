@@ -1,0 +1,42 @@
+use super::action_id::{ActionId, Verb};
+use crate::domain::{DeliveryTarget, DomainState, Interaction, InteractionId, InteractionPayload, PrId, PrState, PullRequest};
+
+/// Whether an action, applied now, takes its card out of the queue. The clients hide the card the
+/// moment it is sent when this is true, and leave it in place otherwise: they never work it out
+/// from the action's name. The daemon decides what a message becomes with the same rule.
+pub fn resolves_card(domain: &DomainState, action: &ActionId) -> bool {
+    always_resolves(action.verb) || handed_back(domain, action)
+}
+
+/// An answer, an acceptance, a read or a request for changes always settles the card it came from.
+pub fn always_resolves(verb: Verb) -> bool {
+    matches!(verb, Verb::Ans | Verb::Ctx | Verb::Changes | Verb::Read | Verb::Accept | Verb::Merge | Verb::CloseUnmerged)
+}
+
+/// A reply to a delivery, a question about a presented PR or a request to resolve its conflicts
+/// is feedback on that delivery, and a reply to an open question answers it: either way its card
+/// leaves the queue. With nothing to hand back the text only reaches the node, and the card stays.
+pub fn handed_back(domain: &DomainState, action: &ActionId) -> bool {
+    match action.verb {
+        Verb::Reply => domain.interactions.get(&InteractionId(action.subject.clone()))
+            .is_some_and(|interaction| match &interaction.payload {
+                InteractionPayload::Delivery { .. } => true,
+                InteractionPayload::Question { answer: None, .. } | InteractionPayload::ActionRequest { answer: None, .. } =>
+                    !domain.holds.contains_key(&interaction.id),
+                _ => false,
+            }),
+        Verb::AskPr | Verb::Conflicts => domain.pull_requests.get(&PrId(action.subject.clone()))
+            .is_some_and(|pr| pr_presentation(domain, pr).is_some()),
+        _ => false,
+    }
+}
+
+/// The open PR's current final delivery, presented at the PR's head.
+pub fn pr_presentation<'a>(domain: &'a DomainState, pr: &PullRequest) -> Option<&'a Interaction> {
+    if pr.state != PrState::Open { return None; }
+    let task = domain.tasks.get(&pr.task_id).filter(|task| !task.state.terminal())?;
+    let presentation = domain.interactions.get(task.final_presentation.as_ref()?)?;
+    let InteractionPayload::Delivery { targets, .. } = &presentation.payload else { return None; };
+    targets.iter().any(|target| matches!(target, DeliveryTarget::PullRequest { pr_id, head }
+        if pr_id == &pr.id && head == &pr.head)).then_some(presentation)
+}

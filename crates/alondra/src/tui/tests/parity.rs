@@ -111,7 +111,8 @@ fn escape_on_a_changed_modal_sends_nothing() {
     let changed = view_action_result(serde_json::json!({
         "outcome":"changed", "result":{"kind":"changed", "title":"New commits",
             "next":{"id":"changes:pr@2-new", "label":"Send anyway", "style":"primary",
-                "presentation":"button", "input":{"kind":"none"}, "attachments":false, "enabled":true}}
+                "presentation":"button", "input":{"kind":"none"}, "attachments":false, "enabled":true,
+                "resolves_card":true}}
     }))
     .unwrap();
     app.on_msg(Msg::ViewAction { request, result: Ok(changed) });
@@ -1512,7 +1513,8 @@ fn a_changed_modal_hides_the_card_it_came_from_not_the_selected_one() {
     let changed = view_action_result(serde_json::json!({
         "outcome":"changed", "result":{"kind":"changed", "title":"New commits",
             "next":{"id":"merge:fresh", "label":"Send anyway", "style":"primary",
-                "presentation":"button", "input":{"kind":"none"}, "attachments":false, "enabled":true}}
+                "presentation":"button", "input":{"kind":"none"}, "attachments":false, "enabled":true,
+                "resolves_card":true}}
     }))
     .unwrap();
     app.on_msg(Msg::ViewAction { request, result: Ok(changed) });
@@ -1601,7 +1603,8 @@ fn a_changed_modal_waits_for_the_composer_and_never_takes_its_enter() {
     let changed = view_action_result(serde_json::json!({
         "outcome":"changed", "result":{"kind":"changed", "title":"New commits",
             "next":{"id":"changes:pr@2-new", "label":"Send anyway", "style":"primary",
-                "presentation":"button", "input":{"kind":"none"}, "attachments":false, "enabled":true}}
+                "presentation":"button", "input":{"kind":"none"}, "attachments":false, "enabled":true,
+                "resolves_card":true}}
     }))
     .unwrap();
     app.on_msg(Msg::ViewAction { request, result: Ok(changed) });
@@ -1649,7 +1652,8 @@ fn cancelling_a_composer_leaves_no_stale_stamp_for_the_next_action() {
     let changed = view_action_result(serde_json::json!({
         "outcome":"changed", "result":{"kind":"changed", "title":"New commits",
             "next":{"id":"changes:pr@2-new", "label":"Send anyway", "style":"primary",
-                "presentation":"button", "input":{"kind":"none"}, "attachments":false, "enabled":true}}
+                "presentation":"button", "input":{"kind":"none"}, "attachments":false, "enabled":true,
+                "resolves_card":true}}
     }))
     .unwrap();
     app.on_msg(Msg::ViewAction { request, result: Ok(changed) });
@@ -1788,7 +1792,8 @@ fn a_changed_modal_never_takes_the_enter_that_sends_the_composer() {
     let changed = view_action_result(serde_json::json!({
         "outcome":"changed", "result":{"kind":"changed", "title":"New commits",
             "next":{"id":"changes:pr@2-new", "label":"Send anyway", "style":"primary",
-                "presentation":"button", "input":{"kind":"none"}, "attachments":false, "enabled":true}}
+                "presentation":"button", "input":{"kind":"none"}, "attachments":false, "enabled":true,
+                "resolves_card":true}}
     }))
     .unwrap();
     app.on_msg(Msg::ViewAction { request, result: Ok(changed) });
@@ -1806,7 +1811,8 @@ fn changed_from(request: serde_json::Value) -> Msg {
     let changed = view_action_result(serde_json::json!({
         "outcome":"changed", "result":{"kind":"changed", "title":"PR #12 has new commits",
             "next":{"id":"merge:fresh", "label":"Send anyway", "style":"primary",
-                "presentation":"button", "input":{"kind":"none"}, "attachments":false, "enabled":true}}
+                "presentation":"button", "input":{"kind":"none"}, "attachments":false, "enabled":true,
+                "resolves_card":true}}
     }))
     .unwrap();
     Msg::ViewAction { request, result: Ok(changed) }
@@ -2142,4 +2148,27 @@ fn comments_on_a_card_that_went_away_are_sent_to_its_node_with_their_quotes() {
     app.on_msg(Msg::Posted { key: Some(Key(key)), result: Ok("Comentarios enviados a Alondra · iOS".into()) });
     assert!(app.reader.is_none() && app.reviews.is_empty());
     assert_eq!(flash(&app), "Comentarios enviados a Alondra · iOS");
+}
+
+/// The TUI hides a card on the server's word alone: an action that takes it out hides it at
+/// once, and one that leaves it waiting (asking to clarify, a message to its node) never does.
+/// It used to hide every card it acted on and bring back, fifteen seconds later, those the
+/// server still listed.
+#[test]
+fn a_card_leaves_the_list_only_when_its_action_says_it_takes_it_out() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+    for resolves in [true, false] {
+        let (tx, _rx) = std::sync::mpsc::sync_channel(8);
+        let mut app = App::new(tx);
+        app.on_msg(Msg::ViewHome(Ok(serde_json::from_value(view_fixture("home-tui.json")).unwrap())));
+        app.reconcile();
+        app.sel = Some(Key(question_id()));
+        let mut card = view_fixture("card-question.json");
+        card["sections"][0]["items"][0]["actions"][0]["resolves_card"] = resolves.into();
+        app.on_msg(Msg::ViewCard { key: format!("card:{}", question_id()), result: Ok(serde_json::from_value(card).unwrap()) });
+        press(&mut app, KeyCode::Char('1'));
+        assert_eq!(posted(&app).len(), 1, "the action is sent either way");
+        assert_eq!(app.hidden.contains_key(&Key(question_id())), resolves, "resolves_card {resolves}");
+        assert_eq!(app.inbox_keys().contains(&Key(question_id())), !resolves);
+    }
 }
