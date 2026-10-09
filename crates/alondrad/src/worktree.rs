@@ -216,6 +216,67 @@ async fn discard_in(origin: WorktreeOrigin, inherited: Option<&Path>, permitted:
     Ok(())
 }
 
+/// What became of the worktree Alondra made for a task once the task closed.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum TaskWorktree {
+    /// It was deleted, or would be on a dry run.
+    Removed,
+    /// It no longer exists.
+    Absent,
+    /// It is not `.claude/worktrees/<slug>` of a repository: the user's folder, never deleted.
+    NotAlondras,
+    /// It holds files not committed or commits no remote has.
+    Unsaved(String),
+}
+
+/// Deletes the worktree Alondra made for a closed task, `.claude/worktrees/<slug>`, which
+/// `claude rm` leaves because Claude Code did not make it. Its branch stays for a relaunch. What
+/// git ignores goes with it, as with `git worktree remove`: the node was asked to clean up first.
+/// With `remove` false it only says what it would do.
+pub(crate) async fn release_task_worktree(dir: &Path, slug: &str, remove: bool) -> Result<TaskWorktree, String> {
+    if !dir.exists() {
+        return Ok(TaskWorktree::Absent);
+    }
+    let Some(top) = git(dir, &["rev-parse", "--path-format=absolute", "--show-toplevel"]).await.map(PathBuf::from) else {
+        return Ok(TaskWorktree::NotAlondras);
+    };
+    let alondras = top.join(".git").is_file()
+        && top.file_name().is_some_and(|name| name == slug)
+        && top.parent().is_some_and(|parent| parent.ends_with(".claude/worktrees"));
+    if !alondras {
+        return Ok(TaskWorktree::NotAlondras);
+    }
+    let status = git(&top, &["status", "--porcelain", "--untracked-files=all"]).await;
+    let unpushed = git(&top, &["rev-list", "--count", "HEAD", "--not", "--remotes"]).await.and_then(|count| count.parse::<usize>().ok());
+    let (Some(status), Some(unpushed)) = (status, unpushed) else {
+        return Err(format!("git could not tell whether {} holds work not saved", top.display()));
+    };
+    let changed = status.lines().filter(|line| !line.trim().is_empty()).count();
+    let mut parts = vec![];
+    if changed > 0 {
+        parts.push(format!("{changed} uncommitted file(s)"));
+    }
+    if unpushed > 0 {
+        parts.push(format!("{unpushed} commit(s) not pushed"));
+    }
+    if !parts.is_empty() {
+        return Ok(TaskWorktree::Unsaved(format!("{} in {}", parts.join(" and "), top.display())));
+    }
+    if !remove {
+        return Ok(TaskWorktree::Removed);
+    }
+    let common = git(&top, &["rev-parse", "--path-format=absolute", "--git-common-dir"]).await.ok_or("its worktree is not a git checkout")?;
+    let out = Command::new("git").arg(format!("--git-dir={common}")).args(["worktree", "remove", "--force"]).arg(&top)
+        .kill_on_drop(true).output().await.map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        return Err(format!("git could not delete {}: {}", top.display(), String::from_utf8_lossy(&out.stderr).trim()));
+    }
+    if top.exists() {
+        return Err(format!("{} is still there after git deleted it", top.display()));
+    }
+    Ok(TaskWorktree::Removed)
+}
+
 /// What a build regenerates, which a deleted worktree can lose: anything else git ignores, such as
 /// `.env` or a local configuration, may exist nowhere else.
 fn build_output(path: &str) -> bool {
@@ -247,6 +308,35 @@ impl Worktrees for Git {
             found.extend(unmerged(session_id).await);
         }
         found
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod testing {
+    use std::path::{Path, PathBuf};
+
+    pub(crate) fn git(dir: &Path, args: &[&str]) {
+        let out = std::process::Command::new("git").arg("-C").arg(dir).args(args).output().unwrap();
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    }
+
+    /// A repository under `root` with a remote, and the worktree Alondra makes for the task whose
+    /// slug is `slug`, its branch pushed: what a task leaves once its PR is up.
+    pub(crate) fn task_worktree(root: &Path, slug: &str) -> PathBuf {
+        std::fs::create_dir_all(root).unwrap();
+        git(root, &["init", "-q", "--bare", "remote.git"]);
+        git(root, &["init", "-q", "repo"]);
+        let repo = root.join("repo");
+        git(&repo, &["config", "user.email", "test@example.invalid"]);
+        git(&repo, &["config", "user.name", "Test"]);
+        git(&repo, &["commit", "-q", "--allow-empty", "-m", "base"]);
+        git(&repo, &["remote", "add", "origin", root.join("remote.git").to_str().unwrap()]);
+        let dir = repo.join(".claude/worktrees").join(slug);
+        let branch = format!("worktree-{slug}");
+        git(&repo, &["worktree", "add", "-q", "-b", &branch, dir.to_str().unwrap()]);
+        git(&dir, &["commit", "-q", "--allow-empty", "-m", "work"]);
+        git(&dir, &["push", "-q", "origin", &branch]);
+        dir
     }
 }
 
@@ -461,5 +551,49 @@ mod tests {
         assert_eq!(code(final_refusal_in(&state, &clone, &task, &text).await), None,
             "when it cannot be told where the default branch is, the result is taken");
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn the_worktree_alondra_made_for_a_closed_task_is_deleted_with_what_git_ignores_and_its_branch_stays() {
+        let root = crate::test_support::Directory::new();
+        let dir = testing::task_worktree(&root, "t-done");
+        std::fs::write(dir.join(".gitignore"), ".state/\n").unwrap();
+        testing::git(&dir, &["add", ".gitignore"]);
+        testing::git(&dir, &["commit", "-q", "-m", "ignore"]);
+        testing::git(&dir, &["push", "-q", "origin", "worktree-t-done"]);
+        std::fs::create_dir(dir.join(".state")).unwrap();
+        std::fs::write(dir.join(".state/db"), "x").unwrap();
+        assert_eq!(release_task_worktree(&dir, "t-done", false).await, Ok(TaskWorktree::Removed));
+        assert!(dir.exists(), "a dry run deletes nothing");
+        assert_eq!(release_task_worktree(&dir, "t-done", true).await, Ok(TaskWorktree::Removed));
+        assert!(!dir.exists());
+        testing::git(&root.join("repo"), &["rev-parse", "--verify", "--quiet", "refs/heads/worktree-t-done"]);
+        assert_eq!(release_task_worktree(&dir, "t-done", true).await, Ok(TaskWorktree::Absent));
+    }
+
+    #[tokio::test]
+    async fn a_closed_tasks_worktree_with_work_not_saved_is_kept() {
+        let root = crate::test_support::Directory::new();
+        let dir = testing::task_worktree(&root, "t-dirty");
+        std::fs::write(dir.join("a.txt"), "x").unwrap();
+        let Ok(TaskWorktree::Unsaved(left)) = release_task_worktree(&dir, "t-dirty", true).await else { panic!("kept for its file") };
+        assert!(left.contains("1 uncommitted file(s)"), "{left}");
+        std::fs::remove_file(dir.join("a.txt")).unwrap();
+        testing::git(&dir, &["commit", "-q", "--allow-empty", "-m", "local"]);
+        let Ok(TaskWorktree::Unsaved(left)) = release_task_worktree(&dir, "t-dirty", true).await else { panic!("kept for its commit") };
+        assert!(left.contains("1 commit(s) not pushed"), "{left}");
+        assert!(dir.join(".git").is_file());
+    }
+
+    #[tokio::test]
+    async fn a_folder_that_is_not_the_tasks_own_worktree_is_never_deleted() {
+        let root = crate::test_support::Directory::new();
+        let dir = testing::task_worktree(&root, "t-own");
+        assert_eq!(release_task_worktree(&dir, "t-other", true).await, Ok(TaskWorktree::NotAlondras), "another task's name");
+        assert_eq!(release_task_worktree(&root.join("repo"), "repo", true).await, Ok(TaskWorktree::NotAlondras), "a main checkout");
+        let elsewhere = root.join("t-own");
+        testing::git(&root.join("repo"), &["worktree", "add", "-q", "-b", "elsewhere", elsewhere.to_str().unwrap()]);
+        assert_eq!(release_task_worktree(&elsewhere, "t-own", true).await, Ok(TaskWorktree::NotAlondras), "outside .claude/worktrees");
+        assert!(dir.exists() && elsewhere.exists());
     }
 }

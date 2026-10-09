@@ -78,12 +78,19 @@ pub(crate) async fn run(domain: Arc<DomainRuntime>) {
 }
 
 async fn watch_stalls(domain: Arc<DomainRuntime>) {
+    let mut reminded = std::collections::HashMap::new();
     loop {
         tokio::time::sleep(STALL_CHECK).await;
         look_at_shells(&domain);
-        for session in stalled_sessions(&domain, alondra_core::now_millis()) {
+        let now = alondra_core::now_millis();
+        for session in stalled_sessions(&domain, now) {
             let domain = domain.clone();
             tokio::spawn(async move { revive_stalled(&domain, &session, &crate::orchestrate::ClaudeCli, &Timing::LIVE).await });
+        }
+        for (session, text) in crate::domain_transport::behind_hung_work(&domain, now, &mut reminded) {
+            if domain.live.pushes.message(&session, crate::node_push::ALONDRA, &text, false).is_err() {
+                log!("could not send {session} back to its task: its connection is gone");
+            }
         }
     }
 }

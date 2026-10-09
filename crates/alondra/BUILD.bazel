@@ -30,6 +30,7 @@ rust_test(
     rustc_env = {"CARGO_BIN_EXE_alondra": "$(rootpath :alondra)"},
     deps = all_crate_deps(normal = True, normal_dev = True),
 ) for name in [
+    "doctor_json",
     "domain_mcp",
     "hook_transport",
     "version",

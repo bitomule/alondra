@@ -49,7 +49,7 @@ pub fn run(check: bool) -> Result<()> {
     let outcome = wait_for_daemon(&installed, || daemon_info(&client), Instant::now, std::thread::sleep, WAIT, || restart_old_daemon(&daemon));
     println!("{}", describe(&outcome, &installed));
     println!();
-    crate::doctor::run(false)?;
+    crate::doctor::run(crate::doctor::Options::default())?;
     if !matches!(outcome, Waited::Running) {
         std::process::exit(1);
     }

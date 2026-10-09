@@ -12,7 +12,7 @@ use crate::node_reports::Report;
 use alondra_core::delivery::State;
 use alondra_core::domain::{
     Actor, AgentId, Author, Command, CommandEnvelope, DomainState, InputValue, InteractionId, InteractionPayload,
-    PROTOCOL_VERSION, Recipient, Scope, ScheduleLaunchState, TaskId, TaskState,
+    PROTOCOL_VERSION, Recipient, Scope, ScheduleLaunchState, Task, TaskId, TaskState,
 };
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
@@ -496,34 +496,107 @@ pub(crate) const STOP_BLOCKS: u32 = 3;
 /// delivery or a question starts the count again; the count is kept in the domain store, so a
 /// restart does not reset it. A session the user drives (not a background node, or one whose
 /// terminal they attached to), work running in the background and a node stopped by the machine
-/// are never held.
+/// are never held; background work that has hung (`Reported::background_hung`) is no such work.
 fn undelivered(domain: &DomainRuntime, agent_id: &AgentId, payload: &Value) -> Result<Option<String>> {
-    let driven_by_user = !domain.live.mods.is_node(&agent_id.0)
-        || domain.live.node(&agent_id.0).is_some_and(|node| node.attached);
-    if driven_by_user
-        || payload.get("background_tasks").and_then(Value::as_array).is_some_and(|tasks| !tasks.is_empty())
-        || domain.live.node(&agent_id.0).is_some_and(|node| node.status == alondra_core::NodeStatus::WaitingMachine
-            || node.turn_signal == Some(alondra_core::TurnSignal::WaitingMachine))
-    {
+    let background = payload.get("background_tasks").and_then(Value::as_array).is_some_and(|tasks| !tasks.is_empty())
+        && !domain.live.mods.session(&agent_id.0).is_some_and(|reported| reported.background_hung(alondra_core::now_millis()));
+    if driven_by_user(domain, agent_id) || background || stopped_by_machine(domain, agent_id) {
         return Ok(None);
     }
-    let state = domain.state()?;
-    let Some(task) = state.tasks.values().find(|task| task.agent_id.as_ref() == Some(agent_id)
+    hold_back(domain, agent_id)
+}
+
+fn driven_by_user(domain: &DomainRuntime, agent_id: &AgentId) -> bool {
+    !domain.live.mods.is_node(&agent_id.0) || domain.live.node(&agent_id.0).is_some_and(|node| node.attached)
+}
+
+fn stopped_by_machine(domain: &DomainRuntime, agent_id: &AgentId) -> bool {
+    domain.live.node(&agent_id.0).is_some_and(|node| node.status == alondra_core::NodeStatus::WaitingMachine
+        || node.turn_signal == Some(alondra_core::TurnSignal::WaitingMachine))
+}
+
+/// How long a node that ended its turn behind hung background work is left before Alondra sends
+/// it back again, when the last reminder changed nothing.
+const HUNG_REMINDER_GAP: alondra_core::Millis = 10 * 60 * 1000;
+
+/// Nodes that ended their turn with nothing running that will wake them (no background work, or
+/// only work that has hung), their Task open and neither a result nor a question, and quiet for
+/// `HUNG_REMINDER_GAP`: no turn end will come to hold them back (their work hung, or the Stop hook
+/// never reached Alondra), so the reminder the Stop hook gives goes to them as a message from
+/// Alondra, counted the same way, and at the cap the user gets the same Problem card.
+/// `reminded` keeps when each node was last sent one.
+pub(crate) fn behind_hung_work(domain: &DomainRuntime, now: alondra_core::Millis,
+    reminded: &mut std::collections::HashMap<String, alondra_core::Millis>) -> Vec<(String, String)> {
+    let Ok(state) = domain.state() else { return vec![] };
+    let mut out = vec![];
+    for agent_id in state.agents.keys() {
+        let session = agent_id.0.as_str();
+        let quiet = domain.live.mods.session(session)
+            .is_some_and(|reported| reported.last_event_at.is_none_or(|at| now - at >= HUNG_REMINDER_GAP));
+        let counted = |task: &TaskId| domain.store.lock().expect("domain store poisoned").stop_blocks(task).ok().flatten();
+        if !quiet || stopped_without_delivering(domain, &state, agent_id, now, counted).is_none()
+            || reminded.get(session).is_some_and(|at| now - at < HUNG_REMINDER_GAP)
+        {
+            continue;
+        }
+        match hold_back(domain, agent_id) {
+            Ok(Some(text)) => {
+                reminded.insert(session.to_owned(), now);
+                out.push((session.to_owned(), text));
+            }
+            Ok(None) => {}
+            Err(error) => log!("could not check whether {session} stopped without delivering: {error:#}"),
+        }
+    }
+    out
+}
+
+/// The node of an open Task ended its turn with nothing running that will wake it, neither a
+/// result nor a question: whether Alondra still sends it back (`Some(true)`) or its cap was
+/// reached and the user told (`Some(false)`). A node the user drives or paused, one the machine
+/// stopped, one waiting on a card, one whose session stopped mid-turn (restarted by
+/// `node_revival`) and one that is not connected are not stopped this way.
+/// `stop_blocks` reads the count kept for a Task, so a caller holding the store can answer.
+pub(crate) fn stopped_without_delivering(domain: &DomainRuntime, state: &DomainState, agent_id: &AgentId,
+    now: alondra_core::Millis, stop_blocks: impl Fn(&TaskId) -> Option<(u32, i64)>) -> Option<bool> {
+    let session = agent_id.0.as_str();
+    let idle = domain.live.mods.session(session).is_some_and(|reported| reported.connection.is_some()
+        && reported.working_since.is_none() && reported.tool.is_none()
+        && (reported.background.is_empty() || reported.background_hung(now)) && !reported.silent(now));
+    if !idle || driven_by_user(domain, agent_id) || stopped_by_machine(domain, agent_id)
+        || domain.live.is_closed(session) || domain.live.gate.paused(session).is_some()
+        || crate::domain_holds::waits_on_user(state, session)
+    {
+        return None;
+    }
+    let (task, marker) = undelivered_task(state, agent_id)?;
+    Some(!stop_blocks(&task.id).is_some_and(|(blocks, previous)| previous == marker && blocks >= STOP_BLOCKS))
+}
+
+/// The agent's open Task that has neither a result for the user nor an open question from it,
+/// with the order of its latest card, which starts the count of held-back turn ends again.
+fn undelivered_task<'a>(state: &'a DomainState, agent_id: &AgentId) -> Option<(&'a Task, i64)> {
+    let task = state.tasks.values().find(|task| task.agent_id.as_ref() == Some(agent_id)
         && matches!(task.state, TaskState::NotStarted | TaskState::Running)
-        && (task.final_presentation.is_none() || state.task_handed_back(&task.id).is_some()))
-    else {
-        return Ok(None);
-    };
+        && (task.final_presentation.is_none() || state.task_handed_back(&task.id).is_some()))?;
     let scope = Scope::Task { task_id: task.id.clone() };
     let author = Author::Agent { agent_id: agent_id.clone() };
     let mine = || state.interactions.values().filter(|card| card.scope == scope && card.author == author);
     if mine().any(|card| !card.withdrawn && matches!(card.payload,
         InteractionPayload::Question { answer: None, .. } | InteractionPayload::ActionRequest { answer: None, .. }))
     {
-        return Ok(None);
+        return None;
     }
     let marker = mine().filter(|card| !matches!(card.payload, InteractionPayload::Information { .. }))
         .map(|card| card.order as i64).max().unwrap_or(0);
+    Some((task, marker))
+}
+
+/// Counts one more turn end of the node's open Task without a result or a question, and gives the
+/// reason to send it back, or nothing once the cap let it stop and told the user.
+fn hold_back(domain: &DomainRuntime, agent_id: &AgentId) -> Result<Option<String>> {
+    let state = domain.state()?;
+    let Some((task, marker)) = undelivered_task(&state, agent_id) else { return Ok(None) };
     let stored = domain.store.lock().expect("domain store poisoned").stop_blocks(&task.id)?;
     let blocks = match stored {
         Some((blocks, previous)) if previous == marker => blocks,
@@ -1349,6 +1422,90 @@ mod tests {
             "background_tasks": [{"id": "b1", "type": "shell", "command": "make test"}]}), Some(6)).await;
         assert_eq!(reply, json!({}));
         assert_eq!(domain.store.lock().unwrap().stop_blocks(&"task".into()).unwrap(), None, "nothing counted");
+    }
+
+    /// A subagent the node started in the background `minutes_ago`, with no shell call alive.
+    fn background_subagent(domain: &DomainRuntime, minutes_ago: i64) {
+        let at = alondra_core::now_millis() - minutes_ago * 60_000;
+        domain.live.mods.connect(serde_json::from_value(json!({"session_id": "agent-a", "version": "2.1.287"})).unwrap(), at);
+        domain.live.mods.apply(serde_json::from_value(json!({"session_id": "agent-a", "event": "subagent.end", "id": "sub"})).unwrap(), at);
+        domain.live.mods.apply(serde_json::from_value(json!({"session_id": "agent-a", "event": "subagent.start", "id": "sub"})).unwrap(), at);
+        domain.live.mods.set_shell_alive("agent-a", Some(false));
+    }
+
+    /// The node of the flaky snapshots task: its one question answered, it ended its turn saying
+    /// it waits. While its background work runs it may stop, as that work wakes it; once that
+    /// work has hung it is held back like any turn end without a result, and the user is told at
+    /// the cap.
+    #[tokio::test]
+    async fn an_answered_question_and_hung_background_work_never_let_a_node_stop_without_delivering() {
+        let fixture = Fixture::new();
+        let domain = fixture.open();
+        node_with_task(&domain);
+        free_text_question(&domain, "q", agent_actor(), task_scope(), Recipient::User, "Deliver only the daemon fix?");
+        free_text_answer(&domain, user_actor(), "q", "Only the daemon fix");
+        let stop = json!({"session_id": "agent-a", "hook_event_name": "Stop",
+            "background_tasks": [{"id": "sub", "type": "agent", "description": "musts run"}]});
+
+        background_subagent(&domain, 5);
+        assert_eq!(hook(&domain, stop.clone(), Some(6)).await.0, json!({}), "its work runs and will wake it");
+        assert_eq!(domain.store.lock().unwrap().stop_blocks(&"task".into()).unwrap(), None, "nothing counted");
+
+        background_subagent(&domain, 150);
+        for _ in 0..STOP_BLOCKS {
+            assert!(reminder_only(&hook(&domain, stop.clone(), Some(6)).await.0), "an answered question is no open question");
+        }
+        assert!(problems(&domain).is_empty());
+        assert_eq!(hook(&domain, stop, Some(6)).await.0, json!({}), "the cap lets it stop");
+        assert_eq!(problems(&domain).iter().map(|card| card.card.need.as_str()).collect::<Vec<_>>(),
+            ["Agent A cannot manage to deliver “Task”"]);
+    }
+
+    /// A node already stopped when its background work hangs ends no more turns: Alondra sends it
+    /// back itself, at most once per gap, counting each like a held-back turn end, and tells the
+    /// user at the cap.
+    #[tokio::test]
+    async fn a_node_idle_behind_hung_background_work_is_sent_back_and_the_user_told_at_the_cap() {
+        let fixture = Fixture::new();
+        let domain = fixture.open();
+        node_with_task(&domain);
+        let mut reminded = std::collections::HashMap::new();
+        let mut now = alondra_core::now_millis();
+
+        background_subagent(&domain, 60);
+        assert!(behind_hung_work(&domain, now, &mut reminded).is_empty(), "its work still runs");
+
+        background_subagent(&domain, 150);
+        for round in 0..STOP_BLOCKS {
+            let sent = behind_hung_work(&domain, now, &mut reminded);
+            assert_eq!(sent.len(), 1, "round {round}");
+            assert_eq!(sent[0].0, "agent-a");
+            assert!(sent[0].1.starts_with("[Alondra] Do not end your turn yet"), "{}", sent[0].1);
+            assert!(behind_hung_work(&domain, now + 60_000, &mut reminded).is_empty(), "not again within the gap");
+            now += HUNG_REMINDER_GAP;
+        }
+        assert!(behind_hung_work(&domain, now, &mut reminded).is_empty(), "the cap: no more reminders");
+        assert_eq!(problems(&domain).len(), 1, "the user is told instead");
+
+        free_text_question(&domain, "q", agent_actor(), task_scope(), Recipient::User, "Which name?");
+        assert!(behind_hung_work(&domain, now + HUNG_REMINDER_GAP, &mut reminded).is_empty(), "a node waiting on its question is left alone");
+    }
+
+    /// The Stop hook of a node never reached Alondra (its connection broke): the node sits idle
+    /// with nothing running, and Alondra sends it back itself once it has been quiet a while.
+    #[tokio::test]
+    async fn a_node_idle_with_nothing_running_whose_stop_was_never_held_is_sent_back() {
+        let fixture = Fixture::new();
+        let domain = fixture.open();
+        node_with_task(&domain);
+        let now = alondra_core::now_millis();
+        let connect = |at| domain.live.mods.connect(serde_json::from_value(json!({"session_id": "agent-a", "version": "2.1.287"})).unwrap(), at);
+        let mut reminded = std::collections::HashMap::new();
+        connect(now - 60_000);
+        assert!(behind_hung_work(&domain, now, &mut reminded).is_empty(), "it just ended its turn");
+        connect(now - HUNG_REMINDER_GAP);
+        assert_eq!(behind_hung_work(&domain, now, &mut reminded).len(), 1);
+        assert_eq!(domain.store.lock().unwrap().stop_blocks(&"task".into()).unwrap().map(|(blocks, _)| blocks), Some(1));
     }
 
     #[tokio::test]

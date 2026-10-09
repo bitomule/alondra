@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 const USER_FACING: &[&str] = &[
     "main.rs",
     "delivery.rs",
-    "doctor.rs",
+    "doctor",
     "update.rs",
     "help.rs",
     "version.rs",

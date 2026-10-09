@@ -20,7 +20,7 @@ fn check(label: &str, text: &str) {
 #[test]
 fn the_tui_and_cli_never_say_awake_or_asleep_again() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    for rel in ["src/tui.rs", "src/tui/draw.rs", "src/doctor.rs"] {
+    for rel in ["src/tui.rs", "src/tui/draw.rs", "src/doctor/checks.rs", "src/doctor/mod.rs", "src/doctor/render.rs"] {
         let path = root.join(rel);
         let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("reading {}: {e}", path.display()));
         check(rel, &text);

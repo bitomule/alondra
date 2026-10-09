@@ -1,0 +1,406 @@
+use std::cell::RefCell;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
+
+use alondra_core::config::{self, Config};
+use alondra_core::startup::Record;
+use anyhow::{Context, Result, bail};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use sha2::{Digest, Sha256};
+
+use super::Action;
+use crate::client::Client;
+use crate::setup;
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct MacInfo {
+    pub os: String,
+    pub arch: String,
+    pub install: String,
+    pub dev_over_brew: bool,
+}
+
+/// The service as launchd has it, and what `doctor --fix` would change in it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ServiceView {
+    pub label: String,
+    /// `launchctl print` of the service, when launchd has it loaded.
+    pub print: Option<String>,
+    pub pending: bool,
+    pub others: Vec<PathBuf>,
+    pub binaries: bool,
+    pub bin: PathBuf,
+    pub dev_over_brew: bool,
+    pub repo: Option<PathBuf>,
+    pub marketplace_elsewhere: Option<PathBuf>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ModsPass {
+    pub fingerprint: String,
+    pub at: i64,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct TestPush {
+    pub device: String,
+    pub name: String,
+    pub at: i64,
+}
+
+/// What doctor remembers between runs, in `doctor.json`: when the slow mod check last passed,
+/// and the last test notification a device accepted.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Memory {
+    #[serde(default)]
+    pub mods: Option<ModsPass>,
+    #[serde(default)]
+    pub test_push: Option<TestPush>,
+}
+
+/// Everything a check reads or does outside this process, so each check runs against a double.
+pub trait System {
+    fn home(&self) -> PathBuf;
+    fn user_home(&self) -> PathBuf;
+    fn config_path(&self) -> PathBuf;
+    fn config_text(&self) -> Option<String>;
+    fn config(&self) -> Config;
+    fn exists(&self, path: &Path) -> bool;
+    fn mac(&self) -> MacInfo;
+    fn health(&self) -> Result<Value, String>;
+    fn devices(&self) -> Option<Vec<Value>>;
+    fn offline_audit(&self) -> Option<Result<(u64, usize), String>>;
+    fn startup(&self) -> Option<Record>;
+    fn service(&self) -> ServiceView;
+    fn service_config(&self) -> bool;
+    fn relay(&self) -> bool;
+    fn apns(&self) -> Option<String>;
+    fn claude(&self, args: &[&str], timeout: Duration) -> Option<(bool, String)>;
+    fn signed_in(&self) -> Result<bool>;
+    fn profile(&self) -> Result<Option<String>, String>;
+    fn plugins(&self) -> Option<Value>;
+    fn marketplace(&self) -> bool;
+    fn node_plugin(&self) -> Option<PathBuf>;
+    fn fingerprint(&self, dir: &Path) -> Option<String>;
+    fn tool(&self, program: &str, args: &[&str]) -> Option<String>;
+    fn port_owner(&self, port: u16) -> Option<String>;
+    fn log_tail(&self, lines: usize) -> Vec<String>;
+    fn memory(&self) -> Memory;
+    fn remember(&self, memory: &Memory);
+    fn now(&self) -> i64;
+    /// Applies one repair. Starting the service waits for the daemon to answer.
+    fn apply(&self, action: Action) -> Result<()>;
+    fn test_push(&self, device: &str) -> Result<()>;
+}
+
+pub fn command_output(mut command: Command, timeout: Duration) -> Option<(bool, String)> {
+    let child = command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().ok()?;
+    let pid = child.id();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(child.wait_with_output());
+    });
+    let Ok(Ok(out)) = rx.recv_timeout(timeout) else {
+        unsafe { libc::kill(pid as i32, libc::SIGKILL) };
+        return None;
+    };
+    let mut text = String::from_utf8_lossy(&out.stdout).to_string();
+    text.push_str(&String::from_utf8_lossy(&out.stderr));
+    Some((out.status.success(), text))
+}
+
+fn output(program: &str, args: &[&str], timeout: Duration) -> Option<String> {
+    let mut command = Command::new(program);
+    command.args(args);
+    command_output(command, timeout).filter(|(ok, _)| *ok).map(|(_, t)| t)
+}
+
+/// A digest of every file under the node plugin, so a changed plugin is checked again.
+pub fn fingerprint(dir: &Path) -> Option<String> {
+    fn walk(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
+        for entry in std::fs::read_dir(dir)? {
+            let path = entry?.path();
+            if path.is_dir() { walk(&path, out)? } else { out.push(path) }
+        }
+        Ok(())
+    }
+    let mut files = vec![];
+    walk(dir, &mut files).ok()?;
+    files.sort();
+    let mut hash = Sha256::new();
+    for file in files {
+        hash.update(file.strip_prefix(dir).ok()?.to_string_lossy().as_bytes());
+        hash.update([0]);
+        hash.update(std::fs::read(&file).ok()?);
+        hash.update([0]);
+    }
+    Some(hash.finalize().iter().map(|b| format!("{b:02x}")).collect())
+}
+
+/// How long `doctor --fix` waits for a started daemon to answer.
+pub const START_WAIT: Duration = Duration::from_secs(30);
+
+pub struct Real {
+    env_home: PathBuf,
+    home: PathBuf,
+    install: RefCell<Option<std::rc::Rc<setup::Installation>>>,
+    health: RefCell<Option<Result<Value, String>>>,
+    context: RefCell<Option<Result<crate::claude_auth::ContextEnv, String>>>,
+}
+
+impl Real {
+    pub fn new() -> Self {
+        let env = |k: &str| std::env::var(k).ok();
+        Self {
+            env_home: config::home_dir(&env),
+            home: config::alondra_home(&env),
+            install: RefCell::new(None),
+            health: RefCell::new(None),
+            context: RefCell::new(None),
+        }
+    }
+
+    fn install(&self) -> std::rc::Rc<setup::Installation> {
+        self.install.borrow_mut().get_or_insert_with(|| std::rc::Rc::new(setup::inspect())).clone()
+    }
+
+    /// The environment the daemon runs Claude with: its service file, or what setup would write.
+    fn context(&self) -> Result<crate::claude_auth::ContextEnv, String> {
+        if let Some(context) = self.context.borrow().as_ref() {
+            return context.clone();
+        }
+        let label = self.config().service_label;
+        let plist = self.env_home.join("Library/LaunchAgents").join(format!("{label}.plist"));
+        let context = match setup::read_plist(&plist) {
+            Ok(value) => {
+                let vars = value.get("EnvironmentVariables").cloned().unwrap_or(Value::Null);
+                serde_json::from_value(vars).map_err(|e| e.to_string())
+                    .and_then(|vars| crate::claude_auth::ContextEnv::from_environment(&self.env_home, &vars).map_err(|e| e.to_string()))
+            }
+            Err(_) => Ok(self.install().context.clone()),
+        };
+        *self.context.borrow_mut() = Some(context.clone());
+        context
+    }
+
+    fn forget(&self) {
+        *self.install.borrow_mut() = None;
+        *self.health.borrow_mut() = None;
+        *self.context.borrow_mut() = None;
+    }
+
+    fn wait_for_daemon(&self) -> Result<()> {
+        let started = Instant::now();
+        let client = Client::new(Duration::from_millis(500));
+        while started.elapsed() < START_WAIT {
+            if client.get::<Value>("/daemon").is_ok() {
+                return Ok(());
+            }
+            std::thread::sleep(Duration::from_millis(500));
+        }
+        bail!(tr!("Alondra didn't start.", "Alondra no ha arrancado."))
+    }
+
+    fn wait_if(&self, started: bool) -> Result<()> {
+        if started { self.wait_for_daemon() } else { Ok(()) }
+    }
+
+    fn sign_in(&self) -> Result<()> {
+        let mut command = self.context().map_err(anyhow::Error::msg)?.command()?;
+        let status = command.args(["auth", "login"]).stdout(std::io::stderr()).status().context("claude auth login")?;
+        if !status.success() {
+            bail!(tr!("Claude login did not finish; run `claude auth login`", "el inicio de sesión de Claude no terminó; ejecuta `claude auth login`"));
+        }
+        Ok(())
+    }
+}
+
+impl System for Real {
+    fn home(&self) -> PathBuf {
+        self.home.clone()
+    }
+
+    fn user_home(&self) -> PathBuf {
+        self.env_home.clone()
+    }
+
+    fn config_path(&self) -> PathBuf {
+        config::path_in(&self.home)
+    }
+
+    fn config_text(&self) -> Option<String> {
+        std::fs::read_to_string(self.config_path()).ok()
+    }
+
+    fn config(&self) -> Config {
+        Config::load().unwrap_or_else(|_| Config::defaults())
+    }
+
+    fn exists(&self, path: &Path) -> bool {
+        path.is_file()
+    }
+
+    fn mac(&self) -> MacInfo {
+        let os = output("/usr/bin/sw_vers", &["-productVersion"], Duration::from_secs(5)).map(|v| format!("macOS {}", v.trim())).unwrap_or_default();
+        let arch = match std::env::consts::ARCH {
+            "aarch64" => "Apple Silicon".to_string(),
+            other => other.to_string(),
+        };
+        let path = std::env::current_exe().and_then(|p| p.canonicalize()).unwrap_or_default();
+        let install = match crate::version::install(&path, &self.env_home) {
+            "homebrew" => "Homebrew",
+            "source" => tr!("built from source", "compilado desde el código"),
+            _ => tr!("development build", "build de desarrollo"),
+        };
+        MacInfo { os, arch, install: install.into(), dev_over_brew: self.install().dev_over_brew }
+    }
+
+    fn health(&self) -> Result<Value, String> {
+        if let Some(health) = self.health.borrow().as_ref() {
+            return health.clone();
+        }
+        let health = Client::new(Duration::from_secs(5)).get::<Value>("/daemon").map_err(|e| e.to_string());
+        *self.health.borrow_mut() = Some(health.clone());
+        health
+    }
+
+    fn devices(&self) -> Option<Vec<Value>> {
+        Client::new(Duration::from_secs(5)).get::<Value>("/devices").ok()
+            .and_then(|v| v.get("devices").and_then(Value::as_array).cloned())
+    }
+
+    fn offline_audit(&self) -> Option<Result<(u64, usize), String>> {
+        self.home.join("alondra.db").exists().then(|| crate::state::audit(&self.home).map_err(|e| format!("{e:#}")))
+    }
+
+    fn startup(&self) -> Option<Record> {
+        alondra_core::startup::read(&self.home)
+    }
+
+    fn service(&self) -> ServiceView {
+        let install = self.install();
+        let label = install.label.clone();
+        let print = output("launchctl", &["print", &format!("gui/{}/{label}", install.paths.uid)], Duration::from_secs(5));
+        ServiceView {
+            label,
+            print,
+            pending: install.service_pending(),
+            others: install.seen.other_services.clone(),
+            binaries: install.seen.binaries,
+            bin: install.paths.bin.clone(),
+            dev_over_brew: install.dev_over_brew,
+            repo: install.paths.repo.clone(),
+            marketplace_elsewhere: install.marketplace_elsewhere(),
+        }
+    }
+
+    fn service_config(&self) -> bool {
+        self.home.join("service.toml").symlink_metadata().is_ok()
+    }
+
+    fn relay(&self) -> bool {
+        crate::service_setup::has_relay(&self.home).unwrap_or(false)
+    }
+
+    fn apns(&self) -> Option<String> {
+        std::fs::read_to_string(self.home.join("apns.json")).ok()
+    }
+
+    fn claude(&self, args: &[&str], timeout: Duration) -> Option<(bool, String)> {
+        let mut command = self.context().ok()?.command().ok()?;
+        command.args(args);
+        command_output(command, timeout)
+    }
+
+    fn signed_in(&self) -> Result<bool> {
+        self.context().map_err(anyhow::Error::msg)?.status()
+    }
+
+    fn profile(&self) -> Result<Option<String>, String> {
+        if let (Ok(config), Ok(watcher)) = (std::env::var("CLAUDE_CONFIG_DIR"), std::env::var("CLAUDE_HOME"))
+            && config != watcher
+        {
+            return Err(tr!("CLAUDE_CONFIG_DIR and CLAUDE_HOME disagree", "CLAUDE_CONFIG_DIR y CLAUDE_HOME no coinciden").into());
+        }
+        self.context().map(|c| c.config_dir)
+    }
+
+    fn plugins(&self) -> Option<Value> {
+        self.context().ok().and_then(|c| setup::plugin_list(&c))
+    }
+
+    fn marketplace(&self) -> bool {
+        self.context().is_ok_and(|c| setup::has_marketplace(&c))
+    }
+
+    fn node_plugin(&self) -> Option<PathBuf> {
+        self.context().ok().and_then(|c| setup::marketplace_path(&c)).map(|root| root.join("plugin"))
+            .filter(|dir| dir.join(".claude-plugin/plugin.json").is_file())
+    }
+
+    fn fingerprint(&self, dir: &Path) -> Option<String> {
+        fingerprint(dir)
+    }
+
+    fn tool(&self, program: &str, args: &[&str]) -> Option<String> {
+        output(program, args, Duration::from_secs(5))
+    }
+
+    fn port_owner(&self, port: u16) -> Option<String> {
+        let text = output("/usr/sbin/lsof", &["-nP", &format!("-iTCP:{port}"), "-sTCP:LISTEN", "-Fc"], Duration::from_secs(5))?;
+        text.lines().find_map(|l| l.strip_prefix('c')).filter(|name| *name != "alondrad").map(str::to_string)
+    }
+
+    fn log_tail(&self, lines: usize) -> Vec<String> {
+        let text = std::fs::read_to_string(self.home.join("alondrad.log")).unwrap_or_default();
+        let all: Vec<&str> = text.lines().collect();
+        all[all.len().saturating_sub(lines)..].iter().map(|l| l.to_string()).collect()
+    }
+
+    fn memory(&self) -> Memory {
+        std::fs::read_to_string(self.home.join("doctor.json")).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
+    }
+
+    fn remember(&self, memory: &Memory) {
+        let path = self.home.join("doctor.json");
+        let tmp = path.with_extension("json.tmp");
+        if let Ok(text) = serde_json::to_string_pretty(memory)
+            && std::fs::write(&tmp, text).is_ok()
+        {
+            let _ = std::fs::rename(&tmp, &path);
+        }
+    }
+
+    fn now(&self) -> i64 {
+        alondra_core::now_millis()
+    }
+
+    fn apply(&self, action: Action) -> Result<()> {
+        let install = self.install();
+        let result = match action {
+            Action::InstallService => install.install_service().and_then(|started| self.wait_if(started)),
+            Action::ReplaceOtherService => install.retire_other_services()
+                .and_then(|_| setup::inspect().install_service())
+                .and_then(|started| self.wait_if(started)),
+            Action::RestartService => install.restart_service().and_then(|_| self.wait_for_daemon()),
+            Action::PrepareIdentity => crate::service_setup::prepare_local_quietly(&self.home).map(|_| ()),
+            Action::RepairPlugin => install.repair_plugin(),
+            Action::SignIn => self.sign_in(),
+        };
+        self.forget();
+        result
+    }
+
+    fn test_push(&self, device: &str) -> Result<()> {
+        let daemon = self.install().paths.bin.join("alondrad");
+        let mut command = Command::new(&daemon);
+        command.args(["--test-service-push", device]);
+        match command_output(command, Duration::from_secs(60)) {
+            Some((true, _)) => Ok(()),
+            Some((false, text)) => bail!("{}", text.trim()),
+            None => bail!(tr!("the test notification did not finish within a minute", "la notificación de prueba no terminó en un minuto")),
+        }
+    }
+}

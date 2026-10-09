@@ -146,12 +146,20 @@ enum Cmd {
         deny: Option<String>,
     },
     #[command(about = tr!(
-        "Check the whole installation: daemon, service, plugin, notifications, tmux",
-        "Comprueba toda la instalación: servidor, servicio, plugin, notificaciones, tmux"
+        "Check everything; --fix repairs or finishes the setup",
+        "Lo comprueba todo; --fix arregla o termina la instalación"
     ))]
     Doctor {
         #[arg(long, help = tr!("Machine-readable output", "Salida para máquinas"))]
         json: bool,
+        #[arg(long, help = tr!("Repair what it can, asking what it needs", "Arregla lo que puede y pregunta lo que necesita"))]
+        fix: bool,
+        #[arg(long, help = tr!("Also run the slow checks (the node mod, up to 3 minutes)", "Ejecuta también las comprobaciones lentas (el mod de nodo, hasta 3 minutos)"))]
+        deep: bool,
+        #[arg(long, conflicts_with_all = ["fix", "deep"], help = tr!("Send a test notification to the device used most recently", "Envía una notificación de prueba al dispositivo usado más recientemente"))]
+        test_push: bool,
+        #[arg(long, help = tr!("Never ask; what needs a person exits with 3", "No pregunta nunca; lo que necesita a una persona sale con 3"))]
+        no_input: bool,
     },
     #[command(about = tr!(
         "Install the newest release with Homebrew and wait until the daemon runs it",
@@ -255,7 +263,7 @@ fn main() -> Result<()> {
             )),
         },
         Some(Cmd::Devices { revoke, approve, deny }) => devices(revoke, approve, deny),
-        Some(Cmd::Doctor { json }) => doctor::run(json),
+        Some(Cmd::Doctor { json, fix, deep, test_push, no_input }) => doctor::run(doctor::Options { json, fix, deep, test_push, no_input }),
         Some(Cmd::Update { check }) => update::run(check),
         Some(Cmd::State { command }) => {
             let home = client::config().home.clone();

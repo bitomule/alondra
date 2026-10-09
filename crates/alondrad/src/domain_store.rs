@@ -939,6 +939,11 @@ impl DomainStore {
     pub(crate) fn task_worktree(&self, task_id: &TaskId) -> Result<Option<String>> {
         Ok(self.conn.query_row("SELECT dir FROM task_worktrees WHERE task_id=?1", [&task_id.0], |row| row.get(0)).optional()?)
     }
+    pub(crate) fn task_worktrees(&self) -> Result<Vec<(TaskId, String)>> {
+        let mut query = self.conn.prepare("SELECT task_id,dir FROM task_worktrees ORDER BY task_id")?;
+        let rows = query.query_map([], |row| Ok((TaskId(row.get(0)?), row.get(1)?)))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
     pub(crate) fn set_task_worktree(&mut self, task_id: &TaskId, dir: &str, now: i64) -> Result<()> {
         self.conn.execute(
             "INSERT INTO task_worktrees(task_id,dir,at) VALUES(?1,?2,?3) ON CONFLICT(task_id) DO UPDATE SET dir=excluded.dir,at=excluded.at",

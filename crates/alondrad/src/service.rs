@@ -2465,6 +2465,7 @@ mod domain_parity_tests;
 
 #[cfg(test)]
 mod tests {
+    mod relay_scheduler_tests;
     use super::*;
     use reqwest::{StatusCode, Url};
     use std::collections::HashSet;
@@ -5241,6 +5242,8 @@ agreement_key = "{}"
             )
             .await
             .unwrap();
+        for _ in 0..2 { tasks.join_next().await.unwrap().unwrap().unwrap(); }
+        assert_eq!(tasks.len(), 1, "the original changes read remains held while ordinary replies complete");
         assert!(
             opened_results(&service, &phone, &responses)
                 .contains(&json!({"status":400,"error":"invalid_changes_query"}))
@@ -5464,6 +5467,7 @@ agreement_key = "{}"
             .poll_work(&mut None, &mut HashSet::new(), &mut tasks)
             .await
             .unwrap();
+        while let Some(result) = tasks.join_next().await { result.unwrap().unwrap(); }
         let results = opened_results(&service, &phone, &responses);
         assert_eq!(results.len(), 1);
         assert_eq!(

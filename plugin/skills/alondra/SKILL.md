@@ -122,6 +122,10 @@ Pick the tool by what you need:
   issues, a check where nothing changed), deliver with `nothing_to_review: true` and only `text`
   targets: Alondra creates no card and closes the task in silence. Never send a review card that
   only says there was nothing to do.
+  When the result needs the user to choose anything (a design's open decisions, a default to
+  pick), ask it with `ask` before you deliver: each choice a question with the option you
+  recommend, up to 4 together with `questions`. Put the answers into the work, then deliver.
+  Never leave choices only in the result's content: accepting a result never answers them.
   Prove the new tests prove something: remove the fix, see the test fail, put it back, see it
   pass, and put that output in the PR. If the repository has a tool that does this, use it.
   Never deliver with a question or request to the user still unanswered, blocking or not: Alondra
@@ -159,7 +163,8 @@ Pick the tool by what you need:
   `{kind: "document_review", document_id, revision_id}`. The user gets the review card: the whole
   document, a comment on any block, your options and Request changes, whose comments come back as
   the answer. Never ask a separate plain question about a document, and do not paste the document
-  into `body`.
+  into `body`. A document with open decisions asks them first, with `ask` as above, and records
+  the answers: the review approves a document with nothing left to choose.
 - `withdraw`: a card of yours that no longer needs an answer (`withdraw_question` still works).
 - `answer_clarification`: the user asked you to clarify a card. Until you settle it your next card
   must replace it: send `replacement` (the corrected card, as `{tool, arguments}`) with the

@@ -22,7 +22,7 @@ Commands:
   attach                    Open a node's terminal (← on an empty line, Ctrl+Z or /exit returns)
   pair                      Pair an iPhone or iPad: shows a QR code with the public URL and a one-time code
   devices                   Paired devices and pairing requests waiting on this Mac; --approve, --deny or --revoke one
-  doctor                    Check the whole installation: daemon, service, plugin, notifications, tmux
+  doctor                    Check everything; --fix repairs or finishes the setup
   update                    Install the newest release with Homebrew and wait until the daemon runs it
   state                     Audit or safely rebuild the local event-derived state
   setup                     Set up or repair Alondra: account login, Mac enrollment, daemon, Claude Code plugin and pairing
