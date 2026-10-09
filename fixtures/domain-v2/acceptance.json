@@ -1384,7 +1384,7 @@
         "R13",
         "R14"
       ],
-      "title": "Push invalidates authorization",
+      "title": "Push invalidates authorization and withdraws the delivery",
       "layers": [
         "C",
         "A",
@@ -1421,7 +1421,7 @@
         {
           "path": "last_error.code",
           "op": "eq",
-          "value": "stale_head"
+          "value": "acceptance_stale"
         },
         {
           "path": "delta.external_merge_calls",
@@ -1431,7 +1431,7 @@
         {
           "path": "tasks.task-1.status",
           "op": "eq",
-          "value": "for_your_review"
+          "value": "running"
         }
       ],
       "execution_status": "store_runner"

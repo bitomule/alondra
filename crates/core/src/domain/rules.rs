@@ -242,6 +242,10 @@ pub fn delivery_withdrawn_for_questions() -> String {
 is in progress again. When the answers arrive, present your result again as it is if nothing changes, or \
 update the work first and then present it.".into()
 }
+pub fn delivery_withdrawn_behind_pr(number: u64) -> String {
+    format!("Pull request #{number} has commits your final delivery does not include, so that delivery was withdrawn \
+and the task is in progress again. When the work is ready, present your result again with the pull request at its new head.")
+}
 /// The card that tells the user why a task cannot start by itself, with the ways out.
 fn start_problem_card(title: &str, problem: &StartProblem, dependency: Option<&str>) -> (CardSpec, Vec<QuestionOption>) {
     let option = |id: &str, label: &str, description: &str| QuestionOption { id: id.into(), label: label.into(), description: Some(description.into()), inputs: vec![] };
@@ -1370,6 +1374,39 @@ impl DomainState {
             }
         }
     }
+    /// A node that pushes to its PR after its final delivery leaves that delivery behind the PR: it
+    /// could no longer be merged as presented, so it leaves the user's queue and the task is in
+    /// progress again until the node presents the new head. A merged PR settles the delivery instead.
+    fn withdraw_deliveries_behind_their_pr(&mut self, effects: &mut Vec<DomainEffect>) {
+        let behind: Vec<(TaskId, InteractionId, u64)> = self.tasks.values()
+            .filter(|t| !t.state.terminal())
+            .filter_map(|t| {
+                let p = self.interactions.get(t.final_presentation.as_ref()?)?;
+                let InteractionPayload::Delivery { targets, .. } = &p.payload else { return None };
+                if p.withdrawn || self.settled(t, p) {
+                    return None;
+                }
+                targets.iter().find_map(|target| match target {
+                    DeliveryTarget::PullRequest { pr_id, head } => self.pull_requests.get(pr_id)
+                        .filter(|pr| pr.state == PrState::Open && pr.head != *head)
+                        .map(|pr| (t.id.clone(), p.id.clone(), pr.number)),
+                    _ => None,
+                })
+            })
+            .collect();
+        for (task_id, delivery, number) in behind {
+            self.invalidate(&task_id);
+            self.retire(&delivery);
+            let t = self.tasks.get_mut(&task_id).unwrap();
+            t.final_presentation = None;
+            if let Some(agent_id) = t.agent_id.clone() {
+                t.started = true;
+                effects.push(DomainEffect::NotifyAgent {
+                    agent_id, task_id: Some(task_id), interaction_id: None, message: delivery_withdrawn_behind_pr(number),
+                });
+            }
+        }
+    }
     /// The cards of a task that ended leave the user's queue. A cancelled task takes them away in
     /// silence: the user stopped the work, so nothing it asked matters any more. A task that ended
     /// with its work done tells the user once about a question it left behind, unless it only
@@ -1766,6 +1803,7 @@ impl DomainState {
         let mut created = vec![];
         next.apply(actor, &envelope.command, &mut effects, &mut created)?;
         next.withdraw_deliveries_asked_after(&mut effects);
+        next.withdraw_deliveries_behind_their_pr(&mut effects);
         next.derive_states();
         if next.cancel_orphan_reviewers(&mut effects) {
             next.derive_states();

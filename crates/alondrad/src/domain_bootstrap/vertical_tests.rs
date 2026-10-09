@@ -414,7 +414,7 @@ async fn http_presenting_a_conflicting_pr_is_refused_before_any_card_or_push() {
         "pr_id":"pr-1", "host":"github.com", "repository":"example/project",
         "number":7, "head":"0123456789abcdef0123456789abcdef01234567", "base":"main", "allowed_methods":["squash"]})).await;
     let pushes_before = user_pushes(&fixture.domain);
-    fixture.pr_view.answer(Some(json!({"state":"OPEN", "headRefOid":"0123456789abcdef0123456789abcdef01234567",
+    fixture.pr_view.answer(Some(json!({"state":"OPEN", "headRefOid":"0123456789abcdef0123456789abcdef01234567", "baseRefName":"main",
         "mergeable":"CONFLICTING", "mergeStateStatus":"DIRTY"})));
     let present = json!({"kind":"present_result", "task_id":"pr-task",
         "interaction_id":"pr-delivery", "body":"Code ready", "is_final":true,
@@ -427,7 +427,7 @@ async fn http_presenting_a_conflicting_pr_is_refused_before_any_card_or_push() {
     assert!(!fixture.domain.state().unwrap().interactions.contains_key(&"pr-delivery".into()), "no card");
     assert_eq!(user_pushes(&fixture.domain), pushes_before, "no push");
 
-    fixture.pr_view.answer(Some(json!({"state":"OPEN", "headRefOid":"0123456789abcdef0123456789abcdef01234567",
+    fixture.pr_view.answer(Some(json!({"state":"OPEN", "headRefOid":"0123456789abcdef0123456789abcdef01234567", "baseRefName":"main",
         "mergeable":"MERGEABLE", "mergeStateStatus":"CLEAN"})));
     fixture.producer(false, present).await;
     let state = fixture.domain.state().unwrap();
