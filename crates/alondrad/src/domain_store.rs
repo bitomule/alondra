@@ -2,6 +2,8 @@
 //! evidence only; these rows are never reconstructed by legacy event replay.
 mod canonical;
 mod connection;
+#[cfg(test)]
+mod live_read_trace;
 pub(crate) mod model_metrics;
 mod repository;
 
@@ -300,6 +302,8 @@ struct Cached {
 }
 pub(crate) struct DomainStore {
     conn: Connection,
+    #[cfg(test)]
+    live_read_trace: Option<live_read_trace::Sink>,
     cached: Option<Cached>,
     #[cfg(test)]
     after_commit: Option<Box<dyn FnMut() + Send>>,
@@ -363,6 +367,21 @@ pub(crate) struct Commit {
 }
 
 impl DomainStore {
+    #[cfg(test)]
+    pub(crate) fn begin_live_read_trace(&mut self) {
+        assert!(self.live_read_trace.is_none(), "live read trace already active");
+        self.live_read_trace = Some(Default::default());
+    }
+    #[cfg(test)]
+    pub(crate) fn end_live_read_trace(&mut self) -> Vec<live_read_trace::LiveStoreRead> {
+        let sink = self.live_read_trace.take().expect("live read trace not active");
+        let events = sink.lock().expect("live read trace poisoned").clone();
+        events
+    }
+    #[cfg(test)]
+    fn trace_live_read(&self, getter: &'static str) -> Option<live_read_trace::Read> {
+        self.live_read_trace.as_ref().map(|sink| live_read_trace::Read::new(sink.clone(), getter))
+    }
     /// Return only a command that already has a durable semantic receipt for this exact actor,
     /// command id and epoch. Route adapters use this to recover opaque fields for an idempotent
     /// retry without reopening a completed authorization to a new command.
@@ -486,6 +505,8 @@ impl DomainStore {
             conn,
             cached: None,
             #[cfg(test)]
+            live_read_trace: None,
+            #[cfg(test)]
             after_commit: None,
         }
     }
@@ -591,9 +612,16 @@ impl DomainStore {
     }
     /// The project and effort each Request was asked for with, by Request.
     pub(crate) fn request_launch_summaries(&self) -> Result<std::collections::BTreeMap<RequestId, (Option<String>, Option<String>)>> {
+        #[cfg(test)]
+        let mut trace = self.trace_live_read("request_launch_summaries");
         let mut query = self.conn.prepare("SELECT request_id,project,json_extract(options,'$.effort') FROM request_launch")?;
-        let rows = query.query_map([], |row| Ok((RequestId(row.get(0)?), (row.get(1)?, row.get(2)?))))?;
-        Ok(rows.collect::<rusqlite::Result<_>>()?)
+        #[cfg(test)]
+        if let Some(trace) = &mut trace { trace.statement(); }
+        let rows = query.query_map([], |row| { #[cfg(test)] if let Some(trace) = &mut trace { trace.row(); } Ok((RequestId(row.get(0)?), (row.get(1)?, row.get(2)?))) })?;
+        let values = rows.collect::<rusqlite::Result<_>>()?;
+        #[cfg(test)]
+        if let Some(trace) = &mut trace { trace.complete(); }
+        Ok(values)
     }
     pub(crate) fn request_launch(&mut self, request_id: &RequestId) -> Result<Option<RequestLaunch>> {
         let tx = self.conn.transaction_with_behavior(TransactionBehavior::Deferred)?;
@@ -885,25 +913,60 @@ pub(crate) struct HistoryStep {
 impl DomainStore {
     /// When each Task last entered its state.
     pub(crate) fn task_state_times(&self) -> Result<std::collections::BTreeMap<TaskId, i64>> {
+        #[cfg(test)]
+        let mut trace = self.trace_live_read("task_state_times");
         let mut query = self.conn.prepare("SELECT h.task_id,a.at FROM task_history h JOIN command_audit a ON a.revision=h.revision
             WHERE h.revision=(SELECT max(revision) FROM task_history WHERE task_id=h.task_id)")?;
-        let rows = query.query_map([], |row| Ok((TaskId(row.get(0)?), row.get(1)?)))?;
-        Ok(rows.collect::<rusqlite::Result<_>>()?)
+        #[cfg(test)]
+        if let Some(trace) = &mut trace { trace.statement(); }
+        let rows = query.query_map([], |row| { #[cfg(test)] if let Some(trace) = &mut trace { trace.row(); } Ok((TaskId(row.get(0)?), row.get(1)?)) })?;
+        let values = rows.collect::<rusqlite::Result<_>>()?;
+        #[cfg(test)]
+        if let Some(trace) = &mut trace { trace.complete(); }
+        Ok(values)
     }
     pub(crate) fn request_times(&self) -> Result<std::collections::BTreeMap<RequestId, i64>> {
+        #[cfg(test)]
+        let mut trace = self.trace_live_read("request_times");
         let mut query = self.conn.prepare("SELECT id,created_at FROM requests")?;
-        let rows = query.query_map([], |row| Ok((RequestId(row.get(0)?), row.get(1)?)))?;
-        Ok(rows.collect::<rusqlite::Result<_>>()?)
+        #[cfg(test)]
+        if let Some(trace) = &mut trace { trace.statement(); }
+        let rows = query.query_map([], |row| { #[cfg(test)] if let Some(trace) = &mut trace { trace.row(); } Ok((RequestId(row.get(0)?), row.get(1)?)) })?;
+        let values = rows.collect::<rusqlite::Result<_>>()?;
+        #[cfg(test)]
+        if let Some(trace) = &mut trace { trace.complete(); }
+        Ok(values)
     }
     /// When the commits of these revisions were made.
     pub(crate) fn revision_times(&self, revisions: &[Revision]) -> Result<std::collections::BTreeMap<Revision, i64>> {
-        let mut query = self.conn.prepare("SELECT at FROM command_audit WHERE revision=?1")?;
+        #[cfg(test)]
+        let mut trace = self.trace_live_read("revision_times");
         let mut times = std::collections::BTreeMap::new();
-        for revision in revisions {
-            if let Some(at) = query.query_row([*revision as i64], |row| row.get(0)).optional()? {
-                times.insert(*revision, at);
+        if revisions.is_empty() {
+            self.conn.prepare("SELECT at FROM command_audit WHERE revision=?1")?;
+        }
+        for revisions in revisions.chunks(512) {
+            let marks = vec!["?"; revisions.len()].join(",");
+            let mut query = self.conn.prepare(&format!(
+                "SELECT revision,at FROM command_audit WHERE revision IN ({marks})"
+            ))?;
+            #[cfg(test)]
+            if let Some(trace) = &mut trace { trace.statement(); }
+            let rows = query.query_map(
+                rusqlite::params_from_iter(revisions.iter().map(|revision| *revision as i64)),
+                |row| {
+                    #[cfg(test)]
+                    if let Some(trace) = &mut trace { trace.row(); }
+                    Ok((row.get::<_, i64>(0)? as Revision, row.get::<_, i64>(1)?))
+                },
+            )?;
+            for row in rows {
+                let (revision, at) = row?;
+                times.insert(revision, at);
             }
         }
+        #[cfg(test)]
+        if let Some(trace) = &mut trace { trace.complete(); }
         Ok(times)
     }
     pub(crate) fn stop_blocks(&self, task_id: &TaskId) -> Result<Option<(u32, i64)>> {
@@ -996,9 +1059,16 @@ impl DomainStore {
         Ok(())
     }
     pub(crate) fn launch_refusals(&self) -> Result<Vec<(TaskId, String, Option<String>)>> {
+        #[cfg(test)]
+        let mut trace = self.trace_live_read("launch_refusals");
         let mut query = self.conn.prepare("SELECT task_id,reason,detail FROM launch_refusals ORDER BY task_id")?;
-        let rows = query.query_map([], |row| Ok((TaskId(row.get(0)?), row.get(1)?, row.get(2)?)))?;
-        Ok(rows.collect::<rusqlite::Result<_>>()?)
+        #[cfg(test)]
+        if let Some(trace) = &mut trace { trace.statement(); }
+        let rows = query.query_map([], |row| { #[cfg(test)] if let Some(trace) = &mut trace { trace.row(); } Ok((TaskId(row.get(0)?), row.get(1)?, row.get(2)?)) })?;
+        let values = rows.collect::<rusqlite::Result<_>>()?;
+        #[cfg(test)]
+        if let Some(trace) = &mut trace { trace.complete(); }
+        Ok(values)
     }
     pub(crate) fn set_launch_refusal(&mut self, task_id: &TaskId, refusal: Option<(&str, Option<&str>)>, now: i64) -> Result<()> {
         match refusal {
@@ -1045,9 +1115,16 @@ impl DomainStore {
     }
     /// Every start Alondra tries again by itself: attempts so far and when next, by task.
     pub(crate) fn start_retries(&self) -> Result<std::collections::BTreeMap<TaskId, (u8, i64)>> {
+        #[cfg(test)]
+        let mut trace = self.trace_live_read("start_retries");
         let mut query = self.conn.prepare("SELECT task_id,attempts,retry_at FROM start_retries")?;
-        let rows = query.query_map([], |row| Ok((TaskId(row.get(0)?), (row.get::<_, i64>(1)?.clamp(1, 255) as u8, row.get(2)?))))?;
-        Ok(rows.collect::<rusqlite::Result<_>>()?)
+        #[cfg(test)]
+        if let Some(trace) = &mut trace { trace.statement(); }
+        let rows = query.query_map([], |row| { #[cfg(test)] if let Some(trace) = &mut trace { trace.row(); } Ok((TaskId(row.get(0)?), (row.get::<_, i64>(1)?.clamp(1, 255) as u8, row.get(2)?))) })?;
+        let values = rows.collect::<rusqlite::Result<_>>()?;
+        #[cfg(test)]
+        if let Some(trace) = &mut trace { trace.complete(); }
+        Ok(values)
     }
     pub(crate) fn set_start_retry(&mut self, task_id: &TaskId, retry: Option<(u8, i64)>) -> Result<()> {
         match retry {
@@ -1073,7 +1150,14 @@ impl DomainStore {
     }
     /// Whether a launch of this task was ever recorded.
     pub(crate) fn task_was_launched(&self, task_id: &TaskId) -> Result<bool> {
-        Ok(self.conn.query_row("SELECT EXISTS(SELECT 1 FROM model_decisions WHERE task_id=?1 AND kind IN('launch','relaunch'))", [&task_id.0], |row| row.get(0))?)
+        #[cfg(test)]
+        let mut trace = self.trace_live_read("task_was_launched");
+        #[cfg(test)]
+        if let Some(trace) = &mut trace { trace.statement(); }
+        let value = self.conn.query_row("SELECT EXISTS(SELECT 1 FROM model_decisions WHERE task_id=?1 AND kind IN('launch','relaunch'))", [&task_id.0], |row| { #[cfg(test)] if let Some(trace) = &mut trace { trace.row(); } row.get(0) })?;
+        #[cfg(test)]
+        if let Some(trace) = &mut trace { trace.complete(); }
+        Ok(value)
     }
     /// Whether Alondra launched this session: a launch of it was recorded, or its agent was assigned
     /// a task by Alondra's own launch path (launch, relaunch, automatic launch), which is what
@@ -1150,9 +1234,16 @@ impl DomainStore {
         Ok(())
     }
     pub(crate) fn cancel_reasons(&self) -> Result<std::collections::BTreeMap<TaskId, String>> {
+        #[cfg(test)]
+        let mut trace = self.trace_live_read("cancel_reasons");
         let mut query = self.conn.prepare("SELECT task_id,reason FROM task_cancel_reason")?;
-        let rows = query.query_map([], |row| Ok((TaskId(row.get(0)?), row.get(1)?)))?;
-        Ok(rows.collect::<rusqlite::Result<_>>()?)
+        #[cfg(test)]
+        if let Some(trace) = &mut trace { trace.statement(); }
+        let rows = query.query_map([], |row| { #[cfg(test)] if let Some(trace) = &mut trace { trace.row(); } Ok((TaskId(row.get(0)?), row.get(1)?)) })?;
+        let values = rows.collect::<rusqlite::Result<_>>()?;
+        #[cfg(test)]
+        if let Some(trace) = &mut trace { trace.complete(); }
+        Ok(values)
     }
     pub(crate) fn task_history(&self, task_id: &TaskId) -> Result<Vec<HistoryStep>> {
         let mut query = self.conn.prepare("SELECT a.at,h.state,h.summary FROM task_history h JOIN command_audit a ON a.revision=h.revision
