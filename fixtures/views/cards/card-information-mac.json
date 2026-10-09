@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:f12d034b-249e-4487-a89b-57de38c26372",
   "client": "mac",
-  "version": "vf19c6b4c5c577e54",
+  "version": "v1481296dee9983e0",
   "cursor": "cursor-1",
   "title": "The simulator pass is clean",
   "status": {
@@ -92,7 +92,8 @@
             "attachments": true,
             "enabled": true,
             "stamp": "Sent",
-            "key": "r"
+            "key": "r",
+            "resolves_card": false
           },
           "link": {
             "kind": "view",
@@ -123,7 +124,8 @@
               "attachments": false,
               "enabled": true,
               "stamp": "Read",
-              "key": "1"
+              "key": "1",
+              "resolves_card": true
             }
           ]
         }

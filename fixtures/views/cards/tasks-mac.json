@@ -4,7 +4,7 @@
   "view": "tasks",
   "key": "tasks",
   "client": "mac",
-  "version": "vc0cd99cbdf09cdf9",
+  "version": "v9abbaa3e9f2ded14",
   "cursor": "cursor-1",
   "title": "Tasks",
   "status": {
@@ -349,7 +349,8 @@
                 "kind": "none"
               },
               "attachments": false,
-              "enabled": true
+              "enabled": true,
+              "resolves_card": false
             }
           ]
         }

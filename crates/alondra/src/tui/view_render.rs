@@ -1020,7 +1020,7 @@ mod tests {
             id: "message".into(), label: "Message".into(), style: Style::Primary, role: None, option_id: None, description: None,
             presentation: Presentation::Button, options: vec![], input: Input::None,
             attachments: false, comments: None, confirm: None, enabled: true,
-            disabled_reason: None, stamp: None, key: None, link: None,
+            disabled_reason: None, stamp: None, key: None, link: None, resolves_card: false,
         };
         assert_eq!(action_line(&action), "Message");
         let withdraw = Action {
@@ -1065,7 +1065,7 @@ mod action_tests {
             id: id.into(), label: label.into(), style: Style::Plain, role: None, option_id: None, description: None,
             presentation: Presentation::Button, options: vec![], input: Input::None,
             attachments: false, comments: None, confirm: None, enabled: true,
-            disabled_reason: None, stamp: None, key: None, link: None,
+            disabled_reason: None, stamp: None, key: None, link: None, resolves_card: false,
         }
     }
 

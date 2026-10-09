@@ -345,7 +345,9 @@ public struct Action: Codable, Equatable, Sendable {
     public let optionId: String?
     /// What choosing the option means, when its author explained it.
     public let description: String?
-    enum CodingKeys: String, CodingKey { case id, label, style, presentation, options, input, attachments, comments, confirm, enabled; case disabledReason = "disabled_reason"; case stamp, key, link, role; case optionId = "option_id"; case description }
+    /// Whether doing it takes its card out of the queue, as the server decides; absent from a daemon older than the field.
+    public let resolvesCard: Bool?
+    enum CodingKeys: String, CodingKey { case id, label, style, presentation, options, input, attachments, comments, confirm, enabled; case disabledReason = "disabled_reason"; case stamp, key, link, role; case optionId = "option_id"; case description; case resolvesCard = "resolves_card" }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decodeIfPresent(String.self, forKey: .id); label = try c.decode(String.self, forKey: .label)
@@ -357,6 +359,7 @@ public struct Action: Codable, Equatable, Sendable {
         key = try c.decodeIfPresent(String.self, forKey: .key); link = try c.decodeIfPresent(Link.self, forKey: .link)
         role = (try? c.decodeIfPresent(ActionRole.self, forKey: .role)) ?? nil
         optionId = try c.decodeIfPresent(String.self, forKey: .optionId); description = try c.decodeIfPresent(String.self, forKey: .description)
+        resolvesCard = try c.decodeIfPresent(Bool.self, forKey: .resolvesCard)
     }
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
@@ -366,6 +369,7 @@ public struct Action: Codable, Equatable, Sendable {
         try c.encodeIfPresent(confirm, forKey: .confirm); try c.encode(enabled, forKey: .enabled); try c.encodeIfPresent(disabledReason, forKey: .disabledReason)
         try c.encodeIfPresent(stamp, forKey: .stamp); try c.encodeIfPresent(key, forKey: .key); try c.encodeIfPresent(link, forKey: .link)
         try c.encodeIfPresent(role, forKey: .role); try c.encodeIfPresent(optionId, forKey: .optionId); try c.encodeIfPresent(description, forKey: .description)
+        try c.encodeIfPresent(resolvesCard, forKey: .resolvesCard)
     }
 }
 public struct ActionOption: Codable, Equatable, Sendable { public let id: String; public let label: String; public let description: String?; public let style: Style; public let input: Input; public let key: String? }

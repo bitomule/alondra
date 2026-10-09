@@ -4,7 +4,7 @@
   "view": "fleet",
   "key": "fleet",
   "client": "mac",
-  "version": "v317ac7614e9c24c1",
+  "version": "v2c2016b840dbb8fb",
   "cursor": "cursor-1",
   "title": "Fleet",
   "status": {
@@ -124,7 +124,8 @@
               },
               "attachments": false,
               "enabled": true,
-              "stamp": "Paused"
+              "stamp": "Paused",
+              "resolves_card": false
             }
           ]
         },
@@ -151,7 +152,8 @@
               },
               "attachments": false,
               "enabled": true,
-              "stamp": "Paused"
+              "stamp": "Paused",
+              "resolves_card": false
             }
           ]
         },
@@ -179,7 +181,8 @@
               },
               "attachments": false,
               "enabled": true,
-              "stamp": "Resuming…"
+              "stamp": "Resuming…",
+              "resolves_card": false
             }
           ]
         },
@@ -207,7 +210,8 @@
               },
               "attachments": false,
               "enabled": true,
-              "stamp": "Resuming…"
+              "stamp": "Resuming…",
+              "resolves_card": false
             }
           ]
         }
@@ -256,7 +260,8 @@
                 "message": "Close this node?",
                 "button": "Close Node"
               },
-              "enabled": true
+              "enabled": true,
+              "resolves_card": false
             }
           ]
         },
@@ -297,7 +302,8 @@
                 "message": "Close this node?",
                 "button": "Close Node"
               },
-              "enabled": true
+              "enabled": true,
+              "resolves_card": false
             }
           ]
         }
@@ -346,7 +352,8 @@
                 "message": "Close this node?",
                 "button": "Close Node"
               },
-              "enabled": true
+              "enabled": true,
+              "resolves_card": false
             }
           ]
         }
@@ -395,7 +402,8 @@
                 "message": "Close this node?",
                 "button": "Close Node"
               },
-              "enabled": true
+              "enabled": true,
+              "resolves_card": false
             }
           ]
         }
@@ -444,7 +452,8 @@
                 "message": "Close this node?",
                 "button": "Close Node"
               },
-              "enabled": true
+              "enabled": true,
+              "resolves_card": false
             }
           ]
         },
@@ -485,7 +494,8 @@
                 "message": "Close this node?",
                 "button": "Close Node"
               },
-              "enabled": true
+              "enabled": true,
+              "resolves_card": false
             }
           ]
         }

@@ -822,6 +822,14 @@ impl DomainState {
         }
         Ok(())
     }
+    fn card_target_matches_delivery(target: &CardTarget, delivery: &Interaction) -> bool {
+        let InteractionPayload::Delivery { targets, .. } = &delivery.payload else { return false };
+        match target {
+            CardTarget::Delivery { interaction_id } => interaction_id == &delivery.id,
+            CardTarget::PullRequest { pr_id } => targets.iter().any(|target| matches!(target, DeliveryTarget::PullRequest { pr_id: known, .. } if known == pr_id)),
+            CardTarget::Document { document_id } => targets.iter().any(|target| matches!(target, DeliveryTarget::DocumentRevision { document_id: known, .. } if known == document_id)),
+        }
+    }
     /// What an open card holds back, as the deliveries it stands in front of.
     pub(crate) fn blocked_deliveries(&self, i: &Interaction) -> Vec<InteractionId> {
         if !self.open(i) {
@@ -830,13 +838,7 @@ impl DomainState {
         let mut out = vec![];
         for target in &i.card.blocks {
             for d in self.interactions.values().filter(|d| self.open(d)) {
-                let InteractionPayload::Delivery { targets, .. } = &d.payload else { continue };
-                let hit = match target {
-                    CardTarget::Delivery { interaction_id } => interaction_id == &d.id,
-                    CardTarget::PullRequest { pr_id } => targets.iter().any(|t| matches!(t, DeliveryTarget::PullRequest { pr_id: p, .. } if p == pr_id)),
-                    CardTarget::Document { document_id } => targets.iter().any(|t| matches!(t, DeliveryTarget::DocumentRevision { document_id: d, .. } if d == document_id)),
-                };
-                if hit && d.id != i.id {
+                if d.id != i.id && Self::card_target_matches_delivery(target, d) {
                     out.push(d.id.clone());
                 }
             }
@@ -930,8 +932,13 @@ impl DomainState {
     }
     /// R16: the open cards that hold back this delivery, oldest first.
     pub fn blocked_by(&self, delivery: &InteractionId) -> Vec<InteractionId> {
+        let Some(delivery) = self.interactions.get(delivery)
+            .filter(|delivery| self.open(delivery) && matches!(delivery.payload, InteractionPayload::Delivery { .. }))
+        else { return vec![] };
         let mut by: Vec<&Interaction> = self.interactions.values()
-            .filter(|i| self.blocked_deliveries(i).contains(delivery))
+            .filter(|i| i.id != delivery.id
+                && i.card.blocks.iter().any(|target| Self::card_target_matches_delivery(target, delivery))
+                && self.open(i))
             .collect();
         by.sort_by_key(|i| i.order);
         by.into_iter().map(|i| i.id.clone()).collect()

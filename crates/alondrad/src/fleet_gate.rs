@@ -149,21 +149,42 @@ struct Inner {
     told: Told,
 }
 
-/// The last reason the log gave for a queue that does not move, so it is said again only when it
-/// changes or every `HOLD_LOG_EVERY`.
+/// What holds the queue, without the numbers that change on every sample (free memory, load,
+/// queue length), so the log repeats a hold only when its cause changes or every `HOLD_LOG_EVERY`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Cause {
+    Slots,
+    Memory(Health),
+    Cpu,
+    Disk,
+}
+
+impl Cause {
+    pub(crate) fn of(hold: &Hold) -> Option<Self> {
+        match hold {
+            Hold::Spacing { .. } => None,
+            Hold::Slots { .. } => Some(Self::Slots),
+            Hold::Memory { health, .. } => Some(Self::Memory(*health)),
+            Hold::Cpu { .. } => Some(Self::Cpu),
+            Hold::Disk => Some(Self::Disk),
+        }
+    }
+}
+
+/// The last cause the log gave for a queue that does not move, and when.
 #[derive(Default)]
-pub(crate) struct Told(Option<(String, Millis)>);
+pub(crate) struct Told(Option<(Cause, Millis)>);
 
 impl Told {
-    pub(crate) fn due(&mut self, reason: Option<String>, now: Millis) -> bool {
-        let Some(reason) = reason else {
+    pub(crate) fn due(&mut self, cause: Option<Cause>, now: Millis) -> bool {
+        let Some(cause) = cause else {
             self.0 = None;
             return false;
         };
-        if self.0.as_ref().is_some_and(|(said, at)| *said == reason && now - at < HOLD_LOG_EVERY) {
+        if self.0.is_some_and(|(said, at)| said == cause && now - at < HOLD_LOG_EVERY) {
             return false;
         }
-        self.0 = Some((reason, now));
+        self.0 = Some((cause, now));
         true
     }
 }
@@ -748,13 +769,13 @@ pub(crate) async fn pass_at(domain: &DomainRuntime, home: &Path, launcher: &impl
         let configured = snapshot.configured;
         inner.saved.learned.learn(configured, snapshot.mac.health, !snapshot.queue.is_empty(), now);
         gate.save(&inner);
-        let held = snapshot.queue.first().zip(snapshot.hold.as_ref()).and_then(|(head, hold)| {
+        let held = snapshot.queue.first().zip(snapshot.hold.as_ref());
+        if inner.told.due(held.and_then(|(_, hold)| Cause::of(hold)), now) && let Some((head, hold)) = held {
             let working: Vec<TaskId> = working_tasks(domain, &state, now).into_iter().collect();
             let on_user: Vec<TaskId> = busy_tasks(domain, &state, now).into_iter().filter(|task| !working.contains(task)).collect();
-            hold_line(snapshot.queue.len(), &key_text(&state, &head.key), head.priority, hold, &working, &on_user, inner.saved.pauses.paused.len())
-        });
-        if inner.told.due(held.clone(), now) && let Some(line) = held {
-            log!("{line}");
+            if let Some(line) = hold_line(snapshot.queue.len(), &key_text(&state, &head.key), head.priority, hold, &working, &on_user, inner.saved.pauses.paused.len()) {
+                log!("{line}");
+            }
         }
         match (snapshot.queue.first(), snapshot.hold) {
             (Some(head), None) if inner.asking.contains_key(&head.key) => {

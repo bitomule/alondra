@@ -132,7 +132,10 @@ impl Outcome {
 
 /// "Send anyway": what a `Changed` outcome offers, the same action with the PR's fresh head.
 pub fn send_anyway(action_id: String, label: &str) -> CardAction {
-    CardAction::from(super::card::button(action_id, label, super::Role::Advance))
+    let mut action = super::card::button(action_id, label, super::Role::Advance);
+    action.resolves_card = super::action_id::ActionId::parse(&action.id)
+        .is_ok_and(|id| super::resolves::always_resolves(id.verb));
+    CardAction::from(action)
 }
 
 /// The text a client shows when it could not reach the Mac: the same in all three.

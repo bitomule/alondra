@@ -489,6 +489,10 @@ pub struct Action {
     pub key: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub link: Option<Link>,
+    /// Whether doing it takes its card out of the queue (`views::resolves_card`): the clients hide
+    /// the card the moment it is sent when it does, and keep it in place when it does not.
+    #[serde(default)]
+    pub resolves_card: bool,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

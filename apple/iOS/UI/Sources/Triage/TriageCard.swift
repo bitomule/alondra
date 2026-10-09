@@ -195,6 +195,7 @@ struct TriageCard: View {
                 .buttonStyle(.plain)
                 .foregroundStyle(.secondary)
                 .accessibilityLabel("Leave for Later")
+                .accessibilityIdentifier("triage.later.\(card.id)")
             }
         }
     }
@@ -204,6 +205,7 @@ struct TriageCard: View {
         return VStack(alignment: .leading, spacing: 8) {
             Text(card.need ?? card.title).font(.display(.title2, weight: .bold)).foregroundStyle(Palette.ink)
                 .lineLimit(large ? 2 : 3)
+                .accessibilityIdentifier("triage.need.\(card.id)")
             if why, let why = card.why {
                 Text(why).font(.subheadline).foregroundStyle(.secondary).lineLimit(large ? 2 : 4)
             }
@@ -245,11 +247,17 @@ struct TriageCard: View {
                 }
                 .menuStyle(.button)
                 .glassRole(action.cardRole)
+                .accessibilityIdentifier(actionIdentifier(action))
             } else {
                 Button { perform(action) } label: { GlassBarLabel(action.label).multilineTextAlignment(.center) }
                     .glassRole(action.cardRole)
+                    .accessibilityIdentifier(actionIdentifier(action))
             }
         }
+    }
+
+    private func actionIdentifier(_ action: AlondraContract.Action) -> String {
+        "triage.action.\(card.id).\(action.optionId ?? action.label)"
     }
 
     private var moreMenu: some View {
@@ -287,6 +295,7 @@ struct TriageCard: View {
             ), axis: .vertical)
                 .lineLimit(1...5).focused(live ? $replyFocused : $roomFocused)
                 .padding(.leading, 16).padding(.vertical, 12)
+                .accessibilityIdentifier("triage.reply.\(card.id)")
             Button {
                 replyFocused = false
                 store.send(.replySent(action))
@@ -298,6 +307,7 @@ struct TriageCard: View {
             .disabled(empty)
             .padding(4)
             .accessibilityLabel("Send")
+            .accessibilityIdentifier("triage.send.\(card.id)")
         }
         .background(Palette.cardRaised, in: .rect(cornerRadius: 22, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).strokeBorder(Palette.hairline))

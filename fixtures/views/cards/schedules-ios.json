@@ -4,7 +4,7 @@
   "view": "schedules",
   "key": "schedules",
   "client": "ios",
-  "version": "v34198c072afa589c",
+  "version": "vb79dcf9d72431ae1",
   "cursor": "cursor-1",
   "title": "Scheduled Tasks",
   "status": {
@@ -85,7 +85,8 @@
               "link": {
                 "kind": "view",
                 "key": "schedule:new"
-              }
+              },
+              "resolves_card": false
             }
           ]
         }

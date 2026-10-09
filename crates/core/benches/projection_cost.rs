@@ -1,5 +1,7 @@
 use alondra_core::domain::*;
 use std::{alloc::{GlobalAlloc, Layout, System}, collections::BTreeSet, sync::atomic::{AtomicBool, AtomicUsize, Ordering}, time::Instant};
+mod inbox_graphs;
+
 struct Allocations;
 static COUNTING: AtomicBool = AtomicBool::new(false);
 static BYTES: AtomicUsize = AtomicUsize::new(0);
@@ -49,6 +51,7 @@ fn cpu_seconds() -> f64 {
         + (usage.ru_utime.tv_usec + usage.ru_stime.tv_usec) as f64 / 1_000_000.0
 }
 fn main() {
+    if std::env::args().any(|argument| argument == "--inbox-graphs") { profile_inbox_graphs(); return; }
     if std::env::args().any(|argument| argument == "--full-inbox") { profile_full_inbox(); return; }
     if std::env::args().any(|argument| argument == "--inbox-orders") { profile_inbox_orders(); return; }
     let mut state = DomainState::new("synthetic-projection-epoch");
@@ -207,4 +210,80 @@ fn profile_full_inbox() {
         "interaction_body_bytes":8_192_000,"document_revisions":1_000,"outputs":expected.len(),
         "input_sha256":input_hash,"output_sha256":output_hash,"errors":errors,"samples":samples}));
     assert_eq!(errors, 0);
+}
+
+
+fn measured_samples<T: PartialEq>(mut read: impl FnMut() -> T, expected: &T) -> (Vec<serde_json::Value>, usize) {
+    std::hint::black_box(read());
+    let mut samples = vec![];
+    let mut errors = 0;
+    for _ in 0..3 {
+        BYTES.store(0, Ordering::Relaxed); CALLS.store(0, Ordering::Relaxed);
+        LIVE.store(0, Ordering::Relaxed); PEAK.store(0, Ordering::Relaxed);
+        let cpu = cpu_seconds(); let start = Instant::now();
+        COUNTING.store(true, Ordering::Relaxed);
+        let actual = read();
+        if &actual != expected { errors += 1; }
+        std::hint::black_box(&actual); drop(actual);
+        COUNTING.store(false, Ordering::Relaxed);
+        samples.push(serde_json::json!({"wall_ms": start.elapsed().as_secs_f64() * 1000.0,
+            "cpu_ms": (cpu_seconds() - cpu) * 1000.0, "allocated_bytes": BYTES.load(Ordering::Relaxed),
+            "allocations": CALLS.load(Ordering::Relaxed), "peak_temporary_bytes": PEAK.load(Ordering::Relaxed),
+            "remaining_temporary_bytes": LIVE.load(Ordering::Relaxed)}));
+    }
+    assert_eq!(errors, 0);
+    assert!(samples.iter().all(|sample| sample["remaining_temporary_bytes"] == 0));
+    (samples, errors)
+}
+
+fn digest(value: &impl serde::Serialize) -> String {
+    use sha2::{Digest, Sha256};
+    format!("{:x}", Sha256::digest(serde_json::to_vec(value).unwrap()))
+}
+
+fn profile_inbox_graphs() {
+    let selected = std::env::args().find_map(|argument| argument.strip_prefix("--graph-case=").map(str::to_owned));
+    let mut executed = 0;
+    for (shape, count, body_size, full) in [
+        ("stack-chain", 64, 64, false), ("stack-chain", 128, 64, false),
+        ("fanout", 100, 64, false), ("fanout", 1_000, 64, false),
+        ("fanin", 100, 64, false), ("fanin", 1_000, 64, false),
+        ("mixed", 5, 64, false), ("unblocked", 1_000, 64, false),
+        ("fanin", 1_000, 8_192, true),
+    ] {
+        let case = format!("{shape}-{count}-{}", if full { "full" } else { "orders" });
+        if selected.as_ref().is_some_and(|selected| selected != &case) { continue; }
+        executed += 1;
+        let fixture = inbox_graphs::fixture(shape, count, body_size);
+        let graph = fixture.inspect();
+        let input_hash = digest(&fixture.state);
+        let expected_order = fixture.orders();
+        let expected_blockers: Vec<_> = fixture.state.interactions.values()
+            .filter(|item| matches!(item.payload, InteractionPayload::Delivery { .. }))
+            .map(|item| (item.id.clone(), fixture.blockers[&item.id].clone())).collect();
+        let lookup = if expected_blockers.is_empty() { None } else {
+            let (samples, errors) = measured_samples(|| inbox_graphs::delivery_blockers(&fixture.state), &expected_blockers);
+            Some(serde_json::json!({"scope": "delivery-blocker-lookup", "samples": samples, "errors": errors,
+                "outputs": expected_blockers.len(), "output_sha256": digest(&expected_blockers)}))
+        };
+        let projection = if full {
+            let expected = fixture.state.inbox_projection();
+            let ids: Vec<_> = expected.iter().map(|item| item.id.clone()).collect();
+            assert_eq!(ids, expected_order.iter().map(|(id, _)| id.clone()).collect::<Vec<_>>());
+            let (samples, errors) = measured_samples(|| fixture.state.inbox_projection(), &expected);
+            serde_json::json!({"scope": "full-inbox-graph", "samples": samples, "errors": errors,
+                "outputs": expected.len(), "output_sha256": digest(&expected)})
+        } else {
+            let (samples, errors) = measured_samples(|| fixture.state.inbox_orders(), &expected_order);
+            serde_json::json!({"scope": "inbox-orders-graph", "samples": samples, "errors": errors,
+                "outputs": expected_order.len(), "output_sha256": digest(&expected_order)})
+        };
+        println!("{}", serde_json::json!({"case": case, "shape": shape, "interactions": count,
+            "interaction_body_bytes": count * body_size, "document_revisions": 0,
+            "input_sha256": input_hash, "literal_order_sha256": digest(&expected_order),
+            "literal_order": expected_order, "adjacency_sha256": digest(&fixture.blockers),
+            "graph": graph, "blocker_lookup": lookup, "projection": projection,
+            "limits": "Own validated synthetic states. Fixture construction, structural validation, literal/legacy/actual-adjacency checks and counter analysis occur before timing. Lookup and projection samples are separate workloads, not additive stages. Full item output hash must match the retained current-source baseline before any future production change. CPU/allocations are isolated; no RSS, app latency or whole-graph linearity claim."}));
+    }
+    assert!(executed > 0, "unknown graph case {selected:?}");
 }

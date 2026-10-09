@@ -880,6 +880,81 @@ final class TriageFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.header?.waiting, 3, "the header drops the card the queue hides")
     }
 
+    /// David wrote his answer to a question in its reply field: the daemon took the text as the
+    /// answer and closed the card, but the phone guessed from the action's name that a reply keeps
+    /// it waiting. The server now says so on the action, and the card leaves once its stamp shows,
+    /// even while every view the Mac sends still lists it.
+    @MainActor
+    func testAWrittenReplyTheServerSaysAnswersTheQuestionTakesTheCardOutAtOnce() async throws {
+        let clock = TestClock<Duration>()
+        let store = store(try fullFeed(), clock: clock)
+        await store.send(.task)
+        await store.skipReceivedActions()
+
+        let reply = ActionRequest(commandId: "c-reply", dataEpoch: "", client: .ios, lang: "es",
+                                  actionId: "reply:\(ids.question)@1", input: ActionInput(text: "Ship the concise copy"), resolvesCard: true)
+        await store.send(.cards(.element(id: ids.question, action: .actions(.sent(reply)))))
+        await clock.advance(by: TriageFeature.stampDuration)
+        await store.receive(\.stampElapsed)
+        XCTAssertEqual(store.state.orderedIDs, [ids.information, ids.delivery, ids.pullRequest])
+
+        await store.send(.screen(.loaded(try Fixtures.home(queue: queue, version: "v-still-listed"))))
+        XCTAssertFalse(store.state.orderedIDs.contains(ids.question), "a view sent before the answer landed cannot bring it back")
+    }
+
+    /// The same answer typed in the card's own reply field, with the reply action as the server
+    /// sends it in the card's view.
+    @MainActor
+    func testTheCardsOwnReplyFieldTakesItOutWhenItsActionSaysItAnswers() async throws {
+        let clock = TestClock<Duration>()
+        let store = store(try fullFeed(), clock: clock)
+        await store.send(.task)
+        await store.skipReceivedActions()
+        let reply = try XCTUnwrap(store.state.cards[id: ids.question]?.replyAction)
+        XCTAssertEqual(reply.resolvesCard, true, "the golden card's reply answers its open question")
+
+        await store.send(.cards(.element(id: ids.question, action: .replyChanged("Ship the concise copy"))))
+        await store.send(.cards(.element(id: ids.question, action: .replySent(reply))))
+        await store.skipReceivedActions()
+        XCTAssertTrue(store.state.optimistic.hides(ids.question))
+    }
+
+    /// The card's own view keeps arriving after the person answered it, now settled. Once the
+    /// queue no longer listed it, the phone forgot it was answered here and announced
+    /// "Already answered" about the answer it had just sent.
+    @MainActor
+    func testACardAnsweredHereIsNotAnnouncedAsAnsweredElsewhereWhenItsViewSettles() async throws {
+        let clock = TestClock<Duration>()
+        let store = store(try fullFeed(), clock: clock)
+        await store.send(.task)
+        await store.skipReceivedActions()
+
+        let reply = try XCTUnwrap(store.state.cards[id: ids.question]?.replyAction)
+        await store.send(.cards(.element(id: ids.question, action: .replyChanged("Ship the concise copy"))))
+        await store.send(.cards(.element(id: ids.question, action: .replySent(reply))))
+        await store.skipReceivedActions()
+        XCTAssertTrue(store.state.answered.contains(ids.question), "the daemon applied the answer")
+        await store.send(.screen(.loaded(try Fixtures.home(queue: [ids.information, ids.delivery, ids.pullRequest], version: "v-after"))))
+        XCTAssertNotNil(store.state.cards[id: ids.question], "its card is still drawn under its stamp")
+        XCTAssertTrue(store.state.answered.contains(ids.question), "so it is still known as answered here")
+    }
+
+    /// A message to the node keeps its card waiting: the server says it does not close it.
+    @MainActor
+    func testAReplyTheServerSaysIsOnlyAMessageKeepsTheCard() async throws {
+        let clock = TestClock<Duration>()
+        let store = store(try fullFeed(), clock: clock)
+        await store.send(.task)
+        await store.skipReceivedActions()
+
+        let reply = ActionRequest(commandId: "c-note", dataEpoch: "", client: .ios, lang: "es",
+                                  actionId: "reply:\(ids.question)@1", input: ActionInput(text: "Thanks"), resolvesCard: false)
+        await store.send(.cards(.element(id: ids.question, action: .actions(.sent(reply)))))
+        await clock.advance(by: TriageFeature.stampDuration)
+        await store.receive(\.stampElapsed)
+        XCTAssertEqual(store.state.orderedIDs, queue)
+    }
+
     @MainActor
     func testAnAnswerFromTheFrontCardNeverStampsItsNeighbour() async throws {
         let store = store(try fullFeed())

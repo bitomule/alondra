@@ -141,7 +141,7 @@ public struct MacPresentationFeature: Sendable {
                 state.actionFeature = ActionFeature.State(dataEpoch: document.dataEpoch, client: .mac, lang: lang)
                 state.actionFeature.unsure = action.id.flatMap { state.unsure[$0] }
                 state.activeForm = nil
-                state.actionTarget = nil
+                state.actionTarget = state.selectedViewKey.flatMap(Self.cardID)
                 state.actionPresented = false
                 return .concatenate(.send(.action(.present(action))), .send(.action(.textChanged(text))), .send(.action(.submit)))
             case .beginViewForm(let form):
@@ -265,6 +265,7 @@ public struct MacPresentationFeature: Sendable {
                 let deadline = sendDeadline(request)
                 guard let target = state.actionTarget else { return deadline }
                 state.actionTarget = nil
+                guard request.resolvesItsCard else { return deadline }
                 state.optimistic.begin(target, request)
                 state.returnReasons[target] = nil
                 state.actionPresented = false

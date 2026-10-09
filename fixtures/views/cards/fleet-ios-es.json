@@ -4,7 +4,7 @@
   "view": "fleet",
   "key": "fleet",
   "client": "ios",
-  "version": "vd292849adaf2dad8",
+  "version": "v3f4ccb1a9fb95daa",
   "cursor": "cursor-1",
   "title": "Flota",
   "status": {
@@ -145,7 +145,8 @@
                 "message": "¿Cerrar este nodo?",
                 "button": "Cerrar nodo"
               },
-              "enabled": true
+              "enabled": true,
+              "resolves_card": false
             }
           ]
         },
@@ -186,7 +187,8 @@
                 "message": "¿Cerrar este nodo?",
                 "button": "Cerrar nodo"
               },
-              "enabled": true
+              "enabled": true,
+              "resolves_card": false
             }
           ]
         }
@@ -235,7 +237,8 @@
                 "message": "¿Detener lo que hace ahora este nodo? Conserva su tarea y te espera.",
                 "button": "Interrumpir"
               },
-              "enabled": true
+              "enabled": true,
+              "resolves_card": false
             },
             {
               "id": "pause:zeta-worker@6",
@@ -252,7 +255,8 @@
                 "button": "Pausar"
               },
               "enabled": true,
-              "stamp": "En pausa"
+              "stamp": "En pausa",
+              "resolves_card": false
             },
             {
               "id": "close:zeta-worker@6",
@@ -268,7 +272,8 @@
                 "message": "¿Cerrar este nodo?",
                 "button": "Cerrar nodo"
               },
-              "enabled": true
+              "enabled": true,
+              "resolves_card": false
             }
           ]
         }
@@ -317,7 +322,8 @@
                 "message": "¿Cerrar este nodo?",
                 "button": "Cerrar nodo"
               },
-              "enabled": true
+              "enabled": true,
+              "resolves_card": false
             }
           ]
         }
@@ -366,7 +372,8 @@
                 "message": "¿Cerrar este nodo?",
                 "button": "Cerrar nodo"
               },
-              "enabled": true
+              "enabled": true,
+              "resolves_card": false
             }
           ]
         },
@@ -407,7 +414,8 @@
                 "message": "¿Cerrar este nodo?",
                 "button": "Cerrar nodo"
               },
-              "enabled": true
+              "enabled": true,
+              "resolves_card": false
             }
           ]
         }

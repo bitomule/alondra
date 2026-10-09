@@ -133,4 +133,29 @@ final class ViewModelsTests: XCTestCase {
         let encoded = try XCTUnwrap(JSONSerialization.jsonObject(with: ContractCodec.encode(anyOf)) as? [String: Any])
         XCTAssertEqual(encoded["any_of"] as? [String], ["every_hours", "every_days", "every_months"])
     }
+
+    /// Whether an action takes its card out is the server's word, read from `resolves_card`.
+    /// A daemon older than the field says nothing; then only a message keeps its card.
+    func testAnActionCarriesWhetherItTakesItsCardOutAndTheRequestKeepsItOnTheDevice() throws {
+        func action(_ extra: String) throws -> Action {
+            try ContractCodec.decode(Action.self, from: Data("""
+            {"id":"reply:q-1@3","label":"Reply","style":"secondary","presentation":"button","input":{"kind":"none"},
+             "attachments":false,"enabled":true\(extra)}
+            """.utf8))
+        }
+        XCTAssertEqual(try action(#","resolves_card":true"#).resolvesCard, true)
+        XCTAssertEqual(try action(#","resolves_card":false"#).resolvesCard, false)
+        XCTAssertNil(try action("").resolvesCard)
+
+        let request = { (resolves: Bool?) in
+            ActionRequest(commandId: "c", dataEpoch: "e", client: .ios, lang: "es", actionId: "reply:q-1@3", resolvesCard: resolves)
+        }
+        XCTAssertTrue(request(true).resolvesItsCard, "a reply the server says answers its question")
+        XCTAssertFalse(request(false).resolvesItsCard)
+        XCTAssertFalse(request(nil).resolvesItsCard, "an older daemon only ever sent a reply to the node")
+        XCTAssertTrue(ActionRequest(commandId: "c", dataEpoch: "e", client: .ios, lang: "es", actionId: "ans:q-1@3").resolvesItsCard)
+        let sent = try XCTUnwrap(JSONSerialization.jsonObject(with: ContractCodec.encode(request(true))) as? [String: Any])
+        XCTAssertNil(sent["resolves_card"], "the server decides it again; the device never sends it")
+        XCTAssertEqual(Set(sent.keys), ["protocol", "command_id", "data_epoch", "client", "lang", "action_id", "input"])
+    }
 }
