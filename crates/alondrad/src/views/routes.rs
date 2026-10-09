@@ -498,6 +498,12 @@ mod tests {
             "/views/card%3Ai-42?protocol=1&client=ios&lang=en"
         ));
         assert!(approved_read_path(
+            "/views/card:beta-0.3.0-42-result?protocol=1&client=ios&lang=es"
+        ));
+        assert!(!approved_read_path(
+            "/views/card:..?protocol=1&client=ios&lang=en"
+        ));
+        assert!(approved_read_path(
             "/views/pull_request%3Agithub.com%2Fbitomule%2Falondra%23154?protocol=1&client=mac&lang=en"
         ));
         assert!(approved_read_path(

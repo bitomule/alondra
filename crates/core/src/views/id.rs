@@ -5,7 +5,9 @@ pub fn valid(id: &str) -> bool {
         && id.len() <= 256
         && (id
             .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+            && id != "."
+            && id != ".."
             || hosted_pr(id))
 }
 
@@ -62,6 +64,7 @@ mod tests {
         for id in [
             "hf-weekly-2026-09-30",
             "a98d034b-249e-4487-a89b-57de38c26372",
+            "beta-0.3.0-42-result",
             "github.com/bitomule/alondra#154",
             "gitlab.example.com/bitomule/alondra#154",
             "gitlab/bitomule/alondra#154",
@@ -71,6 +74,8 @@ mod tests {
         }
         for id in [
             "",
+            ".",
+            "..",
             "../secret",
             "github.com/../repo#154",
             "github.com/a/b#1/other",
