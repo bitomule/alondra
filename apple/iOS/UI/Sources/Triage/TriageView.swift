@@ -98,9 +98,9 @@ public struct TriageView: View {
                     .font(.subheadline.weight(.medium)).foregroundStyle(.secondary).lineLimit(1)
                     .contentTransition(.numericText())
             }
-            if store.orderedIDs.count > 1 {
-                pageDots.padding(.top, 6)
-            }
+            pageDots.padding(.top, 6)
+                .opacity(store.orderedIDs.count > 1 ? 1 : 0)
+                .accessibilityHidden(store.orderedIDs.count <= 1)
         }
         .padding(.bottom, 14)
     }
@@ -138,9 +138,10 @@ public struct TriageView: View {
     }
 
     /// Every card is the room the stack has, from under the header down to the bottom margin above
-    /// the tab bar, so the ones behind line up with the front one. The card never grows with its
-    /// content and nothing here scrolls: the content adapts to the card, and what does not fit is in
-    /// the detail.
+    /// the tab bar, so the ones behind line up with the front one. The room for the page dots and
+    /// for the cards peeking behind is kept even when there are none, so a card alone is as tall as
+    /// one in a full stack. The card never grows with its content and nothing here scrolls: the
+    /// content adapts to the card, and what does not fit is in the detail.
     private var queue: some View {
         GeometryReader { proxy in
             stack(height: proxy.size.height - Self.bottomMargin)
@@ -148,11 +149,12 @@ public struct TriageView: View {
         }
     }
 
-    private static let bottomMargin: CGFloat = 24
+    private static let bottomMargin: CGFloat = 36
+    private static let peek = CGFloat(TriageFeature.depth - 1) * 11
 
     private func stack(height: CGFloat) -> some View {
         let ids = store.visibleIDs
-        let cardHeight = max(0, height - CGFloat(max(0, ids.count - 1)) * 11)
+        let cardHeight = max(0, height - Self.peek)
         let browsable = store.orderedIDs.count > 1
         return ZStack(alignment: .top) {
             ForEach(ids.reversed(), id: \.self) { id in
@@ -187,7 +189,7 @@ public struct TriageView: View {
                 ))
             }
         }
-        .padding(.top, CGFloat(max(0, ids.count - 1)) * 11)
+        .padding(.top, Self.peek)
         .simultaneousGesture(swipe)
         .onChange(of: dragging) { _, now in
             guard !now else { return }

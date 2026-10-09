@@ -388,6 +388,18 @@ final class TriageSnapshotTests: XCTestCase {
         }
     }
 
+    func test_aCardAloneIsAsTallAsTheFrontOfAStack() throws {
+        let alone = try single(try Fixtures.card(Fixtures.questionID))
+        let queue = [Fixtures.questionID, Fixtures.informationID, Fixtures.deliveryID]
+        let stacked = try ScreenStores.triage(queue: queue, cards: try queue.map(Fixtures.card))
+        assertScreen([.light], inWindow: true) {
+            VStack(spacing: 0) {
+                Harness(store: alone, tabBarHeight: 83)
+                Harness(store: stacked, tabBarHeight: 83)
+            }
+        }
+    }
+
     func test_stackAfterTheLastCardWrapsToTheFirst() throws {
         let queue = [Fixtures.questionID, Fixtures.informationID, Fixtures.deliveryID, Fixtures.pullRequestID]
         let shown = [Fixtures.pullRequestID, Fixtures.questionID, Fixtures.informationID]
