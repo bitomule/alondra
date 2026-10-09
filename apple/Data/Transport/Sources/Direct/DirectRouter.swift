@@ -43,6 +43,7 @@ public actor DirectRouter {
     private var validated: (at: ContinuousClock.Instant, network: String)?
     private var failedAt: ContinuousClock.Instant?
     private var probing: Task<DirectEndpoint, any Error>?
+    private var generation: UInt64 = 0
     private var identityChangedOn: String?
 
     /// `saved` are addresses a sealed answer proved before, on some network; `network` names the
@@ -117,6 +118,7 @@ public actor DirectRouter {
 
     /// The last address stopped answering, or the network changed: probe again on next use.
     public func invalidate() {
+        generation &+= 1
         validated = nil
         failedAt = nil
     }
@@ -127,6 +129,8 @@ public actor DirectRouter {
     }
 
     private func probe() async throws -> DirectEndpoint {
+        let startedOn = network()
+        let startedGeneration = generation
         let now = clock.now
         rejected = rejected.filter { $0.value.duration(to: now) < Self.rejectionTime }
         let candidates = candidates.filter { rejected[$0] == nil }
@@ -140,9 +144,13 @@ public actor DirectRouter {
             return answers
         }
         try Task.checkCancellation()
+        guard network() == startedOn, generation == startedGeneration else {
+            current = nil; validated = nil; failedAt = nil
+            throw DirectRouteError.unreachable
+        }
         var changedOn: String?
         for (index, answer) in answers.enumerated() where answer?.macID == pinned.macID && answer?.sameKeys(as: pinned) == false {
-            if proven[candidates[index]] == network() { changedOn = network() }
+            if proven[candidates[index]] == startedOn { changedOn = startedOn }
             rejected[candidates[index]] = clock.now
         }
         guard let index = answers.firstIndex(where: { $0?.macID == pinned.macID && $0?.sameKeys(as: pinned) == true }) else {
@@ -154,7 +162,7 @@ public actor DirectRouter {
         }
         identityChangedOn = nil
         current = candidates[index]
-        validated = (clock.now, network())
+        validated = (clock.now, startedOn)
         failedAt = nil
         return candidates[index]
     }
