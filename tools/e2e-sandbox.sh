@@ -5,6 +5,9 @@
 # Each Mac also listens for direct connections on PORT+20+n (loopback; SANDBOX_LAN=1 opens it to
 # the LAN to try a real phone) and advertises itself on Bonjour as _alondra-sandbox._tcp.
 # Sandbox mode: test/ nodes allowed, wake off. Stop everything with tools/e2e-sandbox-stop.sh.
+# NEW_MAC=1 adds one more Mac that nothing has set up, for `alondra`'s setup wizard: its daemon
+# starts only when the wizard installs the service, through scripts that stand in for launchd
+# and the relay account.
 set -eu
 
 daemon=$1
@@ -48,8 +51,10 @@ local_port() { echo $((base + $1)); }
 direct_port() { echo $((base + 20 + $1)); }
 
 for port in "$issuer_port" "$relay_port"; do port_free "$port"; done
+all=$macs
+[ "${NEW_MAC:-0}" = 1 ] && all=$((macs + 1))
 i=1
-while [ "$i" -le "$macs" ]; do
+while [ "$i" -le "$all" ]; do
 	port_free "$(local_port "$i")"
 	port_free "$(direct_port "$i")"
 	i=$((i + 1))
@@ -114,6 +119,44 @@ while [ "$i" -le "$macs" ]; do
 	i=$((i + 1))
 done
 
+if [ "${NEW_MAC:-0}" = 1 ]; then
+	home="$dir/mac-new"
+	port=$(local_port "$all")
+	mkdir -p "$home/bin"
+	cat >"$home/bin/service" <<SCRIPT
+#!/bin/sh
+# Stands in for launchd: gives the new Mac its port and a loopback direct listener, then
+# (re)starts its alondrad.
+set -eu
+[ -f "$home/config.toml" ] || printf 'port = $port\n' >"$home/config.toml"
+if [ -f "$home/service.toml" ] && ! grep -q '^\[direct\]' "$home/service.toml"; then
+	printf '\n[direct]\nport = $(direct_port "$all")\nlisten = "$direct_listen"\n' >>"$home/service.toml"
+fi
+if [ -f "$home/alondrad.pid" ]; then
+	pid=\$(cat "$home/alondrad.pid")
+	kill "\$pid" 2>/dev/null || true
+	while kill -0 "\$pid" 2>/dev/null; do sleep 0.2; done
+fi
+ALONDRA_HOME="$home" ALONDRA_PORT="$port" ALONDRA_SANDBOX=1 ALONDRA_WAKE=0 ALONDRA_PLUGIN_SOURCE="$repo/plugin" \
+	nohup "$dir/bin/alondrad" >>"$home/alondrad.log" 2>&1 &
+echo \$! >"$home/alondrad.pid"
+SCRIPT
+	cat >"$home/bin/enroll" <<SCRIPT
+#!/bin/sh
+# Stands in for the Alondra account: enrolls the new Mac with the sandbox relay.
+set -eu
+"$tool" enroll-mac "$home" --relay "$relay" --issuer "$issuer" --key "$dir/issuer/key.der"
+{ printf 'relay_url = "$relay"\nowner_sub = "sandbox-owner"\n'; cat "$home/service.toml"; } >"$home/service.toml.relay"
+mv "$home/service.toml.relay" "$home/service.toml"
+SCRIPT
+	chmod 755 "$home/bin/service" "$home/bin/enroll"
+	printf 'export ALONDRA_HOME="%s"\nexport ALONDRA_PORT="%s"\nexport ALONDRA_SANDBOX=1\nexport ALONDRA_SANDBOX_SERVICE="%s"\nexport ALONDRA_SANDBOX_ENROLL="%s"\nexport ALONDRA_PLUGIN_SOURCE="%s"\n' \
+		"$home" "$port" "$home/bin/service" "$home/bin/enroll" "$repo/plugin" >"$home/env"
+	[ -n "$macs_json" ] && macs_json="$macs_json,"
+	macs_json="$macs_json
+    {\"number\": $all, \"mac_id\": \"\", \"home\": \"$home\", \"port\": $port, \"direct_port\": $(direct_port "$all")}"
+fi
+
 trap - EXIT
 cat >"$dir/sandbox.json" <<EOF
 {
@@ -139,6 +182,14 @@ Mac $i on http://127.0.0.1:$(local_port "$i"), direct listener on $direct_listen
 EOF
 	i=$((i + 1))
 done
+if [ "${NEW_MAC:-0}" = 1 ]; then
+	cat <<EOF
+New Mac $all, set up by nothing yet, for the setup wizard (run it from the folder it should propose):
+  . $dir/mac-new/env && $dir/bin/alondra
+  Its phone, approved in the wizard:  $tool --sandbox $dir phone --mac $all pair --direct --wait
+
+EOF
+fi
 cat <<EOF
 Synthetic phone (state in $dir/phones):
   $tool --sandbox $dir phone --mac 1 pair

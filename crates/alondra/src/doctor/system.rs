@@ -67,6 +67,10 @@ pub trait System {
     fn config_path(&self) -> PathBuf;
     fn config_text(&self) -> Option<String>;
     fn config(&self) -> Config;
+    fn options_text(&self) -> Option<String>;
+    fn cwd(&self) -> PathBuf;
+    /// Writes the projects folder into `options.toml`, creating the folder if missing.
+    fn set_projects(&self, folder: &Path) -> Result<()>;
     fn exists(&self, path: &Path) -> bool;
     fn mac(&self) -> MacInfo;
     fn health(&self) -> Result<Value, String>;
@@ -142,9 +146,50 @@ pub fn fingerprint(dir: &Path) -> Option<String> {
 /// How long `doctor --fix` waits for a started daemon to answer.
 pub const START_WAIT: Duration = Duration::from_secs(30);
 
+/// `make e2e-sandbox NEW_MAC=1` stands in for launchd and the relay account, so a development
+/// build can walk a new Mac's setup without touching this Mac's service or Claude profile.
+struct Sandbox {
+    /// Starts or restarts this HOME's daemon.
+    service: PathBuf,
+    /// Enrolls this HOME with the sandbox relay.
+    enroll: PathBuf,
+    /// The node plugin the sandbox daemon loads.
+    plugin: Option<PathBuf>,
+}
+
+impl Sandbox {
+    fn from_env() -> Option<Self> {
+        let var = |k: &str| std::env::var_os(k).filter(|v| !v.is_empty()).map(PathBuf::from);
+        if std::env::var("ALONDRA_SANDBOX").as_deref() != Ok("1") {
+            return None;
+        }
+        let running_from_brew = std::env::current_exe().ok().and_then(|p| p.canonicalize().ok())
+            .is_some_and(|p| setup::brew_package_for_executable(&p).is_some());
+        if running_from_brew {
+            return None;
+        }
+        Some(Sandbox { service: var("ALONDRA_SANDBOX_SERVICE")?, enroll: var("ALONDRA_SANDBOX_ENROLL")?, plugin: var("ALONDRA_PLUGIN_SOURCE") })
+    }
+
+    fn run(script: &Path, home: &Path) -> Result<()> {
+        let status = Command::new(script).env("ALONDRA_HOME", home).stdout(std::io::stderr()).status()
+            .with_context(|| script.display().to_string())?;
+        if !status.success() {
+            let script = script.display();
+            bail!(trf!("{script} failed", "{script} falló"));
+        }
+        Ok(())
+    }
+}
+
+pub fn sandboxed() -> bool {
+    Sandbox::from_env().is_some()
+}
+
 pub struct Real {
     env_home: PathBuf,
     home: PathBuf,
+    sandbox: Option<Sandbox>,
     install: RefCell<Option<std::rc::Rc<setup::Installation>>>,
     health: RefCell<Option<Result<Value, String>>>,
     context: RefCell<Option<Result<crate::claude_auth::ContextEnv, String>>>,
@@ -156,6 +201,7 @@ impl Real {
         Self {
             env_home: config::home_dir(&env),
             home: config::alondra_home(&env),
+            sandbox: Sandbox::from_env(),
             install: RefCell::new(None),
             health: RefCell::new(None),
             context: RefCell::new(None),
@@ -207,6 +253,36 @@ impl Real {
         if started { self.wait_for_daemon() } else { Ok(()) }
     }
 
+    fn daemon_answers(&self) -> bool {
+        Client::new(Duration::from_millis(500)).get::<Value>("/daemon").is_ok()
+    }
+
+    fn start_service(&self, action: Action) -> Result<()> {
+        if let Some(sandbox) = &self.sandbox {
+            return Sandbox::run(&sandbox.service, &self.home).and_then(|_| self.wait_for_daemon());
+        }
+        let install = self.install();
+        match action {
+            Action::ReplaceOtherService => install.retire_other_services()
+                .and_then(|_| setup::inspect().install_service())
+                .and_then(|started| self.wait_if(started)),
+            Action::RestartService => install.restart_service().and_then(|_| self.wait_for_daemon()),
+            _ => install.install_service().and_then(|started| self.wait_if(started)),
+        }
+    }
+
+    /// The daemon reads the relay only when it starts.
+    fn enable_relay(&self) -> Result<()> {
+        let running = self.daemon_answers();
+        match &self.sandbox {
+            Some(sandbox) => Sandbox::run(&sandbox.enroll, &self.home)?,
+            None => {
+                crate::service_setup::enroll(&self.home, false)?;
+            }
+        }
+        if running { self.start_service(Action::RestartService) } else { Ok(()) }
+    }
+
     fn sign_in(&self) -> Result<()> {
         let mut command = self.context().map_err(anyhow::Error::msg)?.command()?;
         let status = command.args(["auth", "login"]).stdout(std::io::stderr()).status().context("claude auth login")?;
@@ -238,6 +314,21 @@ impl System for Real {
         Config::load().unwrap_or_else(|_| Config::defaults())
     }
 
+    fn options_text(&self) -> Option<String> {
+        std::fs::read_to_string(self.home.join(alondra_core::options::FILE_NAME)).ok()
+    }
+
+    fn cwd(&self) -> PathBuf {
+        std::env::current_dir().unwrap_or_else(|_| self.env_home.clone())
+    }
+
+    fn set_projects(&self, folder: &Path) -> Result<()> {
+        let file = self.home.join(alondra_core::options::FILE_NAME);
+        crate::setup_projects::select(file, &self.env_home, &self.cwd(), Some(folder), true, false, &mut std::io::empty(), &mut std::io::sink())?
+            .store()
+            .map(|_| ())
+    }
+
     fn exists(&self, path: &Path) -> bool {
         path.is_file()
     }
@@ -254,7 +345,7 @@ impl System for Real {
             "source" => tr!("built from source", "compilado desde el código"),
             _ => tr!("development build", "build de desarrollo"),
         };
-        MacInfo { os, arch, install: install.into(), dev_over_brew: self.install().dev_over_brew }
+        MacInfo { os, arch, install: install.into(), dev_over_brew: self.sandbox.is_none() && self.install().dev_over_brew }
     }
 
     fn health(&self) -> Result<Value, String> {
@@ -281,6 +372,16 @@ impl System for Real {
 
     fn service(&self) -> ServiceView {
         let install = self.install();
+        if self.sandbox.is_some() {
+            return ServiceView {
+                label: "e2e sandbox".into(),
+                print: self.health().is_ok().then(|| "state = running".into()),
+                binaries: true,
+                bin: install.paths.bin.clone(),
+                repo: install.paths.repo.clone(),
+                ..Default::default()
+            };
+        }
         let label = install.label.clone();
         let print = output("launchctl", &["print", &format!("gui/{}/{label}", install.paths.uid)], Duration::from_secs(5));
         ServiceView {
@@ -328,14 +429,23 @@ impl System for Real {
     }
 
     fn plugins(&self) -> Option<Value> {
+        if self.sandbox.is_some() {
+            return Some(Value::Array(vec![]));
+        }
         self.context().ok().and_then(|c| setup::plugin_list(&c))
     }
 
     fn marketplace(&self) -> bool {
+        if self.sandbox.is_some() {
+            return true;
+        }
         self.context().is_ok_and(|c| setup::has_marketplace(&c))
     }
 
     fn node_plugin(&self) -> Option<PathBuf> {
+        if let Some(sandbox) = &self.sandbox {
+            return sandbox.plugin.clone().filter(|dir| dir.join(".claude-plugin/plugin.json").is_file());
+        }
         self.context().ok().and_then(|c| setup::marketplace_path(&c)).map(|root| root.join("plugin"))
             .filter(|dir| dir.join(".claude-plugin/plugin.json").is_file())
     }
@@ -378,16 +488,14 @@ impl System for Real {
     }
 
     fn apply(&self, action: Action) -> Result<()> {
-        let install = self.install();
         let result = match action {
-            Action::InstallService => install.install_service().and_then(|started| self.wait_if(started)),
-            Action::ReplaceOtherService => install.retire_other_services()
-                .and_then(|_| setup::inspect().install_service())
-                .and_then(|started| self.wait_if(started)),
-            Action::RestartService => install.restart_service().and_then(|_| self.wait_for_daemon()),
+            Action::InstallService | Action::ReplaceOtherService | Action::RestartService => self.start_service(action),
             Action::PrepareIdentity => crate::service_setup::prepare_local_quietly(&self.home).map(|_| ()),
-            Action::RepairPlugin => install.repair_plugin(),
+            Action::RepairPlugin if self.sandbox.is_some() => Ok(()),
+            Action::RepairPlugin => self.install().repair_plugin(),
             Action::SignIn => self.sign_in(),
+            Action::EnableRelay => self.enable_relay(),
+            Action::SetProjects => Ok(()),
         };
         self.forget();
         result

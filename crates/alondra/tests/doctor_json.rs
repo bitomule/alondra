@@ -9,13 +9,15 @@ use std::process::{Command, Output};
 
 use serde_json::Value;
 
-fn doctor(args: &[&str]) -> (Output, Value) {
+fn alondra(args: &[&str], config: Option<&str>) -> (Output, test_support::Directory) {
     let root = test_support::Directory::new();
     std::fs::create_dir_all(root.join("home")).unwrap();
+    if let Some(text) = config {
+        std::fs::write(root.join("home/config.toml"), text).unwrap();
+    }
     let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
     let binary = std::fs::canonicalize(env!("CARGO_BIN_EXE_alondra")).unwrap();
     let output = Command::new(binary)
-        .arg("doctor")
         .args(args)
         .current_dir(&*root)
         .env_clear()
@@ -26,6 +28,15 @@ fn doctor(args: &[&str]) -> (Output, Value) {
         .env("PATH", "/usr/bin:/bin")
         .output()
         .unwrap();
+    (output, root)
+}
+
+fn doctor(args: &[&str]) -> (Output, Value) {
+    let (output, root) = alondra(&[&["doctor"], args].concat(), None);
+    let projects = format!("projects folder: {} (cwd)", root.display());
+    if args.contains(&"--fix") {
+        assert!(String::from_utf8_lossy(&output.stderr).contains(&projects), "{output:?}");
+    }
     let doc = serde_json::from_slice(&output.stdout).unwrap_or_else(|e| panic!("stdout is not one JSON document ({e}): {output:?}"));
     (output, doc)
 }
@@ -46,6 +57,7 @@ fn doctor_json_keeps_todays_shape_and_exits_4_with_the_daemon_down() {
         }
     }
     assert_eq!(check(&doc, "alondrad")["status"], "fail");
+    assert_eq!(check(&doc, "projects")["fixable"], true, "no projects folder yet: {doc}");
     assert!(doc["next_step"].is_string(), "{doc}");
 }
 
@@ -56,7 +68,8 @@ fn doctor_fix_json_without_input_reports_on_stdout_and_progress_on_stderr() {
     assert_eq!(doc["schema"], "alondra.doctor/1");
     assert_eq!(check(&doc, "identity")["status"], "pass", "the service identity is created on its own: {doc}");
     let progress = String::from_utf8_lossy(&output.stderr);
-    assert!(progress.contains("✗ alondrad:"), "{progress}");
+    assert!(progress.contains("✗ Background service:"), "{progress}");
+    assert_eq!(check(&doc, "projects")["status"], "pass", "without a terminal the cwd becomes the projects folder: {doc}");
 }
 
 #[test]
@@ -66,4 +79,20 @@ fn doctor_test_push_json_without_a_relay_exits_3_with_the_next_step() {
     assert_eq!(doc["schema"], "alondra.doctor/1");
     assert_eq!(doc["test_push"]["sent"], false);
     assert_eq!(doc["next_step"], "alondra setup --relay");
+}
+
+#[test]
+fn alondra_without_a_terminal_on_a_mac_never_set_up_exits_3_and_says_how() {
+    let (output, root) = alondra(&[], None);
+    assert_eq!(output.status.code(), Some(3), "{output:?}");
+    let said = String::from_utf8_lossy(&output.stderr);
+    assert!(said.contains("Alondra is not set up on this Mac. Run `alondra` in a terminal, or `alondra doctor --fix --no-input`."), "{said}");
+    assert_eq!(std::fs::read_dir(root.join("home")).unwrap().count(), 0, "nothing was written");
+}
+
+#[test]
+fn alondra_without_a_terminal_and_the_daemon_down_exits_4() {
+    let (output, _root) = alondra(&[], Some("name = \"MacBook Pro\"\n"));
+    assert_eq!(output.status.code(), Some(4), "{output:?}");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("alondra doctor --fix"), "{output:?}");
 }

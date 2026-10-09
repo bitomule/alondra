@@ -40,7 +40,7 @@ fn running() -> ServiceView {
 /// A Mac where every check passes, which each test then breaks in one place. Repairs change
 /// it the way the real ones change the Mac, and every call that writes is recorded.
 struct Fake {
-    config_text: Option<String>,
+    config_text: RefCell<Option<String>>,
     mac: MacInfo,
     health: RefCell<Result<Value, String>>,
     devices: Vec<Value>,
@@ -48,7 +48,9 @@ struct Fake {
     startup: Option<Record>,
     service: RefCell<ServiceView>,
     service_config: RefCell<bool>,
-    relay: bool,
+    relay: RefCell<bool>,
+    options: RefCell<Option<String>>,
+    cwd: PathBuf,
     apns: Option<String>,
     claude: BTreeMap<String, (bool, String)>,
     signed_in: RefCell<Result<bool, String>>,
@@ -78,7 +80,7 @@ impl Fake {
             ("plugin test /m/plugin", (true, String::new())),
         ];
         Fake {
-            config_text: Some("name = \"Ana\"\nwake = true\n".into()),
+            config_text: RefCell::new(Some("name = \"Ana\"\nwake = true\n".into())),
             mac: MacInfo { os: "macOS 26.1".into(), arch: "Apple Silicon".into(), install: "Homebrew".into(), dev_over_brew: false },
             health: RefCell::new(Ok(healthy())),
             devices: vec![json!({"id": "phone-1", "name": "iPhone", "created_at": 1, "last_seen": 5})],
@@ -86,7 +88,9 @@ impl Fake {
             startup: None,
             service: RefCell::new(running()),
             service_config: RefCell::new(true),
-            relay: true,
+            relay: RefCell::new(true),
+            options: RefCell::new(Some("projects_root = \"/\"\n".into())),
+            cwd: "/".into(),
             apns: None,
             claude: claude.into_iter().map(|(k, v)| (k.to_string(), v)).collect(),
             signed_in: RefCell::new(Ok(true)),
@@ -133,10 +137,21 @@ impl System for Fake {
         "/h/.alondra/config.toml".into()
     }
     fn config_text(&self) -> Option<String> {
-        self.config_text.clone()
+        self.config_text.borrow().clone()
     }
     fn config(&self) -> Config {
         local()
+    }
+    fn options_text(&self) -> Option<String> {
+        self.options.borrow().clone()
+    }
+    fn cwd(&self) -> PathBuf {
+        self.cwd.clone()
+    }
+    fn set_projects(&self, folder: &Path) -> Result<()> {
+        self.applied.borrow_mut().push(Action::SetProjects);
+        *self.options.borrow_mut() = Some(format!("projects_root = {:?}\n", folder.display().to_string()));
+        Ok(())
     }
     fn exists(&self, _path: &Path) -> bool {
         true
@@ -163,7 +178,7 @@ impl System for Fake {
         *self.service_config.borrow()
     }
     fn relay(&self) -> bool {
-        self.relay
+        *self.relay.borrow()
     }
     fn apns(&self) -> Option<String> {
         self.apns.clone()
@@ -218,6 +233,7 @@ impl System for Fake {
                     *self.starts_failing.borrow_mut() -= 1;
                     return Err(anyhow!("Alondra didn't start."));
                 }
+                self.config_text.borrow_mut().get_or_insert_with(String::new);
                 let mut service = self.service.borrow_mut();
                 service.print = running().print;
                 service.pending = false;
@@ -231,6 +247,8 @@ impl System for Fake {
                 self.service.borrow_mut().marketplace_elsewhere = None;
             }
             Action::SignIn => *self.signed_in.borrow_mut() = Ok(true),
+            Action::EnableRelay => *self.relay.borrow_mut() = true,
+            Action::SetProjects => {}
         }
         Ok(())
     }
@@ -241,7 +259,7 @@ impl System for Fake {
 }
 
 fn env(sys: &Fake) -> Env<'_> {
-    Env { sys, deep: false }
+    Env { sys, deep: false, first_run: false }
 }
 
 fn find<'a>(outcomes: &'a [Outcome], id: &str) -> &'a Outcome {
@@ -472,7 +490,7 @@ fn the_slow_mod_check_runs_only_with_deep_or_a_changed_plugin() {
     assert!(skipped.detail.contains("--deep checks again"), "{}", skipped.detail);
     assert!(!sys.claude_calls.borrow().iter().any(|c| c.starts_with("plugin")), "{:?}", sys.claude_calls.borrow());
 
-    let deep = Env { sys: &sys, deep: true };
+    let deep = Env { sys: &sys, deep: true, first_run: false };
     assert_eq!(find(&diagnose(&deep), "mods").detail, "the node mod validates and its tests pass");
     assert!(sys.claude_calls.borrow().contains(&"plugin test /m/plugin".to_string()));
 
@@ -530,7 +548,7 @@ fn fix_installs_a_stopped_service_once_and_a_second_run_changes_nothing() {
     assert_eq!(repaired.applied, vec![Action::InstallService], "{:?}", ui.lines);
     assert_eq!(*sys.applied.borrow(), vec![Action::InstallService], "one install for the service and the daemon");
     assert!(repaired.outcomes.iter().all(|o| o.status == Status::Pass), "{:#?}", repaired.outcomes);
-    assert_eq!(outro(&repaired), "Everything is set.");
+    assert_eq!(outro(&env(&sys), &repaired), "Everything is set.");
     assert_eq!(exit_code(&repaired.outcomes), 0);
 
     let before = sys.writes();
@@ -538,8 +556,8 @@ fn fix_installs_a_stopped_service_once_and_a_second_run_changes_nothing() {
     let second = repair(&env(&sys), &mut again).unwrap();
     assert!(second.applied.is_empty());
     assert_eq!(sys.writes(), before, "a second run writes nothing");
-    assert_eq!(outro(&second), "Nothing to change.");
-    assert!(again.lines.iter().any(|l| l == "✓ config: already set"), "{:?}", again.lines);
+    assert_eq!(outro(&env(&sys), &second), "Nothing to change.");
+    assert!(again.lines.iter().any(|l| l == "✓ This Mac: already set"), "{:?}", again.lines);
 }
 
 #[test]
@@ -574,7 +592,7 @@ fn a_question_answered_no_changes_nothing_and_waits_for_the_person() {
     assert!(sys.applied.borrow().is_empty());
     assert!(ui.lines.contains(&"ask Sign in to Claude Code now? It opens your browser.".to_string()), "{:?}", ui.lines);
     assert_eq!(exit_code(&repaired.outcomes), 3);
-    assert_eq!(outro(&repaired), "Not finished.\nNext: claude auth login, then alondra doctor --fix");
+    assert_eq!(outro(&env(&sys), &repaired), "Not finished.\nNext: claude auth login, then alondra doctor --fix");
 }
 
 #[test]
@@ -599,8 +617,8 @@ fn without_a_terminal_nothing_is_asked_and_json_says_the_next_step() {
     let doc = report(&repaired.outcomes);
     assert_eq!(doc["next_step"], "claude auth login, then alondra doctor --fix");
     let text = String::from_utf8(out).unwrap();
-    assert!(text.contains("✗ sign-in: not signed in\n  → claude auth login, then alondra doctor --fix"), "{text}");
-    assert!(text.contains("✓ claude: 2.1.291 (Claude Code)"), "{text}");
+    assert!(text.contains("✗ Claude Code sign-in: not signed in\n  → claude auth login, then alondra doctor --fix"), "{text}");
+    assert!(text.contains("✓ Claude Code: 2.1.291"), "{text}");
 }
 
 #[test]
@@ -677,8 +695,8 @@ fn test_push_goes_to_the_device_used_most_recently_and_is_remembered() {
 
 #[test]
 fn test_push_exit_codes() {
-    let mut no_relay = Fake::healthy();
-    no_relay.relay = false;
+    let no_relay = Fake::healthy();
+    *no_relay.relay.borrow_mut() = false;
     let r = test_push(&env(&no_relay));
     assert_eq!((r.code, r.next.as_deref()), (3, Some("alondra setup --relay")));
     assert!(no_relay.pushed.borrow().is_empty());
@@ -724,4 +742,364 @@ fn the_summary_counts_problems_and_warnings() {
 #[test]
 fn the_day_of_a_timestamp() {
     assert_eq!(day(alondra_core::now_millis()).len(), 10);
+}
+
+fn repo(dir: &Path) {
+    std::fs::create_dir_all(dir.join(".git")).unwrap();
+}
+
+fn folder(path: &Path, repos: usize) {
+    std::fs::create_dir_all(path).unwrap();
+    for n in 0..repos {
+        repo(&path.join(format!("app-{n}")));
+    }
+}
+
+fn paths(proposal: &projects::Proposal) -> Vec<(PathBuf, usize)> {
+    proposal.folders.iter().map(|f| (f.path.clone(), f.repos)).collect()
+}
+
+#[test]
+fn the_cwd_with_repos_is_proposed_alone() {
+    let root = crate::test_support::Directory::new();
+    let (home, cwd) = (root.join("home"), root.join("home/Projects"));
+    folder(&cwd, 3);
+    let proposal = projects::propose(&cwd, &home);
+    assert_eq!(paths(&proposal), vec![(cwd, 3)]);
+    assert_eq!(proposal.refused, None);
+}
+
+#[test]
+fn from_home_the_subfolder_with_most_repos_comes_second() {
+    english();
+    let root = crate::test_support::Directory::new();
+    let home = root.join("home");
+    folder(&home.join("Projects"), 3);
+    folder(&home.join("Other"), 1);
+    folder(&home.join("Documents"), 0);
+    let proposal = projects::propose(&home, &home);
+    assert_eq!(paths(&proposal), vec![(home.clone(), 0), (home.join("Projects"), 3)]);
+    assert_eq!(projects::label(&proposal.folders[0], &home), "~ · no repos at the top level");
+    assert_eq!(projects::label(&proposal.folders[1], &home), "~/Projects · 3 repos");
+}
+
+#[test]
+fn inside_one_repo_its_parent_comes_second() {
+    let root = crate::test_support::Directory::new();
+    let home = root.join("home");
+    folder(&home.join("Projects"), 4);
+    let cwd = home.join("Projects/app-0");
+    assert_eq!(paths(&projects::propose(&cwd, &home)), vec![(cwd.clone(), 0), (home.join("Projects"), 4)]);
+}
+
+#[test]
+fn a_folder_without_repos_gets_the_best_one_in_home() {
+    let root = crate::test_support::Directory::new();
+    let home = root.join("home");
+    folder(&home.join("code"), 2);
+    let cwd = home.join("Downloads");
+    folder(&cwd, 0);
+    assert_eq!(paths(&projects::propose(&cwd, &home)), vec![(cwd, 0), (home.join("code"), 2)]);
+}
+
+#[test]
+fn a_folder_outside_home_is_accepted_and_only_the_root_is_refused() {
+    let root = crate::test_support::Directory::new();
+    let (home, outside) = (root.join("home"), root.join("Volumes/work"));
+    folder(&home, 0);
+    folder(&outside, 2);
+    assert_eq!(paths(&projects::propose(&outside, &home)), vec![(outside, 2)]);
+    let refused = projects::propose(Path::new("/"), &home);
+    assert!(refused.folders.is_empty(), "nothing is the default for /");
+    assert!(refused.refused.is_some());
+}
+
+/// A Mac set up nowhere: no config, no service, no identity, no projects folder, no relay.
+fn new_mac(cwd: &Path) -> Fake {
+    let mut sys = Fake::healthy().stopped();
+    *sys.config_text.borrow_mut() = None;
+    *sys.service_config.borrow_mut() = false;
+    *sys.relay.borrow_mut() = false;
+    *sys.options.borrow_mut() = None;
+    sys.devices.clear();
+    sys.cwd = cwd.to_path_buf();
+    sys
+}
+
+fn wizard_env(sys: &Fake) -> Env<'_> {
+    Env { sys, deep: false, first_run: true }
+}
+
+fn in_order(lines: &[String], expected: &[&str]) {
+    let mut at = 0;
+    for want in expected {
+        match lines[at..].iter().position(|l| l.starts_with(want)) {
+            Some(found) => at += found + 1,
+            None => panic!("{want:?} missing or out of order in {lines:#?}"),
+        }
+    }
+}
+
+#[test]
+fn the_wizard_asks_for_the_folder_and_the_relay_in_the_order_of_the_screens() {
+    english();
+    let root = crate::test_support::Directory::new();
+    let cwd = root.join("Projects");
+    folder(&cwd, 2);
+    let sys = new_mac(&cwd);
+    let mut ui = Recorded { choices: vec![Some(0)], answers: vec![Some(true)], ..Default::default() };
+    let repaired = repair(&wizard_env(&sys), &mut ui).unwrap();
+    in_order(&ui.lines, &[
+        "✓ This Mac: macOS 26.1 · Apple Silicon · Homebrew",
+        "✓ Claude Code: 2.1.291",
+        "✓ Claude profile: default",
+        "✓ Claude Code sign-in: signed in",
+        "select Projects folder — where your git repos live. You can change it later in the app.",
+        "✓ Projects folder: ",
+        "progress Starting the background service…",
+        "✓ Background service: running on port 47800",
+        "✓ Claude plugin: already set",
+        "✓ Ready for your devices",
+        "ask Turn on notifications and access away from home? It needs an Alondra account and opens your browser.",
+        "✓ Notifications and access away from home: on",
+    ]);
+    assert!(ui.lines.iter().any(|l| l.contains(&format!("{} · 2 repos", cwd.display()))), "{:?}", ui.lines);
+    assert!(!ui.lines.iter().any(|l| l.contains("Devices")), "the wizard waits for a device instead: {:?}", ui.lines);
+    assert_eq!(*sys.applied.borrow(), vec![Action::SetProjects, Action::PrepareIdentity, Action::InstallService, Action::EnableRelay]);
+    assert_eq!(*sys.options.borrow(), Some(format!("projects_root = {:?}\n", cwd.display().to_string())));
+    assert_eq!(exit_code(&repaired.outcomes), 0);
+    assert_eq!(outro(&wizard_env(&sys), &repaired), "Alondra is running. Open it on your iPhone or on this Mac.");
+}
+
+#[test]
+fn no_to_the_relay_leaves_the_local_network_and_says_how_to_turn_it_on() {
+    english();
+    let root = crate::test_support::Directory::new();
+    let cwd = root.join("Projects");
+    folder(&cwd, 1);
+    let sys = new_mac(&cwd);
+    let mut ui = Recorded { choices: vec![Some(0)], answers: vec![Some(false)], ..Default::default() };
+    let repaired = repair(&wizard_env(&sys), &mut ui).unwrap();
+    assert!(ui.lines.contains(&"! Notifications and access away from home: off — local network only → alondra setup --relay".to_string()), "{:?}", ui.lines);
+    assert!(!sys.applied.borrow().contains(&Action::EnableRelay));
+    assert_eq!(exit_code(&repaired.outcomes), 0, "local network only is a choice, not a failure");
+}
+
+#[test]
+fn another_folder_can_be_typed_and_the_root_or_a_file_is_refused() {
+    english();
+    let root = crate::test_support::Directory::new();
+    let cwd = root.join("home");
+    folder(&cwd, 0);
+    std::fs::write(cwd.join("notes.txt"), "keep").unwrap();
+    let sys = new_mac(&cwd);
+    let mut ui = Recorded {
+        choices: vec![Some(2)],
+        typed: vec![Some("/".into()), Some("notes.txt".into()), Some("work".into())],
+        answers: vec![Some(true)],
+        ..Default::default()
+    };
+    repair(&wizard_env(&sys), &mut ui).unwrap();
+    assert!(ui.lines.iter().any(|l| l.starts_with("note / can't be the projects folder")), "{:?}", ui.lines);
+    assert!(ui.lines.iter().any(|l| l.contains("notes.txt is not a directory")), "{:?}", ui.lines);
+    assert_eq!(*sys.options.borrow(), Some(format!("projects_root = {:?}\n", cwd.join("work").display().to_string())));
+}
+
+#[test]
+fn from_the_root_there_is_no_default_and_the_folder_is_typed() {
+    english();
+    let root = crate::test_support::Directory::new();
+    let typed = root.join("Projects");
+    folder(&typed, 0);
+    let sys = new_mac(Path::new("/"));
+    let mut ui = Recorded { typed: vec![Some(typed.display().to_string())], answers: vec![Some(true)], ..Default::default() };
+    repair(&wizard_env(&sys), &mut ui).unwrap();
+    assert!(!ui.lines.iter().any(|l| l.starts_with("select Projects folder")), "no list to accept by mistake: {:?}", ui.lines);
+    assert!(ui.lines.iter().any(|l| l.starts_with("note / can't be the projects folder")), "{:?}", ui.lines);
+    assert_eq!(*sys.options.borrow(), Some(format!("projects_root = {:?}\n", typed.display().to_string())));
+}
+
+#[test]
+fn without_a_terminal_the_cwd_is_used_and_said() {
+    english();
+    let root = crate::test_support::Directory::new();
+    let cwd = root.join("Projects");
+    folder(&cwd, 0);
+    let sys = new_mac(&cwd);
+    *sys.config_text.borrow_mut() = Some(String::new());
+    let mut out = vec![];
+    repair(&env(&sys), &mut Plain { out: &mut out }).unwrap();
+    let text = String::from_utf8(out).unwrap();
+    assert!(text.contains(&format!("  projects folder: {} (cwd)", cwd.display())), "{text}");
+    assert_eq!(*sys.options.borrow(), Some(format!("projects_root = {:?}\n", cwd.display().to_string())));
+}
+
+#[test]
+fn a_saved_folder_is_kept_and_one_that_is_gone_is_asked_again() {
+    english();
+    let root = crate::test_support::Directory::new();
+    let (home, saved) = (root.join("home"), root.join("home/Projects"));
+    folder(&saved, 2);
+    let file = Path::new("/h/.alondra/options.toml");
+    let text = format!("projects_root = {:?}\n", saved.display().to_string());
+    let kept = projects::projects_check(Some(&text), file, &home, &home, true);
+    assert_eq!((kept.status, kept.detail.as_str()), (Status::Pass, "~/Projects (2 repos)"), "a valid saved folder is never asked again");
+    let gone = projects::projects_check(Some("projects_root = \"/nowhere-alondra\"\n"), file, &home, &home, false);
+    assert_eq!(gone.status, Status::Fail);
+    assert!(matches!(gone.fix, Some(Fix::Choose { .. })));
+    assert_eq!(gone.next_step(), "alondra setup --projects-root <folder>");
+    let unset = projects::projects_check(None, file, &home, &home, false);
+    assert_eq!(unset.status, Status::Pass, "a configured Mac without one runs on ~/Projects");
+    assert_eq!(projects::projects_check(None, file, &home, &home, true).status, Status::Fail, "a first install always asks");
+}
+
+/// The shape of the Mac this was written on: Homebrew, the `com.bitomule.alondra` label, a
+/// projects folder, the relay on and twelve devices.
+fn like_this_mac(projects: &Path) -> Fake {
+    let mut sys = Fake::healthy();
+    sys.service.borrow_mut().label = "com.bitomule.alondra".into();
+    sys.service.borrow_mut().print = Some("gui/501/com.bitomule.alondra = {\n\tstate = running\n}".into());
+    *sys.options.borrow_mut() = Some(format!("projects_root = {:?}\n", projects.display().to_string()));
+    sys.devices = (1..=12).map(|n| json!({"id": format!("d-{n}"), "name": format!("Device {n}"), "created_at": n})).collect();
+    sys.memory.borrow_mut().test_push = Some(TestPush { device: "d-1".into(), name: "Device 1".into(), at: 0 });
+    sys
+}
+
+#[test]
+fn an_install_like_this_macs_has_nothing_to_change() {
+    english();
+    let root = crate::test_support::Directory::new();
+    let projects = root.join("Projects");
+    folder(&projects, 3);
+    let sys = like_this_mac(&projects);
+    let mut ui = Recorded::default();
+    let repaired = repair(&env(&sys), &mut ui).unwrap();
+    assert_eq!(outro(&env(&sys), &repaired), "Nothing to change.");
+    assert_eq!(sys.writes(), 0, "{:?}", sys.applied.borrow());
+    assert!(!ui.lines.iter().any(|l| l.starts_with("ask") || l.starts_with("select") || l.starts_with("input")), "{:?}", ui.lines);
+    assert_eq!(ui.lines, vec![
+        "✓ This Mac: already set",
+        "✓ Claude Code: 2.1.291",
+        "✓ Claude Code sign-in: signed in",
+        "✓ Background service: running (com.bitomule.alondra)",
+        "✓ Claude plugin: already set",
+        "✓ Devices: 12 paired · away from home: on",
+    ]);
+}
+
+#[test]
+fn every_check_belongs_to_exactly_one_step() {
+    for check in checks::CHECKS {
+        let steps: Vec<&str> = wizard::steps().iter().filter(|s| s.checks.contains(&check.id)).map(|s| s.name).collect();
+        assert_eq!(steps.len(), 1, "{} is in {steps:?}", check.id);
+    }
+}
+
+#[test]
+fn alondra_opens_the_wizard_only_on_a_mac_never_set_up_with_someone_to_ask() {
+    let never = || -> bool { panic!("a Mac never set up is not asked about its daemon") };
+    assert_eq!(launch_decision(false, true, false, never, || None), Launch::Wizard);
+    assert_eq!(launch_decision(false, false, false, never, || None), Launch::NotSetUp);
+    assert_eq!(launch_decision(false, true, true, never, || None), Launch::NotSetUp, "a node never gets the wizard");
+    assert_eq!(launch_decision(true, true, false, || true, || None), Launch::Tui);
+    assert_eq!(launch_decision(true, true, false, || false, || None), Launch::OfferRepair);
+    assert_eq!(launch_decision(true, true, false, || false, || Some("disk full".into())), Launch::StartFailed("disk full".into()));
+    assert_eq!(launch_decision(true, false, false, || false, || None), Launch::Down);
+}
+
+#[test]
+fn set_up_means_a_config_or_a_launch_agent_for_alondrad() {
+    let root = crate::test_support::Directory::new();
+    let (home, agents) = (root.join(".alondra"), root.join("LaunchAgents"));
+    assert!(!configured(&home, Some(&agents)), "nothing at all");
+    std::fs::create_dir_all(&agents).unwrap();
+    std::fs::write(agents.join("com.other.plist"), "<string>/usr/bin/true</string>").unwrap();
+    assert!(!configured(&home, Some(&agents)), "another app's agent");
+    std::fs::write(agents.join("com.bitomule.alondra.plist"), "<string>/opt/homebrew/opt/alondra/bin/alondrad</string>").unwrap();
+    assert!(configured(&home, Some(&agents)));
+    assert!(!configured(&home, None), "the sandbox looks only at its own home");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::write(home.join("config.toml"), "name = \"MacBook Pro\"\n").unwrap();
+    assert!(configured(&home, None));
+}
+
+struct Phone {
+    pending: RefCell<Vec<devices_wait::Request>>,
+    expired: Vec<String>,
+    decisions: RefCell<Vec<(String, bool)>>,
+}
+
+impl devices_wait::Pairings for Phone {
+    fn pending(&self) -> Vec<devices_wait::Request> {
+        self.pending.borrow().clone()
+    }
+    fn decide(&self, id: &str, allow: bool) -> devices_wait::Decided {
+        self.decisions.borrow_mut().push((id.into(), allow));
+        self.pending.borrow_mut().retain(|r| r.id != id);
+        if self.expired.iter().any(|e| e == id) { devices_wait::Decided::Expired } else { devices_wait::Decided::Done }
+    }
+}
+
+struct Clock {
+    now: RefCell<Duration>,
+    enter_at: Option<Duration>,
+}
+
+impl devices_wait::Clock for Clock {
+    fn elapsed(&self) -> Duration {
+        *self.now.borrow()
+    }
+    fn pause(&self, how_long: Duration) {
+        *self.now.borrow_mut() += how_long;
+    }
+    fn finished(&self) -> bool {
+        self.enter_at.is_some_and(|at| *self.now.borrow() >= at)
+    }
+}
+
+fn request(id: &str, name: &str) -> devices_wait::Request {
+    devices_wait::Request { id: id.into(), name: name.into(), code: "482913".into() }
+}
+
+fn phone(requests: Vec<devices_wait::Request>, expired: &[&str]) -> Phone {
+    Phone { pending: RefCell::new(requests), expired: expired.iter().map(|s| s.to_string()).collect(), decisions: RefCell::new(vec![]) }
+}
+
+#[test]
+fn each_request_is_shown_alone_with_its_code_and_only_a_yes_allows_it() {
+    english();
+    let phone = phone(vec![request("a", "iPhone de Ana"), request("b", "iPad")], &[]);
+    let clock = Clock { now: RefCell::new(Duration::ZERO), enter_at: Some(Duration::from_secs(10)) };
+    let mut ui = Recorded { answers: vec![Some(true), Some(false)], ..Default::default() };
+    let allowed = devices_wait::wait(&phone, &mut ui, &clock).unwrap();
+    assert_eq!(allowed, 1);
+    assert_eq!(*phone.decisions.borrow(), vec![("a".to_string(), true), ("b".to_string(), false)]);
+    in_order(&ui.lines, &[
+        "progress Waiting for your iPhone… open Alondra on it. Press Enter to finish.",
+        "ask Allow “iPhone de Ana”? Code 482 913 — allow only if it shows the same code.",
+        "ask Allow “iPad”? Code 482 913 — allow only if it shows the same code.",
+    ]);
+}
+
+#[test]
+fn an_expired_request_says_so_and_the_wait_goes_on() {
+    english();
+    let phone = phone(vec![request("old", "iPhone")], &["old"]);
+    let clock = Clock { now: RefCell::new(Duration::ZERO), enter_at: Some(Duration::from_secs(3)) };
+    let mut ui = Recorded { answers: vec![Some(true)], ..Default::default() };
+    assert_eq!(devices_wait::wait(&phone, &mut ui, &clock).unwrap(), 0);
+    assert!(ui.lines.contains(&"note That request expired — ask again from the device.".to_string()), "{:?}", ui.lines);
+    assert_eq!(ui.lines.last().map(String::as_str), Some("progress Waiting for your iPhone… open Alondra on it. Press Enter to finish."));
+}
+
+#[test]
+fn after_a_minute_without_requests_the_network_hint_shows_and_five_minutes_end_the_wait() {
+    english();
+    let phone = phone(vec![], &[]);
+    let clock = Clock { now: RefCell::new(Duration::ZERO), enter_at: None };
+    let mut ui = Recorded::default();
+    devices_wait::wait(&phone, &mut ui, &clock).unwrap();
+    let hints: Vec<_> = ui.lines.iter().filter(|l| l.starts_with("note Not showing up?")).collect();
+    assert_eq!(hints.len(), 1, "{:?}", ui.lines);
+    assert_eq!(*clock.now.borrow(), devices_wait::LIMIT);
 }

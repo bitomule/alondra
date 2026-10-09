@@ -392,7 +392,7 @@ fn installed_package() -> Option<(PathBuf, PathBuf)> {
     brew_package_for_executable(&executable)
 }
 
-fn brew_package_for_executable(executable: &Path) -> Option<(PathBuf, PathBuf)> {
+pub(crate) fn brew_package_for_executable(executable: &Path) -> Option<(PathBuf, PathBuf)> {
     // Homebrew launches the real executable from its versioned Cellar keg. Persist
     // paths through opt/alondra so launchd and Claude survive a formula upgrade.
     let bin = executable.parent()?;

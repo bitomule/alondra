@@ -28,7 +28,18 @@ pub trait Ui {
     /// `None` when there is nobody to ask.
     fn confirm(&mut self, question: &str, default: bool) -> Result<Option<bool>, Cancelled>;
     fn select(&mut self, question: &str, options: &[String]) -> Result<Option<usize>, Cancelled>;
+    /// Free text, such as a folder; `None` when there is nobody to ask.
+    fn input(&mut self, question: &str) -> Result<Option<String>, Cancelled>;
     fn outro(&mut self, text: &str);
+}
+
+/// A step's name and detail on one line; a step may have only one of them.
+fn line(name: &str, detail: &str, separator: &str) -> String {
+    match (name.is_empty(), detail.is_empty()) {
+        (true, _) => detail.to_string(),
+        (_, true) => name.to_string(),
+        _ => format!("{name}{separator}{detail}"),
+    }
 }
 
 fn mark(status: Status) -> &'static str {
@@ -54,7 +65,7 @@ impl<W: Write> Ui for Plain<W> {
     fn intro(&mut self, _title: &str) {}
 
     fn step(&mut self, status: Status, name: &str, detail: &str, fix: Option<&str>) {
-        let _ = writeln!(self.out, "{} {name}: {detail}", mark(status));
+        let _ = writeln!(self.out, "{} {}", mark(status), line(name, detail, ": "));
         if let Some(fix) = fix {
             let _ = writeln!(self.out, "  → {fix}");
         }
@@ -75,6 +86,10 @@ impl<W: Write> Ui for Plain<W> {
     }
 
     fn select(&mut self, _question: &str, _options: &[String]) -> Result<Option<usize>, Cancelled> {
+        Ok(None)
+    }
+
+    fn input(&mut self, _question: &str) -> Result<Option<String>, Cancelled> {
         Ok(None)
     }
 
@@ -111,7 +126,7 @@ impl Ui for Interactive {
 
     fn step(&mut self, status: Status, name: &str, detail: &str, fix: Option<&str>) {
         let rule = "─".repeat(self.width.saturating_sub(name.chars().count()) + 2);
-        let mut text = format!("{name} {rule} {detail}");
+        let mut text = line(name, detail, &format!(" {rule} "));
         if let Some(fix) = fix {
             text.push_str(&format!("\n→ {fix}"));
         }
@@ -144,6 +159,10 @@ impl Ui for Interactive {
         answer(select.interact())
     }
 
+    fn input(&mut self, question: &str) -> Result<Option<String>, Cancelled> {
+        answer(cliclack::input(question).interact())
+    }
+
     fn outro(&mut self, text: &str) {
         let _ = cliclack::outro(text);
     }
@@ -156,6 +175,7 @@ pub struct Recorded {
     pub lines: Vec<String>,
     pub answers: Vec<Option<bool>>,
     pub choices: Vec<Option<usize>>,
+    pub typed: Vec<Option<String>>,
 }
 
 #[cfg(test)]
@@ -173,7 +193,7 @@ impl Ui for Recorded {
     }
 
     fn step(&mut self, status: Status, name: &str, detail: &str, fix: Option<&str>) {
-        self.lines.push(format!("{} {name}: {detail}{}", mark(status), fix.map(|f| format!(" → {f}")).unwrap_or_default()));
+        self.lines.push(format!("{} {}{}", mark(status), line(name, detail, ": "), fix.map(|f| format!(" → {f}")).unwrap_or_default()));
     }
 
     fn note(&mut self, lines: &[String]) {
@@ -190,9 +210,14 @@ impl Ui for Recorded {
         Ok(if self.answers.is_empty() { None } else { self.answers.remove(0) })
     }
 
-    fn select(&mut self, question: &str, _options: &[String]) -> Result<Option<usize>, Cancelled> {
-        self.lines.push(format!("select {question}"));
+    fn select(&mut self, question: &str, options: &[String]) -> Result<Option<usize>, Cancelled> {
+        self.lines.push(format!("select {question} [{}]", options.join(" | ")));
         Ok(if self.choices.is_empty() { None } else { self.choices.remove(0) })
+    }
+
+    fn input(&mut self, question: &str) -> Result<Option<String>, Cancelled> {
+        self.lines.push(format!("input {question}"));
+        Ok(if self.typed.is_empty() { None } else { self.typed.remove(0) })
     }
 
     fn outro(&mut self, text: &str) {

@@ -12,7 +12,7 @@ BETA_GROUP := Internal Pilot,Private Pilot
 APPLE_VERSION = $(shell sed -n 's/^ *version = "\(.*\)".*/\1/p' tools/shared.bzl)
 APPLE_BUILD = $(shell sed -n 's/^ *build_number = "\(.*\)".*/\1/p' tools/shared.bzl)
 
-.PHONY: version-guard increment-version build-release snapshots-record snapshots-verify tui-shots mac-snapshots-record mac-snapshots-verify no-holds build test install run tui setup launchd unlaunchd restart status doctor cargo-test mac device device-console e2e-sandbox e2e-sandbox-stop e2e-sandbox-logs soak load-bench tasks-screen rehearse-cutover upgrade-rehearsal cutover-live clean-xcode-test-results
+.PHONY: version-guard increment-version build-release snapshots-record snapshots-verify tui-shots mac-snapshots-record mac-snapshots-verify no-holds build test install run tui setup launchd unlaunchd restart status doctor cargo-test mac device device-console e2e-sandbox e2e-sandbox-stop e2e-wizard e2e-sandbox-logs soak load-bench tasks-screen rehearse-cutover upgrade-rehearsal cutover-live clean-xcode-test-results
 
 build:
 	bazelisk build //crates/... //apple:AlondraMac
@@ -155,6 +155,12 @@ e2e-sandbox:
 
 e2e-sandbox-stop:
 	tools/e2e-sandbox-stop.sh
+
+# alondra's setup wizard on a new Mac in its own throwaway sandbox (tools/e2e-wizard.py).
+e2e-wizard:
+	bazelisk build //crates/alondrad //crates/alondra //crates/relay:alondra-relay //tools/sandbox:alondra-sandbox
+	tools/e2e-wizard.py $$(bazelisk cquery --output=files //crates/alondrad 2>/dev/null) $$(bazelisk cquery --output=files //crates/alondra 2>/dev/null) \
+		$$(bazelisk cquery --output=files //crates/relay:alondra-relay 2>/dev/null) $$(bazelisk cquery --output=files //tools/sandbox:alondra-sandbox 2>/dev/null)
 
 # MAC=n for that daemon's log, MAC=relay for the relay's.
 e2e-sandbox-logs:

@@ -221,6 +221,16 @@ impl Phone<'_> {
         Ok(link)
     }
 
+    /// Like `pair_direct`, but the decision is left to whoever watches the Mac (its app, or the
+    /// terminal at the end of `alondra`'s setup), as a person holding the phone would.
+    pub fn pair_direct_waiting(&self, target: &Target) -> Result<Link> {
+        let attempt = self.start_direct(target)?;
+        println!("phone {} shows code {}; waiting for the Mac to decide", self.name, attempt.code);
+        let link = self.finish_direct(target, attempt)?;
+        println!("phone {} paired directly with Mac {} ({}) as {}", self.name, target.number, target.mac.id, link.device_id);
+        Ok(link)
+    }
+
     /// Sends sealed bytes to a Mac's direct port and returns its status and body.
     pub fn send_direct(&self, target: &Target, sealed: &[u8]) -> Result<(u16, Vec<u8>)> {
         post_json(&format!("http://{}/direct/request", target.direct), sealed)

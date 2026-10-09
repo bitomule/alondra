@@ -79,6 +79,9 @@ enum PhoneAction {
     Pair {
         #[arg(long)]
         direct: bool,
+        /// With --direct: leave the decision to the Mac's side instead of approving it.
+        #[arg(long, requires = "direct")]
+        wait: bool,
     },
     /// Sends one encrypted request and prints the decrypted response; --direct skips the relay.
     Request {
@@ -114,8 +117,9 @@ fn main() -> Result<()> {
             let target = sandbox.mac(mac)?;
             let phone = phone::Phone::open(&sandbox, &name)?;
             match action {
-                PhoneAction::Pair { direct: false } => phone.pair(&target),
-                PhoneAction::Pair { direct: true } => phone.pair_direct(&target).map(drop),
+                PhoneAction::Pair { direct: false, .. } => phone.pair(&target),
+                PhoneAction::Pair { direct: true, wait: false } => phone.pair_direct(&target).map(drop),
+                PhoneAction::Pair { direct: true, wait: true } => phone.pair_direct_waiting(&target).map(drop),
                 PhoneAction::Request { method, path, body, request_id, direct } => {
                     let body = body.map(|text| serde_json::from_str(&text)).transpose()?;
                     let reply = if direct {

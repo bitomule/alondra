@@ -14,7 +14,7 @@ pub struct Selection {
     write: bool,
 }
 
-fn resolve(value: &Path, home: &Path, cwd: &Path) -> Result<PathBuf> {
+pub(crate) fn resolve(value: &Path, home: &Path, cwd: &Path) -> Result<PathBuf> {
     if value.as_os_str().is_empty() { bail!(tr!("Projects directory cannot be empty", "la carpeta de proyectos no puede estar vacía")); }
     let path = if value == Path::new("~") { home.to_owned() }
         else if let Ok(rest) = value.strip_prefix("~/") { home.join(rest) }
@@ -114,26 +114,32 @@ impl Selection {
             return Ok(());
         }
         if self.write {
-            // Refuse overwriting options edited while the user was selecting a directory.
-            let current = match fs::read_to_string(&self.file) {
-                Ok(text) => Some(text),
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-                Err(e) => return Err(e.into()),
-            };
-            if current != self.original {
-                let shown = self.file.display();
-                bail!(trf!("{shown} changed during setup; rerun setup", "{shown} cambió durante la configuración; vuelve a ejecutar setup"));
-            }
-            fs::create_dir_all(&self.root).with_context(|| format!("Cannot create projects directory {}", self.root.display()))?;
-            let canonical = self.root.canonicalize()?;
-            let text = with_root(self.original.as_deref().unwrap_or(""), &canonical)?;
-            use std::os::unix::fs::DirBuilderExt;
-            fs::DirBuilder::new().recursive(true).mode(0o700)
-                .create(self.file.parent().context("Options parent")?)?;
-            crate::service_client::atomic_write(&self.file, text.as_bytes())?;
+            let canonical = self.store()?;
             println!("Projects root: {}", canonical.display());
         } else { println!("Projects root: {} (unchanged)", self.root.display()); }
         Ok(())
+    }
+
+    /// Writes the chosen folder into options.toml, creating it if missing; returns it canonical.
+    pub(crate) fn store(self) -> Result<PathBuf> {
+        // Refuse overwriting options edited while the user was selecting a directory.
+        let current = match fs::read_to_string(&self.file) {
+            Ok(text) => Some(text),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => return Err(e.into()),
+        };
+        if current != self.original {
+            let shown = self.file.display();
+            bail!(trf!("{shown} changed during setup; rerun setup", "{shown} cambió durante la configuración; vuelve a ejecutar setup"));
+        }
+        fs::create_dir_all(&self.root).with_context(|| format!("Cannot create projects directory {}", self.root.display()))?;
+        let canonical = self.root.canonicalize()?;
+        let text = with_root(self.original.as_deref().unwrap_or(""), &canonical)?;
+        use std::os::unix::fs::DirBuilderExt;
+        fs::DirBuilder::new().recursive(true).mode(0o700)
+            .create(self.file.parent().context("Options parent")?)?;
+        crate::service_client::atomic_write(&self.file, text.as_bytes())?;
+        Ok(canonical)
     }
 }
 

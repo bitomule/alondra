@@ -326,6 +326,20 @@ pub fn notifications_check(relay: bool, tested: Option<&super::system::TestPush>
     }
 }
 
+/// Asked on a first install, yes by default: without the relay there are no notifications.
+pub fn relay_check(on: bool) -> Outcome {
+    if on {
+        return outcome("relay", "relay", Group::Devices, Status::Pass, tr!("on", "activado"), None);
+    }
+    outcome("relay", "relay", Group::Devices, Status::Warn, tr!("off — local network only", "desactivado: solo red local"), Some(Fix::Ask {
+        question: tr!("Turn on notifications and access away from home? It needs an Alondra account and opens your browser.",
+            "¿Activas las notificaciones y el acceso desde fuera de casa? Necesita una cuenta de Alondra y abre el navegador.").into(),
+        default: true,
+        action: Action::EnableRelay,
+        instead: "alondra setup --relay".into(),
+    }))
+}
+
 pub fn devices_check(devices: &[Value]) -> Outcome {
     let n = devices.len();
     if n > 0 {
@@ -474,6 +488,15 @@ fn run_signin(env: &Env) -> Option<Outcome> {
     Some(signin_check(env.sys.signed_in()))
 }
 
+fn run_projects(env: &Env) -> Option<Outcome> {
+    let file = env.sys.home().join(alondra_core::options::FILE_NAME);
+    Some(super::projects::projects_check(env.sys.options_text().as_deref(), &file, &env.sys.user_home(), &env.sys.cwd(), env.first_run))
+}
+
+fn run_relay(env: &Env) -> Option<Outcome> {
+    env.first_run.then(|| relay_check(env.sys.relay()))
+}
+
 fn run_identity(env: &Env) -> Option<Outcome> {
     Some(identity_check(env.sys.service_config()))
 }
@@ -577,12 +600,13 @@ fn run_tuicr(env: &Env) -> Option<Outcome> {
 /// service itself) is repaired first.
 pub const CHECKS: &[Check] = &[
     Check { id: "mac", run: run_mac },
-    Check { id: "config", run: run_config },
     Check { id: "claude", run: run_claude },
     Check { id: "orchestrator", run: run_orchestrator },
     Check { id: "claude.profile", run: run_profile },
     Check { id: "claude.signin", run: run_signin },
+    Check { id: "projects", run: run_projects },
     Check { id: "identity", run: run_identity },
+    Check { id: "config", run: run_config },
     Check { id: "service", run: run_service },
     Check { id: "alondrad", run: run_daemon },
     Check { id: "state", run: run_state },
@@ -592,6 +616,7 @@ pub const CHECKS: &[Check] = &[
     Check { id: "hooks", run: run_hooks },
     Check { id: "plugin", run: run_plugin },
     Check { id: "mods", run: run_mods },
+    Check { id: "relay", run: run_relay },
     Check { id: "devices", run: run_devices },
     Check { id: "notifications", run: run_notifications },
     Check { id: "tmux", run: run_tmux },

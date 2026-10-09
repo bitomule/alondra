@@ -234,7 +234,7 @@ impl Client {
     }
 
     /// The raw answer, a refusal included: domain commands read their typed error from it.
-    fn exchange(&self, method: &str, path: &str, body: Option<&Value>) -> Result<(u16, Value)> {
+    pub(crate) fn exchange(&self, method: &str, path: &str, body: Option<&Value>) -> Result<(u16, Value)> {
         if let Some(service) = &self.service {
             return service.request(method, path, body, self.timeout);
         }

@@ -239,7 +239,7 @@ fn main() -> Result<()> {
         Some(Cmd::Machines) => service_client::list(),
         Some(Cmd::Connect { mac: Some(mac), repair, .. }) => service_client::connect(&mac, repair),
         Some(Cmd::Connect { mac: None, host, repair }) => direct_client::connect(host.as_deref(), repair),
-        None => tui::run(),
+        None => doctor::launch(),
         Some(Cmd::Login) => account::login(),
         Some(Cmd::Account) => account::status(),
         Some(Cmd::Logout) => account::logout(),
