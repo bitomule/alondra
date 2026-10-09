@@ -5,6 +5,8 @@ class Alondra < Formula
 
   depends_on macos: :sonoma
   depends_on arch: :arm64
+  depends_on "tmux"
+  depends_on "tuicr"
 
   # Signed bytes must survive Homebrew cleaning unchanged.
   skip_clean "bin/alondra", "bin/alondrad"
@@ -19,8 +21,7 @@ class Alondra < Formula
 
   def caveats
     <<~EOS
-      Run `alondra setup` to sign in, install the Claude plugins, and start the daemon.
-      Run it again after `brew upgrade alondra` to restart the daemon on the new version.
+      Run `alondra` to set up this Mac and open Alondra.
     EOS
   end
 
