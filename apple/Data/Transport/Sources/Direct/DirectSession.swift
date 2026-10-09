@@ -9,6 +9,9 @@ public actor DirectSession: OperationAPI {
     private let router: DirectRouter
     private let http: DirectHTTP
     private let pause: @Sendable (Duration) async throws -> Void
+    private let requestClock: RequestClock
+    let mutations: MutationRunner
+    private let mutationEvidence = MutationEvidenceStore()
     /// Most recent operations first; old ones age out, their envelopes long expired anyway.
     private var sealed: [String: (tag: Data, body: Data)] = [:]
     private var sealedOrder: [String] = []
@@ -20,6 +23,19 @@ public actor DirectSession: OperationAPI {
                 macAgreement: P256.KeyAgreement.PublicKey, router: DirectRouter, http: DirectHTTP,
                 now: @escaping @Sendable () -> UInt64 = { UInt64(max(0, Date().timeIntervalSince1970 * 1000)) },
                 pause: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }) {
+        self.init(macID: macID, deviceID: deviceID, signing: signing, agreement: agreement,
+            macSigning: macSigning, macAgreement: macAgreement, router: router, http: http,
+            now: now, pause: pause, requestClock: .continuous)
+    }
+
+    init(macID: String, deviceID: String, signing: P256.Signing.PrivateKey,
+         agreement: P256.KeyAgreement.PrivateKey, macSigning: P256.Signing.PublicKey,
+         macAgreement: P256.KeyAgreement.PublicKey, router: DirectRouter, http: DirectHTTP,
+         now: @escaping @Sendable () -> UInt64 = { UInt64(max(0, Date().timeIntervalSince1970 * 1000)) },
+         pause: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
+         requestClock: RequestClock) {
+        self.requestClock = requestClock
+        mutations = MutationRunner(clock: requestClock)
         codec = EnvelopeCodec(macID: macID, deviceID: deviceID, signing: signing, agreement: agreement,
                               macSigning: macSigning, macAgreement: macAgreement, now: now)
         self.router = router
@@ -27,9 +43,25 @@ public actor DirectSession: OperationAPI {
         self.pause = pause
     }
 
-    public func deactivate() { active = false }
+    public func deactivate() async {
+        active = false
+        await mutations.cancelAll()
+    }
 
     public func perform(_ request: APIRequest) async throws -> APIResponse {
+        guard request.method == "POST" else { return try await performPrepared(request) }
+        let startedAt = requestClock.now()
+        let owner = MutationScope.current?.id ?? UUID()
+        let lease = mutationEvidence.acquire(request.operationID, owner: owner)
+        defer { mutationEvidence.release(lease) }
+        let result = try await mutations.run(dispatchEvidence: lease.evidence, ownerID: owner, startedAt: startedAt, unknown: { APIResponse.unknown }) {
+            try await self.performPrepared(request)
+        }
+        return result
+    }
+
+    private func performPrepared(_ request: APIRequest) async throws -> APIResponse {
+        try MutationScope.check()
         guard active else { throw CancellationError() }
         let wait = EnvelopeRequestPolicy.viewsChangeWait(request.path)
         guard ["GET", "POST"].contains(request.method), !request.path.contains("#"),
@@ -50,21 +82,32 @@ public actor DirectSession: OperationAPI {
             body = existing.body
         } else {
             body = try seal(requestID: request.operationID, method: request.method, path: request.path, body: request.body)
+            try MutationScope.check()
             sealed[request.operationID] = (tag, body)
             sealedOrder.append(request.operationID)
-            if sealedOrder.count > Self.maxSealed { sealed[sealedOrder.removeFirst()] = nil }
+            if sealedOrder.count > Self.maxSealed {
+                let removed = sealedOrder.removeFirst()
+                sealed[removed] = nil
+                mutationEvidence.forget(removed)
+            }
         }
+        mutationEvidence.retain(request.operationID)
         return try await deliver(body, requestID: request.operationID, mutation: true, timeout: timeout)
     }
 
     /// Takes over an operation another carrier already sealed and sent: resending those exact
     /// bytes lets the Mac's journal answer with what it stored instead of running it again.
     public func adopt(_ envelope: Envelope, for request: APIRequest) throws {
+        try MutationScope.check()
         guard sealed[request.operationID] == nil, envelope.requestID == request.operationID else { return }
         let tag = try codec.semanticTag(method: request.method, path: request.path, body: request.body)
         sealed[request.operationID] = (tag, try JSONEncoder().encode(envelope))
         sealedOrder.append(request.operationID)
-        if sealedOrder.count > Self.maxSealed { sealed[sealedOrder.removeFirst()] = nil }
+        if sealedOrder.count > Self.maxSealed {
+                let removed = sealedOrder.removeFirst()
+                sealed[removed] = nil
+                mutationEvidence.forget(removed)
+            }
     }
 
     private func seal(requestID: String, method: String, path: String, body: Data?) throws -> Data {
@@ -86,12 +129,16 @@ public actor DirectSession: OperationAPI {
     private func deliver(_ body: Data, requestID: String, mutation: Bool, timeout: Duration) async throws -> APIResponse {
         var mayHaveArrived = false
         for attempt in 0..<4 {
+            try MutationScope.check()
             guard active else { throw CancellationError() }
             if attempt > 0 { try await pause(.milliseconds(500 * attempt)) }
+            try MutationScope.check()
             let endpoint: DirectEndpoint
             do { endpoint = try await router.endpoint() }
             catch is DirectRouteError where mayHaveArrived { break }
+            try MutationScope.check()
             let context = await router.requestContext()
+            try MutationScope.check()
             let reply: HTTPReply
             do { reply = try await http.post(endpoint, path: "/direct/request", body: body, timeout: timeout) }
             catch let error as URLError where error.code == .cancelled { throw CancellationError() }
@@ -100,6 +147,7 @@ public actor DirectSession: OperationAPI {
                 await router.invalidate()
                 continue
             }
+            try MutationScope.check()
             guard active else { throw CancellationError() }
             if reply.status == 200 {
                 // Only an answer that opens with the pinned keys proves the address is this Mac.
