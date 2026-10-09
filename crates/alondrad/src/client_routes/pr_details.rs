@@ -74,7 +74,14 @@ pub(crate) enum Merge {
     Unknown,
 }
 
+const CLEAN_CACHE_MILLIS: i64 = 60_000;
+
 impl Details {
+    fn fresh_at(&self, now: i64) -> bool {
+        self.observed_at.and_then(|at| now.checked_sub(at))
+            .is_some_and(|age| (0..CLEAN_CACHE_MILLIS).contains(&age))
+    }
+
     fn matches_revision(&self, head: &str, base: &str) -> bool {
         self.head_sha.as_deref() == Some(head) && self.base_ref.as_deref() == Some(base)
     }
@@ -94,6 +101,8 @@ impl Details {
 pub(crate) struct PrDetails {
     cache: Mutex<Observations>,
     refresh: tokio::sync::Mutex<()>,
+    #[cfg(test)]
+    clock: Mutex<Option<Arc<dyn Fn() -> i64 + Send + Sync>>>,
 }
 
 #[derive(Default)]
@@ -109,6 +118,12 @@ struct Observation {
 }
 
 impl PrDetails {
+    fn now(&self) -> i64 {
+        #[cfg(test)]
+        if let Some(clock) = self.clock.lock().expect("pull request clock poisoned").clone() { return clock(); }
+        alondra_core::now_millis()
+    }
+
     pub(crate) fn get(&self, pr_id: &str) -> Option<Details> {
         self.cache.lock().expect("pull request details poisoned").entries.get(pr_id)
             .and_then(|entry| entry.details.clone())
@@ -126,7 +141,7 @@ impl PrDetails {
         let mut cache = self.cache.lock().expect("pull request details poisoned");
         let Some(entry) = cache.entries.get_mut(pr_id).filter(|entry| entry.accepted <= request) else { return false };
         entry.accepted = request;
-        details.observed_at = Some(alondra_core::now_millis());
+        details.observed_at = Some(self.now());
         entry.details = Some(details);
         true
     }
@@ -165,11 +180,11 @@ impl super::Client {
     }
 
     /// Whether `pr` merges at `head`, asked up to `attempts` times while GitHub is still computing.
-    /// A clean answer for this head is trusted; a conflict or an unknown is asked again, since a
+    /// A recent clean answer for this head and base is trusted; a conflict or unknown is asked again, since a
     /// base that moved can clear either without a new head.
     pub(crate) async fn merge_state(&self, pr: &PullRequest, head: &str, attempts: usize, pause: Duration) -> Merge {
         if self.details.get(&pr.id.0)
-            .is_some_and(|details| details.matches_revision(head, &pr.base) && details.merge() == Merge::Clean)
+            .is_some_and(|details| details.matches_revision(head, &pr.base) && details.merge() == Merge::Clean && details.fresh_at(self.details.now()))
         {
             return Merge::Clean;
         }
@@ -185,8 +200,12 @@ impl super::Client {
             if !details.matches_revision(head, &pr.base) { continue; }
             let merge = details.merge();
             if !self.details.complete(&pr.id.0, request, details) {
-                return self.details.get(&pr.id.0).filter(|details| details.matches_revision(head, &pr.base))
-                    .map_or(Merge::Unknown, |details| details.merge());
+                let Some(latest) = self.details.get(&pr.id.0).filter(|details| details.matches_revision(head, &pr.base)) else {
+                    return Merge::Unknown;
+                };
+                let accepted = latest.merge();
+                if latest.fresh_at(self.details.now()) && accepted != Merge::Unknown { return accepted; }
+                return if merge == Merge::Conflicts { Merge::Conflicts } else { Merge::Unknown };
             }
             if merge != Merge::Unknown {
                 return merge;
@@ -627,6 +646,224 @@ mod tests {
         assert_eq!(foreground.await.unwrap_err().code, "pr_conflicts", "newer accepted conflicts cannot become Unknown");
         assert_eq!(client.details.get(&pr.id.0).unwrap(), newest);
         assert_eq!(client.domain.state().unwrap(), state);
+    }
+
+    struct CacheView {
+        answer: Option<serde_json::Value>,
+        reads: std::sync::atomic::AtomicUsize,
+        errors: std::sync::atomic::AtomicUsize,
+        bytes: std::sync::atomic::AtomicUsize,
+    }
+    impl CacheView {
+        fn new(mergeable: Option<&str>) -> Self {
+            Self {
+                answer: mergeable.map(|mergeable| json!({"state":"OPEN", "headRefOid":"a".repeat(40),
+                    "baseRefName":"main", "mergeable":mergeable, "title":"Current provider", "body":"x".repeat(4096)})),
+                reads: 0.into(), errors: 0.into(), bytes: 0.into(),
+            }
+        }
+        fn metrics(&self) -> (usize, usize, usize) {
+            use std::sync::atomic::Ordering::SeqCst;
+            (self.reads.load(SeqCst), self.errors.load(SeqCst), self.bytes.load(SeqCst))
+        }
+    }
+    impl super::PrView for CacheView {
+        fn view<'a>(&'a self, _: &'a str) -> super::Viewed<'a> {
+            Box::pin(async move {
+                use std::sync::atomic::Ordering::SeqCst;
+                self.reads.fetch_add(1, SeqCst);
+                self.errors.fetch_add(usize::from(self.answer.is_none()), SeqCst);
+                self.bytes.fetch_add(self.answer.as_ref().and_then(|v| v["body"].as_str()).map_or(0, str::len), SeqCst);
+                self.answer.clone()
+            })
+        }
+    }
+
+    fn cache_clock(details: &PrDetails) -> std::sync::Arc<std::sync::atomic::AtomicI64> {
+        let clock = std::sync::Arc::new(std::sync::atomic::AtomicI64::new(1000));
+        let read = clock.clone();
+        *details.clock.lock().unwrap() = Some(std::sync::Arc::new(move || read.load(std::sync::atomic::Ordering::SeqCst)));
+        clock
+    }
+    fn cached_clean(client: &crate::client_routes::Client, pr: &alondra_core::domain::PullRequest) {
+        client.details.record(&pr.id.0, Details { title: Some("Cached clean".into()), body: Some("Preserved body".into()),
+            head_sha: Some(pr.head.clone()), base_ref: Some(pr.base.clone()), ..Default::default() });
+    }
+
+    #[tokio::test]
+    async fn freshness_expired_clean_revalidates_and_failure_retains_data_without_authority() {
+        let (_home, client, pr) = foreground_fixture();
+        let state = client.domain.state().unwrap();
+        let clock = cache_clock(&client.details);
+        let source = std::sync::Arc::new(CacheView::new(None));
+        client.use_pr_view(source.clone());
+        cached_clean(&client, &pr);
+        let previous = client.details.get(&pr.id.0).unwrap();
+        clock.store(1000 + 59_999, std::sync::atomic::Ordering::SeqCst);
+        let fresh = client.merge_state(&pr, &pr.head, 1, std::time::Duration::ZERO).await;
+        let fresh_metrics = source.metrics();
+        clock.store(1000 + 60_000, std::sync::atomic::Ordering::SeqCst);
+        let stale = client.merge_state(&pr, &pr.head, 1, std::time::Duration::ZERO).await;
+        println!("clean_cache queries=2 fresh={fresh:?} fresh_provider={fresh_metrics:?} stale={stale:?} total_provider={:?}", source.metrics());
+        assert_eq!(fresh, super::Merge::Clean);
+        assert_eq!(fresh_metrics, (0, 0, 0), "recent matching clean remains a useful fast path");
+        assert_eq!(stale, super::Merge::Unknown, "expired clean cannot certify the current base after provider failure");
+        assert_eq!(source.metrics(), (1, 1, 0));
+        assert_eq!(client.details.get(&pr.id.0).unwrap(), previous, "failure preserves body and provenance without renewing it");
+        assert_eq!(previous.observed_at, Some(1000));
+        assert_eq!(client.domain.state().unwrap(), state);
+    }
+
+    #[tokio::test]
+    async fn freshness_expired_clean_fetches_current_conflicts_before_presentation() {
+        let (_home, client, pr) = foreground_fixture();
+        let state = client.domain.state().unwrap();
+        let clock = cache_clock(&client.details);
+        let source = std::sync::Arc::new(CacheView::new(Some("CONFLICTING")));
+        client.use_pr_view(source.clone());
+        cached_clean(&client, &pr);
+        clock.store(61_000, std::sync::atomic::Ordering::SeqCst);
+        let result = client.verify_presentation(&foreground_presentation(&pr)).await;
+        println!("clean_cache expired_conflicts provider={:?} rejected={}", source.metrics(), result.is_err());
+        assert_eq!(result.unwrap_err().code, "pr_conflicts");
+        assert_eq!(source.metrics(), (1, 0, 4096));
+        let accepted = client.details.get(&pr.id.0).unwrap();
+        assert!(accepted.conflicts && accepted.matches_revision(&pr.head, &pr.base));
+        assert_eq!(accepted.observed_at, Some(61_000));
+        assert_eq!(client.domain.state().unwrap(), state);
+    }
+
+    #[tokio::test]
+    async fn freshness_successful_revalidation_renews_clean_and_next_read_is_cached() {
+        let (_home, client, pr) = foreground_fixture();
+        let clock = cache_clock(&client.details);
+        let source = std::sync::Arc::new(CacheView::new(Some("MERGEABLE")));
+        client.use_pr_view(source.clone());
+        cached_clean(&client, &pr);
+        clock.store(61_000, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(client.merge_state(&pr, &pr.head, 1, std::time::Duration::ZERO).await, super::Merge::Clean);
+        println!("clean_cache successful_revalidation provider={:?}", source.metrics());
+        assert_eq!(source.metrics(), (1, 0, 4096));
+        assert_eq!(client.details.get(&pr.id.0).unwrap().observed_at, Some(61_000));
+        clock.store(61_001, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(client.merge_state(&pr, &pr.head, 1, std::time::Duration::ZERO).await, super::Merge::Clean);
+        assert_eq!(source.metrics(), (1, 0, 4096), "a fresh renewed answer avoids another provider read");
+    }
+
+    #[tokio::test]
+    async fn freshness_missing_future_or_overflowing_provenance_requires_revalidation() {
+        for observed_at in [None, Some(1001), Some(i64::MIN)] {
+            let (_home, client, pr) = foreground_fixture();
+            cache_clock(&client.details);
+            let source = std::sync::Arc::new(CacheView::new(None));
+            client.use_pr_view(source.clone());
+            cached_clean(&client, &pr);
+            client.details.cache.lock().unwrap().entries.get_mut(&pr.id.0).unwrap().details.as_mut().unwrap().observed_at = observed_at;
+            let previous = client.details.get(&pr.id.0).unwrap();
+            assert_eq!(client.merge_state(&pr, &pr.head, 1, std::time::Duration::ZERO).await, super::Merge::Unknown);
+            assert_eq!(source.metrics(), (1, 1, 0));
+            assert_eq!(client.details.get(&pr.id.0).unwrap(), previous);
+        }
+    }
+
+    #[tokio::test]
+    async fn freshness_losing_foreground_cannot_certify_an_expired_background_clean() {
+        let (_home, client, pr) = foreground_fixture();
+        let state = client.domain.state().unwrap();
+        let clock = cache_clock(&client.details);
+        let source = std::sync::Arc::new(ControlledView::new(false));
+        client.use_pr_view(source.clone());
+        let mut foreground = Box::pin(client.merge_state(&pr, &pr.head, 1, std::time::Duration::ZERO));
+        poll_pending(foreground.as_mut());
+        client.details.refresh(&state, &CacheView::new(Some("MERGEABLE"))).await;
+        let previous = client.details.get(&pr.id.0).unwrap();
+        assert_eq!(previous.observed_at, Some(1000));
+        clock.store(61_000, std::sync::atomic::Ordering::SeqCst);
+        source.release();
+        assert_eq!(foreground.await, super::Merge::Unknown, "losing-completion fallback cannot bypass clean expiry");
+        assert_eq!(client.details.get(&pr.id.0).unwrap(), previous);
+        assert_eq!(client.domain.state().unwrap(), state);
+    }
+
+    #[tokio::test]
+    async fn freshness_boundary_expired_clean_cannot_hide_a_returned_foreground_conflict() {
+        let (_home, client, pr) = foreground_fixture();
+        let state = client.domain.state().unwrap();
+        let clock = cache_clock(&client.details);
+        let source = std::sync::Arc::new(ControlledView { mergeable: "CONFLICTING", ..ControlledView::new(false) });
+        client.use_pr_view(source.clone());
+        let command = foreground_presentation(&pr);
+        let mut foreground = Box::pin(client.verify_presentation(&command));
+        poll_pending(foreground.as_mut());
+        client.details.refresh(&state, &CacheView::new(Some("MERGEABLE"))).await;
+        let newest = client.details.get(&pr.id.0).unwrap();
+        clock.store(61_000, std::sync::atomic::Ordering::SeqCst);
+        source.release();
+        assert_eq!(foreground.await.unwrap_err().code, "pr_conflicts", "expired clean is not contradictory authority for matching live conflicts");
+        assert_eq!(client.details.get(&pr.id.0).unwrap(), newest, "rejection need not replace or renew the newer cache row");
+        assert_eq!(newest.observed_at, Some(1000));
+        assert_eq!(client.domain.state().unwrap(), state);
+    }
+
+    #[tokio::test]
+    async fn freshness_boundary_fresh_unknown_cannot_hide_a_returned_foreground_conflict() {
+        let (_home, client, pr) = foreground_fixture();
+        let state = client.domain.state().unwrap();
+        let clock = cache_clock(&client.details);
+        let source = std::sync::Arc::new(ControlledView { mergeable: "CONFLICTING", ..ControlledView::new(false) });
+        client.use_pr_view(source.clone());
+        let command = foreground_presentation(&pr);
+        let mut foreground = Box::pin(client.verify_presentation(&command));
+        poll_pending(foreground.as_mut());
+        clock.store(61_000, std::sync::atomic::Ordering::SeqCst);
+        client.details.refresh(&state, &CacheView::new(Some("UNKNOWN"))).await;
+        let newest = client.details.get(&pr.id.0).unwrap();
+        source.release();
+        assert_eq!(foreground.await.unwrap_err().code, "pr_conflicts", "Unknown does not contradict matching live conflicts");
+        assert_eq!(client.details.get(&pr.id.0).unwrap(), newest);
+        assert_eq!(newest.observed_at, Some(61_000));
+        assert_eq!(client.domain.state().unwrap(), state);
+    }
+
+    #[tokio::test]
+    async fn freshness_boundary_newer_fresh_clean_still_supersedes_foreground_conflicts() {
+        let (_home, client, pr) = foreground_fixture();
+        let state = client.domain.state().unwrap();
+        let clock = cache_clock(&client.details);
+        let source = std::sync::Arc::new(ControlledView { mergeable: "CONFLICTING", ..ControlledView::new(false) });
+        client.use_pr_view(source.clone());
+        let command = foreground_presentation(&pr);
+        let mut foreground = Box::pin(client.verify_presentation(&command));
+        poll_pending(foreground.as_mut());
+        clock.store(61_000, std::sync::atomic::Ordering::SeqCst);
+        client.details.refresh(&state, &CacheView::new(Some("MERGEABLE"))).await;
+        let newest = client.details.get(&pr.id.0).unwrap();
+        source.release();
+        assert!(foreground.await.is_ok(), "fresh matching later clean remains authoritative");
+        assert_eq!(client.details.get(&pr.id.0).unwrap(), newest);
+        assert_eq!(newest.observed_at, Some(61_000));
+        assert_eq!(client.domain.state().unwrap(), state);
+    }
+
+    #[tokio::test]
+    async fn freshness_boundary_wrong_head_or_base_still_returns_unknown() {
+        for (field, value) in [("headRefOid", "b".repeat(40)), ("baseRefName", "release".into())] {
+            let (_home, client, pr) = foreground_fixture();
+            let state = client.domain.state().unwrap();
+            cache_clock(&client.details);
+            let source = std::sync::Arc::new(ControlledView { mergeable: "CONFLICTING", ..ControlledView::new(false) });
+            client.use_pr_view(source.clone());
+            let mut foreground = Box::pin(client.merge_state(&pr, &pr.head, 1, std::time::Duration::ZERO));
+            poll_pending(foreground.as_mut());
+            let mut background = CacheView::new(Some("MERGEABLE"));
+            background.answer.as_mut().unwrap()[field] = value.into();
+            client.details.refresh(&state, &background).await;
+            let newest = client.details.get(&pr.id.0).unwrap();
+            source.release();
+            assert_eq!(foreground.await, super::Merge::Unknown);
+            assert_eq!(client.details.get(&pr.id.0).unwrap(), newest);
+            assert_eq!(client.domain.state().unwrap(), state);
+        }
     }
 
     #[tokio::test]
