@@ -703,6 +703,8 @@ pub struct Machine {
     /// the free percentage: memory can be under pressure with a third of it free.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub memory_pressure: Option<MemoryPressure>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compressor: Option<MemoryCompressor>,
     pub load: [f64; 3],
     pub cpus: usize,
     pub cpu_usage: f32,
@@ -728,6 +730,35 @@ impl MemoryPressure {
             4 => Some(Self::Critical),
             _ => None,
         }
+    }
+}
+
+/// The kernel's own accounting of memory, where macOS reports it. macOS warns of memory pressure
+/// when the compressor occupies more pages than all uncompressed memory.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub struct MemoryCompressor {
+    pub page_size: u64,
+    /// Active, inactive, free and speculative pages.
+    pub uncompressed_pages: u64,
+    /// Pages the compressor occupies in memory.
+    pub compressor_pages: u64,
+    /// Pages kept compressed, in memory or swapped out.
+    pub stored_pages: u64,
+    pub swap_used: u64,
+    pub swapins: u64,
+    pub swapouts: u64,
+}
+
+impl MemoryCompressor {
+    /// The compressor's share of the memory macOS weighs: warning above 0.5, normal again below 0.4.
+    pub fn share(&self) -> f64 {
+        let weighed = self.uncompressed_pages + self.compressor_pages;
+        if weighed == 0 { 0.0 } else { self.compressor_pages as f64 / weighed as f64 }
+    }
+
+    /// How many bytes stand between the Mac and macOS's warning; negative past it.
+    pub fn margin(&self) -> i64 {
+        (self.uncompressed_pages as i64 - self.compressor_pages as i64) * self.page_size as i64
     }
 }
 

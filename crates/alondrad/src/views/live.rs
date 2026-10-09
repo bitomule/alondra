@@ -1001,7 +1001,7 @@ mod tests {
     #[test]
     fn a_minute_of_ram_and_cpu_wiggle_keeps_the_published_set() {
         let machine = |memory_free: u32, cpu: f32| alondra_core::Machine { at: 0, memory_total: 100,
-            memory_available: 50, memory_free_percent: Some(memory_free), memory_pressure: None, load: [0.0; 3], cpus: 8,
+            memory_available: 50, memory_free_percent: Some(memory_free), memory_pressure: None, compressor: None, load: [0.0; 3], cpus: 8,
             cpu_usage: cpu, disk_total: 1_000, disk_available: 120, unreliable: false };
         let usage = |week: f64| alondra_core::usage::Usage { week_percent: week, week_resets_at: 0,
             today_spent: None, today_share: None, per_day_left: 0.0, over_pace: false, five_hour_percent: Some(10.0),
@@ -1024,7 +1024,7 @@ mod tests {
     #[test]
     fn machine_gauges_measure_cpu_after_memory_like_the_header_did() {
         let mut machine = alondra_core::Machine { at: 0, memory_total: 100, memory_available: 50,
-            memory_free_percent: Some(50), memory_pressure: None, load: [0.0; 3], cpus: 8, cpu_usage: 34.4,
+            memory_free_percent: Some(50), memory_pressure: None, compressor: None, load: [0.0; 3], cpus: 8, cpu_usage: 34.4,
             disk_total: 100, disk_available: 50, unreliable: false };
         let english = gauges(&machine, None, Lang::En, 0);
         assert_eq!(english.iter().map(|gauge| gauge.id.as_str()).collect::<Vec<_>>(), ["memory", "cpu", "disk"]);
@@ -1056,7 +1056,7 @@ mod tests {
     #[test]
     fn usage_gauges_keep_reset_daily_share_and_over_pace_warning() {
         let machine = alondra_core::Machine { at: 0, memory_total: 100, memory_available: 50,
-            memory_free_percent: Some(50), memory_pressure: None, load: [0.0; 3], cpus: 8, cpu_usage: 0.0,
+            memory_free_percent: Some(50), memory_pressure: None, compressor: None, load: [0.0; 3], cpus: 8, cpu_usage: 0.0,
             disk_total: 100, disk_available: 50, unreliable: false };
         let usage = alondra_core::usage::Usage { week_percent: 53.0, week_resets_at: 1_790_553_600_000,
             today_spent: Some(41.0), today_share: Some(18.0), over_pace: true,
@@ -1074,7 +1074,7 @@ mod tests {
     #[test]
     fn an_old_reading_says_how_old_it_is_in_both_languages() {
         let machine = alondra_core::Machine { at: 0, memory_total: 100, memory_available: 50,
-            memory_free_percent: Some(50), memory_pressure: None, load: [0.0; 3], cpus: 8, cpu_usage: 0.0,
+            memory_free_percent: Some(50), memory_pressure: None, compressor: None, load: [0.0; 3], cpus: 8, cpu_usage: 0.0,
             disk_total: 100, disk_available: 50, unreliable: false };
         let usage = alondra_core::usage::Usage { week_percent: 53.0, week_resets_at: 1_790_553_600_000,
             today_spent: Some(3.0), today_share: Some(10.0), five_hour_percent: Some(10.0),
