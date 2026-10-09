@@ -977,11 +977,20 @@ async fn a_saturated_changes_rejection_does_not_wait_for_the_mutation_lane() {
         let mut busy = std::pin::pin!(busy);
         let pending = std::future::poll_fn(|cx| Poll::Ready(busy.as_mut().poll(cx).is_pending())).await;
         assert!(pending);
-        let accepted: i64 = service.journal.db().unwrap().query_row(
+        let accepting = service.journal.accept_jobs.available_permits() == 0;
+        let mut accepted: i64 = service.journal.db().unwrap().query_row(
             "SELECT count(*) FROM service_receipts WHERE sender='phone-1' AND request_id='busy-changes'", [], |row| row.get(0),
         ).unwrap();
-        drop(held.take());
-        busy.await.unwrap();
+        if accepting || accepted != 0 {
+            busy.as_mut().await.unwrap();
+            accepted = service.journal.db().unwrap().query_row(
+                "SELECT count(*) FROM service_receipts WHERE sender='phone-1' AND request_id='busy-changes'", [], |row| row.get(0),
+            ).unwrap();
+            drop(held.take());
+        } else {
+            drop(held.take());
+            busy.await.unwrap();
+        }
         accepted
     };
     while let Some(result) = tasks.join_next().await { result.unwrap().unwrap(); }

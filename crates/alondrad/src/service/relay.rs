@@ -24,7 +24,7 @@ use std::{
 
 // The relay accepts a 256 KiB envelope; its work wrapper adds routing metadata.
 const MAX_WORK_BYTES: usize = 256 * 1024 + 4096;
-const MAX_ORDINARY_DELIVERIES: usize = 2;
+pub(super) const MAX_ORDINARY_DELIVERIES: usize = 2;
 
 pub(crate) struct RelayConnector {
     url: Url,
@@ -37,7 +37,7 @@ pub(crate) struct RelayConnector {
 pub(super) struct RelayDelivery {
     response: Vec<u8>,
     device: Arc<Device>,
-    guard: WorkGuard,
+    guard: Arc<WorkGuard>,
     approval_binding: Option<String>,
 }
 
@@ -337,8 +337,7 @@ impl Service {
             self.handle_prepared(work, &epoch, prepared).await
         } else {
             let permit = self.relay()?.deliveries.clone().acquire_owned().await?;
-            prepared.execution = if prepared.request.method == "GET" && prepared.request.body.is_none()
-                && approved_method(&prepared.request).is_ok_and(|method| method == Method::GET) {
+            prepared.execution = if Self::ordinary_read(&prepared.request) {
                 ExecutionLane::Read
             } else {
                 ExecutionLane::Mutation(Self::reserve_mutation_turn(self.lane.clone()).await)
@@ -355,6 +354,11 @@ impl Service {
             });
             Ok(())
         }
+    }
+
+    pub(super) fn ordinary_read(request: &super::LocalRequest) -> bool {
+        request.method == "GET" && request.body.is_none()
+            && approved_method(request).is_ok_and(|method| method == Method::GET)
     }
 
     async fn reserve_mutation_turn(lane: Arc<tokio::sync::Mutex<()>>) -> MutationTurn {

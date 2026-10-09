@@ -42,6 +42,7 @@ const MAX_PUSH_PLAINTEXT: usize = 1_500;
 // The views feed supersedes its prior waiter independently of this limit.
 const MAX_CHANGES_PER_DEVICE: usize = 1;
 const MAX_CHANGES_TOTAL: usize = 16;
+const MAX_JOURNAL_ACCEPTS: usize = MAX_CHANGES_TOTAL + relay::MAX_ORDINARY_DELIVERIES;
 
 type WorkKey = (String, String);
 type InFlight = Arc<InFlightSet>;
@@ -125,7 +126,7 @@ enum ExecutionLane {
 struct PreparedWork {
     request: LocalRequest,
     digest: [u8; 32],
-    guard: WorkGuard,
+    guard: Arc<WorkGuard>,
     execution: ExecutionLane,
 }
 
@@ -988,12 +989,12 @@ impl Service {
             request,
             digest,
             execution: ExecutionLane::Serial,
-            guard: WorkGuard {
+            guard: Arc::new(WorkGuard {
                 inflight: self.inflight.clone(),
                 key,
                 changes,
                 saturated,
-            },
+            }),
         }))
     }
 
@@ -1006,7 +1007,7 @@ impl Service {
         prepared: PreparedWork,
         transport: Transport,
         accepted: A,
-    ) -> Result<(Vec<u8>, Arc<Device>, WorkGuard)>
+    ) -> Result<(Vec<u8>, Arc<Device>, Arc<WorkGuard>)>
     where
         A: FnOnce() -> F,
         F: std::future::Future<Output = Result<()>>,
@@ -1025,7 +1026,7 @@ impl Service {
                 ExecutionLane::Mutation(turn) => Some(turn.acquire().await),
             }
         };
-        let disposition = self.journal.accept(&e.sender, &e.request_id, &digest)?;
+        let disposition = self.journal.accept_admitted(&e.sender, &e.request_id, &digest, guard.clone()).await?;
         accepted().await?;
         if request.body.is_none() && domain_read_route(&request) {
             let binding = self.read_receipt_binding(&e.sender, &device, transport)?;
@@ -2085,8 +2086,32 @@ enum EnrollmentDecision {
 #[derive(Clone)]
 struct Journal {
     path: PathBuf,
+    accept_admissions: Arc<tokio::sync::Semaphore>,
+    accept_jobs: Arc<tokio::sync::Semaphore>,
 }
 impl Journal {
+    async fn off_runtime_admitted<T: Send + 'static>(
+        &self,
+        reservation: Arc<WorkGuard>,
+        operation: impl FnOnce(&Journal) -> Result<T> + Send + 'static,
+    ) -> Result<T> {
+        let admission = self.accept_admissions.clone().try_acquire_owned()
+            .context("receipt journal admission full before acknowledgement")?;
+        let physical = self.accept_jobs.clone().acquire_owned().await?;
+        let journal = self.clone();
+        tokio::task::spawn_blocking(move || {
+            let (_admission, _physical, _reservation) = (admission, physical, reservation);
+            operation(&journal)
+        }).await?
+    }
+
+    async fn accept_admitted(
+        &self, sender: &str, id: &str, digest: &[u8; 32], reservation: Arc<WorkGuard>,
+    ) -> Result<Disposition> {
+        let (sender, id, digest) = (sender.to_owned(), id.to_owned(), *digest);
+        self.off_runtime_admitted(reservation, move |journal| journal.accept(&sender, &id, &digest)).await
+    }
+
     /// Exclusive approval leases wait for shared leases that other tasks hold
     /// across relay awaits, so they must never block a runtime worker.
     async fn off_runtime<T: Send + 'static>(
@@ -2153,7 +2178,10 @@ impl Journal {
             migration.execute_batch("ALTER TABLE service_receipts ADD COLUMN execution_mode TEXT NOT NULL DEFAULT 'legacy'")?;
         }
         migration.commit()?;
-        Ok(Self { path })
+        Ok(Self { path,
+            accept_admissions: Arc::new(tokio::sync::Semaphore::new(MAX_JOURNAL_ACCEPTS)),
+            accept_jobs: Arc::new(tokio::sync::Semaphore::new(1)),
+        })
     }
     fn connect(path: &Path) -> Result<Connection> {
         // Enforce no-follow in SQLite itself as well, closing the race between
@@ -2486,6 +2514,7 @@ mod domain_parity_tests;
 #[cfg(test)]
 mod tests {
     mod relay_scheduler_tests;
+    mod journal_admission_tests;
     use super::*;
     use reqwest::{StatusCode, Url};
     use std::collections::HashSet;
