@@ -198,14 +198,13 @@ impl DomainState {
             ),
             InteractionPayload::Question { answer, .. }
             | InteractionPayload::ActionRequest { answer, .. } => {
-                let answerable_now = active || i.card.kind == CardKind::Propose;
                 let enabled =
-                    answer.is_none() && !i.withdrawn && answerable_now && i.recipient == Recipient::User;
+                    answer.is_none() && !i.withdrawn && active && i.recipient == Recipient::User;
                 let reason = if i.withdrawn {
                     Some("withdrawn".into())
                 } else if i.recipient != Recipient::User {
                     Some("forbidden".into())
-                } else if !answerable_now {
+                } else if !active {
                     Some("task_not_active".into())
                 } else if answer.is_some() {
                     Some("invalid_action_for_kind".into())
@@ -220,7 +219,7 @@ impl DomainState {
                         None if matches!(i.payload, InteractionPayload::Question { .. }) => "question",
                         None => "action_request",
                     },
-                    answer.is_none() && !i.withdrawn && answerable_now,
+                    answer.is_none() && !i.withdrawn && active,
                     vec![AvailableAction {
                         kind: "answer_question".into(),
                         enabled,

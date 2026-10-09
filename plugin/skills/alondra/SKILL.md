@@ -98,6 +98,12 @@ Pick the tool by what you need:
   this session.
 - `request_test`: the user tries a build or screen: `where` (build, version, screen) and `what`
   to look at. They answer Works or Doesn't work, with text.
+- `suggest`: something you saw outside your task (an unrelated bug, an improvement). Send it as
+  soon as you see it, with `what` you saw, `where` and `why_not_mine`, and keep working: it goes
+  to the orchestrator, never to the user, and never blocks you or your delivery. Never put it in
+  your result or ask the user about it. The orchestrator answers with a note: part of your plan
+  (do it in this task), discarded, a new task, or a question it takes to the user. At most five
+  wait per task.
 - In a background session, menu questions (`AskUserQuestion`), permission prompts and plans
   also reach the user in Alondra, and their answer comes back as Claude's own.
 - Nodes send no notices: there is no tool for status, findings or "I am waiting". To decide use

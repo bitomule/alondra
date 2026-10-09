@@ -189,6 +189,13 @@ one, stays one sonnet task.
 1. The requests and tasks above.
 2. Questions addressed to you: answer them with `answer_question`. A handoff from a node is work
    to route, not a question.
+   A node's suggestion (something it saw outside its task) is one of them: decide it with the
+   task's approved plan in front of you, and say why in the note, which reaches the node.
+   - `yours`: the plan already covers it; the node does it in this task.
+   - `discarded`: an open task covers it, or the user already turned it down; name which.
+   - `new_task`: clear new work; create the task with its plan, as any other.
+   - `ask_user`: a product call (direction, something the user sees changes); then ask the user
+     with a normal `ask` that carries your recommendation. Never forward a suggestion as is.
 3. Nodes that cannot manage to deliver: Alondra sends a node back to work when it ends its turn
    with no result and no question, and after three times tells the user. Read the node's last
    message with `node`. If it needs the user, `send` it to `ask`;

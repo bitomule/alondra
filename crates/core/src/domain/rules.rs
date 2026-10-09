@@ -43,10 +43,25 @@ impl Source {
         }
     }
 }
-/// The option of a Propose card that turns it into a Request.
 pub const REQUEST_TITLE_LIMIT: usize = 60;
 pub const POST_MERGE_WORK_MAX: usize = 120;
-pub const PROPOSAL_ACCEPTED: &str = "do_it";
+/// How the orchestrator settles a node's suggestion: the only answers a Propose card offers.
+pub const SUGGESTION_ANSWERS: [(&str, &str, &str); 4] = [
+    ("yours", "It's part of your plan: do it in this task", "The node does it as part of the task it is working on."),
+    ("discarded", "Discarded", "An open task already covers it, or the user already turned it down: the note says which."),
+    ("new_task", "It becomes a new task", "The orchestrator creates a task for it, with its own plan."),
+    ("ask_user", "I'll ask the user", "It is a product call: the orchestrator asks the user, with a recommendation."),
+];
+/// A node's suggestions still waiting for the orchestrator, per task.
+pub const OPEN_SUGGESTIONS_MAX: usize = 5;
+pub fn suggestion_options() -> Vec<QuestionOption> {
+    SUGGESTION_ANSWERS.iter().map(|(id, label, description)| QuestionOption {
+        id: (*id).into(),
+        label: (*label).into(),
+        description: Some((*description).into()),
+        inputs: vec![InputSpec { id: "note".into(), kind: InputKind::Text, required: false }],
+    }).collect()
+}
 /// The notice that a task ended with a card still waiting for the user: this prefix and the card's id.
 pub const ENDED_UNANSWERED_PREFIX: &str = "ended-unanswered-";
 fn kind_name(kind: CardKind) -> String {
@@ -517,6 +532,9 @@ impl DomainState {
             _ => self.card_author(actor, scope, source)?,
         };
         self.recipient(to)?;
+        if card.kind == CardKind::Propose {
+            self.suggestion(&author, scope, to, options)?;
+        }
         if let Some(existing) = self.repeated_notice(&author, scope, to, body, card, source) {
             return Ok(Some(existing));
         }
@@ -559,6 +577,25 @@ impl DomainState {
         );
         self.blocks_acyclic(i)?;
         Ok(None)
+    }
+    /// A suggestion is something a node saw outside its task: it goes to the orchestrator, never
+    /// to the user, carries the orchestrator's fixed answers, and a task keeps only a few waiting.
+    fn suggestion(&self, author: &Author, scope: &Scope, to: &Recipient, options: &[QuestionOption]) -> Result<()> {
+        let (Author::Agent { .. }, Scope::Task { task_id }, Recipient::Orchestrator) = (author, scope, to) else {
+            return refuse("forbidden", "card.kind", "Only a node suggests, to the orchestrator and within its own task: use suggest");
+        };
+        if options != suggestion_options().as_slice() {
+            return refuse("invalid_input", "options", "A suggestion carries the orchestrator's fixed answers: send it with suggest");
+        }
+        let waiting = self.interactions.values().filter(|i| {
+            i.card.kind == CardKind::Propose && i.scope == *scope && !i.withdrawn
+                && matches!(i.payload, InteractionPayload::Question { answer: None, .. })
+        }).count();
+        if waiting >= OPEN_SUGGESTIONS_MAX {
+            return refuse("too_many_suggestions", "scope.task_id", &format!(
+                "Task {task_id} already has {OPEN_SUGGESTIONS_MAX} suggestions waiting for the orchestrator: wait for its answers, or withdraw one you no longer need"));
+        }
+        Ok(())
     }
     /// R1, R2, R4: who may put a card in front of someone, and on which Task.
     fn card_author(&self, actor: &Actor, scope: &Scope, source: Source) -> Result<Author> {
@@ -683,31 +720,6 @@ impl DomainState {
             ),
             _ => Ok(()),
         }
-    }
-    /// The user said "do it" to a proposal: it becomes a Request for the orchestrator, linked
-    /// back to the Task it came from in its body.
-    fn start_proposal(&mut self, proposal: &InteractionId, created: &mut Vec<String>, effects: &mut Vec<DomainEffect>) {
-        let Some(card) = self.interactions.get(proposal).map(|i| (i.card.clone(), i.scope.clone())) else { return };
-        let (card, scope) = card;
-        let source = match &scope {
-            Scope::Task { task_id } => {
-                let title = self.tasks.get(task_id).map(|t| t.title.clone()).unwrap_or_default();
-                format!("Proposed while working on task {task_id} (\"{title}\").")
-            }
-            Scope::Orchestrator { .. } => "Proposed by the orchestrator.".to_owned(),
-        };
-        let mut body = card.need.clone();
-        if !card.why.trim().is_empty() {
-            body = format!("{body}\n\n{}", card.why);
-        }
-        let body = format!("{body}\n\n{source}");
-        let request_id = RequestId(format!("proposal-{proposal}"));
-        if self.requests.contains_key(&request_id) {
-            return;
-        }
-        self.requests.insert(request_id.clone(), Request::new(request_id.clone(), body));
-        created.push(request_id.0.clone());
-        effects.push(DomainEffect::NotifyOrchestrator { interaction_id: None, request_id: Some(request_id) });
     }
     /// R5: one blocking Decide, Do or Provide per node at a time.
     fn one_blocking_ask(&self, author: &Author, card: &CardSpec, blocking: bool) -> Result<()> {
@@ -1240,8 +1252,8 @@ impl DomainState {
         }
     }
     /// A question or request the task's node or the orchestrator asked the user and that still
-    /// waits, blocking or not. A proposal is new work, not part of the task's: it outlives the task
-    /// and holds nothing back. Alondra's own cards (problems, held prompts) are about what Alondra
+    /// waits, blocking or not. A suggestion goes to the orchestrator, not the user: it outlives the
+    /// task and holds nothing back. Alondra's own cards (problems, held prompts) are about what Alondra
     /// does with the task, which they would otherwise hold back themselves.
     /// Ends a task the user, the orchestrator or Alondra stopped: its cards leave in silence and a
     /// node it had is told to stop and is closed.
@@ -2855,9 +2867,6 @@ impl DomainState {
                     _ => unreachable!(),
                 };
                 i.revision = self.revision + 1;
-                if i.card.kind == CardKind::Propose && option_id == PROPOSAL_ACCEPTED {
-                    self.start_proposal(interaction_id, created, effects);
-                }
                 self.settle_start_problem(interaction_id, option_id, effects);
                 // D05: the answer reaches whoever holds the Task now, not the
                 // session that asked and may since have been replaced.

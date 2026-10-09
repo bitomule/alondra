@@ -500,7 +500,7 @@ pub enum CardKind {
     Propose,
 }
 impl CardKind {
-    /// A notice or a proposal never stops a node.
+    /// A notice or a suggestion never stops a node.
     pub fn never_blocks(self) -> bool {
         matches!(self, Self::Know | Self::Propose)
     }
@@ -721,7 +721,7 @@ fn fallback_need(kind: CardKind) -> &'static str {
         CardKind::Test => "Test the result",
         CardKind::Do => "Do what the node asks",
         CardKind::Problem => "Fix the problem",
-        CardKind::Propose => "Consider this proposal",
+        CardKind::Propose => "Consider this suggestion",
     }
 }
 /// At most `max` characters, cut at a character boundary and marked with an ellipsis.

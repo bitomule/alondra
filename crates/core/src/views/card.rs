@@ -234,7 +234,7 @@ fn kind_label(kind: CardKind, lang: Lang) -> &'static str {
         CardKind::Test => t!(lang, "Test", "Probar"),
         CardKind::Do => t!(lang, "Do", "Hacer"),
         CardKind::Problem => t!(lang, "Problem", "Problema"),
-        CardKind::Propose => t!(lang, "Proposal", "Propuesta"),
+        CardKind::Propose => t!(lang, "Suggestion", "Sugerencia"),
     }
 }
 fn kind_icon(kind: CardKind, carries: Option<Icon>) -> Icon {
@@ -818,8 +818,6 @@ fn fixed_option_text(option: &QuestionOption, lang: Lang) -> (String, Option<Str
         ("cannot", "I can't do it") => (t!(lang, "I can't do it", "No puedo hacerlo"), None),
         ("works", "Works") => (t!(lang, "Works", "Funciona"), None),
         ("fails", "Doesn't work") => (t!(lang, "Doesn't work", "No funciona"), None),
-        ("do_it", "Do it") => (t!(lang, "Do it", "Hazlo"), None),
-        ("not_now", "Not now") => (t!(lang, "Not now", "Ahora no"), None),
         ("skip", "I can't provide it") => (t!(lang, "I can't provide it", "No puedo dárselo"), None),
         ("provide", "Send the file") => (t!(lang, "Send the file", "Enviar el archivo"), None),
         ("provide", "Send the text") => (t!(lang, "Send the text", "Enviar el texto"), None),
