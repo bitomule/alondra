@@ -23,6 +23,21 @@ public enum DirectSessionError: Error, Equatable, Sendable {
 public actor DirectRouter {
     public enum Source: Sendable { case saved, mac, bonjour }
 
+    struct RequestContext: Sendable {
+        fileprivate let network: String
+        fileprivate let generation: UInt64
+    }
+
+    func requestContext() -> RequestContext {
+        RequestContext(network: network(), generation: generation)
+    }
+
+    func proved(_ endpoint: DirectEndpoint, in context: RequestContext) {
+        guard context.generation == generation, context.network == network() else { return }
+        proven[endpoint] = context.network
+        rejected[endpoint] = nil
+    }
+
     static let maxBonjour = 4
     static let maxFromMac = 8
     private static let rejectionTime: Duration = .seconds(600)
