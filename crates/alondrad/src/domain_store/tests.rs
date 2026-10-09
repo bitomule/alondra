@@ -1750,3 +1750,69 @@ fn the_orchestrators_session_survives_a_restart_and_a_new_one_replaces_it() {
     let mut reopened = DomainStore::open(&fixture.path()).unwrap();
     assert_eq!(reopened.load().unwrap().orchestrator_session, Some("session-2".into()));
 }
+
+fn revision_times_fixture() -> DomainStore {
+    let conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch("CREATE TABLE command_audit(revision INTEGER PRIMARY KEY,at INTEGER NOT NULL);").unwrap();
+    DomainStore::from_connection(conn)
+}
+
+#[test]
+fn revision_times_batch_preserves_all_keys_and_timestamps_with_two_sql_reads() {
+    let mut store = revision_times_fixture();
+    let compile_options = store.conn.prepare("PRAGMA compile_options").unwrap()
+        .query_map([], |row| row.get::<_, String>(0)).unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>().unwrap();
+    let variable_limit: usize = compile_options.iter().find_map(|option|
+        option.strip_prefix("MAX_VARIABLE_NUMBER=").map(|value| value.parse().unwrap())
+    ).expect("bundled SQLite reports its variable limit");
+    assert!(variable_limit >= 512, "{variable_limit}");
+    let marks = vec!["?"; 512].join(",");
+    let count: i64 = store.conn.prepare(&format!("SELECT count(*) FROM command_audit WHERE revision IN ({marks})"))
+        .unwrap().query_row(rusqlite::params_from_iter(0..512), |row| row.get(0)).unwrap();
+    assert_eq!(count, 0);
+    for revision in 1..=669_i64 {
+        store.conn.execute("INSERT INTO command_audit VALUES(?1,?2)", params![revision, revision * 17]).unwrap();
+    }
+    let revisions = (1..=669).rev().collect::<Vec<Revision>>();
+    let expected = (1..=669).map(|revision| (revision as Revision, revision * 17)).collect::<std::collections::BTreeMap<_, _>>();
+    store.begin_live_read_trace();
+    assert_eq!(store.revision_times(&revisions).unwrap(), expected);
+    let trace = store.end_live_read_trace();
+    assert_eq!(trace.len(), 1);
+    assert_eq!(trace[0].rows, 669);
+    assert!(!trace[0].failed);
+    assert_eq!(trace[0].statement_attempts, 2, "669 revision lookups use two bounded queries");
+    store.begin_live_read_trace();
+    assert_eq!(store.revision_times(&revisions[..513]).unwrap().len(), 513);
+    assert_eq!(store.end_live_read_trace()[0].statement_attempts, 2);
+}
+
+#[test]
+fn revision_times_batch_preserves_missing_duplicates_wrapping_and_fresh_timestamps() {
+    let store = revision_times_fixture();
+    store.conn.execute_batch("INSERT INTO command_audit VALUES(2,20),(4,40),(-1,90);").unwrap();
+    let requested = [4, 2, 4, 99, Revision::MAX];
+    let expected = [(2,20),(4,40),(Revision::MAX,90)].into_iter().collect();
+    assert_eq!(store.revision_times(&requested).unwrap(), expected);
+    assert!(store.revision_times(&[]).unwrap().is_empty());
+    store.conn.execute("UPDATE command_audit SET at=41 WHERE revision=4", []).unwrap();
+    assert_eq!(store.revision_times(&requested).unwrap().get(&4), Some(&41));
+    store.conn.execute("DELETE FROM command_audit WHERE revision=2", []).unwrap();
+    assert!(!store.revision_times(&requested).unwrap().contains_key(&2));
+}
+
+#[test]
+fn revision_times_batch_preserves_empty_schema_errors_and_invalid_timestamp_errors() {
+    let missing = DomainStore::from_connection(Connection::open_in_memory().unwrap());
+    assert!(missing.revision_times(&[]).is_err());
+    assert!(missing.revision_times(&[1]).is_err());
+    let store = revision_times_fixture();
+    store.conn.execute("INSERT INTO command_audit VALUES(1,'invalid')", []).unwrap();
+    assert!(store.revision_times(&[1]).is_err());
+    assert!(store.revision_times(&[2]).unwrap().is_empty());
+    assert!(store.revision_times(&[]).unwrap().is_empty());
+    store.conn.execute_batch("DROP TABLE command_audit; CREATE TABLE command_audit(revision INTEGER PRIMARY KEY);").unwrap();
+    assert!(store.revision_times(&[]).is_err());
+    assert!(store.revision_times(&[1]).is_err());
+}

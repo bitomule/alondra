@@ -236,3 +236,41 @@ async fn repeated_card_requests() {
     let result = measured.unwrap();
     println!("CARD_REQUEST_MEASUREMENT {result}");
 }
+
+#[tokio::test]
+#[ignore = "opt-in isolated live store read trace; no production service"]
+async fn trace_card_live_store_reads() {
+    use alondra_core::views::Lang;
+    let home = crate::test_support::Directory::new();
+    std::fs::create_dir_all(&home).unwrap();
+    {
+        let database = crate::domain_database_migration::active_path(&home);
+        let mut store = DomainStore::open(&database).unwrap();
+        seed(&mut store, 20);
+    }
+    let daemon = crate::domain_bootstrap::DomainDaemon::open(&home).unwrap();
+    let client = daemon.client();
+    let state = client.domain.state().unwrap();
+    let before = process_resources();
+    client.domain.store.lock().unwrap().begin_live_read_trace();
+    let live = crate::views::live::gather(&client, &state, Lang::En, &["card:info-0".into()], true, false).await;
+    let trace = client.domain.store.lock().unwrap().end_live_read_trace();
+    let after = process_resources();
+    let mut getters = std::collections::BTreeMap::<&str, (usize, usize, usize, usize, f64)>::new();
+    for read in &trace {
+        let counts = getters.entry(read.getter).or_default();
+        counts.0 += 1; counts.1 += read.statement_attempts; counts.2 += read.rows;
+        counts.3 += usize::from(read.failed); counts.4 += read.elapsed_ms;
+    }
+    assert!(trace.iter().all(|read| !read.failed));
+    assert_eq!(live.inbox_times.len(), INTERACTIONS);
+    assert_eq!(live.start_waits.len(), TASKS - AGENTS);
+    let live_output_sha256 = { use sha2::{Digest, Sha256}; Sha256::digest(serde_json::to_vec(&live).unwrap()).iter().map(|byte| format!("{byte:02x}")).collect::<String>() };
+    println!("LIVE_STORE_QUERY_MEASUREMENT {}", serde_json::json!({
+        "fixture":{"requests": REQUESTS,"tasks": TASKS,"interactions": INTERACTIONS,"agents": AGENTS},
+        "gather_calls":1, "queries":getters,"events":trace,
+        "trace_process_cpu_ms":after.0 - before.0,
+        "process_lifetime_maxrss_bytes":after.1,
+        "live_output_sha256": live_output_sha256,
+        "limits":"Actual targeted getter invocation/SQL-attempt/callback-row counts in a separate trace-enabled gather. EXISTS returns one SQL scalar row even when false. This is not a trace of every database statement or a decomposition of signed-request timing; per-getter elapsed time includes tracing. CPU/RSS are labeled trace/lifetime, not production retained memory. Existing repeated_card_requests runs the unchanged61signed requests with the trace sink disabled."}));
+}

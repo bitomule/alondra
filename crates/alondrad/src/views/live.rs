@@ -643,6 +643,78 @@ mod cache_tests {
         domain.live.mods.apply(serde_json::from_value(value).unwrap(), at);
     }
 
+
+    fn wait_fixture() -> (crate::test_support::Directory, Arc<crate::domain_runtime::DomainRuntime>, Arc<crate::client_routes::Client>) {
+        let home = crate::test_support::Directory::new();
+        fs::create_dir_all(&home).unwrap();
+        let domain = Arc::new(crate::domain_runtime::DomainRuntime::open(&home).unwrap());
+        let client = crate::client_routes::Client::open(domain.clone(), &home, Arc::new(Mutex::new(None)));
+        execute(&domain, Actor::Orchestrator { generation: 0 }, "request", Command::CreateRequest {
+            request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false,
+        });
+        execute(&domain, Actor::Orchestrator { generation: 0 }, "title", Command::TitleRequest { request_id: "request".into(), title: "Work".into() });
+        for id in ["room", "launch", "relaunch", "send", "closed", "retry"] {
+            execute(&domain, Actor::Orchestrator { generation: 0 }, id, Command::CreateTask {
+                task_id: id.into(), request_id: "request".into(), title: id.into(), agent_id: None,
+                review_prs: true, dependencies: Default::default(), stack: None,
+                launch: Some(alondra_core::domain::LaunchPlan::new("node", home.to_str().unwrap())),
+            });
+        }
+        (home, domain, client)
+    }
+
+    #[tokio::test]
+    async fn live_store_reads_refresh_launch_retry_and_close_side_state_with_the_same_domain_snapshot() {
+        use alondra_core::domain::ModelChooser;
+        use alondra_core::views::LiveStartWait;
+        use crate::domain_store::model_metrics::{Decision, DecisionKind};
+        let (_home, domain, client) = wait_fixture();
+        let state = domain.state().unwrap();
+        let now = 1_700_000_000_000;
+        let initial = gather_at(&client, &state, Lang::En, &[], false, false, now).await;
+        assert_eq!(initial.start_waits.keys().map(String::as_str).collect::<Vec<_>>(), ["closed", "launch", "relaunch", "retry", "room", "send"]);
+        for (id, kind) in [("launch", DecisionKind::Launch), ("relaunch", DecisionKind::Relaunch), ("send", DecisionKind::Send)] {
+            domain.record_model_decision(&Decision { task_id: id.into(), request_id: "request".into(), agent_id: None,
+                at: now, kind, model: None, effort: None, approach: None, chosen_by: ModelChooser::Orchestrator,
+                reason: None, title: id.into() }).unwrap();
+        }
+        domain.live.remember_closed_task("closed", crate::client_routes::ClosedNode { name: "Closed node".into(), cwd: None });
+        domain.store.lock().unwrap().set_start_retry(&"retry".into(), Some((2, now + 60_000))).unwrap();
+        domain.store.lock().unwrap().begin_live_read_trace();
+        let changed = gather_at(&client, &state, Lang::En, &[], false, false, now).await;
+        let trace = domain.store.lock().unwrap().end_live_read_trace();
+        assert_eq!(domain.state().unwrap().revision, state.revision);
+        assert_eq!(changed.start_waits.keys().map(String::as_str).collect::<Vec<_>>(), ["retry", "room", "send"]);
+        assert_eq!(changed.start_waits["room"], LiveStartWait::Room);
+        assert_eq!(changed.start_waits["send"], LiveStartWait::Room);
+        assert_eq!(changed.start_waits["retry"], LiveStartWait::Retry { at: crate::usage_pause::clock_text(now + 60_000, now, false) });
+        assert!(trace.iter().all(|read| !read.failed));
+        assert_eq!(trace.iter().filter(|read| read.getter == "task_was_launched").count(), 5, "live-closed task skips the SQL probe");
+        let later = gather_at(&client, &state, Lang::Es, &[], false, false, now + 2 * 86_400_000).await;
+        assert_eq!(later.start_waits["retry"], LiveStartWait::Retry { at: crate::usage_pause::clock_text(now + 60_000, now + 2 * 86_400_000, true) });
+        assert_ne!(changed.start_waits["retry"], later.start_waits["retry"], "moving clock/language remain live inputs");
+        domain.live.forget_closed_task("closed");
+        domain.store.lock().unwrap().set_start_retry(&"retry".into(), None).unwrap();
+        let restored = gather_at(&client, &state, Lang::En, &[], false, false, now).await;
+        assert_eq!(restored.start_waits["closed"], LiveStartWait::Room);
+        assert_eq!(restored.start_waits["retry"], LiveStartWait::Room);
+    }
+
+    #[tokio::test]
+    async fn unreadable_launch_markers_fail_closed_and_trace_the_failed_reads() {
+        let (home, domain, client) = wait_fixture();
+        let state = domain.state().unwrap();
+        let connection = rusqlite::Connection::open(crate::domain_database_migration::active_path(&home)).unwrap();
+        connection.execute_batch("DROP TABLE model_decisions").unwrap();
+        domain.store.lock().unwrap().begin_live_read_trace();
+        let live = gather_at(&client, &state, Lang::En, &[], false, false, 1_700_000_000_000).await;
+        let trace = domain.store.lock().unwrap().end_live_read_trace();
+        assert!(live.start_waits.is_empty(), "unknown launch history must not advertise a fresh launch slot");
+        let failed: Vec<_> = trace.iter().filter(|read| read.failed).collect();
+        assert_eq!(failed.len(), 6);
+        assert!(failed.iter().all(|read| read.getter == "task_was_launched" && read.statement_attempts == 1 && read.rows == 0));
+    }
+
     #[tokio::test]
     async fn unobserved_nodes_do_not_fabricate_transition_times_or_miss_the_cache() {
         use alondra_core::views::{Client, Transport};
