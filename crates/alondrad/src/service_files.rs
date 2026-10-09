@@ -138,7 +138,7 @@ impl Transfers {
             );
             ensure!(
                 transfers.len() < 32
-                    && transfers.values().filter(|t| t.result.is_none()).count() < SLOTS,
+                    && transfers.values().filter(|t| !t.finalization_attempted).count() < SLOTS,
                 "transfer capacity reached; cancel or finish an existing transfer"
             );
             transfers.insert(
@@ -235,13 +235,13 @@ impl Transfers {
             rusqlite::params![sender, &key.1],
         )?;
         t.finalization_attempted = true;
+        let data = std::mem::take(&mut t.data);
         transaction.commit().context(UNCERTAIN)?;
         let (id, a) =
-            crate::uploads::store_identified(home, &t.name, &t.data, &upload_id(sender, &key.1))
+            crate::uploads::store_identified(home, &t.name, &data, &upload_id(sender, &key.1))
                 .context(UNCERTAIN)?;
         let result = json!({"id":id,"name":a.name,"bytes":a.bytes,"kind":if crate::uploads::is_image(&a.name) {"image"} else {"file"},"path":a.stored_path});
         t.result = Some(result.clone());
-        t.data = Vec::new();
         t.touched = Instant::now();
         Ok(result)
     }
@@ -760,6 +760,57 @@ mod tests {
         assert_eq!(std::fs::read_dir(destination).unwrap().count(), 1);
         std::fs::remove_dir_all(h).unwrap();
     }
+    #[test]
+    fn irreversible_upload_errors_release_buffers_and_admit_new_transfers() {
+        let h = home();
+        let transfers = Transfers::default();
+        let bytes = vec![23; 1024 * 1024];
+        let metadata = json!({"transfer_id":ID,"name":"file.bin","bytes":bytes.len(),
+            "sha256":hex_digest(Sha256::digest(&bytes).as_slice())});
+        let upload = |sender: &str| {
+            let started = transfers.dispatch(&h, sender, "/uploads/start", metadata.clone()).unwrap();
+            assert_eq!(started["offset"], 0, "new and repeated empty starts retain their offset");
+            for (index, chunk) in bytes.chunks(CHUNK).enumerate() {
+                transfers.dispatch(&h, sender, "/uploads/chunk", json!({
+                    "transfer_id":ID,"offset":index * CHUNK,"data":URL_SAFE_NO_PAD.encode(chunk),
+                })).unwrap();
+            }
+        };
+        for sender in ["phone-1", "phone-2"] {
+            upload(sender);
+            let destination = h.join("files/uploads").join(upload_id(sender, ID));
+            std::fs::create_dir_all(&destination).unwrap();
+            let sentinel = destination.join("existing.bin");
+            std::fs::write(&sentinel, b"untouched").unwrap();
+            for _ in 0..2 {
+                let error = transfers.dispatch(&h, sender, "/uploads/finish", json!({"transfer_id":ID})).unwrap_err();
+                assert_eq!(error_code(&error), "attachment_transfer_finalization_uncertain");
+            }
+            assert_eq!(std::fs::read(sentinel).unwrap(), b"untouched");
+        }
+        let (entries, retained_bytes) = {
+            let map = transfers.0.lock().unwrap();
+            (map.len(), map.values().map(|transfer| transfer.data.capacity()).sum::<usize>())
+        };
+        let fresh_upload = transfers.dispatch(&h, "phone-3", "/uploads/start", metadata.clone());
+        println!("upload_error_retention entries={entries} retained_buffer_bytes={retained_bytes} attempted_uploads=2 uploaded_bytes={} fresh_upload_admitted={}", 2 * bytes.len(), fresh_upload.is_ok());
+        assert_eq!(entries, 2, "uncertain attempts retain their retry guard");
+        assert_eq!(retained_bytes, 0, "irreversible failures have no consumer for the upload buffer");
+        assert_eq!(ledger(&h).unwrap().query_row("SELECT count(*) FROM attempts", [], |r| r.get::<_, i64>(0)).unwrap(), 2);
+        fresh_upload.unwrap();
+        upload("phone-3");
+        let completed = transfers.dispatch(&h, "phone-3", "/uploads/finish", json!({"transfer_id":ID})).unwrap();
+        assert_eq!(std::fs::read(completed["path"].as_str().unwrap()).unwrap(), bytes);
+        assert_eq!(transfers.dispatch(&h, "phone-3", "/uploads/finish", json!({"transfer_id":ID})).unwrap(), completed);
+        assert_eq!(ledger(&h).unwrap().query_row("SELECT count(*) FROM attempts", [], |r| r.get::<_, i64>(0)).unwrap(), 3);
+        drop(transfers);
+        let restarted = Transfers::default();
+        for sender in ["phone-1", "phone-2", "phone-3"] {
+            let error = restarted.dispatch(&h, sender, "/uploads/start", metadata.clone()).unwrap_err();
+            assert_eq!(error_code(&error), "attachment_transfer_finalization_uncertain");
+        }
+    }
+
     #[test]
     fn binary_roundtrip_retry_restart_and_download_version() {
         let h = home();
