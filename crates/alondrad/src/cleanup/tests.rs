@@ -447,3 +447,39 @@ async fn a_session_stopped_in_claude_agents_while_its_task_was_open_frees_the_ta
     assert_eq!((task.state, task.agent_id.clone()), (alondra_core::domain::TaskState::NotStarted, None), "it waits for a relaunch");
     assert!(rig.sessions.removals().is_empty(), "a stopped session is freed, not removed");
 }
+
+#[tokio::test]
+async fn cleanup_deletes_the_worktrees_of_closed_tasks_whose_session_is_gone_and_keeps_the_ones_with_work() {
+    let mut rig = Rig::new();
+    let worktrees = crate::test_support::Directory::new();
+    let mut worktree = |rig: &mut Rig, task: Task, gone: bool| {
+        let session = rig.session(task, true);
+        let id = format!("t{}", rig.count);
+        let dir = crate::worktree::testing::task_worktree(&worktrees.join(&id), &id);
+        rig.domain.set_task_worktree(&id.as_str().into(), dir.to_str().unwrap()).unwrap();
+        if gone {
+            rig.sessions.listed.lock().unwrap().retain(|short| !session.starts_with(short.as_str()));
+        }
+        dir
+    };
+    let gone = worktree(&mut rig, Task::Done, true);
+    let unsaved = worktree(&mut rig, Task::Cancelled, true);
+    let closed_now = worktree(&mut rig, Task::Done, false);
+    let open = worktree(&mut rig, Task::Open, true);
+    std::fs::write(unsaved.join("a.txt"), "x").unwrap();
+
+    let dry = rig.run(true).await;
+    let tasks = |list: &Value| list.as_array().unwrap().iter().map(|row| row["task"].as_str().unwrap().to_owned()).collect::<Vec<_>>();
+    assert_eq!(tasks(&dry["worktrees"]), ["Task 1", "Task 3"], "the session closed in the same run counts as gone");
+    assert_eq!(tasks(&dry["kept_worktrees"]), ["Task 2"]);
+    assert!(dry["kept_worktrees"][0]["detail"].as_str().unwrap().contains("1 uncommitted file(s)"));
+    assert!(gone.exists() && closed_now.exists(), "a dry run deletes nothing");
+
+    let report = rig.run(false).await;
+    assert_eq!(tasks(&report["removed_worktrees"]), ["Task 1", "Task 3"]);
+    assert!(!gone.exists() && !closed_now.exists());
+    assert!(unsaved.join("a.txt").exists(), "work not saved is never deleted");
+    assert!(open.exists(), "an open task keeps its worktree");
+    let again = rig.run(false).await;
+    assert!(again["removed_worktrees"].as_array().unwrap().is_empty(), "a second run finds nothing more");
+}

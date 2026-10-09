@@ -1,6 +1,6 @@
 //! `alondra cleanup`: closes the sessions of finished tasks, cutting the turn of the ones stuck
 //! working, closes the ones stopped without a task, and frees the tasks of sessions stopped in
-//! Claude agents.
+//! Claude agents, and deletes the worktrees Alondra made for closed tasks.
 use std::time::Duration;
 
 use anyhow::Result;
@@ -47,7 +47,8 @@ pub(crate) fn render(report: &Value) -> String {
     let dry_run = report["dry_run"].as_bool().unwrap_or(false);
     let (closing, left, failed) = (rows(report, if dry_run { "close" } else { "closed" }), rows(report, "kept"), rows(report, "failed"));
     let freeing = rows(report, if dry_run { "free" } else { "freed" });
-    if closing.is_empty() && left.is_empty() && failed.is_empty() && freeing.is_empty() {
+    let (worktrees, kept_worktrees) = (rows(report, if dry_run { "worktrees" } else { "removed_worktrees" }), rows(report, "kept_worktrees"));
+    if closing.is_empty() && left.is_empty() && failed.is_empty() && freeing.is_empty() && worktrees.is_empty() && kept_worktrees.is_empty() {
         return format!("{}\n", tr!("Nothing to close.", "Nada que cerrar."));
     }
     let mut out: Vec<String> = vec![];
@@ -89,7 +90,24 @@ pub(crate) fn render(report: &Value) -> String {
         out.push(trf!("Could not close ({n}):", "No se pudieron cerrar ({n}):"));
         out.extend(failed.iter().map(|row| format!("  {} ({}): {}", text(row, "name"), text(row, "short_id"), text(row, "error"))));
     }
-    if dry_run && !(closing.is_empty() && freeing.is_empty()) {
+    if !worktrees.is_empty() {
+        let n = worktrees.len();
+        out.push(if dry_run {
+            trf!("Would delete the worktrees of {n} closed tasks:", "Borraría los worktrees de {n} tareas cerradas:")
+        } else {
+            trf!("Deleted the worktrees of {n} closed tasks:", "Borrados los worktrees de {n} tareas cerradas:")
+        });
+        out.extend(worktrees.iter().map(|row| format!("  {}: {}", text(row, "task"), text(row, "dir"))));
+    }
+    if !kept_worktrees.is_empty() {
+        let n = kept_worktrees.len();
+        out.push(trf!("Worktrees of closed tasks left as they are ({n}):", "Worktrees de tareas cerradas que se quedan ({n}):"));
+        out.extend(kept_worktrees.iter().map(|row| {
+            let detail = text(row, "detail");
+            format!("  {}: {}", text(row, "task"), trf!("work not saved: {detail}", "trabajo sin guardar: {detail}"))
+        }));
+    }
+    if dry_run && !(closing.is_empty() && freeing.is_empty() && worktrees.is_empty()) {
         out.push(tr!("Run `alondra cleanup` to do it.", "Ejecuta `alondra cleanup` para hacerlo.").to_owned());
     }
     out.join("\n") + "\n"
@@ -113,6 +131,9 @@ mod tests {
                 {"session": "b3-0000", "short_id": "b3", "name": "Node 5", "reason": "worktree", "detail": "a.txt is not committed"},
             ],
             "failed": [{"session": "c1-0000", "short_id": "c1", "name": "Node 6", "error": "claude rm said no"}],
+            "worktrees": if dry_run { vec![json!({"task_id": "t-a", "task": "Fix the list", "dir": "/r/.claude/worktrees/t-a"})] } else { vec![] },
+            "removed_worktrees": if dry_run { vec![] } else { vec![json!({"task_id": "t-a", "task": "Fix the list", "dir": "/r/.claude/worktrees/t-a"})] },
+            "kept_worktrees": [{"task_id": "t-b", "task": "Tidy the board", "dir": "/r/.claude/worktrees/t-b", "detail": "2 uncommitted file(s) in /r/.claude/worktrees/t-b"}],
         })
     }
 
@@ -125,19 +146,23 @@ mod tests {
             "  Node 4 (b2): it is waiting for a permission",
             "Would free the tasks of 1 sessions stopped in Claude agents, to relaunch them:", "  Node 7 (d1): Fix the list",
             "  Node 5 (b3): its worktree has work that is not saved: a.txt is not committed", "Could not close (1):", "  Node 6 (c1): claude rm said no",
+            "Would delete the worktrees of 1 closed tasks:", "  Fix the list: /r/.claude/worktrees/t-a",
+            "Worktrees of closed tasks left as they are (1):", "  Tidy the board: work not saved: 2 uncommitted file(s) in /r/.claude/worktrees/t-b",
             "Run `alondra cleanup` to do it."] {
             assert!(dry.contains(expected), "{expected} missing from\n{dry}");
         }
         let done = render(&report(false));
         assert!(done.contains("Closed 1 sessions:") && done.contains("  Node 1 (a1): its task was cancelled"), "{done}");
         assert!(!done.contains("Run `alondra cleanup`"), "{done}");
+        assert!(done.contains("Deleted the worktrees of 1 closed tasks:\n  Fix the list: /r/.claude/worktrees/t-a"), "{done}");
         assert_eq!(render(&json!({"dry_run": false, "close": [], "closed": [], "kept": [], "failed": []})), "Nothing to close.\n");
 
         crate::i18n::set_for_this_thread(Lang::Es);
         let spanish = render(&report(true));
         for expected in ["Cerraría 2 sesiones:", "su tarea está hecha", "sin tarea, parada hace más de un día", "Se quedan como están (3):",
             "sigue trabajando aunque se le cortó el turno", "Liberaría las tareas de 1 sesiones paradas",
-            "espera un permiso", "su worktree tiene trabajo sin guardar: a.txt is not committed", "No se pudieron cerrar (1):", "Ejecuta `alondra cleanup` para hacerlo."] {
+            "espera un permiso", "su worktree tiene trabajo sin guardar: a.txt is not committed",
+            "Borraría los worktrees de 1 tareas cerradas:", "Worktrees de tareas cerradas que se quedan (1):", "trabajo sin guardar: 2 uncommitted file(s)", "No se pudieron cerrar (1):", "Ejecuta `alondra cleanup` para hacerlo."] {
             assert!(spanish.contains(expected), "{expected} missing from\n{spanish}");
         }
         assert_eq!(render(&json!({"dry_run": true, "close": [], "closed": [], "kept": [], "failed": []})), "Nada que cerrar.\n");
