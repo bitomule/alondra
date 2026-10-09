@@ -2,8 +2,8 @@
 //! envelopes, acknowledges and delivers responses, and hands encrypted pushes to APNs through it.
 //! Present only when `service.toml` names a relay.
 use super::{
-    Device, EnrollmentDecision, PreparedWork, PushDelivery, Service, Transport, Work, WorkGuard,
-    approval_bound_delivery, bounded_response_within, decoded, domain_read_route, now_ms, registration_ended, relay_error_code, without_relay_extensions,
+    Device, EnrollmentDecision, PreparedWork, PushDelivery, Service, Transport, Work, WorkGuard, ExecutionLane, MutationTurn,
+    approval_bound_delivery, approved_method, bounded_response_within, decoded, domain_read_route, now_ms, registration_ended, relay_error_code, without_relay_extensions,
 };
 use crate::push::local_minutes;
 use alondra_e2e::sign_http_challenge;
@@ -34,7 +34,7 @@ pub(crate) struct RelayConnector {
     deliveries: Arc<tokio::sync::Semaphore>,
 }
 
-struct RelayDelivery {
+pub(super) struct RelayDelivery {
     response: Vec<u8>,
     device: Arc<Device>,
     guard: WorkGuard,
@@ -317,15 +317,15 @@ impl Service {
         Ok(())
     }
 
-    /// Execution retains intake order; completed ordinary responses upload separately.
-    /// Delivery admission precedes execution, and reservation precedes any task spawn.
+    /// Intake reserves mutation order before handing bounded ordinary work to its owner.
+    /// Read-only work uses the same admission budget without waiting for a mutation turn.
     pub(super) async fn schedule_work(
         self: &Arc<Self>,
         work: Work,
         epoch: [u8; 16],
         changes: &mut tokio::task::JoinSet<Result<()>>,
     ) -> Result<()> {
-        let Some(prepared) = self.prepare_work(&work, Transport::Relay)? else {
+        let Some(mut prepared) = self.prepare_work(&work, Transport::Relay)? else {
             return Ok(());
         };
         if prepared.guard.changes {
@@ -333,19 +333,43 @@ impl Service {
             changes.spawn(async move { service.handle_prepared(work, &epoch, prepared).await });
             Ok(())
         } else if prepared.guard.saturated {
+            prepared.execution = ExecutionLane::Read;
             self.handle_prepared(work, &epoch, prepared).await
         } else {
             let permit = self.relay()?.deliveries.clone().acquire_owned().await?;
-            let delivery = self.execute_relay(&work, &epoch, prepared).await?;
+            prepared.execution = if prepared.request.method == "GET" && prepared.request.body.is_none()
+                && approved_method(&prepared.request).is_ok_and(|method| method == Method::GET) {
+                ExecutionLane::Read
+            } else {
+                ExecutionLane::Mutation(Self::reserve_mutation_turn(self.lane.clone()).await)
+            };
             let service = self.clone();
             changes.spawn(async move {
                 let _permit = permit;
-                let result = service.deliver_response(work, &epoch, delivery).await;
+                let result = async {
+                    let delivery = service.execute_relay(&work, &epoch, prepared).await?;
+                    service.deliver_response(work, &epoch, delivery).await
+                }.await;
                 if result.is_err() { service.relay()?.resync(); }
                 result
             });
             Ok(())
         }
+    }
+
+    async fn reserve_mutation_turn(lane: Arc<tokio::sync::Mutex<()>>) -> MutationTurn {
+        use std::{future::Future, task::Poll};
+        let mut waiting = Box::pin(lane.lock_owned());
+        let acquired = std::future::poll_fn(|cx| {
+            // Queue insertion must occur even when intake has exhausted its cooperative budget.
+            let first_poll = tokio::task::unconstrained(waiting.as_mut());
+            let mut first_poll = std::pin::pin!(first_poll);
+            Poll::Ready(match first_poll.as_mut().poll(cx) {
+                Poll::Ready(guard) => Some(guard),
+                Poll::Pending => None,
+            })
+        }).await;
+        match acquired { Some(guard) => MutationTurn::Acquired(guard), None => MutationTurn::Waiting(waiting) }
     }
 
     #[cfg(test)]
@@ -368,7 +392,7 @@ impl Service {
         self.deliver_response(work, epoch, delivery).await
     }
 
-    async fn execute_relay(
+    pub(super) async fn execute_relay(
         &self,
         work: &Work,
         epoch: &[u8; 16],
@@ -391,7 +415,7 @@ impl Service {
         Ok(RelayDelivery { response, device, guard, approval_binding })
     }
 
-    async fn deliver_response(
+    pub(super) async fn deliver_response(
         &self,
         work: Work,
         epoch: &[u8; 16],
