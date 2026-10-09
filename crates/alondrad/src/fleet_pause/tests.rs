@@ -1,5 +1,5 @@
 use super::*;
-use crate::fleet_gate::{Key, Tuning, Waiting};
+use crate::fleet_gate::{Key, Limit, Tuning, Waiting};
 use crate::node_push::testing::Node;
 use crate::node_reports::{Envelope, Report};
 use alondra_core::Machine;
@@ -116,7 +116,7 @@ struct Fleet {
 }
 
 impl Fleet {
-    fn new(tasks: &[(&str, TaskPriority)], limit: u32, started: Millis) -> Self {
+    fn new(tasks: &[(&str, TaskPriority)], limit: Limit, started: Millis) -> Self {
         let home = crate::test_support::Directory::new();
         std::fs::create_dir_all(&home).unwrap();
         let domain = Arc::new(DomainRuntime::open(&home).unwrap());
@@ -211,7 +211,7 @@ fn tasks(events: &[(Millis, String)]) -> Vec<&str> {
 async fn eight_nodes_stopped_by_memory_come_back_by_themselves_by_priority_within_the_limit() {
     use TaskPriority::{High, Low, Normal};
     let base = alondra_core::now_millis();
-    let mut fleet = Fleet::new(&[("t1", High), ("t2", High), ("t3", Normal), ("t4", Normal), ("t5", Normal), ("t6", Normal), ("t7", Low), ("t8", Low)], 6, base - 60 * MIN);
+    let mut fleet = Fleet::new(&[("t1", High), ("t2", High), ("t3", Normal), ("t4", Normal), ("t5", Normal), ("t6", Normal), ("t7", Low), ("t8", Low)], Limit::Fixed(6), base - 60 * MIN);
     fleet.tick(3, base).await;
     fleet.waits_for_machine("t2", base);
     fleet.waits_for_machine("t5", base);
@@ -252,7 +252,7 @@ async fn eight_nodes_stopped_by_memory_come_back_by_themselves_by_priority_withi
 async fn memory_swinging_for_an_hour_resumes_no_paused_node() {
     use TaskPriority::Normal;
     let base = alondra_core::now_millis();
-    let mut fleet = Fleet::new(&[("t1", Normal), ("t2", Normal), ("t3", Normal)], 6, base - 10 * MIN);
+    let mut fleet = Fleet::new(&[("t1", Normal), ("t2", Normal), ("t3", Normal)], Limit::Fixed(6), base - 10 * MIN);
     let mut now = fleet.hold(3, base, 2 * MIN).await;
     assert_eq!(fleet.events("pause").len(), 2);
     let until = now + 60 * MIN;
@@ -272,7 +272,7 @@ async fn memory_swinging_for_an_hour_resumes_no_paused_node() {
 async fn a_resume_that_saturates_the_mac_again_doubles_the_step_and_lowers_the_limit() {
     use TaskPriority::Normal;
     let base = alondra_core::now_millis();
-    let mut fleet = Fleet::new(&[("t1", Normal), ("t2", Normal), ("t3", Normal), ("t4", Normal)], 6, base - 10 * MIN);
+    let mut fleet = Fleet::new(&[("t1", Normal), ("t2", Normal), ("t3", Normal), ("t4", Normal)], Limit::Auto { max: 6 }, base - 10 * MIN);
     let mut now = fleet.hold(3, base, 3 * MIN + SAMPLE).await;
     assert_eq!(fleet.events("pause").len(), 3);
     while fleet.events("resume").is_empty() {
@@ -296,7 +296,7 @@ async fn a_resume_that_saturates_the_mac_again_doubles_the_step_and_lowers_the_l
 async fn the_users_resume_goes_through_over_the_limit_and_their_pause_never_returns_by_itself() {
     use TaskPriority::Normal;
     let base = alondra_core::now_millis();
-    let mut fleet = Fleet::new(&[("t1", Normal), ("t2", Normal), ("t3", Normal)], 2, base - 10 * MIN);
+    let mut fleet = Fleet::new(&[("t1", Normal), ("t2", Normal), ("t3", Normal)], Limit::Fixed(2), base - 10 * MIN);
     fleet.domain.live.gate.pause_by_user(&fleet.domain, "agent-t3", base).unwrap();
     let now = fleet.hold(50, base, 20 * MIN).await;
     assert_eq!(tasks(&fleet.events("pause")), ["t3"]);
@@ -317,7 +317,7 @@ async fn the_users_resume_goes_through_over_the_limit_and_their_pause_never_retu
 async fn the_orchestrator_is_told_a_paused_node_resumes_by_itself() {
     use TaskPriority::Normal;
     let base = alondra_core::now_millis();
-    let mut fleet = Fleet::new(&[("t1", Normal), ("t2", Normal)], 6, base - 10 * MIN);
+    let mut fleet = Fleet::new(&[("t1", Normal), ("t2", Normal)], Limit::Fixed(6), base - 10 * MIN);
     fleet.tick(3, base).await;
     assert_eq!(tasks(&fleet.events("pause")), ["t2"]);
     let body = serde_json::from_value(serde_json::json!({"node": "agent-t2", "text": "carry on"})).unwrap();
@@ -332,7 +332,7 @@ async fn the_orchestrator_is_told_a_paused_node_resumes_by_itself() {
 async fn two_nodes_waiting_for_the_machine_with_the_mac_fine_come_back_one_at_a_time_after_the_grace() {
     use TaskPriority::Normal;
     let base = alondra_core::now_millis();
-    let mut fleet = Fleet::new(&[("t1", Normal), ("t2", Normal)], 6, base - 10 * MIN);
+    let mut fleet = Fleet::new(&[("t1", Normal), ("t2", Normal)], Limit::Fixed(6), base - 10 * MIN);
     fleet.waits_for_machine("t1", base);
     fleet.waits_for_machine("t2", base + SAMPLE);
     fleet.hold(50, base, 12 * MIN).await;
@@ -351,7 +351,7 @@ async fn two_nodes_waiting_for_the_machine_with_the_mac_fine_come_back_one_at_a_
 async fn a_declared_wait_is_never_interrupted_nor_cleaned_up_and_shows_the_nodes_reason() {
     use TaskPriority::Normal;
     let base = alondra_core::now_millis();
-    let mut fleet = Fleet::new(&[("t1", Normal)], 6, base - 10 * MIN);
+    let mut fleet = Fleet::new(&[("t1", Normal)], Limit::Fixed(6), base - 10 * MIN);
     fleet.domain.live.gate.hold_back(&fleet.domain, "agent-t1", Reason::Declared { reason: "cola de compilación".into() }, base);
     fleet.hold(3, base, 2 * MIN).await;
     assert!(fleet.events("pause").is_empty());
@@ -366,7 +366,7 @@ async fn a_declared_wait_is_never_interrupted_nor_cleaned_up_and_shows_the_nodes
 async fn the_usage_limit_reset_brings_nodes_back_one_at_a_time() {
     use TaskPriority::Normal;
     let base = alondra_core::now_millis();
-    let mut fleet = Fleet::new(&[("t1", Normal), ("t2", Normal), ("t3", Normal)], 6, base - 10 * MIN);
+    let mut fleet = Fleet::new(&[("t1", Normal), ("t2", Normal), ("t3", Normal)], Limit::Fixed(6), base - 10 * MIN);
     for task in ["t1", "t2", "t3"] {
         fleet.end_turn(task, base);
         fleet.domain.live.gate.hold_back(&fleet.domain, &format!("agent-{task}"), Reason::Usage, base);
@@ -384,7 +384,7 @@ async fn the_usage_limit_reset_brings_nodes_back_one_at_a_time() {
 async fn a_node_the_user_paused_that_starts_a_turn_by_itself_is_stopped_again_and_stays_paused() {
     use TaskPriority::Normal;
     let base = alondra_core::now_millis();
-    let mut fleet = Fleet::new(&[("t1", Normal), ("t2", Normal)], 6, base - 10 * MIN);
+    let mut fleet = Fleet::new(&[("t1", Normal), ("t2", Normal)], Limit::Fixed(6), base - 10 * MIN);
     fleet.domain.live.gate.pause_by_user(&fleet.domain, "agent-t2", base).unwrap();
     fleet.tick(50, base).await;
     assert_eq!(tasks(&fleet.events("pause")), ["t2"]);
@@ -405,7 +405,7 @@ async fn a_node_the_user_paused_that_starts_a_turn_by_itself_is_stopped_again_an
 async fn a_node_paused_for_memory_that_starts_a_turn_by_itself_is_no_longer_paused() {
     use TaskPriority::Normal;
     let base = alondra_core::now_millis();
-    let mut fleet = Fleet::new(&[("t1", Normal), ("t2", Normal)], 6, base - 10 * MIN);
+    let mut fleet = Fleet::new(&[("t1", Normal), ("t2", Normal)], Limit::Fixed(6), base - 10 * MIN);
     fleet.tick(3, base).await;
     assert_eq!(tasks(&fleet.events("pause")), ["t2"]);
     fleet.domain.live.mods.apply(Envelope { session_id: "agent-t2".into(), report: Report::TurnStart }, base + 12_000);
@@ -420,7 +420,7 @@ async fn a_node_paused_for_memory_that_starts_a_turn_by_itself_is_no_longer_paus
 async fn the_users_message_ends_their_pause_and_the_orchestrators_does_not() {
     use TaskPriority::Normal;
     let base = alondra_core::now_millis();
-    let mut fleet = Fleet::new(&[("t1", Normal), ("t2", Normal)], 6, base - 10 * MIN);
+    let mut fleet = Fleet::new(&[("t1", Normal), ("t2", Normal)], Limit::Fixed(6), base - 10 * MIN);
     fleet.domain.live.gate.pause_by_user(&fleet.domain, "agent-t2", base).unwrap();
     fleet.tick(50, base).await;
 

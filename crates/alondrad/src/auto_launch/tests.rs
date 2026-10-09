@@ -378,7 +378,7 @@ async fn a_manual_and_an_automatic_launch_never_both_start_a_task() {
 async fn twelve_independent_tasks_with_a_plan_start_four_at_a_time_and_the_next_starts_when_one_closes() {
     let f = world();
     let claude = FakeClaude::new(&f);
-    f.domain.live.gate.tune(crate::fleet_gate::Tuning { spacing: 0, limit: Some(4) });
+    f.domain.live.gate.tune(crate::fleet_gate::Tuning { spacing: 0, limit: Some(crate::fleet_gate::Limit::Fixed(4)) });
     let ids: Vec<String> = (1..=12).map(|n| format!("i{n:02}")).collect();
     for id in &ids {
         create(&f, id, &[], Some(&plan(&f, &format!("app/{id}"))));

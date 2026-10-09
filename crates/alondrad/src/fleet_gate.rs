@@ -26,7 +26,7 @@ const FILE: &str = "fleet-gate.json";
 pub(crate) const SPACING: Millis = 60_000;
 /// A node admitted this recently counts as working even before its mod reports a turn.
 const IN_FLIGHT: Millis = 3 * 60_000;
-const LEARN_STEP: Millis = 15 * 60_000;
+const LEARN_STEP: Millis = crate::machine_state::RECOVERY_WINDOW;
 const TICK: Duration = Duration::from_secs(10);
 /// How often the log repeats why the queue waits while the reason stays the same.
 const HOLD_LOG_EVERY: Millis = 10 * 60_000;
@@ -80,8 +80,16 @@ pub(crate) fn decide(head: &Waiting, working: usize, limit: u32, mac: &MacState,
     Ok(())
 }
 
-/// What the gate learned about how many nodes this Mac takes: lowered when the Mac reaches its
-/// limit, raised by one every `LEARN_STEP` the Mac stays fine with someone waiting.
+/// The working-node limit the user chose: a number the gate keeps to whatever the memory does, or
+/// automatic, up to what this Mac takes and lowered by what the gate learned.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Limit {
+    Fixed(u32),
+    Auto { max: u32 },
+}
+
+/// What the gate learned about how many nodes this Mac takes, in automatic only: lowered when the
+/// Mac reaches its limit, raised by one every `LEARN_STEP` the Mac stays fine with someone waiting.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Learned {
     pub cap: Option<u32>,
@@ -89,8 +97,11 @@ pub(crate) struct Learned {
 }
 
 impl Learned {
-    pub(crate) fn limit(&self, configured: u32) -> u32 {
-        self.cap.map_or(configured, |cap| cap.min(configured))
+    pub(crate) fn limit(&self, setting: Limit) -> u32 {
+        match setting {
+            Limit::Fixed(count) => count,
+            Limit::Auto { max } => self.cap.map_or(max, |cap| cap.min(max)),
+        }
     }
 
     pub(crate) fn at_limit(&mut self, working: usize) {
@@ -98,15 +109,15 @@ impl Learned {
         self.since = None;
     }
 
-    pub(crate) fn learn(&mut self, configured: u32, health: Health, queued: bool, now: Millis) {
-        let Some(cap) = self.cap else { return };
+    pub(crate) fn learn(&mut self, setting: Limit, health: Health, queued: bool, now: Millis) {
+        let (Some(cap), Limit::Auto { max }) = (self.cap, setting) else { return };
         if health != Health::Fine || !queued {
             self.since = None;
             return;
         }
         let since = *self.since.get_or_insert(now);
         if now - since >= LEARN_STEP {
-            self.cap = (cap + 1 < configured).then_some(cap + 1);
+            self.cap = (cap + 1 < max).then_some(cap + 1);
             self.since = Some(now);
         }
     }
@@ -125,13 +136,13 @@ struct Saved {
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Tuning {
     pub spacing: Millis,
-    pub limit: Option<u32>,
+    pub limit: Option<Limit>,
 }
 
 impl Default for Tuning {
     fn default() -> Self {
         if cfg!(test) {
-            Self { spacing: 0, limit: Some(alondra_core::options::MAX_WORKING_NODES) }
+            Self { spacing: 0, limit: Some(Limit::Fixed(alondra_core::options::MAX_WORKING_NODES)) }
         } else {
             Self { spacing: SPACING, limit: None }
         }
@@ -207,8 +218,10 @@ impl Default for FleetGate {
 pub(crate) struct Snapshot {
     pub queue: Vec<Waiting>,
     pub working: usize,
+    /// The tasks behind `working`: the busy ones and those starting.
+    pub working_tasks: BTreeSet<TaskId>,
     pub limit: u32,
-    pub configured: u32,
+    pub setting: Limit,
     pub mac: MacState,
     pub hold: Option<Hold>,
     pub disk_low: bool,
@@ -245,21 +258,34 @@ impl FleetGate {
         self.turn.subscribe()
     }
 
-    /// The Mac reached its limit with `working` nodes: the gate admits fewer from now on.
-    pub(crate) fn at_limit(&self, working: usize) {
+    /// The Mac reached its limit with `working` nodes: in automatic, the gate admits fewer from now
+    /// on; a number the user chose stays.
+    pub(crate) fn at_limit(&self, domain: &DomainRuntime, working: usize) {
         let mut inner = self.lock();
-        inner.saved.learned.at_limit(working);
+        if matches!(limit_setting(domain, inner.tuning), Limit::Auto { .. }) {
+            inner.saved.learned.at_limit(working);
+        }
         self.save(&inner);
     }
 
     /// The Mac's memory got worse with `working` nodes at work: a resume shortly before is blamed,
-    /// which doubles the step between resumes and lowers how many nodes the gate lets work.
-    pub(crate) fn saturated(&self, working: usize, now: Millis) {
+    /// which doubles the step between resumes and, in automatic, lowers how many nodes work.
+    pub(crate) fn saturated(&self, domain: &DomainRuntime, working: usize, now: Millis) {
         let mut inner = self.lock();
+        let auto = matches!(limit_setting(domain, inner.tuning), Limit::Auto { .. });
         if inner.saved.pauses.step.saturated(now) {
-            inner.saved.learned.at_limit(working);
+            if auto {
+                inner.saved.learned.at_limit(working);
+            }
             log!("the Mac saturated again after a resume: the step between resumes is now {} min", inner.saved.pauses.step.step / 60_000);
         }
+        self.save(&inner);
+    }
+
+    /// The user chose a limit: what the gate learned before no longer applies.
+    pub(crate) fn forget_learned(&self) {
+        let mut inner = self.lock();
+        inner.saved.learned = Learned::default();
         self.save(&inner);
     }
 
@@ -578,12 +604,18 @@ pub(crate) fn busy_tasks(domain: &DomainRuntime, state: &DomainState, now: Milli
         .collect()
 }
 
-/// The busy nodes that take a slot: a node that waits on the user (a held plan or permission,
-/// a question) is busy with a call, yet only the user moves it, so it leaves its slot to the queue.
+/// The busy nodes that take a slot, the one count the gate, Fleet and the Tasks list share. A node
+/// that waits on the user (a held plan or permission, a question) is busy with a call, yet only the
+/// user moves it; a node paused here (it waits for the machine, the usage limit or the user) comes
+/// back through the queue. Neither keeps its slot, whatever its mod still reports.
 pub(crate) fn working_tasks(domain: &DomainRuntime, state: &DomainState, now: Millis) -> BTreeSet<TaskId> {
+    working_in(domain, state, &domain.live.gate.pauses(), now)
+}
+
+fn working_in(domain: &DomainRuntime, state: &DomainState, pauses: &Pauses, now: Millis) -> BTreeSet<TaskId> {
     busy_tasks(domain, state, now).into_iter()
-        .filter(|task| crate::fleet_pause::session_of(state, task)
-            .is_none_or(|session| !crate::fleet_pause::waits_on_user(domain, state, task, &session)))
+        .filter(|task| crate::fleet_pause::session_of(state, task).is_none_or(|session| !pauses.paused.contains_key(&session)
+            && !crate::fleet_pause::waits_on_user(domain, state, task, &session)))
         .collect()
 }
 
@@ -597,13 +629,16 @@ fn queued_launches(domain: &DomainRuntime, state: &DomainState) -> Vec<Waiting> 
     }).collect()
 }
 
-fn configured_limit(domain: &DomainRuntime, tuning: Tuning) -> u32 {
+fn limit_setting(domain: &DomainRuntime, tuning: Tuning) -> Limit {
     if let Some(limit) = tuning.limit {
         return limit;
     }
     let file = crate::domain_schedule_runner::options_at(domain.home()).unwrap_or_default();
     let (cores, memory) = machine_size();
-    file.max_working_nodes.resolve(cores, memory)
+    match file.max_working_nodes {
+        NodeLimit::Fixed(_) => Limit::Fixed(file.max_working_nodes.resolve(cores, memory)),
+        NodeLimit::Auto => Limit::Auto { max: NodeLimit::Auto.resolve(cores, memory) },
+    }
 }
 
 /// What the user set in `options.toml` (`None` for automatic) and what automatic gives here.
@@ -642,13 +677,16 @@ fn machine_size() -> (usize, u64) {
 }
 
 fn snapshot_locked(domain: &DomainRuntime, state: &DomainState, inner: &Inner, queued: Vec<Waiting>, now: Millis) -> Snapshot {
-    let busy = working_tasks(domain, state, now);
-    let in_flight = inner.admitted.iter()
+    let busy = working_in(domain, state, &inner.saved.pauses, now);
+    let paused = |task: &TaskId| crate::fleet_pause::session_of(state, task).is_some_and(|session| inner.saved.pauses.paused.contains_key(&session));
+    let in_flight: Vec<Option<TaskId>> = inner.admitted.iter()
         .filter(|(_, at)| now - at < IN_FLIGHT)
-        .filter(|(key, _)| task_of(state, key).is_none_or(|task| !busy.contains(&task)
-            && state.tasks.get(&task).is_none_or(|task| !task.state.terminal())))
-        .count();
-    let working = busy.len() + in_flight;
+        .map(|(key, _)| task_of(state, key))
+        .filter(|task| task.as_ref().is_none_or(|task| !busy.contains(task) && !paused(task)
+            && state.tasks.get(task).is_none_or(|task| !task.state.terminal())))
+        .collect();
+    let working = busy.len() + in_flight.len();
+    let working_tasks = busy.into_iter().chain(in_flight.into_iter().flatten()).collect();
     let mut all: BTreeMap<Key, Waiting> = inner.asking.iter().filter(|(key, _)| still_waits(state, key))
         .map(|(key, waiting)| (key.clone(), waiting.clone())).collect();
     for waiting in queued.into_iter().filter(|waiting| still_waits(state, &waiting.key)) {
@@ -662,11 +700,11 @@ fn snapshot_locked(domain: &DomainRuntime, state: &DomainState, inner: &Inner, q
         }
     }
     let queue = ordered(all.into_values().collect());
-    let configured = configured_limit(domain, inner.tuning);
-    let limit = inner.saved.learned.limit(configured);
+    let setting = limit_setting(domain, inner.tuning);
+    let limit = inner.saved.learned.limit(setting);
     let mac = domain.live.machine_watch.mac();
     let disk_low = domain.live.machine_watch.disk_low();
-    let mut snapshot = Snapshot { queue, working, limit, configured, mac, hold: None, disk_low };
+    let mut snapshot = Snapshot { queue, working, working_tasks, limit, setting, mac, hold: None, disk_low };
     snapshot.hold = snapshot.queue.first().and_then(|head| hold_of(inner, head, &snapshot, now).err());
     snapshot
 }
@@ -766,13 +804,13 @@ pub(crate) async fn pass_at(domain: &DomainRuntime, home: &Path, launcher: &impl
         crate::fleet_pause::look(domain, &state, &mut inner.saved.pauses, health, now);
         deliver_owed(domain, &mut inner);
         let snapshot = snapshot_locked(domain, &state, &inner, queued, now);
-        let configured = snapshot.configured;
-        inner.saved.learned.learn(configured, snapshot.mac.health, !snapshot.queue.is_empty(), now);
+        inner.saved.learned.learn(snapshot.setting, snapshot.mac.health, !snapshot.queue.is_empty(), now);
         gate.save(&inner);
         let held = snapshot.queue.first().zip(snapshot.hold.as_ref());
         if inner.told.due(held.and_then(|(_, hold)| Cause::of(hold)), now) && let Some((head, hold)) = held {
-            let working: Vec<TaskId> = working_tasks(domain, &state, now).into_iter().collect();
-            let on_user: Vec<TaskId> = busy_tasks(domain, &state, now).into_iter().filter(|task| !working.contains(task)).collect();
+            let working: Vec<TaskId> = working_in(domain, &state, &inner.saved.pauses, now).into_iter().collect();
+            let paused = |task: &TaskId| crate::fleet_pause::session_of(&state, task).is_some_and(|session| inner.saved.pauses.paused.contains_key(&session));
+            let on_user: Vec<TaskId> = busy_tasks(domain, &state, now).into_iter().filter(|task| !working.contains(task) && !paused(task)).collect();
             if let Some(line) = hold_line(snapshot.queue.len(), &key_text(&state, &head.key), head.priority, hold, &working, &on_user, inner.saved.pauses.paused.len()) {
                 log!("{line}");
             }

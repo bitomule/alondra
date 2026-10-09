@@ -102,6 +102,7 @@ async fn gather_at(
             (task.0, alondra_core::views::LiveLaunchRefusal { reason, detail })
         })
         .collect();
+    let pauses = client.domain.live.gate.pauses();
     let nodes = state
         .agents
         .values()
@@ -229,7 +230,7 @@ async fn gather_at(
                 }).collect(),
                 background_badge,
                 background_suspect,
-                working: matches!(activity, Activity::Working | Activity::Stalled),
+                working: matches!(activity, Activity::Working | Activity::Stalled) && !pauses.paused.contains_key(&session_id),
                 waiting: matches!(node.state, alondra_core::NodeState::WaitingAnswer |
                     alondra_core::NodeState::YourTurn | alondra_core::NodeState::WaitingMerge |
                     alondra_core::NodeState::WaitingMachine),
@@ -735,6 +736,69 @@ mod cache_tests {
         let answer_view = client.views.render("fleet", &state, &answer, Client::Mac, Lang::En, Transport::Loopback).unwrap();
         assert_ne!(answer_view.cursor, stalled_view.cursor);
         assert_eq!(client.views.build_count(), 3);
+    }
+
+    /// The rows of a view whose badge says `state`, by id, wherever they are nested.
+    fn rows_with(value: &Value, state: &str, found: &mut Vec<String>) {
+        match value {
+            Value::Object(row) => {
+                let badged = row.get("badges").and_then(Value::as_array)
+                    .is_some_and(|badges| badges.iter().any(|badge| badge["text"] == state));
+                if badged && let Some(id) = row.get("id").and_then(Value::as_str) {
+                    found.push(id.to_owned());
+                }
+                row.values().for_each(|child| rows_with(child, state, found));
+            }
+            Value::Array(items) => items.iter().for_each(|child| rows_with(child, state, found)),
+            _ => {}
+        }
+    }
+
+    #[tokio::test]
+    async fn the_gate_fleet_and_tasks_list_count_the_same_nodes_working() {
+        use alondra_core::views::{Client, Transport};
+        use crate::node_reports::{Envelope, Report};
+        let home = crate::test_support::Directory::new();
+        fs::create_dir_all(&home).unwrap();
+        let domain = Arc::new(crate::domain_runtime::DomainRuntime::open(&home).unwrap());
+        domain.live.gate.tune(crate::fleet_gate::Tuning { spacing: 0, limit: Some(crate::fleet_gate::Limit::Fixed(2)) });
+        let client = crate::client_routes::Client::open(domain.clone(), &home, Arc::new(Mutex::new(None)));
+        execute(&domain, Actor::User { user_id: "u".into() }, "request", Command::CreateRequest {
+            request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false,
+        });
+        execute(&domain, Actor::User { user_id: "u".into() }, "title", Command::TitleRequest { request_id: "request".into(), title: "Work".into() });
+        let now = alondra_core::now_millis();
+        for id in ["build", "docs", "harness"] {
+            let agent = format!("agent-{id}");
+            execute(&domain, Actor::Orchestrator { generation: 0 }, &format!("create-{id}"), Command::CreateTask {
+                task_id: id.into(), request_id: "request".into(), title: format!("Task {id}"), agent_id: None, review_prs: false,
+                dependencies: Default::default(), stack: None, launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),
+            });
+            execute(&domain, Actor::System, &format!("register-{id}"), Command::RegisterAgent { agent_id: agent.as_str().into(), name: agent.clone() });
+            execute(&domain, Actor::System, &format!("observe-{id}"), Command::ObserveAgent { agent_id: agent.as_str().into(), connected: true });
+            execute(&domain, Actor::User { user_id: "u".into() }, &format!("assign-{id}"), Command::AssignTask {
+                task_id: id.into(), agent_id: agent.as_str().into(), model: None,
+            });
+            execute(&domain, Actor::Agent { agent_id: agent.as_str().into() }, &format!("start-{id}"), Command::StartTask { task_id: id.into() });
+            domain.live.mods.apply(Envelope { session_id: agent, report: Report::TurnStart }, now);
+        }
+        assert!(domain.live.gate.hold_back(&domain, "agent-harness", crate::fleet_pause::Reason::Declared {
+            reason: "The build ran out of memory".into(),
+        }, now));
+
+        let state = domain.state().unwrap();
+        let gate = domain.live.gate.snapshot(&domain, now).unwrap();
+        let live = gather_at(&client, &state, Lang::En, &[], false, false, now).await;
+        let tasks = client.views.render("tasks", &state, &live, Client::Mac, Lang::En, Transport::Loopback).unwrap();
+        let mut listed = vec![];
+        rows_with(&serde_json::to_value(&tasks).unwrap(), "Working", &mut listed);
+        listed.sort();
+        let fleet: Vec<&str> = live.nodes.iter().filter(|node| node.working).map(|node| node.agent_id.as_str()).collect();
+
+        assert_eq!(gate.working_tasks.iter().map(|task| task.0.as_str()).collect::<Vec<_>>(), ["build", "docs"]);
+        assert_eq!(live.pacing.as_ref().map(|pacing| pacing.working), Some(2));
+        assert_eq!(listed, ["build", "docs"], "the Tasks list says Working of the same tasks");
+        assert_eq!(fleet, ["agent-build", "agent-docs"], "Fleet does not show the node waiting for the machine as working");
     }
 
     #[test]

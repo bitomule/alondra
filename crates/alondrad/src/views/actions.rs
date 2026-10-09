@@ -620,7 +620,10 @@ async fn execute_external(
                 None => return Ok(rejected_field(lang, "option_id", "Choose an option")),
             };
             match crate::fleet_gate::set_node_limit(home, limit) {
-                Ok(()) => Ok(to_applied(200, json!({"max_working_nodes": limit}))),
+                Ok(()) => {
+                    domain.live.gate.forget_learned();
+                    Ok(to_applied(200, json!({"max_working_nodes": limit})))
+                }
                 Err(why) => Ok(error_value_lang(lang, "conflict", why)),
             }
         }
