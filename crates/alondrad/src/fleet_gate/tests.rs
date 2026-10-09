@@ -167,7 +167,7 @@ fn swing(low: u32, high: u32) -> Hour {
         if let Some((from, to)) = mac.step(&machine, now) {
             hour.notices.extend(pacing_notice(from, to, &mac));
         }
-        let (next, actions) = step_on(incident, &machine, mac.health, None, &[], false, now);
+        let (next, actions) = step_on(incident, &machine, None, &[], false, now);
         incident = next;
         for action in actions {
             match action {
@@ -191,14 +191,14 @@ fn memory_swinging_between_9_and_16_percent_for_an_hour_resumes_nothing_and_tell
     let hour = swing(9, 16);
     assert_eq!(hour.notices.len(), 1, "only entering the pressure: {:?}", hour.notices);
     assert!(hour.notices[0].starts_with("The Mac is short of memory (9% free)"), "{:?}", hour.notices);
-    assert_eq!((hour.cards, hour.withdrawn, hour.admitted), (1, 0, 0), "{hour:?}");
+    assert_eq!((hour.cards, hour.withdrawn, hour.admitted), (0, 0, 0), "memory never puts a card in front of the user: {hour:?}");
 }
 
 #[test]
 fn memory_swinging_between_9_and_22_percent_never_stays_fine_long_enough_to_count_as_recovered() {
     let hour = swing(9, 22);
     assert_eq!(hour.notices.len(), 1, "only entering the pressure: {:?}", hour.notices);
-    assert_eq!((hour.cards, hour.withdrawn, hour.admitted), (1, 0, 0), "{hour:?}");
+    assert_eq!((hour.cards, hour.withdrawn, hour.admitted), (0, 0, 0), "memory never puts a card in front of the user: {hour:?}");
 }
 
 #[test]

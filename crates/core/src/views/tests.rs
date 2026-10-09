@@ -2556,6 +2556,36 @@ fn orchestrator_waiting(can_retry: bool) -> LiveSnapshot {
 }
 
 #[test]
+fn a_machine_card_offers_its_fix_and_no_reply_to_the_orchestrator_on_any_client() {
+    use crate::domain::CardKind;
+    use crate::machine_incident::{MACHINE_FIXED_LABEL, MACHINE_FIXED_OPTION, MachineCard, MachineCause};
+    let mut state = fixture();
+    let disk = MachineCard { cause: MachineCause::Disk, disk_free: 3_000_000_000, nodes: vec![], reason: None, minutes: None, disk: None, still: false };
+    let (need, why) = disk.text(Lang::En);
+    state.interactions.insert("machine-1000".into(), Interaction {
+        attachments: vec![], id: "machine-1000".into(), scope: Scope::Orchestrator { request_id: None },
+        author: Author::System, recipient: Recipient::User, body: disk.to_body(),
+        blocking: false, subject: None,
+        payload: InteractionPayload::Question {
+            options: vec![QuestionOption { id: MACHINE_FIXED_OPTION.into(), label: MACHINE_FIXED_LABEL.into(), description: None, inputs: vec![] }],
+            answer: None,
+        },
+        revision: 1, order: 9, withdrawn: false,
+        card: spec(CardKind::Problem, &need, &why),
+        clarification: None,
+    });
+    let live = LiveSnapshot::default();
+    for (client, lang) in [(Client::Ios, Lang::Es), (Client::Mac, Lang::En), (Client::Tui, Lang::Es)] {
+        let view = render(&state, &live, client, lang, "card:machine-1000", "");
+        let card = card_of(&view);
+        assert!(card.reply.is_none(), "{client:?}: Alondra raised it, nobody to reply to");
+        assert_eq!(card.actions.iter().filter_map(|action| action.option_id.as_deref()).collect::<Vec<_>>(), [MACHINE_FIXED_OPTION]);
+        let text = serde_json::to_string(card).unwrap();
+        assert!(!text.contains("orchestrator") && !text.contains("orquestador"), "{client:?}: {text}");
+    }
+}
+
+#[test]
 fn an_orchestrator_problem_is_a_card_like_any_other_and_comes_first() {
     use crate::domain::{CardKind, ContentKind as Content};
     let mut state = fixture();

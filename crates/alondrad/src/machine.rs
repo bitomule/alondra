@@ -28,7 +28,7 @@ async fn sample_loop(mut publish: impl FnMut(Machine)) {
     loop {
         sys.refresh_memory();
         sys.refresh_cpu_usage();
-        pressure = match memorystatus_level() {
+        pressure = match forced_memory_free_percent().or_else(memorystatus_level) {
             Some(level) => Some(level),
             None if round.is_multiple_of(3) => tokio::task::spawn_blocking(memory_free_percent).await.ok().flatten(),
             None => pressure,
@@ -53,6 +53,12 @@ async fn sample_loop(mut publish: impl FnMut(Machine)) {
         round += 1;
         tokio::time::sleep(Duration::from_secs(10)).await;
     }
+}
+
+/// `ALONDRA_MEMORY_FREE_PERCENT` stands for the Mac's free memory, so a sandbox can try the pacing
+/// on a Mac with memory to spare.
+fn forced_memory_free_percent() -> Option<u32> {
+    std::env::var("ALONDRA_MEMORY_FREE_PERCENT").ok()?.parse().ok().filter(|free| *free <= 100)
 }
 
 /// The free memory percentage `memory_pressure` prints, read from the kernel without a process.

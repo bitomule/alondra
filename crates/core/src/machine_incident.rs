@@ -1,6 +1,6 @@
-//! Alondra's card for a machine that stops nodes: the disk nearly full, memory or CPU at the
-//! limit, or a node that declared it waits for the machine. One card per incident; its body holds
-//! the numbers so every client words it in its own language.
+//! Alondra's card for a machine that stops nodes: the disk nearly full, or a node that declared it
+//! waits for the machine. One card per incident; its body holds the numbers so every client words
+//! it in its own language. Memory never raises one: Alondra paces the fleet by itself.
 
 use serde::{Deserialize, Serialize};
 
@@ -16,6 +16,7 @@ const NAMES_SHOWN: usize = 3;
 #[serde(rename_all = "snake_case")]
 pub enum MachineCause {
     Disk,
+    /// Only in records from before memory stopped raising cards; read to retire them.
     Memory,
     Load,
     /// A node said it waits for the machine and no gauge shows why.
@@ -26,14 +27,6 @@ pub enum MachineCause {
 pub struct MachineCard {
     pub cause: MachineCause,
     pub disk_free: u64,
-    #[serde(default)]
-    pub memory_free_percent: Option<u32>,
-    /// macOS reports memory pressure, which can happen with plenty of memory free.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub memory_pressure: bool,
-    /// Memory is about to reach macOS's memory pressure, before macOS reports it.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub near_pressure: bool,
     /// The stopped nodes, by the title of their task.
     #[serde(default)]
     pub nodes: Vec<String>,
@@ -46,12 +39,6 @@ pub struct MachineCard {
     /// The volume that is nearly full, when it is not the Mac's own disk.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub disk: Option<String>,
-    /// Memory stays at its limit with one node working, the rest paused: something else eats it.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub single_node: bool,
-    /// The processes using the most memory, by name and resident bytes, on that card.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub top: Vec<(String, u64)>,
     /// The user said they fixed it and the gauge still measures the problem.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub still: bool,
@@ -94,23 +81,11 @@ impl MachineCard {
     pub fn text(&self, lang: Lang) -> (String, String) {
         let free = bytes_text(self.disk_free, lang);
         let on = self.disk.as_ref().map(|disk| tf!(lang, " on {disk}", " en {disk}")).unwrap_or_default();
-        let memory = self.memory_free_percent.unwrap_or(0);
         let need = match self.cause {
             MachineCause::Disk if self.still => tf!(lang, "Still: {free} free left{on}", "Sigue: quedan {free} libres{on}"),
-            MachineCause::Memory if self.still => tf!(lang, "Still: memory {memory}% free", "Sigue: memoria al {memory}% libre"),
             MachineCause::Disk if self.nodes.is_empty() => tf!(lang, "Free up disk space: only {free} left{on}", "Libera espacio en disco: solo quedan {free}{on}"),
             MachineCause::Disk => tf!(lang, "Free up disk space: {free} left{on}", "Libera espacio en disco: quedan {free}{on}"),
-            MachineCause::Memory if self.memory_pressure && self.single_node => tf!(lang, "Free up memory: macOS reports memory pressure ({memory}% free) with a single node working",
-                "Libera memoria: macOS avisa de presión de memoria ({memory}% libre) con un solo nodo trabajando"),
-            MachineCause::Memory if self.memory_pressure => tf!(lang, "Free up memory: macOS reports memory pressure ({memory}% free)",
-                "Libera memoria: macOS avisa de presión de memoria ({memory}% libre)"),
-            MachineCause::Memory if self.near_pressure && self.single_node => tf!(lang, "Free up memory: it is about to reach macOS memory pressure ({memory}% free) with a single node working",
-                "Libera memoria: está a punto de entrar en presión de memoria de macOS ({memory}% libre) con un solo nodo trabajando"),
-            MachineCause::Memory if self.near_pressure => tf!(lang, "Free up memory: it is about to reach macOS memory pressure ({memory}% free)",
-                "Libera memoria: está a punto de entrar en presión de memoria de macOS ({memory}% libre)"),
-            MachineCause::Memory if self.single_node => tf!(lang, "Free up memory: {memory}% free with a single node working",
-                "Libera memoria: {memory}% libre con un solo nodo trabajando"),
-            MachineCause::Memory => tf!(lang, "Free up memory: {memory}% free", "Libera memoria: {memory}% libre"),
+            MachineCause::Memory => t!(lang, "Memory was at its limit", "La memoria estuvo al límite").into(),
             MachineCause::Load => t!(lang, "Lighten the Mac's load: the CPU is at its limit", "Alivia la carga del Mac: la CPU está al límite").into(),
             MachineCause::Declared => t!(lang, "Check the Mac: nodes are waiting for the machine", "Revisa el Mac: hay nodos esperando a la máquina").into(),
         };
@@ -126,21 +101,7 @@ impl MachineCard {
                 None => tf!(lang, "Disk nearly full ({free} free). Alondra starts no new node until there is space.",
                     "Disco casi lleno ({free} libres). Alondra no lanzará nodos nuevos hasta que haya espacio."),
             },
-            MachineCause::Memory => {
-                let limit = if self.memory_pressure {
-                    tf!(lang, "macOS reports memory pressure ({memory}% free).", "macOS avisa de presión de memoria ({memory}% libre).")
-                } else if self.near_pressure {
-                    tf!(lang, "Memory about to reach macOS memory pressure ({memory}% free).", "Memoria a punto de entrar en presión de memoria de macOS ({memory}% libre).")
-                } else {
-                    tf!(lang, "Memory at its limit ({memory}% free).", "Memoria al límite ({memory}% libre).")
-                };
-                if self.top.is_empty() {
-                    limit
-                } else {
-                    let top = self.top.iter().map(|(name, bytes)| format!("{name} {}", bytes_text(*bytes, lang))).collect::<Vec<_>>().join(", ");
-                    format!("{limit} {}", tf!(lang, "Using the most: {top}.", "Lo que más ocupa: {top}."))
-                }
-            }
+            MachineCause::Memory => String::new(),
             MachineCause::Load => t!(lang, "CPU at its limit.", "CPU al límite.").into(),
             MachineCause::Declared => match &self.reason {
                 Some(reason) => tf!(lang, "A node says: {reason}.", "Un nodo dice: {reason}.", reason = reason.trim_end_matches('.')),
@@ -158,7 +119,7 @@ mod tests {
     use super::*;
 
     fn card(cause: MachineCause, nodes: &[&str]) -> MachineCard {
-        MachineCard { cause, disk_free: 0, memory_free_percent: Some(9), memory_pressure: false, near_pressure: false, nodes: nodes.iter().map(|n| n.to_string()).collect(), reason: None, minutes: None, disk: None, single_node: false, top: vec![], still: false }
+        MachineCard { cause, disk_free: 0, nodes: nodes.iter().map(|n| n.to_string()).collect(), reason: None, minutes: None, disk: None, still: false }
     }
 
     #[test]
@@ -176,9 +137,9 @@ mod tests {
         let warning = MachineCard { disk_free: 4_200_000_000, ..card(MachineCause::Disk, &[]) };
         assert_eq!(warning.text(Lang::Es).0, "Libera espacio en disco: solo quedan 4,2 GB");
         assert!(warning.text(Lang::En).1.contains("No node has stopped yet"));
-        let reminder = MachineCard { minutes: Some(30), ..card(MachineCause::Memory, &["a", "b", "c", "d", "e"]) };
-        assert_eq!(reminder.text(Lang::En), ("Free up memory: 9% free".into(),
-            "Memory at its limit (9% free). Still stopped after 30 min: a, b, c and 2 more. They carry on by themselves once it recovers.".into()));
+        let reminder = MachineCard { minutes: Some(30), ..card(MachineCause::Disk, &["a", "b", "c", "d", "e"]) };
+        assert_eq!(reminder.text(Lang::En), ("Free up disk space: 0 B left".into(),
+            "Disk nearly full (0 B free). Alondra starts no new node until there is space. Still stopped after 30 min: a, b, c and 2 more. They carry on by themselves once it recovers.".into()));
     }
 
     #[test]
@@ -203,32 +164,10 @@ mod tests {
     }
 
     #[test]
-    fn memory_at_its_limit_with_a_single_node_working_says_so_and_names_what_uses_the_most() {
-        let single = MachineCard { memory_free_percent: Some(4), single_node: true, top: vec![("Simulator".into(), 1_900_000_000), ("Xcode".into(), 3_100_000_000)], ..card(MachineCause::Memory, &[]) };
-        assert_eq!(MachineCard::from_body(&single.to_body()), Some(single.clone()));
-        let (need, why) = single.text(Lang::Es);
-        assert_eq!(need, "Libera memoria: 4% libre con un solo nodo trabajando");
-        assert!(why.starts_with("Memoria al límite (4% libre). Lo que más ocupa: Simulator 1,9 GB, Xcode 3,1 GB."), "{why}");
-        assert_eq!(single.text(Lang::En).0, "Free up memory: 4% free with a single node working");
-    }
-
-    #[test]
-    fn memory_pressure_with_memory_free_says_macos_reports_it_in_both_languages() {
-        let pressure = MachineCard { memory_free_percent: Some(31), memory_pressure: true, ..card(MachineCause::Memory, &["Lumo"]) };
-        assert_eq!(MachineCard::from_body(&pressure.to_body()), Some(pressure.clone()));
-        assert_eq!(pressure.text(Lang::Es), ("Libera memoria: macOS avisa de presión de memoria (31% libre)".into(),
-            "macOS avisa de presión de memoria (31% libre). Parados: Lumo. Continúan solos cuando se recupere.".into()));
-        assert_eq!(pressure.text(Lang::En).0, "Free up memory: macOS reports memory pressure (31% free)");
-        assert!(!MachineCard::from_body(r#"{"cause":"memory","disk_free":0}"#).unwrap().memory_pressure);
-    }
-
-    #[test]
-    fn memory_about_to_reach_pressure_says_so_before_macos_reports_it_in_both_languages() {
-        let near = MachineCard { memory_free_percent: Some(38), near_pressure: true, ..card(MachineCause::Memory, &["Lumo"]) };
-        assert_eq!(MachineCard::from_body(&near.to_body()), Some(near.clone()));
-        assert_eq!(near.text(Lang::Es), ("Libera memoria: está a punto de entrar en presión de memoria de macOS (38% libre)".into(),
-            "Memoria a punto de entrar en presión de memoria de macOS (38% libre). Parados: Lumo. Continúan solos cuando se recupere.".into()));
-        assert_eq!(near.text(Lang::En).0, "Free up memory: it is about to reach macOS memory pressure (38% free)");
-        assert!(!MachineCard::from_body(r#"{"cause":"memory","disk_free":0}"#).unwrap().near_pressure);
+    fn a_memory_card_left_by_an_earlier_daemon_still_reads_without_asking_to_free_memory() {
+        let left = r#"{"cause":"memory","disk_free":0,"memory_free_percent":38,"near_pressure":true,"single_node":true,"top":[["Xcode",3100000000]],"nodes":["Lumo"]}"#;
+        let card = MachineCard::from_body(left).expect("an old memory card still reads");
+        assert_eq!(card.text(Lang::Es), ("La memoria estuvo al límite".into(), "Parados: Lumo. Continúan solos cuando se recupere.".into()));
+        assert!(!card.text(Lang::En).0.contains("Free up"));
     }
 }

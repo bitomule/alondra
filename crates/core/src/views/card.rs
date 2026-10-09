@@ -762,6 +762,10 @@ pub fn answer_label(state: &DomainState, interaction: &Interaction, option: &Que
 }
 
 /// The problem of Alondra's card for a task that cannot start by itself.
+fn is_machine_card(interaction: &Interaction) -> bool {
+    interaction.author == Author::System && interaction.id.0.starts_with(crate::machine_incident::MACHINE_PREFIX)
+}
+
 fn start_problem_of(interaction: &Interaction) -> Option<crate::domain::StartProblem> {
     (interaction.author == Author::System && interaction.id.0.starts_with(crate::domain::START_PROBLEM_PREFIX))
         .then(|| crate::start_problem::from_body(&interaction.body))
@@ -1227,10 +1231,10 @@ fn local_action(label: &str, key: &str, local: LocalLink) -> Action {
 }
 
 /// Text to the node (or the orchestrator) the card came from; every card has it but a task's start
-/// problem, which no node is behind.
+/// problem, which no node is behind, and a machine card, which Alondra raises itself.
 fn reply_action(item: &InboxItem, interaction: Option<&Interaction>, context: &RenderContext<'_>) -> Option<Action> {
     let lang = context.lang;
-    let interaction = interaction.filter(|interaction| start_problem_of(interaction).is_none())?;
+    let interaction = interaction.filter(|interaction| start_problem_of(interaction).is_none() && !is_machine_card(interaction))?;
     let (id, placeholder) = if matches!(interaction.scope, Scope::Task { .. }) {
         (
             action_id(Verb::Reply, &interaction.id.0, interaction.revision, None)?,

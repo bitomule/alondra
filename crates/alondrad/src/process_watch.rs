@@ -68,24 +68,6 @@ pub(crate) fn shell_descendants(table: &[Process], mod_pid: u32) -> Vec<u32> {
     found
 }
 
-/// The `count` processes using the most memory, by program name and resident bytes.
-pub(crate) fn top_memory(count: usize) -> Vec<(String, u64)> {
-    let table = Command::new("ps").args(["-axo", "rss=,comm="]).output().ok()
-        .map(|output| String::from_utf8_lossy(&output.stdout).into_owned()).unwrap_or_default();
-    top_of(&table, count)
-}
-
-pub(crate) fn top_of(table: &str, count: usize) -> Vec<(String, u64)> {
-    let mut processes: Vec<(String, u64)> = table.lines().filter_map(|line| {
-        let (rss, command) = line.trim_start().split_once(char::is_whitespace)?;
-        let name = command.trim().rsplit('/').next()?.to_owned();
-        Some((name, rss.parse::<u64>().ok()? * 1024))
-    }).collect();
-    processes.sort_by(|a, b| b.1.cmp(&a.1));
-    processes.truncate(count);
-    processes
-}
-
 pub(crate) fn signal(pids: &[u32], signal: libc::c_int) {
     for pid in pids {
         unsafe { libc::kill(*pid as libc::pid_t, signal) };
@@ -124,12 +106,6 @@ mod tests {
         assert_eq!(shell_descendants(&table, 33881), [65951, 65950, 65945], "deepest first");
         assert!(shell_descendants(&table, 33879).is_empty(), "the other session runs no call");
         assert!(shell_descendants(&table, 1).is_empty());
-    }
-
-    #[test]
-    fn the_processes_using_the_most_memory_come_first_by_name() {
-        let top = top_of(" 1200 /Applications/Xcode.app/Contents/MacOS/Xcode\n  300 /bin/zsh\n900000 /usr/bin/rustc\n", 2);
-        assert_eq!(top, [("rustc".to_owned(), 900_000 * 1024), ("Xcode".to_owned(), 1200 * 1024)]);
     }
 
     #[test]
