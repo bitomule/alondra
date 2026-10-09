@@ -350,6 +350,21 @@ impl Invocation<'_> {
 struct ProcessGroup(i32, std::cell::Cell<bool>);
 impl ProcessGroup {
     fn kill(&self) { if self.1.replace(false) { unsafe { libc::kill(-self.0, libc::SIGKILL); } } }
+    /// macOS does not deliver a group SIGKILL to a child the shell is forking at that instant,
+    /// so one signal can leave a descendant holding the execution lock. Signal again until the
+    /// group is empty; a group left with only an unreaped zombie answers EPERM, not ESRCH.
+    fn terminate(&self) -> impl std::future::Future<Output = ()> + Send + use<> {
+        self.1.set(false);
+        let group = self.0;
+        async move {
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+            while unsafe { libc::kill(-group, libc::SIGKILL) } == 0
+                || std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH) {
+                if tokio::time::Instant::now() >= deadline { break; }
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+            }
+        }
+    }
 }
 impl Drop for ProcessGroup {
     fn drop(&mut self) { self.kill(); }
@@ -436,7 +451,7 @@ pub async fn execute(invocation: Invocation<'_>, mut spawned: impl FnMut(u32) ->
         }
     };
     // MCP helpers and any ordinary descendants must not survive their execution.
-    group.kill();
+    group.terminate().await;
     // Do not hang on a grandchild which retained stderr after the main process ended.
     let mut diagnostics = diagnostics;
     let diagnostic = match tokio::time::timeout(std::time::Duration::from_secs(2), &mut diagnostics).await {
@@ -717,6 +732,29 @@ printf '%s\n' '{"type":"result","session_id":"test-session","subtype":"success",
         assert!(!std::fs::read_dir(&dir).unwrap().any(|entry| entry.unwrap().file_name().to_string_lossy().starts_with("prompt-")),
             "the prompt leaves no file behind");
         std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[tokio::test]
+    async fn cancelling_while_claude_forks_leaves_no_descendant_holding_the_lock() {
+        for _ in 0..20 {
+            let scratch_directory = crate::test_support::Directory::new();
+            let dir = scratch_directory.parent().unwrap().join(uuid().unwrap());
+            let lock = Ownership::acquire(&dir).unwrap().unwrap();
+            let exe = fake(&dir, r#"cat >/dev/null
+printf '%s\n' '{"type":"system","subtype":"init","session_id":"test-session","permissionMode":"auto","mcp_servers":[{"name":"plugin:alondra-orchestrator:alondra-orchestrator","status":"connected"}],"tools":["Skill","Read","mcp__plugin_alondra-orchestrator_alondra-orchestrator__create_task","mcp__plugin_alondra-orchestrator_alondra-orchestrator__ask"]}'
+sleep 30 &
+wait"#);
+            let started = tokio::sync::Notify::new();
+            let output = tokio::time::timeout(std::time::Duration::from_secs(25),
+                execute(invocation(&dir, &exe, &lock), |_| Ok(()), || { started.notify_one(); Ok(()) }, started.notified())).await.unwrap();
+            assert!(output.stream.error.unwrap().contains("cancelled"));
+            drop(lock);
+            // A sibling test forking at this moment holds a copy of the descriptor only until it execs.
+            let released = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+                while Ownership::acquire(&dir).unwrap().is_none() { tokio::time::sleep(std::time::Duration::from_millis(10)).await; }
+            }).await;
+            assert!(released.is_ok(), "a child forked as the execution was cancelled kept the execution lock");
+            std::fs::remove_dir_all(dir).unwrap();
+        }
     }
     #[tokio::test]
     async fn malformed_output_kills_process_without_waiting_for_timeout() {
