@@ -563,8 +563,72 @@ fn no_pending_card_is_left_with_nothing_the_user_can_do_once_its_task_ends() {
 
 // F2: the inbox is one item per interaction, in the order the user should meet them.
 
+fn selected_inbox(s: &DomainState) -> Vec<InboxItem> {
+    s.inbox_projection()
+}
+
+#[test]
+fn inbox_selection_keeps_user_cards_current_final_delivery_and_action_guards() {
+    let mut s = fixture();
+    ok(&mut s, orchestrator(), inform("z-notice", scope("t"), "First notice"));
+    let notice_order = s.revision;
+    let mut private = inform("private", scope("t"), "For the node");
+    if let Command::PublishInformation { recipient, .. } = &mut private {
+        *recipient = Recipient::Agent { agent_id: "a".into() };
+    }
+    ok(&mut s, orchestrator(), private);
+    ok(&mut s, agent(), present("partial", text(), false, review()));
+    ok(&mut s, agent(), present("final", text(), true, review()));
+    let final_order = s.revision;
+    ok(&mut s, orchestrator(), inform("a-notice", Scope::Orchestrator { request_id: None }, "Second notice"));
+    let revision = s.revision;
+    let before = s.clone();
+    let inbox = selected_inbox(&s);
+    assert_eq!(inbox.iter().map(|i| i.id.as_str()).collect::<Vec<_>>(),
+        ["interaction:final", "interaction:z-notice", "interaction:a-notice"]);
+    assert_eq!(inbox[0].order, final_order);
+    assert_eq!(inbox[1].order, notice_order);
+    assert_eq!(inbox[0].body.as_deref(), Some("Result ready"));
+    assert_eq!(inbox[1].body.as_deref(), Some("First notice"));
+    assert_eq!(inbox[0].task_id, Some("t".into()));
+    assert_eq!(inbox[0].request_id, Some("r".into()));
+    assert_eq!(inbox[0].agent_id, Some("a".into()));
+    assert!(inbox[0].pending);
+    assert!(inbox[0].available_actions.iter().any(|a| a.kind == "accept_delivery" && a.enabled
+        && a.presentation_id == Some("final".into()) && a.expected_revision == revision));
+    assert!(inbox[1].available_actions.iter().any(|a| a.kind == "mark_read" && a.enabled
+        && a.expected_revision == revision));
+    assert_eq!(s, before, "projection is read-only");
+    ok(&mut s, user(), Command::AcceptDelivery { presentation_id: "final".into(), targets: text() });
+    ok(&mut s, Actor::System, Command::RecordNodeEnd { task_id: "t".into(), end: NodeEnd::Closed, agent_id: Some("a".into()) });
+    ok(&mut s, user(), Command::ArchiveTask { task_id: "t".into(), archived: true });
+    assert_eq!(selected_inbox(&s).iter().map(|i| i.id.as_str()).collect::<Vec<_>>(), ["interaction:a-notice"]);
+    ok(&mut s, user(), Command::ArchiveTask { task_id: "t".into(), archived: false });
+    assert_eq!(inbox_ids(&s), ["final", "z-notice", "a-notice"]);
+    assert!(!selected_inbox(&s)[0].pending);
+}
+
+#[test]
+fn inbox_equal_order_uses_id_after_rank_and_excludes_other_recipients() {
+    let mut s = fixture();
+    for id in ["z", "a"] {
+        ok(&mut s, orchestrator(), inform(id, scope("t"), id));
+    }
+    let mut private = inform("orchestrator", scope("t"), "For the orchestrator");
+    if let Command::PublishInformation { recipient, .. } = &mut private {
+        *recipient = Recipient::Orchestrator;
+    }
+    ok(&mut s, agent(), private);
+    for id in ["z", "a"] {
+        s.interactions.get_mut(&InteractionId::from(id)).unwrap().order = 4;
+    }
+    s.validate().unwrap();
+    assert_eq!(inbox_ids(&s), ["a", "z"]);
+    assert_eq!(selected_inbox(&s).iter().map(|i| i.order).collect::<Vec<_>>(), [4, 4]);
+}
+
 fn inbox_ids(s: &DomainState) -> Vec<String> {
-    s.projection().inbox.iter().map(|item| item.id.trim_start_matches("interaction:").to_owned()).collect()
+    selected_inbox(s).iter().map(|item| item.id.trim_start_matches("interaction:").to_owned()).collect()
 }
 fn register_pr_of(s: &mut DomainState, actor: Actor, task: &str, pr: &str, number: u64) {
     ok(s, actor, Command::RegisterPr {

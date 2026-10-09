@@ -430,9 +430,7 @@ impl DomainState {
         let mut slots: Vec<Option<InboxItem>> = sorted.into_iter().map(|(_, item)| Some(item)).collect();
         sequence.into_iter().filter_map(|at| slots[at].take()).collect()
     }
-    /// Complete coherent projection. IDs, order and action guards are server owned.
-    /// read_by is shared across the single owner domain, irrespective of device identity.
-    pub fn projection(&self) -> DomainProjection {
+    pub fn inbox_projection(&self) -> Vec<InboxItem> {
         let mut items = vec![];
         for i in self.interactions.values() {
             if i.recipient != Recipient::User {
@@ -452,7 +450,13 @@ impl DomainState {
             }
             items.push(self.item(i));
         }
-        let inbox = self.order_inbox(items);
+        self.order_inbox(items)
+    }
+
+    /// Complete coherent projection. IDs, order and action guards are server owned.
+    /// read_by is shared across the single owner domain, irrespective of device identity.
+    pub fn projection(&self) -> DomainProjection {
+        let inbox = self.inbox_projection();
         let unread_information = self
             .interactions
             .values()
