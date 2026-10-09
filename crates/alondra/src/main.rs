@@ -13,6 +13,7 @@ mod claude_auth;
 mod cleanup;
 mod doctor;
 mod delivery;
+mod help;
 mod mcp;
 mod models;
 mod ops;
@@ -28,12 +29,13 @@ mod setup_projects;
 mod state;
 mod tui;
 mod update;
+mod version;
 
 use std::time::Duration;
 
 use alondra_core::now_millis;
 use anyhow::Result;
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 use serde_json::json;
 
 use crate::client::Client;
@@ -41,15 +43,19 @@ use crate::client::Client;
 #[derive(Parser)]
 #[command(name = "alondra", about = tr!("The hive from the terminal. With no arguments it opens the TUI.", "La colmena desde la terminal. Sin argumentos abre la TUI."))]
 struct Cli {
+    #[arg(short = 'V', long, help = tr!("Print the version of this terminal and of the service", "Muestra la versión de este terminal y la del servicio"))]
+    version: bool,
+    #[arg(long, requires = "version", help = tr!("Machine-readable output", "Salida para máquinas"))]
+    json: bool,
     #[command(subcommand)]
     command: Option<Cmd>,
 }
 
 #[derive(Subcommand)]
 enum Cmd {
-    #[command(about = "Inspect or explicitly resolve uncertain deliveries; Local by default")]
+    #[command(about = tr!("Inspect or explicitly resolve uncertain deliveries; Local by default", "Revisa o resuelve a mano las entregas inciertas; Local por defecto"))]
     Delivery(delivery::Options),
-    #[command(about = "List Macs enrolled in your service account")]
+    #[command(about = tr!("List Macs enrolled in your service account", "Lista los Macs dados de alta en tu cuenta del servicio"))]
     Machines,
     #[command(about = tr!(
         "Pair this terminal with another Mac: found on this network, at --host, or by Mac ID through the relay",
@@ -84,12 +90,12 @@ enum Cmd {
         #[arg(long, help = tr!("Machine-readable output", "Salida para máquinas"))]
         json: bool,
     },
-    #[command(about = "Stop the active orchestrator execution; inspect partial effects before retrying")]
+    #[command(about = tr!("Stop the active orchestrator execution; inspect partial effects before retrying", "Para la ejecución activa del orquestador; revisa los efectos parciales antes de reintentar"))]
     OrchestratorCancel { run_id: String },
-    #[command(about = "Continue without replaying the interrupted batch after checking its effects")]
+    #[command(about = tr!("Continue without replaying the interrupted batch after checking its effects", "Sigue sin repetir el lote interrumpido después de revisar sus efectos"))]
     OrchestratorAcknowledge { run_id: String, #[arg(long, required = true)] confirm: bool },
-    #[command(about = "Retry an ambiguous orchestrator run after checking its previous effects")]
-    OrchestratorRetry { run_id: String, #[arg(long, required = true, help = "Confirm that replay may repeat actions from this execution")] confirm: bool },
+    #[command(about = tr!("Retry an ambiguous orchestrator run after checking its previous effects", "Reintenta una ejecución dudosa del orquestador después de revisar sus efectos anteriores"))]
+    OrchestratorRetry { run_id: String, #[arg(long, required = true, help = tr!("Confirm that replay may repeat actions from this execution", "Confirma que repetirla puede repetir acciones de esta ejecución"))] confirm: bool },
     #[command(about = tr!("Answer a question by its id; the text goes to the option that takes it", "Contesta una pregunta por su id; el texto va a la opción que lo admite"))]
     Answer {
         id: String,
@@ -216,7 +222,10 @@ fn main() -> Result<()> {
     unsafe {
         libc::signal(libc::SIGPIPE, libc::SIG_DFL);
     }
-    let cli = Cli::parse();
+    let cli = parse(std::env::args_os());
+    if cli.version {
+        return version::run(cli.json);
+    }
     match cli.command {
         Some(Cmd::Delivery(options)) => delivery::run(options),
         Some(Cmd::Machines) => service_client::list(),
@@ -269,6 +278,11 @@ fn main() -> Result<()> {
         Some(Cmd::Inbox) => Ok(()),
         Some(Cmd::Keys) => keys_probe(),
     }
+}
+
+fn parse(args: impl IntoIterator<Item = std::ffi::OsString>) -> Cli {
+    let matches = help::localized(Cli::command()).get_matches_from(args);
+    Cli::from_arg_matches(&matches).unwrap_or_else(|e| e.exit())
 }
 
 fn show_config(get: Option<&str>) -> Result<()> {

@@ -55,7 +55,7 @@ pub struct Args {
     pub skip_plugin: bool,
     #[arg(long)]
     pub skip_pair: bool,
-    #[arg(long, help = "Explicitly recover the service identity; requires local confirmation and new client pairing")]
+    #[arg(long, help = tr!("Explicitly recover the service identity; requires local confirmation and new client pairing", "Recupera a propósito la identidad del servicio; pide confirmación aquí y volver a emparejar los clientes"))]
     pub recover_service: bool,
     #[arg(long, help = tr!("Overwrite config.toml / apns.json values that differ", "Sobrescribe los valores de config.toml / apns.json que cambien"))]
     pub force: bool,
@@ -541,7 +541,7 @@ fn running_alondrad_pids() -> Result<Vec<i32>> {
     if output.status.code() == Some(1) && output.stdout.is_empty() {
         return Ok(Vec::new());
     }
-    anyhow::bail!("could not determine whether another daemon is running")
+    anyhow::bail!(tr!("could not determine whether another daemon is running", "no se pudo comprobar si hay otro daemon en ejecución"))
 }
 
 fn ensure_no_running_daemons(mut pids: impl FnMut() -> Result<Vec<i32>>) -> Result<()> {
@@ -586,7 +586,7 @@ fn stop_owned_job_and_wait(
         }
         std::thread::sleep(poll_interval);
     }
-    anyhow::bail!("daemon did not exit after launchctl bootout; upgrade stopped")
+    anyhow::bail!(tr!("daemon did not exit after launchctl bootout; upgrade stopped", "el daemon no terminó tras launchctl bootout; actualización detenida"))
 }
 
 fn release_home_lock_then(
@@ -698,7 +698,7 @@ pub fn run(args: Args) -> Result<()> {
         BREW_PREFIXES.iter().any(|p| Path::new(p).exists()),
         env("FORCE_DEV_INSTALL").is_some_and(|v| !v.is_empty()),
     ) {
-        bail!("Alondra is installed with Homebrew; a dev build running setup would point the user's daemon at itself. Use the e2e sandbox (make e2e-sandbox), or set FORCE_DEV_INSTALL=1 if you really mean it");
+        bail!(tr!("Alondra is installed with Homebrew; a dev build running setup would point the user's daemon at itself. Use the e2e sandbox (make e2e-sandbox), or set FORCE_DEV_INSTALL=1 if you really mean it", "Alondra está instalada con Homebrew; una build de desarrollo que ejecute setup apuntaría el daemon del usuario a sí misma. Usa el sandbox e2e (make e2e-sandbox), o define FORCE_DEV_INSTALL=1 si de verdad lo quieres"));
     }
     let home = config::home_dir(&env);
     let alondra_home = config::alondra_home(&env);
@@ -725,8 +725,8 @@ pub fn run(args: Args) -> Result<()> {
             println!("would confirm service recovery, stop only this HOME's daemon, preserve tasks/receipts, replace service identity and require new pairings");
             return Ok(());
         }
-        if args.no_input { bail!("--recover-service requires local confirmation; remove --no-input"); }
-        if args.skip_service { bail!("--recover-service cannot be combined with --skip-service"); }
+        if args.no_input { bail!(tr!("--recover-service requires local confirmation; remove --no-input", "--recover-service necesita confirmación local; quita --no-input")); }
+        if args.skip_service { bail!(tr!("--recover-service cannot be combined with --skip-service", "--recover-service no se puede combinar con --skip-service")); }
         let outcome = crate::service_setup::recover(&paths.alondra_home, || stop_for_recovery(&paths, &label),
             &mut std::io::stdin().lock(), &mut std::io::stdout().lock())?;
         return continue_after_recovery(outcome, || {
@@ -743,7 +743,7 @@ pub fn run(args: Args) -> Result<()> {
         Some(lock)
     };
     if let (Ok(config), Ok(watcher)) = (std::env::var("CLAUDE_CONFIG_DIR"), std::env::var("CLAUDE_HOME")) {
-        if config != watcher { bail!("CLAUDE_CONFIG_DIR and CLAUDE_HOME disagree; set one Claude profile before alondra setup"); }
+        if config != watcher { bail!(tr!("CLAUDE_CONFIG_DIR and CLAUDE_HOME disagree; set one Claude profile before alondra setup", "CLAUDE_CONFIG_DIR y CLAUDE_HOME no coinciden; define un único perfil de Claude antes de alondra setup")); }
     }
     let context = claude_context(&paths, &label);
     let legacy = std::env::var_os("CLAUDE_CONFIG_DIR").is_none()
@@ -761,7 +761,7 @@ pub fn run(args: Args) -> Result<()> {
         bail!(tr!("setup stopped", "setup detenido"));
     }
     if !args.dry_run && !args.skip_service && !seen.binaries {
-        bail!("alondrad is missing from the configured installation; install the Homebrew formula or pass --bin, then rerun `alondra setup`");
+        bail!(tr!("alondrad is missing from the configured installation; install the Homebrew formula or pass --bin, then rerun `alondra setup`", "falta alondrad en la instalación configurada; instala la fórmula de Homebrew o pasa --bin, y vuelve a ejecutar `alondra setup`"));
     }
     let brew_stamp = paths.alondra_home.join("brew-keg-path");
     let current_brew_path = brew_executable

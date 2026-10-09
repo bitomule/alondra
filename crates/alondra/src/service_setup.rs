@@ -81,10 +81,8 @@ fn random<const N: usize>() -> Result<[u8; N]> {
 fn read_private(path: &Path) -> Result<[u8; 32]> {
     let meta = fs::symlink_metadata(path)?;
     if !meta.is_file() || meta.permissions().mode() & 0o077 != 0 {
-        bail!(
-            "private key file has unsafe permissions: {}",
-            path.display()
-        );
+        let shown = path.display();
+        bail!(trf!("private key file has unsafe permissions: {shown}", "el archivo de clave privada tiene permisos inseguros: {shown}"));
     }
     let bytes = URL_SAFE_NO_PAD.decode(fs::read_to_string(path)?.trim())?;
     bytes
@@ -118,7 +116,7 @@ fn load_or_create_keys(home: &Path) -> Result<(PublicMac, SigningKey)> {
     let dir_exists = match fs::symlink_metadata(&dir) {
         Ok(dir_meta) => {
             if dir_meta.file_type().is_symlink() || !dir_meta.is_dir() {
-                bail!("service key directory must be a real directory");
+                bail!(tr!("service key directory must be a real directory", "el directorio de claves del servicio debe ser un directorio real"));
             }
             fs::set_permissions(&dir, fs::Permissions::from_mode(0o700))?;
             true
@@ -135,7 +133,7 @@ fn load_or_create_keys(home: &Path) -> Result<(PublicMac, SigningKey)> {
         public_path.exists(),
     ];
     if dir_exists && !files.iter().all(|exists| *exists) {
-        bail!("incomplete service key set; refusing to replace an existing Mac identity");
+        bail!(tr!("incomplete service key set; refusing to replace an existing Mac identity", "conjunto de claves del servicio incompleto; no se sustituirá la identidad existente del Mac"));
     }
     if files.iter().all(|exists| *exists) {
         let signing = read_private(&signing_path)?;
@@ -146,7 +144,7 @@ fn load_or_create_keys(home: &Path) -> Result<(PublicMac, SigningKey)> {
             || identity.agreement_key != agreement_key
             || !identity.mac_id.starts_with("mac-")
         {
-            bail!("service public identity does not match local private keys");
+            bail!(tr!("service public identity does not match local private keys", "la identidad pública del servicio no coincide con las claves privadas locales"));
         }
         return Ok((identity, SigningKey::from_slice(&signing)?));
     }
@@ -194,7 +192,7 @@ fn load_or_create_keys(home: &Path) -> Result<(PublicMac, SigningKey)> {
     file.sync_all()?;
     fs::File::open(&stage)?.sync_all()?;
     if fs::symlink_metadata(&dir).is_ok() {
-        bail!("service key directory appeared during setup; retry after inspecting it");
+        bail!(tr!("service key directory appeared during setup; retry after inspecting it", "el directorio de claves del servicio apareció durante la configuración; revísalo y reinténtalo"));
     }
     fs::rename(&stage, &dir)?;
     fs::File::open(home)?.sync_all()?;
@@ -225,7 +223,8 @@ fn register_at(identity: &PublicMac, signing: &SigningKey, token: &str, relay: &
     let http = http();
     let mut bootstrap = http.get(format!("{relay}/v1/bootstrap")).call()?;
     if bootstrap.status().as_u16() != 200 {
-        bail!("relay bootstrap failed ({})", bootstrap.status());
+        let status = bootstrap.status();
+        bail!(trf!("relay bootstrap failed ({status})", "falló el arranque del relay ({status})"));
     }
     let bootstrap: Bootstrap = bootstrap.body_mut().with_config().limit(4096).read_json()?;
     let epoch: [u8; 16] = URL_SAFE_NO_PAD
@@ -258,13 +257,15 @@ fn register_at(identity: &PublicMac, signing: &SigningKey, token: &str, relay: &
         .send(&body[..])?;
     match response.status().as_u16() {
         200 | 201 => Ok(()),
-        401 => bail!(
-            "Mac enrollment refused the account token or signed proof; run `alondra login` and retry"
-        ),
-        409 => bail!(
-            "Mac identity already belongs to another key or account; explicit recovery is required"
-        ),
-        status => bail!("Mac enrollment failed ({status})"),
+        401 => bail!(tr!(
+            "Mac enrollment refused the account token or signed proof; run `alondra login` and retry",
+            "el registro del Mac rechazó el token de la cuenta o la prueba firmada; ejecuta `alondra login` y reinténtalo"
+        )),
+        409 => bail!(tr!(
+            "Mac identity already belongs to another key or account; explicit recovery is required",
+            "la identidad del Mac ya pertenece a otra clave o cuenta; hace falta una recuperación explícita"
+        )),
+        status => bail!(trf!("Mac enrollment failed ({status})", "falló el registro del Mac ({status})")),
     }
 }
 
@@ -286,7 +287,7 @@ fn key_paths(home: &Path) -> Result<(String, String, Option<String>)> {
 fn existing_paths(path: &Path) -> Result<Option<KeyPaths>> {
     match fs::symlink_metadata(path) {
         Ok(meta) if meta.is_file() => Ok(Some(toml::from_str(&fs::read_to_string(path)?)?)),
-        Ok(_) => bail!("service.toml must be a regular file"),
+        Ok(_) => bail!(tr!("service.toml must be a regular file", "service.toml debe ser un archivo normal")),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error.into()),
     }
@@ -298,7 +299,7 @@ fn check_identity(existing: &KeyPaths, identity: &PublicMac, paths: &(String, St
         || existing.agreement_key_path != paths.1
         || existing.journal_path != paths.2
     {
-        bail!("existing service.toml belongs to another Mac or key path");
+        bail!(tr!("existing service.toml belongs to another Mac or key path", "el service.toml existente pertenece a otro Mac o a otra ruta de claves"));
     }
     Ok(())
 }
@@ -364,7 +365,7 @@ fn service_file_at(home: &Path, identity: &PublicMac, owner_sub: &str, write: bo
     };
     let existing_path = match fs::symlink_metadata(&path) {
         Ok(meta) if meta.is_file() => true,
-        Ok(_) => bail!("service.toml must be a regular file"),
+        Ok(_) => bail!(tr!("service.toml must be a regular file", "service.toml debe ser un archivo normal")),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
         Err(error) => return Err(error.into()),
     };
@@ -377,7 +378,7 @@ fn service_file_at(home: &Path, identity: &PublicMac, owner_sub: &str, write: bo
             || existing.agreement_key_path != expected.agreement_key_path
             || existing.journal_path != expected.journal_path
         {
-            bail!("existing service.toml belongs to another Mac, account or key path");
+            bail!(tr!("existing service.toml belongs to another Mac, account or key path", "el service.toml existente pertenece a otro Mac, cuenta o ruta de claves"));
         }
         return Ok(false);
     }

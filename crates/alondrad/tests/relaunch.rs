@@ -246,6 +246,15 @@ fn a_launchd_daemon_restarts_into_a_replacement_only_once_it_passes_preflight() 
 }
 
 #[test]
+fn the_daemon_says_which_views_protocols_it_serves() {
+    let mut fixture = Fixture::new("protocol");
+    let _daemon = serve(&mut fixture, false);
+    let body: serde_json::Value = serde_json::from_str(&fixture.get("/daemon").expect("/daemon answers")).unwrap();
+    let protocol = alondra_core::views::VIEWS_PROTOCOL;
+    assert_eq!(body["views_protocol"], serde_json::json!({"min": protocol, "max": protocol}));
+}
+
+#[test]
 fn a_daemon_started_by_hand_never_relaunches() {
     let mut fixture = Fixture::new("manual");
     let mut daemon = serve(&mut fixture, false);

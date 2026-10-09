@@ -15,7 +15,7 @@ rust_test(
     name = "alondra_test",
     crate = ":alondra",
     deps = all_crate_deps(normal_dev = True),
-    data = ["//fixtures/client-v2", "//fixtures/markdown", "//fixtures/views:all", "//fixtures/views:cards", "//fixtures/domain-v2:text-completion.commands.json"],
+    data = ["//fixtures/cli", "//fixtures/client-v2", "//fixtures/markdown", "//fixtures/views:all", "//fixtures/views:cards", "//fixtures/domain-v2:text-completion.commands.json"],
     edition = "2024",
 )
 
@@ -32,6 +32,7 @@ rust_test(
 ) for name in [
     "domain_mcp",
     "hook_transport",
+    "version",
 ]]
 
 [rust_test(
@@ -43,5 +44,6 @@ rust_test(
     deps = all_crate_deps(normal = True, normal_dev = True),
 ) for name in [
     "english_quotes",
+    "no_literal_texts",
     "no_sleep_wording",
 ]]

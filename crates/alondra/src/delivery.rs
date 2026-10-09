@@ -12,17 +12,22 @@ pub const ATTEMPTS: &str = "/delivery-attempts";
 
 #[derive(Args)]
 pub struct Options {
-    /// Explicit approved destination; omitted means Local, never the last remote Mac.
-    #[arg(id = "delivery_mac", long = "mac", global = true)]
+    #[arg(id = "delivery_mac", long = "mac", global = true, help = tr!(
+        "Explicit approved destination; omitted means Local, never the last remote Mac.",
+        "Destino aprobado de forma explícita; sin él es Local, nunca el último Mac remoto."
+    ))]
     pub mac: Option<String>,
     #[command(subcommand)]
     pub command: Command,
 }
 #[derive(Subcommand)]
 pub enum Command {
-    /// Inspect recorded attempts, their versions and recovery instructions.
+    #[command(about = tr!("Inspect recorded attempts, their versions and recovery instructions.", "Revisa los intentos guardados, sus versiones y cómo recuperarlos."))]
     List,
-    /// Allow another attempt after inspecting the destination terminal, agent and worktree.
+    #[command(about = tr!(
+        "Allow another attempt after inspecting the destination terminal, agent and worktree.",
+        "Permite otro intento después de revisar el terminal, el agente y el worktree de destino."
+    ))]
     Retry {
         id: i64,
         #[arg(long)]
@@ -32,7 +37,7 @@ pub enum Command {
         #[arg(long, required = true)]
         confirm_duplicate_risk: bool,
     },
-    /// Stop retrying this attempt; this does not undo an external effect.
+    #[command(about = tr!("Stop retrying this attempt; this does not undo an external effect.", "Deja de reintentar este intento; no deshace ningún efecto externo."))]
     Discard {
         id: i64,
         #[arg(long)]

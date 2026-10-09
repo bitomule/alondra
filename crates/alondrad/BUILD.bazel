@@ -47,7 +47,7 @@ rust_test(
     edition = "2024",
     rustc_env = {"CARGO_BIN_EXE_alondrad": "$(rootpath :alondrad)"},
     version = "0.1.0",
-    deps = all_crate_deps(normal = True, normal_dev = True),
+    deps = all_crate_deps(normal = True, normal_dev = True) + ["//crates/core:alondra_core"],
 )
 
 rust_test(

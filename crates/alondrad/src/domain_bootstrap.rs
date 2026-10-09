@@ -260,7 +260,9 @@ async fn daemon(
         None => (Value::Null, Value::Null),
     };
     Json(
-        json!({"version": env!("CARGO_PKG_VERSION"), "update": crate::updates::status(&state.home),
+        json!({"version": env!("CARGO_PKG_VERSION"),
+        "views_protocol": {"min": alondra_core::views::VIEWS_PROTOCOL, "max": alondra_core::views::VIEWS_PROTOCOL},
+        "update":crate::updates::status(&state.home),
         "preflight_rejected": crate::relaunch::rejected(), "machine": machine, "usage": usage,
         "mods": crate::mods_check::status(),
         "direct": state.service.get().filter(|_| state.direct.get().is_some()).map(|service| json!({

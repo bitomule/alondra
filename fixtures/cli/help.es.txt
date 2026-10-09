@@ -1,0 +1,35 @@
+La colmena desde la terminal. Sin argumentos abre la TUI.
+
+Uso: alondra [OPTIONS] [COMMAND]
+
+Comandos:
+  delivery                  Revisa o resuelve a mano las entregas inciertas; Local por defecto
+  machines                  Lista los Macs dados de alta en tu cuenta del servicio
+  connect                   Empareja este terminal con otro Mac: encontrado en esta red, en --host, o por ID de Mac a través del relay
+  login                     Inicia sesión en el servicio Alondra desde el navegador
+  account                   Muestra la cuenta conectada al servicio Alondra
+  logout                    Cierra la sesión del servicio Alondra en este Mac
+  status                    Resumen en texto: preguntas abiertas, flota y máquina
+  models                    Cómo le fue a cada modelo que eligió el orquestador: resultados, preguntas, tiempo y coste
+  cleanup                   Cierra las sesiones de tareas terminadas, también las atascadas trabajando, y las paradas sin tarea; libera las tareas de sesiones paradas
+  orchestrator-cancel       Para la ejecución activa del orquestador; revisa los efectos parciales antes de reintentar
+  orchestrator-acknowledge  Sigue sin repetir el lote interrumpido después de revisar sus efectos
+  orchestrator-retry        Reintenta una ejecución dudosa del orquestador después de revisar sus efectos anteriores
+  answer                    Contesta una pregunta por su id; el texto va a la opción que lo admite
+  send                      Manda un mensaje al nodo de una tarea (id de tarea), a un nodo (nombre, id corto o session_id) o al orquestador
+  cancel                    Cancela tareas por su id
+  close                     Cierra la sesión de un nodo (nombre, id corto o session_id)
+  attach                    Abre el terminal de un nodo (← con la línea vacía, Ctrl+Z o /exit vuelven)
+  pair                      Vincula un iPhone o iPad: enseña un QR con la URL pública y un código de un solo uso
+  devices                   Dispositivos vinculados y peticiones de emparejamiento pendientes en este Mac; --approve, --deny o --revoke uno
+  doctor                    Comprueba toda la instalación: servidor, servicio, plugin, notificaciones, tmux
+  update                    Instala la última versión con Homebrew y espera a que el servidor la ejecute
+  state                     Audita o reconstruye de forma segura el estado local derivado de eventos
+  setup                     Configura o repara Alondra: login, alta del Mac, daemon, plugin de Claude Code y vinculación
+  config                    Enseña los ajustes en vigor (entorno > config.toml > por defecto)
+  help                      Muestra esta ayuda o la de los subcomandos indicados
+
+Opciones:
+  -V, --version  Muestra la versión de este terminal y la del servicio
+      --json     Salida para máquinas
+  -h, --help     Muestra la ayuda

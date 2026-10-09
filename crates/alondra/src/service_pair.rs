@@ -147,7 +147,7 @@ fn private_key(home: &Path, wire: &str) -> Result<[u8; 32]> {
     let path = home.join(wire);
     let meta = fs::symlink_metadata(&path)?;
     if !meta.is_file() || meta.permissions().mode() & 0o077 != 0 {
-        bail!("unsafe service key permissions");
+        bail!(tr!("unsafe service key permissions", "permisos inseguros en la clave del servicio"));
     }
     let bytes = URL_SAFE_NO_PAD.decode(fs::read_to_string(path)?.trim())?;
     bytes
@@ -210,7 +210,7 @@ fn call(
             .header("x-device-signature", signature)
             .header("x-relay-epoch", URL_SAFE_NO_PAD.encode(epoch))
             .call()?,
-        _ => bail!("unsupported relay method"),
+        _ => bail!(tr!("unsupported relay method", "método de relay no admitido")),
     };
     let status = response.status().as_u16();
     let bytes = response
@@ -223,7 +223,7 @@ fn call(
 fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
     if let Ok(meta) = fs::symlink_metadata(path) {
         if !meta.is_file() || meta.file_type().is_symlink() {
-            bail!("unsafe pairing state path");
+            bail!(tr!("unsafe pairing state path", "ruta insegura del estado de emparejamiento"));
         }
     }
     let temp = path.with_extension(format!(
@@ -320,7 +320,7 @@ fn wait_for_daemon(mut ready: impl FnMut() -> bool, pause: impl Fn()) -> Result<
         }
         pause();
     }
-    bail!("alondrad is not answering on this Mac; check ~/.alondra/alondrad.log, then rerun alondra pair")
+    bail!(tr!("alondrad is not answering on this Mac; check ~/.alondra/alondrad.log, then rerun alondra pair", "alondrad no responde en este Mac; revisa ~/.alondra/alondrad.log y vuelve a ejecutar alondra pair"))
 }
 
 fn local_approve(
@@ -334,7 +334,7 @@ fn local_approve(
         .get(format!("{local_origin}/service/bootstrap"))
         .call()?;
     if local_boot.status().as_u16() != 200 {
-        bail!("Mac approval service is unavailable");
+        bail!(tr!("Mac approval service is unavailable", "el servicio de aprobación del Mac no está disponible"));
     }
     let local_boot: Bootstrap = local_boot
         .body_mut()
@@ -360,10 +360,8 @@ fn local_approve(
         &local_epoch,
     )?;
     if status != 204 {
-        bail!(
-            "Mac rejected local device approval: {}",
-            String::from_utf8_lossy(&detail)
-        );
+        let detail = String::from_utf8_lossy(&detail);
+        bail!(trf!("Mac rejected local device approval: {detail}", "el Mac rechazó la aprobación local del dispositivo: {detail}"));
     }
     Ok(())
 }
@@ -382,10 +380,10 @@ fn complete_pending(
         || pending.phone.owner_sub != config.owner_sub
         || pending.phone.session_id != pending.session_id
     {
-        bail!("pending pairing belongs to another Mac or account");
+        bail!(tr!("pending pairing belongs to another Mac or account", "el emparejamiento pendiente pertenece a otro Mac o cuenta"));
     }
     if now_ms()? >= pending.expires_at_ms {
-        bail!("pending pairing expired");
+        bail!(tr!("pending pairing expired", "el emparejamiento pendiente ha caducado"));
     }
     let phone = &pending.phone;
     let found = config
@@ -396,7 +394,7 @@ fn complete_pending(
         Some(device)
             if device.signing_key == phone.signing_key
                 && device.agreement_key == phone.agreement_key => {}
-        Some(_) => bail!("pending device ID conflicts with Mac service config"),
+        Some(_) => bail!(tr!("pending device ID conflicts with Mac service config", "el ID del dispositivo pendiente entra en conflicto con la configuración del servicio del Mac")),
         None => {
             let lock = alondra_core::service_config::ServiceConfigLock::exclusive(home)?;
             alondra_core::service_config::add_device(
@@ -432,7 +430,7 @@ fn complete_pending(
         epoch,
     )?;
     if status != 201 && status != 200 {
-        bail!("relay device enrollment failed ({status})");
+        bail!(trf!("relay device enrollment failed ({status})", "falló el registro del dispositivo en el relay ({status})"));
     }
     let approval = Approval {
         v: 1,
@@ -463,7 +461,7 @@ fn complete_pending(
         epoch,
     )?;
     if status != 202 {
-        bail!("relay approval handoff failed ({status})");
+        bail!(trf!("relay approval handoff failed ({status})", "falló el traspaso de la aprobación al relay ({status})"));
     }
     fs::remove_file(home.join("service-pairing-pending.json"))?;
     fs::File::open(home)?.sync_all()?;
@@ -495,7 +493,7 @@ fn abandon_expired(
         epoch,
     )?;
     if status != 204 {
-        bail!("could not revoke expired phone ({status}); retry setup");
+        bail!(trf!("could not revoke expired phone ({status}); retry setup", "no se pudo revocar el teléfono caducado ({status}); reintenta la configuración"));
     }
     let lock = alondra_core::service_config::ServiceConfigLock::exclusive(home)?;
     alondra_core::service_config::remove_device(home, &lock, &pending.phone.device_id)?;
@@ -505,7 +503,7 @@ fn abandon_expired(
     let local_url = format!("{}/devices/{}", local_origin, pending.phone.device_id);
     let response = agent.delete(local_url).call()?;
     if !matches!(response.status().as_u16(), 200 | 404) {
-        bail!("could not revoke expired phone locally");
+        bail!(tr!("could not revoke expired phone locally", "no se pudo revocar el teléfono caducado en local"));
     }
     fs::remove_file(home.join("service-pairing-pending.json"))?;
     fs::File::open(home)?.sync_all()?;
@@ -547,7 +545,7 @@ fn confirm_and_persist_candidate(
         || phone.display_name.len() > 80
         || phone.display_name.chars().any(char::is_control)
     {
-        bail!("pairing candidate mismatch");
+        bail!(tr!("pairing candidate mismatch", "el candidato de emparejamiento no coincide"));
     }
     p256::PublicKey::from_sec1_bytes(&URL_SAFE_NO_PAD.decode(&phone.agreement_key)?)?;
     let fingerprint =
@@ -558,7 +556,7 @@ fn confirm_and_persist_candidate(
     let mut comparison = String::new();
     input.read_line(&mut comparison)?;
     if !bool::from(comparison.trim().as_bytes().ct_eq(fingerprint.as_bytes())) {
-        bail!("Client comparison code does not match; pairing declined");
+        bail!(tr!("Client comparison code does not match; pairing declined", "el código de comparación del cliente no coincide; emparejamiento rechazado"));
     }
     write!(output, "Approve this device on this Mac? [y/N] ")?;
     output.flush()?;
@@ -568,7 +566,7 @@ fn confirm_and_persist_candidate(
         answer.trim(),
         "y" | "Y" | "yes" | "YES" | "s" | "S" | "sí" | "Sí"
     ) {
-        bail!("pairing declined");
+        bail!(tr!("pairing declined", "emparejamiento rechazado"));
     }
     let pending = Pending {
         session_id: session_id.to_owned(),
@@ -596,7 +594,7 @@ pub fn run(home: &Path) -> Result<()> {
     let path = home.join("service.toml");
     let text = fs::read_to_string(&path)?;
     if toml::from_str::<toml::Table>(&text)?.get("relay_url").is_none() {
-        bail!("this Mac has no relay: devices on the same network pair on their own (alondra connect, or the app's search); to pair through the relay, run alondra setup --relay first");
+        bail!(tr!("this Mac has no relay: devices on the same network pair on their own (alondra connect, or the app's search); to pair through the relay, run alondra setup --relay first", "este Mac no tiene relay: los dispositivos de la misma red se emparejan solos (alondra connect, o la búsqueda de la app); para emparejar a través del relay, ejecuta antes alondra setup --relay"));
     }
     let mut config: ServiceConfig = toml::from_str(&text)?;
     let origin = url::Url::parse(&config.relay_url)?;
@@ -608,19 +606,19 @@ pub fn run(home: &Path) -> Result<()> {
         || !origin.username().is_empty()
         || origin.password().is_some()
     {
-        bail!("invalid service relay origin");
+        bail!(tr!("invalid service relay origin", "origen del relay del servicio no válido"));
     }
     let public: PublicMac =
         serde_json::from_slice(&fs::read(alondra_core::home_lock::public_identity_path(home)?)?)?;
     if config.mac_id != public.mac_id {
-        bail!("service Mac ID differs from its public identity");
+        bail!(tr!("service Mac ID differs from its public identity", "el ID del Mac del servicio difiere de su identidad pública"));
     }
     let signing = SigningKey::from_slice(&private_key(home, &config.signing_key_path)?)?;
     let agreement = SecretKey::from_slice(&private_key(home, &config.agreement_key_path)?)?;
     if URL_SAFE_NO_PAD.encode(signing.verifying_key().to_sec1_bytes()) != public.signing_key
         || URL_SAFE_NO_PAD.encode(agreement.public_key().to_sec1_bytes()) != public.agreement_key
     {
-        bail!("service public keys differ from private keys");
+        bail!(tr!("service public keys differ from private keys", "las claves públicas del servicio difieren de las privadas"));
     }
     let mut boot = agent
         .get(format!(
@@ -629,7 +627,7 @@ pub fn run(home: &Path) -> Result<()> {
         ))
         .call()?;
     if boot.status().as_u16() != 200 {
-        bail!("relay bootstrap unavailable");
+        bail!(tr!("relay bootstrap unavailable", "el arranque del relay no está disponible"));
     }
     let boot: Bootstrap = boot.body_mut().with_config().limit(4096).read_json()?;
     let epoch: [u8; 16] = URL_SAFE_NO_PAD
@@ -686,7 +684,7 @@ pub fn run(home: &Path) -> Result<()> {
         &epoch,
     )?;
     if status != 201 {
-        bail!("pairing session refused ({status})");
+        bail!(trf!("pairing session refused ({status})", "sesión de emparejamiento rechazada ({status})"));
     }
     let qr = serde_json::to_string(&Qr {
         version: 1,
@@ -706,7 +704,7 @@ pub fn run(home: &Path) -> Result<()> {
     println!("Terminal invitation (paste into alondra connect on the client):\n{qr}");
     let candidate = loop {
         if now_ms()? >= expires {
-            bail!("pairing session expired");
+            bail!(tr!("pairing session expired", "la sesión de emparejamiento ha caducado"));
         }
         let route = format!("/v1/pairings/{session_id}");
         let (status, bytes) = call(
@@ -722,7 +720,7 @@ pub fn run(home: &Path) -> Result<()> {
         match status {
             204 => std::thread::sleep(Duration::from_secs(2)),
             200 => break serde_json::from_slice::<Candidate>(&bytes)?,
-            _ => bail!("pairing poll failed ({status})"),
+            _ => bail!(trf!("pairing poll failed ({status})", "falló la consulta del emparejamiento ({status})")),
         }
     };
     let pending = confirm_and_persist_candidate(
@@ -747,6 +745,7 @@ mod tests {
 
     #[test]
     fn substituted_candidate_cannot_persist_approval_with_original_client_code() {
+        crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
         let scratch_directory = crate::test_support::Directory::new();
         let home=scratch_directory.parent().unwrap().join(format!("alondra-pairing-substitution-{}",URL_SAFE_NO_PAD.encode(random::<8>().unwrap())));
         fs::create_dir(&home).unwrap();

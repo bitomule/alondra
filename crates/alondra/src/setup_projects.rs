@@ -15,18 +15,24 @@ pub struct Selection {
 }
 
 fn resolve(value: &Path, home: &Path, cwd: &Path) -> Result<PathBuf> {
-    if value.as_os_str().is_empty() { bail!("Projects directory cannot be empty"); }
+    if value.as_os_str().is_empty() { bail!(tr!("Projects directory cannot be empty", "la carpeta de proyectos no puede estar vacía")); }
     let path = if value == Path::new("~") { home.to_owned() }
         else if let Ok(rest) = value.strip_prefix("~/") { home.join(rest) }
         else if value.is_absolute() { value.to_owned() } else { cwd.join(value) };
     match fs::metadata(&path) {
         Ok(meta) if meta.is_dir() => Ok(path.canonicalize()?),
-        Ok(_) => bail!("{} is not a directory; choose another --projects-root", path.display()),
+        Ok(_) => {
+            let shown = path.display();
+            bail!(trf!("{shown} is not a directory; choose another --projects-root", "{shown} no es un directorio; elige otro --projects-root"))
+        }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             // Check existing ancestors now, before any auth or writes.
             let mut ancestor = path.as_path();
             while !ancestor.exists() { ancestor = ancestor.parent().context("No existing parent for projects directory")?; }
-            if !ancestor.is_dir() { bail!("{} is not a directory", ancestor.display()); }
+            if !ancestor.is_dir() {
+                let shown = ancestor.display();
+                bail!(trf!("{shown} is not a directory", "{shown} no es un directorio"));
+            }
             Ok(path)
         }
         Err(e) => Err(e).with_context(|| format!("Cannot access {}", path.display())),
@@ -50,7 +56,10 @@ pub fn select(
     dry_run: bool, input: &mut impl BufRead, output: &mut impl Write,
 ) -> Result<Selection> {
     match fs::symlink_metadata(&file) {
-        Ok(meta) if !meta.is_file() || meta.file_type().is_symlink() => bail!("{} must be a regular file; repair it before setup", file.display()),
+        Ok(meta) if !meta.is_file() || meta.file_type().is_symlink() => {
+            let shown = file.display();
+            bail!(trf!("{shown} must be a regular file; repair it before setup", "{shown} debe ser un archivo normal; repáralo antes de la configuración"))
+        }
         Ok(_) => (),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => (),
         Err(e) => return Err(e.into()),
@@ -71,7 +80,7 @@ pub fn select(
             }
             result => {
                 let why = result.err().map(|e| e.to_string()).unwrap_or_else(|| format!("{value} does not exist"));
-                if no_input || dry_run { bail!("Configured projects_root is invalid: {why}. Rerun setup --projects-root <directory> to repair it"); }
+                if no_input || dry_run { bail!(trf!("Configured projects_root is invalid: {why}. Rerun setup --projects-root <directory> to repair it", "El projects_root configurado no es válido: {why}. Vuelve a ejecutar setup --projects-root <directorio> para repararlo")); }
                 writeln!(output, "Configured projects_root is invalid: {why}.")?;
             }
         }
@@ -84,7 +93,7 @@ pub fn select(
             write!(output, "{} [{}]: ", tr!("Projects folder (created if missing; :cancel to stop)", "Carpeta de proyectos (se crea si falta; :cancel para salir)"), home.join("Projects").display())?;
             output.flush()?;
             let mut line = String::new();
-            if input.read_line(&mut line)? == 0 || line.trim() == ":cancel" { bail!("Setup cancelled before authentication or changes"); }
+            if input.read_line(&mut line)? == 0 || line.trim() == ":cancel" { bail!(tr!("Setup cancelled before authentication or changes", "Configuración cancelada antes de autenticar o hacer cambios")); }
             let value = line.trim();
             let proposed = if value.is_empty() { home.join("Projects") } else { PathBuf::from(value) };
             match resolve(&proposed, home, cwd) {
@@ -111,7 +120,10 @@ impl Selection {
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
                 Err(e) => return Err(e.into()),
             };
-            if current != self.original { bail!("{} changed during setup; rerun setup", self.file.display()); }
+            if current != self.original {
+                let shown = self.file.display();
+                bail!(trf!("{shown} changed during setup; rerun setup", "{shown} cambió durante la configuración; vuelve a ejecutar setup"));
+            }
             fs::create_dir_all(&self.root).with_context(|| format!("Cannot create projects directory {}", self.root.display()))?;
             let canonical = self.root.canonicalize()?;
             let text = with_root(self.original.as_deref().unwrap_or(""), &canonical)?;

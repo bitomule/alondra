@@ -41,17 +41,17 @@ pub(crate) fn effective_username() -> Result<String> {
         )
     };
     if code != 0 || result.is_null() {
-        bail!("cannot resolve effective OS account for Claude; no login was attempted");
+        bail!(tr!("cannot resolve effective OS account for Claude; no login was attempted", "no se pudo resolver la cuenta efectiva del sistema para Claude; no se intentó iniciar sesión"));
     }
     let record = unsafe { record.assume_init() };
     if record.pw_name.is_null() {
-        bail!("effective OS account has no username");
+        bail!(tr!("effective OS account has no username", "la cuenta efectiva del sistema no tiene nombre de usuario"));
     }
     let name = unsafe { std::ffi::CStr::from_ptr(record.pw_name) }
         .to_str()
         .context("effective OS username is not UTF-8")?;
     if name.is_empty() {
-        bail!("effective OS account has an empty username");
+        bail!(tr!("effective OS account has an empty username", "la cuenta efectiva del sistema tiene el nombre de usuario vacío"));
     }
     Ok(name.to_owned())
 }
@@ -85,7 +85,7 @@ impl ContextEnv {
             (vars.get("CLAUDE_CONFIG_DIR"), vars.get("CLAUDE_HOME"))
         {
             if config != watcher {
-                bail!("Claude profile variables disagree; rerun alondra setup with one profile");
+                bail!(tr!("Claude profile variables disagree; rerun alondra setup with one profile", "las variables del perfil de Claude no coinciden; vuelve a ejecutar alondra setup con un único perfil"));
             }
         }
         Ok(Self {
@@ -158,9 +158,10 @@ impl ContextEnv {
             .spawn()
             .context("could not start Claude login")?;
         if !wait(&mut child, Duration::from_secs(300))?.success() {
-            bail!(
-                "Claude login did not finish; run `claude auth login`, then rerun `alondra setup`"
-            );
+            bail!(tr!(
+                "Claude login did not finish; run `claude auth login`, then rerun `alondra setup`",
+                "el inicio de sesión de Claude no terminó; ejecuta `claude auth login` y vuelve a ejecutar `alondra setup`"
+            ));
         }
         Ok(())
     }
@@ -183,7 +184,7 @@ fn wait(child: &mut std::process::Child, timeout: Duration) -> Result<std::proce
         if Instant::now() >= until {
             let _ = child.kill();
             let _ = child.wait();
-            bail!("Claude authentication command timed out; rerun alondra setup");
+            bail!(tr!("Claude authentication command timed out; rerun alondra setup", "el comando de autenticación de Claude superó el tiempo de espera; vuelve a ejecutar alondra setup"));
         }
         std::thread::sleep(Duration::from_millis(20));
     }
@@ -191,15 +192,16 @@ fn wait(child: &mut std::process::Child, timeout: Duration) -> Result<std::proce
 
 fn parse_status(success: bool, bytes: &[u8]) -> Result<bool> {
     if bytes.len() > 65536 {
-        bail!("Claude authentication response too large");
+        bail!(tr!("Claude authentication response too large", "la respuesta de autenticación de Claude es demasiado grande"));
     }
-    let value: serde_json::Value = serde_json::from_slice(bytes).map_err(|_| anyhow::anyhow!("Claude returned invalid authentication status; update Claude Code and rerun alondra setup"))?;
+    let value: serde_json::Value = serde_json::from_slice(bytes).map_err(|_| anyhow::anyhow!(tr!("Claude returned invalid authentication status; update Claude Code and rerun alondra setup", "Claude devolvió un estado de autenticación no válido; actualiza Claude Code y vuelve a ejecutar alondra setup")))?;
     match value.get("loggedIn").and_then(serde_json::Value::as_bool) {
         Some(false) => Ok(false),
         Some(true) if success => Ok(true),
-        _ => bail!(
-            "Claude authentication status could not be verified; update Claude Code and rerun alondra setup"
-        ),
+        _ => bail!(tr!(
+            "Claude authentication status could not be verified; update Claude Code and rerun alondra setup",
+            "no se pudo verificar el estado de autenticación de Claude; actualiza Claude Code y vuelve a ejecutar alondra setup"
+        )),
     }
 }
 
@@ -212,15 +214,17 @@ fn ensure_with(
         return Ok(());
     }
     if !interactive {
-        bail!(
-            "Claude Code is not signed in. Run `claude auth login` for this Mac user, then rerun `alondra setup`"
-        );
+        bail!(tr!(
+            "Claude Code is not signed in. Run `claude auth login` for this Mac user, then rerun `alondra setup`",
+            "Claude Code no tiene la sesión iniciada. Ejecuta `claude auth login` con este usuario de Mac y vuelve a ejecutar `alondra setup`"
+        ));
     }
     login()?;
     if !status()? {
-        bail!(
-            "Claude Code is still not signed in; complete `claude auth login` and rerun `alondra setup`"
-        );
+        bail!(tr!(
+            "Claude Code is still not signed in; complete `claude auth login` and rerun `alondra setup`",
+            "Claude Code sigue sin tener la sesión iniciada; completa `claude auth login` y vuelve a ejecutar `alondra setup`"
+        ));
     }
     Ok(())
 }

@@ -447,16 +447,8 @@ pub fn run(json_out: bool) -> Result<()> {
             .collect();
         println!("{}", serde_json::to_string_pretty(&json!({"ok": !failed, "checks": list}))?);
     } else {
-        for c in &checks {
-            let mark = match c.status {
-                Status::Pass => "✓",
-                Status::Warn => "!",
-                Status::Fail => "✗",
-            };
-            println!("{mark} {:<10} {}", c.name, c.detail);
-            if c.status != Status::Pass && !c.fix.is_empty() {
-                println!("  {:<10} → {}", "", c.fix);
-            }
+        for line in lines(&checks) {
+            println!("{line}");
         }
     }
     if failed {
@@ -465,9 +457,48 @@ pub fn run(json_out: bool) -> Result<()> {
     Ok(())
 }
 
+/// One line per check and an arrow line under each fix, the details in one column however long
+/// the longest check name is.
+fn lines(checks: &[Check]) -> Vec<String> {
+    let width = checks.iter().map(|c| c.name.chars().count()).max().unwrap_or(0);
+    let mut out = vec![];
+    for c in checks {
+        let mark = match c.status {
+            Status::Pass => "✓",
+            Status::Warn => "!",
+            Status::Fail => "✗",
+        };
+        out.push(format!("{mark} {:<width$} {}", c.name, c.detail));
+        if c.status != Status::Pass && !c.fix.is_empty() {
+            out.push(format!("  {:<width$} → {}", "", c.fix));
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn details_and_fixes_start_in_one_column_past_the_longest_check_name() {
+        let checks = [
+            check("tmux", Status::Pass, "3.5a", ""),
+            check("orchestrator", Status::Warn, "offline", "alondra setup"),
+            check("service push", Status::Fail, "no relay", "alondra setup --relay"),
+            check("notificación", Status::Pass, "ok", ""),
+        ];
+        let lines = lines(&checks);
+        let columns: Vec<usize> = lines
+            .iter()
+            .map(|l| {
+                let at = ["3.5a", "offline", "→", "no relay", "ok"].iter().find_map(|w| l.find(w)).unwrap();
+                l[..at].chars().count()
+            })
+            .collect();
+        assert_eq!(lines.len(), 6, "{lines:#?}");
+        assert!(columns.iter().all(|&c| c == columns[0]), "{lines:#?}");
+    }
 
     #[test]
     fn a_present_service_configuration_replaces_the_apns_file_check() {
