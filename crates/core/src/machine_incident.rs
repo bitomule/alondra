@@ -31,6 +31,9 @@ pub struct MachineCard {
     /// macOS reports memory pressure, which can happen with plenty of memory free.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub memory_pressure: bool,
+    /// Memory is about to reach macOS's memory pressure, before macOS reports it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub near_pressure: bool,
     /// The stopped nodes, by the title of their task.
     #[serde(default)]
     pub nodes: Vec<String>,
@@ -101,6 +104,10 @@ impl MachineCard {
                 "Libera memoria: macOS avisa de presión de memoria ({memory}% libre) con un solo nodo trabajando"),
             MachineCause::Memory if self.memory_pressure => tf!(lang, "Free up memory: macOS reports memory pressure ({memory}% free)",
                 "Libera memoria: macOS avisa de presión de memoria ({memory}% libre)"),
+            MachineCause::Memory if self.near_pressure && self.single_node => tf!(lang, "Free up memory: it is about to reach macOS memory pressure ({memory}% free) with a single node working",
+                "Libera memoria: está a punto de entrar en presión de memoria de macOS ({memory}% libre) con un solo nodo trabajando"),
+            MachineCause::Memory if self.near_pressure => tf!(lang, "Free up memory: it is about to reach macOS memory pressure ({memory}% free)",
+                "Libera memoria: está a punto de entrar en presión de memoria de macOS ({memory}% libre)"),
             MachineCause::Memory if self.single_node => tf!(lang, "Free up memory: {memory}% free with a single node working",
                 "Libera memoria: {memory}% libre con un solo nodo trabajando"),
             MachineCause::Memory => tf!(lang, "Free up memory: {memory}% free", "Libera memoria: {memory}% libre"),
@@ -122,6 +129,8 @@ impl MachineCard {
             MachineCause::Memory => {
                 let limit = if self.memory_pressure {
                     tf!(lang, "macOS reports memory pressure ({memory}% free).", "macOS avisa de presión de memoria ({memory}% libre).")
+                } else if self.near_pressure {
+                    tf!(lang, "Memory about to reach macOS memory pressure ({memory}% free).", "Memoria a punto de entrar en presión de memoria de macOS ({memory}% libre).")
                 } else {
                     tf!(lang, "Memory at its limit ({memory}% free).", "Memoria al límite ({memory}% libre).")
                 };
@@ -149,7 +158,7 @@ mod tests {
     use super::*;
 
     fn card(cause: MachineCause, nodes: &[&str]) -> MachineCard {
-        MachineCard { cause, disk_free: 0, memory_free_percent: Some(9), memory_pressure: false, nodes: nodes.iter().map(|n| n.to_string()).collect(), reason: None, minutes: None, disk: None, single_node: false, top: vec![], still: false }
+        MachineCard { cause, disk_free: 0, memory_free_percent: Some(9), memory_pressure: false, near_pressure: false, nodes: nodes.iter().map(|n| n.to_string()).collect(), reason: None, minutes: None, disk: None, single_node: false, top: vec![], still: false }
     }
 
     #[test]
@@ -211,5 +220,15 @@ mod tests {
             "macOS avisa de presión de memoria (31% libre). Parados: Lumo. Continúan solos cuando se recupere.".into()));
         assert_eq!(pressure.text(Lang::En).0, "Free up memory: macOS reports memory pressure (31% free)");
         assert!(!MachineCard::from_body(r#"{"cause":"memory","disk_free":0}"#).unwrap().memory_pressure);
+    }
+
+    #[test]
+    fn memory_about_to_reach_pressure_says_so_before_macos_reports_it_in_both_languages() {
+        let near = MachineCard { memory_free_percent: Some(38), near_pressure: true, ..card(MachineCause::Memory, &["Lumo"]) };
+        assert_eq!(MachineCard::from_body(&near.to_body()), Some(near.clone()));
+        assert_eq!(near.text(Lang::Es), ("Libera memoria: está a punto de entrar en presión de memoria de macOS (38% libre)".into(),
+            "Memoria a punto de entrar en presión de memoria de macOS (38% libre). Parados: Lumo. Continúan solos cuando se recupere.".into()));
+        assert_eq!(near.text(Lang::En).0, "Free up memory: it is about to reach macOS memory pressure (38% free)");
+        assert!(!MachineCard::from_body(r#"{"cause":"memory","disk_free":0}"#).unwrap().near_pressure);
     }
 }

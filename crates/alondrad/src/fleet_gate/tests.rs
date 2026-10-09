@@ -104,7 +104,7 @@ fn swing(low: u32, high: u32) -> Hour {
         let free = if (now / (3 * MIN)) % 2 == 0 { low } else { high };
         let machine = Machine { at: now, memory_free_percent: Some(free), cpus: 11, load: [5.0; 3], ..Machine::default() };
         if let Some((from, to)) = mac.step(&machine, now) {
-            hour.notices.extend(pacing_notice(from, to, mac.free_percent, mac.pressure));
+            hour.notices.extend(pacing_notice(from, to, &mac));
         }
         let (next, actions) = step_on(incident, &machine, mac.health, None, &[], false, now);
         incident = next;
@@ -147,7 +147,7 @@ fn memory_back_above_20_percent_for_5_minutes_recovers_once_and_lets_the_queue_g
     let mut now = 0;
     for free in std::iter::repeat_n(8, 6).chain(std::iter::repeat_n(30, 32)) {
         if let Some((from, to)) = mac.step(&Machine { memory_free_percent: Some(free), cpus: 11, load: [5.0; 3], ..Machine::default() }, now) {
-            notices.extend(pacing_notice(from, to, mac.free_percent, mac.pressure));
+            notices.extend(pacing_notice(from, to, &mac));
         }
         now += SAMPLE;
     }
