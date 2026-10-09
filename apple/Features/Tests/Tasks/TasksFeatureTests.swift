@@ -62,6 +62,14 @@ final class TasksFeatureTests: XCTestCase {
     }
 
     @MainActor
+    func testAChainOpensAndClosesOnItsOwn() async throws {
+        let store = await loaded(try Samples.document("tasks-populated"))
+
+        await store.send(.chainToggled("chain:t-install-texts")) { $0.openChains = ["chain:t-install-texts"] }
+        await store.send(.chainToggled("chain:t-install-texts")) { $0.openChains = [] }
+    }
+
+    @MainActor
     func testOpeningAFoldSentWithoutItsRowsAsksForThemOnce() async throws {
         let document = try Samples.document("tasks-populated") { object in
             var sections = object["sections"] as? [[String: Any]] ?? []

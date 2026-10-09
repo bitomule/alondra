@@ -15,6 +15,7 @@ mod schedules;
 mod sidebar;
 mod status;
 mod summary;
+mod task_state;
 mod tasks;
 #[cfg(test)]
 mod tests;

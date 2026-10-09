@@ -22,7 +22,8 @@ fn open_finished(app: &mut App, domain: &DomainState, live: &LiveSnapshot) {
 fn task_screen(domain: &DomainState, live: &LiveSnapshot, request: &str, task: &str) -> App {
     let mut app = app_on(Screen::Tasks, build(domain, live, "tasks"));
     open_finished(&mut app, domain, live);
-    app.sel = Some(Key(request.into()));
+    let row = if app.inbox_keys().iter().any(|key| key.0 == task) { task } else { request };
+    app.sel = Some(Key(row.into()));
     app.on_msg(Msg::ViewCard {
         key: format!("task:{task}"),
         result: Ok(build(domain, live, &format!("task:{task}"))),
@@ -214,20 +215,18 @@ fn tasks_list_one_row_per_single_task_request_with_people_times() {
 }
 
 #[test]
-fn the_tasks_list_nests_a_task_under_the_other_requests_task_it_follows_and_names_a_new_request_by_its_first_sentence() {
+fn the_tasks_list_is_three_blocks_with_the_chain_folded_and_names_a_new_request_by_its_first_sentence() {
     let mut app = app_on(Screen::Tasks, fixture_view("tasks-tui.json"));
     let screen = rendered(&mut app, 120, 30);
-    dump("tasks (across requests)", &screen);
+    dump("tasks (blocks)", &screen);
     let lines: Vec<&str> = screen.lines().collect();
     let at = |needle: &str| lines.iter().position(|line| line.contains(needle)).unwrap_or_else(|| panic!("{needle}: {screen}"));
-    let parent = at("Restore the native review experience").min(at("Polish the Alondra beta"));
-    let nested = at("Decrement the badge on retraction");
-    assert!(nested > parent && lines[nested].contains("↳"), "the dependent hangs under its parent: {screen}");
-    assert!(lines[nested + 1].contains("Waits for “Restore the native review experience”"), "its state says what it waits for: {screen}");
-    assert!(lines[nested + 2].contains("from: Badge accuracy"), "{screen}");
-    let waits = at("waits for Restore the native review experience");
-    assert!(lines[waits].contains("↳") && waits > at("Badge accuracy"), "{screen}");
-    assert!(lines[waits + 1].contains("Decrement the badge on retraction"), "{screen}");
+    assert!(at("FOR YOU 4") < at("IN PROGRESS 3") && at("IN PROGRESS 3") < at("WAITING 1"), "{screen}");
+    assert!(!screen.contains("ACTIVE"), "the blocks replace the Active title: {screen}");
+    let head = at("Restore the native review experience");
+    assert!(lines[head + 1..].iter().take(3).any(|line| line.contains("▸ +1 waiting for this")), "{screen}");
+    assert!(!screen.contains("Decrement the badge on retraction"), "folded until opened: {screen}");
+    assert!(!screen.contains("from: ") && !screen.contains("waits for Restore"), "{screen}");
     for loose in ["Review the schedule editor", "Write the release notes"] {
         assert!(lines[at(loose)].contains(loose), "{screen}");
     }
@@ -262,6 +261,51 @@ fn finished_and_archived_start_folded_and_enter_on_the_header_opens_and_folds_th
     press(&mut app, KeyCode::Char('o'));
     let again = rendered(&mut app, 100, 30);
     assert!(again.contains("▸ TERMINADAS") && !again.contains(WEEKLY), "{again}");
+}
+
+#[test]
+fn a_chain_of_waiting_tasks_folds_under_its_first_task_and_enter_opens_it() {
+    let mut domain = DomainState::new("screens");
+    domain.revision = 1;
+    let mut request = Request::new("r-onb".into(), "Instalación guiada y nueva CLI".into());
+    request.title = Some("Instalación guiada y nueva CLI: plan por fases".into());
+    domain.requests.insert("r-onb".into(), request);
+    for (id, title, state, dependencies) in [
+        ("t-2", "Textos y versión", TaskState::NotStarted, &[][..]),
+        ("t-2b", "Versión en la TUI", TaskState::WaitingDependency, &["t-2"][..]),
+        ("t-3", "Motor de comprobaciones", TaskState::WaitingDependency, &["t-2"][..]),
+        ("t-4", "Asistente de instalación", TaskState::WaitingDependency, &["t-3"][..]),
+        ("t-5", "Fórmula de Homebrew", TaskState::WaitingDependency, &["t-4"][..]),
+        ("t-6", "API de ajustes", TaskState::WaitingDependency, &["t-2b"][..]),
+        ("t-7", "Ajustes en las apps", TaskState::WaitingDependency, &["t-6"][..]),
+        ("t-8", "API de la CLI", TaskState::WaitingDependency, &["t-4", "t-5", "t-7"][..]),
+        ("t-9", "Documentación", TaskState::WaitingDependency, &["t-8"][..]),
+    ] {
+        let mut row = task(id, "r-onb", None, title, state);
+        row.dependencies = dependencies.iter().map(|id| (*id).into()).collect();
+        domain.tasks.insert(id.into(), row);
+    }
+    let live = LiveSnapshot::default();
+    let mut app = app_on(Screen::Tasks, build(&domain, &live, "tasks"));
+    let folded = rendered(&mut app, 100, 30);
+    dump("tasks (chain folded)", &folded);
+    assert!(folded.contains("▸ +8 esperando a esta"), "{folded}");
+    assert!(!folded.contains("Documentación") && !folded.contains("API de la CLI"), "{folded}");
+
+    let fold = app.inbox_keys().iter().position(|key| key.0 == "chain:t-2").unwrap();
+    app.move_inbox(fold as isize);
+    press(&mut app, KeyCode::Enter);
+    let open = rendered(&mut app, 100, 30);
+    dump("tasks (chain open)", &open);
+    assert!(open.contains("▾ +8 esperando a esta"), "{open}");
+    let lines: Vec<&str> = open.lines().collect();
+    let at = |needle: &str| lines.iter().position(|line| line.contains(needle)).unwrap_or_else(|| panic!("{needle}: {open}"));
+    assert!(at("Versión en la TUI") < at("API de ajustes") && at("Fórmula de Homebrew") < at("API de la CLI")
+        && at("API de la CLI") < at("Documentación"), "each after what it waits for: {open}");
+
+    press(&mut app, KeyCode::Enter);
+    let again = rendered(&mut app, 100, 30);
+    assert!(again.contains("▸ +8 esperando a esta") && !again.contains("Documentación"), "{again}");
 }
 
 #[test]

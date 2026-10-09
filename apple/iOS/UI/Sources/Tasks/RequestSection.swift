@@ -7,24 +7,33 @@ import SwiftUI
 /// orchestrator is still splitting says so once, under what was asked.
 struct RequestSection: View {
     let request: TasksBoard.Request
+    let openChains: Set<String>
     let open: (AlondraContract.Link) -> Void
+    let toggleChain: (String) -> Void
     let perform: (WireAction) -> Void
+    /// Inside a block of the active work, which already sets the margins.
+    var inBlock = false
     @State private var confirmingWithdraw = false
     @Environment(\.dynamicTypeSize) private var typeSize
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            if !request.isLoose { header }
-            ForEach(request.tasks) { line in
-                if line.isWait {
-                    WaitsRow(line: line, open: open)
-                } else {
-                    TaskCard(line: line, open: open)
+        Group {
+            if inBlock {
+                VStack(alignment: .leading, spacing: 8) {
+                    groupHeader
+                    TaskLines(lines: request.lines(open: openChains), openChains: openChains, open: open, toggleChain: toggleChain)
                 }
+                .padding(8)
+                .background(Palette.hairline.opacity(0.6), in: .rect(cornerRadius: 26, style: .continuous))
+            } else {
+                VStack(alignment: .leading, spacing: 10) {
+                    if !request.isLoose { header }
+                    TaskLines(lines: request.lines(open: openChains), openChains: openChains, open: open, toggleChain: toggleChain)
+                }
+                .padding(.horizontal, 16)
+                .padding(.top, 28)
             }
         }
-        .padding(.horizontal, 16)
-        .padding(.top, 28)
         .confirmationDialog(
             request.withdraw?.confirm?.title ?? "",
             isPresented: $confirmingWithdraw,
@@ -36,6 +45,37 @@ struct RequestSection: View {
         } message: {
             Text(verbatim: request.withdraw?.confirm?.message ?? "")
         }
+    }
+
+    /// A request with a real title holds its tasks in one container: its title and how many tasks it has, then them.
+    private var groupHeader: some View {
+        let layout = typeSize.isAccessibilitySize
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 2)) : AnyLayout(HStackLayout(alignment: .firstTextBaseline, spacing: 6))
+        return layout {
+            Text(verbatim: request.title)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(Palette.ink)
+                .lineLimit(2)
+                .multilineTextAlignment(.leading)
+                .accessibilityAddTraits(.isHeader)
+            Text("\(request.taskCount) tasks")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize()
+            if !typeSize.isAccessibilitySize { Spacer(minLength: 4) }
+            if let project = request.project {
+                Text(verbatim: project)
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Palette.card, in: .capsule)
+                    .lineLimit(1)
+            }
+        }
+        .padding(.horizontal, 8)
+        .padding(.top, 4)
+        .accessibilityElement(children: .combine)
     }
 
     private var header: some View {
@@ -150,16 +190,18 @@ struct TaskCard: View {
                 }
                 Spacer(minLength: 8)
                 if line.waiting > 0 { WaitingBadge(count: line.waiting) }
-                Image(systemName: "chevron.right")
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(.tertiary)
-                    .accessibilityHidden(true)
+                if line.link != nil {
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(.tertiary)
+                        .accessibilityHidden(true)
+                }
             }
             Text(verbatim: line.title)
                 .font(.body.weight(.semibold))
                 .foregroundStyle(line.struck ? AnyShapeStyle(.secondary) : AnyShapeStyle(Palette.ink))
                 .strikethrough(line.struck)
-                .lineLimit(3)
+                .lineLimit(2)
                 .multilineTextAlignment(.leading)
             if let origin = line.origin {
                 Text(verbatim: origin)
@@ -189,6 +231,38 @@ struct TaskCard: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Palette.card.opacity(0.85), in: .rect(cornerRadius: 22, style: .continuous))
         .contentShape(.rect)
+    }
+}
+
+/// "+7 waiting for this" under the first task of a chain: tapping it shows or hides the tasks that wait, one level deep.
+struct ChainRow: View {
+    let line: TasksBoard.Line
+    let isOpen: Bool
+    let toggle: () -> Void
+
+    var body: some View {
+        Button(action: toggle) {
+            HStack(spacing: 6) {
+                Image(systemName: "arrow.turn.down.right")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(.tertiary)
+                    .accessibilityHidden(true)
+                Text(verbatim: line.title)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(.tertiary)
+                    .rotationEffect(.degrees(isOpen ? 90 : 0))
+                    .accessibilityHidden(true)
+                Spacer(minLength: 8)
+            }
+            .padding(.leading, CGFloat(max(line.depth - 1, 0)) * 20 + 6)
+            .padding(.vertical, 6)
+            .contentShape(.rect)
+        }
+        .buttonStyle(PressStyle())
+        .accessibilityValue(isOpen ? Text("Expanded") : Text("Collapsed"))
     }
 }
 

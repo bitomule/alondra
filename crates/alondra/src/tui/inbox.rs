@@ -28,7 +28,7 @@ pub(super) fn review_clone_flow(
 impl App {
     pub fn inbox_keys(&self) -> Vec<Key> {
         if let Some(view) = self.shown_home() {
-            return super::view_render::entries(&view, &self.open_sections)
+            return super::view_render::entries(&view, &self.open_sections, &self.open_rows)
                 .into_iter()
                 .map(|(id, _, _)| Key(id))
                 .collect();
@@ -38,7 +38,7 @@ impl App {
 
     pub fn inbox_count(&self) -> usize {
         if let Some(view) = self.shown_home() {
-            return super::view_render::entries(&view, &self.open_sections)
+            return super::view_render::entries(&view, &self.open_sections, &self.open_rows)
                 .into_iter()
                 .filter(|(id, nested, _)| !nested && super::view_render::header_section(id).is_none())
                 .count();
@@ -86,6 +86,20 @@ impl App {
             self.open_sections.insert(id);
         }
         true
+    }
+
+    /// Enter or `o` on a row the daemon sends folded shows the rows under it, and hides them again.
+    pub(super) fn toggle_selected_fold(&mut self) -> bool {
+        let Some(id) = self.sel.as_ref().map(|key| key.0.clone()) else {
+            return false;
+        };
+        let folds = self.shown_home().is_some_and(|view| {
+            super::view_render::rows(&view).iter().any(|(row, _)| row.id == id && row.folded)
+        });
+        if folds && !self.open_rows.remove(&id) {
+            self.open_rows.insert(id);
+        }
+        folds
     }
 
     pub(super) fn inbox_cmd(&mut self, cmd: Cmd) {

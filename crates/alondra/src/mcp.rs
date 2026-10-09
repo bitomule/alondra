@@ -256,6 +256,19 @@ fn card_tools(user: &str, interaction: &Value, node: bool) -> Vec<Value> {
             &["interaction_id", "scope", "need", "why", "options"],
         ));
     }
+    if node {
+        let scope = interaction["scope"].clone();
+        tools.push(domain_tool(
+            "suggest",
+            &format!("Tell the orchestrator about something you saw outside your task (an unrelated bug, an improvement) as soon as you see it, and keep working: it never blocks you, never goes to {user} and never touches your delivery. The orchestrator answers with a note: it is part of your plan (do it in this task), discarded (already covered or already turned down), a new task, or a question it takes to {user}. At most {} suggestions wait at a time per task.", alondra_core::domain::OPEN_SUGGESTIONS_MAX),
+            json!({"interaction_id":{"type":"string"},"scope":scope,
+                "what":{"type":"string","maxLength":90,"description":"What you saw, on one line"},
+                "where":{"type":"string","description":"Where it is: file and line, screen, PR, command"},
+                "why_not_mine":{"type":"string","maxLength":240,"description":"Why it is not part of your task"},
+                "detail":{"type":"string","description":"Anything else the orchestrator needs to decide: what you measured, how to reproduce it"}}),
+            &["interaction_id", "scope", "what", "where", "why_not_mine"],
+        ));
+    }
     tools
 }
 
@@ -515,6 +528,7 @@ fn call_node(client: &Client, name: &str, args: &Value) -> Result<String> {
         | "request_action"
         | "request_input"
         | "request_test"
+        | "suggest"
         | "withdraw"
         | "withdraw_question"
         | "answer_clarification"
@@ -590,6 +604,7 @@ fn execute_tool(client: &Client, name: &str, args: &Value) -> Result<String> {
         | "request_action"
         | "request_input"
         | "request_test"
+        | "suggest"
         | "raise_problem"
         | "publish_information"
         | "withdraw"
@@ -717,8 +732,8 @@ fn command_request(name: &str, args: &Value, data_epoch: &str) -> Result<(&'stat
     Ok((method, path, body))
 }
 
-const CARD_COMMANDS: [&str; 9] = [
-    "ask", "request_action", "request_input", "request_test", "raise_problem",
+const CARD_COMMANDS: [&str; 10] = [
+    "ask", "request_action", "request_input", "request_test", "suggest", "raise_problem",
     "publish_information", "present_result", "withdraw", "withdraw_question",
 ];
 
@@ -790,7 +805,7 @@ pub(crate) fn resource_target(name: &str, command: &Value) -> Result<(&'static s
     let id = |key: &str| -> Result<String> { Ok(urlencode(value(key)?)) };
     let target = match name {
         "ask" if asks_together(command) => ("POST", "/question-groups".to_owned()),
-        "ask" | "ask_question" | "request_input" | "request_test" => ("POST", "/questions".to_owned()),
+        "ask" | "ask_question" | "request_input" | "request_test" | "suggest" => ("POST", "/questions".to_owned()),
         "request_action" => ("POST", "/action-requests".to_owned()),
         "publish_information" => ("POST", "/messages".to_owned()),
         "raise_problem" => ("POST", "/problems".to_owned()),
@@ -833,7 +848,7 @@ pub(crate) fn resource_target(name: &str, command: &Value) -> Result<(&'static s
 fn domain_envelope(name: &str, args: &Value, data_epoch: &str, command_id: &str) -> Result<Value> {
     let kind = match name {
         "ask" if asks_together(args) => "ask_questions",
-        "ask" | "request_input" | "request_test" => "ask_question",
+        "ask" | "request_input" | "request_test" | "suggest" => "ask_question",
         "request_action" => "request_action",
         "publish_information" => "publish_information",
         "raise_problem" => "raise_problem",
@@ -904,6 +919,7 @@ fn card_kind(name: &str, command: &serde_json::Map<String, Value>) -> Option<&'s
         "request_action" => "do",
         "request_input" => "provide",
         "request_test" => "test",
+        "suggest" => "propose",
         "publish_information" => "know",
         "raise_problem" => "problem",
         "present_result" if command.get("is_final").and_then(Value::as_bool) == Some(true) => "review",
@@ -1022,6 +1038,9 @@ fn attach_card(name: &str, command: &mut serde_json::Map<String, Value>) -> Resu
     if name == "ask" && fold_questions(command)? {
         return Ok(());
     }
+    if name == "suggest" {
+        suggestion_fields(command)?;
+    }
     let need = take_text(command, "need");
     let mut why = take_text(command, "why");
     let mut content = command.remove("content").filter(|v| !v.is_null()).map(unplan_content);
@@ -1086,6 +1105,27 @@ fn attach_card(name: &str, command: &mut serde_json::Map<String, Value>) -> Resu
         command.insert("body".into(), json!(body));
     }
     command.insert("card".into(), Value::Object(card));
+    Ok(())
+}
+
+/// A suggestion is a question for the orchestrator with its fixed answers: what the node saw is
+/// the need, why it is not the node's the why, and where it is (with any detail) the content.
+fn suggestion_fields(command: &mut serde_json::Map<String, Value>) -> Result<()> {
+    let (what, place, not_mine, detail) =
+        (take_text(command, "what"), take_text(command, "where"), take_text(command, "why_not_mine"), take_text(command, "detail"));
+    if what.trim().is_empty() || place.trim().is_empty() || not_mine.trim().is_empty() {
+        anyhow::bail!("invalid_input: what, where and why_not_mine are required: say what you saw, where, and why it is not part of your task");
+    }
+    let mut body = format!("Where: {}", place.trim());
+    if !detail.trim().is_empty() {
+        body = format!("{body}\n\n{}", detail.trim());
+    }
+    command.insert("need".into(), json!(what));
+    command.insert("why".into(), json!(not_mine));
+    command.insert("content".into(), json!({"kind":"report","body":body}));
+    command.insert("recipient".into(), json!({"kind":"orchestrator"}));
+    command.insert("blocking".into(), json!(false));
+    command.insert("options".into(), serde_json::to_value(alondra_core::domain::suggestion_options())?);
     Ok(())
 }
 
@@ -2225,6 +2265,25 @@ mod card_tool_tests {
         let parsed: alondra_core::domain::CommandEnvelope = serde_json::from_value(envelope).unwrap();
         let alondra_core::domain::Command::AskQuestions { questions, blocking, .. } = parsed.command else { panic!("ask questions") };
         assert_eq!((questions.len(), blocking), (2, true));
+    }
+
+    #[test]
+    fn a_suggestion_is_a_question_for_the_orchestrator_with_its_fixed_answers() {
+        assert!(!required(&tool(Role::Node, "suggest")).contains(&"recipient".to_owned()));
+        assert!(tools(Role::Orchestrator, "Ana").as_array().unwrap().iter().all(|t| t["name"] != "suggest"));
+        let built = built("suggest", with(json!({"what":"The README names the old flag","where":"README.md:12",
+            "why_not_mine":"This task only touches the CLI","detail":"Seen while reading the docs"})));
+        assert_eq!(domain_envelope("suggest", &with(json!({"what":"w","where":"x","why_not_mine":"y"})), "epoch", "id").unwrap()["command"]["kind"], "ask_question");
+        assert_eq!(built["recipient"], json!({"kind":"orchestrator"}), "never the user, whatever the node sent");
+        assert_eq!(built["blocking"], false);
+        assert_eq!(built["card"]["kind"], "propose");
+        assert_eq!(built["card"]["need"], "The README names the old flag");
+        assert_eq!(built["card"]["why"], "This task only touches the CLI");
+        assert_eq!(built["card"]["content"]["body"], "Where: README.md:12\n\nSeen while reading the docs");
+        let ids: Vec<&str> = built["options"].as_array().unwrap().iter().map(|o| o["id"].as_str().unwrap()).collect();
+        assert_eq!(ids, ["yours", "discarded", "new_task", "ask_user"]);
+        let missing = domain_envelope("suggest", &with(json!({"what":"w","why_not_mine":"y"})), "epoch", "id").unwrap_err().to_string();
+        assert!(missing.contains("what, where and why_not_mine are required"), "{missing}");
     }
 
     #[test]

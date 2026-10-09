@@ -386,14 +386,6 @@ fn options_are_few_short_and_one_recommended() {
 }
 
 #[test]
-fn notices_and_proposals_never_block() {
-    let mut s = fixture();
-    let propose = CardSpec::new(CardKind::Propose, "Let me also update the README").why("It still names the old flag");
-    assert_eq!(refused(&mut s, agent(), ask("p", "t", true, propose.clone())), ("invalid_input".into(), Some("blocking".into())));
-    ok(&mut s, agent(), ask("p", "t", false, propose));
-}
-
-#[test]
 fn only_alondra_raises_a_problem() {
     let mut s = fixture();
     let problem = |id: &str| Command::RaiseProblem {
@@ -453,58 +445,84 @@ fn a_card_written_before_cards_is_read_from_its_body() {
     assert_eq!(said["card"]["need"], "Read the summary");
 }
 
-fn proposal(s: &mut DomainState) {
-    let card = CardSpec::new(CardKind::Propose, "Update the README").why("It still names the old flag");
-    ok(s, agent(), Command::AskQuestion {
-        attachments: vec![], interaction_id: "p".into(), scope: scope("t"), recipient: Recipient::User,
-        body: "Update the README".into(), blocking: false, card,
-        options: vec![option("do_it", "Do it"), option("not_now", "Not now")],
-    });
+fn suggest(id: &str) -> Command {
+    Command::AskQuestion {
+        attachments: vec![], interaction_id: id.into(), scope: scope("t"), recipient: Recipient::Orchestrator,
+        body: "The README still names the old flag".into(), blocking: false,
+        card: CardSpec::new(CardKind::Propose, "Update the README's old flag").why("It is not part of this task"),
+        options: suggestion_options(),
+    }
 }
-fn answer_with(option_id: &str) -> Command {
-    Command::AnswerQuestion { attachments: vec![], interaction_id: "p".into(), option_id: option_id.into(), inputs: BTreeMap::new() }
-}
-
-#[test]
-fn doing_a_proposal_creates_a_request_for_the_orchestrator() {
-    let mut s = fixture();
-    proposal(&mut s);
-    let out = ok(&mut s, user(), answer_with("do_it"));
-    let request = &s.requests[&"proposal-p".into()];
-    assert!(request.body.starts_with("Update the README\n\nIt still names the old flag"), "{}", request.body);
-    assert!(request.body.contains("task t") && request.body.contains("Task t"), "linked back to its source: {}", request.body);
-    assert!(out.effects.iter().any(|e| matches!(e, DomainEffect::NotifyOrchestrator { request_id: Some(r), .. } if r.0 == "proposal-p")));
-    assert!(out.created_ids.contains(&"proposal-p".to_owned()));
+fn settle(id: &str, option_id: &str, note: &str) -> Command {
+    Command::AnswerQuestion {
+        attachments: vec![], interaction_id: id.into(), option_id: option_id.into(),
+        inputs: BTreeMap::from([("note".to_owned(), InputValue::Text(note.into()))]),
+    }
 }
 
 #[test]
-fn not_now_only_closes_the_proposal() {
+fn a_suggestion_goes_to_the_orchestrator_and_never_to_the_users_inbox() {
     let mut s = fixture();
-    proposal(&mut s);
-    let requests = s.requests.len();
-    ok(&mut s, user(), answer_with("not_now"));
-    assert_eq!(s.requests.len(), requests);
-    assert!(!s.open(&s.interactions[&"p".into()]));
+    let out = ok(&mut s, agent(), suggest("p"));
+    assert!(out.effects.iter().any(|e| matches!(e, DomainEffect::NotifyOrchestrator { interaction_id: Some(i), .. } if i.0 == "p")));
+    assert!(!out.effects.iter().any(|e| matches!(e, DomainEffect::NotifyUser { .. })), "{:?}", out.effects);
+    assert!(s.projection().inbox.iter().all(|item| item.id != "interaction:p"));
+    assert_eq!(crate::views::inbox_badge(&s), 0);
 }
 
 #[test]
-fn a_proposal_can_be_answered_after_its_task_is_done() {
+fn only_a_node_suggests_and_only_to_the_orchestrator_with_its_answers() {
     let mut s = fixture();
-    proposal(&mut s);
+    let Command::AskQuestion { card, .. } = suggest("p") else { unreachable!() };
+    let to_user = Command::AskQuestion {
+        attachments: vec![], interaction_id: "u".into(), scope: scope("t"), recipient: Recipient::User,
+        body: "Update the README".into(), blocking: false, card: card.clone(), options: suggestion_options(),
+    };
+    assert_eq!(refused(&mut s, agent(), to_user.clone()), ("forbidden".into(), Some("card.kind".into())));
+    assert_eq!(refused(&mut s, orchestrator(), to_user), ("forbidden".into(), Some("card.kind".into())));
+    let mut own_answers = suggest("o");
+    if let Command::AskQuestion { options, .. } = &mut own_answers {
+        *options = vec![option("do_it", "Do it"), option("not_now", "Not now")];
+    }
+    assert_eq!(refused(&mut s, agent(), own_answers), ("invalid_input".into(), Some("options".into())));
+    let mut blocking = suggest("b");
+    if let Command::AskQuestion { blocking: b, .. } = &mut blocking {
+        *b = true;
+    }
+    assert_eq!(refused(&mut s, agent(), blocking), ("invalid_input".into(), Some("blocking".into())));
+}
+
+#[test]
+fn a_task_keeps_at_most_five_suggestions_waiting() {
+    let mut s = fixture();
+    for at in 1..=OPEN_SUGGESTIONS_MAX {
+        ok(&mut s, agent(), suggest(&format!("p{at}")));
+    }
+    assert_eq!(refused(&mut s, agent(), suggest("p6")), ("too_many_suggestions".into(), Some("scope.task_id".into())));
+    ok(&mut s, orchestrator(), settle("p1", "discarded", "Task 12 already covers it"));
+    ok(&mut s, agent(), suggest("p6"));
+}
+
+#[test]
+fn the_orchestrators_answer_and_note_reach_the_node() {
+    let mut s = fixture();
+    ok(&mut s, agent(), suggest("p"));
+    assert_eq!(refused(&mut s, user(), settle("p", "yours", "")).0, "forbidden");
+    let out = ok(&mut s, orchestrator(), settle("p", "yours", "Step 3 of your plan covers it"));
+    assert!(out.effects.iter().any(|e| matches!(e,
+        DomainEffect::NotifyAgent { agent_id, interaction_id: Some(i), .. } if agent_id.0 == "a" && i.0 == "p")), "{:?}", out.effects);
+    let InteractionPayload::Question { answer: Some(answer), .. } = &s.interactions[&"p".into()].payload else { panic!("unanswered") };
+    assert_eq!(answer.inputs["note"], InputValue::Text("Step 3 of your plan covers it".into()));
+}
+
+#[test]
+fn a_suggestion_holds_back_neither_the_delivery_nor_the_end_of_its_task() {
+    let mut s = fixture();
+    ok(&mut s, agent(), suggest("p"));
+    assert!(!s.unanswered(&"t".into()));
+    ok(&mut s, agent(), present("review", text(), true, review()));
     ok(&mut s, user(), Command::CancelTask { task_id: "t".into() });
-    ok(&mut s, user(), answer_with("do_it"));
-    assert!(s.requests.contains_key(&"proposal-p".into()));
-}
-
-#[test]
-fn a_proposal_stays_pending_and_answerable_after_its_task_ends() {
-    let mut s = fixture();
-    proposal(&mut s);
-    ok(&mut s, user(), Command::CancelTask { task_id: "t".into() });
-    let item = s.projection().inbox.into_iter().find(|item| item.id == "interaction:p").unwrap();
-    assert!(item.pending);
-    let action = item.available_actions.iter().find(|action| action.kind == "answer_question").unwrap();
-    assert_eq!((action.enabled, action.disabled_reason.as_deref()), (true, None));
+    ok(&mut s, orchestrator(), settle("p", "new_task", "Created as its own task"));
 }
 
 #[test]
@@ -524,10 +542,9 @@ fn no_pending_card_is_left_with_nothing_the_user_can_do_once_its_task_ends() {
         body: "Log in".into(), blocking: false, options: two(), card: with_verify(CardKind::Do, "Log in"),
     });
     ok(&mut s, orchestrator(), inform("know", scope("t"), "Heads up"));
-    proposal(&mut s);
     ok(&mut s, user(), Command::CancelTask { task_id: "t".into() });
     let items = s.projection().inbox;
-    assert!(items.iter().any(|item| item.pending), "the notice and the proposal remain");
+    assert!(items.iter().any(|item| item.pending), "the notice remains");
     for item in items.iter().filter(|item| item.pending) {
         assert!(
             item.available_actions.iter().any(|action| action.enabled),
@@ -537,7 +554,7 @@ fn no_pending_card_is_left_with_nothing_the_user_can_do_once_its_task_ends() {
     }
     let mut pending: Vec<&str> = items.iter().filter(|item| item.pending).map(|item| item.id.as_str()).collect();
     pending.sort();
-    assert_eq!(pending, ["interaction:know", "interaction:p"],
+    assert_eq!(pending, ["interaction:know"],
         "a card nobody can answer leaves the inbox in silence: {pending:?}");
     for card in ["decide", "test", "provide", "do"] {
         assert!(s.interactions[&card.into()].withdrawn, "{card} is withdrawn, not left open");
@@ -583,13 +600,11 @@ fn the_inbox_has_one_item_per_interaction_and_never_groups_by_pr_or_document() {
 }
 
 #[test]
-fn the_inbox_runs_problem_then_blocking_asks_then_review_provide_propose_know_oldest_first() {
+fn the_inbox_runs_problem_then_blocking_asks_then_review_provide_know_oldest_first() {
     let mut s = fixture();
     register_agent(&mut s, "b");
     task(&mut s, "t2", "b");
     ok(&mut s, orchestrator(), inform("know-old", scope("t"), "The first notice"));
-    ok(&mut s, agent(), ask("propose", "t", false,
-        CardSpec::new(CardKind::Propose, "Let me also update the README").why("It names the old flag")));
     ok(&mut s, agent(), ask("provide", "t", false,
         CardSpec::new(CardKind::Provide, "Send a screenshot of the bug").why("I cannot reproduce it")));
     ok(&mut s, orchestrator(), inform("know-new", scope("t"), "The second notice"));
@@ -618,8 +633,8 @@ fn the_inbox_runs_problem_then_blocking_asks_then_review_provide_propose_know_ol
     });
     assert_eq!(
         inbox_ids(&s),
-        ["problem", "permission", "decide", "do", "review", "provide", "propose", "know-old", "know-new"],
-        "problem, what holds a node up (oldest first), review, provide, propose, notices (oldest first)"
+        ["problem", "permission", "decide", "do", "review", "provide", "know-old", "know-new"],
+        "problem, what holds a node up (oldest first), review, provide, notices (oldest first)"
     );
 }
 

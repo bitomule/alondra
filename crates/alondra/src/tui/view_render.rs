@@ -1,6 +1,7 @@
 //! Text rendering for daemon-built views. The component switch lives here so new view
 //! components have one deliberate TUI representation.
 
+use std::borrow::Cow;
 use std::collections::BTreeSet;
 
 use alondra_core::domain::CardKind;
@@ -58,6 +59,7 @@ pub fn folded(view: &View, section: &Section, open: &BTreeSet<String>) -> bool {
 pub fn entries(
     view: &View,
     open: &BTreeSet<String>,
+    open_rows: &BTreeSet<String>,
 ) -> Vec<(String, bool, Option<alondra_core::views::Link>)> {
     let mut result = Vec::new();
     for section in &view.sections {
@@ -72,7 +74,7 @@ pub fn entries(
                 Item::Row(row) if opens_schedules(view, &row.id) => {}
                 Item::Row(row) => {
                     result.push((row.id.clone(), false, row.link.clone()));
-                    result.extend(nested_rows(row).into_iter().map(|child| (child.id.clone(), true, child.link.clone())));
+                    result.extend(shown_rows(row, open_rows).into_iter().map(|child| (child.id.clone(), true, child.link.clone())));
                 }
                 Item::Card(card) if section.id != "detail" => {
                     result.push((card.id.clone(), false, card.link.clone()));
@@ -87,6 +89,54 @@ pub fn entries(
 /// Everything under a row, in reading order: the list draws a task tree as one indented column.
 pub fn nested_rows(row: &Row) -> Vec<&Row> {
     row.children.iter().flat_map(|child| std::iter::once(child).chain(nested_rows(child))).collect()
+}
+
+/// The rows under `row` the list shows: a row the daemon sends folded hides its own until the user opens it.
+pub fn shown_rows<'a>(row: &'a Row, open: &BTreeSet<String>) -> Vec<&'a Row> {
+    if row.folded && !open.contains(&row.id) {
+        return Vec::new();
+    }
+    row.children.iter().flat_map(|child| std::iter::once(child).chain(shown_rows(child, open))).collect()
+}
+
+/// A folded row says with ▸ or ▾ whether the rows under it are shown.
+pub fn fold_marked<'a>(row: &'a Row, open: &BTreeSet<String>) -> Cow<'a, Row> {
+    if !row.folded {
+        return Cow::Borrowed(row);
+    }
+    let mark = if open.contains(&row.id) { "▾" } else { "▸" };
+    Cow::Owned(Row { title: format!("{mark} {}", row.title), ..row.clone() })
+}
+
+/// Whether a section carries the Tasks list's blocks (For you, In progress, Waiting) as rows.
+pub fn has_blocks(section: &Section) -> bool {
+    section.items.iter().any(|item| matches!(item, Item::Row(row) if row.id.starts_with("block:")))
+}
+
+/// The TUI lists each block of the Tasks list as a section of its own, its title over its tasks.
+pub fn lift_blocks(sections: &mut Vec<Section>) {
+    let Some(at) = sections.iter().position(has_blocks) else { return };
+    let section = sections.remove(at);
+    let blocks = section.items.into_iter().filter_map(|item| match item {
+        Item::Row(row) if row.id.starts_with("block:") => Some(row),
+        _ => None,
+    }).map(|block| {
+        let count = match &block.trailing {
+            Some(alondra_core::views::Trailing::Text { text }) => text.parse().ok(),
+            _ => None,
+        };
+        Section {
+            id: block.id,
+            title: Some(block.title),
+            count,
+            collapsed: false,
+            items: block.children.into_iter().map(Item::Row).collect(),
+            card_ids: vec![],
+            card_waits: vec![],
+            more: None,
+        }
+    });
+    sections.splice(at..at, blocks);
 }
 
 pub fn rows(view: &View) -> Vec<(&Row, bool)> {
@@ -475,8 +525,8 @@ pub fn document_lines(view: &View, width: usize) -> Vec<Line<'static>> {
                 Item::Card(card) => lines.extend(card_lines(card, width)),
                 Item::Row(row) => {
                     lines.extend(row_lines(row, width, false, row.depth > 0));
-                    for child in nested_rows(row) {
-                        lines.extend(row_lines(child, width, false, true));
+                    for child in shown_rows(row, &BTreeSet::new()) {
+                        lines.extend(row_lines(&fold_marked(child, &BTreeSet::new()), width, false, true));
                     }
                 }
                 Item::Markdown(markdown) => {

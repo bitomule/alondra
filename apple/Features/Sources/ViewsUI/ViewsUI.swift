@@ -246,17 +246,34 @@ public struct RowView: View {
     public let row: Row
     public var onAction: (Action) -> Void
     public var onLink: (Link) -> Void
+    /// A row the daemon sends folded shows its children once clicked.
+    @State private var opened = false
     public init(row: Row, onAction: @escaping (Action) -> Void = { _ in }, onLink: @escaping (Link) -> Void = { _ in }) { self.row = row; self.onAction = onAction; self.onLink = onLink }
     public var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 8) {
-                Image(systemName: iconName(row.icon)).foregroundStyle(ViewPalette.dawn)
-                VStack(alignment: .leading, spacing: 2) { Text(row.title).font(.subheadline.weight(.semibold)).strikethrough(row.struck); if let subtitle = row.subtitle { Text(subtitle).font(.caption).foregroundStyle(.secondary) } }
-                Spacer()
-                if let trailing = row.trailing { TrailingView(trailing: trailing) }
+            if row.folded {
+                Button { withAnimation(.smooth) { opened.toggle() } } label: {
+                    HStack(spacing: 6) {
+                        Text(row.title).font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
+                        Image(systemName: "chevron.right").font(.caption.weight(.bold)).foregroundStyle(.secondary)
+                            .rotationEffect(.degrees(opened ? 90 : 0)).accessibilityHidden(true)
+                        Spacer()
+                    }.contentShape(.rect)
+                }
+                .buttonStyle(.plain)
+                .accessibilityHint(opened ? Text("Hides them") : Text("Shows them"))
+            } else {
+                HStack(spacing: 8) {
+                    Image(systemName: iconName(row.icon)).foregroundStyle(ViewPalette.dawn)
+                    VStack(alignment: .leading, spacing: 2) { Text(row.title).font(.subheadline.weight(.semibold)).strikethrough(row.struck); if let subtitle = row.subtitle { Text(subtitle).font(.caption).foregroundStyle(.secondary) } }
+                    Spacer()
+                    if let trailing = row.trailing { TrailingView(trailing: trailing) }
+                }
             }
             if !row.badges.isEmpty { LabelList(labels: row.badges) }
-            ForEach(Array(row.children.enumerated()), id: \.offset) { _, child in RowView(row: child, onAction: onAction, onLink: onLink).padding(.leading, 18) }
+            if !row.folded || opened {
+                ForEach(row.children, id: \.id) { child in RowView(row: child, onAction: onAction, onLink: onLink).padding(.leading, 18) }
+            }
             if !row.actions.isEmpty { ActionButtons(actions: row.actions, onAction: onAction, onLink: onLink) }
         }
         .padding(12).frame(maxWidth: .infinity, alignment: .leading)

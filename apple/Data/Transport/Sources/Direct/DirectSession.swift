@@ -91,6 +91,7 @@ public actor DirectSession: OperationAPI {
             let endpoint: DirectEndpoint
             do { endpoint = try await router.endpoint() }
             catch is DirectRouteError where mayHaveArrived { break }
+            let context = await router.requestContext()
             let reply: HTTPReply
             do { reply = try await http.post(endpoint, path: "/direct/request", body: body, timeout: timeout) }
             catch let error as URLError where error.code == .cancelled { throw CancellationError() }
@@ -104,26 +105,26 @@ public actor DirectSession: OperationAPI {
                 // Only an answer that opens with the pinned keys proves the address is this Mac.
                 if let envelope = try? JSONDecoder().decode(Envelope.self, from: reply.body),
                    let response = try? codec.opened(envelope, requestID: requestID) {
-                    await router.proved(endpoint)
+                    await router.proved(endpoint, in: context)
                     if Self.saysRevoked(response) { throw DirectSessionError.deviceRevoked }
                     return response
                 }
-                await router.reject(endpoint)
+                await router.reject(endpoint, in: context)
                 continue
             }
             // A bare status is not signed, so it never says anything about the Mac or this
             // device: a refusal rules out only that address, and the Mac stays as not answering.
             // From an address proved on this network, a conflict or a rejection is believed.
-            guard reply.status != 401, await router.isProven(endpoint) else {
-                await router.reject(endpoint)
+            guard reply.status != 401, await router.isProven(endpoint, in: context) else {
+                await router.reject(endpoint, in: context)
                 continue
             }
             switch reply.status {
             case 409: throw RelaySessionError.operationIdentityConflict
-            case 421: await router.reject(endpoint)
+            case 421: await router.reject(endpoint, in: context)
             case 429, 503: continue
             case 400: return .completed(status: 400, body: reply.body)
-            default: await router.reject(endpoint)
+            default: await router.reject(endpoint, in: context)
             }
         }
         if mutation && mayHaveArrived { return .unknown }

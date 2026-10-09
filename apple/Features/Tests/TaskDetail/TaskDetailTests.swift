@@ -49,7 +49,7 @@ final class TaskDetailTests: XCTestCase {
     func testATaskWhoseNodeTheUserClosedOffersRelaunchBeforeCancel() throws {
         let detail = TaskDetail(document: try Fixtures.document("task-closed-ios"))
 
-        XCTAssertEqual(detail.state, "Node closed")
+        XCTAssertEqual(detail.state, "Stopped · You closed its session before it delivered")
         XCTAssertEqual(detail.relaunch?.label, "Relaunch")
         XCTAssertEqual(detail.relaunch?.enabled, true)
         XCTAssertEqual(detail.actions.map(\.command), ["relaunch", "set_priority", "cancel"])

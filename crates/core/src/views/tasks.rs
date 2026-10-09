@@ -1,99 +1,22 @@
 use super::{
+    task_state::{self, Block},
     BuildError, Confirm, Fact, Facts, Icon, Item, Link, LocalLink, Markdown, Notice, RenderContext,
     Style, Tone, Trailing, View, action_id::Verb, common, text::{t, tf},
 };
 use crate::domain::{DomainState, ModelChooser, NodeEnd, Request, RequestId, Task, TaskId, TaskState};
 use std::collections::{BTreeMap, BTreeSet};
 
-/// The task's state as a short line. A task that waits says what for, whatever it waits for.
+/// The task's state as a short line, the same the Tasks list shows.
 fn state(task: &Task, context: &RenderContext<'_>) -> String {
-    if let Some(paused) = common::paused(task, context) {
-        return common::paused_label(paused, context.lang);
-    }
-    if let Some(queued) = common::queued(task, context) {
-        return common::queued_label(queued, context.lang);
-    }
-    let plain = plain_state(task, context);
-    if plain == t!(context.lang, "Waiting", "Esperando")
-        && let crate::domain::Attention::Wait(reason) = context.domain.attention(task)
-    {
-        return wait_text(&reason, context);
-    }
-    if plain == t!(context.lang, "Not started", "Sin empezar") {
-        return not_started(task, context);
-    }
-    if task.state == TaskState::Running && plain == t!(context.lang, "Working", "Trabajando") {
-        match node(task, context) {
-            Some(node) if node.reconnecting => return t!(context.lang, "Reconnecting", "Reconectando").into(),
-            Some(node) if node.disconnected => return t!(context.lang, "No connection", "Sin conexión").into(),
-            Some(node) if node.quiet => return t!(context.lang, "No activity", "Sin actividad").into(),
-            _ => {}
-        }
-    }
-    plain.into()
+    task_state::present(task, context).state
 }
 
-/// Why a task that has not started has not, as a fact: what refused its last launch, the task it
-/// waits for, or when Alondra tries again; otherwise Alondra starts it when there is room.
-fn not_started(task: &Task, context: &RenderContext<'_>) -> String {
-    let lang = context.lang;
-    if let Some(super::live::LiveStartWait::Retry { at }) = context.live.start_waits.get(&task.id.0) {
-        return tf!(lang, "Didn't start: trying again at {at}", "No arrancó: reintento a las {at}", at = at);
-    }
-    let Some(refusal) = context.live.launch_refusals.get(&task.id.0) else {
-        let pending = task.dependencies.iter().chain(&task.delivered_dependencies)
-            .filter_map(|id| context.domain.tasks.get(id))
-            .find(|dependency| !dependency.state.terminal());
-        return match pending {
-            Some(dependency) => wait_text(&crate::domain::WaitReason::BlockedBy { task: dependency.id.clone() }, context),
-            None => match context.live.start_waits.get(&task.id.0) {
-                Some(super::live::LiveStartWait::Room) if context.live.usage_exhausted.is_some() =>
-                    t!(lang, "Won't start: Claude usage ran out", "No arranca: se acabó el uso de Claude").into(),
-                Some(super::live::LiveStartWait::Room) => t!(lang, "Starting", "Arrancando").into(),
-                Some(super::live::LiveStartWait::Retry { .. }) | None =>
-                    t!(lang, "Waiting for the orchestrator to launch it", "Esperando a que el orquestador la lance").into(),
-            },
-        };
-    };
-    match (refusal.reason.as_str(), refusal.detail.as_deref()) {
-        ("workspace_untrusted", Some(folder)) => tf!(lang, "Won't start: Claude Code doesn't trust {folder}",
-            "No arranca: Claude Code no confía en {folder}", folder = folder),
-        ("workspace_untrusted", None) => t!(lang, "Won't start: Claude Code doesn't trust its folder",
-            "No arranca: Claude Code no confía en su carpeta").into(),
-        ("usage_exhausted", _) => t!(lang, "Won't start: Claude usage ran out", "No arranca: se acabó el uso de Claude").into(),
-        ("disk_low", _) => t!(lang, "Won't start: the disk is almost full", "No arranca: el disco está casi lleno").into(),
-        (_, Some(error)) => tf!(lang, "Didn't start: {error}", "No arrancó: {error}", error = error.lines().next().unwrap_or(error)),
-        _ => t!(lang, "Didn't start", "No arrancó").into(),
-    }
-}
-
-/// What Alondra sees of the task's node now: reconnecting, without a connection, or quiet for
-/// long enough to say so (the row's time says how long).
-fn node<'a>(task: &Task, context: &RenderContext<'a>) -> Option<&'a super::live::LiveNode> {
-    task.agent_id.as_ref().and_then(|id| context.live.nodes.iter().find(|node| node.agent_id == id.0))
-}
-
-fn plain_state(task: &Task, context: &RenderContext<'_>) -> &'static str {
-    let (domain, lang) = (context.domain, context.lang);
-    if let Some(label) = common::instruction_label(task, domain, lang) {
-        return label;
-    }
-    if common::failed_launch(task, domain).is_some() {
-        return common::launch_failed_label(lang);
-    }
-    if common::node_closed(task, context) {
-        return common::node_closed_label(lang);
-    }
-    match task.state {
-        TaskState::NotStarted => t!(lang, "Not started", "Sin empezar"),
-        TaskState::Running => t!(lang, "Working", "Trabajando"),
-        TaskState::NeedsYou => t!(lang, "Needs you", "Te necesita"),
-        TaskState::ForYourReview => t!(lang, "In review", "En revisión"),
-        TaskState::AwaitingBlocker => t!(lang, "Waiting", "Esperando"),
-        TaskState::WaitingDependency => t!(lang, "Waiting", "Esperando"),
-        TaskState::Closing => t!(lang, "Closing", "Cerrando"),
-        TaskState::Done => t!(lang, "Finished", "Terminado"),
-        TaskState::Cancelled => t!(lang, "Cancelled", "Cancelado"),
+/// A task's own screen says its state with the fact that explains it, unless what it does now has its own lines.
+fn detail_state(task: &Task, context: &RenderContext<'_>) -> String {
+    let presentation = task_state::present(task, context);
+    match (&presentation.fact, presentation.block) {
+        (Some(fact), Block::ForYou | Block::Waiting) => format!("{} · {fact}", presentation.state),
+        _ => presentation.state,
     }
 }
 
@@ -112,31 +35,50 @@ fn relaunch_action(task: &Task, context: &RenderContext<'_>) -> Option<super::Ac
 }
 
 pub(super) fn task_row(task: &Task, context: &RenderContext<'_>) -> super::Row {
-    let (icon, tone) = common::task_presentation(task.state);
-    let mut row = common::row(
-        &task.id.0,
-        &format!("task:{}", task.id),
-        icon,
-        task.title.clone(),
-        Some(state(task, context).into()),
-    );
+    presented_row(task, &task_state::present(task, context), context)
+}
+
+/// One task as the list draws it: its state in colour, its title, and one fact with since when it holds. The iPhone
+/// reads the fact from the row's `activity` line, the Mac beside the state, the TUI under the title.
+fn presented_row(task: &Task, presentation: &task_state::Presentation, context: &RenderContext<'_>) -> super::Row {
+    let mut row = common::row(&task.id.0, &format!("task:{}", task.id), presentation.icon, task.title.clone(),
+        Some(presentation.state.clone()));
     row.struck = task.state == TaskState::Cancelled;
-    row.badges.push(super::Label { text: state(task, context).into(), tone });
+    row.badges.push(super::Label { text: presentation.state.clone(), tone: presentation.tone });
     row.badges.extend(common::scheduled_mark(task, context.domain, context.lang));
     row.actions.extend(relaunch_action(task, context));
     row.actions.extend(super::pacing::task_actions(task, context));
-    if context.client == super::Client::Tui {
-        row.subtitle = None;
-        row.trailing = context.live.task_history.get(&task.id.0)
-            .and_then(|history| history.last())
-            .map(|step| Trailing::Time { at: step.at.clone(), format: super::TimeFormat::Relative });
-        return row;
+    let since = presentation.since.clone().map(|at| Trailing::Time { at, format: super::TimeFormat::Relative });
+    match context.client {
+        super::Client::Tui => {
+            row.subtitle = presentation.fact.clone();
+            row.trailing = since;
+            return row;
+        }
+        super::Client::Ios => {
+            if let Some(fact) = &presentation.fact {
+                let mut line = common::row("activity", "node", Icon::Notice, fact.clone(), None);
+                line.link = None;
+                line.trailing = since;
+                row.children.push(line);
+            }
+        }
+        _ => {
+            row.subtitle = presentation.fact.clone();
+            let count = context.projection.inbox.iter()
+                .filter(|item| item.pending && item.task_id.as_ref() == Some(&task.id))
+                .count();
+            row.trailing = (count > 0).then(|| Trailing::Text {
+                text: match count {
+                    1 => t!(context.lang, "1 question", "1 pregunta").into(),
+                    _ => tf!(context.lang, "{count} questions", "{count} preguntas"),
+                },
+            });
+            return row;
+        }
     }
     row.trailing = Some(Trailing::Count {
-        value: context
-            .projection
-            .inbox
-            .iter()
+        value: context.projection.inbox.iter()
             .filter(|item| item.pending && item.task_id.as_ref() == Some(&task.id))
             .count() as u32,
     });
@@ -305,13 +247,9 @@ fn request_row(request: &Request, forest: &Forest<'_>, context: &RenderContext<'
     let tasks = forest.tasks_of(&request.id);
     let title = forest.request_title(&request.id).unwrap_or_else(|| summary(&request.body));
     let split = forest.split.contains(&request.id);
-    let headline = if split {
-        t!(context.lang, "The rest is still under way", "El resto sigue en marcha")
-    } else {
-        request_state(request, tasks, context)
-    };
+    let headline = (!split).then(|| request_state(request, tasks, context));
     let id = if split { format!("{}:ended", request.id) } else { request.id.0.clone() };
-    let mut row = common::row(&id, &format!("request:{}", request.id), Icon::Mission, title, Some(headline.into()));
+    let mut row = common::row(&id, &format!("request:{}", request.id), Icon::Mission, title, headline.map(Into::into));
     row.trailing = context
         .live
         .request_times
@@ -424,11 +362,6 @@ fn branch(task: &Task, depth: u8, forest: &Forest<'_>, placed: &mut BTreeSet<Tas
     if !placed.insert(task.id.clone()) { return None; }
     let mut row = task_row(task, context);
     row.depth = depth;
-    if context.client == super::Client::Ios {
-        row.children.extend(task.agent_id.as_ref()
-            .and_then(|id| context.live.nodes.iter().find(|node| node.agent_id == id.0))
-            .and_then(super::fleet::activity));
-    }
     if forest.nested_under.contains_key(&task.id)
         && let Some(origin) = forest.request_title(&task.request_id) {
         mark_origin(&mut row, &origin, context);
@@ -488,6 +421,316 @@ fn merge_order<'a>(domain: &'a DomainState, task: &'a Task) -> Vec<&'a Task> {
     order
 }
 
+/// From how many waiting tasks a chain folds them under its first task.
+const CHAIN_FOLDS_FROM: usize = 1;
+
+/// One entry of the active list: a task alone, or a request with a real title and several tasks under its header.
+enum Entry<'a> {
+    Task(&'a Task),
+    Group(&'a Request, Vec<&'a Task>),
+    /// A request the orchestrator has not split into tasks yet.
+    Request(&'a Request),
+}
+
+/// The active list in three blocks, For you, In progress and Waiting: one row per task, a header only for a
+/// request that is not a message to the orchestrator and has several tasks here, and the tasks that wait on
+/// others folded in a chain under the first of them.
+fn active_items(buckets: &BTreeMap<&RequestId, Bucket>, context: &RenderContext<'_>) -> (Vec<Item>, u32) {
+    let domain = context.domain;
+    let listed: Vec<&Task> = domain.tasks.values()
+        .filter(|task| buckets.get(&task.request_id).is_some_and(|whole| task_bucket(task, *whole) == Bucket::Active))
+        .collect();
+    let shown: BTreeMap<&TaskId, task_state::Presentation> = listed.iter()
+        .map(|task| (&task.id, task_state::present(task, context))).collect();
+    let chains = chains(&listed, &shown, context);
+    let in_chain: BTreeSet<&TaskId> = chains.values().flatten().map(|task| &task.id).collect();
+    let loose: Vec<&Task> = listed.iter().copied().filter(|task| !in_chain.contains(&task.id)).collect();
+    let mut by_request: BTreeMap<&RequestId, Vec<&Task>> = BTreeMap::new();
+    for task in &loose {
+        by_request.entry(&task.request_id).or_default().push(task);
+    }
+    let grouped = |task: &Task| by_request.get(&task.request_id).filter(|tasks| tasks.len() > 1)
+        .and_then(|_| domain.requests.get(&task.request_id))
+        .filter(|request| !request.message && request.title.is_some());
+    let mut entries: Vec<Entry<'_>> = Vec::new();
+    let mut placed = BTreeSet::new();
+    for task in &loose {
+        match grouped(task) {
+            Some(request) if placed.insert(&request.id) => entries.push(Entry::Group(request, by_request[&request.id].clone())),
+            Some(_) => {}
+            None => entries.push(Entry::Task(task)),
+        }
+    }
+    let mut with_tasks: BTreeSet<&RequestId> = domain.tasks.values().map(|task| &task.request_id).collect();
+    for request in domain.requests.values()
+        .filter(|request| buckets.get(&request.id) == Some(&Bucket::Active) && with_tasks.insert(&request.id)) {
+        entries.push(Entry::Request(request));
+    }
+    let lead = |entry: &Entry<'_>| -> (Block, Order) {
+        let tasks = match entry {
+            Entry::Task(task) => vec![*task],
+            Entry::Group(_, tasks) => tasks.clone(),
+            Entry::Request(request) => {
+                let since = context.live.request_times.get(&request.id.0).cloned();
+                let block = if splitting_waits_for_you(context) { Block::ForYou } else { Block::InProgress };
+                let presentation = task_state::Presentation::waiting_request(block, since);
+                return (block, order(&presentation));
+            }
+        };
+        tasks.iter().map(|task| {
+            let presentation = &shown[&task.id];
+            (presentation.block, order(presentation))
+        }).min().expect("an entry has a task")
+    };
+    let mut blocks: BTreeMap<Block, Vec<(Entry<'_>, Order)>> = BTreeMap::new();
+    for entry in entries {
+        let (block, key) = lead(&entry);
+        match entry {
+            Entry::Group(_, tasks) if block == Block::Waiting => {
+                for task in tasks { blocks.entry(block).or_default().push((Entry::Task(task), order(&shown[&task.id]))); }
+            }
+            entry => blocks.entry(block).or_default().push((entry, key)),
+        }
+    }
+    let projects = projects(&listed, context);
+    let mut items = Vec::new();
+    for (block, mut entries) in blocks {
+        entries.sort_by(|(_, left), (_, right)| left.cmp(right));
+        let (id, title) = match block {
+            Block::ForYou => ("block:for-you", t!(context.lang, "For you", "Para ti")),
+            Block::InProgress => ("block:in-progress", t!(context.lang, "In progress", "En marcha")),
+            Block::Waiting | Block::Ended => ("block:waiting", t!(context.lang, "Waiting", "En espera")),
+        };
+        let mut row = common::row(id, "", Icon::Task, title.into(), None);
+        row.link = None;
+        let mut count = 0;
+        for (entry, _) in entries {
+            match entry {
+                Entry::Task(task) => {
+                    count += 1;
+                    let mut line = entry_row(task, 1, &shown, &chains, &projects, context);
+                    if block == Block::Waiting && let Some(name) = grouped(task).map(request_name) {
+                        append_fact(&mut line, &name, context);
+                    }
+                    row.children.push(line);
+                }
+                Entry::Request(request) => {
+                    count += 1;
+                    let mut line = common::row(&request.id.0, &format!("request:{}", request.id), Icon::Mission,
+                        request_name(request), Some(request_state(request, &[], context).into()));
+                    line.depth = 1;
+                    line.trailing = context.live.request_times.get(&request.id.0)
+                        .map(|at| Trailing::Time { at: at.clone(), format: super::TimeFormat::Relative });
+                    line.link = None;
+                    row.children.push(line);
+                }
+                Entry::Group(request, tasks) => {
+                    let mut header = group_row(request, &tasks, context);
+                    for task in &tasks {
+                        count += 1;
+                        header.children.push(entry_row(task, 2, &shown, &chains, &projects, context));
+                    }
+                    row.children.push(header);
+                }
+            }
+        }
+        row.trailing = Some(Trailing::Text { text: count.to_string() });
+        items.push(Item::Row(row));
+    }
+    (items, listed.len() as u32)
+}
+
+/// A request not split yet waits for the user when the orchestrator stopped and asks whether to retry.
+fn splitting_waits_for_you(context: &RenderContext<'_>) -> bool {
+    context.live.orchestrator.as_ref().is_some_and(|orchestrator| orchestrator.can_retry)
+}
+
+/// Where a task goes inside its block: what needs the user longest waiting first; what works most recently active
+/// first; the queue by its place, then the rest most recent first.
+fn order(presentation: &task_state::Presentation) -> Order {
+    let at = presentation.since.clone();
+    match (presentation.block, presentation.queue) {
+        (Block::ForYou, _) => (0, 0, at.unwrap_or_else(|| "~".into()), std::cmp::Reverse(String::new())),
+        (Block::Waiting, Some(place)) => (0, place, String::new(), std::cmp::Reverse(String::new())),
+        _ => (1, 0, String::new(), std::cmp::Reverse(presentation.active_at.clone().or(at).unwrap_or_default())),
+    }
+}
+
+/// Local ISO times of one Mac compare as text.
+type Order = (u8, usize, String, std::cmp::Reverse<String>);
+
+/// The project of each task whose node says one, when the list mixes projects: only the ones that are not the
+/// most common carry it as a mark.
+fn projects<'a>(listed: &[&'a Task], context: &'a RenderContext<'_>) -> BTreeMap<&'a TaskId, &'a str> {
+    let known: BTreeMap<&TaskId, &str> = listed.iter().filter_map(|task| {
+        let id = task.agent_id.as_ref()?;
+        let project = context.live.nodes.iter().find(|node| node.agent_id == id.0)?.project.as_deref()?;
+        (project != "others").then_some((&task.id, project))
+    }).collect();
+    let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+    for project in known.values() { *counts.entry(project).or_default() += 1; }
+    let Some(common) = counts.iter().max_by_key(|(_, count)| **count).map(|(project, _)| *project) else { return BTreeMap::new() };
+    known.into_iter().filter(|(_, project)| *project != common).collect()
+}
+
+fn request_name(request: &Request) -> String {
+    request.title.clone().unwrap_or_else(|| summary(&request.body))
+}
+
+/// A waiting line of a group without header names the group after its fact.
+fn append_fact(row: &mut super::Row, name: &str, context: &RenderContext<'_>) {
+    match context.client {
+        super::Client::Ios => match row.children.iter_mut().find(|child| child.id == "activity") {
+            Some(line) => line.title = format!("{} · {name}", line.title),
+            None => {
+                let mut line = common::row("activity", "node", Icon::Notice, name.into(), None);
+                line.link = None;
+                row.children.push(line);
+            }
+        },
+        _ => row.subtitle = Some(match row.subtitle.take() {
+            Some(text) => format!("{text} · {name}"),
+            None => name.into(),
+        }),
+    }
+}
+
+fn group_row(request: &Request, tasks: &[&Task], context: &RenderContext<'_>) -> super::Row {
+    let mut row = common::row(&format!("group:{}", request.id), &format!("request:{}", request.id), Icon::Mission,
+        request_name(request), None);
+    row.depth = 1;
+    row.trailing = context.live.request_times.get(&request.id.0)
+        .map(|at| Trailing::Time { at: at.clone(), format: super::TimeFormat::Relative });
+    if let Some(project) = tasks.iter().filter_map(|task| task.agent_id.as_ref())
+        .filter_map(|id| context.live.nodes.iter().find(|node| node.agent_id == id.0))
+        .filter_map(|node| node.project.as_deref()).find(|project| *project != "others") {
+        row.badges.push(super::Label { text: project.into(), tone: Tone::Neutral });
+    }
+    row.link = tasks.iter().max_by_key(|task| task.revision).map(|task| super::Link::View { key: format!("task:{}", task.id) });
+    if context.client == super::Client::Tui {
+        row.badges.insert(0, super::Label {
+            text: tf!(context.lang, "{count} tasks", "{count} tareas", count = tasks.len()),
+            tone: Tone::Neutral,
+        });
+    }
+    row
+}
+
+/// A task with the chain of tasks that wait for it folded under it.
+fn entry_row(task: &Task, depth: u8, shown: &BTreeMap<&TaskId, task_state::Presentation>,
+    chains: &BTreeMap<&TaskId, Vec<&Task>>, projects: &BTreeMap<&TaskId, &str>, context: &RenderContext<'_>) -> super::Row {
+    let mut row = presented_row(task, &shown[&task.id], context);
+    row.depth = depth;
+    if let Some(project) = projects.get(&task.id) {
+        row.badges.push(super::Label { text: (*project).into(), tone: Tone::Neutral });
+    }
+    let Some(waiting) = chains.get(&task.id).filter(|waiting| waiting.len() >= CHAIN_FOLDS_FROM) else { return row };
+    let mut fold = common::row(&format!("chain:{}", task.id), "", Icon::Branch,
+        tf!(context.lang, "+{count} waiting for this", "+{count} esperando a esta", count = waiting.len()), None);
+    fold.link = None;
+    fold.folded = true;
+    fold.depth = depth.saturating_add(1);
+    for member in waiting {
+        let mut line = common::row(&member.id.0, &format!("task:{}", member.id), Icon::Branch, member.title.clone(),
+            Some(waits_for(member, context)));
+        line.depth = depth.saturating_add(2);
+        line.badges.push(super::Label { text: shown[&member.id].state.clone(), tone: shown[&member.id].tone });
+        if context.client == super::Client::Tui {
+            line.badges.clear();
+        }
+        fold.children.push(line);
+    }
+    row.children.push(fold);
+    row
+}
+
+/// "waits for Guided install PR 4, 5 and 7": the tasks it waits for directly, each by the part of its title
+/// before ":", with what they share said once.
+fn waits_for(task: &Task, context: &RenderContext<'_>) -> String {
+    let names: Vec<String> = task_state::open_dependencies(task, context).iter()
+        .map(|dependency| dependency.title.split_once(':').map_or(dependency.title.as_str(), |(head, _)| head).trim().to_owned())
+        .collect();
+    let names = shared_prefix_once(&names);
+    let joined = match names.as_slice() {
+        [] => String::new(),
+        [only] => only.clone(),
+        [head @ .., last] => {
+            let and = t!(context.lang, "and", "y");
+            format!("{} {and} {last}", head.join(", "))
+        }
+    };
+    tf!(context.lang, "waits for {joined}", "espera a {joined}")
+}
+
+/// ["Install PR 4", "Install PR 5"] reads as ["Install PR 4", "5"]: the words they share are said once.
+fn shared_prefix_once(names: &[String]) -> Vec<String> {
+    let [first, rest @ ..] = names else { return Vec::new() };
+    if rest.is_empty() {
+        return vec![first.clone()];
+    }
+    let mut shared = first.as_str();
+    for name in rest {
+        while !name.starts_with(shared) {
+            shared = match shared.trim_end().rsplit_once(' ') {
+                Some((head, _)) => &first[..head.len() + 1],
+                None => "",
+            };
+        }
+    }
+    let shared = &shared[..shared.rfind(' ').map_or(0, |at| at + 1)];
+    if shared.is_empty() || names.iter().any(|name| name.len() == shared.len()) {
+        return names.to_vec();
+    }
+    std::iter::once(first.clone()).chain(rest.iter().map(|name| name[shared.len()..].to_owned())).collect()
+}
+
+/// The tasks that wait on others, under the first open task of their chain, each after what it waits for.
+fn chains<'a>(listed: &[&'a Task], shown: &BTreeMap<&TaskId, task_state::Presentation>,
+    context: &RenderContext<'a>) -> BTreeMap<&'a TaskId, Vec<&'a Task>> {
+    let by_id: BTreeMap<&TaskId, &Task> = listed.iter().map(|task| (&task.id, *task)).collect();
+    let chained = |task: &Task| shown.get(&task.id).is_some_and(|presentation| presentation.chained);
+    let waits_on = |task: &Task| -> Vec<&'a Task> {
+        task_state::open_dependencies(task, context).into_iter().filter(|dependency| by_id.contains_key(&dependency.id)).collect()
+    };
+    let head = |task: &'a Task| -> Option<&'a Task> {
+        let mut seen = BTreeSet::new();
+        let mut current = task;
+        loop {
+            if !seen.insert(&current.id) { return None; }
+            let next = waits_on(current).into_iter().min_by_key(|dependency| (chained(dependency), dependency.id.clone()))?;
+            if !chained(next) { return Some(next); }
+            current = next;
+        }
+    };
+    let mut members: BTreeMap<&TaskId, Vec<&Task>> = BTreeMap::new();
+    for task in listed.iter().copied().filter(|task| chained(task)) {
+        if let Some(head) = head(task) {
+            members.entry(&head.id).or_default().push(task);
+        }
+    }
+    members.into_iter().map(|(head, tasks)| {
+        let mut ordered: Vec<&Task> = Vec::new();
+        let mut placed: BTreeSet<&TaskId> = BTreeSet::from([head]);
+        fn visit<'a>(from: &TaskId, tasks: &[&'a Task], placed: &mut BTreeSet<&'a TaskId>, ordered: &mut Vec<&'a Task>,
+            ready: &dyn Fn(&Task, &BTreeSet<&'a TaskId>) -> bool) {
+            for task in tasks.iter().copied().filter(|task| task.dependencies.contains(from) || task.delivered_dependencies.contains(from)) {
+                if placed.contains(&task.id) || !ready(task, placed) { continue; }
+                placed.insert(&task.id);
+                ordered.push(task);
+                visit(&task.id, tasks, placed, ordered, ready);
+            }
+        }
+        let inside: BTreeSet<&TaskId> = tasks.iter().map(|task| &task.id).chain([head]).collect();
+        let ready = |task: &Task, placed: &BTreeSet<&TaskId>| task.dependencies.iter().chain(&task.delivered_dependencies)
+            .filter(|id| inside.contains(id)).all(|id| placed.contains(id));
+        visit(head, &tasks, &mut placed, &mut ordered, &ready);
+        for task in &tasks {
+            if !placed.contains(&task.id) { placed.insert(&task.id); ordered.push(task); }
+        }
+        (head, ordered)
+    }).collect()
+}
+
 pub(super) fn list(key: &str, context: &RenderContext<'_>) -> Result<View, BuildError> {
     let page = if key == "tasks" {
         None
@@ -532,6 +775,13 @@ pub(super) fn list(key: &str, context: &RenderContext<'_>) -> Result<View, Build
         ("finished", t!(context.lang, "Finished", "Terminadas"), Bucket::Finished),
         ("archived", t!(context.lang, "Archived", "Archivadas"), Bucket::Archived),
     ] {
+        if section == Bucket::Active {
+            let (items, count) = active_items(&buckets, context);
+            let mut active = common::section(id, Some(title.into()), items);
+            active.count = Some(count);
+            view.sections.push(active);
+            continue;
+        }
         let forest = Forest::new(context.domain, section, &buckets);
         let requests: Vec<_> = context
             .domain
@@ -689,7 +939,7 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
     let request = context.domain.requests.get(&task.request_id);
     let mut facts = vec![Fact {
         label: t!(context.lang, "State", "Estado").into(),
-        value: state(task, context).into(),
+        value: detail_state(task, context),
         tone: Some(common::task_presentation(task.state).1),
         link: None,
     }];

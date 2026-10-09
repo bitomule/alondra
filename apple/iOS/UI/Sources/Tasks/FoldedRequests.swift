@@ -58,7 +58,7 @@ private struct FinishedRequestRow: View {
     let first: Bool
     let open: (AlondraContract.Link) -> Void
 
-    private var cancelled: Bool { request.icon != .check && request.tasks.allSatisfy(\.struck) }
+    private var cancelled: Bool { request.icon != .check && request.tasks.filter { !$0.isChain }.allSatisfy(\.struck) }
 
     var body: some View {
         if let link = request.link {

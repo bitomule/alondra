@@ -322,6 +322,9 @@ pub struct Row {
     pub kind: Option<CardKind>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub children: Vec<Row>,
+    /// `children` start hidden behind this row; tapping it shows them.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub folded: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub actions: Vec<Action>,
 }

@@ -348,6 +348,16 @@ pub(crate) async fn gather(
         .into_iter()
         .map(|(id, at)| (id.0, timestamp(at)))
         .collect() };
+    let (task_since, cancel_reasons) = if clock_only { (BTreeMap::new(), BTreeMap::new()) } else {
+        let (times, reasons) = {
+            let store = client.domain.store.lock().expect("domain store poisoned");
+            (store.task_state_times().unwrap_or_default(), store.cancel_reasons().unwrap_or_default())
+        };
+        let since = state.tasks.values().filter(|task| !task.archived)
+            .filter_map(|task| times.get(&task.id).map(|at| (task.id.0.clone(), timestamp(*at))))
+            .collect();
+        (since, reasons.into_iter().map(|(task, reason)| (task.0, reason)).collect())
+    };
     let task_options = state.tasks.values().map(|task| {
         let (project, effort) = launches.get(&task.request_id).cloned().unwrap_or_default();
         (task.id.0.clone(), alondra_core::views::live::LiveTaskOptions { project, effort })
@@ -482,6 +492,8 @@ pub(crate) async fn gather(
         activity,
         task_history,
         task_options,
+        task_since,
+        cancel_reasons,
         search_matches,
         usage_exhausted: exhausted.map(|exhausted| alondra_core::views::LiveUsageExhausted {
             since: timestamp(exhausted.since),

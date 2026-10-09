@@ -57,10 +57,14 @@ public actor FeedSession {
         var lifetime: UUID
         var epochGeneration: UInt64
         let requiredEpoch: String?
-        let task: Task<Void, Never>
+        var task: Task<Void, Never>?
         var waiters: [UUID: LoadWaiter]
     }
     private var inFlightLoads: [LoadKey: InFlightLoad] = [:]
+    private static let loadLimit = 4
+    private(set) var runningLoadTasks: [UUID: Task<Void, Never>] = [:]
+    var runningLoadIDs: Set<UUID> { Set(runningLoadTasks.keys) }
+    private var pendingLoads: [(request: LoadKey, id: UUID)] = []
     private(set) var loadOwners: [String: UUID] = [:]
     private(set) var loadLifetimes: [String: UUID] = [:]
     private var cursorLoadOwner: UUID?
@@ -71,7 +75,7 @@ public actor FeedSession {
     private var status: ViewStatus?
     private var reset = false
     private var active = true
-    private var generation: UInt64 = 0
+    private(set) var generation: UInt64 = 0
     private var feedTask: Task<Void, Never>?
     private var subscribers: [UUID: AsyncStream<FeedSnapshot>.Continuation] = [:]
     private var eventSubscribers: [UUID: AsyncStream<FeedEvent>.Continuation] = [:]
@@ -187,20 +191,38 @@ public actor FeedSession {
         loadLifetimes[request.key] = lifetime
         loadOwners[request.key] = id
         cursorLoadOwner = id
-        let transport = self.transport
-        let client = self.client
-        let lang = self.lang
-        let task = Task { @concurrent [weak self] in
-            let result: Result<ViewFetch, any Error>
-            do {
-                try Task.checkCancellation()
-                let fetched = try await transport.fetchView(key: request.key, client: client, lang: lang, known: request.known)
-                try Task.checkCancellation()
-                result = .success(fetched)
-            } catch { result = .failure(error) }
-            await self?.completeLoad(request, id: id, result: result)
+        inFlightLoads[request] = InFlightLoad(id: id, lifetime: lifetime, epochGeneration: epochGeneration, requiredEpoch: requiredEpoch, task: nil, waiters: waiters)
+        pendingLoads.append((request, id))
+        admitLoads()
+    }
+
+    private func admitLoads() {
+        while runningLoadTasks.count < Self.loadLimit, !pendingLoads.isEmpty {
+            let next = pendingLoads.removeFirst()
+            guard var load = inFlightLoads[next.request], load.id == next.id else { continue }
+            let transport = self.transport
+            let client = self.client
+            let lang = self.lang
+            let task = Task { @concurrent [weak self] in
+                let result: Result<ViewFetch, any Error>
+                do {
+                    try Task.checkCancellation()
+                    let fetched = try await transport.fetchView(key: next.request.key, client: client, lang: lang, known: next.request.known)
+                    try Task.checkCancellation()
+                    result = .success(fetched)
+                } catch { result = .failure(error) }
+                await self?.finishLoad(next.request, id: next.id, result: result)
+            }
+            load.task = task
+            runningLoadTasks[next.id] = task
+            inFlightLoads[next.request] = load
         }
-        inFlightLoads[request] = InFlightLoad(id: id, lifetime: lifetime, epochGeneration: epochGeneration, requiredEpoch: requiredEpoch, task: task, waiters: waiters)
+    }
+
+    private func finishLoad(_ request: LoadKey, id: UUID, result: Result<ViewFetch, any Error>) {
+        completeLoad(request, id: id, result: result)
+        runningLoadTasks.removeValue(forKey: id)
+        admitLoads()
     }
 
     private func currentLoad(_ key: String) -> LoadKey? {
@@ -211,6 +233,7 @@ public actor FeedSession {
         guard let load = inFlightLoads[request], load.id == id else { return }
         guard loadOwners[request.key] == id else {
             inFlightLoads.removeValue(forKey: request)
+            pendingLoads.removeAll { $0.id == load.id }
             if let current = currentLoad(request.key), var owner = inFlightLoads[current] {
                 owner.waiters.merge(load.waiters) { existing, _ in existing }
                 inFlightLoads[current] = owner
@@ -277,7 +300,8 @@ public actor FeedSession {
         var waiters: [UUID: LoadWaiter] = [:]
         for key in matching {
             guard let finished = inFlightLoads.removeValue(forKey: key) else { continue }
-            if finished.id != id { finished.task.cancel() }
+            pendingLoads.removeAll { $0.id == finished.id }
+            if finished.id != id { finished.task?.cancel() }
             waiters.merge(finished.waiters) { existing, _ in existing }
         }
         let retired = pruneLoadMetadata(request.key)
@@ -292,8 +316,9 @@ public actor FeedSession {
         var waiters: [UUID: LoadWaiter] = [:]
         for request in requests {
             guard let load = inFlightLoads.removeValue(forKey: request) else { continue }
+            pendingLoads.removeAll { $0.id == load.id }
             waiters.merge(load.waiters) { existing, _ in existing }
-            load.task.cancel()
+            load.task?.cancel()
         }
         guard !waiters.isEmpty else { pruneLoadMetadata(key); return }
         startLoad(LoadKey(key: key, known: nil), waiters: waiters, requiredEpoch: dataEpoch)
@@ -318,7 +343,8 @@ public actor FeedSession {
         if !needed {
             cancelLoads(request.key)
         } else if load.waiters.isEmpty, loadOwners[request.key] != load.id {
-            inFlightLoads.removeValue(forKey: request)?.task.cancel()
+            inFlightLoads.removeValue(forKey: request)?.task?.cancel()
+            pendingLoads.removeAll { $0.id == load.id }
         }
     }
 
@@ -328,7 +354,8 @@ public actor FeedSession {
         loadLifetimes.removeValue(forKey: key)
         for request in requests {
             guard let load = inFlightLoads.removeValue(forKey: request) else { continue }
-            load.task.cancel()
+            pendingLoads.removeAll { $0.id == load.id }
+            load.task?.cancel()
             let cancelled = LoadCompletion(owner: load.id, lifetime: load.lifetime, result: .failure(CancellationError()), epochGeneration: load.epochGeneration)
             for waiter in load.waiters.values { waiter.continuation.resume(returning: cancelled) }
         }
@@ -339,7 +366,7 @@ public actor FeedSession {
         var waiters: [String: [UUID: LoadWaiter]] = [:]
         for (request, load) in inFlightLoads {
             if load.id == preserved?.id { continue }
-            load.task.cancel()
+            load.task?.cancel()
             if request.key == preservedRequest?.key {
                 preserved?.waiters.merge(load.waiters) { existing, _ in existing }
             } else {
@@ -347,6 +374,7 @@ public actor FeedSession {
             }
         }
         inFlightLoads.removeAll()
+        pendingLoads.removeAll()
         loadOwners.removeAll(); loadLifetimes.removeAll()
         for key in openKeys { loadLifetimes[key] = UUID() }
         if let preservedRequest, var load = preserved {
@@ -529,15 +557,39 @@ public actor FeedSession {
         }
     }
 
-    private func refresh(_ keys: [String], generation current: UInt64) async throws {
-        for key in keys {
-            guard !Task.isCancelled, generation == current, openKeys.contains(key) else { return }
-            let wasMissing = versions[key] == nil
-            do { _ = try await load(key, known: versions[key]) }
-            catch FeedError.missingView { continue }
-            guard !Task.isCancelled, generation == current, openKeys.contains(key) else { return }
-            if wasMissing, documents[key] != nil { emit(.stale([key])) }
+    func refresh(_ keys: [String], generation current: UInt64) async throws {
+        guard !Task.isCancelled, generation == current else { return }
+        try await withThrowingTaskGroup(of: Void.self, isolation: self) { group in
+            var remaining = keys.makeIterator()
+            for _ in 0..<Self.loadLimit {
+                guard let key = remaining.next() else { break }
+                enqueueRefresh(key, generation: current, into: &group)
+            }
+            while try await group.next() != nil {
+                guard !Task.isCancelled, generation == current else { group.cancelAll(); return }
+                if let key = remaining.next() { enqueueRefresh(key, generation: current, into: &group) }
+            }
         }
+    }
+
+    private func enqueueRefresh(_ key: String, generation current: UInt64, into group: inout ThrowingTaskGroup<Void, any Error>) {
+        guard !Task.isCancelled, generation == current, openKeys.contains(key), !group.isCancelled else { return }
+        let task = Task.immediate { try await self.refreshKey(key, generation: current) }
+        group.addTask {
+            try await withTaskCancellationHandler {
+                try await task.value
+                try Task.checkCancellation()
+            } onCancel: { task.cancel() }
+        }
+    }
+
+    private func refreshKey(_ key: String, generation current: UInt64) async throws {
+        guard !Task.isCancelled, generation == current, openKeys.contains(key) else { return }
+        let wasMissing = versions[key] == nil
+        do { _ = try await load(key, known: versions[key]) }
+        catch FeedError.missingView { return }
+        guard !Task.isCancelled, generation == current, openKeys.contains(key) else { return }
+        if wasMissing, documents[key] != nil { emit(.stale([key])) }
     }
 
     private static func isMissingView(_ error: any Error) -> Bool {
