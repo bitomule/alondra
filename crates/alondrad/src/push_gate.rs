@@ -142,7 +142,7 @@ mod tests {
         }
 
         fn github_says(&self, mergeable: &str, merge_state: &str) {
-            self.github.answer(Some(json!({"state": "OPEN", "headRefOid": HEAD,
+            self.github.answer(Some(json!({"state": "OPEN", "headRefOid": HEAD, "baseRefName": "main",
                 "mergeable": mergeable, "mergeStateStatus": merge_state})));
         }
 

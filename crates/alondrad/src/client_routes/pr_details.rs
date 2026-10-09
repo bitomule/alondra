@@ -62,6 +62,8 @@ pub(crate) struct Details {
     pub changed_files: u64,
     pub conflicts: bool,
     pub mergeability_unknown: bool,
+    #[serde(skip)]
+    observed_at: Option<i64>,
 }
 
 /// Whether a PR merges into its base, as far as GitHub has told us.
@@ -73,6 +75,10 @@ pub(crate) enum Merge {
 }
 
 impl Details {
+    fn matches_revision(&self, head: &str, base: &str) -> bool {
+        self.head_sha.as_deref() == Some(head) && self.base_ref.as_deref() == Some(base)
+    }
+
     fn merge(&self) -> Merge {
         if self.conflicts {
             Merge::Conflicts
@@ -85,29 +91,71 @@ impl Details {
 }
 
 #[derive(Default)]
-pub(crate) struct PrDetails(Mutex<BTreeMap<String, Details>>);
+pub(crate) struct PrDetails {
+    cache: Mutex<Observations>,
+    refresh: tokio::sync::Mutex<()>,
+}
+
+#[derive(Default)]
+struct Observations {
+    next: u64,
+    entries: BTreeMap<String, Observation>,
+}
+
+#[derive(Default)]
+struct Observation {
+    accepted: u64,
+    details: Option<Details>,
+}
 
 impl PrDetails {
     pub(crate) fn get(&self, pr_id: &str) -> Option<Details> {
-        self.0.lock().expect("pull request details poisoned").get(pr_id).cloned()
+        self.cache.lock().expect("pull request details poisoned").entries.get(pr_id)
+            .and_then(|entry| entry.details.clone())
     }
 
+    fn begin(&self, pr_id: &str) -> u64 {
+        let mut cache = self.cache.lock().expect("pull request details poisoned");
+        cache.next = cache.next.checked_add(1).expect("pull request observation counter exhausted");
+        let request = cache.next;
+        cache.entries.entry(pr_id.to_owned()).or_default();
+        request
+    }
+
+    fn complete(&self, pr_id: &str, request: u64, mut details: Details) -> bool {
+        let mut cache = self.cache.lock().expect("pull request details poisoned");
+        let Some(entry) = cache.entries.get_mut(pr_id).filter(|entry| entry.accepted <= request) else { return false };
+        entry.accepted = request;
+        details.observed_at = Some(alondra_core::now_millis());
+        entry.details = Some(details);
+        true
+    }
+
+    #[cfg(test)]
     pub(crate) fn record(&self, pr_id: &str, details: Details) {
-        self.0.lock().expect("pull request details poisoned").insert(pr_id.to_owned(), details);
+        self.complete(pr_id, self.begin(pr_id), details);
     }
 
     fn keep_only(&self, state: &DomainState) {
-        self.0.lock().expect("pull request details poisoned")
+        self.cache.lock().expect("pull request details poisoned").entries
             .retain(|id, _| state.pull_requests.keys().any(|pr| &pr.0 == id));
     }
 
     pub(crate) async fn refresh(&self, state: &DomainState, source: &dyn PrView) {
+        let _refresh = self.refresh.lock().await;
         self.keep_only(state);
-        for pr in state.pull_requests.values().filter(|pr| pr.state == PrState::Open) {
-            let url = alondra_core::pr::canonical(&pr.repository, pr.number);
-            let Some(view) = source.view(&url).await else { continue };
-            self.record(&pr.id.0, parse(&pr.id.0, pr.number, &view));
-        }
+        let pending = Mutex::new(state.pull_requests.values().filter(|pr| pr.state == PrState::Open));
+        let read = || async {
+            loop {
+                let Some(pr) = pending.lock().expect("pull request refresh poisoned").next() else { break };
+                let request = self.begin(&pr.id.0);
+                let url = alondra_core::pr::canonical(&pr.repository, pr.number);
+                if let Some(view) = source.view(&url).await {
+                    self.complete(&pr.id.0, request, parse(&pr.id.0, pr.number, &view));
+                }
+            }
+        };
+        tokio::join!(read(), read());
     }
 }
 
@@ -121,7 +169,7 @@ impl super::Client {
     /// base that moved can clear either without a new head.
     pub(crate) async fn merge_state(&self, pr: &PullRequest, head: &str, attempts: usize, pause: Duration) -> Merge {
         if self.details.get(&pr.id.0)
-            .is_some_and(|details| details.head_sha.as_deref() == Some(head) && details.merge() == Merge::Clean)
+            .is_some_and(|details| details.matches_revision(head, &pr.base) && details.merge() == Merge::Clean)
         {
             return Merge::Clean;
         }
@@ -131,10 +179,15 @@ impl super::Client {
             if attempt > 0 {
                 tokio::time::sleep(pause).await;
             }
+            let request = self.details.begin(&pr.id.0);
             let Some(answer) = view.view(&url).await else { return Merge::Unknown };
             let details = parse(&pr.id.0, pr.number, &answer);
+            if !details.matches_revision(head, &pr.base) { continue; }
             let merge = details.merge();
-            self.details.record(&pr.id.0, details);
+            if !self.details.complete(&pr.id.0, request, details) {
+                return self.details.get(&pr.id.0).filter(|details| details.matches_revision(head, &pr.base))
+                    .map_or(Merge::Unknown, |details| details.merge());
+            }
             if merge != Merge::Unknown {
                 return merge;
             }
@@ -180,7 +233,7 @@ pub(crate) fn hand_back_conflicts(domain: &crate::domain_runtime::DomainRuntime,
     for pr_id in state.pull_requests.keys() {
         let Ok(state) = domain.state() else { return };
         let Some(pr) = state.pull_requests.get(pr_id) else { continue };
-        if !details.get(&pr.id.0).is_some_and(|details| details.conflicts) || conflicts_sent(&state, pr) {
+        if !details.get(&pr.id.0).is_some_and(|details| details.conflicts && details.matches_revision(&pr.head, &pr.base)) || conflicts_sent(&state, pr) {
             continue;
         }
         let Some(presentation) = crate::views::actions::pr_presentation(&state, pr) else { continue };
@@ -231,6 +284,7 @@ fn parse(id: &str, number: u64, view: &Value) -> Details {
         deletions: card.deletions,
         changed_files: card.changed_files,
         checks: card.checks,
+        observed_at: None,
     }
 }
 
@@ -289,7 +343,7 @@ mod tests {
         hand_back_conflicts(&domain, &details, "Ana");
         assert!(conflicts_told(&domain).is_empty(), "a PR that merges cleanly stays with the user");
 
-        details.record("pr", Details { conflicts: true, ..Default::default() });
+        details.record("pr", Details { conflicts: true, head_sha: Some("head1".into()), base_ref: Some("main".into()), ..Default::default() });
         hand_back_conflicts(&domain, &details, "Ana");
         hand_back_conflicts(&domain, &details, "Ana");
         let told = conflicts_told(&domain);
@@ -304,6 +358,7 @@ mod tests {
         run(&domain, Actor::System, "observed", Command::ObservePrState { pr_id: "pr".into(), head: "head2".into(),
             base: "main".into(), state: PrState::Open, merged_head: None });
         present(&domain, "pushed", "head2");
+        details.record("pr", Details { conflicts: true, head_sha: Some("head2".into()), base_ref: Some("main".into()), ..Default::default() });
         hand_back_conflicts(&domain, &details, "Ana");
         assert_eq!(conflicts_told(&domain).iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(), ["first", "pushed"]);
     }
@@ -330,10 +385,448 @@ mod tests {
             instruction: Instruction::Conflicts });
         present(&domain, "again", "head1");
         let details = PrDetails::default();
-        details.record("pr", Details { conflicts: true, ..Default::default() });
+        details.record("pr", Details { conflicts: true, head_sha: Some("head1".into()), base_ref: Some("main".into()), ..Default::default() });
         hand_back_conflicts(&domain, &details, "Ana");
         assert_eq!(conflicts_told(&domain).iter().filter(|(id, _)| id == "again").count(), 1,
             "a real conflict at the same head still goes back");
+    }
+
+    #[derive(Clone, Default)]
+    struct ReadMetrics {
+        started: Vec<u64>,
+        active: usize,
+        peak: usize,
+        active_body_bytes: usize,
+        peak_body_bytes: usize,
+        completed: usize,
+        errors: usize,
+        returned_body_bytes: usize,
+    }
+
+    struct ControlledView {
+        mergeable: &'static str,
+        hold_all: bool,
+        released: std::sync::atomic::AtomicBool,
+        release: tokio::sync::Notify,
+        metrics: std::sync::Mutex<ReadMetrics>,
+    }
+
+    impl ControlledView {
+        fn new(hold_all: bool) -> Self {
+            Self { mergeable: "MERGEABLE", hold_all, released: false.into(), release: Default::default(), metrics: Default::default() }
+        }
+        fn release(&self) {
+            self.released.store(true, std::sync::atomic::Ordering::SeqCst);
+            self.release.notify_waiters();
+        }
+        fn metrics(&self) -> ReadMetrics {
+            self.metrics.lock().unwrap().clone()
+        }
+    }
+
+    struct ActiveRead<'a> {
+        source: &'a ControlledView,
+        bytes: usize,
+    }
+    impl Drop for ActiveRead<'_> {
+        fn drop(&mut self) {
+            let mut metrics = self.source.metrics.lock().unwrap();
+            metrics.active -= 1;
+            metrics.active_body_bytes -= self.bytes;
+        }
+    }
+
+    impl super::PrView for ControlledView {
+        fn view<'a>(&'a self, url: &'a str) -> super::Viewed<'a> {
+            Box::pin(async move {
+                let number: u64 = url.rsplit('/').next().unwrap().parse().unwrap();
+                let value = (number != 3).then(|| json!({
+                    "title":format!("Provider PR {number}"),"body":"x".repeat(4096),
+                    "headRefOid":"a".repeat(40),"headRefName":"branch","baseRefName":"main",
+                    "state":"OPEN","mergeable":self.mergeable,"statusCheckRollup":[],
+                }));
+                let bytes = value.as_ref().map_or(0, |value| value["body"].as_str().unwrap().len());
+                {
+                    let mut metrics = self.metrics.lock().unwrap();
+                    metrics.started.push(number);
+                    metrics.active += 1;
+                    metrics.peak = metrics.peak.max(metrics.active);
+                    metrics.active_body_bytes += bytes;
+                    metrics.peak_body_bytes = metrics.peak_body_bytes.max(metrics.active_body_bytes);
+                }
+                let _active = ActiveRead { source: self, bytes };
+                if (self.hold_all || number == 1) && !self.released.load(std::sync::atomic::Ordering::SeqCst) {
+                    self.release.notified().await;
+                }
+                {
+                    let mut metrics = self.metrics.lock().unwrap();
+                    metrics.completed += 1;
+                    metrics.errors += usize::from(value.is_none());
+                    metrics.returned_body_bytes += bytes;
+                }
+                value
+            })
+        }
+    }
+
+    fn watched_prs(count: u64) -> alondra_core::domain::DomainState {
+        let mut state = alondra_core::domain::DomainState::new("provider-fixture");
+        let mut apply = |actor, command| {
+            state.execute(&actor, &CommandEnvelope {
+                protocol_version: 2, data_epoch: state.data_epoch.clone(),
+                command_id: format!("fixture-{}", state.revision).into(),
+                expected_revision: state.revision, command,
+            }).unwrap();
+        };
+        apply(Actor::User { user_id: "user".into() }, Command::CreateRequest {
+            request_id: "request".into(), body: "Review the providers".into(),
+            auto_merge: false, maintenance: false, message: false,
+        });
+        apply(Actor::User { user_id: "user".into() }, Command::TitleRequest {
+            request_id: "request".into(), title: "Provider review".into(),
+        });
+        for number in 1..=count {
+            let agent = format!("agent-{number}");
+            let task = format!("task-{number}");
+            apply(Actor::System, Command::RegisterAgent { agent_id: agent.clone().into(), name: "Fixture".into() });
+            apply(Actor::Orchestrator { generation: 0 }, Command::CreateTask {
+                task_id: task.clone().into(), request_id: "request".into(), title: "Review".into(),
+                agent_id: Some(agent.clone().into()), review_prs: true, dependencies: Default::default(), stack: None,
+                launch: Some(alondra_core::domain::LaunchPlan::new("node", "/synthetic")),
+            });
+            apply(Actor::Agent { agent_id: agent.into() }, Command::RegisterPr {
+                task_id: task.into(), pr_id: format!("pr-{number}").into(), host: "github.com".into(),
+                repository: format!("fixture/repo-{number}"), number, head: "a".repeat(40),
+                base: "main".into(), allowed_methods: vec![MergeMethod::Squash],
+            });
+        }
+        state.validate().unwrap();
+        state
+    }
+
+    fn poll_pending(future: std::pin::Pin<&mut impl std::future::Future>) {
+        let waker = std::task::Waker::noop();
+        assert!(future.poll(&mut std::task::Context::from_waker(waker)).is_pending());
+    }
+
+    fn foreground_fixture() -> (crate::test_support::Directory, std::sync::Arc<crate::client_routes::Client>, alondra_core::domain::PullRequest) {
+        let home = crate::test_support::Directory::new();
+        std::fs::create_dir_all(&home).unwrap();
+        let domain = std::sync::Arc::new(crate::domain_runtime::DomainRuntime::open(&home).unwrap());
+        run(&domain, Actor::System, "agent", Command::RegisterAgent { agent_id: "agent".into(), name: "Fixture".into() });
+        run(&domain, Actor::User { user_id: "user".into() }, "request", Command::CreateRequest {
+            request_id: "request".into(), body: "Review".into(), auto_merge: false, maintenance: false, message: false,
+        });
+        run(&domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask {
+            task_id: "task".into(), request_id: "request".into(), title: "Review".into(), agent_id: Some("agent".into()),
+            review_prs: true, dependencies: Default::default(), stack: None,
+            launch: Some(alondra_core::domain::LaunchPlan::new("node", "/synthetic")),
+        });
+        run(&domain, Actor::Agent { agent_id: "agent".into() }, "pr", Command::RegisterPr {
+            task_id: "task".into(), pr_id: "pr-1".into(), host: "github.com".into(), repository: "fixture/repo".into(),
+            number: 1, head: "a".repeat(40), base: "main".into(), allowed_methods: vec![MergeMethod::Squash],
+        });
+        let pr = domain.state().unwrap().pull_requests[&"pr-1".into()].clone();
+        let client = crate::client_routes::Client::open(domain, &home, Default::default());
+        client.details.record(&pr.id.0, Details {
+            title: Some("Prior unknown observation".into()), head_sha: Some(pr.head.clone()),
+            base_ref: Some(pr.base.clone()), mergeability_unknown: true, ..Default::default()
+        });
+        (home, client, pr)
+    }
+
+    fn foreground_presentation(pr: &alondra_core::domain::PullRequest) -> Command {
+        let targets = vec![DeliveryTarget::PullRequest { pr_id: pr.id.clone(), head: pr.head.clone() }];
+        Command::PresentResult {
+            attachments: vec![], task_id: pr.task_id.clone(), interaction_id: "candidate".into(), body: "Ready".into(),
+            is_final: true, nothing_to_review: false,
+            card: alondra_core::domain::CardSpec::delivery("Review", &targets, true), targets,
+        }
+    }
+
+    #[tokio::test]
+    async fn provider_later_failed_background_read_preserves_a_valid_foreground_answer() {
+        for (mergeable, expected) in [("MERGEABLE", super::Merge::Clean), ("CONFLICTING", super::Merge::Conflicts)] {
+            let (_home, client, pr) = foreground_fixture();
+            let state = client.domain.state().unwrap();
+            let source = std::sync::Arc::new(ControlledView { mergeable, ..ControlledView::new(false) });
+            client.use_pr_view(source.clone());
+            let previous = client.details.get(&pr.id.0).unwrap();
+            let mut foreground = Box::pin(client.merge_state(&pr, &pr.head, 1, std::time::Duration::ZERO));
+            poll_pending(foreground.as_mut());
+            client.details.refresh(&state, &super::FakePrView::default()).await;
+            assert_eq!(client.details.get(&pr.id.0).unwrap(), previous, "a failed later read preserves the old data and timestamp");
+            source.release();
+            assert_eq!(foreground.await, expected, "a failed later read is not authority to hide a valid foreground answer");
+            let accepted = client.details.get(&pr.id.0).unwrap();
+            assert_eq!(accepted.merge(), expected);
+            assert_eq!(accepted.title.as_deref(), Some("Provider PR 1"));
+            assert!(accepted.observed_at.is_some() && accepted.matches_revision(&pr.head, &pr.base));
+            assert_eq!(client.domain.state().unwrap(), state);
+        }
+    }
+
+    #[tokio::test]
+    async fn provider_later_failed_background_read_cannot_hide_foreground_presentation_conflicts() {
+        let (_home, client, pr) = foreground_fixture();
+        let state = client.domain.state().unwrap();
+        let source = std::sync::Arc::new(ControlledView { mergeable: "CONFLICTING", ..ControlledView::new(false) });
+        client.use_pr_view(source.clone());
+        let command = foreground_presentation(&pr);
+        let mut foreground = Box::pin(client.verify_presentation(&command));
+        poll_pending(foreground.as_mut());
+        client.details.refresh(&state, &super::FakePrView::default()).await;
+        source.release();
+        assert_eq!(foreground.await.unwrap_err().code, "pr_conflicts", "known conflicts must still refuse the presentation");
+        let accepted = client.details.get(&pr.id.0).unwrap();
+        assert!(accepted.conflicts && accepted.observed_at.is_some());
+        assert_eq!(client.domain.state().unwrap(), state, "no presentation or effect is committed by readonly verification");
+    }
+
+    #[tokio::test]
+    async fn provider_later_successful_background_answer_keeps_matching_authority() {
+        for (foreground_merge, background_merge, head, base, expected) in [
+            ("MERGEABLE", "CONFLICTING", "a".repeat(40), "main", super::Merge::Conflicts),
+            ("CONFLICTING", "MERGEABLE", "a".repeat(40), "main", super::Merge::Clean),
+            ("MERGEABLE", "CONFLICTING", "b".repeat(40), "main", super::Merge::Unknown),
+            ("MERGEABLE", "CONFLICTING", "a".repeat(40), "release", super::Merge::Unknown),
+        ] {
+            let (_home, client, pr) = foreground_fixture();
+            let state = client.domain.state().unwrap();
+            let source = std::sync::Arc::new(ControlledView { mergeable: foreground_merge, ..ControlledView::new(false) });
+            client.use_pr_view(source.clone());
+            let mut foreground = Box::pin(client.merge_state(&pr, &pr.head, 1, std::time::Duration::ZERO));
+            poll_pending(foreground.as_mut());
+            let background = super::FakePrView::default();
+            background.answer(Some(json!({"state":"OPEN", "title":"New background observation",
+                "headRefOid":head, "baseRefName":base, "mergeable":background_merge})));
+            client.details.refresh(&state, &background).await;
+            let newest = client.details.get(&pr.id.0).unwrap();
+            assert!(newest.observed_at.is_some());
+            source.release();
+            assert_eq!(foreground.await, expected, "a losing foreground read uses only matching accepted authority");
+            assert_eq!(client.details.get(&pr.id.0).unwrap(), newest, "the newer successful answer and timestamp survive the older completion");
+            assert_eq!(client.domain.state().unwrap(), state);
+        }
+    }
+
+    #[tokio::test]
+    async fn provider_later_successful_background_conflicts_still_refuse_a_presentation() {
+        let (_home, client, pr) = foreground_fixture();
+        let state = client.domain.state().unwrap();
+        let source = std::sync::Arc::new(ControlledView::new(false));
+        client.use_pr_view(source.clone());
+        let command = foreground_presentation(&pr);
+        let mut foreground = Box::pin(client.verify_presentation(&command));
+        poll_pending(foreground.as_mut());
+        let background = super::FakePrView::default();
+        background.answer(Some(json!({"state":"OPEN", "headRefOid":pr.head, "baseRefName":pr.base, "mergeable":"CONFLICTING"})));
+        client.details.refresh(&state, &background).await;
+        let newest = client.details.get(&pr.id.0).unwrap();
+        source.release();
+        assert_eq!(foreground.await.unwrap_err().code, "pr_conflicts", "newer accepted conflicts cannot become Unknown");
+        assert_eq!(client.details.get(&pr.id.0).unwrap(), newest);
+        assert_eq!(client.domain.state().unwrap(), state);
+    }
+
+    #[tokio::test]
+    async fn provider_refresh_publishes_independent_prs_before_a_blocked_first_read() {
+        let state = watched_prs(4);
+        let unchanged = state.clone();
+        let details = PrDetails::default();
+        details.record("pr-3", Details { title: Some("Last successful observation".into()), ..Default::default() });
+        let previous_failed = details.get("pr-3").unwrap();
+        let source = ControlledView::new(false);
+        let mut refresh = Box::pin(details.refresh(&state, &source));
+        poll_pending(refresh.as_mut());
+        let partial = details.get("pr-2").is_some() && details.get("pr-4").is_some();
+        let pending = source.metrics();
+        source.release();
+        refresh.await;
+        let completed = source.metrics();
+        println!("provider_reads offered=4 completed={} errors={} peak_active={} peak_body_bytes={} returned_body_bytes={} partial_before_release={partial} pending_at_checkpoint={}",
+            completed.completed, completed.errors, completed.peak, completed.peak_body_bytes,
+            completed.returned_body_bytes, pending.active);
+        assert_eq!(completed.started, [1, 2, 3, 4]);
+        assert_eq!((completed.completed, completed.errors, completed.active), (4, 1, 0));
+        assert_eq!(completed.returned_body_bytes, 3 * 4096);
+        assert_eq!(details.get("pr-3").unwrap(), previous_failed, "a failed read never renews its last observation");
+        assert!(details.get("pr-2").unwrap().observed_at.is_some());
+        assert!(serde_json::to_value(details.get("pr-2").unwrap()).unwrap().get("observed_at").is_none(),
+            "observation provenance remains private rather than an unused product field");
+        assert_eq!(state, unchanged, "detail preparation never writes the domain");
+        assert!(partial, "independent details must be published before the first provider read is released");
+    }
+
+    #[tokio::test]
+    async fn provider_old_background_answer_cannot_replace_a_newer_foreground_observation() {
+        let state = watched_prs(1);
+        let details = PrDetails::default();
+        let source = ControlledView::new(false);
+        let mut refresh = Box::pin(details.refresh(&state, &source));
+        poll_pending(refresh.as_mut());
+        details.record("pr-1", Details {
+            title: Some("New foreground observation".into()), head_sha: Some("b".repeat(40)),
+            base_ref: Some("release".into()), ..Default::default()
+        });
+        let newest = details.get("pr-1").unwrap();
+        source.release();
+        refresh.await;
+        assert_eq!(details.get("pr-1").unwrap(), newest, "an older provider answer cannot overwrite the newer head or base");
+    }
+
+    #[tokio::test]
+    async fn provider_merge_state_requires_the_requested_head_and_base() {
+        let home = crate::test_support::Directory::new();
+        std::fs::create_dir_all(&home).unwrap();
+        let domain = std::sync::Arc::new(crate::domain_runtime::DomainRuntime::open(&home).unwrap());
+        let before = domain.state().unwrap();
+        let client = crate::client_routes::Client::open(domain.clone(), &home, Default::default());
+        let source = std::sync::Arc::new(super::FakePrView::default());
+        client.use_pr_view(source.clone());
+        let state = watched_prs(1);
+        let pr = state.pull_requests.values().next().unwrap();
+        for mergeable in ["MERGEABLE", "CONFLICTING"] {
+            for (head, base) in [("b".repeat(40), "main"), (pr.head.clone(), "release")] {
+                client.details.record(&pr.id.0, Details::default());
+                source.answer(Some(json!({"state":"OPEN","headRefOid":head,"baseRefName":base,"mergeable":mergeable})));
+                assert_eq!(client.merge_state(pr, &pr.head, 1, std::time::Duration::ZERO).await, super::Merge::Unknown,
+                    "a different head or base is not an authoritative answer about the requested PR revision");
+            }
+        }
+        for (mergeable, expected) in [("MERGEABLE", super::Merge::Clean), ("CONFLICTING", super::Merge::Conflicts)] {
+            client.details.record(&pr.id.0, Details::default());
+            source.answer(Some(json!({"state":"OPEN","headRefOid":pr.head,"baseRefName":"main","mergeable":mergeable})));
+            assert_eq!(client.merge_state(pr, &pr.head, 1, std::time::Duration::ZERO).await, expected);
+        }
+        assert_eq!(domain.state().unwrap(), before, "provider preparation never writes or authorizes effects");
+    }
+
+    #[tokio::test]
+    async fn provider_cached_clean_answer_for_another_base_is_not_authority() {
+        let home = crate::test_support::Directory::new();
+        std::fs::create_dir_all(&home).unwrap();
+        let domain = std::sync::Arc::new(crate::domain_runtime::DomainRuntime::open(&home).unwrap());
+        let client = crate::client_routes::Client::open(domain, &home, Default::default());
+        let source = std::sync::Arc::new(super::FakePrView::default());
+        client.use_pr_view(source);
+        let state = watched_prs(1);
+        let pr = state.pull_requests.values().next().unwrap();
+        client.details.record(&pr.id.0, Details { head_sha: Some(pr.head.clone()), base_ref: Some("release".into()), ..Default::default() });
+        assert_eq!(client.merge_state(pr, &pr.head, 1, std::time::Duration::ZERO).await, super::Merge::Unknown,
+            "a cached clean answer about another base cannot bypass a failed current read");
+    }
+
+    #[test]
+    fn provider_stale_conflicts_do_not_hand_back_a_new_head_or_base() {
+        let home = crate::test_support::Directory::new();
+        std::fs::create_dir_all(&home).unwrap();
+        let domain = crate::domain_runtime::DomainRuntime::open(&home).unwrap();
+        run(&domain, Actor::System, "agent", Command::RegisterAgent { agent_id: "agent".into(), name: "Fixture".into() });
+        run(&domain, Actor::User { user_id: "user".into() }, "request", Command::CreateRequest {
+            request_id: "request".into(), body: "Review".into(), auto_merge: false, maintenance: false, message: false,
+        });
+        run(&domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask {
+            task_id: "task".into(), request_id: "request".into(), title: "Review".into(), agent_id: Some("agent".into()),
+            review_prs: true, dependencies: Default::default(), stack: None,
+            launch: Some(alondra_core::domain::LaunchPlan::new("node", "/synthetic")),
+        });
+        run(&domain, Actor::Agent { agent_id: "agent".into() }, "pr", Command::RegisterPr {
+            task_id: "task".into(), pr_id: "pr".into(), host: "github.com".into(), repository: "fixture/repo".into(),
+            number: 1, head: "new-head".into(), base: "release".into(), allowed_methods: vec![MergeMethod::Squash],
+        });
+        present(&domain, "presentation", "new-head");
+        let details = PrDetails::default();
+        for (head, base) in [("old-head", "release"), ("new-head", "main")] {
+            details.record("pr", Details { conflicts: true, head_sha: Some(head.into()), base_ref: Some(base.into()), ..Default::default() });
+            hand_back_conflicts(&domain, &details, "User");
+            assert!(conflicts_told(&domain).is_empty(), "conflicts from a different head or base are not authority for feedback");
+        }
+        details.record("pr", Details { conflicts: true, head_sha: Some("new-head".into()), base_ref: Some("release".into()), ..Default::default() });
+        hand_back_conflicts(&domain, &details, "User");
+        assert_eq!(conflicts_told(&domain).len(), 1, "matching provider facts still hand conflicts back once");
+    }
+
+    #[tokio::test]
+    async fn provider_partial_details_are_visible_in_a_real_view_before_first_release() {
+        let home = crate::test_support::Directory::new();
+        std::fs::create_dir_all(&home).unwrap();
+        let domain = std::sync::Arc::new(crate::domain_runtime::DomainRuntime::open(&home).unwrap());
+        for number in 1..=2 {
+            let agent = format!("agent-{number}");
+            let request = format!("request-{number}");
+            let task = format!("task-{number}");
+            run(&domain, Actor::System, &agent, Command::RegisterAgent { agent_id: agent.clone().into(), name: "Fixture".into() });
+            run(&domain, Actor::User { user_id: "user".into() }, &request, Command::CreateRequest {
+                request_id: request.clone().into(), body: "Review".into(), auto_merge: false, maintenance: false, message: false,
+            });
+            run(&domain, Actor::Orchestrator { generation: 0 }, &task, Command::CreateTask {
+                task_id: task.clone().into(), request_id: request.into(), title: "Review".into(),
+                agent_id: Some(agent.clone().into()), review_prs: true, dependencies: Default::default(), stack: None,
+                launch: Some(alondra_core::domain::LaunchPlan::new("node", "/synthetic")),
+            });
+            run(&domain, Actor::Agent { agent_id: agent.into() }, &format!("pr-{number}"), Command::RegisterPr {
+                task_id: task.into(), pr_id: format!("pr-{number}").into(), host: "github.com".into(),
+                repository: format!("fixture/repo-{number}"), number, head: "a".repeat(40),
+                base: "main".into(), allowed_methods: vec![MergeMethod::Squash],
+            });
+        }
+        let state = domain.state().unwrap();
+        let client = crate::client_routes::Client::open(domain.clone(), &home, Default::default());
+        async fn get(client: &crate::client_routes::Client, path: &str) -> serde_json::Value {
+            let response = crate::views::routes::relay(client, "fixture-device", path).await;
+            assert_eq!(response.status(), axum::http::StatusCode::OK);
+            let bytes = axum::body::to_bytes(response.into_body(), crate::views::VIEW_BUDGET_BYTES).await.unwrap();
+            serde_json::from_slice(&bytes).unwrap()
+        }
+        let path = "/views/pull_request:pr-2?protocol=1&client=mac&lang=en";
+        let initial = get(&client, path).await;
+        assert_eq!(initial["title"], "PR #2");
+        let source = ControlledView::new(false);
+        let mut refresh = Box::pin(client.details.refresh(&state, &source));
+        poll_pending(refresh.as_mut());
+        let partial = get(&client, &format!("{path}&known={}", initial["version"].as_str().unwrap())).await;
+        assert_eq!(partial["title"], "Provider PR 2", "the real view GET does not wait for the other PR's provider");
+        assert_ne!(partial["unchanged"], true, "the previously rendered fallback does not mask the new details");
+        assert!(client.details.get("pr-1").is_none(), "first provider remains held while the second is visible");
+        assert_eq!(source.metrics().active, 1);
+        assert_eq!(domain.state().unwrap(), state, "publishing readonly details changes no domain state");
+        source.release();
+        refresh.await;
+    }
+
+    #[tokio::test]
+    async fn provider_overlapping_refreshes_share_the_pending_read_bound() {
+        let state = watched_prs(6);
+        let details = PrDetails::default();
+        let source = ControlledView::new(true);
+        let mut first = Box::pin(details.refresh(&state, &source));
+        let mut second = Box::pin(details.refresh(&state, &source));
+        poll_pending(first.as_mut());
+        poll_pending(second.as_mut());
+        let pending = source.metrics();
+        assert!(pending.active <= 2 && pending.started.len() <= 2,
+            "overlapping refreshes of the same cache may not admit two sets of pending reads");
+        assert!(pending.peak_body_bytes <= 2 * 4096);
+        drop(first);
+        drop(second);
+        assert_eq!((source.metrics().active, source.metrics().active_body_bytes), (0, 0));
+    }
+
+    #[tokio::test]
+    async fn provider_pending_read_admission_and_cancellation_are_bounded() {
+        let state = watched_prs(6);
+        let details = PrDetails::default();
+        let source = ControlledView::new(true);
+        let mut refresh = Box::pin(details.refresh(&state, &source));
+        poll_pending(refresh.as_mut());
+        let pending = source.metrics();
+        assert!(!pending.started.is_empty());
+        assert!(pending.started.len() <= 2, "only two pending provider reads may be admitted");
+        assert!(pending.active <= 2 && pending.peak_body_bytes <= 2 * 4096);
+        drop(refresh);
+        assert_eq!((source.metrics().active, source.metrics().active_body_bytes), (0, 0),
+            "dropping the refresh drops all its owned provider futures and bodies");
     }
 
     #[test]
