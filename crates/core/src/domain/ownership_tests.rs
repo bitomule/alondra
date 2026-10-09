@@ -18,6 +18,7 @@ enum Step {
     RevivalFails(usize),
     AnswerRevival { pick: usize, retry: bool },
     UserClosesNode(usize),
+    NodeStops(usize),
     Deliver(usize),
     AcceptAndFinish(usize),
     Cancel(usize),
@@ -36,6 +37,7 @@ fn step() -> impl Strategy<Value = Step> {
         1 => (0usize..8).prop_map(Step::RevivalFails),
         1 => (0usize..8, any::<bool>()).prop_map(|(pick, retry)| Step::AnswerRevival { pick, retry }),
         1 => (0usize..8).prop_map(Step::UserClosesNode),
+        3 => (0usize..8).prop_map(Step::NodeStops),
         2 => (0usize..8).prop_map(Step::Deliver),
         2 => (0usize..8).prop_map(Step::AcceptAndFinish),
         1 => (0usize..8).prop_map(Step::Cancel),
@@ -47,6 +49,8 @@ struct World {
     s: DomainState,
     facts: BTreeMap<TaskId, StartFacts>,
     attempts: BTreeMap<TaskId, u8>,
+    /// Turn ends without a result or a question in a row, as the daemon's Stop guard counts them.
+    stops: BTreeMap<TaskId, u32>,
     now: i64,
     made: usize,
     nodes: usize,
@@ -77,7 +81,7 @@ impl World {
 
     /// A normal request, and the request of a weekly scheduled run whose own task works.
     fn new() -> World {
-        let mut w = World { s: DomainState::new("epoch"), facts: BTreeMap::new(), attempts: BTreeMap::new(), now: 1_000_000, made: 0, nodes: 0 };
+        let mut w = World { s: DomainState::new("epoch"), facts: BTreeMap::new(), attempts: BTreeMap::new(), stops: BTreeMap::new(), now: 1_000_000, made: 0, nodes: 0 };
         w.must(user(), Command::CreateRequest { request_id: "r".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
         w.must(orchestrator(), Command::TitleRequest { request_id: "r".into(), title: "Work".into() });
         w.must(Actor::System, Command::CreateSchedule { schedule: Schedule {
@@ -203,7 +207,7 @@ impl World {
                 }
             }
             Step::NodeDies(n) => {
-                if let Some(task) = self.pick(n, |t, f| t.agent_id.is_some() && f.node == NodeFact::Alive) {
+                if let Some(task) = self.pick(n, |t, f| t.agent_id.is_some() && matches!(f.node, NodeFact::Alive | NodeFact::Stopped { .. })) {
                     let agent = self.agent_of(&task).unwrap();
                     self.must(Actor::System, Command::ObserveAgent { agent_id: agent, connected: false });
                     self.fact(&task).node = NodeFact::Reviving;
@@ -251,9 +255,16 @@ impl World {
                     fact.start = Start::Launched;
                 }
             }
+            Step::NodeStops(n) => {
+                let Some(task) = self.pick(n, |t, f| t.state == TaskState::Running && t.final_presentation.is_none() && t.agent_id.is_some()
+                    && matches!(f.node, NodeFact::Alive | NodeFact::Stopped { sent_back: true }) && self.s.open_user_card(&t.id).is_none()) else { return };
+                self.stop_without_delivering(&task);
+            }
             Step::Deliver(n) => {
-                let Some(task) = self.pick(n, |t, f| t.state == TaskState::Running && t.final_presentation.is_none() && f.node == NodeFact::Alive
-                    && t.agent_id.is_some()) else { return };
+                let Some(task) = self.pick(n, |t, f| t.state == TaskState::Running && t.final_presentation.is_none()
+                    && matches!(f.node, NodeFact::Alive | NodeFact::Stopped { .. }) && t.agent_id.is_some()) else { return };
+                self.stops.remove(&task);
+                self.fact(&task).node = NodeFact::Alive;
                 let agent = self.agent_of(&task).unwrap();
                 let targets = vec![DeliveryTarget::Text { text: "Done".into() }];
                 let _ = self.exec(Actor::Agent { agent_id: agent }, Command::PresentResult {
@@ -286,6 +297,23 @@ impl World {
         }
     }
 
+    /// The node ends its turn with nothing running, neither a result nor a question: the Stop guard
+    /// sends it back until its cap, then tells the user with a Problem card and lets it stop.
+    fn stop_without_delivering(&mut self, task: &TaskId) {
+        let stops = self.stops.entry(task.clone()).or_default();
+        *stops += 1;
+        let told = *stops > STOP_CAP;
+        if told {
+            self.must(Actor::System, Command::RaiseProblem {
+                attachments: vec![], interaction_id: format!("problem-undelivered-{task}-{}", self.s.revision).into(),
+                scope: Scope::Task { task_id: task.clone() }, body: "It stopped without a result or a question".into(), options: vec![],
+                card: CardSpec::new(CardKind::Problem, format!("A node cannot manage to deliver “{task}”"))
+                    .why("It ended its turn three times without a result or a question; now it has stopped."),
+            });
+        }
+        self.fact(task).node = NodeFact::Stopped { sent_back: !told };
+    }
+
     /// What the daemon does after every change: `react`, carried out as the daemon carries it out.
     fn react(&mut self) {
         for reaction in self.s.react(&self.facts) {
@@ -316,6 +344,9 @@ impl World {
         Ok(())
     }
 }
+
+/// Held-back turn ends the daemon's Stop guard allows before it tells the user.
+const STOP_CAP: u32 = 3;
 
 #[test]
 fn every_open_task_is_always_in_someones_hands() {
@@ -407,4 +438,37 @@ fn a_closed_node_and_a_cancelled_dependency_each_ask_the_user() {
     let t = &w.s.tasks[&waiting];
     assert!(t.dependencies.is_empty() && t.state == TaskState::NotStarted);
     assert_eq!(w.s.holder(t, &w.facts[&waiting]), Ok(Holder::Gate(GateCause::Room)));
+}
+
+/// The flaky snapshots node: its question answered, it stopped without delivering. While Alondra
+/// still sends it back it holds its task; at the cap the card that tells the user holds it; a
+/// node stopped this way that nobody told is a task in nobody's hands.
+#[test]
+fn a_node_stopped_without_a_result_or_a_question_is_sent_back_then_put_to_the_user() {
+    let mut w = World::new();
+    w.apply(&Step::Create { scheduled: false, plan: true, deps: vec![] });
+    w.apply(&Step::Admit(0));
+    let task: TaskId = "t1".into();
+    let agent = w.agent_of(&task).unwrap();
+    w.must(Actor::Agent { agent_id: agent.clone() }, Command::AskQuestion {
+        attachments: vec![], interaction_id: "ask-1".into(), scope: Scope::Task { task_id: task.clone() }, recipient: Recipient::User,
+        body: "Deliver only the daemon fix?".into(), blocking: true,
+        options: vec![
+            QuestionOption { id: "daemon".into(), label: "Only the daemon fix".into(), description: None, inputs: vec![] },
+            QuestionOption { id: "both".into(), label: "Both fixes".into(), description: None, inputs: vec![] },
+        ],
+        card: CardSpec::derived(CardKind::Decide, "Choose what to deliver"),
+    });
+    w.must(user(), Command::AnswerQuestion { attachments: vec![], interaction_id: "ask-1".into(), option_id: "daemon".into(), inputs: BTreeMap::new() });
+
+    for _ in 0..STOP_CAP {
+        w.stop_without_delivering(&task);
+        assert_eq!(w.s.holder(&w.s.tasks[&task], &w.facts[&task]), Ok(Holder::Node), "Alondra sends it back");
+    }
+    let unattended = StartFacts { node: NodeFact::Stopped { sent_back: false }, ..w.facts[&task].clone() };
+    assert_eq!(w.s.holder(&w.s.tasks[&task], &unattended).unwrap_err().why,
+        "its node stopped without a result or a question and nobody was told");
+    w.stop_without_delivering(&task);
+    let card = w.s.open_user_card(&task).expect("the user is told").id.clone();
+    assert_eq!(w.s.holder(&w.s.tasks[&task], &w.facts[&task]), Ok(Holder::User(UserCause::Card(card))));
 }

@@ -4,10 +4,12 @@
 //! Alondra launched, and closes only what `claude agents` lists. One that still works after its task
 //! ended has its turn cut first; a task whose node declared work after the merge has not ended, so
 //! that node is never touched. It never closes one that waits for a permission, has work that is
-//! not saved or that the user chose to leave open.
+//! not saved or that the user chose to leave open. It also deletes the worktrees Alondra made for
+//! tasks that ended and whose session is gone, unless they hold work not saved.
 use crate::domain_runtime::DomainRuntime;
 use crate::domain_github::execute_system;
 use crate::node_close::{CloseOutcome, Sessions, close_node, listed};
+use crate::worktree::TaskWorktree;
 use alondra_core::domain::{AgentId, Command, DomainState, NodeEnd, Task, TaskState};
 use axum::http::StatusCode;
 use serde_json::{Value, json};
@@ -193,8 +195,58 @@ pub(crate) async fn run(
             Err(error) => failed.push(failure(&candidate, &format!("{error:#}"))),
         }
     }
+    let ended: Vec<&str> = if dry_run { &close } else { &closed }.iter().filter_map(|row| row["short_id"].as_str()).collect();
+    let (worktrees, kept_worktrees) = closed_task_worktrees(domain, &state, &listing, &ended, dry_run).await;
     let (free, freed) = if dry_run { (freed, vec![]) } else { (vec![], freed) };
-    Ok(json!({"dry_run": dry_run, "free": free, "freed": freed, "close": close, "closed": closed, "kept": left, "failed": failed}))
+    let (worktrees, removed_worktrees) = if dry_run { (worktrees, vec![]) } else { (vec![], worktrees) };
+    Ok(json!({"dry_run": dry_run, "free": free, "freed": freed, "close": close, "closed": closed, "kept": left, "failed": failed,
+        "worktrees": worktrees, "removed_worktrees": removed_worktrees, "kept_worktrees": kept_worktrees}))
+}
+
+/// The worktrees Alondra made for tasks that ended, which `claude rm` leaves because Claude Code
+/// did not make them: deleted (or listed, on a dry run) once the task's session is gone. Never one
+/// whose node the user kept or is the user's own, nor one a node of an open task works in; one with
+/// work not saved is kept and said why.
+async fn closed_task_worktrees(
+    domain: &DomainRuntime, state: &DomainState, listing: &str, ended: &[&str], dry_run: bool,
+) -> (Vec<Value>, Vec<Value>) {
+    let recorded = match domain.store.lock().expect("domain store poisoned").task_worktrees() {
+        Ok(recorded) => recorded,
+        Err(error) => {
+            log!("could not read the worktrees of tasks: {error:#}");
+            return (vec![], vec![]);
+        }
+    };
+    let (mut released, mut kept) = (vec![], vec![]);
+    for (task_id, dir) in recorded {
+        let Some(task) = state.tasks.get(&task_id) else { continue };
+        if !task.state.terminal() || matches!(task.wrap_up.node, Some(NodeEnd::KeptByUser | NodeEnd::UsersOwn)) {
+            continue;
+        }
+        if let Some(agent) = &task.agent_id {
+            let short: String = domain.live.node(&agent.0).map_or_else(|| agent.0.chars().take(8).collect(), |node| node.short_id);
+            if !domain.launched_by_alondra(agent).unwrap_or(false) || (listed(listing, &short) && !ended.contains(&short.as_str())) {
+                continue;
+            }
+        }
+        if open_task_works_in(state, domain, Path::new(&dir)) {
+            continue;
+        }
+        let row = json!({"task_id": task_id.0, "task": task.title, "dir": dir});
+        match crate::worktree::release_task_worktree(Path::new(&dir), &crate::launch_worktree::slug(&task_id.0), !dry_run).await {
+            Ok(TaskWorktree::Removed) => released.push(row),
+            Ok(TaskWorktree::Absent | TaskWorktree::NotAlondras) => {}
+            Ok(TaskWorktree::Unsaved(left)) => kept.push(json!({"task_id": task_id.0, "task": task.title, "dir": dir, "detail": left})),
+            Err(why) => kept.push(json!({"task_id": task_id.0, "task": task.title, "dir": dir, "detail": why})),
+        }
+    }
+    (released, kept)
+}
+
+fn open_task_works_in(state: &DomainState, domain: &DomainRuntime, dir: &Path) -> bool {
+    state.tasks.values().filter(|task| !task.state.terminal()).filter_map(|task| task.agent_id.as_ref())
+        .filter_map(|agent| domain.live.mods.session(&agent.0)?.cwd)
+        .any(|cwd| Path::new(&cwd).starts_with(dir))
 }
 
 fn failure(candidate: &Candidate, error: &str) -> Value {

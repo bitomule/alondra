@@ -709,3 +709,37 @@ async fn a_node_that_declares_again_or_is_working_never_reaches_the_user_and_lea
     rig.pass(T0 + 11 * HOUR + 34 * MINUTE).await;
     assert_eq!(rig.sessions.removals(), 1, "once the work ends the usual wait closes it");
 }
+
+#[tokio::test]
+async fn closing_the_node_deletes_the_worktree_alondra_made_for_its_task_which_claude_rm_leaves() {
+    let rig = Rig::new(thirty_minutes());
+    let root = crate::test_support::Directory::new();
+    let dir = crate::worktree::testing::task_worktree(&root, "t");
+    rig.domain.set_task_worktree(&"t".into(), dir.to_str().unwrap()).unwrap();
+    rig.confirm();
+    rig.pass(T0).await;
+    assert_eq!(rig.sessions.removals(), 1);
+    assert!(!dir.exists(), "the task's worktree is gone with its session");
+    rig.assert_done(NodeEnd::Closed);
+}
+
+#[tokio::test]
+async fn a_worktree_with_work_not_saved_keeps_the_task_closing_until_it_can_go() {
+    let rig = Rig::new(thirty_minutes());
+    let root = crate::test_support::Directory::new();
+    let dir = crate::worktree::testing::task_worktree(&root, "t");
+    rig.domain.set_task_worktree(&"t".into(), dir.to_str().unwrap()).unwrap();
+    std::fs::write(dir.join("a.txt"), "x").unwrap();
+    rig.confirm();
+    rig.pass(T0).await;
+    assert!(dir.join("a.txt").exists());
+    assert_eq!(rig.task().state, TaskState::Closing, "a close that leaves the worktree behind is not a close");
+    let closing = rig.closing().unwrap();
+    assert_eq!(closing.failures, 1);
+    assert!(closing.last_error.unwrap().contains("1 uncommitted file(s)"));
+
+    std::fs::remove_file(dir.join("a.txt")).unwrap();
+    rig.pass(T0 + 5 * MINUTE).await;
+    assert!(!dir.exists(), "the next attempt deletes it although the session is already gone");
+    assert_eq!(rig.task().state, TaskState::Done);
+}

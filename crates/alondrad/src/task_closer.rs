@@ -8,6 +8,7 @@ use crate::domain_github::execute_system;
 use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::{PostMergeCheck, TaskClosing};
 use crate::node_close::{CloseOutcome, Sessions, close_node};
+use crate::worktree::TaskWorktree;
 use alondra_core::close_problem::{CLOSE_PROBLEM_PREFIX, CloseProblem, CloseStop};
 use alondra_core::views::Lang;
 use alondra_core::domain::{
@@ -15,6 +16,7 @@ use alondra_core::domain::{
     Scope, Task, TaskId, TaskState, clip,
 };
 use anyhow::Result;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -254,11 +256,13 @@ async fn close_one(domain: &DomainRuntime, sessions: &dyn Sessions, timing: &Tim
             return Err(error);
         }
     };
+    let cleanup = matches!(kind, Due::Cleanup);
     match outcome {
-        CloseOutcome::Closed { .. } => finish(domain, &row, Some(&agent), NodeEnd::Closed),
+        CloseOutcome::Closed { .. } => finish_with_worktree(domain, timing, now, task, &agent, row, cleanup, NodeEnd::Closed).await,
         CloseOutcome::NotListed => {
             crate::node_revival::user_closed(domain, &agent.0)?;
-            finish(domain, &row, Some(&agent), if interrupted { NodeEnd::Closed } else { NodeEnd::Gone })
+            let end = if interrupted { NodeEnd::Closed } else { NodeEnd::Gone };
+            finish_with_worktree(domain, timing, now, task, &agent, row, cleanup, end).await
         }
         CloseOutcome::Refused { reasons, message } => {
             let (stop, detail) = match reasons.iter().find(|reason| reason.kind != "permission") {
@@ -271,6 +275,24 @@ async fn close_one(domain: &DomainRuntime, sessions: &dyn Sessions, timing: &Tim
         CloseOutcome::Failed { message, .. } => {
             failure(domain, timing, now, task, &agent, row, &message, (CloseStop::Error, &message), matches!(kind, Due::Cleanup))
         }
+    }
+}
+
+/// The session is gone; the worktree Alondra made for the task goes too, which `claude rm` leaves
+/// because Claude Code did not make it. The task finishes only once it is gone, so a worktree with
+/// work not saved is a failed close and is tried again, never forgotten.
+#[allow(clippy::too_many_arguments)]
+async fn finish_with_worktree(
+    domain: &DomainRuntime, timing: &Timing, now: i64, task: &Task, agent: &AgentId, row: TaskClosing, cleanup: bool, end: NodeEnd,
+) -> Result<()> {
+    let Some(dir) = domain.task_worktree(&task.id)? else { return finish(domain, &row, Some(agent), end) };
+    match crate::worktree::release_task_worktree(Path::new(&dir), &crate::launch_worktree::slug(&task.id.0), true).await {
+        Ok(TaskWorktree::Unsaved(left)) => {
+            let reason = format!("its session is closed, but its worktree has work that is not saved: {left}");
+            failure(domain, timing, now, task, agent, row, &reason, (CloseStop::Unsaved, &left), cleanup)
+        }
+        Ok(_) => finish(domain, &row, Some(agent), end),
+        Err(why) => failure(domain, timing, now, task, agent, row, &why, (CloseStop::Error, &why), cleanup),
     }
 }
 
