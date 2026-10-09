@@ -627,8 +627,44 @@ fn inbox_equal_order_uses_id_after_rank_and_excludes_other_recipients() {
     assert_eq!(selected_inbox(&s).iter().map(|i| i.order).collect::<Vec<_>>(), [4, 4]);
 }
 
+fn ordered_inbox(s: &DomainState) -> Vec<(String, Revision)> {
+    s.inbox_orders()
+}
+
+#[test]
+fn inbox_multiple_blockers_keep_server_order_before_and_after_an_answer() {
+    let mut s = fixture();
+    register_pr(&mut s);
+    ok(&mut s, agent(), present("d", pr_target(), true, review()));
+    let delivery_order = s.revision;
+    let mut revisions = vec![];
+    for id in ["q1", "q2"] {
+        let mut card = decide("Keep the filter?");
+        card.blocks = vec![CardTarget::PullRequest { pr_id: "pr".into() }];
+        ok(&mut s, agent(), ask(id, "t", false, card));
+        revisions.push(s.revision);
+    }
+    let before = s.clone();
+    assert_eq!(ordered_inbox(&s), vec![
+        ("interaction:q1".into(), revisions[0]), ("interaction:q2".into(), revisions[1]),
+        ("interaction:d".into(), delivery_order),
+    ]);
+    let d = selected_inbox(&s).into_iter().find(|i| i.id == "interaction:d").unwrap();
+    assert_eq!(d.blocked_by, vec![InteractionId::from("q1"), InteractionId::from("q2")]);
+    assert!(d.available_actions.iter().filter(|a| a.kind == "accept_delivery" || a.kind == "authorize_merge").all(|a| !a.enabled));
+    let projection = s.projection();
+    assert_eq!(s, before, "all order and full-projection reads are immutable");
+    let expected: serde_json::Value = serde_json::from_str(include_str!("../../fixtures/inbox_order_projection.json")).unwrap();
+    assert_eq!(serde_json::to_value(&projection).unwrap(), expected);
+    ok(&mut s, user(), answer("q1"));
+    assert_eq!(ordered_inbox(&s), vec![
+        ("interaction:q2".into(), revisions[1]), ("interaction:d".into(), delivery_order),
+        ("interaction:q1".into(), revisions[0]),
+    ]);
+}
+
 fn inbox_ids(s: &DomainState) -> Vec<String> {
-    selected_inbox(s).iter().map(|item| item.id.trim_start_matches("interaction:").to_owned()).collect()
+    ordered_inbox(s).iter().map(|(id, _)| id.trim_start_matches("interaction:").to_owned()).collect()
 }
 fn register_pr_of(s: &mut DomainState, actor: Actor, task: &str, pr: &str, number: u64) {
     ok(s, actor, Command::RegisterPr {

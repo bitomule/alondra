@@ -299,11 +299,7 @@ pub(crate) async fn gather(
         action: None,
     });
     let inbox_times = if clock_only { vec![] } else {
-        let orders = state
-            .inbox_projection()
-            .into_iter()
-            .map(|item| (item.id, item.order))
-            .collect::<Vec<_>>();
+        let orders = state.inbox_orders();
         let revisions = orders.iter().map(|(_, order)| *order).collect::<Vec<_>>();
         client
             .domain

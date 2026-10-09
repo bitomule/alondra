@@ -1,0 +1,386 @@
+{
+  "protocol_version": 2,
+  "data_epoch": "epoch",
+  "revision": 7,
+  "inbox": [
+    {
+      "id": "interaction:q1",
+      "kind": "question",
+      "subject": {
+        "kind": "interaction",
+        "interaction_id": "q1"
+      },
+      "title": "Task t",
+      "body": "Which name?",
+      "task_id": "t",
+      "request_id": "r",
+      "agent_id": "a",
+      "revision": 6,
+      "order": 6,
+      "pending": true,
+      "available_actions": [
+        {
+          "kind": "answer_question",
+          "enabled": true,
+          "disabled_reason": null,
+          "expected_revision": 7,
+          "presentation_id": null,
+          "expected_head": null
+        },
+        {
+          "kind": "request_clarification",
+          "enabled": true,
+          "disabled_reason": null,
+          "expected_revision": 7,
+          "presentation_id": null,
+          "expected_head": null
+        }
+      ],
+      "card": {
+        "kind": "decide",
+        "need": "Keep the filter?",
+        "why": "The name goes on the release",
+        "blocks": [
+          {
+            "kind": "pull_request",
+            "pr_id": "pr"
+          }
+        ]
+      },
+      "blocks": [
+        "d"
+      ],
+      "blocked_by": []
+    },
+    {
+      "id": "interaction:q2",
+      "kind": "question",
+      "subject": {
+        "kind": "interaction",
+        "interaction_id": "q2"
+      },
+      "title": "Task t",
+      "body": "Which name?",
+      "task_id": "t",
+      "request_id": "r",
+      "agent_id": "a",
+      "revision": 7,
+      "order": 7,
+      "pending": true,
+      "available_actions": [
+        {
+          "kind": "answer_question",
+          "enabled": true,
+          "disabled_reason": null,
+          "expected_revision": 7,
+          "presentation_id": null,
+          "expected_head": null
+        },
+        {
+          "kind": "request_clarification",
+          "enabled": true,
+          "disabled_reason": null,
+          "expected_revision": 7,
+          "presentation_id": null,
+          "expected_head": null
+        }
+      ],
+      "card": {
+        "kind": "decide",
+        "need": "Keep the filter?",
+        "why": "The name goes on the release",
+        "blocks": [
+          {
+            "kind": "pull_request",
+            "pr_id": "pr"
+          }
+        ]
+      },
+      "blocks": [
+        "d"
+      ],
+      "blocked_by": []
+    },
+    {
+      "id": "interaction:d",
+      "kind": "delivery",
+      "subject": {
+        "kind": "interaction",
+        "interaction_id": "d"
+      },
+      "title": "Task t",
+      "body": "Result ready",
+      "task_id": "t",
+      "request_id": "r",
+      "agent_id": "a",
+      "revision": 5,
+      "order": 5,
+      "pending": false,
+      "available_actions": [
+        {
+          "kind": "accept_delivery",
+          "enabled": false,
+          "disabled_reason": "blocked",
+          "refusal": {
+            "kind": "blocked_by_question",
+            "need": "Keep the filter?"
+          },
+          "expected_revision": 7,
+          "presentation_id": "d",
+          "expected_head": null
+        },
+        {
+          "kind": "submit_feedback",
+          "enabled": true,
+          "disabled_reason": null,
+          "expected_revision": 7,
+          "presentation_id": "d",
+          "expected_head": null
+        },
+        {
+          "kind": "authorize_merge",
+          "enabled": false,
+          "disabled_reason": "blocked",
+          "refusal": {
+            "kind": "blocked_by_question",
+            "need": "Keep the filter?"
+          },
+          "expected_revision": 7,
+          "presentation_id": "d",
+          "expected_head": "head1"
+        },
+        {
+          "kind": "request_clarification",
+          "enabled": true,
+          "disabled_reason": null,
+          "expected_revision": 7,
+          "presentation_id": null,
+          "expected_head": null
+        }
+      ],
+      "card": {
+        "kind": "review",
+        "need": "Review the release",
+        "why": "",
+        "content": {
+          "kind": "report",
+          "body": "Everything shipped"
+        }
+      },
+      "blocks": [],
+      "blocked_by": [
+        "q1",
+        "q2"
+      ]
+    }
+  ],
+  "counts": {
+    "roots": 3,
+    "pending": 2,
+    "unread_information": 0
+  },
+  "tasks": [
+    {
+      "id": "t",
+      "request_id": "r",
+      "agent_id": "a",
+      "title": "Task t",
+      "state": "waiting_dependency",
+      "revision": 7,
+      "started": false,
+      "review_prs": true,
+      "final_presentation": "d",
+      "pr_id": "pr",
+      "dependencies": [],
+      "stack": null,
+      "documents": {},
+      "archived": false
+    }
+  ],
+  "agents": [
+    {
+      "id": "a",
+      "name": "Instance a",
+      "connected": false
+    }
+  ],
+  "requests": [
+    {
+      "id": "r",
+      "body": "Build it",
+      "closed": false,
+      "title": "Build it",
+      "answer": null,
+      "withdrawn": false,
+      "auto_merge": false,
+      "maintenance": false,
+      "message": false
+    }
+  ],
+  "interactions": [
+    {
+      "attachments": [],
+      "id": "d",
+      "scope": {
+        "kind": "task",
+        "task_id": "t"
+      },
+      "author": {
+        "kind": "agent",
+        "agent_id": "a"
+      },
+      "recipient": {
+        "kind": "user"
+      },
+      "body": "Result ready",
+      "blocking": false,
+      "subject": null,
+      "payload": {
+        "kind": "delivery",
+        "targets": [
+          {
+            "kind": "pull_request",
+            "pr_id": "pr",
+            "head": "head1"
+          }
+        ],
+        "is_final": true,
+        "acceptance": null,
+        "feedback": []
+      },
+      "revision": 5,
+      "order": 5,
+      "withdrawn": false,
+      "card": {
+        "kind": "review",
+        "need": "Review the release",
+        "why": "",
+        "content": {
+          "kind": "report",
+          "body": "Everything shipped"
+        }
+      }
+    },
+    {
+      "attachments": [],
+      "id": "q1",
+      "scope": {
+        "kind": "task",
+        "task_id": "t"
+      },
+      "author": {
+        "kind": "agent",
+        "agent_id": "a"
+      },
+      "recipient": {
+        "kind": "user"
+      },
+      "body": "Which name?",
+      "blocking": false,
+      "subject": null,
+      "payload": {
+        "kind": "question",
+        "options": [
+          {
+            "id": "a",
+            "label": "Atlas",
+            "inputs": []
+          },
+          {
+            "id": "b",
+            "label": "Borealis",
+            "inputs": []
+          }
+        ],
+        "answer": null
+      },
+      "revision": 6,
+      "order": 6,
+      "withdrawn": false,
+      "card": {
+        "kind": "decide",
+        "need": "Keep the filter?",
+        "why": "The name goes on the release",
+        "blocks": [
+          {
+            "kind": "pull_request",
+            "pr_id": "pr"
+          }
+        ]
+      }
+    },
+    {
+      "attachments": [],
+      "id": "q2",
+      "scope": {
+        "kind": "task",
+        "task_id": "t"
+      },
+      "author": {
+        "kind": "agent",
+        "agent_id": "a"
+      },
+      "recipient": {
+        "kind": "user"
+      },
+      "body": "Which name?",
+      "blocking": false,
+      "subject": null,
+      "payload": {
+        "kind": "question",
+        "options": [
+          {
+            "id": "a",
+            "label": "Atlas",
+            "inputs": []
+          },
+          {
+            "id": "b",
+            "label": "Borealis",
+            "inputs": []
+          }
+        ],
+        "answer": null
+      },
+      "revision": 7,
+      "order": 7,
+      "withdrawn": false,
+      "card": {
+        "kind": "decide",
+        "need": "Keep the filter?",
+        "why": "The name goes on the release",
+        "blocks": [
+          {
+            "kind": "pull_request",
+            "pr_id": "pr"
+          }
+        ]
+      }
+    }
+  ],
+  "pull_requests": [
+    {
+      "id": "pr",
+      "task_id": "t",
+      "host": "github.com",
+      "repository": "owner/repo",
+      "number": 7,
+      "head": "head1",
+      "base": "main",
+      "state": "open",
+      "merged_head": null,
+      "allowed_methods": [
+        "squash"
+      ],
+      "review": {
+        "decisions": []
+      }
+    }
+  ],
+  "documents": [],
+  "document_revisions": [],
+  "document_reviews": [],
+  "merge_authorizations": [],
+  "stack_readiness": [],
+  "superseded_acceptances": []
+}
