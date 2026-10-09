@@ -43,6 +43,7 @@ const MAX_PUSH_PLAINTEXT: usize = 1_500;
 const MAX_CHANGES_PER_DEVICE: usize = 1;
 const MAX_CHANGES_TOTAL: usize = 16;
 const MAX_JOURNAL_ACCEPTS: usize = MAX_CHANGES_TOTAL + relay::MAX_ORDINARY_DELIVERIES;
+const MAX_JOURNAL_RECEIPTS: usize = MAX_CHANGES_TOTAL + relay::MAX_ORDINARY_DELIVERIES + 1;
 
 type WorkKey = (String, String);
 type InFlight = Arc<InFlightSet>;
@@ -536,6 +537,7 @@ impl Service {
         request: &LocalRequest,
         digest: &[u8; 32],
         transport: Transport,
+        receipt: Arc<ReceiptAdmission>,
     ) -> Result<Vec<u8>> {
         self.require_device_approval(&envelope.sender, device, transport)?;
         if self.domain.is_some() && request.path == PUSH_BINDING_REMOVE_ROUTE {
@@ -547,8 +549,8 @@ impl Service {
                 Err(_) => json!({"status":422,"body":{"error":"invalid push binding removal"}}),
             };
             let bytes = self.encode_response(envelope, device, &result, request)?;
-            self.journal
-                .complete(&envelope.sender, &envelope.request_id, &bytes)?;
+            let bytes = self.journal
+                .complete_admitted(&envelope.sender, &envelope.request_id, bytes, receipt.clone()).await?;
             return Ok(bytes);
         }
         if request.path == "/v1/service/push-binding"
@@ -563,8 +565,8 @@ impl Service {
                         &json!({"status":422,"body":{"error":"invalid push preferences"}}),
                         request,
                     )?;
-                    self.journal
-                        .complete(&envelope.sender, &envelope.request_id, &bytes)?;
+                    let bytes = self.journal
+                        .complete_admitted(&envelope.sender, &envelope.request_id, bytes, receipt.clone()).await?;
                     return Ok(bytes);
                 }
             };
@@ -683,8 +685,8 @@ impl Service {
                 bail!("domain service command path is not approved");
             };
             let bytes = self.encode_response(envelope, device, &result, request)?;
-            self.journal
-                .complete(&envelope.sender, &envelope.request_id, &bytes)?;
+            let bytes = self.journal
+                .complete_admitted(&envelope.sender, &envelope.request_id, bytes, receipt.clone()).await?;
             return Ok(bytes);
         }
         let hub = self
@@ -716,8 +718,8 @@ impl Service {
             .await?
         };
         let bytes = self.encode_response(envelope, device, &result, request)?;
-        self.journal
-            .complete(&envelope.sender, &envelope.request_id, &bytes)?;
+        let bytes = self.journal
+            .complete_admitted(&envelope.sender, &envelope.request_id, bytes, receipt.clone()).await?;
         Ok(bytes)
     }
 
@@ -1026,7 +1028,8 @@ impl Service {
                 ExecutionLane::Mutation(turn) => Some(turn.acquire().await),
             }
         };
-        let disposition = self.journal.accept_admitted(&e.sender, &e.request_id, &digest, guard.clone()).await?;
+        let receipt = self.journal.reserve_receipt(guard.clone())?;
+        let disposition = self.journal.accept_admitted(&e.sender, &e.request_id, &digest, receipt.clone()).await?;
         accepted().await?;
         if request.body.is_none() && domain_read_route(&request) {
             let binding = self.read_receipt_binding(&e.sender, &device, transport)?;
@@ -1045,12 +1048,14 @@ impl Service {
         let response = match disposition {
             Disposition::Completed(bytes) => bytes,
             Disposition::ExecutingLocal => {
-                self.execute_atomic_local(e, &device, &request, &digest, transport)
+                self.execute_atomic_local(e, &device, &request, &digest, transport, receipt.clone())
                     .await?
             }
             Disposition::Executing if !interrupted_read => {
                 let bytes = self.encode_response(e, &device, &json!({"status":409,"error":"uncertain","detail":"execution was interrupted; inspect the Mac before retrying this action"}), &request)?;
-                self.journal.complete(&e.sender, &e.request_id, &bytes)?;
+                #[cfg(test)]
+                self.journal.before_write(ReceiptWrite::Complete, &e.request_id).await;
+                let bytes = self.journal.complete_admitted(&e.sender, &e.request_id, bytes, receipt.clone()).await?;
                 bytes
             }
             Disposition::Accepted | Disposition::Executing => {
@@ -1058,13 +1063,18 @@ impl Service {
                 // approval (and enrollment) immediately before dispatch.
                 self.require_device_approval(&e.sender, &device, transport)?;
                 if !interrupted_read && self.atomic_local(&request) {
+                    #[cfg(test)]
+                    self.journal.before_write(ReceiptWrite::ExecutingLocal, &e.request_id).await;
                     self.journal
-                        .executing_local(&e.sender, &e.request_id, &digest)?;
-                    self.execute_atomic_local(e, &device, &request, &digest, transport)
+                        .executing_admitted(&e.sender, &e.request_id, &digest, true, receipt.clone()).await?;
+                    self.execute_atomic_local(e, &device, &request, &digest, transport, receipt.clone())
                         .await?
                 } else {
                     if !interrupted_read {
-                        self.journal.executing(&e.sender, &e.request_id, &digest)?;
+                        #[cfg(test)]
+                        self.journal.before_write(ReceiptWrite::Executing, &e.request_id).await;
+                        self.journal.executing_admitted(&e.sender, &e.request_id, &digest, false, receipt.clone()).await?;
+                        self.require_device_approval(&e.sender, &device, transport)?;
                     }
                     let result = if guard.saturated {
                         json!({"status":429,"error":"changes_busy"})
@@ -1083,7 +1093,9 @@ impl Service {
                         }
                     };
                     let bytes = self.encode_response(e, &device, &result, &request)?;
-                    self.journal.complete(&e.sender, &e.request_id, &bytes)?;
+                    #[cfg(test)]
+                    self.journal.before_write(ReceiptWrite::Complete, &e.request_id).await;
+                    let bytes = self.journal.complete_admitted(&e.sender, &e.request_id, bytes, receipt.clone()).await?;
                     bytes
                 }
             }
@@ -2083,13 +2095,71 @@ enum EnrollmentDecision {
     Active,
     Revoked,
 }
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ReceiptWrite { Executing, ExecutingLocal, Complete }
+#[cfg(test)]
+type ReceiptWriteHook = dyn Fn(ReceiptWrite, &str) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync;
+
+struct ReceiptAdmission {
+    _permit: tokio::sync::OwnedSemaphorePermit,
+    reservation: Arc<WorkGuard>,
+}
+
 #[derive(Clone)]
 struct Journal {
     path: PathBuf,
+    receipt_admissions: Arc<tokio::sync::Semaphore>,
     accept_admissions: Arc<tokio::sync::Semaphore>,
     accept_jobs: Arc<tokio::sync::Semaphore>,
+    #[cfg(test)]
+    before_write: Option<Arc<ReceiptWriteHook>>,
 }
 impl Journal {
+    fn reserve_receipt(&self, reservation: Arc<WorkGuard>) -> Result<Arc<ReceiptAdmission>> {
+        let permit = self.receipt_admissions.clone().try_acquire_owned()
+            .context("receipt journal lifecycle admission full before acknowledgement")?;
+        Ok(Arc::new(ReceiptAdmission { _permit: permit, reservation }))
+    }
+
+    async fn write_receipt<T: Send + 'static>(
+        &self,
+        receipt: Arc<ReceiptAdmission>,
+        operation: impl FnOnce(&Journal) -> Result<T> + Send + 'static,
+    ) -> Result<T> {
+        let physical = self.accept_jobs.clone().acquire_owned().await?;
+        let journal = self.clone();
+        tokio::task::spawn_blocking(move || {
+            let (_physical, _receipt) = (physical, receipt);
+            operation(&journal)
+        }).await?
+    }
+
+    async fn executing_admitted(
+        &self, sender: &str, id: &str, digest: &[u8; 32], local: bool, receipt: Arc<ReceiptAdmission>,
+    ) -> Result<()> {
+        let (sender, id, digest) = (sender.to_owned(), id.to_owned(), *digest);
+        self.write_receipt(receipt, move |journal| {
+            if local { journal.executing_local(&sender, &id, &digest) }
+            else { journal.executing(&sender, &id, &digest) }
+        }).await
+    }
+
+    async fn complete_admitted(
+        &self, sender: &str, id: &str, response: Vec<u8>, receipt: Arc<ReceiptAdmission>,
+    ) -> Result<Vec<u8>> {
+        let (sender, id) = (sender.to_owned(), id.to_owned());
+        self.write_receipt(receipt, move |journal| {
+            journal.complete(&sender, &id, &response)?;
+            Ok(response)
+        }).await
+    }
+
+    #[cfg(test)]
+    async fn before_write(&self, stage: ReceiptWrite, id: &str) {
+        if let Some(hook) = &self.before_write { hook(stage, id).await }
+    }
+
     async fn off_runtime_admitted<T: Send + 'static>(
         &self,
         reservation: Arc<WorkGuard>,
@@ -2106,10 +2176,13 @@ impl Journal {
     }
 
     async fn accept_admitted(
-        &self, sender: &str, id: &str, digest: &[u8; 32], reservation: Arc<WorkGuard>,
+        &self, sender: &str, id: &str, digest: &[u8; 32], receipt: Arc<ReceiptAdmission>,
     ) -> Result<Disposition> {
         let (sender, id, digest) = (sender.to_owned(), id.to_owned(), *digest);
-        self.off_runtime_admitted(reservation, move |journal| journal.accept(&sender, &id, &digest)).await
+        self.off_runtime_admitted(receipt.reservation.clone(), move |journal| {
+            let _receipt = receipt;
+            journal.accept(&sender, &id, &digest)
+        }).await
     }
 
     /// Exclusive approval leases wait for shared leases that other tasks hold
@@ -2179,8 +2252,11 @@ impl Journal {
         }
         migration.commit()?;
         Ok(Self { path,
+            receipt_admissions: Arc::new(tokio::sync::Semaphore::new(MAX_JOURNAL_RECEIPTS)),
             accept_admissions: Arc::new(tokio::sync::Semaphore::new(MAX_JOURNAL_ACCEPTS)),
             accept_jobs: Arc::new(tokio::sync::Semaphore::new(1)),
+            #[cfg(test)]
+            before_write: None,
         })
     }
     fn connect(path: &Path) -> Result<Connection> {
@@ -2515,6 +2591,7 @@ mod domain_parity_tests;
 mod tests {
     mod relay_scheduler_tests;
     mod journal_admission_tests;
+    mod journal_transition_tests;
     use super::*;
     use reqwest::{StatusCode, Url};
     use std::collections::HashSet;
@@ -3658,8 +3735,11 @@ agreement_key = "{}"
             let seq = hub.read(|v| v.seq);
             let held = hub.starts.lock().await;
             let phone = service.devices.get("phone-1").unwrap();
-            let mut pending =
-                Box::pin(service.execute_atomic_local(&work.envelope, &phone, &request, &[1; 32], Transport::Relay));
+            let prepared = service.prepare_work(&work, Transport::Relay).unwrap().unwrap();
+            let receipt = service.journal.reserve_receipt(prepared.guard).unwrap();
+            let mut pending = Box::pin(service.execute_atomic_local(
+                &work.envelope, &phone, &request, &[1; 32], Transport::Relay, receipt,
+            ));
             // Poll exactly to the mutex wait: authorization already passed, mutation has not run.
             let waker = std::task::Waker::noop();
             assert!(
@@ -4887,6 +4967,7 @@ agreement_key = "{}"
                         &device,
                         &prepared.request,
                         &prepared.digest, Transport::Relay,
+                        service.journal.reserve_receipt(prepared.guard.clone()).unwrap(),
                     )
                     .await
                     .unwrap();
@@ -7378,6 +7459,7 @@ agreement_key = "{}"
                 &device,
                 &prepared.request,
                 &prepared.digest, Transport::Relay,
+                service.journal.reserve_receipt(prepared.guard.clone()).unwrap(),
             )
             .await
             .unwrap();
