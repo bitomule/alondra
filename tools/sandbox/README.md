@@ -61,3 +61,29 @@ Pairing approves the phone through the daemon's local `POST /service/approve-dev
 with the Mac's key, the same two steps `alondra pair` takes after the code matches. Answering an
 ask needs one to exist, and only a Claude session the daemon launched can create one: launch a
 probe node, then `phone request POST /interactions/<id>/answers '<body>'`.
+
+## Cards end to end
+
+`tools/e2e_cards.py` starts its own sandbox, has two nodes without a model put one card of each
+kind in front of the user (an option, a request for text, a question answered by writing in its
+reply field, four questions asked together, a tool permission the node waits on, and a delivery),
+and answers every one from a client. Each card must leave at once, as its action's
+`resolves_card` promised, and never come back; each card of the group must open on its own screen.
+
+```sh
+make e2e-relay-cards                 # the synthetic phone, every request through the relay
+make e2e-direct-cards                # the same, over the Mac's direct listener
+make e2e-cards-tui                   # the real TUI in tmux
+make e2e-ios-cards                   # the iOS app in a pooled simulator, driven with MAV
+E2E_CAPTURES=/tmp/cards make e2e-cards-tui   # keeps what the client showed at each step
+```
+
+The iOS run builds `//apple:AlondraiOS` for the simulator with `--define=alondra_sandbox=1`,
+leases an iPhone 17 Pro on iOS 26.3 from `simpool`, finds the sandbox Mac on Bonjour
+(`SANDBOX_LAN=1`, so its direct listener answers on the LAN address Bonjour gives) and approves the
+pairing through the Mac's local route. It covers the direct connection only: the app signs in to
+the relay with the production account server, which the sandbox does not have, so the relay is
+covered by the synthetic phone. `tools/e2e_cards.py` with no `--client` keeps a seeded sandbox up
+for a person until Ctrl+C. None of these run in `musts validate`; the same flows without a client
+run there as `every_card_kind_leaves_the_queue_when_its_action_says_so_and_never_returns`
+(`crates/alondrad/src/domain_e2e_tests.rs`).

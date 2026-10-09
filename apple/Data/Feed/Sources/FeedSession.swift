@@ -501,7 +501,14 @@ public actor FeedSession {
                 let reply = try await transport.fetchChanges(client: client, lang: lang, wait: 50, cursor: cursor, views: openVersions)
                 guard !Task.isCancelled, generation == current else { return }
                 guard pollEpoch == epochGeneration else { continue }
-                if reply.superseded { return }
+                if reply.superseded {
+                    // Another poll of this device reached the Mac after this one: over the relay,
+                    // usually one this session already cancelled. Ask again, slower each time, so two
+                    // live pollers of one device cannot take turns as fast as they can.
+                    failures += 1
+                    do { try await retryDelay(failures) } catch { return }
+                    continue
+                }
                 let priorStatus = status
                 let priorEpoch = dataEpoch
                 feedOwnsCursor = true

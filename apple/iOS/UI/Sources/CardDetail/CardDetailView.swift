@@ -86,8 +86,10 @@ public struct CardDetailView: View {
             } actions: {
                 Button("Try Again") { store.send(.screen(.retry)) }.buttonStyle(.glass)
             }
+            .accessibilityIdentifier("cardDetail.failed")
         case .loading, .loaded:
             ScrollView { skeleton.padding(20) }
+                .accessibilityIdentifier("cardDetail.loading")
         }
     }
 
@@ -114,6 +116,7 @@ public struct CardDetailView: View {
             }
             .padding(.horizontal, 20).padding(.bottom, 24)
         }
+        .accessibilityIdentifier("cardDetail.loaded")
         .scrollDismissesKeyboard(.interactively)
         .safeAreaBar(edge: .bottom) { actionBar(subject) }
     }

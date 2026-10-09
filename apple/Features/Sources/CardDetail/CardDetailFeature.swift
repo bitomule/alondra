@@ -140,6 +140,7 @@ public struct CardDetailFeature: Sendable {
         case previewClosed
         case opened(ViewKey)
         case submit
+        case loadTimedOut
         case delegate(Delegate)
 
         @CasePathable
@@ -153,6 +154,8 @@ public struct CardDetailFeature: Sendable {
 
     @Dependency(\.viewsClient) var viewsClient
     @Dependency(\.dismiss) var dismiss
+    @Dependency(\.continuousClock) var clock
+    private enum CancelID: Hashable { case loadDeadline }
 
     public var body: some ReducerOf<Self> {
         Scope(state: \.screen, action: \.screen) { ScreenFeature() }
@@ -161,20 +164,28 @@ public struct CardDetailFeature: Sendable {
         Reduce { state, action in
             switch action {
             case .task:
-                return .send(.screen(.task))
+                return .merge(.send(.screen(.task)), loadDeadline(state))
+            case .screen(.retry):
+                return loadDeadline(state)
+            case .screen(.stop), .screen(.failed), .screen(.missing):
+                return .cancel(id: CancelID.loadDeadline)
+            case .loadTimedOut:
+                guard state.screen.document == nil, state.screen.phase == .loading else { return .none }
+                state.screen.phase = .failed(TriageFeature.loadFailure)
+                return .none
             case .screen(.loaded(let document)):
                 guard document.key == state.screen.key.rawValue else { return .none }
                 if let why = document.settledNotice {
-                    return .merge(.send(.delegate(.settled(why))), .run { [dismiss] _ in await dismiss() })
+                    return .merge(.cancel(id: CancelID.loadDeadline), .send(.delegate(.settled(why))), .run { [dismiss] _ in await dismiss() })
                 }
                 state.actions.dataEpoch = document.dataEpoch
                 if let inline = Self.commentableText(of: document) {
                     state.content = inline
                     state.contentDigest = nil
                     state.contentFailed = false
-                    return .none
+                    return .cancel(id: CancelID.loadDeadline)
                 }
-                return .merge(fetchContent(of: document, state: &state), fetchDiff(of: document, state: &state))
+                return .merge(.cancel(id: CancelID.loadDeadline), fetchContent(of: document, state: &state), fetchDiff(of: document, state: &state))
             case .diffLoaded(let digest, let files):
                 guard digest == state.diffDigest else { return .none }
                 state.diff = files
@@ -315,6 +326,17 @@ public struct CardDetailFeature: Sendable {
         document.sections.lazy.flatMap(\.items).compactMap { item -> String? in
             if case .markdown(let markdown) = item, markdown.commentable { markdown.text } else { nil }
         }.first
+    }
+
+    /// The screen never stays on its placeholder: past the same limit as a card in the queue it
+    /// says it could not load and offers to try again.
+    private func loadDeadline(_ state: State) -> Effect<Action> {
+        guard state.screen.document == nil else { return .none }
+        return .run { [clock] send in
+            try await clock.sleep(for: TriageFeature.loadDeadline)
+            await send(.loadTimedOut)
+        }
+        .cancellable(id: CancelID.loadDeadline, cancelInFlight: true)
     }
 
     private func fetchContent(of document: ViewDocument, state: inout State) -> Effect<Action> {

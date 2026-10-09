@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:cc2d034b-249e-4487-a89b-57de38c26372",
   "client": "tui",
-  "version": "vc19dd78ee4ced012",
+  "version": "vbf3ff8ca94bf3810",
   "cursor": "cursor-1",
   "title": "Pega este comando en el terminal: confía en todos los repos de ~/Projects",
   "status": {
@@ -91,7 +91,8 @@
             "attachments": true,
             "enabled": true,
             "stamp": "Enviado",
-            "key": "r"
+            "key": "r",
+            "resolves_card": false
           },
           "more": [
             {
@@ -135,7 +136,8 @@
               "attachments": false,
               "enabled": true,
               "stamp": "Aclaración solicitada",
-              "key": "c"
+              "key": "c",
+              "resolves_card": false
             },
             {
               "id": "",
@@ -155,7 +157,8 @@
                   "kind": "attach",
                   "session": "alondra-ios"
                 }
-              }
+              },
+              "resolves_card": false
             }
           ],
           "link": {
@@ -204,7 +207,8 @@
               "attachments": false,
               "enabled": true,
               "stamp": "Leída",
-              "key": "1"
+              "key": "1",
+              "resolves_card": true
             }
           ]
         }

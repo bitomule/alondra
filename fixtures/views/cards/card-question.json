@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:a98d034b-249e-4487-a89b-57de38c26372",
   "client": "ios",
-  "version": "v1f78b974391d067c",
+  "version": "v0960724727a1d2d0",
   "cursor": "cursor-1",
   "title": "Choose the welcome copy",
   "status": {
@@ -91,7 +91,8 @@
             },
             "attachments": true,
             "enabled": true,
-            "stamp": "Sent"
+            "stamp": "Sent",
+            "resolves_card": true
           },
           "more": [
             {
@@ -108,7 +109,8 @@
               },
               "attachments": true,
               "enabled": true,
-              "stamp": "Answered"
+              "stamp": "Answered",
+              "resolves_card": true
             },
             {
               "id": "clarify:a98d034b-249e-4487-a89b-57de38c26372@1",
@@ -150,7 +152,8 @@
               },
               "attachments": false,
               "enabled": true,
-              "stamp": "Clarification requested"
+              "stamp": "Clarification requested",
+              "resolves_card": false
             }
           ],
           "link": {
@@ -201,7 +204,8 @@
               },
               "attachments": false,
               "enabled": true,
-              "stamp": "Answered"
+              "stamp": "Answered",
+              "resolves_card": true
             },
             {
               "id": "ans:a98d034b-249e-4487-a89b-57de38c26372@1",
@@ -216,7 +220,8 @@
               },
               "attachments": false,
               "enabled": true,
-              "stamp": "Answered"
+              "stamp": "Answered",
+              "resolves_card": true
             }
           ]
         }

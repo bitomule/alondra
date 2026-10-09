@@ -4,7 +4,7 @@
   "view": "fleet",
   "key": "fleet",
   "client": "ios",
-  "version": "v2333becff2b7ae4c",
+  "version": "v74f6516a1a9fdc3a",
   "cursor": "cursor-1",
   "title": "Fleet",
   "status": {
@@ -124,7 +124,8 @@
               },
               "attachments": false,
               "enabled": true,
-              "stamp": "Paused"
+              "stamp": "Paused",
+              "resolves_card": false
             }
           ]
         },
@@ -151,7 +152,8 @@
               },
               "attachments": false,
               "enabled": true,
-              "stamp": "Paused"
+              "stamp": "Paused",
+              "resolves_card": false
             }
           ]
         },
@@ -179,7 +181,8 @@
               },
               "attachments": false,
               "enabled": true,
-              "stamp": "Resuming…"
+              "stamp": "Resuming…",
+              "resolves_card": false
             }
           ]
         },
@@ -207,7 +210,8 @@
               },
               "attachments": false,
               "enabled": true,
-              "stamp": "Resuming…"
+              "stamp": "Resuming…",
+              "resolves_card": false
             }
           ]
         }
@@ -270,7 +274,8 @@
                 "message": "Close this node?",
                 "button": "Close Node"
               },
-              "enabled": true
+              "enabled": true,
+              "resolves_card": false
             }
           ]
         },
@@ -311,7 +316,8 @@
                 "message": "Close this node?",
                 "button": "Close Node"
               },
-              "enabled": true
+              "enabled": true,
+              "resolves_card": false
             }
           ]
         }
@@ -360,7 +366,8 @@
                 "message": "Close this node?",
                 "button": "Close Node"
               },
-              "enabled": true
+              "enabled": true,
+              "resolves_card": false
             }
           ]
         }
@@ -406,7 +413,8 @@
               },
               "attachments": false,
               "enabled": true,
-              "stamp": "Resuming…"
+              "stamp": "Resuming…",
+              "resolves_card": false
             },
             {
               "id": "close:zeta-worker@6",
@@ -422,7 +430,8 @@
                 "message": "Close this node?",
                 "button": "Close Node"
               },
-              "enabled": true
+              "enabled": true,
+              "resolves_card": false
             }
           ]
         }
@@ -471,7 +480,8 @@
                 "message": "Close this node?",
                 "button": "Close Node"
               },
-              "enabled": true
+              "enabled": true,
+              "resolves_card": false
             }
           ]
         },
@@ -512,7 +522,8 @@
                 "message": "Close this node?",
                 "button": "Close Node"
               },
-              "enabled": true
+              "enabled": true,
+              "resolves_card": false
             }
           ]
         }

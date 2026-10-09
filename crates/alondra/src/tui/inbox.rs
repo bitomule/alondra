@@ -458,6 +458,7 @@ impl App {
         let acting = super::Acting {
             origin: selected.clone(),
             stamp: action.stamp.clone(),
+            hides: action.resolves_card,
         };
         let answers_a_choice = option.is_none() && action.option_id.is_some();
         match input {

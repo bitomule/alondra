@@ -114,3 +114,58 @@ private actor RestartingMac: ViewTransport {
         throw FeedError.unknownCommand
     }
 }
+
+final class FeedSupersededTests: XCTestCase {
+    /// Over the relay a poll this session already gave up on can reach the Mac after the live one,
+    /// which the Mac then answers "superseded". The feed used to end there, so nothing the Mac
+    /// changed reached the phone again: an answered card stayed on screen.
+    func testAPollTheMacSupersededIsAskedAgainAndTheChangeArrives() async throws {
+        let transport = SupersedingMac()
+        let delays = Delays()
+        let session = FeedSession(transport: transport, client: .ios, lang: "en", retryDelay: { await delays.record($0) })
+        let stopper = Task {
+            try await Task.sleep(for: .seconds(5))
+            await session.stop()
+        }
+        defer { stopper.cancel() }
+        var home = ViewObservation.stream(session: session, key: .home).makeAsyncIterator()
+
+        guard case .document(let before)? = try await home.next() else { return XCTFail("home never loaded") }
+        XCTAssertEqual(before.version, "v1")
+        guard case .document(let after)? = try await home.next() else { return XCTFail("the change after a superseded poll never arrived") }
+        XCTAssertEqual(after.version, "v2")
+        let attempts = await delays.attempts
+        XCTAssertEqual(attempts, [1], "it waits before asking again, as after any failed poll")
+        await session.stop()
+    }
+}
+
+private actor SupersedingMac: ViewTransport {
+    private var polls = 0
+    private var version = "v1"
+
+    func fetchView(key: String, client: ViewClient, lang: String, known: String?) async throws -> ViewFetch {
+        let json = """
+        {"protocol":1,"view":"\(key)","key":"\(key)","client":"ios","version":"\(version)",
+        "cursor":"c-\(version)","data_epoch":"e","status":{"version":"s","summary":"Ready","badge":0,
+        "counts":[],"gauges":[],"orchestrator":{"text":"idle","tone":"neutral"}},"sections":[]}
+        """
+        return try ContractCodec.decode(ViewFetch.self, from: Data(json.utf8))
+    }
+
+    func fetchChanges(client: ViewClient, lang: String, wait: UInt, cursor: String?, views: [OpenViewVersion]) async throws -> ViewFeed {
+        polls += 1
+        if polls > 2 { try await Task.sleep(for: .seconds(60)) }
+        if polls == 2 { version = "v2" }
+        let json = """
+        {"protocol":1,"cursor":"c-\(version)","data_epoch":"e","status":{"version":"s","summary":"Ready","badge":0,
+        "counts":[],"gauges":[],"orchestrator":{"text":"idle","tone":"neutral"}},
+        "stale":\(polls == 2 ? "[\"home\"]" : "[]"),"reset":false,"superseded":\(polls == 1)}
+        """
+        return try ContractCodec.decode(ViewFeed.self, from: Data(json.utf8))
+    }
+
+    func submitAction(_ request: ActionRequest, body: Data) async throws -> ActionResponse {
+        throw FeedError.unknownCommand
+    }
+}

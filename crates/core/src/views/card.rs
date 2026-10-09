@@ -525,9 +525,13 @@ pub(super) fn from_item(item: &InboxItem, context: &RenderContext<'_>, included:
             next += 1;
         }
     }
-    card.reply = reply_action(item, interaction, context).and_then(CardAction::usable);
-    card.actions = visible.into_iter().filter_map(CardAction::usable).collect();
-    card.more = more.into_iter().filter_map(CardAction::usable).collect();
+    let settles = |mut action: Action| {
+        action.resolves_card = ActionId::parse(&action.id).is_ok_and(|id| super::resolves_card(context.domain, &id));
+        action
+    };
+    card.reply = reply_action(item, interaction, context).map(settles).and_then(CardAction::usable);
+    card.actions = visible.into_iter().map(settles).filter_map(CardAction::usable).collect();
+    card.more = more.into_iter().map(settles).filter_map(CardAction::usable).collect();
     Ok(card)
 }
 
@@ -673,6 +677,7 @@ pub(super) fn button(id: String, label: &str, role: Role) -> Action {
         stamp: None,
         key: None,
         link: None,
+        resolves_card: false,
     }
 }
 

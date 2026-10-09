@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:github.com/example/repo#12",
   "client": "mac",
-  "version": "v852b195f93c7358f",
+  "version": "v62230c47c29fcc21",
   "cursor": "cursor-1",
   "title": "Add the compact schedule editor",
   "status": {
@@ -92,7 +92,8 @@
             "attachments": true,
             "enabled": true,
             "stamp": "Sent",
-            "key": "r"
+            "key": "r",
+            "resolves_card": true
           },
           "more": [
             {
@@ -112,7 +113,8 @@
               },
               "enabled": true,
               "stamp": "Closing…",
-              "key": "3"
+              "key": "3",
+              "resolves_card": true
             },
             {
               "id": "",
@@ -129,7 +131,8 @@
               "link": {
                 "kind": "url",
                 "url": "https://github.com/example/repo/pull/12"
-              }
+              },
+              "resolves_card": false
             }
           ],
           "link": {
@@ -183,7 +186,8 @@
               "attachments": false,
               "enabled": true,
               "stamp": "Merging…",
-              "key": "1"
+              "key": "1",
+              "resolves_card": true
             },
             {
               "id": "changes:github.com/example/repo#12@6~abcdef12",
@@ -207,7 +211,8 @@
               "link": {
                 "kind": "view",
                 "key": "pull_request:github.com/example/repo#12"
-              }
+              },
+              "resolves_card": true
             }
           ]
         }

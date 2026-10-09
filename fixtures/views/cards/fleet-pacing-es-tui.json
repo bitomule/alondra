@@ -4,7 +4,7 @@
   "view": "fleet",
   "key": "fleet",
   "client": "tui",
-  "version": "v16c24595e433d117",
+  "version": "v6772fc8e3a92a0c2",
   "cursor": "cursor-1",
   "title": "Flota",
   "status": {
@@ -125,7 +125,8 @@
               "attachments": false,
               "enabled": true,
               "stamp": "En pausa",
-              "key": "p"
+              "key": "p",
+              "resolves_card": false
             }
           ]
         },
@@ -153,7 +154,8 @@
               "attachments": false,
               "enabled": true,
               "stamp": "En pausa",
-              "key": "p"
+              "key": "p",
+              "resolves_card": false
             }
           ]
         },
@@ -182,7 +184,8 @@
               "attachments": false,
               "enabled": true,
               "stamp": "Reanudando…",
-              "key": "u"
+              "key": "u",
+              "resolves_card": false
             }
           ]
         },
@@ -211,7 +214,8 @@
               "attachments": false,
               "enabled": true,
               "stamp": "Reanudando…",
-              "key": "u"
+              "key": "u",
+              "resolves_card": false
             }
           ]
         }
@@ -257,7 +261,8 @@
                 "button": "Cerrar nodo"
               },
               "enabled": true,
-              "key": "x"
+              "key": "x",
+              "resolves_card": false
             }
           ]
         },
@@ -295,7 +300,8 @@
                 "button": "Cerrar nodo"
               },
               "enabled": true,
-              "key": "x"
+              "key": "x",
+              "resolves_card": false
             }
           ]
         }
@@ -341,7 +347,8 @@
                 "button": "Cerrar nodo"
               },
               "enabled": true,
-              "key": "x"
+              "key": "x",
+              "resolves_card": false
             }
           ]
         }
@@ -387,7 +394,8 @@
                 "button": "Cerrar nodo"
               },
               "enabled": true,
-              "key": "x"
+              "key": "x",
+              "resolves_card": false
             }
           ]
         }
@@ -433,7 +441,8 @@
                 "button": "Cerrar nodo"
               },
               "enabled": true,
-              "key": "x"
+              "key": "x",
+              "resolves_card": false
             }
           ]
         },
@@ -471,7 +480,8 @@
                 "button": "Cerrar nodo"
               },
               "enabled": true,
-              "key": "x"
+              "key": "x",
+              "resolves_card": false
             }
           ]
         }

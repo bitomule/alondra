@@ -4,7 +4,7 @@
   "view": "tasks",
   "key": "tasks?section=finished&after=0",
   "client": "ios",
-  "version": "v50efd3538d5e43bd",
+  "version": "vcc0bea81b3baff55",
   "cursor": "cursor-1",
   "title": "Tareas",
   "status": {
@@ -502,7 +502,8 @@
                 "kind": "none"
               },
               "attachments": false,
-              "enabled": true
+              "enabled": true,
+              "resolves_card": false
             }
           ]
         }

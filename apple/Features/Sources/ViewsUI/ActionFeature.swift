@@ -76,6 +76,7 @@ public struct ActionFeature: Sendable {
         public let body: String?
         public let actionId: String
         public let button: String
+        public var resolvesCard: Bool? = nil
     }
 
     public enum Action {
@@ -205,7 +206,7 @@ public struct ActionFeature: Sendable {
             case .sendChangedAction:
                 guard let changed = state.changed else { return .none }
                 state.changed = nil
-                state.pending = makeRequest(state, actionID: changed.actionId)
+                state.pending = makeRequest(state, actionID: changed.actionId, resolvesCard: changed.resolvesCard)
                 return send(&state)
             case .sent, .settled:
                 return .none
@@ -304,7 +305,7 @@ public struct ActionFeature: Sendable {
         .cancellable(id: DeliveryID(commandID: request.commandId)))
     }
 
-    private func makeRequest(_ state: State, actionID: String) -> ActionRequest {
+    private func makeRequest(_ state: State, actionID: String, resolvesCard: Bool? = nil) -> ActionRequest {
         let request = ActionRequest(
             commandId: uuid().uuidString.lowercased(), dataEpoch: state.dataEpoch,
             client: state.client, lang: state.lang, actionId: actionID,
@@ -312,7 +313,8 @@ public struct ActionFeature: Sendable {
             input: ActionInput(text: state.text.isEmpty ? nil : state.text,
                 attachments: state.attachments.isEmpty ? nil : state.attachments,
                 comments: state.comments.isEmpty ? nil : state.comments,
-                fields: state.fields.isEmpty ? nil : state.fields)
+                fields: state.fields.isEmpty ? nil : state.fields),
+            resolvesCard: resolvesCard ?? state.action?.resolvesCard
         )
         guard let unsure = state.unsure, unsure.actionId == request.actionId,
               unsure.optionId == request.optionId, unsure.input == request.input else { return request }

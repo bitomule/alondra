@@ -4,7 +4,7 @@
   "view": "sidebar",
   "key": "sidebar",
   "client": "mac",
-  "version": "v0ede45e0a21657aa",
+  "version": "v605fbb1b1b122bd1",
   "cursor": "cursor-1",
   "status": {
     "version": "v7675bad0b5fdf15f",
@@ -300,7 +300,8 @@
             "link": {
               "kind": "view",
               "key": "card:a98d034b-249e-4487-a89b-57de38c26372"
-            }
+            },
+            "resolves_card": false
           }
         }
       ]
