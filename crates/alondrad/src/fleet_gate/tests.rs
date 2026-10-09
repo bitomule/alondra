@@ -104,7 +104,7 @@ fn swing(low: u32, high: u32) -> Hour {
         let free = if (now / (3 * MIN)) % 2 == 0 { low } else { high };
         let machine = Machine { at: now, memory_free_percent: Some(free), cpus: 11, load: [5.0; 3], ..Machine::default() };
         if let Some((from, to)) = mac.step(&machine, now) {
-            hour.notices.extend(pacing_notice(from, to, mac.free_percent, mac.pressure));
+            hour.notices.extend(pacing_notice(from, to, &mac));
         }
         let (next, actions) = step_on(incident, &machine, mac.health, None, &[], false, now);
         incident = next;
@@ -147,7 +147,7 @@ fn memory_back_above_20_percent_for_5_minutes_recovers_once_and_lets_the_queue_g
     let mut now = 0;
     for free in std::iter::repeat_n(8, 6).chain(std::iter::repeat_n(30, 32)) {
         if let Some((from, to)) = mac.step(&Machine { memory_free_percent: Some(free), cpus: 11, load: [5.0; 3], ..Machine::default() }, now) {
-            notices.extend(pacing_notice(from, to, mac.free_percent, mac.pressure));
+            notices.extend(pacing_notice(from, to, &mac));
         }
         now += SAMPLE;
     }
@@ -324,7 +324,7 @@ fn a_node_waiting_for_the_user_to_approve_its_plan_leaves_its_slot_to_the_queue_
 }
 
 #[test]
-fn the_log_says_why_the_queue_waits_and_repeats_it_only_when_it_changes_or_every_10_minutes() {
+fn the_log_says_why_the_queue_waits_and_repeats_it_only_when_its_cause_changes_or_every_10_minutes() {
     let working: Vec<TaskId> = vec!["t-a".into(), "t-b".into()];
     let on_user: Vec<TaskId> = vec!["t-c".into()];
     let slots = Hold::Slots { working: 3, limit: 3 };
@@ -337,11 +337,16 @@ fn the_log_says_why_the_queue_waits_and_repeats_it_only_when_it_changes_or_every
     assert_eq!(hold_line(1, "t-x", TaskPriority::Normal, &Hold::Spacing { until: 5 }, &[], &[], 0), None, "the minute between starts is not news");
 
     let mut told = Told::default();
-    let line = || Some("slots".to_owned());
-    assert!(told.due(line(), 0));
-    assert!(!told.due(line(), 9 * MIN), "the same reason within 10 minutes");
-    assert!(told.due(line(), 10 * MIN), "said again after 10 minutes");
-    assert!(told.due(Some("memory".into()), 10 * MIN + 1), "a new reason at once");
+    let tight = |free| Cause::of(&Hold::Memory { health: Health::Tight, free: Some(free) });
+    assert!(told.due(tight(12), 0));
+    for (second, free) in (10..).step_by(10).zip([11, 9, 13, 8, 12]) {
+        assert!(!told.due(tight(free), second * 1_000), "free memory moving from sample to sample is the same cause");
+    }
+    assert!(!told.due(tight(7), 9 * MIN), "the same cause within 10 minutes");
+    assert!(told.due(tight(7), 10 * MIN), "said again after 10 minutes");
+    assert!(told.due(Cause::of(&Hold::Memory { health: Health::AtLimit, free: Some(7) }), 10 * MIN + 1), "Tight to AtLimit is news at once");
+    assert!(told.due(Cause::of(&Hold::Cpu { load: 52.4, cpus: 11 }), 10 * MIN + 2), "a new cause at once");
+    assert!(!told.due(Cause::of(&Hold::Cpu { load: 61.0, cpus: 11 }), 10 * MIN + 3), "a different load is the same cause");
     assert!(!told.due(None, 11 * MIN));
-    assert!(told.due(Some("memory".into()), 11 * MIN + 1), "after the queue moved, the next wait is told");
+    assert!(told.due(Cause::of(&Hold::Cpu { load: 61.0, cpus: 11 }), 11 * MIN + 1), "after the queue moved, the next wait is told");
 }

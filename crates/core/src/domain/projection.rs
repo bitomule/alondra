@@ -410,25 +410,33 @@ impl DomainState {
                 at
             })
             .collect();
+        let mut dependents = vec![vec![]; blockers.len()];
+        for (dependent, held_by) in blockers.iter().enumerate() {
+            for (offset, &blocker) in held_by.iter().enumerate() {
+                if offset == 0 || held_by[offset - 1] != blocker {
+                    dependents[blocker].push(dependent);
+                }
+            }
+        }
         let mut placed = vec![false; sorted.len()];
         let mut sequence = Vec::with_capacity(sorted.len());
-        fn place(at: usize, blockers: &[Vec<usize>], placed: &mut [bool], sequence: &mut Vec<usize>) {
+        fn place(at: usize, blockers: &[Vec<usize>], dependents: &[Vec<usize>], placed: &mut [bool], sequence: &mut Vec<usize>) {
             if placed[at] {
                 return;
             }
             placed[at] = true;
             for &blocker in &blockers[at] {
-                place(blocker, blockers, placed, sequence);
+                place(blocker, blockers, dependents, placed, sequence);
             }
             sequence.push(at);
-            for (dependent, held_by) in blockers.iter().enumerate() {
-                if !placed[dependent] && held_by.contains(&at) && held_by.iter().all(|b| placed[*b]) {
-                    place(dependent, blockers, placed, sequence);
+            for &dependent in &dependents[at] {
+                if !placed[dependent] && blockers[dependent].iter().all(|b| placed[*b]) {
+                    place(dependent, blockers, dependents, placed, sequence);
                 }
             }
         }
         for at in 0..sorted.len() {
-            place(at, &blockers, &mut placed, &mut sequence);
+            place(at, &blockers, &dependents, &mut placed, &mut sequence);
         }
         sequence.into_iter().map(|at| sorted[at].1).collect()
     }
@@ -609,4 +617,77 @@ mod inbox_order_tests {
         assert_eq!(ordered(vec![item("a", 1, CardKind::Know, &["b"]), item("b", 2, CardKind::Know, &["a"])]),
             ["interaction:b", "interaction:a"]);
     }
+    #[test]
+    fn inbox_duplicate_blockers_self_edges_and_cycles_keep_mark_before_emission() {
+        assert_eq!(ordered(vec![
+            item("a", 1, CardKind::Know, &["b", "b"]),
+            item("b", 2, CardKind::Know, &["a", "b"]),
+            item("c", 3, CardKind::Know, &["b", "b", "missing"]),
+        ]), ["interaction:b", "interaction:c", "interaction:a"]);
+    }
+
+    #[test]
+    fn inbox_diamond_checks_readiness_during_recursive_ascending_scan() {
+        assert_eq!(ordered(vec![
+            item("leaf", 1, CardKind::Know, &["a", "b"]),
+            item("c", 2, CardKind::Know, &["a"]),
+            item("a", 3, CardKind::Know, &[]), item("b", 4, CardKind::Know, &[]),
+        ]), ["interaction:a", "interaction:c", "interaction:b", "interaction:leaf"]);
+    }
+
+    #[test]
+    fn inbox_ready_siblings_use_sorted_position_not_arrival_order() {
+        assert_eq!(ordered(vec![
+            item("z", 2, CardKind::Know, &["root"]),
+            item("a0", 2, CardKind::Know, &["root"]),
+            item("root", 9, CardKind::Know, &[]),
+            item("a", 2, CardKind::Know, &["root", "root"]),
+        ]), ["interaction:root", "interaction:a0", "interaction:z", "interaction:a"]);
+    }
+
+    #[test]
+    fn inbox_disconnected_cycle_components_keep_the_root_loop_order() {
+        assert_eq!(ordered(vec![
+            item("a", 1, CardKind::Know, &["b"]), item("b", 2, CardKind::Know, &["a"]),
+            item("c", 3, CardKind::Know, &["d"]), item("d", 4, CardKind::Know, &["c"]),
+        ]), ["interaction:b", "interaction:a", "interaction:d", "interaction:c"]);
+    }
+
+    // Frozen pre-index procedure; the expected permutation does not call the production kernel.
+    fn legacy_sequence(blockers: &[Vec<usize>]) -> Vec<usize> {
+        fn place(at: usize, blockers: &[Vec<usize>], placed: &mut [bool], sequence: &mut Vec<usize>) {
+            if placed[at] { return; }
+            placed[at] = true;
+            for &blocker in &blockers[at] { place(blocker, blockers, placed, sequence); }
+            sequence.push(at);
+            for (dependent, held_by) in blockers.iter().enumerate() {
+                if !placed[dependent] && held_by.contains(&at) && held_by.iter().all(|b| placed[*b]) {
+                    place(dependent, blockers, placed, sequence);
+                }
+            }
+        }
+        let mut placed = vec![false; blockers.len()];
+        let mut sequence = vec![];
+        for at in 0..blockers.len() { place(at, blockers, &mut placed, &mut sequence); }
+        sequence
+    }
+
+    #[test]
+    fn inbox_all_three_node_edge_graphs_match_the_frozen_scan_permutation() {
+        let ids = ["a", "b", "c"];
+        for graph in 0..512 {
+            let blockers: Vec<Vec<usize>> = (0..3).map(|dependent| {
+                (0..3).filter(|blocker| graph & (1 << (dependent * 3 + blocker)) != 0).collect()
+            }).collect();
+            let expected: Vec<_> = legacy_sequence(&blockers).into_iter().map(|i| format!("interaction:{}", ids[i])).collect();
+            let items = (0..3).map(|i| {
+                let held_by: Vec<_> = blockers[i].iter().map(|b| ids[*b]).collect();
+                item(ids[i], i as u64 + 1, CardKind::Know, &held_by)
+            }).collect();
+            let actual = ordered(items);
+            assert_eq!(actual.len(), 3, "graph {graph} must emit every entry once");
+            assert_eq!(actual, expected, "edge graph {graph}");
+        }
+    }
+
 }

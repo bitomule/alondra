@@ -108,10 +108,12 @@ pub(crate) fn failing(machine: &Machine, health: Health, previous: Option<Machin
 
 /// What the orchestrator hears when memory changes for real: entering pressure and being Fine
 /// again, never the swings between Tight and AtLimit.
-pub(crate) fn pacing_notice(from: Health, to: Health, free: Option<u32>, pressure: Option<MemoryPressure>) -> Option<String> {
-    let free = free.map(|free| format!(" ({free}% free)")).unwrap_or_default();
-    let free = match pressure {
-        Some(MemoryPressure::Warning | MemoryPressure::Critical) if to != Health::Fine => format!("{free}, and macOS reports memory pressure"),
+pub(crate) fn pacing_notice(from: Health, to: Health, mac: &MacState) -> Option<String> {
+    let free = mac.free_percent.map(|free| format!(" ({free}% free)")).unwrap_or_default();
+    let free = match mac.pressure {
+        _ if to == Health::Fine => free,
+        Some(MemoryPressure::Warning | MemoryPressure::Critical) => format!("{free}, and macOS reports memory pressure"),
+        _ if mac.near_pressure => format!("{free}, and memory is about to reach macOS memory pressure"),
         _ => free,
     };
     match (from, to) {
@@ -128,6 +130,7 @@ fn card_for(cause: MachineCause, machine: &Machine, disk: Option<&str>, waiting:
         disk_free: machine.disk_available,
         memory_free_percent: machine.memory_free_percent,
         memory_pressure: cause == MachineCause::Memory && machine.memory_pressure.is_some_and(|pressure| pressure != MemoryPressure::Normal),
+        near_pressure: cause == MachineCause::Memory && machine.compressor.is_some_and(|compressor| compressor.share() >= crate::machine_state::NEAR_SHARE),
         nodes: waiting.iter().map(|waiter| waiter.name.clone()).collect(),
         reason: (cause == MachineCause::Declared).then(|| waiting.first().map(|waiter| waiter.reason.clone())).flatten(),
         minutes,
@@ -499,7 +502,7 @@ pub(crate) fn pace(domain: &DomainRuntime, machine: &Machine) {
     if worse(from, to) {
         domain.live.gate.saturated(working, now);
     }
-    if let Some(text) = pacing_notice(from, to, mac.free_percent, mac.pressure) {
+    if let Some(text) = pacing_notice(from, to, &mac) {
         let id = format!("{MACHINE_PREFIX}pacing-{}", crate::auth::random_hex(6));
         if let Err(error) = domain.tell_orchestrator(&id, text) {
             log!("could not tell the orchestrator about the Mac's memory: {error:?}");
@@ -555,7 +558,7 @@ mod tests {
     const MIN: Millis = 60_000;
 
     fn machine(disk_free: u64, memory_free: u32) -> Machine {
-        Machine { at: 0, memory_total: 100, memory_available: 50, memory_free_percent: Some(memory_free), memory_pressure: None, load: [1.0; 3], cpus: 8,
+        Machine { at: 0, memory_total: 100, memory_available: 50, memory_free_percent: Some(memory_free), memory_pressure: None, compressor: None, load: [1.0; 3], cpus: 8,
             cpu_usage: 10.0, disk_total: 500 * GB, disk_available: disk_free, unreliable: false }
     }
 

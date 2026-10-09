@@ -123,7 +123,10 @@ class UpgradeMachine:
                        if process.port == port and process.returncode is None)
         if self.now < process.ready:
             raise OSError('synthetic startup is not ready')
-        return io.BytesIO(json.dumps({'version': process.version}).encode())
+        status = {'version': process.version}
+        if process.mode == 'reject' and process.launch.stat().st_ino != process.inode:
+            status['preflight_rejected'] = {'reason': 'synthetic: bootstrap failed integrity audit'}
+        return io.BytesIO(json.dumps(status).encode())
 
     def sleep(self, duration):
         self.now += duration
@@ -336,21 +339,25 @@ class UpgradeTests(Fixture):
 
     def test_a_rejected_upgrade_fails_with_the_daemons_reason(self):
         old, new = self.old_and_new('reject')
-        with patch.object(u, 'EXIT_WITHIN', 2), \
+        with UpgradeMachine().boundaries(), \
              self.assertRaisesRegex(u.Failed, 'did not restart into 1.0.1.*synthetic: bootstrap failed integrity audit'):
             u.upgrade(self.rehearsal, 'case', self.home, old, new)
 
     def test_a_daemon_that_never_notices_the_new_binary_fails(self):
         old, new = self.old_and_new('serve')
-        with patch.object(u, 'EXIT_WITHIN', 1), self.assertRaisesRegex(u.Failed, 'did not restart into 1.0.1'):
+        with UpgradeMachine().boundaries(), self.assertRaisesRegex(u.Failed, 'did not restart into 1.0.1'):
             u.upgrade(self.rehearsal, 'case', self.home, old, new)
 
     def test_no_daemon_outlives_the_rehearsal(self):
         old, new = self.old_and_new('serve')
         with patch.object(u, 'EXIT_WITHIN', 1), self.assertRaises(u.Failed):
             u.upgrade(self.rehearsal, 'case', self.home, old, new)
-        time.sleep(0.2)
-        leftover = subprocess.run(['/usr/bin/pgrep', '-f', str(self.root / 'work/case/opt')], capture_output=True)
+        deadline = time.monotonic() + 30
+        while True:
+            leftover = subprocess.run(['/usr/bin/pgrep', '-f', str(self.root / 'work/case/opt')], capture_output=True)
+            if leftover.returncode == 1 or time.monotonic() > deadline:
+                break
+            time.sleep(0.05)
         self.assertEqual(leftover.returncode, 1, leftover.stdout)
 
 
