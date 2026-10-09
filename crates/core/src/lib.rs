@@ -25,6 +25,7 @@ pub mod orchestrator_batch;
 pub mod pr;
 pub mod sessions;
 pub mod stack;
+pub mod start_problem;
 pub mod startup;
 #[cfg(test)]
 mod recorded;

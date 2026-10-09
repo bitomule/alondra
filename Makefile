@@ -12,7 +12,7 @@ BETA_GROUP := Internal Pilot,Private Pilot
 APPLE_VERSION = $(shell sed -n 's/^ *version = "\(.*\)".*/\1/p' tools/shared.bzl)
 APPLE_BUILD = $(shell sed -n 's/^ *build_number = "\(.*\)".*/\1/p' tools/shared.bzl)
 
-.PHONY: version-guard increment-version build-release snapshots-record snapshots-verify tui-shots mac-snapshots-record mac-snapshots-verify no-holds build test install run tui setup launchd unlaunchd restart status doctor cargo-test mac device device-console e2e-sandbox e2e-sandbox-stop e2e-wizard e2e-doc-review e2e-sandbox-logs soak load-bench tasks-screen rehearse-cutover upgrade-rehearsal cutover-live clean-xcode-test-results
+.PHONY: version-guard increment-version build-release snapshots-record snapshots-verify tui-shots mac-snapshots-record mac-snapshots-verify no-holds build test install run tui setup launchd unlaunchd restart status doctor cargo-test mac device device-console e2e-sandbox e2e-sandbox-stop e2e-wizard e2e-doc-review e2e-sandbox-logs e2e-relay-cards e2e-direct-cards e2e-cards-tui e2e-ios-cards soak load-bench tasks-screen rehearse-cutover upgrade-rehearsal cutover-live clean-xcode-test-results
 
 build:
 	bazelisk build //crates/... //apple:AlondraMac
@@ -168,6 +168,29 @@ e2e-doc-review:
 	bazelisk build //crates/alondrad //crates/alondra //crates/relay:alondra-relay //tools/sandbox:alondra-sandbox
 	tools/e2e-doc-review.py $$(bazelisk cquery --output=files //crates/alondrad 2>/dev/null) $$(bazelisk cquery --output=files //crates/alondra 2>/dev/null) \
 		$$(bazelisk cquery --output=files //crates/relay:alondra-relay 2>/dev/null) $$(bazelisk cquery --output=files //tools/sandbox:alondra-sandbox 2>/dev/null)
+
+# Every kind of card answered from one client against its own sandbox: each leaves at once and never
+# comes back, and each card of a group opens on its own screen (tools/e2e_cards.py, tests/sandbox/README.md).
+# e2e-relay-cards and e2e-direct-cards use the synthetic phone; e2e-cards-tui the real TUI in tmux;
+# e2e-ios-cards the iOS app in a pooled simulator. E2E_CAPTURES=<dir> keeps what each client showed.
+E2E_CARDS = bazelisk build //crates/alondrad //crates/alondra //crates/relay:alondra-relay //tools/sandbox:alondra-sandbox && \
+	python3 tools/e2e_cards.py $(if $(E2E_CAPTURES),--captures $(E2E_CAPTURES)) --client $(1) \
+		$$(bazelisk cquery --output=files //crates/alondrad //crates/alondra //crates/relay:alondra-relay //tools/sandbox:alondra-sandbox 2>/dev/null | grep -v '\.ok$$')
+
+e2e-relay-cards:
+	$(call E2E_CARDS,relay)
+
+e2e-direct-cards:
+	$(call E2E_CARDS,direct)
+
+e2e-cards-tui:
+	$(call E2E_CARDS,tui)
+
+E2E_IOS_APP = //apple:AlondraiOS --ios_multi_cpus=sim_arm64 --define=alondra_sandbox=1
+
+e2e-ios-cards:
+	bazelisk build $(E2E_IOS_APP)
+	export E2E_IOS_IPA=$$(bazelisk cquery --output=files $(E2E_IOS_APP) 2>/dev/null | grep '\.ipa$$'); $(call E2E_CARDS,ios)
 
 # MAC=n for that daemon's log, MAC=relay for the relay's.
 e2e-sandbox-logs:

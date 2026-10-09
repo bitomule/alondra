@@ -4,7 +4,7 @@
   "view": "task",
   "key": "task:t-651c38484cd2f34e74d5107ba05f7f15",
   "client": "ios",
-  "version": "v77d7562b12bb8c4e",
+  "version": "v005441604a66a452",
   "cursor": "cursor-1",
   "title": "Restore the native review experience",
   "status": {
@@ -203,7 +203,8 @@
                 "kind": "none"
               },
               "attachments": false,
-              "enabled": true
+              "enabled": true,
+              "resolves_card": false
             },
             {
               "id": "set_priority:t-651c38484cd2f34e74d5107ba05f7f15@6",
@@ -243,7 +244,8 @@
                 "kind": "none"
               },
               "attachments": false,
-              "enabled": true
+              "enabled": true,
+              "resolves_card": false
             },
             {
               "id": "cancel:t-651c38484cd2f34e74d5107ba05f7f15@6",
@@ -259,7 +261,8 @@
                 "message": "¿Cancelar esta tarea?",
                 "button": "Cancelar tarea"
               },
-              "enabled": true
+              "enabled": true,
+              "resolves_card": false
             }
           ]
         }

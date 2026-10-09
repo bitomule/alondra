@@ -4,7 +4,7 @@
   "view": "tasks",
   "key": "tasks",
   "client": "tui",
-  "version": "v3795df3492527b63",
+  "version": "v088f3fcbef48d7fa",
   "cursor": "cursor-1",
   "title": "Tasks",
   "status": {
@@ -356,7 +356,8 @@
               },
               "attachments": false,
               "enabled": true,
-              "key": "A"
+              "key": "A",
+              "resolves_card": false
             }
           ]
         }

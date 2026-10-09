@@ -61,25 +61,86 @@ fn one_start_a_minute_and_never_past_the_limit() {
 }
 
 #[test]
-fn the_learned_limit_drops_below_what_hit_the_limit_and_climbs_one_every_15_minutes() {
+fn the_learned_limit_drops_below_what_hit_the_limit_and_climbs_one_every_5_fine_minutes() {
+    let auto = Limit::Auto { max: 6 };
     let mut learned = Learned::default();
-    assert_eq!(learned.limit(6), 6);
+    assert_eq!(learned.limit(auto), 6);
     learned.at_limit(6);
-    assert_eq!(learned.limit(6), 5);
-    learned.learn(6, Health::Fine, true, 0);
-    learned.learn(6, Health::Fine, true, 14 * MIN);
-    assert_eq!(learned.limit(6), 5);
-    learned.learn(6, Health::Tight, true, 14 * MIN + SAMPLE);
-    learned.learn(6, Health::Fine, true, 15 * MIN);
-    learned.learn(6, Health::Fine, true, 29 * MIN);
-    assert_eq!(learned.limit(6), 5, "the climb starts again after the Mac was not fine");
-    learned.learn(6, Health::Fine, false, 30 * MIN);
-    learned.learn(6, Health::Fine, true, 31 * MIN);
-    learned.learn(6, Health::Fine, true, 46 * MIN);
-    assert_eq!(learned.limit(6), 6);
-    assert_eq!(learned.cap, None, "back at the configured limit it follows it again");
+    assert_eq!(learned.limit(auto), 5);
+    learned.learn(auto, Health::Fine, true, 0);
+    learned.learn(auto, Health::Fine, true, 4 * MIN);
+    assert_eq!(learned.limit(auto), 5);
+    learned.learn(auto, Health::Tight, true, 4 * MIN + SAMPLE);
+    learned.learn(auto, Health::Fine, true, 5 * MIN);
+    learned.learn(auto, Health::Fine, true, 9 * MIN);
+    assert_eq!(learned.limit(auto), 5, "the climb starts again after the Mac was not fine");
+    learned.learn(auto, Health::Fine, false, 10 * MIN);
+    learned.learn(auto, Health::Fine, true, 11 * MIN);
+    learned.learn(auto, Health::Fine, true, 16 * MIN);
+    assert_eq!(learned.limit(auto), 6);
+    assert_eq!(learned.cap, None, "back at the automatic limit it follows it again");
     learned.at_limit(1);
-    assert_eq!(learned.limit(6), 1, "always at least one");
+    assert_eq!(learned.limit(auto), 1, "always at least one");
+}
+
+#[test]
+fn a_number_the_user_chose_is_the_limit_whatever_the_gate_learned() {
+    let mut learned = Learned::default();
+    learned.at_limit(3);
+    assert_eq!(learned.limit(Limit::Auto { max: 4 }), 2);
+    assert_eq!(learned.limit(Limit::Fixed(4)), 4);
+    learned.learn(Limit::Fixed(4), Health::Fine, true, 0);
+    learned.learn(Limit::Fixed(4), Health::Fine, true, 60 * MIN);
+    assert_eq!(learned.cap, Some(2), "a fixed number learns nothing");
+}
+
+/// The Mac's memory on 9 October 2026 from 17:35, as `machine-samples/2026-10-09.csv` recorded it:
+/// minutes since 17:35, the health from then on, and the nodes the gate counted as working.
+const OCTOBER_9: &[(Millis, Health, usize)] = &[
+    (0, Health::Tight, 4), (1, Health::AtLimit, 4), (2, Health::Tight, 3),
+    (57, Health::Fine, 2), (59, Health::Tight, 3), (61, Health::AtLimit, 3), (62, Health::Tight, 3),
+    (66, Health::Fine, 3), (74, Health::Tight, 3), (81, Health::Fine, 3), (82, Health::Tight, 3),
+    (91, Health::Fine, 3), (96, Health::Tight, 3), (101, Health::Fine, 3), (105, Health::Tight, 3),
+    (122, Health::Fine, 3), (123, Health::Tight, 2), (150, Health::Fine, 2), (158, Health::Tight, 2),
+    (165, Health::Fine, 2), (182, Health::Fine, 2),
+];
+
+/// The learned limit every minute of `OCTOBER_9`, with tasks queued the whole time.
+fn october_9(setting: Limit) -> Vec<(Millis, u32)> {
+    let mut learned = Learned::default();
+    let mut health = Health::Fine;
+    let mut limits = vec![];
+    for minute in 0..=OCTOBER_9.last().unwrap().0 {
+        if let Some(&(_, next, working)) = OCTOBER_9.iter().find(|(at, ..)| *at == minute) {
+            if next == Health::AtLimit && health != Health::AtLimit {
+                learned.at_limit(working);
+            }
+            health = next;
+        }
+        for sample in 0..6 {
+            learned.learn(setting, health, true, minute * MIN + sample * SAMPLE);
+        }
+        limits.push((minute, learned.limit(setting)));
+    }
+    limits
+}
+
+fn clock(minute: Millis) -> String {
+    let at = 17 * 60 + 35 + minute;
+    format!("{:02}:{:02}", at / 60, at % 60)
+}
+
+/// When the limit changed: every minute it differs from the minute before.
+fn changes(limits: &[(Millis, u32)]) -> Vec<(String, u32)> {
+    limits.windows(2).filter(|pair| pair[0].1 != pair[1].1).map(|pair| (clock(pair[1].0), pair[1].1)).collect()
+}
+
+#[test]
+fn in_automatic_the_limit_october_9_lowered_to_3_and_2_climbs_back_by_itself() {
+    let limits = october_9(Limit::Auto { max: 4 });
+    assert_eq!(changes(&limits), [
+        ("17:36".into(), 3), ("18:36".into(), 2), ("18:46".into(), 3), ("20:10".into(), 4),
+    ], "it drops at each AtLimit and climbs one step every 5 minutes the Mac stays fine");
 }
 
 /// What an hour of memory swinging between `low` and `high` every 3 minutes does, sampled every
@@ -201,7 +262,7 @@ fn start(domain: &DomainRuntime, id: &str, now: Millis) {
 fn eight_starts_with_a_limit_of_6_leave_2_queued_in_order_until_a_node_finishes() {
     let (_home, domain) = world();
     let gate = &domain.live.gate;
-    gate.tune(Tuning { spacing: SPACING, limit: Some(6) });
+    gate.tune(Tuning { spacing: SPACING, limit: Some(Limit::Fixed(6)) });
     let ids = ["t1", "t2", "t3", "t4", "t5", "t6", "t7", "t8"];
     for id in ids {
         create(&domain, id);
@@ -277,7 +338,7 @@ fn a_review_follows_the_priority_of_the_task_it_reviews() {
 #[test]
 fn a_macos_warning_held_with_31_percent_free_and_6_nodes_working_lowers_the_limit_to_5() {
     let (_home, domain) = world();
-    domain.live.gate.tune(Tuning { spacing: SPACING, limit: Some(6) });
+    domain.live.gate.tune(Tuning { spacing: SPACING, limit: Some(Limit::Auto { max: 6 }) });
     let base = alondra_core::now_millis();
     for id in ["t1", "t2", "t3", "t4", "t5", "t6"] {
         create(&domain, id);
@@ -299,7 +360,7 @@ fn a_macos_warning_held_with_31_percent_free_and_6_nodes_working_lowers_the_limi
 fn a_node_waiting_for_the_user_to_approve_its_plan_leaves_its_slot_to_the_queue_until_the_user_answers() {
     let (_home, domain) = world();
     let gate = &domain.live.gate;
-    gate.tune(Tuning { spacing: 0, limit: Some(1) });
+    gate.tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(1)) });
     let now = alondra_core::now_millis();
     for id in ["t1", "t2", "t3"] {
         create(&domain, id);
@@ -349,4 +410,95 @@ fn the_log_says_why_the_queue_waits_and_repeats_it_only_when_its_cause_changes_o
     assert!(!told.due(Cause::of(&Hold::Cpu { load: 61.0, cpus: 11 }), 10 * MIN + 3), "a different load is the same cause");
     assert!(!told.due(None, 11 * MIN));
     assert!(told.due(Cause::of(&Hold::Cpu { load: 61.0, cpus: 11 }), 11 * MIN + 1), "after the queue moved, the next wait is told");
+}
+
+fn sample(domain: &DomainRuntime, free: u32, from: Millis, to: Millis) {
+    let mut now = from;
+    while now < to {
+        crate::machine_watch::pace(domain, &Machine { at: now, memory_free_percent: Some(free), cpus: 11, load: [5.0; 3], ..Machine::default() });
+        now += SAMPLE;
+    }
+}
+
+fn finish(domain: &DomainRuntime, id: &str, now: Millis) {
+    domain.live.mods.apply(Envelope { session_id: format!("agent-{id}"), report: Report::TurnComplete { answer: "Done".into(), aborted: false } }, now);
+}
+
+fn ask(domain: &DomainRuntime, id: &str, now: Millis) -> Result<(), Hold> {
+    domain.live.gate.ask(domain, Waiting { key: Key::Task(id.into()), priority: TaskPriority::Normal, resuming: false, since: 0 }, now)
+}
+
+#[test]
+fn with_a_fixed_4_an_afternoon_of_memory_pressure_ends_with_4_working_once_the_mac_is_fine() {
+    let (_home, domain) = world();
+    domain.live.gate.tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(4)) });
+    for id in ["t1", "t2", "t3", "t4", "t5", "t6"] {
+        create(&domain, id);
+    }
+    let base = alondra_core::now_millis();
+    for id in ["t1", "t2", "t3", "t4"] {
+        assert_eq!(ask(&domain, id, base), Ok(()));
+        start(&domain, id, base);
+    }
+    sample(&domain, 3, base, base + MIN);
+    finish(&domain, "t4", base + MIN);
+    sample(&domain, 50, base + MIN, base + 10 * MIN);
+    sample(&domain, 3, base + 10 * MIN, base + 11 * MIN);
+    finish(&domain, "t3", base + 11 * MIN);
+    let now = base + 20 * MIN;
+    sample(&domain, 50, base + 11 * MIN, now);
+    let snapshot = domain.live.gate.snapshot(&domain, now).unwrap();
+    assert_eq!((snapshot.mac.health, snapshot.working, snapshot.limit), (Health::Fine, 2, 4),
+        "reaching its limit with 4 and then 3 working never lowers the number the user chose");
+    for id in ["t5", "t6"] {
+        assert_eq!(ask(&domain, id, now), Ok(()), "{id} takes a free slot of the 4");
+        start(&domain, id, now);
+    }
+    assert_eq!(domain.live.gate.snapshot(&domain, now).unwrap().working, 4);
+}
+
+#[test]
+fn in_automatic_the_same_afternoon_lowers_the_limit_and_5_fine_minutes_raise_it_again() {
+    let (_home, domain) = world();
+    domain.live.gate.tune(Tuning { spacing: 0, limit: Some(Limit::Auto { max: 4 }) });
+    for id in ["t1", "t2", "t3", "t4"] {
+        create(&domain, id);
+    }
+    let base = alondra_core::now_millis();
+    for id in ["t1", "t2", "t3", "t4"] {
+        assert_eq!(ask(&domain, id, base), Ok(()));
+        start(&domain, id, base);
+    }
+    sample(&domain, 3, base, base + MIN);
+    assert_eq!(domain.live.gate.snapshot(&domain, base + MIN).unwrap().limit, 3);
+    domain.live.gate.forget_learned();
+    assert_eq!(domain.live.gate.snapshot(&domain, base + MIN).unwrap().limit, 4, "choosing a limit forgets what the gate learned");
+}
+
+#[test]
+fn a_node_waiting_for_the_machine_leaves_its_slot_and_comes_back_through_the_gate() {
+    let (_home, domain) = world();
+    let gate = &domain.live.gate;
+    gate.tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(1)) });
+    create(&domain, "t1");
+    create(&domain, "t2");
+    let now = alondra_core::now_millis();
+    assert_eq!(ask(&domain, "t1", now), Ok(()));
+    start(&domain, "t1", now);
+    assert_eq!(ask(&domain, "t2", now), Err(Hold::Slots { working: 1, limit: 1 }));
+
+    assert!(gate.hold_back(&domain, "agent-t1", Reason::Declared { reason: "The build ran out of memory".into() }, now + MIN));
+    let snapshot = gate.snapshot(&domain, now + MIN).unwrap();
+    assert_eq!(snapshot.working, 0, "its mod still reports the turn that called wait_for_machine, yet it waits");
+    assert_eq!(ask(&domain, "t2", now + MIN), Ok(()), "its slot goes to the queue");
+    start(&domain, "t2", now + MIN);
+
+    gate.release_declared();
+    let resume = Waiting { key: Key::Resume("agent-t1".into()), priority: TaskPriority::Normal, resuming: true, since: now + MIN };
+    assert_eq!(gate.ask(&domain, resume.clone(), now + 2 * MIN), Err(Hold::Slots { working: 1, limit: 1 }), "it waits for a slot like any start");
+    finish(&domain, "t2", now + 5 * MIN);
+    assert_eq!(gate.ask(&domain, resume, now + 5 * MIN), Ok(()));
+    let snapshot = gate.snapshot(&domain, now + 5 * MIN).unwrap();
+    assert_eq!((snapshot.working, snapshot.working_tasks.into_iter().collect::<Vec<_>>()), (1, vec![TaskId::from("t1")]),
+        "back from its wait it takes its slot again");
 }

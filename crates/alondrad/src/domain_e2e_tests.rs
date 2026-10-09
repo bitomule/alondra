@@ -685,3 +685,136 @@ async fn comments_sent_on_a_document_review_reach_the_node_even_when_it_moves_on
     daemon.stop().await;
     std::fs::remove_dir_all(root).unwrap();
 }
+
+impl App {
+    async fn view(&self, key: &str) -> Value {
+        self.send("GET", &format!("/views/{}?protocol={}&client=ios&lang=es", key.replace(':', "%3A"),
+            alondra_core::views::VIEWS_PROTOCOL), None).await
+    }
+
+    /// The cards waiting for the user, in the order the phone shows them.
+    async fn queue(&self) -> Vec<String> {
+        let home = self.view("home").await;
+        home["sections"].as_array().into_iter().flatten().find(|section| section["id"] == "queue")
+            .and_then(|section| section["card_ids"].as_array()).into_iter().flatten()
+            .map(|id| id.as_str().unwrap().to_owned()).collect()
+    }
+
+    /// Every action a card's own screen offers: its buttons, the ones under "More" and its reply.
+    async fn card_actions(&self, card: &str) -> Vec<Value> {
+        let view = self.view(&format!("card:{card}")).await;
+        assert_eq!(view["key"], format!("card:{card}"), "the card's screen loads under its own key: {view}");
+        view["sections"].as_array().into_iter().flatten()
+            .flat_map(|section| section["items"].as_array().into_iter().flatten())
+            .flat_map(|item| item["actions"].as_array().into_iter().flatten().chain(item["more"].as_array().into_iter().flatten())
+                .chain(item.get("reply").filter(|reply| reply.is_object())))
+            .cloned().collect()
+    }
+
+    async fn action(&self, card: &str, prefix: &str) -> Value {
+        let actions = self.card_actions(card).await;
+        actions.iter().find(|action| action["id"].as_str().is_some_and(|id| id.starts_with(prefix))).cloned()
+            .unwrap_or_else(|| panic!("card {card} offers no {prefix} action: {actions:?}"))
+    }
+
+    async fn perform(&self, action: &Value, option: Option<&str>, text: Option<&str>) -> Value {
+        let epoch = self.view("home").await["data_epoch"].as_str().unwrap().to_owned();
+        self.send("POST", "/actions", Some(json!({
+            "protocol": alondra_core::views::VIEWS_PROTOCOL, "command_id": uuid_v4(), "data_epoch": epoch,
+            "client": "ios", "lang": "es", "action_id": action["id"], "option_id": option, "input": {"text": text},
+        }))).await
+    }
+
+    /// Acts on a card from its own screen and checks what the server promised with
+    /// `resolves_card`: a card it said would leave is gone from the queue and from the next
+    /// changes the phone asks for, and stays gone; one it said would stay is still there.
+    async fn settle(&self, card: &str, prefix: &str, option: Option<&str>, text: Option<&str>, leaves: bool) {
+        let action = self.action(card, prefix).await;
+        assert_eq!(action["resolves_card"], json!(leaves), "{card}: {prefix} says whether it takes its card out: {action}");
+        let before = self.view("home").await;
+        assert!(self.queue().await.contains(&card.to_owned()), "{card} waits before the action");
+        let reply = self.perform(&action, option, text).await;
+        assert_eq!(reply["outcome"], "applied", "{card}: {reply}");
+        let changes = self.send("GET", &format!("/changes?protocol={}&client=ios&lang=es&wait=0&cursor={}&views=home%40{}",
+            alondra_core::views::VIEWS_PROTOCOL, before["cursor"].as_str().unwrap(), before["version"].as_str().unwrap()), None).await;
+        if leaves {
+            assert!(changes["stale"].as_array().unwrap().contains(&json!("home")), "the phone's next poll says home changed: {changes}");
+        }
+        for _ in 0..3 {
+            assert_eq!(!self.queue().await.contains(&card.to_owned()), leaves,
+                "{card} after {prefix}: the queue {} it", if leaves { "no longer lists" } else { "still lists" });
+        }
+    }
+}
+
+/// Every kind of card the phone answers leaves its queue when the server said it would, and only
+/// then: an option, a text, a reply on a question, a question of a group, a permission and a
+/// delivery; asking to clarify keeps its card. Each card of a group opens on its own screen.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn every_card_kind_leaves_the_queue_when_its_action_says_so_and_never_returns() {
+    let scratch_directory = crate::test_support::Directory::new();
+    let root = scratch_directory.parent().unwrap().join(format!("alondra-cards-{}", crate::auth::random_hex(8)));
+    let home = root.join("home");
+    std::fs::create_dir_all(root.join("projects")).unwrap();
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::write(alondra_core::options::path_in(&home),
+        format!("projects_root = {:?}\n", root.join("projects").to_str().unwrap())).unwrap();
+    let daemon = Daemon::start(&home).await;
+    let (settings, task, epoch) = node_with_a_task(&daemon, &home).await;
+    let app = App::pair(&daemon);
+    let scope = json!({"kind": "task", "task_id": task.0});
+    let choice = |id: &str| json!({"id": id, "label": id, "description": format!("Go with {id}"), "inputs": []});
+    let ask = |id: &str, need: &str| ("ask", tool_args(&epoch, id, 0, json!({"interaction_id": id, "scope": scope,
+        "recipient": {"kind": "user"}, "need": need, "why": "The release waits for it.", "blocking": false,
+        "options": [choice("stable"), choice("beta")]})));
+    node_calls(&home, &daemon, &settings, vec![
+        ask("option", "Pick the release channel"),
+        ask("reply", "Name the new settings screen"),
+        ask("clarify", "Pick the launch day"),
+        ("request_input", json!({"data_epoch": epoch, "command_id": "text", "expected_revision": 0, "interaction_id": "text",
+            "scope": scope, "recipient": {"kind": "user"}, "need": "Write the release note", "why": "The release notes need it.",
+            "kind": "text", "blocking": false})),
+        ("ask", tool_args(&epoch, "group", 0, json!({"interaction_id": "group", "scope": scope, "recipient": {"kind": "user"},
+            "why": "", "blocking": false, "questions": (1..=4).map(|n| json!({"question": format!("Launch question {n}?"),
+                "why": "The launch plan needs it.", "options": [choice("a"), choice("b")]})).collect::<Vec<_>>()}))),
+    ]);
+    let queue = app.queue().await;
+    let group: Vec<String> = queue.iter().filter(|id| id.starts_with("group")).cloned().collect();
+    assert_eq!(group.len(), 4, "four questions asked together are four cards: {queue:?}");
+    for card in &group {
+        assert!(!app.card_actions(card).await.is_empty(), "{card} opens on its own screen with its answers");
+    }
+
+    app.settle("option", "ans:", Some("stable"), None, true).await;
+    app.settle("text", "ans:", None, Some("Faster sync and a new settings screen"), true).await;
+    app.settle("reply", "reply:", None, Some("Call it Preferences"), true).await;
+    app.settle("clarify", "clarify:", Some("unclear"), Some("Which time zone?"), false).await;
+    app.settle(&group[2], "reply:", None, Some("David signs it"), true).await;
+    for (card, option) in [(&group[0], "a"), (&group[1], "b"), (&group[3], "a")] {
+        app.settle(card, "ans:", Some(option), None, true).await;
+    }
+
+    let waiting = app.queue().await;
+    let hook_home = home.clone();
+    let permission = std::thread::spawn(move || hook(&hook_home, json!({"session_id": SESSION, "hook_event_name": "PermissionRequest",
+        "permission_mode": "default", "tool_name": "Bash", "tool_input": {"command": "git push"}, "cwd": "/work"})));
+    let mut asked = None;
+    for _ in 0..100 {
+        asked = app.queue().await.into_iter().find(|id| !waiting.contains(id));
+        if asked.is_some() { break; }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    let asked = asked.expect("the permission the node waits on is a card");
+    app.settle(&asked, "ans:", Some(Hold::ALLOW), None, true).await;
+    let decision = permission.join().unwrap();
+    assert_eq!(decision["hookSpecificOutput"]["decision"]["behavior"], "allow", "{decision}");
+
+    node_calls(&home, &daemon, &settings, vec![("withdraw", tool_args(&epoch, "withdraw-clarify", 0, json!({"interaction_id": "clarify"}))),
+        ("present_result", tool_args(&epoch, "delivery", 0, json!({
+        "task_id": task.0, "interaction_id": "delivery", "need": "Review the migration report", "body": "The store moved in one go.",
+        "targets": [{"kind": "text", "text": "The store moved in one go."}], "is_final": true})))]);
+    app.settle("delivery", "accept:", None, None, true).await;
+    assert!(app.queue().await.is_empty(), "nothing is left waiting");
+    daemon.stop().await;
+    std::fs::remove_dir_all(root).unwrap();
+}

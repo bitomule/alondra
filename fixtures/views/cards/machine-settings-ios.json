@@ -4,7 +4,7 @@
   "view": "machine",
   "key": "machine",
   "client": "ios",
-  "version": "vf7b80ec798f41072",
+  "version": "ved8a8136cbd6958b",
   "cursor": "cursor-1",
   "title": "Machine",
   "status": {
@@ -208,7 +208,8 @@
                 "kind": "none"
               },
               "attachments": false,
-              "enabled": true
+              "enabled": true,
+              "resolves_card": false
             }
           ]
         }

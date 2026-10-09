@@ -329,7 +329,8 @@ async fn launch_guarded(domain: &DomainRuntime, home: &Path, actor: &Actor, body
         remember_refusal(domain, &task.id, Some(("disk_low", None)));
         return Err(DomainError::new("disk_low", format!("{why}. {} stays as it is and can be launched after that", body.task)));
     }
-    if let Some(repository) = crate::claude_trust::check(Path::new(&cwd)) {
+    let projects_root = crate::domain_schedule_runner::options_at(home).ok().map(|file| file.projects_root(&crate::options::user_home()));
+    if let Some(repository) = crate::claude_trust::ensure(Path::new(&cwd), projects_root.as_deref()) {
         remember_refusal(domain, &task.id, Some(("workspace_untrusted", Some(&repository.to_string_lossy()))));
         return Err(DomainError::new("workspace_untrusted", crate::claude_trust::instructions(&repository)));
     }

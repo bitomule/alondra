@@ -497,10 +497,10 @@ pub(crate) fn pace(domain: &DomainRuntime, machine: &Machine) {
     let Some((from, to)) = change else { return };
     log!("the Mac's memory went from {from:?} to {to:?} ({:?}% free, {working} node(s) working)", mac.free_percent);
     if to == Health::AtLimit {
-        domain.live.gate.at_limit(working);
+        domain.live.gate.at_limit(domain, working);
     }
     if worse(from, to) {
-        domain.live.gate.saturated(working, now);
+        domain.live.gate.saturated(domain, working, now);
     }
     if let Some(text) = pacing_notice(from, to, &mac) {
         let id = format!("{MACHINE_PREFIX}pacing-{}", crate::auth::random_hex(6));

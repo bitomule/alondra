@@ -32,10 +32,14 @@ public struct ScreenFeature: Sendable {
         case loaded(ViewDocument)
         case missing
         case failed(String)
+        /// The observation ended on its own, without an error and without the screen stopping it.
+        case ended
     }
 
     @Dependency(\.viewsClient) var viewsClient
-    private enum CancelID { case observe }
+    /// One per view: a screen stopping or reloading its own view never cancels another screen's,
+    /// which TCA would otherwise do for every screen below it (a card's detail under the queue).
+    private enum CancelID: Hashable { case observe(String) }
 
     public var body: some ReducerOf<Self> {
         Reduce { state, action in
@@ -48,16 +52,22 @@ public struct ScreenFeature: Sendable {
                             if case .document(let document) = fetch { await send(.loaded(document)) }
                         }
                     } catch ViewsClientError.missingView {
-                        await send(.missing)
-                    } catch is CancellationError {
+                        return await send(.missing)
+                    } catch is CancellationError where Task.isCancelled {
                         return
                     } catch {
-                        await send(.failed(String(localized: "Couldn’t load this from your Mac. Try again.")))
+                        return await send(.failed(String(localized: "Couldn’t load this from your Mac. Try again.")))
                     }
+                    guard !Task.isCancelled else { return }
+                    await send(.ended)
                 }
-                .cancellable(id: CancelID.observe, cancelInFlight: true)
+                .cancellable(id: CancelID.observe(state.key.rawValue), cancelInFlight: true)
+            case .ended:
+                guard state.document == nil else { return .none }
+                state.phase = .failed(String(localized: "Couldn’t load this from your Mac. Try again."))
+                return .none
             case .stop:
-                return .cancel(id: CancelID.observe)
+                return .cancel(id: CancelID.observe(state.key.rawValue))
             case .loaded(let document):
                 guard document.key == state.key.rawValue else { return .none }
                 state.document = document

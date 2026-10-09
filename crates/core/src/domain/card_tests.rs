@@ -1081,3 +1081,75 @@ fn nothing_to_review_is_refused_for_a_notice_a_pr_or_a_document() {
     register_pr(&mut s);
     assert_eq!(refused(&mut s, agent(), nothing_to_review("pr", pr_target(), true)).1.as_deref(), Some("nothing_to_review"));
 }
+
+// Frozen outgoing-list scan: expected membership never calls the optimized target predicate.
+fn expanded_blocker_scan(state: &DomainState, delivery: &InteractionId) -> Vec<InteractionId> {
+    let mut blockers: Vec<&Interaction> = state.interactions.values().filter(|item| {
+        if !state.open(item) { return false; }
+        let mut outgoing = vec![];
+        for target in &item.card.blocks {
+            for candidate in state.interactions.values().filter(|candidate| state.open(candidate)) {
+                let InteractionPayload::Delivery { targets, .. } = &candidate.payload else { continue };
+                let hit = match target {
+                    CardTarget::Delivery { interaction_id } => interaction_id == &candidate.id,
+                    CardTarget::PullRequest { pr_id } => targets.iter().any(|target| matches!(target, DeliveryTarget::PullRequest { pr_id: known, .. } if known == pr_id)),
+                    CardTarget::Document { document_id } => targets.iter().any(|target| matches!(target, DeliveryTarget::DocumentRevision { document_id: known, .. } if known == document_id)),
+                };
+                if hit && candidate.id != item.id { outgoing.push(candidate.id.clone()); }
+            }
+        }
+        outgoing.contains(delivery)
+    }).collect();
+    blockers.sort_by_key(|item| item.order);
+    blockers.into_iter().map(|item| item.id.clone()).collect()
+}
+
+#[test]
+fn delivery_blocker_queries_match_all_target_kinds_once_and_keep_equal_order_ties() {
+    let mut s = fixture();
+    register_pr(&mut s);
+    ok(&mut s, agent(), Command::CreateDocument {
+        task_id: "t".into(), document_id: "doc".into(), title: "Synthetic document".into(), revision_id: "revision".into(),
+        content_digest: "a".repeat(64), content_reference: "library-file:synthetic/document.txt".into(), role: "implementation".into(),
+    });
+    let targets = vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: "head1".into() },
+        DeliveryTarget::DocumentRevision { document_id: "doc".into(), revision_id: "revision".into() }];
+    ok(&mut s, agent(), present("d", targets, true, review()));
+    for id in ["q-z", "q-a"] {
+        let mut card = decide("Choose the release name");
+        card.blocks = vec![CardTarget::Document { document_id: "doc".into() },
+            CardTarget::PullRequest { pr_id: "pr".into() }, CardTarget::Delivery { interaction_id: "d".into() }];
+        ok(&mut s, agent(), ask(id, "t", false, card));
+    }
+    for id in ["q-z", "q-a"] { s.interactions.get_mut(&InteractionId::from(id)).unwrap().order = s.revision; }
+    s.validate().unwrap();
+    assert_eq!(s.blocked_by(&"d".into()), [InteractionId::from("q-a"), InteractionId::from("q-z")]);
+    assert_eq!(s.blocked_deliveries(&s.interactions[&"q-z".into()]), [InteractionId::from("d"), InteractionId::from("d"), InteractionId::from("d")]);
+    for id in ["d", "q-z", "q-a", "missing"] {
+        assert_eq!(s.blocked_by(&id.into()), expanded_blocker_scan(&s, &id.into()), "query {id}");
+    }
+    ok(&mut s, user(), answer("q-a"));
+    assert_eq!(s.blocked_by(&"d".into()), [InteractionId::from("q-z")]);
+    assert_eq!(s.blocked_by(&"d".into()), expanded_blocker_scan(&s, &"d".into()));
+}
+
+#[test]
+fn delivery_blocker_queries_exclude_self_and_closed_query_targets() {
+    let mut s = fixture();
+    register_pr(&mut s);
+    let mut card = review();
+    card.blocks = vec![CardTarget::PullRequest { pr_id: "pr".into() }];
+    ok(&mut s, agent(), present("d", pr_target(), true, card));
+    assert!(s.blocked_by(&"d".into()).is_empty());
+    assert!(s.blocked_deliveries(&s.interactions[&"d".into()]).is_empty());
+    let mut card = decide("Choose the release name");
+    card.blocks = vec![CardTarget::PullRequest { pr_id: "pr".into() }];
+    ok(&mut s, agent(), ask("q", "t", false, card));
+    assert_eq!(s.blocked_by(&"d".into()), [InteractionId::from("q")]);
+    assert_eq!(s.blocked_by(&"d".into()), expanded_blocker_scan(&s, &"d".into()));
+    ok(&mut s, agent(), Command::Withdraw { interaction_id: "d".into() });
+    assert!(s.open(&s.interactions[&"q".into()]));
+    assert!(!s.open(&s.interactions[&"d".into()]));
+    assert!(s.blocked_by(&"d".into()).is_empty());
+    assert_eq!(s.blocked_by(&"d".into()), expanded_blocker_scan(&s, &"d".into()));
+}

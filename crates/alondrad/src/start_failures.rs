@@ -27,7 +27,7 @@ pub(crate) fn failed(domain: &DomainRuntime, task: &TaskId, problem: StartProble
                 let mut store = domain.store.lock().expect("domain store poisoned");
                 store.set_start_retry(task, None)?;
                 let (reason, detail) = match &problem {
-                    StartProblem::Untrusted { folder } => (AutoLaunchReason::WorkspaceUntrusted, Some(folder.as_str())),
+                    StartProblem::Untrusted { folder, .. } => (AutoLaunchReason::WorkspaceUntrusted, Some(folder.as_str())),
                     StartProblem::LaunchFailed { error } => (AutoLaunchReason::LaunchFailed, Some(error.as_str())),
                     StartProblem::NodeClosed | StartProblem::DependencyCancelled { .. } => (AutoLaunchReason::LaunchFailed, None),
                 };
@@ -46,7 +46,7 @@ pub(crate) fn problem_of(code: &str, message: &str, cwd: Option<&str>) -> Option
         "usage_exhausted" | "disk_low" | "conflict" => None,
         "workspace_untrusted" => {
             let folder = cwd.map(|cwd| crate::claude_trust::check(Path::new(cwd)).map_or_else(|| cwd.to_owned(), |repo| repo.to_string_lossy().into_owned()));
-            Some(StartProblem::Untrusted { folder: folder.unwrap_or_else(|| message.to_owned()) })
+            Some(StartProblem::Untrusted { folder: folder.unwrap_or_else(|| message.to_owned()), error: None })
         }
         _ => Some(StartProblem::LaunchFailed { error: message.trim().to_owned() }),
     }
@@ -124,8 +124,16 @@ pub(crate) async fn react(domain: &DomainRuntime, home: &Path, launcher: &impl c
 
 /// The user asked to try again: a task whose node they closed gets a new node in that node's
 /// folder; any other goes back to the gate, which starts it with its plan. A relaunch refused
-/// for a reason of its own is a failed start like any other.
+/// for a reason of its own is a failed start like any other. Trying again a folder Claude Code
+/// did not trust is the user trusting it, so Alondra records that first, or says why it could not.
 async fn retry(domain: &DomainRuntime, home: &Path, task: &TaskId, closed: bool, launcher: &impl crate::orchestrate::Launcher) -> Result<()> {
+    let untrusted = domain.state()?.last_start_problem(task).and_then(|problem| serde_json::from_str::<StartProblem>(&problem.body).ok());
+    if let Some(StartProblem::Untrusted { folder, .. }) = untrusted
+        && let Err(error) = crate::claude_trust::grant(Path::new(&folder))
+    {
+        log!("could not trust {folder} in Claude Code for {task}: {error}");
+        return failed(domain, task, StartProblem::Untrusted { folder, error: Some(error) }, alondra_core::now_millis());
+    }
     {
         let mut store = domain.store.lock().expect("domain store poisoned");
         store.forget_auto_launch(task)?;

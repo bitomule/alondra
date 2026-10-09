@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:hf-weekly-2026-09-30",
   "client": "ios",
-  "version": "va88ad942fd027130",
+  "version": "va452ebcc9568cecb",
   "cursor": "cursor-1",
   "title": "Add the compact schedule editor",
   "status": {
@@ -91,7 +91,8 @@
             },
             "attachments": true,
             "enabled": true,
-            "stamp": "Sent"
+            "stamp": "Sent",
+            "resolves_card": true
           },
           "more": [
             {
@@ -110,7 +111,8 @@
                 "button": "Close PR"
               },
               "enabled": true,
-              "stamp": "Closing…"
+              "stamp": "Closing…",
+              "resolves_card": true
             },
             {
               "id": "",
@@ -126,7 +128,8 @@
               "link": {
                 "kind": "url",
                 "url": "https://github.com/example/repo/pull/12"
-              }
+              },
+              "resolves_card": false
             }
           ],
           "link": {
@@ -177,7 +180,8 @@
               },
               "attachments": false,
               "enabled": true,
-              "stamp": "Merging…"
+              "stamp": "Merging…",
+              "resolves_card": true
             },
             {
               "id": "changes:github.com/example/repo#12@6~abcdef12",
@@ -200,7 +204,8 @@
               "link": {
                 "kind": "view",
                 "key": "pull_request:github.com/example/repo#12"
-              }
+              },
+              "resolves_card": true
             }
           ]
         }

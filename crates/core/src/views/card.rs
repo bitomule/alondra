@@ -460,7 +460,7 @@ pub(super) fn from_item(item: &InboxItem, context: &RenderContext<'_>, included:
         .map(|at| vec![Stamp { role: "created".into(), at: at.into(), format: TimeFormat::Relative }])
         .unwrap_or_default();
     let (blocks, blocked_by) = chips(item, context);
-    let (need, why) = match interaction.and_then(|i| pace_text(i, domain, lang)) {
+    let (need, why) = match interaction.and_then(|i| start_problem_text(i, domain, lang).or_else(|| pace_text(i, domain, lang))) {
         Some((need, why)) => (need, Some(why)),
         None => (
             humanize_task_ids(&spec.need, domain),
@@ -525,9 +525,13 @@ pub(super) fn from_item(item: &InboxItem, context: &RenderContext<'_>, included:
             next += 1;
         }
     }
-    card.reply = reply_action(item, interaction, context).and_then(CardAction::usable);
-    card.actions = visible.into_iter().filter_map(CardAction::usable).collect();
-    card.more = more.into_iter().filter_map(CardAction::usable).collect();
+    let settles = |mut action: Action| {
+        action.resolves_card = ActionId::parse(&action.id).is_ok_and(|id| super::resolves_card(context.domain, &id));
+        action
+    };
+    card.reply = reply_action(item, interaction, context).map(settles).and_then(CardAction::usable);
+    card.actions = visible.into_iter().map(settles).filter_map(CardAction::usable).collect();
+    card.more = more.into_iter().map(settles).filter_map(CardAction::usable).collect();
     Ok(card)
 }
 
@@ -673,6 +677,7 @@ pub(super) fn button(id: String, label: &str, role: Role) -> Action {
         stamp: None,
         key: None,
         link: None,
+        resolves_card: false,
     }
 }
 
@@ -752,8 +757,30 @@ fn held_option(hold: Hold, option: &QuestionOption, lang: Lang) -> (String, Inpu
 pub fn answer_label(state: &DomainState, interaction: &Interaction, option: &QuestionOption, lang: Lang) -> String {
     match state.holds.get(&interaction.id).copied().filter(|hold| *hold != Hold::Question) {
         Some(hold) => held_option(hold, option, lang).0,
-        None => fixed_option_text(option, lang).0,
+        None => fixed_option_text(interaction, option, lang).0,
     }
+}
+
+/// The problem of Alondra's card for a task that cannot start by itself.
+fn start_problem_of(interaction: &Interaction) -> Option<crate::domain::StartProblem> {
+    (interaction.author == Author::System && interaction.id.0.starts_with(crate::domain::START_PROBLEM_PREFIX))
+        .then(|| crate::start_problem::from_body(&interaction.body))
+        .flatten()
+}
+
+fn start_problem_card(interaction: &Interaction, domain: &DomainState, lang: Lang) -> Option<CardSpec> {
+    let problem = start_problem_of(interaction)?;
+    let Scope::Task { task_id } = &interaction.scope else { return None };
+    let title = domain.tasks.get(task_id)?.title.as_str();
+    let dependency = match &problem {
+        crate::domain::StartProblem::DependencyCancelled { dependency } => domain.tasks.get(dependency).map(|task| task.title.as_str()),
+        _ => None,
+    };
+    Some(crate::start_problem::card(title, &problem, dependency, lang))
+}
+
+fn start_problem_text(interaction: &Interaction, domain: &DomainState, lang: Lang) -> Option<(String, String)> {
+    start_problem_card(interaction, domain, lang).map(|card| (card.need, card.why))
 }
 
 /// What Alondra's own cards about the pace of the week's usage, about the machine and about a task
@@ -800,7 +827,12 @@ fn pace_text(interaction: &Interaction, domain: &DomainState, lang: Lang) -> Opt
 
 /// The words of an option the system writes itself, keyed by the id and English text it was
 /// built with, in the viewer's language. An option someone worded keeps its own label.
-fn fixed_option_text(option: &QuestionOption, lang: Lang) -> (String, Option<String>) {
+fn fixed_option_text(interaction: &Interaction, option: &QuestionOption, lang: Lang) -> (String, Option<String>) {
+    if let Some(problem) = start_problem_of(interaction)
+        && let Some(own) = crate::start_problem::options(&problem, lang).into_iter().find(|own| own.id == option.id)
+    {
+        return (own.label, own.description);
+    }
     if let Some((label, description)) = crate::close_problem::option_text(&option.id, &option.label, lang) {
         return (label.into(), Some(description.into()));
     }
@@ -879,7 +911,7 @@ fn answer_actions(
         for (index, option) in ordered.into_iter().enumerate() {
             let Some(id) = action_id(Verb::Ans, &interaction.id.0, revision, None) else { continue };
             let recommended = interaction.card.recommended.as_deref() == Some(option.id.as_str());
-            let (fixed_label, fixed_description) = fixed_option_text(option, lang);
+            let (fixed_label, fixed_description) = fixed_option_text(interaction, option, lang);
             let (label, input) = match hold.filter(|hold| *hold != Hold::Question) {
                 Some(hold) => held_option(hold, option, lang),
                 None => (
@@ -1194,10 +1226,11 @@ fn local_action(label: &str, key: &str, local: LocalLink) -> Action {
     action
 }
 
-/// Text to the node (or the orchestrator) the card came from; every card has it.
+/// Text to the node (or the orchestrator) the card came from; every card has it but a task's start
+/// problem, which no node is behind.
 fn reply_action(item: &InboxItem, interaction: Option<&Interaction>, context: &RenderContext<'_>) -> Option<Action> {
     let lang = context.lang;
-    let interaction = interaction?;
+    let interaction = interaction.filter(|interaction| start_problem_of(interaction).is_none())?;
     let (id, placeholder) = if matches!(interaction.scope, Scope::Task { .. }) {
         (
             action_id(Verb::Reply, &interaction.id.0, interaction.revision, None)?,
@@ -1262,6 +1295,10 @@ fn content_items(item: &InboxItem, context: &RenderContext<'_>) -> Vec<Item> {
         && let Some(card) = crate::close_problem::CloseProblem::from_body(&interaction.body)
     {
         out.push(markdown(card.detail(lang)));
+        return out;
+    }
+    if let Some(content) = start_problem_card(interaction, domain, lang).and_then(|card| card.content) {
+        out.push(markdown(content.body));
         return out;
     }
     if interaction.author == Author::System
@@ -1420,7 +1457,7 @@ fn history_rows(item: &InboxItem, context: &RenderContext<'_>) -> Vec<Item> {
     match &interaction.payload {
         InteractionPayload::Question { options, answer: Some(answer) }
         | InteractionPayload::ActionRequest { options, answer: Some(answer) } => {
-            let label = options.iter().find(|option| option.id == answer.option_id).map(|option| fixed_option_text(option, lang).0);
+            let label = options.iter().find(|option| option.id == answer.option_id).map(|option| fixed_option_text(interaction, option, lang).0);
             let text = answer.inputs.values().find_map(|value| match value {
                 crate::domain::InputValue::Text(text) => Some(clip(text, 240)),
                 _ => None,

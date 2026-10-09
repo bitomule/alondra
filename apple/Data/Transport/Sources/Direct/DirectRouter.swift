@@ -26,16 +26,23 @@ public actor DirectRouter {
     struct RequestContext: Sendable {
         fileprivate let network: String
         fileprivate let generation: UInt64
+        fileprivate let validationGeneration: UInt64
     }
 
     func requestContext() -> RequestContext {
-        RequestContext(network: network(), generation: generation)
+        RequestContext(network: network(), generation: generation, validationGeneration: validationGeneration)
     }
 
-    func proved(_ endpoint: DirectEndpoint, in context: RequestContext) {
+    func proved(_ endpoint: DirectEndpoint, in context: RequestContext, response: APIResponse, lifetime: DirectSessionLifetime) {
         guard context.generation == generation, context.network == network() else { return }
         proven[endpoint] = context.network
         rejected[endpoint] = nil
+        guard case .completed(status: 200, body: _) = response else { return }
+        lifetime.whileActive {
+            guard !Task.isCancelled, context.validationGeneration == validationGeneration,
+                  current == endpoint, let validated, validated.network == context.network else { return }
+            self.validated = (now(), validated.network)
+        }
     }
 
     func isProven(_ endpoint: DirectEndpoint, in context: RequestContext) -> Bool {
@@ -56,7 +63,7 @@ public actor DirectRouter {
     private let network: @Sendable () -> String
     private let freshness: Duration
     private let retryAfterFailure: Duration
-    private let clock = ContinuousClock()
+    private let now: @Sendable () -> ContinuousClock.Instant
     private var saved: [DirectEndpoint]
     private var fromMac: [DirectEndpoint] = []
     private var fromBonjour: [DirectEndpoint] = []
@@ -68,18 +75,21 @@ public actor DirectRouter {
     private var failedAt: (at: ContinuousClock.Instant, network: String)?
     private var probing: Task<DirectEndpoint, any Error>?
     private var generation: UInt64 = 0
+    private var validationGeneration: UInt64 = 0
     private var identityChangedOn: String?
 
     /// `saved` are addresses a sealed answer proved before, on some network; `network` names the
     /// current one.
     public init(pinned: DirectMacIdentity, saved: [DirectEndpoint], http: DirectHTTP,
                 network: @escaping @Sendable () -> String = { "" },
-                freshness: Duration = .seconds(60), retryAfterFailure: Duration = .seconds(15)) {
+                freshness: Duration = .seconds(60), retryAfterFailure: Duration = .seconds(15),
+                now: @escaping @Sendable () -> ContinuousClock.Instant = { ContinuousClock().now }) {
         self.pinned = pinned
         self.http = http
         self.network = network
         self.freshness = freshness
         self.retryAfterFailure = retryAfterFailure
+        self.now = now
         self.saved = Self.unique(saved.filter(\.isValid))
     }
 
@@ -108,14 +118,14 @@ public actor DirectRouter {
             fromBonjour = Array(Self.unique(fresh.filter { !others.contains($0) } + fromBonjour).prefix(Self.maxBonjour))
         }
         failedAt = nil
-        if let current, candidates.first.map({ $0.rank < current.rank }) == true { validated = nil }
+        if let current, candidates.first.map({ $0.rank < current.rank }) == true { discardValidation() }
     }
 
     public func endpoint() async throws -> DirectEndpoint {
         if let current, let validated, validated.network == network(),
-           validated.at.duration(to: clock.now) < freshness { return current }
+           validated.at.duration(to: now()) < freshness { return current }
         // Away from home every request would otherwise wait for the probes.
-        if let failedAt, failedAt.network == network(), failedAt.at.duration(to: clock.now) < retryAfterFailure { throw unreachable }
+        if let failedAt, failedAt.network == network(), failedAt.at.duration(to: now()) < retryAfterFailure { throw unreachable }
         if let probing { return try await probing.value }
         let task = MutationScope.$current.withValue(nil) { Task { try await self.probe() } }
         probing = task
@@ -136,19 +146,24 @@ public actor DirectRouter {
     }
 
     private func reject(_ endpoint: DirectEndpoint, on rejectedOn: String) {
-        rejected[endpoint] = (clock.now, rejectedOn)
+        rejected[endpoint] = (now(), rejectedOn)
         if proven[endpoint] == rejectedOn { proven[endpoint] = nil }
         if current == endpoint {
             current = nil
-            validated = nil
+            discardValidation()
         }
     }
 
     /// The last address stopped answering, or the network changed: probe again on next use.
     public func invalidate() {
         generation &+= 1
-        validated = nil
+        discardValidation()
         failedAt = nil
+    }
+
+    private func discardValidation() {
+        validationGeneration &+= 1
+        validated = nil
     }
 
     private var candidates: [DirectEndpoint] {
@@ -159,8 +174,9 @@ public actor DirectRouter {
     private func probe() async throws -> DirectEndpoint {
         let startedOn = network()
         let startedGeneration = generation
-        let now = clock.now
-        rejected = rejected.filter { $0.value.network == startedOn && $0.value.at.duration(to: now) < Self.rejectionTime }
+        let startedValidationGeneration = validationGeneration
+        let observedAt = now()
+        rejected = rejected.filter { $0.value.network == startedOn && $0.value.at.duration(to: observedAt) < Self.rejectionTime }
         let candidates = candidates.filter { rejected[$0] == nil }
         let http = http
         let answers = await withTaskGroup(of: (Int, DirectMacIdentity?).self) { group in
@@ -172,25 +188,31 @@ public actor DirectRouter {
             return answers
         }
         try Task.checkCancellation()
-        guard network() == startedOn, generation == startedGeneration else {
-            current = nil; validated = nil; failedAt = nil
+        guard network() == startedOn, generation == startedGeneration,
+              validationGeneration == startedValidationGeneration else {
+            if validationGeneration == startedValidationGeneration {
+                current = nil
+                discardValidation()
+                failedAt = nil
+            }
             throw DirectRouteError.unreachable
         }
         var changedOn: String?
         for (index, answer) in answers.enumerated() where answer?.macID == pinned.macID && answer?.sameKeys(as: pinned) == false {
             if proven[candidates[index]] == startedOn { changedOn = startedOn }
-            rejected[candidates[index]] = (clock.now, startedOn)
+            rejected[candidates[index]] = (now(), startedOn)
         }
         guard let index = answers.firstIndex(where: { $0?.macID == pinned.macID && $0?.sameKeys(as: pinned) == true }) else {
             current = nil
-            validated = nil
-            failedAt = (clock.now, startedOn)
+            discardValidation()
+            failedAt = (now(), startedOn)
             if changedOn != nil { identityChangedOn = changedOn }
             throw unreachable
         }
         identityChangedOn = nil
         current = candidates[index]
-        validated = (clock.now, startedOn)
+        validationGeneration &+= 1
+        validated = (now(), startedOn)
         failedAt = nil
         return candidates[index]
     }

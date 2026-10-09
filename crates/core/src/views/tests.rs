@@ -827,9 +827,6 @@ fn tasks_views_match_goldens() {
             _ => include_str!("../../../../fixtures/views/cards/tasks-tui.json"),
         };
         let actual = render(&state, &live, client, lang, "tasks", "2026-09-30T10:00:00Z");
-        if let Ok(dir) = std::env::var("ALONDRA_GOLDEN_OUT") {
-            std::fs::write(format!("{dir}/{filename}"), format!("{}\n", serde_json::to_string_pretty(&actual).unwrap())).unwrap();
-        }
         assert_golden(filename, &actual, expected);
     }
     for (filename, client, lang, expected) in [
@@ -838,9 +835,6 @@ fn tasks_views_match_goldens() {
         ("tasks-mac-finished.json", Client::Mac, Lang::En, include_str!("../../../../fixtures/views/cards/tasks-mac-finished.json")),
     ] {
         let actual = render(&state, &live, client, lang, "tasks?section=finished&after=0", "2026-09-30T10:00:00Z");
-        if let Ok(dir) = std::env::var("ALONDRA_GOLDEN_OUT") {
-            std::fs::write(format!("{dir}/{filename}"), format!("{}\n", serde_json::to_string_pretty(&actual).unwrap())).unwrap();
-        }
         assert_golden(filename, &actual, expected);
     }
 }
@@ -1032,7 +1026,11 @@ fn agent_uuid_keeps_message_and_close_actions() {
     assert!(actions.iter().any(|action| action.id.starts_with(&format!("msg:{id}@"))));
     assert!(actions.iter().any(|action| action.id.starts_with(&format!("close:{id}@"))));
 }
+/// `ALONDRA_GOLDEN_OUT=<dir>` writes what the views render now there, to review and copy over the goldens.
 fn assert_golden(filename: &str, view: &View, expected: &str) {
+    if let Ok(dir) = std::env::var("ALONDRA_GOLDEN_OUT") {
+        std::fs::write(format!("{dir}/{filename}"), format!("{}\n", serde_json::to_string_pretty(view).unwrap())).unwrap();
+    }
     let actual = serde_json::to_value(view).unwrap();
     let expected: serde_json::Value = serde_json::from_str(expected).unwrap();
     assert_eq!(actual, expected, "{filename}");
@@ -2210,9 +2208,6 @@ fn a_settled_card_matches_its_goldens_in_every_apple_client() {
     ];
     for ((filename, client, lang), expected) in SETTLED_GOLDENS.into_iter().zip(expected) {
         let actual = render(&state, &live, client, lang, &format!("card:{SETTLED_CARD}"), "2026-09-30T10:00:00Z");
-        if let Ok(dir) = std::env::var("ALONDRA_GOLDEN_OUT") {
-            std::fs::write(format!("{dir}/{filename}"), format!("{}\n", serde_json::to_string_pretty(&actual).unwrap())).unwrap();
-        }
         assert_golden(filename, &actual, expected);
     }
 }
@@ -5631,4 +5626,92 @@ fn a_working_task_between_turns_still_says_only_working() {
     let (block, row) = active_row(&state, &live, Client::Ios, Lang::Es, "t-1");
     assert_eq!((block.as_str(), row.badges[0].text.as_str(), row.children.len()), ("block:in-progress", "Trabajando", 0),
         "what it said last is not what it does now");
+}
+
+/// A task Claude Code would not start in: the card is worded in the viewer's language, its button
+/// says what it does, and it offers no reply because no node is behind it.
+#[test]
+fn an_untrusted_folder_card_speaks_the_users_language_and_offers_no_reply() {
+    use crate::domain::{Actor, Command, CommandEnvelope, StartProblem};
+    let mut state = failed_launch_fixture("Workspace not trusted.\n");
+    let raise = |state: &mut DomainState, problem: StartProblem| {
+        state.execute(&Actor::System, &CommandEnvelope {
+            protocol_version: 2, data_epoch: state.data_epoch.clone(), command_id: format!("c-{}", state.revision).into(),
+            expected_revision: state.revision, command: Command::RaiseStartProblem { task_id: "t-1".into(), problem },
+        }).unwrap();
+    };
+    raise(&mut state, StartProblem::Untrusted { folder: "/Users/someone/Projects/indie-apps".into(), error: None });
+    let id = state.interactions.keys().find(|id| id.0.starts_with(crate::domain::START_PROBLEM_PREFIX)).unwrap().0.clone();
+
+    let spanish = decidable_card(&state, Lang::Es, &id);
+    assert_eq!(spanish.need.as_deref(), Some("Confía en indie-apps para que «Build a feature» arranque"));
+    assert_eq!(spanish.why.as_deref(), Some("Claude Code solo arranca sesiones en carpetas de confianza, y aún no confía en esta."));
+    let labels: Vec<&str> = spanish.actions.iter().chain(&spanish.more).map(|action| action.label.as_str()).collect();
+    assert!(labels.contains(&"Confiar y arrancarla") && labels.contains(&"Cancelar la tarea"), "{labels:?}");
+    assert!(spanish.reply.is_none(), "no node is behind a task that did not start");
+    let detail = format!("{:?}", render(&state, &LiveSnapshot::default(), Client::Ios, Lang::Es, &format!("card:{id}"), ""));
+    assert!(detail.contains("Carpeta: /Users/someone/Projects/indie-apps") && detail.contains("acepta el aviso"), "{detail}");
+
+    let english = decidable_card(&state, Lang::En, &id);
+    assert_eq!(english.need.as_deref(), Some("Trust indie-apps so “Build a feature” can start"));
+    assert!(english.actions.iter().chain(&english.more).any(|action| action.label.contains("Trust it and start it")));
+    assert!(english.reply.is_none());
+}
+
+#[test]
+fn a_folder_alondra_could_not_trust_says_why_on_its_card() {
+    use crate::domain::{Actor, Command, CommandEnvelope, StartProblem};
+    let mut state = failed_launch_fixture("Workspace not trusted.\n");
+    state.execute(&Actor::System, &CommandEnvelope {
+        protocol_version: 2, data_epoch: state.data_epoch.clone(), command_id: "c-1".into(), expected_revision: state.revision,
+        command: Command::RaiseStartProblem { task_id: "t-1".into(), problem: StartProblem::Untrusted {
+            folder: "/Users/someone/Projects/indie-apps".into(), error: Some("another Claude Code session kept ~/.claude.json locked".into()),
+        } },
+    }).unwrap();
+    let id = state.interactions.keys().find(|id| id.0.starts_with(crate::domain::START_PROBLEM_PREFIX)).unwrap().0.clone();
+
+    let card = decidable_card(&state, Lang::Es, &id);
+    assert_eq!(card.why.as_deref(), Some("Elegiste confiar en ella, pero Alondra no pudo guardarlo en los ajustes de Claude Code."));
+    let detail = format!("{:?}", render(&state, &LiveSnapshot::default(), Client::Ios, Lang::Es, &format!("card:{id}"), ""));
+    assert!(detail.contains("Por qué falló: another Claude Code session kept ~/.claude.json locked"), "{detail}");
+}
+
+/// Every card action says, from the server, whether it takes its card out of the queue; the
+/// clients hide the card on that alone. A reply answers an open question and hands a delivery back,
+/// but is only a message on a notice or on a question the node is holding a session for.
+#[test]
+fn every_card_action_says_whether_it_takes_its_card_out() {
+    fn resolving(state: &DomainState, key: &str) -> Vec<(String, bool)> {
+        let view = render(state, &golden_live(), Client::Ios, Lang::En, key, "2026-09-30T10:00:00Z");
+        let card = card_of(&view);
+        card.actions.iter().chain(&card.more).chain(&card.reply)
+            .map(|action| (action.id.split(['@', '~']).next().unwrap().to_owned(), action.resolves_card))
+            .collect()
+    }
+    fn owned(pairs: &[(&str, bool)]) -> Vec<(String, bool)> {
+        pairs.iter().map(|(id, resolves)| ((*id).to_owned(), *resolves)).collect()
+    }
+    let state = golden_fixture();
+    let question = "a98d034b-249e-4487-a89b-57de38c26372";
+    assert_eq!(resolving(&state, &format!("card:{question}")), owned(&[
+        (&format!("ans:{question}"), true), (&format!("ans:{question}"), true), (&format!("ans:{question}"), true),
+        (&format!("clarify:{question}"), false), (&format!("reply:{question}"), true),
+    ]), "an option, a written answer and a reply all answer the question; asking to clarify keeps it");
+    let notice = "f12d034b-249e-4487-a89b-57de38c26372";
+    assert_eq!(resolving(&state, &format!("card:{notice}")), owned(&[
+        (&format!("read:{notice}"), true), (&format!("reply:{notice}"), false),
+    ]), "a notice leaves when read; a reply to it is a message to its node");
+    assert_eq!(resolving(&state, "card:hf-weekly-2026-09-30"), owned(&[
+        ("merge:hf-weekly-2026-09-30", true), ("changes:github.com/example/repo#12", true),
+        ("close_unmerged:hf-weekly-2026-09-30", true), ("", false), ("reply:hf-weekly-2026-09-30", true),
+    ]), "merging, asking for changes, closing and replying all hand the delivery back; the link opens GitHub");
+
+    let mut group = group_state(&[0]);
+    assert_eq!(resolving(&group, "card:g-q2"), owned(&[
+        ("ans:g-q2", true), ("ans:g-q2", true), ("ans:g-q2", true),
+        ("clarify:g-q2", false), ("retake:g-q2", false), ("reply:g-q2", true),
+    ]), "a question of a group is answered alone; reopening another one keeps this one");
+    group.holds.insert("g-q2".into(), crate::domain::Hold::Question);
+    let held = resolving(&group, "card:g-q2");
+    assert!(held.contains(&("reply:g-q2".to_owned(), false)), "a held question is answered in its session; a reply is a message: {held:?}");
 }

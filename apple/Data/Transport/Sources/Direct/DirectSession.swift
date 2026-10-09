@@ -1,5 +1,20 @@
 import CryptoKit
 import Foundation
+import Synchronization
+
+final class DirectSessionLifetime: Sendable {
+    private let open = Mutex(true)
+
+    var isActive: Bool { open.withLock { $0 } }
+
+    func deactivate() { open.withLock { $0 = false } }
+
+    func whileActive(_ update: () -> Void) {
+        open.withLock { active in
+            if active { update() }
+        }
+    }
+}
 
 /// Sealed requests to one paired Mac over its direct port, answered in the same exchange.
 /// A mutation is sealed once per operation ID and only ever resent as the same bytes: the Mac's
@@ -16,7 +31,8 @@ public actor DirectSession: OperationAPI {
     private var sealed: [String: (tag: Data, body: Data)] = [:]
     private var sealedOrder: [String] = []
     static let maxSealed = 256
-    private var active = true
+    private let lifetime = DirectSessionLifetime()
+    private var active: Bool { lifetime.isActive }
 
     public init(macID: String, deviceID: String, signing: P256.Signing.PrivateKey,
                 agreement: P256.KeyAgreement.PrivateKey, macSigning: P256.Signing.PublicKey,
@@ -44,7 +60,7 @@ public actor DirectSession: OperationAPI {
     }
 
     public func deactivate() async {
-        active = false
+        lifetime.deactivate()
         await mutations.cancelAll()
     }
 
@@ -153,7 +169,7 @@ public actor DirectSession: OperationAPI {
                 // Only an answer that opens with the pinned keys proves the address is this Mac.
                 if let envelope = try? JSONDecoder().decode(Envelope.self, from: reply.body),
                    let response = try? codec.opened(envelope, requestID: requestID) {
-                    await router.proved(endpoint, in: context)
+                    await router.proved(endpoint, in: context, response: response, lifetime: lifetime)
                     if Self.saysRevoked(response) { throw DirectSessionError.deviceRevoked }
                     return response
                 }

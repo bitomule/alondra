@@ -327,7 +327,7 @@ fn untrusted_project(home: &Path, schedule: &d::Schedule) -> Option<Value> {
     }
     let root = crate::domain_schedule_runner::options_at(home).ok()?.projects_root(&crate::options::user_home());
     let folder = schedule.project.as_deref().map_or(root.clone(), |project| root.join(project));
-    let repository = crate::claude_trust::check(&folder)?;
+    let repository = crate::claude_trust::ensure(&folder, Some(&root))?;
     Some(error("untrusted_project", &crate::claude_trust::instructions(&repository)))
 }
 
@@ -386,26 +386,32 @@ mod tests {
         fn plugin(&self) -> Option<std::path::PathBuf> { Some("/synthetic/plugin".into()) }
     }
 
+    /// The repository is inside the projects folder, so saving the Schedule trusts it in Claude
+    /// Code; when that trust cannot be saved, neither is the Schedule.
     #[test]
-    fn a_schedule_in_a_repository_claude_does_not_trust_is_not_saved() {
+    fn a_schedule_is_saved_only_once_claude_code_trusts_its_repository() {
         let fixture = Fixture::new();
         fs::create_dir_all(fixture.root.join("projects/Parcel/.git")).unwrap();
         let parcel = fixture.root.join("projects/Parcel").canonicalize().unwrap();
         let config = fixture.root.join(".claude.json");
         crate::claude_trust::use_config_for_test(&config);
-        let trust = |accepted: bool| fs::write(&config, json!({"projects": {parcel.to_str().unwrap(): {"hasTrustDialogAccepted": accepted}}}).to_string()).unwrap();
+        fs::write(&config, json!({"projects": {parcel.to_str().unwrap(): {"hasTrustDialogAccepted": false}}}).to_string()).unwrap();
+        let accepted = || serde_json::from_str::<Value>(&fs::read_to_string(&config).unwrap()).unwrap()["projects"][parcel.to_str().unwrap()]["hasTrustDialogAccepted"].clone();
         let mut draft = Fixture::draft();
         draft["project"] = json!("Parcel");
         let create = || mutation(&fixture.domain, &fixture.home, "POST", "/schedules", Some(&draft), None, || Ok(()));
+        let lock = fixture.root.join(".claude.json.lock");
 
-        trust(false);
+        fs::create_dir(&lock).unwrap();
         let refused = create();
         assert_eq!(refused["body"]["code"], "untrusted_project");
         assert!(refused["body"]["message"].as_str().unwrap().contains(parcel.to_str().unwrap()));
         assert!(fixture.domain.state().unwrap().schedule.schedules.is_empty());
+        assert_eq!(accepted(), false);
 
-        trust(true);
+        fs::remove_dir(&lock).unwrap();
         assert_eq!(create()["status"], 201);
+        assert_eq!(accepted(), true);
     }
 
     #[tokio::test]

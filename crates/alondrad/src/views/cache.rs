@@ -44,6 +44,18 @@ impl Entries {
 }
 
 impl Cache {
+    #[cfg(test)]
+    pub(crate) fn build_count(&self) -> usize {
+        self.builds.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn serialized_retention(&self) -> (usize, usize) {
+        let entries = self.entries.lock().expect("view render cache poisoned");
+        let bytes = entries.values.values().map(|view| serde_json::to_vec(view).expect("view serialization").len()).sum();
+        (entries.values.len(), bytes)
+    }
+
     pub(crate) fn render(
         &self,
         key: &str,

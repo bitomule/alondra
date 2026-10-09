@@ -64,7 +64,18 @@ pub(crate) async fn gather(
     allow_issue_refresh: bool,
     clock_only: bool,
 ) -> LiveSnapshot {
-    let now = alondra_core::now_millis();
+    gather_at(client, state, lang, keys, allow_issue_refresh, clock_only, alondra_core::now_millis()).await
+}
+
+async fn gather_at(
+    client: &crate::client_routes::Client,
+    state: &DomainState,
+    lang: Lang,
+    keys: &[String],
+    allow_issue_refresh: bool,
+    clock_only: bool,
+    now: Millis,
+) -> LiveSnapshot {
     let exhausted = client.domain.live.usage_pause.current();
     let (launches, refusals, retries) = {
         let store = client.domain.store.lock().expect("domain store poisoned");
@@ -91,6 +102,7 @@ pub(crate) async fn gather(
             (task.0, alondra_core::views::LiveLaunchRefusal { reason, detail })
         })
         .collect();
+    let pauses = client.domain.live.gate.pauses();
     let nodes = state
         .agents
         .values()
@@ -99,12 +111,15 @@ pub(crate) async fn gather(
             let reported = client.domain.live.mods.session(&session_id).unwrap_or_default();
             let open_task = state.tasks.values().any(|task| task.agent_id.as_ref() == Some(&agent.id) && !task.archived
                 && !matches!(task.state, TaskState::Done | TaskState::Closing | TaskState::Cancelled));
-            let node = match client.domain.live.node(&session_id) {
-                Some(node) => node,
+            let (node, state_since) = match client.domain.live.node(&session_id) {
+                Some(node) => {
+                    let state_since = Some(node.state_since);
+                    (node, state_since)
+                }
                 None if reported.started_at.is_some() || agent.connected || open_task => {
-                    let mut node = alondra_core::Node::new(&session_id, now);
+                    let mut node = alondra_core::Node::new(&session_id, 0);
                     node.cwd = reported.cwd.clone();
-                    node
+                    (node, None)
                 }
                 None => return None,
             };
@@ -215,16 +230,16 @@ pub(crate) async fn gather(
                 }).collect(),
                 background_badge,
                 background_suspect,
-                working: matches!(activity, Activity::Working | Activity::Stalled),
+                working: matches!(activity, Activity::Working | Activity::Stalled) && !pauses.paused.contains_key(&session_id),
                 waiting: matches!(node.state, alondra_core::NodeState::WaitingAnswer |
                     alondra_core::NodeState::YourTurn | alondra_core::NodeState::WaitingMerge |
                     alondra_core::NodeState::WaitingMachine),
                 quiet: !matches!(activity, Activity::Working | Activity::Stalled)
                     && !matches!(node.state, alondra_core::NodeState::WaitingAnswer
                         | alondra_core::NodeState::WaitingMerge | alondra_core::NodeState::WaitingMachine)
-                    && now.saturating_sub(node.state_since.max(answer.map_or(0, |answer| answer.at)))
-                        >= alondra_core::states::NODE_QUIET_MS,
-                state_since: Some(timestamp(node.state_since)),
+                    && state_since.is_some_and(|since| now.saturating_sub(since.max(answer.map_or(0, |answer| answer.at)))
+                        >= alondra_core::states::NODE_QUIET_MS),
+                state_since: state_since.map(timestamp),
                 last_message: answer.map(|answer| answer.text.clone()),
                 last_message_at: answer.map(|answer| timestamp(answer.at)),
                 last_turn_aborted: answer.is_some_and(|answer| answer.aborted),
@@ -615,6 +630,176 @@ mod cache_tests {
     use super::*;
     use alondra_core::domain::{Actor, Command, CommandEnvelope};
     use std::{fs, sync::Arc};
+
+    fn execute(domain: &crate::domain_runtime::DomainRuntime, actor: Actor, id: &str, command: Command) {
+        let state = domain.state().unwrap();
+        domain.execute(&actor, &CommandEnvelope {
+            protocol_version: alondra_core::domain::PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: id.into(),
+            expected_revision: state.revision, command,
+        }, None, || Ok(())).unwrap();
+    }
+
+    fn report(domain: &crate::domain_runtime::DomainRuntime, value: Value, at: Millis) {
+        domain.live.mods.apply(serde_json::from_value(value).unwrap(), at);
+    }
+
+    #[tokio::test]
+    async fn unobserved_nodes_do_not_fabricate_transition_times_or_miss_the_cache() {
+        use alondra_core::views::{Client, Transport};
+        let home = crate::test_support::Directory::new();
+        fs::create_dir_all(&home).unwrap();
+        let domain = Arc::new(crate::domain_runtime::DomainRuntime::open(&home).unwrap());
+        let client = crate::client_routes::Client::open(domain.clone(), &home, Arc::new(Mutex::new(None)));
+        for id in ["connected", "reported", "assigned", "hidden"] {
+            execute(&domain, Actor::System, id, Command::RegisterAgent { agent_id: id.into(), name: id.into() });
+        }
+        execute(&domain, Actor::System, "observe", Command::ObserveAgent { agent_id: "connected".into(), connected: true });
+        execute(&domain, Actor::Orchestrator { generation: 0 }, "request", Command::CreateRequest {
+            request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false,
+        });
+        execute(&domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask {
+            task_id: "task".into(), request_id: "request".into(), title: "Work".into(), agent_id: Some("assigned".into()),
+            review_prs: true, dependencies: Default::default(), stack: None,
+            launch: Some(alondra_core::domain::LaunchPlan::new("node", home.to_str().unwrap())),
+        });
+        report(&domain, serde_json::json!({"session_id": "reported", "event": "session.start", "version": "test"}), 1_000);
+        let state = domain.state().unwrap();
+        let first = gather_at(&client, &state, Lang::En, &[], false, false, 2_000).await;
+        let later = gather_at(&client, &state, Lang::En, &[], false, false, 2_000 + alondra_core::states::NODE_QUIET_MS).await;
+        let first_view = client.views.render("fleet", &state, &first, Client::Mac, Lang::En, Transport::Loopback).unwrap();
+        let later_view = client.views.render("fleet", &state, &later, Client::Mac, Lang::En, Transport::Loopback).unwrap();
+        assert_eq!(client.views.build_count(), 1, "reading an unobserved node again must reuse the view");
+        assert_eq!(first.nodes.iter().map(|node| node.agent_id.as_str()).collect::<Vec<_>>(), ["assigned", "connected", "reported"]);
+        for node in &first.nodes {
+            assert_eq!(node.state_since, None, "a session or task is not an observed node transition");
+            assert!(!node.quiet, "the time of the last node transition is unknown");
+        }
+        assert_eq!(serde_json::to_value(&later).unwrap(), serde_json::to_value(&first).unwrap());
+        assert_eq!(later_view, first_view);
+    }
+
+    #[tokio::test]
+    async fn observed_nodes_keep_transition_times_and_quiet_boundaries() {
+        use alondra_core::views::{Client, Transport};
+        let home = crate::test_support::Directory::new();
+        fs::create_dir_all(&home).unwrap();
+        let domain = Arc::new(crate::domain_runtime::DomainRuntime::open(&home).unwrap());
+        let client = crate::client_routes::Client::open(domain.clone(), &home, Arc::new(Mutex::new(None)));
+        execute(&domain, Actor::System, "agent", Command::RegisterAgent { agent_id: "known".into(), name: "Known".into() });
+        domain.live.observe(&serde_json::json!({"session_id": "known", "hook_event_name": "Stop", "last_assistant_message": "Ready"}));
+        let since = domain.live.node("known").unwrap().state_since;
+        let state = domain.state().unwrap();
+        let before = gather_at(&client, &state, Lang::En, &[], false, false, since + alondra_core::states::NODE_QUIET_MS - 1).await;
+        let quiet = gather_at(&client, &state, Lang::En, &[], false, false, since + alondra_core::states::NODE_QUIET_MS).await;
+        assert_eq!(before.nodes[0].state_since, Some(timestamp(since)));
+        assert_eq!(quiet.nodes[0].state_since, before.nodes[0].state_since);
+        assert!(!before.nodes[0].quiet);
+        assert!(quiet.nodes[0].quiet);
+        let before_view = client.views.render("fleet", &state, &before, Client::Mac, Lang::En, Transport::Loopback).unwrap();
+        let quiet_view = client.views.render("fleet", &state, &quiet, Client::Mac, Lang::En, Transport::Loopback).unwrap();
+        assert_ne!(quiet_view.cursor, before_view.cursor);
+        assert_eq!(client.views.build_count(), 2);
+        report(&domain, serde_json::json!({"session_id": "known", "event": "turn.complete", "answer": "New answer"}), since + 1_000);
+        let recent_answer = gather_at(&client, &state, Lang::En, &[], false, false, since + alondra_core::states::NODE_QUIET_MS).await;
+        assert!(!recent_answer.nodes[0].quiet, "a recent answer postpones quiet");
+        assert_eq!(recent_answer.nodes[0].last_message.as_deref(), Some("New answer"));
+        assert_eq!(recent_answer.nodes[0].state_since, Some(timestamp(since)));
+    }
+
+    #[tokio::test]
+    async fn report_updates_and_elapsed_tool_limits_invalidate_unobserved_nodes() {
+        use alondra_core::views::{Client, Transport};
+        let home = crate::test_support::Directory::new();
+        fs::create_dir_all(&home).unwrap();
+        let domain = Arc::new(crate::domain_runtime::DomainRuntime::open(&home).unwrap());
+        let client = crate::client_routes::Client::open(domain.clone(), &home, Arc::new(Mutex::new(None)));
+        execute(&domain, Actor::System, "agent", Command::RegisterAgent { agent_id: "reported".into(), name: "Reported".into() });
+        report(&domain, serde_json::json!({"session_id": "reported", "event": "session.start", "version": "test"}), 1_000);
+        report(&domain, serde_json::json!({"session_id": "reported", "event": "tool.start", "tool": "Bash", "input": {"command": "build"}}), 2_000);
+        let state = domain.state().unwrap();
+        let limit = 2_000 + alondra_core::states::call_limit("Bash");
+        let working = gather_at(&client, &state, Lang::En, &[], false, false, limit).await;
+        let stalled = gather_at(&client, &state, Lang::En, &[], false, false, limit + 1).await;
+        assert_eq!(working.nodes[0].state_key.as_deref(), Some("busy"));
+        assert_eq!(stalled.nodes[0].state_key.as_deref(), Some("stalled"));
+        let working_view = client.views.render("fleet", &state, &working, Client::Mac, Lang::En, Transport::Loopback).unwrap();
+        let stalled_view = client.views.render("fleet", &state, &stalled, Client::Mac, Lang::En, Transport::Loopback).unwrap();
+        assert_ne!(stalled_view.cursor, working_view.cursor);
+        report(&domain, serde_json::json!({"session_id": "reported", "event": "turn.complete", "answer": "Done", "aborted": true}), limit + 2);
+        let answer = gather_at(&client, &state, Lang::En, &[], false, false, limit + 2).await;
+        assert_eq!(answer.nodes[0].state_key.as_deref(), Some("free"));
+        assert_eq!(answer.nodes[0].last_message.as_deref(), Some("Done"));
+        assert_eq!(answer.nodes[0].last_message_at, Some(timestamp(limit + 2)));
+        assert!(answer.nodes[0].last_turn_aborted);
+        assert!(!answer.nodes[0].quiet);
+        assert_eq!(answer.nodes[0].state_since, None);
+        let answer_view = client.views.render("fleet", &state, &answer, Client::Mac, Lang::En, Transport::Loopback).unwrap();
+        assert_ne!(answer_view.cursor, stalled_view.cursor);
+        assert_eq!(client.views.build_count(), 3);
+    }
+
+    /// The rows of a view whose badge says `state`, by id, wherever they are nested.
+    fn rows_with(value: &Value, state: &str, found: &mut Vec<String>) {
+        match value {
+            Value::Object(row) => {
+                let badged = row.get("badges").and_then(Value::as_array)
+                    .is_some_and(|badges| badges.iter().any(|badge| badge["text"] == state));
+                if badged && let Some(id) = row.get("id").and_then(Value::as_str) {
+                    found.push(id.to_owned());
+                }
+                row.values().for_each(|child| rows_with(child, state, found));
+            }
+            Value::Array(items) => items.iter().for_each(|child| rows_with(child, state, found)),
+            _ => {}
+        }
+    }
+
+    #[tokio::test]
+    async fn the_gate_fleet_and_tasks_list_count_the_same_nodes_working() {
+        use alondra_core::views::{Client, Transport};
+        use crate::node_reports::{Envelope, Report};
+        let home = crate::test_support::Directory::new();
+        fs::create_dir_all(&home).unwrap();
+        let domain = Arc::new(crate::domain_runtime::DomainRuntime::open(&home).unwrap());
+        domain.live.gate.tune(crate::fleet_gate::Tuning { spacing: 0, limit: Some(crate::fleet_gate::Limit::Fixed(2)) });
+        let client = crate::client_routes::Client::open(domain.clone(), &home, Arc::new(Mutex::new(None)));
+        execute(&domain, Actor::User { user_id: "u".into() }, "request", Command::CreateRequest {
+            request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false,
+        });
+        execute(&domain, Actor::User { user_id: "u".into() }, "title", Command::TitleRequest { request_id: "request".into(), title: "Work".into() });
+        let now = alondra_core::now_millis();
+        for id in ["build", "docs", "harness"] {
+            let agent = format!("agent-{id}");
+            execute(&domain, Actor::Orchestrator { generation: 0 }, &format!("create-{id}"), Command::CreateTask {
+                task_id: id.into(), request_id: "request".into(), title: format!("Task {id}"), agent_id: None, review_prs: false,
+                dependencies: Default::default(), stack: None, launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),
+            });
+            execute(&domain, Actor::System, &format!("register-{id}"), Command::RegisterAgent { agent_id: agent.as_str().into(), name: agent.clone() });
+            execute(&domain, Actor::System, &format!("observe-{id}"), Command::ObserveAgent { agent_id: agent.as_str().into(), connected: true });
+            execute(&domain, Actor::User { user_id: "u".into() }, &format!("assign-{id}"), Command::AssignTask {
+                task_id: id.into(), agent_id: agent.as_str().into(), model: None,
+            });
+            execute(&domain, Actor::Agent { agent_id: agent.as_str().into() }, &format!("start-{id}"), Command::StartTask { task_id: id.into() });
+            domain.live.mods.apply(Envelope { session_id: agent, report: Report::TurnStart }, now);
+        }
+        assert!(domain.live.gate.hold_back(&domain, "agent-harness", crate::fleet_pause::Reason::Declared {
+            reason: "The build ran out of memory".into(),
+        }, now));
+
+        let state = domain.state().unwrap();
+        let gate = domain.live.gate.snapshot(&domain, now).unwrap();
+        let live = gather_at(&client, &state, Lang::En, &[], false, false, now).await;
+        let tasks = client.views.render("tasks", &state, &live, Client::Mac, Lang::En, Transport::Loopback).unwrap();
+        let mut listed = vec![];
+        rows_with(&serde_json::to_value(&tasks).unwrap(), "Working", &mut listed);
+        listed.sort();
+        let fleet: Vec<&str> = live.nodes.iter().filter(|node| node.working).map(|node| node.agent_id.as_str()).collect();
+
+        assert_eq!(gate.working_tasks.iter().map(|task| task.0.as_str()).collect::<Vec<_>>(), ["build", "docs"]);
+        assert_eq!(live.pacing.as_ref().map(|pacing| pacing.working), Some(2));
+        assert_eq!(listed, ["build", "docs"], "the Tasks list says Working of the same tasks");
+        assert_eq!(fleet, ["agent-build", "agent-docs"], "Fleet does not show the node waiting for the machine as working");
+    }
 
     #[test]
     fn published_gauges_debounce_for_a_minute_and_ignore_invisible_values() {

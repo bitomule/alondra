@@ -2,10 +2,12 @@ use super::*;
 use crate::domain_orchestrator_tools::{LaunchBody, launch};
 use crate::launch_plans::LaunchPlan;
 use alondra_core::domain::{
+    StartProblem,
     Command, CommandEnvelope, DeliveryTarget, InteractionId, MergeMethod, NodeEnd, PROTOCOL_VERSION, PrState, TaskId,
 };
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
+use std::path::Path;
 use std::sync::Mutex;
 
 struct Fixture {
@@ -378,7 +380,7 @@ async fn a_manual_and_an_automatic_launch_never_both_start_a_task() {
 async fn twelve_independent_tasks_with_a_plan_start_four_at_a_time_and_the_next_starts_when_one_closes() {
     let f = world();
     let claude = FakeClaude::new(&f);
-    f.domain.live.gate.tune(crate::fleet_gate::Tuning { spacing: 0, limit: Some(4) });
+    f.domain.live.gate.tune(crate::fleet_gate::Tuning { spacing: 0, limit: Some(crate::fleet_gate::Limit::Fixed(4)) });
     let ids: Vec<String> = (1..=12).map(|n| format!("i{n:02}")).collect();
     for id in &ids {
         create(&f, id, &[], Some(&plan(&f, &format!("app/{id}"))));
@@ -507,26 +509,94 @@ async fn a_failed_start_is_tried_again_by_itself_then_put_to_the_user_who_can_tr
     assert!(agent_of(&f, "f1").is_some(), "the user's try again starts it");
 }
 
+fn untrusted_config(f: &Fixture) -> std::path::PathBuf {
+    let config = f.root.join(".claude.json");
+    crate::claude_trust::use_config_for_test(&config);
+    let project = f.project.canonicalize().unwrap();
+    std::fs::write(&config, json!({"projects": {project.to_str().unwrap(): {"hasTrustDialogAccepted": false}}}).to_string()).unwrap();
+    config
+}
+
+fn trusted(f: &Fixture, config: &Path) -> bool {
+    let document: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(config).unwrap()).unwrap();
+    document["projects"][f.project.canonicalize().unwrap().to_str().unwrap()]["hasTrustDialogAccepted"] == true
+}
+
+/// Claude Code does not trust the folder: the user is asked at once, and choosing to trust it
+/// records that trust as Claude Code's own prompt does and starts the task, so the card never
+/// comes back.
 #[tokio::test]
-async fn an_untrusted_repository_asks_the_user_at_once_with_the_steps() {
+async fn trusting_an_untrusted_folder_from_its_card_starts_the_task() {
     let f = world();
     let claude = FakeClaude::new(&f);
     create(&f, "f1", &[], Some(&plan(&f, "app/f1")));
-    let project = f.project.canonicalize().unwrap();
-    let config = f.root.join(".claude.json");
-    crate::claude_trust::use_config_for_test(&config);
-    std::fs::write(&config, json!({"projects": {project.to_str().unwrap(): {"hasTrustDialogAccepted": false}}}).to_string()).unwrap();
+    let config = untrusted_config(&f);
     pass(&f.domain, &f.home, &claude).await.unwrap();
     assert_eq!(claude.launches(), 0);
     assert_eq!(auto(&f, "f1").unwrap().reason, Some(AutoLaunchReason::WorkspaceUntrusted));
     let card = problem(&f, "f1").expect("only the user can trust it");
-    assert!(card.card.need.starts_with("Trust ") && card.card.content.as_ref().unwrap().body.contains("Run `claude`"), "{:?}", card.card);
+    assert_eq!(card.card.need, "Trust App so “Task f1” can start");
 
-    std::fs::write(&config, json!({"projects": {project.to_str().unwrap(): {"hasTrustDialogAccepted": true}}}).to_string()).unwrap();
     answer(&f, &card.id, alondra_core::domain::START_RETRY);
     pass(&f.domain, &f.home, &claude).await.unwrap();
     pass(&f.domain, &f.home, &claude).await.unwrap();
+
+    assert!(trusted(&f, &config), "the user's choice is saved where Claude Code reads it");
     assert_eq!(claude.launches(), 1);
+    assert!(agent_of(&f, "f1").is_some());
+    pass(&f.domain, &f.home, &claude).await.unwrap();
+    assert!(problem(&f, "f1").is_none(), "the card does not come back");
+    assert_eq!(f.domain.state().unwrap().interactions.keys().filter(|id| id.0.starts_with("start-problem-f1")).count(), 1);
+}
+
+/// When Alondra cannot save the trust, the task does not start and a new card says why.
+#[tokio::test]
+async fn a_trust_alondra_cannot_save_comes_back_saying_why() {
+    let f = world();
+    let claude = FakeClaude::new(&f);
+    create(&f, "f1", &[], Some(&plan(&f, "app/f1")));
+    let config = untrusted_config(&f);
+    pass(&f.domain, &f.home, &claude).await.unwrap();
+    let card = problem(&f, "f1").expect("asked");
+    let lock = f.root.join(".claude.json.lock");
+    std::fs::create_dir(&lock).unwrap();
+
+    answer(&f, &card.id, alondra_core::domain::START_RETRY);
+    pass(&f.domain, &f.home, &claude).await.unwrap();
+    pass(&f.domain, &f.home, &claude).await.unwrap();
+
+    assert_eq!(claude.launches(), 0);
+    assert!(!trusted(&f, &config));
+    let again = problem(&f, "f1").expect("a new card with the reason");
+    assert_ne!(again.id, card.id);
+    let Some(StartProblem::Untrusted { error: Some(error), .. }) = alondra_core::start_problem::from_body(&again.body) else { panic!("{}", again.body) };
+    assert!(error.contains("locked"), "{error}");
+    assert!(again.card.why.starts_with("You chose to trust it, but Alondra could not save"), "{}", again.card.why);
+
+    std::fs::remove_dir(&lock).unwrap();
+    answer(&f, &again.id, alondra_core::domain::START_RETRY);
+    pass(&f.domain, &f.home, &claude).await.unwrap();
+    pass(&f.domain, &f.home, &claude).await.unwrap();
+    assert!(trusted(&f, &config));
+    assert_eq!(claude.launches(), 1);
+}
+
+/// A folder inside the projects folder the user chose at setup is trusted by that choice: the
+/// task starts with no card.
+#[tokio::test]
+async fn a_folder_inside_the_projects_folder_starts_without_a_card() {
+    let f = world();
+    let claude = FakeClaude::new(&f);
+    std::fs::create_dir_all(alondra_core::options::path_in(&f.home).parent().unwrap()).unwrap();
+    std::fs::write(alondra_core::options::path_in(&f.home), format!("projects_root = {:?}\n", f.root.to_str().unwrap())).unwrap();
+    create(&f, "f1", &[], Some(&plan(&f, "app/f1")));
+    let config = untrusted_config(&f);
+
+    pass(&f.domain, &f.home, &claude).await.unwrap();
+
+    assert!(trusted(&f, &config));
+    assert_eq!(claude.launches(), 1);
+    assert!(problem(&f, "f1").is_none());
 }
 
 #[tokio::test]

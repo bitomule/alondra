@@ -45,18 +45,22 @@ public struct ActionRequest: Codable, Equatable, Sendable {
     public let actionId: String
     public let optionId: String?
     public let input: ActionInput
+    /// Whether the card it came from leaves the queue once the action is applied: the server's
+    /// `resolves_card` on the action. It stays on this device and is never sent.
+    public var resolvesItsCard = false
     enum CodingKeys: String, CodingKey {
         case protocolVersion = "protocol", commandId = "command_id", dataEpoch = "data_epoch", client, lang
         case actionId = "action_id", optionId = "option_id", input
     }
-    public init(protocolVersion: UInt32 = ContractCodec.protocolVersion, commandId: String, dataEpoch: String, client: ViewClient, lang: String, actionId: String, optionId: String? = nil, input: ActionInput = ActionInput()) {
+    public init(protocolVersion: UInt32 = ContractCodec.protocolVersion, commandId: String, dataEpoch: String, client: ViewClient, lang: String, actionId: String, optionId: String? = nil, input: ActionInput = ActionInput(), resolvesCard: Bool? = nil) {
         self.protocolVersion = protocolVersion; self.commandId = commandId; self.dataEpoch = dataEpoch; self.client = client
         self.lang = lang; self.actionId = actionId; self.optionId = optionId; self.input = input
+        self.resolvesItsCard = resolvesCard ?? Self.resolvesOnAnOlderDaemon(actionId)
     }
 
-    /// A message sent from a card (a reply to its node or the orchestrator, a question about its
-    /// PR) leaves the card waiting: only an answer, an acceptance or a read takes it out.
-    public var resolvesItsCard: Bool {
+    /// A daemon older than `resolves_card` does not say; it never turned a message into an answer,
+    /// so everything but a message takes the card out.
+    static func resolvesOnAnOlderDaemon(_ actionId: String) -> Bool {
         !["reply:", "msg:", "ask_pr:"].contains { actionId.hasPrefix($0) }
     }
 }

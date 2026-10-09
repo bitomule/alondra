@@ -32,6 +32,8 @@ mod views_tests;
 pub struct Acting {
     pub origin: Key,
     pub stamp: Option<String>,
+    /// The server's `resolves_card`: the card leaves the list the moment the action is sent.
+    pub hides: bool,
 }
 
 #[derive(Debug)]
@@ -184,6 +186,7 @@ enum ModalThen {
     Changed {
         request: Value,
         action_id: String,
+        hides: bool,
         origin: Option<Key>,
         review: Option<Key>,
     },
@@ -1441,7 +1444,9 @@ impl App {
             .and_then(|acting| acting.stamp.clone())
             .unwrap_or_else(|| tr!("Sending…", "Enviando…").to_owned());
         self.pending(text);
-        if let (Some(command), Some(acting)) = (request["command_id"].as_str(), acting) {
+        if let (Some(command), Some(acting)) = (request["command_id"].as_str(), acting)
+            && acting.hides
+        {
             self.in_flight.insert(command.to_owned(), acting.origin.clone());
             self.hide(acting.origin.clone());
             self.left_on.insert(acting.origin, self.sel.clone());
@@ -1479,6 +1484,7 @@ impl App {
             ModalThen::Changed {
                 request,
                 action_id,
+                hides,
                 origin,
                 review,
             } => {
@@ -1492,6 +1498,7 @@ impl App {
                 let acting = origin.map(|origin| Acting {
                     origin,
                     stamp: None,
+                    hides,
                 });
                 self.submit_view_request(fresh, acting);
             }
@@ -2202,6 +2209,7 @@ impl App {
                     then: ModalThen::Changed {
                         request,
                         action_id: next.id.clone(),
+                        hides: next.resolves_card,
                         origin,
                         review,
                     },

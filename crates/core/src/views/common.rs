@@ -273,6 +273,7 @@ pub(super) fn action(
         stamp: None,
         key: None,
         link: None,
+        resolves_card: false,
     })
 }
 
@@ -295,6 +296,7 @@ pub(super) fn view_link(key: &str, label: &str) -> Action {
         stamp: None,
         key: None,
         link: Some(Link::View { key: key.into() }),
+        resolves_card: false,
     }
 }
 

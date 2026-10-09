@@ -279,6 +279,28 @@ struct MacAnsweringTests {
     }
 
     @Test
+    func aReplyTheServerSaysAnswersTheQuestionTakesTheCardOutAtOnce() async throws {
+        let store = try makeStore(waiting: ["a", "b"], selected: "card:a", load: unchangedSidebar)
+        store.dependencies.viewsClient.perform = { _ in try response("applied") }
+        let reply = try decodeAction(#"{"id":"reply:a@1","label":"Reply","style":"secondary","role":"neutral","presentation":"button","input":{"kind":"text","required":true,"multiline":true},"attachments":true,"enabled":true,"resolves_card":true}"#)
+        await store.send(.sendReply(reply, text: "Use the compact one"))
+        await store.skipReceivedActions()
+        #expect(store.state.optimistic.hides("a"))
+        #expect(store.state.selection == .viewKey("card:b"))
+    }
+
+    @Test
+    func aButtonTheServerSaysKeepsItsCardLeavesItInPlace() async throws {
+        let store = try makeStore(waiting: ["a", "b"], selected: "card:a", load: unchangedSidebar)
+        store.dependencies.viewsClient.perform = { _ in try response("applied") }
+        let clarify = try decodeAction(#"{"id":"clarify:a@1","label":"Request clarification","style":"secondary","role":"neutral","presentation":"button","input":{"kind":"none"},"attachments":false,"enabled":true,"resolves_card":false}"#)
+        await store.send(.beginViewAction(clarify))
+        await store.skipReceivedActions()
+        #expect(!store.state.optimistic.hides("a"))
+        #expect(store.state.selection == .viewKey("card:a"))
+    }
+
+    @Test
     func clarifyingSendsTheReasonAndTheOptionalText() async throws {
         let sent = LockIsolated<[ActionRequest]>([])
         let store = try makeStore(waiting: ["a"], selected: "card:a")

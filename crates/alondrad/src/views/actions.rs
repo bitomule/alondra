@@ -388,7 +388,7 @@ async fn execute_inner(
         && request.input.text.as_deref().is_none_or(|text| text.trim().is_empty()) {
         return Ok(rejected_field(lang, "option_id", "Choose an option"));
     }
-    if is_external(action.verb) && !handed_back_in_domain(&state, &action) {
+    if is_external(action.verb) && !alondra_core::views::resolves::handed_back(&state, &action) {
         execute_external(domain, client, home, device, &request, &attachments, &action, identity, authorize, lang).await
     } else {
         execute_value(domain, device, request, &attachments, identity, authorize)
@@ -620,7 +620,10 @@ async fn execute_external(
                 None => return Ok(rejected_field(lang, "option_id", "Choose an option")),
             };
             match crate::fleet_gate::set_node_limit(home, limit) {
-                Ok(()) => Ok(to_applied(200, json!({"max_working_nodes": limit}))),
+                Ok(()) => {
+                    domain.live.gate.forget_learned();
+                    Ok(to_applied(200, json!({"max_working_nodes": limit})))
+                }
                 Err(why) => Ok(error_value_lang(lang, "conflict", why)),
             }
         }
@@ -1348,42 +1351,13 @@ fn map_action(
     }
 }
 
-/// A reply to a delivery, a question about a presented PR or a request to resolve its conflicts
-/// is feedback on that delivery, so its card leaves the queue; with no delivery to hold it is
-/// only typed to the node.
-fn handed_back_in_domain(state: &alondra_core::domain::DomainState, action: &ActionId) -> bool {
-    match action.verb {
-        Verb::Reply => state.interactions.get(&InteractionId(action.subject.clone()))
-            .is_some_and(|interaction| match &interaction.payload {
-                InteractionPayload::Delivery { .. } => true,
-                InteractionPayload::Question { answer: None, .. } | InteractionPayload::ActionRequest { answer: None, .. } =>
-                    !state.holds.contains_key(&interaction.id),
-                _ => false,
-            }),
-        Verb::AskPr | Verb::Conflicts => state.pull_requests.get(&alondra_core::domain::PrId(action.subject.clone()))
-            .is_some_and(|pr| pr_presentation(state, pr).is_some()),
-        _ => false,
-    }
-}
-
 /// Resolve conflicts is Alondra's own request, whether the user tapped it or Alondra noticed:
 /// one per PR head, so a second one for the same head changes nothing.
 pub(crate) fn conflicts_command_id(pr: &alondra_core::domain::PullRequest) -> CommandId {
     CommandId(format!("conflicts-{}-{}", pr.id, pr.head))
 }
 
-/// The open PR's current final delivery, presented at the PR's head.
-pub(crate) fn pr_presentation<'a>(
-    state: &'a alondra_core::domain::DomainState,
-    pr: &alondra_core::domain::PullRequest,
-) -> Option<&'a alondra_core::domain::Interaction> {
-    if pr.state != alondra_core::domain::PrState::Open { return None; }
-    let task = state.tasks.get(&pr.task_id).filter(|task| !task.state.terminal())?;
-    let presentation = state.interactions.get(task.final_presentation.as_ref()?)?;
-    let InteractionPayload::Delivery { targets, .. } = &presentation.payload else { return None; };
-    targets.iter().any(|target| matches!(target, alondra_core::domain::DeliveryTarget::PullRequest { pr_id, head }
-        if pr_id == &pr.id && head == &pr.head)).then_some(presentation)
-}
+pub(crate) use alondra_core::views::pr_presentation;
 
 fn held_plan(state: &alondra_core::domain::DomainState, interaction: &alondra_core::domain::Interaction) -> bool {
     state.holds.get(&interaction.id) == Some(&Hold::Plan)

@@ -24,7 +24,7 @@ public enum OutcomeStyle: Equatable, Sendable {
                     self = .failure(result.title)
                     return
                 }
-                self = .ask(.init(title: result.title, body: result.body, actionId: id, button: next.label))
+                self = .ask(.init(title: result.title, body: result.body, actionId: id, button: next.label, resolvesCard: next.resolvesCard))
             case .other:
                 self = reply.outcome == .applied
                     ? .success(result.title)

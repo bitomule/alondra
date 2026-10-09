@@ -1,379 +1,14 @@
 {
-  "client": "tui",
-  "cursor": "cursor-1",
-  "data_epoch": "test-epoch",
-  "key": "home",
   "protocol": 1,
-  "sections": [
-    {
-      "collapsed": false,
-      "count": 5,
-      "id": "waiting",
-      "items": [
-        {
-          "content_row": {
-            "icon": "notice",
-            "kind": "options",
-            "label": "Why each option",
-            "summary": "2 options"
-          },
-          "context": [
-            {
-              "chip": {
-                "text": "Demo Garden",
-                "tone": "neutral"
-              },
-              "icon": "node",
-              "link": {
-                "key": "node:d887a34b-249e-4487-a89b-57de38c26372",
-                "kind": "view"
-              },
-              "state": {
-                "text": "Waiting for an answer",
-                "tone": "warning"
-              },
-              "text": "Alondra · iOS"
-            }
-          ],
-          "detail": "reference",
-          "eyebrow": {
-            "text": "Decide",
-            "tone": "accent"
-          },
-          "icon": "question",
-          "id": "a98d034b-249e-4487-a89b-57de38c26372",
-          "kind": "decide",
-          "link": {
-            "key": "card:a98d034b-249e-4487-a89b-57de38c26372",
-            "kind": "view"
-          },
-          "meta": "Alondra · iOS · Demo Garden",
-          "need": "Choose the welcome copy",
-          "state": {
-            "text": "Blocks Alondra · iOS",
-            "tone": "warning"
-          },
-          "subtitle": "The new empty state is ready; the beta ships with the copy you pick.",
-          "title": "Choose the welcome copy",
-          "type": "card",
-          "why": "The new empty state is ready; the beta ships with the copy you pick."
-        },
-        {
-          "detail": "reference",
-          "eyebrow": {
-            "text": "Decide",
-            "tone": "accent"
-          },
-          "icon": "question",
-          "id": "8fa4034b-249e-4487-a89b-57de38c26372",
-          "kind": "decide",
-          "link": {
-            "key": "card:8fa4034b-249e-4487-a89b-57de38c26372",
-            "kind": "view"
-          },
-          "meta": "Alondra",
-          "need": "Ship the compact schedule editor with this beta?",
-          "state": {
-            "text": "Blocks this node",
-            "tone": "warning"
-          },
-          "subtitle": "The review of the pull request waits for your answer.",
-          "title": "Ship the compact schedule editor with this beta?",
-          "type": "card",
-          "why": "The review of the pull request waits for your answer."
-        },
-        {
-          "content_row": {
-            "icon": "pull_request",
-            "kind": "diff",
-            "label": "Changes",
-            "summary": "4 files · +120 −30"
-          },
-          "detail": "reference",
-          "eyebrow": {
-            "text": "Review · PR #12",
-            "tone": "accent"
-          },
-          "icon": "pull_request",
-          "id": "hf-weekly-2026-09-30",
-          "kind": "review",
-          "link": {
-            "key": "card:hf-weekly-2026-09-30",
-            "kind": "view"
-          },
-          "meta": "Alondra",
-          "need": "Review the beta candidate",
-          "state": {
-            "text": "+120 −30 · ✓",
-            "tone": "success"
-          },
-          "subtitle": "All required checks passed and the branch is up to date with main.",
-          "title": "Review the beta candidate",
-          "type": "card",
-          "why": "All required checks passed and the branch is up to date with main."
-        },
-        {
-          "content_row": {
-            "icon": "notice",
-            "kind": "report",
-            "label": "Report",
-            "summary": "3 points"
-          },
-          "detail": "reference",
-          "eyebrow": {
-            "text": "FYI",
-            "tone": "neutral"
-          },
-          "icon": "notice",
-          "id": "f12d034b-249e-4487-a89b-57de38c26372",
-          "kind": "know",
-          "link": {
-            "key": "card:f12d034b-249e-4487-a89b-57de38c26372",
-            "kind": "view"
-          },
-          "meta": "Alondra",
-          "need": "The simulator pass is clean",
-          "state": {
-            "text": "Doesn't block",
-            "tone": "neutral"
-          },
-          "subtitle": "Swipe navigation, inline replies and attachment previews are ready for review.",
-          "title": "The simulator pass is clean",
-          "type": "card",
-          "why": "Swipe navigation, inline replies and attachment previews are ready for review."
-        },
-        {
-          "context": [
-            {
-              "chip": {
-                "text": "Demo Garden",
-                "tone": "neutral"
-              },
-              "icon": "node",
-              "link": {
-                "key": "node:d887a34b-249e-4487-a89b-57de38c26372",
-                "kind": "view"
-              },
-              "state": {
-                "text": "Waiting for an answer",
-                "tone": "warning"
-              },
-              "text": "Alondra · iOS"
-            }
-          ],
-          "detail": "reference",
-          "eyebrow": {
-            "text": "FYI",
-            "tone": "neutral"
-          },
-          "icon": "notice",
-          "id": "cc2d034b-249e-4487-a89b-57de38c26372",
-          "kind": "know",
-          "link": {
-            "key": "card:cc2d034b-249e-4487-a89b-57de38c26372",
-            "kind": "view"
-          },
-          "meta": "Alondra · iOS · Demo Garden",
-          "need": "The pull request checks passed",
-          "state": {
-            "text": "Doesn't block",
-            "tone": "neutral"
-          },
-          "title": "The pull request checks passed",
-          "type": "card"
-        }
-      ],
-      "title": "Waiting for You"
-    },
-    {
-      "collapsed": false,
-      "id": "detail",
-      "items": [
-        {
-          "actions": [
-            {
-              "attachments": false,
-              "description": "Use a short title and one explanatory sentence.",
-              "enabled": true,
-              "id": "ans:a98d034b-249e-4487-a89b-57de38c26372@1",
-              "input": {
-                "kind": "none"
-              },
-              "key": "1",
-              "label": "★ Ship the concise copy",
-              "option_id": "clear",
-              "presentation": "button",
-              "role": "advance",
-              "stamp": "Answered",
-              "style": "primary"
-            },
-            {
-              "attachments": false,
-              "description": "Preserve the more conversational explanation.",
-              "enabled": true,
-              "id": "ans:a98d034b-249e-4487-a89b-57de38c26372@1",
-              "input": {
-                "kind": "none"
-              },
-              "key": "2",
-              "label": "Keep the warmer copy",
-              "option_id": "warm",
-              "presentation": "button",
-              "role": "neutral",
-              "stamp": "Answered",
-              "style": "secondary"
-            }
-          ],
-          "content_row": {
-            "icon": "notice",
-            "kind": "options",
-            "label": "Why each option",
-            "summary": "2 options"
-          },
-          "context": [
-            {
-              "chip": {
-                "text": "Demo Garden",
-                "tone": "neutral"
-              },
-              "icon": "node",
-              "link": {
-                "key": "node:d887a34b-249e-4487-a89b-57de38c26372",
-                "kind": "view"
-              },
-              "state": {
-                "text": "Waiting for an answer",
-                "tone": "warning"
-              },
-              "text": "Alondra · iOS"
-            }
-          ],
-          "detail": "included",
-          "eyebrow": {
-            "text": "Decide",
-            "tone": "accent"
-          },
-          "icon": "question",
-          "id": "a98d034b-249e-4487-a89b-57de38c26372",
-          "kind": "decide",
-          "link": {
-            "key": "card:a98d034b-249e-4487-a89b-57de38c26372",
-            "kind": "view"
-          },
-          "meta": "Alondra · iOS · Demo Garden",
-          "more": [
-            {
-              "attachments": true,
-              "enabled": true,
-              "id": "ans:a98d034b-249e-4487-a89b-57de38c26372@1",
-              "input": {
-                "kind": "text",
-                "multiline": true,
-                "placeholder": "Answer in your own words…",
-                "required": true
-              },
-              "key": "3",
-              "label": "Write my own answer",
-              "presentation": "button",
-              "role": "neutral",
-              "stamp": "Answered",
-              "style": "secondary"
-            },
-            {
-              "attachments": false,
-              "enabled": true,
-              "id": "clarify:a98d034b-249e-4487-a89b-57de38c26372@1",
-              "input": {
-                "kind": "text",
-                "multiline": true,
-                "placeholder": "What should it clarify?",
-                "required": false
-              },
-              "key": "c",
-              "label": "Request clarification",
-              "options": [
-                {
-                  "id": "unclear",
-                  "input": {
-                    "kind": "none"
-                  },
-                  "label": "It is unclear",
-                  "style": "secondary"
-                },
-                {
-                  "id": "contradicts",
-                  "input": {
-                    "kind": "none"
-                  },
-                  "label": "It contradicts something",
-                  "style": "secondary"
-                },
-                {
-                  "id": "missing_context",
-                  "input": {
-                    "kind": "none"
-                  },
-                  "label": "It lacks context",
-                  "style": "secondary"
-                }
-              ],
-              "presentation": "options",
-              "role": "neutral",
-              "stamp": "Clarification requested",
-              "style": "secondary"
-            },
-            {
-              "attachments": false,
-              "enabled": true,
-              "id": "",
-              "input": {
-                "kind": "none"
-              },
-              "key": "a",
-              "label": "Attach to node",
-              "link": {
-                "kind": "local",
-                "local": {
-                  "kind": "attach",
-                  "session": "alondra-ios"
-                }
-              },
-              "presentation": "button",
-              "role": "neutral",
-              "style": "plain"
-            }
-          ],
-          "need": "Choose the welcome copy",
-          "reply": {
-            "attachments": true,
-            "enabled": true,
-            "id": "reply:a98d034b-249e-4487-a89b-57de38c26372@1",
-            "input": {
-              "kind": "text",
-              "multiline": true,
-              "placeholder": "Reply to Alondra · iOS…",
-              "required": true
-            },
-            "key": "r",
-            "label": "Reply",
-            "presentation": "button",
-            "role": "neutral",
-            "stamp": "Sent",
-            "style": "secondary"
-          },
-          "state": {
-            "text": "Blocks Alondra · iOS",
-            "tone": "warning"
-          },
-          "subtitle": "The new empty state is ready; the beta ships with the copy you pick.",
-          "title": "Choose the welcome copy",
-          "type": "card",
-          "why": "The new empty state is ready; the beta ships with the copy you pick."
-        }
-      ]
-    }
-  ],
+  "data_epoch": "test-epoch",
+  "view": "home",
+  "key": "home",
+  "client": "tui",
+  "version": "v88b762318a8d2bf8",
+  "cursor": "cursor-1",
   "status": {
+    "version": "v29e230088bd2c22c",
+    "summary": "2 questions · 3 to read · 0 nodes working",
     "badge": 5,
     "counts": [
       {
@@ -406,25 +41,396 @@
       {
         "id": "memory",
         "label": "Memory",
-        "level": "calm",
+        "value": 0.38,
         "text": "6.1 GB of 16 GB",
-        "value": 0.38
+        "level": "calm"
       },
       {
         "id": "disk",
         "label": "Disk available",
-        "level": "calm",
+        "value": 0.72,
         "text": "120 GB",
-        "value": 0.72
+        "level": "calm"
       }
     ],
     "orchestrator": {
       "text": "idle",
       "tone": "neutral"
-    },
-    "summary": "2 questions · 3 to read · 0 nodes working",
-    "version": "v29e230088bd2c22c"
+    }
   },
-  "version": "v2e268e7365a71c72",
-  "view": "home"
+  "sections": [
+    {
+      "id": "waiting",
+      "title": "Waiting for You",
+      "count": 5,
+      "collapsed": false,
+      "items": [
+        {
+          "type": "card",
+          "id": "a98d034b-249e-4487-a89b-57de38c26372",
+          "kind": "decide",
+          "need": "Choose the welcome copy",
+          "why": "The new empty state is ready; the beta ships with the copy you pick.",
+          "meta": "Alondra · iOS · Demo Garden",
+          "content_row": {
+            "kind": "options",
+            "icon": "notice",
+            "label": "Why each option",
+            "summary": "2 options"
+          },
+          "link": {
+            "kind": "view",
+            "key": "card:a98d034b-249e-4487-a89b-57de38c26372"
+          },
+          "icon": "question",
+          "eyebrow": {
+            "text": "Decide",
+            "tone": "accent"
+          },
+          "title": "Choose the welcome copy",
+          "subtitle": "The new empty state is ready; the beta ships with the copy you pick.",
+          "context": [
+            {
+              "icon": "node",
+              "text": "Alondra · iOS",
+              "link": {
+                "kind": "view",
+                "key": "node:d887a34b-249e-4487-a89b-57de38c26372"
+              },
+              "chip": {
+                "text": "Demo Garden",
+                "tone": "neutral"
+              },
+              "state": {
+                "text": "Waiting for an answer",
+                "tone": "warning"
+              }
+            }
+          ],
+          "state": {
+            "text": "Blocks Alondra · iOS",
+            "tone": "warning"
+          },
+          "detail": "reference"
+        },
+        {
+          "type": "card",
+          "id": "8fa4034b-249e-4487-a89b-57de38c26372",
+          "kind": "decide",
+          "need": "Ship the compact schedule editor with this beta?",
+          "why": "The review of the pull request waits for your answer.",
+          "meta": "Alondra",
+          "link": {
+            "kind": "view",
+            "key": "card:8fa4034b-249e-4487-a89b-57de38c26372"
+          },
+          "icon": "question",
+          "eyebrow": {
+            "text": "Decide",
+            "tone": "accent"
+          },
+          "title": "Ship the compact schedule editor with this beta?",
+          "subtitle": "The review of the pull request waits for your answer.",
+          "state": {
+            "text": "Blocks this node",
+            "tone": "warning"
+          },
+          "detail": "reference"
+        },
+        {
+          "type": "card",
+          "id": "hf-weekly-2026-09-30",
+          "kind": "review",
+          "need": "Review the beta candidate",
+          "why": "All required checks passed and the branch is up to date with main.",
+          "meta": "Alondra",
+          "content_row": {
+            "kind": "diff",
+            "icon": "pull_request",
+            "label": "Changes",
+            "summary": "4 files · +120 −30"
+          },
+          "link": {
+            "kind": "view",
+            "key": "card:hf-weekly-2026-09-30"
+          },
+          "icon": "pull_request",
+          "eyebrow": {
+            "text": "Review · PR #12",
+            "tone": "accent"
+          },
+          "title": "Review the beta candidate",
+          "subtitle": "All required checks passed and the branch is up to date with main.",
+          "state": {
+            "text": "+120 −30 · ✓",
+            "tone": "success"
+          },
+          "detail": "reference"
+        },
+        {
+          "type": "card",
+          "id": "f12d034b-249e-4487-a89b-57de38c26372",
+          "kind": "know",
+          "need": "The simulator pass is clean",
+          "why": "Swipe navigation, inline replies and attachment previews are ready for review.",
+          "meta": "Alondra",
+          "content_row": {
+            "kind": "report",
+            "icon": "notice",
+            "label": "Report",
+            "summary": "3 points"
+          },
+          "link": {
+            "kind": "view",
+            "key": "card:f12d034b-249e-4487-a89b-57de38c26372"
+          },
+          "icon": "notice",
+          "eyebrow": {
+            "text": "FYI",
+            "tone": "neutral"
+          },
+          "title": "The simulator pass is clean",
+          "subtitle": "Swipe navigation, inline replies and attachment previews are ready for review.",
+          "state": {
+            "text": "Doesn't block",
+            "tone": "neutral"
+          },
+          "detail": "reference"
+        },
+        {
+          "type": "card",
+          "id": "cc2d034b-249e-4487-a89b-57de38c26372",
+          "kind": "know",
+          "need": "The pull request checks passed",
+          "meta": "Alondra · iOS · Demo Garden",
+          "link": {
+            "kind": "view",
+            "key": "card:cc2d034b-249e-4487-a89b-57de38c26372"
+          },
+          "icon": "notice",
+          "eyebrow": {
+            "text": "FYI",
+            "tone": "neutral"
+          },
+          "title": "The pull request checks passed",
+          "context": [
+            {
+              "icon": "node",
+              "text": "Alondra · iOS",
+              "link": {
+                "kind": "view",
+                "key": "node:d887a34b-249e-4487-a89b-57de38c26372"
+              },
+              "chip": {
+                "text": "Demo Garden",
+                "tone": "neutral"
+              },
+              "state": {
+                "text": "Waiting for an answer",
+                "tone": "warning"
+              }
+            }
+          ],
+          "state": {
+            "text": "Doesn't block",
+            "tone": "neutral"
+          },
+          "detail": "reference"
+        }
+      ]
+    },
+    {
+      "id": "detail",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "card",
+          "id": "a98d034b-249e-4487-a89b-57de38c26372",
+          "kind": "decide",
+          "need": "Choose the welcome copy",
+          "why": "The new empty state is ready; the beta ships with the copy you pick.",
+          "meta": "Alondra · iOS · Demo Garden",
+          "content_row": {
+            "kind": "options",
+            "icon": "notice",
+            "label": "Why each option",
+            "summary": "2 options"
+          },
+          "reply": {
+            "id": "reply:a98d034b-249e-4487-a89b-57de38c26372@1",
+            "label": "Reply",
+            "style": "secondary",
+            "role": "neutral",
+            "presentation": "button",
+            "input": {
+              "kind": "text",
+              "placeholder": "Reply to Alondra · iOS…",
+              "required": true,
+              "multiline": true
+            },
+            "attachments": true,
+            "enabled": true,
+            "stamp": "Sent",
+            "key": "r",
+            "resolves_card": true
+          },
+          "more": [
+            {
+              "id": "ans:a98d034b-249e-4487-a89b-57de38c26372@1",
+              "label": "Write my own answer",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "text",
+                "placeholder": "Answer in your own words…",
+                "required": true,
+                "multiline": true
+              },
+              "attachments": true,
+              "enabled": true,
+              "stamp": "Answered",
+              "key": "3",
+              "resolves_card": true
+            },
+            {
+              "id": "clarify:a98d034b-249e-4487-a89b-57de38c26372@1",
+              "label": "Request clarification",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "options",
+              "options": [
+                {
+                  "id": "unclear",
+                  "label": "It is unclear",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                },
+                {
+                  "id": "contradicts",
+                  "label": "It contradicts something",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                },
+                {
+                  "id": "missing_context",
+                  "label": "It lacks context",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                }
+              ],
+              "input": {
+                "kind": "text",
+                "placeholder": "What should it clarify?",
+                "required": false,
+                "multiline": true
+              },
+              "attachments": false,
+              "enabled": true,
+              "stamp": "Clarification requested",
+              "key": "c",
+              "resolves_card": false
+            },
+            {
+              "id": "",
+              "label": "Attach to node",
+              "style": "plain",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "key": "a",
+              "link": {
+                "kind": "local",
+                "local": {
+                  "kind": "attach",
+                  "session": "alondra-ios"
+                }
+              },
+              "resolves_card": false
+            }
+          ],
+          "link": {
+            "kind": "view",
+            "key": "card:a98d034b-249e-4487-a89b-57de38c26372"
+          },
+          "icon": "question",
+          "eyebrow": {
+            "text": "Decide",
+            "tone": "accent"
+          },
+          "title": "Choose the welcome copy",
+          "subtitle": "The new empty state is ready; the beta ships with the copy you pick.",
+          "context": [
+            {
+              "icon": "node",
+              "text": "Alondra · iOS",
+              "link": {
+                "kind": "view",
+                "key": "node:d887a34b-249e-4487-a89b-57de38c26372"
+              },
+              "chip": {
+                "text": "Demo Garden",
+                "tone": "neutral"
+              },
+              "state": {
+                "text": "Waiting for an answer",
+                "tone": "warning"
+              }
+            }
+          ],
+          "state": {
+            "text": "Blocks Alondra · iOS",
+            "tone": "warning"
+          },
+          "detail": "included",
+          "actions": [
+            {
+              "id": "ans:a98d034b-249e-4487-a89b-57de38c26372@1",
+              "label": "★ Ship the concise copy",
+              "style": "primary",
+              "role": "advance",
+              "option_id": "clear",
+              "description": "Use a short title and one explanatory sentence.",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "stamp": "Answered",
+              "key": "1",
+              "resolves_card": true
+            },
+            {
+              "id": "ans:a98d034b-249e-4487-a89b-57de38c26372@1",
+              "label": "Keep the warmer copy",
+              "style": "secondary",
+              "role": "neutral",
+              "option_id": "warm",
+              "description": "Preserve the more conversational explanation.",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "stamp": "Answered",
+              "key": "2",
+              "resolves_card": true
+            }
+          ]
+        }
+      ]
+    }
+  ]
 }
