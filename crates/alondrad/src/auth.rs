@@ -41,6 +41,7 @@ pub struct Auth {
     pairing: Mutex<HashMap<String, Instant>>,
     seen: Mutex<VecDeque<String>>,
     service_verifier: Mutex<HttpChallengeVerifier>,
+    usage: crate::device_usage::DeviceUsage,
 }
 
 pub fn random_hex(bytes: usize) -> String {
@@ -80,6 +81,7 @@ impl Auth {
             pairing: Mutex::new(HashMap::new()),
             seen: Mutex::new(VecDeque::new()),
             service_verifier: Mutex::new(HttpChallengeVerifier::new(120_000, 4096)?),
+            usage: crate::device_usage::DeviceUsage::at(home),
         })
     }
 
@@ -179,6 +181,10 @@ impl Auth {
             .map_err(|_| "invalid or replayed service signature".into())
     }
 
+    pub(crate) fn usage(&self) -> &crate::device_usage::DeviceUsage {
+        &self.usage
+    }
+
     pub fn list(&self) -> Vec<Device> {
         self.devices.lock().expect("devices lock poisoned").clone()
     }
@@ -205,12 +211,12 @@ impl Auth {
         })
     }
 
-    fn verify(&self, headers: &HeaderMap, method: &str, path_and_query: &str, body: &[u8]) -> Result<Signed, &'static str> {
-        self.verify_at(headers, method, path_and_query, body, now_millis())
+    fn verify(&self, headers: &HeaderMap, method: &str, path_and_query: &str, body: &[u8], local: bool) -> Result<Signed, &'static str> {
+        self.verify_at(headers, method, path_and_query, body, now_millis(), local)
     }
 
     fn verify_at(&self, headers: &HeaderMap, method: &str, path_and_query: &str,
-        body: &[u8], now: i64) -> Result<Signed, &'static str> {
+        body: &[u8], now: i64, local: bool) -> Result<Signed, &'static str> {
         let h = |k: &str| headers.get(k).and_then(|v| v.to_str().ok());
         let device_id = h("x-alondra-device").ok_or("missing X-Alondra-Device")?;
         let timestamp = h("x-alondra-timestamp").ok_or("missing X-Alondra-Timestamp")?;
@@ -239,9 +245,9 @@ impl Auth {
             seen.pop_front();
         }
         drop(seen);
-        let mut devices = self.devices.lock().expect("devices lock poisoned");
-        let device = devices.iter_mut().find(|d| d.id == device_id).ok_or("device not paired")?;
-        device.last_seen = Some(now_millis());
+        let devices = self.devices.lock().expect("devices lock poisoned");
+        let device = devices.iter().find(|d| d.id == device_id).ok_or("device not paired")?;
+        self.usage.touch(&device.id, now_millis(), local);
         Ok(Signed { device_id: device.id.clone(), name: device.name.clone(), public_key: key_b64 })
     }
 }
@@ -266,7 +272,8 @@ fn unauthorized(reason: &str) -> Response {
 
 pub async fn guard(State(auth): State<Arc<Auth>>, ConnectInfo(peer): ConnectInfo<SocketAddr>, req: Request<Body>, next: Next) -> Response {
     let presents_signature = req.headers().contains_key("x-alondra-signature");
-    if is_local(&peer, req.headers()) && !presents_signature {
+    let local = is_local(&peer, req.headers());
+    if local && !presents_signature {
         return next.run(req).await;
     }
     let (parts, body) = req.into_parts();
@@ -274,7 +281,7 @@ pub async fn guard(State(auth): State<Arc<Auth>>, ConnectInfo(peer): ConnectInfo
         return unauthorized("cuerpo demasiado grande");
     };
     let path_and_query = parts.uri.path_and_query().map(|p| p.as_str()).unwrap_or("/");
-    let signed = match auth.verify(&parts.headers, parts.method.as_str(), path_and_query, &bytes) {
+    let signed = match auth.verify(&parts.headers, parts.method.as_str(), path_and_query, &bytes, local) {
         Ok(signed) => signed,
         Err(reason) => return unauthorized(reason),
     };
@@ -315,10 +322,23 @@ mod tests {
         let msg = signed_message("POST", "/v1/questions/1/answer", &ts.to_string(), b"{\"text\":\"yes\"}");
         let sig: Signature = key.sign(msg.as_bytes());
         let h = headers(&id, ts, &sig);
-        let signed = auth.verify(&h, "POST", "/v1/questions/1/answer", b"{\"text\":\"yes\"}").unwrap();
+        let signed = auth.verify(&h, "POST", "/v1/questions/1/answer", b"{\"text\":\"yes\"}", false).unwrap();
         assert_eq!(signed.name, "iPhone");
         assert_eq!(signed.device_id, id);
-        assert_eq!(auth.verify(&h, "POST", "/v1/questions/1/answer", b"{\"text\":\"yes\"}").unwrap_err(), "replayed request");
+        assert_eq!(auth.verify(&h, "POST", "/v1/questions/1/answer", b"{\"text\":\"yes\"}", false).unwrap_err(), "replayed request");
+    }
+
+    #[test]
+    fn a_signed_request_records_the_use_and_whether_it_came_from_this_mac() {
+        let (auth, key, id) = auth_with_device();
+        let ts = now_millis();
+        assert!(auth.usage().snapshot(ts).devices.get(&id).is_none());
+        let msg = signed_message("GET", "/views/home", &ts.to_string(), b"");
+        let sig: Signature = key.sign(msg.as_bytes());
+        auth.verify(&headers(&id, ts, &sig), "GET", "/views/home", b"", true).unwrap();
+        let used = &auth.usage().snapshot(ts).devices[&id];
+        assert!(used.last_used_ms.is_some_and(|at| at >= ts));
+        assert!(used.local);
     }
 
     #[test]
@@ -329,8 +349,8 @@ mod tests {
         let signature: Signature = key.sign(message.as_bytes());
         let equivalent = Signature::from_scalars(signature.r().to_bytes(), (-*signature.s()).to_bytes()).unwrap();
         key.verifying_key().verify(message.as_bytes(), &equivalent).unwrap();
-        auth.verify_at(&headers(&id, ts, &signature), "GET", "/views/home", b"", ts).unwrap();
-        assert_eq!(auth.verify_at(&headers(&id, ts, &equivalent), "GET", "/views/home", b"", ts)
+        auth.verify_at(&headers(&id, ts, &signature), "GET", "/views/home", b"", ts, false).unwrap();
+        assert_eq!(auth.verify_at(&headers(&id, ts, &equivalent), "GET", "/views/home", b"", ts, false)
             .unwrap_err(), "replayed request");
     }
 
@@ -341,8 +361,8 @@ mod tests {
         let msg = signed_message("POST", "/v1/questions/1/answer", &ts.to_string(), b"{\"text\":\"yes\"}");
         let sig: Signature = key.sign(msg.as_bytes());
         let h = headers(&id, ts, &sig);
-        assert_eq!(auth.verify(&h, "POST", "/v1/questions/1/answer", b"{\"text\":\"no\"}").unwrap_err(), "wrong signature");
-        assert_eq!(auth.verify(&h, "POST", "/v1/questions/2/answer", b"{\"text\":\"yes\"}").unwrap_err(), "wrong signature");
+        assert_eq!(auth.verify(&h, "POST", "/v1/questions/1/answer", b"{\"text\":\"no\"}", false).unwrap_err(), "wrong signature");
+        assert_eq!(auth.verify(&h, "POST", "/v1/questions/2/answer", b"{\"text\":\"yes\"}", false).unwrap_err(), "wrong signature");
     }
 
     #[test]
@@ -351,11 +371,11 @@ mod tests {
         let ts = now_millis() - 10 * 60_000;
         let msg = signed_message("GET", "/v1/overview", &ts.to_string(), b"");
         let sig: Signature = key.sign(msg.as_bytes());
-        assert_eq!(auth.verify(&headers(&id, ts, &sig), "GET", "/v1/overview", b"").unwrap_err(), "timestamp out of range");
+        assert_eq!(auth.verify(&headers(&id, ts, &sig), "GET", "/v1/overview", b"", false).unwrap_err(), "timestamp out of range");
         let ts = now_millis();
         let msg = signed_message("GET", "/v1/overview", &ts.to_string(), b"");
         let sig: Signature = key.sign(msg.as_bytes());
-        assert_eq!(auth.verify(&headers("other", ts, &sig), "GET", "/v1/overview", b"").unwrap_err(), "device not paired");
+        assert_eq!(auth.verify(&headers("other", ts, &sig), "GET", "/v1/overview", b"", false).unwrap_err(), "device not paired");
     }
 
     #[test]

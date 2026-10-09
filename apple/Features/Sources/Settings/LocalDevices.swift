@@ -21,10 +21,13 @@ public struct TrustedDevice: Identifiable, Equatable, Sendable {
     public let name: String
     /// Nil from a daemon that predates the field.
     public let origin: Origin?
+    /// The last signed request it made; nil when it has made none since Alondra began recording.
+    public let lastUsed: Date?
 
-    public init(id: String, name: String, origin: Origin?) {
+    public init(id: String, name: String, origin: Origin?, lastUsed: Date? = nil) {
         self.id = id
         self.name = name
         self.origin = origin
+        self.lastUsed = lastUsed
     }
 }

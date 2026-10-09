@@ -59,6 +59,8 @@ mod start_failures;
 mod launch_worktree;
 mod node_close;
 mod revoked_devices;
+mod device_expiry;
+mod device_usage;
 mod node_push;
 mod node_reports;
 mod node_work;
@@ -479,6 +481,7 @@ async fn run_domain(config: &Config) -> Result<()> {
         state.attach_direct(direct.clone());
         tokio::spawn(direct::run(direct, config.sandbox));
     }
+    tokio::spawn(device_expiry::run(state.clone(), config.home.clone(), config.device_expiry_days));
     let app = domain_bootstrap::router(state)
         .layer(axum::middleware::from_fn_with_state(auth, auth::guard));
     log!(

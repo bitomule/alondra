@@ -9,7 +9,17 @@ extension Connection {
     }
 
     private struct Devices: Decodable {
-        struct Device: Decodable { let id: String; let name: String; let origin: String? }
+        struct Device: Decodable {
+            let id: String
+            let name: String
+            let origin: String?
+            let lastSeen: Int64?
+
+            private enum CodingKeys: String, CodingKey {
+                case id, name, origin
+                case lastSeen = "last_seen"
+            }
+        }
         let devices: [Device]
     }
 
@@ -25,7 +35,14 @@ extension Connection {
 
     public func trustedDevices() async throws -> [TrustedDevice] {
         try JSONDecoder().decode(Devices.self, from: try await local(.devices)).devices
-            .map { TrustedDevice(id: $0.id, name: $0.name, origin: $0.origin.flatMap(TrustedDevice.Origin.init)) }
+            .map {
+                TrustedDevice(
+                    id: $0.id,
+                    name: $0.name,
+                    origin: $0.origin.flatMap(TrustedDevice.Origin.init),
+                    lastUsed: $0.lastSeen.map { Date(timeIntervalSince1970: TimeInterval($0) / 1000) }
+                )
+            }
     }
 
     /// Cuts the device off on every path at once: direct, relay and push.

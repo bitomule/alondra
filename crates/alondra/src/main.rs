@@ -310,6 +310,7 @@ fn show_config(get: Option<&str>) -> Result<()> {
         ("compact_idle_nodes_at", c.compact_idle_nodes_at.map(|p| format!("{p}%")).unwrap_or_else(|| "off".into())),
         ("compact_orchestrator_at", c.compact_orchestrator_at.map(|p| format!("{p}%")).unwrap_or_else(|| "off".into())),
         ("archived_tasks_days", c.archived_tasks_days.to_string()),
+        ("device_expiry_days", c.device_expiry_days.map(|d| d.to_string()).unwrap_or_else(|| "off".into())),
         ("auto_update", c.auto_update.to_string()),
         ("max_working_nodes", node_limit(&c.home)),
     ];
@@ -597,19 +598,59 @@ fn devices(revoke: Option<String>, approve: Option<String>, deny: Option<String>
         return Ok(());
     }
     let v: serde_json::Value = client.get("/devices")?;
+    device_lines(&v, now_millis()).iter().for_each(|line| println!("{line}"));
+    Ok(())
+}
+
+/// How long ago `then` was, the way people say it: minutes, then hours, then days.
+fn ago(then: i64, now: i64) -> String {
+    let minutes = (now - then).max(0) / 60_000;
+    let (hours, days) = (minutes / 60, minutes / 1_440);
+    match (days, hours) {
+        (0, 0) => trf!("{minutes} min ago", "hace {minutes} min"),
+        (0, _) => trf!("{hours} h ago", "hace {hours} h"),
+        (1, _) => tr!("1 day ago", "hace 1 día").into(),
+        _ => trf!("{days} days ago", "hace {days} días"),
+    }
+}
+
+/// The paired devices with their last use, then the ones Alondra unpaired on its own lately.
+fn device_lines(v: &serde_json::Value, now: i64) -> Vec<String> {
     let list = v.get("devices").and_then(|d| d.as_array()).cloned().unwrap_or_default();
+    let mut lines = Vec::new();
     if list.is_empty() {
-        println!("{}", tr!("No paired devices. Devices on the same network pair on their own: open the app, or run alondra connect on the other computer.", "No hay dispositivos vinculados. Los dispositivos de la misma red se emparejan solos: abre la app, o ejecuta alondra connect en el otro ordenador."));
+        lines.push(tr!("No paired devices. Devices on the same network pair on their own: open the app, or run alondra connect on the other computer.", "No hay dispositivos vinculados. Los dispositivos de la misma red se emparejan solos: abre la app, o ejecuta alondra connect en el otro ordenador.").to_string());
     }
     for d in list {
-        let last = d.get("last_seen").and_then(|x| x.as_i64()).map(|t| {
-                let mins = (now_millis() - t) / 60_000;
-                trf!("seen {mins} min ago", "visto hace {mins} min")
-            })
-            .unwrap_or_else(|| tr!("never used", "sin uso").into());
-        println!("{}  {}  ({last})", d["id"].as_str().unwrap_or(""), d["name"].as_str().unwrap_or(""));
+        let mut last = match d.get("last_seen").and_then(|x| x.as_i64()) {
+            Some(at) => { let ago = ago(at, now); trf!("used {ago}", "usado {ago}") }
+            None => {
+                let paired = d.get("created_at").and_then(|x| x.as_i64()).map_or_else(String::new, |at| ago(at, now));
+                trf!("never used, paired {paired}", "sin uso, vinculado {paired}")
+            }
+        };
+        if d.get("push_failing").and_then(|x| x.as_bool()) == Some(true) {
+            last.push_str(tr!(" · the relay no longer has its notifications", " · el relay ya no tiene sus notificaciones"));
+        }
+        lines.push(format!("{}  {}  ({last})", d["id"].as_str().unwrap_or(""), d["name"].as_str().unwrap_or("")));
     }
-    Ok(())
+    let expired = v.get("expired").and_then(|d| d.as_array()).cloned().unwrap_or_default();
+    if !expired.is_empty() {
+        lines.push(tr!("Unpaired on their own (open the app on the device, or run alondra connect on it, to pair it again):", "Desvinculados solos (abre la app en el dispositivo, o ejecuta alondra connect en él, para volver a vincularlo):").to_string());
+    }
+    for e in expired {
+        let when = ago(e["expired_at_ms"].as_i64().unwrap_or(now), now);
+        let why = match e["reason"].as_str() {
+            Some("relay_forgot") => tr!("the relay no longer has its notifications", "el relay ya no tiene sus notificaciones").to_string(),
+            _ => {
+                let days = e["days"].as_f64().unwrap_or(0.0);
+                trf!("unused for {days} days", "sin uso en {days} días")
+            }
+        };
+        let name = e["name"].as_str().unwrap_or("");
+        lines.push(trf!("  {name} — unpaired on its own {when}: {why}", "  {name} — desvinculado solo {when}: {why}"));
+    }
+    lines
 }
 
 fn keys_probe() -> anyhow::Result<()> {
@@ -670,6 +711,46 @@ mod destination_tests {
         let direct = Cli::try_parse_from(["alondra", "connect", "--host", "192.168.1.2"]).unwrap();
         assert!(matches!(direct.command, Some(Cmd::Connect { mac: None, host: Some(host), .. }) if host == "192.168.1.2"));
         assert!(Cli::try_parse_from(["alondra", "connect", "mac-a", "--host", "x"]).is_err());
+    }
+}
+
+#[cfg(test)]
+mod device_list_tests {
+    use super::*;
+    const DAY: i64 = 86_400_000;
+    const NOW: i64 = 100 * DAY;
+
+    fn listing() -> serde_json::Value {
+        json!({
+            "devices": [
+                {"id": "phone-a", "name": "iPhone", "created_at": 0, "last_seen": NOW - 5 * 60_000, "push_failing": false},
+                {"id": "client-b", "name": "Terminal", "created_at": NOW - 3 * DAY, "last_seen": null, "push_failing": true}
+            ],
+            "expired": [
+                {"id": "phone-c", "name": "Old iPhone", "reason": "unused", "days": 30.0, "expired_at_ms": NOW - 3 * DAY},
+                {"id": "phone-d", "name": "iPad", "reason": "relay_forgot", "days": null, "expired_at_ms": NOW - 2 * 3_600_000}
+            ]
+        })
+    }
+
+    #[test]
+    fn the_list_says_when_each_device_was_last_used_and_which_went_on_their_own() {
+        crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+        assert_eq!(device_lines(&listing(), NOW), [
+            "phone-a  iPhone  (used 5 min ago)",
+            "client-b  Terminal  (never used, paired 3 days ago · the relay no longer has its notifications)",
+            "Unpaired on their own (open the app on the device, or run alondra connect on it, to pair it again):",
+            "  Old iPhone — unpaired on its own 3 days ago: unused for 30 days",
+            "  iPad — unpaired on its own 2 h ago: the relay no longer has its notifications",
+        ]);
+        crate::i18n::set_for_this_thread(crate::i18n::Lang::Es);
+        assert_eq!(device_lines(&listing(), NOW), [
+            "phone-a  iPhone  (usado hace 5 min)",
+            "client-b  Terminal  (sin uso, vinculado hace 3 días · el relay ya no tiene sus notificaciones)",
+            "Desvinculados solos (abre la app en el dispositivo, o ejecuta alondra connect en él, para volver a vincularlo):",
+            "  Old iPhone — desvinculado solo hace 3 días: sin uso en 30 días",
+            "  iPad — desvinculado solo hace 2 h: el relay ya no tiene sus notificaciones",
+        ]);
     }
 }
 

@@ -61,6 +61,17 @@ impl DomainDaemon {
         self.service.get().map_or(Ok(()), |service| service.reload_devices())
     }
 
+    /// Unpairs `id` on every path at once: a request it still signs is answered, sealed, that it
+    /// was revoked. Blocks on the approval lease.
+    pub(crate) fn revoke_device(&self, id: &str) -> Result<bool> {
+        let revoked = self.auth.revoke(id)?;
+        if revoked && let Some(service) = self.service.get() {
+            service.remember_revoked(id);
+        }
+        self.reload_service_devices()?;
+        Ok(revoked)
+    }
+
     pub(crate) fn auth(&self) -> Arc<crate::auth::Auth> {
         self.auth.clone()
     }
@@ -384,13 +395,22 @@ async fn devices(
         return refused;
     }
     let service = state.service.get();
+    let now = alondra_core::now_millis();
+    let usage = state.auth.usage().snapshot(now);
     let list: Vec<Value> = state.auth.list().into_iter()
         .map(|d| {
             let origin = service.map_or("mac", |service| service.device_origin(&d.id));
-            json!({"id": d.id, "name": d.name, "created_at": d.created_at, "last_seen": d.last_seen, "origin": origin})
+            let used = usage.devices.get(&d.id);
+            let last_seen = used.and_then(|used| used.last_used_ms).max(d.last_seen);
+            let push_failing = used.is_some_and(|used| used.push_missing.is_some());
+            json!({"id": d.id, "name": d.name, "created_at": d.created_at, "last_seen": last_seen,
+                "push_failing": push_failing, "origin": origin})
         })
         .collect();
-    Json(json!({"devices": list})).into_response()
+    let expired: Vec<&crate::device_usage::Expired> = usage.expired.iter()
+        .filter(|expired| now - expired.expired_at_ms < crate::device_usage::EXPIRED_KEPT_MS)
+        .collect();
+    Json(json!({"devices": list, "expired": expired})).into_response()
 }
 
 #[derive(Deserialize)]
@@ -456,25 +476,10 @@ async fn revoke_device(
     if let Some(refused) = local_only(&peer, &headers) {
         return refused;
     }
-    let auth = state.auth.clone();
-    let service = state.service.get().cloned();
-    let revoked = tokio::task::spawn_blocking(move || {
-        let revoked = auth.revoke(&id)?;
-        if revoked {
-            if let Some(service) = service {
-                service.remember_revoked(&id);
-            }
-        }
-        anyhow::Ok(revoked)
-    })
-    .await;
-    let revoked = match revoked {
+    let revoked = match tokio::task::spawn_blocking(move || state.revoke_device(&id)).await {
         Ok(Ok(revoked)) => revoked,
         _ => return storage(),
     };
-    if state.reload_service_devices().is_err() {
-        return storage();
-    }
     if revoked {
         Json(json!({"ok": true})).into_response()
     } else {
@@ -1023,6 +1028,30 @@ mod tests {
     use base64::{Engine as _, engine::general_purpose::STANDARD};
     use p256::ecdsa::{Signature, SigningKey, signature::Signer};
     use std::net::SocketAddr;
+
+    #[tokio::test]
+    async fn the_device_list_shows_the_recorded_use_and_the_devices_unpaired_lately() {
+        use crate::device_usage::{EXPIRED_KEPT_MS, Expired, ExpiryReason};
+        let home = crate::test_support::Directory::new();
+        std::fs::create_dir_all(&*home).unwrap();
+        drop(DomainRuntime::open(&home).unwrap());
+        let state = DomainDaemon::open(&home).unwrap();
+        let key = STANDARD.encode(SigningKey::from_slice(&[7u8; 32]).unwrap().verifying_key().to_sec1_bytes());
+        state.auth.pair(&state.auth.new_pairing_code(), "iPhone", &key).unwrap();
+        let id = state.auth.list()[0].id.clone();
+        let now = alondra_core::now_millis();
+        let usage = state.auth.usage();
+        usage.touch(&id, now - 60_000, false);
+        usage.push_not_found(&id, now);
+        let expired = |id: &str, at| Expired { id: id.into(), name: "Old iPhone".into(), reason: ExpiryReason::Unused, days: Some(30.0), expired_at_ms: at };
+        usage.expire(expired("phone-recent", now - 3_600_000));
+        usage.expire(expired("phone-forgotten", now - EXPIRED_KEPT_MS - 1));
+        let response = devices(State(state), ConnectInfo("127.0.0.1:4000".parse::<SocketAddr>().unwrap()), HeaderMap::new()).await;
+        let body: Value = serde_json::from_slice(&axum::body::to_bytes(response.into_body(), 1 << 20).await.unwrap()).unwrap();
+        assert_eq!(body["devices"][0]["last_seen"], now - 60_000);
+        assert_eq!(body["devices"][0]["push_failing"], true);
+        assert_eq!(body["expired"], json!([{"id": "phone-recent", "name": "Old iPhone", "reason": "unused", "days": 30.0, "expired_at_ms": now - 3_600_000}]));
+    }
 
     #[tokio::test]
     async fn cleanup_needs_a_local_paired_device() {

@@ -78,7 +78,7 @@ final class MacLocalPairingSnapshotTests: XCTestCase {
         state.nodeLimit.setting = limit
         state.macStatuses = [ids[0]: .route(.thisMac), ids[1]: .route(.localNetwork), ids[2]: .problem(.macNotOnNetwork)]
         state.devices = [
-            TrustedDevice(id: "phone-1", name: "iPhone de David", origin: .direct),
+            TrustedDevice(id: "phone-1", name: "iPhone", origin: .direct, lastUsed: Date(timeIntervalSinceNow: -300)),
             TrustedDevice(id: "phone-2", name: "iPad", origin: .relay),
         ]
         let store = Store(initialState: state) { EmptyReducer<SettingsFeature.State, SettingsFeature.Action>() }

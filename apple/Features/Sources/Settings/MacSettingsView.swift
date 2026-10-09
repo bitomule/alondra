@@ -150,6 +150,15 @@ public struct MacSettingsView<PairingContent: View>: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Label(device.name, systemImage: "iphone")
                         if let origin = device.origin { Text(origin.title).font(.caption).foregroundStyle(.secondary) }
+                        Group {
+                            if let lastUsed = device.lastUsed {
+                                Text("Used \(lastUsed, format: .relative(presentation: .named))")
+                            } else {
+                                Text("Not used yet")
+                            }
+                        }
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                     }
                     Spacer()
                     Button("Revoke", role: .destructive) { store.send(.revokeDeviceTapped(device.id)) }

@@ -457,9 +457,13 @@ impl Service {
                 .await?;
             let status = response.status();
             if status == reqwest::StatusCode::ACCEPTED {
+                self.auth.usage().push_ok(id, alondra_core::now_millis());
                 return Ok(());
             }
             let code = relay_error_code(&response.bytes().await.unwrap_or_default());
+            if status == reqwest::StatusCode::NOT_FOUND && code == "push_registration_not_found" {
+                self.auth.usage().push_not_found(id, alondra_core::now_millis());
+            }
             if registration_ended(status, &code) {
                 self.journal.forget_push_binding(id, binding)?;
                 bail!("the relay no longer has a push registration for this device (HTTP {status}, error {code}); stopped pushing to it until it registers again");

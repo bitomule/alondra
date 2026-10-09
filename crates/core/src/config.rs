@@ -8,6 +8,7 @@ pub const FILE_NAME: &str = "config.toml";
 pub const DEFAULT_LABEL: &str = "dev.alondra.alondrad";
 pub const DEFAULT_RETENTION_HOURS: f64 = 14.0 * 24.0;
 pub const DEFAULT_ARCHIVED_TASKS_DAYS: f64 = 30.0;
+pub const DEFAULT_DEVICE_EXPIRY_DAYS: f64 = 30.0;
 pub const DEFAULT_CLOSE_FREE_NODES_AFTER: Duration = Duration::from_secs(30 * 60);
 pub const DEFAULT_COMPACT_IDLE_NODES_AT: f64 = 30.0;
 pub const DEFAULT_COMPACT_ORCHESTRATOR_AT: f64 = 50.0;
@@ -50,6 +51,9 @@ pub struct FileConfig {
     /// Days an archived task is kept before Alondra forgets it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub archived_tasks_days: Option<f64>,
+    /// Days a paired device may go unused before Alondra unpairs it on its own; 0 turns it off.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub device_expiry_days: Option<f64>,
     /// Install a newer release with Homebrew as soon as the daemon sees it. Off unless set.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub auto_update: Option<bool>,
@@ -63,6 +67,9 @@ impl FileConfig {
         }
         if file.compact_idle_nodes_at.is_some_and(|p| !(0.0..=100.0).contains(&p)) {
             return Err("compact_idle_nodes_at: a percentage from 0 (off) to 100".into());
+        }
+        if file.device_expiry_days.is_some_and(|days| !(days.is_finite() && days >= 0.0)) {
+            return Err("device_expiry_days: a number of days, 0 to turn it off".into());
         }
         if file.compact_orchestrator_at.is_some_and(|p| !(0.0..=100.0).contains(&p)) {
             return Err("compact_orchestrator_at: a percentage from 0 (off) to 100".into());
@@ -79,7 +86,7 @@ impl FileConfig {
         macro_rules! take {
             ($($f:ident),*) => { $( if over.$f.is_some() { self.$f = over.$f.clone(); } )* };
         }
-        take!(name, port, listen, public_url, legacy_bridge, wake, retention_hours, service_label, resume_dead_nodes, close_free_nodes_after, compact_idle_nodes_at, compact_orchestrator_at, archived_tasks_days, auto_update);
+        take!(name, port, listen, public_url, legacy_bridge, wake, retention_hours, service_label, resume_dead_nodes, close_free_nodes_after, compact_idle_nodes_at, compact_orchestrator_at, archived_tasks_days, device_expiry_days, auto_update);
         self
     }
 }
@@ -130,6 +137,9 @@ pub struct Config {
     pub compact_idle_nodes_at: Option<f64>,
     pub compact_orchestrator_at: Option<f64>,
     pub archived_tasks_days: f64,
+    /// Days a paired device may go unused before Alondra unpairs it on its own. 30 unless set;
+    /// `None` is off.
+    pub device_expiry_days: Option<f64>,
     pub auto_update: bool,
 }
 
@@ -217,6 +227,13 @@ impl Config {
                 .and_then(|v| v.parse().ok())
                 .or(file.archived_tasks_days)
                 .unwrap_or(DEFAULT_ARCHIVED_TASKS_DAYS),
+            device_expiry_days: Some(
+                var("ALONDRA_DEVICE_EXPIRY_DAYS")
+                    .and_then(|v| v.parse::<f64>().ok().filter(|d| d.is_finite() && *d >= 0.0))
+                    .or(file.device_expiry_days)
+                    .unwrap_or(DEFAULT_DEVICE_EXPIRY_DAYS),
+            )
+            .filter(|days| *days > 0.0),
             auto_update: var("ALONDRA_AUTO_UPDATE").map(flag).or(file.auto_update).unwrap_or(false),
             home,
         }
@@ -369,6 +386,11 @@ mod tests {
         assert_eq!(resolve(&file, &[]).archived_tasks_days, 7.0);
         assert_eq!(resolve(&file, &[("ALONDRA_ARCHIVED_TASKS_DAYS", "0.5")]).archived_tasks_days, 0.5);
         assert_eq!(resolve(&file, &[("ALONDRA_ARCHIVED_TASKS_DAYS", "soon")]).archived_tasks_days, 7.0, "a broken env value falls through to the file");
+        assert_eq!(resolve(&FileConfig::default(), &[]).device_expiry_days, Some(DEFAULT_DEVICE_EXPIRY_DAYS));
+        let file = FileConfig::parse("device_expiry_days = 0\n").unwrap();
+        assert_eq!(resolve(&file, &[]).device_expiry_days, None, "0 turns it off");
+        assert_eq!(resolve(&file, &[("ALONDRA_DEVICE_EXPIRY_DAYS", "0.5")]).device_expiry_days, Some(0.5));
+        assert!(FileConfig::parse("device_expiry_days = -1\n").is_err());
         assert!(!resolve(&FileConfig::default(), &[]).auto_update, "updates are only installed when asked");
         let file = FileConfig::parse("auto_update = true\n").unwrap();
         assert!(resolve(&file, &[]).auto_update);

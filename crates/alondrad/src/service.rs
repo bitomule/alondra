@@ -885,6 +885,7 @@ impl Service {
                 now_ms(),
             )
             .map_err(|error| anyhow!("invalid encrypted work: {error}"))?;
+        self.auth.usage().touch(&e.sender, alondra_core::now_millis(), false);
         let request: LocalRequest = serde_json::from_slice(&plaintext)?;
         anyhow::ensure!(
             request.path != "/commands",

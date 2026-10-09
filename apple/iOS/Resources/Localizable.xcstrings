@@ -1,6 +1,8 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "Used %@": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Usado %@"}}}},
+    "Not used yet": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Sin uso todavía"}}}},
     "Change": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Cambiar"}}}},
     "How many nodes work at the same time on the Mac. The rest wait their turn.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Cuántos nodos trabajan a la vez en el Mac. Los demás esperan su turno."}}}},
     "Your Mac didn’t get the new limit. Try again.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "El nuevo límite no llegó a tu Mac. Vuelve a probar."}}}},

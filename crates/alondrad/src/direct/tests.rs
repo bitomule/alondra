@@ -460,3 +460,62 @@ async fn a_denied_device_cannot_ask_again_over_the_network() {
     let retry = Pairing { nonce: protocol::random_nonce().unwrap(), ..Pairing::new(&phone) };
     assert_eq!(send(&f.base, "/direct/pairing", &retry.start()).await.0, 403);
 }
+
+#[tokio::test]
+async fn a_signed_request_on_either_path_records_when_the_device_was_last_used() {
+    let relayed = Phone::new("client-a", 30);
+    let direct = Phone::new("client-b", 40);
+    let relay = Router::new()
+        .route("/v1/work/{id}/receipt", post(|| async { Json(json!({"status": "received"})) }))
+        .route("/v1/work/{id}/response", post(|| async { Json(json!({"status": "completed"})) }));
+    let relay_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let relay_url = format!("http://{}/", relay_listener.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(relay_listener, relay).await.unwrap() });
+    let home = home_with(&[&relayed, &direct], Some(&relay_url));
+    let auth = Arc::new(Auth::open(&home).unwrap());
+    let service = Service::open(&home, 0, auth.clone()).unwrap().unwrap();
+    service.enroll_with_relay_for_tests("client-a");
+    let service = Arc::new(service);
+    let f = serve(home, service.clone(), auth.clone()).await;
+    let before = alondra_core::now_millis();
+    let used = |id: &str| auth.usage().snapshot(0).devices.get(id).and_then(|used| used.last_used_ms);
+    assert_eq!((used("client-a"), used("client-b")), (None, None));
+
+    service.handle_relay_for_tests(relayed.request("op-relay", routes::PATH), &[9u8; 16]).await.unwrap();
+    assert!(used("client-a").is_some_and(|at| at >= before), "through the relay");
+    assert_eq!(send(&f.base, "/direct/request", &direct.request("op-direct", routes::PATH)).await.0, 200);
+    assert!(used("client-b").is_some_and(|at| at >= before), "on the direct path");
+
+    auth.usage().flush(alondra_core::now_millis()).unwrap();
+    let reopened = crate::device_usage::DeviceUsage::at(&f.home).snapshot(0);
+    assert!(reopened.devices["client-b"].last_used_ms.is_some(), "the use outlives a restart");
+}
+
+#[tokio::test]
+async fn an_unused_device_is_unpaired_on_its_own_and_told_so_while_the_one_in_use_stays() {
+    let unused = Phone::new("client-a", 30);
+    let in_use = Phone::new("client-b", 40);
+    let home = home_with(&[&unused, &in_use], None);
+    std::fs::write(home.join("device-usage.json"), r#"{"tracking_since_ms": 0}"#).unwrap();
+    drop(crate::domain_runtime::DomainRuntime::open(&home).unwrap());
+    let daemon = crate::domain_bootstrap::DomainDaemon::open(&home).unwrap();
+    let auth = daemon.auth();
+    let service = Arc::new(Service::open(&home, 0, auth.clone()).unwrap().unwrap());
+    daemon.attach_service(service.clone());
+    let f = serve(home, service, auth.clone()).await;
+    assert_eq!(send(&f.base, "/direct/request", &in_use.request("op-1", routes::PATH)).await.0, 200);
+
+    let now = alondra_core::now_millis();
+    let gone = crate::device_expiry::sweep(&daemon, &f.home, now, 30.0);
+    assert_eq!(gone.iter().map(|expired| expired.id.as_str()).collect::<Vec<_>>(), ["client-a"]);
+    assert_eq!(gone[0].reason, crate::device_usage::ExpiryReason::Unused);
+    let paired: Vec<_> = Auth::open(&f.home).unwrap().list().into_iter().map(|device| device.id).collect();
+    assert_eq!(paired, ["client-b"], "the device in use stays paired");
+    assert_eq!(auth.usage().snapshot(now).expired, gone, "the list remembers which went and why");
+
+    let (status, body) = send(&f.base, "/direct/request", &unused.request("op-2", routes::PATH)).await;
+    assert_eq!(status, 200, "the unpaired device gets an answer it can open");
+    let answer = unused.open(&body);
+    assert_eq!((answer["status"].as_u64(), answer["error"].as_str()), (Some(403), Some("device_revoked")));
+    assert_eq!(send(&f.base, "/direct/request", &in_use.request("op-3", routes::PATH)).await.0, 200);
+}
