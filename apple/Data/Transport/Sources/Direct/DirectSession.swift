@@ -91,6 +91,7 @@ public actor DirectSession: OperationAPI {
             let endpoint: DirectEndpoint
             do { endpoint = try await router.endpoint() }
             catch is DirectRouteError where mayHaveArrived { break }
+            let context = await router.requestContext()
             let reply: HTTPReply
             do { reply = try await http.post(endpoint, path: "/direct/request", body: body, timeout: timeout) }
             catch let error as URLError where error.code == .cancelled { throw CancellationError() }
@@ -104,7 +105,7 @@ public actor DirectSession: OperationAPI {
                 // Only an answer that opens with the pinned keys proves the address is this Mac.
                 if let envelope = try? JSONDecoder().decode(Envelope.self, from: reply.body),
                    let response = try? codec.opened(envelope, requestID: requestID) {
-                    await router.proved(endpoint)
+                    await router.proved(endpoint, in: context)
                     if Self.saysRevoked(response) { throw DirectSessionError.deviceRevoked }
                     return response
                 }

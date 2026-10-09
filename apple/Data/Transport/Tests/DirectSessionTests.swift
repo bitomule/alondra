@@ -495,3 +495,57 @@ extension DirectRouterTests {
         #expect(await f.router.route == nil)
     }
 }
+
+
+private actor HeldPostedReply: HTTPTransport {
+    private let mac: FakeDirectMac
+    private let entered: AsyncStream<Void>
+    private let signal: AsyncStream<Void>.Continuation
+    private var hold = true
+    private var pending: (HTTPReply, CheckedContinuation<HTTPReply, any Error>)?
+
+    init(mac: FakeDirectMac) {
+        self.mac = mac
+        let pair = AsyncStream<Void>.makeStream()
+        entered = pair.stream; signal = pair.continuation
+    }
+
+    func starts() -> AsyncStream<Void> { entered }
+
+    func send(_ request: URLRequest) async throws -> HTTPReply {
+        let reply = try await mac.send(request)
+        guard request.url?.path == "/direct/request", hold else { return reply }
+        hold = false
+        return try await withCheckedThrowingContinuation { continuation in
+            pending = (reply, continuation)
+            signal.yield(())
+        }
+    }
+
+    func release() {
+        let completion = pending
+        pending = nil
+        if let completion { completion.1.resume(returning: completion.0) }
+    }
+}
+
+extension DirectSessionTests {
+    @Test func aSealedReplyFromThePreviousNetworkCannotProveTheCurrentAddress() async throws {
+        let f = try await Fixture()
+        let held = HeldPostedReply(mac: f.mac)
+        let session = DirectSession(macID: "mac-1", deviceID: "phone-1", signing: f.mac.device,
+            agreement: f.mac.deviceAgreement, macSigning: f.mac.macSigning.publicKey,
+            macAgreement: f.mac.macAgreement.publicKey, router: f.router,
+            http: DirectHTTP(transport: held), pause: { _ in })
+        var starts = await held.starts().makeAsyncIterator()
+        let pending = Task { try await session.perform(f.read()) }
+        #expect(await starts.next() != nil)
+        f.network.join("new-network")
+        await f.router.invalidate()
+        await held.release()
+        #expect(try await pending.value == answered, "the authenticated response remains the same operation result")
+        #expect(await !f.router.isProven(lan), "an old-network response cannot authenticate an address on the new network")
+        #expect(try await session.perform(f.read()) == answered)
+        #expect(await f.router.isProven(lan), "a fresh sealed request on the current network can prove it")
+    }
+}
