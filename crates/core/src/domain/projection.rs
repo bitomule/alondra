@@ -70,6 +70,15 @@ pub struct AvailableAction {
     pub presentation_id: Option<InteractionId>,
     pub expected_head: Option<String>,
 }
+struct InboxOrderFacts<'a> {
+    id: &'a str,
+    interaction_id: &'a InteractionId,
+    order: Revision,
+    kind: CardKind,
+    blocking: bool,
+    blocked_by: &'a [InteractionId],
+}
+
 impl DomainState {
     /// User task controls are computed by the same guards as command execution.
     pub fn task_actions(&self, task_id: &TaskId) -> Option<Vec<AvailableAction>> {
@@ -301,10 +310,7 @@ impl DomainState {
         if let Some(action) = self.clarification_action(i) {
             actions.push(action);
         }
-        let blocked_by = match &i.payload {
-            InteractionPayload::Delivery { .. } => self.delivery_blocked_by(i),
-            _ => vec![],
-        };
+        let blocked_by = self.inbox_blockers(i);
         InboxItem {
             id: format!("interaction:{}", i.id),
             kind: kind.into(),
@@ -370,8 +376,8 @@ impl DomainState {
     /// The "Waiting for You" order: a problem, then what holds a node up right now, then what
     /// to review or test, what to provide, proposals and notices; the oldest first in each
     /// group, and a card that holds another back sits right above it.
-    fn inbox_rank(item: &InboxItem, blocking: bool) -> u8 {
-        match item.card.kind {
+    fn inbox_rank(kind: CardKind, blocking: bool) -> u8 {
+        match kind {
             CardKind::Problem => 0,
             CardKind::Authorize | CardKind::Do | CardKind::Decide | CardKind::Provide if blocking => 1,
             CardKind::Authorize | CardKind::Do | CardKind::Decide | CardKind::Review | CardKind::Test => 2,
@@ -380,29 +386,26 @@ impl DomainState {
             CardKind::Know => 5,
         }
     }
-    fn order_inbox(&self, items: Vec<InboxItem>) -> Vec<InboxItem> {
-        let blocking = |item: &InboxItem| {
-            let InboxSubject::Interaction { interaction_id } = &item.subject;
-            self.interactions.get(interaction_id).is_some_and(|i| i.blocking)
-        };
-        let mut sorted: Vec<(u8, InboxItem)> = items
-            .into_iter()
-            .map(|item| (Self::inbox_rank(&item, blocking(&item)), item))
+    fn inbox_sequence(facts: &[InboxOrderFacts<'_>]) -> Vec<usize> {
+        let mut sorted: Vec<(u8, usize)> = facts
+            .iter()
+            .enumerate()
+            .map(|(index, item)| (Self::inbox_rank(item.kind, item.blocking), index))
             .collect();
-        sorted.sort_by(|(ra, a), (rb, b)| (ra, a.order, &a.id).cmp(&(rb, b.order, &b.id)));
-        let interaction_of = |item: &InboxItem| {
-            let InboxSubject::Interaction { interaction_id } = &item.subject;
-            Some(interaction_id.clone())
-        };
+        sorted.sort_by(|(ra, a), (rb, b)| {
+            let a = &facts[*a];
+            let b = &facts[*b];
+            (ra, a.order, a.id).cmp(&(rb, b.order, b.id))
+        });
         let position: BTreeMap<InteractionId, usize> = sorted
             .iter()
             .enumerate()
-            .filter_map(|(index, (_, item))| interaction_of(item).map(|id| (id, index)))
+            .map(|(index, (_, item))| (facts[*item].interaction_id.clone(), index))
             .collect();
         let blockers: Vec<Vec<usize>> = sorted
             .iter()
             .map(|(_, item)| {
-                let mut at: Vec<usize> = item.blocked_by.iter().filter_map(|id| position.get(id).copied()).collect();
+                let mut at: Vec<usize> = facts[*item].blocked_by.iter().filter_map(|id| position.get(id).copied()).collect();
                 at.sort_unstable();
                 at
             })
@@ -427,10 +430,33 @@ impl DomainState {
         for at in 0..sorted.len() {
             place(at, &blockers, &mut placed, &mut sequence);
         }
-        let mut slots: Vec<Option<InboxItem>> = sorted.into_iter().map(|(_, item)| Some(item)).collect();
+        sequence.into_iter().map(|at| sorted[at].1).collect()
+    }
+    fn order_inbox(&self, items: Vec<InboxItem>) -> Vec<InboxItem> {
+        let sequence = {
+            let facts: Vec<_> = items.iter().map(|item| {
+                let InboxSubject::Interaction { interaction_id } = &item.subject;
+                InboxOrderFacts {
+                    id: &item.id,
+                    interaction_id,
+                    order: item.order,
+                    kind: item.card.kind,
+                    blocking: self.interactions.get(interaction_id).is_some_and(|i| i.blocking),
+                    blocked_by: &item.blocked_by,
+                }
+            }).collect();
+            Self::inbox_sequence(&facts)
+        };
+        let mut slots: Vec<Option<InboxItem>> = items.into_iter().map(Some).collect();
         sequence.into_iter().filter_map(|at| slots[at].take()).collect()
     }
-    pub fn inbox_projection(&self) -> Vec<InboxItem> {
+    fn inbox_blockers(&self, i: &Interaction) -> Vec<InteractionId> {
+        match &i.payload {
+            InteractionPayload::Delivery { .. } => self.delivery_blocked_by(i),
+            _ => vec![],
+        }
+    }
+    fn select_inbox<'a, T>(&'a self, mut project: impl FnMut(&'a Interaction) -> T) -> Vec<T> {
         let mut items = vec![];
         for i in self.interactions.values() {
             if i.recipient != Recipient::User {
@@ -448,9 +474,28 @@ impl DomainState {
             {
                 continue;
             }
-            items.push(self.item(i));
+            items.push(project(i));
         }
-        self.order_inbox(items)
+        items
+    }
+    pub fn inbox_projection(&self) -> Vec<InboxItem> {
+        self.order_inbox(self.select_inbox(|i| self.item(i)))
+    }
+    pub fn inbox_orders(&self) -> Vec<(String, Revision)> {
+        let entries = self.select_inbox(|i| (format!("interaction:{}", i.id), i, self.inbox_blockers(i)));
+        let sequence = {
+            let facts: Vec<_> = entries.iter().map(|(id, i, blocked_by)| InboxOrderFacts {
+                id,
+                interaction_id: &i.id,
+                order: i.order,
+                kind: i.card.kind,
+                blocking: self.interactions.get(&i.id).is_some_and(|i| i.blocking),
+                blocked_by,
+            }).collect();
+            Self::inbox_sequence(&facts)
+        };
+        let mut slots: Vec<_> = entries.into_iter().map(|(id, i, _)| Some((id, i.order))).collect();
+        sequence.into_iter().filter_map(|at| slots[at].take()).collect()
     }
 
     /// Complete coherent projection. IDs, order and action guards are server owned.
@@ -514,5 +559,54 @@ impl DomainState {
                     .and_then(|(_, p)| self.superseded(p))
             })
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod inbox_order_tests {
+    use super::*;
+
+    fn item(id: &str, order: Revision, kind: CardKind, blockers: &[&str]) -> InboxItem {
+        InboxItem {
+            id: format!("interaction:{id}"), kind: "information".into(),
+            subject: InboxSubject::Interaction { interaction_id: id.into() },
+            title: id.into(), body: Some("Body is irrelevant to ordering".into()),
+            task_id: None, request_id: None, agent_id: None,
+            revision: order, order, pending: false, available_actions: vec![],
+            card: CardSpec::new(kind, "Ordering fixture"), blocks: vec![],
+            blocked_by: blockers.iter().map(|id| (*id).into()).collect(),
+        }
+    }
+    fn ordered(items: Vec<InboxItem>) -> Vec<String> {
+        DomainState::new("ordering-fixture").order_inbox(items).into_iter().map(|item| item.id).collect()
+    }
+
+    #[test]
+    fn inbox_rank_then_revision_then_formatted_id_is_preserved() {
+        let items = vec![
+            item("z", 2, CardKind::Know, &[]), item("a0", 2, CardKind::Know, &[]),
+            item("a-1", 2, CardKind::Know, &[]), item("a", 2, CardKind::Know, &[]),
+            item("proposal", 1, CardKind::Propose, &[]), item("provide", 1, CardKind::Provide, &[]),
+            item("test", 1, CardKind::Test, &[]), item("problem", 8, CardKind::Problem, &[]),
+        ];
+        assert_eq!(ordered(items), ["interaction:problem", "interaction:test", "interaction:provide", "interaction:proposal",
+            "interaction:a", "interaction:a-1", "interaction:a0", "interaction:z"]);
+    }
+
+    #[test]
+    fn inbox_chain_multiple_and_missing_blockers_place_every_item_once() {
+        let items = vec![
+            item("leaf", 1, CardKind::Know, &["middle", "root", "not-selected"]),
+            item("middle", 2, CardKind::Know, &["root"]), item("root", 3, CardKind::Know, &[]),
+            item("other", 4, CardKind::Know, &["not-selected"]),
+        ];
+        assert_eq!(ordered(items), ["interaction:root", "interaction:middle", "interaction:leaf", "interaction:other"]);
+    }
+
+    #[test]
+    fn inbox_synthetic_cycle_preserves_the_existing_each_once_permutation() {
+        // Command guards reject cycles; the ordering kernel still terminates on this input.
+        assert_eq!(ordered(vec![item("a", 1, CardKind::Know, &["b"]), item("b", 2, CardKind::Know, &["a"])]),
+            ["interaction:b", "interaction:a"]);
     }
 }

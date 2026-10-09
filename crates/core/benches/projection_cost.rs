@@ -49,6 +49,7 @@ fn cpu_seconds() -> f64 {
         + (usage.ru_utime.tv_usec + usage.ru_stime.tv_usec) as f64 / 1_000_000.0
 }
 fn main() {
+    if std::env::args().any(|argument| argument == "--full-inbox") { profile_full_inbox(); return; }
     if std::env::args().any(|argument| argument == "--inbox-orders") { profile_inbox_orders(); return; }
     let mut state = DomainState::new("synthetic-projection-epoch");
     commit(&mut state, Actor::System, Command::RegisterAgent { agent_id: "agent".into(), name: "Synthetic agent".into() });
@@ -88,7 +89,7 @@ fn main() {
 }
 
 fn inbox_orders(state: &DomainState) -> Vec<(String, Revision)> {
-    state.inbox_projection().into_iter().map(|item| (item.id, item.order)).collect()
+    state.inbox_orders()
 }
 
 fn inbox_fixture(count: usize, body_size: usize, history: usize) -> DomainState {
@@ -176,4 +177,34 @@ fn profile_inbox_orders() {
             assert_eq!(errors, 0);
         }
     }
+}
+
+fn profile_full_inbox() {
+    use sha2::{Digest, Sha256};
+    let state = inbox_fixture(1_000, 8_192, 1_000);
+    let expected = state.inbox_projection();
+    assert_eq!(expected.len(), 1_000);
+    let input_hash = format!("{:x}", Sha256::digest(serde_json::to_vec(&state).unwrap()));
+    let output_hash = format!("{:x}", Sha256::digest(serde_json::to_vec(&expected).unwrap()));
+    std::hint::black_box(state.inbox_projection());
+    let mut samples = vec![];
+    let mut errors = 0;
+    for _ in 0..3 {
+        BYTES.store(0, Ordering::Relaxed); CALLS.store(0, Ordering::Relaxed);
+        LIVE.store(0, Ordering::Relaxed); PEAK.store(0, Ordering::Relaxed);
+        let cpu = cpu_seconds(); let start = Instant::now();
+        COUNTING.store(true, Ordering::Relaxed);
+        let actual = state.inbox_projection();
+        if actual != expected { errors += 1; }
+        std::hint::black_box(&actual); drop(actual);
+        COUNTING.store(false, Ordering::Relaxed);
+        samples.push(serde_json::json!({"wall_ms":start.elapsed().as_secs_f64()*1000.0,
+            "cpu_ms":(cpu_seconds()-cpu)*1000.0,"allocated_bytes":BYTES.load(Ordering::Relaxed),
+            "allocations":CALLS.load(Ordering::Relaxed),"peak_temporary_bytes":PEAK.load(Ordering::Relaxed),
+            "remaining_temporary_bytes":LIVE.load(Ordering::Relaxed)}));
+    }
+    println!("{}", serde_json::json!({"scope":"full-inbox-control", "interactions":1_000,
+        "interaction_body_bytes":8_192_000,"document_revisions":1_000,"outputs":expected.len(),
+        "input_sha256":input_hash,"output_sha256":output_hash,"errors":errors,"samples":samples}));
+    assert_eq!(errors, 0);
 }
