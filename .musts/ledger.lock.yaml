@@ -1,5 +1,6 @@
 version: 1
 satisfied:
+- {check: "root/apple-tests", scope_hash: "00e183e4c5b5256ad30bdb339127481f4f7c22d50f41ecca4cb7f6c3e2c6cebb"}
 - {check: "root/apple-tests", scope_hash: "01efcd7c383b8d51368ce701cd5b62549130e39f4764b18b52153bfb606d0f02"}
 - {check: "root/apple-tests", scope_hash: "0335ad65eca952ac0d014a2af27c2a479b822dec8a6717bde0cfc5625da76d5f"}
 - {check: "root/apple-tests", scope_hash: "040d0c784e62908a139d8ac33e4d41aebcf7026917499f4c0d99729e7bc8f245"}
@@ -765,6 +766,7 @@ satisfied:
 - {check: "root/bazel-build", scope_hash: "b844de0ddc2f411609a77633ccf18d577264f2ef0ed0ff3b1188448129a563cf"}
 - {check: "root/bazel-build", scope_hash: "b8585d026b5fce5decbb59ed201e2a70430dda83fe06654bb1ed268c1a9102a4"}
 - {check: "root/bazel-build", scope_hash: "b8f7b9cc46b52e13f29a5204e2aa92ffdf6cdcfc4c2276655287293f8ad83058"}
+- {check: "root/bazel-build", scope_hash: "b90938c3b345e789c25a319e56b43df1f93bf7cb43e29131b24bd297860306f9"}
 - {check: "root/bazel-build", scope_hash: "b91ef5c72f862e454b2785f842debf72eba319a297d4d9531334ca01a4ff134a"}
 - {check: "root/bazel-build", scope_hash: "b9419cc913807c69cd57664cd8ffecbf03c8a85a8160851ae6c7237a8ddebc72"}
 - {check: "root/bazel-build", scope_hash: "b9f9e4f91d5cc7fd2a07b1b11d03c5e669065a2bd522cef3570ab198f6065ade"}

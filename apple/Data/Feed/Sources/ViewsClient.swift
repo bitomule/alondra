@@ -46,10 +46,11 @@ public struct ViewsClient: Sendable {
 }
 
 /// Leases keep the server feed's open-key union equal to the screens currently visible.
-private actor ViewOpenSet {
+actor ViewOpenSet {
     private let session: FeedSession
-    private var owners: [String: [ViewKey: ViewLease]] = [:]
-    private var generations: [String: UInt64] = [:]
+    private(set) var owners: [String: [ViewKey: ViewLease]] = [:]
+    private(set) var generations: [String: UInt64] = [:]
+    private var nextGeneration: UInt64 = 0
 
     init(session: FeedSession) { self.session = session }
 
@@ -58,8 +59,15 @@ private actor ViewOpenSet {
     }
 
     func replace(owner: String, with keys: Set<ViewKey>) async {
-        let generation = (generations[owner] ?? 0) &+ 1
+        nextGeneration &+= 1
+        let generation = nextGeneration
         generations[owner] = generation
+        defer {
+            if generations[owner] == generation, owners[owner]?.isEmpty == true {
+                owners[owner] = nil
+                generations[owner] = nil
+            }
+        }
         var leases = owners[owner] ?? [:]
         let removed = leases.keys.filter { !keys.contains($0) }
         let retired = removed.compactMap { leases.removeValue(forKey: $0) }
@@ -78,7 +86,7 @@ private actor ViewOpenSet {
     }
 
     func remove(owner: String) async {
-        generations[owner, default: 0] &+= 1
+        generations[owner] = nil
         let leases = owners.removeValue(forKey: owner) ?? [:]
         for lease in leases.values { await session.close(lease) }
     }
