@@ -818,3 +818,443 @@ fn executing_rechecks_approval_after_waiting_for_its_sql_slot() {
         assert!(service.inflight.lock().unwrap().is_empty());
     }
 }
+
+#[tokio::test]
+async fn sixteen_changes_two_ordinary_and_inline_busy_share_real_lifecycle_admission() {
+    use axum::extract::Path as RoutePath;
+    use std::collections::VecDeque;
+    let (_directory, original, _) = push_fixture();
+    let home = original.home.clone();
+    drop(original);
+    let mut configuration = std::fs::read_to_string(home.join("service.toml")).unwrap();
+    let mut approvals = Vec::new();
+    let mut phones = Vec::new();
+    for index in 0..16 {
+        let id = format!("phone-{}", index + 1);
+        let signing = SigningKey::from_slice(&[33 + index as u8; 32]).unwrap();
+        let agreement = SecretKey::from_slice(&[34 + index as u8; 32]).unwrap();
+        approvals.push(json!({"id":id,"name":format!("Fixture phone {}",index+1),"created_at":0,"last_seen":null,"public_key":STANDARD.encode(signing.verifying_key().to_sec1_bytes())}));
+        if index != 0 {
+            configuration.push_str(&format!("\n[[devices]]\ndevice_id = \"{id}\"\nsigning_key = \"{}\"\nagreement_key = \"{}\"\n", URL_SAFE_NO_PAD.encode(signing.verifying_key().to_sec1_bytes()), URL_SAFE_NO_PAD.encode(agreement.public_key().to_sec1_bytes())));
+        }
+        phones.push((id, signing, agreement));
+    }
+    std::fs::write(
+        home.join("devices.json"),
+        serde_json::to_vec(&approvals).unwrap(),
+    )
+    .unwrap();
+    std::fs::write(home.join("service.toml"), configuration).unwrap();
+    let mut service = Service::open(&home, 0, Arc::new(Auth::open(&home).unwrap()))
+        .unwrap()
+        .unwrap();
+    for (id, _, _) in &phones {
+        service.enroll_with_relay_for_tests(id);
+    }
+    let release_changes = Arc::new(tokio::sync::Semaphore::new(0));
+    let release_post = Arc::new(tokio::sync::Semaphore::new(0));
+    let release_read = Arc::new(tokio::sync::Semaphore::new(0));
+    let release_busy_ack = Arc::new(tokio::sync::Semaphore::new(0));
+    let release_post_upload = Arc::new(tokio::sync::Semaphore::new(0));
+    let release_post_sql = Arc::new(tokio::sync::Semaphore::new(0));
+    let changes_entered = Arc::new(tokio::sync::Semaphore::new(0));
+    let ordinary_entered = Arc::new(tokio::sync::Semaphore::new(0));
+    let busy_ack_entered = Arc::new(tokio::sync::Semaphore::new(0));
+    let post_upload_entered = Arc::new(tokio::sync::Semaphore::new(0));
+    let post_sql_entered = Arc::new(tokio::sync::Semaphore::new(0));
+    let post_sql_released = Arc::new(tokio::sync::Semaphore::new(0));
+    let effects = Arc::new(AtomicUsize::new(0));
+    let changes_calls = Arc::new(AtomicUsize::new(0));
+    let read_calls = Arc::new(AtomicUsize::new(0));
+    let ack_requests = Arc::new(AtomicUsize::new(0));
+    let ack_returns = Arc::new(AtomicUsize::new(0));
+    let responses = Arc::new(Mutex::new(Vec::<(String, Vec<u8>)>::new()));
+    let local = Router::new()
+        .route(
+            "/v1/changes",
+            get({
+                let (entered, release, calls) = (
+                    changes_entered.clone(),
+                    release_changes.clone(),
+                    changes_calls.clone(),
+                );
+                move || {
+                    let (entered, release, calls) =
+                        (entered.clone(), release.clone(), calls.clone());
+                    async move {
+                        calls.fetch_add(1, Ordering::SeqCst);
+                        entered.add_permits(1);
+                        release.acquire().await.unwrap().forget();
+                        axum::Json(json!({"tick":42}))
+                    }
+                }
+            }),
+        )
+        .route(
+            "/v1/questions/1/answer",
+            post({
+                let (entered, release, effects) = (
+                    ordinary_entered.clone(),
+                    release_post.clone(),
+                    effects.clone(),
+                );
+                move || {
+                    let (entered, release, effects) =
+                        (entered.clone(), release.clone(), effects.clone());
+                    async move {
+                        effects.fetch_add(1, Ordering::SeqCst);
+                        entered.add_permits(1);
+                        release.acquire().await.unwrap().forget();
+                        axum::Json(json!({"saved":true}))
+                    }
+                }
+            }),
+        )
+        .route(
+            "/v1/options",
+            get({
+                let (entered, release, calls) = (
+                    ordinary_entered.clone(),
+                    release_read.clone(),
+                    read_calls.clone(),
+                );
+                move || {
+                    let (entered, release, calls) =
+                        (entered.clone(), release.clone(), calls.clone());
+                    async move {
+                        calls.fetch_add(1, Ordering::SeqCst);
+                        entered.add_permits(1);
+                        release.acquire().await.unwrap().forget();
+                        axum::Json(json!({"short":true}))
+                    }
+                }
+            }),
+        );
+    let local_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    service.local_port = local_listener.local_addr().unwrap().port();
+    let local_server = tokio::spawn(axum::serve(local_listener, local).into_future());
+    let seal = |phone: usize, id: &str, request: Value| Work {
+        request_id: id.to_owned(),
+        envelope: Envelope::seal_random(
+            EnvelopeContext {
+                route: "mac-1",
+                sender: &phones[phone].0,
+                recipient: "mac-1",
+                request_id: id,
+                kind: "request",
+                expires_at_ms: now_ms() + 600_000,
+            },
+            &serde_json::to_vec(&request).unwrap(),
+            &phones[phone].1,
+            &service.agreement.public_key(),
+        )
+        .unwrap(),
+    };
+    let mut works: Vec<_> = (0..16)
+        .map(|index| {
+            seal(
+                index,
+                &format!("cohort-changes-{index}"),
+                json!({"method":"GET","path":"/v1/changes?after=0&wait=50"}),
+            )
+        })
+        .collect();
+    works.push(seal(
+        0,
+        "cohort-post",
+        json!({"method":"POST","path":"/v1/questions/1/answer","body":{"text":"Fixture answer"}}),
+    ));
+    works.push(seal(
+        1,
+        "cohort-read",
+        json!({"method":"GET","path":"/v1/options"}),
+    ));
+    works.push(seal(
+        0,
+        "cohort-busy",
+        json!({"method":"GET","path":"/v1/changes?after=0&wait=50"}),
+    ));
+    let queue = Arc::new(Mutex::new(VecDeque::from(
+        works
+            .iter()
+            .map(|work| json!({"request_id":work.request_id,"envelope":work.envelope}))
+            .collect::<Vec<_>>(),
+    )));
+    let relay = Router::new()
+        .route(
+            "/v1/bootstrap",
+            get(|| async { axum::Json(json!({"epoch":URL_SAFE_NO_PAD.encode([7;16])})) }),
+        )
+        .route(
+            "/v1/work",
+            get({
+                let queue = queue.clone();
+                move || {
+                    let next = queue.lock().unwrap().pop_front().unwrap();
+                    async move { axum::Json(next) }
+                }
+            }),
+        )
+        .route(
+            "/v1/work/{id}/receipt",
+            post({
+                let (entered, release, requests, returned) = (
+                    busy_ack_entered.clone(),
+                    release_busy_ack.clone(),
+                    ack_requests.clone(),
+                    ack_returns.clone(),
+                );
+                move |RoutePath(id): RoutePath<String>| {
+                    let (entered, release, returned) =
+                        (entered.clone(), release.clone(), returned.clone());
+                    requests.fetch_add(1, Ordering::SeqCst);
+                    async move {
+                        if id == "cohort-busy" {
+                            entered.add_permits(1);
+                            release.acquire().await.unwrap().forget();
+                        }
+                        returned.fetch_add(1, Ordering::SeqCst);
+                        StatusCode::ACCEPTED
+                    }
+                }
+            }),
+        )
+        .route(
+            "/v1/work/{id}/response",
+            post({
+                let (responses, entered, release) = (
+                    responses.clone(),
+                    post_upload_entered.clone(),
+                    release_post_upload.clone(),
+                );
+                move |RoutePath(id): RoutePath<String>, body: Bytes| {
+                    let (responses, entered, release) =
+                        (responses.clone(), entered.clone(), release.clone());
+                    async move {
+                        responses.lock().unwrap().push((id.clone(), body.to_vec()));
+                        if id == "cohort-post" {
+                            entered.add_permits(1);
+                            release.acquire().await.unwrap().forget();
+                        }
+                        StatusCode::ACCEPTED
+                    }
+                }
+            }),
+        );
+    let relay_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    service.set_relay_url(
+        Url::parse(&format!("http://{}/", relay_listener.local_addr().unwrap())).unwrap(),
+    );
+    let relay_server = tokio::spawn(axum::serve(relay_listener, relay).into_future());
+    service.journal.before_write = Some(Arc::new({
+        let (entered, release, released) = (
+            post_sql_entered.clone(),
+            release_post_sql.clone(),
+            post_sql_released.clone(),
+        );
+        move |stage, id| {
+            let target = stage == ReceiptWrite::Complete && id == "cohort-post";
+            let (entered, release, released) = (entered.clone(), release.clone(), released.clone());
+            Box::pin(async move {
+                if target {
+                    entered.add_permits(1);
+                    release.acquire().await.unwrap().forget();
+                    released.add_permits(1);
+                }
+            })
+        }
+    }));
+    let service = Arc::new(service);
+    let mut tasks = tokio::task::JoinSet::new();
+    let mut epoch = None;
+    let mut revoked = HashSet::new();
+    let mut full_snapshot = None;
+    let mut blocked_completion = None;
+    let exercise=tokio::time::timeout(Duration::from_secs(30), async {
+        for _ in 0..18 { service.poll_work(&mut epoch,&mut revoked,&mut tasks).await?; }
+        tokio::select! {
+            permit=changes_entered.acquire_many(16) => permit?.forget(),
+            done=tasks.join_next() => anyhow::bail!("changes worker finished before the cohort hold: {done:?}"),
+        }
+        tokio::select! {
+            permit=ordinary_entered.acquire_many(2) => permit?.forget(),
+            done=tasks.join_next() => anyhow::bail!("ordinary worker finished before the cohort hold: {done:?}"),
+        }
+        let task_count = tasks.len();
+        let busy=service.poll_work(&mut epoch,&mut revoked,&mut tasks);
+        let mut busy=std::pin::pin!(busy);
+        tokio::select! {
+            permit=busy_ack_entered.acquire() => permit?.forget(),
+            result=busy.as_mut() => anyhow::bail!("inline saturated intake finished before its ACK hold: {result:?}"),
+        }
+        let inflight=service.inflight.lock().unwrap();
+        full_snapshot=Some((service.journal.receipt_admissions.available_permits(),inflight.len(),inflight.values().filter(|(_,changes)| *changes).count(),task_count,ack_requests.load(Ordering::SeqCst),ack_returns.load(Ordering::SeqCst),effects.load(Ordering::SeqCst),changes_calls.load(Ordering::SeqCst),read_calls.load(Ordering::SeqCst),service.journal.accept_jobs.available_permits()));
+        drop(inflight);
+        let physical=service.journal.accept_jobs.clone().acquire_owned().await?;
+        release_post.add_permits(1);
+        post_sql_entered.acquire().await?.forget();
+        release_post_sql.add_permits(1);
+        post_sql_released.acquire().await?.forget();
+        let post_state:String=service.journal.db()?.query_row("SELECT state FROM service_receipts WHERE request_id='cohort-post'",[],|row|row.get(0))?;
+        blocked_completion=Some((post_state,service.journal.receipt_admissions.available_permits(),service.journal.accept_jobs.available_permits(),responses.lock().unwrap().len()));
+        drop(physical);
+        post_upload_entered.acquire().await?.forget();
+        release_busy_ack.add_permits(1);
+        busy.await?;
+        Ok::<_,anyhow::Error>(())
+    }).await;
+    for gate in [
+        &release_changes,
+        &release_post,
+        &release_read,
+        &release_busy_ack,
+        &release_post_upload,
+        &release_post_sql,
+    ] {
+        gate.add_permits(64);
+    }
+    let mut outcomes = Vec::new();
+    while let Some(result) = tasks.join_next().await {
+        outcomes.push(result);
+    }
+    let physical = service
+        .journal
+        .accept_jobs
+        .clone()
+        .acquire_owned()
+        .await
+        .unwrap();
+    drop(physical);
+    let initial = responses.lock().unwrap().clone();
+    let mut replay_results = Vec::new();
+    if matches!(exercise, Ok(Ok(()))) {
+        let mut replay = tokio::task::JoinSet::new();
+        for work in &works {
+            replay_results.push(
+                service
+                    .schedule_work(repeat_work(work), [7; 16], &mut replay)
+                    .await,
+            );
+            while let Some(result) = replay.join_next().await {
+                outcomes.push(result);
+            }
+        }
+    }
+    local_server.abort();
+    relay_server.abort();
+    let _ = local_server.await;
+    let _ = relay_server.await;
+    let records: i64 = service
+        .journal
+        .db()
+        .unwrap()
+        .query_row(
+            "SELECT count(*) FROM service_receipts WHERE state='completed'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let active_devices: i64 = service
+        .journal
+        .db()
+        .unwrap()
+        .query_row(
+            "SELECT count(*) FROM service_enrollments WHERE state='active'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let all = responses.lock().unwrap();
+    let mut statuses = Vec::new();
+    let mut exact_replays = true;
+    for work in &works {
+        let copies: Vec<_> = all
+            .iter()
+            .filter(|(id, _)| id == &work.request_id)
+            .collect();
+        if copies.len() != 2 {
+            exact_replays = false;
+            continue;
+        }
+        exact_replays &= copies[0].1 == copies[1].1;
+        let envelope: Envelope = serde_json::from_slice(&copies[0].1).unwrap();
+        let agreement = &phones
+            .iter()
+            .find(|(id, _, _)| id == &envelope.recipient)
+            .unwrap()
+            .2;
+        let opened: Value = serde_json::from_slice(
+            &envelope
+                .open(
+                    service.signing.verifying_key(),
+                    agreement,
+                    "mac-1",
+                    &envelope.recipient,
+                    "mac-1",
+                    now_ms(),
+                )
+                .unwrap(),
+        )
+        .unwrap();
+        statuses.push((work.request_id.clone(), opened));
+    }
+    println!(
+        "mixed_receipt_cohort snapshot={full_snapshot:?} blocked_completion={blocked_completion:?} initial_replies={} total_replies={} records={records} active_devices={active_devices} effects={} changes_calls={} read_calls={} lifecycle_available={} physical_available={} reservations={} exact_replays={exact_replays} exercise={exercise:?}",
+        initial.len(),
+        all.len(),
+        effects.load(Ordering::SeqCst),
+        changes_calls.load(Ordering::SeqCst),
+        read_calls.load(Ordering::SeqCst),
+        service.journal.receipt_admissions.available_permits(),
+        service.journal.accept_jobs.available_permits(),
+        service.inflight.lock().unwrap().len()
+    );
+    println!("mixed_receipt_outcomes={outcomes:?} replay_scheduling={replay_results:?}");
+    assert!(matches!(exercise, Ok(Ok(()))));
+    assert_eq!(full_snapshot, Some((0, 19, 16, 18, 19, 18, 1, 16, 1, 1)));
+    assert_eq!(blocked_completion, Some(("executing".into(), 0, 0, 0)));
+    assert_eq!(active_devices, 16);
+    assert_eq!(initial.len(), 19);
+    assert_eq!(all.len(), 38);
+    assert_eq!(records, 19);
+    assert!(outcomes.iter().all(|result| matches!(result, Ok(Ok(())))));
+    assert!(replay_results.iter().all(Result::is_ok));
+    assert!(exact_replays);
+    assert_eq!(
+        statuses
+            .iter()
+            .filter(|(_, value)| value["status"] == 429 && value["error"] == "changes_busy")
+            .count(),
+        1
+    );
+    assert_eq!(
+        statuses
+            .iter()
+            .filter(|(_, value)| value["status"] == 200)
+            .count(),
+        18
+    );
+    for (id, value) in &statuses {
+        if id.starts_with("cohort-changes-") {
+            assert_eq!(value, &json!({"status":200,"body":{"tick":42}}));
+        }
+        if id == "cohort-post" {
+            assert_eq!(value, &json!({"status":200,"body":{"saved":true}}));
+        }
+        if id == "cohort-read" {
+            assert_eq!(value, &json!({"status":200,"body":{"short":true}}));
+        }
+    }
+    assert_eq!(
+        (
+            effects.load(Ordering::SeqCst),
+            changes_calls.load(Ordering::SeqCst),
+            read_calls.load(Ordering::SeqCst)
+        ),
+        (1, 16, 1)
+    );
+    assert_eq!(service.journal.receipt_admissions.available_permits(), 19);
+    assert_eq!(service.journal.accept_admissions.available_permits(), 18);
+    assert_eq!(service.journal.accept_jobs.available_permits(), 1);
+    assert!(service.inflight.lock().unwrap().is_empty());
+}
