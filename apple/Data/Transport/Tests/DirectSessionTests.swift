@@ -464,3 +464,34 @@ private let viaRelay = APIResponse.completed(status: 200, body: Data(#"{"relay":
         #expect(try await routed.perform(f.read()) == viaRelay)
     }
 }
+
+extension DirectRouterTests {
+    @Test(arguments: [false, true]) func anAddressRejectedOnAnotherNetworkIsProbedAgainWithoutTrustingHello(invalidate: Bool) async throws {
+        let f = try await Fixture()
+        #expect(try await f.session.perform(f.read()) == answered)
+        await f.router.invalidate()
+        await f.mac.answerHello(on: lan.host, with: await f.mac.impostor)
+        await #expect(throws: DirectRouteError.identityChanged) { try await f.router.endpoint() }
+        f.network.join("new-network")
+        await f.mac.answerHello(on: lan.host, with: await f.mac.identity)
+        if invalidate { await f.router.invalidate() }
+        #expect(try await f.router.endpoint() == lan)
+        #expect(await !f.router.isProven(lan), "the old proof belongs to the old network")
+        #expect(try await f.session.perform(f.read()) == answered)
+        #expect(await f.router.isProven(lan), "only the sealed answer proves the address on this network")
+    }
+}
+
+extension DirectRouterTests {
+    @Test func invalidationOnTheSameNetworkDoesNotForgetARejectedAddress() async throws {
+        let f = try await Fixture()
+        #expect(try await f.session.perform(f.read()) == answered)
+        await f.router.invalidate()
+        await f.mac.answerHello(on: lan.host, with: await f.mac.impostor)
+        await #expect(throws: DirectRouteError.identityChanged) { try await f.router.endpoint() }
+        await f.mac.answerHello(on: lan.host, with: await f.mac.identity)
+        await f.router.invalidate()
+        await #expect(throws: DirectRouteError.identityChanged) { try await f.router.endpoint() }
+        #expect(await f.router.route == nil)
+    }
+}
