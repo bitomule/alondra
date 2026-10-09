@@ -28,3 +28,35 @@ sh_test(
         "requires-network",
     ],
 )
+
+# A document reviewed in the real TUI, inside tmux, against a fresh sandbox (`make e2e-doc-review`).
+sh_test(
+    name = "doc_review",
+    timeout = "long",
+    srcs = ["doc_review.sh"],
+    args = [
+        "$(rootpath //crates/alondrad)",
+        "$(rootpath //crates/alondra)",
+        "$(rootpath //crates/relay:alondra-relay)",
+        "$(rootpath //tools/sandbox:alondra-sandbox)",
+    ],
+    data = [
+        "//:plugin_files",
+        "//tools:e2e-doc-review.py",
+        "//tools:e2e-sandbox.sh",
+        "//tools:e2e-sandbox-stop.sh",
+        "//crates/alondra",
+        "//crates/alondrad",
+        "//crates/relay:alondra-relay",
+        "//tools/sandbox:alondra-sandbox",
+    ],
+    env_inherit = [
+        "HOME",
+        "PATH",
+    ],
+    tags = [
+        "local",
+        "manual",
+        "requires-network",
+    ],
+)

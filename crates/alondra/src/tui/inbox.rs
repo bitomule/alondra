@@ -471,6 +471,7 @@ impl App {
                         required: *required,
                         allow_attachments: action.attachments,
                         acting: Some(acting.clone()),
+                        review: None,
                     },
                     "",
                 );

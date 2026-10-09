@@ -20,6 +20,7 @@ fn alondra_binary() -> PathBuf {
 
 struct Daemon {
     domain: Arc<DomainRuntime>,
+    auth: Arc<crate::auth::Auth>,
     port: u16,
     server: tokio::task::JoinHandle<()>,
     hooks: tokio::task::JoinHandle<anyhow::Result<()>>,
@@ -33,13 +34,15 @@ impl Daemon {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
         let auth = state.auth.clone();
+        let state_auth = auth.clone();
         let app = router(state).layer(axum::middleware::from_fn_with_state(auth, crate::auth::guard));
         let server = tokio::spawn(async move {
             axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await.unwrap();
         });
         let socket = crate::hook_socket::bind(home).await.unwrap();
         let hooks = tokio::spawn(crate::domain_transport::serve(socket, domain.clone()));
-        Self { domain, port, server, hooks }
+        let auth = state_auth;
+        Self { domain, auth, port, server, hooks }
     }
 
     async fn stop(self) {
@@ -470,6 +473,215 @@ async fn what_claude_sends_the_orchestrator_is_maintenance_and_its_answer_is_no_
         let closed = alondra_as_claude(&home, daemon.port, "es", &["close", name]);
         assert!(String::from_utf8_lossy(&closed.stderr).contains("Alondra gestiona el orquestador"), "{name}: {}", String::from_utf8_lossy(&closed.stderr));
     }
+    daemon.stop().await;
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// The phone or Mac app: a paired device that signs each request, as the apps do.
+struct App {
+    base: String,
+    key: p256::ecdsa::SigningKey,
+    device: String,
+    http: reqwest::Client,
+}
+
+impl App {
+    fn pair(daemon: &Daemon) -> Self {
+        use base64::Engine;
+        let key = p256::ecdsa::SigningKey::from_slice(&[9u8; 32]).unwrap();
+        let code = daemon.auth.new_pairing_code();
+        let device = daemon.auth.pair(&code, "Test iPhone",
+            &base64::engine::general_purpose::STANDARD.encode(key.verifying_key().to_sec1_bytes())).unwrap();
+        Self { base: format!("http://127.0.0.1:{}", daemon.port), key, device: device.id, http: reqwest::Client::new() }
+    }
+
+    async fn send(&self, method: &str, path: &str, body: Option<Value>) -> Value {
+        use base64::Engine;
+        use p256::ecdsa::signature::Signer;
+        static NEXT: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+        let bytes = body.as_ref().map(|body| serde_json::to_vec(body).unwrap()).unwrap_or_default();
+        let timestamp = alondra_core::now_millis() + NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let signature: p256::ecdsa::Signature = self.key.sign(crate::auth::signed_message(method, path, &timestamp.to_string(), &bytes).as_bytes());
+        let request = if method == "POST" { self.http.post(format!("{}{path}", self.base)) } else { self.http.get(format!("{}{path}", self.base)) }
+            .header("x-alondra-device", &self.device)
+            .header("x-alondra-timestamp", timestamp.to_string())
+            .header("x-alondra-signature", base64::engine::general_purpose::STANDARD.encode(signature.to_der().as_bytes()));
+        let request = if body.is_some() { request.header("content-type", "application/json").body(bytes) } else { request };
+        request.send().await.unwrap().json().await.unwrap()
+    }
+
+    /// The card's "Request changes" action, as the app reads it from the card's view.
+    async fn changes_action(&self, card: &str) -> (String, String) {
+        let view = self.send("GET", &format!("/views/card%3A{card}?protocol={}&client=ios&lang=es",
+            alondra_core::views::VIEWS_PROTOCOL), None).await;
+        let actions = view.to_string();
+        let id = view["sections"].as_array().into_iter().flatten()
+            .flat_map(|section| section["items"].as_array().into_iter().flatten())
+            .flat_map(|item| item["actions"].as_array().into_iter().flatten())
+            .filter_map(|action| action["id"].as_str())
+            .find(|id| id.starts_with("changes:"))
+            .unwrap_or_else(|| panic!("no request-changes action on card {card}: {actions}"))
+            .to_owned();
+        (id, view["data_epoch"].as_str().unwrap().to_owned())
+    }
+
+    /// Sends block comments with "Request changes", as the iOS and Mac apps do.
+    async fn request_changes(&self, card: &str, comments: Value) -> Value {
+        let action = self.changes_action(card).await;
+        self.send_changes(action, comments).await
+    }
+
+    /// Sends the comments with an action read earlier: the card may have changed since.
+    async fn send_changes(&self, (action_id, data_epoch): (String, String), comments: Value) -> Value {
+        self.send("POST", "/actions", Some(json!({
+            "protocol": alondra_core::views::VIEWS_PROTOCOL, "command_id": uuid_v4(), "data_epoch": data_epoch,
+            "client": "ios", "lang": "es", "action_id": action_id, "input": {"comments": comments},
+        }))).await
+    }
+}
+
+fn uuid_v4() -> String {
+    let hex = crate::auth::random_hex(16);
+    format!("{}-{}-4{}-8{}-{}", &hex[0..8], &hex[8..12], &hex[13..16], &hex[17..20], &hex[20..32])
+}
+
+fn document(home: &Path, name: &str, text: &str) -> (String, String) {
+    use sha2::Digest;
+    std::fs::create_dir_all(home.join("files")).unwrap();
+    std::fs::write(home.join("files").join(name), text).unwrap();
+    let digest = sha2::Sha256::digest(text.as_bytes()).iter().map(|byte| format!("{byte:02x}")).collect();
+    (digest, format!("files/{name}"))
+}
+
+/// A node with a task and its bearer, launched by the scheduler without a model.
+async fn node_with_a_task(daemon: &Daemon, home: &Path) -> (String, TaskId, String) {
+    daemon.execute(Actor::System, "schedule", Command::CreateSchedule { schedule: Schedule {
+        id: "schedule-1".into(), title: "Write the design".into(), text: "Write the design".into(),
+        project: None, options: BTreeMap::new(), disallowed_tools: vec![],
+        frequency: ScheduleFrequency::Daily, hour: 9, minute: 0, weekday: None, interval: None,
+        start_at: None, enabled: false, next_run: None, revision: 1, deleted_at: None,
+    }});
+    daemon.execute(Actor::System, "claim", Command::ClaimScheduleRun {
+        schedule_id: "schedule-1".into(), run_id: "run-1".into(), origin: ScheduleRunOrigin::Manual,
+        now: alondra_core::now_millis(), next_after_now: None, expected_schedule_revision: None,
+    });
+    let launcher = CapturingLauncher(Mutex::new(vec![]));
+    node_event(home, json!({"session_id": SESSION, "event": "session.start", "version": "2.1.287", "cwd": "/work", "launch_key": "run-1"}));
+    crate::domain_schedule_runner::run_cycle(&daemon.domain, home, false, &launcher).await.unwrap();
+    let args = launcher.0.lock().unwrap().pop().expect("one launch");
+    let settings = args.windows(2).find(|pair| pair[0] == "--settings").unwrap()[1].clone();
+    let state = daemon.domain.state().unwrap();
+    let task = state.tasks.values().next().unwrap().id.clone();
+    (settings, task, state.data_epoch.0.clone())
+}
+
+fn node_calls(home: &Path, daemon: &Daemon, settings: &str, calls: Vec<(&str, Value)>) {
+    for (index, reply) in mcp(home, daemon.port, ("ALONDRA_DOMAIN_SETTINGS", settings), calls).iter().enumerate() {
+        let (failed, text) = tool_text(reply);
+        assert!(!failed, "call {index}: {text}");
+    }
+}
+
+fn pushed_text(home: &Path, pushed: &mut Option<Pushed>) -> String {
+    let line = next_line(pushed, std::time::Duration::from_secs(10)).expect("the node was told");
+    node_ack(home, &[line["id"].as_str().unwrap()]);
+    line["text"].as_str().unwrap().to_owned()
+}
+
+fn applied_done(reply: &Value) {
+    assert_eq!(reply["result"]["kind"], "done", "{reply}");
+}
+
+const COMMENTS: &str = r#"[
+    {"anchor": "paragraph:1:0", "text": "Split this step in two", "quote": "Migrate the store in one go"},
+    {"anchor": "paragraph:2:0", "text": "Keep the old endpoint a release longer", "quote": "Remove the old endpoint"}
+]"#;
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn comments_sent_on_a_document_review_reach_the_node_even_when_it_moves_on_to_a_newer_revision() {
+    let scratch_directory = crate::test_support::Directory::new();
+    let root = scratch_directory.parent().unwrap().join(format!("alondra-review-{}", crate::auth::random_hex(8)));
+    let home = root.join("home");
+    std::fs::create_dir_all(root.join("projects")).unwrap();
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::write(alondra_core::options::path_in(&home),
+        format!("projects_root = {:?}\n", root.join("projects").to_str().unwrap())).unwrap();
+    let daemon = Daemon::start(&home).await;
+    let (settings, task, epoch) = node_with_a_task(&daemon, &home).await;
+    let app = App::pair(&daemon);
+    let comments: Value = serde_json::from_str(COMMENTS).unwrap();
+    let (mut helper, pushed) = connect(&home);
+    let mut pushed = Some(pushed);
+    let scope = json!({"kind": "task", "task_id": task.0});
+    let ask = |id: &str, revision: &str, replaces: Option<&str>| {
+        let mut question = json!({"kind": "ask_question", "interaction_id": id, "scope": scope, "recipient": {"kind": "user"},
+            "need": "Review the migration design", "why": "The migration waits for it", "blocking": true,
+            "options": [{"id": "approve", "label": "Approve", "inputs": []}, {"id": "drop", "label": "Drop it", "inputs": []}]});
+        if let Some(replaces) = replaces { question["replaces"] = json!(replaces); }
+        vec![
+            ("ask", tool_args(&epoch, id, 0, question)),
+            ("link_interaction_subject", tool_args(&epoch, &format!("link-{id}"), 0, json!({"kind": "link_interaction_subject",
+                "interaction_id": id, "subject": {"kind": "document_review", "document_id": "design", "revision_id": revision}}))),
+        ]
+    };
+
+    // The node writes a document and asks for its review; the app sends two block comments.
+    let (digest, reference) = document(&home, "design-1.md", "# Design\n\nMigrate the store in one go\n\nRemove the old endpoint\n");
+    let mut calls = vec![("create_document", tool_args(&epoch, "doc-1", 0, json!({"kind": "create_document", "task_id": task.0,
+        "document_id": "design", "title": "Migration design", "revision_id": "design-r1", "content_digest": digest,
+        "content_reference": reference, "role": "design"})))];
+    calls.extend(ask("review-1", "design-r1", None));
+    node_calls(&home, &daemon, &settings, calls);
+    let reply = app.request_changes("review-1", comments.clone()).await;
+    applied_done(&reply);
+    let told = pushed_text(&home, &mut pushed);
+    assert!(told.contains("Split this step in two") && told.contains("Migrate the store in one go")
+        && told.contains("Keep the old endpoint a release longer"), "{told}");
+
+    // The node publishes a second revision while the user still comments the first one.
+    let (digest, reference) = document(&home, "design-2.md", "# Design\n\nMigrate the store in two steps\n");
+    let mut calls = vec![("revise_document", tool_args(&epoch, "doc-2", 0, json!({"kind": "revise_document", "task_id": task.0,
+        "document_id": "design", "revision_id": "design-r2", "content_digest": digest, "content_reference": reference})))];
+    calls.extend(ask("review-2", "design-r1", None));
+    node_calls(&home, &daemon, &settings, calls);
+    let reply = app.request_changes("review-2", comments.clone()).await;
+    applied_done(&reply);
+    let told = pushed_text(&home, &mut pushed);
+    assert!(told.contains("Split this step in two") && told.contains("Keep the old endpoint a release longer"), "{told}");
+
+    // The node asks again about the newer revision, replacing the card the user had open.
+    calls = ask("review-3", "design-r1", None);
+    node_calls(&home, &daemon, &settings, calls);
+    let open = app.changes_action("review-3").await;
+    node_calls(&home, &daemon, &settings, ask("review-4", "design-r2", Some("review-3")));
+    let reply = app.send_changes(open.clone(), comments.clone()).await;
+    assert_eq!(reply["result"]["kind"], "changed", "{reply}");
+    assert_eq!(reply["result"]["title"], "«Migration design» tiene una versión nueva", "{reply}");
+    assert_eq!(reply["result"]["body"], "Mientras comentabas, el nodo pidió revisar la versión 2; tú leías la 1. Tus comentarios siguen sin enviar.");
+    let resend = reply["result"]["next"]["id"].as_str().expect("it offers to send them to the new version").to_owned();
+    assert!(resend.starts_with("changes:review-4@"), "{resend}");
+    applied_done(&app.send_changes((resend, open.1), comments.clone()).await);
+    let told = pushed_text(&home, &mut pushed);
+    assert!(told.contains("Split this step in two") && told.contains("Keep the old endpoint a release longer"), "{told}");
+
+    // A result that delivers the document: the node presents revision 2 again while the user comments.
+    node_calls(&home, &daemon, &settings, vec![("present_result", tool_args(&epoch, "result-1", 0, json!({"kind": "present_result",
+        "task_id": task.0, "interaction_id": "result-1", "need": "Review the migration design", "body": "The design",
+        "targets": [{"kind": "document_revision", "document_id": "design", "revision_id": "design-r2"}], "is_final": true})))]);
+    let open_result = app.changes_action("result-1").await;
+    let (digest, reference) = document(&home, "design-3.md", "# Design\n\nMigrate the store in three steps\n");
+    node_calls(&home, &daemon, &settings, vec![
+        ("revise_document", tool_args(&epoch, "doc-3", 0, json!({"kind": "revise_document", "task_id": task.0,
+            "document_id": "design", "revision_id": "design-r3", "content_digest": digest, "content_reference": reference}))),
+        ("present_result", tool_args(&epoch, "result-2", 0, json!({"kind": "present_result",
+        "task_id": task.0, "interaction_id": "result-2", "need": "Review the migration design", "body": "The design",
+        "targets": [{"kind": "document_revision", "document_id": "design", "revision_id": "design-r3"}], "is_final": true})))]);
+    applied_done(&app.send_changes(open_result, comments.clone()).await);
+    let told = pushed_text(&home, &mut pushed);
+    assert!(told.contains("These comments are on version 2 of “Migration design”, which the user was reading; you have since presented version 3.")
+        && told.contains("Split this step in two") && told.contains("Keep the old endpoint a release longer"), "{told}");
+    helper.kill().unwrap();
+    helper.wait().unwrap();
     daemon.stop().await;
     std::fs::remove_dir_all(root).unwrap();
 }

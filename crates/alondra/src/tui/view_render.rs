@@ -352,6 +352,13 @@ pub fn card_agent(card: &Card) -> Option<&alondra_core::views::ContextLine> {
     card.context.iter().find(|line| line.icon == Icon::Node)
 }
 
+pub fn card_agent_id(card: &Card) -> Option<alondra_core::domain::AgentId> {
+    match card_agent(card)?.link.as_ref()? {
+        alondra_core::views::Link::View { key } => key.strip_prefix("node:").map(|id| alondra_core::domain::AgentId(id.to_owned())),
+        _ => None,
+    }
+}
+
 /// `◆ AUTHORIZE · Alondra · iOS · Demo Garden · 3d ago`: what it is, who it came from, how old.
 fn card_header(card: &Card) -> Line<'static> {
     let (glyph, color) = card_glyph(card);

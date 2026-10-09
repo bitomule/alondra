@@ -2052,3 +2052,94 @@ fn a_know_card_detail_shows_its_whole_body_with_the_command_block() {
     let closing = at("Si clonas repos nuevos en ~/Projects, vuelve a ejecutarlo.");
     assert!(headline < intro && intro < command && command < script && script < closing, "{lines:#?}");
 }
+
+fn reader_with_a_comment(app: &mut App) -> String {
+    app.loaded = true;
+    let mut view = view_fixture("card-question.json");
+    let id = question_id();
+    view["sections"][0]["items"][0]["actions"] = serde_json::json!([
+        {"id":format!("changes:{id}@1"), "label":"Request changes", "style":"secondary",
+         "presentation":"button", "input":{"kind":"text","placeholder":"Describe", "required":true,"multiline":true},
+         "attachments":true,"enabled":true,"key":"s"}
+    ]);
+    let key = format!("card:{id}");
+    app.view_navigation.push(key.clone());
+    app.card_view = Some(serde_json::from_value(view).unwrap());
+    app.open_reader();
+    press(app, KeyCode::Char('c'));
+    typed(app, "Tighter");
+    press(app, KeyCode::Enter);
+    key
+}
+
+fn settled_card(key: &str) -> alondra_core::views::View {
+    let card = view_fixture("card-question.json");
+    serde_json::from_value(serde_json::json!({
+        "protocol": card["protocol"], "data_epoch": "test-epoch", "view": alondra_core::views::SETTLED_VIEW,
+        "key": key, "client": "tui", "version": "", "cursor": "", "sections": [],
+        "empty": {"text": "Respondida", "tone": "neutral"}, "status": card["status"], "notices": []
+    }))
+    .unwrap()
+}
+
+#[test]
+fn sent_reader_comments_close_the_reader_and_say_they_went_not_that_the_card_is_gone() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::Es);
+    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
+    let mut app = App::new(tx);
+    let key = reader_with_a_comment(&mut app);
+    press(&mut app, KeyCode::Char('s'));
+    press(&mut app, KeyCode::Enter);
+    let sent = posted(&app);
+    assert!(sent[0].1["input"]["text"].as_str().unwrap().contains("Tighter"));
+
+    app.on_msg(Msg::ViewCard { key: key.clone(), result: Ok(settled_card(&key)) });
+    let sending = screen(&mut app, 140, 30);
+    assert!(sending.contains("enviando tus comentarios"), "{sending}");
+    assert!(!sending.contains("ya no está en la bandeja"), "{sending}");
+
+    app.on_msg(Msg::ViewAction { request: sent[0].1.clone(), result: applied("done", "Cambios solicitados") });
+    assert!(app.reader.is_none(), "the reader closes once the Mac has the comments");
+    assert!(app.reviews.is_empty(), "sent comments are not left as unsent");
+    assert_eq!(flash(&app), "Comentarios enviados a Alondra · iOS");
+    let after = screen(&mut app, 140, 30);
+    assert!(!after.contains("ya no está en la bandeja") && !after.contains("sin enviar"), "{after}");
+}
+
+#[test]
+fn reader_comments_the_mac_did_not_take_stay_in_the_reader() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::Es);
+    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
+    let mut app = App::new(tx);
+    reader_with_a_comment(&mut app);
+    press(&mut app, KeyCode::Char('s'));
+    press(&mut app, KeyCode::Enter);
+    let sent = posted(&app);
+    app.on_msg(Msg::ViewAction { request: sent[0].1.clone(), result: applied("refused", "Ya no está disponible") });
+    assert!(app.reader.is_some());
+    assert_eq!(app.reviews.values().map(|review| review.count()).sum::<usize>(), 1);
+    assert!(app.review_sends.is_empty());
+}
+
+#[test]
+fn comments_on_a_card_that_went_away_are_sent_to_its_node_with_their_quotes() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::Es);
+    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
+    let mut app = App::new(tx);
+    let key = reader_with_a_comment(&mut app);
+    app.on_msg(Msg::ViewCard { key: key.clone(), result: Ok(settled_card(&key)) });
+    let gone = screen(&mut app, 160, 30);
+    assert!(gone.contains("s: enviar tus comentarios a Alondra · iOS"), "{gone}");
+
+    press(&mut app, KeyCode::Char('s'));
+    let sent = posted(&app);
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    assert_eq!(sent[0].0, "/agents/d887a34b-249e-4487-a89b-57de38c26372/messages");
+    let text = sent[0].1["text"].as_str().unwrap();
+    assert!(text.starts_with("Mis comentarios sobre «"), "{text}");
+    assert!(text.contains("Tighter"), "{text}");
+
+    app.on_msg(Msg::Posted { key: Some(Key(key)), result: Ok("Comentarios enviados a Alondra · iOS".into()) });
+    assert!(app.reader.is_none() && app.reviews.is_empty());
+    assert_eq!(flash(&app), "Comentarios enviados a Alondra · iOS");
+}

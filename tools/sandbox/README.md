@@ -8,6 +8,8 @@ make e2e-sandbox MACS=2            # N daemons in service mode + relay + token i
 make e2e-sandbox-logs MAC=2        # tail one daemon's log (MAC=relay for the relay)
 make e2e-sandbox-stop              # stop everything and delete SANDBOX_DIR (KEEP=1 keeps it)
 bazelisk test //tests/sandbox:scenarios   # opt-in: fresh two-Mac sandbox + automatic scenarios
+make e2e-doc-review                # a document reviewed in the real TUI (tmux): the node gets the comments
+bazelisk test //tests/sandbox:doc_review  # the same, opt-in through Bazel
 ```
 
 `SANDBOX_PORT` (default 47890) moves every port: the issuer on `PORT-1`, the relay on `PORT`,

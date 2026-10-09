@@ -185,6 +185,7 @@ enum ModalThen {
         request: Value,
         action_id: String,
         origin: Option<Key>,
+        review: Option<Key>,
     },
 }
 
@@ -294,6 +295,8 @@ pub enum Part {
 pub struct Reader {
     pub key: Key,
     pub agent: String,
+    /// The node the card came from, so comments still reach it if the card goes away.
+    agent_id: Option<AgentId>,
     pub title: String,
     pub kind: String,
     pub glyph: &'static str,
@@ -445,6 +448,9 @@ pub enum Target {
         required: bool,
         allow_attachments: bool,
         acting: Option<Acting>,
+        /// The reader whose comments this sends.
+        #[serde(default)]
+        review: Option<Key>,
     },
     /// A message to an agent or the orchestrator; the text is filled in when it is sent.
     Message {
@@ -640,6 +646,10 @@ pub struct App {
     pub detail_scroll: usize,
     settle_until: i64,
     hidden: HashMap<Key, i64>,
+    /// Reader comments on their way, by command: they stay until the Mac confirms them.
+    review_sends: HashMap<String, Key>,
+    /// The card whose comments were just sent, so its closing does not hide that they went.
+    review_sent: Option<Key>,
     pub agent_sel: Option<AgentId>,
     agent_idx: usize,
     pub agent_scroll: usize,
@@ -1101,6 +1111,8 @@ impl App {
             detail_scroll: 0,
             settle_until: 0,
             hidden: HashMap::new(),
+            review_sends: HashMap::new(),
+            review_sent: None,
             agent_sel: None,
             agent_idx: 0,
             agent_scroll: 0,
@@ -1416,6 +1428,12 @@ impl App {
         if self.unsure.as_ref().is_some_and(same)
             && let Some(earlier) = self.unsure.take()
         {
+            if let (Some(review), Some(earlier_command)) = (
+                request["command_id"].as_str().and_then(|command| self.review_sends.remove(command)),
+                earlier["command_id"].as_str(),
+            ) {
+                self.review_sends.insert(earlier_command.to_owned(), review);
+            }
             request = earlier;
         }
         let text = acting
@@ -1462,11 +1480,15 @@ impl App {
                 request,
                 action_id,
                 origin,
+                review,
             } => {
                 let data_epoch = request["data_epoch"].as_str().unwrap_or_default();
                 let option_id = request["option_id"].as_str();
                 let input = request["input"].clone();
                 let fresh = Client::action_body(data_epoch, &action_id, option_id, input);
+                if let (Some(key), Some(command)) = (review, fresh["command_id"].as_str()) {
+                    self.review_sends.insert(command.to_owned(), key);
+                }
                 let acting = origin.map(|origin| Acting {
                     origin,
                     stamp: None,
@@ -1525,6 +1547,9 @@ impl App {
             self.hide(Key(id.to_owned()));
         }
         self.sync_open_views();
+        if self.review_sent.as_ref().is_some_and(|sent| sent.0 == key) {
+            return;
+        }
         self.flash(view.empty.map(|notice| notice.text).unwrap_or_default());
     }
 
@@ -2006,6 +2031,9 @@ impl App {
                 Ok(text) => {
                     if let Some(k) = key {
                         self.reviews.remove(&k);
+                        if self.reader.as_ref().is_some_and(|reader| reader.key == k) {
+                            self.reader = None;
+                        }
                     }
                     self.flash(text);
                 }
@@ -2101,6 +2129,7 @@ impl App {
     fn view_action_done(&mut self, request: Value, result: Result<ViewActionReply, Delivery>) {
         let command = request["command_id"].as_str().unwrap_or_default();
         let origin = self.in_flight.remove(command);
+        let review = self.review_sends.remove(command);
         if self.unsure.as_ref().is_some_and(|earlier| earlier["command_id"] == request["command_id"]) {
             self.unsure = None;
         }
@@ -2144,6 +2173,10 @@ impl App {
                     self.left_on.remove(&key);
                     self.hidden.insert(key, now_millis());
                 }
+                let text = match review {
+                    Some(key) => self.review_delivered(key),
+                    None => text,
+                };
                 if outcome.kind == OutcomeKind::Done {
                     self.flash(text);
                 } else {
@@ -2170,6 +2203,7 @@ impl App {
                         request,
                         action_id: next.id.clone(),
                         origin,
+                        review,
                     },
                 };
                 if self.typing() || self.modal.is_some() {
@@ -2179,6 +2213,28 @@ impl App {
                 }
             }
         }
+    }
+
+    /// The comments reached the Mac: they leave the reader, which closes, and the user is told
+    /// where they went.
+    fn review_delivered(&mut self, key: Key) -> String {
+        self.reviews.remove(&key);
+        let agent = self
+            .reader
+            .as_ref()
+            .filter(|reader| reader.key == key)
+            .map(|reader| reader.agent.clone())
+            .unwrap_or_default();
+        if self.reader.as_ref().is_some_and(|reader| reader.key == key) {
+            self.reader = None;
+        }
+        self.review_sent = Some(key);
+        let sent = if agent.is_empty() {
+            tr!("Comments sent", "Comentarios enviados").to_owned()
+        } else {
+            trf!("Comments sent to {agent}", "Comentarios enviados a {agent}")
+        };
+        sent
     }
 
     fn show_again(&mut self, origin: Option<Key>) {
@@ -2786,6 +2842,7 @@ impl App {
                 option_id,
                 allow_attachments,
                 acting,
+                review,
                 ..
             } => {
                 let mut input = json!({});
@@ -2801,6 +2858,9 @@ impl App {
                 }
                 let request =
                     Client::action_body(&data_epoch, &action_id, option_id.as_deref(), input);
+                if let (Some(key), Some(command)) = (review, request["command_id"].as_str()) {
+                    self.review_sends.insert(command.to_owned(), key);
+                }
                 self.submit_view_request(request, acting);
             }
             Target::Message {
@@ -2973,9 +3033,11 @@ impl App {
                 .and_then(view_render::card_agent)
                 .map(|line| line.text.clone())
                 .unwrap_or_default();
+            let agent_id = first_card.and_then(view_render::card_agent_id);
             self.reader = Some(Reader {
                 key: Key(view.key),
                 agent,
+                agent_id,
                 title,
                 kind,
                 glyph,
@@ -3007,6 +3069,7 @@ impl App {
             let agent = view_render::card_agent(&card)
                 .map(|line| line.text.clone())
                 .unwrap_or_default();
+            let agent_id = view_render::card_agent_id(&card);
             let (glyph, color) = (view_render::icon(card.icon), view_render::icon_color(card.icon));
             let mut text = format!("# {}", card.title);
             for context in &card.context {
@@ -3028,6 +3091,7 @@ impl App {
             self.reader = Some(Reader {
                 key,
                 agent,
+                agent_id,
                 title: card.title,
                 kind,
                 glyph,
@@ -3172,6 +3236,9 @@ impl App {
                     {
                         composer.input = TextInput::with(&review.feedback());
                         composer.chips.extend(review.chips.clone());
+                        if let Target::ViewAction { review, .. } = &mut composer.target {
+                            *review = Some(key);
+                        }
                     }
                     return;
                 }
@@ -3271,6 +3338,7 @@ impl App {
                     required,
                     allow_attachments: action.attachments,
                     acting: None,
+                    review: Some(key.clone()),
                 },
                 &text,
             );
@@ -3279,6 +3347,60 @@ impl App {
             }
             return;
         }
+        self.send_review_to_node(key);
+    }
+
+    /// The card went (its node asked again about a newer revision, or withdrew it) while the user
+    /// was commenting: the comments go to that node as a message, about what the user read.
+    fn send_review_to_node(&mut self, key: Key) {
+        let Some(review) = self.reviews.get(&key).filter(|review| !review.is_empty()) else {
+            self.fail(tr!(
+                "No comments to send",
+                "No hay comentarios que enviar"
+            ));
+            return;
+        };
+        let Some((agent, name, title)) = self.reader.as_ref().and_then(|reader| {
+            Some((reader.agent_id.clone()?, reader.agent.clone(), reader.title.clone()))
+        }) else {
+            self.fail(tr!(
+                "This card is gone and has no node to send your comments to: they stay here.",
+                "Esta tarjeta ya no está y no tiene nodo al que enviar tus comentarios: se quedan aquí."
+            ));
+            return;
+        };
+        let title = md::one_line(&title);
+        let text = format!(
+            "{}\n\n{}",
+            trf!(
+                "My comments on “{title}”, on the version I was reading (its card was gone when I sent them):",
+                "Mis comentarios sobre «{title}», sobre la versión que estaba leyendo (su tarjeta ya no estaba cuando los envié):"
+            ),
+            review.feedback()
+        );
+        let mut message = ops::Message::to(Some(agent), ops::MessageKind::Message, text);
+        message.attachments = dropped::stored(&review.chips);
+        let ok = if name.is_empty() {
+            tr!("Comments sent", "Comentarios enviados").to_owned()
+        } else {
+            trf!("Comments sent to {name}", "Comentarios enviados a {name}")
+        };
+        self.pending(tr!("Sending…", "Enviando…"));
+        let (path, body) = (message.path(), message.body());
+        #[cfg(test)]
+        self.posted.borrow_mut().push((path.clone(), body.clone()));
+        self.action_sent();
+        self.spawn(move |tx, target| {
+            let result = Client::for_target(target, Duration::from_secs(30))
+                .post(&path, &body)
+                .map_err(|e| format!("{e:#}"))
+                .and_then(|reply| match reply.get("delivery_state").map(|state| serde_json::from_value::<alondra_core::delivery::State>(state.clone())) {
+                    None | Some(Ok(alondra_core::delivery::State::Handed)) => Ok(ok),
+                    Some(Ok(state)) => Err(crate::delivery::state_text(state).to_owned()),
+                    Some(Err(_)) => Err(tr!("Unknown delivery outcome", "Resultado de entrega desconocido").to_owned()),
+                });
+            let _ = tx.send(Msg::Posted { key: Some(key), result });
+        });
     }
 
     pub fn search_key(&mut self, k: KeyEvent) {

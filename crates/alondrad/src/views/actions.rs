@@ -376,6 +376,9 @@ async fn execute_inner(
     if let Some(response) = changed_pr_head(&state, &action, lang) {
         return Ok(response);
     }
+    if let Some(response) = newer_document_review(&state, &action, lang) {
+        return Ok(response);
+    }
     if matches!(action.verb, Verb::Changes | Verb::AskPr | Verb::Reply)
         && request.input.text.as_deref().is_none_or(|text| text.trim().is_empty())
         && request.input.comments.is_empty() {
@@ -1289,6 +1292,10 @@ fn map_action(
                 .map(|comment| (comment.anchor.clone(), comment.text.clone(), comment.quote.clone())).collect();
             let body = alondra_core::views::review_export::text_with_quotes(&comments, request.input.text.as_deref().unwrap_or_default());
             if body.trim().is_empty() && request.input.comments.is_empty() { return None; }
+            let body = match state.interactions.get(&InteractionId(action.subject.clone())).and_then(|read| older_version(state, read, interaction)) {
+                Some(note) => format!("{note}\n\n{body}"),
+                None => body,
+            };
             if let InteractionPayload::Question { answer: None, .. } | InteractionPayload::ActionRequest { answer: None, .. } = &interaction.payload {
                 let option_id = if held_plan(state, interaction) {
                     Hold::REQUEST_CHANGES.to_owned()
@@ -1404,6 +1411,70 @@ fn changed_pr_head(
     }))
 }
 
+/// Feedback written on a document delivery the node has since presented again with a newer
+/// revision says which version it was written on.
+fn older_version(state: &alondra_core::domain::DomainState, read: &alondra_core::domain::Interaction,
+    current: &alondra_core::domain::Interaction) -> Option<String> {
+    if read.id == current.id { return None; }
+    let revisions = |interaction: &alondra_core::domain::Interaction| match &interaction.payload {
+        InteractionPayload::Delivery { targets, .. } => targets.iter().filter_map(|target| match target {
+            alondra_core::domain::DeliveryTarget::DocumentRevision { document_id, revision_id } => Some((document_id.clone(), revision_id.clone())),
+            _ => None,
+        }).collect::<Vec<_>>(),
+        _ => vec![],
+    };
+    let now = revisions(current);
+    let (document, read_revision) = revisions(read).into_iter()
+        .find(|(document, revision)| now.iter().any(|(other, newer)| other == document && newer != revision))?;
+    let (_, newer) = now.iter().find(|(other, _)| *other == document)?;
+    let number = |revision| state.document_revisions.get(revision).map_or(0, |revision: &alondra_core::domain::DocumentRevision| revision.number);
+    let title = state.documents.get(&document).map_or_else(|| document.0.clone(), |document| document.title.clone());
+    Some(format!("These comments are on version {} of “{title}”, which the user was reading; you have since presented version {}.",
+        number(&read_revision), number(newer)))
+}
+
+/// Comments on a document review whose card its node replaced, usually to ask about a newer
+/// revision, are offered to that newer review instead of being lost.
+fn newer_document_review(state: &alondra_core::domain::DomainState, action: &ActionId, lang: Lang) -> Option<Value> {
+    use alondra_core::domain::InteractionSubject;
+    if action.verb != Verb::Changes { return None; }
+    let read = state.interactions.get(&InteractionId(action.subject.clone()))?;
+    let Some(InteractionSubject::DocumentReview { document_id, revision_id: read_revision }) = &read.subject else { return None; };
+    let open = |interaction: &alondra_core::domain::Interaction| !interaction.withdrawn
+        && matches!(interaction.payload, InteractionPayload::Question { answer: None, .. } | InteractionPayload::ActionRequest { answer: None, .. });
+    if open(read) { return None; }
+    let newer = state.interactions.values()
+        .filter(|candidate| candidate.id != read.id && candidate.scope == read.scope && open(candidate))
+        .filter(|candidate| matches!(&candidate.subject, Some(InteractionSubject::DocumentReview { document_id: other, .. }) if other == document_id))
+        .max_by_key(|candidate| candidate.order)?;
+    let fresh = ActionId::new(Verb::Changes, newer.id.0.clone(), newer.revision, None).ok()?.to_string();
+    let title = state.documents.get(document_id).map_or_else(|| document_id.0.clone(), |document| document.title.clone());
+    let number = |revision: &alondra_core::domain::DocumentRevisionId| state.document_revisions.get(revision).map_or(0, |revision| revision.number);
+    let newer_revision = match &newer.subject { Some(InteractionSubject::DocumentReview { revision_id, .. }) => number(revision_id), _ => 0 };
+    let read_revision = number(read_revision);
+    let (message, detail, button) = match (lang, newer_revision == read_revision) {
+        (Lang::Es, false) => (format!("«{title}» tiene una versión nueva"),
+            format!("Mientras comentabas, el nodo pidió revisar la versión {newer_revision}; tú leías la {read_revision}. Tus comentarios siguen sin enviar."),
+            "Enviarlos a la versión nueva"),
+        (Lang::Es, true) => (format!("La revisión de «{title}» cambió"),
+            "Mientras comentabas, el nodo cambió su petición de revisión. Tus comentarios siguen sin enviar.".to_owned(),
+            "Enviarlos a la petición nueva"),
+        (_, false) => (format!("“{title}” has a new version"),
+            format!("While you commented, the node asked for a review of version {newer_revision}; you were reading version {read_revision}. Your comments are not sent yet."),
+            "Send them to the new version"),
+        (_, true) => (format!("The review of “{title}” changed"),
+            "While you commented, the node changed its review request. Your comments are not sent yet.".to_owned(),
+            "Send them to the new request"),
+    };
+    Some(json!({
+        "protocol":VIEWS_PROTOCOL,
+        "outcome":"changed",
+        "message":message,
+        "detail":detail,
+        "confirm":{"action_id":fresh,"button":button}
+    }))
+}
+
 fn context_request(note: &str) -> String {
     let detail = if note.is_empty() { String::new() } else { format!(" [What is missing: {note}]") };
     format!("I need more context before deciding.{detail} Explain what is at stake, the options with their consequences and your recommendation, and ask again.")
@@ -1456,7 +1527,7 @@ fn domain_refusal_value(error: &DomainError, lang: Lang) -> Value {
 }
 
 /// What an accept verb is accepting, read before the action changes the card.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 enum Accepted {
     Plan,
     Document,
@@ -1472,6 +1543,7 @@ impl Accepted {
         match &interaction.payload {
             InteractionPayload::Delivery { targets, .. } if !targets.is_empty()
                 && targets.iter().all(|target| matches!(target, alondra_core::domain::DeliveryTarget::DocumentRevision { .. })) => Self::Document,
+            InteractionPayload::Question { .. } if matches!(interaction.subject, Some(alondra_core::domain::InteractionSubject::DocumentReview { .. })) => Self::Document,
             _ => Self::Result,
         }
     }
@@ -1492,6 +1564,7 @@ fn applied_outcome(verb: Verb, lang: Lang, stamp: &str, accepted: Accepted) -> O
             Accepted::Document => say("Document accepted.", "Documento aceptado."),
             Accepted::Result => say("Result accepted.", "Resultado aceptado."),
         }),
+        Verb::Changes if accepted == Accepted::Document => Outcome::done(say("Changes sent to its node. The document comes back with its next version.", "Cambios enviados a su nodo. El documento volverá con su próxima versión.")),
         Verb::Changes => Outcome::done(say("Changes sent. The card comes back when it is presented again.", "Cambios enviados. La tarjeta volverá cuando se presente de nuevo.")),
         Verb::Ans if stamp.contains(" · ") => Outcome::done(stamp.to_owned()),
         Verb::Ans => Outcome::done(say("Answer sent.", "Respuesta enviada.")),
@@ -1530,11 +1603,12 @@ fn with_result(mut reply: Value, lang: Lang, action: Option<&ActionId>, accepted
             let title = reply["message"].as_str().unwrap_or_default().to_owned();
             let id = reply["confirm"]["action_id"].as_str().unwrap_or_default().to_owned();
             let label = reply["confirm"]["button"].as_str().unwrap_or_default();
-            Outcome::changed(title, if es {
+            let detail = reply["detail"].as_str().map(str::to_owned).unwrap_or_else(|| if es {
                 "Revisaste una versión anterior. Envíalo igualmente o abre la PR para ver qué cambió."
             } else {
                 "You reviewed an older version. Send anyway, or open the PR to see what changed."
-            }.to_owned(), alondra_core::views::send_anyway(id, label))
+            }.to_owned());
+            Outcome::changed(title, detail, alondra_core::views::send_anyway(id, label))
         }
         _ => {
             let message = reply["message"].as_str().unwrap_or_default().to_owned();
