@@ -62,9 +62,9 @@ public actor RelayOutbox {
         records[requestID]
     }
 
-    /// The caller must seal a fresh envelope before this call. A record is durable before POST.
-    /// Network errors and post-send disk errors are both uncertain; neither authorizes retry.
-    public func submitNew(_ envelope: Envelope, semanticTag: Data? = nil) async throws -> RelaySubmission {
+    /// A session record precedes POST. Network failures stay uncertain and never authorize replay.
+    public func submitNew(_ envelope: Envelope, semanticTag: Data? = nil,
+                          reserved: @Sendable () -> Void = {}) async throws -> RelaySubmission {
         _ = try envelope.signedBytes()
         guard envelope.kind == "request" else { throw RelayOutboxError.invalidEnvelope }
         guard try JSONEncoder().encode(envelope).count <= 256 * 1024 else {
@@ -73,10 +73,13 @@ public actor RelayOutbox {
         guard envelope.route == scope.macID, envelope.recipient == scope.macID,
               envelope.sender == scope.deviceID else { throw RelayOutboxError.wrongScope }
         guard records[envelope.requestID] == nil else { throw RelayOutboxError.duplicateRequestID }
+        try MutationScope.check()
         records[envelope.requestID] = RelayOutboxEntry(
             requestID: envelope.requestID, scope: scope, envelope: envelope, phase: .reserved, semanticTag: semanticTag)
+        reserved()
 
         do {
+            try MutationScope.check()
             let receipt = try await transport.submitRequest(envelope)
             guard receipt.requestID == envelope.requestID else {
                 try? setUncertain(envelope.requestID)

@@ -586,3 +586,160 @@ extension DirectSessionTests {
         if bodies.count == 4 { #expect(bodies[1] == bodies[3]) }
     }
 }
+
+private actor DeadlineDirectTransport: HTTPTransport {
+    private let mac: FakeDirectMac
+    private(set) var actionTimeouts: [TimeInterval] = []
+
+    init(mac: FakeDirectMac) { self.mac = mac }
+
+    func send(_ request: URLRequest) async throws -> HTTPReply {
+        if request.url?.path == "/direct/request", let body = request.httpBody,
+           let envelope = try? JSONDecoder().decode(Envelope.self, from: body),
+           envelope.requestID == "budget-action" {
+            actionTimeouts.append(request.timeoutInterval)
+        }
+        return try await mac.send(request)
+    }
+}
+
+private actor DeadlineRelayBridge: RelayOperations {
+    private let mac: FakeDirectMac
+    private let codec: EnvelopeCodec
+    private let clock: MutationTestClock
+    private let consumed: Duration
+    private var sent: Envelope?
+
+    init(mac: FakeDirectMac, codec: EnvelopeCodec, clock: MutationTestClock, consumed: Duration) {
+        self.mac = mac; self.codec = codec; self.clock = clock; self.consumed = consumed
+    }
+
+    func perform(_ request: APIRequest) async throws -> APIResponse {
+        let envelope = try codec.sealRequest(requestID: request.operationID, method: request.method,
+            path: request.path, body: request.body)
+        sent = envelope
+        try await mac.deliverThroughTheRelay(envelope)
+        clock.advance(by: consumed)
+        return .unknown
+    }
+    func sentEnvelope(for requestID: String) async -> Envelope? { sent }
+    func registerServicePush(token: String, environment: String, binding: String) async throws {}
+    func deactivate() async {}
+}
+
+extension RoutedSessionTests {
+    @Test(arguments: [false, true])
+    func aMutationDoesNotRenewItsBudgetWhenTheRelayHandsOffToDirect(expired: Bool) async throws {
+        let f = try await Fixture()
+        let time = MutationTestClock()
+        let recorded = DeadlineDirectTransport(mac: f.mac)
+        let direct = DirectSession(macID: "mac-1", deviceID: "phone-1", signing: f.mac.device,
+            agreement: f.mac.deviceAgreement, macSigning: f.mac.macSigning.publicKey,
+            macAgreement: f.mac.macAgreement.publicKey, router: f.router,
+            http: DirectHTTP(transport: recorded), pause: { _ in })
+        let codec = EnvelopeCodec(macID: "mac-1", deviceID: "phone-1", signing: f.mac.device,
+            agreement: f.mac.deviceAgreement, macSigning: f.mac.macSigning.publicKey,
+            macAgreement: f.mac.macAgreement.publicKey, now: { UInt64(Date().timeIntervalSince1970 * 1000) })
+        let relay = DeadlineRelayBridge(mac: f.mac, codec: codec, clock: time,
+            consumed: .seconds(expired ? 121 : 115))
+        let routed = RoutedSession(direct: direct, router: f.router, relay: relay, requestClock: time.clock)
+        let request = try f.action("budget-action")
+        let response = try await routed.perform(request)
+        #expect(response == (expired ? .unknown : answered))
+        let timeouts = await recorded.actionTimeouts
+        #expect(timeouts == (expired ? [] : [5]), "the same 120-second budget must cover both carriers")
+        #expect(await f.mac.executions(of: request.operationID) == 1)
+        await routed.deactivate()
+    }
+}
+
+private actor FractionalTimeoutTransport: HTTPTransport {
+    private(set) var timeouts: [TimeInterval] = []
+    func send(_ request: URLRequest) async throws -> HTTPReply {
+        timeouts.append(request.timeoutInterval)
+        return HTTPReply(status: 200, body: Data())
+    }
+}
+
+extension DirectSessionTests {
+    @Test func aPositiveFractionalTimeoutDoesNotBecomeAnUnlimitedHTTPTimeout() async throws {
+        let transport = FractionalTimeoutTransport()
+        _ = try await DirectHTTP(transport: transport).post(lan, path: "/direct/request", body: Data(), timeout: .milliseconds(250))
+        #expect(await transport.timeouts == [0.25])
+    }
+}
+
+private actor SharedDeadlineProbe: HTTPTransport {
+    private let mac: FakeDirectMac
+    private var held: CheckedContinuation<Void, Never>?
+    let starts: AsyncStream<Void>
+    private let continuation: AsyncStream<Void>.Continuation
+    private(set) var inheritedBudget = false
+    private(set) var probeCount = 0
+
+    init(mac: FakeDirectMac) {
+        self.mac = mac
+        let pair = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        starts = pair.stream; continuation = pair.continuation
+    }
+    func send(_ request: URLRequest) async throws -> HTTPReply {
+        if request.url?.path == "/direct/hello" {
+            probeCount += 1
+            inheritedBudget = MutationScope.current != nil
+            await withCheckedContinuation { held = $0; continuation.yield(()) }
+        }
+        return try await mac.send(request)
+    }
+    func release() { held?.resume(); held = nil }
+}
+
+extension DirectSessionTests {
+    @Test(arguments: [false, true])
+    func oneProbeWaiterCanFinishWhileAnotherUsesTheSharedAnswer(cancelled: Bool) async throws {
+        let mac = FakeDirectMac()
+        await mac.answerHello(on: lan.host, with: await mac.identity)
+        let probe = SharedDeadlineProbe(mac: mac)
+        let http = DirectHTTP(transport: probe)
+        let router = DirectRouter(pinned: await mac.identity, saved: [lan], http: http)
+        let clock = MutationTestClock()
+        let session = DirectSession(macID: "mac-1", deviceID: "phone-1", signing: mac.device,
+            agreement: mac.deviceAgreement, macSigning: mac.macSigning.publicKey,
+            macAgreement: mac.macAgreement.publicKey, router: router, http: http,
+            pause: { _ in }, requestClock: clock.clock)
+        let firstRunner = MutationRunner(clock: clock.clock)
+        let nextRunner = MutationRunner(clock: clock.clock)
+        var starts = await probe.starts.makeAsyncIterator()
+        var nextStates = nextRunner.states.makeAsyncIterator()
+        let firstRequest = try APIRequest(endpoint: Endpoint<Data>.data(.post, path: ["actions"], body: Data("{}".utf8)), operationID: "expired-probe")
+        let nextRequest = try APIRequest(endpoint: Endpoint<Data>.data(.post, path: ["actions"], body: Data("{}".utf8)), operationID: "surviving-probe")
+        let first = Task {
+            try await firstRunner.run(unknown: { APIResponse.unknown }) { try await session.perform(firstRequest) }
+        }
+        #expect(await starts.next() != nil)
+        clock.advance(by: .seconds(60))
+        let next = Task {
+            try await nextRunner.run(unknown: { APIResponse.unknown }) { try await session.perform(nextRequest) }
+        }
+        while let state = await nextStates.next() { if state.waiters == 1 { break } }
+        if cancelled { first.cancel() } else { clock.advance(by: .seconds(60)) }
+        let early = await first.result
+        if case let .failure(error) = early {
+            #expect(cancelled ? error is CancellationError : (error as? URLError)?.code == .timedOut)
+        } else { Issue.record("the first waiter must finish before its probe permits dispatch") }
+        #expect(await firstRunner.runningWorkers.count == 1)
+        #expect(await !probe.inheritedBudget)
+        await probe.release()
+        let surviving = await next.result
+        #expect((try? surviving.get()) == answered)
+        await firstRunner.drain()
+        await nextRunner.drain()
+        #expect(await mac.executions(of: "expired-probe") == 0)
+        #expect(await mac.executions(of: "surviving-probe") == 1)
+        #expect(await probe.probeCount == 1)
+        #expect(await firstRunner.runningWorkers.isEmpty)
+        #expect(await nextRunner.runningWorkers.isEmpty)
+        #expect(await firstRunner.timerTask == nil)
+        #expect(await nextRunner.timerTask == nil)
+        await session.deactivate()
+    }
+}

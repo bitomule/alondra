@@ -37,6 +37,7 @@ actor RelayTransport: Transport {
         guard result.protocolVersion == 1, try Base64URL.decode(result.epoch).count == 16 else {
             throw RelayWireError.invalidResponse
         }
+        if let budget = MutationScope.current, budget.interruption != nil || Task.isCancelled { return result }
         epoch = try Base64URL.decode(result.epoch)
         epochProven = false
         return result
@@ -112,9 +113,12 @@ actor RelayTransport: Transport {
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         }
         if signed {
+            try MutationScope.check()
             if epoch == nil { _ = try await bootstrap() }
+            try MutationScope.check()
             guard let epoch else { throw RelayWireError.invalidResponse }
-            let token = try await bearer()
+            let token = try await MutationScope.$current.withValue(nil) { try await bearer() }
+            try MutationScope.check()
             guard !token.isEmpty, !token.utf8.contains(where: { $0 <= 32 || $0 == 127 }) else {
                 throw RelayWireError.invalidField
             }
@@ -132,14 +136,18 @@ actor RelayTransport: Transport {
             request.setValue(Base64URL.encode(random), forHTTPHeaderField: "x-device-nonce")
             request.setValue(Base64URL.encode(signature), forHTTPHeaderField: "x-device-signature")
         }
+        request.timeoutInterval = try MutationScope.remaining(cap: .seconds(request.timeoutInterval)).requestTimeInterval
+        try MutationScope.check()
+        if method == "POST", target == "/v1/requests" { try MutationScope.possibleDispatch() }
         let reply = try await transport.send(request)
+        if let budget = MutationScope.current, budget.interruption != nil || Task.isCancelled { return reply }
         guard signed else { return reply }
         if reply.status == 401 {
             // A relay restart changes its epoch, and an epoch that already worked is the likely
             // cause: bootstrap again first. A 401 with a fresh epoch is about the access token,
             // never that the Mac revoked this device: renew it before the next request.
             if epochProven { epochProven = false; epoch = nil }
-            else { await bearerRefused() }
+            else { await MutationScope.$current.withValue(nil) { await bearerRefused() } }
         } else if reply.status < 500 {
             epochProven = true
         }

@@ -127,7 +127,7 @@ public actor DirectRouter {
         // Away from home every request would otherwise wait for the probes.
         if let failedAt, failedAt.network == network(), failedAt.at.duration(to: now()) < retryAfterFailure { throw unreachable }
         if let probing { return try await probing.value }
-        let task = Task { try await self.probe() }
+        let task = MutationScope.$current.withValue(nil) { Task { try await self.probe() } }
         probing = task
         defer { probing = nil }
         return try await task.value

@@ -23,6 +23,9 @@ public actor RelaySession: OperationAPI, PushRegistrationAPI {
     private let scope: RelayOutboxScope
     private let codec: EnvelopeCodec
     private let sleep: @Sendable () async throws -> Void
+    private let requestClock: RequestClock
+    let mutations: MutationRunner
+    let mutationEvidence = MutationEvidenceStore()
     private let waitForReadDeadline: @Sendable (ContinuousClock.Instant) async throws -> Void
     private var active = true
     private var relayBootstrap: RelayBootstrap?
@@ -48,7 +51,8 @@ public actor RelaySession: OperationAPI, PushRegistrationAPI {
                 macSigning: P256.Signing.PublicKey, macAgreement: P256.KeyAgreement.PublicKey,
                 now: @escaping @Sendable () -> UInt64 = { UInt64(Date().timeIntervalSince1970 * 1000) },
                 sleep: @escaping @Sendable () async throws -> Void = { try await Task.sleep(for: .seconds(1)) },
-                waitForReadDeadline: @escaping @Sendable (ContinuousClock.Instant) async throws -> Void) throws {
+                waitForReadDeadline: @escaping @Sendable (ContinuousClock.Instant) async throws -> Void,
+                requestClock: RequestClock = .continuous) throws {
         let client = try AlondraAPIClient.makeTransport(base: scope.relay, deviceID: scope.deviceID,
             signing: signing, bearer: bearer, bearerRefused: bearerRefused, transport: transport)
         self.client = client; self.scope = scope
@@ -56,6 +60,8 @@ public actor RelaySession: OperationAPI, PushRegistrationAPI {
         codec = EnvelopeCodec(macID: scope.macID, deviceID: scope.deviceID, signing: signing,
             agreement: agreement, macSigning: macSigning, macAgreement: macAgreement, now: now)
         self.sleep = sleep
+        self.requestClock = requestClock
+        mutations = MutationRunner(clock: requestClock)
         self.waitForReadDeadline = waitForReadDeadline
     }
 
@@ -68,7 +74,10 @@ public actor RelaySession: OperationAPI, PushRegistrationAPI {
         guard active, !Task.isCancelled else { throw CancellationError() }
     }
 
-    public func deactivate() { active = false }
+    public func deactivate() async {
+        active = false
+        await mutations.cancelAll()
+    }
 
     /// The envelope this session sent for an operation, so another carrier can resend the very
     /// same bytes: the Mac's journal recognises them and never runs the operation twice.
@@ -112,6 +121,21 @@ public actor RelaySession: OperationAPI, PushRegistrationAPI {
     /// reconciles the existing envelope; it can never submit the mutation a second time.
     public func execute(requestID: String, method: String, path: String, body: Data? = nil,
                         statusPolls: Int = 10) async throws -> RelayOperationResult {
+        guard method == "POST" else {
+            return try await executePrepared(requestID: requestID, method: method, path: path, body: body, statusPolls: statusPolls)
+        }
+        let startedAt = requestClock.now()
+        let owner = MutationScope.current?.id ?? UUID()
+        let lease = mutationEvidence.acquire(requestID, owner: owner)
+        defer { mutationEvidence.release(lease) }
+        return try await mutations.run(dispatchEvidence: lease.evidence, ownerID: owner, startedAt: startedAt, unknown: { RelayOperationResult.unknown }) {
+            try await self.executePrepared(requestID: requestID, method: method, path: path, body: body, statusPolls: statusPolls)
+        }
+    }
+
+    private func executePrepared(requestID: String, method: String, path: String, body: Data?,
+                                 statusPolls: Int) async throws -> RelayOperationResult {
+        try MutationScope.check()
         guard active else { throw CancellationError() }
         guard ["GET", "POST"].contains(method),
               EnvelopeRequestPolicy.validViewsPath(method: method, path: path, hasBody: body != nil),
@@ -126,22 +150,27 @@ public actor RelaySession: OperationAPI, PushRegistrationAPI {
         guard !requestID.hasPrefix("read-") else { throw RelaySessionError.invalidRequest }
         let tag = try codec.semanticTag(method: method, path: path, body: body)
         if let existing = try await outbox.entry(requestID: requestID) {
+            try MutationScope.check()
             guard existing.semanticTag == tag else { throw RelaySessionError.operationIdentityConflict }
             return try await resume(requestID: requestID, statusPolls: statusPolls)
         }
         // Bootstrap is read-only. A restart between this read and POST may still cause
         // uncertainty; only status reconciliation may follow that POST, never a replay.
         _ = try await client.bootstrap()
+        try MutationScope.check()
         guard active else { throw CancellationError() }
         let envelope = try sealRequest(requestID: requestID, method: method, path: path, body: body)
         try Task.checkCancellation()
+        try MutationScope.check()
         let submitted: RelaySubmission
-        do { submitted = try await outbox.submitNew(envelope, semanticTag: tag) }
+        let evidence = mutationEvidence
+        do { submitted = try await outbox.submitNew(envelope, semanticTag: tag, reserved: { evidence.retain(requestID) }) }
         catch RelayOutboxError.duplicateRequestID {
             guard let existing = try await outbox.entry(requestID: requestID), existing.semanticTag == tag
             else { throw RelaySessionError.operationIdentityConflict }
             return try await resume(requestID: requestID, statusPolls: statusPolls)
         }
+        try MutationScope.check()
         if case let .accepted(receipt) = submitted, let result = try verified(receipt, requestID: requestID) { return result }
         return try await resume(requestID: requestID, statusPolls: statusPolls)
     }
@@ -154,8 +183,17 @@ public actor RelaySession: OperationAPI, PushRegistrationAPI {
     /// Absence is authoritative only because outbox entries/tombstones are never deleted.
     /// A journal read error propagates; it must never be interpreted as permission to send.
     public func recoveryStatus(requestID: String) async throws -> RelayRecoveryStatus {
+        return try await mutations.run(conservativeUnknown: true, startedAt: requestClock.now(), unknown: { RelayRecoveryStatus.unknown }) {
+            try await self.recoveryPrepared(requestID: requestID)
+        }
+    }
+
+    private func recoveryPrepared(requestID: String) async throws -> RelayRecoveryStatus {
+        try MutationScope.check()
         guard active else { return .unknown }
-        guard try await outbox.entry(requestID: requestID) != nil else { return .notDispatched }
+        let entry = try await outbox.entry(requestID: requestID)
+        try MutationScope.check()
+        guard entry != nil else { return .notDispatched }
         switch try await resume(requestID: requestID) {
         case .completed(let status, let body): return .completed(status: status, body: body)
         case .unknown: return .unknown
@@ -163,19 +201,32 @@ public actor RelaySession: OperationAPI, PushRegistrationAPI {
     }
 
     public func resume(requestID: String, statusPolls: Int = 10) async throws -> RelayOperationResult {
+        return try await mutations.run(conservativeUnknown: true, startedAt: requestClock.now(), unknown: { RelayOperationResult.unknown }) {
+            try await self.resumePrepared(requestID: requestID, statusPolls: statusPolls)
+        }
+    }
+
+    private func resumePrepared(requestID: String, statusPolls: Int) async throws -> RelayOperationResult {
+        try MutationScope.check()
         guard active else { return .unknown }
         guard (0...30).contains(statusPolls) else { throw RelaySessionError.invalidRequest }
         guard let entry = try await outbox.entry(requestID: requestID) else { return .unknown }
+        try MutationScope.check()
         if let status = entry.lastStatus, let revision = entry.lastRevision,
            let result = try verified(RelayReceipt(requestID: requestID, status: status,
                 revision: revision, response: entry.lastResponse), requestID: requestID) { return result }
         for attempt in 0..<statusPolls {
             do {
                 try Task.checkCancellation()
+                try MutationScope.check()
                 if attempt > 0 { try await sleep() }
+                try MutationScope.check()
                 guard active else { return .unknown }
                 if let receipt = try await reconcileRead(requestID: requestID),
-                   let result = try verified(receipt, requestID: requestID) { return result }
+                   let result = try verified(receipt, requestID: requestID) {
+                    try MutationScope.check()
+                    return result
+                }
             } catch is CancellationError { return .unknown }
             catch { return .unknown }
         }
@@ -185,10 +236,12 @@ public actor RelaySession: OperationAPI, PushRegistrationAPI {
     private func reconcileRead(requestID: String) async throws -> RelayReceipt? {
         do { return try await outbox.reconcile(requestID: requestID) }
         catch RelayWireError.unauthorized {
+            try MutationScope.check()
             // Authentication checks the challenge epoch before the query cursor. Refresh
             // it once on a read; revoked credentials still fail on the second GET.
             _ = try await client.bootstrap()
             guard active else { throw CancellationError() }
+            try MutationScope.check()
             return try await outbox.reconcile(requestID: requestID)
         }
     }

@@ -24,6 +24,10 @@ public actor LoopbackSession: OperationAPI {
     private let identity: LoopbackIdentityStore
     private let deviceName: String
     private let now: @Sendable () -> Date
+    private let requestClock: RequestClock
+    let mutations: MutationRunner
+    private let mutationEvidence = MutationEvidenceStore()
+    private let requestTransport: (any HTTPTransport)?
     private var pairing: Task<String, Error>?
     private var outcomes: [String: LoopbackOutcome] = [:]
     var uploads: [String: LoopbackUpload] = [:]
@@ -32,6 +36,16 @@ public actor LoopbackSession: OperationAPI {
 
     public init(base: URL = LoopbackSession.defaultBase, identity: LoopbackIdentityStore, deviceName: String,
                 urlSession: URLSession = LoopbackSession.makeURLSession(), now: @escaping @Sendable () -> Date = { .now }) {
+        self.init(base: base, identity: identity, deviceName: deviceName, urlSession: urlSession,
+            now: now, requestClock: .continuous)
+    }
+
+    init(base: URL = LoopbackSession.defaultBase, identity: LoopbackIdentityStore, deviceName: String,
+         urlSession: URLSession = LoopbackSession.makeURLSession(), now: @escaping @Sendable () -> Date = { .now },
+         requestClock: RequestClock, transport: (any HTTPTransport)? = nil) {
+        self.requestClock = requestClock
+        mutations = MutationRunner(clock: requestClock)
+        self.requestTransport = transport
         self.base = base
         self.identity = identity
         self.deviceName = deviceName
@@ -66,8 +80,9 @@ public actor LoopbackSession: OperationAPI {
         return try? await http.hello(at: DirectEndpoint(host: "127.0.0.1", port: port, kind: .localNetwork)).macID
     }
 
-    public func deactivate() {
+    public func deactivate() async {
         active = false
+        await mutations.cancelAll()
         pairing?.cancel()
         pairing = nil
     }
@@ -79,6 +94,23 @@ public actor LoopbackSession: OperationAPI {
     }
 
     public func perform(_ request: APIRequest) async throws -> APIResponse {
+        guard request.method == "POST" else { return try await performPrepared(request) }
+        let startedAt = requestClock.now()
+        let owner = MutationScope.current?.id ?? UUID()
+        let lease = mutationEvidence.acquire(request.operationID, owner: owner)
+        defer { mutationEvidence.release(lease) }
+        let result = try await mutations.run(dispatchEvidence: lease.evidence, ownerID: owner, startedAt: startedAt, unknown: { APIResponse.unknown }) {
+            try await self.performPrepared(request)
+        }
+        if result == .unknown {
+            if outcomes[request.operationID] == nil { outcomes[request.operationID] = .unknown }
+            mutationEvidence.retain(request.operationID)
+        }
+        return result
+    }
+
+    private func performPrepared(_ request: APIRequest) async throws -> APIResponse {
+        try MutationScope.check()
         guard active else { throw CancellationError() }
         let route = request.path.split(separator: "?", maxSplits: 1).first.map(String.init) ?? request.path
         let result: LoopbackOutcome
@@ -105,7 +137,9 @@ public actor LoopbackSession: OperationAPI {
         let limit = timeout ?? (isRead ? Self.readTimeout(target) : 120)
         var repaired = false
         while true {
+            try MutationScope.check()
             let device = try await pairedDeviceID()
+            try MutationScope.check()
             let request = try await signedRequest(method: method, target: target, body: body, device: device,
                                                   contentType: contentType, timeout: limit)
             let status: Int, data: Data
@@ -117,12 +151,16 @@ public actor LoopbackSession: OperationAPI {
             }
             guard active else { throw CancellationError() }
             if status == 401, !repaired {
+                try MutationScope.check()
                 repaired = true
                 await forget(device: device)
                 continue
             }
             let outcome = LoopbackOutcome.completed(status: status, body: data)
-            if !isRead, let operationID { outcomes[operationID] = outcome }
+            if !isRead, let operationID {
+                outcomes[operationID] = outcome
+                mutationEvidence.retain(operationID)
+            }
             return outcome
         }
     }
@@ -146,6 +184,14 @@ public actor LoopbackSession: OperationAPI {
     }
 
     private func send(_ request: URLRequest) async throws -> (Int, Data) {
+        var request = request
+        request.timeoutInterval = try MutationScope.remaining(cap: .seconds(request.timeoutInterval)).requestTimeInterval
+        try MutationScope.check()
+        if request.httpMethod == "POST" { try MutationScope.possibleDispatch() }
+        if let requestTransport {
+            let reply = try await requestTransport.send(request)
+            return (reply.status, reply.body)
+        }
         let (data, response) = try await urlSession.data(for: request)
         guard let http = response as? HTTPURLResponse else { throw LoopbackSessionError.invalidResponse }
         return (http.statusCode, data)
@@ -173,7 +219,7 @@ public actor LoopbackSession: OperationAPI {
         guard active else { throw CancellationError() }
         if let id = await identity.deviceID() { return id }
         if let pairing { return try await pairing.value }
-        let task = Task { try await self.pair() }
+        let task = MutationScope.$current.withValue(nil) { Task { try await self.pair() } }
         pairing = task
         defer { pairing = nil }
         return try await task.value

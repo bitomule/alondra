@@ -24,6 +24,8 @@ public actor RoutedSession: OperationAPI, PushRegistrationAPI {
     private let directAllowed: @Sendable () -> Bool
     private let probeInterval: Duration
     private let clock = ContinuousClock()
+    private let requestClock: RequestClock
+    let mutations: MutationRunner
     private var lastRoute: ConnectionRoute?
     private var relayFirst: Bool
     private var probe: Task<Void, Never>?
@@ -33,6 +35,15 @@ public actor RoutedSession: OperationAPI, PushRegistrationAPI {
     /// it, so the system never asks for Local Network access on its own.
     public init(direct: DirectSession?, router: DirectRouter?, relay: (any RelayOperations)?,
                 directAllowed: @escaping @Sendable () -> Bool = { true }, probeInterval: Duration = .seconds(60)) {
+        self.init(direct: direct, router: router, relay: relay, directAllowed: directAllowed,
+            probeInterval: probeInterval, requestClock: .continuous)
+    }
+
+    init(direct: DirectSession?, router: DirectRouter?, relay: (any RelayOperations)?,
+         directAllowed: @escaping @Sendable () -> Bool = { true }, probeInterval: Duration = .seconds(60),
+         requestClock: RequestClock) {
+        self.requestClock = requestClock
+        mutations = MutationRunner(clock: requestClock)
         self.direct = direct
         self.router = router
         self.relay = relay
@@ -47,6 +58,14 @@ public actor RoutedSession: OperationAPI, PushRegistrationAPI {
     public var route: ConnectionRoute? { lastRoute }
 
     public func perform(_ request: APIRequest) async throws -> APIResponse {
+        guard request.method == "POST" else { return try await performPrepared(request) }
+        return try await mutations.run(conservativeUnknown: true, startedAt: requestClock.now(), unknown: { APIResponse.unknown }) {
+            try await self.performPrepared(request)
+        }
+    }
+
+    private func performPrepared(_ request: APIRequest) async throws -> APIResponse {
+        try MutationScope.check()
         guard let relay else {
             guard let direct else { throw DirectRouteError.unreachable }
             return try await viaDirect(direct, request)
@@ -77,9 +96,12 @@ public actor RoutedSession: OperationAPI, PushRegistrationAPI {
     /// A mutation the relay already sent goes out again as those same bytes.
     private func resend(_ request: APIRequest, from relay: any RelayOperations,
                         over direct: DirectSession) async throws -> APIResponse {
+        try MutationScope.check()
         if request.method == "POST", let envelope = await relay.sentEnvelope(for: request.operationID) {
+            try MutationScope.check()
             try await direct.adopt(envelope, for: request)
         }
+        try MutationScope.check()
         let response = try await viaDirect(direct, request)
         relayFirst = false
         return response
@@ -109,6 +131,7 @@ public actor RoutedSession: OperationAPI, PushRegistrationAPI {
     }
 
     public func deactivate() async {
+        await mutations.cancelAll()
         probe?.cancel()
         await direct?.deactivate()
         await relay?.deactivate()
@@ -126,9 +149,11 @@ public actor RoutedSession: OperationAPI, PushRegistrationAPI {
               let request = try? APIRequest(endpoint: Endpoint<Data>.data(.get, path: ["capabilities"]), operationID: "probe")
         else { return }
         probedAt = clock.now
-        probe = Task {
-            let answered = (try? await direct.perform(request)) != nil
-            self.probeFinished(answered)
+        probe = MutationScope.$current.withValue(nil) {
+            Task {
+                let answered = (try? await direct.perform(request)) != nil
+                self.probeFinished(answered)
+            }
         }
     }
 

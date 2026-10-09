@@ -32,13 +32,17 @@ public struct DirectHTTP: Sendable {
         guard endpoint.isValid, path.hasPrefix("/direct/"), let url = endpoint.url(path) else {
             throw RelayWireError.invalidEndpoint
         }
-        var request = URLRequest(url: url, timeoutInterval: Double(timeout.components.seconds))
+        let remaining = try MutationScope.remaining(cap: timeout)
+        guard remaining > .zero else { throw URLError(.timedOut) }
+        var request = URLRequest(url: url, timeoutInterval: remaining.requestTimeInterval)
         request.httpMethod = method
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         if let body {
             request.httpBody = body
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         }
+        try MutationScope.check()
+        if method == "POST" { try MutationScope.possibleDispatch() }
         let reply = try await transport.send(request)
         guard reply.body.count <= Self.maxResponse else { throw RelayWireError.invalidResponse }
         return reply
