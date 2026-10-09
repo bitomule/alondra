@@ -161,18 +161,57 @@ fn context_label(percent: u32, lang: super::Lang) -> super::Label {
 }
 
 /// What the node runs now while it works, otherwise what it said last, with when.
-pub(super) fn activity(node: &super::LiveNode) -> Option<super::Row> {
-    let message = || node.last_message.as_deref().map(str::trim)
-        .filter(|text| !text.is_empty() && !text.starts_with("mcp__"))
-        .map(|text| (text.lines().next().unwrap_or_default().to_owned(), node.last_message_at.clone()));
-    let (text, at) = node.tool.clone().filter(|_| node.working)
-        .map(|tool| (tool, node.state_since.clone()))
-        .or_else(message)?;
+pub(super) fn activity(node: &super::LiveNode, lang: super::Lang) -> Option<super::Row> {
+    let (text, at) = doing(node, lang)?;
     let mut row = common::row("activity", "node", Icon::Notice, text, None);
     row.link = None;
     row.trailing = at.map(|at| Trailing::Time { at, format: super::TimeFormat::Relative });
     Some(row)
 }
+
+/// What a node does, only as facts it reports: the step of its own task list while it works; once it stopped,
+/// the first sentence it said and when. Nothing is inferred from the commands it runs, and a node at work carries
+/// no time, so its row never goes stale.
+pub(super) fn doing(node: &super::LiveNode, lang: super::Lang) -> Option<(String, Option<String>)> {
+    if let Some(step) = step(node, lang) {
+        return Some((step, None));
+    }
+    if node.working {
+        return None;
+    }
+    node.last_message.as_deref().and_then(said).map(|sentence| (
+        tf!(lang, "Said: “{sentence}”", "Dijo: «{sentence}»"),
+        node.last_message_at.clone(),
+    ))
+}
+
+/// "Step 3 of 4 · Generate iOS screenshots", while the node's own task list has a step in progress.
+pub(super) fn step(node: &super::LiveNode, lang: super::Lang) -> Option<String> {
+    let (index, step) = node.steps.iter().enumerate().find(|(_, step)| step.state == StepState::InProgress)?;
+    let (number, total, subject) = (index + 1, node.steps.len(), &step.subject);
+    Some(tf!(lang, "Step {number} of {total} · {subject}", "Paso {number} de {total} · {subject}"))
+}
+
+const SAID_LIMIT: usize = 80;
+
+/// The first sentence of what a node said, when it is prose: not a tool, a path or code.
+fn said(message: &str) -> Option<String> {
+    let line = message.lines().map(str::trim).find(|line| !line.is_empty())?;
+    if line.starts_with(['`', '/', '~', '$']) || line.starts_with("mcp__") || line.starts_with("./")
+        || line.split_once(':').is_some_and(|(head, _)| TOOLS.contains(&head)) {
+        return None;
+    }
+    let sentence = line.char_indices()
+        .find(|(at, c)| matches!(c, '.' | '?' | '!') && line[at + c.len_utf8()..].starts_with(' '))
+        .map_or(line, |(at, c)| &line[..at + c.len_utf8()]);
+    if sentence.chars().count() <= SAID_LIMIT {
+        return Some(sentence.to_owned());
+    }
+    let cut: String = sentence.chars().take(SAID_LIMIT - 1).collect();
+    Some(format!("{}…", cut.rsplit_once(' ').map_or(cut.as_str(), |(head, _)| head)))
+}
+
+const TOOLS: [&str; 12] = ["Bash", "Edit", "Write", "MultiEdit", "NotebookEdit", "Read", "Grep", "Glob", "Agent", "Task", "WebSearch", "WebFetch"];
 
 /// How far the node's task list has got ("3/5"), while a step is still open.
 fn progress_badge(node: &super::LiveNode) -> Option<super::Label> {
@@ -327,7 +366,7 @@ pub(super) fn node_row(agent: &crate::domain::Agent, context: &RenderContext<'_>
             row.title = task.title.clone();
             row.subtitle = (task.title != name).then_some(name);
         }
-        row.children.extend(live.and_then(activity));
+        row.children.extend(live.and_then(|node| activity(node, context.lang)));
         row.actions.extend(interrupt_action(&agent.id.0, context));
         row.actions.extend(super::pacing::node_actions(&agent.id, context));
     } else {

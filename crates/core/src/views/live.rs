@@ -43,6 +43,12 @@ pub struct LiveSnapshot {
     pub task_history: BTreeMap<String, Vec<LiveHistoryStep>>,
     #[serde(default)]
     pub task_options: BTreeMap<String, LiveTaskOptions>,
+    /// When each open task last changed state, by task id: the Tasks list says since when its fact holds.
+    #[serde(default)]
+    pub task_since: BTreeMap<String, String>,
+    /// Why each cancelled task was cancelled, when someone said so.
+    #[serde(default)]
+    pub cancel_reasons: BTreeMap<String, String>,
     #[serde(default)]
     pub search_matches: Option<Vec<String>>,
     #[serde(default)]

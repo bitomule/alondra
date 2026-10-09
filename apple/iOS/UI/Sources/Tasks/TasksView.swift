@@ -60,9 +60,18 @@ public struct TasksView: View {
                 }
                 .padding(.top, 60)
             } else {
-                ForEach(board.active.requests) { request in
-                    RequestSection(request: request, open: { store.send(.open($0)) },
-                                   perform: { store.send(.perform($0)) })
+                if board.active.blocks.isEmpty {
+                    ForEach(board.active.requests) { request in
+                        RequestSection(request: request, openChains: store.openChains, open: { store.send(.open($0)) },
+                                       toggleChain: { store.send(.chainToggled($0), animation: .snappy) },
+                                       perform: { store.send(.perform($0)) })
+                    }
+                } else {
+                    ForEach(board.active.blocks) { block in
+                        TaskBlockSection(block: block, openChains: store.openChains, open: { store.send(.open($0)) },
+                                         toggleChain: { store.send(.chainToggled($0), animation: .snappy) },
+                                         perform: { store.send(.perform($0)) })
+                    }
                 }
                 if board.active.more != nil {
                     MoreButton(fold: board.active, loading: store.loadingMore.contains(board.active.id)) {
@@ -86,19 +95,23 @@ public struct TasksView: View {
     }
 }
 
-/// "3 requests · 1 needs you · 2 running", counted from the tasks on the screen.
+/// "4 for you · 3 in progress · 1 waiting", read from the same blocks the list shows; from an older daemon,
+/// "3 requests · 1 needs you · 2 running".
 private struct TasksSummary: View {
     let board: TasksBoard
 
-    private var parts: [LocalizedStringKey] {
+    private var parts: [Text] {
+        if !board.active.blocks.isEmpty {
+            return board.active.blocks.map { Text(verbatim: "\($0.count) \($0.title.lowercased())") }
+        }
         let tasks = board.active.requests.flatMap(\.tasks)
         let needsYou = tasks.count { $0.icon == .action }
         let inReview = tasks.count { $0.icon == .pullRequest }
         let running = tasks.count { $0.icon == .mission }
-        var parts: [LocalizedStringKey] = ["\(board.active.count) requests"]
-        if needsYou > 0 { parts.append("\(needsYou) need you") }
-        if inReview > 0 { parts.append("\(inReview) in review") }
-        if running > 0 { parts.append("\(running) running") }
+        var parts: [Text] = [Text("\(board.active.count) requests")]
+        if needsYou > 0 { parts.append(Text("\(needsYou) need you")) }
+        if inReview > 0 { parts.append(Text("\(inReview) in review")) }
+        if running > 0 { parts.append(Text("\(running) running")) }
         return parts
     }
 
@@ -110,17 +123,17 @@ private struct TasksSummary: View {
                 joined(Array(parts.dropFirst())).fixedSize()
             }
             VStack(alignment: .leading, spacing: 2) {
-                ForEach(Array(parts.enumerated()), id: \.offset) { _, part in Text(part) }
+                ForEach(Array(parts.enumerated()), id: \.offset) { _, part in part }
             }
         }
         .accessibilityElement(children: .combine)
     }
 
-    private func joined(_ parts: [LocalizedStringKey]) -> some View {
+    private func joined(_ parts: [Text]) -> some View {
         HStack(spacing: 5) {
             ForEach(Array(parts.enumerated()), id: \.offset) { index, part in
                 if index > 0 { Text(verbatim: "·") }
-                Text(part).lineLimit(1)
+                part.lineLimit(1)
             }
         }
     }

@@ -13,10 +13,12 @@ final class TasksSnapshotTests: XCTestCase {
     private let lightAndDark: [SnapshotVariant] = [.light, .dark]
 
     /// `opened` are the pages the daemon sends for a fold when it is opened.
-    private func tasks(_ document: ViewDocument, expanded: Set<String> = [], opened: [ViewDocument] = []) -> StoreOf<TasksFeature> {
+    private func tasks(_ document: ViewDocument, expanded: Set<String> = [], opened: [ViewDocument] = [],
+                       openChains: Set<String> = []) -> StoreOf<TasksFeature> {
         var state = TasksFeature.State()
         state.screen = .showing(document, key: .tasks)
         state.expanded = expanded
+        state.openChains = openChains
         for page in opened {
             for section in page.sections where expanded.contains(section.id) {
                 let rows = section.items.compactMap { if case .row(let row) = $0 { row } else { nil } }
@@ -85,9 +87,10 @@ final class TasksSnapshotTests: XCTestCase {
     }
 
     private func daemonsOwnTasks(_ document: ViewDocument, expanded: Set<String> = [], opened: [ViewDocument] = [],
-                                 height: CGFloat) -> some View {
+                                 openChains: Set<String> = [], height: CGFloat) -> some View {
         ScreenFrame(height: height) {
-            TasksView(store: tasks(document, expanded: expanded, opened: opened)).environment(\.referenceDate, screenReferenceDate)
+            TasksView(store: tasks(document, expanded: expanded, opened: opened, openChains: openChains))
+                .environment(\.referenceDate, screenReferenceDate)
         }
     }
 
@@ -99,6 +102,13 @@ final class TasksSnapshotTests: XCTestCase {
     func test_tasks_theDaemonsOwnFixture_spanish() throws {
         let document = try SampleViews.document("tasks-ios-es")
         assertScreen(lightAndDark, language: .spanish, inWindow: true) { daemonsOwnTasks(document, height: 1750) }
+    }
+
+    func test_tasks_theDaemonsOwnFixture_chainOpen_spanish() throws {
+        let document = try SampleViews.document("tasks-ios-es")
+        assertScreen(lightAndDark, language: .spanish, inWindow: true) {
+            daemonsOwnTasks(document, openChains: ["chain:t-651c38484cd2f34e74d5107ba05f7f15"], height: 2050)
+        }
     }
 
     func test_tasks_theDaemonsOwnFixture_foldsOpen() throws {

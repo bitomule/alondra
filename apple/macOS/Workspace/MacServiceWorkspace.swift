@@ -545,11 +545,7 @@ private struct MacViewSidebarRow: View {
                     set: { presentation.send(.rowExpanded(row.id, defaultExpanded: true, expanded: $0)) }
                 )) {
                     ForEach(visibleChildren, id: \.id) { child in
-                        if let selectionTag = selectionTag(for: child) {
-                            MacTaskSidebarRow(row: child).tag(selectionTag)
-                        } else {
-                            MacTaskSidebarRow(row: child)
-                        }
+                        MacTaskTree(row: child, presentation: presentation)
                     }
                 } label: { rowLabel }
             }
@@ -687,6 +683,34 @@ private struct MacViewSidebarRow: View {
     }
 }
 
+/// A task with what goes under it: a request's tasks open by default, a chain the daemon folds ("+7 waiting for
+/// this") stays closed until clicked.
+private struct MacTaskTree: View {
+    let row: Row
+    let presentation: StoreOf<MacPresentationFeature>
+    var body: some View {
+        if row.children.isEmpty {
+            tagged(MacTaskSidebarRow(row: row))
+        } else {
+            DisclosureGroup(isExpanded: Binding(
+                get: { presentation.withState { $0.rowExpanded(row.id, defaultExpanded: !row.folded) } },
+                set: { presentation.send(.rowExpanded(row.id, defaultExpanded: !row.folded, expanded: $0)) }
+            )) {
+                ForEach(row.children, id: \.id) { child in
+                    MacTaskTree(row: child, presentation: presentation)
+                }
+            } label: { tagged(MacTaskSidebarRow(row: row)) }
+        }
+    }
+    @ViewBuilder private func tagged(_ content: MacTaskSidebarRow) -> some View {
+        if case let .view(key)? = row.link {
+            content.tag(MacPresentationFeature.Selection.viewKey(key))
+        } else {
+            content
+        }
+    }
+}
+
 private struct MacTaskSidebarRow: View {
     let row: Row
     var body: some View {
@@ -695,11 +719,18 @@ private struct MacTaskSidebarRow: View {
                 StatusDot(color: taskColor).frame(width: 6)
                 Text(row.title).fontWeight(.medium).strikethrough(row.struck).lineLimit(2)
             }
-            if let subtitle = row.subtitle { Text(verbatim: subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
+            if let line { Text(verbatim: line).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
         }.padding(.vertical, 2).accessibilityElement(children: .combine)
     }
     private var taskColor: Color {
         color(forTaskRow: row)
+    }
+    /// The task's state and the fact that explains it, each once.
+    private var line: String? {
+        let state = row.badges.first?.text
+        guard let subtitle = row.subtitle else { return state }
+        guard let state, !subtitle.hasPrefix(state) else { return subtitle }
+        return "\(state) · \(subtitle)"
     }
 }
 

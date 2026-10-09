@@ -60,6 +60,7 @@ pub(super) fn row(
         struck: false,
         kind: None,
         children: vec![],
+        folded: false,
         actions: vec![],
     }
 }
@@ -116,7 +117,7 @@ pub(super) fn queued<'a>(task: &crate::domain::Task, context: &'a RenderContext<
     context.live.pacing.as_ref()?.queued.iter().find(|queued| queued.task_id == task.id.0)
 }
 
-fn ordinal(position: usize, lang: super::Lang) -> String {
+pub(super) fn ordinal(position: usize, lang: super::Lang) -> String {
     match lang {
         super::Lang::Es => format!("{position}.º"),
         super::Lang::En => {
@@ -217,11 +218,11 @@ pub(super) fn node_closed(task: &crate::domain::Task, context: &super::RenderCon
 }
 
 pub(super) fn node_closed_label(lang: super::Lang) -> &'static str {
-    super::text::t!(lang, "Node closed", "Nodo cerrado")
+    super::text::t!(lang, "Stopped", "Detenida")
 }
 
 pub(super) fn launch_failed_label(lang: super::Lang) -> &'static str {
-    super::text::t!(lang, "Did not start", "No arrancó")
+    super::text::t!(lang, "Didn't start", "No arrancó")
 }
 
 pub(super) fn task_presentation(state: crate::domain::TaskState) -> (super::Icon, super::Tone) {

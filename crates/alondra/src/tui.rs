@@ -700,6 +700,8 @@ pub struct App {
     pub task_zoom: bool,
     /// Sections the daemon sends folded that the user opened.
     pub open_sections: BTreeSet<String>,
+    /// Rows the daemon sends folded, such as a chain of waiting tasks, that the user opened.
+    pub open_rows: BTreeSet<String>,
     /// The rows of each opened section, fetched apart: the list view only says how many there are.
     pub section_pages: BTreeMap<String, alondra_core::views::Section>,
     /// The selected task's controls as the daemon computed them, by the revision they were read at.
@@ -1107,6 +1109,7 @@ impl App {
             task_view: View::default(),
             task_zoom: false,
             open_sections: BTreeSet::new(),
+            open_rows: BTreeSet::new(),
             section_pages: BTreeMap::new(),
             task_actions: HashMap::new(),
             task_actions_asked: HashSet::new(),
@@ -1271,7 +1274,7 @@ impl App {
             return Some(key.clone());
         }
         if let (Some(selected), Some(view)) = (self.sel.as_ref(), self.shown_home()) {
-            let entry = view_render::entries(&view, &self.open_sections)
+            let entry = view_render::entries(&view, &self.open_sections, &self.open_rows)
                 .into_iter()
                 .find(|(id, _, _)| *id == selected.0);
             if let Some((_, _, link)) = entry {
@@ -2145,11 +2148,13 @@ impl App {
         let home = self.home_view.as_ref()?;
         let paged = |section: &alondra_core::views::Section| section.collapsed && section.items.is_empty()
             && self.open_sections.contains(&section.id) && self.section_pages.contains_key(&section.id);
-        if self.hidden.is_empty() && self.in_flight.is_empty() && !home.sections.iter().any(paged) {
+        let blocks = home.sections.iter().any(view_render::has_blocks);
+        if self.hidden.is_empty() && self.in_flight.is_empty() && !home.sections.iter().any(paged) && !blocks {
             return Some(std::borrow::Cow::Borrowed(home));
         }
         let now = now_millis();
         let mut shown = home.clone();
+        view_render::lift_blocks(&mut shown.sections);
         for section in &mut shown.sections {
             if paged(section) && let Some(page) = self.section_pages.get(&section.id) {
                 section.items = page.items.clone();
@@ -2324,7 +2329,7 @@ impl App {
         }
         let opens = matches!(cmd, Cmd::Expand)
             || matches!(cmd, Cmd::Other(k) if k.code == KeyCode::Enter);
-        if opens && self.toggle_selected_section() {
+        if opens && (self.toggle_selected_section() || self.toggle_selected_fold()) {
             return Flow::Go;
         }
         match cmd {

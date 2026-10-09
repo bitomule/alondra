@@ -1,0 +1,300 @@
+//! One task in the words of the Tasks list: a short state, the one fact that explains it, since when that fact
+//! holds, and the block of the list it belongs to. Every task falls in one row of this table; none is left without
+//! a state.
+use super::{
+    Icon, LiveHold, LivePauseReason, RenderContext, Tone, common,
+    text::{t, tf},
+};
+use crate::domain::{Attention, Instruction, PrState, Task, TaskPriority, TaskState, WaitReason};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) enum Block {
+    /// It waits for something from the user.
+    ForYou,
+    InProgress,
+    Waiting,
+    Ended,
+}
+
+pub(super) struct Presentation {
+    pub state: String,
+    pub tone: Tone,
+    pub icon: Icon,
+    pub fact: Option<String>,
+    pub since: Option<String>,
+    pub block: Block,
+    /// It waits for other open tasks, so it is listed in the chain of the first of them.
+    pub chained: bool,
+    /// Its place in the queue of starts.
+    pub queue: Option<usize>,
+    /// When it last did something, to order the work in progress; a task at work shows no time.
+    pub active_at: Option<String>,
+}
+
+impl Presentation {
+    /// Where a request the orchestrator has not split yet sorts, as if it were a task.
+    pub(super) fn waiting_request(block: Block, since: Option<String>) -> Self {
+        Self { since, ..Self::new(String::new(), Tone::Neutral, block, None) }
+    }
+
+    fn new(state: impl Into<String>, tone: Tone, block: Block, fact: Option<String>) -> Self {
+        Self { state: state.into(), tone, icon: Icon::Task, fact, since: None, block, chained: false, queue: None, active_at: None }
+    }
+}
+
+pub(super) fn present(task: &Task, context: &RenderContext<'_>) -> Presentation {
+    let (icon, _) = common::task_presentation(task.state);
+    let mut presentation = classify(task, context);
+    presentation.icon = if presentation.tone == Tone::Warning && task.state != TaskState::NeedsYou { Icon::Notice } else { icon };
+    if presentation.since.is_none() && presentation.active_at.is_none() {
+        presentation.since = context.live.task_since.get(&task.id.0).cloned()
+            .or_else(|| context.live.task_history.get(&task.id.0).and_then(|history| history.last()).map(|step| step.at.clone()));
+    }
+    presentation
+}
+
+fn classify(task: &Task, context: &RenderContext<'_>) -> Presentation {
+    let (domain, lang) = (context.domain, context.lang);
+    use Block::*;
+    match task.state {
+        TaskState::Done => return Presentation::new(t!(lang, "Finished", "Terminada"), Tone::Success, Ended, Some(done_fact(task, context))),
+        TaskState::Cancelled => return Presentation::new(t!(lang, "Cancelled", "Cancelada"), Tone::Neutral, Ended,
+            context.live.cancel_reasons.get(&task.id.0).map(|reason| reason.trim().to_owned()).filter(|reason| !reason.is_empty())),
+        TaskState::Closing => return closing(task, context),
+        _ => {}
+    }
+    if let Some(paused) = common::paused(task, context) {
+        let at = &paused.at;
+        let fact = match paused.reason {
+            LivePauseReason::User => tf!(lang, "You paused it at {at}", "La pausaste a las {at}"),
+            LivePauseReason::Memory => tf!(lang, "For memory since {at} · resumes by itself", "Por memoria desde las {at} · se reanuda sola"),
+            LivePauseReason::Usage => t!(lang, "For the usage limit · back when it resets", "Por el límite de uso · vuelve cuando se reinicie").into(),
+            LivePauseReason::Machine => match paused.waits_for.as_deref().map(|reason| reason.trim().trim_end_matches('.')).filter(|reason| !reason.is_empty()) {
+                Some(reason) => tf!(lang, "{reason} · since {at}", "{reason} · desde las {at}"),
+                None => tf!(lang, "Waits for the Mac since {at}", "Espera al Mac desde las {at}"),
+            },
+        };
+        return Presentation::new(t!(lang, "Paused", "Pausada"), Tone::Neutral, Waiting, Some(fact));
+    }
+    if let Some((_, reason)) = domain.task_merge_failure(&task.id) {
+        return Presentation::new(t!(lang, "Couldn't merge", "No se pudo fusionar"), Tone::Warning, ForYou, Some(reason));
+    }
+    if let Attention::Wait(reason @ WaitReason::Answer { .. }) = domain.attention(task) {
+        return waiting_for(task, &reason, context);
+    }
+    match task.state {
+        TaskState::Running => running(task, context),
+        TaskState::NeedsYou => Presentation::new(t!(lang, "Needs you", "Te necesita"), Tone::Warning, ForYou, open_questions(task, context)),
+        TaskState::ForYourReview | TaskState::AwaitingBlocker => match domain.attention(task) {
+            Attention::Wait(reason) => waiting_for(task, &reason, context),
+            _ if task.state == TaskState::ForYourReview =>
+                Presentation::new(t!(lang, "Ready for review", "Para revisar"), Tone::Info, ForYou, review_fact(task, context)),
+            _ => Presentation::new(t!(lang, "Waiting", "Esperando"), Tone::Info, Waiting, None),
+        },
+        TaskState::WaitingDependency => waiting_dependency(task, context),
+        TaskState::NotStarted => not_started(task, context),
+        TaskState::Done | TaskState::Cancelled | TaskState::Closing => unreachable!("handled above"),
+    }
+}
+
+/// What a task that needs the user asks: its one open question, or how many it has. Never the task's own title.
+fn open_questions(task: &Task, context: &RenderContext<'_>) -> Option<String> {
+    let lang = context.lang;
+    let pending: Vec<_> = context.projection.inbox.iter()
+        .filter(|item| item.pending && item.task_id.as_ref() == Some(&task.id))
+        .collect();
+    match pending.as_slice() {
+        [] => None,
+        [one] if !one.card.need.trim().is_empty() && one.card.need.trim() != task.title.trim() => {
+            let need = one.card.need.trim();
+            Some(tf!(lang, "“{need}”", "«{need}»"))
+        }
+        [_] => Some(t!(lang, "1 open question", "1 pregunta abierta").into()),
+        many => {
+            let count = many.len();
+            Some(tf!(lang, "{count} open questions", "{count} preguntas abiertas"))
+        }
+    }
+}
+
+fn running(task: &Task, context: &RenderContext<'_>) -> Presentation {
+    let lang = context.lang;
+    let node = task.agent_id.as_ref().and_then(|id| context.live.nodes.iter().find(|node| node.agent_id == id.0));
+    let doing = node.and_then(|node| super::fleet::doing(node, lang));
+    let (fact, said_at) = doing.map_or((None, None), |(fact, at)| (Some(fact), at));
+    let active_at = said_at.or_else(|| node.and_then(|node| node.state_since.clone()))
+        .or_else(|| context.live.task_since.get(&task.id.0).cloned());
+    let state = match context.domain.task_handed_back(&task.id) {
+        Some(Instruction::Changes) => t!(lang, "Making changes", "Corrigiendo"),
+        Some(Instruction::Conflicts) => t!(lang, "Resolving conflicts", "Resolviendo conflictos"),
+        Some(Instruction::Question | Instruction::Reply) => t!(lang, "Answering you", "Respondiéndote"),
+        None if node.is_some_and(|node| node.reconnecting) => t!(lang, "Reconnecting", "Reconectando"),
+        None if node.is_some_and(|node| node.disconnected) =>
+            return Presentation { since: active_at, ..Presentation::new(t!(lang, "No connection", "Sin conexión"), Tone::Warning, Block::ForYou, fact) },
+        None if node.is_some_and(|node| node.quiet) =>
+            return Presentation { since: active_at, ..Presentation::new(t!(lang, "No activity", "Sin actividad"), Tone::Warning, Block::ForYou, fact) },
+        None => t!(lang, "Working", "Trabajando"),
+    };
+    let step = node.and_then(|node| super::fleet::step(node, lang));
+    Presentation { active_at, ..Presentation::new(state, Tone::Accent, Block::InProgress, step) }
+}
+
+fn closing(task: &Task, context: &RenderContext<'_>) -> Presentation {
+    let lang = context.lang;
+    let fact = if task.wrap_up.asked_at.is_some() {
+        t!(lang, "Cleaning up before closing", "Limpiando antes de cerrar")
+    } else {
+        t!(lang, "Accepted · Alondra merges its PR", "Aceptada · Alondra fusiona su PR")
+    };
+    Presentation::new(t!(lang, "Closing", "Cerrando"), Tone::Success, Block::InProgress, Some(fact.into()))
+}
+
+fn waiting_for(task: &Task, reason: &WaitReason, context: &RenderContext<'_>) -> Presentation {
+    let lang = context.lang;
+    match reason {
+        WaitReason::Answer { need } => Presentation::new(t!(lang, "Needs you", "Te necesita"), Tone::Warning, Block::ForYou,
+            Some(tf!(lang, "“{need}”", "«{need}»"))),
+        WaitReason::UpstreamPr { number } => waiting_pr(*number, lang),
+        WaitReason::NodeFixing { .. } => Presentation::new(t!(lang, "Resolving conflicts", "Resolviendo conflictos"), Tone::Accent,
+            Block::InProgress, None),
+        WaitReason::Merging { .. } | WaitReason::Closing => closing(task, context),
+        WaitReason::BlockedBy { task: blocker } => {
+            let title = context.domain.tasks.get(blocker).map_or(blocker.0.as_str(), |blocker| blocker.title.as_str());
+            Presentation::new(t!(lang, "Waiting", "Esperando"), Tone::Info, Block::Waiting,
+                Some(tf!(lang, "Waits for “{title}”", "Espera a «{title}»")))
+        }
+    }
+}
+
+fn waiting_pr(number: u64, lang: super::Lang) -> Presentation {
+    Presentation::new(t!(lang, "Waiting for PR", "Esperando PR"), Tone::Info, Block::Waiting,
+        Some(tf!(lang, "Waits for PR #{number} to merge", "Espera a que se fusione la PR #{number}")))
+}
+
+/// The open tasks this one still waits for.
+pub(super) fn open_dependencies<'a>(task: &Task, context: &RenderContext<'a>) -> Vec<&'a Task> {
+    task.dependencies.iter().chain(&task.delivered_dependencies)
+        .filter(|id| **id != task.id)
+        .filter_map(|id| context.domain.tasks.get(id))
+        .filter(|dependency| !dependency.state.terminal())
+        .collect()
+}
+
+fn chained(task: &Task, context: &RenderContext<'_>) -> Presentation {
+    let lang = context.lang;
+    let fact = open_dependencies(task, context).first()
+        .map(|dependency| tf!(lang, "Waits for “{title}”", "Espera a «{title}»", title = dependency.title));
+    Presentation { chained: true, ..Presentation::new(t!(lang, "Waiting", "Esperando"), Tone::Info, Block::Waiting, fact) }
+}
+
+fn waiting_dependency(task: &Task, context: &RenderContext<'_>) -> Presentation {
+    if let Some(pr) = task.stack.as_ref().and_then(|stack| context.domain.pull_requests.get(&stack.pr_id))
+        .filter(|pr| pr.state == PrState::Open) {
+        return waiting_pr(pr.number, context.lang);
+    }
+    if !open_dependencies(task, context).is_empty() {
+        return chained(task, context);
+    }
+    Presentation::new(t!(context.lang, "Waiting", "Esperando"), Tone::Info, Block::Waiting, None)
+}
+
+fn not_started(task: &Task, context: &RenderContext<'_>) -> Presentation {
+    let lang = context.lang;
+    use Block::*;
+    if task.agent_id.is_some() {
+        return Presentation::new(t!(lang, "Starting", "Arrancando"), Tone::Accent, InProgress,
+            Some(t!(lang, "Opening its session", "Abriendo su sesión").into()));
+    }
+    let didnt_start = |fact: String| Presentation::new(common::launch_failed_label(lang), Tone::Warning, ForYou, Some(fact));
+    if let Some(super::LiveStartWait::Retry { at }) = context.live.start_waits.get(&task.id.0) {
+        return Presentation::new(common::launch_failed_label(lang), Tone::Warning, Waiting,
+            Some(tf!(lang, "Trying again at {at}", "Reintento a las {at}")));
+    }
+    if let Some(refusal) = context.live.launch_refusals.get(&task.id.0) {
+        return didnt_start(match (refusal.reason.as_str(), refusal.detail.as_deref()) {
+            ("workspace_untrusted", Some(folder)) => tf!(lang, "Claude Code doesn't trust {folder}", "Claude Code no confía en {folder}"),
+            ("workspace_untrusted", None) => t!(lang, "Claude Code doesn't trust its folder", "Claude Code no confía en su carpeta").into(),
+            ("usage_exhausted", _) => t!(lang, "Claude usage ran out", "Se acabó el uso de Claude").into(),
+            ("disk_low", _) => t!(lang, "The disk is nearly full", "El disco está casi lleno").into(),
+            (_, Some(error)) => error.lines().next().unwrap_or(error).to_owned(),
+            _ => t!(lang, "Its launch failed", "Su lanzamiento falló").into(),
+        });
+    }
+    if let Some(error) = common::failed_launch(task, context.domain) {
+        return didnt_start(if error.is_empty() {
+            t!(lang, "The scheduled run could not launch it", "La ejecución programada no pudo lanzarla").into()
+        } else {
+            error.lines().next().unwrap_or(error).to_owned()
+        });
+    }
+    if common::node_closed(task, context) {
+        return Presentation::new(common::node_closed_label(lang), Tone::Warning, ForYou,
+            Some(t!(lang, "You closed its session before it delivered", "Cerraste su sesión sin que entregara").into()));
+    }
+    if !open_dependencies(task, context).is_empty() {
+        return chained(task, context);
+    }
+    if let Some(queued) = common::queued(task, context) {
+        let place = common::ordinal(queued.position, lang);
+        let of = queued.of;
+        let fact = match &queued.hold {
+            LiveHold::Next if queued.position == 1 => Some(t!(lang, "Starts within a minute", "Arranca en menos de un minuto").into()),
+            LiveHold::Slots { working, limit } => Some(tf!(lang, "{working} of {limit} working", "Hay {working} de {limit} trabajando")),
+            LiveHold::Memory { free: Some(free) } => Some(tf!(lang, "The Mac is short of memory ({free}% free)", "El Mac va justo de memoria ({free} % libre)")),
+            LiveHold::Memory { free: None } => Some(t!(lang, "The Mac is short of memory", "El Mac va justo de memoria").into()),
+            LiveHold::Cpu { load, cpus } => Some(tf!(lang, "The Mac is very busy (load {load} on {cpus} cores)", "El Mac está muy cargado (carga {load} en {cpus} núcleos)")),
+            LiveHold::Disk => Some(t!(lang, "The disk is nearly full", "El disco está casi lleno").into()),
+            LiveHold::Next => priority(task, lang),
+        };
+        return Presentation {
+            queue: Some(queued.position),
+            ..Presentation::new(tf!(lang, "Queued · {place} of {of}", "En cola · {place} de {of}"), Tone::Neutral, Waiting, fact)
+        };
+    }
+    match context.live.start_waits.get(&task.id.0) {
+        Some(_) if context.live.usage_exhausted.is_some() => Presentation::new(
+            t!(lang, "Queued", "En cola"), Tone::Neutral, Waiting,
+            Some(t!(lang, "Claude usage ran out · starts when it is back", "Se acabó el uso de Claude · arranca cuando vuelva").into())),
+        Some(_) => Presentation::new(t!(lang, "Queued", "En cola"), Tone::Neutral, Waiting,
+            Some(t!(lang, "Starts when there is room", "Arranca cuando haya sitio").into())),
+        None => Presentation::new(common::node_closed_label(lang), Tone::Warning, ForYou,
+            Some(t!(lang, "Its session ended before it delivered", "Su sesión terminó sin que entregara").into())),
+    }
+}
+
+fn priority(task: &Task, lang: super::Lang) -> Option<String> {
+    match task.priority {
+        TaskPriority::High => Some(t!(lang, "High priority", "Prioridad alta").into()),
+        TaskPriority::Low => Some(t!(lang, "Low priority", "Prioridad baja").into()),
+        TaskPriority::Normal => None,
+    }
+}
+
+fn pr_title(id: &str, context: &RenderContext<'_>) -> Option<String> {
+    context.live.pull_requests.iter().find(|pr| pr.id == id).and_then(|pr| pr.title.clone())
+}
+
+fn review_fact(task: &Task, context: &RenderContext<'_>) -> Option<String> {
+    let lang = context.lang;
+    if let Some(pr) = task.pr_id.as_ref().and_then(|id| context.domain.pull_requests.get(id)) {
+        let number = pr.number;
+        return Some(match pr_title(&pr.id.0, context) {
+            Some(title) => tf!(lang, "PR #{number} · {title}", "PR #{number} · {title}"),
+            None => tf!(lang, "PR #{number}", "PR #{number}"),
+        });
+    }
+    task.documents.keys().last().and_then(|id| context.domain.documents.get(id))
+        .map(|document| tf!(lang, "Document: {title}", "Documento: {title}", title = document.title))
+}
+
+fn done_fact(task: &Task, context: &RenderContext<'_>) -> String {
+    let lang = context.lang;
+    if let Some(pr) = task.pr_id.as_ref().and_then(|id| context.domain.pull_requests.get(id)).filter(|pr| pr.state == PrState::Merged) {
+        let number = pr.number;
+        return tf!(lang, "PR #{number} merged", "PR #{number} fusionada");
+    }
+    if !task.documents.is_empty() {
+        return t!(lang, "You accepted the document", "Aceptaste el documento").into();
+    }
+    t!(lang, "Delivered", "Entregada").into()
+}

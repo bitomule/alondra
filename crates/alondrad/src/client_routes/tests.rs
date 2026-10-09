@@ -1030,8 +1030,8 @@ async fn fleet_and_node_views_show_what_the_node_mods_report() {
 
     let fleet = view_json(&fixture, "fleet", "en").await;
     let a = node_row(&fleet, "agent-a");
-    let activity = a["children"].as_array().unwrap().iter().find(|child| child["id"] == "activity").unwrap();
-    assert_eq!(activity["title"], "Bash: bazel test //crates/...", "the tool the node runs now");
+    assert!(a["children"].as_array().is_none_or(|children| children.iter().all(|child| child["id"] != "activity")),
+        "a node at work shows neither its command nor a guess from it");
     let a_badges = badges(a);
     assert!(!a_badges.iter().any(|(text, _)| text.contains("Context") || text.contains('$')),
         "context and cost stay on the node's screen: {a_badges:?}");

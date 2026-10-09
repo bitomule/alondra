@@ -85,11 +85,13 @@ final class TasksBoardTests: XCTestCase {
         XCTAssertNotNil(daemons.archiveCompleted, "the BlurCamera request has finished tasks")
         XCTAssertEqual(daemons.schedules?.count, 0, "the daemon sends no count when nothing is scheduled")
         XCTAssertEqual(daemons.active.requests.count, 7)
+        XCTAssertEqual(daemons.active.count, 8, "the active work is counted in tasks")
     }
 
     func testAScheduledRunInProgressIsAnActiveRequestMarkedScheduled() throws {
         let board = TasksBoard(document: try Fixtures.document("tasks-ios"))
-        let request = try XCTUnwrap(board.active.requests.first { $0.id == "r-scheduled" })
+        XCTAssertEqual(board.active.blocks.map(\.id), ["block:for-you", "block:in-progress", "block:waiting"])
+        let request = try XCTUnwrap(board.active.requests.first { $0.id == "t-scheduled-lumo" })
         let task = try XCTUnwrap(request.tasks.first)
 
         XCTAssertTrue(request.isSingleTask)
@@ -99,37 +101,42 @@ final class TasksBoardTests: XCTestCase {
         XCTAssertEqual(task.tone, .accent, "the mark never takes the state's place")
 
         let spanish = TasksBoard(document: try Fixtures.document("tasks-ios-es"))
-        let marks = spanish.active.requests.first { $0.id == "r-scheduled" }?.tasks.first?.marks
+        let marks = spanish.active.requests.first { $0.id == "t-scheduled-lumo" }?.tasks.first?.marks
         XCTAssertEqual(marks, ["Programada"])
-        XCTAssertEqual(board.active.requests.first { $0.id == "r-badge" }?.tasks.first?.marks, [])
+        XCTAssertEqual(board.active.requests.first { $0.id == "t-badge-count" }?.tasks.first?.marks, [])
     }
 
-    func testATaskThatWaitsOnAnotherRequestsTaskIsNestedThereAndLeavesAShortRowInItsOwn() throws {
+    func testTheActiveWorkComesInBlocksWithTheirTitleAndCount() throws {
         let board = TasksBoard(document: try Fixtures.document("tasks-ios"))
-        let parent = try XCTUnwrap(board.active.requests.first { $0.title == "Polish the Alondra beta" })
-        let nested = try XCTUnwrap(parent.tasks.last)
 
-        XCTAssertEqual(parent.tasks.map(\.depth), [0, 1])
-        XCTAssertEqual(nested.id, "t-badge-decrement")
-        XCTAssertEqual(nested.origin, "from: Badge accuracy")
-        XCTAssertEqual(parent.taskCount, 1, "a task of another request is not one of its tasks")
-        XCTAssertFalse(parent.isSingleTask, "the nested task makes it a group, so its title shows")
+        XCTAssertEqual(board.active.blocks.map(\.title), ["For you", "In progress", "Waiting"])
+        XCTAssertEqual(board.active.blocks.map(\.count), [4, 3, 1], "a block counts its tasks, not the ones folded in a chain")
+        XCTAssertEqual(board.active.blocks.map(\.isCompact), [false, false, true], "only waiting work reads as short lines")
+        let forYou = try XCTUnwrap(board.active.blocks.first)
+        XCTAssertEqual(forYou.requests.map(\.isLoose), [false, true, true], "a request with a real title keeps its header")
+        XCTAssertEqual(forYou.requests.first?.title, "BlurCamera · weekly improvement")
+    }
 
-        let own = try XCTUnwrap(board.active.requests.first { $0.title == "Badge accuracy" })
-        XCTAssertEqual(own.tasks.map(\.isWait), [false, true])
-        let waits = try XCTUnwrap(own.tasks.last)
-        XCTAssertEqual(waits.title, "waits for Restore the native review experience")
-        XCTAssertEqual(waits.dependent, "Decrement the badge on retraction")
-        XCTAssertNil(waits.state)
-        XCTAssertEqual(waits.link, .view(key: "task:t-badge-decrement"))
-        XCTAssertEqual(own.taskCount, 1)
+    func testAChainOfWaitingTasksFoldsUnderItsFirstTaskFromOneAndOpensOneLevelDeep() throws {
+        let board = TasksBoard(document: try Fixtures.document("tasks-ios"))
+        let head = try XCTUnwrap(board.active.requests.first { $0.id == "t-651c38484cd2f34e74d5107ba05f7f15" })
+
+        XCTAssertEqual(head.lines(open: []).map(\.title), ["Restore the native review experience", "+1 waiting for this"])
+        XCTAssertEqual(head.lines(open: []).last?.isChain, true)
+        let open = head.lines(open: ["chain:t-651c38484cd2f34e74d5107ba05f7f15"])
+        XCTAssertEqual(open.map(\.title), ["Restore the native review experience", "+1 waiting for this", "Decrement the badge on retraction"])
+        XCTAssertEqual(open.last?.state, "waits for Restore the native review experience")
+        XCTAssertEqual(open.last?.chain, "chain:t-651c38484cd2f34e74d5107ba05f7f15")
+        XCTAssertTrue(board.active.requests.flatMap(\.tasks).allSatisfy { !$0.isWait && $0.origin == nil },
+                      "no «waits for» rows and no «from:» lines")
     }
 
     func testTheTasksOfAnUntitledRequestWithSeveralTasksStandLooseWithoutAHeader() throws {
         let board = TasksBoard(document: try Fixtures.document("tasks-ios"))
-        let loose = board.active.requests.filter(\.isLoose)
+        let loose = board.active.requests.filter { $0.id.hasPrefix("t-legacy") }
 
         XCTAssertEqual(loose.map(\.id), ["t-legacy-editor", "t-legacy-notes"])
+        XCTAssertEqual(loose.map(\.isLoose), [true, true])
         XCTAssertEqual(loose.map { $0.tasks.map(\.title) }, [["Review the schedule editor"], ["Write the release notes"]])
         XCTAssertEqual(loose.map(\.title), ["", ""])
     }
@@ -138,8 +145,11 @@ final class TasksBoardTests: XCTestCase {
         let board = TasksBoard(document: try Fixtures.document("tasks-ios"))
         let request = try XCTUnwrap(board.active.requests.first { $0.id == "r-new" })
 
-        XCTAssertEqual(request.title, "Import lists from Notes")
-        XCTAssertTrue(request.tasks.isEmpty)
+        XCTAssertTrue(request.isLoose, "it reads as one more row of its block, its time inside the row")
+        XCTAssertEqual(request.tasks.map(\.title), ["Import lists from Notes"])
+        XCTAssertEqual(request.tasks.first?.state, "The orchestrator is splitting it")
+        XCTAssertNotNil(request.tasks.first?.activityAt)
+        XCTAssertNil(request.tasks.first?.link)
     }
 
     func testARequestThatOnlyAnsweredIsFinishedAsAnswered() throws {
@@ -156,9 +166,10 @@ final class TasksBoardTests: XCTestCase {
         let board = TasksBoard(document: try Fixtures.document("tasks-ios"))
         XCTAssertTrue(board.finished.requests.isEmpty)
         XCTAssertEqual(board.finished.more?.remaining, UInt32(board.finished.count))
-        let live = try XCTUnwrap(board.active.requests.first { $0.id == "r-blurcamera" })
-        XCTAssertEqual(live.tasks.map(\.title), ["Link the website in app.json", "Photos extension hint after the first blur"])
-        XCTAssertEqual(live.tasks.map(\.state), ["Won't start: Claude Code doesn't trust ~/Projects/indie-apps", "No activity"])
+        let live = try XCTUnwrap(board.active.requests.first { $0.id == "group:r-blurcamera" })
+        XCTAssertEqual(live.tasks.filter { $0.depth == 0 }.map(\.title), ["Link the website in app.json", "Photos extension hint after the first blur"])
+        XCTAssertEqual(live.tasks.filter { $0.depth == 0 }.map(\.state), ["Didn't start", "No activity"])
+        XCTAssertEqual(live.tasks.first?.activity, "Claude Code doesn't trust ~/Projects/indie-apps")
 
         let page = try Fixtures.document("tasks-ios-finished")
         let ended = page.sections.first { $0.id == "finished" }?.items.compactMap { item -> String? in

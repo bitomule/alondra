@@ -4,7 +4,7 @@
   "view": "fleet",
   "key": "fleet",
   "client": "ios",
-  "version": "vd90f7bdf879afb3b",
+  "version": "vd292849adaf2dad8",
   "cursor": "cursor-1",
   "title": "Flota",
   "status": {
@@ -120,7 +120,7 @@
             {
               "id": "activity",
               "icon": "notice",
-              "title": "The simulator pass completed successfully.",
+              "title": "Dijo: «The simulator pass completed successfully.»",
               "trailing": {
                 "kind": "time",
                 "at": "2026-09-30T09:58:00Z",

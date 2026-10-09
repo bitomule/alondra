@@ -15,6 +15,7 @@ public struct TasksFeature: Sendable {
         public var screen = ScreenFeature.State(key: .tasks)
         public var actions = ActionFeature.State.ios()
         public var expanded: Set<String> = []
+        public var openChains: Set<String> = []
         public var pages: [String: TasksPage] = [:]
         public var pagesVersion: String?
         public var loadingMore: Set<String> = []
@@ -31,6 +32,7 @@ public struct TasksFeature: Sendable {
         case task
         case refresh
         case foldToggled(String)
+        case chainToggled(String)
         case showMore(String)
         case moreLoaded(String, request: UUID, ViewDocument)
         case moreFailed(String, request: UUID)
@@ -80,6 +82,9 @@ public struct TasksFeature: Sendable {
                 }
                 guard state.pages[id] == nil else { return .none }
                 return .send(.showMore(id))
+            case .chainToggled(let id):
+                if !state.openChains.insert(id).inserted { state.openChains.remove(id) }
+                return .none
             case .showMore(let id):
                 guard let board = state.board, state.loadingMore.insert(id).inserted,
                       let more = [board.active, board.finished, board.archived].first(where: { $0.id == id })?.more

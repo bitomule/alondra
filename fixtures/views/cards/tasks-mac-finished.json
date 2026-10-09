@@ -4,7 +4,7 @@
   "view": "tasks",
   "key": "tasks?section=finished&after=0",
   "client": "mac",
-  "version": "vbb8ab9023373bfdf",
+  "version": "vda6c38e07bbe3a2a",
   "cursor": "cursor-1",
   "title": "Tasks",
   "status": {
@@ -81,74 +81,166 @@
     {
       "id": "active",
       "title": "Active",
-      "count": 6,
+      "count": 8,
       "collapsed": false,
       "items": [
         {
           "type": "row",
-          "id": "r-9f2156b5a8894e53901f0af576dff6a2",
-          "link": {
-            "kind": "view",
-            "key": "task:t-651c38484cd2f34e74d5107ba05f7f15"
-          },
-          "icon": "action",
-          "title": "Polish the Alondra beta",
-          "badges": [
-            {
-              "text": "Needs you",
-              "tone": "warning"
-            }
-          ],
+          "id": "block:for-you",
+          "icon": "task",
+          "title": "For you",
           "trailing": {
-            "kind": "time",
-            "at": "2026-09-30T09:40:00.000Z",
-            "format": "relative"
+            "kind": "text",
+            "text": "4"
           },
           "depth": 0,
           "struck": false,
           "children": [
             {
-              "id": "t-badge-decrement",
+              "id": "group:r-blurcamera",
               "link": {
                 "kind": "view",
-                "key": "task:t-badge-decrement"
+                "key": "task:t-hf-share-hint"
               },
-              "icon": "task",
-              "title": "Decrement the badge on retraction",
-              "subtitle": "Waits for “Restore the native review experience” · from: Badge accuracy",
+              "icon": "mission",
+              "title": "BlurCamera · weekly improvement",
+              "depth": 1,
+              "struck": false,
+              "children": [
+                {
+                  "id": "t-hf-registry",
+                  "link": {
+                    "kind": "view",
+                    "key": "task:t-hf-registry"
+                  },
+                  "icon": "notice",
+                  "title": "Link the website in app.json",
+                  "subtitle": "Claude Code doesn't trust ~/Projects/indie-apps",
+                  "badges": [
+                    {
+                      "text": "Didn't start",
+                      "tone": "warning"
+                    }
+                  ],
+                  "depth": 2,
+                  "struck": false
+                },
+                {
+                  "id": "t-hf-share-hint",
+                  "link": {
+                    "kind": "view",
+                    "key": "task:t-hf-share-hint"
+                  },
+                  "icon": "notice",
+                  "title": "Photos extension hint after the first blur",
+                  "subtitle": "Said: “Waiting for the snapshot run to finish.”",
+                  "badges": [
+                    {
+                      "text": "No activity",
+                      "tone": "warning"
+                    }
+                  ],
+                  "depth": 2,
+                  "struck": false
+                }
+              ]
+            },
+            {
+              "id": "t-651c38484cd2f34e74d5107ba05f7f15",
+              "link": {
+                "kind": "view",
+                "key": "task:t-651c38484cd2f34e74d5107ba05f7f15"
+              },
+              "icon": "action",
+              "title": "Restore the native review experience",
+              "subtitle": "5 open questions",
               "badges": [
                 {
-                  "text": "Waits for “Restore the native review experience”",
-                  "tone": "neutral"
+                  "text": "Needs you",
+                  "tone": "warning"
                 }
               ],
               "trailing": {
-                "kind": "count",
-                "value": 0
+                "kind": "text",
+                "text": "5 questions"
               },
-              "depth": 2,
+              "depth": 1,
+              "struck": false,
+              "children": [
+                {
+                  "id": "chain:t-651c38484cd2f34e74d5107ba05f7f15",
+                  "icon": "branch",
+                  "title": "+1 waiting for this",
+                  "depth": 2,
+                  "struck": false,
+                  "children": [
+                    {
+                      "id": "t-badge-decrement",
+                      "link": {
+                        "kind": "view",
+                        "key": "task:t-badge-decrement"
+                      },
+                      "icon": "branch",
+                      "title": "Decrement the badge on retraction",
+                      "subtitle": "waits for Restore the native review experience",
+                      "badges": [
+                        {
+                          "text": "Waiting",
+                          "tone": "info"
+                        }
+                      ],
+                      "depth": 3,
+                      "struck": false
+                    }
+                  ],
+                  "folded": true
+                }
+              ]
+            },
+            {
+              "id": "t-legacy-editor",
+              "link": {
+                "kind": "view",
+                "key": "task:t-legacy-editor"
+              },
+              "icon": "pull_request",
+              "title": "Review the schedule editor",
+              "badges": [
+                {
+                  "text": "Ready for review",
+                  "tone": "info"
+                }
+              ],
+              "depth": 1,
               "struck": false
             }
           ]
         },
         {
           "type": "row",
-          "id": "r-badge",
-          "link": {
-            "kind": "view",
-            "key": "task:t-badge-decrement"
-          },
-          "icon": "mission",
-          "title": "Badge accuracy",
-          "subtitle": "Active",
+          "id": "block:in-progress",
+          "icon": "task",
+          "title": "In progress",
           "trailing": {
-            "kind": "time",
-            "at": "2026-09-30T09:52:00.000Z",
-            "format": "relative"
+            "kind": "text",
+            "text": "3"
           },
           "depth": 0,
           "struck": false,
           "children": [
+            {
+              "id": "r-new",
+              "icon": "mission",
+              "title": "Import lists from Notes",
+              "subtitle": "The orchestrator is splitting it",
+              "trailing": {
+                "kind": "time",
+                "at": "2026-09-30T09:59:00.000Z",
+                "format": "relative"
+              },
+              "depth": 1,
+              "struck": false
+            },
             {
               "id": "t-badge-count",
               "link": {
@@ -157,29 +249,33 @@
               },
               "icon": "mission",
               "title": "Count the retracted pushes",
-              "subtitle": "Working",
               "badges": [
                 {
                   "text": "Working",
                   "tone": "accent"
                 }
               ],
-              "trailing": {
-                "kind": "count",
-                "value": 0
-              },
               "depth": 1,
               "struck": false
             },
             {
-              "id": "waits:t-badge-decrement:t-651c38484cd2f34e74d5107ba05f7f15",
+              "id": "t-scheduled-lumo",
               "link": {
                 "kind": "view",
-                "key": "task:t-badge-decrement"
+                "key": "task:t-scheduled-lumo"
               },
-              "icon": "branch",
-              "title": "waits for Restore the native review experience",
-              "subtitle": "Decrement the badge on retraction",
+              "icon": "mission",
+              "title": "Lumo · weekly improvement",
+              "badges": [
+                {
+                  "text": "Working",
+                  "tone": "accent"
+                },
+                {
+                  "text": "Scheduled",
+                  "tone": "neutral"
+                }
+              ],
               "depth": 1,
               "struck": false
             }
@@ -187,144 +283,35 @@
         },
         {
           "type": "row",
-          "id": "r-blurcamera",
-          "link": {
-            "kind": "view",
-            "key": "task:t-hf-share-hint"
+          "id": "block:waiting",
+          "icon": "task",
+          "title": "Waiting",
+          "trailing": {
+            "kind": "text",
+            "text": "1"
           },
-          "icon": "mission",
-          "title": "BlurCamera · weekly improvement",
-          "subtitle": "Active",
           "depth": 0,
           "struck": false,
           "children": [
             {
-              "id": "t-hf-registry",
+              "id": "t-legacy-notes",
               "link": {
                 "kind": "view",
-                "key": "task:t-hf-registry"
+                "key": "task:t-legacy-notes"
               },
-              "icon": "task",
-              "title": "Link the website in app.json",
-              "subtitle": "Won't start: Claude Code doesn't trust ~/Projects/indie-apps",
+              "icon": "notice",
+              "title": "Write the release notes",
+              "subtitle": "Trying again at 10:15",
               "badges": [
                 {
-                  "text": "Won't start: Claude Code doesn't trust ~/Projects/indie-apps",
-                  "tone": "neutral"
+                  "text": "Didn't start",
+                  "tone": "warning"
                 }
               ],
-              "trailing": {
-                "kind": "count",
-                "value": 0
-              },
-              "depth": 1,
-              "struck": false
-            },
-            {
-              "id": "t-hf-share-hint",
-              "link": {
-                "kind": "view",
-                "key": "task:t-hf-share-hint"
-              },
-              "icon": "mission",
-              "title": "Photos extension hint after the first blur",
-              "subtitle": "No activity",
-              "badges": [
-                {
-                  "text": "No activity",
-                  "tone": "accent"
-                }
-              ],
-              "trailing": {
-                "kind": "count",
-                "value": 0
-              },
               "depth": 1,
               "struck": false
             }
           ]
-        },
-        {
-          "type": "row",
-          "id": "t-legacy-editor",
-          "link": {
-            "kind": "view",
-            "key": "task:t-legacy-editor"
-          },
-          "icon": "pull_request",
-          "title": "Review the schedule editor",
-          "subtitle": "In review",
-          "badges": [
-            {
-              "text": "In review",
-              "tone": "info"
-            }
-          ],
-          "trailing": {
-            "kind": "count",
-            "value": 0
-          },
-          "depth": 1,
-          "struck": false
-        },
-        {
-          "type": "row",
-          "id": "t-legacy-notes",
-          "link": {
-            "kind": "view",
-            "key": "task:t-legacy-notes"
-          },
-          "icon": "task",
-          "title": "Write the release notes",
-          "subtitle": "Didn't start: trying again at 10:15",
-          "badges": [
-            {
-              "text": "Didn't start: trying again at 10:15",
-              "tone": "neutral"
-            }
-          ],
-          "trailing": {
-            "kind": "count",
-            "value": 0
-          },
-          "depth": 1,
-          "struck": false
-        },
-        {
-          "type": "row",
-          "id": "r-new",
-          "icon": "mission",
-          "title": "Import lists from Notes",
-          "subtitle": "The orchestrator is splitting it",
-          "trailing": {
-            "kind": "time",
-            "at": "2026-09-30T09:59:00.000Z",
-            "format": "relative"
-          },
-          "depth": 0,
-          "struck": false
-        },
-        {
-          "type": "row",
-          "id": "r-scheduled",
-          "link": {
-            "kind": "view",
-            "key": "task:t-scheduled-lumo"
-          },
-          "icon": "mission",
-          "title": "Lumo · weekly improvement",
-          "badges": [
-            {
-              "text": "Working",
-              "tone": "accent"
-            },
-            {
-              "text": "Scheduled",
-              "tone": "neutral"
-            }
-          ],
-          "depth": 0,
-          "struck": false
         }
       ]
     },
@@ -352,7 +339,6 @@
           },
           "icon": "mission",
           "title": "BlurCamera · weekly improvement",
-          "subtitle": "The rest is still under way",
           "depth": 0,
           "struck": false,
           "children": [
@@ -364,17 +350,13 @@
               },
               "icon": "check",
               "title": "Lifetime offer when the paywall closes",
-              "subtitle": "Finished",
+              "subtitle": "Delivered",
               "badges": [
                 {
                   "text": "Finished",
                   "tone": "success"
                 }
               ],
-              "trailing": {
-                "kind": "count",
-                "value": 0
-              },
               "depth": 1,
               "struck": false
             },
@@ -386,17 +368,13 @@
               },
               "icon": "check",
               "title": "Post: blur faces in a video on iPhone",
-              "subtitle": "Finished",
+              "subtitle": "Delivered",
               "badges": [
                 {
                   "text": "Finished",
                   "tone": "success"
                 }
               ],
-              "trailing": {
-                "kind": "count",
-                "value": 0
-              },
               "depth": 1,
               "struck": false
             }
