@@ -133,7 +133,7 @@ public actor FeedSession {
                 requiredEpoch = dataEpoch
                 continue
             }
-            // A terminal one-off failure owns its result without retaining the key forever.
+            // A terminal one-off result owns its bytes without retaining the key forever.
             if completion.retired {
                 if let document = documents[key] {
                     return known == document.version ? .unchanged(cursor: cursor ?? document.cursor) : .document(document)
@@ -267,8 +267,14 @@ public actor FeedSession {
                 }
             }
             if case .success = accepted {
-                documents[request.key] = document
-                versions[request.key] = document.version
+                let transientPicker = request.key == "issue_picker" || request.key.hasPrefix("issue_picker?")
+                if transientPicker && !openKeys.contains(request.key) {
+                    documents[request.key] = nil
+                    versions[request.key] = nil
+                } else {
+                    documents[request.key] = document
+                    versions[request.key] = document.version
+                }
                 if !feedOwnsCursor, cursorLoadOwner == id || cursor == nil {
                     cursor = document.cursor
                 }
