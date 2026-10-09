@@ -85,7 +85,12 @@ pub enum NodeFact {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum StartProblem {
     LaunchFailed { error: String },
-    Untrusted { folder: String },
+    Untrusted {
+        folder: String,
+        /// Why Alondra could not trust it when the user asked it to.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
     NodeClosed,
     DependencyCancelled { dependency: TaskId },
 }

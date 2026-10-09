@@ -261,41 +261,6 @@ pub fn delivery_withdrawn_behind_pr(number: u64) -> String {
     format!("Pull request #{number} has commits your final delivery does not include, so that delivery was withdrawn \
 and the task is in progress again. When the work is ready, present your result again with the pull request at its new head.")
 }
-/// The card that tells the user why a task cannot start by itself, with the ways out.
-fn start_problem_card(title: &str, problem: &StartProblem, dependency: Option<&str>) -> (CardSpec, Vec<QuestionOption>) {
-    let option = |id: &str, label: &str, description: &str| QuestionOption { id: id.into(), label: label.into(), description: Some(description.into()), inputs: vec![] };
-    let cancel = option(START_CANCEL, "Cancel the task", "The task closes without starting");
-    let retry = |label: &str| option(START_RETRY, label, "Alondra starts it again as soon as there is room");
-    let need = |text: String| clip(&text, CardSpec::NEED_MAX);
-    match problem {
-        StartProblem::LaunchFailed { error } => (
-            CardSpec::new(CardKind::Problem, need(format!("“{title}” does not start")))
-                .why(clip(&format!("Alondra tried to start it {} times and it failed every time.", START_RETRIES.len() + 1), CardSpec::WHY_MAX))
-                .content(ContentKind::Diagnosis, error.trim()),
-            vec![retry("Try again"), cancel],
-        ),
-        StartProblem::Untrusted { folder } => (
-            CardSpec::new(CardKind::Problem, need(format!("Trust {folder} so “{title}” can start")))
-                .why(clip("Claude Code does not trust this folder yet, and only you can trust it.", CardSpec::WHY_MAX))
-                .content(ContentKind::Steps, &format!("1. Open a terminal in {folder}.\n2. Run `claude` and accept that you trust the folder.\n3. Choose «I trust it, try again» here.")),
-            vec![retry("I trust it, try again"), cancel],
-        ),
-        StartProblem::NodeClosed => (
-            CardSpec::new(CardKind::Problem, need(format!("Relaunch “{title}” or cancel it")))
-                .why(clip("Its node was closed while the task was still open. A relaunch starts a new node in the same folder, with its files.", CardSpec::WHY_MAX)),
-            vec![option(START_RETRY, "Relaunch", "A new node starts it in the folder the closed one worked in"), cancel],
-        ),
-        StartProblem::DependencyCancelled { .. } => {
-            let other = dependency.unwrap_or("A task it depends on");
-            (
-                CardSpec::new(CardKind::Problem, need(format!("“{other}” was cancelled: start “{title}” without it?")))
-                    .why(clip(&format!("“{title}” was waiting for “{other}” to finish, and it will not."), CardSpec::WHY_MAX)),
-                vec![option(START_WITHOUT, "Start without it", "It no longer waits for that task and starts when there is room"),
-                    option(START_CANCEL, "Cancel this task", "It closes without starting")],
-            )
-        }
-    }
-}
 pub fn cancelled_notice(title: &str) -> String {
     format!("Your task “{title}” was cancelled. Stop working on it now and do not start anything new \
 for it: do not commit, push, register a pull request or deliver anything. Before you end your \
@@ -2060,10 +2025,12 @@ impl DomainState {
                 let title = task.title.clone();
                 let n = self.interactions.keys().filter(|i| i.0.starts_with(&format!("{START_PROBLEM_PREFIX}{}-", task_id.0))).count() + 1;
                 let problem_id = InteractionId(format!("{START_PROBLEM_PREFIX}{}-{n}", task_id.0));
-                let (card, options) = start_problem_card(&title, problem, self.tasks.get(match problem {
-                    StartProblem::DependencyCancelled { dependency } => dependency,
-                    _ => task_id,
-                }).map(|t| t.title.as_str()));
+                let dependency = match problem {
+                    StartProblem::DependencyCancelled { dependency } => self.tasks.get(dependency).map(|t| t.title.as_str()),
+                    _ => None,
+                };
+                let card = crate::start_problem::card(&title, problem, dependency, crate::views::Lang::En);
+                let options = crate::start_problem::options(problem, crate::views::Lang::En);
                 self.insert_interaction(
                     actor,
                     &problem_id,

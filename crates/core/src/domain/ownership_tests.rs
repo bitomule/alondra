@@ -180,7 +180,7 @@ impl World {
             Step::LaunchFails { pick, untrusted } => {
                 let Some(task) = self.pick(pick, |t, f| Self::unstarted(t) && matches!(f.start, Start::Ready | Start::Launching)) else { return };
                 let problem = if untrusted {
-                    StartProblem::Untrusted { folder: "/synthetic/Projects/BlurCamera".into() }
+                    StartProblem::Untrusted { folder: "/synthetic/Projects/BlurCamera".into(), error: None }
                 } else {
                     StartProblem::LaunchFailed { error: "claude exited with status 1".into() }
                 };

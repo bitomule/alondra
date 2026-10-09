@@ -142,7 +142,8 @@ async fn invoke_claimed(
             "schedule project directory does not exist".into(),
         ));
     }
-    if let Some(repository) = crate::claude_trust::check(Path::new(&launch.cwd)) {
+    let projects_root = options_at(home).ok().map(|file| file.projects_root(&crate::options::user_home()));
+    if let Some(repository) = crate::claude_trust::ensure(Path::new(&launch.cwd), projects_root.as_deref()) {
         return Err((
             StatusCode::CONFLICT,
             crate::claude_trust::instructions(&repository),
@@ -1514,11 +1515,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_repository_claude_does_not_trust_is_never_launched_and_the_orchestrator_hears_why() {
+    async fn a_repository_alondra_cannot_trust_is_never_launched_and_the_orchestrator_hears_why() {
         let fixture = Fixture::new();
         let config = fixture.root.join(".claude.json");
         std::fs::write(&config, r#"{"projects":{}}"#).unwrap();
         crate::claude_trust::use_config_for_test(&config);
+        std::fs::create_dir(fixture.root.join(".claude.json.lock")).unwrap();
         fixture.claim("untrusted");
         let launcher = CountingLauncher {
             calls: Mutex::new(0),
