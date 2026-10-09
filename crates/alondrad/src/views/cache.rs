@@ -133,4 +133,27 @@ mod tests {
         assert_eq!(first, second);
         assert_eq!(cache.builds.load(std::sync::atomic::Ordering::Relaxed), 1);
     }
+    #[test]
+    fn render_clock_separates_language_epoch_revision_and_live_inbox_times() {
+        let cache = Cache::default();
+        let mut domain = DomainState::new("epoch");
+        let mut live = LiveSnapshot::default();
+        let first = cache.render("home", &domain, &live, Client::Ios, Lang::En, Transport::Loopback).unwrap();
+        let spanish = cache.render("home", &domain, &live, Client::Ios, Lang::Es, Transport::Loopback).unwrap();
+        assert_ne!(first.status.version, spanish.status.version);
+        assert_ne!(first, spanish);
+        assert_eq!(cache.render("home", &domain, &live, Client::Ios, Lang::En, Transport::Loopback).unwrap(), first);
+        assert_eq!(cache.builds.load(std::sync::atomic::Ordering::Relaxed), 2);
+        domain.revision += 1;
+        let revised = cache.render("home", &domain, &live, Client::Ios, Lang::En, Transport::Loopback).unwrap();
+        assert_ne!(revised.cursor, first.cursor);
+        domain.data_epoch = "restored-epoch".into();
+        let restored = cache.render("home", &domain, &live, Client::Ios, Lang::En, Transport::Loopback).unwrap();
+        assert_ne!(restored.cursor, revised.cursor);
+        live.inbox_times.push(views::InboxTime { id: "interaction:notice".into(), at: "2026-09-30T10:00:00Z".into() });
+        let changed = cache.render("home", &domain, &live, Client::Ios, Lang::En, Transport::Loopback).unwrap();
+        assert_ne!(changed.cursor, restored.cursor);
+        assert_eq!(cache.builds.load(std::sync::atomic::Ordering::Relaxed), 5);
+    }
+
 }

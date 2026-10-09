@@ -300,8 +300,7 @@ pub(crate) async fn gather(
     });
     let inbox_times = if clock_only { vec![] } else {
         let orders = state
-            .projection()
-            .inbox
+            .inbox_projection()
             .into_iter()
             .map(|item| (item.id, item.order))
             .collect::<Vec<_>>();
@@ -642,6 +641,42 @@ mod cache_tests {
         assert_eq!(published_gauges(&mut published, now + std::time::Duration::from_secs(120), Lang::En, || {
             (vec![gauge("60%", 0.6)], vec![])
         })[0].text, "60%");
+    }
+
+    #[tokio::test]
+    async fn inbox_times_follow_server_order_and_committed_revision_times_in_both_languages() {
+        use alondra_core::domain::{Recipient, Scope};
+        let home = crate::test_support::Directory::new();
+        fs::create_dir_all(&home).unwrap();
+        let domain = Arc::new(crate::domain_runtime::DomainRuntime::open(&home).unwrap());
+        let client = crate::client_routes::Client::open(domain.clone(), &home, Arc::new(std::sync::Mutex::new(None)));
+        let mut orders = vec![];
+        for id in ["z-first", "a-second"] {
+            let state = domain.state().unwrap();
+            domain.execute(&Actor::Orchestrator { generation: 0 }, &CommandEnvelope {
+                protocol_version: 2, data_epoch: state.data_epoch.clone(),
+                command_id: format!("notice-{id}").into(), expected_revision: state.revision,
+                command: Command::PublishInformation {
+                    attachments: vec![], interaction_id: id.into(),
+                    scope: Scope::Orchestrator { request_id: None }, recipient: Recipient::User,
+                    body: id.into(), card: alondra_core::domain::CardSpec::new(alondra_core::domain::CardKind::Know, "Read the update"),
+                },
+            }, None, || Ok(())).unwrap();
+            orders.push(domain.state().unwrap().revision);
+        }
+        let state = domain.state().unwrap();
+        let before = serde_json::to_vec(&*state).unwrap();
+        let times = domain.store.lock().unwrap().revision_times(&orders).unwrap();
+        assert_eq!(times.len(), 2, "both source commits must exist");
+        for lang in [Lang::En, Lang::Es] {
+            let snapshot = gather(&client, &state, lang, &[], false, false).await;
+            assert_eq!(snapshot.inbox_times.iter().map(|i| (i.id.as_str(), i.at.clone())).collect::<Vec<_>>(), vec![
+                ("interaction:z-first", timestamp(times[&orders[0]])),
+                ("interaction:a-second", timestamp(times[&orders[1]])),
+            ]);
+            assert!(gather(&client, &state, lang, &[], false, true).await.inbox_times.is_empty());
+        }
+        assert_eq!(serde_json::to_vec(&*domain.state().unwrap()).unwrap(), before);
     }
 
     #[tokio::test]
