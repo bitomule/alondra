@@ -360,9 +360,9 @@ fn drain_sql(journal: &Journal, runtime: &tokio::runtime::Runtime, physical: usi
 }
 
 #[test]
-fn nineteen_lifecycles_reject_overflow_before_ack_and_recover_the_same_envelope() {
+fn bounded_lifecycles_reject_overflow_before_ack_and_recover_the_same_envelope() {
     let (_directory, service, runtime) = transition_fixture();
-    let held: Vec<_> = (0..19)
+    let held: Vec<_> = (0..MAX_JOURNAL_RECEIPTS)
         .map(|index| prepared_ticket(&service, &format!("held-{index}")).1)
         .collect();
     let available = service
@@ -442,7 +442,8 @@ fn nineteen_lifecycles_reject_overflow_before_ack_and_recover_the_same_envelope(
         .query_row("SELECT n FROM binding_effects", [], |row| row.get(0))
         .unwrap();
     println!(
-        "receipt_lifecycles held=19 available={available} rejected={} before_ack={before_ack} before_row={before_row} before_effect={before_effect} effects_after={effects} available_after={} reservations={}",
+        "receipt_lifecycles held={} available={available} rejected={} before_ack={before_ack} before_row={before_row} before_effect={before_effect} effects_after={effects} available_after={} reservations={}",
+        MAX_JOURNAL_RECEIPTS,
         rejected,
         service.journal.receipt_admissions.available_permits(),
         service.inflight.lock().unwrap().len()
@@ -455,8 +456,8 @@ fn nineteen_lifecycles_reject_overflow_before_ack_and_recover_the_same_envelope(
     assert_eq!(replies[1].as_ref().unwrap(), replies[2].as_ref().unwrap());
     assert_eq!(effects, 1);
     assert_eq!(acknowledgements.load(Ordering::SeqCst), 3);
-    assert_eq!(service.journal.receipt_admissions.available_permits(), 19);
-    assert_eq!(service.journal.accept_admissions.available_permits(), 18);
+    assert_eq!(service.journal.receipt_admissions.available_permits(), MAX_JOURNAL_RECEIPTS);
+    assert_eq!(service.journal.accept_admissions.available_permits(), MAX_JOURNAL_ACCEPTS);
     assert_eq!(service.journal.accept_jobs.available_permits(), 1);
     assert!(service.inflight.lock().unwrap().is_empty());
 }
@@ -535,11 +536,11 @@ fn queued_transition_cancellation_runs_no_sql_and_releases_only_its_ticket() {
     assert_eq!(pending.unwrap(), true);
     assert!(cancelled.is_err_and(|error| error.is_cancelled()));
     assert_eq!(retained, 1);
-    assert_eq!(available, 18);
+    assert_eq!(available, MAX_JOURNAL_RECEIPTS - 1);
     assert!(!called.load(Ordering::SeqCst));
     assert_eq!(state, "accepted");
     assert!(first_result.unwrap().is_ok());
-    assert_eq!(service.journal.receipt_admissions.available_permits(), 19);
+    assert_eq!(service.journal.receipt_admissions.available_permits(), MAX_JOURNAL_RECEIPTS);
     assert!(service.inflight.lock().unwrap().is_empty());
 }
 
@@ -619,14 +620,14 @@ fn started_transitions_keep_the_ticket_and_reservation_until_physical_exit() {
         );
         assert!(entered.is_ok());
         assert!(cancelled.is_err_and(|error| error.is_cancelled()));
-        assert_eq!((retained, available, busy), (1, 18, 0));
+        assert_eq!((retained, available, busy), (1, MAX_JOURNAL_RECEIPTS - 1, 0));
         assert!(duplicate);
         if stage == ReceiptWrite::Complete {
             assert_eq!(final_row, ("completed".into(), Some(expected)));
         } else {
             assert_eq!(final_row, ("executing".into(), None));
         }
-        assert_eq!(service.journal.receipt_admissions.available_permits(), 19);
+        assert_eq!(service.journal.receipt_admissions.available_permits(), MAX_JOURNAL_RECEIPTS);
         assert!(service.inflight.lock().unwrap().is_empty());
     }
 }
@@ -700,7 +701,7 @@ fn completion_keeps_the_owned_response_allocation_and_errors_release_capacity() 
         receipt,
     ));
     assert!(rejected.is_err());
-    assert_eq!(service.journal.receipt_admissions.available_permits(), 19);
+    assert_eq!(service.journal.receipt_admissions.available_permits(), MAX_JOURNAL_RECEIPTS);
     let (_, receipt, digest) = prepared_ticket(&service, "missing-journal");
     std::fs::remove_file(&service.journal.path).unwrap();
     let missing = runtime.block_on(service.journal.executing_admitted(
@@ -712,7 +713,7 @@ fn completion_keeps_the_owned_response_allocation_and_errors_release_capacity() 
     ));
     assert!(missing.is_err());
     assert!(!service.journal.path.exists());
-    assert_eq!(service.journal.receipt_admissions.available_permits(), 19);
+    assert_eq!(service.journal.receipt_admissions.available_permits(), MAX_JOURNAL_RECEIPTS);
     assert_eq!(service.journal.accept_jobs.available_permits(), 1);
     assert!(service.inflight.lock().unwrap().is_empty());
 }
@@ -813,14 +814,14 @@ fn executing_rechecks_approval_after_waiting_for_its_sql_slot() {
         assert_eq!(before, "accepted");
         assert_eq!(successful, revoke == "none");
         assert_eq!(calls.load(Ordering::SeqCst), usize::from(revoke == "none"));
-        assert_eq!(service.journal.receipt_admissions.available_permits(), 19);
+        assert_eq!(service.journal.receipt_admissions.available_permits(), MAX_JOURNAL_RECEIPTS);
         assert_eq!(service.journal.accept_jobs.available_permits(), 1);
         assert!(service.inflight.lock().unwrap().is_empty());
     }
 }
 
 #[tokio::test]
-async fn sixteen_changes_two_ordinary_and_inline_busy_share_real_lifecycle_admission() {
+async fn changes_ordinary_and_inline_busy_share_real_lifecycle_admission() {
     use axum::extract::Path as RoutePath;
     use std::collections::VecDeque;
     let (_directory, original, _) = push_fixture();
@@ -969,6 +970,9 @@ async fn sixteen_changes_two_ordinary_and_inline_busy_share_real_lifecycle_admis
         "cohort-read",
         json!({"method":"GET","path":"/v1/options"}),
     ));
+    for index in 2..relay::MAX_ORDINARY_DELIVERIES {
+        works.push(seal(index, &format!("cohort-read-{index}"), json!({"method":"GET","path":"/v1/options"})));
+    }
     works.push(seal(
         0,
         "cohort-busy",
@@ -1071,13 +1075,13 @@ async fn sixteen_changes_two_ordinary_and_inline_busy_share_real_lifecycle_admis
     let mut full_snapshot = None;
     let mut blocked_completion = None;
     let exercise=tokio::time::timeout(Duration::from_secs(30), async {
-        for _ in 0..18 { service.poll_work(&mut epoch,&mut revoked,&mut tasks).await?; }
+        for _ in 0..MAX_JOURNAL_ACCEPTS { service.poll_work(&mut epoch,&mut revoked,&mut tasks).await?; }
         tokio::select! {
             permit=changes_entered.acquire_many(16) => permit?.forget(),
             done=tasks.join_next() => anyhow::bail!("changes worker finished before the cohort hold: {done:?}"),
         }
         tokio::select! {
-            permit=ordinary_entered.acquire_many(2) => permit?.forget(),
+            permit=ordinary_entered.acquire_many(relay::MAX_ORDINARY_DELIVERIES as u32) => permit?.forget(),
             done=tasks.join_next() => anyhow::bail!("ordinary worker finished before the cohort hold: {done:?}"),
         }
         let task_count = tasks.len();
@@ -1211,12 +1215,12 @@ async fn sixteen_changes_two_ordinary_and_inline_busy_share_real_lifecycle_admis
     );
     println!("mixed_receipt_outcomes={outcomes:?} replay_scheduling={replay_results:?}");
     assert!(matches!(exercise, Ok(Ok(()))));
-    assert_eq!(full_snapshot, Some((0, 19, 16, 18, 19, 18, 1, 16, 1, 1)));
+    assert_eq!(full_snapshot, Some((0, MAX_JOURNAL_RECEIPTS, 16, MAX_JOURNAL_ACCEPTS, MAX_JOURNAL_RECEIPTS, MAX_JOURNAL_ACCEPTS, 1, 16, relay::MAX_ORDINARY_DELIVERIES - 1, 1)));
     assert_eq!(blocked_completion, Some(("executing".into(), 0, 0, 0)));
     assert_eq!(active_devices, 16);
-    assert_eq!(initial.len(), 19);
-    assert_eq!(all.len(), 38);
-    assert_eq!(records, 19);
+    assert_eq!(initial.len(), MAX_JOURNAL_RECEIPTS);
+    assert_eq!(all.len(), 2 * MAX_JOURNAL_RECEIPTS);
+    assert_eq!(records, MAX_JOURNAL_RECEIPTS as i64);
     assert!(outcomes.iter().all(|result| matches!(result, Ok(Ok(())))));
     assert!(replay_results.iter().all(Result::is_ok));
     assert!(exact_replays);
@@ -1232,7 +1236,7 @@ async fn sixteen_changes_two_ordinary_and_inline_busy_share_real_lifecycle_admis
             .iter()
             .filter(|(_, value)| value["status"] == 200)
             .count(),
-        18
+        MAX_JOURNAL_ACCEPTS
     );
     for (id, value) in &statuses {
         if id.starts_with("cohort-changes-") {
@@ -1241,7 +1245,7 @@ async fn sixteen_changes_two_ordinary_and_inline_busy_share_real_lifecycle_admis
         if id == "cohort-post" {
             assert_eq!(value, &json!({"status":200,"body":{"saved":true}}));
         }
-        if id == "cohort-read" {
+        if id.starts_with("cohort-read") {
             assert_eq!(value, &json!({"status":200,"body":{"short":true}}));
         }
     }
@@ -1251,10 +1255,10 @@ async fn sixteen_changes_two_ordinary_and_inline_busy_share_real_lifecycle_admis
             changes_calls.load(Ordering::SeqCst),
             read_calls.load(Ordering::SeqCst)
         ),
-        (1, 16, 1)
+        (1, 16, relay::MAX_ORDINARY_DELIVERIES - 1)
     );
-    assert_eq!(service.journal.receipt_admissions.available_permits(), 19);
-    assert_eq!(service.journal.accept_admissions.available_permits(), 18);
+    assert_eq!(service.journal.receipt_admissions.available_permits(), MAX_JOURNAL_RECEIPTS);
+    assert_eq!(service.journal.accept_admissions.available_permits(), MAX_JOURNAL_ACCEPTS);
     assert_eq!(service.journal.accept_jobs.available_permits(), 1);
     assert!(service.inflight.lock().unwrap().is_empty());
 }

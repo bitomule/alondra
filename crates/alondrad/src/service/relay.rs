@@ -24,7 +24,7 @@ use std::{
 
 // The relay accepts a 256 KiB envelope; its work wrapper adds routing metadata.
 const MAX_WORK_BYTES: usize = 256 * 1024 + 4096;
-pub(super) const MAX_ORDINARY_DELIVERIES: usize = 2;
+pub(super) const MAX_ORDINARY_DELIVERIES: usize = 4;
 
 pub(crate) struct RelayConnector {
     url: Url,

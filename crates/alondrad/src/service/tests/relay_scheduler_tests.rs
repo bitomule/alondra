@@ -269,7 +269,7 @@ async fn oversized_work_profile() -> bool {
 }
 
 #[tokio::test]
-async fn relay_delivery_slots_bound_two_uploads_and_release_on_admission_cancel_and_shutdown() {
+async fn relay_delivery_slots_bound_uploads_and_release_on_admission_cancel_and_shutdown() {
     use std::{future::Future, task::Poll};
     let (_directory, mut service, _) = push_fixture();
     activate_push(&service);
@@ -341,11 +341,13 @@ async fn relay_delivery_slots_bound_two_uploads_and_release_on_admission_cancel_
     let mut admission_observation = None;
     if scheduled_before_upload {
         entered.acquire().await.unwrap().forget();
-        service.schedule_work(changes_work(&service, "second", request.clone()), [7;16], &mut tasks).await.unwrap();
-        entered.acquire().await.unwrap().forget();
-        assert_eq!(tasks.len(), 2);
-        assert_eq!(calls.load(Ordering::SeqCst), 2);
-        assert_eq!(receipts.load(Ordering::SeqCst), 2);
+        for index in 1..relay::MAX_ORDINARY_DELIVERIES {
+            service.schedule_work(changes_work(&service, &format!("held-{index}"), request.clone()), [7;16], &mut tasks).await.unwrap();
+            entered.acquire().await.unwrap().forget();
+        }
+        assert_eq!(tasks.len(), relay::MAX_ORDINARY_DELIVERIES);
+        assert_eq!(calls.load(Ordering::SeqCst), relay::MAX_ORDINARY_DELIVERIES);
+        assert_eq!(receipts.load(Ordering::SeqCst), relay::MAX_ORDINARY_DELIVERIES);
         {
             let schedule = service.schedule_work(changes_work(&service, "third", request.clone()), [7;16], &mut tasks);
             let mut schedule = std::pin::pin!(schedule);
@@ -358,15 +360,15 @@ async fn relay_delivery_slots_bound_two_uploads_and_release_on_admission_cancel_
             admission_observation = Some((pending, reservations, accepted,
                 calls.load(Ordering::SeqCst), receipts.load(Ordering::SeqCst)));
         }
-        assert_eq!(service.inflight.lock().unwrap().len(), 2, "dropping an admission waiter releases its reservation");
+        assert_eq!(service.inflight.lock().unwrap().len(), relay::MAX_ORDINARY_DELIVERIES, "dropping an admission waiter releases its reservation");
         service.schedule_work(repeat_work(&first), [7;16], &mut tasks).await.unwrap();
-        assert_eq!(tasks.len(), 2, "redelivery must not allocate a delivery slot or task");
-        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        assert_eq!(tasks.len(), relay::MAX_ORDINARY_DELIVERIES, "redelivery must not allocate a delivery slot or task");
+        assert_eq!(calls.load(Ordering::SeqCst), relay::MAX_ORDINARY_DELIVERIES);
         tasks.abort_all();
         while tasks.join_next().await.is_some() {}
         assert!(service.inflight.lock().unwrap().is_empty());
-        release.add_permits(2);
-        finished.acquire_many(2).await.unwrap().forget();
+        release.add_permits(relay::MAX_ORDINARY_DELIVERIES);
+        finished.acquire_many(relay::MAX_ORDINARY_DELIVERIES as u32).await.unwrap().forget();
     } else {
         while let Some(result) = tasks.join_next().await { result.unwrap().unwrap(); }
         finished.acquire().await.unwrap().forget();
@@ -381,13 +383,13 @@ async fn relay_delivery_slots_bound_two_uploads_and_release_on_admission_cancel_
     let _ = relay_server.await;
     assert!(scheduled_before_upload, "ordinary delivery must be owned and bounded outside intake");
     let (pending, reservations, accepted, admitted_calls, admitted_receipts) = admission_observation.unwrap();
-    assert!(pending, "a third job must await delivery admission before execution or sealing");
-    assert_eq!(reservations, 3);
+    assert!(pending, "an overflow job must await delivery admission before execution or sealing");
+    assert_eq!(reservations, relay::MAX_ORDINARY_DELIVERIES + 1);
     assert_eq!(accepted, 0, "an admission waiter must not acknowledge or start a durable receipt");
-    assert_eq!(admitted_calls, 2);
-    assert_eq!(admitted_receipts, 2);
-    assert_eq!(calls.load(Ordering::SeqCst), 3);
-    assert_eq!(receipts.load(Ordering::SeqCst), 3);
+    assert_eq!(admitted_calls, relay::MAX_ORDINARY_DELIVERIES);
+    assert_eq!(admitted_receipts, relay::MAX_ORDINARY_DELIVERIES);
+    assert_eq!(calls.load(Ordering::SeqCst), relay::MAX_ORDINARY_DELIVERIES + 1);
+    assert_eq!(receipts.load(Ordering::SeqCst), relay::MAX_ORDINARY_DELIVERIES + 1);
 }
 
 #[tokio::test]
@@ -837,7 +839,7 @@ async fn queued_ticket_profile(cancel: bool) -> (bool, bool) {
 }
 
 #[tokio::test]
-async fn a_waiting_preference_mutation_leaves_intake_at_the_two_pipeline_budget() {
+async fn a_waiting_preference_mutation_leaves_room_for_an_independent_read() {
     let (_directory, mut service, phone) = push_fixture();
     activate_push(&service);
     let entered = Arc::new(tokio::sync::Semaphore::new(0));
@@ -845,6 +847,7 @@ async fn a_waiting_preference_mutation_leaves_intake_at_the_two_pipeline_budget(
     let released = Arc::new(AtomicBool::new(false));
     let effect = Arc::new(AtomicUsize::new(0));
     let early_read = Arc::new(AtomicBool::new(false));
+    let read_entered = Arc::new(tokio::sync::Semaphore::new(0));
     let local = Router::new()
         .route("/v1/questions/1/answer", post({
             let entered = entered.clone(); let release = release.clone(); let effect = effect.clone();
@@ -859,9 +862,10 @@ async fn a_waiting_preference_mutation_leaves_intake_at_the_two_pipeline_budget(
             }
         }))
         .route("/v1/options", get({
-            let released = released.clone(); let early_read = early_read.clone();
+            let released = released.clone(); let early_read = early_read.clone(); let read_entered = read_entered.clone();
             move || {
                 if !released.load(Ordering::SeqCst) { early_read.store(true, Ordering::SeqCst); }
+                read_entered.add_permits(1);
                 async { axum::Json(json!({"short":true})) }
             }
         }));
@@ -925,6 +929,7 @@ async fn a_waiting_preference_mutation_leaves_intake_at_the_two_pipeline_budget(
     if advanced {
         second_scheduled = observed.recv().await == Some("budget-pref");
         third.acquire().await.unwrap().forget();
+        read_entered.acquire().await.unwrap().forget();
         receipts_at_budget = Some(receipts.load(Ordering::SeqCst));
     }
     released.store(true, Ordering::SeqCst);
@@ -943,10 +948,10 @@ async fn a_waiting_preference_mutation_leaves_intake_at_the_two_pipeline_budget(
     assert_eq!(binding, Some(URL_SAFE_NO_PAD.encode([7;32])));
     assert_eq!(reserved, 0);
     assert!(!early_preference.load(Ordering::SeqCst), "the queued preference must not jump the held mutation");
-    assert!(!early_read.load(Ordering::SeqCst), "the existing two occupied pipelines leave no third read admission");
+    assert!(early_read.load(Ordering::SeqCst), "a read must execute while a mutation runs and a preference waits for its turn");
     assert!(advanced, "held mutation execution must leave intake available");
     assert!(second_scheduled, "the preference waiting for its turn must not retain intake");
-    assert_eq!(receipts_at_budget, Some(1));
+    assert_eq!(receipts_at_budget, Some(2));
 }
 
 #[tokio::test]
@@ -1001,4 +1006,99 @@ async fn a_saturated_changes_rejection_does_not_wait_for_the_mutation_lane() {
     assert_eq!(results, vec![json!({"status":429,"error":"changes_busy"})]);
     assert_eq!(reserved, 0);
     assert_eq!(accepted_before_write_release, 1, "a busy rejection must not queue behind a mutation before acknowledging its read");
+}
+
+
+#[tokio::test]
+async fn card_action_and_background_uploads_leave_room_for_two_detail_reads() {
+    use std::{future::Future, task::Poll};
+    let (_directory, mut service, phone) = push_fixture();
+    activate_push(&service);
+    let effects = Arc::new(AtomicUsize::new(0));
+    let local = Router::new()
+        .route("/v1/questions/1/answer", post({
+            let effects = effects.clone();
+            move || {
+                effects.fetch_add(1, Ordering::SeqCst);
+                async { axum::Json(json!({"saved":true})) }
+            }
+        }))
+        .route("/v1/options", get(|| async { axum::Json(json!({"detail":"independent"})) }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    service.local_port = listener.local_addr().unwrap().port();
+    let local_server = tokio::spawn(axum::serve(listener, local).into_future());
+    let entered = Arc::new(tokio::sync::Semaphore::new(0));
+    let release = Arc::new(tokio::sync::Semaphore::new(0));
+    let replies = Arc::new(Mutex::new(Vec::<(String, Vec<u8>)>::new()));
+    let receipts = Arc::new(AtomicUsize::new(0));
+    let active = Arc::new(AtomicUsize::new(0));
+    let peak = Arc::new(AtomicUsize::new(0));
+    let relay = Router::new()
+        .route("/v1/work/{id}/receipt", post({
+            let receipts = receipts.clone();
+            move || { receipts.fetch_add(1, Ordering::SeqCst); async { StatusCode::ACCEPTED } }
+        }))
+        .route("/v1/work/{id}/response", post({
+            let (entered, release, replies, active, peak) = (entered.clone(), release.clone(), replies.clone(), active.clone(), peak.clone());
+            move |Path(id): Path<String>, body: Bytes| {
+                let (entered, release, replies, active, peak) = (entered.clone(), release.clone(), replies.clone(), active.clone(), peak.clone());
+                async move {
+                    let count = active.fetch_add(1, Ordering::SeqCst) + 1;
+                    peak.fetch_max(count, Ordering::SeqCst);
+                    replies.lock().unwrap().push((id, body.to_vec()));
+                    entered.add_permits(1);
+                    release.acquire().await.unwrap().forget();
+                    active.fetch_sub(1, Ordering::SeqCst);
+                    StatusCode::ACCEPTED
+                }
+            }
+        }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    service.set_relay_url(Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap());
+    let relay_server = tokio::spawn(axum::serve(listener, relay).into_future());
+    let service = Arc::new(service);
+    let mut tasks = tokio::task::JoinSet::new();
+    let read = json!({"method":"GET","path":"/v1/options"});
+    service.schedule_work(changes_work(&service, "action", json!({"method":"POST","path":"/v1/questions/1/answer","body":{"text":"Fixture answer"}})), [7;16], &mut tasks).await.unwrap();
+    service.schedule_work(changes_work(&service, "background", read.clone()), [7;16], &mut tasks).await.unwrap();
+    entered.acquire_many(2).await.unwrap().forget();
+    assert_eq!(effects.load(Ordering::SeqCst), 1);
+    let mut admitted_details = 0;
+    for id in ["detail-one", "detail-two"] {
+        let scheduling = service.schedule_work(changes_work(&service, id, read.clone()), [7;16], &mut tasks);
+        let mut scheduling = std::pin::pin!(scheduling);
+        let ready = std::future::poll_fn(|cx| Poll::Ready(scheduling.as_mut().poll(cx))).await;
+        match ready {
+            Poll::Ready(result) => { result.unwrap(); admitted_details += 1; }
+            Poll::Pending => break,
+        }
+    }
+    if admitted_details == 2 { entered.acquire_many(2).await.unwrap().forget(); }
+    let before_release: Vec<_> = replies.lock().unwrap().iter().map(|(id, _)| id.clone()).collect();
+    let fifth_waits = {
+        let scheduling = service.schedule_work(changes_work(&service, "fifth", read), [7;16], &mut tasks);
+        let mut scheduling = std::pin::pin!(scheduling);
+        std::future::poll_fn(|cx| Poll::Ready(scheduling.as_mut().poll(cx).is_pending())).await
+    };
+    release.add_permits(8);
+    while let Some(result) = tasks.join_next().await { result.unwrap().unwrap(); }
+    let responses = replies.lock().unwrap();
+    for (id, bytes) in responses.iter() {
+        let envelope: Envelope = serde_json::from_slice(bytes).unwrap();
+        assert_eq!(&envelope.request_id, id);
+        let opened: Value = serde_json::from_slice(&envelope.open(service.signing.verifying_key(), &phone, "mac-1", "phone-1", "mac-1", now_ms()).unwrap()).unwrap();
+        let expected = if id == "action" { json!({"status":200,"body":{"saved":true}}) } else { json!({"status":200,"body":{"detail":"independent"}}) };
+        assert_eq!(opened, expected);
+    }
+    println!("card-action-detail offered=4 completed={} details_before_release={admitted_details} effects={} peak_uploads={} receipts={} response_bytes={} fifth_waits={fifth_waits}", responses.len(), effects.load(Ordering::SeqCst), peak.load(Ordering::SeqCst), receipts.load(Ordering::SeqCst), responses.iter().map(|(_, bytes)| bytes.len()).sum::<usize>());
+    drop(responses);
+    local_server.abort(); relay_server.abort();
+    let _ = local_server.await; let _ = relay_server.await;
+    assert!(service.inflight.lock().unwrap().is_empty());
+    assert_eq!(effects.load(Ordering::SeqCst), 1);
+    assert!(fifth_waits, "the worker adjustment must retain bounded admission");
+    assert_eq!(admitted_details, 2, "both details must execute while the already-applied action and background upload are held");
+    assert!(before_release.contains(&"detail-one".to_owned()));
+    assert!(before_release.contains(&"detail-two".to_owned()));
+    assert_eq!(peak.load(Ordering::SeqCst), 4);
 }

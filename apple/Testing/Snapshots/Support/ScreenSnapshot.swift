@@ -64,13 +64,14 @@ func assertScreen<Content: View>(
     language: SnapshotLanguage = .english,
     inWindow: Bool = false,
     animatedPixels: Bool = false,
+    pixelPrecision: Float? = nil,
     file: StaticString = #filePath,
     testName: String = #function,
     line: UInt = #line,
     @ViewBuilder _ content: () -> Content
 ) {
     // A system spinner draws a different frame on every run; it covers far less than 1% of a screen.
-    let precision: Float = animatedPixels ? 0.99 : 1
+    let precision: Float = pixelPrecision ?? (animatedPixels ? 0.99 : 1)
     for variant in variants {
         let suffix = language == .english ? variant.suffix : "\(variant.suffix)_\(language.rawValue.prefix(2))"
         assertAppSnapshot(

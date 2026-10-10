@@ -80,6 +80,7 @@ ios_unit_test(
     timeout = "long",
     bundle_id = "com.bitomule.alondra.snapshottests",
     data = glob(["Tests/__Snapshots__/**"], allow_empty = True) + [
+        "Fixtures/pairing-native-label.png",
         "//apple/Testing/Samples:all",
         "//fixtures/views:all",
         "//fixtures/views:cards",
