@@ -49,7 +49,7 @@ fn seed(store: &mut DomainStore, nodes: usize) {
     for n in 0..nodes.max(AGENTS) {
         run(store, &Actor::System, format!("agent-{n}"), Command::RegisterAgent {
             agent_id: format!("bench-node-{n}").into(),
-            name: format!("Bench node {n}"),
+            name: format!("Bench node {n}"), at: 0
         });
     }
     for t in 0..TASKS {

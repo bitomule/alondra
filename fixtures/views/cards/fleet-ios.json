@@ -4,12 +4,12 @@
   "view": "fleet",
   "key": "fleet",
   "client": "ios",
-  "version": "vc3642d041f647996",
+  "version": "vd0f010c875bec1ce",
   "cursor": "cursor-1",
   "title": "Fleet",
   "status": {
-    "version": "v91273ca54f0f3f53",
-    "summary": "2 questions · 3 to read · 1 node working",
+    "version": "ve2c2d8cfd09a48c1",
+    "summary": "2 questions · 3 to read · 2 nodes working",
     "badge": 5,
     "counts": [
       {
@@ -30,7 +30,7 @@
       {
         "id": "working",
         "label": "working",
-        "value": 1
+        "value": 2
       },
       {
         "id": "waiting",
@@ -297,7 +297,7 @@
           "subtitle": "alpha-waiting",
           "badges": [
             {
-              "text": "Queued",
+              "text": "Starting",
               "tone": "neutral"
             }
           ],
@@ -310,98 +310,6 @@
           "actions": [
             {
               "id": "close:alpha-waiting@6",
-              "label": "Close Node",
-              "style": "destructive",
-              "presentation": "button",
-              "input": {
-                "kind": "none"
-              },
-              "attachments": false,
-              "confirm": {
-                "title": "Close Node",
-                "message": "Close this node?",
-                "button": "Close Node"
-              },
-              "enabled": true,
-              "resolves_card": false
-            }
-          ]
-        }
-      ]
-    },
-    {
-      "id": "idle",
-      "title": "Idle",
-      "count": 2,
-      "collapsed": true,
-      "items": [
-        {
-          "type": "row",
-          "id": "finished-today",
-          "link": {
-            "kind": "view",
-            "key": "node:finished-today"
-          },
-          "icon": "node",
-          "title": "Trim the push payload",
-          "subtitle": "finished-today",
-          "badges": [
-            {
-              "text": "Done",
-              "tone": "success"
-            }
-          ],
-          "trailing": {
-            "kind": "count",
-            "value": 0
-          },
-          "depth": 0,
-          "struck": false,
-          "actions": [
-            {
-              "id": "close:finished-today@6",
-              "label": "Close Node",
-              "style": "destructive",
-              "presentation": "button",
-              "input": {
-                "kind": "none"
-              },
-              "attachments": false,
-              "confirm": {
-                "title": "Close Node",
-                "message": "Close this node?",
-                "button": "Close Node"
-              },
-              "enabled": true,
-              "resolves_card": false
-            }
-          ]
-        },
-        {
-          "type": "row",
-          "id": "finished-yesterday",
-          "link": {
-            "kind": "view",
-            "key": "node:finished-yesterday"
-          },
-          "icon": "node",
-          "title": "Ship the compact editor",
-          "subtitle": "finished-yesterday",
-          "badges": [
-            {
-              "text": "Done",
-              "tone": "success"
-            }
-          ],
-          "trailing": {
-            "kind": "count",
-            "value": 0
-          },
-          "depth": 0,
-          "struck": false,
-          "actions": [
-            {
-              "id": "close:finished-yesterday@6",
               "label": "Close Node",
               "style": "destructive",
               "presentation": "button",

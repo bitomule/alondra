@@ -4,10 +4,10 @@
   "view": "settled_card",
   "key": "card:a98d034b-249e-4487-a89b-57de38c26372",
   "client": "mac",
-  "version": "v4c5b1b541dff127e",
+  "version": "v1cd1f4e1632ef81a",
   "cursor": "cursor-1",
   "status": {
-    "version": "v47edd097e99cb5fc",
+    "version": "va561a2919d9f4b59",
     "summary": "1 question · 3 to read · 0 nodes working",
     "badge": 4,
     "counts": [
@@ -34,7 +34,7 @@
       {
         "id": "waiting",
         "label": "waiting",
-        "value": 1
+        "value": 0
       }
     ],
     "gauges": [

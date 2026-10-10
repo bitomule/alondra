@@ -373,7 +373,7 @@ mod tests {
 
     /// A Task with a registered PR, a presented final and the user's merge authorization.
     fn authorized(domain: &DomainRuntime) {
-        command(domain, Actor::System, "agent", Command::RegisterAgent { agent_id: "a".into(), name: "A".into() });
+        command(domain, Actor::System, "agent", Command::RegisterAgent { agent_id: "a".into(), name: "A".into(), at: 0 });
         command(domain, Actor::User { user_id: "u".into() }, "request", Command::CreateRequest { request_id: "r".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
         command(domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask {
             task_id: "t".into(), request_id: "r".into(), title: "Task".into(), agent_id: Some("a".into()),
@@ -395,7 +395,7 @@ mod tests {
     }
 
     fn presented(domain: &DomainRuntime, auto_merge: bool) {
-        command(domain, Actor::System, "agent", Command::RegisterAgent { agent_id: "a".into(), name: "A".into() });
+        command(domain, Actor::System, "agent", Command::RegisterAgent { agent_id: "a".into(), name: "A".into(), at: 0 });
         command(domain, Actor::User { user_id: "u".into() }, "request", Command::CreateRequest { request_id: "r".into(), body: "Work".into(), auto_merge, maintenance: false, message: false });
         command(domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask {
             task_id: "t".into(), request_id: "r".into(), title: "Task".into(), agent_id: Some("a".into()),
@@ -571,7 +571,7 @@ mod tests {
                 auto_merge: false, maintenance: false, message: false,
             },
         );
-        command(&domain, Actor::System, "agent-b", Command::RegisterAgent { agent_id: "b".into(), name: "Instance B".into() });
+        command(&domain, Actor::System, "agent-b", Command::RegisterAgent { agent_id: "b".into(), name: "Instance B".into(), at: 0 });
         command(
             &domain,
             Actor::Orchestrator { generation: 0 },

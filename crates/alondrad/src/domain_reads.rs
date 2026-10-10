@@ -577,7 +577,7 @@ fn summary(snapshot: &Snapshot, q: &Query) -> Response {
         revision,
         counts: p.counts.clone(),
         open_tasks: p.tasks.iter().filter(|t| !t.state.terminal() && !t.archived).count() as u64,
-        connected_agents: p.agents.iter().filter(|a| a.connected).count() as u64,
+        connected_agents: p.agents.iter().filter(|a| a.phase.live()).count() as u64,
         sections: snapshot.sections.clone(),
         expansions: BTreeMap::new(),
         pending: vec![],

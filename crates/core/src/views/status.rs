@@ -13,12 +13,7 @@ pub(super) fn build(projection: &DomainProjection, context: &RenderContext<'_>) 
         .filter(|item| super::home::waits_for(item) == "question")
         .count() as u32;
     let to_read = pending - questions;
-    let working = context
-        .live
-        .nodes
-        .iter()
-        .filter(|node| node.working)
-        .count() as u32;
+    let working = context.domain.slots().len() as u32;
     let mut summary = Vec::new();
     if questions > 0 {
         summary.push(if questions == 1 {
@@ -75,7 +70,7 @@ pub(super) fn build(projection: &DomainProjection, context: &RenderContext<'_>) 
             Count {
                 id: "waiting".into(),
                 label: t!(context.lang, "waiting", "esperando").into(),
-                value: context.live.nodes.iter().filter(|node| node.waiting).count() as u32,
+                value: context.domain.agents.values().filter(|agent| matches!(agent.phase, crate::domain::NodePhase::WaitingUser { .. })).count() as u32,
             },
         ],
         gauges: context.live.gauges.clone(),

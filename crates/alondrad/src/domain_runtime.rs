@@ -207,6 +207,35 @@ impl DomainRuntime {
     }
 
     /// Whether Alondra launched this session: a recorded launch, or a scheduled run it started.
+    /// A node mod connected: a session that says it is mid-turn tells the node machine so, as a
+    /// daemon that restarted meanwhile learns it.
+    pub(crate) fn connect_node(&self, hello: crate::node_reports::Hello, at: alondra_core::Millis) -> u64 {
+        let (agent, working) = (AgentId(hello.session_id.clone()), hello.working);
+        let number = self.live.mods.connect(hello, at);
+        if working && let Err(error) = crate::domain_agent_lifecycle::node_event_at(self, &agent, alondra_core::domain::NodeEvent::TurnStarted, at) {
+            log!("could not record that {} is mid-turn: {error}", agent.0);
+        }
+        number
+    }
+
+    /// A node mod's report: what it says is kept for the views, and a turn it started or a session
+    /// it ended goes to the node machine. A turn's end is the Stop hook's to say: only it knows
+    /// whether Alondra held the turn back.
+    pub(crate) fn report(&self, envelope: crate::node_reports::Envelope, at: alondra_core::Millis) {
+        let happened = match envelope.report {
+            crate::node_reports::Report::TurnStart => Some(alondra_core::domain::NodeEvent::TurnStarted),
+            crate::node_reports::Report::SessionEnd => Some(alondra_core::domain::NodeEvent::SessionLost),
+            _ => None,
+        };
+        let agent = AgentId(envelope.session_id.clone());
+        self.live.mods.apply(envelope, at);
+        if let Some(happened) = happened
+            && let Err(error) = crate::domain_agent_lifecycle::node_event_at(self, &agent, happened, at)
+        {
+            log!("could not record what {} reported: {error}", agent.0);
+        }
+    }
+
     pub(crate) fn launched_by_alondra(&self, agent: &AgentId) -> Result<bool> {
         if self.store.lock().expect("domain store poisoned").launched_by_alondra(&agent.0)? || self.live.mods.started_with_a_launch_key(&agent.0) {
             return Ok(true);
@@ -443,7 +472,8 @@ fn command_task(state: &DomainState, command: &Command) -> Option<TaskId> {
         | Command::RecordScheduleRunFailed { .. }
         | Command::InterruptScheduleRunsOnRestart { .. }
         | Command::RegisterAgent { .. }
-        | Command::ObserveAgent { .. }
+        | Command::MoveNode { .. }
+        | Command::ReconcileNodes { .. }
         | Command::AdvanceOrchestratorGeneration { .. }
         | Command::BindOrchestratorSession { .. }
         | Command::HoldHook { .. }
@@ -588,7 +618,7 @@ mod snapshot_tests {
             data_epoch: before.data_epoch.clone(),
             command_id: "agent".into(),
             expected_revision: before.revision,
-            command: Command::RegisterAgent { agent_id: "agent-a".into(), name: "A".into() },
+            command: Command::RegisterAgent { agent_id: "agent-a".into(), name: "A".into(), at: 0 },
         };
         runtime.execute(&Actor::System, &envelope, None, || Ok(())).unwrap();
         let after = runtime.state().unwrap();
@@ -631,7 +661,7 @@ mod producer_revision_tests {
                     None,
                     Command::RegisterAgent {
                         agent_id: "agent-a".into(),
-                        name: "A".into(),
+                        name: "A".into(), at: 0
                     },
                 ),
                 None,

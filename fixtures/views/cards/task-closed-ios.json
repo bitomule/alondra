@@ -4,11 +4,11 @@
   "view": "task",
   "key": "task:t-651c38484cd2f34e74d5107ba05f7f15",
   "client": "ios",
-  "version": "ve8fe9d1c50d0739b",
+  "version": "vf80a8493b83b240b",
   "cursor": "cursor-1",
   "title": "Restore the native review experience",
   "status": {
-    "version": "v5cc0ca4395f8ef9a",
+    "version": "ve9645fa555ff78a5",
     "summary": "0 nodes working",
     "badge": 0,
     "counts": [
@@ -35,7 +35,7 @@
       {
         "id": "waiting",
         "label": "waiting",
-        "value": 1
+        "value": 0
       }
     ],
     "gauges": [

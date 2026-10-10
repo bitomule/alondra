@@ -4,12 +4,12 @@
   "view": "fleet",
   "key": "fleet",
   "client": "tui",
-  "version": "v6772fc8e3a92a0c2",
+  "version": "va15a9c3b449e4f01",
   "cursor": "cursor-1",
   "title": "Flota",
   "status": {
-    "version": "v96d9c38b403cb71e",
-    "summary": "2 preguntas · 3 por leer · 0 nodos trabajando",
+    "version": "ve8b9c2585f93edac",
+    "summary": "2 preguntas · 3 por leer · 1 nodo trabajando",
     "badge": 5,
     "counts": [
       {
@@ -30,7 +30,7 @@
       {
         "id": "working",
         "label": "trabajando",
-        "value": 0
+        "value": 1
       },
       {
         "id": "waiting",
@@ -325,7 +325,7 @@
           "subtitle": "alpha-waiting",
           "badges": [
             {
-              "text": "En cola",
+              "text": "Arrancando",
               "tone": "neutral"
             }
           ],
@@ -372,7 +372,7 @@
           "subtitle": "zeta-worker",
           "badges": [
             {
-              "text": "Inactivo",
+              "text": "Esperando máquina",
               "tone": "neutral"
             }
           ],
@@ -381,92 +381,6 @@
           "actions": [
             {
               "id": "close:zeta-worker@6",
-              "label": "Cerrar nodo",
-              "style": "destructive",
-              "presentation": "button",
-              "input": {
-                "kind": "none"
-              },
-              "attachments": false,
-              "confirm": {
-                "title": "Cerrar nodo",
-                "message": "¿Cerrar este nodo?",
-                "button": "Cerrar nodo"
-              },
-              "enabled": true,
-              "key": "x",
-              "resolves_card": false
-            }
-          ]
-        }
-      ]
-    },
-    {
-      "id": "idle",
-      "title": "Inactivos",
-      "count": 2,
-      "collapsed": true,
-      "items": [
-        {
-          "type": "row",
-          "id": "finished-today",
-          "link": {
-            "kind": "view",
-            "key": "node:finished-today"
-          },
-          "icon": "node",
-          "title": "Trim the push payload",
-          "subtitle": "finished-today",
-          "badges": [
-            {
-              "text": "Terminado",
-              "tone": "success"
-            }
-          ],
-          "depth": 0,
-          "struck": false,
-          "actions": [
-            {
-              "id": "close:finished-today@6",
-              "label": "Cerrar nodo",
-              "style": "destructive",
-              "presentation": "button",
-              "input": {
-                "kind": "none"
-              },
-              "attachments": false,
-              "confirm": {
-                "title": "Cerrar nodo",
-                "message": "¿Cerrar este nodo?",
-                "button": "Cerrar nodo"
-              },
-              "enabled": true,
-              "key": "x",
-              "resolves_card": false
-            }
-          ]
-        },
-        {
-          "type": "row",
-          "id": "finished-yesterday",
-          "link": {
-            "kind": "view",
-            "key": "node:finished-yesterday"
-          },
-          "icon": "node",
-          "title": "Ship the compact editor",
-          "subtitle": "finished-yesterday",
-          "badges": [
-            {
-              "text": "Terminado",
-              "tone": "success"
-            }
-          ],
-          "depth": 0,
-          "struck": false,
-          "actions": [
-            {
-              "id": "close:finished-yesterday@6",
               "label": "Cerrar nodo",
               "style": "destructive",
               "presentation": "button",

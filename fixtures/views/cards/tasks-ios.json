@@ -4,12 +4,12 @@
   "view": "tasks",
   "key": "tasks",
   "client": "ios",
-  "version": "v39a1db83b2b5a39b",
+  "version": "vbd6b6ccbd42243b6",
   "cursor": "cursor-1",
   "title": "Tasks",
   "status": {
-    "version": "v1ac3a1e39f0643d1",
-    "summary": "2 questions · 3 to read · 0 nodes working",
+    "version": "v2f4c647959130274",
+    "summary": "2 questions · 3 to read · 2 nodes working",
     "badge": 5,
     "counts": [
       {
@@ -30,7 +30,7 @@
       {
         "id": "working",
         "label": "working",
-        "value": 0
+        "value": 2
       },
       {
         "id": "waiting",
@@ -309,7 +309,27 @@
                 "value": 0
               },
               "depth": 1,
-              "struck": false
+              "struck": false,
+              "actions": [
+                {
+                  "id": "pause:a-badge@6",
+                  "label": "Pause",
+                  "style": "secondary",
+                  "presentation": "button",
+                  "input": {
+                    "kind": "none"
+                  },
+                  "attachments": false,
+                  "confirm": {
+                    "title": "Pause this node?",
+                    "message": "It stops what it is running now and keeps its task. Alondra does not resume it by itself: only you do.",
+                    "button": "Pause"
+                  },
+                  "enabled": true,
+                  "stamp": "Paused",
+                  "resolves_card": false
+                }
+              ]
             },
             {
               "id": "t-scheduled-lumo",
@@ -335,7 +355,27 @@
                 "value": 0
               },
               "depth": 1,
-              "struck": false
+              "struck": false,
+              "actions": [
+                {
+                  "id": "pause:a-lumo@6",
+                  "label": "Pause",
+                  "style": "secondary",
+                  "presentation": "button",
+                  "input": {
+                    "kind": "none"
+                  },
+                  "attachments": false,
+                  "confirm": {
+                    "title": "Pause this node?",
+                    "message": "It stops what it is running now and keeps its task. Alondra does not resume it by itself: only you do.",
+                    "button": "Pause"
+                  },
+                  "enabled": true,
+                  "stamp": "Paused",
+                  "resolves_card": false
+                }
+              ]
             }
           ]
         },

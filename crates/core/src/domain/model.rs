@@ -93,7 +93,10 @@ impl Request {
 pub struct Agent {
     pub id: AgentId,
     pub name: String,
-    pub connected: bool,
+    pub phase: super::NodePhase,
+    /// When its phase last moved, by the clock of the event that moved it.
+    #[serde(default)]
+    pub since: crate::model::Millis,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

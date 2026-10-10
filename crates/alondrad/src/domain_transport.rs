@@ -11,7 +11,7 @@ use crate::domain_store::OutboxMessage;
 use crate::node_reports::Report;
 use alondra_core::delivery::State;
 use alondra_core::domain::{
-    Actor, AgentId, Author, Command, CommandEnvelope, DomainState, InputValue, InteractionId, InteractionPayload,
+    Actor, AgentId, Author, Command, CommandEnvelope, DomainState, InputValue, InteractionId, InteractionPayload, NodeEvent,
     PROTOCOL_VERSION, Recipient, Scope, ScheduleLaunchState, Task, TaskId, TaskState,
 };
 use anyhow::{Context, Result, bail};
@@ -117,7 +117,7 @@ async fn node_event(mut stream: UnixStream, domain: &DomainRuntime, report: Valu
     }
     let ended = matches!(envelope.report, Report::SessionEnd).then(|| envelope.session_id.clone());
     let measured = matches!(envelope.report, Report::Measure { .. });
-    domain.live.mods.apply(envelope, alondra_core::now_millis());
+    domain.report(envelope, alondra_core::now_millis());
     if measured {
         domain.live.note_measures();
     }
@@ -181,7 +181,7 @@ async fn node_connection(mut stream: UnixStream, domain: &DomainRuntime, hello: 
         register_probe(domain, &session)?;
     }
     let launch_key = hello.launch_key.clone();
-    let number = domain.live.mods.connect(hello, alondra_core::now_millis());
+    let number = domain.connect_node(hello, alondra_core::now_millis());
     if let Some(key) = launch_key
         && let Err(error) = crate::domain_sessions::reissue(domain, &key, &AgentId(session.clone()))
     {
@@ -233,7 +233,7 @@ fn register_probe(domain: &DomainRuntime, session: &str) -> Result<()> {
     let short = &session[..session.len().min(8)];
     let user = || Actor::User { user_id: "sandbox".into() };
     let steps = [
-        (Actor::System, "register", Command::RegisterAgent { agent_id: session.into(), name: format!("test/{short}") }),
+        (Actor::System, "register", Command::RegisterAgent { agent_id: session.into(), name: format!("test/{short}"), at: 0 }),
         (user(), "request", Command::CreateRequest {
             request_id: format!("sandbox-probe-{session}").into(), body: "Probe".into(), auto_merge: false, maintenance: false, message: false,
         }),
@@ -371,7 +371,7 @@ fn respond(domain: &DomainRuntime, payload: &Value) -> Result<Reply> {
     };
     let event = text(payload, "hook_event_name").unwrap_or_default();
     let tool = text(payload, "tool_name");
-    if event == "PreToolUse" && domain.live.gate.paused_by_user(&session_id) {
+    if event == "PreToolUse" && domain.live.gate.paused_by_user(domain, &session_id) {
         return Ok(Reply::Plain(json!({"hookSpecificOutput": {"hookEventName": "PreToolUse",
             "permissionDecision": "deny", "permissionDecisionReason": PAUSED_BY_USER}})));
     }
@@ -380,22 +380,19 @@ fn respond(domain: &DomainRuntime, payload: &Value) -> Result<Reply> {
             "permissionDecision": "allow", "permissionDecisionReason": "Alondra tool"}})));
     }
     let agent_id = AgentId(session_id.clone());
-    let Some(was_connected) = domain.state()?.agents.get(&agent_id).map(|agent| agent.connected) else {
+    if !domain.state()?.agents.contains_key(&agent_id) {
         return Ok(Reply::Plain(json!({})));
-    };
+    }
     domain.live.observe(payload);
-    // A SessionStart that arrives before the launch registers the Agent is dropped, so any
-    // later hook proves the session alive, as every hook did in 8ccd131.
-    let connected = match event.as_str() {
-        "SessionStart" => Some(true),
-        "SessionEnd" => Some(false),
-        _ => (!was_connected).then_some(true),
-    };
-    if let Some(connected) = connected {
-        let event_id = format!("{event}-{session_id}-{}", crate::auth::random_hex(8));
-        lifecycle::observe_instance(domain, &agent_id, connected, &lifecycle::prepare_event(domain, &event_id)?)?;
-        if !connected {
+    // Any hook but these two runs inside a turn, so it proves the turn under way.
+    match event.as_str() {
+        "SessionStart" | "Stop" => {}
+        "SessionEnd" => {
+            lifecycle::node_event(domain, &agent_id, NodeEvent::SessionLost)?;
             session_ended(domain, &agent_id)?;
+        }
+        _ => {
+            lifecycle::node_event(domain, &agent_id, NodeEvent::TurnStarted)?;
         }
     }
     if !matches!(event.as_str(), "SessionStart" | "SessionEnd") {
@@ -413,7 +410,7 @@ fn respond(domain: &DomainRuntime, payload: &Value) -> Result<Reply> {
     }
     match event.as_str() {
         "SessionStart" | "SessionEnd" => Ok(Reply::Plain(json!({}))),
-        "Stop" if domain.live.gate.paused_by_user(&session_id) => Ok(Reply::Plain(json!({}))),
+        "Stop" if domain.live.gate.paused_by_user(domain, &session_id) => Ok(Reply::Plain(json!({}))),
         "Stop" => {
             let held = crate::domain_messages::take_held(domain, &agent_id);
             if !held.is_empty() {
@@ -421,7 +418,12 @@ fn respond(domain: &DomainRuntime, payload: &Value) -> Result<Reply> {
             }
             Ok(match undelivered(domain, &agent_id, payload)? {
                 Some(reason) => Reply::Block { reason, session: session_id },
-                None => Reply::Plain(json!({})),
+                None => {
+                    if !works_in_background(domain, &agent_id, payload) {
+                        lifecycle::node_event(domain, &agent_id, NodeEvent::TurnEnded)?;
+                    }
+                    Reply::Plain(json!({}))
+                }
             })
         }
         _ => Ok(Reply::Plain(json!({}))),
@@ -497,10 +499,14 @@ pub(crate) const STOP_BLOCKS: u32 = 3;
 /// restart does not reset it. A session the user drives (not a background node, or one whose
 /// terminal they attached to), work running in the background and a node stopped by the machine
 /// are never held; background work that has hung (`Reported::background_hung`) is no such work.
+/// The turn ended behind background work of its own that will wake it: the node still works.
+fn works_in_background(domain: &DomainRuntime, agent_id: &AgentId, payload: &Value) -> bool {
+    payload.get("background_tasks").and_then(Value::as_array).is_some_and(|tasks| !tasks.is_empty())
+        && !domain.live.mods.session(&agent_id.0).is_some_and(|reported| reported.background_hung(alondra_core::now_millis()))
+}
+
 fn undelivered(domain: &DomainRuntime, agent_id: &AgentId, payload: &Value) -> Result<Option<String>> {
-    let background = payload.get("background_tasks").and_then(Value::as_array).is_some_and(|tasks| !tasks.is_empty())
-        && !domain.live.mods.session(&agent_id.0).is_some_and(|reported| reported.background_hung(alondra_core::now_millis()));
-    if driven_by_user(domain, agent_id) || background || stopped_by_machine(domain, agent_id) {
+    if driven_by_user(domain, agent_id) || works_in_background(domain, agent_id, payload) || stopped_by_machine(domain, agent_id) {
         return Ok(None);
     }
     hold_back(domain, agent_id)
@@ -564,7 +570,7 @@ pub(crate) fn stopped_without_delivering(domain: &DomainRuntime, state: &DomainS
         && reported.working_since.is_none() && reported.tool.is_none()
         && (reported.background.is_empty() || reported.background_hung(now)) && !reported.silent(now));
     if !idle || driven_by_user(domain, agent_id) || stopped_by_machine(domain, agent_id)
-        || domain.live.is_closed(session) || domain.live.gate.paused(session).is_some()
+        || domain.live.is_closed(session) || domain.live.gate.paused(domain, session).is_some()
         || crate::domain_holds::waits_on_user(state, session)
     {
         return None;
@@ -811,7 +817,7 @@ mod tests {
     fn answered_question(domain: &DomainRuntime, agent: &str) {
         domain.live.mods.loaded_in(agent);
         command(domain, Actor::System, &format!("register-{agent}"), Command::RegisterAgent {
-            agent_id: agent.into(), name: agent.into(),
+            agent_id: agent.into(), name: agent.into(), at: 0
         });
         command(domain, Actor::User { user_id: "u".into() }, &format!("request-{agent}"),
             Command::CreateRequest { request_id: format!("request-{agent}").into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
@@ -859,7 +865,7 @@ mod tests {
         let fixture = Fixture::new();
         let domain = fixture.open();
         command(&domain, Actor::System, "register", Command::RegisterAgent {
-            agent_id: "agent-a".into(), name: "Agent A".into(),
+            agent_id: "agent-a".into(), name: "Agent A".into(), at: 0
         });
         command(&domain, Actor::User { user_id: "u".into() }, "request", Command::CreateRequest {
             request_id: "request".into(), body: "Build a widget".into(), auto_merge: false, maintenance: false, message: false,
@@ -933,7 +939,7 @@ mod tests {
         let fixture = Fixture::new();
         let domain = fixture.open();
         command(&domain, Actor::System, "register", Command::RegisterAgent {
-            agent_id: "agent-a".into(), name: "Agent A".into(),
+            agent_id: "agent-a".into(), name: "Agent A".into(), at: 0
         });
         command(&domain, Actor::User { user_id: "u".into() }, "request", Command::CreateRequest {
             request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false,
@@ -1028,7 +1034,7 @@ mod tests {
     fn node_with_task(domain: &DomainRuntime) {
         domain.live.mods.loaded_in("agent-a");
         command(domain, Actor::System, "register", Command::RegisterAgent {
-            agent_id: "agent-a".into(), name: "Agent A".into(),
+            agent_id: "agent-a".into(), name: "Agent A".into(), at: 0
         });
         command(domain, Actor::User { user_id: "u".into() }, "request", Command::CreateRequest {
             request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false,
@@ -1195,16 +1201,16 @@ mod tests {
         let fixture = Fixture::new();
         let domain = fixture.open();
         command(&domain, Actor::System, "register", Command::RegisterAgent {
-            agent_id: "session-a".into(), name: "A".into(),
+            agent_id: "session-a".into(), name: "A".into(), at: 0
         });
         let bearer = domain.bind_agent("session-a").unwrap().expose_for_child_environment().to_owned();
         let (_, result) = hook(&domain, json!({"session_id": "session-a", "hook_event_name": "SessionStart"}), Some(6)).await;
         result.unwrap();
-        assert!(domain.state().unwrap().agents[&"session-a".into()].connected);
+        assert!(domain.state().unwrap().agents[&"session-a".into()].phase.holds_slot());
         assert!(domain.resolve_bearer(&bearer).is_ok());
         let (_, result) = hook(&domain, json!({"session_id": "session-a", "hook_event_name": "SessionEnd"}), Some(6)).await;
         result.unwrap();
-        assert!(!domain.state().unwrap().agents[&"session-a".into()].connected);
+        assert!(!domain.state().unwrap().agents[&"session-a".into()].phase.holds_slot());
         assert!(domain.resolve_bearer(&bearer).is_err(), "a finished session's bearer is revoked");
         let (reply, _) = hook(&domain, json!({"session_id": "session-a", "hook_event_name": "PreToolUse",
             "tool_name": "mcp__plugin_alondra_alondra__publish_information"}), Some(6)).await;
@@ -1217,11 +1223,12 @@ mod tests {
         let domain = fixture.open();
         hook(&domain, json!({"session_id": "session-a", "hook_event_name": "SessionStart"}), Some(6)).await.1.unwrap();
         command(&domain, Actor::System, "register", Command::RegisterAgent {
-            agent_id: "session-a".into(), name: "A".into(),
+            agent_id: "session-a".into(), name: "A".into(), at: 0
         });
-        assert!(!domain.state().unwrap().agents[&"session-a".into()].connected);
+        let phase = || domain.state().unwrap().agents[&"session-a".into()].phase.clone();
+        assert_eq!(phase(), alondra_core::domain::NodePhase::Starting { reviving: false });
         hook(&domain, json!({"session_id": "session-a", "hook_event_name": "UserPromptSubmit"}), Some(6)).await.1.unwrap();
-        assert!(domain.state().unwrap().agents[&"session-a".into()].connected);
+        assert_eq!(phase(), alondra_core::domain::NodePhase::Working);
         let revision = domain.state().unwrap().revision;
         hook(&domain, json!({"session_id": "session-a", "hook_event_name": "PostToolUse", "tool_name": "Bash"}), Some(6)).await.1.unwrap();
         assert_eq!(domain.state().unwrap().revision, revision, "a connected Agent's hooks record nothing more");
@@ -1231,7 +1238,7 @@ mod tests {
     async fn hooks_of_a_known_session_are_observed_live_and_a_stranger_is_not() {
         let fixture = Fixture::new();
         let domain = fixture.open();
-        command(&domain, Actor::System, "register", Command::RegisterAgent { agent_id: "session-a".into(), name: "A".into() });
+        command(&domain, Actor::System, "register", Command::RegisterAgent { agent_id: "session-a".into(), name: "A".into(), at: 0 });
         let (_, result) = hook(&domain, json!({"session_id": "session-a", "hook_event_name": "PreToolUse",
             "tool_name": "Bash", "tool_input": {"command": "ls"}, "cwd": "/Users/me/Projects/App"}), Some(6)).await;
         result.unwrap();
@@ -1245,7 +1252,7 @@ mod tests {
     async fn a_node_cannot_act_as_the_user_and_a_session_alondra_does_not_follow_is_untouched() {
         let fixture = Fixture::new();
         let domain = fixture.open();
-        command(&domain, Actor::System, "register", Command::RegisterAgent { agent_id: "session-a".into(), name: "A".into() });
+        command(&domain, Actor::System, "register", Command::RegisterAgent { agent_id: "session-a".into(), name: "A".into(), at: 0 });
         let pre = |session: &str, tool: &str, input: &Value| json!({"session_id": session, "hook_event_name": "PreToolUse",
             "tool_name": tool, "tool_input": input});
         for (tool, input) in [
@@ -1303,7 +1310,7 @@ mod tests {
         let fixture = Fixture::new();
         let domain = fixture.open();
         node_with_task(&domain);
-        command(&domain, Actor::System, "register-b", Command::RegisterAgent { agent_id: "agent-b".into(), name: "B".into() });
+        command(&domain, Actor::System, "register-b", Command::RegisterAgent { agent_id: "agent-b".into(), name: "B".into(), at: 0 });
         hook(&domain, json!({"session_id": "agent-b", "hook_event_name": "PreToolUse", "tool_name": "Bash"}), Some(6)).await.1.unwrap();
         hook(&domain, json!({"session_id": "stranger", "hook_event_name": "PreToolUse", "tool_name": "Bash"}), Some(6)).await.1.unwrap();
         assert_eq!(task_state(&domain), TaskState::NotStarted);
@@ -1392,7 +1399,7 @@ mod tests {
         }
         assert_eq!(hook(&domain, json!({"session_id": "agent-a", "hook_event_name": "Stop"}), Some(6)).await.0, json!({}));
 
-        domain.live.gate.release_by_user_message("agent-a");
+        domain.live.gate.release_by_user_message(&domain, "agent-a");
         let (reply, _) = hook(&domain, json!({"session_id": "agent-a", "hook_event_name": "PreToolUse", "tool_name": "Bash"}), Some(6)).await;
         assert_ne!(reply["hookSpecificOutput"]["permissionDecision"], "deny", "{reply}");
         assert_eq!(hook(&domain, json!({"session_id": "agent-a", "hook_event_name": "Stop"}), Some(6)).await.0["decision"], "block");
@@ -1427,9 +1434,9 @@ mod tests {
     /// A subagent the node started in the background `minutes_ago`, with no shell call alive.
     fn background_subagent(domain: &DomainRuntime, minutes_ago: i64) {
         let at = alondra_core::now_millis() - minutes_ago * 60_000;
-        domain.live.mods.connect(serde_json::from_value(json!({"session_id": "agent-a", "version": "2.1.287"})).unwrap(), at);
-        domain.live.mods.apply(serde_json::from_value(json!({"session_id": "agent-a", "event": "subagent.end", "id": "sub"})).unwrap(), at);
-        domain.live.mods.apply(serde_json::from_value(json!({"session_id": "agent-a", "event": "subagent.start", "id": "sub"})).unwrap(), at);
+        domain.connect_node(serde_json::from_value(json!({"session_id": "agent-a", "version": "2.1.287"})).unwrap(), at);
+        domain.report(serde_json::from_value(json!({"session_id": "agent-a", "event": "subagent.end", "id": "sub"})).unwrap(), at);
+        domain.report(serde_json::from_value(json!({"session_id": "agent-a", "event": "subagent.start", "id": "sub"})).unwrap(), at);
         domain.live.mods.set_shell_alive("agent-a", Some(false));
     }
 
@@ -1499,7 +1506,7 @@ mod tests {
         let domain = fixture.open();
         node_with_task(&domain);
         let now = alondra_core::now_millis();
-        let connect = |at| domain.live.mods.connect(serde_json::from_value(json!({"session_id": "agent-a", "version": "2.1.287"})).unwrap(), at);
+        let connect = |at| domain.connect_node(serde_json::from_value(json!({"session_id": "agent-a", "version": "2.1.287"})).unwrap(), at);
         let mut reminded = std::collections::HashMap::new();
         connect(now - 60_000);
         assert!(behind_hung_work(&domain, now, &mut reminded).is_empty(), "it just ended its turn");
@@ -1696,7 +1703,7 @@ mod tests {
 
     fn working_agent_without_mod(domain: &DomainRuntime, agent: &str) {
         let user = || Actor::User { user_id: "u".into() };
-        command(domain, Actor::System, &format!("register-{agent}"), Command::RegisterAgent { agent_id: agent.into(), name: agent.into() });
+        command(domain, Actor::System, &format!("register-{agent}"), Command::RegisterAgent { agent_id: agent.into(), name: agent.into(), at: 0 });
         command(domain, user(), &format!("request-{agent}"),
             Command::CreateRequest { request_id: format!("request-{agent}").into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
         command(domain, Actor::Orchestrator { generation: 0 }, &format!("task-{agent}"), Command::CreateTask {
@@ -2104,7 +2111,7 @@ mod tests {
         let fixture = Fixture::new();
         let domain = fixture.open();
         working_agent_without_mod(&domain, "no-mod");
-        command(&domain, Actor::System, "register-idle", Command::RegisterAgent { agent_id: "idle".into(), name: "idle".into() });
+        command(&domain, Actor::System, "register-idle", Command::RegisterAgent { agent_id: "idle".into(), name: "idle".into(), at: 0 });
         domain.live.mods.loaded_in("idle");
         domain.live.mods.loaded_in("stranger");
         for card in [permission("no-mod"), permission("idle"), permission("stranger")] {

@@ -120,7 +120,7 @@ mod tests {
             let fixture = Self { home, domain, client, github };
             let user = Actor::User { user_id: "user".into() };
             let agent = Actor::Agent { agent_id: "agent".into() };
-            fixture.run(Actor::System, "agent", Command::RegisterAgent { agent_id: "agent".into(), name: "Agent".into() });
+            fixture.run(Actor::System, "agent", Command::RegisterAgent { agent_id: "agent".into(), name: "Agent".into(), at: 0 });
             fixture.run(user.clone(), "request", Command::CreateRequest { request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
             fixture.run(Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { task_id: "task".into(), request_id: "request".into(), title: "Task".into(),
                 agent_id: Some("agent".into()), review_prs: false, dependencies: Default::default(), stack: None,

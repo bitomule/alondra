@@ -199,6 +199,9 @@ fn head(s: &str) -> Result<()> {
         Ok(())
     }
 }
+/// Who reads a notice for the orchestrator: Alondra, once it handed the notice over.
+pub const ORCHESTRATOR_READER: &str = "alondra-orchestrator";
+
 fn user(actor: &Actor) -> Result<String> {
     match actor {
         Actor::User { user_id } => {
@@ -1801,6 +1804,7 @@ impl DomainState {
         }
         next.resume_waiting_nodes(self, &mut effects);
         next.wrap_up_step(&mut effects);
+        next.settle_nodes();
         for id in self.touched_tasks(&next) {
             next.tasks.get_mut(&id).unwrap().revision = self.revision + 1;
         }
@@ -1811,6 +1815,7 @@ impl DomainState {
             effects.clear();
         }
         next.validate()?;
+        next.validate_nodes()?;
         let superseded_acceptances = self
             .interactions
             .values()
@@ -2137,7 +2142,7 @@ impl DomainState {
                     self.tell_the_answer(actor, request_id, answer, title.as_deref(), created, effects)?;
                 }
             }
-            Command::RegisterAgent { agent_id, name } => {
+            Command::RegisterAgent { agent_id, name, at } => {
                 system(actor)?;
                 id(&agent_id.0)?;
                 nonempty(name)?;
@@ -2149,20 +2154,19 @@ impl DomainState {
                     Agent {
                         id: agent_id.clone(),
                         name: name.clone(),
-                        connected: false,
+                        phase: NodePhase::Starting { reviving: false },
+                        since: *at,
                     },
                 );
                 created.push(agent_id.0.clone());
             }
-            Command::ObserveAgent {
-                agent_id,
-                connected,
-            } => {
+            Command::MoveNode { agent_id, event, at } => {
                 system(actor)?;
-                self.agents
-                    .get_mut(agent_id)
-                    .ok_or_else(|| DomainError::new("not_found", "Agent missing"))?
-                    .connected = *connected;
+                self.move_node(agent_id, event, *at)?;
+            }
+            Command::ReconcileNodes { listed, at } => {
+                system(actor)?;
+                self.reconcile_nodes(listed, *at);
             }
             Command::AdvanceOrchestratorGeneration { generation } => {
                 system(actor)?;
@@ -2769,7 +2773,11 @@ impl DomainState {
                 });
             }
             Command::MarkRead { interaction_id } => {
-                let u = user(actor)?;
+                let to_orchestrator = self.interactions.get(interaction_id).is_some_and(|i| i.recipient == Recipient::Orchestrator);
+                let u = match actor {
+                    Actor::System if to_orchestrator => ORCHESTRATOR_READER.to_owned(),
+                    _ => user(actor)?,
+                };
                 let i = self
                     .interactions
                     .get_mut(interaction_id)

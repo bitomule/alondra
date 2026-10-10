@@ -472,6 +472,9 @@
             },
             "name": {
               "type": "string"
+            },
+            "at": {
+              "type": "integer"
             }
           },
           "required": [
@@ -485,19 +488,71 @@
           "additionalProperties": false,
           "properties": {
             "kind": {
-              "const": "observe_agent"
+              "const": "move_node"
             },
             "agent_id": {
               "$ref": "#/$defs/AgentId"
             },
-            "connected": {
-              "type": "boolean"
+            "event": {
+              "type": "object",
+              "required": [
+                "kind"
+              ],
+              "properties": {
+                "kind": {
+                  "enum": [
+                    "turn_started",
+                    "turn_ended",
+                    "session_lost",
+                    "session_closed",
+                    "start_failed",
+                    "revival_failed",
+                    "paused",
+                    "pause_cleanup",
+                    "pause_released",
+                    "resumed",
+                    "listed"
+                  ]
+                }
+              }
+            },
+            "at": {
+              "type": "integer"
             }
           },
           "required": [
             "kind",
             "agent_id",
-            "connected"
+            "event",
+            "at"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "reconcile_nodes"
+            },
+            "listed": {
+              "type": "object",
+              "additionalProperties": {
+                "enum": [
+                  "working",
+                  "idle",
+                  "blocked",
+                  "absent"
+                ]
+              }
+            },
+            "at": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "kind",
+            "listed",
+            "at"
           ]
         },
         {

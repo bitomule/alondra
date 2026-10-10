@@ -10,8 +10,9 @@ use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::StoreError;
 use alondra_core::domain::{
     Actor, AgentId, Command, CommandEnvelope, CommandId, CommandOutcome, DataEpoch, DomainError,
-    Revision, PROTOCOL_VERSION,
+    Millis, NodeEvent, Listed, Revision, PROTOCOL_VERSION,
 };
+use std::collections::BTreeMap;
 use sha2::{Digest, Sha256};
 
 pub(crate) struct ManagedIdentity {
@@ -25,6 +26,7 @@ pub(crate) struct LifecycleEvent {
     event_id: String,
     data_epoch: DataEpoch,
     expected_revision: Revision,
+    at: Millis,
 }
 
 pub(crate) fn prepare_event(
@@ -39,6 +41,7 @@ pub(crate) fn prepare_event(
         event_id: event_id.to_owned(),
         data_epoch: state.data_epoch.clone(),
         expected_revision: state.revision,
+        at: alondra_core::now_millis(),
     })
 }
 
@@ -70,29 +73,50 @@ pub(crate) fn register_instance(
         Command::RegisterAgent {
             agent_id: identity.agent_id.clone(),
             name: name.to_owned(),
+            at: event.at,
         },
     )
 }
 
-/// Record a transition observed by the daemon's managed process supervisor.
-///
-/// Each distinct spawn or exit needs a distinct event. Reuse the whole event
-/// and payload only when retrying an uncertain commit.
-pub(crate) fn observe_instance(
+/// Hand the node machine something that happened to a node. Each distinct happening needs a
+/// distinct event; reuse the whole event only when retrying an uncertain commit.
+pub(crate) fn move_instance(
     domain: &DomainRuntime,
     agent_id: &AgentId,
-    connected: bool,
+    happened: NodeEvent,
     event: &LifecycleEvent,
 ) -> Result<CommandOutcome, StoreError> {
-    submit(
-        domain,
-        "agent-observe",
-        event,
-        Command::ObserveAgent {
-            agent_id: agent_id.clone(),
-            connected,
-        },
-    )
+    submit(domain, "agent-move", event, Command::MoveNode { agent_id: agent_id.clone(), event: happened, at: event.at })
+}
+
+/// Records `happened` when the node machine would move the node for it, and says whether it did.
+/// An event the machine refuses (a late report, a closed node) or that changes nothing is
+/// dropped without a write.
+pub(crate) fn node_event(domain: &DomainRuntime, agent_id: &AgentId, happened: NodeEvent) -> Result<bool, StoreError> {
+    node_event_at(domain, agent_id, happened, alondra_core::now_millis())
+}
+
+/// `node_event` for something that happened at `at`, by the reporter's clock.
+pub(crate) fn node_event_at(domain: &DomainRuntime, agent_id: &AgentId, happened: NodeEvent, at: Millis) -> Result<bool, StoreError> {
+    let state = domain.state().map_err(StoreError::Storage)?;
+    if !matches!(state.node_next(agent_id, &happened, at), Ok(Some(_))) {
+        return Ok(false);
+    }
+    let id = format!("{}-{}-{}", happened.key(), agent_id.0, crate::auth::random_hex(8));
+    let event = LifecycleEvent { event_id: id, data_epoch: state.data_epoch.clone(), expected_revision: state.revision, at };
+    move_instance(domain, agent_id, happened, &event).map(|outcome| outcome.changed)
+}
+
+/// Hands the node machine the listing of real sessions, when it moves any node.
+pub(crate) fn reconcile(domain: &DomainRuntime, listed: BTreeMap<AgentId, Listed>) -> Result<bool, StoreError> {
+    let state = domain.state().map_err(StoreError::Storage)?;
+    let at = alondra_core::now_millis();
+    if !state.reconciling_moves(&listed, at) {
+        return Ok(false);
+    }
+    let id = format!("reconcile-{}", crate::auth::random_hex(8));
+    let event = LifecycleEvent { event_id: id, data_epoch: state.data_epoch.clone(), expected_revision: state.revision, at };
+    submit(domain, "agent-reconcile", &event, Command::ReconcileNodes { listed, at }).map(|outcome| outcome.changed)
 }
 
 fn submit(
@@ -117,6 +141,7 @@ fn submit(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alondra_core::domain::NodePhase;
 
     struct Fixture(crate::test_support::Directory);
     impl Fixture {
@@ -146,25 +171,24 @@ mod tests {
         let registered = register_instance(&domain, &identity, "Builder", &register).unwrap();
         assert!(registered.changed);
         assert_eq!(registered.created_ids, vec![id.0.clone()]);
-        assert!(!domain.state().unwrap().agents[&id].connected);
+        assert_eq!(domain.state().unwrap().agents[&id].phase, NodePhase::Starting { reviving: false });
         let replay = register_instance(&domain, &identity, "Builder", &register).unwrap();
         assert_eq!(replay.revision, registered.revision);
-        let spawn = prepare_event(&domain, "launch-one-spawn").unwrap();
-        let spawned = observe_instance(&domain, &id, true, &spawn).unwrap();
+        let spawn = prepare_event(&domain, "launch-one-turn").unwrap();
+        let spawned = move_instance(&domain, &id, NodeEvent::TurnStarted, &spawn).unwrap();
         assert!(spawned.changed);
         let exit = prepare_event(&domain, "launch-one-exit").unwrap();
-        let stopped = observe_instance(&domain, &id, false, &exit).unwrap();
+        let stopped = move_instance(&domain, &id, NodeEvent::SessionClosed, &exit).unwrap();
         assert!(stopped.changed);
         drop(domain);
 
         let reopened = fixture.open();
-        assert!(!reopened.state().unwrap().agents[&id].connected);
-        let replay = observe_instance(&reopened, &id, false, &exit).unwrap();
+        assert_eq!(reopened.state().unwrap().agents[&id].phase, NodePhase::Closed);
+        let replay = move_instance(&reopened, &id, NodeEvent::SessionClosed, &exit).unwrap();
         assert_eq!(replay.revision, stopped.revision);
-        let restart = prepare_event(&reopened, "launch-two-spawn").unwrap();
-        let restarted = observe_instance(&reopened, &id, true, &restart).unwrap();
-        assert!(restarted.changed);
-        assert!(reopened.state().unwrap().agents[&id].connected);
+        let restart = prepare_event(&reopened, "launch-two-turn").unwrap();
+        let refused = move_instance(&reopened, &id, NodeEvent::TurnStarted, &restart).unwrap_err();
+        assert!(matches!(refused, StoreError::Domain(ref value) if value.code == "node_closed"), "a closed node stays closed");
     }
 
     #[test]
@@ -180,8 +204,8 @@ mod tests {
             matches!(error, StoreError::Domain(ref value) if value.code == "idempotency_conflict")
         );
         let status = prepare_event(&domain, "status-one").unwrap();
-        observe_instance(&domain, &id, false, &status).unwrap();
-        let error = observe_instance(&domain, &id, true, &status).unwrap_err();
+        move_instance(&domain, &id, NodeEvent::TurnStarted, &status).unwrap();
+        let error = move_instance(&domain, &id, NodeEvent::TurnEnded, &status).unwrap_err();
         assert!(
             matches!(error, StoreError::Domain(ref value) if value.code == "idempotency_conflict")
         );
@@ -194,7 +218,7 @@ mod tests {
         let identity = new_identity().unwrap();
         let id = identity.agent_id.clone();
         let unknown = prepare_event(&domain, "unknown-spawn").unwrap();
-        assert!(observe_instance(&domain, &id, true, &unknown).is_err());
+        assert!(move_instance(&domain, &id, NodeEvent::TurnStarted, &unknown).is_err());
         assert!(prepare_event(&domain, "").is_err());
         assert!(domain.state().unwrap().agents.is_empty());
     }

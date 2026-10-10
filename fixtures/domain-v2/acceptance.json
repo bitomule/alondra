@@ -24,12 +24,12 @@
       {
         "id": "agent-a",
         "session_id": "agent-a",
-        "connected": true
+        "phase": "working"
       },
       {
         "id": "agent-b",
         "session_id": "agent-b",
-        "connected": true
+        "phase": "working"
       }
     ],
     "tasks": [
@@ -1654,9 +1654,9 @@
           "value": "closing"
         },
         {
-          "path": "agents.agent-a.connected",
+          "path": "agents.agent-a.phase",
           "op": "eq",
-          "value": false
+          "value": "closing"
         }
       ],
       "cs_evidence": ["domain::tests::explicit_acceptance_completes_the_task_and_feedback_revokes_it_first"],
@@ -1784,9 +1784,9 @@
           "value": "agent-a"
         },
         {
-          "path": "agents.agent-a.connected",
+          "path": "agents.agent-a.phase",
           "op": "eq",
-          "value": true
+          "value": "stopped"
         }
       ],
       "execution_status": "store_runner"

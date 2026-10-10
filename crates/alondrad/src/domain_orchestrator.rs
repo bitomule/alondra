@@ -7,7 +7,7 @@ use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::OutboxMessage;
 use crate::orchestrator_process::{self as process, Invocation, Ownership};
 use alondra_core::delivery::State;
-use alondra_core::domain::{DomainError, DomainState, InteractionId, InteractionPayload, QuestionOption, Scope};
+use alondra_core::domain::{Actor, Command, CommandEnvelope, DomainError, DomainState, InteractionId, InteractionPayload, PROTOCOL_VERSION, QuestionOption, Recipient, Scope};
 use alondra_core::now_millis;
 use alondra_core::orchestrator_batch::{BATCH_CONTINUE, BATCH_CONTINUE_LABEL, BATCH_PROBLEM_PREFIX, BATCH_RETRY, BATCH_RETRY_LABEL, BatchProblem, BatchStop};
 use anyhow::{Context, Result, bail};
@@ -99,6 +99,32 @@ pub(crate) struct Executor {
     pub home: PathBuf,
     pub claude_home: PathBuf,
     pub executable: PathBuf,
+}
+
+/// A notice for the orchestrator is read once Alondra handed it over (or gave it up): it no
+/// longer waits for anyone.
+pub(crate) fn read_handed_notices(domain: &DomainRuntime) {
+    let out = match domain.store.lock().expect("domain store poisoned").orchestrator_notices_out() {
+        Ok(out) => out,
+        Err(error) => return log!("could not list the orchestrator's handed notices: {error:#}"),
+    };
+    for id in out {
+        let Ok(state) = domain.state() else { return };
+        let unread = state.interactions.get(&InteractionId::from(id.as_str())).is_some_and(|i| {
+            i.recipient == Recipient::Orchestrator && matches!(&i.payload, InteractionPayload::Information { read_by } if read_by.is_empty())
+        });
+        if !unread {
+            continue;
+        }
+        let envelope = CommandEnvelope {
+            protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(),
+            command_id: format!("orchestrator-read-{id}").into(), expected_revision: state.revision,
+            command: Command::MarkRead { interaction_id: id.as_str().into() },
+        };
+        if let Err(error) = domain.execute(&Actor::System, &envelope, None, || Ok(())) {
+            log!("could not mark the orchestrator's notice {id} read: {error:?}");
+        }
+    }
 }
 
 impl Executor {
@@ -365,6 +391,7 @@ impl Executor {
         }
         if succeeded {
             self.finish(&run, State::Handed, None)?;
+            read_handed_notices(&self.domain);
             runtime.active_run = None;
             runtime.last_error = None;
             runtime.failure = None;
@@ -691,7 +718,7 @@ exit 1"#;
     /// A question from an Agent to the orchestrator: one orchestrator inbox message.
     fn ask_orchestrator(domain: &DomainRuntime, n: u32) {
         if n == 1 {
-            command(domain, Actor::System, "agent", Command::RegisterAgent { agent_id: "a".into(), name: "A".into() });
+            command(domain, Actor::System, "agent", Command::RegisterAgent { agent_id: "a".into(), name: "A".into(), at: 0 });
             command(domain, Actor::Orchestrator { generation: 0 }, "request", Command::CreateRequest { request_id: "r".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
             command(domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask {
                 task_id: "t".into(), request_id: "r".into(), title: "Task".into(), agent_id: Some("a".into()),

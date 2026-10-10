@@ -4,7 +4,7 @@
 //! decisions are the domain's (`after_failure`, `DomainState::react`); this carries them out.
 use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::{AutoLaunchReason, AutoLaunchState};
-use alondra_core::domain::{
+use alondra_core::domain::{NodePhase, 
     AfterFailure, Command, CommandEnvelope, DomainState, NodeFact, Reaction, Start, StartFacts, StartProblem, TaskId,
     PROTOCOL_VERSION, after_failure,
 };
@@ -70,7 +70,7 @@ pub(crate) fn facts(domain: &DomainRuntime, state: &DomainState) -> Result<BTree
     let autos = store.auto_launches()?;
     let retries = store.start_retries()?;
     let queued: Vec<TaskId> = store.launch_queue()?.into_iter().map(|row| row.task_id).collect();
-    let held = domain.live.gate.pauses().held;
+    let held = domain.live.gate.pauses(domain).held;
     let now = alondra_core::now_millis();
     let mut out = BTreeMap::new();
     for task in state.tasks.values().filter(|task| !task.state.terminal() && !task.archived) {
@@ -87,11 +87,13 @@ pub(crate) fn facts(domain: &DomainRuntime, state: &DomainState) -> Result<BTree
             (None, None) => Start::Ready,
         };
         let node = match task.agent_id.as_ref().and_then(|id| state.agents.get(id)) {
-            Some(agent) if agent.connected => crate::domain_transport::stopped_without_delivering(domain, state, &agent.id, now,
+            Some(agent) if agent.phase == NodePhase::Starting { reviving: true } => match crate::domain_holds::waits_on_user(state, &agent.id.0) {
+                true => NodeFact::Asking,
+                false => NodeFact::Reviving,
+            },
+            Some(agent) if agent.phase.live() => crate::domain_transport::stopped_without_delivering(domain, state, &agent.id, now,
                 |task| store.stop_blocks(task).ok().flatten()).map_or(NodeFact::Alive, |sent_back| NodeFact::Stopped { sent_back }),
-            Some(agent) if crate::domain_holds::waits_on_user(state, &agent.id.0) => NodeFact::Asking,
-            Some(_) => NodeFact::Reviving,
-            None => NodeFact::Gone,
+            Some(_) | None => NodeFact::Gone,
         };
         out.insert(task.id.clone(), StartFacts {
             planned: scheduled || planned.contains_key(&task.id),

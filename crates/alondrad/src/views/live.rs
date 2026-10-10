@@ -1,6 +1,6 @@
 use super::reset_time;
 use alondra_core::Millis;
-use alondra_core::domain::{DomainState, PrState, PullRequest, TaskId, TaskState};
+use alondra_core::domain::{DomainState, NodePhase, PrState, PullRequest, TaskId, TaskState};
 use alondra_core::views::{
     Gauge, InboxTime, Lang, Level, LiveActivity, LiveBackground, LiveHistoryStep, LiveNode, LiveOrchestrator,
     LiveCheck, LivePullRequest, LiveRun, LiveSnapshot, LiveStep, Notice, StepState, Tone,
@@ -102,7 +102,6 @@ async fn gather_at(
             (task.0, alondra_core::views::LiveLaunchRefusal { reason, detail })
         })
         .collect();
-    let pauses = client.domain.live.gate.pauses();
     let nodes = state
         .agents
         .values()
@@ -116,7 +115,7 @@ async fn gather_at(
                     let state_since = Some(node.state_since);
                     (node, state_since)
                 }
-                None if reported.started_at.is_some() || agent.connected || open_task => {
+                None if reported.started_at.is_some() || agent.phase.live() || open_task => {
                     let mut node = alondra_core::Node::new(&session_id, 0);
                     node.cwd = reported.cwd.clone();
                     (node, None)
@@ -132,7 +131,6 @@ async fn gather_at(
                 Activity::Stalled if crate::domain_holds::waits_on_user(state, &session_id) => Activity::Working,
                 activity => activity,
             };
-            let reconnecting = client.domain.live.is_reconnecting(&session_id);
             let state_key = match activity {
                 Activity::Stalled => "stalled",
                 Activity::Failed => "failed",
@@ -230,13 +228,9 @@ async fn gather_at(
                 }).collect(),
                 background_badge,
                 background_suspect,
-                working: matches!(activity, Activity::Working | Activity::Stalled) && !pauses.paused.contains_key(&session_id),
-                waiting: matches!(node.state, alondra_core::NodeState::WaitingAnswer |
-                    alondra_core::NodeState::YourTurn | alondra_core::NodeState::WaitingMerge |
-                    alondra_core::NodeState::WaitingMachine),
-                quiet: !matches!(activity, Activity::Working | Activity::Stalled)
-                    && !matches!(node.state, alondra_core::NodeState::WaitingAnswer
-                        | alondra_core::NodeState::WaitingMerge | alondra_core::NodeState::WaitingMachine)
+                working: agent.phase == NodePhase::Working,
+                waiting: matches!(agent.phase, NodePhase::WaitingUser { .. } | NodePhase::Paused(_)),
+                quiet: agent.phase == NodePhase::Stopped
                     && state_since.is_some_and(|since| now.saturating_sub(since.max(answer.map_or(0, |answer| answer.at)))
                         >= alondra_core::states::NODE_QUIET_MS),
                 state_since: state_since.map(timestamp),
@@ -248,9 +242,8 @@ async fn gather_at(
                 context_window: reported.context.as_ref().map(|context| context.window),
                 cost_cents: reported.cost_usd.map(|usd| (usd * 100.0).round().max(0.0) as u64),
                 model: reported.model.clone(),
-                reconnecting,
-                disconnected: !reconnecting && reported.connection.is_none()
-                    && reported.disconnected_at.is_some_and(|at| now - at > crate::node_revival::Timing::LIVE.grace.as_millis() as i64),
+                reconnecting: agent.phase == NodePhase::Starting { reviving: true },
+                disconnected: agent.phase == NodePhase::Closed && open_task,
                 waiting_until: exhausted.as_ref().filter(|_| node.usage_limited).map(|exhausted| timestamp(exhausted.until)),
             })
         })
@@ -640,7 +633,7 @@ mod cache_tests {
     }
 
     fn report(domain: &crate::domain_runtime::DomainRuntime, value: Value, at: Millis) {
-        domain.live.mods.apply(serde_json::from_value(value).unwrap(), at);
+        domain.report(serde_json::from_value(value).unwrap(), at);
     }
 
 
@@ -723,9 +716,10 @@ mod cache_tests {
         let domain = Arc::new(crate::domain_runtime::DomainRuntime::open(&home).unwrap());
         let client = crate::client_routes::Client::open(domain.clone(), &home, Arc::new(Mutex::new(None)));
         for id in ["connected", "reported", "assigned", "hidden"] {
-            execute(&domain, Actor::System, id, Command::RegisterAgent { agent_id: id.into(), name: id.into() });
+            execute(&domain, Actor::System, id, Command::RegisterAgent { agent_id: id.into(), name: id.into(), at: 0 });
         }
-        execute(&domain, Actor::System, "observe", Command::ObserveAgent { agent_id: "connected".into(), connected: true });
+        execute(&domain, Actor::System, "observe", Command::MoveNode { agent_id: "connected".into(), event: alondra_core::domain::NodeEvent::TurnStarted, at: 0 });
+        execute(&domain, Actor::System, "hide", Command::MoveNode { agent_id: "hidden".into(), event: alondra_core::domain::NodeEvent::SessionClosed, at: 0 });
         execute(&domain, Actor::Orchestrator { generation: 0 }, "request", Command::CreateRequest {
             request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false,
         });
@@ -757,8 +751,9 @@ mod cache_tests {
         fs::create_dir_all(&home).unwrap();
         let domain = Arc::new(crate::domain_runtime::DomainRuntime::open(&home).unwrap());
         let client = crate::client_routes::Client::open(domain.clone(), &home, Arc::new(Mutex::new(None)));
-        execute(&domain, Actor::System, "agent", Command::RegisterAgent { agent_id: "known".into(), name: "Known".into() });
+        execute(&domain, Actor::System, "agent", Command::RegisterAgent { agent_id: "known".into(), name: "Known".into(), at: 0 });
         domain.live.observe(&serde_json::json!({"session_id": "known", "hook_event_name": "Stop", "last_assistant_message": "Ready"}));
+        execute(&domain, Actor::System, "stop", Command::MoveNode { agent_id: "known".into(), event: alondra_core::domain::NodeEvent::TurnEnded, at: 0 });
         let since = domain.live.node("known").unwrap().state_since;
         let state = domain.state().unwrap();
         let before = gather_at(&client, &state, Lang::En, &[], false, false, since + alondra_core::states::NODE_QUIET_MS - 1).await;
@@ -785,7 +780,7 @@ mod cache_tests {
         fs::create_dir_all(&home).unwrap();
         let domain = Arc::new(crate::domain_runtime::DomainRuntime::open(&home).unwrap());
         let client = crate::client_routes::Client::open(domain.clone(), &home, Arc::new(Mutex::new(None)));
-        execute(&domain, Actor::System, "agent", Command::RegisterAgent { agent_id: "reported".into(), name: "Reported".into() });
+        execute(&domain, Actor::System, "agent", Command::RegisterAgent { agent_id: "reported".into(), name: "Reported".into(), at: 0 });
         report(&domain, serde_json::json!({"session_id": "reported", "event": "session.start", "version": "test"}), 1_000);
         report(&domain, serde_json::json!({"session_id": "reported", "event": "tool.start", "tool": "Bash", "input": {"command": "build"}}), 2_000);
         let state = domain.state().unwrap();
@@ -846,13 +841,13 @@ mod cache_tests {
                 task_id: id.into(), request_id: "request".into(), title: format!("Task {id}"), agent_id: None, review_prs: false,
                 dependencies: Default::default(), stack: None, launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),
             });
-            execute(&domain, Actor::System, &format!("register-{id}"), Command::RegisterAgent { agent_id: agent.as_str().into(), name: agent.clone() });
-            execute(&domain, Actor::System, &format!("observe-{id}"), Command::ObserveAgent { agent_id: agent.as_str().into(), connected: true });
+            execute(&domain, Actor::System, &format!("register-{id}"), Command::RegisterAgent { agent_id: agent.as_str().into(), name: agent.clone(), at: 0 });
+            execute(&domain, Actor::System, &format!("observe-{id}"), Command::MoveNode { agent_id: agent.as_str().into(), event: alondra_core::domain::NodeEvent::TurnStarted, at: 0 });
             execute(&domain, Actor::User { user_id: "u".into() }, &format!("assign-{id}"), Command::AssignTask {
                 task_id: id.into(), agent_id: agent.as_str().into(), model: None,
             });
             execute(&domain, Actor::Agent { agent_id: agent.as_str().into() }, &format!("start-{id}"), Command::StartTask { task_id: id.into() });
-            domain.live.mods.apply(Envelope { session_id: agent, report: Report::TurnStart }, now);
+            domain.report(Envelope { session_id: agent, report: Report::TurnStart }, now);
         }
         assert!(domain.live.gate.hold_back(&domain, "agent-harness", crate::fleet_pause::Reason::Declared {
             reason: "The build ran out of memory".into(),
@@ -944,7 +939,7 @@ mod cache_tests {
             domain.execute(&Actor::System, &CommandEnvelope {
                 protocol_version: 2, data_epoch: state.data_epoch.clone(),
                 command_id: format!("register-{id}").into(), expected_revision: state.revision,
-                command: Command::RegisterAgent { agent_id: id.into(), name: format!("Agent {id}") },
+                command: Command::RegisterAgent { agent_id: id.into(), name: format!("Agent {id}"), at: 0 },
             }, None, || Ok(())).unwrap();
         }
         let activity_hook = |id: &str, message: &str| serde_json::json!({

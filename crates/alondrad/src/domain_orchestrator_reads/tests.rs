@@ -36,7 +36,7 @@ fn world() -> Fixture {
     std::fs::create_dir_all(&home).unwrap();
     let domain = DomainRuntime::open(&home).unwrap();
     for (id, name) in [("agent-a", "Instance A"), ("agent-b", "Instance B")] {
-        run(&domain, Actor::System, Command::RegisterAgent { agent_id: id.into(), name: name.into() });
+        run(&domain, Actor::System, Command::RegisterAgent { agent_id: id.into(), name: name.into(), at: 0 });
     }
     run(&domain, user(), Command::CreateRequest { request_id: "r".into(), body: "Make the editor readable".into(), auto_merge: false, maintenance: false, message: false });
     run(&domain, user(), Command::TitleRequest { request_id: "r".into(), title: "Readable editor".into() });
@@ -47,7 +47,7 @@ fn world() -> Fixture {
     run(&domain, Actor::Orchestrator { generation: 0 }, task("t1", Some("agent-a"), &[]));
     run(&domain, Actor::Orchestrator { generation: 0 }, task("t2", None, &["t1"]));
     domain.live.observe(&json!({"session_id": "agent-a", "hook_event_name": "UserPromptSubmit", "cwd": "/Users/me/Projects/App", "prompt": "go"}));
-    domain.live.mods.apply(serde_json::from_value(json!({"session_id": "agent-a", "event": "model", "model": "claude-sonnet-5-5"})).unwrap(), 1);
+    domain.report(serde_json::from_value(json!({"session_id": "agent-a", "event": "model", "model": "claude-sonnet-5-5"})).unwrap(), 1);
     domain.live.observe(&json!({"session_id": "stranger", "hook_event_name": "UserPromptSubmit", "cwd": "/Users/me/Projects/App", "prompt": "go"}));
     Fixture(home, domain)
 }

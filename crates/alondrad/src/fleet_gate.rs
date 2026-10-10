@@ -11,8 +11,7 @@ use crate::domain_orchestrator_tools::{LaunchBody, Origin, launch_from, request_
 use crate::domain_runtime::DomainRuntime;
 use crate::fleet_pause::{Pauses, Paused, Reason};
 use crate::machine_state::{Health, MacState};
-use crate::node_reports::Activity;
-use alondra_core::domain::{Actor, DomainState, ScheduleLaunchState, ScheduleRunState, TaskId, TaskPriority, TaskState};
+use alondra_core::domain::{Actor, AgentId, DomainState, NodeEvent, NodePhase, Pause, PauseCleanup, PauseReason, ScheduleLaunchState, ScheduleRunState, TaskId, TaskPriority, TaskState};
 use alondra_core::views::{LiveHold, LivePacing, LivePaused, LivePauseReason, LiveQueued};
 use alondra_core::Millis;
 use alondra_core::options::NodeLimit;
@@ -152,6 +151,8 @@ impl Default for Tuning {
 #[derive(Default)]
 struct Inner {
     saved: Saved,
+    /// Pauses an older daemon kept in the gate's file, handed to the node machine on first use.
+    legacy: BTreeMap<String, Paused>,
     /// Starts the gate let through and when, counted as working while their node comes up.
     admitted: Vec<(Key, Millis)>,
     /// Starts whose caller keeps them durable and asks again when woken.
@@ -230,12 +231,36 @@ pub(crate) struct Snapshot {
 impl FleetGate {
     pub(crate) fn persisted_in(home: &Path) -> Self {
         let file = home.join(FILE);
-        let saved = std::fs::read(&file).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default();
-        Self { inner: Mutex::new(Inner { saved, ..Inner::default() }), file: Some(file), ..Self::default() }
+        let mut saved: Saved = std::fs::read(&file).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default();
+        let legacy = std::mem::take(&mut saved.pauses.paused);
+        Self { inner: Mutex::new(Inner { saved, legacy, ..Inner::default() }), file: Some(file), ..Self::default() }
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
         self.inner.lock().expect("fleet gate poisoned")
+    }
+
+    /// The gate with the pauses the node machine holds now: the only place they live.
+    fn lock_with(&self, domain: &DomainRuntime) -> std::sync::MutexGuard<'_, Inner> {
+        let mut inner = self.lock();
+        if !inner.legacy.is_empty() {
+            let legacy = std::mem::take(&mut inner.legacy);
+            let mut wanted = domain.state().map(|state| domain_paused(&state)).unwrap_or_default();
+            for (session, paused) in legacy {
+                wanted.entry(session).or_insert(paused);
+            }
+            hand_pauses(domain, &wanted);
+        }
+        if let Ok(state) = domain.state() {
+            inner.saved.pauses.paused = domain_paused(&state);
+        }
+        inner
+    }
+
+    /// Hands what changed in the pauses to the node machine, then saves the rest of the gate.
+    fn save_with(&self, domain: &DomainRuntime, inner: &Inner) {
+        hand_pauses(domain, &inner.saved.pauses.paused);
+        self.save(inner);
     }
 
     fn save(&self, inner: &Inner) {
@@ -271,7 +296,7 @@ impl FleetGate {
     /// The Mac's memory got worse with `working` nodes at work: a resume shortly before is blamed,
     /// which doubles the step between resumes and, in automatic, lowers how many nodes work.
     pub(crate) fn saturated(&self, domain: &DomainRuntime, working: usize, now: Millis) {
-        let mut inner = self.lock();
+        let mut inner = self.lock_with(domain);
         let auto = matches!(limit_setting(domain, inner.tuning), Limit::Auto { .. });
         if inner.saved.pauses.step.saturated(now) {
             if auto {
@@ -279,7 +304,7 @@ impl FleetGate {
             }
             log!("the Mac saturated again after a resume: the step between resumes is now {} min", inner.saved.pauses.step.step / 60_000);
         }
-        self.save(&inner);
+        self.save_with(domain, &inner);
     }
 
     /// The user chose a limit: what the gate learned before no longer applies.
@@ -289,12 +314,12 @@ impl FleetGate {
         self.save(&inner);
     }
 
-    pub(crate) fn paused(&self, session: &str) -> Option<Paused> {
-        self.lock().saved.pauses.paused.get(session).cloned()
+    pub(crate) fn paused(&self, domain: &DomainRuntime, session: &str) -> Option<Paused> {
+        self.lock_with(domain).saved.pauses.paused.get(session).cloned()
     }
 
-    pub(crate) fn pauses(&self) -> Pauses {
-        self.lock().saved.pauses.clone()
+    pub(crate) fn pauses(&self, domain: &DomainRuntime) -> Pauses {
+        self.lock_with(domain).saved.pauses.clone()
     }
 
     /// A node stopped for a reason of its own (`wait_for_machine`, the usage limit): it waits here
@@ -302,7 +327,7 @@ impl FleetGate {
     /// which the gate does not pace.
     pub(crate) fn hold_back(&self, domain: &DomainRuntime, session: &str, reason: Reason, now: Millis) -> bool {
         let Some(task) = domain.state().ok().and_then(|state| open_task_of(&state, session)) else { return false };
-        let mut inner = self.lock();
+        let mut inner = self.lock_with(domain);
         if inner.saved.pauses.paused.get(session).is_some_and(|paused| paused.reason == Reason::ByUser) {
             return true;
         }
@@ -310,7 +335,7 @@ impl FleetGate {
         inner.saved.pauses.paused.insert(session.to_owned(), Paused {
             task, reason, since: now, cut: None, turn_since, cleanup: crate::fleet_pause::Cleanup::Done, released: false,
         });
-        self.save(&inner);
+        self.save_with(domain, &inner);
         drop(inner);
         self.poke();
         true
@@ -319,16 +344,16 @@ impl FleetGate {
     /// The user paused a working node: it stops at once and only the user brings it back.
     pub(crate) fn pause_by_user(&self, domain: &DomainRuntime, session: &str, now: Millis) -> Result<(), &'static str> {
         let task = domain.state().ok().and_then(|state| open_task_of(&state, session)).ok_or("This node has no open task")?;
-        let mut inner = self.lock();
+        let mut inner = self.lock_with(domain);
         crate::fleet_pause::stop(domain, &mut inner.saved.pauses, session, task, Reason::ByUser, now);
-        self.save(&inner);
+        self.save_with(domain, &inner);
         Ok(())
     }
 
     /// The user resumed a paused node (D3): it goes on at once, even over the limit, and counts
     /// toward it from now on.
     pub(crate) fn resume_now(&self, domain: &DomainRuntime, session: &str, now: Millis) -> bool {
-        let mut inner = self.lock();
+        let mut inner = self.lock_with(domain);
         if !inner.saved.pauses.paused.contains_key(session) {
             return false;
         }
@@ -337,32 +362,32 @@ impl FleetGate {
         resume_locked(domain, &mut inner, session, now);
         inner.admitted.retain(|(_, at)| now - at < IN_FLIGHT);
         inner.admitted.push((Key::Resume(session.to_owned()), now));
-        self.save(&inner);
+        self.save_with(domain, &inner);
         true
     }
 
-    pub(crate) fn paused_by_user(&self, session: &str) -> bool {
-        self.lock().saved.pauses.paused.get(session).is_some_and(|paused| paused.reason == Reason::ByUser)
+    pub(crate) fn paused_by_user(&self, domain: &DomainRuntime, session: &str) -> bool {
+        self.lock_with(domain).saved.pauses.paused.get(session).is_some_and(|paused| paused.reason == Reason::ByUser)
     }
 
     /// The user wrote to a node they paused: their message is what it goes on with, so the pause
     /// ends without the resume notice.
-    pub(crate) fn release_by_user_message(&self, session: &str) {
-        let mut inner = self.lock();
+    pub(crate) fn release_by_user_message(&self, domain: &DomainRuntime, session: &str) {
+        let mut inner = self.lock_with(domain);
         if inner.saved.pauses.paused.get(session).is_some_and(|paused| paused.reason == Reason::ByUser) {
             inner.saved.pauses.paused.remove(session);
             log!("{session} is no longer paused: the user wrote to it");
-            self.save(&inner);
+            self.save_with(domain, &inner);
         }
     }
 
     /// The user said they fixed what the machine lacked: declared waits no longer wait out their grace.
-    pub(crate) fn release_declared(&self) {
-        let mut inner = self.lock();
+    pub(crate) fn release_declared(&self, domain: &DomainRuntime) {
+        let mut inner = self.lock_with(domain);
         for paused in inner.saved.pauses.paused.values_mut().filter(|paused| matches!(paused.reason, Reason::Declared { .. })) {
             paused.released = true;
         }
-        self.save(&inner);
+        self.save_with(domain, &inner);
         drop(inner);
         self.poke();
     }
@@ -377,7 +402,7 @@ impl FleetGate {
     pub(crate) fn ask(&self, domain: &DomainRuntime, waiting: Waiting, now: Millis) -> Result<(), Hold> {
         let state = domain.state().map_err(|_| Hold::Spacing { until: now + SPACING })?;
         let queued = queued_launches(domain, &state);
-        let mut inner = self.lock();
+        let mut inner = self.lock_with(domain);
         let key = waiting.key.clone();
         if inner.admitted.iter().any(|(admitted, at)| *admitted == key && now - at < IN_FLIGHT) {
             return Ok(());
@@ -396,7 +421,7 @@ impl FleetGate {
             resume_locked(domain, &mut inner, session, now);
         }
         admit(&mut inner, key, now);
-        self.save(&inner);
+        self.save_with(domain, &inner);
         Ok(())
     }
 
@@ -408,7 +433,7 @@ impl FleetGate {
     pub(crate) fn snapshot(&self, domain: &DomainRuntime, now: Millis) -> Option<Snapshot> {
         let state = domain.state().ok()?;
         let queued = queued_launches(domain, &state);
-        let inner = self.lock();
+        let inner = self.lock_with(domain);
         Some(snapshot_locked(domain, &state, &inner, queued, now))
     }
 
@@ -416,7 +441,7 @@ impl FleetGate {
     pub(crate) fn live(&self, domain: &DomainRuntime, now: Millis) -> Option<LivePacing> {
         let snapshot = self.snapshot(domain, now)?;
         let state = domain.state().ok()?;
-        let pauses = self.pauses();
+        let pauses = self.pauses(domain);
         let is_paused = |waiting: &Waiting| matches!(&waiting.key, Key::Resume(session) if pauses.paused.contains_key(session));
         let starts: Vec<&Waiting> = snapshot.queue.iter().filter(|waiting| !is_paused(waiting)).collect();
         let total = starts.len();
@@ -486,6 +511,85 @@ fn hold_of(inner: &Inner, head: &Waiting, snapshot: &Snapshot, now: Millis) -> R
         return Err(Hold::Spacing { until });
     }
     Ok(())
+}
+
+fn reason_of(reason: &PauseReason) -> Reason {
+    match reason {
+        PauseReason::Memory => Reason::Memory,
+        PauseReason::Declared { reason } => Reason::Declared { reason: reason.clone() },
+        PauseReason::Usage => Reason::Usage,
+        PauseReason::ByUser => Reason::ByUser,
+    }
+}
+
+fn pause_reason(reason: &Reason) -> PauseReason {
+    match reason {
+        Reason::Memory => PauseReason::Memory,
+        Reason::Declared { reason } => PauseReason::Declared { reason: reason.clone() },
+        Reason::Usage => PauseReason::Usage,
+        Reason::ByUser => PauseReason::ByUser,
+    }
+}
+
+fn cleanup_of(cleanup: PauseCleanup) -> crate::fleet_pause::Cleanup {
+    match cleanup {
+        PauseCleanup::Pending => crate::fleet_pause::Cleanup::Pending,
+        PauseCleanup::Terminated => crate::fleet_pause::Cleanup::Terminated,
+        PauseCleanup::Done => crate::fleet_pause::Cleanup::Done,
+    }
+}
+
+fn pause_cleanup(cleanup: crate::fleet_pause::Cleanup) -> PauseCleanup {
+    match cleanup {
+        crate::fleet_pause::Cleanup::Pending => PauseCleanup::Pending,
+        crate::fleet_pause::Cleanup::Terminated => PauseCleanup::Terminated,
+        crate::fleet_pause::Cleanup::Done => PauseCleanup::Done,
+    }
+}
+
+/// The paused nodes as the node machine holds them, by session, with the task each one keeps.
+fn domain_paused(state: &DomainState) -> BTreeMap<String, Paused> {
+    state.paused_nodes().into_iter().filter_map(|(agent, pause)| {
+        let task = state.node_task(agent).filter(|task| !task.state.terminal())?.id.clone();
+        Some((agent.0.clone(), Paused {
+            task, reason: reason_of(&pause.reason), since: pause.since, cut: pause.cut.clone(), turn_since: pause.turn_since,
+            cleanup: cleanup_of(pause.cleanup), released: pause.released,
+        }))
+    }).collect()
+}
+
+/// Turns the pauses the gate wants into events of the node machine: a new pause, its cleanup, its
+/// release, a resume. The machine refuses what cannot be (pausing a node that waits on the user),
+/// and the gate reads back what it accepted.
+fn hand_pauses(domain: &DomainRuntime, wanted: &BTreeMap<String, Paused>) {
+    let Ok(state) = domain.state() else { return };
+    let held = domain_paused(&state);
+    let mut events = vec![];
+    for (session, paused) in wanted {
+        match held.get(session) {
+            None => events.push((session, NodeEvent::Paused { pause: Pause {
+                reason: pause_reason(&paused.reason), since: paused.since, cut: paused.cut.clone(), turn_since: paused.turn_since,
+                cleanup: pause_cleanup(paused.cleanup), released: paused.released,
+            } })),
+            Some(known) => {
+                if known.cleanup != paused.cleanup {
+                    events.push((session, NodeEvent::PauseCleanup { cleanup: pause_cleanup(paused.cleanup) }));
+                }
+                if paused.released && !known.released {
+                    events.push((session, NodeEvent::PauseReleased));
+                }
+            }
+        }
+    }
+    for session in held.keys().filter(|session| !wanted.contains_key(*session)) {
+        events.push((session, NodeEvent::Resumed));
+    }
+    for (session, event) in events {
+        let key = event.key();
+        if let Err(error) = crate::domain_agent_lifecycle::node_event(domain, &AgentId(session.clone()), event) {
+            log!("could not record that {session} {key}: {error}");
+        }
+    }
 }
 
 /// A paused node's turn came: it is told to carry on, or brought back first if it is not connected.
@@ -588,34 +692,25 @@ fn still_waits(state: &DomainState, key: &Key) -> bool {
         Key::Resume(session) => open_task_of(state, session).is_some(),
         Key::Task(task) => state.tasks.get(task).is_some_and(|task| !task.archived && !task.state.terminal()
             && !matches!(task.state, TaskState::Closing)
-            && task.agent_id.as_ref().is_none_or(|agent| !state.agents.get(agent).is_some_and(|agent| agent.connected))),
+            && task.agent_id.as_ref().is_none_or(|agent| !state.agents.get(agent).is_some_and(|agent| agent.phase.live() && agent.phase != NodePhase::Starting { reviving: true }))),
         Key::Run(run) => state.schedule.runs.get(&run.as_str().into()).is_some_and(|run| run.state == ScheduleRunState::Sent
             && run.launch.as_ref().is_some_and(|launch| launch.state == ScheduleLaunchState::Pending)),
     }
 }
 
-/// Nodes at work on a task, from what their mods report.
-pub(crate) fn busy_tasks(domain: &DomainRuntime, state: &DomainState, now: Millis) -> BTreeSet<TaskId> {
-    state.tasks.values()
-        .filter(|task| !task.archived && !task.state.terminal())
-        .filter(|task| task.agent_id.as_ref().and_then(|agent| domain.live.mods.session(&agent.0))
-            .is_some_and(|reported| matches!(reported.activity(now), Activity::Working | Activity::Stalled)))
-        .map(|task| task.id.clone())
+/// The tasks whose node is in a turn: what the gate may pause for memory.
+pub(crate) fn busy_tasks(state: &DomainState) -> BTreeSet<TaskId> {
+    state.agents.values().filter(|agent| agent.phase == NodePhase::Working)
+        .filter_map(|agent| state.node_task(&agent.id).filter(|task| !task.state.terminal()).map(|task| task.id.clone()))
         .collect()
 }
 
-/// The busy nodes that take a slot, the one count the gate, Fleet and the Tasks list share. A node
-/// that waits on the user (a held plan or permission, a question) is busy with a call, yet only the
-/// user moves it; a node paused here (it waits for the machine, the usage limit or the user) comes
-/// back through the queue. Neither keeps its slot, whatever its mod still reports.
-pub(crate) fn working_tasks(domain: &DomainRuntime, state: &DomainState, now: Millis) -> BTreeSet<TaskId> {
-    working_in(domain, state, &domain.live.gate.pauses(), now)
-}
-
-fn working_in(domain: &DomainRuntime, state: &DomainState, pauses: &Pauses, now: Millis) -> BTreeSet<TaskId> {
-    busy_tasks(domain, state, now).into_iter()
-        .filter(|task| crate::fleet_pause::session_of(state, task).is_none_or(|session| !pauses.paused.contains_key(&session)
-            && !crate::fleet_pause::waits_on_user(domain, state, task, &session)))
+/// The tasks whose node takes a slot, as the node machine says: the one count the gate, Fleet, the
+/// Tasks list and the header share. A paused node, one that waits on the user and one being brought
+/// back hold none, whatever their session still reports.
+pub(crate) fn working_tasks(state: &DomainState) -> BTreeSet<TaskId> {
+    state.slots().into_iter()
+        .filter_map(|agent| state.node_task(&agent.id).filter(|task| !task.state.terminal()).map(|task| task.id.clone()))
         .collect()
 }
 
@@ -677,7 +772,7 @@ fn machine_size() -> (usize, u64) {
 }
 
 fn snapshot_locked(domain: &DomainRuntime, state: &DomainState, inner: &Inner, queued: Vec<Waiting>, now: Millis) -> Snapshot {
-    let busy = working_in(domain, state, &inner.saved.pauses, now);
+    let busy = working_tasks(state);
     let paused = |task: &TaskId| crate::fleet_pause::session_of(state, task).is_some_and(|session| inner.saved.pauses.paused.contains_key(&session));
     let in_flight: Vec<Option<TaskId>> = inner.admitted.iter()
         .filter(|(_, at)| now - at < IN_FLIGHT)
@@ -798,19 +893,19 @@ pub(crate) async fn pass_at(domain: &DomainRuntime, home: &Path, launcher: &impl
     let gate = &domain.live.gate;
     let head = {
         let queued = queued_launches(domain, &state);
-        let mut inner = gate.lock();
+        let mut inner = gate.lock_with(domain);
         inner.asking.retain(|key, _| still_waits(&state, key));
         let health = domain.live.machine_watch.mac().health;
         crate::fleet_pause::look(domain, &state, &mut inner.saved.pauses, health, now);
         deliver_owed(domain, &mut inner);
         let snapshot = snapshot_locked(domain, &state, &inner, queued, now);
         inner.saved.learned.learn(snapshot.setting, snapshot.mac.health, !snapshot.queue.is_empty(), now);
-        gate.save(&inner);
+        gate.save_with(domain, &inner);
         let held = snapshot.queue.first().zip(snapshot.hold.as_ref());
         if inner.told.due(held.and_then(|(_, hold)| Cause::of(hold)), now) && let Some((head, hold)) = held {
-            let working: Vec<TaskId> = working_in(domain, &state, &inner.saved.pauses, now).into_iter().collect();
-            let paused = |task: &TaskId| crate::fleet_pause::session_of(&state, task).is_some_and(|session| inner.saved.pauses.paused.contains_key(&session));
-            let on_user: Vec<TaskId> = busy_tasks(domain, &state, now).into_iter().filter(|task| !working.contains(task) && !paused(task)).collect();
+            let working: Vec<TaskId> = working_tasks(&state).into_iter().collect();
+            let on_user: Vec<TaskId> = state.agents.values().filter(|agent| matches!(agent.phase, NodePhase::WaitingUser { .. }))
+                .filter_map(|agent| state.node_task(&agent.id).map(|task| task.id.clone())).collect();
             if let Some(line) = hold_line(snapshot.queue.len(), &key_text(&state, &head.key), head.priority, hold, &working, &on_user, inner.saved.pauses.paused.len()) {
                 log!("{line}");
             }
@@ -824,13 +919,13 @@ pub(crate) async fn pass_at(domain: &DomainRuntime, home: &Path, launcher: &impl
                 let session = session.clone();
                 resume_locked(domain, &mut inner, &session, now);
                 admit(&mut inner, Key::Resume(session), now);
-                gate.save(&inner);
+                gate.save_with(domain, &inner);
                 None
             }
             (Some(head), None) => {
                 let key = head.key.clone();
                 admit(&mut inner, key.clone(), now);
-                gate.save(&inner);
+                gate.save_with(domain, &inner);
                 Some(key)
             }
             _ => None,

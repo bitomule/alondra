@@ -252,10 +252,10 @@ fn create(domain: &DomainRuntime, id: &str) {
 /// The admitted task's node starts and takes its first turn.
 fn start(domain: &DomainRuntime, id: &str, now: Millis) {
     let agent = format!("agent-{id}");
-    run(domain, Actor::System, Command::RegisterAgent { agent_id: AgentId(agent.clone()), name: agent.clone() });
-    run(domain, Actor::System, Command::ObserveAgent { agent_id: AgentId(agent.clone()), connected: true });
+    run(domain, Actor::System, Command::RegisterAgent { agent_id: AgentId(agent.clone()), name: agent.clone(), at: 0 });
+    run(domain, Actor::System, Command::MoveNode { agent_id: AgentId(agent.clone()), event: alondra_core::domain::NodeEvent::TurnStarted, at: 0 });
     run(domain, Actor::User { user_id: "u".into() }, Command::AssignTask { task_id: id.into(), agent_id: AgentId(agent.clone()), model: None });
-    domain.live.mods.apply(Envelope { session_id: agent, report: Report::TurnStart }, now);
+    domain.report(Envelope { session_id: agent, report: Report::TurnStart }, now);
 }
 
 #[test]
@@ -293,7 +293,7 @@ fn eight_starts_with_a_limit_of_6_leave_2_queued_in_order_until_a_node_finishes(
     assert_eq!(pacing.queued.iter().map(|queued| (queued.task_id.as_str(), queued.position, queued.of)).collect::<Vec<_>>(),
         [("t6", 1, 2), ("t8", 2, 2)]);
 
-    domain.live.mods.apply(Envelope { session_id: "agent-t1".into(), report: Report::TurnComplete { answer: "Done".into(), aborted: false } }, now);
+    finish(&domain, "t1", now);
     let t8 = Waiting { key: Key::Task("t8".into()), priority: TaskPriority::Normal, resuming: false, since: base + 7 };
     assert!(gate.ask(&domain, t8.clone(), now).is_err(), "t6 is older");
     let t6 = Waiting { key: Key::Task("t6".into()), priority: TaskPriority::Normal, resuming: false, since: base + 5 };
@@ -366,7 +366,7 @@ fn a_node_waiting_for_the_user_to_approve_its_plan_leaves_its_slot_to_the_queue_
         create(&domain, id);
     }
     start(&domain, "t1", now);
-    domain.live.mods.apply(Envelope { session_id: "agent-t1".into(), report: Report::ToolStart {
+    domain.report(Envelope { session_id: "agent-t1".into(), report: Report::ToolStart {
         tool: "ExitPlanMode".into(), tool_use_id: Some("plan-call".into()), input: serde_json::json!({"plan": "Fix it"}) } }, now);
     let t2 = Waiting { key: Key::Task("t2".into()), priority: TaskPriority::Normal, resuming: false, since: now };
     assert!(matches!(gate.ask(&domain, t2.clone(), now), Err(Hold::Slots { working: 1, limit: 1 })), "t1 is at work");
@@ -420,8 +420,10 @@ fn sample(domain: &DomainRuntime, free: u32, from: Millis, to: Millis) {
     }
 }
 
+/// The node's turn ends, as its mod and the Stop hook say.
 fn finish(domain: &DomainRuntime, id: &str, now: Millis) {
-    domain.live.mods.apply(Envelope { session_id: format!("agent-{id}"), report: Report::TurnComplete { answer: "Done".into(), aborted: false } }, now);
+    domain.report(Envelope { session_id: format!("agent-{id}"), report: Report::TurnComplete { answer: "Done".into(), aborted: false } }, now);
+    crate::domain_agent_lifecycle::node_event_at(domain, &AgentId(format!("agent-{id}")), alondra_core::domain::NodeEvent::TurnEnded, now).unwrap();
 }
 
 fn ask(domain: &DomainRuntime, id: &str, now: Millis) -> Result<(), Hold> {
@@ -493,7 +495,7 @@ fn a_node_waiting_for_the_machine_leaves_its_slot_and_comes_back_through_the_gat
     assert_eq!(ask(&domain, "t2", now + MIN), Ok(()), "its slot goes to the queue");
     start(&domain, "t2", now + MIN);
 
-    gate.release_declared();
+    gate.release_declared(&domain);
     let resume = Waiting { key: Key::Resume("agent-t1".into()), priority: TaskPriority::Normal, resuming: true, since: now + MIN };
     assert_eq!(gate.ask(&domain, resume.clone(), now + 2 * MIN), Err(Hold::Slots { working: 1, limit: 1 }), "it waits for a slot like any start");
     finish(&domain, "t2", now + 5 * MIN);

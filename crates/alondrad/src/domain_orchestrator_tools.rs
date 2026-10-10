@@ -312,7 +312,7 @@ async fn launch_guarded(domain: &DomainRuntime, home: &Path, actor: &Actor, body
     if task.state.terminal() {
         return Err(conflict(format!("{} is closed; reopen it first", body.task)));
     }
-    if replaced.is_none() && task.agent_id.as_ref().and_then(|id| current.agents.get(id)).is_some_and(|a| a.connected) {
+    if replaced.is_none() && task.agent_id.as_ref().and_then(|id| current.agents.get(id)).is_some_and(|a| a.phase.live() && a.phase != alondra_core::domain::NodePhase::Starting { reviving: true }) {
         return Err(conflict(format!("{} already has a connected agent; send it what to do", body.task)));
     }
     if let Some(exhausted) = domain.live.usage_pause.current() {
@@ -441,7 +441,7 @@ async fn launch_guarded(domain: &DomainRuntime, home: &Path, actor: &Actor, body
     };
     let agent_id = AgentId(session.clone());
     let agent_name = body.title.clone().unwrap_or_else(|| name.clone());
-    match run(domain, &Actor::System, Command::RegisterAgent { agent_id: agent_id.clone(), name: agent_name }) {
+    match run(domain, &Actor::System, Command::RegisterAgent { agent_id: agent_id.clone(), name: agent_name, at: alondra_core::now_millis() }) {
         Ok(()) => (),
         Err(error) if error.code == "invalid_input" => (),
         Err(error) => return Err(discard(error)),
@@ -691,7 +691,7 @@ pub(crate) struct SendBody {
 pub(crate) async fn send(domain: &DomainRuntime, home: &Path, actor: &Actor, body: SendBody) -> Result<Value, DomainError> {
     let current = state(domain)?;
     let agent_id = agent(&current, &body.node)?;
-    if let Some(paused) = domain.live.gate.paused(&agent_id.0) {
+    if let Some(paused) = domain.live.gate.paused(domain, &agent_id.0) {
         let why = match paused.reason {
             crate::fleet_pause::Reason::ByUser => format!("{} paused it and only {} resumes it", crate::domain_messages::user_name(), crate::domain_messages::user_name()),
             _ => "Alondra paused it for the machine and resumes it by itself in its turn, within the limit".into(),

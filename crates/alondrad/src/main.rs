@@ -58,6 +58,7 @@ mod launch_plans;
 mod start_failures;
 mod launch_worktree;
 mod node_close;
+mod node_reconcile;
 mod revoked_devices;
 mod device_expiry;
 mod device_usage;
@@ -521,6 +522,9 @@ async fn run_domain(config: &Config) -> Result<()> {
     if config.wake {
         tokio::spawn(auto_launch::run(domain.clone(), config.home.clone(), orchestrate::ClaudeCli));
     }
+    node_reconcile::once(&domain, &node_close::Machine).await;
+    domain_orchestrator::read_handed_notices(&domain);
+    tokio::spawn(node_reconcile::run(domain.clone(), Arc::new(node_close::Machine)));
     tokio::spawn(fleet_gate::run(domain.clone(), config.home.clone(), orchestrate::ClaudeCli));
     let transport = tokio::spawn(domain_transport::run(hooks, domain.clone()));
     match plugins::node_source(&watcher::claude_home()).zip(plugins::own_cli()) {

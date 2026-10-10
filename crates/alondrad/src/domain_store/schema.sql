@@ -4,7 +4,7 @@ CREATE TABLE domain_meta (
  orchestrator_generation INTEGER NOT NULL CHECK(orchestrator_generation>=0)
 );
 CREATE TABLE requests (id TEXT PRIMARY KEY CHECK(length(id)>0), body TEXT NOT NULL, closed INTEGER NOT NULL CHECK(closed IN(0,1)), created_at INTEGER NOT NULL DEFAULT 0, title TEXT, answer TEXT, withdrawn INTEGER NOT NULL DEFAULT 0 CHECK(withdrawn IN(0,1)), auto_merge INTEGER NOT NULL DEFAULT 0 CHECK(auto_merge IN(0,1)), CHECK(withdrawn=0 OR closed=1));
-CREATE TABLE agents (id TEXT PRIMARY KEY CHECK(length(id)>0), name TEXT NOT NULL, connected INTEGER NOT NULL CHECK(connected IN(0,1)));
+CREATE TABLE agents (id TEXT PRIMARY KEY CHECK(length(id)>0), name TEXT NOT NULL, phase TEXT NOT NULL DEFAULT '{"kind":"closed"}' CHECK(json_valid(phase) AND json_type(phase,'$.kind')='text'), since INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE tasks (
  id TEXT PRIMARY KEY CHECK(length(id)>0), request_id TEXT NOT NULL REFERENCES requests(id), agent_id TEXT REFERENCES agents(id), title TEXT NOT NULL,
  state TEXT NOT NULL CHECK(state IN('not_started','running','needs_you','in_review','waiting_dependency','closing','done','cancelled')),

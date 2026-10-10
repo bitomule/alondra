@@ -35,7 +35,7 @@ impl Fixture {
             expected_revision: state.revision,
             command: Command::RegisterAgent {
                 agent_id: "agent-a".into(),
-                name: "Fixture agent".into(),
+                name: "Fixture agent".into(), at: 0
             },
         }, None, || Ok(())).unwrap();
         let manager = runtime.issue(Principal::Orchestrator {

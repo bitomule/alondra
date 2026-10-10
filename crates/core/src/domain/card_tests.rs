@@ -54,7 +54,7 @@ fn task(s: &mut DomainState, id: &str, agent: &str) {
     });
 }
 fn register_agent(s: &mut DomainState, id: &str) {
-    ok(s, Actor::System, Command::RegisterAgent { agent_id: id.into(), name: format!("Instance {id}") });
+    ok(s, Actor::System, Command::RegisterAgent { agent_id: id.into(), name: format!("Instance {id}"), at: 0 });
 }
 fn fixture() -> DomainState {
     let mut s = DomainState::new("epoch");

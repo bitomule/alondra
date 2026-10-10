@@ -4,12 +4,12 @@
   "view": "tasks",
   "key": "tasks?section=finished&after=0",
   "client": "ios",
-  "version": "vcc0bea81b3baff55",
+  "version": "vd17009359d3a384e",
   "cursor": "cursor-1",
   "title": "Tareas",
   "status": {
-    "version": "v10d4baf30216fb80",
-    "summary": "2 preguntas · 3 por leer · 0 nodos trabajando",
+    "version": "v81f04d97e524479f",
+    "summary": "2 preguntas · 3 por leer · 2 nodos trabajando",
     "badge": 5,
     "counts": [
       {
@@ -30,7 +30,7 @@
       {
         "id": "working",
         "label": "trabajando",
-        "value": 0
+        "value": 2
       },
       {
         "id": "waiting",
@@ -309,7 +309,27 @@
                 "value": 0
               },
               "depth": 1,
-              "struck": false
+              "struck": false,
+              "actions": [
+                {
+                  "id": "pause:a-badge@6",
+                  "label": "Pausar",
+                  "style": "secondary",
+                  "presentation": "button",
+                  "input": {
+                    "kind": "none"
+                  },
+                  "attachments": false,
+                  "confirm": {
+                    "title": "¿Pausar este nodo?",
+                    "message": "Deja lo que está ejecutando ahora y conserva su tarea. Alondra no lo reanuda solo: solo tú.",
+                    "button": "Pausar"
+                  },
+                  "enabled": true,
+                  "stamp": "En pausa",
+                  "resolves_card": false
+                }
+              ]
             },
             {
               "id": "t-scheduled-lumo",
@@ -335,7 +355,27 @@
                 "value": 0
               },
               "depth": 1,
-              "struck": false
+              "struck": false,
+              "actions": [
+                {
+                  "id": "pause:a-lumo@6",
+                  "label": "Pausar",
+                  "style": "secondary",
+                  "presentation": "button",
+                  "input": {
+                    "kind": "none"
+                  },
+                  "attachments": false,
+                  "confirm": {
+                    "title": "¿Pausar este nodo?",
+                    "message": "Deja lo que está ejecutando ahora y conserva su tarea. Alondra no lo reanuda solo: solo tú.",
+                    "button": "Pausar"
+                  },
+                  "enabled": true,
+                  "stamp": "En pausa",
+                  "resolves_card": false
+                }
+              ]
             }
           ]
         },

@@ -139,7 +139,7 @@ async fn signed_loopback_and_sealed_service_share_reads_errors_and_command_recei
         "agent",
         Command::RegisterAgent {
             agent_id: "agent-parity".into(),
-            name: "Synthetic Agent".into(),
+            name: "Synthetic Agent".into(), at: 0
         },
     );
     let user = Actor::User {

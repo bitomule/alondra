@@ -2,7 +2,7 @@ use super::{
     BuildError, Confirm, Fact, Facts, Icon, Item, Link, LocalLink, Markdown, RenderContext, StepState, Style, Tone,
     Trailing, View, action_id::Verb, common, text::{t, tf},
 };
-use crate::domain::{AgentId, MergeAttemptState, PrState, TaskState};
+use crate::domain::{AgentId, MergeAttemptState, NodePhase, Pause, PauseReason, PrState, TaskState};
 use std::collections::BTreeMap;
 
 fn close_action(id: &str, context: &RenderContext<'_>) -> Option<super::Action> {
@@ -37,7 +37,7 @@ fn message_action(id: &str, context: &RenderContext<'_>) -> Option<super::Action
 
 /// Stopping a node's current turn, offered only while it works.
 fn interrupt_action(id: &str, context: &RenderContext<'_>) -> Option<super::Action> {
-    context.live.nodes.iter().find(|node| node.agent_id == id).filter(|node| node.working)?;
+    common::working(id, context).then_some(())?;
     let mut action = common::action(Verb::Interrupt, id, context.domain.revision,
         t!(context.lang, "Interrupt", "Interrumpir"), Style::Secondary)?;
     action.key = (context.client == super::Client::Tui).then(|| "i".into());
@@ -52,14 +52,11 @@ fn interrupt_action(id: &str, context: &RenderContext<'_>) -> Option<super::Acti
 
 /// A node's one state, in 8ccd131's words: a question it blocks on, then what the session does,
 /// then what waits for the user on it, then where its tasks stand.
-/// A node is in Fleet while it is connected, has a task, or is live; one that finished and left
-/// is not, and neither is one the user closed.
+/// A node is in Fleet while its session lives: whatever its phase but closed.
 pub(super) fn in_fleet(agent: &crate::domain::Agent, context: &RenderContext<'_>) -> bool {
     agent.id.0 != "orchestrator"
         && context.domain.orchestrator_session.as_ref() != Some(&agent.id)
-        && !context.live.closed_nodes.contains(&agent.id.0)
-        && (agent.connected || common::current_task(context.domain, &agent.id).is_some()
-            || context.live.nodes.iter().any(|node| node.agent_id == agent.id.0))
+        && agent.phase.live()
 }
 
 pub(super) fn node_state(agent: &AgentId, context: &RenderContext<'_>) -> super::Label {
@@ -81,41 +78,36 @@ pub(super) fn node_state(agent: &AgentId, context: &RenderContext<'_>) -> super:
             && matches!(authorization.attempt, MergeAttemptState::Claimed | MergeAttemptState::Uncertain)
             && context.domain.pull_requests.get(&authorization.pr_id).is_some_and(|pr| pr.state == PrState::Open)
     });
-    let (text, tone) = if waiting(&["question", "permission", "plan"]) {
-        (t!(lang, "Waiting for an answer", "Esperando respuesta"), Tone::Warning)
-    } else if live.is_some_and(|node| node.reconnecting) {
-        (t!(lang, "Reconnecting", "Reconectando"), Tone::Info)
-    } else if live.is_some_and(|node| node.disconnected) && tasks.iter().any(|state| !state.terminal()) {
-        (t!(lang, "No connection", "Sin conexión"), Tone::Warning)
-    } else if merging {
-        (t!(lang, "Merging", "Fusionando"), Tone::Info)
-    } else if key == Some("stalled") {
-        (t!(lang, "Stalled", "Parado"), Tone::Critical)
-    } else if key == Some("failed") {
-        (t!(lang, "Failed", "Falló"), Tone::Critical)
-    } else if let Some(reason) = post_merge_work(agent, context) {
-        return super::Label {
-            text: tf!(lang, "Finishing after the merge: {reason}", "Terminando tras fusionar: {reason}", reason = reason),
-            tone: Tone::Info,
-        };
-    } else if live.is_some_and(|node| node.working) {
-        (t!(lang, "Working", "Trabajando"), Tone::Info)
-    } else if key == Some("waiting_machine") {
-        (t!(lang, "Waiting for the machine", "Esperando máquina"), Tone::Neutral)
-    } else if waiting(&["action_request"]) || tasks.contains(&TaskState::NeedsYou) {
-        (t!(lang, "Your turn", "Te toca"), Tone::YourTurn)
-    } else if reviewing || tasks.contains(&TaskState::ForYourReview) {
-        (t!(lang, "Waiting for your review", "Espera tu revisión"), Tone::Accent)
-    } else if waiting(&["delivery"]) {
-        (t!(lang, "Delivering results", "Entrega resultado"), Tone::Success)
-    } else if !tasks.is_empty() && tasks.iter().all(|state| matches!(state, TaskState::Done | TaskState::Closing | TaskState::Cancelled)) {
-        (t!(lang, "Done", "Terminado"), Tone::Success)
-    } else if let Some(title) = awaited_title(agent, context) {
-        return super::Label { text: tf!(lang, "Waiting for {title}", "Esperando a {title}", title = title), tone: Tone::Neutral };
-    } else if tasks.iter().any(|state| matches!(state, TaskState::NotStarted | TaskState::WaitingDependency)) {
-        (t!(lang, "Queued", "En cola"), Tone::Neutral)
-    } else {
-        (t!(lang, "Idle", "Inactivo"), Tone::Neutral)
+    let phase = context.domain.node_phase(agent).cloned().unwrap_or(NodePhase::Closed);
+    let (text, tone) = match phase {
+        NodePhase::Starting { reviving: true } => (t!(lang, "Reconnecting", "Reconectando"), Tone::Info),
+        NodePhase::Starting { reviving: false } => (t!(lang, "Starting", "Arrancando"), Tone::Neutral),
+        NodePhase::Working if merging => (t!(lang, "Merging", "Fusionando"), Tone::Info),
+        NodePhase::Working if key == Some("stalled") => (t!(lang, "Stalled", "Parado"), Tone::Critical),
+        NodePhase::Working if key == Some("failed") => (t!(lang, "Failed", "Falló"), Tone::Critical),
+        NodePhase::Working => (t!(lang, "Working", "Trabajando"), Tone::Info),
+        NodePhase::WaitingUser { .. } if waiting(&["action_request"]) => (t!(lang, "Your turn", "Te toca"), Tone::YourTurn),
+        NodePhase::WaitingUser { .. } => (t!(lang, "Waiting for an answer", "Esperando respuesta"), Tone::Warning),
+        NodePhase::Paused(Pause { reason: PauseReason::ByUser, .. }) => (t!(lang, "Paused", "En pausa"), Tone::Neutral),
+        NodePhase::Paused(_) => (t!(lang, "Waiting for the machine", "Esperando máquina"), Tone::Neutral),
+        NodePhase::Delivered if reviewing || tasks.contains(&TaskState::ForYourReview) =>
+            (t!(lang, "Waiting for your review", "Espera tu revisión"), Tone::Accent),
+        NodePhase::Delivered => (t!(lang, "Delivering results", "Entrega resultado"), Tone::Success),
+        NodePhase::Stopped => match awaited_title(agent, context) {
+            Some(title) => return super::Label { text: tf!(lang, "Waiting for {title}", "Esperando a {title}", title = title), tone: Tone::Neutral },
+            None => (t!(lang, "Stopped", "Detenido"), Tone::Warning),
+        },
+        NodePhase::Closing => match post_merge_work(agent, context) {
+            Some(reason) => return super::Label {
+                text: tf!(lang, "Finishing after the merge: {reason}", "Terminando tras fusionar: {reason}", reason = reason),
+                tone: Tone::Info,
+            },
+            None if merging => (t!(lang, "Merging", "Fusionando"), Tone::Info),
+            None => (t!(lang, "Done", "Terminado"), Tone::Success),
+        },
+        NodePhase::Closed if !tasks.is_empty() && tasks.iter().all(|state| matches!(state, TaskState::Done | TaskState::Closing | TaskState::Cancelled)) =>
+            (t!(lang, "Done", "Terminado"), Tone::Success),
+        NodePhase::Closed => (t!(lang, "Closed", "Cerrado"), Tone::Neutral),
     };
     super::Label { text: text.into(), tone }
 }
@@ -161,8 +153,8 @@ fn context_label(percent: u32, lang: super::Lang) -> super::Label {
 }
 
 /// What the node runs now while it works, otherwise what it said last, with when.
-pub(super) fn activity(node: &super::LiveNode, lang: super::Lang) -> Option<super::Row> {
-    let (text, at) = doing(node, lang)?;
+pub(super) fn activity(node: &super::LiveNode, context: &RenderContext<'_>) -> Option<super::Row> {
+    let (text, at) = doing(node, common::working(&node.agent_id, context), context.lang)?;
     let mut row = common::row("activity", "node", Icon::Notice, text, None);
     row.link = None;
     row.trailing = at.map(|at| Trailing::Time { at, format: super::TimeFormat::Relative });
@@ -172,11 +164,11 @@ pub(super) fn activity(node: &super::LiveNode, lang: super::Lang) -> Option<supe
 /// What a node does, only as facts it reports: the step of its own task list while it works; once it stopped,
 /// the first sentence it said and when. Nothing is inferred from the commands it runs, and a node at work carries
 /// no time, so its row never goes stale.
-pub(super) fn doing(node: &super::LiveNode, lang: super::Lang) -> Option<(String, Option<String>)> {
+pub(super) fn doing(node: &super::LiveNode, working: bool, lang: super::Lang) -> Option<(String, Option<String>)> {
     if let Some(step) = step(node, lang) {
         return Some((step, None));
     }
-    if node.working {
+    if working {
         return None;
     }
     node.last_message.as_deref().and_then(said).map(|sentence| (
@@ -366,14 +358,14 @@ pub(super) fn node_row(agent: &crate::domain::Agent, context: &RenderContext<'_>
             row.title = task.title.clone();
             row.subtitle = (task.title != name).then_some(name);
         }
-        row.children.extend(live.and_then(|node| activity(node, context.lang)));
+        row.children.extend(live.and_then(|node| activity(node, context)));
         row.actions.extend(interrupt_action(&agent.id.0, context));
         row.actions.extend(super::pacing::node_actions(&agent.id, context));
     } else {
         if let Some(task) = task {
             row.title = task.title.clone();
         }
-        row.subtitle = live.filter(|node| node.working).and_then(|node| node.tool.clone())
+        row.subtitle = live.filter(|node| common::working(&node.agent_id, context)).and_then(|node| node.tool.clone())
             .or_else(|| (row.title != name).then_some(name));
     }
     row.actions.extend(close_action(&agent.id.0, context));
@@ -506,7 +498,7 @@ fn pacing_section(context: &RenderContext<'_>) -> Option<super::Section> {
 /// Where a node stands in Fleet: 0 when it needs the user, 1 while it works, 2 while it waits;
 /// `None` when it holds no open task, which puts it among the idle ones.
 fn urgency(agent: &AgentId, context: &RenderContext<'_>) -> Option<u8> {
-    let live_working = context.live.nodes.iter().any(|node| node.agent_id == agent.0 && node.working);
+    let live_working = common::working(&agent.0, context);
     let open_task = context.domain.tasks.values()
         .any(|task| task.agent_id.as_ref() == Some(agent) && !task.archived && !task.state.terminal());
     let owes_user = context.projection.inbox.iter()
@@ -585,14 +577,14 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
     let mut readings = vec![];
     if let Some(node) = live {
         let lang = context.lang;
-        if node.reconnecting {
+        if context.domain.node_phase(&AgentId(node.agent_id.clone())) == Some(&NodePhase::Starting { reviving: true }) {
             readings.push(Fact { label: t!(lang, "Connection", "Conexión").into(), value: t!(lang, "Reconnecting", "Reconectando").into(),
                 tone: Some(Tone::Info), link: None });
         }
         if let Some(tool) = &node.tool {
             readings.push(Fact { label: t!(lang, "Running", "Ejecutando").into(), value: tool.clone(), tone: None, link: None });
         }
-        if node.last_turn_aborted && !node.working {
+        if node.last_turn_aborted && !common::working(&node.agent_id, context) {
             readings.push(Fact { label: t!(lang, "Last turn", "Último turno").into(),
                 value: t!(lang, "Interrupted", "Interrumpido").into(), tone: Some(Tone::Warning), link: None });
         }

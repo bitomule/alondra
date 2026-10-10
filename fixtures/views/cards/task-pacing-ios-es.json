@@ -4,12 +4,12 @@
   "view": "task",
   "key": "task:t-queued-next",
   "client": "ios",
-  "version": "v467bd02ef5db1551",
+  "version": "v65a546c752bed5dd",
   "cursor": "cursor-1",
   "title": "Fix the crash when the schedule list is empty",
   "status": {
-    "version": "v96d9c38b403cb71e",
-    "summary": "2 preguntas · 3 por leer · 0 nodos trabajando",
+    "version": "ve8b9c2585f93edac",
+    "summary": "2 preguntas · 3 por leer · 1 nodo trabajando",
     "badge": 5,
     "counts": [
       {
@@ -30,7 +30,7 @@
       {
         "id": "working",
         "label": "trabajando",
-        "value": 0
+        "value": 1
       },
       {
         "id": "waiting",

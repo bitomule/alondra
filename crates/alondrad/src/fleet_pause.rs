@@ -117,7 +117,9 @@ impl Step {
 /// Everything about pauses the gate keeps across restarts.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Pauses {
-    /// By session.
+    /// By session: what the node machine holds, read when the gate is locked. An older daemon
+    /// saved them in the gate's file; they are still read once, never written.
+    #[serde(default, skip_serializing)]
     pub paused: BTreeMap<String, Paused>,
     pub step: Step,
     pub last_pause: Option<Millis>,
@@ -184,8 +186,8 @@ pub(crate) fn session_of(state: &DomainState, task: &TaskId) -> Option<String> {
 }
 
 /// The nodes working now that are not paused already.
-pub(crate) fn candidates(domain: &DomainRuntime, state: &DomainState, pauses: &Pauses, now: Millis) -> Vec<Candidate> {
-    crate::fleet_gate::busy_tasks(domain, state, now).into_iter().filter_map(|task| {
+pub(crate) fn candidates(domain: &DomainRuntime, state: &DomainState, pauses: &Pauses) -> Vec<Candidate> {
+    crate::fleet_gate::busy_tasks(state).into_iter().filter_map(|task| {
         let session = session_of(state, &task)?;
         if pauses.paused.contains_key(&session) {
             return None;
@@ -244,7 +246,7 @@ pub(crate) fn look(domain: &DomainRuntime, state: &DomainState, pauses: &mut Pau
             if pauses.last_pause.is_some_and(|at| now - at < PAUSE_EVERY) {
                 return;
             }
-            let working = candidates(domain, state, pauses, now);
+            let working = candidates(domain, state, pauses);
             if let Some(victim) = choose(&working).cloned() {
                 stop(domain, pauses, &victim.session, victim.task, Reason::Memory, now);
                 pauses.last_pause = Some(now);

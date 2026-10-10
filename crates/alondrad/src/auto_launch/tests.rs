@@ -98,7 +98,7 @@ fn finish(f: &Fixture, id: &str, body: &str, pull_request: bool) {
 
 /// A task an earlier node works on, which was never launched by Alondra.
 fn open_task(f: &Fixture, id: &str) {
-    command(&f.domain, Actor::System, Command::RegisterAgent { agent_id: format!("seed-{id}").into(), name: format!("Seed {id}").into() });
+    command(&f.domain, Actor::System, Command::RegisterAgent { agent_id: format!("seed-{id}").into(), name: format!("Seed {id}").into(), at: 0 });
     command(&f.domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { task_id: id.into(), request_id: "r".into(), title: format!("Task {id}"),
         agent_id: Some(format!("seed-{id}").into()), review_prs: false, dependencies: Default::default(), stack: None,
         launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")), });

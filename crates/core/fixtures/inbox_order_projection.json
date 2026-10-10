@@ -201,7 +201,11 @@
     {
       "id": "a",
       "name": "Instance a",
-      "connected": false
+      "phase": {
+        "kind": "waiting_user",
+        "in_turn": false
+      },
+      "since": 0
     }
   ],
   "requests": [

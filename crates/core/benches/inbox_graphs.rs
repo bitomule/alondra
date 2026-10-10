@@ -16,7 +16,7 @@ fn pr(index: usize) -> PrId { format!("pr-{index:05}").into() }
 fn templates() -> DomainState {
     let mut state = DomainState::new("synthetic-inbox-graph-epoch");
     for id in ["delivery-agent", "question-agent"] {
-        super::commit(&mut state, Actor::System, Command::RegisterAgent { agent_id: id.into(), name: id.into() });
+        super::commit(&mut state, Actor::System, Command::RegisterAgent { agent_id: id.into(), name: id.into(), at: 0 });
     }
     super::commit(&mut state, super::user(), Command::CreateRequest {
         request_id: "request".into(), body: "Synthetic graph".into(), auto_merge: false, maintenance: false, message: false,

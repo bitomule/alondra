@@ -1,5 +1,6 @@
 use super::*;
 use crate::domain::{
+    NodePhase,
     Agent, Author, Document, DocumentRevision, DomainProjection, DomainState, Interaction, InteractionPayload,
     InteractionSubject, MergeAttemptState, MergeAuthorization, MergeMethod, PrState, PullRequest, QuestionOption, Recipient, Request, Scope, Task,
     TaskState, ModelChooser, TaskModel,
@@ -17,7 +18,8 @@ fn fixture() -> DomainState {
         Agent {
             id: "a-1".into(),
             name: "Node One".into(),
-            connected: true,
+            phase: NodePhase::Working,
+            since: 0,
         },
     );
     state.tasks.insert(
@@ -129,6 +131,7 @@ fn with_cards(domain: &DomainState) -> DomainState {
             InteractionPayload::Delivery { targets, is_final, .. } => CardSpec::delivery(&body, targets, *is_final),
         };
     }
+    state.settle_nodes();
     state
 }
 fn render<'a>(
@@ -139,7 +142,36 @@ fn render<'a>(
     key: &str,
     time: &'a str,
 ) -> View {
-    let domain = with_cards(domain);
+    let mut domain = with_cards(domain);
+    // What older fixtures said with the flags of a live node, as the phase the node machine keeps.
+    let unregistered: Vec<_> = domain.tasks.values().filter_map(|task| task.agent_id.clone())
+        .filter(|agent| !domain.agents.contains_key(agent)).collect();
+    for agent in unregistered {
+        domain.agents.insert(agent.clone(), crate::domain::Agent { name: agent.0.clone(), id: agent, phase: NodePhase::Working, since: 0 });
+    }
+    for paused in live.pacing.iter().flat_map(|pacing| &pacing.paused).filter(|paused| paused.session.is_some()) {
+        let reason = match paused.reason {
+            LivePauseReason::User => crate::domain::PauseReason::ByUser,
+            LivePauseReason::Usage => crate::domain::PauseReason::Usage,
+            LivePauseReason::Memory => crate::domain::PauseReason::Memory,
+            LivePauseReason::Machine => crate::domain::PauseReason::Declared { reason: paused.waits_for.clone().unwrap_or_default() },
+        };
+        let agent = domain.tasks.get(&paused.task_id.as_str().into()).and_then(|task| task.agent_id.clone());
+        if let Some(agent) = agent.and_then(|agent| domain.agents.get_mut(&agent)) {
+            agent.phase = NodePhase::Paused(crate::domain::Pause { reason, since: 0, cut: None, turn_since: None, cleanup: Default::default(), released: false });
+        }
+    }
+    for node in &live.nodes {
+        let Some(agent) = domain.agents.get_mut(&node.agent_id.as_str().into()).filter(|agent| agent.phase.live()) else { continue };
+        if node.reconnecting {
+            agent.phase = NodePhase::Starting { reviving: true };
+        } else if node.disconnected {
+            agent.phase = NodePhase::Closed;
+        } else if node.quiet && !node.working {
+            agent.phase = NodePhase::Stopped;
+        }
+    }
+    domain.settle_nodes();
     build(
         key,
         RenderContext {
@@ -468,8 +500,11 @@ fn golden_fixture() -> DomainState {
     if let Some(task) = state.tasks.get_mut(&"t-1".into()) {
         task.title = "Restore the native review experience".into();
     }
-    if let Some(agent) = state.agents.get_mut(&"a-1".into()) {
+    if let Some(mut agent) = state.agents.remove(&"a-1".into()) {
+        agent.id = agent_id.into();
         agent.name = "Alondra · iOS".into();
+        agent.phase = NodePhase::Stopped;
+        state.agents.insert(agent.id.clone(), agent);
     }
     if let Some(interaction) = state.interactions.get_mut(&"i-1".into()) {
         interaction.body = "The new empty state is ready. Which copy should we ship in the beta?".into();
@@ -651,7 +686,11 @@ fn tasks_fixture() -> (DomainState, LiveSnapshot) {
     add_task(&mut state, "t-hf-registry", "r-blurcamera", "Link the website in app.json", TaskState::NotStarted, &[]);
     add_task(&mut state, "t-hf-paywall", "r-blurcamera", "Lifetime offer when the paywall closes", TaskState::Done, &[]);
     add_task(&mut state, "t-hf-post", "r-blurcamera", "Post: blur faces in a video on iPhone", TaskState::Done, &[]);
-    state.agents.insert("a-hf".into(), Agent { id: "a-hf".into(), name: "BlurCamera hint".into(), connected: true });
+    state.agents.insert("a-hf".into(), Agent { id: "a-hf".into(), name: "BlurCamera hint".into(), phase: NodePhase::Working, since: 0 });
+    for (task, agent) in [("t-badge-count", "a-badge"), ("t-scheduled-lumo", "a-lumo")] {
+        state.agents.insert(agent.into(), Agent { id: agent.into(), name: agent.into(), phase: NodePhase::Working, since: 0 });
+        state.tasks.get_mut(&task.into()).unwrap().agent_id = Some(agent.into());
+    }
     state.tasks.get_mut(&"t-hf-share-hint".into()).unwrap().agent_id = Some("a-hf".into());
     live.nodes.push(LiveNode {
         agent_id: "a-hf".into(), name: "BlurCamera hint".into(), quiet: true,
@@ -1039,7 +1078,7 @@ fn assert_golden(filename: &str, view: &View, expected: &str) {
 #[test]
 fn view_keys_are_addressable_and_bound_to_epoch() {
     let mut state = fixture();
-    state.agents.get_mut(&"a-1".into()).unwrap().connected = true;
+    state.agents.get_mut(&"a-1".into()).unwrap().phase = NodePhase::Working;
     let live = LiveSnapshot::default();
     for (key, client) in [
         ("sidebar", Client::Mac),
@@ -1519,7 +1558,7 @@ fn a_running_task_whose_node_lost_its_connection_says_so_instead_of_working() {
     live.nodes[0].reconnecting = false;
     live.nodes[0].disconnected = true;
     let fleet = format!("{:?}", render(&state, &live, Client::Mac, Lang::Es, "fleet", ""));
-    assert!(fleet.contains("Sin conexión"), "{fleet}");
+    assert!(!fleet.contains("Node One"), "a node whose session is gone for good leaves Fleet: {fleet}");
 }
 
 #[test]
@@ -1573,7 +1612,9 @@ fn the_ended_tasks_of_a_request_still_under_way_fold_away_from_the_active_list()
 #[test]
 fn a_tui_task_list_shows_a_request_with_one_task_as_that_task_and_nests_only_several() {
     let mut state = fixture();
+    state.interactions.clear();
     state.tasks.get_mut(&"t-1".into()).unwrap().state = TaskState::Running;
+    state.tasks.get_mut(&"t-1".into()).unwrap().agent_id = Some("a-1".into());
     let mut live = LiveSnapshot::default();
     live.request_times.insert("r-1".into(), "2026-10-03T19:49:18.945+02:00".into());
     let single = active_row(&state, &live, Client::Tui, Lang::Es, "t-1").1;
@@ -1696,19 +1737,19 @@ fn rows_count_cards_from_the_render_projection_without_projecting_again() {
 }
 
 #[test]
-fn each_fleet_node_shows_one_state_derived_from_its_task_never_its_connection() {
+fn each_fleet_node_shows_its_one_phase_and_a_closed_one_leaves() {
     let mut state = fixture();
     state.interactions.clear();
     let template = state.tasks.remove(&"t-1".into()).unwrap();
-    for (agent, connected, task, task_state) in [
-        ("one-task", true, "t-one-task-per-node", TaskState::ForYourReview),
-        ("recent-queue", false, "t-recent-requests-queue", TaskState::Done),
-        ("home-zero", true, "t-home-counters-zero", TaskState::Done),
-        ("claude-mods", true, "t-claude-mods-analysis", TaskState::Done),
-        ("busy", true, "t-busy", TaskState::Running),
-        ("idle", true, "t-idle", TaskState::Running),
+    for (agent, phase, task, task_state) in [
+        ("one-task", NodePhase::Working, "t-one-task-per-node", TaskState::ForYourReview),
+        ("recent-queue", NodePhase::Closed, "t-recent-requests-queue", TaskState::Done),
+        ("home-zero", NodePhase::Working, "t-home-counters-zero", TaskState::Done),
+        ("claude-mods", NodePhase::Working, "t-claude-mods-analysis", TaskState::Done),
+        ("busy", NodePhase::Working, "t-busy", TaskState::Running),
+        ("idle", NodePhase::Stopped, "t-idle", TaskState::Running),
     ] {
-        state.agents.insert(agent.into(), Agent { id: agent.into(), name: agent.into(), connected });
+        state.agents.insert(agent.into(), Agent { id: agent.into(), name: agent.into(), phase, since: 0 });
         let mut row = template.clone();
         row.id = task.into();
         row.agent_id = Some(agent.into());
@@ -1726,18 +1767,18 @@ fn each_fleet_node_shows_one_state_derived_from_its_task_never_its_connection() 
         });
     }
     let view = render(&state, &live, Client::Ios, Lang::Es, "fleet", "");
-    let node = |id: &str| view.sections.iter().flat_map(|section| &section.items).find_map(|item| {
+    let found = |id: &str| view.sections.iter().flat_map(|section| &section.items).find_map(|item| {
         if let Item::Row(row) = item && row.id == id { Some(row.clone()) } else { None }
-    }).unwrap();
+    });
+    assert!(found("recent-queue").is_none(), "a node whose session closed is not in Fleet");
     for (agent, text, tone) in [
         ("one-task", "Espera tu revisión", Tone::Accent),
-        ("recent-queue", "Terminado", Tone::Success),
         ("home-zero", "Terminado", Tone::Success),
         ("claude-mods", "Terminado", Tone::Success),
         ("busy", "Trabajando", Tone::Info),
-        ("idle", "Inactivo", Tone::Neutral),
+        ("idle", "Detenido", Tone::Warning),
     ] {
-        let row = node(agent);
+        let row = found(agent).unwrap();
         assert_eq!(row.title, "Build a feature", "{agent}");
         assert_eq!(row.subtitle.as_deref(), Some(agent), "{agent}");
         assert_eq!(row.badges, vec![Label { text: text.into(), tone }], "{agent}");
@@ -3102,6 +3143,7 @@ fn an_ios_fleet_item_is_the_node_and_its_one_task_without_readings() {
     assert!(interrupt.confirm.is_some());
 
     live.nodes[0].working = false;
+    state.agents.get_mut(&"a-1".into()).unwrap().phase = NodePhase::Stopped;
     state.agents.get_mut(&"a-1".into()).unwrap().name = "alondra-ios".into();
     let resting = item(&state, &live);
     assert_eq!(resting.subtitle.as_deref(), Some("alondra-ios"), "a node name that adds something stays");
@@ -3239,7 +3281,7 @@ fn node_detail_names_its_state_and_since_when() {
 #[test]
 fn node_detail_without_live_data_names_its_state_not_its_connection() {
     let mut state = fixture();
-    state.agents.get_mut(&"a-1".into()).unwrap().connected = false;
+    state.agents.get_mut(&"a-1".into()).unwrap().phase = NodePhase::Stopped;
     let view = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::En, "node:a-1", "2026-09-30T10:00:00Z");
     let Item::Facts(facts) = &view.sections.iter().find(|section| section.id == "header").unwrap().items[0] else {
         panic!("header facts")
@@ -4194,7 +4236,7 @@ fn presented_pr() -> DomainState {
     let agent = Actor::Agent { agent_id: "a".into() };
     let user = Actor::User { user_id: "u".into() };
     for (actor, command) in [
-        (Actor::System, Command::RegisterAgent { agent_id: "a".into(), name: "Node A".into() }),
+        (Actor::System, Command::RegisterAgent { agent_id: "a".into(), name: "Node A".into(), at: 0 }),
         (user.clone(), Command::CreateRequest { request_id: "r".into(), body: "Fix it".into(), auto_merge: false, maintenance: false, message: false }),
         (Actor::Orchestrator { generation: 0 }.clone(), Command::CreateTask { task_id: "t".into(), request_id: "r".into(), title: "Fix it".into(),
             agent_id: Some("a".into()), review_prs: false, dependencies: BTreeSet::new(), stack: None,
@@ -4239,6 +4281,7 @@ fn a_pr_sent_back_leaves_waiting_for_you_and_its_task_says_what_alondra_asked() 
             attachments: vec![], presentation_id: "d".into(), body: "Back to you".into(), instruction,
             targets: vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: "head1".into() }],
         });
+        execute(&mut state, Actor::System, Command::MoveNode { agent_id: "a".into(), event: crate::domain::NodeEvent::TurnStarted, at: 1 });
         assert!(home(&state).is_empty(), "{instruction:?} takes the card out of Waiting for You");
         assert!(task(&state, Lang::En).contains(english), "{instruction:?}");
         assert!(task(&state, Lang::Es).contains(spanish), "{instruction:?}");
@@ -4700,8 +4743,8 @@ const FLEET_GOLDENS: [(&str, Client, Lang); 4] = [
     ("fleet-tui.json", Client::Tui, Lang::En),
 ];
 
-/// A fleet where a node needing the user, a queued one with no live entry, a working one and a
-/// waiting one belong to projects, and two nodes with nothing open are idle.
+/// A fleet where a node needing the user, one stopped behind a dependency with no live entry, a
+/// working one and a starting one belong to projects, and two nodes whose sessions closed are gone.
 fn fleet_fixture() -> (DomainState, LiveSnapshot) {
     let mut state = golden_fixture();
     let mut live = golden_live();
@@ -4709,14 +4752,14 @@ fn fleet_fixture() -> (DomainState, LiveSnapshot) {
     golden_task.agent_id = Some("d887a34b-249e-4487-a89b-57de38c26372".into());
     let template = golden_task.clone();
     let golden_request = template.request_id.0.clone();
-    for (agent, request, title, task_state) in [
-        ("queued", golden_request.as_str(), "Wire the badge after the review", TaskState::WaitingDependency),
-        ("zeta-worker", "r-zeta", "Build the importer", TaskState::Running),
-        ("alpha-waiting", "r-alpha", "Plan the migration", TaskState::NotStarted),
-        ("finished-yesterday", golden_request.as_str(), "Ship the compact editor", TaskState::Done),
-        ("finished-today", golden_request.as_str(), "Trim the push payload", TaskState::Done),
+    for (agent, request, title, task_state, phase) in [
+        ("queued", golden_request.as_str(), "Wire the badge after the review", TaskState::WaitingDependency, NodePhase::Stopped),
+        ("zeta-worker", "r-zeta", "Build the importer", TaskState::Running, NodePhase::Working),
+        ("alpha-waiting", "r-alpha", "Plan the migration", TaskState::NotStarted, NodePhase::Starting { reviving: false }),
+        ("finished-yesterday", golden_request.as_str(), "Ship the compact editor", TaskState::Done, NodePhase::Closed),
+        ("finished-today", golden_request.as_str(), "Trim the push payload", TaskState::Done, NodePhase::Closed),
     ] {
-        state.agents.insert(agent.into(), Agent { id: agent.into(), name: agent.into(), connected: true });
+        state.agents.insert(agent.into(), Agent { id: agent.into(), name: agent.into(), phase, since: 0 });
         if !state.requests.contains_key(&request.into()) {
             state.requests.insert(request.into(), Request::new(request.into(), title.into()));
         }
@@ -4770,7 +4813,7 @@ fn a_node_with_no_project_anywhere_is_in_other_after_the_named_projects() {
     let (mut state, live) = fleet_fixture();
     let mut task = state.tasks[&"t-queued".into()].clone();
     state.requests.insert("r-orphan".into(), Request::new("r-orphan".into(), "Orphan".into()));
-    state.agents.insert("orphan".into(), Agent { id: "orphan".into(), name: "orphan".into(), connected: true });
+    state.agents.insert("orphan".into(), Agent { id: "orphan".into(), name: "orphan".into(), phase: NodePhase::Stopped, since: 0 });
     task.id = "t-orphan".into();
     task.request_id = "r-orphan".into();
     task.agent_id = Some("orphan".into());
@@ -4788,21 +4831,19 @@ fn a_node_with_no_project_anywhere_is_in_other_after_the_named_projects() {
 fn fleet_projects_come_by_their_most_urgent_node_and_nodes_by_urgency() {
     let (state, live) = fleet_fixture();
     let view = render(&state, &live, Client::Ios, Lang::En, "fleet", "");
-    assert_eq!(section_ids(&view), ["orchestrator", "project:Demo Garden", "project:Zeta", "project:Alpha", "idle"]);
+    assert_eq!(section_ids(&view), ["orchestrator", "project:Demo Garden", "project:Zeta", "project:Alpha"]);
     assert_eq!(section_rows(&view, "project:Demo Garden"), ["d887a34b-249e-4487-a89b-57de38c26372", "queued"],
         "a node that needs the user comes before one that waits");
 }
 
 #[test]
-fn idle_nodes_are_a_collapsed_last_section_with_the_most_recent_first() {
+fn nodes_whose_sessions_closed_leave_fleet() {
     let (state, live) = fleet_fixture();
     let view = render(&state, &live, Client::Ios, Lang::En, "fleet", "");
-    let idle = view.sections.last().unwrap();
-    assert_eq!((idle.id.as_str(), idle.title.as_deref(), idle.count, idle.collapsed), ("idle", Some("Idle"), Some(2), true));
-    assert_eq!(section_rows(&view, "idle"), ["finished-today", "finished-yesterday"]);
-    assert!(view.sections.iter().filter(|section| section.id != "idle").all(|section| !section.collapsed));
-    let es = render(&state, &live, Client::Ios, Lang::Es, "fleet", "");
-    assert_eq!(es.sections.last().unwrap().title.as_deref(), Some("Inactivos"));
+    assert!(!section_ids(&view).contains(&"idle"), "{:?}", section_ids(&view));
+    let rows: Vec<&str> = view.sections.iter().flat_map(|section| &section.items)
+        .filter_map(|item| if let Item::Row(row) = item { Some(row.id.as_str()) } else { None }).collect();
+    assert!(!rows.contains(&"finished-today") && !rows.contains(&"finished-yesterday"), "{rows:?}");
 }
 
 #[test]
@@ -4831,8 +4872,8 @@ fn a_node_with_an_open_task_never_reads_idle_and_idle_is_only_for_the_bottom_sec
     };
     assert_eq!(label(Lang::En, "queued"), "Waiting for Restore the native review experience");
     assert_eq!(label(Lang::Es, "queued"), "Esperando a Restore the native review experience");
-    assert_eq!(label(Lang::En, "alpha-waiting"), "Queued");
-    assert_eq!(label(Lang::Es, "alpha-waiting"), "En cola");
+    assert_eq!(label(Lang::En, "alpha-waiting"), "Starting");
+    assert_eq!(label(Lang::Es, "alpha-waiting"), "Arrancando");
     let view = render(&state, &live, Client::Ios, Lang::En, "fleet", "");
     for section in view.sections.iter().filter(|section| section.id.starts_with("project:")) {
         for item in &section.items {
@@ -5227,7 +5268,7 @@ fn the_terminal_shows_only_the_new_plan_after_the_first_was_sent_back() {
         body: format!("# {title}\n\n1. Do it"), options: Hold::Plan.options(),
         card: CardSpec::new(CardKind::Review, title).content(ContentKind::Plan, format!("# {title}\n\n1. Do it")),
     };
-    execute(&mut state, Actor::System, Command::RegisterAgent { agent_id: "a".into(), name: "Node A".into() });
+    execute(&mut state, Actor::System, Command::RegisterAgent { agent_id: "a".into(), name: "Node A".into(), at: 0 });
     execute(&mut state, user.clone(), Command::CreateRequest { request_id: "r".into(), body: "Weekly cycle".into(), auto_merge: false, maintenance: false, message: false });
     execute(&mut state, Actor::Orchestrator { generation: 0 }.clone(), Command::CreateTask { task_id: "t".into(), request_id: "r".into(), title: "Weekly cycle".into(),
         agent_id: Some("a".into()), review_prs: false, dependencies: BTreeSet::new(), stack: None,
@@ -5249,7 +5290,7 @@ fn the_terminal_shows_only_the_new_plan_after_the_first_was_sent_back() {
 fn a_paused_task_says_since_when_why_and_when_it_comes_back_in_both_languages() {
     let mut state = fixture();
     let task = state.tasks.get_mut(&crate::domain::TaskId::from("t-1")).unwrap();
-    (task.state, task.final_presentation) = (TaskState::Running, None);
+    (task.state, task.final_presentation, task.agent_id) = (TaskState::Running, None, Some("agent-1".into()));
     let memory = LivePaused { task_id: "t-1".into(), session: Some("agent-1".into()), at: "14:05".into(), reason: LivePauseReason::Memory, fine_minutes: Some(2), next: false, waits_for: None };
     let live = LiveSnapshot {
         pacing: Some(LivePacing { working: 5, limit: 6, fixed: None, auto: 6, memory_free: Some(24), tight: true, queued: vec![], paused: vec![memory.clone()] }),
@@ -5364,6 +5405,7 @@ fn a_queued_task_offers_pause_and_a_paused_one_offers_resume_where_it_shows() {
 #[test]
 fn a_working_node_offers_pause_with_a_warning_and_a_paused_node_offers_resume_by_its_session() {
     let mut state = fixture();
+    state.interactions.clear();
     let task = state.tasks.get_mut(&crate::domain::TaskId::from("t-1")).unwrap();
     (task.state, task.final_presentation, task.agent_id) = (TaskState::Running, None, Some("a-1".into()));
     let mut live = pacing_live(vec![], vec![], None);
@@ -5609,15 +5651,15 @@ fn a_node_that_stopped_says_what_it_said_and_only_in_prose() {
         agent_id: "a-1".into(), name: "n".into(), working: false, last_message: Some(message.into()),
         last_message_at: Some("2026-10-09T06:40:00+02:00".into()), ..LiveNode::default()
     };
-    let doing = |node: &LiveNode, lang| fleet::doing(node, lang).map(|(text, _)| text);
+    let doing = |node: &LiveNode, lang| fleet::doing(node, false, lang).map(|(text, _)| text);
     assert_eq!(doing(&node("Done with the parser. Now the tests."), Lang::Es).as_deref(), Some("Dijo: «Done with the parser.»"));
-    assert_eq!(fleet::doing(&node("Waiting for Bazel."), Lang::En).and_then(|(_, at)| at).as_deref(), Some("2026-10-09T06:40:00+02:00"));
+    assert_eq!(fleet::doing(&node("Waiting for Bazel."), false, Lang::En).and_then(|(_, at)| at).as_deref(), Some("2026-10-09T06:40:00+02:00"));
     assert_eq!(doing(&node("`cargo test` passed"), Lang::En), None, "only prose is quoted");
     assert_eq!(doing(&node("Edit: src/main.rs"), Lang::En), None);
     let long = "word ".repeat(40);
     assert!(doing(&node(&long), Lang::En).unwrap().chars().count() <= 80 + "Said: “”".chars().count());
-    let working = LiveNode { working: true, tool: Some("Bash: cargo test".into()), ..node("Earlier") };
-    assert_eq!(fleet::doing(&working, Lang::En), None, "at work, nothing inferred from its tool");
+    let working = LiveNode { tool: Some("Bash: cargo test".into()), ..node("Earlier") };
+    assert_eq!(fleet::doing(&working, true, Lang::En), None, "at work, nothing inferred from its tool");
 }
 #[test]
 fn a_task_that_needs_you_says_its_question_never_its_own_title() {

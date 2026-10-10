@@ -4,12 +4,12 @@
   "view": "fleet",
   "key": "fleet",
   "client": "ios",
-  "version": "v3f4ccb1a9fb95daa",
+  "version": "v1316c097f01ce78d",
   "cursor": "cursor-1",
   "title": "Flota",
   "status": {
-    "version": "vb05d782b87d67d8a",
-    "summary": "2 preguntas · 3 por leer · 1 nodo trabajando",
+    "version": "veeede61ab853f61e",
+    "summary": "2 preguntas · 3 por leer · 2 nodos trabajando",
     "badge": 5,
     "counts": [
       {
@@ -30,7 +30,7 @@
       {
         "id": "working",
         "label": "trabajando",
-        "value": 1
+        "value": 2
       },
       {
         "id": "waiting",
@@ -297,7 +297,7 @@
           "subtitle": "alpha-waiting",
           "badges": [
             {
-              "text": "En cola",
+              "text": "Arrancando",
               "tone": "neutral"
             }
           ],
@@ -310,98 +310,6 @@
           "actions": [
             {
               "id": "close:alpha-waiting@6",
-              "label": "Cerrar nodo",
-              "style": "destructive",
-              "presentation": "button",
-              "input": {
-                "kind": "none"
-              },
-              "attachments": false,
-              "confirm": {
-                "title": "Cerrar nodo",
-                "message": "¿Cerrar este nodo?",
-                "button": "Cerrar nodo"
-              },
-              "enabled": true,
-              "resolves_card": false
-            }
-          ]
-        }
-      ]
-    },
-    {
-      "id": "idle",
-      "title": "Inactivos",
-      "count": 2,
-      "collapsed": true,
-      "items": [
-        {
-          "type": "row",
-          "id": "finished-today",
-          "link": {
-            "kind": "view",
-            "key": "node:finished-today"
-          },
-          "icon": "node",
-          "title": "Trim the push payload",
-          "subtitle": "finished-today",
-          "badges": [
-            {
-              "text": "Terminado",
-              "tone": "success"
-            }
-          ],
-          "trailing": {
-            "kind": "count",
-            "value": 0
-          },
-          "depth": 0,
-          "struck": false,
-          "actions": [
-            {
-              "id": "close:finished-today@6",
-              "label": "Cerrar nodo",
-              "style": "destructive",
-              "presentation": "button",
-              "input": {
-                "kind": "none"
-              },
-              "attachments": false,
-              "confirm": {
-                "title": "Cerrar nodo",
-                "message": "¿Cerrar este nodo?",
-                "button": "Cerrar nodo"
-              },
-              "enabled": true,
-              "resolves_card": false
-            }
-          ]
-        },
-        {
-          "type": "row",
-          "id": "finished-yesterday",
-          "link": {
-            "kind": "view",
-            "key": "node:finished-yesterday"
-          },
-          "icon": "node",
-          "title": "Ship the compact editor",
-          "subtitle": "finished-yesterday",
-          "badges": [
-            {
-              "text": "Terminado",
-              "tone": "success"
-            }
-          ],
-          "trailing": {
-            "kind": "count",
-            "value": 0
-          },
-          "depth": 0,
-          "struck": false,
-          "actions": [
-            {
-              "id": "close:finished-yesterday@6",
               "label": "Cerrar nodo",
               "style": "destructive",
               "presentation": "button",

@@ -1438,7 +1438,7 @@ mod tests {
                 "agent",
                 Command::RegisterAgent {
                     agent_id: "agent-a".into(),
-                    name: "Synthetic agent".into(),
+                    name: "Synthetic agent".into(), at: 0
                 },
             ),
             (

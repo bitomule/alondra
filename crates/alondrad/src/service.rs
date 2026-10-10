@@ -7133,7 +7133,7 @@ agreement_key = "{}"
                     expected_revision: state.revision,
                     command: alondra_core::domain::Command::RegisterAgent {
                         agent_id: "agent-a".into(),
-                        name: "Instance A".into(),
+                        name: "Instance A".into(), at: 0
                     },
                 },
                 None,

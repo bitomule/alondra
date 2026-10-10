@@ -4,12 +4,12 @@
   "view": "machine",
   "key": "machine",
   "client": "ios",
-  "version": "v3e635963293168b2",
+  "version": "v39c420d7ab7479c1",
   "cursor": "cursor-1",
   "title": "Máquina",
   "status": {
-    "version": "v96d9c38b403cb71e",
-    "summary": "2 preguntas · 3 por leer · 0 nodos trabajando",
+    "version": "ve8b9c2585f93edac",
+    "summary": "2 preguntas · 3 por leer · 1 nodo trabajando",
     "badge": 5,
     "counts": [
       {
@@ -30,7 +30,7 @@
       {
         "id": "working",
         "label": "trabajando",
-        "value": 0
+        "value": 1
       },
       {
         "id": "waiting",

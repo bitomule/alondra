@@ -208,18 +208,15 @@ fn setup_base(store: &mut DomainStore, base: &Value) {
             Actor::System,
             Command::RegisterAgent {
                 agent_id: id.into(),
-                name: id.into(),
+                name: id.into(), at: 0
             },
         );
-        if field(agent, "connected") == true {
+        if field(agent, "phase") == "working" {
             setup_command(
                 store,
-                &format!("setup-connected-{id}"),
+                &format!("setup-working-{id}"),
                 Actor::System,
-                Command::ObserveAgent {
-                    agent_id: id.into(),
-                    connected: true,
-                },
+                Command::MoveNode { agent_id: id.into(), event: NodeEvent::TurnStarted, at: 0 },
             );
         }
     }
@@ -586,7 +583,7 @@ fn measured(
     let agents: serde_json::Map<String, Value> = state
         .agents
         .iter()
-        .map(|(id, agent)| (id.0.clone(), json!({"connected":agent.connected})))
+        .map(|(id, agent)| (id.0.clone(), json!({"phase":agent.phase.key()})))
         .collect();
     let mut presentations = serde_json::Map::new();
     for (id, interaction) in &state.interactions {

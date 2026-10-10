@@ -74,7 +74,7 @@ impl Fixture {
             expected_revision: domain.state().unwrap().revision,
             command: Command::RegisterAgent {
                 agent_id: "agent-a".into(),
-                name: "Fixture agent".into(),
+                name: "Fixture agent".into(), at: 0
             },
         };
         domain
@@ -491,7 +491,7 @@ async fn http_the_orchestrator_creates_every_task_with_its_plan() {
     let register = CommandEnvelope {
         protocol_version: PROTOCOL_VERSION, data_epoch: epoch, command_id: "register-b".into(),
         expected_revision: fixture.domain.state().unwrap().revision,
-        command: Command::RegisterAgent { agent_id: "agent-b".into(), name: "Fresh node".into() },
+        command: Command::RegisterAgent { agent_id: "agent-b".into(), name: "Fresh node".into(), at: 0 },
     };
     fixture.domain.execute(&Actor::System, &register, None, || Ok(())).unwrap();
     fixture.producer(true, json!({"kind":"create_request", "request_id":"request-plan", "body":"Work in two steps"})).await;

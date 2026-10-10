@@ -499,7 +499,7 @@ mod tests {
                 expected_revision: state.revision,
                 command: Command::RegisterAgent {
                     agent_id: format!("agent-{command_id}").into(),
-                    name: "Unseen agent".into(),
+                    name: "Unseen agent".into(), at: 0
                 },
             };
             self.client.domain.execute(

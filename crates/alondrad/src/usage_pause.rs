@@ -577,7 +577,7 @@ mod tests {
 
     fn measure(domain: &DomainRuntime, windows: serde_json::Value) {
         let envelope = serde_json::from_value(json!({"session_id": "m", "event": "session.measure", "rate_limits": windows})).unwrap();
-        domain.live.mods.apply(envelope, now_millis());
+        domain.report(envelope, now_millis());
         domain.live.note_measures();
     }
 

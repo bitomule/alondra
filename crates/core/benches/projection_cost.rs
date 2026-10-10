@@ -55,7 +55,7 @@ fn main() {
     if std::env::args().any(|argument| argument == "--full-inbox") { profile_full_inbox(); return; }
     if std::env::args().any(|argument| argument == "--inbox-orders") { profile_inbox_orders(); return; }
     let mut state = DomainState::new("synthetic-projection-epoch");
-    commit(&mut state, Actor::System, Command::RegisterAgent { agent_id: "agent".into(), name: "Synthetic agent".into() });
+    commit(&mut state, Actor::System, Command::RegisterAgent { agent_id: "agent".into(), name: "Synthetic agent".into(), at: 0 });
     commit(&mut state, user(), Command::CreateRequest { request_id: "request".into(), body: "Synthetic request".into(), auto_merge: false, maintenance: false, message: false });
     commit(&mut state, Actor::Orchestrator { generation: 0 }, Command::CreateTask { task_id: "task".into(), request_id: "request".into(), title: "Synthetic task".into(), agent_id: Some("agent".into()), review_prs: true, dependencies: BTreeSet::new(), stack: None, launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")) });
     for index in 0..500 {
@@ -97,7 +97,7 @@ fn inbox_orders(state: &DomainState) -> Vec<(String, Revision)> {
 
 fn inbox_fixture(count: usize, body_size: usize, history: usize) -> DomainState {
     let mut state = DomainState::new("synthetic-inbox-epoch");
-    commit(&mut state, Actor::System, Command::RegisterAgent { agent_id: "agent".into(), name: "Synthetic agent".into() });
+    commit(&mut state, Actor::System, Command::RegisterAgent { agent_id: "agent".into(), name: "Synthetic agent".into(), at: 0 });
     commit(&mut state, user(), Command::CreateRequest { request_id: "request".into(), body: "Synthetic request".into(), auto_merge: false, maintenance: false, message: false });
     commit(&mut state, Actor::Orchestrator { generation: 0 }, Command::CreateTask {
         task_id: "task".into(), request_id: "request".into(), title: "Synthetic task".into(), agent_id: Some("agent".into()),

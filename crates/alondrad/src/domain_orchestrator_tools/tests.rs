@@ -34,7 +34,7 @@ fn world() -> Fixture {
     std::fs::create_dir_all(&home).unwrap();
     std::fs::create_dir_all(&project).unwrap();
     let domain = Arc::new(DomainRuntime::open(&home).unwrap());
-    command(&domain, Actor::System, Command::RegisterAgent { agent_id: "agent-b".into(), name: "Instance B".into() });
+    command(&domain, Actor::System, Command::RegisterAgent { agent_id: "agent-b".into(), name: "Instance B".into(), at: 0 });
     command(&domain, user(), Command::CreateRequest { request_id: "r".into(), body: "Make the editor readable".into(), auto_merge: false, maintenance: false, message: false });
     command(&domain, user(), Command::TitleRequest { request_id: "r".into(), title: "Readable editor".into() });
     command(&domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { task_id: "t".into(), request_id: "r".into(), title: "Editor colours".into(),
@@ -132,7 +132,7 @@ impl crate::orchestrate::Launcher for FakeClaude {
     async fn respawn(&self, short: &str) -> Result<(), String> {
         self.respawned.lock().unwrap().push(short.into());
         if let Some(domain) = &self.loads_mod_in {
-            domain.live.mods.connect(serde_json::from_value(json!({"session_id": "agent-b", "version": "2.1.287"})).unwrap(), 2);
+            domain.connect_node(serde_json::from_value(json!({"session_id": "agent-b", "version": "2.1.287"})).unwrap(), 2);
         }
         Ok(())
     }
@@ -288,7 +288,7 @@ async fn a_launch_is_refused_for_a_closed_or_taken_task_and_a_session_without_it
     assert!(f.domain.state().unwrap().tasks[&TaskId::from("t")].agent_id.is_none());
 
     command(&f.domain, actor.clone(), Command::AssignTask { task_id: "t".into(), agent_id: "agent-b".into(), model: None });
-    crate::domain_agent_lifecycle::observe_instance(&f.domain, &"agent-b".into(), true,
+    crate::domain_agent_lifecycle::move_instance(&f.domain, &"agent-b".into(), alondra_core::domain::NodeEvent::TurnStarted,
         &crate::domain_agent_lifecycle::prepare_event(&f.domain, "start-b").unwrap()).unwrap();
     let claude = FakeClaude::loading(&f.domain);
     let taken = launch(&f.domain, &f.home, &actor, launch_body(&f, json!({"model": "sonnet"})), |_| None, &claude).await.unwrap_err();
@@ -338,7 +338,7 @@ async fn a_message_with_a_task_reaches_only_that_tasks_node() {
     assert!(unassigned.message.contains("Launch a new node for t2 with launch"), "{}", unassigned.message);
     assert_eq!(f.domain.state().unwrap().tasks[&TaskId::from("t2")].agent_id, None, "a message never assigns");
 
-    command(&f.domain, Actor::System, Command::RegisterAgent { agent_id: "agent-c".into(), name: "Instance C".into() });
+    command(&f.domain, Actor::System, Command::RegisterAgent { agent_id: "agent-c".into(), name: "Instance C".into(), at: 0 });
     let foreign: SendBody = serde_json::from_value(json!({"node": "agent-c", "text": "Mine now", "task": "t"})).unwrap();
     assert_eq!(send(&f.domain, &f.home, &actor, foreign).await.unwrap_err().code, "not_assigned");
     assert_eq!(node.texts().len(), 1, "the refused messages sent nothing");
@@ -393,7 +393,7 @@ async fn an_interrupt_is_a_line_for_the_connected_agent_and_is_refused_for_one_t
     assert_eq!(interrupt(&f.domain, named()).unwrap(), json!({"interrupted": "agent-b"}));
     tokio::task::yield_now().await;
     assert_eq!(node.interrupts(), 1);
-    command(&f.domain, Actor::System, Command::RegisterAgent { agent_id: "agent-a".into(), name: "Instance A".into() });
+    command(&f.domain, Actor::System, Command::RegisterAgent { agent_id: "agent-a".into(), name: "Instance A".into(), at: 0 });
     let gone: NodeBody = serde_json::from_value(json!({"node": "agent-a"})).unwrap();
     assert_eq!(interrupt(&f.domain, gone).unwrap_err().code, "session_unreachable");
     assert_eq!(node.interrupts(), 1);
@@ -423,7 +423,7 @@ fn measured(domain: &DomainRuntime, week_percent: f64) {
     let reset = crate::log::local_iso(alondra_core::now_millis().div_euclid(1000) as libc::time_t + 5 * 86_400, 0);
     let envelope = serde_json::from_value(json!({"session_id": "m", "event": "session.measure",
         "rate_limits": [{"kind": "seven_day", "percent_used": week_percent, "resets_at": reset}]})).unwrap();
-    domain.live.mods.apply(envelope, alondra_core::now_millis());
+    domain.report(envelope, alondra_core::now_millis());
 }
 
 #[tokio::test]
@@ -499,7 +499,7 @@ async fn a_task_whose_node_the_user_closed_is_relaunched_for_that_task_in_the_cl
     let f = world();
     command(&f.domain, user(), Command::AssignTask { task_id: "t".into(), agent_id: "agent-b".into(), model: None });
     command(&f.domain, Actor::Agent { agent_id: "agent-b".into() }, Command::StartTask { task_id: "t".into() });
-    f.domain.live.mods.connect(serde_json::from_value(json!({"session_id": "agent-b", "version": "2.1.287", "cwd": f.project.to_str().unwrap()})).unwrap(), 1);
+    f.domain.connect_node(serde_json::from_value(json!({"session_id": "agent-b", "version": "2.1.287", "cwd": f.project.to_str().unwrap()})).unwrap(), 1);
     let claude = FakeClaude::loading(&f.domain);
     let refused = relaunch(&f.domain, &f.home, &user(), &"t".into(), &claude).await.unwrap_err();
     assert_eq!(refused.code, "conflict", "a task whose node was not closed is not relaunched");
@@ -606,7 +606,7 @@ async fn a_message_with_an_approach_is_recorded_and_a_plain_one_is_not() {
     let actor = the_orchestrator(&f.domain);
     let _node = Node::connect(&f.domain, "agent-b");
     give(&f, "t", "agent-b");
-    f.domain.live.mods.apply(serde_json::from_value(json!({"session_id": "agent-b", "event": "model", "model": "claude-sonnet-5-5"})).unwrap(), 1);
+    f.domain.report(serde_json::from_value(json!({"session_id": "agent-b", "event": "model", "model": "claude-sonnet-5-5"})).unwrap(), 1);
     let body = |extra: Value| -> SendBody {
         let mut body = json!({"node": "Instance B", "text": "Go", "task": "t"});
         body.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
@@ -628,7 +628,7 @@ async fn a_relaunch_is_recorded_as_one_and_needs_no_reason() {
     let f = world();
     command(&f.domain, user(), Command::AssignTask { task_id: "t".into(), agent_id: "agent-b".into(), model: None });
     command(&f.domain, Actor::Agent { agent_id: "agent-b".into() }, Command::StartTask { task_id: "t".into() });
-    f.domain.live.mods.connect(serde_json::from_value(json!({"session_id": "agent-b", "version": "2.1.287", "cwd": f.project.to_str().unwrap()})).unwrap(), 1);
+    f.domain.connect_node(serde_json::from_value(json!({"session_id": "agent-b", "version": "2.1.287", "cwd": f.project.to_str().unwrap()})).unwrap(), 1);
     crate::node_revival::user_closed(&f.domain, "agent-b").unwrap();
     relaunch(&f.domain, &f.home, &user(), &"t".into(), &FakeClaude::loading(&f.domain)).await.unwrap();
     assert_eq!(decisions(&f.domain), [row("relaunch", Some("sonnet"), None, Some("solo"), None)]);
@@ -641,9 +641,9 @@ async fn closing_a_launched_node_keeps_its_cost_and_the_fullest_its_context_got(
     let claude = FakeClaude::loading(&f.domain);
     launch(&f.domain, &f.home, &actor, launch_body(&f, json!({"model": "sonnet"})), |_| None, &claude).await.unwrap();
     for (context, cost) in [(json!({"window": 200000, "percent": 62.5}), 0.8), (json!({"window": 200000, "tokens": 50000}), 1.25)] {
-        f.domain.live.mods.apply(serde_json::from_value(json!({"session_id": SESSION, "event": "session.measure", "context": context, "cost_usd": cost})).unwrap(), 2);
+        f.domain.report(serde_json::from_value(json!({"session_id": SESSION, "event": "session.measure", "context": context, "cost_usd": cost})).unwrap(), 2);
     }
-    f.domain.live.mods.apply(serde_json::from_value(json!({"session_id": SESSION, "event": "model", "model": "claude-sonnet-5-5"})).unwrap(), 3);
+    f.domain.report(serde_json::from_value(json!({"session_id": SESSION, "event": "model", "model": "claude-sonnet-5-5"})).unwrap(), 3);
     assert!(f.domain.store.lock().unwrap().node_cost(SESSION).unwrap().is_none());
 
     crate::node_revival::user_closed(&f.domain, SESSION).unwrap();
@@ -747,7 +747,7 @@ async fn a_task_in_progress_whose_node_died_is_relaunched_and_assigned_to_the_ne
     let actor = the_orchestrator(&f.domain);
     give(&f, "t", "agent-b");
     command(&f.domain, Actor::Agent { agent_id: "agent-b".into() }, Command::StartTask { task_id: "t".into() });
-    command(&f.domain, Actor::System, Command::ObserveAgent { agent_id: "agent-b".into(), connected: false });
+    command(&f.domain, Actor::System, Command::MoveNode { agent_id: "agent-b".into(), event: alondra_core::domain::NodeEvent::SessionLost, at: 0 });
     let claude = FakeClaude::loading(&f.domain);
     launch(&f.domain, &f.home, &actor, launch_body(&f, json!({"model": "sonnet"})), |_| None, &claude).await.unwrap();
     assert_eq!(f.domain.state().unwrap().tasks[&TaskId::from("t")].agent_id, Some(AgentId::from(SESSION)));
@@ -765,7 +765,7 @@ async fn the_changes_the_user_asked_for_reach_the_node_that_takes_the_task_over(
         card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true) });
     command(&f.domain, user(), Command::SubmitFeedback { attachments: vec![], presentation_id: "final".into(), targets: targets(),
         body: "  Use the new palette  ".into(), instruction: alondra_core::domain::Instruction::Changes });
-    command(&f.domain, Actor::System, Command::ObserveAgent { agent_id: "agent-b".into(), connected: false });
+    command(&f.domain, Actor::System, Command::MoveNode { agent_id: "agent-b".into(), event: alondra_core::domain::NodeEvent::SessionLost, at: 0 });
     command(&f.domain, Actor::System, Command::RecordNodeEnd { task_id: "t".into(), end: alondra_core::domain::NodeEnd::Closed, agent_id: Some("agent-b".into()) });
     assert_eq!(f.domain.state().unwrap().tasks[&TaskId::from("t")].state, TaskState::NotStarted);
     let claude = FakeClaude::loading(&f.domain);
@@ -781,9 +781,9 @@ fn connected_node_on_the_task(f: &Fixture) -> u64 {
 fn connected_node(f: &Fixture, agent: &str) -> u64 {
     give(f, "t", agent);
     command(&f.domain, Actor::Agent { agent_id: agent.into() }, Command::StartTask { task_id: "t".into() });
-    crate::domain_agent_lifecycle::observe_instance(&f.domain, &agent.into(), true,
+    crate::domain_agent_lifecycle::move_instance(&f.domain, &agent.into(), alondra_core::domain::NodeEvent::TurnStarted,
         &crate::domain_agent_lifecycle::prepare_event(&f.domain, &format!("start-{agent}")).unwrap()).unwrap();
-    f.domain.live.mods.connect(serde_json::from_value(json!({"session_id": agent, "version": "2.1.287", "cwd": f.project.to_str().unwrap()})).unwrap(), 1)
+    f.domain.connect_node(serde_json::from_value(json!({"session_id": agent, "version": "2.1.287", "cwd": f.project.to_str().unwrap()})).unwrap(), 1)
 }
 
 #[tokio::test]
@@ -825,7 +825,7 @@ async fn replacing_a_tasks_node_stops_it_keeps_its_folder_and_gives_the_task_to_
     let state = f.domain.state().unwrap();
     assert_eq!(state.tasks[&TaskId::from("t")].agent_id, Some(AgentId::from(SESSION)));
     assert_eq!(state.tasks[&TaskId::from("t")].model.as_ref().map(|m| m.model.as_str()), Some("opus"));
-    assert!(!state.agents[&AgentId::from("agent-b")].connected, "the old node is disconnected");
+    assert!(!state.agents[&AgentId::from("agent-b")].phase.holds_slot(), "the old node is disconnected");
     assert!(f.domain.live.is_closed("agent-b"), "and is not brought back");
     assert!(f.domain.live.closed_task_ids().is_empty());
 }
@@ -842,7 +842,7 @@ async fn a_replacement_that_cannot_launch_leaves_the_old_node_working() {
     assert!(claude.stopped.lock().unwrap().is_empty() && claude.calls.lock().unwrap().is_empty());
     let state = f.domain.state().unwrap();
     assert_eq!(state.tasks[&TaskId::from("t")].agent_id, Some(AgentId::from("agent-b")));
-    assert!(state.agents[&AgentId::from("agent-b")].connected);
+    assert!(state.agents[&AgentId::from("agent-b")].phase.holds_slot());
 
     command(&f.domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { task_id: "free".into(), request_id: "r".into(), title: "Free".into(),
         agent_id: None, review_prs: false, dependencies: Default::default(), stack: None,
@@ -890,7 +890,7 @@ async fn a_replacement_whose_stop_fails_launches_nothing_and_the_old_node_keeps_
     assert_eq!(state.tasks[&TaskId::from("t")].agent_id, Some(AgentId::from("agent-b")), "the old node keeps its task");
     assert_eq!(state.tasks[&TaskId::from("t")].state, TaskState::Running);
     assert_eq!(state.agents.len(), 1, "no new agent was registered");
-    assert!(state.agents[&AgentId::from("agent-b")].connected && !f.domain.live.is_closed("agent-b"));
+    assert!(state.agents[&AgentId::from("agent-b")].phase.holds_slot() && !f.domain.live.is_closed("agent-b"));
     assert!(settings_files(&f.home).is_empty(), "the new session's settings are discarded");
     assert!(!refused.message.contains("keeps its node"), "{}", refused.message);
 }
@@ -1114,7 +1114,7 @@ async fn a_review_that_asks_for_changes_twice_shows_its_rounds_and_serious_findi
     command(&domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { task_id: "t".into(), request_id: "r".into(), title: "Editor colours".into(),
         agent_id: None, review_prs: false, dependencies: Default::default(), stack: None,
         launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")), });
-    command(&domain, Actor::System, Command::RegisterAgent { agent_id: "reviewer".into(), name: "Reviewer".into() });
+    command(&domain, Actor::System, Command::RegisterAgent { agent_id: "reviewer".into(), name: "Reviewer".into(), at: 0 });
     command(&domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { task_id: "review".into(), request_id: "r".into(), title: "Review the editor colours".into(),
         agent_id: Some("reviewer".into()), review_prs: false, dependencies: Default::default(), stack: None,
         launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")), });
@@ -1313,7 +1313,7 @@ async fn a_replacement_inherits_the_worktree_claude_code_made_for_the_old_node()
     let claude_home = f.root.join("claude");
     crate::watcher::use_claude_home_for_test(&claude_home);
     let old = "0ldn0de0-0000-4000-8000-000000000000";
-    command(&f.domain, Actor::System, Command::RegisterAgent { agent_id: old.into(), name: "Old".into() });
+    command(&f.domain, Actor::System, Command::RegisterAgent { agent_id: old.into(), name: "Old".into(), at: 0 });
     let made = f.project.join(".claude/worktrees/t");
     std::fs::create_dir_all(&made).unwrap();
     std::fs::create_dir_all(claude_home.join("jobs/0ldn0de0")).unwrap();

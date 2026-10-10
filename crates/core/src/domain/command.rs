@@ -96,10 +96,19 @@ pub enum Command {
     RegisterAgent {
         agent_id: AgentId,
         name: String,
+        #[serde(default)]
+        at: Millis,
     },
-    ObserveAgent {
+    /// Something happened to a node: the node machine moves its phase or refuses the event.
+    MoveNode {
         agent_id: AgentId,
-        connected: bool,
+        event: NodeEvent,
+        at: Millis,
+    },
+    /// What the listing of real sessions says of each node Alondra launched, absent included.
+    ReconcileNodes {
+        listed: BTreeMap<AgentId, Listed>,
+        at: Millis,
     },
     AdvanceOrchestratorGeneration {
         generation: u64,

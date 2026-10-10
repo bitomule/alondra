@@ -440,6 +440,7 @@ fn hand_over(
         Command::RegisterAgent {
             agent_id: agent_id.clone(),
             name: name.to_owned(),
+            at: alondra_core::now_millis(),
         },
     ) {
         Ok(_) => (),

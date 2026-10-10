@@ -34,9 +34,8 @@ final class FleetFeatureTests: XCTestCase {
 
         XCTAssertEqual(overview.orchestrator?.title, "Orchestrator")
         XCTAssertEqual(overview.orchestrator?.isOrchestrator, true)
-        XCTAssertEqual(overview.groups.map(\.title), ["Demo Garden", "Zeta", "Alpha", "Idle"])
-        XCTAssertEqual(overview.groups.map(\.collapsed), [false, false, false, true], "idle nodes start collapsed, last")
-        XCTAssertEqual(overview.groups.last?.count, 2)
+        XCTAssertEqual(overview.groups.map(\.title), ["Demo Garden", "Zeta", "Alpha"], "nodes whose sessions closed are not listed")
+        XCTAssertEqual(overview.groups.map(\.collapsed), [false, false, false])
         XCTAssertEqual(overview.groups.first?.count, 2)
         let node = try XCTUnwrap(overview.groups.first?.nodes.first)
         XCTAssertEqual(node.title, "Restore the native review experience")

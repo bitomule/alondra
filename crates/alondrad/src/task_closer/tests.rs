@@ -117,7 +117,7 @@ impl Rig {
         let home = crate::test_support::Directory::new();
         std::fs::create_dir(&home).unwrap();
         let domain = Arc::new(DomainRuntime::open(&home).unwrap());
-        command(&domain, Actor::System, "agent", Command::RegisterAgent { agent_id: SESSION.into(), name: "Node".into() });
+        command(&domain, Actor::System, "agent", Command::RegisterAgent { agent_id: SESSION.into(), name: "Node".into(), at: 0 });
         command(&domain, user(), "request", Command::CreateRequest { request_id: "r".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
         command(&domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask {
             task_id: "t".into(), request_id: "r".into(), title: "Result".into(), agent_id: Some(SESSION.into()),
@@ -545,7 +545,7 @@ async fn a_task_that_goes_back_to_work_while_its_session_is_removed_is_released_
 async fn a_node_that_replaces_the_one_being_removed_is_not_unassigned() {
     let rig = Rig::new(thirty_minutes());
     rig.confirm();
-    command(&rig.domain, Actor::System, "register-b", Command::RegisterAgent { agent_id: "agent-b".into(), name: "New node".into() });
+    command(&rig.domain, Actor::System, "register-b", Command::RegisterAgent { agent_id: "agent-b".into(), name: "New node".into(), at: 0 });
     let domain = rig.domain.clone();
     *rig.sessions.during_rm.lock().unwrap() = Some(Box::new(move || {
         command(&domain, user(), "feedback", Command::SubmitFeedback {

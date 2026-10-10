@@ -269,7 +269,7 @@ async fn a_scheduled_session_commands_and_receives_its_answer_once_across_a_daem
     ]);
     let (refused, text) = tool_text(&replies[0]);
     assert!(refused && text.contains("forbidden"), "{text}");
-    assert!(!daemon.domain.state().unwrap().agents[&AgentId(session.clone())].connected);
+    assert!(!daemon.domain.state().unwrap().agents[&AgentId(session.clone())].phase.holds_slot());
     let kept: Value = serde_json::from_slice(&std::fs::read(&settings).expect("its task is open: `claude respawn` passes the same file again")).unwrap();
     assert!(kept["env"].get("ALONDRA_DOMAIN_CAPABILITY").is_none(), "but the revoked bearer is gone from it");
     daemon.stop().await;

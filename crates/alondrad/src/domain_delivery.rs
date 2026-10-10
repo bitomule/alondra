@@ -413,7 +413,7 @@ mod tests {
             "agent",
             Command::RegisterAgent {
                 agent_id: "agent-a".into(),
-                name: "A".into(),
+                name: "A".into(), at: 0
             },
         );
         apply_command(
@@ -622,7 +622,7 @@ mod tests {
             "agent",
             Command::RegisterAgent {
                 agent_id: "agent-a".into(),
-                name: "A".into(),
+                name: "A".into(), at: 0
             },
         );
         command(
@@ -1164,7 +1164,7 @@ mod tests {
         let domain = Arc::new(DomainRuntime::open(&home).unwrap());
         let client = crate::client_routes::Client::open(domain.clone(), &home, Default::default());
         let agent = Actor::Agent { agent_id: "agent-a".into() };
-        apply_command(&domain, Actor::System, "agent", Command::RegisterAgent { agent_id: "agent-a".into(), name: "A".into() });
+        apply_command(&domain, Actor::System, "agent", Command::RegisterAgent { agent_id: "agent-a".into(), name: "A".into(), at: 0 });
         apply_command(&domain, Actor::User { user_id: "u".into() }, "request", Command::CreateRequest {
             request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
         apply_command(&domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask {
@@ -1200,7 +1200,7 @@ mod tests {
         std::fs::create_dir_all(&home).unwrap();
         let open = || Arc::new(DomainRuntime::open(&home).unwrap());
         let domain = open();
-        apply_command(&domain, Actor::System, "agent", Command::RegisterAgent { agent_id: "agent-a".into(), name: "A".into() });
+        apply_command(&domain, Actor::System, "agent", Command::RegisterAgent { agent_id: "agent-a".into(), name: "A".into(), at: 0 });
         apply_command(&domain, Actor::User { user_id: "u".into() }, "request", Command::CreateRequest {
             request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
         apply_command(&domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask {

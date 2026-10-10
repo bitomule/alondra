@@ -170,7 +170,7 @@ impl PrView for PrGithub {
 
 fn seed_work(fixture: &Fixture) {
     for (agent, name) in [("agent-a", "Instance A"), ("agent-b", "Instance B")] {
-        fixture.command(Actor::System, &format!("register-{agent}"), Command::RegisterAgent { agent_id: agent.into(), name: name.into() });
+        fixture.command(Actor::System, &format!("register-{agent}"), Command::RegisterAgent { agent_id: agent.into(), name: name.into(), at: 0 });
     }
     for request in ["request-1", "request-2"] {
         fixture.user(request, Command::CreateRequest { request_id: request.into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
@@ -385,7 +385,7 @@ impl crate::orchestrate::Launcher for DroppingSessions {
     async fn stop(&self, _: &str) {}
     async fn respawn(&self, short: &str) -> Result<(), String> {
         self.respawned.lock().unwrap().push(short.into());
-        self.domain.live.mods.connect(serde_json::from_value(json!({"session_id": self.session, "version": "2.1.287"})).unwrap(), 2);
+        self.domain.connect_node(serde_json::from_value(json!({"session_id": self.session, "version": "2.1.287"})).unwrap(), 2);
         Ok(())
     }
 }
@@ -440,7 +440,7 @@ async fn closing_a_background_session_runs_claude_rm_and_takes_it_out_of_the_fle
     seed_work(&fixture);
     observe_sessions(&fixture);
     fixture.domain.live.observe(&hook("agent-a", "Stop", json!({})));
-    fixture.command(Actor::System, "connect-a", Command::ObserveAgent { agent_id: "agent-a".into(), connected: true });
+    fixture.command(Actor::System, "connect-a", Command::MoveNode { agent_id: "agent-a".into(), event: alondra_core::domain::NodeEvent::TurnStarted, at: 0 });
     let short = fixture.domain.live.node("agent-a").unwrap().short_id;
     let sessions = FakeSessions::listing(&[&short]);
     fixture.client.use_sessions(sessions.clone());
@@ -454,7 +454,7 @@ async fn closing_a_background_session_runs_claude_rm_and_takes_it_out_of_the_fle
     assert_eq!(answer["interactive"], false);
     let calls = sessions.calls.lock().unwrap().clone();
     assert!(calls.iter().any(|call| call == &["rm".to_string(), short.clone()]), "{calls:?}");
-    assert!(!fixture.domain.state().unwrap().agents[&"agent-a".into()].connected, "the domain sees the session gone");
+    assert!(!fixture.domain.state().unwrap().agents[&"agent-a".into()].phase.holds_slot(), "the domain sees the session gone");
     assert!(fixture.domain.resolve_bearer(&bearer).is_err(), "its capability is revoked");
     let runtime = fixture.runtime_json().await;
     assert!(runtime["nodes"].as_array().unwrap().iter().all(|node| node["session_id"] != "agent-a"), "what was observed of it is forgotten");
@@ -467,7 +467,7 @@ async fn a_node_the_user_closed_leaves_fleet_stays_gone_after_a_restart_and_is_n
     seed_work(&fixture);
     observe_sessions(&fixture);
     fixture.domain.live.observe(&hook("agent-a", "Stop", json!({})));
-    fixture.command(Actor::System, "connect-a", Command::ObserveAgent { agent_id: "agent-a".into(), connected: true });
+    fixture.command(Actor::System, "connect-a", Command::MoveNode { agent_id: "agent-a".into(), event: alondra_core::domain::NodeEvent::TurnStarted, at: 0 });
     let short = fixture.domain.live.node("agent-a").unwrap().short_id;
     fixture.client.use_sessions(FakeSessions::listing(&[&short]));
     assert!(fleet_lists(&view_json(&fixture, "fleet", "en").await, "agent-a"), "it is a row before it is closed");
@@ -488,8 +488,8 @@ async fn a_node_closed_with_alondra_close_is_never_revived_while_or_after_it_is_
     seed_work(&fixture);
     observe_sessions(&fixture);
     fixture.domain.live.observe(&hook("agent-a", "Stop", json!({})));
-    fixture.command(Actor::System, "connect-a", Command::ObserveAgent { agent_id: "agent-a".into(), connected: true });
-    let connection = fixture.domain.live.mods.connect(serde_json::from_value(json!({"session_id": "agent-a", "version": "2.1.287"})).unwrap(), 1);
+    fixture.command(Actor::System, "connect-a", Command::MoveNode { agent_id: "agent-a".into(), event: alondra_core::domain::NodeEvent::TurnStarted, at: 0 });
+    let connection = fixture.domain.connect_node(serde_json::from_value(json!({"session_id": "agent-a", "version": "2.1.287"})).unwrap(), 1);
     let short = fixture.domain.live.node("agent-a").unwrap().short_id;
     let sessions = Arc::new(DroppingSessions { inner: FakeSessions::listing(&[&short]), domain: fixture.domain.clone(),
         session: "agent-a".into(), connection, respawned: Default::default() });
@@ -509,7 +509,7 @@ async fn closing_an_interactive_session_only_leaves_the_fleet() {
     let fixture = Fixture::start().await;
     seed_work(&fixture);
     observe_sessions(&fixture);
-    fixture.command(Actor::System, "connect-b", Command::ObserveAgent { agent_id: "agent-b".into(), connected: true });
+    fixture.command(Actor::System, "connect-b", Command::MoveNode { agent_id: "agent-b".into(), event: alondra_core::domain::NodeEvent::TurnStarted, at: 0 });
     let sessions = FakeSessions::listing(&[]);
     fixture.client.use_sessions(sessions.clone());
     let (status, answer) = fixture.local_send("/agents/agent-b/close", &json!({})).await;
@@ -517,7 +517,7 @@ async fn closing_an_interactive_session_only_leaves_the_fleet() {
     assert_eq!(answer["interactive"], true);
     assert!(answer["output"].as_str().unwrap().contains("interactive session"));
     assert!(sessions.calls.lock().unwrap().iter().all(|call| call[0] == "agents"), "claude rm is never run for a terminal session");
-    assert!(!fixture.domain.state().unwrap().agents[&"agent-b".into()].connected);
+    assert!(!fixture.domain.state().unwrap().agents[&"agent-b".into()].phase.holds_slot());
 }
 
 #[tokio::test]
@@ -687,7 +687,7 @@ async fn projects_are_the_checkouts_under_the_root_ranked_by_what_the_daemon_saw
     assert_eq!(names(&listed), ["App", "Web"]);
     assert_eq!(listed["root"], fixture.home.join("Projects").to_str().unwrap());
 
-    fixture.command(Actor::System, "register-web", Command::RegisterAgent { agent_id: "agent-web".into(), name: "Web agent".into() });
+    fixture.command(Actor::System, "register-web", Command::RegisterAgent { agent_id: "agent-web".into(), name: "Web agent".into(), at: 0 });
     let cwd = fixture.home.join("Projects").join("Web");
     fixture.domain.live.observe(&hook("agent-web", "SessionStart", json!({"cwd": cwd.to_str().unwrap()})));
     assert_eq!(names(&fixture.get_json("/projects").await), ["Web", "App"], "the project a session is working in comes first");
@@ -1011,22 +1011,22 @@ async fn fleet_and_node_views_show_what_the_node_mods_report() {
     let fixture = Fixture::start().await;
     seed_work(&fixture);
     observe_sessions(&fixture);
-    let mods = &fixture.domain.live.mods;
+    let mods = &fixture.domain;
     let report = |session: &str, report: Value| {
         let mut report = report;
         report["session_id"] = json!(session);
-        mods.apply(serde_json::from_value(report).unwrap(), alondra_core::now_millis());
+        mods.report(serde_json::from_value(report).unwrap(), alondra_core::now_millis());
     };
     let hello = |session: &str| serde_json::from_value(json!({"session_id": session, "version": "2.1.287"})).unwrap();
-    mods.connect(hello("agent-a"), 1);
+    mods.connect_node(hello("agent-a"), 1);
     report("agent-a", json!({"event": "turn.start", "turn_id": "t1"}));
     report("agent-a", json!({"event": "tool.start", "tool": "Bash", "tool_use_id": "u1",
         "input": {"command": "bazel test //crates/..."}}));
     report("agent-a", json!({"event": "session.measure", "context": {"tokens": 850000, "window": 1000000, "percent": 85},
         "rate_limits": [], "cost_usd": 0.42}));
-    let b = mods.connect(hello("agent-b"), 2);
+    let b = mods.connect_node(hello("agent-b"), 2);
     report("agent-b", json!({"event": "turn.complete", "turn_id": "t2", "answer": "Stopped halfway through the parser", "aborted": true}));
-    mods.disconnect("agent-b", b);
+    mods.live.mods.disconnect("agent-b", b);
 
     let fleet = view_json(&fixture, "fleet", "en").await;
     let a = node_row(&fleet, "agent-a");
@@ -1057,12 +1057,12 @@ async fn a_nodes_state_comes_from_its_mods_events_and_connection_not_from_hooks_
     let fixture = Fixture::start().await;
     seed_work(&fixture);
     observe_sessions(&fixture);
-    let mods = &fixture.domain.live.mods;
+    let mods = &fixture.domain;
     let now = alondra_core::now_millis();
     let report = |report: Value, at: i64| {
         let mut report = report;
         report["session_id"] = json!("agent-a");
-        mods.apply(serde_json::from_value(report).unwrap(), at);
+        mods.report(serde_json::from_value(report).unwrap(), at);
     };
     let state = async |fixture: &Fixture| {
         let fleet = view_json(fixture, "fleet", "en").await;
@@ -1071,7 +1071,7 @@ async fn a_nodes_state_comes_from_its_mods_events_and_connection_not_from_hooks_
     let hello: crate::node_reports::Hello = serde_json::from_value(json!({"session_id": "agent-a", "version": "2.1.287"})).unwrap();
     assert_ne!(state(&fixture).await, "Working", "recent hooks alone do not make a node work: only its mod says so");
 
-    let connection = mods.connect(hello, now);
+    let connection = mods.connect_node(hello, now);
     report(json!({"event": "turn.start", "turn_id": "t1"}), now);
     assert_eq!(state(&fixture).await, "Working");
 
@@ -1081,21 +1081,17 @@ async fn a_nodes_state_comes_from_its_mods_events_and_connection_not_from_hooks_
     assert_eq!(state(&fixture).await, "Working");
 
     report(json!({"event": "turn.complete", "turn_id": "t1", "answer": "Done."}), now);
-    assert_ne!(state(&fixture).await, "Working", "the turn ended: the node is idle");
+    crate::domain_agent_lifecycle::node_event_at(&fixture.domain, &AgentId::from("agent-a"), alondra_core::domain::NodeEvent::TurnEnded, now).unwrap();
+    assert_ne!(state(&fixture).await, "Working", "the turn ended, as the Stop hook says: the node is idle");
 
     report(json!({"event": "turn.start", "turn_id": "t2"}), now);
-    mods.disconnect("agent-a", connection);
+    mods.live.mods.disconnect("agent-a", connection);
     let fleet = view_json(&fixture, "fleet", "en").await;
     let row = node_row(&fleet, "agent-a");
     assert_eq!(badges(row)[0].0, "Working", "a node whose connection closed keeps its last factual state while the daemon brings it back");
-    domain_live_reconnecting(&fixture, "agent-a", true);
+    crate::domain_agent_lifecycle::node_event(&fixture.domain, &AgentId::from("agent-a"), alondra_core::domain::NodeEvent::SessionLost).unwrap();
     let fleet = view_json(&fixture, "fleet", "en").await;
-    assert_eq!(badges(node_row(&fleet, "agent-a"))[0].0, "Reconnecting", "and says so only while a restart of its session runs");
-    domain_live_reconnecting(&fixture, "agent-a", false);
-}
-
-fn domain_live_reconnecting(fixture: &Fixture, session: &str, on: bool) {
-    fixture.domain.live.set_reconnecting(session, on);
+    assert_eq!(badges(node_row(&fleet, "agent-a"))[0].0, "Reconnecting", "and says so once its session is lost and Alondra brings it back");
 }
 
 #[tokio::test]
@@ -1104,7 +1100,7 @@ async fn a_node_the_daemon_never_heard_a_hook_from_shows_once_its_mod_connects()
     seed_work(&fixture);
     let hello: crate::node_reports::Hello = serde_json::from_value(json!({"session_id": "agent-b", "version": "2.1.287", "working": true})).unwrap();
     assert!(fixture.domain.live.node("agent-b").is_none());
-    fixture.domain.live.mods.connect(hello, alondra_core::now_millis());
+    fixture.domain.connect_node(hello, alondra_core::now_millis());
     let fleet = view_json(&fixture, "fleet", "en").await;
     assert_eq!(badges(node_row(&fleet, "agent-b"))[0].0, "Working", "a restarted daemon learns the node is mid-turn from its reconnection");
 }
@@ -1114,15 +1110,16 @@ async fn the_background_badges_come_from_the_mods_subagent_shell_and_end_of_turn
     let fixture = Fixture::start().await;
     seed_work(&fixture);
     observe_sessions(&fixture);
-    let mods = &fixture.domain.live.mods;
+    let mods = &fixture.domain;
     let now = alondra_core::now_millis();
     let report = |report: Value, at: i64| {
         let mut report = report;
         report["session_id"] = json!("agent-a");
-        mods.apply(serde_json::from_value(report).unwrap(), at);
+        mods.report(serde_json::from_value(report).unwrap(), at);
     };
     let hello: crate::node_reports::Hello = serde_json::from_value(json!({"session_id": "agent-a", "version": "2.1.287"})).unwrap();
-    mods.connect(hello, now);
+    mods.connect_node(hello, now);
+    report(json!({"event": "turn.start", "turn_id": "t1"}), now);
     let badge = async |fixture: &Fixture| {
         let fleet = view_json(fixture, "fleet", "en").await;
         badges(node_row(&fleet, "agent-a")).into_iter().map(|(text, _)| text).collect::<Vec<_>>()
@@ -1150,15 +1147,15 @@ async fn a_node_shows_the_subagents_workflows_and_task_list_its_mod_reports_and_
     let fixture = Fixture::start().await;
     seed_work(&fixture);
     observe_sessions(&fixture);
-    let mods = &fixture.domain.live.mods;
+    let mods = &fixture.domain;
     let now = alondra_core::now_millis();
     let report = |report: Value, at: i64| {
         let mut report = report;
         report["session_id"] = json!("agent-a");
-        mods.apply(serde_json::from_value(report).unwrap(), at);
+        mods.report(serde_json::from_value(report).unwrap(), at);
     };
     let hello: crate::node_reports::Hello = serde_json::from_value(json!({"session_id": "agent-a", "version": "2.1.287"})).unwrap();
-    mods.connect(hello, now);
+    mods.connect_node(hello, now);
     report(json!({"event": "subagent.start", "id": "sa-1", "description": "Fix the parser", "type": "Explore", "model": "claude-haiku-4-5"}), now);
     report(json!({"event": "workflow.start", "id": "w1", "name": "review-loop"}), now);
     report(json!({"event": "shell.start", "id": "u1", "command": "cargo build"}), now);
@@ -1189,11 +1186,11 @@ async fn a_node_shows_the_subagents_workflows_and_task_list_its_mod_reports_and_
 async fn a_background_shell_running_for_long_in_an_idle_node_is_flagged_and_stops_counting_as_work() {
     let fixture = Fixture::start().await;
     seed_work(&fixture);
-    let mods = &fixture.domain.live.mods;
+    let mods = &fixture.domain;
     let now = alondra_core::now_millis();
     let hello: crate::node_reports::Hello = serde_json::from_value(json!({"session_id": "agent-b", "version": "2.1.287"})).unwrap();
-    mods.connect(hello, now);
-    mods.apply(serde_json::from_value(json!({"session_id": "agent-b", "event": "shell.start", "id": "u1", "command": "sleep 99999"})).unwrap(),
+    mods.connect_node(hello, now);
+    mods.report(serde_json::from_value(json!({"session_id": "agent-b", "event": "shell.start", "id": "u1", "command": "sleep 99999"})).unwrap(),
         now - 31 * 60 * 1000);
     let fleet = view_json(&fixture, "fleet", "en").await;
     let shown = badges(node_row(&fleet, "agent-b"));
@@ -1202,24 +1199,26 @@ async fn a_background_shell_running_for_long_in_an_idle_node_is_flagged_and_stop
 }
 
 #[tokio::test]
-async fn a_node_that_has_not_reconnected_after_a_restart_is_idle_and_never_reads_disconnected() {
+async fn a_node_whose_turn_ended_with_no_task_is_idle_and_never_reads_disconnected() {
     let fixture = Fixture::start().await;
     seed_work(&fixture);
     let domain = &fixture.domain;
     let state = domain.state().unwrap();
     domain.execute(&Actor::System, &CommandEnvelope {
         protocol_version: 2, data_epoch: state.data_epoch.clone(), command_id: "register-ghost".into(), expected_revision: state.revision,
-        command: Command::RegisterAgent { agent_id: "ghost".into(), name: "alondra/ghost".into() },
+        command: Command::RegisterAgent { agent_id: "ghost".into(), name: "alondra/ghost".into(), at: 0 },
     }, None, || Ok(())).unwrap();
-    crate::domain_agent_lifecycle::observe_instance(domain, &"ghost".into(), true,
+    crate::domain_agent_lifecycle::move_instance(domain, &"ghost".into(), alondra_core::domain::NodeEvent::TurnStarted,
         &crate::domain_agent_lifecycle::prepare_event(domain, "start-ghost").unwrap()).unwrap();
+    crate::domain_agent_lifecycle::move_instance(domain, &"ghost".into(), alondra_core::domain::NodeEvent::TurnEnded,
+        &crate::domain_agent_lifecycle::prepare_event(domain, "end-ghost").unwrap()).unwrap();
     assert!(domain.live.node("ghost").is_none() && domain.live.mods.session("ghost").is_none(), "nothing live: the daemon just restarted");
 
     let fleet = view_json(&fixture, "fleet", "es").await;
     let project = fleet["sections"].as_array().unwrap().iter()
         .find(|section| section["items"].as_array().unwrap().iter().any(|item| item["id"] == "ghost")).unwrap();
-    assert_eq!(project["id"], "idle", "a connected node with no open task is idle, whatever its project");
-    assert_eq!(badges(node_row(&fleet, "ghost"))[0], ("Inactivo".into(), "neutral".into()), "a connected node whose turn ended is idle");
+    assert_eq!(project["id"], "idle", "a node with no open task is idle, whatever its project");
+    assert_eq!(badges(node_row(&fleet, "ghost"))[0], ("Detenido".into(), "warning".into()), "its turn ended with nothing for anyone");
 }
 
 #[tokio::test]
@@ -1234,25 +1233,25 @@ async fn a_stopped_node_with_an_open_task_stays_in_fleet_under_its_project_with_
         }, None, || Ok(())).unwrap();
     };
     let user = || Actor::User { user_id: "u".into() };
-    run(Actor::System, "register-stopped", Command::RegisterAgent { agent_id: "stopped".into(), name: "alondra/stopped".into() });
+    run(Actor::System, "register-stopped", Command::RegisterAgent { agent_id: "stopped".into(), name: "alondra/stopped".into(), at: 0 });
     run(user(), "request-stopped", Command::CreateRequest { request_id: "request-stopped".into(), body: "Probe".into(), auto_merge: false, maintenance: false, message: false });
     run(Actor::Orchestrator { generation: 0 }, "task-stopped", Command::CreateTask {
         task_id: "task-stopped".into(), request_id: "request-stopped".into(), title: "Probe".into(), agent_id: Some("stopped".into()),
         review_prs: false, dependencies: Default::default(), stack: None,
         launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),
     });
-    let mods = &domain.live.mods;
-    let connection = mods.connect(serde_json::from_value(json!({"session_id": "stopped", "version": "2.1.287"})).unwrap(), alondra_core::now_millis());
-    mods.apply(serde_json::from_value(json!({"session_id": "stopped", "event": "session.end"})).unwrap(), alondra_core::now_millis());
-    mods.disconnect("stopped", connection);
-    crate::domain_agent_lifecycle::observe_instance(domain, &"stopped".into(), false,
+    let mods = &domain;
+    let connection = mods.connect_node(serde_json::from_value(json!({"session_id": "stopped", "version": "2.1.287"})).unwrap(), alondra_core::now_millis());
+    mods.report(serde_json::from_value(json!({"session_id": "stopped", "event": "session.end"})).unwrap(), alondra_core::now_millis());
+    mods.live.mods.disconnect("stopped", connection);
+    crate::domain_agent_lifecycle::move_instance(domain, &"stopped".into(), alondra_core::domain::NodeEvent::SessionLost,
         &crate::domain_agent_lifecycle::prepare_event(domain, "end-stopped").unwrap()).unwrap();
 
     let fleet = view_json(&fixture, "fleet", "es").await;
     let section = fleet["sections"].as_array().unwrap().iter()
         .find(|section| section["items"].as_array().unwrap().iter().any(|item| item["id"] == "stopped")).unwrap();
     assert_eq!(section["id"], "project:alondra");
-    assert_eq!(badges(node_row(&fleet, "stopped"))[0], ("En cola".into(), "neutral".into()));
+    assert_eq!(badges(node_row(&fleet, "stopped"))[0], ("Reconectando".into(), "info".into()), "its session ended with its task open: Alondra brings it back");
 }
 
 #[tokio::test]
@@ -1263,8 +1262,10 @@ async fn an_agent_with_no_connection_no_task_and_nothing_live_has_left_fleet() {
     let state = domain.state().unwrap();
     domain.execute(&Actor::System, &CommandEnvelope {
         protocol_version: 2, data_epoch: state.data_epoch.clone(), command_id: "register-bare".into(), expected_revision: state.revision,
-        command: Command::RegisterAgent { agent_id: "bare".into(), name: "test/bare".into() },
+        command: Command::RegisterAgent { agent_id: "bare".into(), name: "test/bare".into(), at: 0 },
     }, None, || Ok(())).unwrap();
+    crate::domain_agent_lifecycle::move_instance(domain, &"bare".into(), alondra_core::domain::NodeEvent::SessionLost,
+        &crate::domain_agent_lifecycle::prepare_event(domain, "left-bare").unwrap()).unwrap();
     let fleet = view_json(&fixture, "fleet", "en").await;
     let listed = fleet["sections"].as_array().unwrap().iter()
         .flat_map(|section| section["items"].as_array().unwrap()).any(|item| item["id"] == "bare");

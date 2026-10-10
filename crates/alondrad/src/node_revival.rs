@@ -11,7 +11,7 @@
 //! to not started, waiting for a relaunch.
 use crate::domain_runtime::DomainRuntime;
 use crate::orchestrate::Launcher;
-use alondra_core::domain::{Actor, AgentId, Command, CommandEnvelope, QuestionOption, TaskId, PROTOCOL_VERSION};
+use alondra_core::domain::{Actor, AgentId, Command, CommandEnvelope, NodeEvent, QuestionOption, TaskId, PROTOCOL_VERSION};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -142,7 +142,7 @@ pub(crate) fn stalled_sessions(domain: &DomainRuntime, now: alondra_core::Millis
         .map(|agent| agent.0.clone())
         .filter(|session| open_task(&state, session) && !domain.live.is_closed(session))
         .filter(|session| !crate::domain_holds::waits_on_user(&state, session))
-        .filter(|session| domain.live.gate.paused(session).is_none())
+        .filter(|session| domain.live.gate.paused(&domain, session).is_none())
         .filter(|session| domain.live.mods.session(session).is_some_and(|reported| reported.silent(now)))
         .collect()
 }
@@ -368,9 +368,7 @@ pub(crate) fn take_out(domain: &DomainRuntime, session: &str, reason: &str, cwd:
             Err(failure) => log!("could not free {task_id} after its node was closed: {failure:?}"),
         }
     }
-    let event_id = format!("close-{session}-{}", crate::auth::random_hex(8));
-    let event = crate::domain_agent_lifecycle::prepare_event(domain, &event_id).map_err(|failure| anyhow::anyhow!("{failure}"))?;
-    crate::domain_agent_lifecycle::observe_instance(domain, &agent, false, &event).map_err(|failure| anyhow::anyhow!("{failure}"))?;
+    crate::domain_agent_lifecycle::node_event(domain, &agent, NodeEvent::SessionClosed).map_err(|failure| anyhow::anyhow!("{failure}"))?;
     crate::domain_transport::session_ended(domain, &agent)?;
     domain.live.mark_closed(session);
     domain.live.apply(&alondra_core::Event::NodeRemoved { session_id: session.to_owned() });
@@ -457,14 +455,14 @@ mod tests {
         std::fs::create_dir_all(&home).unwrap();
         let domain = Arc::new(DomainRuntime::open(&home).unwrap());
         let user = || Actor::User { user_id: "u".into() };
-        command(&domain, Actor::System, "register", Command::RegisterAgent { agent_id: SESSION.into(), name: "alondra/probe".into() });
+        command(&domain, Actor::System, "register", Command::RegisterAgent { agent_id: SESSION.into(), name: "alondra/probe".into(), at: 0 });
         if with_task {
             command(&domain, user(), "request", Command::CreateRequest { request_id: "r".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
             command(&domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { task_id: "t".into(), request_id: "r".into(), title: "Probe".into(),
                 agent_id: Some(SESSION.into()), review_prs: false, dependencies: Default::default(), stack: None,
                 launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")), });
         }
-        let connection = domain.live.mods.connect(hello(), 1);
+        let connection = domain.connect_node(hello(), 1);
         domain.live.mods.disconnect(SESSION, connection);
         (Home(home), domain)
     }
@@ -501,7 +499,7 @@ mod tests {
             if attempt < self.works_from {
                 return Err("no such session".into());
             }
-            self.domain.live.mods.connect(hello(), 2);
+            self.domain.connect_node(hello(), 2);
             Ok(())
         }
     }
@@ -556,11 +554,11 @@ mod tests {
     /// A node whose mod is connected and whose turn started a while ago, with nothing since.
     fn silent_turn(domain: &DomainRuntime) -> tokio::sync::mpsc::UnboundedReceiver<String> {
         let long_ago = alondra_core::now_millis() - QUIET_FOR;
-        domain.live.mods.connect(hello(), long_ago);
+        domain.connect_node(hello(), long_ago);
         let link = domain.live.pushes.attach(SESSION, 90);
         domain.live.mods.sample_cpu(SESSION, 500, long_ago);
         domain.live.mods.sample_cpu(SESSION, 500, long_ago + 1);
-        domain.live.mods.apply(serde_json::from_value(json!({"session_id": SESSION, "event": "turn.start", "turn_id": "t"})).unwrap(), long_ago);
+        domain.report(serde_json::from_value(json!({"session_id": SESSION, "event": "turn.start", "turn_id": "t"})).unwrap(), long_ago);
         link
     }
 
@@ -626,7 +624,7 @@ mod tests {
     async fn a_session_with_recent_activity_or_no_open_task_is_not_stalled() {
         let (_home, domain) = world(true);
         let _link = silent_turn(&domain);
-        domain.live.mods.apply(serde_json::from_value(json!({"session_id": SESSION, "event": "session.measure"})).unwrap(), alondra_core::now_millis());
+        domain.report(serde_json::from_value(json!({"session_id": SESSION, "event": "session.measure"})).unwrap(), alondra_core::now_millis());
         assert!(stalled_sessions(&domain, alondra_core::now_millis()).is_empty(), "any report is activity");
         let (_home, finished) = world(false);
         let _link = silent_turn(&finished);
@@ -656,7 +654,7 @@ mod tests {
             let domain = domain.clone();
             async move {
                 tokio::time::sleep(Duration::from_millis(5)).await;
-                domain.live.mods.connect(hello(), 3);
+                domain.connect_node(hello(), 3);
             }
         });
         let patient = Timing { grace: Duration::from_secs(10), ..FAST };

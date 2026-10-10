@@ -1923,7 +1923,7 @@ mod tests {
         let domain = std::sync::Arc::new(crate::domain_runtime::DomainRuntime::open(&home).unwrap());
         let client = crate::client_routes::Client::open(domain.clone(), &home, Default::default());
         apply_seed_command(&domain, Actor::System, "register-agent", Command::RegisterAgent {
-            agent_id: "agent-a".into(), name: "Agent A".into(),
+            agent_id: "agent-a".into(), name: "Agent A".into(), at: 0
         });
         apply_seed_command(&domain, Actor::User { user_id: "user".into() }, "create-request", Command::CreateRequest {
             request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false,
@@ -1934,7 +1934,7 @@ mod tests {
         for task_id in ["task-a", "task-b"] {
             let agent = format!("agent-{task_id}");
             apply_seed_command(&domain, Actor::System, &format!("register-{task_id}"), Command::RegisterAgent {
-                agent_id: agent.clone().into(), name: agent.clone(),
+                agent_id: agent.clone().into(), name: agent.clone(), at: 0
             });
             apply_seed_command(&domain, Actor::Orchestrator { generation: 0 }, &format!("create-{task_id}"), Command::CreateTask {
                 task_id: task_id.into(), request_id: "request".into(), title: task_id.into(),
@@ -2304,7 +2304,7 @@ mod tests {
         }
         let (home, domain, client) = action_home();
         apply_seed_command(&domain, Actor::System, "register-agent", Command::RegisterAgent {
-            agent_id: "agent-a".into(), name: "Agent A".into(),
+            agent_id: "agent-a".into(), name: "Agent A".into(), at: 0
         });
         let mut node = domain.live.pushes.attach("agent-a", 1);
         let state = domain.state().unwrap();
@@ -2337,7 +2337,7 @@ mod tests {
         use std::task::{Context, Poll, Waker};
         let (home, domain, client) = action_home();
         apply_seed_command(&domain, Actor::System, "register-agent", Command::RegisterAgent {
-            agent_id: "agent-a".into(), name: "Agent A".into(),
+            agent_id: "agent-a".into(), name: "Agent A".into(), at: 0
         });
         let mut node = domain.live.pushes.attach("agent-a", 1);
         let mut request = pacing_request(&domain.state().unwrap(), Verb::Msg, "agent-a", "", "en");
@@ -2391,7 +2391,7 @@ mod tests {
         use std::task::{Context, Poll, Waker};
         let (home, domain, client) = action_home();
         apply_seed_command(&domain, Actor::System, "register-agent", Command::RegisterAgent {
-            agent_id: "agent-a".into(), name: "Agent A".into(),
+            agent_id: "agent-a".into(), name: "Agent A".into(), at: 0
         });
         let mut node = domain.live.pushes.attach("agent-a", 1);
         let state = domain.state().unwrap();
@@ -2425,7 +2425,7 @@ mod tests {
         use std::task::{Context, Poll, Waker};
         let (home, domain, client) = action_home();
         apply_seed_command(&domain, Actor::System, "register-agent", Command::RegisterAgent {
-            agent_id: "agent-a".into(), name: "Agent A".into(),
+            agent_id: "agent-a".into(), name: "Agent A".into(), at: 0
         });
         let mut node = domain.live.pushes.attach("agent-a", 1);
         let mut request = pacing_request(&domain.state().unwrap(), Verb::Msg, "agent-a", "", "en");
@@ -2455,7 +2455,7 @@ mod tests {
         use std::task::{Context, Poll, Waker};
         let (home, domain, client) = action_home();
         apply_seed_command(&domain, Actor::System, "register-agent", Command::RegisterAgent {
-            agent_id: "agent-a".into(), name: "Agent A".into(),
+            agent_id: "agent-a".into(), name: "Agent A".into(), at: 0
         });
         apply_seed_command(&domain, Actor::User { user_id:"user".into() }, "request", Command::CreateRequest {
             request_id:"request".into(), body:"Work".into(), message:false, auto_merge:false, maintenance:false,
@@ -2523,7 +2523,7 @@ mod tests {
         use std::task::{Context, Poll, Waker};
         let (home, domain, client) = action_home();
         apply_seed_command(&domain, Actor::System, "register-agent", Command::RegisterAgent {
-            agent_id:"agent-a".into(), name:"Agent A".into(),
+            agent_id:"agent-a".into(), name:"Agent A".into(), at: 0
         });
         let sessions = std::sync::Arc::new(HeldClose { removes:Default::default(), listed:true.into(), release:tokio::sync::Semaphore::new(0) });
         client.use_sessions(sessions.clone());
@@ -2601,7 +2601,7 @@ mod tests {
         use std::future::Future;
         use std::task::{Context, Poll, Waker};
         let (home, domain, client) = action_home();
-        apply_seed_command(&domain, Actor::System, "agent", Command::RegisterAgent { agent_id:"agent-a".into(), name:"Agent".into() });
+        apply_seed_command(&domain, Actor::System, "agent", Command::RegisterAgent { agent_id:"agent-a".into(), name:"Agent".into(), at: 0 });
         let mut node = domain.live.pushes.attach("agent-a", 1);
         let full = domain.local_actions.slots.clone().acquire_many_owned(1024).await.unwrap();
         let mut request = pacing_request(&domain.state().unwrap(), Verb::Msg, "agent-a", "", "en");
@@ -2628,7 +2628,7 @@ mod tests {
         use std::future::Future;
         use std::task::{Context, Poll, Waker};
         let (home, domain, client) = action_home();
-        apply_seed_command(&domain, Actor::System, "agent", Command::RegisterAgent { agent_id:"agent-a".into(), name:"Agent".into() });
+        apply_seed_command(&domain, Actor::System, "agent", Command::RegisterAgent { agent_id:"agent-a".into(), name:"Agent".into(), at: 0 });
         let sessions = std::sync::Arc::new(HeldClose { removes:Default::default(), listed:true.into(), release:tokio::sync::Semaphore::new(0) });
         client.use_sessions(sessions.clone());
         let mut node = domain.live.pushes.attach("agent-a", 1);
@@ -2702,7 +2702,7 @@ mod tests {
         use std::future::Future;
         use std::task::{Context, Poll, Waker};
         let (home, domain, client) = action_home();
-        apply_seed_command(&domain, Actor::System, "agent", Command::RegisterAgent { agent_id:"agent-a".into(), name:"Agent".into() });
+        apply_seed_command(&domain, Actor::System, "agent", Command::RegisterAgent { agent_id:"agent-a".into(), name:"Agent".into(), at: 0 });
         let mut node = domain.live.pushes.attach("agent-a", 1);
         domain.live.mark_closed("agent-a");
         let mut request = pacing_request(&domain.state().unwrap(), Verb::Msg, "agent-a", "", "en");
@@ -2742,7 +2742,7 @@ mod tests {
         let (home, domain, client) = action_home();
         let user = Actor::User { user_id: "user".into() };
         apply_seed_command(&domain, Actor::System, "register-agent", Command::RegisterAgent {
-            agent_id: "agent-a".into(), name: "Agent A".into(),
+            agent_id: "agent-a".into(), name: "Agent A".into(), at: 0
         });
         apply_seed_command(&domain, user.clone(), "create-request", Command::CreateRequest {
             request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false,
@@ -2775,7 +2775,7 @@ mod tests {
         let user = Actor::User { user_id: "user".into() };
         let agent = Actor::Agent { agent_id: "agent-a".into() };
         apply_seed_command(domain, Actor::System, "register-agent", Command::RegisterAgent {
-            agent_id: "agent-a".into(), name: "Agent A".into(),
+            agent_id: "agent-a".into(), name: "Agent A".into(), at: 0
         });
         apply_seed_command(domain, user.clone(), "create-request", Command::CreateRequest {
             request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false,
@@ -2804,7 +2804,7 @@ mod tests {
     async fn interrupting_a_node_writes_one_interrupt_down_its_connection_and_is_refused_when_it_is_gone() {
         let (home, domain, client) = action_home();
         apply_seed_command(&domain, Actor::System, "register-agent", Command::RegisterAgent {
-            agent_id: "agent-a".into(), name: "Agent A".into(),
+            agent_id: "agent-a".into(), name: "Agent A".into(), at: 0
         });
         let interrupt = |command_id: &str| {
             let action = ActionId::new(Verb::Interrupt, "agent-a", domain.state().unwrap().revision, None).unwrap().to_string();
@@ -3213,7 +3213,7 @@ mod tests {
     #[tokio::test]
     async fn a_device_that_lost_its_approval_and_a_node_that_is_not_connected_are_refused_in_words() {
         let (home, domain, client) = action_home();
-        apply_seed_command(&domain, Actor::System, "register-agent", Command::RegisterAgent { agent_id: "agent-a".into(), name: "Agent A".into() });
+        apply_seed_command(&domain, Actor::System, "register-agent", Command::RegisterAgent { agent_id: "agent-a".into(), name: "Agent A".into(), at: 0 });
         let interrupt = ActionId::new(Verb::Interrupt, "agent-a", domain.state().unwrap().revision, None).unwrap();
         let request = action_request(&domain, FIRST, "es", interrupt.to_string(), None, json!({}));
         let gone = execute_action(&domain, &client, &home.0, "test-device", request, None, || Ok(())).await.unwrap();

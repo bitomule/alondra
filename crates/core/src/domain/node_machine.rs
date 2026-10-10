@@ -1,0 +1,348 @@
+//! The one state of every node. A node is in exactly one `NodePhase`, and only `next` moves it:
+//! what Claude Code reports, the hooks, the gate, the listing of real sessions and the domain's own
+//! commands are events it accepts or refuses. The gate, Fleet, Tasks, the header and the TUI read
+//! the phase; none keeps a state of its own. See docs/fleet-pacing.md §11.
+use super::*;
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+
+type Result<T> = std::result::Result<T, DomainError>;
+pub use crate::model::Millis;
+
+/// How long a started node may go without a turn before an idle or missing session frees its slot.
+pub const START_GRACE: Millis = 3 * 60_000;
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum NodePhase {
+    /// Admitted, or being restarted after its session was lost; no turn has begun yet.
+    Starting { reviving: bool },
+    /// A turn is running.
+    Working,
+    /// A card of its task waits for the user, whether its turn still runs or ended. Whatever it
+    /// does meanwhile, the user moves it, so it holds no slot.
+    WaitingUser { in_turn: bool },
+    /// Stopped by Alondra (the machine, the usage limit) or by the user; it comes back through the gate.
+    Paused(Pause),
+    /// Its final result is in front of the user.
+    Delivered,
+    /// Its turn ended with nothing for anyone: Alondra sends it back to its task or asks the user.
+    Stopped,
+    /// Its task is over and it cleans up before its session closes.
+    Closing,
+    /// Its session is gone for good.
+    Closed,
+}
+
+impl NodePhase {
+    /// Takes one of the node limit's slots: a node admitted and starting, or in a turn. One being
+    /// brought back after its session was lost already had its slot counted when it was admitted.
+    pub fn holds_slot(&self) -> bool {
+        matches!(self, Self::Starting { reviving: false } | Self::Working)
+    }
+    pub fn live(&self) -> bool {
+        !matches!(self, Self::Closed)
+    }
+    pub fn key(&self) -> &'static str {
+        match self {
+            Self::Starting { reviving: false } => "starting",
+            Self::Starting { reviving: true } => "reviving",
+            Self::Working => "working",
+            Self::WaitingUser { .. } => "waiting_user",
+            Self::Paused(_) => "paused",
+            Self::Delivered => "delivered",
+            Self::Stopped => "stopped",
+            Self::Closing => "closing",
+            Self::Closed => "closed",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Pause {
+    pub reason: PauseReason,
+    pub since: Millis,
+    /// The command its turn was running when it was stopped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cut: Option<String>,
+    /// When its interrupted turn started.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_since: Option<Millis>,
+    #[serde(default)]
+    pub cleanup: PauseCleanup,
+    /// The user released it ("I've fixed it"): it no longer waits out the grace of a declared wait.
+    #[serde(default)]
+    pub released: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PauseReason {
+    Memory,
+    /// The node said it waits for the machine.
+    Declared { reason: String },
+    Usage,
+    ByUser,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PauseCleanup {
+    #[default]
+    Pending,
+    Terminated,
+    Done,
+}
+
+/// What `claude agents` says of a session when Alondra lists them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Listed {
+    Working,
+    Idle,
+    Blocked,
+    Absent,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum NodeEvent {
+    TurnStarted,
+    TurnEnded,
+    /// The session ended or crashed while its task still needs it.
+    SessionLost,
+    /// The user or Alondra closed the session for good.
+    SessionClosed,
+    StartFailed,
+    /// Restarting the lost session failed; a card asks the user what to do.
+    RevivalFailed,
+    Paused { pause: Pause },
+    PauseCleanup { cleanup: PauseCleanup },
+    PauseReleased,
+    Resumed,
+    Listed { listed: Listed },
+}
+
+impl NodeEvent {
+    pub fn key(&self) -> &'static str {
+        match self {
+            Self::TurnStarted => "turn_started",
+            Self::TurnEnded => "turn_ended",
+            Self::SessionLost => "session_lost",
+            Self::SessionClosed => "session_closed",
+            Self::StartFailed => "start_failed",
+            Self::RevivalFailed => "revival_failed",
+            Self::Paused { .. } => "paused",
+            Self::PauseCleanup { .. } => "pause_cleanup",
+            Self::PauseReleased => "pause_released",
+            Self::Resumed => "resumed",
+            Self::Listed { .. } => "listed",
+        }
+    }
+    /// Reports that carry the reporter's clock: one older than the node's phase is refused.
+    fn timed(&self) -> bool {
+        matches!(self, Self::TurnStarted | Self::TurnEnded | Self::SessionLost)
+    }
+}
+
+/// What the domain knows of a node's task when its phase moves.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TaskFacts {
+    /// It has an open task that still needs it.
+    pub open: bool,
+    /// Its task is over or cleaning up.
+    pub closing: bool,
+    /// A call of its turn is held on a card of the user.
+    pub held: bool,
+    /// A question or request of its task waits for the user.
+    pub card: bool,
+    /// Its final result is in front of the user or settled for review.
+    pub delivered: bool,
+}
+
+fn refuse<T>(code: &str, message: &str) -> Result<T> {
+    Err(DomainError::new(code, message))
+}
+
+/// Where a node rests once its turn is over.
+fn rest(f: &TaskFacts) -> NodePhase {
+    if f.closing {
+        NodePhase::Closing
+    } else if f.card || f.held {
+        NodePhase::WaitingUser { in_turn: false }
+    } else if f.delivered {
+        NodePhase::Delivered
+    } else {
+        NodePhase::Stopped
+    }
+}
+
+/// The phase the domain's own facts move a node to, whatever event came: a card opened or
+/// answered, a result delivered or withdrawn, its task closing.
+pub fn settle(phase: NodePhase, f: &TaskFacts) -> NodePhase {
+    match phase {
+        NodePhase::Closed => NodePhase::Closed,
+        NodePhase::Closing if f.open && !f.closing => rest(f),
+        NodePhase::Closing => NodePhase::Closing,
+        _ if f.closing => NodePhase::Closing,
+        NodePhase::Working | NodePhase::Starting { reviving: false } if f.held || f.card => NodePhase::WaitingUser { in_turn: true },
+        NodePhase::Working | NodePhase::Starting { reviving: false } if f.delivered => NodePhase::Delivered,
+        NodePhase::WaitingUser { in_turn: true } if !f.held && !f.card => if f.delivered { NodePhase::Delivered } else { NodePhase::Working },
+        NodePhase::WaitingUser { in_turn: false } | NodePhase::Delivered | NodePhase::Stopped => rest(f),
+        phase => phase,
+    }
+}
+
+/// The one transition function. `since` is when the node's phase last moved and `at` when the
+/// event happened.
+pub fn next(phase: &NodePhase, since: Millis, event: &NodeEvent, f: &TaskFacts, at: Millis) -> Result<NodePhase> {
+    use NodePhase as P;
+    if *phase == P::Closed {
+        return refuse("node_closed", "The node's session is closed");
+    }
+    if event.timed() && at < since {
+        return refuse("stale", "The report is older than the node's state");
+    }
+    let lost = || if f.open && !f.closing { P::Starting { reviving: true } } else { P::Closed };
+    let moved = match (phase, event) {
+        (P::Paused(Pause { reason: PauseReason::ByUser, .. }), NodeEvent::TurnStarted) =>
+            return refuse("paused_by_user", "Only the user resumes a node they paused"),
+        (P::Closing, NodeEvent::TurnStarted | NodeEvent::TurnEnded) => P::Closing,
+        (_, NodeEvent::TurnStarted) => P::Working,
+        (P::Paused(_), NodeEvent::TurnEnded) => phase.clone(),
+        (_, NodeEvent::TurnEnded) => rest(f),
+        (P::Paused(_), NodeEvent::SessionLost) => phase.clone(),
+        (P::Closing, NodeEvent::SessionLost) => P::Closed,
+        (_, NodeEvent::SessionLost) => lost(),
+        (_, NodeEvent::SessionClosed) => P::Closed,
+        (P::Starting { .. }, NodeEvent::StartFailed | NodeEvent::RevivalFailed) => P::Closed,
+        (_, NodeEvent::StartFailed | NodeEvent::RevivalFailed) => return refuse("not_starting", "The node is not starting"),
+        (P::Starting { .. } | P::Working | P::Stopped, NodeEvent::Paused { pause }) => P::Paused(pause.clone()),
+        (P::Paused(_), NodeEvent::Paused { .. }) => return refuse("already_paused", "The node is already paused"),
+        (_, NodeEvent::Paused { .. }) => return refuse("not_working", "Only a node at work, or one whose turn ended with nothing pending, can be paused"),
+        (P::Paused(pause), NodeEvent::PauseCleanup { cleanup }) => P::Paused(Pause { cleanup: *cleanup, ..pause.clone() }),
+        (P::Paused(pause), NodeEvent::PauseReleased) => P::Paused(Pause { released: true, ..pause.clone() }),
+        (P::Paused(_), NodeEvent::Resumed) => P::Starting { reviving: false },
+        (_, NodeEvent::PauseCleanup { .. } | NodeEvent::PauseReleased | NodeEvent::Resumed) =>
+            return refuse("not_paused", "The node is not paused"),
+        (phase, NodeEvent::Listed { listed }) => observe(phase, since, *listed, f, at),
+    };
+    Ok(settle(moved, f))
+}
+
+/// What the listing of real sessions says moves a node. It carries no turn times, so it never
+/// overrides a pause, and it leaves a node that has only just started alone. A node being brought
+/// back stays so until its revival ends: it holds no slot, and the user's "try again" restarts it.
+fn observe(phase: &NodePhase, since: Millis, listed: Listed, f: &TaskFacts, at: Millis) -> NodePhase {
+    use NodePhase as P;
+    let young = at - since < START_GRACE;
+    match (phase, listed) {
+        (P::Closing, Listed::Absent) => P::Closed,
+        (P::Closing, _) => P::Closing,
+        (P::Paused(_), _) => phase.clone(),
+        (P::Starting { reviving: false }, Listed::Absent | Listed::Idle) if young => phase.clone(),
+        (P::Starting { reviving: true }, Listed::Absent) => phase.clone(),
+        (_, Listed::Absent) => if f.open && !f.closing { P::Starting { reviving: true } } else { P::Closed },
+        (P::WaitingUser { .. } | P::Delivered | P::Stopped, Listed::Idle) => phase.clone(),
+        (_, Listed::Idle) => rest(f),
+        (P::WaitingUser { .. } | P::Delivered, Listed::Working | Listed::Blocked) => phase.clone(),
+        (_, Listed::Working | Listed::Blocked) => P::Working,
+    }
+}
+
+impl DomainState {
+    /// The task a node works on: its open one, else the last it had.
+    pub fn node_task(&self, agent: &AgentId) -> Option<&Task> {
+        let mine = || self.tasks.values().filter(move |t| t.agent_id.as_ref() == Some(agent));
+        mine().find(|t| !t.state.terminal() && !t.archived && t.state != TaskState::Closing)
+            .or_else(|| mine().find(|t| !t.state.terminal() && !t.archived))
+            .or_else(|| mine().last())
+    }
+
+    pub fn task_facts(&self, agent: &AgentId) -> TaskFacts {
+        let held = self.holds.keys().any(|id| self.interactions.get(id).is_some_and(|i| {
+            matches!(&i.author, Author::Agent { agent_id } if agent_id == agent)
+                && !i.withdrawn && matches!(i.payload, InteractionPayload::Question { answer: None, .. })
+        }));
+        let asked = self.interactions.values().any(|i| matches!(&i.author, Author::Agent { agent_id } if agent_id == agent)
+            && i.recipient == Recipient::User && self.open(i)
+            && matches!(i.payload, InteractionPayload::Question { .. } | InteractionPayload::ActionRequest { .. }));
+        let Some(t) = self.node_task(agent) else {
+            return TaskFacts { held, card: asked, ..TaskFacts::default() };
+        };
+        let closing = t.state.terminal() || t.state == TaskState::Closing || t.wrap_up.asked_at.is_some();
+        let delivered = t.final_presentation.as_ref().and_then(|p| self.interactions.get(p))
+            .is_some_and(|p| self.open(p) && self.handed_back(p).is_none())
+            || matches!(t.state, TaskState::ForYourReview | TaskState::AwaitingBlocker);
+        TaskFacts { open: !t.state.terminal() && !t.archived, closing, held, card: asked || self.open_user_card(&t.id).is_some(), delivered }
+    }
+
+    /// Whether `event` would move the node, and where: what an adapter checks before it records one.
+    pub fn node_next(&self, agent: &AgentId, event: &NodeEvent, at: Millis) -> Result<Option<NodePhase>> {
+        let a = self.agents.get(agent).ok_or_else(|| DomainError::new("not_found", "Agent missing"))?;
+        let moved = next(&a.phase, a.since, event, &self.task_facts(agent), at)?;
+        Ok((moved != a.phase).then_some(moved))
+    }
+
+    pub(super) fn move_node(&mut self, agent: &AgentId, event: &NodeEvent, at: Millis) -> Result<()> {
+        if let Some(moved) = self.node_next(agent, event, at)? {
+            let a = self.agents.get_mut(agent).expect("checked by node_next");
+            a.phase = moved;
+            a.since = a.since.max(at);
+        }
+        Ok(())
+    }
+
+    /// Every node the listing of real sessions speaks of takes what it says: listed as Claude Code
+    /// shows it, or absent. A closed node, or one the listing cannot move, is left as it is.
+    pub(super) fn reconcile_nodes(&mut self, listed: &BTreeMap<AgentId, Listed>, at: Millis) {
+        for (id, listed) in listed {
+            if self.agents.get(id).is_some_and(|a| a.phase.live()) {
+                let _ = self.move_node(id, &NodeEvent::Listed { listed: *listed }, at);
+            }
+        }
+    }
+
+    /// Whether the listing would move any node: an adapter submits it only then.
+    pub fn reconciling_moves(&self, listed: &BTreeMap<AgentId, Listed>, at: Millis) -> bool {
+        let mut next = self.clone();
+        next.reconcile_nodes(listed, at);
+        next.agents != self.agents
+    }
+
+    /// Applies what the last command changed in the nodes' tasks.
+    pub fn settle_nodes(&mut self) {
+        let ids: Vec<AgentId> = self.agents.keys().cloned().collect();
+        for id in ids {
+            let facts = self.task_facts(&id);
+            let a = self.agents.get_mut(&id).expect("listed above");
+            a.phase = settle(a.phase.clone(), &facts);
+        }
+    }
+
+    /// The nodes that take a slot: the one count the gate, Fleet, Tasks and the header share.
+    pub fn slots(&self) -> Vec<&Agent> {
+        self.agents.values().filter(|a| a.phase.holds_slot() && Some(&a.id) != self.orchestrator_session.as_ref()).collect()
+    }
+
+    pub fn node_phase(&self, agent: &AgentId) -> Option<&NodePhase> {
+        self.agents.get(agent).map(|a| &a.phase)
+    }
+
+    /// The paused nodes, by agent.
+    pub fn paused_nodes(&self) -> BTreeMap<&AgentId, &Pause> {
+        self.agents.values().filter_map(|a| match &a.phase {
+            NodePhase::Paused(pause) => Some((&a.id, pause)),
+            _ => None,
+        }).collect()
+    }
+
+    pub(super) fn validate_nodes(&self) -> Result<()> {
+        for a in self.agents.values() {
+            if settle(a.phase.clone(), &self.task_facts(&a.id)) != a.phase {
+                return refuse("node_phase_mismatch", "A node's phase contradicts its task");
+            }
+        }
+        Ok(())
+    }
+}

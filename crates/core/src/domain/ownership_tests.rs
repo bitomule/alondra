@@ -106,7 +106,7 @@ impl World {
             launch: ScheduleLaunchIntent { name: "scheduled/weekly-run".into(), cwd: "/synthetic/Projects/BlurCamera".into(),
                 prompt: "Improve BlurCamera".into(), options_json: serde_json::to_string(&options).unwrap() },
         });
-        w.must(Actor::System, Command::RegisterAgent { agent_id: "weekly-node".into(), name: "scheduled/weekly".into() });
+        w.must(Actor::System, Command::RegisterAgent { agent_id: "weekly-node".into(), name: "scheduled/weekly".into(), at: 0 });
         w.must(Actor::System, Command::ClaimScheduleLaunch { run_id: "run".into(), now: 102 });
         w.must(Actor::System, Command::RecordScheduleLaunchHanded { run_id: "run".into(), session_id: Some("weekly-node".into()),
             agent_id: Some("weekly-node".into()), finished_at: 103 });
@@ -139,7 +139,7 @@ impl World {
     fn start_node(&mut self, task: &TaskId) {
         self.nodes += 1;
         let agent: AgentId = format!("node-{}", self.nodes).into();
-        self.must(Actor::System, Command::RegisterAgent { agent_id: agent.clone(), name: format!("node {}", self.nodes) });
+        self.must(Actor::System, Command::RegisterAgent { agent_id: agent.clone(), name: format!("node {}", self.nodes), at: 0 });
         self.must(Actor::System, Command::AssignTask { task_id: task.clone(), agent_id: agent.clone(), model: None });
         self.must(Actor::Agent { agent_id: agent }, Command::StartTask { task_id: task.clone() });
         self.attempts.remove(task);
@@ -209,14 +209,17 @@ impl World {
             Step::NodeDies(n) => {
                 if let Some(task) = self.pick(n, |t, f| t.agent_id.is_some() && matches!(f.node, NodeFact::Alive | NodeFact::Stopped { .. })) {
                     let agent = self.agent_of(&task).unwrap();
-                    self.must(Actor::System, Command::ObserveAgent { agent_id: agent, connected: false });
+                    self.must(Actor::System, Command::MoveNode { agent_id: agent, event: NodeEvent::SessionLost, at: 0 });
                     self.fact(&task).node = NodeFact::Reviving;
                 }
             }
             Step::NodeBack(n) => {
                 if let Some(task) = self.pick(n, |t, f| t.agent_id.is_some() && f.node == NodeFact::Reviving) {
                     let agent = self.agent_of(&task).unwrap();
-                    self.must(Actor::System, Command::ObserveAgent { agent_id: agent, connected: true });
+                    if self.s.node_phase(&agent) != Some(&NodePhase::Starting { reviving: true }) {
+                        return;
+                    }
+                    self.must(Actor::System, Command::MoveNode { agent_id: agent, event: NodeEvent::TurnStarted, at: 0 });
                     self.fact(&task).node = NodeFact::Alive;
                 }
             }

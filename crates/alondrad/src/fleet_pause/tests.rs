@@ -132,21 +132,23 @@ impl Fleet {
                 launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),
             });
             run(&domain, user(), Command::SetPriority { task_id: (*id).into(), priority: *priority });
-            run(&domain, Actor::System, Command::RegisterAgent { agent_id: AgentId(agent.clone()), name: agent.clone() });
-            run(&domain, Actor::System, Command::ObserveAgent { agent_id: AgentId(agent.clone()), connected: true });
+            run(&domain, Actor::System, Command::RegisterAgent { agent_id: AgentId(agent.clone()), name: agent.clone(), at: 0 });
+            run(&domain, Actor::System, Command::MoveNode { agent_id: AgentId(agent.clone()), event: alondra_core::domain::NodeEvent::TurnStarted, at: 0 });
             run(&domain, user(), Command::AssignTask { task_id: (*id).into(), agent_id: AgentId(agent.clone()), model: None });
-            domain.live.mods.apply(Envelope { session_id: agent.clone(), report: Report::TurnStart }, started + index as Millis * MIN);
+            domain.report(Envelope { session_id: agent.clone(), report: Report::TurnStart }, started + index as Millis * MIN);
             nodes.push((agent.clone(), Node::connect(&domain, &agent), 0));
         }
         Self { home: Home(home), domain, nodes, log: vec![], max_working: 0, notices: 0 }
     }
 
     fn working(&self, now: Millis) -> usize {
-        crate::fleet_gate::busy_tasks(&self.domain, &self.domain.state().unwrap(), now).len()
+        crate::fleet_gate::working_tasks(&self.domain.state().unwrap()).len()
     }
 
+    /// The node's turn ends, as its mod and the Stop hook say.
     fn end_turn(&self, task: &str, now: Millis) {
-        self.domain.live.mods.apply(Envelope { session_id: format!("agent-{task}"), report: Report::TurnComplete { answer: String::new(), aborted: false } }, now);
+        self.domain.report(Envelope { session_id: format!("agent-{task}"), report: Report::TurnComplete { answer: String::new(), aborted: false } }, now);
+        crate::domain_agent_lifecycle::node_event_at(&self.domain, &alondra_core::domain::AgentId(format!("agent-{task}")), alondra_core::domain::NodeEvent::TurnEnded, now).unwrap();
     }
 
     /// The node's build died for lack of memory and it said so with `wait_for_machine`.
@@ -172,10 +174,10 @@ impl Fleet {
             for line in &lines[*seen..] {
                 let task = session.trim_start_matches("agent-").to_owned();
                 if line["interrupt"] == true {
-                    self.domain.live.mods.apply(Envelope { session_id: session.clone(), report: Report::TurnComplete { answer: String::new(), aborted: true } }, now);
+                    self.domain.report(Envelope { session_id: session.clone(), report: Report::TurnComplete { answer: String::new(), aborted: true } }, now);
                     self.log.push((now, "pause", task));
                 } else if line["text"].is_string() {
-                    self.domain.live.mods.apply(Envelope { session_id: session.clone(), report: Report::TurnStart }, now);
+                    self.domain.report(Envelope { session_id: session.clone(), report: Report::TurnStart }, now);
                     self.log.push((now, "resume", task));
                 }
             }
@@ -235,7 +237,7 @@ async fn eight_nodes_stopped_by_memory_come_back_by_themselves_by_priority_withi
     assert_eq!(tasks(&fleet.events("resume"))[5..], ["t8"], "the slot t1 left goes to the Low node paused first");
     assert_eq!(fleet.working(now), 6);
     assert_eq!(fleet.max_working, 6, "never past the limit");
-    let paused: Vec<String> = fleet.domain.live.gate.pauses().paused.into_values().map(|paused| paused.task.0).collect();
+    let paused: Vec<String> = fleet.domain.live.gate.pauses(&fleet.domain).paused.into_values().map(|paused| paused.task.0).collect();
     assert_eq!(paused, ["t7"]);
     assert_eq!(fleet.events("pause").len(), 5, "no flapping: nothing was paused again");
     assert_eq!(fleet.notices, 2, "the orchestrator heard memory run out and come back, once each");
@@ -281,12 +283,12 @@ async fn a_resume_that_saturates_the_mac_again_doubles_the_step_and_lowers_the_l
     }
     assert_eq!(fleet.working(now), 2);
     let now = fleet.hold(12, now, MIN).await;
-    assert_eq!(fleet.domain.live.gate.pauses().step.step, 6 * MIN, "the Mac went short of memory within 10 minutes of the resume");
+    assert_eq!(fleet.domain.live.gate.pauses(&fleet.domain).step.step, 6 * MIN, "the Mac went short of memory within 10 minutes of the resume");
     let snapshot = fleet.domain.live.gate.snapshot(&fleet.domain, now).unwrap();
     assert_eq!(snapshot.limit, 1, "the learned limit dropped below the 2 nodes that saturated it");
     assert_eq!(fleet.events("pause").len(), 3, "short of memory but not at its limit: nobody is paused");
     let now = fleet.hold(30, now, 31 * MIN).await;
-    assert_eq!(fleet.domain.live.gate.pauses().step.step, STEP, "30 calm minutes set the step back");
+    assert_eq!(fleet.domain.live.gate.pauses(&fleet.domain).step.step, STEP, "30 calm minutes set the step back");
     let _ = now;
 }
 
@@ -355,7 +357,7 @@ async fn a_declared_wait_is_never_interrupted_nor_cleaned_up_and_shows_the_nodes
     fleet.domain.live.gate.hold_back(&fleet.domain, "agent-t1", Reason::Declared { reason: "cola de compilación".into() }, base);
     fleet.hold(3, base, 2 * MIN).await;
     assert!(fleet.events("pause").is_empty());
-    let paused = fleet.domain.live.gate.paused("agent-t1").unwrap();
+    let paused = fleet.domain.live.gate.paused(&fleet.domain, "agent-t1").unwrap();
     assert_eq!(paused.cleanup, Cleanup::Done, "nothing of its own is stopped");
     let pacing = fleet.domain.live.gate.live(&fleet.domain, base + 2 * MIN).unwrap();
     assert_eq!(pacing.paused[0].waits_for.as_deref(), Some("cola de compilación"));
@@ -389,15 +391,15 @@ async fn a_node_the_user_paused_that_starts_a_turn_by_itself_is_stopped_again_an
     fleet.tick(50, base).await;
     assert_eq!(tasks(&fleet.events("pause")), ["t2"]);
 
-    fleet.domain.live.mods.apply(Envelope { session_id: "agent-t2".into(), report: Report::TurnStart }, base + 12_000);
+    fleet.domain.report(Envelope { session_id: "agent-t2".into(), report: Report::TurnStart }, base + 12_000);
     fleet.tick(50, base + 20_000).await;
     assert_eq!(tasks(&fleet.events("pause")), ["t2", "t2"], "its new turn is cut");
-    assert_eq!(fleet.domain.live.gate.paused("agent-t2").map(|paused| paused.reason), Some(Reason::ByUser));
+    assert_eq!(fleet.domain.live.gate.paused(&fleet.domain, "agent-t2").map(|paused| paused.reason), Some(Reason::ByUser));
 
     fleet.hold(50, base + 30_000, 20 * MIN).await;
     assert_eq!(tasks(&fleet.events("pause")), ["t2", "t2"], "a turn already cut is not cut again");
     assert!(fleet.events("resume").is_empty(), "only the user resumes it");
-    assert!(fleet.domain.live.gate.paused_by_user("agent-t2"));
+    assert!(fleet.domain.live.gate.paused_by_user(&fleet.domain, "agent-t2"));
 }
 
 /// A node Alondra paused for memory that starts a turn by itself went on: it is no longer paused.
@@ -408,9 +410,9 @@ async fn a_node_paused_for_memory_that_starts_a_turn_by_itself_is_no_longer_paus
     let mut fleet = Fleet::new(&[("t1", Normal), ("t2", Normal)], Limit::Fixed(6), base - 10 * MIN);
     fleet.tick(3, base).await;
     assert_eq!(tasks(&fleet.events("pause")), ["t2"]);
-    fleet.domain.live.mods.apply(Envelope { session_id: "agent-t2".into(), report: Report::TurnStart }, base + 12_000);
+    fleet.domain.report(Envelope { session_id: "agent-t2".into(), report: Report::TurnStart }, base + 12_000);
     fleet.tick(50, base + 20_000).await;
-    assert!(fleet.domain.live.gate.paused("agent-t2").is_none());
+    assert!(fleet.domain.live.gate.paused(&fleet.domain, "agent-t2").is_none());
     assert_eq!(tasks(&fleet.events("pause")), ["t2"]);
 }
 
@@ -427,9 +429,9 @@ async fn the_users_message_ends_their_pause_and_the_orchestrators_does_not() {
     let body = serde_json::from_value(serde_json::json!({"node": "agent-t2", "text": "carry on"})).unwrap();
     let refused = crate::domain_orchestrator_tools::send(&fleet.domain, &fleet.home.0, &Actor::Orchestrator { generation: 1 }, body).await.unwrap_err();
     assert_eq!(refused.code, "node_paused");
-    assert!(fleet.domain.live.gate.paused_by_user("agent-t2"));
+    assert!(fleet.domain.live.gate.paused_by_user(&fleet.domain, "agent-t2"));
 
     let body = serde_json::from_value(serde_json::json!({"text": "Use the new API"})).unwrap();
     crate::domain_messages::deliver(&fleet.domain, &fleet.home.0, &user(), "The user", &AgentId("agent-t2".into()), body, true).await.unwrap();
-    assert!(fleet.domain.live.gate.paused("agent-t2").is_none());
+    assert!(fleet.domain.live.gate.paused(&fleet.domain, "agent-t2").is_none());
 }

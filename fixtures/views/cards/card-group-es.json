@@ -4,11 +4,11 @@
   "view": "card",
   "key": "card:g-q2",
   "client": "ios",
-  "version": "v4cc3ab7cc492683d",
+  "version": "v1c1c0aaeca53c4ae",
   "cursor": "cursor-1",
   "title": "Ship it today?",
   "status": {
-    "version": "vef50aac4dfc2c9f5",
+    "version": "v93bd14a9c2d056aa",
     "summary": "3 preguntas · 2 por leer · 0 nodos trabajando",
     "badge": 5,
     "counts": [
@@ -35,7 +35,7 @@
       {
         "id": "waiting",
         "label": "esperando",
-        "value": 0
+        "value": 1
       }
     ],
     "gauges": [],

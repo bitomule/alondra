@@ -106,7 +106,7 @@ pub(crate) async fn deliver(domain: &DomainRuntime, home: &Path, user: &Actor, n
     let acked = domain.live.pushes.message(&agent.0, &author, &text, as_user)
         .map_err(|_| refused("session_unreachable", "the node is not connected to Alondra: its session is stopped or its Claude Code mod is not running. Nothing was sent"))?;
     if as_user {
-        domain.live.gate.release_by_user_message(&agent.0);
+        domain.live.gate.release_by_user_message(domain, &agent.0);
     }
     let delivered = match tokio::time::timeout(ACK_WAIT, acked).await {
         Ok(Ok(())) => State::Handed,
@@ -214,8 +214,8 @@ mod tests {
                 command_id: id.into(), expected_revision: state.revision, command };
             domain.execute(&actor, &envelope, None, || Ok(())).unwrap();
         };
-        run(Actor::System, "a", Command::RegisterAgent { agent_id: "agent-a".into(), name: "A".into() });
-        run(Actor::System, "b", Command::RegisterAgent { agent_id: "agent-b".into(), name: "B".into() });
+        run(Actor::System, "a", Command::RegisterAgent { agent_id: "agent-a".into(), name: "A".into(), at: 0 });
+        run(Actor::System, "b", Command::RegisterAgent { agent_id: "agent-b".into(), name: "B".into(), at: 0 });
         run(user(), "r", Command::CreateRequest { request_id: "r".into(), body: "Build".into(), auto_merge: false, maintenance: false, message: false });
         run(Actor::Orchestrator { generation: 0 }, "t", Command::CreateTask { task_id: "t".into(), request_id: "r".into(), title: "Build it".into(),
             agent_id: Some("agent-a".into()), review_prs: false, dependencies: Default::default(), stack: None,
@@ -289,9 +289,9 @@ mod tests {
         let node = Node::connect(&domain, "agent-a");
         let long_ago = alondra_core::now_millis() - alondra_core::states::TURN_QUIET_MS - 60_000;
         let hello = serde_json::from_value(json!({"session_id": "agent-a", "version": "2.1.287"})).unwrap();
-        domain.live.mods.connect(hello, long_ago);
+        domain.connect_node(hello, long_ago);
         domain.live.mods.sample_cpu("agent-a", 500, long_ago);
-        domain.live.mods.apply(serde_json::from_value(json!({"session_id": "agent-a", "event": "turn.start", "turn_id": "t"})).unwrap(), long_ago);
+        domain.report(serde_json::from_value(json!({"session_id": "agent-a", "event": "turn.start", "turn_id": "t"})).unwrap(), long_ago);
         let refused = deliver(&domain, &fixture.0, &user(), "Ana", &"agent-a".into(), body(json!({"text": "hi"})), true).await.unwrap_err();
         assert_eq!(refused.code, "session_stalled");
         assert!(node.texts().is_empty(), "nothing was written down its connection");

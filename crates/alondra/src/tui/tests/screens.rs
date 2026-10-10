@@ -99,7 +99,10 @@ fn busy() -> (DomainState, LiveSnapshot) {
         domain.requests.insert(request.as_str().into(), body);
         domain.agents.insert(
             agent.as_str().into(),
-            Agent { id: agent.as_str().into(), name: title.into(), connected: true },
+            Agent { id: agent.as_str().into(), name: title.into(), since: 0, phase: match state {
+                TaskState::Done => alondra_core::domain::NodePhase::Closing,
+                _ => alondra_core::domain::NodePhase::Working,
+            } },
         );
         domain
             .tasks
@@ -443,7 +446,7 @@ fn held_card(hold: alondra_core::domain::Hold, spec: alondra_core::domain::CardS
     };
     let user = || Actor::User { user_id: "u".into() };
     run(user(), Command::CreateRequest { request_id: "r".into(), body: "Ship the release".into(), auto_merge: false, maintenance: false, message: false });
-    run(Actor::System, Command::RegisterAgent { agent_id: "agent-a".into(), name: "release".into() });
+    run(Actor::System, Command::RegisterAgent { agent_id: "agent-a".into(), name: "release".into(), at: 0 });
     run(Actor::Orchestrator { generation: 0 }, Command::CreateTask {
         task_id: "t".into(), request_id: "r".into(), title: "Release".into(),
         agent_id: Some("agent-a".into()), review_prs: false, dependencies: Default::default(), stack: None,

@@ -73,7 +73,7 @@ pub(super) fn seeded(store: &mut DomainStore) {
         "agent",
         Command::RegisterAgent {
             agent_id: "agent-1".into(),
-            name: "Fixture".into(),
+            name: "Fixture".into(), at: 0
         },
     );
     execute(
@@ -1562,7 +1562,7 @@ fn task_relations_a_verdict_and_the_split_review_states_survive_a_restart() {
     let fixture = Fixture::new();
     let mut store = DomainStore::open(&fixture.path()).unwrap();
     seeded(&mut store);
-    execute(&mut store, &Actor::System, "agent-2", Command::RegisterAgent { agent_id: "agent-2".into(), name: "Reviewer".into() });
+    execute(&mut store, &Actor::System, "agent-2", Command::RegisterAgent { agent_id: "agent-2".into(), name: "Reviewer".into(), at: 0 });
     execute(&mut store, &user(), "request-title", Command::TitleRequest { request_id: "request-1".into(), title: "Useful work".into() });
     execute(&mut store, &Actor::Orchestrator { generation: 0 }, "task-2", Command::CreateTask {
         task_id: "task-2".into(), request_id: "request-1".into(), title: "Review".into(), agent_id: Some("agent-2".into()),

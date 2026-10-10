@@ -157,9 +157,17 @@ pub(super) fn queued_label(queued: &super::LiveQueued, lang: super::Lang) -> Str
 }
 
 /// The task's pause, if its node is paused.
+/// The node's turn is running, as the node machine says.
+pub(super) fn working(agent: &str, context: &RenderContext<'_>) -> bool {
+    context.domain.node_phase(&crate::domain::AgentId(agent.into())) == Some(&crate::domain::NodePhase::Working)
+}
+
 pub(super) fn paused<'a>(task: &crate::domain::Task, context: &'a RenderContext<'_>) -> Option<&'a super::LivePaused> {
     if task.state.terminal() { return None; }
-    context.live.pacing.as_ref()?.paused.iter().find(|paused| paused.task_id == task.id.0)
+    let paused = context.live.pacing.as_ref()?.paused.iter().find(|paused| paused.task_id == task.id.0)?;
+    let node_paused = || task.agent_id.as_ref().and_then(|agent| context.domain.node_phase(agent))
+        .is_some_and(|phase| matches!(phase, crate::domain::NodePhase::Paused(_)));
+    (paused.session.is_none() || node_paused()).then_some(paused)
 }
 
 /// "Paused since 14:05 for memory · resumes when the Mac has been fine for 5 min (2 so far)".

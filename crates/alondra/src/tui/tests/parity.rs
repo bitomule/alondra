@@ -1389,7 +1389,7 @@ fn an_empty_fleet_detail_summarises_the_fleet_from_the_servers_counts() {
     app.sel = None;
     app.card_view_asked = None;
     let shown = screen(&mut app, 120, 20);
-    for expected in ["The fleet right now", "1 working", "1 waiting"] {
+    for expected in ["The fleet right now", "2 working", "1 waiting"] {
         assert!(shown.contains(expected), "{expected}: {shown}");
     }
 }
@@ -1422,7 +1422,7 @@ fn held_plan_card() -> alondra_core::views::View {
     };
     let user = || Actor::User { user_id: "u".into() };
     run(user(), Command::CreateRequest { request_id: "r".into(), body: "Build it".into(), auto_merge: false, maintenance: false, message: false });
-    run(Actor::System, Command::RegisterAgent { agent_id: "agent-a".into(), name: "Instance A".into() });
+    run(Actor::System, Command::RegisterAgent { agent_id: "agent-a".into(), name: "Instance A".into(), at: 0 });
     run(Actor::Orchestrator { generation: 0 }, Command::CreateTask { task_id: "t".into(), request_id: "r".into(), title: "Build".into(),
         agent_id: Some("agent-a".into()), review_prs: false, dependencies: Default::default(), stack: None,
         launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")), });

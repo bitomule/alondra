@@ -29,6 +29,15 @@ const TASK_MODELS: &str = "CREATE TABLE IF NOT EXISTS task_models(task_id TEXT P
 const MODEL_METRICS: &str = include_str!("domain_store/model_metrics.sql");
 /// How many turn ends in a row Alondra held back for a Task, since its node last delivered or
 /// asked (`marker`, the order of that card). Kept outside the domain state, like task_models.
+/// Domains written before the node machine kept a `connected` flag per agent. A connected agent
+/// was at work; one with an open task is being brought back; the rest are closed. The first
+/// listing of real sessions after the daemon starts corrects what the flag got wrong.
+const AGENT_PHASES: &str = "ALTER TABLE agents ADD COLUMN phase TEXT NOT NULL DEFAULT '{\"kind\":\"closed\"}' CHECK(json_valid(phase) AND json_type(phase,'$.kind')='text');\
+ALTER TABLE agents ADD COLUMN since INTEGER NOT NULL DEFAULT 0;\
+UPDATE agents SET phase=CASE WHEN connected=1 THEN '{\"kind\":\"working\"}' \
+ WHEN EXISTS(SELECT 1 FROM tasks t WHERE t.agent_id=agents.id AND t.archived=0 AND t.state NOT IN('done','cancelled')) THEN '{\"kind\":\"starting\",\"reviving\":true}' \
+ ELSE '{\"kind\":\"closed\"}' END;\
+ALTER TABLE agents DROP COLUMN connected;";
 const STOP_BLOCKS: &str = "CREATE TABLE IF NOT EXISTS stop_blocks(task_id TEXT PRIMARY KEY, blocks INTEGER NOT NULL CHECK(blocks>=0), marker INTEGER NOT NULL);";
 /// What became of a task's node, kept beside the task; created on every open like task_models.
 const TASK_WRAP_UPS: &str = "CREATE TABLE IF NOT EXISTS task_wrap_ups(\
@@ -450,6 +459,10 @@ impl DomainStore {
                 application == APPLICATION_ID,
                 "not an Alondra domain database"
             );
+        }
+        let flagged: bool = tx.query_row("SELECT count(*) FROM pragma_table_info('agents') WHERE name='connected'", [], |r| r.get::<_, i64>(0))? == 1;
+        if flagged {
+            tx.execute_batch(AGENT_PHASES)?;
         }
         tx.execute_batch(TASK_MODELS)?;
         tx.execute_batch(MODEL_METRICS)?;
@@ -1259,6 +1272,14 @@ impl DomainStore {
             [id], |r| Ok((r.get(0)?, r.get(1)?)),
         ).optional()?)
     }
+    /// The notices for the orchestrator that left the outbox: handed to it, or given up.
+    pub(crate) fn orchestrator_notices_out(&self) -> Result<Vec<String>> {
+        let mut q = self.conn.prepare("SELECT DISTINCT m.interaction_id FROM domain_messages m JOIN domain_outbox o ON o.message_id=m.id \
+            LEFT JOIN domain_message_user_targets u ON u.message_id=m.id \
+            WHERE m.recipient_kind='orchestrator' AND u.message_id IS NULL AND m.interaction_id IS NOT NULL AND o.state IN('handed','discarded')")?;
+        Ok(q.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?)
+    }
+
     pub(crate) fn pending_messages(&self) -> Result<Vec<OutboxMessage>> {
         let mut q=self.conn.prepare("SELECT m.id,CASE WHEN u.message_id IS NOT NULL THEN 'user' ELSE m.recipient_kind END,m.agent_id,m.task_id,m.interaction_id,m.message,o.state FROM domain_messages m JOIN command_audit a ON a.revision=m.revision JOIN domain_outbox o ON o.message_id=m.id LEFT JOIN domain_message_user_targets u ON u.message_id=m.id WHERE o.state IN('pending','retryable') ORDER BY a.at,m.id")?;
         Ok(q.query_map([], |r| {

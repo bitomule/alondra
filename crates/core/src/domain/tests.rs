@@ -16,7 +16,7 @@ fn agent_b() -> Actor {
     }
 }
 fn register_b(s: &mut DomainState) {
-    exec(s, Actor::System, Command::RegisterAgent { agent_id: "b".into(), name: "Instance B".into() }).unwrap();
+    exec(s, Actor::System, Command::RegisterAgent { agent_id: "b".into(), name: "Instance B".into(), at: 0 }).unwrap();
 }
 /// The task waits in Closing for its node; Alondra records the node closed and the task is done.
 fn end_node(s: &mut DomainState, task: &str) {
@@ -52,7 +52,7 @@ fn fixture() -> DomainState {
         Actor::System,
         Command::RegisterAgent {
             agent_id: "a".into(),
-            name: "Instance A".into(),
+            name: "Instance A".into(), at: 0
         },
     )
     .unwrap();
@@ -506,10 +506,7 @@ fn explicit_acceptance_completes_the_task_and_feedback_revokes_it_first() {
     exec(
         &mut s,
         Actor::System,
-        Command::ObserveAgent {
-            agent_id: "a".into(),
-            connected: false,
-        },
+        Command::MoveNode { agent_id: "a".into(), event: NodeEvent::SessionLost, at: 0 },
     )
     .unwrap();
     exec(
@@ -545,7 +542,7 @@ fn reassigning_a_task_waiting_for_its_merge_needs_fresh_acceptance() {
         Actor::System,
         Command::RegisterAgent {
             agent_id: "b".into(),
-            name: "Instance B".into(),
+            name: "Instance B".into(), at: 0
         },
     )
     .unwrap();
@@ -1308,7 +1305,7 @@ fn only_a_manager_can_link_another_tasks_document() {
         Actor::System,
         Command::RegisterAgent {
             agent_id: "b".into(),
-            name: "Instance B".into(),
+            name: "Instance B".into(), at: 0
         },
     )
     .unwrap();
@@ -1428,7 +1425,7 @@ fn a_task_left_closing_by_an_older_daemon_completes_with_the_next_command() {
         presentation_id: "final".into(), targets: text(),
     }).unwrap();
     state.tasks.get_mut(&"t".into()).unwrap().state = TaskState::Closing;
-    exec(&mut state, Actor::System, Command::ObserveAgent { agent_id: "a".into(), connected: true }).unwrap();
+    exec(&mut state, Actor::System, Command::MoveNode { agent_id: "a".into(), event: NodeEvent::TurnStarted, at: 0 }).unwrap();
     end_node(&mut state, "t");
     assert_eq!(state.tasks[&"t".into()].state, TaskState::Done);
 }
@@ -1499,7 +1496,7 @@ fn no_task_stays_closing_without_a_way_out() {
                 if presented && end != PrState::Open {
                     observe(&mut s);
                 }
-                exec(&mut s, Actor::System, Command::ObserveAgent { agent_id: "a".into(), connected: true }).unwrap();
+                exec(&mut s, Actor::System, Command::ReconcileNodes { listed: [("a".into(), Listed::Idle)].into(), at: 0 }).unwrap();
                 assert!(closing_has_a_way_out(&s), "presented={presented} {end:?} accepted={accept}: {:?}", s.tasks[&"t".into()]);
             }
         }
@@ -1979,7 +1976,7 @@ fn reassign_fences_old_agent_and_preserves_historical_author() {
         Actor::System,
         Command::RegisterAgent {
             agent_id: "b".into(),
-            name: "Instance B".into(),
+            name: "Instance B".into(), at: 0
         },
     )
     .unwrap();
@@ -2731,7 +2728,7 @@ fn answer_reaches_the_current_assignee_after_reassignment() {
         Actor::System,
         Command::RegisterAgent {
             agent_id: "b".into(),
-            name: "Instance B".into(),
+            name: "Instance B".into(), at: 0
         },
     )
     .unwrap();
@@ -2884,7 +2881,7 @@ fn revision_checks_are_per_subject_and_invalidation_dates_decisions() {
     );
     // Two managers deciding the same Task from one snapshot: one winner.
     for id in ["b", "c"] {
-        exec(&mut s, Actor::System, Command::RegisterAgent { agent_id: id.into(), name: id.into() }).unwrap();
+        exec(&mut s, Actor::System, Command::RegisterAgent { agent_id: id.into(), name: id.into(), at: 0 }).unwrap();
     }
     let seen = s.revision;
     run(&mut s, user(), "assign-b", seen, Command::AssignTask { task_id: "t".into(), agent_id: "b".into(), model: None }).unwrap();
@@ -2930,7 +2927,8 @@ fn variant_index(c: &Command) -> usize {
         Command::CreateRequest { .. } => 9,
         Command::CloseRequest { .. } => 10,
         Command::RegisterAgent { .. } => 11,
-        Command::ObserveAgent { .. } => 12,
+        Command::MoveNode { .. } => 12,
+        Command::ReconcileNodes { .. } => 12,
         Command::AdvanceOrchestratorGeneration { .. } => 13,
         Command::CreateTask { .. } => 14,
         Command::AssignTask { .. } => 15,
@@ -3015,8 +3013,8 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
         (Command::InterruptScheduleRunsOnRestart, true),
         (Command::CreateRequest { request_id: ids.request.into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false }, true),
         (Command::CloseRequest { request_id: ids.request.into(), answer: None, withdrawn: false, title: None }, false),
-        (Command::RegisterAgent { agent_id: ids.agent.into(), name: "Ghost".into() }, true),
-        (Command::ObserveAgent { agent_id: ids.agent.into(), connected: true }, false),
+        (Command::RegisterAgent { agent_id: ids.agent.into(), name: "Ghost".into(), at: 0 }, true),
+        (Command::MoveNode { agent_id: ids.agent.into(), event: NodeEvent::TurnStarted, at: 0 }, false),
         (Command::AdvanceOrchestratorGeneration { generation: 1 }, true),
         (Command::BindOrchestratorSession { session_id: ids.agent.into() }, true),
         (Command::CreateTask { task_id: "fresh-task".into(), request_id: ids.request.into(),
@@ -3147,7 +3145,7 @@ fn unknown_and_foreign_ids_are_typed_rejections_never_panics() {
     let mut s = fixture();
     assert_all_rejected(&s, &actors, &unknown);
 
-    exec(&mut s, Actor::System, Command::RegisterAgent { agent_id: "b".into(), name: "Instance B".into() }).unwrap();
+    exec(&mut s, Actor::System, Command::RegisterAgent { agent_id: "b".into(), name: "Instance B".into(), at: 0 }).unwrap();
     exec(&mut s, orchestrator(), Command::CreateTask { task_id: "t2".into(), request_id: "r".into(),
         title: "Other".into(), agent_id: Some("b".into()), review_prs: true,
         dependencies: BTreeSet::new(), stack: None,
@@ -3915,7 +3913,7 @@ fn a_question_the_node_of_a_cancelled_task_asks_while_it_winds_down_reaches_the_
     exec(&mut s, user(), Command::CancelTask { task_id: "t".into() }).unwrap();
     assert!(s.interactions[&"before".into()].withdrawn, "what it asked about the work the user stopped leaves");
     ask_aside(&mut s, "stuck");
-    exec(&mut s, Actor::System, Command::ObserveAgent { agent_id: "a".into(), connected: false }).unwrap();
+    exec(&mut s, Actor::System, Command::ReconcileNodes { listed: BTreeMap::new(), at: 0 }).unwrap();
     assert!(!s.interactions[&"stuck".into()].withdrawn);
     assert!(pending(&s, "stuck"), "the user sees what the node asks while it winds down");
     let item = s.projection().inbox.into_iter().find(|item| item.id == "interaction:stuck").unwrap();
@@ -3934,11 +3932,11 @@ fn a_notice_left_for_a_cancelled_task_is_taken_away() {
     let mut s = fixture();
     ask_aside(&mut s, "q");
     s.tasks.get_mut(&"t".into()).unwrap().state = TaskState::Done;
-    exec(&mut s, Actor::System, Command::ObserveAgent { agent_id: "a".into(), connected: false }).unwrap();
+    exec(&mut s, Actor::System, Command::ReconcileNodes { listed: BTreeMap::new(), at: 0 }).unwrap();
     let notice = format!("{ENDED_UNANSWERED_PREFIX}q");
     assert!(pending(&s, &notice));
     s.tasks.get_mut(&"t".into()).unwrap().state = TaskState::Cancelled;
-    exec(&mut s, Actor::System, Command::ObserveAgent { agent_id: "a".into(), connected: true }).unwrap();
+    exec(&mut s, Actor::System, Command::ReconcileNodes { listed: BTreeMap::new(), at: 0 }).unwrap();
     assert!(!pending(&s, &notice));
 }
 /// A plan nobody approved for work that is already done changes nothing for the user.
@@ -3947,7 +3945,7 @@ fn a_task_done_with_its_plan_open_says_nothing_about_the_plan() {
     let mut s = fixture();
     hold_plan(&mut s, "plan");
     s.tasks.get_mut(&"t".into()).unwrap().state = TaskState::Done;
-    exec(&mut s, Actor::System, Command::ObserveAgent { agent_id: "a".into(), connected: false }).unwrap();
+    exec(&mut s, Actor::System, Command::ReconcileNodes { listed: BTreeMap::new(), at: 0 }).unwrap();
     assert!(s.interactions[&"plan".into()].withdrawn);
     assert!(notices(&s).is_empty());
 }
@@ -3957,14 +3955,14 @@ fn a_task_left_done_with_an_open_question_tells_the_user_once() {
     let mut s = fixture();
     ask_aside(&mut s, "q");
     s.tasks.get_mut(&"t".into()).unwrap().state = TaskState::Done;
-    exec(&mut s, Actor::System, Command::ObserveAgent { agent_id: "a".into(), connected: false }).unwrap();
+    exec(&mut s, Actor::System, Command::ReconcileNodes { listed: BTreeMap::new(), at: 0 }).unwrap();
     let notice = format!("{ENDED_UNANSWERED_PREFIX}q");
     assert!(pending(&s, &notice) && !pending(&s, "q"));
     let card = &s.interactions[&InteractionId(notice.clone())].card;
     assert_eq!(card.need, "No longer waits for your answer: Decide whether to cover invalid card numbers");
     assert_eq!(card.why, "The work was finished before you answered");
     assert_eq!(card.content.as_ref().unwrap().body, "Cover card numbers that fail Luhn too?");
-    let again = exec(&mut s, Actor::System, Command::ObserveAgent { agent_id: "a".into(), connected: true }).unwrap();
+    let again = exec(&mut s, Actor::System, Command::ReconcileNodes { listed: BTreeMap::new(), at: 0 }).unwrap();
     assert!(!again.effects.iter().any(|e| matches!(e, DomainEffect::NotifyUser { .. })));
     assert_eq!(s.interactions.keys().filter(|id| id.0.starts_with(ENDED_UNANSWERED_PREFIX)).count(), 1);
 }
@@ -4017,7 +4015,7 @@ fn a_node_waiting_on_a_task_is_resumed_once_when_that_task_is_done() {
         _ => None,
     }).collect();
     assert_eq!(resumed, vec![(Some("waits".into()), dependencies_done_notice(&["Result"]))]);
-    let later = exec(&mut s, Actor::System, Command::ObserveAgent { agent_id: "b".into(), connected: true }).unwrap();
+    let later = exec(&mut s, Actor::System, Command::ReconcileNodes { listed: BTreeMap::new(), at: 0 }).unwrap();
     assert!(!later.effects.iter().any(|e| matches!(e, DomainEffect::NotifyAgent { .. })));
 }
 #[test]

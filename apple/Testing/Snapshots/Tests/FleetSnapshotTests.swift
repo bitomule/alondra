@@ -41,7 +41,7 @@ final class FleetSnapshotTests: XCTestCase {
         assertScreen(language: .spanish, inWindow: true) { ScreenFrame(height: 1400, growsWithText: false) { spanish } }
     }
 
-    func test_fleet_idleNodesSitCollapsedAtTheBottom() throws {
+    func test_fleet_closedNodesAreNotListed() throws {
         let view = try fleet()
         assertScreen(inWindow: true) { ScreenFrame(height: 1150, growsWithText: false) { view } }
         let spanish = try fleet(document: "fleet-ios-es")

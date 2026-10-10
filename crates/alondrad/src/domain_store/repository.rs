@@ -832,7 +832,7 @@ pub(super) fn load(c: &Connection) -> Result<DomainState> {
     }
     drop(stored);
     drop(messages);
-    for row in rows(c, "agents", &["connected"], &[])? {
+    for row in rows(c, "agents", &[], &["phase"])? {
         let x: Agent = decode(row)?;
         state.agents.insert(x.id.clone(), x);
     }

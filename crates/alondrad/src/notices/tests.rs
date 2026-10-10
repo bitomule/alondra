@@ -31,7 +31,7 @@ impl Fixture {
         std::fs::create_dir_all(&home).unwrap();
         let domain = Arc::new(DomainRuntime::open(&home).unwrap());
         let fixture = Self { home, domain };
-        fixture.command(Actor::System, "agent", Command::RegisterAgent { agent_id: "agent-a".into(), name: "A".into() });
+        fixture.command(Actor::System, "agent", Command::RegisterAgent { agent_id: "agent-a".into(), name: "A".into(), at: 0 });
         fixture.command(Actor::User { user_id: "u".into() }, "request", Command::CreateRequest {
             request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
         fixture.command(Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask {

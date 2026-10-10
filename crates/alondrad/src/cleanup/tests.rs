@@ -104,7 +104,7 @@ impl Rig {
         let n = self.count;
         let session = format!("a{n:07}-0000-4000-8000-000000000000");
         let short = format!("a{n:07}");
-        command(&self.domain, Actor::System, Command::RegisterAgent { agent_id: session.clone().into(), name: format!("Node {n}") });
+        command(&self.domain, Actor::System, Command::RegisterAgent { agent_id: session.clone().into(), name: format!("Node {n}"), at: 0 });
         self.domain.live.apply(&Event::DaemonSeen(DaemonObservation {
             session_id: session.clone(), short_id: short.clone(), name: Some(format!("Node {n}")), ..Default::default()
         }));
@@ -266,7 +266,7 @@ async fn a_replaced_node_is_not_closed_while_the_node_that_took_its_worktree_wor
     std::fs::create_dir_all(rig.claude_home.join("jobs").join(short)).unwrap();
     std::fs::write(rig.claude_home.join("jobs").join(short).join("state.json"),
         format!(r#"{{"state":"stopped","detail":"d","sessionId":"{replaced}","updatedAt":"2025-12-25T00:00:00.000Z","worktreePath":"/w/t-cards-3"}}"#)).unwrap();
-    rig.domain.live.mods.connect(serde_json::from_value(serde_json::json!({"session_id": successor, "version": "2.1.287", "cwd": "/w/t-cards-3"})).unwrap(), 1);
+    rig.domain.connect_node(serde_json::from_value(serde_json::json!({"session_id": successor, "version": "2.1.287", "cwd": "/w/t-cards-3"})).unwrap(), 1);
 
     let report = rig.run(false).await;
     assert!(rig.sessions.removals().is_empty(), "claude rm would delete the worktree the successor works in: {report}");
@@ -304,7 +304,7 @@ impl Rig {
         let n = self.count;
         let session = format!("a{n:07}-0000-4000-8000-000000000000");
         let short = format!("a{n:07}");
-        command(&self.domain, Actor::System, Command::RegisterAgent { agent_id: session.clone().into(), name: format!("Node {n}") });
+        command(&self.domain, Actor::System, Command::RegisterAgent { agent_id: session.clone().into(), name: format!("Node {n}"), at: 0 });
         self.domain.live.apply(&Event::DaemonSeen(DaemonObservation {
             session_id: session.clone(), short_id: short.clone(), name: Some(format!("Node {n}")), ..Default::default()
         }));
@@ -434,7 +434,7 @@ async fn a_session_stopped_in_claude_agents_while_its_task_was_open_frees_the_ta
     command(&rig.domain, Actor::Agent { agent_id: stopped.clone().into() }, Command::StartTask { task_id: "t1".into() });
     rig.job(&stopped, "stopped", "2026-01-01T23:00:00.000Z");
     rig.job(&alive, "stopped", "2026-01-01T23:00:00.000Z");
-    let connection = rig.domain.live.mods.connect(serde_json::from_value(json!({"session_id": alive, "version": "2.1.287"})).unwrap(), 1);
+    let connection = rig.domain.connect_node(serde_json::from_value(json!({"session_id": alive, "version": "2.1.287"})).unwrap(), 1);
     let _ = connection;
     let dry = rig.run(true).await;
     assert_eq!(names(&dry["free"]), ["Node 1"], "a session still connected is not taken as stopped");

@@ -122,7 +122,7 @@ mod tests {
         domain.execute(&Actor::System, &CommandEnvelope {
             protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(),
             command_id: format!("register-{agent}").into(), expected_revision: state.revision,
-            command: Command::RegisterAgent { agent_id: agent.into(), name: agent.into() },
+            command: Command::RegisterAgent { agent_id: agent.into(), name: agent.into(), at: 0 },
         }, None, || Ok(())).unwrap();
     }
 
