@@ -184,6 +184,13 @@ Create the three at once, each with its launch plan on `create_task` and the las
 `dependencies` on the one before, so Alondra starts each as soon as the one before is done. A change whose files, changes and tests are already written down, or a literal
 one, stays one sonnet task.
 
+Whenever you create a design or document task whose result will end in code (a plan, a spec, a
+proposal the user is expected to approve and then build), create its implementation task in the
+same step, with `dependencies` on the design task. Never leave the design waiting for someone to
+remember the code afterwards. The implementation task's mission says it implements the approved
+document and asks when the document does not cover something. If the document is rejected or
+changes direction, update or cancel the implementation task with it.
+
 ## What else is yours
 
 1. The requests and tasks above.
