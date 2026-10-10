@@ -45,6 +45,7 @@ struct Server {
     pairing: pairing::Mailbox,
     work_waiters: Arc<Semaphore>,
     change_waiters: Arc<Semaphore>,
+    status_waiters: Arc<Semaphore>,
     requests: Arc<Semaphore>,
     device_gate: Arc<RwLock<()>>,
     waitlist: management::waitlist::Limiter,
@@ -104,7 +105,7 @@ async fn ready(State(server): State<Arc<Server>>) -> impl IntoResponse {
 async fn bootstrap(State(server): State<Arc<Server>>) -> impl IntoResponse {
     (
         StatusCode::OK,
-        Json(json!({"protocol":1,"epoch":server.epoch})),
+        Json(json!({"protocol":1,"epoch":server.epoch,"request_wait":true})),
     )
 }
 
@@ -647,24 +648,61 @@ async fn submit(
     Ok((code, Json(json!({"request_id":result.request_id,"status":result.status,"revision":result.revision}))).into_response())
 }
 
+#[derive(Deserialize, Default)]
+struct StatusQuery {
+    #[serde(default)]
+    wait_s: u64,
+}
+
 async fn request_status(
     State(server): State<Arc<Server>>,
     Path(id): Path<String>,
+    Query(query): Query<StatusQuery>,
     headers: HeaderMap,
     method: Method,
     uri: Uri,
 ) -> ApiResult {
-    let _gate = server.device_gate.read().await;
-    let who = server
-        .auth
-        .authenticate_phone(&headers, &method, &uri, &[], now_ms())
-        .await
+    let gate = server.device_gate.read().await;
+    let who = server.auth.authenticate_phone(&headers, &method, &uri, &[], now_ms())
+        .await.map_err(authentication_error)?;
+    let mac = server.auth.paired_mac_for_phone(&who.device_id, &who.owner_sub)
         .map_err(authentication_error)?;
-    let result = server
-        .queue
-        .get(&who.owner_sub, &who.device_id, &id, now_ms())
+    server.auth.mac_for_owner(&mac, &who.owner_sub).map_err(authentication_error)?;
+    let wait_s = query.wait_s.min(25);
+    let initial = server.queue.get(&who.owner_sub, &who.device_id, &id, now_ms())
         .map_err(queued_error)?;
-    Ok((StatusCode::OK, Json(json!(result))).into_response())
+    if wait_s == 0 || matches!(initial.status, state::JobStatus::Completed | state::JobStatus::Expired) {
+        return Ok((StatusCode::OK, Json(json!(initial))).into_response());
+    }
+    let subscription = server.queue.subscribe_changes(&who.owner_sub, &who.device_id, &mac);
+    let mut initial_gate = Some(gate);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(wait_s);
+    let mut permit = None;
+    loop {
+        let notified = subscription.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+        let gate = if let Some(gate) = initial_gate.take() { gate } else {
+            let gate = server.device_gate.read().await;
+            server.auth.require_live_phone(&who).await.map_err(authentication_error)?;
+            gate
+        };
+        let result = server.queue.get(&who.owner_sub, &who.device_id, &id, now_ms())
+            .map_err(queued_error)?;
+        if matches!(result.status, state::JobStatus::Completed | state::JobStatus::Expired)
+            || wait_s == 0 || tokio::time::Instant::now() >= deadline {
+            return Ok((StatusCode::OK, Json(json!(result))).into_response());
+        }
+        drop(gate);
+        if permit.is_none() {
+            permit = Some(server.status_waiters.clone().try_acquire_owned()
+                .map_err(|_| error(StatusCode::TOO_MANY_REQUESTS, "too_many_polls"))?);
+        }
+        tokio::select! {
+            _ = notified => {},
+            _ = tokio::time::sleep_until(deadline) => {},
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -928,6 +966,7 @@ async fn main() -> anyhow::Result<()> {
         pairing: pairing::Mailbox::default(),
         work_waiters: Arc::new(Semaphore::new(16)),
         change_waiters: Arc::new(Semaphore::new(64)),
+        status_waiters: Arc::new(Semaphore::new(16)),
         requests: Arc::new(Semaphore::new(128)),
         device_gate: Arc::new(RwLock::new(())),
         waitlist: management::waitlist::Limiter::from_env()?,
@@ -1116,6 +1155,7 @@ mod http_tests {
             pairing: pairing::Mailbox::default(),
             work_waiters: Arc::new(Semaphore::new(16)),
             change_waiters: Arc::new(Semaphore::new(64)),
+        status_waiters: Arc::new(Semaphore::new(16)),
             requests: Arc::new(Semaphore::new(128)),
             device_gate: Arc::new(RwLock::new(())),
             waitlist: management::waitlist::Limiter::new(None),
@@ -1135,6 +1175,188 @@ mod http_tests {
             .unwrap();
         });
         (url, server, join)
+    }
+
+    fn enroll_receipt_reader(server: &Server, key: &SigningKey) {
+        server.auth.enroll(&auth::Identity { device_id: "mac-1".into(), owner_sub: "owner".into() },
+            PhoneDevice { device_id: "receipt-phone".into(), owner_sub: "owner".into(), signing_key: key_bytes(key) }).unwrap();
+        server.queue.submit("owner", "receipt-phone", "mac-1", "deferred-read", [19; 32],
+            json!({"ciphertext":"request-fixture"}), now_ms()+60_000, now_ms()).unwrap();
+    }
+
+    async fn receipt_wait_isolation_case(revoke: bool) {
+        let mac_key = SigningKey::from_slice(&[105; 32]).unwrap();
+        let phone_key = SigningKey::from_slice(&[106; 32]).unwrap();
+        let (url, server, serving) = test_server(&mac_key).await;
+        enroll_receipt_reader(&server, &phone_key);
+        let client = reqwest::Client::new();
+        let epoch = server.auth.server_epoch();
+        let path = "/v1/requests/deferred-read?wait_s=25";
+        let mut polls = tokio::task::JoinSet::new();
+        for nonce in 1..=16 {
+            polls.spawn(sign(&epoch, client.get(format!("{url}{path}")).bearer_auth(jwt("owner", now_ms())),
+                &phone_key, "receipt-phone", "GET", path, &[], nonce).send());
+        }
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while server.status_waiters.available_permits()!=0 { tokio::task::yield_now().await; }
+        }).await.expect("all sixteen receipts must actually wait");
+        assert!(polls.try_join_next().is_none());
+        assert_eq!(server.change_waiters.available_permits(), 64);
+        assert_eq!(server.work_waiters.available_permits(), 16);
+        assert_eq!(server.requests.available_permits(), 112);
+        let overflow = sign(&epoch, client.get(format!("{url}{path}")).bearer_auth(jwt("owner", now_ms())),
+            &phone_key, "receipt-phone", "GET", path, &[], 17).send().await.unwrap();
+        assert_eq!(overflow.status(), StatusCode::TOO_MANY_REQUESTS);
+        let short_path = "/v1/requests/deferred-read";
+        let snapshot = sign(&epoch, client.get(format!("{url}{short_path}")).bearer_auth(jwt("owner", now_ms())),
+            &phone_key, "receipt-phone", "GET", short_path, &[], 18).send().await.unwrap();
+        assert_eq!(snapshot.status(), StatusCode::OK);
+        assert_eq!(snapshot.json::<Value>().await.unwrap()["status"], "queued");
+        let changes_path = "/v1/changes?since=0&wait_s=0";
+        let changes = sign(&epoch, client.get(format!("{url}{changes_path}")).bearer_auth(jwt("owner", now_ms())),
+            &phone_key, "receipt-phone", "GET", changes_path, &[], 19).send().await.unwrap();
+        assert_eq!(changes.status(), StatusCode::OK);
+        if revoke {
+            let revoke_path = "/v1/devices/receipt-phone";
+            let response = sign(&epoch, client.delete(format!("{url}{revoke_path}")), &mac_key,
+                "mac-1", "DELETE", revoke_path, &[], 20).send().await.unwrap();
+            assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        } else {
+            server.queue.next_work("mac-1", now_ms()).unwrap();
+            server.queue.mark_received("mac-1", "deferred-read", now_ms()).unwrap();
+            server.queue.respond("mac-1", "receipt-phone", "deferred-read",
+                json!({"ciphertext":"exact-completed-result"}), now_ms()).unwrap();
+        }
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while let Some(response) = polls.join_next().await {
+                let response = response.unwrap().unwrap();
+                if revoke { assert_eq!(response.status(), StatusCode::UNAUTHORIZED); }
+                else {
+                    assert_eq!(response.status(), StatusCode::OK);
+                    let body = response.json::<Value>().await.unwrap();
+                    assert_eq!(body["request_id"], "deferred-read");
+                    assert_eq!(body["status"], "completed");
+                    assert_eq!(body["response"], json!({"ciphertext":"exact-completed-result"}));
+                }
+            }
+        }).await.expect("completion or revocation must wake every receipt waiter");
+        assert_eq!(server.status_waiters.available_permits(), 16);
+        assert_eq!(server.requests.available_permits(), 128);
+        serving.abort();
+        let _ = serving.await;
+    }
+
+    #[tokio::test]
+    async fn deferred_receipts_are_bounded_and_return_the_exact_result_without_a_second_get() {
+        receipt_wait_isolation_case(false).await;
+    }
+
+    #[tokio::test]
+    async fn deferred_receipts_recheck_revocation_without_holding_the_device_gate() {
+        receipt_wait_isolation_case(true).await;
+    }
+
+    #[tokio::test]
+    async fn terminal_receipts_bypass_saturated_waiters_and_preserve_owner_and_epoch_checks() {
+        let mac_key = SigningKey::from_slice(&[109; 32]).unwrap();
+        let phone_key = SigningKey::from_slice(&[110; 32]).unwrap();
+        let (url, server, serving) = test_server(&mac_key).await;
+        enroll_receipt_reader(&server, &phone_key);
+        server.queue.next_work("mac-1", now_ms()).unwrap();
+        server.queue.mark_received("mac-1", "deferred-read", now_ms()).unwrap();
+        let opaque = json!({"ciphertext":"unchanged-response"});
+        server.queue.respond("mac-1", "receipt-phone", "deferred-read", opaque.clone(), now_ms()).unwrap();
+        let held = server.status_waiters.clone().acquire_many_owned(16).await.unwrap();
+        let client = reqwest::Client::new();
+        let epoch = server.auth.server_epoch();
+        let path = "/v1/requests/deferred-read?wait_s=25";
+        let ready = sign(&epoch, client.get(format!("{url}{path}")).bearer_auth(jwt("owner", now_ms())),
+            &phone_key, "receipt-phone", "GET", path, &[], 1).send().await.unwrap();
+        assert_eq!(ready.status(), StatusCode::OK);
+        assert_eq!(ready.json::<Value>().await.unwrap()["response"], opaque);
+        let stale = sign(&[0;16], client.get(format!("{url}{path}")).bearer_auth(jwt("owner", now_ms())),
+            &phone_key, "receipt-phone", "GET", path, &[], 2).send().await.unwrap();
+        assert_eq!(stale.status(), StatusCode::UNAUTHORIZED);
+        server.auth.enroll(&auth::Identity { device_id: "mac-1".into(), owner_sub: "owner".into() },
+            PhoneDevice { device_id: "other-reader".into(), owner_sub: "owner".into(), signing_key: key_bytes(&phone_key) }).unwrap();
+        let foreign = sign(&epoch, client.get(format!("{url}{path}")).bearer_auth(jwt("owner", now_ms())),
+            &phone_key, "other-reader", "GET", path, &[], 3).send().await.unwrap();
+        assert_eq!(foreign.status(), StatusCode::NOT_FOUND);
+        server.queue.submit("owner", "receipt-phone", "mac-1", "expired-read", [20;32],
+            json!({"ciphertext":"expired"}), now_ms()-1, now_ms()-10).unwrap();
+        let path = "/v1/requests/expired-read?wait_s=25";
+        let expired = sign(&epoch, client.get(format!("{url}{path}")).bearer_auth(jwt("owner", now_ms())),
+            &phone_key, "receipt-phone", "GET", path, &[], 4).send().await.unwrap();
+        assert_eq!(expired.status(), StatusCode::OK);
+        assert_eq!(expired.json::<Value>().await.unwrap()["status"], "expired");
+        drop(held);
+        serving.abort();
+        let _ = serving.await;
+    }
+
+    #[tokio::test]
+    async fn immediate_status_authenticates_once_and_waits_revalidate_after_a_wake() {
+        let mac_key = SigningKey::from_slice(&[101; 32]).unwrap();
+        let phone_key = SigningKey::from_slice(&[102; 32]).unwrap();
+        let (url, server, serving) = test_server(&mac_key).await;
+        enroll_receipt_reader(&server, &phone_key);
+        let client = reqwest::Client::new();
+        for (nonce, path) in [(1, "/v1/requests/deferred-read"), (2, "/v1/requests/deferred-read?wait_s=0")] {
+            let before = server.auth.live_route_check_count();
+            let reply = sign(&server.auth.server_epoch(), client.get(format!("{url}{path}"))
+                .bearer_auth(jwt("owner", now_ms())), &phone_key, "receipt-phone", "GET", path, &[], nonce)
+                .send().await.unwrap();
+            assert_eq!(reply.status(), StatusCode::OK);
+            assert_eq!(reply.json::<Value>().await.unwrap()["status"], "queued");
+            assert_eq!(server.auth.live_route_check_count()-before, 1,
+                "an immediate receipt must not duplicate the live-route authorization lookup");
+        }
+        let path = "/v1/requests/deferred-read?wait_s=25";
+        let request = sign(&server.auth.server_epoch(), client.get(format!("{url}{path}"))
+            .bearer_auth(jwt("owner", now_ms())), &phone_key, "receipt-phone", "GET", path, &[], 3)
+            .build().unwrap();
+        let before = server.auth.live_route_check_count();
+        let mut pending = Box::pin(request_status(State(server.clone()), Path("deferred-read".into()),
+            Query(StatusQuery { wait_s: 25 }), request.headers().clone(), Method::GET, path.parse().unwrap()));
+        let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+        assert!(std::future::Future::poll(pending.as_mut(), &mut context).is_pending());
+        assert_eq!(server.status_waiters.available_permits(), 15);
+        assert_eq!(server.auth.live_route_check_count()-before, 1,
+            "the initial waiter snapshot uses the authentication already held under the gate");
+        server.queue.next_work("mac-1", now_ms()).unwrap();
+        server.queue.mark_received("mac-1", "deferred-read", now_ms()).unwrap();
+        server.queue.respond("mac-1", "receipt-phone", "deferred-read",
+            json!({"ciphertext":"completed"}), now_ms()).unwrap();
+        assert!(std::future::Future::poll(pending.as_mut(), &mut context).is_ready());
+        assert_eq!(server.auth.live_route_check_count()-before, 2,
+            "the completion wake must perform a fresh authorization check");
+        drop(pending);
+        assert_eq!(server.status_waiters.available_permits(), 16);
+        serving.abort();
+        let _ = serving.await;
+    }
+
+    #[tokio::test]
+    async fn cancelling_the_receipt_handler_releases_its_waiter() {
+        let mac_key = SigningKey::from_slice(&[107; 32]).unwrap();
+        let phone_key = SigningKey::from_slice(&[108; 32]).unwrap();
+        let (url, server, serving) = test_server(&mac_key).await;
+        enroll_receipt_reader(&server, &phone_key);
+        let path = "/v1/requests/deferred-read?wait_s=25";
+        let request = sign(&server.auth.server_epoch(), reqwest::Client::new().get(format!("{url}{path}"))
+            .bearer_auth(jwt("owner", now_ms())), &phone_key, "receipt-phone", "GET", path, &[], 1)
+            .build().unwrap();
+        let mut pending = Box::pin(request_status(State(server.clone()), Path("deferred-read".into()),
+            Query(StatusQuery { wait_s: 25 }), request.headers().clone(), Method::GET, path.parse().unwrap()));
+        let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+        assert!(std::future::Future::poll(pending.as_mut(), &mut context).is_pending(),
+            "a nonterminal request must wait rather than return a queued snapshot");
+        assert_eq!(server.status_waiters.available_permits(), 15,
+            "Pending must reflect admitted receipt work, not another asynchronous operation");
+        drop(pending);
+        assert_eq!(server.status_waiters.available_permits(), 16);
+        serving.abort();
+        let _ = serving.await;
     }
 
     // Saturate actual idle HTTP polls from owner A; owner B has either an

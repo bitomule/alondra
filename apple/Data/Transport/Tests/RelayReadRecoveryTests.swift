@@ -5,7 +5,7 @@ import Testing
 
 private enum ReadFault: Sendable, Equatable {
     case changesNetwork, changesBusy, completedStatus, lostSubmission, deadline, cancelled
-    case changedEpoch, wrongResponseIdentity, refusedStatus
+    case changedEpoch, wrongResponseIdentity, refusedStatus, none
 }
 
 private actor ReadRecoveryPeer: HTTPTransport {
@@ -17,6 +17,7 @@ private actor ReadRecoveryPeer: HTTPTransport {
     let actionEntered: AsyncStream<Void>
     private let actionContinuation: AsyncStream<Void>.Continuation
     private let fault: ReadFault
+    private let requestWait: Bool
     private let epoch = Base64URL.encode(Data(repeating: 7, count: 16))
     private var actionWaiter: CheckedContinuation<Void, Never>?
     private var responses: [String: Envelope] = [:]
@@ -27,9 +28,11 @@ private actor ReadRecoveryPeer: HTTPTransport {
     private(set) var readID: String?
     private(set) var readStatuses = 0
     private(set) var backoffs = 0
+    private(set) var responseBytes = 0
+    private(set) var exchangeCount = 0
 
-    init(_ fault: ReadFault) {
-        self.fault = fault
+    init(_ fault: ReadFault, requestWait: Bool = false) {
+        self.fault = fault; self.requestWait = requestWait
         let pair = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
         actionEntered = pair.stream; actionContinuation = pair.continuation
     }
@@ -52,8 +55,11 @@ private actor ReadRecoveryPeer: HTTPTransport {
     }
 
     func send(_ request: URLRequest) async throws -> HTTPReply {
+        exchangeCount += 1
         let url = try #require(request.url)
-        if url.path == "/v1/bootstrap" { return try json(["protocol": 1, "epoch": epoch]) }
+        if url.path == "/v1/bootstrap" {
+            return try json(requestWait ? ["protocol": 1, "epoch": epoch, "request_wait": true] : ["protocol": 1, "epoch": epoch])
+        }
         try verify(request)
         if request.httpMethod == "POST" {
             #expect(url.path == "/v1/requests")
@@ -98,6 +104,13 @@ private actor ReadRecoveryPeer: HTTPTransport {
         }
         #expect(url.path.hasPrefix("/v1/requests/"))
         let id = url.lastPathComponent
+        if url.query != nil {
+            #expect(requestWait)
+            #expect(url.query?.hasPrefix("wait_s=") == true)
+            #expect(request.timeoutInterval == 35)
+            if fault == .changesNetwork { throw URLError(.networkConnectionLost) }
+            if fault == .cancelled { throw CancellationError() }
+        }
         statusIDs.append(id)
         if id == "action-A" {
             actionContinuation.yield(())
@@ -131,11 +144,68 @@ private actor ReadRecoveryPeer: HTTPTransport {
     }
 
     private func json(_ value: [String: Any]) throws -> HTTPReply {
-        HTTPReply(status: 200, body: try JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]))
+        let body = try JSONSerialization.data(withJSONObject: value, options: [.sortedKeys])
+        responseBytes += body.count
+        return HTTPReply(status: 200, body: body)
     }
 }
 
 @Suite struct RelayReadRecoveryTests {
+    @Test func deferredReceiptRemovesOneExchangeWithoutChangingTheDetail() async throws {
+        var exchanges: [Int] = []
+        var responseBytes: [Int] = []
+        for enabled in [false, true] {
+            let peer = ReadRecoveryPeer(.none, requestWait: enabled)
+            let session = try await peer.session()
+            let result = try await session.execute(requestID: "detail-B", method: "GET",
+                path: "/views/card:B?protocol=1&client=ios&lang=en")
+            #expect(result == .completed(status: 200, body: Data(#"{"card":"B","detail":"Second card"}"#.utf8)))
+            #expect(await peer.submissions.count == 1)
+            #expect(await peer.readStatuses == 1)
+            #expect(await peer.changes == (enabled ? 0 : 1))
+            #expect(await peer.backoffs == 0)
+            exchanges.append(await peer.exchangeCount)
+            responseBytes.append(await peer.responseBytes)
+            await session.deactivate()
+        }
+        #expect(exchanges == [4, 3])
+        #expect(responseBytes[1] < responseBytes[0])
+        print("deferred-read exchanges=\(exchanges) response_bytes=\(responseBytes) fixed_200ms_exchange_model_ms=\(exchanges.map { $0 * 200 }) correct_results=2 errors=0 posts=[1,1]")
+    }
+
+    @Test func deferredReceiptRecoversUsingTheSameReadIDWithoutResubmission() async throws {
+        let peer = ReadRecoveryPeer(.changesNetwork, requestWait: true)
+        let session = try await peer.session()
+        #expect(try await session.execute(requestID: "detail-B", method: "GET",
+            path: "/views/card:B?protocol=1&client=ios&lang=en") ==
+            .completed(status: 200, body: Data(#"{"card":"B","detail":"Second card"}"#.utf8)))
+        #expect(await peer.submissions.count == 1)
+        #expect(await peer.changes == 0)
+        #expect(await peer.backoffs == 1)
+        let readID = try #require(await peer.readID)
+        #expect(await peer.statusIDs == [readID])
+        await session.deactivate()
+    }
+
+    @Test(arguments: [ReadFault.wrongResponseIdentity, .refusedStatus, .cancelled])
+    private func deferredReceiptStillRejectsInvalidAndCancelledResults(_ fault: ReadFault) async throws {
+        let peer = ReadRecoveryPeer(fault, requestWait: true)
+        let session = try await peer.session()
+        if fault == .cancelled {
+            await #expect(throws: CancellationError.self) {
+                try await session.execute(requestID: "detail-B", method: "GET",
+                    path: "/views/card:B?protocol=1&client=ios&lang=en")
+            }
+        } else {
+            #expect(try await session.execute(requestID: "detail-B", method: "GET",
+                path: "/views/card:B?protocol=1&client=ios&lang=en") == .unknown)
+        }
+        #expect(await peer.submissions.count == 1)
+        #expect(await peer.changes == 0)
+        #expect(await peer.backoffs == 0)
+        await session.deactivate()
+    }
+
     @Test(arguments: [ReadFault.changesNetwork, .changesBusy, .completedStatus, .lostSubmission])
     private func detailRecoversWhileTheAppliedCardsReceiptIsStillPending(_ fault: ReadFault) async throws {
         let peer = ReadRecoveryPeer(fault)

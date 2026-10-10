@@ -31,6 +31,7 @@ fn save<T: serde::Serialize>(file: &std::path::Path, value: &T) {
 pub(crate) struct Live {
     view: Mutex<View>,
     sequence: AtomicU64,
+    pub(crate) changed: crate::node_reports::LiveChanges,
     presence: Mutex<HashMap<String, i64>>,
     pub(crate) mods: crate::node_reports::Reports,
     pub(crate) pushes: crate::node_push::Pushes,
@@ -199,6 +200,7 @@ impl Live {
             let until = details.as_deref().and_then(|text| crate::usage_pause::reset_in(text, now)).or_else(|| self.mods.reset_after_limit(now));
             self.usage_pause.exhaust(until, now);
         }
+        self.changed.publish();
     }
 
     /// A node's measurement that shows a plan window used up is the limit too.
@@ -224,6 +226,7 @@ impl Live {
 
     pub(crate) fn apply(&self, event: &Event) {
         self.view.lock().expect("live sessions poisoned").apply(self.next(), now_millis(), event);
+        self.changed.publish();
     }
 
     pub(crate) fn node(&self, session_id: &str) -> Option<Node> {

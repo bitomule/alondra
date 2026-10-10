@@ -71,6 +71,13 @@ actor RelayTransport: Transport {
         return job
     }
 
+    public func waitForRequest(requestID: String, waitSeconds: UInt64) async throws -> RelayReceipt {
+        guard Self.validRequestID(requestID), (1...25).contains(waitSeconds) else { throw RelayWireError.invalidField }
+        let job: RelayJob = try await get("/v1/requests/\(requestID)?wait_s=\(waitSeconds)", signed: true)
+        guard job.requestID == requestID else { throw RelayWireError.invalidResponse }
+        return RelayReceipt(requestID: job.requestID, status: job.status, revision: job.revision, response: job.response)
+    }
+
     public func changes(since: UInt64, epoch expectedEpoch: String? = nil, waitSeconds: UInt64 = 25) async throws -> RelayChanges {
         guard waitSeconds <= 25 else { throw RelayWireError.invalidField }
         var target = "/v1/changes?since=\(since)"
@@ -106,7 +113,7 @@ actor RelayTransport: Transport {
         var request = URLRequest(url: url)
         request.httpMethod = method
         request.cachePolicy = .reloadIgnoringLocalCacheData
-        request.timeoutInterval = target.hasPrefix("/v1/changes?") ? 35 : 15
+        request.timeoutInterval = target.hasPrefix("/v1/changes?") || target.hasPrefix("/v1/requests/") && target.contains("?wait_s=") ? 35 : 15
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         if method == "POST" {
             request.httpBody = body

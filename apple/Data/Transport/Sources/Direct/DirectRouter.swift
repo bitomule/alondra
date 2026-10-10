@@ -1,5 +1,6 @@
 import AlondraContract
 import Foundation
+import Synchronization
 
 public enum DirectRouteError: Error, Equatable, Sendable {
     /// No address proved to be this Mac from the current network.
@@ -20,6 +21,17 @@ public enum DirectSessionError: Error, Equatable, Sendable {
 /// address that answers with other keys is skipped on its own and the Mac stays as not
 /// answering. An address is trusted only on the network where a sealed answer through it opened
 /// with the pinned keys; on a new network even a saved address is proved again first.
+enum DirectProbeObservation: Sendable, Equatable {
+    case answered(DirectEndpoint), waitingForProbe, waitingForDrain, joiningProbe
+}
+
+private struct DirectProbeSelection: Sendable {
+    let endpoint: DirectEndpoint
+    let network: String
+    let generation: UInt64
+    let validationGeneration: UInt64
+}
+
 public actor DirectRouter {
     public enum Source: Sendable { case saved, mac, bonjour }
 
@@ -58,6 +70,7 @@ public actor DirectRouter {
     static let maxFromMac = 8
     private static let rejectionTime: Duration = .seconds(600)
 
+    private let probeObserved: (@Sendable (DirectProbeObservation) -> Void)?
     private let pinned: DirectMacIdentity
     private let http: DirectHTTP
     private let network: @Sendable () -> String
@@ -73,7 +86,11 @@ public actor DirectRouter {
     private var current: DirectEndpoint?
     private var validated: (at: ContinuousClock.Instant, network: String)?
     private var failedAt: (at: ContinuousClock.Instant, network: String)?
-    private var probing: Task<DirectEndpoint, any Error>?
+    private var probing: Task<Void, Never>?
+    private var probeResult: DirectProbeResult?
+    private var probeDrained: DirectProbeResult?
+    private var probeResolved = false
+    private var probePreference: Int?
     private var generation: UInt64 = 0
     private var validationGeneration: UInt64 = 0
     private var identityChangedOn: String?
@@ -84,6 +101,16 @@ public actor DirectRouter {
                 network: @escaping @Sendable () -> String = { "" },
                 freshness: Duration = .seconds(60), retryAfterFailure: Duration = .seconds(15),
                 now: @escaping @Sendable () -> ContinuousClock.Instant = { ContinuousClock().now }) {
+        self.init(pinned: pinned, saved: saved, http: http, network: network, freshness: freshness,
+                  retryAfterFailure: retryAfterFailure, now: now, probeObserved: nil)
+    }
+
+    init(pinned: DirectMacIdentity, saved: [DirectEndpoint], http: DirectHTTP,
+         network: @escaping @Sendable () -> String, freshness: Duration = .seconds(60),
+         retryAfterFailure: Duration = .seconds(15),
+         now: @escaping @Sendable () -> ContinuousClock.Instant,
+         probeObserved: (@Sendable (DirectProbeObservation) -> Void)?) {
+        self.probeObserved = probeObserved
         self.pinned = pinned
         self.http = http
         self.network = network
@@ -118,7 +145,7 @@ public actor DirectRouter {
             fromBonjour = Array(Self.unique(fresh.filter { !others.contains($0) } + fromBonjour).prefix(Self.maxBonjour))
         }
         failedAt = nil
-        if let current, candidates.first.map({ $0.rank < current.rank }) == true { discardValidation() }
+        if let preference = current?.rank ?? probePreference, candidates.first.map({ $0.rank < preference }) == true { discardValidation() }
     }
 
     public func endpoint() async throws -> DirectEndpoint {
@@ -126,11 +153,53 @@ public actor DirectRouter {
            validated.at.duration(to: now()) < freshness { return current }
         // Away from home every request would otherwise wait for the probes.
         if let failedAt, failedAt.network == network(), failedAt.at.duration(to: now()) < retryAfterFailure { throw unreachable }
-        if let probing { return try await probing.value }
-        let task = MutationScope.$current.withValue(nil) { Task { try await self.probe() } }
+        try Task.checkCancellation()
+        if probing != nil {
+            if probeResolved, let probeDrained {
+                probeObserved?(.waitingForDrain)
+                do { _ = try await probeDrained.value() }
+                catch { try Task.checkCancellation() }
+                return try await endpoint()
+            }
+            guard let probeResult else { throw unreachable }
+            probeObserved?(.joiningProbe)
+            return try await use(try await probeResult.value())
+        }
+        let observer = probeObserved
+        let result = DirectProbeResult(registered: { observer?(.waitingForProbe) })
+        let drained = DirectProbeResult()
+        probeResult = result
+        probeDrained = drained
+        probePreference = candidates.first?.rank
+        let task = MutationScope.$current.withValue(nil) { Task {
+            let outcome: Result<DirectProbeSelection, any Error>
+            do { outcome = .success(try await self.probe(result)) }
+            catch { outcome = .failure(error) }
+            result.complete(outcome)
+            self.probing = nil
+            self.probeResult = nil
+            self.probeDrained = nil
+            self.probeResolved = false
+            self.probePreference = nil
+            drained.complete(outcome)
+        } }
         probing = task
-        defer { probing = nil }
-        return try await task.value
+        return try await use(try await result.value())
+    }
+
+    private func use(_ selection: DirectProbeSelection) async throws -> DirectEndpoint {
+        try Task.checkCancellation()
+        guard selection.network == network(), selection.generation == generation,
+              selection.validationGeneration == validationGeneration, current == selection.endpoint else {
+            return try await endpoint()
+        }
+        return selection.endpoint
+    }
+
+    var probeWaiterCount: Int { probeResult?.waiterCount ?? 0 }
+
+    func drainProbes() async {
+        if let probing { await probing.value }
     }
 
     /// A sealed answer from this address opened with the pinned keys.
@@ -171,22 +240,47 @@ public actor DirectRouter {
             .sorted { ($0.element.rank, $0.offset) < ($1.element.rank, $1.offset) }.map(\.element)
     }
 
-    private func probe() async throws -> DirectEndpoint {
+    private func probe(_ result: DirectProbeResult) async throws -> DirectProbeSelection {
         let startedOn = network()
         let startedGeneration = generation
         let startedValidationGeneration = validationGeneration
         let observedAt = now()
         rejected = rejected.filter { $0.value.network == startedOn && $0.value.at.duration(to: observedAt) < Self.rejectionTime }
         let candidates = candidates.filter { rejected[$0] == nil }
+        probePreference = candidates.first?.rank
         let http = http
-        let answers = await withTaskGroup(of: (Int, DirectMacIdentity?).self) { group in
+        let selected = await withTaskGroup(of: (Int, DirectMacIdentity?).self) { group in
             for (index, endpoint) in candidates.enumerated() {
                 group.addTask { (index, try? await http.hello(at: endpoint)) }
             }
             var answers = [DirectMacIdentity?](repeating: nil, count: candidates.count)
-            for await (index, identity) in group { answers[index] = identity }
-            return answers
+            var finished = [Bool](repeating: false, count: candidates.count)
+            for await (index, identity) in group {
+                answers[index] = identity
+                finished[index] = true
+                if let winner = answers.firstIndex(where: { $0?.macID == pinned.macID && $0?.sameKeys(as: pinned) == true }),
+                   finished[..<winner].allSatisfy({ $0 }) {
+                    let selection = Result { try select(candidates: candidates, answers: answers,
+                        startedOn: startedOn, generation: startedGeneration,
+                        validationGeneration: startedValidationGeneration) }
+                    probeResolved = true
+                    result.complete(selection)
+                    probeObserved?(.answered(candidates[index]))
+                    group.cancelAll()
+                    return selection
+                }
+                probeObserved?(.answered(candidates[index]))
+            }
+            return Result { try select(candidates: candidates, answers: answers,
+                startedOn: startedOn, generation: startedGeneration,
+                validationGeneration: startedValidationGeneration) }
         }
+        return try selected.get()
+    }
+
+    private func select(candidates: [DirectEndpoint], answers: [DirectMacIdentity?],
+                        startedOn: String, generation startedGeneration: UInt64,
+                        validationGeneration startedValidationGeneration: UInt64) throws -> DirectProbeSelection {
         try Task.checkCancellation()
         guard network() == startedOn, generation == startedGeneration,
               validationGeneration == startedValidationGeneration else {
@@ -214,7 +308,8 @@ public actor DirectRouter {
         validationGeneration &+= 1
         validated = (now(), startedOn)
         failedAt = nil
-        return candidates[index]
+        return DirectProbeSelection(endpoint: candidates[index], network: startedOn, generation: startedGeneration,
+                                    validationGeneration: validationGeneration)
     }
 
     private var unreachable: DirectRouteError {
@@ -224,5 +319,46 @@ public actor DirectRouter {
     private static func unique(_ endpoints: [DirectEndpoint]) -> [DirectEndpoint] {
         var seen = Set<DirectEndpoint>()
         return endpoints.filter { seen.insert($0).inserted }
+    }
+}
+
+private final class DirectProbeResult: Sendable {
+    private struct State {
+        var result: Result<DirectProbeSelection, any Error>?
+        var waiters: [UUID: CheckedContinuation<DirectProbeSelection, any Error>] = [:]
+    }
+    private let state = Mutex(State())
+    private let registered: @Sendable () -> Void
+    init(registered: @escaping @Sendable () -> Void = {}) { self.registered = registered }
+    var waiterCount: Int { state.withLock { $0.waiters.count } }
+
+    func value() async throws -> DirectProbeSelection {
+        let id = UUID()
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                let result: Result<DirectProbeSelection, any Error>? = state.withLock { state -> Result<DirectProbeSelection, any Error>? in
+                    if Task.isCancelled { return .failure(CancellationError()) }
+                    if let result = state.result { return result }
+                    state.waiters[id] = continuation
+                    return nil as Result<DirectProbeSelection, any Error>?
+                }
+                if let result { continuation.resume(with: result) }
+                else { registered() }
+            }
+        } onCancel: {
+            let waiter = self.state.withLock { $0.waiters.removeValue(forKey: id) }
+            waiter?.resume(throwing: CancellationError())
+        }
+    }
+
+    func complete(_ result: Result<DirectProbeSelection, any Error>) {
+        let waiters = state.withLock { state in
+            guard state.result == nil else { return [CheckedContinuation<DirectProbeSelection, any Error>]() }
+            state.result = result
+            let waiters = Array(state.waiters.values)
+            state.waiters.removeAll()
+            return waiters
+        }
+        for waiter in waiters { waiter.resume(with: result) }
     }
 }

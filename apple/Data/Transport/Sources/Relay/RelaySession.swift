@@ -326,6 +326,22 @@ public actor RelaySession: OperationAPI, PushRegistrationAPI {
                 try checkReadDeadline(deadline)
                 let remaining = requestClock.now().duration(to: deadline).components
                 let wait = UInt64(max(1, min(25, remaining.seconds + (remaining.attoseconds > 0 ? 1 : 0))))
+                if bootstrap.requestWait {
+                    do {
+                        let current = try await client.waitForRequest(requestID: requestID, waitSeconds: wait)
+                        try checkReadDeadline(deadline)
+                        if let result = try verified(current, requestID: requestID) { return result }
+                        if current.status == "expired" { return .unknown }
+                        try await pauseReadRecovery(deadline)
+                    } catch {
+                        guard Self.transientReadFailure(error) else { throw error }
+                        try await pauseReadRecovery(deadline)
+                        let current = try await readStatus(requestID: requestID, deadline: deadline)
+                        if let result = try verified(current, requestID: requestID) { return result }
+                        if current.status == "expired" { return .unknown }
+                    }
+                    continue
+                }
                 let update: RelayChanges
                 do {
                     update = try await client.changes(since: revision, epoch: bootstrap.epoch, waitSeconds: wait)
