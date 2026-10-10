@@ -174,7 +174,7 @@ fn accept_admission_bounds_pending_work_and_recovers_the_same_unacknowledged_env
     start.recv().unwrap();
     let (queued, observed) = mpsc::channel();
     let mut jobs = vec![first];
-    for index in 1..18 {
+    for index in 1..MAX_JOURNAL_ACCEPTS {
         let id = format!("occupied-{index}");
         let (reservation, digest) = admission_reservation(&service, &id);
         let journal = service.journal.clone();
@@ -188,7 +188,7 @@ fn accept_admission_bounds_pending_work_and_recovers_the_same_unacknowledged_env
             match initial { Poll::Ready(result) => result, Poll::Pending => operation.await }
         }));
     }
-    let observed: Vec<_> = (1..18).map(|_| observed.recv().unwrap()).collect();
+    let observed: Vec<_> = (1..MAX_JOURNAL_ACCEPTS).map(|_| observed.recv().unwrap()).collect();
     let occupied = service.journal.accept_admissions.available_permits();
 
     let work = changes_work(&service, "overflow", json!({"method":"POST","path":"/v1/service/push-binding",
@@ -228,7 +228,7 @@ fn accept_admission_bounds_pending_work_and_recovers_the_same_unacknowledged_env
     let binding = service.journal.push_binding("phone-1").unwrap();
     assert!(observed.iter().all(|pending| *pending));
     assert_eq!(occupied, 0);
-    assert!(rejected, "the nineteenth admission must fail before SQL");
+    assert!(rejected, "an overflow admission must fail before SQL");
     assert_eq!(before_ack, 0);
     assert_eq!(before_row, 0);
     assert_eq!(before_binding, Some(URL_SAFE_NO_PAD.encode([4;32])));
@@ -237,7 +237,7 @@ fn accept_admission_bounds_pending_work_and_recovers_the_same_unacknowledged_env
     assert_eq!(replay[0].as_ref().unwrap(), replay[1].as_ref().unwrap(), "the same envelope must replay its completed ciphertext");
     assert_eq!(acknowledgements.load(Ordering::SeqCst), 2);
     assert_eq!(binding, Some(URL_SAFE_NO_PAD.encode([9;32])));
-    assert_eq!(service.journal.accept_admissions.available_permits(), 18);
+    assert_eq!(service.journal.accept_admissions.available_permits(), MAX_JOURNAL_ACCEPTS);
     assert_eq!(service.journal.accept_jobs.available_permits(), 1);
     assert!(service.inflight.lock().unwrap().is_empty());
 }
@@ -288,9 +288,9 @@ fn queued_accept_cancellation_runs_no_sql_and_releases_its_reservation() {
     assert!(!called.load(Ordering::SeqCst));
     assert_eq!(row, 0);
     assert_eq!(retained, 1);
-    assert_eq!(available, 17);
+    assert_eq!(available, MAX_JOURNAL_ACCEPTS - 1);
     assert!(first_result.is_ok());
-    assert_eq!(service.journal.accept_admissions.available_permits(), 18);
+    assert_eq!(service.journal.accept_admissions.available_permits(), MAX_JOURNAL_ACCEPTS);
     assert!(service.inflight.lock().unwrap().is_empty());
 }
 
@@ -338,11 +338,11 @@ fn started_accept_owns_its_slot_and_reservation_after_cancel_or_runtime_shutdown
         gate.wait();
         exit.recv().unwrap();
         drop(runtime);
-        assert_eq!(held_admissions, 17);
+        assert_eq!(held_admissions, MAX_JOURNAL_ACCEPTS - 1);
         assert_eq!(held_jobs, 0);
         assert_eq!(held_reservations, 1, "caller cancellation must not retire a still-running SQL job");
         assert!(outcome.lock().unwrap().as_ref().unwrap().is_ok());
-        assert_eq!(service.journal.accept_admissions.available_permits(), 18);
+        assert_eq!(service.journal.accept_admissions.available_permits(), MAX_JOURNAL_ACCEPTS);
         assert_eq!(service.journal.accept_jobs.available_permits(), 1);
         assert!(service.inflight.lock().unwrap().is_empty());
     }
@@ -357,7 +357,7 @@ fn a_failed_admitted_sql_operation_releases_all_ownership() {
         move |journal| journal.accept("phone-1", "error", &digest).map(|_| ())));
     println!("admitted_sql_error={result:?}");
     assert!(result.is_err());
-    assert_eq!(service.journal.accept_admissions.available_permits(), 18);
+    assert_eq!(service.journal.accept_admissions.available_permits(), MAX_JOURNAL_ACCEPTS);
     assert_eq!(service.journal.accept_jobs.available_permits(), 1);
     assert!(service.inflight.lock().unwrap().is_empty());
 }

@@ -271,7 +271,7 @@ public actor RelaySession: OperationAPI, PushRegistrationAPI {
     private func waitForReadCompletion(requestID: String, path: String, seconds: Int,
                                        deadlineSlack: Int = 5) async throws -> RelayOperationResult {
         // Includes bootstrap, the one submission, status reconciliation and every HTTP wait.
-        let deadline = ContinuousClock().now.advanced(by: .seconds(seconds + deadlineSlack))
+        let deadline = requestClock.now().advanced(by: .seconds(seconds + deadlineSlack))
         let waitForDeadline = waitForReadDeadline
         return try await withThrowingTaskGroup(of: RelayOperationResult.self) { group in
             group.addTask {
@@ -283,7 +283,7 @@ public actor RelaySession: OperationAPI, PushRegistrationAPI {
             defer { group.cancelAll() }
             let result = try await group.next() ?? .unknown
             try Task.checkCancellation()
-            guard ContinuousClock().now < deadline else { return .unknown }
+            guard requestClock.now() < deadline else { return .unknown }
             return result
         }
     }
@@ -291,11 +291,10 @@ public actor RelaySession: OperationAPI, PushRegistrationAPI {
     private func checkReadDeadline(_ deadline: ContinuousClock.Instant) throws {
         try Task.checkCancellation()
         guard active else { throw CancellationError() }
-        guard ContinuousClock().now < deadline else { throw RelaySessionError.outcomeUnknown }
+        guard requestClock.now() < deadline else { throw RelaySessionError.outcomeUnknown }
     }
 
     private func readUntilChange(requestID: String, path: String, deadline: ContinuousClock.Instant) async throws -> RelayOperationResult {
-        let clock = ContinuousClock()
         var bootstrap = try await currentBootstrap()
         try checkReadDeadline(deadline)
         let envelope = try sealRequest(requestID: requestID, method: "GET", path: path, body: nil)
@@ -317,17 +316,27 @@ public actor RelaySession: OperationAPI, PushRegistrationAPI {
             catch {
                 // A lost submission response authorizes only GET reconciliation, never POST.
                 try checkReadDeadline(deadline)
-                receipt = try await client.requestStatus(requestID: requestID)
+                receipt = try await readStatus(requestID: requestID, deadline: deadline)
             }
             try checkReadDeadline(deadline)
             if let result = try verified(receipt, requestID: requestID) { return result }
             if receipt.status == "expired" { return .unknown }
             var revision = receipt.revision
-            while clock.now < deadline {
+            while requestClock.now() < deadline {
                 try checkReadDeadline(deadline)
-                let remaining = clock.now.duration(to: deadline).components
+                let remaining = requestClock.now().duration(to: deadline).components
                 let wait = UInt64(max(1, min(25, remaining.seconds + (remaining.attoseconds > 0 ? 1 : 0))))
-                let update = try await client.changes(since: revision, epoch: bootstrap.epoch, waitSeconds: wait)
+                let update: RelayChanges
+                do {
+                    update = try await client.changes(since: revision, epoch: bootstrap.epoch, waitSeconds: wait)
+                } catch {
+                    guard Self.transientReadFailure(error) else { throw error }
+                    try await pauseReadRecovery(deadline)
+                    let current = try await readStatus(requestID: requestID, deadline: deadline)
+                    if let result = try verified(current, requestID: requestID) { return result }
+                    if current.status == "expired" { return .unknown }
+                    continue
+                }
                 try checkReadDeadline(deadline)
                 // A new relay epoch or a backwards cursor cannot describe this job's lifecycle.
                 guard update.epoch == bootstrap.epoch, update.revision >= revision else { return .unknown }
@@ -335,7 +344,7 @@ public actor RelaySession: OperationAPI, PushRegistrationAPI {
                 guard let job = update.changes.first(where: { $0.requestID == requestID }) else { continue }
                 if job.status == "expired" { return .unknown }
                 guard job.status == "completed" else { continue }
-                let completed = try await client.requestStatus(requestID: requestID)
+                let completed = try await readStatus(requestID: requestID, deadline: deadline)
                 try checkReadDeadline(deadline)
                 if let result = try verified(completed, requestID: requestID) { return result }
             }
@@ -346,6 +355,35 @@ public actor RelaySession: OperationAPI, PushRegistrationAPI {
             if case RelayWireError.conflict = error { relayBootstrap = nil }
             return .unknown
         }
+    }
+
+    private func readStatus(requestID: String, deadline: ContinuousClock.Instant) async throws -> RelayReceipt {
+        while true {
+            try checkReadDeadline(deadline)
+            do {
+                let receipt = try await client.requestStatus(requestID: requestID)
+                try checkReadDeadline(deadline)
+                return receipt
+            } catch {
+                guard Self.transientReadFailure(error) else { throw error }
+                try await pauseReadRecovery(deadline)
+            }
+        }
+    }
+
+    private func pauseReadRecovery(_ deadline: ContinuousClock.Instant) async throws {
+        try checkReadDeadline(deadline)
+        try await sleep()
+        try checkReadDeadline(deadline)
+    }
+
+    private static func transientReadFailure(_ error: any Error) -> Bool {
+        if case let RelayWireError.server(status) = error {
+            return status == 429 || (500...599).contains(status)
+        }
+        guard let error = error as? URLError else { return false }
+        return [.timedOut, .networkConnectionLost, .notConnectedToInternet,
+                .cannotConnectToHost, .cannotFindHost, .dnsLookupFailed].contains(error.code)
     }
 
     /// The relay epoch only changes when the relay restarts; a rejection clears it.

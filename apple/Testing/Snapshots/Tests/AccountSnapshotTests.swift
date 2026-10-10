@@ -3,13 +3,16 @@ import AlondraDesign
 import AlondraFeatures
 import AlondraiOSUI
 import ComposableArchitecture
+import SnapshotTesting
 import SwiftUI
+import UIKit
 import XCTest
 
 /// Signing in, linking a Mac, the settings sheet, and the screen that takes over when the Mac
 /// cannot be reached.
 @MainActor
 final class AccountSnapshotTests: XCTestCase {
+    private static let pairingPixelPrecision: Float = 0.9995
     private func signIn(_ edit: (inout SignInFeature.State) -> Void = { _ in }, additionalMac: Bool = false)
         -> StoreOf<SignInFeature> {
         var state = SignInFeature.State(additionalMac: additionalMac)
@@ -65,7 +68,49 @@ final class AccountSnapshotTests: XCTestCase {
             $0.findMac.macs = [studio]
             $0.findMac.error = "The Mac didn’t allow this device."
         }
-        assertScreen([.light], inWindow: true) { ScreenFrame(height: 852) { SignInView(store: store, demo: {}) } }
+        assertScreen([.light], inWindow: true, pixelPrecision: Self.pairingPixelPrecision) { ScreenFrame(height: 852) { SignInView(store: store, demo: {}) } }
+    }
+
+    func test_pairingComparisonAcceptsNativeLabelVariationButRejectsMissingNoticeAndMovedCard() throws {
+        let root = URL(fileURLWithPath: try XCTUnwrap(ProcessInfo.processInfo.environment["TEST_SRCDIR"]))
+            .appendingPathComponent("_main/apple/Testing/Snapshots")
+        let reference = try XCTUnwrap(UIImage(data: Data(contentsOf: root.appendingPathComponent(
+            "Tests/__Snapshots__/AccountSnapshotTests/test_findMac_aDeniedRequestStaysOnTheList.light.png"))))
+        let nativeLabel = try XCTUnwrap(UIImage(data: Data(contentsOf: root.appendingPathComponent("Fixtures/pairing-native-label.png"))))
+        let strict = Snapshotting<UIImage, UIImage>.image(precision: 1, perceptualPrecision: 0.98).diffing
+        let local = Snapshotting<UIImage, UIImage>.image(precision: Self.pairingPixelPrecision, perceptualPrecision: 0.98).diffing
+        XCTAssertEqual(reference.size, nativeLabel.size)
+        XCTAssertEqual(reference.imageOrientation, nativeLabel.imageOrientation)
+        XCTAssertNotNil(strict.diffV2(reference, nativeLabel), "the retained real rendering variation must exercise the comparison")
+        XCTAssertNil(local.diffV2(reference, nativeLabel), "native label variation must not fail an otherwise identical screen")
+        XCTAssertNotNil(local.diffV2(reference, try pairingImage(reference, removingNotice: true)), "the denied-device notice must remain visible")
+        XCTAssertNotNil(local.diffV2(reference, try pairingImage(reference, removingNotice: false)), "the Mac card must stay in position")
+    }
+
+    private func pairingImage(_ image: UIImage, removingNotice: Bool) throws -> UIImage {
+        let original = try XCTUnwrap(image.cgImage)
+        let bytesPerPixel = try XCTUnwrap(original.bitsPerPixel.isMultiple(of: 8) ? original.bitsPerPixel / 8 : nil)
+        XCTAssertEqual(original.width, 393)
+        XCTAssertEqual(original.height, 852)
+        let bytes = try XCTUnwrap(original.dataProvider?.data) as Data
+        var changed = bytes
+        let rows = removingNotice ? 333..<359 : 261..<432
+        let columns = removingNotice ? 45..<332 : 25..<376
+        for y in rows {
+            for x in columns {
+                let sourceX = removingNotice ? 30 : (x >= 33 ? x - 8 : 10)
+                let source = y * original.bytesPerRow + sourceX * bytesPerPixel
+                let target = y * original.bytesPerRow + x * bytesPerPixel
+                changed.replaceSubrange(target..<(target + bytesPerPixel), with: bytes[source..<(source + bytesPerPixel)])
+            }
+        }
+        let provider = try XCTUnwrap(CGDataProvider(data: changed as CFData))
+        let result = try XCTUnwrap(CGImage(width: original.width, height: original.height,
+            bitsPerComponent: original.bitsPerComponent, bitsPerPixel: original.bitsPerPixel,
+            bytesPerRow: original.bytesPerRow, space: try XCTUnwrap(original.colorSpace),
+            bitmapInfo: original.bitmapInfo, provider: provider, decode: nil,
+            shouldInterpolate: original.shouldInterpolate, intent: original.renderingIntent))
+        return UIImage(cgImage: result, scale: image.scale, orientation: image.imageOrientation)
     }
 
     func test_findMac_comparingTheCode() {
