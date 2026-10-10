@@ -324,6 +324,19 @@ impl DomainRuntime {
         Ok(commit.outcome)
     }
 
+    /// A system command the domain judges on the state it commits against, as the node machine
+    /// does its moves: the revision is filled under the writer lock, so a command committed
+    /// meanwhile never makes it stale.
+    pub(crate) fn execute_on_current(&self, envelope: &CommandEnvelope) -> Result<CommandOutcome, StoreError> {
+        let mut store = self.store.lock().expect("domain store poisoned");
+        let commit = store.execute_filling_revision(&Actor::System, envelope)?;
+        self.publish(&commit.state);
+        if !commit.replayed && commit.outcome.changed {
+            self.changed.send_replace(commit.state.revision);
+        }
+        Ok(commit.outcome)
+    }
+
     pub fn execute_bearer(
         &self,
         bearer: &str,

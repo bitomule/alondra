@@ -524,6 +524,9 @@ impl World {
     /// header count the same nodes at work.
     fn check(&self) {
         self.s.validate_nodes().unwrap();
+        for agent in self.s.agents.keys() {
+            assert_eq!(self.s.task_facts(agent), facts_node_by_node(&self.s, agent), "the one-pass facts of {} match", agent.0);
+        }
         let slots: BTreeSet<String> = self.s.slots().iter().map(|a| a.id.0.clone()).collect();
         assert!(self.s.paused_nodes().keys().all(|id| !slots.contains(&id.0)), "a paused node holds a slot");
 
@@ -544,6 +547,25 @@ impl World {
         let header = fleet.status.counts.iter().find(|count| count.id == "working").map(|count| count.value as usize);
         assert_eq!(header, Some(slots.len()), "the header counts the same nodes");
     }
+}
+
+/// `task_facts` as it was read before the one-pass index: a scan of every card and task per node.
+fn facts_node_by_node(s: &DomainState, agent: &AgentId) -> TaskFacts {
+    let held = s.holds.keys().any(|id| s.interactions.get(id).is_some_and(|i| {
+        matches!(&i.author, Author::Agent { agent_id } if agent_id == agent)
+            && !i.withdrawn && matches!(i.payload, InteractionPayload::Question { answer: None, .. })
+    }));
+    let asked = s.interactions.values().any(|i| matches!(&i.author, Author::Agent { agent_id } if agent_id == agent)
+        && i.recipient == Recipient::User && s.open(i)
+        && matches!(i.payload, InteractionPayload::Question { .. } | InteractionPayload::ActionRequest { .. }));
+    let Some(t) = s.node_task(agent) else {
+        return TaskFacts { held, card: asked, ..TaskFacts::default() };
+    };
+    let closing = t.state.terminal() || t.state == TaskState::Closing || t.wrap_up.asked_at.is_some();
+    let delivered = t.final_presentation.as_ref().and_then(|p| s.interactions.get(p))
+        .is_some_and(|p| s.open(p) && s.handed_back(p).is_none())
+        || matches!(t.state, TaskState::ForYourReview | TaskState::AwaitingBlocker);
+    TaskFacts { open: !t.state.terminal() && !t.archived, closing, held, card: asked || s.open_user_card(&t.id).is_some(), delivered }
 }
 
 fn rows(view: &View) -> Vec<String> {

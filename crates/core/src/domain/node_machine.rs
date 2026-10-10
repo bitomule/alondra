@@ -4,7 +4,7 @@
 //! the phase; none keeps a state of its own. See docs/fleet-pacing.md §11.
 use super::*;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 type Result<T> = std::result::Result<T, DomainError>;
 pub use crate::model::Millis;
@@ -150,6 +150,15 @@ impl NodeEvent {
     }
 }
 
+/// The parts of every node's `TaskFacts` that need a scan, by node and by task.
+struct FactIndex<'a> {
+    held: BTreeSet<&'a AgentId>,
+    asked: BTreeSet<&'a AgentId>,
+    carded: BTreeSet<&'a TaskId>,
+    /// The task `node_task` picks, with its rank: open, closing, or any (the last one).
+    tasks: BTreeMap<&'a AgentId, (u8, &'a Task)>,
+}
+
 /// What the domain knows of a node's task when its phase moves.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct TaskFacts {
@@ -265,21 +274,54 @@ impl DomainState {
     }
 
     pub fn task_facts(&self, agent: &AgentId) -> TaskFacts {
-        let held = self.holds.keys().any(|id| self.interactions.get(id).is_some_and(|i| {
-            matches!(&i.author, Author::Agent { agent_id } if agent_id == agent)
-                && !i.withdrawn && matches!(i.payload, InteractionPayload::Question { answer: None, .. })
-        }));
-        let asked = self.interactions.values().any(|i| matches!(&i.author, Author::Agent { agent_id } if agent_id == agent)
-            && i.recipient == Recipient::User && self.open(i)
-            && matches!(i.payload, InteractionPayload::Question { .. } | InteractionPayload::ActionRequest { .. }));
-        let Some(t) = self.node_task(agent) else {
+        self.facts_in(&self.fact_index(), agent)
+    }
+
+    fn facts_in(&self, index: &FactIndex<'_>, agent: &AgentId) -> TaskFacts {
+        let held = index.held.contains(agent);
+        let asked = index.asked.contains(agent);
+        let Some(t) = index.tasks.get(agent).map(|(_, task)| *task) else {
             return TaskFacts { held, card: asked, ..TaskFacts::default() };
         };
         let closing = t.state.terminal() || t.state == TaskState::Closing || t.wrap_up.asked_at.is_some();
         let delivered = t.final_presentation.as_ref().and_then(|p| self.interactions.get(p))
             .is_some_and(|p| self.open(p) && self.handed_back(p).is_none())
             || matches!(t.state, TaskState::ForYourReview | TaskState::AwaitingBlocker);
-        TaskFacts { open: !t.state.terminal() && !t.archived, closing, held, card: asked || self.open_user_card(&t.id).is_some(), delivered }
+        TaskFacts { open: !t.state.terminal() && !t.archived, closing, held, card: asked || index.carded.contains(&t.id), delivered }
+    }
+
+    /// What `task_facts` reads, in one pass over tasks and cards: every command settles every
+    /// node, so a pass per node made each command cost nodes × cards.
+    fn fact_index(&self) -> FactIndex<'_> {
+        let held = self.holds.keys().filter_map(|id| self.interactions.get(id))
+            .filter(|i| !i.withdrawn && matches!(i.payload, InteractionPayload::Question { answer: None, .. }))
+            .filter_map(|i| match &i.author { Author::Agent { agent_id } => Some(agent_id), _ => None })
+            .collect();
+        let (mut asked, mut carded) = (BTreeSet::new(), BTreeSet::new());
+        for i in self.interactions.values().filter(|i| i.recipient == Recipient::User
+            && matches!(i.payload, InteractionPayload::Question { .. } | InteractionPayload::ActionRequest { .. })
+            && self.open(i))
+        {
+            if let Author::Agent { agent_id } = &i.author {
+                asked.insert(agent_id);
+            }
+            if let Scope::Task { task_id } = &i.scope {
+                carded.insert(task_id);
+            }
+        }
+        let mut tasks: BTreeMap<&AgentId, (u8, &Task)> = BTreeMap::new();
+        for t in self.tasks.values() {
+            let Some(agent) = &t.agent_id else { continue };
+            let rank = match (!t.state.terminal() && !t.archived, t.state == TaskState::Closing) {
+                (true, false) => 0,
+                (true, true) => 1,
+                (false, _) => 2,
+            };
+            if tasks.get(agent).is_none_or(|(kept, _)| rank < *kept || (rank, *kept) == (2, 2)) {
+                tasks.insert(agent, (rank, t));
+            }
+        }
+        FactIndex { held, asked, carded, tasks }
     }
 
     /// Whether `event` would move the node, and where: what an adapter checks before it records one.
@@ -317,9 +359,9 @@ impl DomainState {
 
     /// Applies what the last command changed in the nodes' tasks.
     pub fn settle_nodes(&mut self) {
-        let ids: Vec<AgentId> = self.agents.keys().cloned().collect();
-        for id in ids {
-            let facts = self.task_facts(&id);
+        let index = self.fact_index();
+        let facts: Vec<(AgentId, TaskFacts)> = self.agents.keys().map(|id| (id.clone(), self.facts_in(&index, id))).collect();
+        for (id, facts) in facts {
             let a = self.agents.get_mut(&id).expect("listed above");
             a.phase = settle(a.phase.clone(), &facts);
         }
@@ -343,8 +385,9 @@ impl DomainState {
     }
 
     pub(super) fn validate_nodes(&self) -> Result<()> {
+        let index = self.fact_index();
         for a in self.agents.values() {
-            if settle(a.phase.clone(), &self.task_facts(&a.id)) != a.phase {
+            if settle(a.phase.clone(), &self.facts_in(&index, &a.id)) != a.phase {
                 return refuse("node_phase_mismatch", "A node's phase contradicts its task");
             }
         }

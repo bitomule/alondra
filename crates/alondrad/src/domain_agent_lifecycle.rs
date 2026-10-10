@@ -9,7 +9,7 @@
 use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::StoreError;
 use alondra_core::domain::{
-    Actor, AgentId, Command, CommandEnvelope, CommandId, CommandOutcome, DataEpoch, DomainError,
+    Actor, AgentId, Command, CommandEnvelope, CommandId, CommandOutcome, DataEpoch, DomainError, DomainState,
     Millis, NodeEvent, Listed, Revision, PROTOCOL_VERSION,
 };
 use std::collections::BTreeMap;
@@ -103,8 +103,7 @@ pub(crate) fn node_event_at(domain: &DomainRuntime, agent_id: &AgentId, happened
         return Ok(false);
     }
     let id = format!("{}-{}-{}", happened.key(), agent_id.0, crate::auth::random_hex(8));
-    let event = LifecycleEvent { event_id: id, data_epoch: state.data_epoch.clone(), expected_revision: state.revision, at };
-    move_instance(domain, agent_id, happened, &event).map(|outcome| outcome.changed)
+    submit_on_current(domain, "agent-move", &id, &state, Command::MoveNode { agent_id: agent_id.clone(), event: happened, at })
 }
 
 /// Hands the node machine the listing of real sessions, when it moves any node.
@@ -115,8 +114,26 @@ pub(crate) fn reconcile(domain: &DomainRuntime, listed: BTreeMap<AgentId, Listed
         return Ok(false);
     }
     let id = format!("reconcile-{}", crate::auth::random_hex(8));
-    let event = LifecycleEvent { event_id: id, data_epoch: state.data_epoch.clone(), expected_revision: state.revision, at };
-    submit(domain, "agent-reconcile", &event, Command::ReconcileNodes { listed, at }).map(|outcome| outcome.changed)
+    submit_on_current(domain, "agent-reconcile", &id, &state, Command::ReconcileNodes { listed, at })
+}
+
+/// The node machine judges a move on the state it commits against, so the move is never refused
+/// as stale because another command committed since `state` was read.
+fn submit_on_current(domain: &DomainRuntime, kind: &str, event_id: &str, state: &DomainState, command: Command) -> Result<bool, StoreError> {
+    let envelope = CommandEnvelope {
+        protocol_version: PROTOCOL_VERSION,
+        data_epoch: state.data_epoch.clone(),
+        command_id: command_id(kind, event_id),
+        expected_revision: 0,
+        command,
+    };
+    domain.execute_on_current(&envelope).map(|outcome| outcome.changed)
+}
+
+fn command_id(kind: &str, event_id: &str) -> CommandId {
+    let digest = Sha256::digest(event_id.as_bytes());
+    let hexadecimal: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
+    CommandId(format!("{kind}-{hexadecimal}"))
 }
 
 fn submit(
@@ -125,13 +142,10 @@ fn submit(
     event: &LifecycleEvent,
     command: Command,
 ) -> Result<CommandOutcome, StoreError> {
-    let digest = Sha256::digest(event.event_id.as_bytes());
-    let hexadecimal: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
-    let command_id = CommandId(format!("{kind}-{hexadecimal}"));
     let envelope = CommandEnvelope {
         protocol_version: PROTOCOL_VERSION,
         data_epoch: event.data_epoch.clone(),
-        command_id,
+        command_id: command_id(kind, &event.event_id),
         expected_revision: event.expected_revision,
         command,
     };
@@ -209,6 +223,21 @@ mod tests {
         assert!(
             matches!(error, StoreError::Domain(ref value) if value.code == "idempotency_conflict")
         );
+    }
+
+    #[test]
+    fn a_node_event_judged_on_an_older_state_is_judged_again_not_lost() {
+        let fixture = Fixture::new();
+        let gate = fixture.open();
+        let paused = new_identity().unwrap();
+        register_instance(&gate, &paused, "Builder", &prepare_event(&gate, "launch-paused").unwrap()).unwrap();
+        let elsewhere = fixture.open();
+        let other = new_identity().unwrap();
+        register_instance(&elsewhere, &other, "Other", &prepare_event(&elsewhere, "launch-other").unwrap()).unwrap();
+        assert!(gate.state().unwrap().revision < elsewhere.state().unwrap().revision, "the gate's state is older");
+
+        assert_eq!(node_event(&gate, &paused.agent_id, NodeEvent::TurnStarted).unwrap(), true);
+        assert_eq!(gate.state().unwrap().agents[&paused.agent_id].phase, NodePhase::Working);
     }
 
     #[test]
