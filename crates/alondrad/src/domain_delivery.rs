@@ -1229,10 +1229,10 @@ mod tests {
         };
         let handed = ("handed".to_owned(), None);
 
-        let first = plan(&domain, "call-1", "Ship the parser");
+        let first = plan(&domain, "call-1", "- [ ] Ship the parser");
         assert_eq!(push(domain.clone(), first).await, handed);
         crate::domain_holds::release_call(&domain, "agent-a", "call-1").unwrap();
-        let again = plan(&domain, "call-2", "Ship the parser");
+        let again = plan(&domain, "call-2", "- [ ] Ship the parser");
         drop(domain);
 
         let domain = open();
@@ -1243,12 +1243,12 @@ mod tests {
             "the card still waits in the inbox");
 
         crate::domain_holds::release_call(&domain, "agent-a", "call-2").unwrap();
-        let changed = plan(&domain, "call-3", "Ship the parser and its tests");
+        let changed = plan(&domain, "call-3", "- [ ] Ship the parser and its tests");
         assert_eq!(push(domain.clone(), changed.clone()).await, handed, "a plan that changed is a new notice");
 
         apply_command(&domain, Actor::User { user_id: "u".into() }, "answer", Command::AnswerQuestion {
             attachments: vec![], interaction_id: changed, option_id: Hold::REQUEST_CHANGES.into(), inputs: Default::default() });
-        let asked_again = plan(&domain, "call-4", "Ship the parser and its tests");
+        let asked_again = plan(&domain, "call-4", "- [ ] Ship the parser and its tests");
         assert_eq!(push(domain.clone(), asked_again).await, handed, "asked again after an answer: told again");
         drop(domain);
         std::fs::remove_dir_all(home).unwrap();

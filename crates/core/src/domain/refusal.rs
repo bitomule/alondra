@@ -63,6 +63,9 @@ pub const INTERNAL_CODES: &[&str] = &[
     "dependency_not_delivered", "clarification_pending", "blocking_open", "blocking_interaction",
     "unanswered_questions", "ask_already_open", "already_withdrawn", "already_answered", "agent_used", "agent_busy",
     "maintenance_request", "launch_plan_required", "too_many_suggestions",
+    "plan_without_checklist", "plan_checklist_too_long", "checklist_not_final", "checklist_without_plan",
+    "checklist_unknown_item", "checklist_without_evidence", "evidence_unknown_attachment", "evidence_unknown_pr",
+    "checklist_incomplete",
 ];
 
 impl Refusal {
@@ -92,9 +95,9 @@ mod tests {
     /// the catalog lists as only reachable by a node; a new code must be put in one of them.
     #[test]
     fn every_code_the_rules_produce_is_known_to_the_refusal_catalog() {
-        let source = include_str!("rules.rs");
+        let source = [include_str!("rules.rs"), include_str!("checklist.rs")].concat();
         let mut found = std::collections::BTreeSet::new();
-        for marker in ["fail(\"", "refuse(\"", "DomainError::new(\"", "fail(\n"] {
+        for marker in ["fail(\"", "refuse(\"", "DomainError::new(\"", "fail(\n", "Some((\""] {
             for part in source.split(marker).skip(1) {
                 let code: String = if marker.ends_with('\n') {
                     part.trim_start().strip_prefix('"').map(|rest| rest.chars().take_while(|c| *c != '"').collect()).unwrap_or_default()

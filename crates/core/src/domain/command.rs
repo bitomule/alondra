@@ -316,6 +316,10 @@ pub enum Command {
         /// A final delivery that found nothing for the user to look at: the task closes in silence.
         #[serde(default)]
         nothing_to_review: bool,
+        /// Every point of the task's approved plan, marked done with its evidence; required on the
+        /// final delivery of a task whose plan was approved.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        checklist: Vec<ChecklistMark>,
         card: CardSpec,
     },
     SubmitFeedback {

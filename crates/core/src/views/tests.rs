@@ -2181,6 +2181,57 @@ fn card_variants_match_goldens() {
     }
 }
 
+/// The beta candidate delivered against the plan its node had approved: every point with what
+/// proves it, the commit linked to the PR's repository.
+fn checklist_delivery_fixture() -> DomainState {
+    use crate::domain::{Checklist, ChecklistItem, ChecklistMark, Evidence, EvidenceKind, InteractionId};
+    let mut state = golden_fixture();
+    let delivery = InteractionId::from("hf-weekly-2026-09-30");
+    let task_id = state.interactions[&delivery].scope.clone();
+    let Scope::Task { task_id } = task_id else { unreachable!() };
+    let point = |id: &str, text: &str| ChecklistItem { id: id.into(), text: text.into() };
+    state.checklists.insert(task_id, Checklist { plan: "hold-plan-1".into(), items: vec![
+        point("1", "Restore the native review layouts"),
+        point("2", "Verify the ARM simulator build"),
+        point("3", "Snapshot the review screens in light and dark"),
+    ] });
+    let evidence = |kind, value: &str, detail: Option<&str>| Evidence { kind, value: value.into(), detail: detail.map(Into::into) };
+    state.checklist_marks.insert(delivery, vec![
+        ChecklistMark { item: "1".into(), evidence: vec![evidence(EvidenceKind::Commit, "3f2a1c9e5b7d4a1f8c6e2b9d0a7f5c3e1b8d6a4f", None)] },
+        ChecklistMark { item: "2".into(), evidence: vec![evidence(EvidenceKind::Command, "make build-sim ARCH=arm64", Some("Build succeeded in 2 min 14 s"))] },
+        ChecklistMark { item: "3".into(), evidence: vec![
+            evidence(EvidenceKind::Test, "make snapshots-verify", Some("42 snapshots match")),
+            evidence(EvidenceKind::Link, "https://github.com/example/repo/pull/12#snapshots", None),
+        ] },
+    ]);
+    state
+}
+
+#[test]
+fn a_final_delivery_shows_each_point_of_the_approved_plan_with_its_evidence() {
+    let state = checklist_delivery_fixture();
+    let live = golden_live();
+    for (client, lang, filename, expected) in [
+        (Client::Ios, Lang::En, "card-delivery-checklist.json", include_str!("../../../../fixtures/views/cards/card-delivery-checklist.json")),
+        (Client::Ios, Lang::Es, "card-delivery-checklist-es.json", include_str!("../../../../fixtures/views/cards/card-delivery-checklist-es.json")),
+        (Client::Mac, Lang::En, "card-delivery-checklist-mac.json", include_str!("../../../../fixtures/views/cards/card-delivery-checklist-mac.json")),
+        (Client::Mac, Lang::Es, "card-delivery-checklist-es-mac.json", include_str!("../../../../fixtures/views/cards/card-delivery-checklist-es-mac.json")),
+    ] {
+        let actual = render(&state, &live, client, lang, "card:hf-weekly-2026-09-30", "2026-09-30T10:00:00Z");
+        assert_golden(filename, &actual, expected);
+    }
+    let view = render(&state, &live, Client::Tui, Lang::En, "card:hf-weekly-2026-09-30", "");
+    let plan = view.sections.iter().find(|section| section.id == "plan").unwrap();
+    assert_eq!(plan.title.as_deref(), Some("Approved plan · 3 of 3 done"));
+    let Item::Row(first) = &plan.items[0] else { panic!("a point is a row") };
+    assert_eq!(first.title, "Restore the native review layouts");
+    assert_eq!(first.children[0].title, "Commit · 3f2a1c9");
+    assert!(matches!(&first.children[0].link, Some(Link::Url { url }) if url.ends_with("/commit/3f2a1c9e5b7d4a1f8c6e2b9d0a7f5c3e1b8d6a4f")));
+    assert_eq!(view.sections.iter().position(|section| section.id == "plan"), Some(1), "the plan comes right after the card");
+    let without = render(&golden_fixture(), &live, Client::Tui, Lang::En, "card:hf-weekly-2026-09-30", "");
+    assert!(without.sections.iter().all(|section| section.id != "plan"), "a delivery without an approved plan shows no plan");
+}
+
 /// Only a destructive action asks "are you sure?": merging, accepting, approving and answering are
 /// the decision itself, on every client and in every language.
 #[test]
@@ -4244,7 +4295,7 @@ fn presented_pr() -> DomainState {
         (agent.clone(), Command::RegisterPr { task_id: "t".into(), pr_id: "pr".into(), host: "github.com".into(),
             repository: "owner/repo".into(), number: 1, head: "head1".into(), base: "main".into(),
             allowed_methods: vec![MergeMethod::Squash] }),
-        (agent, Command::PresentResult { attachments: vec![], task_id: "t".into(), interaction_id: "d".into(),
+        (agent, Command::PresentResult { checklist: Vec::new(), attachments: vec![], task_id: "t".into(), interaction_id: "d".into(),
             body: "Ready".into(), targets: vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: "head1".into() }],
             is_final: true, nothing_to_review: false, card: crate::domain::CardSpec::delivery("Review the result", &[], true) }),
     ] {
@@ -5265,8 +5316,8 @@ fn the_terminal_shows_only_the_new_plan_after_the_first_was_sent_back() {
     let user = Actor::User { user_id: "u".into() };
     let plan = |id: &str, title: &str| Command::HoldHook {
         interaction_id: id.into(), task_id: "t".into(), agent_id: "a".into(), hold: Hold::Plan,
-        body: format!("# {title}\n\n1. Do it"), options: Hold::Plan.options(),
-        card: CardSpec::new(CardKind::Review, title).content(ContentKind::Plan, format!("# {title}\n\n1. Do it")),
+        body: format!("# {title}\n\n- [ ] Do it"), options: Hold::Plan.options(),
+        card: CardSpec::new(CardKind::Review, title).content(ContentKind::Plan, format!("# {title}\n\n- [ ] Do it")),
     };
     execute(&mut state, Actor::System, Command::RegisterAgent { agent_id: "a".into(), name: "Node A".into(), at: 0 });
     execute(&mut state, user.clone(), Command::CreateRequest { request_id: "r".into(), body: "Weekly cycle".into(), auto_merge: false, maintenance: false, message: false });

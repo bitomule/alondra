@@ -1,5 +1,6 @@
 //! Pure business domain. Authenticated adapters construct Actors; SQL owns persistence.
 mod attention;
+mod checklist;
 mod command;
 mod model;
 mod node_machine;
@@ -15,12 +16,15 @@ mod attention_tests;
 #[cfg(test)]
 mod card_tests;
 #[cfg(test)]
+mod checklist_tests;
+#[cfg(test)]
 mod tests;
 #[cfg(test)]
 mod ownership_tests;
 #[cfg(test)]
 mod node_machine_tests;
 pub use attention::*;
+pub use checklist::*;
 pub use command::*;
 pub use model::*;
 pub use node_machine::*;

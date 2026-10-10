@@ -380,6 +380,7 @@ impl World {
                 let Some(agent) = self.pick(n, |a, t| a.phase.live() && t.is_some_and(|t| t.state == TaskState::Running)) else { return };
                 let task = self.open_task(&agent).unwrap();
                 let _ = self.exec(Actor::Agent { agent_id: agent }, Command::PresentResult {
+                    checklist: Vec::new(),
                     attachments: vec![], task_id: task.clone(), interaction_id: format!("final-{task}-{}", self.s.revision).into(),
                     body: "Done".into(), targets: vec![DeliveryTarget::Text { text: "Done".into() }], is_final: true,
                     nothing_to_review: false, card: CardSpec::delivery("Review the result", &[], true),

@@ -98,6 +98,7 @@ fn present(store: &mut DomainStore) {
         &agent(),
         "present",
         Command::PresentResult {
+            checklist: Vec::new(),
             task_id: "task-1".into(),
             interaction_id: "delivery-1".into(),
             body: "Finished the answer".into(),
@@ -917,6 +918,7 @@ fn restart_preserves_decisions_documents_and_relations() {
         &agent(),
         "present",
         Command::PresentResult {
+            checklist: Vec::new(),
             task_id: "task-1".into(),
             interaction_id: "delivery-1".into(),
             body: "PR and document".into(),
@@ -1038,6 +1040,7 @@ fn attachments_of_interaction_answer_feedback_and_delivery_survive_restart() {
         &agent(),
         "present",
         Command::PresentResult {
+            checklist: Vec::new(),
             task_id: "task-1".into(),
             interaction_id: "delivery-1".into(),
             body: "Result".into(),
@@ -1225,6 +1228,7 @@ fn document_package(store: &mut DomainStore, pr: bool) -> Vec<DeliveryTarget> {
         &agent(),
         "present",
         Command::PresentResult {
+            checklist: Vec::new(),
             task_id: "task-1".into(),
             interaction_id: "delivery-1".into(),
             body: "Finished the design".into(),
@@ -1357,6 +1361,7 @@ fn a_new_final_reports_the_acceptance_it_superseded_and_feedback_does_not() {
         &mut store,
         "represent-without-reading",
         Command::PresentResult {
+            checklist: Vec::new(),
             task_id: "task-1".into(),
             interaction_id: "delivery-2".into(),
             body: "A different answer".into(),
@@ -1577,6 +1582,7 @@ fn task_relations_a_verdict_and_the_split_review_states_survive_a_restart() {
     let reviewer = Actor::Agent { agent_id: "agent-2".into() };
     execute(&mut store, &reviewer, "start-review", Command::StartTask { task_id: "task-2".into() });
     execute(&mut store, &reviewer, "present-review", Command::PresentResult {
+        checklist: Vec::new(),
         task_id: "task-2".into(), interaction_id: "delivery-2".into(), body: "Reviewed".into(),
         targets: vec![DeliveryTarget::Text { text: "The review".into() }], is_final: true, nothing_to_review: false, attachments: vec![],
         card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
@@ -1601,11 +1607,13 @@ fn task_relations_a_verdict_and_the_split_review_states_survive_a_restart() {
     };
     assert_eq!(pushes(&store, "delivery-1"), 0, "no push while a review holds the delivery back");
     execute(&mut store, &agent(), "present-again", Command::PresentResult {
+        checklist: Vec::new(),
         task_id: "task-1".into(), interaction_id: "delivery-1b".into(), body: "Fixed".into(),
         targets: vec![DeliveryTarget::Text { text: "The answer".into() }], is_final: true, nothing_to_review: false, attachments: vec![],
         card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
     });
     execute(&mut store, &reviewer, "present-review-again", Command::PresentResult {
+        checklist: Vec::new(),
         task_id: "task-2".into(), interaction_id: "delivery-2b".into(), body: "Reviewed again".into(),
         targets: vec![DeliveryTarget::Text { text: "The review".into() }], is_final: true, nothing_to_review: false, attachments: vec![],
         card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
@@ -1815,4 +1823,36 @@ fn revision_times_batch_preserves_empty_schema_errors_and_invalid_timestamp_erro
     store.conn.execute_batch("DROP TABLE command_audit; CREATE TABLE command_audit(revision INTEGER PRIMARY KEY);").unwrap();
     assert!(store.revision_times(&[]).is_err());
     assert!(store.revision_times(&[1]).is_err());
+}
+#[test]
+fn an_approved_plan_s_checklist_and_the_final_delivery_s_marks_survive_a_restart() {
+    let fixture = Fixture::new();
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    seeded(&mut store);
+    let plan = "# Goal\n\n- [ ] Write the answer\n- [ ] Check it\n";
+    let held = |id: &str| Command::HoldHook {
+        interaction_id: id.into(), task_id: "task-1".into(), agent_id: "agent-1".into(), hold: Hold::Plan,
+        body: plan.into(), options: Hold::Plan.options(),
+        card: CardSpec::new(CardKind::Review, "Goal").content(ContentKind::Plan, plan),
+    };
+    let approve = |id: &str| Command::AnswerQuestion { attachments: vec![], interaction_id: id.into(), option_id: Hold::APPROVE.into(), inputs: Default::default() };
+    execute(&mut store, &Actor::System, "plan-1", held("plan-1"));
+    execute(&mut store, &user(), "approve-1", approve("plan-1"));
+    execute(&mut store, &Actor::System, "plan-2", held("plan-2"));
+    execute(&mut store, &user(), "approve-2", approve("plan-2"));
+    let evidence = |value: &str| vec![Evidence { kind: EvidenceKind::Command, value: value.into(), detail: Some("passed".into()) }];
+    let marks = vec![ChecklistMark { item: "1".into(), evidence: evidence("make answer") }, ChecklistMark { item: "2".into(), evidence: evidence("make check") }];
+    let targets = vec![DeliveryTarget::Text { text: "The answer".into() }];
+    execute(&mut store, &agent(), "present", Command::PresentResult {
+        checklist: marks.clone(), attachments: vec![], task_id: "task-1".into(), interaction_id: "delivery-1".into(),
+        body: "Finished the answer".into(), card: CardSpec::delivery("Review the result", &targets, true), targets,
+        is_final: true, nothing_to_review: false,
+    });
+    assert_eq!(count(&store, "task_checklists"), 1, "a later approved plan replaces the task's checklist");
+    drop(store);
+    let mut restarted = DomainStore::open(&fixture.path()).unwrap();
+    let state = restarted.load().unwrap();
+    assert_eq!(state.checklists[&TaskId::from("task-1")].plan, InteractionId::from("plan-2"));
+    assert_eq!(state.checklists[&TaskId::from("task-1")].items.len(), 2);
+    assert_eq!(state.checklist_marks[&InteractionId::from("delivery-1")], marks);
 }

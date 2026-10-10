@@ -85,7 +85,7 @@ fn finish(f: &Fixture, id: &str, body: &str, pull_request: bool) {
         command(&f.domain, author.clone(), Command::RegisterPr { task_id: id.into(), pr_id: format!("pr-{id}").into(), host: "github.com".into(),
             repository: "me/app".into(), number: 7, head: "head1".into(), base: "main".into(), allowed_methods: vec![MergeMethod::Squash] });
     }
-    command(&f.domain, author, Command::PresentResult { attachments: vec![], task_id: id.into(), interaction_id: format!("final-{id}").into(),
+    command(&f.domain, author, Command::PresentResult { checklist: Vec::new(), attachments: vec![], task_id: id.into(), interaction_id: format!("final-{id}").into(),
         body: body.into(), targets: targets.clone(), is_final: true, nothing_to_review: false, card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true) });
     command(&f.domain, user(), Command::AcceptDelivery { presentation_id: format!("final-{id}").into(), targets });
     if pull_request {
@@ -216,7 +216,7 @@ async fn a_review_starts_by_itself_when_the_task_it_reviews_delivers_and_its_mis
     let author = Actor::Agent { agent_id: "seed-a".into() };
     command(&f.domain, author.clone(), Command::RegisterPr { task_id: "a".into(), pr_id: "pr-a".into(), host: "github.com".into(),
         repository: "me/app".into(), number: 9, head: "head1".into(), base: "main".into(), allowed_methods: vec![MergeMethod::Squash] });
-    command(&f.domain, author, Command::PresentResult { attachments: vec![], task_id: "a".into(), interaction_id: "final-a".into(),
+    command(&f.domain, author, Command::PresentResult { checklist: Vec::new(), attachments: vec![], task_id: "a".into(), interaction_id: "final-a".into(),
         body: "What a delivered".into(), targets: vec![DeliveryTarget::PullRequest { pr_id: "pr-a".into(), head: "head1".into() }],
         is_final: true, nothing_to_review: false, card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true) });
     pass(&f.domain, &f.home, &claude).await.unwrap();

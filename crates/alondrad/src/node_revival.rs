@@ -536,6 +536,7 @@ mod tests {
         let (_home, domain) = world(true);
         let text = || vec![DeliveryTarget::Text { text: "The result".into() }];
         command(&domain, Actor::Agent { agent_id: SESSION.into() }, "present", Command::PresentResult {
+            checklist: Vec::new(),
             attachments: vec![], task_id: "t".into(), interaction_id: "final".into(), body: "Done".into(), targets: text(),
             is_final: true, nothing_to_review: false, card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
         });
@@ -583,7 +584,7 @@ mod tests {
     async fn a_silent_session_whose_held_card_is_open_waits_for_the_user_and_is_never_restarted() {
         let (_home, domain) = world(true);
         let _link = silent_turn(&domain);
-        let card = serde_json::from_value(json!({"session_id": SESSION, "id": "call-1", "kind": "plan", "input": {"plan": "Ship it"}})).unwrap();
+        let card = serde_json::from_value(json!({"session_id": SESSION, "id": "call-1", "kind": "plan", "input": {"plan": "- [ ] Ship it"}})).unwrap();
         assert!(matches!(crate::domain_holds::post(&domain, &card, true).unwrap(), crate::domain_holds::Posted::Held(_)));
         assert!(stalled_sessions(&domain, alondra_core::now_millis()).is_empty(), "waiting for the user, not stalled");
         crate::domain_holds::release_call(&domain, SESSION, "call-1").unwrap();

@@ -125,6 +125,7 @@ impl Rig {
             Task::Done => {
                 let targets = vec![DeliveryTarget::Text { text: "Result".into() }];
                 command(&self.domain, Actor::Agent { agent_id: session.clone().into() }, Command::PresentResult {
+                    checklist: Vec::new(),
                     attachments: vec![], task_id: id.clone().into(), interaction_id: format!("final-{n}").into(), body: "Done".into(),
                     targets: targets.clone(), is_final: true, nothing_to_review: false, card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true) });
                 command(&self.domain, user(), Command::AcceptDelivery { presentation_id: format!("final-{n}").into(), targets });
@@ -412,6 +413,7 @@ async fn a_node_that_declared_work_after_the_merge_is_neither_cut_nor_closed() {
     let agent = || Actor::Agent { agent_id: releasing.clone().into() };
     let targets = vec![DeliveryTarget::Text { text: "Result".into() }];
     command(&rig.domain, agent(), Command::PresentResult {
+        checklist: Vec::new(),
         attachments: vec![], task_id: "t1".into(), interaction_id: "final-1".into(), body: "Done".into(), targets: targets.clone(),
         is_final: true, nothing_to_review: false, card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true) });
     command(&rig.domain, user(), Command::AcceptDelivery { presentation_id: "final-1".into(), targets });

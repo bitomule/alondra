@@ -128,6 +128,11 @@ Pick the tool by what you need:
   issues, a check where nothing changed), deliver with `nothing_to_review: true` and only `text`
   targets: Alondra creates no card and closes the task in silence. Never send a review card that
   only says there was nothing to do.
+  When the user approved a plan for the task, send `checklist` with the final result: every point
+  of that plan's checklist, by its number from 1, each with at least one piece of evidence
+  (`commit` sha in your branch, `test` or `command` you ran, `screenshot` attachment id, `pr`,
+  `file`, `link`). Alondra refuses the result while a point is missing and names it. A point that
+  no longer applies goes out with a revised plan the user approves, never by leaving it out.
   When the result needs the user to choose anything (a design's open decisions, a default to
   pick), ask it with `ask` before you deliver: each choice a question with the option you
   recommend, up to 4 together with `questions`. Put the answers into the work, then deliver.
@@ -162,7 +167,9 @@ Pick the tool by what you need:
   with `EnterPlanMode`, plan, and present it with `ExitPlanMode`. Alondra holds it as a plan card:
   the user reads the whole plan, comments on any block, and approves or requests changes; the
   requested changes reach you as a message right after. Never write a plan as a document or ask
-  about it with `ask`.
+  about it with `ask`. Write its scope as Markdown checklist lines (`- [ ] …`), one per thing you
+  will deliver: a plan without them comes back to you, and once approved they are what your final
+  result must mark done.
 - Another document the user approves before you go on (a design, a report, a spec): create (or
   revise) it, `ask` with the decision in `body` and the approval options, then at once
   `link_interaction_subject` with that question and

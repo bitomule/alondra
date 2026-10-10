@@ -408,6 +408,65 @@ impl DomainState {
         self.targets(task_id, targets)?;
         Ok((p, t, targets))
     }
+    /// A final delivery of a task with an approved plan marks every point of it done, each with
+    /// what proves it; a task with no approved plan, or a result that is not final, carries none.
+    fn checklist_marks_cover_the_plan(&self, task_id: &TaskId, is_final: bool, marks: &[ChecklistMark], attachments: &[AttachmentRef]) -> Result<()> {
+        let plan = self.checklists.get(task_id);
+        if marks.is_empty() && (!is_final || plan.is_none()) {
+            return Ok(());
+        }
+        if !is_final {
+            return refuse("checklist_not_final", "checklist", "only the final delivery marks the plan's points done: leave checklist out of this result");
+        }
+        let Some(plan) = plan else {
+            return refuse("checklist_without_plan", "checklist", "this task has no approved plan: leave checklist out");
+        };
+        let kinds = EvidenceKind::listed();
+        let mut marked = BTreeSet::new();
+        for mark in marks {
+            let point = &mark.item;
+            if !plan.items.iter().any(|item| item.id == *point) {
+                return refuse("checklist_unknown_item", "checklist", &format!("point {point} is not in the approved plan (points 1–{})", plan.items.len()));
+            }
+            if !marked.insert(point.as_str()) {
+                return refuse("checklist_unknown_item", "checklist", &format!("point {point} is marked twice: mark each point once, with all its evidence"));
+            }
+            if mark.evidence.iter().all(|e| e.value.trim().is_empty()) {
+                return refuse("checklist_without_evidence", "checklist", &format!("point {point} has no evidence: add at least one ({kinds})"));
+            }
+            if mark.evidence.len() > EVIDENCE_MAX_PER_ITEM {
+                return refuse("invalid_input", "checklist", &format!("point {point} has more than {EVIDENCE_MAX_PER_ITEM} pieces of evidence: keep the ones that prove it"));
+            }
+            for evidence in &mark.evidence {
+                let value = evidence.value.trim();
+                if value.is_empty() || value.chars().count() > EVIDENCE_MAX_TEXT || evidence.detail.as_ref().is_some_and(|d| d.chars().count() > EVIDENCE_MAX_TEXT) {
+                    return refuse("invalid_input", "checklist", &format!("point {point}: every piece of evidence has a value, and value and detail are at most {EVIDENCE_MAX_TEXT} characters"));
+                }
+                match evidence.kind {
+                    EvidenceKind::Commit if !is_commit_sha(value) => {
+                        return refuse("invalid_input", "checklist", &format!("point {point}: {value} is not a commit sha: cite the commit by its sha"));
+                    }
+                    EvidenceKind::Screenshot if !attachments.iter().any(|a| a.id == value) => {
+                        return refuse("evidence_unknown_attachment", "checklist", &format!("point {point}: screenshot {value} is not one of this result's attachments: attach it and cite its id"));
+                    }
+                    EvidenceKind::Pr if self.task(task_id)?.pr_id.as_ref().is_none_or(|pr| pr.0 != value) => {
+                        return refuse("evidence_unknown_pr", "checklist", &format!("point {point}: {value} is not this task's registered PR: cite its pr_id"));
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let missing: Vec<String> = plan.items.iter()
+            .filter(|item| !marked.contains(item.id.as_str()))
+            .map(|item| format!("{} “{}”", item.id, item.text))
+            .collect();
+        if !missing.is_empty() {
+            return refuse("checklist_incomplete", "checklist", &format!(
+                "the approved plan has {} points and these are not marked done: {}. Finish them and add each to checklist with its evidence ({kinds}). If a point no longer applies, send a revised plan with ExitPlanMode; once the user approves it, it replaces this checklist",
+                plan.items.len(), missing.join(", ")));
+        }
+        Ok(())
+    }
     fn targets(&self, task: &TaskId, targets: &[DeliveryTarget]) -> Result<()> {
         let t = self.task(task)?;
         if targets.is_empty() || targets.len() > 64 {
@@ -2643,6 +2702,9 @@ impl DomainState {
                     return fail("forbidden", "Only Alondra holds a hook");
                 }
                 validate_options(options)?;
+                if *hold == Hold::Plan {
+                    plan_checklist(body)?;
+                }
                 let scope = Scope::Task { task_id: task_id.clone() };
                 let winding_down = self.tasks.get(task_id).is_some_and(|t| Self::winding_down(t) && t.agent_id.as_ref() == Some(agent_id));
                 if !winding_down {
@@ -2849,6 +2911,12 @@ impl DomainState {
                     _ => unreachable!(),
                 };
                 i.revision = self.revision + 1;
+                if let (Some(Hold::Plan), Scope::Task { task_id }) = (self.holds.get(interaction_id), &i.scope)
+                    && option_id == Hold::APPROVE
+                {
+                    let checklist = Checklist { plan: interaction_id.clone(), items: checklist_items(&i.body) };
+                    self.checklists.insert(task_id.clone(), checklist);
+                }
                 self.settle_start_problem(interaction_id, option_id, effects);
                 // D05: the answer reaches whoever holds the Task now, not the
                 // session that asked and may since have been replaced.
@@ -3170,6 +3238,7 @@ impl DomainState {
                 targets,
                 is_final,
                 nothing_to_review,
+                checklist,
                 card,
             } => {
                 self.assigned(actor, task_id)?;
@@ -3193,6 +3262,7 @@ impl DomainState {
                     return refuse("pr_missing", "targets", &format!(
                         "Your PR #{} is open: present it in the final delivery with its head {} so it is merged when the user accepts", pr.number, pr.head));
                 }
+                self.checklist_marks_cover_the_plan(task_id, *is_final, checklist, attachments)?;
                 let mut card = card.clone();
                 if targets.iter().any(|t| matches!(t, DeliveryTarget::PullRequest { pr_id, .. }
                     if self.pull_requests.get(pr_id).is_some_and(|p| p.state != PrState::Open)))
@@ -3224,6 +3294,9 @@ impl DomainState {
                         .map(|i| format!("“{}”", i.card.need)).collect::<Vec<_>>().join(", ");
                     return refuse("unanswered_questions", "is_final", &format!(
                         "You have unanswered questions ({open}): wait for the answers before you deliver, or withdraw the ones you no longer need"));
+                }
+                if !checklist.is_empty() {
+                    self.checklist_marks.insert(interaction_id.clone(), checklist.clone());
                 }
                 if *is_final {
                     self.invalidate(task_id);
@@ -4135,10 +4208,29 @@ impl DomainState {
                 }
             }
         }
+        for (task_id, checklist) in &self.checklists {
+            if !self.tasks.contains_key(task_id) || self.holds.get(&checklist.plan) != Some(&Hold::Plan)
+                || !self.interactions.get(&checklist.plan).is_some_and(|i| i.scope == (Scope::Task { task_id: task_id.clone() }))
+            {
+                return fail("invalid_input", "Invalid checklist relation");
+            }
+        }
+        for id in self.checklist_marks.keys() {
+            if !self.interactions.get(id).is_some_and(|i| matches!(i.payload, InteractionPayload::Delivery { is_final: true, .. })) {
+                return fail("invalid_input", "Invalid checklist marks relation");
+            }
+        }
         for (k, s) in &self.stack_readiness {
             if k!=&s.task_id || !self.pull_requests.get(&s.pr_id).is_some_and(|p|p.task_id==s.task_id) || !self.interactions.get(&s.presentation_id).is_some_and(|i|i.scope==(Scope::Task{task_id:k.clone()}) && matches!(&i.payload,InteractionPayload::Delivery{targets,..} if targets.contains(&DeliveryTarget::PullRequest{pr_id:s.pr_id.clone(),head:s.head.clone()}))){return fail("invalid_input","Invalid stack readiness relation")}
         }
         Ok(())
+    }
+}
+/// A plan states its scope as Markdown checklist lines, so its final delivery can be held to it.
+fn plan_checklist(plan: &str) -> Result<()> {
+    match plan_checklist_problem(plan) {
+        Some((code, fix)) => refuse(code, "plan", &fix),
+        None => Ok(()),
     }
 }
 fn validate_options(options: &[QuestionOption]) -> Result<()> {

@@ -70,6 +70,7 @@ fn review_relation(s: &mut DomainState) {
 }
 fn present(s: &mut DomainState, who: &str, task: &str, id: &str) -> CommandOutcome {
     ok(s, agent(who), Command::PresentResult {
+        checklist: Vec::new(),
         attachments: vec![], task_id: task.into(), interaction_id: id.into(), body: "Done".into(),
         targets: vec![DeliveryTarget::Text { text: "The result".into() }],
         is_final: true, nothing_to_review: false, card: CardSpec::delivery("Review the result", &[], true),
@@ -297,6 +298,7 @@ fn pr_target() -> Vec<DeliveryTarget> {
 }
 fn present_pr(s: &mut DomainState, task: &str, who: &str, id: &str) -> CommandOutcome {
     ok(s, agent(who), Command::PresentResult {
+        checklist: Vec::new(),
         attachments: vec![], task_id: task.into(), interaction_id: id.into(), body: "Done".into(), targets: pr_target(),
         is_final: true, nothing_to_review: false, card: CardSpec::delivery("Review the result", &[], true),
     })

@@ -1,4 +1,4 @@
-use super::ScheduleState;
+use super::{Checklist, ChecklistMark, ScheduleState};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -918,6 +918,12 @@ pub struct DomainState {
     /// Questions a Claude Code hook is waiting on: the hook, not the outbox, hands the answer.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub holds: BTreeMap<InteractionId, Hold>,
+    /// Each Task's scope: the points of the last plan the user approved for it.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub checklists: BTreeMap<TaskId, Checklist>,
+    /// The points each final delivery marked done, with their evidence.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub checklist_marks: BTreeMap<InteractionId, Vec<ChecklistMark>>,
 }
 impl DomainState {
     pub fn new(epoch: impl Into<DataEpoch>) -> Self {
@@ -938,6 +944,8 @@ impl DomainState {
             stack_readiness: BTreeMap::new(),
             schedule: ScheduleState::default(),
             holds: BTreeMap::new(),
+            checklists: BTreeMap::new(),
+            checklist_marks: BTreeMap::new(),
         }
     }
     /// The orchestrator has neither defined it into Tasks nor closed it.

@@ -217,6 +217,13 @@ public struct CardDetailView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(row.title).font(.subheadline.weight(.semibold)).foregroundStyle(Palette.ink)
                 if let subtitle = row.subtitle { Text(subtitle).font(.footnote).foregroundStyle(.secondary) }
+                ForEach(row.children, id: \.id) { child in
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(child.title).font(.footnote).foregroundStyle(Palette.ink)
+                        if let subtitle = child.subtitle { Text(subtitle).font(.caption).foregroundStyle(.secondary) }
+                    }
+                    .padding(.top, 4)
+                }
             }
             Spacer(minLength: 0)
         }

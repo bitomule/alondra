@@ -661,6 +661,8 @@ fn ensure_nothing_removed(before: &DomainState, after: &DomainState) -> Result<(
     kept("merge authorization", &before.merge_authorizations, &after.merge_authorizations)?;
     kept("stack readiness", &before.stack_readiness, &after.stack_readiness)?;
     kept("hook hold", &before.holds, &after.holds)?;
+    kept("task checklist", &before.checklists, &after.checklists)?;
+    kept("delivery checklist", &before.checklist_marks, &after.checklist_marks)?;
     kept("schedule", &before.schedule.schedules, &after.schedule.schedules)?;
     kept("schedule run", &before.schedule.runs, &after.schedule.runs)?;
     for (id, task) in &before.tasks {
@@ -797,6 +799,14 @@ pub(super) fn save_changes(c: &Connection, before: &DomainState, after: &DomainS
             let row = object(&json!({"interaction_id": id, "hold": hold}))?;
             upsert(c, "interaction_holds", &["interaction_id"], row)?;
         }
+    }
+    for (task_id, checklist) in after.checklists.iter().filter(|(id, c)| before.checklists.get(*id) != Some(*c)) {
+        let row = object(&json!({"task_id": task_id, "plan_interaction_id": checklist.plan, "items": checklist.items}))?;
+        upsert(c, "task_checklists", &["task_id"], row)?;
+    }
+    for (id, marks) in after.checklist_marks.iter().filter(|(id, m)| before.checklist_marks.get(*id) != Some(*m)) {
+        let row = object(&json!({"interaction_id": id, "marks": marks}))?;
+        upsert(c, "delivery_checklists", &["interaction_id"], row)?;
     }
     save_schedule_changes(c, &before.schedule, &after.schedule)?;
     Ok(())
@@ -1114,6 +1124,13 @@ pub(super) fn load(c: &Connection) -> Result<DomainState> {
     }
     for row in rows(c, "interaction_holds", &[], &[])? {
         state.holds.insert(InteractionId::from(s(&row["interaction_id"])?), decode(row["hold"].clone())?);
+    }
+    for row in rows(c, "task_checklists", &[], &["items"])? {
+        let checklist = Checklist { plan: InteractionId::from(s(&row["plan_interaction_id"])?), items: decode(row["items"].clone())? };
+        state.checklists.insert(TaskId::from(s(&row["task_id"])?), checklist);
+    }
+    for row in rows(c, "delivery_checklists", &[], &["marks"])? {
+        state.checklist_marks.insert(InteractionId::from(s(&row["interaction_id"])?), decode(row["marks"].clone())?);
     }
     state.schedule = load_schedule_state(c)?;
     state.derive_states();

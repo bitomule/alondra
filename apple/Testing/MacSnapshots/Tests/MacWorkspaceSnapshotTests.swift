@@ -238,6 +238,16 @@ final class MacWorkspaceSnapshotTests: XCTestCase {
         }
     }
 
+    func test_card_deliveryWithItsApprovedPlan() throws {
+        let store = try presentation(detail: "card-delivery-checklist-mac")
+        assertWindow(size: CGSize(width: 900, height: 820)) { MacServiceDetail(presentation: store) }
+    }
+
+    func test_card_deliveryWithItsApprovedPlan_spanish() throws {
+        let store = try presentation(detail: "card-delivery-checklist-es-mac", spanish: true)
+        assertWindow(size: CGSize(width: 900, height: 820), spanish: true) { MacServiceDetail(presentation: store) }
+    }
+
     func test_card_noticeThatBlocksNothing() throws {
         let store = try presentation(detail: "card-information-mac")
         assertWindow(size: CGSize(width: 900, height: 520)) { MacServiceDetail(presentation: store) }

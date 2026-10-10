@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use alondra_core::domain::{DeliveryTarget, DomainError, DomainState, TaskId};
+use alondra_core::domain::{ChecklistMark, DeliveryTarget, DomainError, DomainState, EvidenceKind, TaskId};
 use serde_json::Value;
 use tokio::process::Command;
 
@@ -174,6 +174,30 @@ pub(crate) async fn final_refusal_in(state: &DomainState, dir: &Path, task: &Tas
             None
         }
     }
+}
+
+/// Why the commits a final delivery cites as evidence cannot be taken: one its worktree does not
+/// have in the history of its HEAD. Nothing when the node has no worktree of its own.
+pub(crate) async fn evidence_refusal(session_id: &str, checklist: &[ChecklistMark]) -> Option<DomainError> {
+    evidence_refusal_in(&worktree_of(session_id)?, checklist).await
+}
+
+pub(crate) async fn evidence_refusal_in(dir: &Path, checklist: &[ChecklistMark]) -> Option<DomainError> {
+    for mark in checklist {
+        for evidence in mark.evidence.iter().filter(|evidence| evidence.kind == EvidenceKind::Commit) {
+            let sha = evidence.value.trim();
+            let commit = format!("{sha}^{{commit}}");
+            let known = git(dir, &["rev-parse", "--verify", "--quiet", &commit]).await.is_some();
+            if !known || git(dir, &["merge-base", "--is-ancestor", sha, "HEAD"]).await.is_none() {
+                let mut error = DomainError::new("evidence_commit_not_in_work", format!(
+                    "checklist: commit {sha} (point {}) is not in your work: cite a commit of your branch, pushed, or commit and push the work it stands for",
+                    mark.item));
+                error.subject = Some("checklist".into());
+                return Some(error);
+            }
+        }
+    }
+    None
 }
 
 /// Deletes the node's worktree so `claude rm` closes the node; its commits stay on its branch.
@@ -551,6 +575,25 @@ mod tests {
         assert_eq!(code(final_refusal_in(&state, &clone, &task, &text).await), None,
             "when it cannot be told where the default branch is, the result is taken");
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_commit_cited_as_evidence_must_be_in_the_history_of_the_node_s_work() {
+        let root = crate::test_support::Directory::new();
+        let dir = testing::task_worktree(&root, "t-evidence");
+        let head = git(&dir, &["rev-parse", "HEAD"]).await.unwrap();
+        let cite = |sha: &str| vec![ChecklistMark { item: "2".into(), evidence: vec![alondra_core::domain::Evidence { kind: EvidenceKind::Commit, value: sha.into(), detail: None }] }];
+        assert_eq!(evidence_refusal_in(&dir, &cite(&head)).await, None);
+        assert_eq!(evidence_refusal_in(&dir, &cite(&head[..7])).await, None, "an abbreviated sha is the same commit");
+        let refused = evidence_refusal_in(&dir, &cite("0123456789abcdef0123456789abcdef01234567")).await.unwrap();
+        assert_eq!(refused.code, "evidence_commit_not_in_work");
+        assert!(refused.message.starts_with("checklist: commit 0123456789abcdef0123456789abcdef01234567 (point 2) is not in your work"), "{}", refused.message);
+        testing::git(&dir, &["checkout", "-q", "-b", "elsewhere"]);
+        testing::git(&dir, &["commit", "-q", "--allow-empty", "-m", "aside"]);
+        let aside = git(&dir, &["rev-parse", "HEAD"]).await.unwrap();
+        testing::git(&dir, &["checkout", "-q", "-"]);
+        assert_eq!(evidence_refusal_in(&dir, &cite(&aside)).await.map(|e| e.code), Some("evidence_commit_not_in_work".into()),
+            "a commit on another branch is not this work");
     }
 
     #[tokio::test]

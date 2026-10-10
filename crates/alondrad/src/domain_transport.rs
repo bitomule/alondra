@@ -1177,6 +1177,7 @@ mod tests {
             allowed_methods: vec![MergeMethod::Squash],
         });
         command(&domain, Actor::Agent { agent_id: "session-a".into() }, "present", Command::PresentResult {
+            checklist: Vec::new(),
             attachments: vec![], task_id: "task-session-a".into(), interaction_id: "delivery".into(),
             body: "Ready".into(), targets: vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: head.into() }],
             is_final: true, nothing_to_review: false, card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
@@ -1521,6 +1522,7 @@ mod tests {
         let domain = fixture.open();
         node_with_task(&domain);
         command(&domain, agent_actor(), "present", Command::PresentResult {
+            checklist: Vec::new(),
             attachments: vec![], task_id: "task".into(), interaction_id: "delivery".into(),
             body: "Done".into(), targets: vec![DeliveryTarget::Text { text: "The answer".into() }], is_final: true,
             nothing_to_review: false,
@@ -1558,6 +1560,7 @@ mod tests {
         let domain = fixture.open();
         node_with_task(&domain);
         command(&domain, agent_actor(), "present", Command::PresentResult {
+            checklist: Vec::new(),
             attachments: vec![], task_id: "task".into(), interaction_id: "delivery".into(),
             body: "Done".into(), targets: vec![DeliveryTarget::Text { text: "The answer".into() }], is_final: true, nothing_to_review: false, card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
         });
@@ -1733,7 +1736,7 @@ mod tests {
 
     fn plan(agent: &str) -> Value {
         json!({"session_id": agent, "id": "toolu-plan", "kind": "plan",
-            "input": {"plan": "# Ship the parser\n\n1. Split the lexer"}})
+            "input": {"plan": "# Ship the parser\n\n- [ ] Split the lexer"}})
     }
 
     fn elicitation(agent: &str) -> Value {
@@ -1890,6 +1893,24 @@ mod tests {
         assert_eq!((reply["held"].as_bool(), reply["approved"].as_bool()), (Some(true), Some(false)), "{reply}");
         assert!(reply["feedback"].as_str().unwrap().contains("was cancelled"), "{reply}");
         assert_eq!(domain.state().unwrap().interactions.len(), before, "no card is put to the user");
+    }
+
+    #[tokio::test]
+    async fn a_plan_without_a_checklist_goes_back_to_its_node_and_never_reaches_the_user() {
+        let fixture = Fixture::new();
+        let domain = fixture.open();
+        working_agent(&domain, "agent-a");
+        let before = domain.state().unwrap().interactions.len();
+        let (mut client, server) = UnixStream::pair().unwrap();
+        let unlisted = json!({"session_id": "agent-a", "id": "toolu-plan", "kind": "plan", "input": {"plan": "# Ship the parser\n\n1. Split the lexer"}});
+        send(&mut client, &json!({"node_hold": unlisted})).await;
+        let (result, reply) = tokio::join!(handle(server, &domain), reply(&mut client));
+        result.unwrap();
+        assert_eq!((reply["held"].as_bool(), reply["approved"].as_bool()), (Some(true), Some(false)), "{reply}");
+        assert!(reply["feedback"].as_str().unwrap().starts_with("Your plan has no checklist. Write its scope as Markdown checklist lines (`- [ ] …`)"), "{reply}");
+        let state = domain.state().unwrap();
+        assert_eq!(state.interactions.len(), before, "no card is put to the user");
+        assert!(state.holds.is_empty());
     }
 
     #[tokio::test]

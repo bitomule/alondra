@@ -140,6 +140,18 @@ final class CardDetailSnapshotTests: XCTestCase {
         assertDetail(store, language: .spanish)
     }
 
+    // MARK: A final delivery held to its approved plan
+
+    func test_deliveryWithItsApprovedPlan() throws {
+        let store = ScreenStores.cardDetail(try Fixtures.unblocked(try Fixtures.document("card-delivery-checklist")))
+        assertDetail(store)
+    }
+
+    func test_deliveryWithItsApprovedPlan_es() throws {
+        let store = ScreenStores.cardDetail(try Fixtures.spanish(try Fixtures.unblocked(try Fixtures.document("card-delivery-checklist-es"))))
+        assertDetail(store, language: .spanish)
+    }
+
     // MARK: A plan to comment on
 
     func test_plan() throws {

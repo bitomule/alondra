@@ -385,6 +385,7 @@ mod tests {
             number: 7, head: HEAD.into(), base: "main".into(), allowed_methods: vec![MergeMethod::Squash],
         });
         command(domain, Actor::Agent { agent_id: "a".into() }, "present", Command::PresentResult {
+            checklist: Vec::new(),
             attachments: vec![], task_id: "t".into(), interaction_id: "d".into(), body: "Ready".into(),
             targets: vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: HEAD.into() }], is_final: true, nothing_to_review: false, card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
         });
@@ -409,6 +410,7 @@ mod tests {
         command(domain, Actor::Agent { agent_id: "a".into() }, "pr", register.clone());
         assert_eq!(crate::domain_api::auto_merge_notice(domain, &register).is_some(), auto_merge);
         command(domain, Actor::Agent { agent_id: "a".into() }, "present", Command::PresentResult {
+            checklist: Vec::new(),
             attachments: vec![], task_id: "t".into(), interaction_id: "d".into(), body: "Ready".into(),
             targets: vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: HEAD.into() }], is_final: true, nothing_to_review: false, card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
         });
@@ -671,6 +673,7 @@ mod tests {
         reconcile(&domain, &observer, &mut ObservationFailures::default()).await.unwrap();
         assert_eq!(domain.state().unwrap().merge_authorizations[&"auth".into()].attempt, MergeAttemptState::Failed);
         command(&domain, Actor::Agent { agent_id: "a".into() }, "present-2", Command::PresentResult {
+            checklist: Vec::new(),
             attachments: vec![], task_id: "t".into(), interaction_id: "d2".into(), body: "Conflicts resolved".into(),
             targets: vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: OTHER.into() }], is_final: true,
             nothing_to_review: false,

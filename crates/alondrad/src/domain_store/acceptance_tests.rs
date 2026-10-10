@@ -360,6 +360,7 @@ fn setup_variant(store: &mut DomainStore, variants: &Value, name: &str) {
             &format!("setup-present-{name}"),
             actor("agent-a"),
             Command::PresentResult {
+                checklist: Vec::new(),
                 attachments: vec![],
                 task_id: task_id.into(),
                 interaction_id: string(field(variant, "presentation_id")).into(),
@@ -446,6 +447,7 @@ fn setup_variant(store: &mut DomainStore, variants: &Value, name: &str) {
             &format!("setup-present-{name}"),
             actor("agent-a"),
             Command::PresentResult {
+                checklist: Vec::new(),
                 attachments: vec![],
                 task_id: task_id.into(),
                 interaction_id: string(variant_field(variants, name, "presentation_id")).into(),
@@ -467,6 +469,7 @@ fn setup_variant(store: &mut DomainStore, variants: &Value, name: &str) {
             &format!("setup-present-{name}"),
             actor("agent-a"),
             Command::PresentResult {
+                checklist: Vec::new(),
                 attachments: vec![],
                 task_id: string(field(variant, "task_id")).into(),
                 interaction_id: string(field(variant, "presentation_id")).into(),

@@ -126,6 +126,7 @@ fn the_report_reads_the_tasks_history_and_the_changes_asked_on_its_pr_from_the_s
     });
     let targets = vec![DeliveryTarget::PullRequest { pr_id: "pr-1".into(), head: "aaa".into() }];
     run_command(&mut store, &agent, "present", Command::PresentResult {
+        checklist: Vec::new(),
         task_id: "task-1".into(), interaction_id: "delivery-1".into(), body: "The PR".into(), targets: targets.clone(),
         is_final: true, nothing_to_review: false, attachments: vec![], card: CardSpec::delivery("Review the PR", &[], true),
     });
@@ -250,6 +251,7 @@ fn a_change_asked_on_a_delivery_without_a_pr_is_a_round_but_not_a_changed_pr() {
 
 fn text_delivery(task: &str, id: &str) -> Command {
     Command::PresentResult {
+        checklist: Vec::new(),
         task_id: task.into(), interaction_id: id.into(), body: "Done".into(), targets: vec![DeliveryTarget::Text { text: "The answer".into() }],
         is_final: true, nothing_to_review: false, attachments: vec![], card: CardSpec::delivery("Review the result", &[], true),
     }

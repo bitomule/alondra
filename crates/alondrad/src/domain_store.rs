@@ -80,6 +80,15 @@ const TASK_POST_MERGE_WORK: &str = "CREATE TABLE IF NOT EXISTS task_post_merge_w
 const TASK_PRIORITIES: &str = "CREATE TABLE IF NOT EXISTS task_priorities(\
  task_id TEXT PRIMARY KEY REFERENCES tasks(id),\
  priority TEXT NOT NULL CHECK(priority IN('high','normal','low')));";
+/// Each task's scope, the points of the last plan the user approved, and the points each final
+/// delivery marked done; created on every open like task_relations.
+const TASK_CHECKLISTS: &str = "CREATE TABLE IF NOT EXISTS task_checklists(\
+ task_id TEXT PRIMARY KEY REFERENCES tasks(id),\
+ plan_interaction_id TEXT NOT NULL REFERENCES interactions(id),\
+ items TEXT NOT NULL CHECK(json_valid(items)));\
+ CREATE TABLE IF NOT EXISTS delivery_checklists(\
+ interaction_id TEXT PRIMARY KEY REFERENCES interactions(id),\
+ marks TEXT NOT NULL CHECK(json_valid(marks)));";
 /// Launches waiting at the gate for a free slot (not domain state): what to launch, who asked and
 /// since when. See docs/fleet-pacing.md.
 const LAUNCH_QUEUE: &str = "CREATE TABLE IF NOT EXISTS launch_queue(\
@@ -481,6 +490,7 @@ impl DomainStore {
         tx.execute_batch(ORCHESTRATOR_DELIVERIES)?;
         tx.execute_batch(TASK_POST_MERGE_WORK)?;
         tx.execute_batch(TASK_PRIORITIES)?;
+        tx.execute_batch(TASK_CHECKLISTS)?;
         tx.execute_batch(LAUNCH_QUEUE)?;
         tx.execute_batch(TASK_CLOSINGS)?;
         tx.execute_batch(POST_MERGE_CHECKS)?;

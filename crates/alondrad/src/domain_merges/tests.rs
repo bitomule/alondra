@@ -58,6 +58,7 @@ fn presented(_tag: &str, auto_merge: bool) -> (Home, Arc<DomainRuntime>, FakeGit
         number: 7, head: HEAD.into(), base: "main".into(), allowed_methods: vec![MergeMethod::Squash, MergeMethod::Merge],
     });
     command(&domain, Actor::Agent { agent_id: "a".into() }, "present", Command::PresentResult {
+        checklist: Vec::new(),
         attachments: vec![], task_id: "t".into(), interaction_id: "d".into(), body: "Ready".into(),
         targets: targets(), is_final: true, nothing_to_review: false, card: CardSpec::delivery("Review the result", &[], true),
     });
@@ -184,6 +185,7 @@ async fn an_auto_merge_waits_for_the_task_that_reviews_it_and_merges_once_it_app
     });
     command(&domain, reviewer(), "start", Command::StartTask { task_id: "review".into() });
     command(&domain, reviewer(), "present-review", Command::PresentResult {
+        checklist: Vec::new(),
         attachments: vec![], task_id: "review".into(), interaction_id: "rd".into(), body: "Looked at it".into(),
         targets: vec![DeliveryTarget::Text { text: "The review".into() }], is_final: true,
         nothing_to_review: false,

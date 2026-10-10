@@ -985,6 +985,13 @@ async fn execute_command<H: DomainHost>(
         {
             return domain_error(refusal);
         }
+        if let (Principal::Agent { session_id, .. }, Command::PresentResult { interaction_id, checklist, is_final: true, .. }) = (&principal, &envelope.command)
+            && !checklist.is_empty()
+            && host.domain().state().is_ok_and(|state| !state.interactions.contains_key(interaction_id))
+            && let Some(refusal) = crate::worktree::evidence_refusal(session_id, checklist).await
+        {
+            return domain_error(refusal);
+        }
         if let (Principal::Agent { .. }, Command::PresentResult { targets, is_final: true, .. }) = (&principal, &envelope.command)
             && let Ok(state) = host.domain().state()
             && let Some(refusal) = crate::domain_merges::draft_refusal(&state, targets, &crate::domain_github::GhCli::new()).await

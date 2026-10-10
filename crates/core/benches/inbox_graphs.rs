@@ -34,6 +34,7 @@ fn templates() -> DomainState {
     let targets = vec![DeliveryTarget::PullRequest { pr_id: "template-pr".into(), head: "fixture-head".into() }];
     let card = CardSpec::delivery("Review synthetic result", &targets, true);
     super::commit(&mut state, Actor::Agent { agent_id: "delivery-agent".into() }, Command::PresentResult {
+        checklist: Vec::new(),
         attachments: vec![], task_id: "delivery-task".into(), interaction_id: "template-delivery".into(), body: "Synthetic result".into(),
         targets, is_final: true, nothing_to_review: false, card,
     });

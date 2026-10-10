@@ -13,7 +13,7 @@ use super::{
 };
 use crate::domain::{
     AvailableAction, Author, CardKind, CardSpec, ClarificationReason, ContentKind as DomainContent,
-    DeliveryTarget, DomainProjection, DomainState, Hold, InboxItem, InboxSubject, Instruction, Interaction, InteractionId,
+    DeliveryTarget, DomainProjection, DomainState, EvidenceKind, Hold, InboxItem, InboxSubject, Instruction, Interaction, InteractionId,
     InteractionPayload, InteractionSubject, MergeMethod, PrId, PrState, PullRequest, QuestionGroup, QuestionOption, Recipient, Scope, clip,
 };
 
@@ -115,6 +115,9 @@ pub(super) fn build(id: &str, context: &RenderContext<'_>) -> Result<View, Build
     let card = from_item(item, context, true)?;
     let title = card.title.clone();
     let mut sections = vec![super::common::section("card", None, vec![Item::Card(card)])];
+    if let Some((title, points)) = plan_points(item, context) {
+        sections.push(super::common::section("plan", Some(title), points));
+    }
     match pr_sections(item, context) {
         Some(pr_sections) => sections.extend(pr_sections),
         None => {
@@ -1439,6 +1442,57 @@ fn context_items(item: &InboxItem, context: &RenderContext<'_>) -> Vec<Item> {
     }
     let link = item.task_id.as_ref().map(|id| Link::View { key: format!("task:{id}") });
     vec![Item::Facts(Facts { items: vec![Fact { label: t!(context.lang, "Task", "Tarea").into(), value: line, tone: None, link }] })]
+}
+
+/// The points of the task's approved plan its final delivery marked done, each with the evidence
+/// under it.
+fn plan_points(item: &InboxItem, context: &RenderContext<'_>) -> Option<(String, Vec<Item>)> {
+    let lang = context.lang;
+    let domain = context.domain;
+    let interaction = interaction_of(item, domain)?;
+    let marks = domain.checklist_marks.get(&interaction.id)?;
+    let Scope::Task { task_id } = &interaction.scope else { return None };
+    let items = domain.checklists.get(task_id).map(|checklist| checklist.items.as_slice()).unwrap_or_default();
+    let repository = domain.tasks.get(task_id).and_then(|task| task.pr_id.as_ref()).and_then(|pr| domain.pull_requests.get(pr)).map(|pr| {
+        context.live.pull_requests.iter().find(|detail| detail.id == pr.id.0).and_then(|detail| detail.url.as_deref())
+            .and_then(|url| url.rsplit_once("/pull/")).map(|(base, _)| base.to_owned())
+            .unwrap_or_else(|| format!("https://{}/{}", pr.host, pr.repository))
+    });
+    let bare = |id: String, icon: Icon, title: String, subtitle: Option<String>| {
+        let mut row: Row = super::common::row(&id, "", icon, title, subtitle);
+        row.link = None;
+        row
+    };
+    let points = marks.iter().map(|mark| {
+        let text = items.iter().find(|point| point.id == mark.item).map(|point| point.text.clone())
+            .unwrap_or_else(|| tf!(lang, "Point {n}", "Punto {n}", n = mark.item));
+        let mut row = bare(format!("plan-{}", mark.item), Icon::Check, text, None);
+        row.children = mark.evidence.iter().enumerate().map(|(n, evidence)| {
+            let value = evidence.value.trim();
+            let (icon, label, shown) = match evidence.kind {
+                EvidenceKind::Commit => (Icon::Branch, "Commit", &value[..value.len().min(7)]),
+                EvidenceKind::Test => (Icon::Check, "Test", value),
+                EvidenceKind::Command => (Icon::Action, t!(lang, "Command", "Comando"), value),
+                EvidenceKind::Screenshot => (Icon::Attachment, t!(lang, "Screenshot", "Captura"),
+                    interaction.attachments.iter().find(|a| a.id == value).map_or(value, |a| a.name.as_str())),
+                EvidenceKind::Pr => (Icon::PullRequest, "PR", value),
+                EvidenceKind::File => (Icon::Document, t!(lang, "File", "Archivo"), value),
+                EvidenceKind::Link => (Icon::Notice, t!(lang, "Link", "Enlace"), value),
+            };
+            let mut child = bare(format!("plan-{}-{n}", mark.item), icon, format!("{label} · {}", clip(shown, 120)), evidence.detail.as_deref().map(|d| clip(d, 240)));
+            child.depth = 1;
+            child.link = match evidence.kind {
+                EvidenceKind::Commit => repository.as_ref().map(|base| Link::Url { url: format!("{base}/commit/{value}") }),
+                EvidenceKind::Link if value.starts_with("https://") || value.starts_with("http://") => Some(Link::Url { url: value.into() }),
+                _ => None,
+            };
+            child
+        }).collect();
+        Item::Row(row)
+    }).collect::<Vec<_>>();
+    let total = items.len().max(marks.len());
+    let title = tf!(lang, "Approved plan · {done} of {total} done", "Plan aprobado · {done} de {total} hechos", done = marks.len(), total = total);
+    Some((title, points))
 }
 
 fn history_rows(item: &InboxItem, context: &RenderContext<'_>) -> Vec<Item> {

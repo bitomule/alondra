@@ -1944,6 +1944,7 @@ mod tests {
             });
             let delivery_id = format!("delivery-{task_id}");
             apply_seed_command(&domain, Actor::Agent { agent_id: agent.clone().into() }, &format!("present-{task_id}"), Command::PresentResult {
+                checklist: Vec::new(),
                 attachments: vec![], task_id: task_id.into(), interaction_id: delivery_id.clone().into(),
                 body: "Complete".into(), targets: vec![DeliveryTarget::Text { text: "Complete".into() }],
                 is_final: true, nothing_to_review: false, card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
@@ -2790,6 +2791,7 @@ mod tests {
             number: 7, head: "0123456789abcdef".into(), base: "main".into(), allowed_methods: vec![MergeMethod::Squash],
         });
         apply_seed_command(domain, agent, "present", Command::PresentResult {
+            checklist: Vec::new(),
             attachments: vec![], task_id: "task".into(), interaction_id: "result".into(), body: "Ready".into(),
             targets: vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: "0123456789abcdef".into() }],
             is_final: true, nothing_to_review: false, card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
@@ -2959,6 +2961,7 @@ mod tests {
     fn present_again(domain: &crate::domain_runtime::DomainRuntime, interaction: &str) {
         use alondra_core::domain::DeliveryTarget;
         apply_seed_command(domain, Actor::Agent { agent_id: "agent-a".into() }, interaction, Command::PresentResult {
+            checklist: Vec::new(),
             attachments: vec![], task_id: "task".into(), interaction_id: interaction.into(), body: "Ready again".into(),
             targets: vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: "0123456789abcdef".into() }],
             is_final: true, nothing_to_review: false, card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
@@ -3060,6 +3063,7 @@ mod tests {
             state: alondra_core::domain::PrState::Open, merged_head: None,
         });
         apply_seed_command(&domain, Actor::Agent { agent_id: "agent-a".into() }, "present-moved", Command::PresentResult {
+            checklist: Vec::new(),
             attachments: vec![], task_id: "task".into(), interaction_id: "result-2".into(), body: "Pushed again".into(),
             targets: vec![alondra_core::domain::DeliveryTarget::PullRequest { pr_id: "pr".into(), head: moved.into() }],
             is_final: true, nothing_to_review: false, card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),

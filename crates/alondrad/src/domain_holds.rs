@@ -12,7 +12,7 @@ use crate::http::{elicitation_card, elicitation_content, permission_detail, perm
 use alondra_core::domain::{
     clip, without_recommended_suffix, Actor, AgentId, Answer, Author, CardKind, CardSpec, Command, CommandEnvelope,
     ContentKind, DomainState, GroupQuestion, Hold, InputValue, InteractionId, InteractionPayload, QuestionGroup,
-    QuestionOption, TaskState, PROTOCOL_VERSION,
+    QuestionOption, TaskState, PROTOCOL_VERSION, plan_checklist_problem,
 };
 use anyhow::Result;
 use serde::Deserialize;
@@ -105,11 +105,21 @@ pub(crate) fn post(domain: &DomainRuntime, card: &Card, background: bool) -> Res
     {
         return Ok(Posted::Denied(reason));
     }
+    if hold == Hold::Plan
+        && let Some((_, fix)) = plan_checklist_problem(&str_field(&card.input, "plan").unwrap_or_default())
+    {
+        return Ok(Posted::Denied(capitalized(&fix)));
+    }
     Ok(match open(domain, &card.session_id, id, hold, card.tool.clone(), card.input.clone(), &card.suggestions, None)? {
         Some(held) => Posted::Held(held.id),
         None if hold == Hold::Plan => Posted::Denied(NO_TASK_FOR_PLAN.into()),
         None => Posted::NotHeld,
     })
+}
+
+fn capitalized(text: &str) -> String {
+    let mut chars = text.chars();
+    chars.next().map(|first| first.to_uppercase().chain(chars).collect()).unwrap_or_default()
 }
 
 const NO_TASK_FOR_PLAN: &str = "No open Alondra task can review this plan: do not go on with it. Stop.";

@@ -432,6 +432,7 @@ fn present(s: &mut DomainState, id: &str, targets: Vec<DeliveryTarget>) {
         s,
         agent(),
         Command::PresentResult {
+            checklist: Vec::new(),
             attachments: vec![],
             task_id: "t".into(),
             interaction_id: id.into(),
@@ -1483,6 +1484,7 @@ fn no_task_stays_closing_without_a_way_out() {
                     observe(&mut s);
                 }
                 let shown = exec(&mut s, agent(), Command::PresentResult {
+                    checklist: Vec::new(),
                     attachments: vec![], task_id: "t".into(), interaction_id: "d".into(), body: "Result ready".into(),
                     targets: targets.clone(), is_final: true, nothing_to_review: false, card: crate::domain::CardSpec::delivery("Review the result", &[], true),
                 });
@@ -2053,6 +2055,7 @@ fn partial_delivery_and_unread_information_do_not_replace_final_or_block() {
         &mut s,
         agent(),
         Command::PresentResult {
+            checklist: Vec::new(),
             attachments: vec![],
             task_id: "t".into(),
             interaction_id: "partial".into(),
@@ -2264,6 +2267,7 @@ fn stack_readiness_is_explicit_and_merge_requires_upstream_merge_and_retarget() 
         &mut s,
         agent_b(),
         Command::PresentResult {
+            checklist: Vec::new(),
             attachments: vec![],
             task_id: "down".into(),
             interaction_id: "d-down".into(),
@@ -2686,6 +2690,7 @@ fn a_registered_pr_is_presented_while_open_and_an_accepted_task_settles_once_it_
     register(&mut open);
     let before = open.clone();
     let error = exec(&mut open, agent(), Command::PresentResult {
+        checklist: Vec::new(),
         attachments: vec![], task_id: "t".into(), interaction_id: "d".into(), body: "Result ready".into(),
         targets: text(), is_final: true, nothing_to_review: false, card: crate::domain::CardSpec::delivery("Review the result", &[], true),
     }).unwrap_err();
@@ -3053,7 +3058,7 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
             head: "head9".into(), base: "main".into(), allowed_methods: vec![MergeMethod::Squash] }, false),
         (Command::LinkInteractionSubject { interaction_id: ids.interaction.into(),
             subject: InteractionSubject::PullRequest { pr_id: ids.pr.into() } }, false),
-        (Command::PresentResult { attachments: vec![], task_id: ids.task.into(),
+        (Command::PresentResult { checklist: Vec::new(), attachments: vec![], task_id: ids.task.into(),
             interaction_id: "fresh-delivery".into(), body: "Done".into(), targets: text(),
             is_final: true, nothing_to_review: false, card: crate::domain::CardSpec::delivery("Review the result", &[], true) }, false),
         (Command::SubmitFeedback { attachments: vec![], presentation_id: ids.interaction.into(),
@@ -3158,7 +3163,7 @@ fn unknown_and_foreign_ids_are_typed_rejections_never_panics() {
     exec(&mut s, b.clone(), Command::CreateDocument { task_id: "t2".into(), document_id: "doc2".into(),
         title: "Doc".into(), revision_id: "rev2".into(), content_digest: "c".repeat(64),
         content_reference: "files/c".into(), role: "spec".into() }).unwrap();
-    exec(&mut s, b.clone(), Command::PresentResult { attachments: vec![], task_id: "t2".into(),
+    exec(&mut s, b.clone(), Command::PresentResult { checklist: Vec::new(), attachments: vec![], task_id: "t2".into(),
         interaction_id: "pres2".into(), body: "Done".into(),
         targets: vec![DeliveryTarget::PullRequest { pr_id: "pr2".into(), head: "head1".into() }],
         is_final: true, nothing_to_review: false, card: crate::domain::CardSpec::delivery("Review the result", &[], true) }).unwrap();
@@ -3263,7 +3268,7 @@ fn a_handed_schedule_launch_assigns_its_task_to_the_registered_session_once() {
 fn a_held_hook_question_reaches_the_user_and_its_answer_never_enters_the_outbox() {
     let mut s = fixture();
     let held = |id: &str, hold: Hold| Command::HoldHook { interaction_id: id.into(), task_id: "t".into(),
-        agent_id: "a".into(), hold, body: "Bash: rm -rf build".into(), options: hold.options(), card: crate::domain::CardSpec::derived(crate::domain::CardKind::Authorize, "Allow the call") };
+        agent_id: "a".into(), hold, body: if hold == Hold::Plan { "- [ ] Clean the build" } else { "Bash: rm -rf build" }.into(), options: hold.options(), card: crate::domain::CardSpec::derived(crate::domain::CardKind::Authorize, "Allow the call") };
     reject_unchanged(&mut s, agent(), held("h", Hold::Permission), "forbidden");
     let outcome = exec(&mut s, Actor::System, held("h", Hold::Permission)).unwrap();
     assert_eq!(outcome.effects, [DomainEffect::NotifyUser { task_id: Some("t".into()), interaction_id: "h".into() }]);
@@ -3726,6 +3731,7 @@ fn a_delivery_stacked_on_an_open_pr_is_no_card_until_that_pr_merges_and_then_one
         number: 2, head: "head-down".into(), base: "upstream-branch".into(), allowed_methods: vec![MergeMethod::Squash],
     }).unwrap();
     let delivered = exec(&mut s, agent_b(), Command::PresentResult {
+        checklist: Vec::new(),
         attachments: vec![], task_id: "down".into(), interaction_id: "d-down".into(), body: "Downstream ready".into(),
         targets: vec![DeliveryTarget::PullRequest { pr_id: "pr-down".into(), head: "head-down".into() }],
         is_final: true, nothing_to_review: false, card: crate::domain::CardSpec::delivery("Review the result", &[], true),
@@ -3780,6 +3786,7 @@ fn a_final_delivery_is_refused_while_a_question_of_its_task_waits() {
     ask_aside(&mut s, "q");
     let before = s.clone();
     let refused = exec(&mut s, agent(), Command::PresentResult {
+        checklist: Vec::new(),
         attachments: vec![], task_id: "t".into(), interaction_id: "d".into(), body: "Result ready".into(),
         targets: pr_targets(), is_final: true, nothing_to_review: false, card: crate::domain::CardSpec::delivery("Review the result", &[], true),
     }).unwrap_err();
@@ -3882,9 +3889,9 @@ fn an_accepted_text_delivery_waits_for_a_question_asked_during_cleanup() {
 }
 fn hold_plan(s: &mut DomainState, id: &str) {
     exec(s, Actor::System, Command::HoldHook { interaction_id: id.into(), task_id: "t".into(), agent_id: "a".into(), hold: Hold::Plan,
-        body: "# Tests without stray temp folders\n\n1. Point TMPDIR at Bazel's".into(), options: Hold::Plan.options(),
+        body: "# Tests without stray temp folders\n\n- [ ] Point TMPDIR at Bazel's".into(), options: Hold::Plan.options(),
         card: crate::domain::CardSpec::derived(crate::domain::CardKind::Review, "Tests without stray temp folders")
-            .content(crate::domain::ContentKind::Plan, "1. Point TMPDIR at Bazel's") }).unwrap();
+            .content(crate::domain::ContentKind::Plan, "- [ ] Point TMPDIR at Bazel's") }).unwrap();
 }
 fn notices(s: &DomainState) -> Vec<&Interaction> {
     s.interactions.values().filter(|i| i.id.0.starts_with(ENDED_UNANSWERED_PREFIX)).collect()

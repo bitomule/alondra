@@ -99,6 +99,7 @@ fn review() -> CardSpec {
 }
 fn present(id: &str, targets: Vec<DeliveryTarget>, is_final: bool, card: CardSpec) -> Command {
     Command::PresentResult {
+        checklist: Vec::new(),
         attachments: vec![], task_id: "t".into(), interaction_id: id.into(), body: "Result ready".into(),
         targets, is_final, nothing_to_review: false, card,
     }
@@ -273,8 +274,8 @@ fn a_new_plan_replaces_the_open_one() {
     let mut s = fixture();
     let plan = |id: &str, title: &str| Command::HoldHook {
         interaction_id: id.into(), task_id: "t".into(), agent_id: "a".into(), hold: Hold::Plan,
-        body: format!("# {title}\n\n1. Do it"), options: Hold::Plan.options(),
-        card: CardSpec::new(CardKind::Review, title).content(ContentKind::Plan, format!("# {title}\n\n1. Do it")),
+        body: format!("# {title}\n\n- [ ] Do it"), options: Hold::Plan.options(),
+        card: CardSpec::new(CardKind::Review, title).content(ContentKind::Plan, format!("# {title}\n\n- [ ] Do it")),
     };
     ok(&mut s, Actor::System, plan("p1", "Ship the cards"));
     ok(&mut s, Actor::System, plan("p2", "Ship the cards in two steps"));
@@ -295,6 +296,7 @@ fn blocks_points_at_an_open_target_of_the_task() {
     register_agent(&mut s, "b");
     task(&mut s, "t2", "b");
     ok(&mut s, agent_b(), Command::PresentResult {
+        checklist: Vec::new(),
         attachments: vec![], task_id: "t2".into(), interaction_id: "elsewhere".into(), body: "Done".into(),
         targets: text(), is_final: false, nothing_to_review: false, card: CardSpec::new(CardKind::Know, "Read the result"),
     });
@@ -674,6 +676,7 @@ fn register_pr_of(s: &mut DomainState, actor: Actor, task: &str, pr: &str, numbe
 }
 fn present_pr(s: &mut DomainState, actor: Actor, task: &str, id: &str, pr: &str) {
     ok(s, actor, Command::PresentResult {
+        checklist: Vec::new(),
         attachments: vec![], task_id: task.into(), interaction_id: id.into(), body: "Result ready".into(),
         targets: vec![DeliveryTarget::PullRequest { pr_id: pr.into(), head: format!("head-{pr}") }],
         is_final: true, nothing_to_review: false, card: review(),
@@ -711,6 +714,7 @@ fn the_inbox_runs_problem_then_blocking_asks_then_review_provide_know_oldest_fir
     register_agent(&mut s, "c");
     task(&mut s, "t3", "c");
     ok(&mut s, Actor::Agent { agent_id: "c".into() }, Command::PresentResult {
+        checklist: Vec::new(),
         attachments: vec![], task_id: "t3".into(), interaction_id: "review".into(), body: "Done".into(),
         targets: text(), is_final: true, nothing_to_review: false, card: review(),
     });
@@ -744,6 +748,7 @@ fn a_card_that_blocks_sits_right_above_what_it_blocks() {
     register_agent(&mut s, "b");
     task(&mut s, "t2", "b");
     ok(&mut s, agent_b(), Command::PresentResult {
+        checklist: Vec::new(),
         attachments: vec![], task_id: "t2".into(), interaction_id: "elsewhere".into(), body: "Done".into(),
         targets: text(), is_final: true, nothing_to_review: false, card: review(),
     });
@@ -949,8 +954,8 @@ fn only_alondra_wakes_the_orchestrator_with_information() {
 fn held_plan(id: &str, agent: &str, title: &str) -> Command {
     Command::HoldHook {
         interaction_id: id.into(), task_id: "t".into(), agent_id: agent.into(), hold: Hold::Plan,
-        body: format!("# {title}\n\n1. Do it"), options: Hold::Plan.options(),
-        card: CardSpec::new(CardKind::Review, title).content(ContentKind::Plan, format!("# {title}\n\n1. Do it")),
+        body: format!("# {title}\n\n- [ ] Do it"), options: Hold::Plan.options(),
+        card: CardSpec::new(CardKind::Review, title).content(ContentKind::Plan, format!("# {title}\n\n- [ ] Do it")),
     }
 }
 fn waiting_for_user(s: &DomainState) -> Vec<String> {
@@ -1060,7 +1065,7 @@ fn open_cards_lists_what_the_reader_may_replace() {
 fn nothing_to_review(id: &str, targets: Vec<DeliveryTarget>, is_final: bool) -> Command {
     match present(id, targets, is_final, review()) {
         Command::PresentResult { attachments, task_id, interaction_id, body, targets, is_final, card, .. } =>
-            Command::PresentResult { attachments, task_id, interaction_id, body, targets, is_final, nothing_to_review: true, card },
+            Command::PresentResult { checklist: Vec::new(), attachments, task_id, interaction_id, body, targets, is_final, nothing_to_review: true, card },
         _ => unreachable!(),
     }
 }

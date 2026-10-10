@@ -327,7 +327,7 @@ mod tests {
     }
 
     fn present(domain: &crate::domain_runtime::DomainRuntime, id: &str, head: &str) {
-        run(domain, Actor::Agent { agent_id: "agent".into() }, id, Command::PresentResult { attachments: vec![],
+        run(domain, Actor::Agent { agent_id: "agent".into() }, id, Command::PresentResult { checklist: Vec::new(), attachments: vec![],
             task_id: "task".into(), interaction_id: id.into(), body: "Ready".into(), is_final: true, nothing_to_review: false,
             targets: vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: head.into() }], card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true) });
     }
@@ -557,6 +557,7 @@ mod tests {
     fn foreground_presentation(pr: &alondra_core::domain::PullRequest) -> Command {
         let targets = vec![DeliveryTarget::PullRequest { pr_id: pr.id.clone(), head: pr.head.clone() }];
         Command::PresentResult {
+            checklist: Vec::new(),
             attachments: vec![], task_id: pr.task_id.clone(), interaction_id: "candidate".into(), body: "Ready".into(),
             is_final: true, nothing_to_review: false,
             card: alondra_core::domain::CardSpec::delivery("Review", &targets, true), targets,

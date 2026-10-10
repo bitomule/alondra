@@ -129,7 +129,7 @@ mod tests {
                 host: "github.com".into(), repository: "me/app".into(), number: 7, head: HEAD.into(), base: "main".into(),
                 allowed_methods: vec![MergeMethod::Squash] });
             let targets = vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: HEAD.into() }];
-            fixture.run(agent, "result", Command::PresentResult { attachments: vec![], task_id: "task".into(),
+            fixture.run(agent, "result", Command::PresentResult { checklist: Vec::new(), attachments: vec![], task_id: "task".into(),
                 interaction_id: "result".into(), body: "Ready".into(), is_final: true, nothing_to_review: false,
                 card: CardSpec::delivery("Review the result", &targets, true), targets });
             fixture

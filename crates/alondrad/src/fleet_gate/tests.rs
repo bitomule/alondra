@@ -367,12 +367,12 @@ fn a_node_waiting_for_the_user_to_approve_its_plan_leaves_its_slot_to_the_queue_
     }
     start(&domain, "t1", now);
     domain.report(Envelope { session_id: "agent-t1".into(), report: Report::ToolStart {
-        tool: "ExitPlanMode".into(), tool_use_id: Some("plan-call".into()), input: serde_json::json!({"plan": "Fix it"}) } }, now);
+        tool: "ExitPlanMode".into(), tool_use_id: Some("plan-call".into()), input: serde_json::json!({"plan": "- [ ] Fix it"}) } }, now);
     let t2 = Waiting { key: Key::Task("t2".into()), priority: TaskPriority::Normal, resuming: false, since: now };
     assert!(matches!(gate.ask(&domain, t2.clone(), now), Err(Hold::Slots { working: 1, limit: 1 })), "t1 is at work");
 
     let card: crate::domain_holds::Card = serde_json::from_value(serde_json::json!({
-        "session_id": "agent-t1", "id": "plan-call", "kind": "plan", "tool": "ExitPlanMode", "input": {"plan": "Fix it"}})).unwrap();
+        "session_id": "agent-t1", "id": "plan-call", "kind": "plan", "tool": "ExitPlanMode", "input": {"plan": "- [ ] Fix it"}})).unwrap();
     let crate::domain_holds::Posted::Held(plan) = crate::domain_holds::post(&domain, &card, true).unwrap() else { panic!("the plan is held") };
     assert_eq!(gate.snapshot(&domain, now).unwrap().working, 0, "t1 waits for the user to approve its plan");
     assert_eq!(gate.ask(&domain, t2, now), Ok(()), "its slot goes to the queue");

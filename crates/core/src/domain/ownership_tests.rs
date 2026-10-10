@@ -271,6 +271,7 @@ impl World {
                 let agent = self.agent_of(&task).unwrap();
                 let targets = vec![DeliveryTarget::Text { text: "Done".into() }];
                 let _ = self.exec(Actor::Agent { agent_id: agent }, Command::PresentResult {
+                    checklist: Vec::new(),
                     attachments: vec![], task_id: task.clone(), interaction_id: format!("final-{task}").into(), body: "Done".into(),
                     targets, is_final: true, nothing_to_review: false, card: CardSpec::delivery("Review the result", &[], true),
                 });

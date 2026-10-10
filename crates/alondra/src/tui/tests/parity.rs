@@ -1427,9 +1427,9 @@ fn held_plan_card() -> alondra_core::views::View {
         agent_id: Some("agent-a".into()), review_prs: false, dependencies: Default::default(), stack: None,
         launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")), });
     run(Actor::System, Command::HoldHook { interaction_id: "hold-1".into(), task_id: "t".into(),
-        agent_id: "agent-a".into(), hold: Hold::Plan, body: "# Ship the parser\n\n1. Split the lexer".into(),
+        agent_id: "agent-a".into(), hold: Hold::Plan, body: "# Ship the parser\n\n- [ ] Split the lexer".into(),
         options: Hold::Plan.options(), card: alondra_core::domain::CardSpec::new(alondra_core::domain::CardKind::Review, "Ship the parser")
-            .content(alondra_core::domain::ContentKind::Plan, "1. Split the lexer") });
+            .content(alondra_core::domain::ContentKind::Plan, "- [ ] Split the lexer") });
     let live = alondra_core::views::LiveSnapshot::default();
     alondra_core::views::build("card:hold-1", alondra_core::views::RenderContext {
         domain: &state, projection: &state.projection(), live: &live, client: alondra_core::views::Client::Tui, lang: alondra_core::views::Lang::En,
