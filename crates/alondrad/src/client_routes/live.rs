@@ -40,6 +40,7 @@ pub(crate) struct Live {
     pub(crate) sandbox: std::sync::atomic::AtomicBool,
     pub(crate) losses: crate::node_revival::Losses,
     pub(crate) usage_pause: crate::usage_pause::UsagePause,
+    pub(crate) api_watch: crate::api_failures::ApiWatch,
     pub(crate) machine_watch: crate::machine_watch::MachineWatch,
     pub(crate) gate: crate::fleet_gate::FleetGate,
     watching: Mutex<std::collections::HashSet<String>>,

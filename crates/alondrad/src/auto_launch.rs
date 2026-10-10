@@ -120,6 +120,9 @@ pub(crate) async fn pass(domain: &DomainRuntime, home: &Path, launcher: &impl La
         if retries.get(&task.id).is_some_and(|(_, at)| *at > now) {
             continue;
         }
+        if domain.live.api_watch.down(now) {
+            continue;
+        }
         let usage_out = domain.live.usage_pause.current().is_some();
         let disk_low = domain.live.machine_watch.disk_low();
         let retry = match row.as_ref().map(|row| (row.state, row.reason)) {

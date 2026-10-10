@@ -170,6 +170,28 @@ pub(super) fn paused<'a>(task: &crate::domain::Task, context: &'a RenderContext<
     (paused.session.is_none() || node_paused()).then_some(paused)
 }
 
+/// "Claude API error at 14:05 · retries at 14:07 (attempt 2 of 3)", or the wait for the API to come back.
+pub(super) fn api_wait_label(paused: &super::LivePaused, lang: super::Lang) -> String {
+    use super::{LivePauseReason, text::tf};
+    let at = &paused.at;
+    let since = match paused.reason {
+        LivePauseReason::ApiOutage => tf!(lang, "Waiting for the Claude service since {at}", "Esperando al servicio de Claude desde las {at}"),
+        _ => tf!(lang, "Claude API error at {at}", "Error de la API de Claude a las {at}"),
+    };
+    let of = crate::domain::API_RETRIES.len();
+    match (&paused.retry, paused.reason) {
+        (Some(retry), LivePauseReason::ApiError) => {
+            let (when, attempt) = (&retry.at, retry.attempt);
+            format!("{since} · {}", tf!(lang, "retries at {when} (attempt {attempt} of {of})", "reintenta a las {when} (intento {attempt} de {of})"))
+        }
+        (Some(retry), _) => {
+            let when = &retry.at;
+            format!("{since} · {}", tf!(lang, "tries again at {when}", "vuelve a probar a las {when}"))
+        }
+        (None, _) => since,
+    }
+}
+
 /// "Paused since 14:05 for memory · resumes when the Mac has been fine for 5 min (2 so far)".
 pub(super) fn paused_label(paused: &super::LivePaused, lang: super::Lang) -> String {
     use super::{LivePauseReason, text::tf};
@@ -179,6 +201,7 @@ pub(super) fn paused_label(paused: &super::LivePaused, lang: super::Lang) -> Str
         LivePauseReason::Usage => return tf!(lang, "Paused since {at} for the usage limit · resumes in turn once it resets",
             "Pausado desde las {at} por el límite de uso · se reanuda por turno cuando se reinicie"),
         LivePauseReason::Memory => tf!(lang, "Paused since {at} for memory", "Pausado desde las {at} por memoria"),
+        LivePauseReason::ApiError | LivePauseReason::ApiOutage => return api_wait_label(paused, lang),
         LivePauseReason::Machine => {
             let reason = paused.waits_for.as_deref().map(|reason| reason.trim().trim_end_matches('.')).filter(|reason| !reason.is_empty());
             let since = match reason {

@@ -5,6 +5,7 @@ mod test_support;
 #[macro_use]
 mod log;
 mod approval_lease;
+mod api_failures;
 mod auth;
 mod classify;
 mod cleanup;

@@ -111,6 +111,15 @@ pub struct LivePaused {
     /// What the node said it waits for, when it declared the wait itself.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub waits_for: Option<String>,
+    /// For an API error: the local clock time Alondra sends it back, "14:07", and the attempt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry: Option<LiveRetry>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LiveRetry {
+    pub at: String,
+    pub attempt: u8,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -121,6 +130,10 @@ pub enum LivePauseReason {
     Machine,
     Usage,
     User,
+    /// A Claude API error ended its turn; Alondra sends it back by itself.
+    ApiError,
+    /// The Claude API looks down for every node: it waits for it to come back.
+    ApiOutage,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

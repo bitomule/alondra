@@ -83,6 +83,8 @@ pub enum PauseReason {
     Declared { reason: String },
     Usage,
     ByUser,
+    /// A Claude API error ended its turn: Alondra sends it back to its task at the retry's time.
+    ApiError(ApiRetry),
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -109,6 +111,8 @@ pub enum Listed {
 pub enum NodeEvent {
     TurnStarted,
     TurnEnded,
+    /// A Claude API error ended its turn and Alondra does not send it back by itself.
+    TurnFailed,
     /// The session ended or crashed while its task still needs it.
     SessionLost,
     /// The user or Alondra closed the session for good.
@@ -128,6 +132,7 @@ impl NodeEvent {
         match self {
             Self::TurnStarted => "turn_started",
             Self::TurnEnded => "turn_ended",
+            Self::TurnFailed => "turn_failed",
             Self::SessionLost => "session_lost",
             Self::SessionClosed => "session_closed",
             Self::StartFailed => "start_failed",
@@ -141,7 +146,7 @@ impl NodeEvent {
     }
     /// Reports that carry the reporter's clock: one older than the node's phase is refused.
     fn timed(&self) -> bool {
-        matches!(self, Self::TurnStarted | Self::TurnEnded | Self::SessionLost)
+        matches!(self, Self::TurnStarted | Self::TurnEnded | Self::TurnFailed | Self::SessionLost)
     }
 }
 
@@ -207,10 +212,10 @@ pub fn next(phase: &NodePhase, since: Millis, event: &NodeEvent, f: &TaskFacts, 
     let moved = match (phase, event) {
         (P::Paused(Pause { reason: PauseReason::ByUser, .. }), NodeEvent::TurnStarted) =>
             return refuse("paused_by_user", "Only the user resumes a node they paused"),
-        (P::Closing, NodeEvent::TurnStarted | NodeEvent::TurnEnded) => P::Closing,
+        (P::Closing, NodeEvent::TurnStarted | NodeEvent::TurnEnded | NodeEvent::TurnFailed) => P::Closing,
         (_, NodeEvent::TurnStarted) => P::Working,
-        (P::Paused(_), NodeEvent::TurnEnded) => phase.clone(),
-        (_, NodeEvent::TurnEnded) => rest(f),
+        (P::Paused(_), NodeEvent::TurnEnded | NodeEvent::TurnFailed) => phase.clone(),
+        (_, NodeEvent::TurnEnded | NodeEvent::TurnFailed) => rest(f),
         (P::Paused(_), NodeEvent::SessionLost) => phase.clone(),
         (P::Closing, NodeEvent::SessionLost) => P::Closed,
         (_, NodeEvent::SessionLost) => lost(),

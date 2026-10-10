@@ -38,6 +38,10 @@ UPDATE agents SET phase=CASE WHEN connected=1 THEN '{\"kind\":\"working\"}' \
  WHEN EXISTS(SELECT 1 FROM tasks t WHERE t.agent_id=agents.id AND t.archived=0 AND t.state NOT IN('done','cancelled')) THEN '{\"kind\":\"starting\",\"reviving\":true}' \
  ELSE '{\"kind\":\"closed\"}' END;\
 ALTER TABLE agents DROP COLUMN connected;";
+/// The turns of a node a Claude API error ended in a row, the first and the last, and the card that
+/// asks the user once Alondra stops sending it back by itself. Kept outside the domain state,
+/// like stop_blocks.
+const API_FAILURES: &str = "CREATE TABLE IF NOT EXISTS api_failures(agent_id TEXT PRIMARY KEY, failures INTEGER NOT NULL CHECK(failures BETWEEN 0 AND 255), first_at INTEGER NOT NULL, last_at INTEGER NOT NULL, card TEXT);";
 const STOP_BLOCKS: &str = "CREATE TABLE IF NOT EXISTS stop_blocks(task_id TEXT PRIMARY KEY, blocks INTEGER NOT NULL CHECK(blocks>=0), marker INTEGER NOT NULL);";
 /// What became of a task's node, kept beside the task; created on every open like task_models.
 const TASK_WRAP_UPS: &str = "CREATE TABLE IF NOT EXISTS task_wrap_ups(\
@@ -476,6 +480,7 @@ impl DomainStore {
         tx.execute_batch(TASK_MODELS)?;
         tx.execute_batch(MODEL_METRICS)?;
         tx.execute_batch(STOP_BLOCKS)?;
+        tx.execute_batch(API_FAILURES)?;
         tx.execute_batch(TASK_WRAP_UPS)?;
         tx.execute_batch(TASK_RELATIONS)?;
         tx.execute_batch(MAINTENANCE_REQUESTS)?;
@@ -991,6 +996,22 @@ impl DomainStore {
         #[cfg(test)]
         if let Some(trace) = &mut trace { trace.complete(); }
         Ok(times)
+    }
+    pub(crate) fn api_failures(&self) -> Result<std::collections::BTreeMap<AgentId, crate::api_failures::Streak>> {
+        let mut statement = self.conn.prepare("SELECT agent_id,failures,first_at,last_at,card FROM api_failures")?;
+        let rows = statement.query_map([], |row| Ok((AgentId(row.get(0)?), crate::api_failures::Streak {
+            failures: row.get(1)?, first_at: row.get(2)?, last_at: row.get(3)?, card: row.get::<_, Option<String>>(4)?.map(InteractionId),
+        })))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+    pub(crate) fn set_api_failures(&self, agent: &AgentId, streak: Option<&crate::api_failures::Streak>) -> Result<()> {
+        match streak {
+            None => self.conn.execute("DELETE FROM api_failures WHERE agent_id=?1", [&agent.0])?,
+            Some(streak) => self.conn.execute(
+                "INSERT INTO api_failures(agent_id,failures,first_at,last_at,card) VALUES(?1,?2,?3,?4,?5) ON CONFLICT(agent_id) DO UPDATE SET failures=excluded.failures,first_at=excluded.first_at,last_at=excluded.last_at,card=excluded.card",
+                params![agent.0, streak.failures, streak.first_at, streak.last_at, streak.card.as_ref().map(|card| card.0.as_str())])?,
+        };
+        Ok(())
     }
     pub(crate) fn stop_blocks(&self, task_id: &TaskId) -> Result<Option<(u32, i64)>> {
         Ok(self.conn.query_row("SELECT blocks,marker FROM stop_blocks WHERE task_id=?1", [&task_id.0],

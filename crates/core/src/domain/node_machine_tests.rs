@@ -16,6 +16,10 @@ fn pause(reason: PauseReason) -> Pause {
     Pause { reason, since: SINCE, cut: None, turn_since: None, cleanup: PauseCleanup::Pending, released: false }
 }
 
+fn api_error() -> PauseReason {
+    PauseReason::ApiError(ApiRetry { error: "server_error".into(), detail: None, attempt: 1, at: SINCE + 30_000, outage: false })
+}
+
 fn phases() -> Vec<NodePhase> {
     vec![
         NodePhase::Starting { reviving: false },
@@ -25,6 +29,7 @@ fn phases() -> Vec<NodePhase> {
         NodePhase::WaitingUser { in_turn: false },
         NodePhase::Paused(pause(PauseReason::Memory)),
         NodePhase::Paused(pause(PauseReason::ByUser)),
+        NodePhase::Paused(pause(api_error())),
         NodePhase::Delivered,
         NodePhase::Stopped,
         NodePhase::Closing,
@@ -34,7 +39,7 @@ fn phases() -> Vec<NodePhase> {
 
 fn events() -> Vec<NodeEvent> {
     let mut all = vec![
-        NodeEvent::TurnStarted, NodeEvent::TurnEnded, NodeEvent::SessionLost, NodeEvent::SessionClosed,
+        NodeEvent::TurnStarted, NodeEvent::TurnEnded, NodeEvent::TurnFailed, NodeEvent::SessionLost, NodeEvent::SessionClosed,
         NodeEvent::StartFailed, NodeEvent::RevivalFailed, NodeEvent::Paused { pause: pause(PauseReason::Usage) },
         NodeEvent::PauseCleanup { cleanup: PauseCleanup::Done }, NodeEvent::PauseReleased, NodeEvent::Resumed,
     ];
@@ -79,6 +84,7 @@ macro_rules! forbid {
 forbid! {
     closed_refuses_a_turn_start: NodePhase::Closed, NodeEvent::TurnStarted => "node_closed";
     closed_refuses_a_turn_end: NodePhase::Closed, NodeEvent::TurnEnded => "node_closed";
+    closed_refuses_a_failed_turn: NodePhase::Closed, NodeEvent::TurnFailed => "node_closed";
     closed_refuses_a_lost_session: NodePhase::Closed, NodeEvent::SessionLost => "node_closed";
     closed_refuses_closing_again: NodePhase::Closed, NodeEvent::SessionClosed => "node_closed";
     closed_refuses_a_failed_start: NodePhase::Closed, NodeEvent::StartFailed => "node_closed";
@@ -112,6 +118,8 @@ forbid! {
     closing_refuses_a_failed_revival: NodePhase::Closing, NodeEvent::RevivalFailed => "not_starting";
 
     paused_refuses_a_second_pause: NodePhase::Paused(pause(PauseReason::Memory)), NodeEvent::Paused { pause: pause(PauseReason::Usage) } => "already_paused";
+    paused_for_an_api_error_refuses_a_second_pause: NodePhase::Paused(pause(api_error())), NodeEvent::Paused { pause: pause(api_error()) } => "already_paused";
+    waiting_in_turn_refuses_an_api_error_pause: NodePhase::WaitingUser { in_turn: true }, NodeEvent::Paused { pause: pause(api_error()) } => "not_working";
     paused_by_the_user_refuses_a_second_pause: NodePhase::Paused(pause(PauseReason::ByUser)), NodeEvent::Paused { pause: pause(PauseReason::Memory) } => "already_paused";
     waiting_in_turn_refuses_a_pause: NodePhase::WaitingUser { in_turn: true }, NodeEvent::Paused { pause: pause(PauseReason::Memory) } => "not_working";
     waiting_refuses_a_pause: NodePhase::WaitingUser { in_turn: false }, NodeEvent::Paused { pause: pause(PauseReason::Memory) } => "not_working";
@@ -159,6 +167,7 @@ stale! {
     a_late_turn_start_never_moves_a_delivered_node: NodePhase::Delivered, NodeEvent::TurnStarted;
     a_late_turn_start_never_moves_a_stopped_node: NodePhase::Stopped, NodeEvent::TurnStarted;
     a_late_turn_end_never_moves_a_working_node: NodePhase::Working, NodeEvent::TurnEnded;
+    a_late_failed_turn_never_moves_a_working_node: NodePhase::Working, NodeEvent::TurnFailed;
     a_late_lost_session_never_moves_a_working_node: NodePhase::Working, NodeEvent::SessionLost;
     a_late_lost_session_never_moves_a_revived_node: NodePhase::Starting { reviving: false }, NodeEvent::SessionLost;
 }
@@ -188,6 +197,46 @@ fn a_paused_node_holds_no_slot_and_only_a_turn_it_began_after_the_pause_brings_i
 }
 
 #[test]
+fn a_turn_an_api_error_ended_waits_without_a_slot_and_its_resume_brings_it_back_to_work() {
+    let paused = next(&NodePhase::Working, SINCE, &NodeEvent::Paused { pause: pause(api_error()) }, &OPEN, AT).unwrap();
+    assert_eq!(paused, NodePhase::Paused(pause(api_error())));
+    assert!(!paused.holds_slot());
+    assert_eq!(next(&paused, SINCE, &NodeEvent::TurnFailed, &OPEN, AT).unwrap(), paused, "the failed turn's end leaves the pause");
+    assert_eq!(next(&paused, SINCE, &NodeEvent::Listed { listed: Listed::Blocked }, &OPEN, AT).unwrap(), paused,
+        "Claude Code lists the failed session as blocked: that never undoes the pause");
+    let resumed = next(&paused, SINCE, &NodeEvent::Resumed, &OPEN, AT).unwrap();
+    assert_eq!(resumed, NodePhase::Starting { reviving: false });
+    assert_eq!(next(&resumed, SINCE, &NodeEvent::TurnStarted, &OPEN, AT).unwrap(), NodePhase::Working);
+}
+
+#[test]
+fn a_turn_an_api_error_ended_for_good_rests_on_its_card_and_never_counts_as_work() {
+    let card = TaskFacts { card: true, ..OPEN };
+    assert_eq!(next(&NodePhase::Working, SINCE, &NodeEvent::TurnFailed, &card, AT).unwrap(), NodePhase::WaitingUser { in_turn: false });
+    assert_eq!(next(&NodePhase::Working, SINCE, &NodeEvent::TurnFailed, &OPEN, AT).unwrap(), NodePhase::Stopped);
+    let closing = TaskFacts { closing: true, ..OPEN };
+    assert_eq!(next(&NodePhase::Closing, SINCE, &NodeEvent::TurnFailed, &closing, AT).unwrap(), NodePhase::Closing);
+}
+
+#[test]
+fn an_api_error_is_retried_a_growing_wait_apart_and_asks_the_user_only_when_others_prove_the_api_works() {
+    let retry = |attempt, health| after_api_failure("server_error", Some("Connection lost mid-response"), attempt, health, AT);
+    let waits: Vec<_> = (1..=3).map(|attempt| match retry(attempt, ApiHealth::Proven) {
+        AfterApiFailure::Retry(r) => { assert!(!r.outage); r.at - AT }
+        other => panic!("attempt {attempt}: {other:?}"),
+    }).collect();
+    assert_eq!(waits, API_RETRIES.to_vec());
+    assert_eq!(retry(4, ApiHealth::Proven), AfterApiFailure::Ask);
+    assert!(matches!(retry(4, ApiHealth::Unknown), AfterApiFailure::Retry(ApiRetry { outage: true, .. })), "no proof the API works: it keeps waiting");
+    assert!(matches!(retry(1, ApiHealth::Down), AfterApiFailure::Retry(ApiRetry { outage: true, .. })));
+    assert!(matches!(retry(9, ApiHealth::Down), AfterApiFailure::Retry(ApiRetry { outage: true, .. })), "an outage never raises a card");
+    assert_eq!(after_api_failure("rate_limit", None, 1, ApiHealth::Proven, AT), AfterApiFailure::WaitUsage);
+    assert_eq!(after_api_failure("authentication_failed", None, 1, ApiHealth::Proven, AT), AfterApiFailure::Ask);
+    assert_eq!(classify("overloaded"), ApiErrorKind::Transient);
+    assert_eq!(classify("an_error_added_later"), ApiErrorKind::Transient);
+}
+
+#[test]
 fn an_open_card_or_a_delivery_takes_the_node_out_of_the_slots_even_inside_a_turn() {
     let card = TaskFacts { card: true, ..OPEN };
     assert_eq!(next(&NodePhase::Stopped, SINCE, &NodeEvent::TurnStarted, &card, AT).unwrap(), NodePhase::WaitingUser { in_turn: true });
@@ -214,6 +263,7 @@ fn a_session_missing_from_the_listing_frees_its_slot_once_its_start_had_time() {
 enum Step {
     Launch,
     Turn { pick: usize, start: bool, late: bool },
+    ApiFailure { pick: usize, retried: bool },
     Ask(usize),
     Answer(usize),
     Deliver(usize),
@@ -234,6 +284,7 @@ fn step() -> impl Strategy<Value = Step> {
     prop_oneof![
         3 => Just(Step::Launch),
         6 => (0usize..8, any::<bool>(), prop::bool::weighted(0.25)).prop_map(|(pick, start, late)| Step::Turn { pick, start, late }),
+        2 => (0usize..8, any::<bool>()).prop_map(|(pick, retried)| Step::ApiFailure { pick, retried }),
         2 => (0usize..8).prop_map(Step::Ask),
         2 => (0usize..8).prop_map(Step::Answer),
         2 => (0usize..8).prop_map(Step::Deliver),
@@ -355,6 +406,17 @@ impl World {
                 }
                 if accepted && !late && self.real.contains_key(&agent) {
                     self.real.insert(agent, if start { Listed::Working } else { Listed::Idle });
+                }
+            }
+            Step::ApiFailure { pick, retried } => {
+                let Some(agent) = self.pick(pick, |a, _| a.phase.live()) else { return };
+                let retry = ApiRetry { error: "overloaded".into(), detail: None, attempt: 1, at: self.now + API_RETRIES[0], outage: false };
+                let pause = Pause { reason: PauseReason::ApiError(retry), since: self.now, cut: None, turn_since: None, cleanup: PauseCleanup::Done, released: false };
+                if !(retried && self.event(&agent, NodeEvent::Paused { pause }, self.now)) {
+                    self.event(&agent, NodeEvent::TurnFailed, self.now);
+                }
+                if self.real.contains_key(&agent) {
+                    self.real.insert(agent, Listed::Blocked);
                 }
             }
             Step::Ask(n) => {

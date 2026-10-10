@@ -384,9 +384,16 @@ fn respond(domain: &DomainRuntime, payload: &Value) -> Result<Reply> {
         return Ok(Reply::Plain(json!({})));
     }
     domain.live.observe(payload);
-    // Any hook but these two runs inside a turn, so it proves the turn under way.
+    if crate::api_failures::proves_an_answer(&event) {
+        domain.live.api_watch.answered(&session_id, alondra_core::now_millis());
+    }
+    // Any hook but these runs inside a turn, so it proves the turn under way.
     match event.as_str() {
         "SessionStart" | "Stop" => {}
+        "StopFailure" => {
+            crate::api_failures::turn_failed(domain, &agent_id, payload, alondra_core::now_millis())?;
+            return Ok(Reply::Plain(json!({})));
+        }
         "SessionEnd" => {
             lifecycle::node_event(domain, &agent_id, NodeEvent::SessionLost)?;
             session_ended(domain, &agent_id)?;
@@ -419,6 +426,7 @@ fn respond(domain: &DomainRuntime, payload: &Value) -> Result<Reply> {
             Ok(match undelivered(domain, &agent_id, payload)? {
                 Some(reason) => Reply::Block { reason, session: session_id },
                 None => {
+                    crate::api_failures::turn_ended(domain, &agent_id)?;
                     if !works_in_background(domain, &agent_id, payload) {
                         lifecycle::node_event(domain, &agent_id, NodeEvent::TurnEnded)?;
                     }
@@ -1304,6 +1312,23 @@ mod tests {
         assert_eq!(domain.state().unwrap().revision, revision, "a started Task is not started again");
         command(&domain, agent_actor(), "start", Command::StartTask { task_id: "task".into() });
         assert_eq!(task_state(&domain), TaskState::Running, "start_task still works when the Agent calls it");
+    }
+
+    #[tokio::test]
+    async fn a_turn_an_api_error_ended_waits_for_alondra_to_send_it_back_and_never_counts_as_work() {
+        let fixture = Fixture::new();
+        let domain = fixture.open();
+        node_with_task(&domain);
+        hook(&domain, json!({"session_id": "agent-a", "hook_event_name": "UserPromptSubmit", "prompt": "Work"}), Some(6)).await.1.unwrap();
+        assert_eq!(domain.state().unwrap().node_phase(&"agent-a".into()), Some(&NodePhase::Working));
+        let (reply, result) = hook(&domain, json!({"session_id": "agent-a", "hook_event_name": "StopFailure", "error_type": "server_error",
+            "error_details": "API Error: Connection lost mid-response. The response above may be incomplete."}), Some(6)).await;
+        result.unwrap();
+        assert_eq!(reply, json!({}));
+        let state = domain.state().unwrap();
+        let phase = state.node_phase(&"agent-a".into()).unwrap();
+        assert!(matches!(phase, NodePhase::Paused(Pause { reason: PauseReason::ApiError(ApiRetry { attempt: 1, .. }), .. })), "{phase:?}");
+        assert!(state.slots().is_empty(), "it holds no slot while it waits");
     }
 
     #[tokio::test]

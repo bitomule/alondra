@@ -463,11 +463,19 @@ impl FleetGate {
                 task_id: entry.task.0.clone(),
                 session: Some(session.clone()),
                 at: crate::usage_pause::clock_text(entry.since, now, false),
-                reason: match entry.reason {
+                reason: match &entry.reason {
                     Reason::Memory => LivePauseReason::Memory,
                     Reason::Declared { .. } => LivePauseReason::Machine,
                     Reason::Usage => LivePauseReason::Usage,
                     Reason::ByUser => LivePauseReason::User,
+                    Reason::ApiError(retry) if retry.outage => LivePauseReason::ApiOutage,
+                    Reason::ApiError(_) => LivePauseReason::ApiError,
+                },
+                retry: match &entry.reason {
+                    Reason::ApiError(retry) => Some(alondra_core::views::LiveRetry {
+                        at: crate::usage_pause::clock_text(retry.at, now, false), attempt: retry.attempt,
+                    }),
+                    _ => None,
                 },
                 fine_minutes,
                 next,
@@ -484,6 +492,7 @@ impl FleetGate {
             fine_minutes,
             next: false,
             waits_for: None,
+            retry: None,
         })).collect();
         let (fixed, auto) = node_limit_setting(domain);
         Some(LivePacing {
@@ -506,7 +515,8 @@ fn hold_of(inner: &Inner, head: &Waiting, snapshot: &Snapshot, now: Millis) -> R
         return Err(Hold::Disk);
     }
     decide(head, snapshot.working, snapshot.limit, &snapshot.mac, inner.saved.last_admission, inner.tuning.spacing, now)?;
-    let paused = matches!(&head.key, Key::Resume(session) if inner.saved.pauses.paused.contains_key(session));
+    let paused = matches!(&head.key, Key::Resume(session) if inner.saved.pauses.paused.get(session)
+        .is_some_and(|paused| !matches!(paused.reason, Reason::ApiError(_))));
     if let Some(until) = inner.saved.pauses.step.next_at().filter(|until| paused && *until > now) {
         return Err(Hold::Spacing { until });
     }
@@ -519,6 +529,7 @@ fn reason_of(reason: &PauseReason) -> Reason {
         PauseReason::Declared { reason } => Reason::Declared { reason: reason.clone() },
         PauseReason::Usage => Reason::Usage,
         PauseReason::ByUser => Reason::ByUser,
+        PauseReason::ApiError(retry) => Reason::ApiError(retry.clone()),
     }
 }
 
@@ -528,6 +539,7 @@ fn pause_reason(reason: &Reason) -> PauseReason {
         Reason::Declared { reason } => PauseReason::Declared { reason: reason.clone() },
         Reason::Usage => PauseReason::Usage,
         Reason::ByUser => PauseReason::ByUser,
+        Reason::ApiError(retry) => PauseReason::ApiError(retry.clone()),
     }
 }
 
@@ -595,8 +607,12 @@ fn hand_pauses(domain: &DomainRuntime, wanted: &BTreeMap<String, Paused>) {
 /// A paused node's turn came: it is told to carry on, or brought back first if it is not connected.
 fn resume_locked(domain: &DomainRuntime, inner: &mut Inner, session: &str, now: Millis) {
     let Some(paused) = inner.saved.pauses.paused.remove(session) else { return };
-    if paused.reason != Reason::ByUser {
-        inner.saved.pauses.step.resumed(now);
+    match &paused.reason {
+        Reason::ByUser => {}
+        Reason::ApiError(retry) => if retry.outage {
+            domain.live.api_watch.probed(now);
+        },
+        _ => inner.saved.pauses.step.resumed(now),
     }
     log!("resuming {session} ({}), paused since {}", paused.task, paused.since);
     let text = crate::fleet_pause::resume_text(&paused, now);
@@ -788,7 +804,12 @@ fn snapshot_locked(domain: &DomainRuntime, state: &DomainState, inner: &Inner, q
         all.insert(waiting.key.clone(), waiting);
     }
     let usage_clear = !domain.live.usage_pause.is_active();
-    for (session, paused) in inner.saved.pauses.paused.iter().filter(|(_, paused)| paused.returns(usage_clear, now)) {
+    let probe = crate::api_failures::outage_probe(&inner.saved.pauses.paused, &domain.live.api_watch, now);
+    let returning = inner.saved.pauses.paused.iter().filter(|(session, paused)| match &paused.reason {
+        Reason::ApiError(retry) if retry.outage => domain.live.api_watch.answered_since(paused.since) || probe.as_ref() == Some(*session),
+        _ => paused.returns(usage_clear, domain.live.api_watch.answered_since(paused.since), now),
+    });
+    for (session, paused) in returning {
         let key = Key::Resume(session.clone());
         if still_waits(state, &key) {
             all.insert(key.clone(), Waiting { key, priority: priority_of(state, Some(&paused.task)), resuming: true, since: paused.since });

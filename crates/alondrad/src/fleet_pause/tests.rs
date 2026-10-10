@@ -3,7 +3,7 @@ use crate::fleet_gate::{Key, Limit, Tuning, Waiting};
 use crate::node_push::testing::Node;
 use crate::node_reports::{Envelope, Report};
 use alondra_core::Machine;
-use alondra_core::domain::{Actor, AgentId, Command, CommandEnvelope, PROTOCOL_VERSION};
+use alondra_core::domain::{API_RETRIES, Actor, AgentId, ApiRetry, Command, CommandEnvelope, NodePhase, OUTAGE_PROBE, PROTOCOL_VERSION, Pause, PauseReason, TaskId, TaskState};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -52,13 +52,18 @@ fn the_step_doubles_up_to_30_minutes_when_a_resume_saturates_the_mac_and_comes_b
 #[test]
 fn a_pause_by_the_user_never_returns_by_itself_and_a_declared_wait_waits_out_its_grace() {
     let paused = |reason| Paused { task: "t".into(), reason, since: 0, cut: None, turn_since: None, cleanup: Cleanup::Done, released: false };
-    assert!(!paused(Reason::ByUser).returns(true, 10 * 60 * MIN));
-    assert!(paused(Reason::Memory).returns(true, 0));
-    assert!(!paused(Reason::Usage).returns(false, 0));
+    assert!(!paused(Reason::ByUser).returns(true, false, 10 * 60 * MIN));
+    assert!(paused(Reason::Memory).returns(true, false, 0));
+    assert!(!paused(Reason::Usage).returns(false, false, 0));
     let declared = paused(Reason::Declared { reason: "build queue".into() });
-    assert!(!declared.returns(true, DECLARED_GRACE - 1));
-    assert!(declared.returns(true, DECLARED_GRACE));
-    assert!(Paused { released: true, ..declared }.returns(true, 0), "\"I've fixed it\" lets it go at once");
+    assert!(!declared.returns(true, false, DECLARED_GRACE - 1));
+    assert!(declared.returns(true, false, DECLARED_GRACE));
+    assert!(Paused { released: true, ..declared }.returns(true, false, 0), "\"I've fixed it\" lets it go at once");
+    let retry = alondra_core::domain::ApiRetry { error: "server_error".into(), detail: None, attempt: 1, at: 30_000, outage: false };
+    let failed = paused(Reason::ApiError(retry));
+    assert!(!failed.returns(true, false, 29_999), "an API error waits for its retry");
+    assert!(failed.returns(true, false, 30_000));
+    assert!(failed.returns(true, true, 0), "the model answering another node lets it go at once");
 }
 
 #[test]
@@ -434,4 +439,172 @@ async fn the_users_message_ends_their_pause_and_the_orchestrators_does_not() {
     let body = serde_json::from_value(serde_json::json!({"text": "Use the new API"})).unwrap();
     crate::domain_messages::deliver(&fleet.domain, &fleet.home.0, &user(), "The user", &AgentId("agent-t2".into()), body, true).await.unwrap();
     assert!(fleet.domain.live.gate.paused(&fleet.domain, "agent-t2").is_none());
+}
+
+/// What Claude Code's `StopFailure` hook carries, handed to the daemon as its hook path does.
+fn api_error(fleet: &Fleet, task: &str, error: &str, now: Millis) {
+    let session = format!("agent-{task}");
+    let payload = serde_json::json!({"session_id": session, "hook_event_name": "StopFailure", "error_type": error,
+        "error_details": "API Error: Connection lost mid-response. The response above may be incomplete."});
+    fleet.domain.live.observe(&payload);
+    crate::api_failures::turn_failed(&fleet.domain, &AgentId(session), &payload, now).unwrap();
+}
+
+fn phase(fleet: &Fleet, task: &str) -> alondra_core::domain::NodePhase {
+    fleet.domain.state().unwrap().node_phase(&AgentId(format!("agent-{task}"))).unwrap().clone()
+}
+
+fn api_cards(fleet: &Fleet) -> Vec<alondra_core::domain::Interaction> {
+    let state = fleet.domain.state().unwrap();
+    state.interactions.values().filter(|card| state.open(card) && card.body.contains("api_failed")).cloned().collect()
+}
+
+fn answer(fleet: &Fleet, card: &alondra_core::domain::Interaction, option: &str) {
+    run(&fleet.domain, user(), Command::AnswerQuestion { attachments: vec![], interaction_id: card.id.clone(), option_id: option.into(), inputs: Default::default() });
+    crate::api_failures::settle_cards(&fleet.domain).unwrap();
+}
+
+/// The case of 9 October: "API Error: Connection lost mid-response" ended a node's turn and it
+/// sat there until someone wrote to it. Now it waits 30 s without a slot and Alondra sends it back.
+#[tokio::test]
+async fn a_turn_an_api_error_cut_is_sent_back_by_itself_and_its_node_works_again() {
+    let base = alondra_core::now_millis();
+    let mut fleet = Fleet::new(&[("t1", TaskPriority::Normal)], Limit::Fixed(4), base - MIN);
+    api_error(&fleet, "t1", "server_error", base);
+    assert!(matches!(phase(&fleet, "t1"), NodePhase::Paused(Pause { reason: PauseReason::ApiError(ApiRetry { attempt: 1, outage: false, .. }), .. })));
+    assert_eq!(fleet.working(base), 0, "a node waiting out an API error holds no slot");
+    let pacing = fleet.domain.live.gate.live(&fleet.domain, base).unwrap();
+    assert_eq!(pacing.paused[0].reason, alondra_core::views::LivePauseReason::ApiError);
+    assert_eq!(pacing.paused[0].retry.as_ref().map(|retry| retry.attempt), Some(1));
+    fleet.hold(50, base, 30_000 - 1).await;
+    assert!(fleet.events("resume").is_empty(), "not before its retry");
+    fleet.tick(50, base + 30_000).await;
+    assert_eq!(tasks(&fleet.events("resume")), ["t1"]);
+    assert_eq!(phase(&fleet, "t1"), NodePhase::Working);
+    let line = fleet.nodes[0].1.lines.lock().unwrap().last().cloned().unwrap();
+    let text = line["text"].as_str().unwrap();
+    assert!(text.contains("Claude API error (API Error: Connection lost mid-response.") && text.contains("Carry on where you left off"), "{text}");
+    assert!(api_cards(&fleet).is_empty());
+}
+
+/// Every node failing at once is the API down: they wait for it with no card and no new start,
+/// one of them probing it, and all come back once the model answers again.
+#[tokio::test]
+async fn while_the_api_is_down_for_every_node_they_wait_without_a_card_and_come_back_with_it() {
+    let base = alondra_core::now_millis();
+    let mut fleet = Fleet::new(&[("t1", TaskPriority::Normal), ("t2", TaskPriority::Normal), ("t3", TaskPriority::Normal)], Limit::Fixed(4), base - MIN);
+    api_error(&fleet, "t1", "overloaded", base);
+    api_error(&fleet, "t2", "overloaded", base + 1_000);
+    api_error(&fleet, "t3", "overloaded", base + 2_000);
+    assert!(fleet.domain.live.api_watch.down(base + 2_000), "no new node starts while it is down");
+    for task in ["t2", "t3"] {
+        assert!(matches!(phase(&fleet, task), NodePhase::Paused(Pause { reason: PauseReason::ApiError(ApiRetry { outage: true, .. }), .. })), "{task}");
+    }
+    let mut now = base + 2_000;
+    for _ in 0..30 {
+        now = fleet.hold(50, now, OUTAGE_PROBE).await;
+        let back: Vec<String> = fleet.events("resume").into_iter().map(|(_, task)| task).collect();
+        let last = back.last().cloned();
+        if let Some(task) = last.filter(|task| phase(&fleet, task) == NodePhase::Working) {
+            api_error(&fleet, &task, "overloaded", now);
+        }
+        assert!(fleet.working(now) <= 1, "one node at a time probes the API");
+    }
+    assert!(api_cards(&fleet).is_empty(), "an outage of an hour raises no card");
+    assert!(fleet.events("resume").len() >= 25, "it kept probing: {:?}", fleet.events("resume"));
+
+    let probe = fleet.events("resume").last().unwrap().1.clone();
+    fleet.domain.live.api_watch.answered(&format!("agent-{probe}"), now + 1);
+    let now = fleet.hold(50, now + 2, 5 * MIN).await;
+    assert_eq!(fleet.working(now), 3, "the model answered: everyone came back");
+    assert!(!fleet.domain.live.api_watch.down(now));
+}
+
+/// One node failing while another gets answers is not an outage: after 30 s, 2 min and 10 min
+/// a card asks the user, and "try again now" sends the node back at once.
+#[tokio::test]
+async fn a_node_the_api_keeps_failing_while_others_work_asks_the_user_after_its_retries() {
+    let base = alondra_core::now_millis();
+    let mut fleet = Fleet::new(&[("t1", TaskPriority::Normal), ("t2", TaskPriority::Normal)], Limit::Fixed(4), base - MIN);
+    let mut now = base;
+    for attempt in 1..=API_RETRIES.len() {
+        api_error(&fleet, "t1", "server_error", now);
+        fleet.domain.live.api_watch.answered("agent-t2", now + 1);
+        let wait = API_RETRIES[attempt - 1];
+        now = fleet.hold(50, now + 1, wait + 1).await;
+        assert_eq!(fleet.events("resume").len(), attempt, "attempt {attempt} came back after {wait} ms");
+        assert!(api_cards(&fleet).is_empty());
+    }
+    api_error(&fleet, "t1", "server_error", now);
+    let cards = api_cards(&fleet);
+    assert_eq!(cards.len(), 1, "the fourth failure in a row asks the user");
+    assert_eq!(phase(&fleet, "t1"), NodePhase::WaitingUser { in_turn: false }, "the user holds it now, not a slot");
+    let es = alondra_core::start_problem::card("Task t1", &serde_json::from_str(&cards[0].body).unwrap(), None, alondra_core::views::Lang::Es);
+    assert_eq!(es.need, "Los errores de la API de Claude cortan una y otra vez «Task t1»");
+    let options: Vec<&str> = match &cards[0].payload {
+        alondra_core::domain::InteractionPayload::Question { options, .. } => options.iter().map(|option| option.id.as_str()).collect(),
+        _ => panic!("a question"),
+    };
+    assert_eq!(options, [alondra_core::domain::START_RETRY, alondra_core::domain::START_CANCEL]);
+
+    let resumes = fleet.events("resume").len();
+    answer(&fleet, &cards[0], alondra_core::domain::START_RETRY);
+    fleet.tick(50, now + SAMPLE).await;
+    assert_eq!(fleet.events("resume").len(), resumes + 1, "\"try again now\" sends it back at once");
+    assert_eq!(phase(&fleet, "t1"), NodePhase::Working);
+
+    api_error(&fleet, "t1", "server_error", now + MIN);
+    assert!(matches!(phase(&fleet, "t1"), NodePhase::Paused(Pause { reason: PauseReason::ApiError(ApiRetry { attempt: 1, .. }), .. })),
+        "after the user's retry Alondra counts again from the first wait");
+}
+
+#[tokio::test]
+async fn cancelling_on_the_card_closes_the_task_and_an_error_retrying_cannot_fix_asks_at_once() {
+    let base = alondra_core::now_millis();
+    let fleet = Fleet::new(&[("t1", TaskPriority::Normal)], Limit::Fixed(4), base - MIN);
+    api_error(&fleet, "t1", "authentication_failed", base);
+    let cards = api_cards(&fleet);
+    assert_eq!(cards.len(), 1, "signing in again is the user's to do: no retry");
+    let es = alondra_core::start_problem::card("Task t1", &serde_json::from_str(&cards[0].body).unwrap(), None, alondra_core::views::Lang::Es);
+    assert!(es.why.contains("inicia sesión"), "{es:?}");
+    answer(&fleet, &cards[0], alondra_core::domain::START_CANCEL);
+    let state = fleet.domain.state().unwrap();
+    assert_eq!(state.tasks[&TaskId::from("t1")].state, TaskState::Cancelled);
+    assert!(matches!(phase(&fleet, "t1"), NodePhase::Closing | NodePhase::Closed));
+}
+
+/// The usage limit waits for its reset, without a slot and without a card.
+#[tokio::test]
+async fn a_usage_limit_pauses_the_node_until_it_resets() {
+    let base = alondra_core::now_millis();
+    let mut fleet = Fleet::new(&[("t1", TaskPriority::Normal)], Limit::Fixed(4), base - MIN);
+    api_error(&fleet, "t1", "rate_limit", base);
+    assert!(matches!(phase(&fleet, "t1"), NodePhase::Paused(Pause { reason: PauseReason::Usage, .. })));
+    assert_eq!(fleet.working(base), 0);
+    fleet.hold(50, base, 10 * MIN).await;
+    assert!(fleet.events("resume").is_empty(), "the limit has not reset");
+    assert!(api_cards(&fleet).is_empty());
+}
+
+/// Only a turn an API error cut is sent back: a turn that ended normally, or one that waits on
+/// the user, never is.
+#[tokio::test]
+async fn a_normal_end_or_a_wait_on_the_user_is_never_sent_back() {
+    let base = alondra_core::now_millis();
+    let mut fleet = Fleet::new(&[("t1", TaskPriority::Normal), ("t2", TaskPriority::Normal)], Limit::Fixed(4), base - MIN);
+    fleet.end_turn("t1", base);
+    run(&fleet.domain, Actor::Agent { agent_id: AgentId("agent-t2".into()) }, Command::AskQuestion {
+        attachments: vec![], interaction_id: "q-t2".into(), scope: alondra_core::domain::Scope::Task { task_id: "t2".into() },
+        recipient: alondra_core::domain::Recipient::User, body: "Which name?".into(), blocking: false,
+        options: vec![
+            alondra_core::domain::QuestionOption { id: "a".into(), label: "Atlas".into(), description: None, inputs: vec![] },
+            alondra_core::domain::QuestionOption { id: "b".into(), label: "Borealis".into(), description: None, inputs: vec![] },
+        ],
+        card: alondra_core::domain::CardSpec::new(alondra_core::domain::CardKind::Decide, "Choose the release name").why("The name goes on the release"),
+    });
+    api_error(&fleet, "t2", "server_error", base + 1_000);
+    assert_eq!(phase(&fleet, "t2"), NodePhase::WaitingUser { in_turn: false });
+    fleet.hold(50, base + 2_000, 15 * MIN).await;
+    assert!(fleet.events("resume").is_empty(), "{:?}", fleet.events("resume"));
+    assert!(api_cards(&fleet).is_empty());
 }

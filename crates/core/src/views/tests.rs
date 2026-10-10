@@ -155,6 +155,10 @@ fn render<'a>(
             LivePauseReason::Usage => crate::domain::PauseReason::Usage,
             LivePauseReason::Memory => crate::domain::PauseReason::Memory,
             LivePauseReason::Machine => crate::domain::PauseReason::Declared { reason: paused.waits_for.clone().unwrap_or_default() },
+            LivePauseReason::ApiError | LivePauseReason::ApiOutage => crate::domain::PauseReason::ApiError(crate::domain::ApiRetry {
+                error: "server_error".into(), detail: None, attempt: paused.retry.as_ref().map_or(1, |retry| retry.attempt), at: 0,
+                outage: paused.reason == LivePauseReason::ApiOutage,
+            }),
         };
         let agent = domain.tasks.get(&paused.task_id.as_str().into()).and_then(|task| task.agent_id.clone());
         if let Some(agent) = agent.and_then(|agent| domain.agents.get_mut(&agent)) {
@@ -5342,7 +5346,7 @@ fn a_paused_task_says_since_when_why_and_when_it_comes_back_in_both_languages() 
     let mut state = fixture();
     let task = state.tasks.get_mut(&crate::domain::TaskId::from("t-1")).unwrap();
     (task.state, task.final_presentation, task.agent_id) = (TaskState::Running, None, Some("agent-1".into()));
-    let memory = LivePaused { task_id: "t-1".into(), session: Some("agent-1".into()), at: "14:05".into(), reason: LivePauseReason::Memory, fine_minutes: Some(2), next: false, waits_for: None };
+    let memory = LivePaused { task_id: "t-1".into(), session: Some("agent-1".into()), at: "14:05".into(), reason: LivePauseReason::Memory, fine_minutes: Some(2), next: false, waits_for: None, retry: None };
     let live = LiveSnapshot {
         pacing: Some(LivePacing { working: 5, limit: 6, fixed: None, auto: 6, memory_free: Some(24), tight: true, queued: vec![], paused: vec![memory.clone()] }),
         ..LiveSnapshot::default()
@@ -5360,6 +5364,25 @@ fn a_paused_task_says_since_when_why_and_when_it_comes_back_in_both_languages() 
     assert_eq!(common::paused_label(&LivePaused { next: true, ..declared }, Lang::Es), "Esperando: cola de compilación · desde las 14:05 · se reanuda el siguiente");
     let unexplained = LivePaused { reason: LivePauseReason::Machine, ..memory };
     assert_eq!(common::paused_label(&unexplained, Lang::En), "Waiting since 14:05");
+}
+
+#[test]
+fn a_node_an_api_error_stopped_says_when_alondra_sends_it_back_and_an_outage_says_it_waits_for_the_service() {
+    let mut state = fixture();
+    let task = state.tasks.get_mut(&crate::domain::TaskId::from("t-1")).unwrap();
+    (task.state, task.final_presentation, task.agent_id) = (TaskState::Running, None, Some("agent-1".into()));
+    let failed = LivePaused { task_id: "t-1".into(), session: Some("agent-1".into()), at: "23:26".into(), reason: LivePauseReason::ApiError,
+        fine_minutes: None, next: false, waits_for: None, retry: Some(crate::views::LiveRetry { at: "23:28".into(), attempt: 2 }) };
+    assert_eq!(common::paused_label(&failed, Lang::Es), "Error de la API de Claude a las 23:26 · reintenta a las 23:28 (intento 2 de 3)");
+    assert_eq!(common::paused_label(&failed, Lang::En), "Claude API error at 23:26 · retries at 23:28 (attempt 2 of 3)");
+    let outage = LivePaused { reason: LivePauseReason::ApiOutage, retry: Some(crate::views::LiveRetry { at: "23:40".into(), attempt: 3 }), ..failed.clone() };
+    assert_eq!(common::paused_label(&outage, Lang::Es), "Esperando al servicio de Claude desde las 23:26 · vuelve a probar a las 23:40");
+    let live = LiveSnapshot {
+        pacing: Some(LivePacing { working: 1, limit: 4, fixed: None, auto: 4, memory_free: Some(60), tight: false, queued: vec![], paused: vec![failed] }),
+        ..LiveSnapshot::default()
+    };
+    let task = serde_json::to_string(&render(&state, &live, Client::Tui, Lang::Es, "task:t-1", "")).unwrap();
+    assert!(task.contains("Error de la API de Claude a las 23:26 · reintenta a las 23:28 (intento 2 de 3)"), "{task}");
 }
 
 fn action_ids(view: &View) -> Vec<String> {
@@ -5443,7 +5466,7 @@ fn a_queued_task_offers_pause_and_a_paused_one_offers_resume_where_it_shows() {
         assert!(!action_ids(&detail).iter().any(|id| id.starts_with("resume:")));
     }
 
-    let paused = LivePaused { task_id: "t-1".into(), session: None, at: "11:20".into(), reason: LivePauseReason::User, fine_minutes: None, next: false, waits_for: None };
+    let paused = LivePaused { task_id: "t-1".into(), session: None, at: "11:20".into(), reason: LivePauseReason::User, fine_minutes: None, next: false, waits_for: None, retry: None };
     let live = pacing_live(vec![], vec![paused], None);
     let fleet = render(&state, &live, Client::Ios, Lang::Es, "fleet", "");
     let resume = find_action(&fleet, "resume:t-1").expect("a task taken out of the queue resumes by its id");
@@ -5468,7 +5491,7 @@ fn a_working_node_offers_pause_with_a_warning_and_a_paused_node_offers_resume_by
     assert!(find_action(&fleet, "pause:a-1").is_some(), "{:?}", action_ids(&fleet));
 
     live.nodes[0].working = false;
-    let paused = LivePaused { task_id: "t-1".into(), session: Some("a-1".into()), at: "14:05".into(), reason: LivePauseReason::Memory, fine_minutes: Some(2), next: false, waits_for: None };
+    let paused = LivePaused { task_id: "t-1".into(), session: Some("a-1".into()), at: "14:05".into(), reason: LivePauseReason::Memory, fine_minutes: Some(2), next: false, waits_for: None, retry: None };
     live.pacing.as_mut().unwrap().paused.push(paused);
     let node = render(&state, &live, Client::Tui, Lang::En, "node:a-1", "");
     assert!(action_ids(&node).contains(&"resume:a-1".to_owned()), "{:?}", action_ids(&node));
@@ -5530,9 +5553,9 @@ fn pacing_fixture() -> (DomainState, LiveSnapshot) {
         ],
         paused: vec![
             LivePaused { task_id: "t-zeta-worker".into(), session: Some("zeta-worker".into()), at: "14:05".into(),
-                reason: LivePauseReason::Memory, fine_minutes: Some(2), next: false, waits_for: None },
+                reason: LivePauseReason::Memory, fine_minutes: Some(2), next: false, waits_for: None, retry: None },
             LivePaused { task_id: "t-held".into(), session: None, at: "11:20".into(),
-                reason: LivePauseReason::User, fine_minutes: Some(2), next: false, waits_for: None },
+                reason: LivePauseReason::User, fine_minutes: Some(2), next: false, waits_for: None, retry: None },
         ],
     });
     live.nodes.iter_mut().filter(|node| node.agent_id == "zeta-worker").for_each(|node| node.working = false);

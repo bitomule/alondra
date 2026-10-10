@@ -29,7 +29,7 @@ pub(crate) fn failed(domain: &DomainRuntime, task: &TaskId, problem: StartProble
                 let (reason, detail) = match &problem {
                     StartProblem::Untrusted { folder, .. } => (AutoLaunchReason::WorkspaceUntrusted, Some(folder.as_str())),
                     StartProblem::LaunchFailed { error } => (AutoLaunchReason::LaunchFailed, Some(error.as_str())),
-                    StartProblem::NodeClosed | StartProblem::DependencyCancelled { .. } => (AutoLaunchReason::LaunchFailed, None),
+                    StartProblem::NodeClosed | StartProblem::DependencyCancelled { .. } | StartProblem::ApiFailed { .. } => (AutoLaunchReason::LaunchFailed, None),
                 };
                 store.set_auto_launch(task, AutoLaunchState::Blocked, Some(reason), detail, now)?;
             }
@@ -52,7 +52,7 @@ pub(crate) fn problem_of(code: &str, message: &str, cwd: Option<&str>) -> Option
     }
 }
 
-fn raise(domain: &DomainRuntime, task: &TaskId, problem: StartProblem) -> Result<()> {
+pub(crate) fn raise(domain: &DomainRuntime, task: &TaskId, problem: StartProblem) -> Result<()> {
     let state = domain.state()?;
     let envelope = CommandEnvelope {
         protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(),
@@ -108,6 +108,7 @@ pub(crate) fn facts(domain: &DomainRuntime, state: &DomainState) -> Result<BTree
 
 /// Carries out what must happen now so no open task is left in nobody's hands.
 pub(crate) async fn react(domain: &DomainRuntime, home: &Path, launcher: &impl crate::orchestrate::Launcher) -> Result<()> {
+    crate::api_failures::settle_cards(domain)?;
     let state = domain.state()?;
     let facts = facts(domain, &state)?;
     for reaction in state.react(&facts) {

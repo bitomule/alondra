@@ -69,6 +69,7 @@ fn classify(task: &Task, context: &RenderContext<'_>) -> Presentation {
             LivePauseReason::User => tf!(lang, "You paused it at {at}", "La pausaste a las {at}"),
             LivePauseReason::Memory => tf!(lang, "For memory since {at} · resumes by itself", "Por memoria desde las {at} · se reanuda sola"),
             LivePauseReason::Usage => t!(lang, "For the usage limit · back when it resets", "Por el límite de uso · vuelve cuando se reinicie").into(),
+            LivePauseReason::ApiError | LivePauseReason::ApiOutage => common::api_wait_label(paused, lang),
             LivePauseReason::Machine => match paused.waits_for.as_deref().map(|reason| reason.trim().trim_end_matches('.')).filter(|reason| !reason.is_empty()) {
                 Some(reason) => tf!(lang, "{reason} · since {at}", "{reason} · desde las {at}"),
                 None => tf!(lang, "Waits for the Mac since {at}", "Espera al Mac desde las {at}"),

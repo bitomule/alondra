@@ -7,7 +7,7 @@
 //! saturates the Mac again. See docs/fleet-pacing.md §7.
 use crate::domain_runtime::DomainRuntime;
 use crate::machine_state::Health;
-use alondra_core::domain::{DomainState, TaskId, TaskPriority, TaskState};
+use alondra_core::domain::{ApiRetry, DomainState, TaskId, TaskPriority, TaskState};
 use alondra_core::Millis;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -31,6 +31,7 @@ pub(crate) enum Reason {
     Declared { reason: String },
     Usage,
     ByUser,
+    ApiError(ApiRetry),
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -61,12 +62,13 @@ pub(crate) struct Paused {
 }
 
 impl Paused {
-    /// Whether the gate may bring it back now: a pause by the user waits for the user, and a
-    /// declared wait for its grace.
-    pub(crate) fn returns(&self, usage_clear: bool, now: Millis) -> bool {
+    /// Whether the gate may bring it back now: a pause by the user waits for the user, a declared
+    /// wait for its grace, and an API error for its retry or for the model to answer another node.
+    pub(crate) fn returns(&self, usage_clear: bool, api_answered: bool, now: Millis) -> bool {
         match &self.reason {
             Reason::ByUser => false,
             Reason::Usage => usage_clear,
+            Reason::ApiError(retry) => api_answered || now >= retry.at,
             Reason::Declared { .. } => self.released || now - self.since >= DECLARED_GRACE,
             Reason::Memory => true,
         }
@@ -164,6 +166,7 @@ pub(crate) fn resume_text(paused: &Paused, now: Millis) -> String {
         Reason::Memory => format!("Alondra stopped you at {at} because the Mac ran out of memory{cut}. The Mac has been fine for 5 minutes: carry on with your task and run again what was cut."),
         Reason::Declared { .. } => format!("You waited for the machine since {at}. The Mac is fine again: carry on with your task; if it still cannot go on, call wait_for_machine again with the reason."),
         Reason::Usage => "Your Claude usage limit has reset. Carry on with what you were doing.".into(),
+        Reason::ApiError(retry) => crate::api_failures::resume_text(&retry.error, retry.detail.as_deref()),
         Reason::ByUser => format!("{} resumed you; you were paused at {at}{cut}. Carry on with your task and run again what was cut.", crate::domain_messages::user_name()),
     }
 }

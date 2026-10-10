@@ -93,6 +93,14 @@ pub enum StartProblem {
     },
     NodeClosed,
     DependencyCancelled { dependency: TaskId },
+    /// Claude API errors keep ending its node's turns and Alondra no longer sends it back by itself.
+    ApiFailed {
+        error: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        detail: Option<String>,
+        /// Its turns the error ended in a row.
+        attempts: u8,
+    },
 }
 
 pub const START_PROBLEM_PREFIX: &str = "start-problem-";
