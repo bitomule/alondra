@@ -849,6 +849,12 @@ async fn agent_waiting_machine(
             "invalid reason",
         ));
     };
+    if crate::machine_watch::usage_wait(&body.reason) {
+        return crate::domain_api::domain_error(DomainError::new(
+            "invalid_input",
+            crate::machine_watch::USAGE_WAIT_REFUSED,
+        ));
+    }
     let live = &state.domain.live;
     let turn = live.node(&session_id).map_or(0, |node| node.turn);
     let now = alondra_core::now_millis();
