@@ -730,6 +730,7 @@ mod tests {
             pairing: crate::pairing::Mailbox::default(),
             work_waiters: Arc::new(Semaphore::new(1)),
             change_waiters: Arc::new(Semaphore::new(1)),
+            status_waiters: Arc::new(Semaphore::new(1)),
             requests: Arc::new(Semaphore::new(8)),
             device_gate: Arc::new(tokio::sync::RwLock::new(())),
             waitlist: crate::management::waitlist::Limiter::new(None),

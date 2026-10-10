@@ -81,16 +81,17 @@ pub(crate) fn start_clock(client: &Arc<crate::client_routes::Client>) {
         let Some(initial_client) = weak.upgrade() else { return };
         let mut domain_changes = initial_client.domain.subscribe();
         let mut state = initial_client.domain.state().ok();
+        let mut hook_changes = initial_client.domain.live.changed.subscribe();
+        let mut report_changes = initial_client.domain.live.mods.changed.subscribe();
         drop(initial_client);
         let mut last = None;
         loop {
-            let domain_advanced = tokio::select! {
-                _ = interval.tick() => false,
-                changed = domain_changes.changed() => {
-                    if changed.is_err() { break; }
-                    true
-                },
-            };
+            let Some(domain_advanced) = next_sample(
+                async { interval.tick().await; },
+                &mut domain_changes,
+                &mut hook_changes,
+                &mut report_changes,
+            ).await else { break };
             let Some(client) = weak.upgrade() else { break };
             if domain_advanced || state.is_none() {
                 state = client.domain.state().ok();
@@ -99,6 +100,20 @@ pub(crate) fn start_clock(client: &Arc<crate::client_routes::Client>) {
             sample_live(&client, state, &mut last).await;
         }
     });
+}
+
+async fn next_sample(
+    periodic: impl std::future::Future<Output = ()>,
+    domain_changes: &mut watch::Receiver<alondra_core::domain::Revision>,
+    hook_changes: &mut watch::Receiver<()>,
+    report_changes: &mut watch::Receiver<()>,
+) -> Option<bool> {
+    tokio::select! {
+        _ = periodic => Some(false),
+        changed = domain_changes.changed() => changed.ok().map(|()| true),
+        changed = hook_changes.changed() => changed.ok().map(|()| false),
+        changed = report_changes.changed() => changed.ok().map(|()| false),
+    }
 }
 
 async fn sample_live(
@@ -452,8 +467,8 @@ mod tests {
     use std::{fs, sync::Arc};
 
     struct FeedFixture {
-        home: crate::test_support::Directory,
         client: Arc<crate::client_routes::Client>,
+        home: crate::test_support::Directory,
     }
 
     impl FeedFixture {
@@ -571,12 +586,6 @@ mod tests {
         }
     }
 
-    impl Drop for FeedFixture {
-        fn drop(&mut self) {
-            fs::remove_dir_all(&self.home).unwrap();
-        }
-    }
-
     async fn response_json(response: Response) -> serde_json::Value {
         let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
         serde_json::from_slice(&bytes).unwrap()
@@ -684,6 +693,134 @@ mod tests {
         // Supersede the parked request to leave no waiter behind in the fixture.
         let _ = response_json(handle(&fixture.client, "device-wait", &query(&first.cursor, 0, &[]), Transport::Loopback).await).await;
         assert_eq!(pending.await.unwrap()["superseded"], true);
+    }
+
+    fn poll_sample(
+        domain_changes: &mut watch::Receiver<alondra_core::domain::Revision>,
+        hook_changes: &mut watch::Receiver<()>,
+        report_changes: &mut watch::Receiver<()>,
+    ) -> std::task::Poll<Option<bool>> {
+        use std::future::Future;
+        let mut pending = Box::pin(next_sample(
+            std::future::pending(), domain_changes,
+            hook_changes, report_changes,
+        ));
+        pending.as_mut().poll(&mut std::task::Context::from_waker(std::task::Waker::noop()))
+    }
+
+    #[test]
+    fn node_reports_publish_without_domain_or_periodic_clock_and_coalesce_bursts() {
+        // Open outside the runtime so this test owns the single sampler's progression.
+        let fixture = FeedFixture::new();
+        fixture.register_agent("event-driven");
+        let agent = "agent-event-driven";
+        let key = format!("node:{agent}");
+        let report = |command: &str| crate::node_reports::Envelope {
+            session_id: agent.into(),
+            report: crate::node_reports::Report::ToolStart {
+                tool: "Bash".into(), tool_use_id: Some("tool-call".into()),
+                input: serde_json::json!({"command": command}),
+            },
+        };
+        fixture.client.domain.report(crate::node_reports::Envelope {
+            session_id: agent.into(),
+            report: crate::node_reports::Report::SessionStart {
+                version: "test".into(), cwd: None, launch_key: None,
+            },
+        }, 1_700_000_000_000);
+        fixture.client.domain.report(report("echo first"), 1_700_000_000_000);
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        runtime.block_on(async {
+            let state = fixture.client.domain.state().unwrap();
+            let mut domain_changes = fixture.client.domain.subscribe();
+            let mut hook_changes = fixture.client.domain.live.changed.subscribe();
+            let mut report_changes = fixture.client.domain.live.mods.changed.subscribe();
+            assert!(poll_sample(&mut domain_changes, &mut hook_changes, &mut report_changes).is_pending());
+            let live = super::super::live::gather(&fixture.client, &state, Lang::En, &[key.clone()], false, false).await;
+            let rendered = fixture.client.views.render(&key, &state, &live, Client::Ios, Lang::En, Transport::Loopback).unwrap();
+            let open = vec![(key.clone(), rendered.version)];
+            let first = fixture.initial(&open).await;
+            let _ = response_json(handle(&fixture.client, "device-report", &query(&first.cursor, 0, &open), Transport::Loopback).await).await;
+            let mut last = None;
+            assert!(sample_live(&fixture.client, &state, &mut last).await);
+            let before = *fixture.client.feeds.clock.borrow();
+            assert!(poll_sample(&mut domain_changes, &mut hook_changes, &mut report_changes).is_pending());
+            for index in 0..64 {
+                fixture.client.domain.report(report(&format!("echo burst-{index}")), 1_700_000_000_001 + index);
+            }
+            assert_eq!(fixture.client.domain.state().unwrap().revision, state.revision,
+                "tool reports must not need a domain commit to publish");
+            let triggered = poll_sample(&mut domain_changes, &mut hook_changes, &mut report_changes);
+            println!("reports=64 trigger={triggered:?} domain_commits=0 periodic_ticks=0");
+            assert_eq!(triggered, std::task::Poll::Ready(Some(false)),
+                "the normal node report path must trigger sampling with the periodic clock withheld");
+            assert!(sample_live(&fixture.client, &state, &mut last).await);
+            assert_eq!(*fixture.client.feeds.clock.borrow(), before + 1);
+            assert!(poll_sample(&mut domain_changes, &mut hook_changes, &mut report_changes).is_pending(), "64 reports retain one sampling permit");
+            let reply = response_json(handle(&fixture.client, "device-report", &query(&first.cursor, 0, &open), Transport::Loopback).await).await;
+            assert_eq!(reply["stale"], serde_json::json!([key]), "{reply}");
+            let live = super::super::live::gather(&fixture.client, &state, Lang::En, &[key.clone()], false, false).await;
+            let rendered = fixture.client.views.render(&key, &state, &live, Client::Ios, Lang::En, Transport::Loopback).unwrap();
+            assert!(serde_json::to_string(&rendered).unwrap().contains("echo burst-63"), "the final activity reaches the view");
+            fixture.client.domain.report(report("echo burst-63"), 1_700_000_000_064);
+            assert_eq!(poll_sample(&mut domain_changes, &mut hook_changes, &mut report_changes), std::task::Poll::Ready(Some(false)));
+            assert!(!sample_live(&fixture.client, &state, &mut last).await, "an unchanged visible report does not wake clients");
+            assert_eq!(*fixture.client.feeds.clock.borrow(), before + 1);
+            println!("reports=64 sample_permits=1 visible_wakes=1 domain_commits=0 latest_activity=echo burst-63 duplicate_wakes=0 periodic_ticks=0");
+        });
+    }
+
+    #[test]
+    fn hooks_and_connection_changes_trigger_sampling_but_stale_disconnects_do_not() {
+        let fixture = FeedFixture::new();
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        runtime.block_on(async {
+            let mut domain_changes = fixture.client.domain.subscribe();
+            let mut hook_changes = fixture.client.domain.live.changed.subscribe();
+            let mut report_changes = fixture.client.domain.live.mods.changed.subscribe();
+            fixture.client.domain.live.observe(&serde_json::json!({"hook_event_name": "Stop"}));
+            assert!(poll_sample(&mut domain_changes, &mut hook_changes, &mut report_changes).is_pending());
+            fixture.client.domain.live.observe(&serde_json::json!({"session_id": "hook", "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "echo hooked"}}));
+            assert_eq!(poll_sample(&mut domain_changes, &mut hook_changes, &mut report_changes), std::task::Poll::Ready(Some(false)));
+            let hello = || crate::node_reports::Hello { session_id: "connected".into(), version: "test".into(), cwd: None, launch_key: None, working: false };
+            let first = fixture.client.domain.connect_node(hello(), 1_700_000_000_000);
+            assert_eq!(poll_sample(&mut domain_changes, &mut hook_changes, &mut report_changes), std::task::Poll::Ready(Some(false)));
+            let second = fixture.client.domain.connect_node(hello(), 1_700_000_000_001);
+            assert_eq!(poll_sample(&mut domain_changes, &mut hook_changes, &mut report_changes), std::task::Poll::Ready(Some(false)));
+            assert!(!fixture.client.domain.live.mods.disconnect("connected", first));
+            assert!(poll_sample(&mut domain_changes, &mut hook_changes, &mut report_changes).is_pending());
+            assert!(fixture.client.domain.live.mods.disconnect("connected", second));
+            assert_eq!(poll_sample(&mut domain_changes, &mut hook_changes, &mut report_changes), std::task::Poll::Ready(Some(false)));
+        });
+    }
+
+    #[test]
+    fn a_retired_client_sampler_cannot_consume_the_replacement_clients_report() {
+        let fixture = FeedFixture::new();
+        let retired = crate::client_routes::Client::open(
+            fixture.client.domain.clone(), &fixture.home,
+            Arc::new(std::sync::Mutex::new(None)),
+        );
+        let weak = Arc::downgrade(&retired);
+        let mut retired_domain = retired.domain.subscribe();
+        let mut retired_hooks = retired.domain.live.changed.subscribe();
+        let mut retired_reports = retired.domain.live.mods.changed.subscribe();
+        drop(retired);
+        assert!(weak.upgrade().is_none());
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        runtime.block_on(async {
+            let mut domain_changes = fixture.client.domain.subscribe();
+            let mut hook_changes = fixture.client.domain.live.changed.subscribe();
+            let mut report_changes = fixture.client.domain.live.mods.changed.subscribe();
+            fixture.client.domain.report(crate::node_reports::Envelope {
+                session_id: "replacement".into(),
+                report: crate::node_reports::Report::ToolEnd { tool_use_id: None },
+            }, 1_700_000_000_000);
+            assert_eq!(poll_sample(&mut retired_domain, &mut retired_hooks, &mut retired_reports), std::task::Poll::Ready(Some(false)));
+            assert_eq!(poll_sample(&mut domain_changes, &mut hook_changes, &mut report_changes), std::task::Poll::Ready(Some(false)),
+                "the retired sampler must not steal the replacement's event");
+            assert!(poll_sample(&mut domain_changes, &mut hook_changes, &mut report_changes).is_pending());
+        });
     }
 
     #[tokio::test]

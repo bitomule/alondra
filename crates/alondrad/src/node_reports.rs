@@ -306,6 +306,17 @@ struct Limits {
     day_start: Option<(String, Millis, f64)>,
 }
 
+pub(crate) struct LiveChanges(tokio::sync::watch::Sender<()>);
+
+impl Default for LiveChanges {
+    fn default() -> Self { Self(tokio::sync::watch::Sender::new(())) }
+}
+
+impl LiveChanges {
+    pub(crate) fn publish(&self) { self.0.send_replace(()); }
+    pub(crate) fn subscribe(&self) -> tokio::sync::watch::Receiver<()> { self.0.subscribe() }
+}
+
 #[derive(Default)]
 pub(crate) struct Reports {
     sessions: Mutex<HashMap<String, Reported>>,
@@ -315,6 +326,7 @@ pub(crate) struct Reports {
     saved_in: Option<PathBuf>,
     connections: std::sync::atomic::AtomicU64,
     started: tokio::sync::Notify,
+    pub(crate) changed: LiveChanges,
 }
 
 impl Reports {
@@ -338,6 +350,7 @@ impl Reports {
 
     pub(crate) fn apply(&self, envelope: Envelope, now: Millis) {
         self.apply_on(envelope, now, &local_day(now));
+        self.changed.publish();
     }
 
     fn apply_on(&self, Envelope { session_id, report }: Envelope, now: Millis, today: &str) {
@@ -482,6 +495,7 @@ impl Reports {
         session.started_at.get_or_insert(now);
         drop(sessions);
         self.started.notify_waiters();
+        self.changed.publish();
         number
     }
 
@@ -493,6 +507,7 @@ impl Reports {
             Some(session) if session.connection == Some(number) => {
                 session.connection = None;
                 session.disconnected_at = Some(alondra_core::now_millis());
+                self.changed.publish();
                 true
             }
             _ => false,

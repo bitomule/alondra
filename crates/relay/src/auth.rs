@@ -183,6 +183,8 @@ pub struct Auth {
     verifier: Mutex<HttpChallengeVerifier>,
     #[cfg(test)]
     verification_time: Mutex<Option<u64>>,
+    #[cfg(test)]
+    live_route_checks: std::sync::atomic::AtomicUsize,
 }
 
 impl Auth {
@@ -405,6 +407,8 @@ impl Auth {
             verifier: Mutex::new(verifier),
             #[cfg(test)]
             verification_time: Mutex::new(None),
+            #[cfg(test)]
+            live_route_checks: std::sync::atomic::AtomicUsize::new(0),
         })
     }
 
@@ -1144,6 +1148,8 @@ impl Auth {
     }
 
     pub async fn require_live_route(&self,subject:&str,mac_id:&str,client_id:Option<&str>)->Result<()> {
+        #[cfg(test)]
+        self.live_route_checks.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         if let Some(db)=&self.management {
             db.require_live_device(subject,mac_id,client_id).await.map_err(|error| {
                 if error.downcast_ref::<crate::management::DomainError>()==Some(&crate::management::DomainError::Forbidden) {anyhow::anyhow!(AccountGateError::Denied)} else {
@@ -1173,6 +1179,11 @@ impl Auth {
             })?;
         }
         Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn live_route_check_count(&self) -> usize {
+        self.live_route_checks.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     #[cfg(test)]

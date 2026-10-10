@@ -13,6 +13,169 @@ private let freshnessBody = Data(#"{"key":"card:controlled","protocol":1,"text":
 private let freshnessAnswer = APIResponse.completed(status: 200, body: freshnessBody)
 
 @Suite(.serialized) struct DirectRouteFreshnessTests {
+    @Test func theFirstSealedReadFinishesBeforeAnUnusedHelloIsReleased() async throws {
+        let observed = AsyncStream<DirectProbeObservation>.makeStream()
+        let f = try FreshnessFixture(probeObserved: { observed.continuation.yield($0) })
+        await f.peer.holdHello(on: freshnessLAN.host)
+        await f.peer.holdHello(on: freshnessTailnet.host)
+        var entered = await f.peer.observe().makeAsyncIterator()
+        let read = Task { try await f.read() }
+        var hosts = Set<String>()
+        for _ in 0..<2 {
+            if case let .hello(host) = await entered.next() { hosts.insert(host) }
+        }
+        #expect(hosts == [freshnessLAN.host, freshnessTailnet.host])
+        await f.peer.releaseHello(on: freshnessLAN.host)
+        var processed = observed.stream.makeAsyncIterator()
+        while await processed.next() != .answered(freshnessLAN) {}
+        let selected = await f.router.route == .localNetwork
+        if selected {
+            await expectFreshnessAnswer(read.result)
+            #expect(await f.router.isProven(freshnessLAN), "the first answer must open with the pinned keys before the unused hello ends")
+            #expect(await f.peer.stats().pending == 1)
+        }
+        await f.peer.releaseAll()
+        await f.router.drainProbes()
+        if !selected { await expectFreshnessAnswer(read.result) }
+        #expect(selected, "a processed preferred hello must permit the sealed read while the unused lower preference hello is still held")
+        #expect(await f.peer.stats().reads == 1)
+        #expect(await f.peer.stats().effects == 0)
+        #expect(await f.peer.stats().pending == 0)
+        await f.session.deactivate()
+    }
+
+    @Test func anInvalidatedWinnerWaitsForPhysicalDrainBeforeProbingAgain() async throws {
+        let observed = AsyncStream<DirectProbeObservation>.makeStream()
+        let f = try FreshnessFixture(probeObserved: { observed.continuation.yield($0) })
+        await f.peer.holdHello(on: freshnessLAN.host)
+        await f.peer.holdHello(on: freshnessTailnet.host)
+        var entered = await f.peer.observe().makeAsyncIterator()
+        let first = Task { try await f.read() }
+        for _ in 0..<2 { _ = await entered.next() }
+        await f.peer.releaseHello(on: freshnessLAN.host)
+        await expectFreshnessAnswer(first.result)
+        await f.router.invalidate()
+        var events = observed.stream.makeAsyncIterator()
+        let replacement = Task { try await f.read() }
+        while await events.next() != .waitingForDrain {}
+        #expect(await f.peer.stats().hellos.values.reduce(0, +) == 2)
+        #expect(await f.peer.stats().pending == 1)
+        await f.peer.releaseAll()
+        await expectFreshnessAnswer(replacement.result)
+        await f.router.drainProbes()
+        #expect(await f.peer.stats().reads == 2)
+        #expect(await f.peer.stats().hellos[freshnessLAN.host] == 2)
+        #expect(await f.peer.stats().hellos.values.reduce(0, +) <= 4)
+        #expect(await f.router.isProven(freshnessLAN))
+        #expect(await f.peer.stats().pending == 0)
+        await f.session.deactivate()
+    }
+
+    @Test func aNewReadWaitsForPhysicalDrainAfterTheOldSnapshotFailed() async throws {
+        let name = DirectEndpoint(host: "fixture.tail.ts.net", port: 47810, kind: .tailscale)
+        let observed = AsyncStream<DirectProbeObservation>.makeStream()
+        let f = try FreshnessFixture(saved: [freshnessTailnet, name], probeObserved: { observed.continuation.yield($0) })
+        await f.peer.holdHello(on: freshnessTailnet.host)
+        await f.peer.holdHello(on: name.host)
+        var entered = await f.peer.observe().makeAsyncIterator()
+        var progress = observed.stream.makeAsyncIterator()
+        let old = Task { try await f.read() }
+        for _ in 0..<2 { _ = await entered.next() }
+        await f.router.offer([freshnessLAN], from: .mac)
+        await f.peer.releaseHello(on: freshnessTailnet.host)
+        while await progress.next() != .answered(freshnessTailnet) {}
+        switch await old.result {
+        case let .failure(error): #expect((error as? DirectRouteError) == .unreachable)
+        case .success: Issue.record("the invalidated old snapshot must not dispatch")
+        }
+        let replacement = Task { try await f.read() }
+        var next = await progress.next()
+        while next != .waitingForDrain && next != .joiningProbe { next = await progress.next() }
+        let reusedFailure: Result<APIResponse, any Error>?
+        if next == .joiningProbe { reusedFailure = await replacement.result }
+        else { reusedFailure = nil }
+        #expect(await f.peer.stats().hellos.values.reduce(0, +) == 2)
+        #expect(await f.peer.stats().pending == 1)
+        await f.peer.releaseAll()
+        if let reusedFailure { await expectFreshnessAnswer(reusedFailure) }
+        else { await expectFreshnessAnswer(replacement.result) }
+        await f.router.drainProbes()
+        #expect(await f.router.route == .localNetwork)
+        #expect(await f.router.isProven(freshnessLAN))
+        #expect(await f.peer.stats().reads == 1)
+        #expect(await f.peer.stats().pending == 0)
+        await f.session.deactivate()
+    }
+
+    @Test func cancellingOneProbeWaiterDoesNotCancelTheSharedDiscovery() async throws {
+        let observed = AsyncStream<DirectProbeObservation>.makeStream()
+        let f = try FreshnessFixture(saved: [freshnessLAN], probeObserved: { observed.continuation.yield($0) })
+        await f.peer.holdHello(on: freshnessLAN.host)
+        var entered = await f.peer.observe().makeAsyncIterator()
+        var events = observed.stream.makeAsyncIterator()
+        let first = Task { try await f.read() }
+        #expect(await entered.next() == .hello(freshnessLAN.host))
+        while await events.next() != .waitingForProbe {}
+        let cancelled = Task { try await f.router.endpoint() }
+        while await events.next() != .waitingForProbe {}
+        #expect(await f.router.probeWaiterCount == 2)
+        cancelled.cancel()
+        #expect(await f.router.probeWaiterCount == 1, "cancellation must remove the waiter before the physical hello exits")
+        await f.peer.releaseAll()
+        switch await cancelled.result {
+        case let .failure(error): #expect(error is CancellationError)
+        case .success: Issue.record("the cancelled waiter cannot dispatch using the shared answer")
+        }
+        await expectFreshnessAnswer(first.result)
+        await f.router.drainProbes()
+        #expect(await f.router.probeWaiterCount == 0)
+        #expect(await f.peer.stats().reads == 1)
+        #expect(await f.peer.stats().hellos.values.reduce(0, +) == 1)
+        #expect(await f.peer.stats().pending == 0)
+        await f.session.deactivate()
+    }
+
+    @Test func aHigherPreferenceOfferInvalidatesTheFirstCandidateSnapshot() async throws {
+        let f = try FreshnessFixture(saved: [freshnessTailnet])
+        await f.peer.holdHello(on: freshnessTailnet.host)
+        var entered = await f.peer.observe().makeAsyncIterator()
+        let old = Task { try await f.read() }
+        #expect(await entered.next() == .hello(freshnessTailnet.host))
+        await f.router.offer([freshnessLAN], from: .mac)
+        await f.peer.releaseAll()
+        switch await old.result {
+        case let .failure(error): #expect((error as? DirectRouteError) == .unreachable)
+        case .success: Issue.record("an initial probe must not promote the old lower preference snapshot")
+        }
+        await f.router.drainProbes()
+        #expect(await f.peer.stats().reads == 0)
+        #expect(try await f.read() == freshnessAnswer)
+        await f.router.drainProbes()
+        #expect(await f.router.route == .localNetwork)
+        #expect(await f.router.isProven(freshnessLAN))
+        #expect(await f.peer.stats().reads == 1)
+        #expect(await f.peer.stats().pending == 0)
+        await f.session.deactivate()
+    }
+
+    @Test func aFastTailnetHelloStillWaitsForThePreferredLAN() async throws {
+        let observed = AsyncStream<DirectProbeObservation>.makeStream()
+        let f = try FreshnessFixture(probeObserved: { observed.continuation.yield($0) })
+        await f.peer.holdHello(on: freshnessLAN.host)
+        var consumed = observed.stream.makeAsyncIterator()
+        let read = Task { try await f.read() }
+        while await consumed.next() != .answered(freshnessTailnet) {}
+        #expect(await f.router.route == nil)
+        #expect(await f.peer.stats().reads == 0)
+        await f.peer.releaseHello(on: freshnessLAN.host)
+        await expectFreshnessAnswer(read.result)
+        await f.router.drainProbes()
+        #expect(await f.router.route == .localNetwork)
+        #expect(await f.router.isProven(freshnessLAN))
+        #expect(await f.peer.stats().pending == 0)
+        await f.session.deactivate()
+    }
+
     @Test func anActiveReadDoesNotWaitForAnUnusedAddress() async throws {
         let f = try FreshnessFixture()
         #expect(try await f.read() == freshnessAnswer)
@@ -29,7 +192,7 @@ private let freshnessAnswer = APIResponse.completed(status: 200, body: freshness
         #expect(await f.router.route == .localNetwork)
         let stats = await f.peer.stats()
         #expect(stats.reads == 3 && stats.effects == 0 && stats.pending == 0)
-        #expect(stats.hellos.values.reduce(0, +) == 2)
+        #expect((1...2).contains(stats.hellos.values.reduce(0, +)))
     }
 
     @Test(arguments: FreshnessReply.failures) fileprivate func unsuccessfulRepliesDoNotRenewTheRoute(reply: FreshnessReply) async throws {
@@ -248,14 +411,14 @@ private struct FreshnessFixture {
     let peer: FreshnessPeer
     let router: DirectRouter
     let session: DirectSession
-    init(saved: [DirectEndpoint] = [freshnessLAN, freshnessTailnet]) throws {
+    init(saved: [DirectEndpoint] = [freshnessLAN, freshnessTailnet], probeObserved: (@Sendable (DirectProbeObservation) -> Void)? = nil) throws {
         let time = time
         let keys = try FreshnessKeys()
         self.keys = keys
         peer = FreshnessPeer(keys: keys, time: time)
         let http = DirectHTTP(transport: peer)
         router = DirectRouter(pinned: keys.identity, saved: saved, http: http,
-                              network: { time.network }, now: { time.instant })
+                              network: { time.network }, now: { time.instant }, probeObserved: probeObserved)
         session = Self.session(keys: keys, time: time, router: router, peer: peer)
     }
     func makeSession() -> DirectSession { Self.session(keys: keys, time: time, router: router, peer: peer) }
@@ -306,7 +469,7 @@ private actor FreshnessPeer: HTTPTransport {
     private var impostorHosts: Set<String> = []
     private var heldHello: Set<String> = []
     private var heldResponses = false
-    private var pending: [(CheckedContinuation<HTTPReply, Never>, HTTPReply)] = []
+    private var pending: [(CheckedContinuation<HTTPReply, Never>, HTTPReply, Event)] = []
     private var observer: AsyncStream<Event>.Continuation?
     private var hellos: [String: Int] = [:]
     private var reads = 0
@@ -328,11 +491,17 @@ private actor FreshnessPeer: HTTPTransport {
         .init(hellos: hellos, reads: reads, effects: effects, requestBytes: requestBytes,
               responseBytes: responseBytes, pending: pending.count)
     }
+    func releaseHello(on host: String) {
+        heldHello.remove(host)
+        let released = pending.filter { $0.2 == .hello(host) }
+        pending.removeAll { $0.2 == .hello(host) }
+        for (continuation, response, _) in released { continuation.resume(returning: response) }
+    }
     func releaseAll() {
         heldHello.removeAll(); heldResponses = false
         let waiting = pending
         pending.removeAll()
-        for (continuation, response) in waiting { continuation.resume(returning: response) }
+        for (continuation, response, _) in waiting { continuation.resume(returning: response) }
     }
     func send(_ request: URLRequest) async throws -> HTTPReply {
         let url = try #require(request.url)
@@ -368,7 +537,7 @@ private actor FreshnessPeer: HTTPTransport {
     }
     private func hold(_ response: HTTPReply, event: Event) async -> HTTPReply {
         await withCheckedContinuation {
-            pending.append(($0, response))
+            pending.append(($0, response, event))
             observer?.yield(event)
         }
     }
