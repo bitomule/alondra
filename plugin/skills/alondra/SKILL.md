@@ -158,6 +158,11 @@ Pick the tool by what you need:
   After 3 hours Alondra asks you whether it still runs: call it again with the reason if it
   does. If you are not working and do not answer within 30 minutes, the user decides whether to
   close the session.
+- Work that comes after the merge of your PR (publish, install, deploy, verify) is part of your
+  task: the PR alone is not its final result. Declare it with `post_merge_work` and its `reason`
+  before you present the PR as final. Accepting and merging the PR then does not close the task:
+  it stays in progress, Alondra tells you to do that work once the PR merges, and the task closes
+  only after you call `post_merge_work` without `reason` (or `cleanup_done`) when it is done.
 - Do not end your turn while your task is open with no result and no question: Alondra sends you
   back to work with the reason, and after three times it tells the user you cannot deliver.
 - `create_document` / `revise_document`: a file the user reviews. Copy it into Alondra's files

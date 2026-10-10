@@ -3544,12 +3544,39 @@ fn only_the_tasks_node_declares_work_after_the_merge_and_cleanup_done_ends_it() 
     reject_unchanged(&mut s, agent(), post_merge_work(Some("release.sh")), "task_not_active");
 }
 #[test]
+fn work_declared_before_delivering_keeps_the_merged_task_in_progress_until_it_ends() {
+    let mut s = fixture();
+    register(&mut s);
+    exec(&mut s, agent(), post_merge_work(Some("publish the release"))).unwrap();
+    present(&mut s, "d", pr_targets());
+    exec(&mut s, user(), Command::AcceptDelivery { presentation_id: "d".into(), targets: pr_targets() }).unwrap();
+    let merged = merge_observed(&mut s);
+    assert_eq!(sent_to_node(&merged), vec![post_merge_reminder("Result", &"t".into(), "publish the release")]);
+    assert_eq!(s.tasks[&"t".into()].state, TaskState::Running, "accepting the PR does not close a task with work left");
+    exec(&mut s, agent(), post_merge_work(None)).unwrap();
+    assert_eq!(s.tasks[&"t".into()].state, TaskState::Closing);
+    exec(&mut s, agent(), Command::ConfirmCleanup { task_id: "t".into() }).unwrap();
+    end_node(&mut s, "t");
+    assert_eq!(s.tasks[&"t".into()].state, TaskState::Done);
+}
+#[test]
+fn work_declared_while_closing_takes_the_task_back_to_in_progress() {
+    let mut s = fixture();
+    accept_text(&mut s);
+    assert_eq!(s.tasks[&"t".into()].state, TaskState::Closing);
+    exec(&mut s, agent(), post_merge_work(Some("release.sh"))).unwrap();
+    assert_eq!(s.tasks[&"t".into()].state, TaskState::Running);
+    exec(&mut s, agent(), Command::ConfirmCleanup { task_id: "t".into() }).unwrap();
+    assert_eq!(s.tasks[&"t".into()].state, TaskState::Closing);
+}
+#[test]
 fn closing_the_node_drops_the_work_it_declared_after_the_merge() {
     let mut s = fixture();
     accept_text(&mut s);
     exec(&mut s, agent(), post_merge_work(Some("release.sh"))).unwrap();
-    end_node(&mut s, "t");
+    exec(&mut s, Actor::System, Command::RecordNodeEnd { task_id: "t".into(), end: NodeEnd::Closed, agent_id: None }).unwrap();
     assert_eq!(s.tasks[&"t".into()].wrap_up.post_merge_work, None);
+    assert_eq!(s.tasks[&"t".into()].state, TaskState::Done);
 }
 #[test]
 fn a_second_cleanup_confirmation_moves_its_revision() {

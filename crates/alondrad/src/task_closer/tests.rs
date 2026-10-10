@@ -588,7 +588,7 @@ async fn an_idle_node_that_declares_work_after_the_merge_is_not_closed_when_the_
     rig.pass(T0 + 30 * MINUTE).await;
     rig.pass(T0 + 4 * 60 * MINUTE).await;
     assert_eq!(rig.sessions.removals(), 0);
-    assert_eq!(rig.task().state, TaskState::Closing);
+    assert_eq!(rig.task().state, TaskState::Running, "the task stays in progress while its work after the merge runs");
     assert!(rig.cards().is_empty());
 }
 

@@ -249,6 +249,15 @@ still running after the merge (a deploy, a release script), call post_merge_work
 and what it is first: Alondra keeps the session open until you call it again without reason or call \
 cleanup_done.", task = task.0)
 }
+/// What a node that declared work after the merge before delivering is told once its delivery
+/// settles: the task stays in progress until that work ends.
+pub fn post_merge_reminder(title: &str, task: &TaskId, reason: &str) -> String {
+    format!("Your task “{title}” has its delivery accepted and merged, and you said work remains after the \
+merge: {reason}. Do it now: the task stays in progress until you say it ended. When it ends, call \
+post_merge_work with task_id {task} without reason, then delete what you generated for this task that git \
+does not track (build outputs, caches, temporary files) with the project's own tools and call cleanup_done \
+with task_id {task}. If it cannot be done, say so with ask.", task = task.0)
+}
 /// What a node that waited on other Tasks is told when they are done.
 pub fn dependencies_done_notice(titles: &[&str]) -> String {
     let names: Vec<String> = titles.iter().map(|title| format!("“{title}”")).collect();
@@ -1527,7 +1536,10 @@ impl DomainState {
             let finished = self.finished(t);
             if finished && self.wraps_up(t) && t.wrap_up.asked_at.is_none() {
                 let agent_id = t.agent_id.clone().expect("a task that wraps up has a node");
-                let message = cleanup_request(&t.title, &t.id);
+                let message = match &t.wrap_up.post_merge_work {
+                    Some(work) => post_merge_reminder(&t.title, &t.id, &work.reason),
+                    None => cleanup_request(&t.title, &t.id),
+                };
                 self.tasks.get_mut(&id).unwrap().wrap_up.asked_at = Some(revision);
                 effects.push(DomainEffect::NotifyAgent { agent_id, task_id: Some(id), interaction_id: None, message });
             } else if !finished && (t.wrap_up.asked_at.is_some() || t.wrap_up.cleaned_at.is_some()) {
@@ -1601,7 +1613,13 @@ impl DomainState {
                     if (self.settled(t, p) || self.accepted(p)) && self.unanswered(&t.id) {
                         TaskState::NeedsYou
                     } else if self.settled(t, p) {
-                        if self.wraps_up(t) { TaskState::Closing } else { TaskState::Done }
+                        if !self.wraps_up(t) {
+                            TaskState::Done
+                        } else if t.wrap_up.post_merge_work.is_some() {
+                            TaskState::Running
+                        } else {
+                            TaskState::Closing
+                        }
                     } else if self.accepted(p) {
                         TaskState::WaitingDependency
                     } else if self.handed_back(p).is_some() || !t.blocks.is_empty() {

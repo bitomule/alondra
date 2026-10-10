@@ -35,4 +35,4 @@ pub use plan::*;
 pub use projection::*;
 pub use refusal::*;
 pub use schedule::*;
-pub use rules::{ALONDRA_MERGES, ORCHESTRATOR_READER, ENDED_UNANSWERED_PREFIX, OPEN_SUGGESTIONS_MAX, SUGGESTION_ANSWERS, suggestion_options, cancelled_notice, delivery_withdrawn_for_questions, delivery_withdrawn_behind_pr, dependencies_done_notice, cleanup_request, merge_failed_text, merge_failure, merged_notice};
+pub use rules::{ALONDRA_MERGES, ORCHESTRATOR_READER, ENDED_UNANSWERED_PREFIX, OPEN_SUGGESTIONS_MAX, SUGGESTION_ANSWERS, suggestion_options, cancelled_notice, delivery_withdrawn_for_questions, delivery_withdrawn_behind_pr, dependencies_done_notice, cleanup_request, post_merge_reminder, merge_failed_text, merge_failure, merged_notice};
