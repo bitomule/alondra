@@ -88,6 +88,7 @@ mod schedule_clock;
 mod schedules;
 mod sentinel;
 mod service;
+mod settings;
 mod service_files;
 mod start_guard;
 mod store;

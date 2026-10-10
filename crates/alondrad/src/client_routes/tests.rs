@@ -11,9 +11,9 @@ use p256::ecdsa::{Signature, SigningKey, signature::Signer};
 use std::collections::BTreeSet;
 use std::net::SocketAddr;
 
-pub(super) struct Fixture {
-    pub home: crate::test_support::Directory,
-    pub base: String,
+pub(crate) struct Fixture {
+    pub(crate) home: crate::test_support::Directory,
+    pub(crate) base: String,
     http: reqwest::Client,
     key: SigningKey,
     device_id: String,
@@ -39,7 +39,7 @@ pub(super) fn fixture_json(name: &str) -> Value {
 }
 
 impl Fixture {
-    pub(super) async fn start() -> Self {
+    pub(crate) async fn start() -> Self {
         let home = crate::test_support::Directory::new();
         std::fs::create_dir(&home).unwrap();
         drop(DomainRuntime::open(&home).unwrap());
@@ -97,7 +97,11 @@ impl Fixture {
         if body.is_some() { request.header("content-type", "application/json").body(bytes) } else { request }
     }
 
-    pub(super) async fn get(&self, path: &str) -> (StatusCode, Vec<u8>) {
+    pub(crate) fn device_id(&self) -> &str {
+        &self.device_id
+    }
+
+    pub(crate) async fn get(&self, path: &str) -> (StatusCode, Vec<u8>) {
         let response = self.signed("GET", path, None).send().await.unwrap();
         (response.status(), response.bytes().await.unwrap().to_vec())
     }
@@ -127,7 +131,7 @@ impl Fixture {
         serde_json::from_slice(&body).unwrap()
     }
 
-    pub(super) async fn send(&self, method: &str, path: &str, body: &Value) -> (StatusCode, Value) {
+    pub(crate) async fn send(&self, method: &str, path: &str, body: &Value) -> (StatusCode, Value) {
         let response = self.signed(method, path, Some(body)).send().await.unwrap();
         let status = response.status();
         (status, response.json().await.unwrap_or(Value::Null))

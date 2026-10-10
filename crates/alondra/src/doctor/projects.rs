@@ -19,23 +19,8 @@ pub struct Proposal {
     pub refused: Option<String>,
 }
 
-fn is_repo(dir: &Path) -> bool {
-    dir.join(".git").exists()
-}
-
-fn subfolders(dir: &Path) -> Vec<PathBuf> {
-    let Ok(entries) = std::fs::read_dir(dir) else { return vec![] };
-    let mut found: Vec<PathBuf> = entries.filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|p| p.is_dir() && !p.file_name().is_some_and(|n| n.to_string_lossy().starts_with('.')))
-        .collect();
-    found.sort();
-    found
-}
-
-/// Git repos directly inside `dir`.
-pub fn repos(dir: &Path) -> usize {
-    subfolders(dir).iter().filter(|p| is_repo(p)).count()
-}
+pub use alondra_core::projects_folder::repos;
+use alondra_core::projects_folder::{is_repo, subfolders};
 
 pub fn refusal(path: &Path) -> Option<String> {
     (path == Path::new("/")).then(|| tr!(

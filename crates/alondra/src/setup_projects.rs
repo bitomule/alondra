@@ -2,10 +2,6 @@
 use std::{fs, io::{BufRead, Write}, path::{Path, PathBuf}};
 use anyhow::{Context, Result, bail};
 use alondra_core::options::OptionsFile;
-use serde::Deserialize;
-
-#[derive(Deserialize)]
-struct RootValue { projects_root: Option<toml::Spanned<String>> }
 
 pub struct Selection {
     file: PathBuf,
@@ -15,40 +11,30 @@ pub struct Selection {
 }
 
 pub(crate) fn resolve(value: &Path, home: &Path, cwd: &Path) -> Result<PathBuf> {
-    if value.as_os_str().is_empty() { bail!(tr!("Projects directory cannot be empty", "la carpeta de proyectos no puede estar vacía")); }
-    let path = if value == Path::new("~") { home.to_owned() }
-        else if let Ok(rest) = value.strip_prefix("~/") { home.join(rest) }
-        else if value.is_absolute() { value.to_owned() } else { cwd.join(value) };
-    match fs::metadata(&path) {
-        Ok(meta) if meta.is_dir() => Ok(path.canonicalize()?),
-        Ok(_) => {
+    use alondra_core::projects_folder::RootError;
+    match alondra_core::projects_folder::resolve(value, home, cwd) {
+        Ok(path) => Ok(path),
+        Err(RootError::Empty) => bail!(tr!("Projects directory cannot be empty", "la carpeta de proyectos no puede estar vacía")),
+        Err(RootError::NotADirectory(path)) => {
             let shown = path.display();
-            bail!(trf!("{shown} is not a directory; choose another --projects-root", "{shown} no es un directorio; elige otro --projects-root"))
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            // Check existing ancestors now, before any auth or writes.
-            let mut ancestor = path.as_path();
-            while !ancestor.exists() { ancestor = ancestor.parent().context("No existing parent for projects directory")?; }
-            if !ancestor.is_dir() {
-                let shown = ancestor.display();
-                bail!(trf!("{shown} is not a directory", "{shown} no es un directorio"));
+            if path == resolved_input(value, home, cwd) {
+                bail!(trf!("{shown} is not a directory; choose another --projects-root", "{shown} no es un directorio; elige otro --projects-root"))
             }
-            Ok(path)
+            bail!(trf!("{shown} is not a directory", "{shown} no es un directorio"))
         }
-        Err(e) => Err(e).with_context(|| format!("Cannot access {}", path.display())),
+        Err(RootError::WholeDisk) => bail!(tr!("/ holds the whole disk", "/ es todo el disco")),
+        Err(RootError::Unreadable(why)) => Err(anyhow::Error::msg(format!("Cannot access {why}"))),
     }
 }
 
+fn resolved_input(value: &Path, home: &Path, cwd: &Path) -> PathBuf {
+    if value == Path::new("~") { home.to_owned() }
+    else if let Ok(rest) = value.strip_prefix("~/") { home.join(rest) }
+    else if value.is_absolute() { value.to_owned() } else { cwd.join(value) }
+}
+
 fn with_root(original: &str, root: &Path) -> Result<String> {
-    let value = root.to_str().context("Projects directory must be valid UTF-8")?;
-    let encoded = toml::Value::String(value.to_owned()).to_string();
-    let parsed: RootValue = toml::from_str(original)?;
-    let mut text = original.to_owned();
-    if let Some(existing) = parsed.projects_root {
-        text.replace_range(existing.span(), &encoded);
-    } else { text = format!("projects_root = {encoded}\n{text}"); }
-    OptionsFile::parse(&text).map_err(anyhow::Error::msg)?;
-    Ok(text)
+    alondra_core::projects_folder::with_root(original, root).map_err(anyhow::Error::msg)
 }
 
 pub fn select(

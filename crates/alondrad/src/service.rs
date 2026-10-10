@@ -1234,6 +1234,25 @@ impl Service {
         .await
     }
 
+    /// This Mac's settings for an approved device, the same answer the local listener gives.
+    async fn settings(&self, sender: &str, request: &LocalRequest) -> Result<Option<crate::client_routes::Reply>> {
+        let home = self.home.clone();
+        let relay = self.has_relay();
+        let user_home = crate::options::user_home();
+        let work: Box<dyn FnOnce() -> crate::client_routes::Reply + Send> = if request.method == "PUT" && request.path == crate::settings::PATH {
+            let body = request.body.clone().context("settings body required")?;
+            let lang = self.routes.as_ref().map_or(alondra_core::views::Lang::En, |client| client.language_for_device(sender));
+            Box::new(move || crate::settings::write(&home, &user_home, relay, &body, lang))
+        } else if request.method == "GET" && request.path == crate::settings::PATH {
+            Box::new(move || crate::settings::read(&home, &user_home, relay))
+        } else if let Some(path) = crate::settings::folders_query(&request.path).filter(|_| request.method == "GET") {
+            Box::new(move || crate::settings::folders(&user_home, path.as_deref()))
+        } else {
+            return Ok(None);
+        };
+        Ok(Some(tokio::task::spawn_blocking(work).await?))
+    }
+
     async fn dispatch_domain(
         &self,
         domain: &Arc<crate::domain_runtime::DomainRuntime>,
@@ -1244,6 +1263,10 @@ impl Service {
         approved_method(request)?;
         let device = self.devices.get(sender).context("unapproved device")?;
         let approved = self.approved_device(sender, &device, transport)?;
+        if let Some(reply) = self.settings(sender, request).await? {
+            approved.recheck()?;
+            return Ok(reply.into_value());
+        }
         if request.method == "POST" || request.method == "PUT" {
             if crate::domain_api::is_resource_mutation_path(&request.method, &request.path) {
                 let body = request.body.as_ref().context("resource body required")?;
@@ -1889,6 +1912,12 @@ fn domain_read_id(id: &str) -> bool {
 /// The relay carries opaque JSON. Only these app operations may be replayed on loopback.
 /// There is deliberately no general URL proxy, no pairing/device management, and no upload.
 fn approved_method(request: &LocalRequest) -> Result<Method> {
+    if request.method == "GET" && request.body.is_none() && crate::settings::approved_read(&request.path) {
+        return Ok(Method::GET);
+    }
+    if request.method == "PUT" && request.body.is_some() && request.path == crate::settings::PATH {
+        return Ok(Method::PUT);
+    }
     if request.method == "GET" && request.body.is_none() && request.path == crate::direct::routes::PATH {
         return Ok(Method::GET);
     }
@@ -7582,5 +7611,60 @@ agreement_key = "{}"
         drop(domain);
         drop(auth);
         std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_paired_phone_reads_and_changes_the_settings_through_the_relay() {
+        use std::os::unix::fs::PermissionsExt;
+        let home = crate::test_support::Directory::new();
+        std::fs::create_dir_all(&*home).unwrap();
+        let domain = Arc::new(crate::domain_runtime::DomainRuntime::open(&home).unwrap());
+        let phone_signing = SigningKey::from_slice(&[3u8; 32]).unwrap();
+        let phone_agreement = SecretKey::from_slice(&[4u8; 32]).unwrap();
+        let signing_wire = URL_SAFE_NO_PAD.encode(phone_signing.verifying_key().to_sec1_bytes());
+        let agreement_wire = URL_SAFE_NO_PAD.encode(phone_agreement.public_key().to_sec1_bytes());
+        for (name, secret) in [("mac-signing.key", [1u8; 32]), ("mac-agreement.key", [2u8; 32])] {
+            let path = home.join(name);
+            std::fs::write(&path, URL_SAFE_NO_PAD.encode(secret)).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        std::fs::write(home.join("service.toml"), format!(
+            "relay_url = \"http://127.0.0.1:1/\"\nmac_id = \"mac-1\"\nowner_sub = \"owner\"\nsigning_key_path = \"mac-signing.key\"\nagreement_key_path = \"mac-agreement.key\"\n[[devices]]\ndevice_id = \"phone-a\"\nsigning_key = \"{signing_wire}\"\nagreement_key = \"{agreement_wire}\"\n"
+        )).unwrap();
+        let auth = Arc::new(Auth::open(&home).unwrap());
+        auth.approve_service("phone-a", "Test", &signing_wire).unwrap();
+        let client = crate::client_routes::Client::open(domain.clone(), &home, Default::default());
+        let service = Service::open(&home, 0, auth.clone()).unwrap().unwrap()
+            .with_domain(domain.clone()).with_client(client);
+        service.journal.reserve_enrollment("phone-a", &phone_signing.verifying_key().to_sec1_bytes()).unwrap();
+        service.journal.activate_enrollment("phone-a").unwrap();
+        let request = |method: &str, path: &str, body: Option<Value>| LocalRequest { method: method.into(), path: path.into(), body };
+
+        for (method, path, body) in [("GET", "/settings", None), ("GET", "/settings/folders", None),
+            ("GET", "/settings/folders?path=%2FUsers", None), ("PUT", "/settings", Some(json!({})))] {
+            assert!(approved_method(&request(method, path, body)).is_ok(), "{method} {path} is relayed");
+        }
+        for (method, path, body) in [("PUT", "/settings", None), ("GET", "/settings", Some(json!({}))),
+            ("POST", "/settings", Some(json!({}))), ("GET", "/settings/folders?path=a&x=1", None), ("GET", "/settings/x", None)] {
+            assert!(approved_method(&request(method, path, body)).is_err(), "{method} {path} is refused");
+        }
+
+        let read = service.dispatch("phone-a", &request("GET", "/settings", None), Transport::Relay).await.unwrap();
+        assert_eq!((read["status"].as_i64(), read["body"]["relay"]["on"].as_bool()), (Some(200), Some(true)), "{read}");
+        let chosen = home.join("Chosen");
+        let changed = service.dispatch("phone-a",
+            &request("PUT", "/settings", Some(json!({"projects_root": chosen, "lang": "en"}))), Transport::Relay).await.unwrap();
+        assert_eq!(changed["status"], 200, "{changed}");
+        assert_eq!(changed["body"]["projects_root"], json!(chosen));
+        assert!(chosen.is_dir(), "a missing folder is created");
+        let refused = service.dispatch("phone-a",
+            &request("PUT", "/settings", Some(json!({"projects_root": "/"}))), Transport::Relay).await.unwrap();
+        assert_eq!((refused["status"].as_i64(), refused["body"]["error"].as_str()), (Some(422), Some("whole_disk")));
+        let browse = service.dispatch("phone-a", &request("GET", "/settings/folders", None), Transport::Relay).await.unwrap();
+        assert_eq!(browse["status"], 200, "{browse}");
+        assert!(service.dispatch("phone-z", &request("GET", "/settings", None), Transport::Relay).await.is_err(),
+            "a device that is not paired gets nothing");
+        drop(service);
+        drop(domain);
     }
 }

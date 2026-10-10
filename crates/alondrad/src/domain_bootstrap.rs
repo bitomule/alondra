@@ -142,6 +142,8 @@ pub(crate) fn router(state: Arc<DomainDaemon>) -> Router {
         .route("/orchestrator/node", get(orchestrator_node))
         .route("/agents/waiting-machine", post(agent_waiting_machine))
         .route("/cards/open", get(open_cards))
+        .route(crate::settings::PATH, get(settings_read).put(settings_write))
+        .route(crate::settings::FOLDERS, get(settings_folders))
         .merge(crate::domain_api::routes())
         .merge(crate::views::routes::router())
         .merge(crate::notices::router())
@@ -254,6 +256,84 @@ pub(crate) fn signed_device(home: &Path, signed: &Option<Extension<Signed>>) -> 
         .iter()
         .any(|entry| entry.id == signed.device_id && entry.public_key == signed.public_key)
         .then(|| signed.clone())
+}
+
+/// Who may read and change this Mac's settings: this Mac unsigned, or an approved device. A
+/// browser page open on the Mac sends an `Origin` and is refused.
+fn settings_caller(state: &DomainDaemon, peer: &SocketAddr, headers: &HeaderMap, signed: &Option<Extension<Signed>>) -> Result<alondra_core::views::Lang, Response> {
+    if headers.contains_key(axum::http::header::ORIGIN) {
+        return Err(forbidden("settings change only from Alondra's own clients"));
+    }
+    if signed.is_some() {
+        return signed_device(&state.home, signed)
+            .map(|device| state.client.language_for_device(&device.device_id))
+            .ok_or_else(|| forbidden("signed user device required"));
+    }
+    match local_only(peer, headers) {
+        Some(refused) => Err(refused),
+        None => Ok(alondra_core::views::Lang::En),
+    }
+}
+
+fn relay_on(state: &DomainDaemon) -> bool {
+    state.service.get().is_some_and(|service| service.has_relay())
+}
+
+async fn settings_read(
+    State(state): State<Arc<DomainDaemon>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    signed: Option<Extension<Signed>>,
+) -> Response {
+    if let Err(refused) = settings_caller(&state, &peer, &headers, &signed) {
+        return refused;
+    }
+    let relay = relay_on(&state);
+    match tokio::task::spawn_blocking(move || crate::settings::read(&state.home, &crate::options::user_home(), relay)).await {
+        Ok(reply) => reply.into_response(),
+        Err(_) => storage(),
+    }
+}
+
+async fn settings_folders(
+    State(state): State<Arc<DomainDaemon>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    signed: Option<Extension<Signed>>,
+    uri: axum::http::Uri,
+) -> Response {
+    if let Err(refused) = settings_caller(&state, &peer, &headers, &signed) {
+        return refused;
+    }
+    let path_and_query = uri.path_and_query().map_or(uri.path(), |p| p.as_str()).to_owned();
+    let Some(path) = crate::settings::folders_query(&path_and_query) else {
+        return crate::domain_api::domain_error(DomainError::new("invalid_input", "invalid folders query"));
+    };
+    match tokio::task::spawn_blocking(move || crate::settings::folders(&crate::options::user_home(), path.as_deref())).await {
+        Ok(reply) => reply.into_response(),
+        Err(_) => storage(),
+    }
+}
+
+async fn settings_write(
+    State(state): State<Arc<DomainDaemon>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    signed: Option<Extension<Signed>>,
+    body: Result<Json<Value>, JsonRejection>,
+) -> Response {
+    let lang = match settings_caller(&state, &peer, &headers, &signed) {
+        Ok(lang) => lang,
+        Err(refused) => return refused,
+    };
+    let Ok(Json(body)) = body else {
+        return crate::domain_api::domain_error(DomainError::new("invalid_input", "invalid settings"));
+    };
+    let relay = relay_on(&state);
+    match tokio::task::spawn_blocking(move || crate::settings::write(&state.home, &crate::options::user_home(), relay, &body, lang)).await {
+        Ok(reply) => reply.into_response(),
+        Err(_) => storage(),
+    }
 }
 
 /// The running version, update state and machine gauges, for `alondra update`,

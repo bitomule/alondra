@@ -547,4 +547,4 @@ pub(crate) fn router(client: Arc<Client>) -> Router {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
