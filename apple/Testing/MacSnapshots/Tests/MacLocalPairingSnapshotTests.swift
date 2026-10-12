@@ -1,5 +1,6 @@
 import AlondraContract
 import AlondraFeatures
+import AlondraMacWorkspace
 import AppKit
 import ComposableArchitecture
 import SnapshotTesting
@@ -83,5 +84,34 @@ final class MacLocalPairingSnapshotTests: XCTestCase {
         ]
         let store = Store(initialState: state) { EmptyReducer<SettingsFeature.State, SettingsFeature.Action>() }
         return MacSettingsView(store: store) { _ in EmptyView() }
+    }
+
+    private var thisMacSettings: some View {
+        let client = MacSettingsClient(load: { throw CancellationError() }, save: { _ in throw CancellationError() },
+                                       folders: { _ in throw CancellationError() })
+        let state = MacSettingsFeature.State(id: UUID(), macName: "MacBook Pro de David", client: client, settings: MacSettings(
+            projectsRoot: "/Users/david/Projects",
+            candidates: [.init(path: "/Users/david/Projects", repos: 63), .init(path: "/Users/david/Developer", repos: 4)],
+            relay: .init(on: false)))
+        let store = Store(initialState: state) { EmptyReducer<MacSettingsFeature.State, MacSettingsFeature.Action>() }
+        return NavigationStack { ThisMacSettingsView(store: store) }
+    }
+
+    func test_thisMacSettings() {
+        assertWindow(size: CGSize(width: 480, height: 460)) { thisMacSettings }
+    }
+
+    func test_thisMacSettings_spanish() {
+        assertWindow(size: CGSize(width: 480, height: 460), spanish: true, variants: light) { thisMacSettings }
+    }
+
+    func test_localDaemonMissing_installWithHomebrew() {
+        assertWindow(size: CGSize(width: 640, height: 480)) { MacLocalDaemonMissingView(connectToAnotherMac: {}, exploreDemo: {}) }
+    }
+
+    func test_localDaemonMissing_installWithHomebrew_spanish() {
+        assertWindow(size: CGSize(width: 640, height: 480), spanish: true, variants: light) {
+            MacLocalDaemonMissingView(connectToAnotherMac: {}, exploreDemo: {})
+        }
     }
 }

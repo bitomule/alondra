@@ -249,6 +249,10 @@ public final class AccountSession {
         try await reconcile(collection, subject: registry.ownerSubject, preferred: collection.selectedID, generation: current)
     }
 
+    public func session(choice id: UUID) -> Connection? {
+        registry.snapshot.entries.first { choiceIDs[$0.id] == id }?.session
+    }
+
     /// How every paired Mac answers now: one signed round trip each, all at once.
     public func macStatuses() async -> [UUID: MacStatus] {
         let entries = registry.snapshot.entries.compactMap { entry in choiceIDs[entry.id].map { ($0, entry.session) } }

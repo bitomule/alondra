@@ -121,7 +121,7 @@ public actor RelaySession: OperationAPI, PushRegistrationAPI {
     /// reconciles the existing envelope; it can never submit the mutation a second time.
     public func execute(requestID: String, method: String, path: String, body: Data? = nil,
                         statusPolls: Int = 10) async throws -> RelayOperationResult {
-        guard method == "POST" else {
+        guard method != "GET" else {
             return try await executePrepared(requestID: requestID, method: method, path: path, body: body, statusPolls: statusPolls)
         }
         let startedAt = requestClock.now()
@@ -137,7 +137,7 @@ public actor RelaySession: OperationAPI, PushRegistrationAPI {
                                  statusPolls: Int) async throws -> RelayOperationResult {
         try MutationScope.check()
         guard active else { throw CancellationError() }
-        guard ["GET", "POST"].contains(method),
+        guard ["GET", "POST", "PUT"].contains(method),
               EnvelopeRequestPolicy.validViewsPath(method: method, path: path, hasBody: body != nil),
               !path.contains("#"), statusPolls >= 0, statusPolls <= 30 else {
             throw RelaySessionError.invalidRequest

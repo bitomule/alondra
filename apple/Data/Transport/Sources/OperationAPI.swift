@@ -64,7 +64,8 @@ public struct APIRequest: Sendable, Equatable {
         switch (method, path) {
         case (.get, ["capabilities"]), (.get, ["changes"]), (.get, ["files", "chunk"]), (.get, ["routes"]),
              (.post, ["actions"]), (.post, ["activity"]), (.post, ["device", "push-binding"]),
-             (.post, ["device", "push-binding", "remove"]):
+             (.post, ["device", "push-binding", "remove"]),
+             (.get, ["settings"]), (.put, ["settings"]), (.get, ["settings", "folders"]):
             return true
         case (.get, let rest) where rest.count == 2 && rest[0] == "views":
             return validViewKey(rest[1])
@@ -112,6 +113,7 @@ public struct APIRequest: Sendable, Equatable {
     }
 
     public static func validClientQuery(method: HTTPMethod, path: [String], query: [(String, String)]) -> Bool {
+        if path.first == "settings" { return validSettingsQuery(path: path, query: query) }
         guard path.count == 2, path[0] == "views", method == .get else { return true }
         let names = query.map(\.0)
         guard Set(names).count == names.count,
@@ -139,5 +141,13 @@ public struct APIRequest: Sendable, Equatable {
         default:
             return extra.isEmpty
         }
+    }
+
+    private static func validSettingsQuery(path: [String], query: [(String, String)]) -> Bool {
+        if path == ["settings", "folders"], query.count == 1, let (name, value) = query.first {
+            return name == "path" && !value.isEmpty && value.utf8.count <= 4096
+                && !value.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains)
+        }
+        return query.isEmpty
     }
 }

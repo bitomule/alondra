@@ -94,7 +94,7 @@ final class AccountSnapshotTests: XCTestCase {
         XCTAssertEqual(original.height, 852)
         let bytes = try XCTUnwrap(original.dataProvider?.data) as Data
         var changed = bytes
-        let rows = removingNotice ? 333..<359 : 261..<432
+        let rows = removingNotice ? 432..<459 : 261..<531
         let columns = removingNotice ? 45..<332 : 25..<376
         for y in rows {
             for x in columns {
@@ -136,7 +136,7 @@ final class AccountSnapshotTests: XCTestCase {
     }
 
     func test_pairing_afterAFailedAttemptTheCameraStaysOffAndTheErrorStays() {
-        let store = signIn({ $0.error = "That code has expired. Run alondra pair again." }, additionalMac: true)
+        let store = signIn({ $0.error = "That code has expired. Run alondra device invite again." }, additionalMac: true)
         assertScreen([.light], inWindow: true) { ScreenFrame(height: 852) { PairingView(store: store) } }
     }
 

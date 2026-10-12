@@ -128,7 +128,7 @@ public struct FindMacView: View {
     @ViewBuilder private var browsing: some View {
         if store.findMac.macs.isEmpty {
             ProgressView("Looking for Macs on this network…").frame(maxWidth: .infinity).padding(.vertical, 12)
-            Text("Is Alondra running on your Mac? Run `alondra setup` in Terminal, and keep both devices on the same Wi-Fi.")
+            Text("Is Alondra running on your Mac? Run `alondra` in Terminal, and keep both devices on the same Wi-Fi.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
         } else {
@@ -148,7 +148,16 @@ public struct FindMacView: View {
                 .accessibilityIdentifier("findMac.mac")
             }
         }
+        notThere
         addByAddress
+    }
+
+    private var notThere: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Not there? On your Mac run:").font(.footnote).foregroundStyle(.secondary)
+            InstallCommands().font(.footnote)
+        }
+        .accessibilityIdentifier("findMac.notThere")
     }
 
     /// The error of the last attempt, and pairing by a typed address, also when Bonjour is off.

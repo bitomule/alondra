@@ -94,7 +94,7 @@ public actor LoopbackSession: OperationAPI {
     }
 
     public func perform(_ request: APIRequest) async throws -> APIResponse {
-        guard request.method == "POST" else { return try await performPrepared(request) }
+        guard request.method != "GET" else { return try await performPrepared(request) }
         let startedAt = requestClock.now()
         let owner = MutationScope.current?.id ?? UUID()
         let lease = mutationEvidence.acquire(request.operationID, owner: owner)
@@ -187,7 +187,7 @@ public actor LoopbackSession: OperationAPI {
         var request = request
         request.timeoutInterval = try MutationScope.remaining(cap: .seconds(request.timeoutInterval)).requestTimeInterval
         try MutationScope.check()
-        if request.httpMethod == "POST" { try MutationScope.possibleDispatch() }
+        if request.httpMethod != "GET" { try MutationScope.possibleDispatch() }
         if let requestTransport {
             let reply = try await requestTransport.send(request)
             return (reply.status, reply.body)

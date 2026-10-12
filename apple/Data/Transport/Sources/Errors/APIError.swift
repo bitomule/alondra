@@ -27,6 +27,9 @@ public enum APIError: Error, Equatable, Sendable {
         let reasons = (object?["reasons"] as? [[String: Any]] ?? []).map {
             RefusalReason(kind: $0["kind"] as? String ?? "", detail: $0["detail"] as? String)
         }
+        if status == 422, let message = object?["message"] as? String, !message.isEmpty {
+            return .server(status: status, kind: object?["error"] as? String, detail: message, reasons: reasons)
+        }
         if status == 403 { return .forbidden(kind: kind, detail: trimmed, reasons: reasons) }
         if status == 409 { return .conflict(kind: kind, detail: trimmed, reasons: reasons) }
         if status == 404, object?["error"] != nil {

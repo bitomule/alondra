@@ -54,6 +54,17 @@ public struct MacSettingsView<PairingContent: View>: View {
                     }
             }
         }
+        .sheet(item: $store.scope(state: \.macSettings, action: \.macSettings)) { mac in
+            NavigationStack {
+                ThisMacSettingsView(store: mac)
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("Close") { store.send(.macSettings(.dismiss)) }
+                        }
+                    }
+            }
+            .frame(minWidth: 420, minHeight: 360)
+        }
         .formStyle(.grouped)
         .navigationTitle("Settings")
         #if os(iOS)
@@ -105,25 +116,34 @@ public struct MacSettingsView<PairingContent: View>: View {
     private var macsSection: some View {
         Section {
             ForEach(store.macs) { mac in
-                Button { store.send(.selectMac(mac.id)) } label: {
-                    HStack {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Label(mac.displayName, systemImage: "desktopcomputer")
-                            if let status = store.macStatuses[mac.id] { MacStatusLabel(status: status).font(.caption) }
-                        }
-                        Spacer()
-                        if store.selectingMacID == mac.id || store.forgettingMacID == mac.id { ProgressView() }
-                        else if store.selectedMacID == mac.id {
-                            Image(systemName: "checkmark").foregroundStyle(success).accessibilityHidden(true)
+                HStack {
+                    Button { store.send(.selectMac(mac.id)) } label: {
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Label(mac.displayName, systemImage: "desktopcomputer")
+                                if let status = store.macStatuses[mac.id] { MacStatusLabel(status: status).font(.caption) }
+                            }
+                            Spacer()
+                            if store.selectingMacID == mac.id || store.forgettingMacID == mac.id { ProgressView() }
+                            else if store.selectedMacID == mac.id {
+                                Image(systemName: "checkmark").foregroundStyle(success).accessibilityHidden(true)
+                            }
                         }
                     }
+                    .disabled(store.selectingMacID != nil || store.selectedMacID == mac.id)
+                    .accessibilityLabel(mac.displayName)
+                    .accessibilityValue(store.selectedMacID == mac.id ? "Selected" : "")
+                    Button { store.send(.openMacSettings(mac.id)) } label: {
+                        Label("This Mac’s Settings…", systemImage: "info.circle").labelStyle(.iconOnly)
+                    }
+                    .buttonStyle(.borderless)
+                    .help(Text("This Mac’s Settings…"))
+                    .accessibilityIdentifier("settings.macSettings")
                 }
-                .disabled(store.selectingMacID != nil || store.selectedMacID == mac.id)
                 .contextMenu {
+                    Button("This Mac’s Settings…") { store.send(.openMacSettings(mac.id)) }
                     if mac.local { Button("Forget This Mac", role: .destructive) { store.send(.forgetMacTapped(mac.id)) } }
                 }
-                .accessibilityLabel(mac.displayName)
-                .accessibilityValue(store.selectedMacID == mac.id ? "Selected" : "")
             }
             if let problem = store.macError {
                 Label { Text(problem.title) } icon: { Image(systemName: problem.systemImage) }

@@ -58,7 +58,7 @@ public actor RoutedSession: OperationAPI, PushRegistrationAPI {
     public var route: ConnectionRoute? { lastRoute }
 
     public func perform(_ request: APIRequest) async throws -> APIResponse {
-        guard request.method == "POST" else { return try await performPrepared(request) }
+        guard request.method != "GET" else { return try await performPrepared(request) }
         return try await mutations.run(conservativeUnknown: true, startedAt: requestClock.now(), unknown: { APIResponse.unknown }) {
             try await self.performPrepared(request)
         }
@@ -80,7 +80,7 @@ public actor RoutedSession: OperationAPI, PushRegistrationAPI {
             lastRoute = .relay
             // The relay could not say whether the Mac ran it: ask the Mac directly with the same
             // envelope, which it answers from its journal if it already did.
-            if response == .unknown, request.method == "POST", let direct, directAllowed(),
+            if response == .unknown, request.method != "GET", let direct, directAllowed(),
                let answered = try? await resend(request, from: relay, over: direct), answered != .unknown {
                 return answered
             }
@@ -97,7 +97,7 @@ public actor RoutedSession: OperationAPI, PushRegistrationAPI {
     private func resend(_ request: APIRequest, from relay: any RelayOperations,
                         over direct: DirectSession) async throws -> APIResponse {
         try MutationScope.check()
-        if request.method == "POST", let envelope = await relay.sentEnvelope(for: request.operationID) {
+        if request.method != "GET", let envelope = await relay.sentEnvelope(for: request.operationID) {
             try MutationScope.check()
             try await direct.adopt(envelope, for: request)
         }

@@ -3,7 +3,7 @@ import AlondraFeatures
 import ComposableArchitecture
 import SwiftUI
 
-/// Linking a Mac: scan the code `alondra pair` shows, or paste the invitation, then confirm the
+/// Linking a Mac: scan the code `alondra device invite` shows, or paste the invitation, then confirm the
 /// code on the Mac. After a failed attempt the camera stays off and the error stays until the
 /// next try.
 public struct PairingView: View {
@@ -79,7 +79,7 @@ public struct PairingView: View {
     @ViewBuilder private var scanning: some View {
         Label("Open Alondra on your Mac", systemImage: "laptopcomputer").font(.headline)
         Text("Run this command in Terminal to show your connection code.").foregroundStyle(.secondary)
-        Text(verbatim: "alondra pair")
+        Text(verbatim: "alondra device invite")
             .font(.mono(.body))
             .textSelection(.enabled)
             .padding(14)

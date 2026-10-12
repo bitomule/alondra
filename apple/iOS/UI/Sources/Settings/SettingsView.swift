@@ -32,6 +32,12 @@ public struct SettingsView: View {
                     }
             }
         }
+        .navigationDestination(item: $store.scope(state: \.macSettings, action: \.macSettings)) { mac in
+            ThisMacSettingsView(store: mac)
+                .scrollContentBackground(.hidden)
+                .background(DawnBackground())
+                .navigationBarTitleDisplayMode(.inline)
+        }
         .confirmationDialog(
             "Sign out of Alondra?",
             isPresented: Binding(get: { store.confirmLogout }, set: { if !$0 { store.send(.cancelLogout) } }),
@@ -73,31 +79,39 @@ public struct SettingsView: View {
                     .textSelection(.enabled)
             }
             ForEach(store.macs) { mac in
-                Button { store.send(.selectMac(mac.id)) } label: {
-                    HStack {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Label(mac.displayName, systemImage: "desktopcomputer")
-                                .foregroundStyle(Palette.ink)
-                            if let status = store.macStatuses[mac.id] {
-                                MacStatusLabel(status: status).font(.caption).padding(.leading, 34)
+                HStack {
+                    Button { store.send(.selectMac(mac.id)) } label: {
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Label(mac.displayName, systemImage: "desktopcomputer")
+                                    .foregroundStyle(Palette.ink)
+                                if let status = store.macStatuses[mac.id] {
+                                    MacStatusLabel(status: status).font(.caption).padding(.leading, 34)
+                                }
+                            }
+                            Spacer()
+                            if store.selectingMacID == mac.id || store.forgettingMacID == mac.id {
+                                ProgressView()
+                            } else if store.selectedMacID == mac.id {
+                                Image(systemName: "checkmark").foregroundStyle(Palette.sage).accessibilityHidden(true)
                             }
                         }
-                        Spacer()
-                        if store.selectingMacID == mac.id || store.forgettingMacID == mac.id {
-                            ProgressView()
-                        } else if store.selectedMacID == mac.id {
-                            Image(systemName: "checkmark").foregroundStyle(Palette.sage).accessibilityHidden(true)
-                        }
                     }
+                    .buttonStyle(.borderless)
+                    .disabled(store.selectingMacID != nil || store.selectedMacID == mac.id)
+                    .accessibilityLabel(Text(verbatim: mac.displayName))
+                    .accessibilityValue(store.selectedMacID == mac.id ? Text("Selected") : Text(verbatim: ""))
+                    Button { store.send(.openMacSettings(mac.id)) } label: {
+                        Label("This Mac’s settings", systemImage: "info.circle").labelStyle(.iconOnly)
+                    }
+                    .buttonStyle(.borderless)
+                    .accessibilityIdentifier("settings.macSettings")
                 }
-                .disabled(store.selectingMacID != nil || store.selectedMacID == mac.id)
                 .swipeActions {
                     if mac.local {
                         Button("Forget", systemImage: "trash", role: .destructive) { store.send(.forgetMacTapped(mac.id)) }
                     }
                 }
-                .accessibilityLabel(Text(verbatim: mac.displayName))
-                .accessibilityValue(store.selectedMacID == mac.id ? Text("Selected") : Text(verbatim: ""))
             }
             .task { await store.send(.loadMacStatuses).finish() }
             if let problem = store.macError {

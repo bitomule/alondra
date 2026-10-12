@@ -19,7 +19,7 @@ enum EnvelopeRequestPolicy {
 
     static func validViewsPath(method: String, path: String, hasBody: Bool) -> Bool {
         if method == "GET", !hasBody, validClientContractPath(method: method, path: path) { return true }
-        if method == "POST", hasBody, validClientContractPath(method: method, path: path) { return true }
+        if ["POST", "PUT"].contains(method), hasBody, validClientContractPath(method: method, path: path) { return true }
         guard method == "GET", !hasBody, path.hasPrefix("/"),
               let components = URLComponents(string: "alondra://relay" + path),
               components.fragment == nil else { return false }

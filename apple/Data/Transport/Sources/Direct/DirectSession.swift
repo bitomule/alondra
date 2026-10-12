@@ -65,7 +65,7 @@ public actor DirectSession: OperationAPI {
     }
 
     public func perform(_ request: APIRequest) async throws -> APIResponse {
-        guard request.method == "POST" else { return try await performPrepared(request) }
+        guard request.method != "GET" else { return try await performPrepared(request) }
         let startedAt = requestClock.now()
         let owner = MutationScope.current?.id ?? UUID()
         let lease = mutationEvidence.acquire(request.operationID, owner: owner)
@@ -80,7 +80,7 @@ public actor DirectSession: OperationAPI {
         try MutationScope.check()
         guard active else { throw CancellationError() }
         let wait = EnvelopeRequestPolicy.viewsChangeWait(request.path)
-        guard ["GET", "POST"].contains(request.method), !request.path.contains("#"),
+        guard ["GET", "POST", "PUT"].contains(request.method), !request.path.contains("#"),
               wait != nil || EnvelopeRequestPolicy.validViewsPath(method: request.method, path: request.path,
                                                                   hasBody: request.body != nil)
         else { throw RelaySessionError.invalidRequest }

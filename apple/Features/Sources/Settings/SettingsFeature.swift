@@ -50,6 +50,8 @@ public struct SettingsClient: Sendable {
     public var selectMac: @Sendable (UUID) async throws -> Void = { _ in throw CancellationError() }
     public var macStatuses: @Sendable () async -> [UUID: MacStatus] = { [:] }
     public var forgetMac: @Sendable (UUID) async throws -> Void = { _ in throw CancellationError() }
+    /// Reads and changes one paired Mac's own settings; nil when that Mac has no session here.
+    public var macSettings: @Sendable (UUID) async -> MacSettingsClient? = { _ in nil }
     /// Only the Mac app on its own daemon lists and revokes devices.
     public var devices: (@Sendable () async throws -> [TrustedDevice])?
     public var revokeDevice: @Sendable (String) async throws -> Void = { _ in throw CancellationError() }
@@ -100,6 +102,7 @@ public extension DependencyValues {
         public var error: String?
         public var pairingCleanup = false
         @Presents public var pairing: SignInFeature.State?
+        @Presents public var macSettings: MacSettingsFeature.State?
         public var macs: [MacChoice] = []
         public var selectedMacID: UUID?
         public var selectingMacID: UUID?
@@ -137,6 +140,7 @@ public extension DependencyValues {
         case linkMac, pairingCleanupFinished, pairing(PresentationAction<SignInFeature.Action>)
         case selectMac(UUID), macSelected(UUID, UInt64), macSelectionFailed(ConnectionProblem?, UInt64)
         case loadMacStatuses, macStatusesLoaded([UUID: MacStatus])
+        case openMacSettings(UUID), macSettingsReady(UUID, MacSettingsClient), macSettings(PresentationAction<MacSettingsFeature.Action>)
         case forgetMacTapped(UUID), cancelForgetMac, confirmForgetMac, macForgotten(UUID), macForgetFailed(String)
         case loadDevices, devicesLoaded([TrustedDevice]), devicesFailed(String)
         case revokeDeviceTapped(String), cancelRevokeDevice, confirmRevokeDevice, deviceRevoked(String), revokeFailed(String)
@@ -350,6 +354,15 @@ public extension DependencyValues {
                 guard generation == state.generation, state.selectingMacID != nil else { return .none }
                 state.selectingMacID = nil; state.macError = problem
                 return .none
+            case .openMacSettings(let id):
+                return .run { send in
+                    if let settings = await client.macSettings(id) { await send(.macSettingsReady(id, settings)) }
+                }
+            case .macSettingsReady(let id, let settings):
+                guard let mac = state.macs.first(where: { $0.id == id }) else { return .none }
+                state.macSettings = MacSettingsFeature.State(id: id, macName: mac.displayName, client: settings)
+                return .none
+            case .macSettings: return .none
             case .logoutTapped: state.confirmLogout = true; return .none
             case .cancelLogout: state.confirmLogout = false; return .none
             case .confirmLogout:
@@ -358,5 +371,6 @@ public extension DependencyValues {
             }
         }
         .ifLet(\.$pairing, action: \.pairing) { SignInFeature() }
+        .ifLet(\.$macSettings, action: \.macSettings) { MacSettingsFeature() }
     }
 }

@@ -149,6 +149,19 @@ private let answered = APIResponse.completed(status: 200, body: Data(#"{"ok":tru
         #expect(await f.mac.executed == 1)
     }
 
+    @Test func aFolderChangeTravelsAsAMutationAndRunsOnce() async throws {
+        let f = try await Fixture()
+        await f.mac.failRequests(1)
+        let change = try APIRequest(endpoint: Endpoint<Data>.data(.put, path: ["settings"],
+                                                                 body: Data(#"{"projects_root":"/Users/d/Code"}"#.utf8)),
+                                    operationID: "folder-1")
+        #expect(try await f.session.perform(change) == answered)
+        let bodies = await f.mac.requestBodies
+        #expect(bodies.count == 2)
+        #expect(bodies[0] == bodies[1])
+        #expect(await f.mac.executed == 1)
+    }
+
     @Test func retryingAnOperationResendsItsFirstEnvelope() async throws {
         let f = try await Fixture()
         _ = try await f.session.perform(f.action("op-1"))

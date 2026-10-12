@@ -59,6 +59,14 @@ struct MacServiceSettingsScene: View {
             return statuses
         }
         client.forgetMac = { id in try await account.forgetMac(choice: id) }
+        client.macSettings = { id in
+            await MainActor.run {
+                if id == workspace.thisMacChoiceID {
+                    return workspace.thisMac?.macSettingsClient(pickLocalFolder: { await LocalFolderPanel.choose() })
+                }
+                return account.session(choice: id)?.macSettingsClient()
+            }
+        }
         if let thisMac = workspace.thisMac {
             client.devices = { try await thisMac.trustedDevices() }
             client.revokeDevice = { id in try await thisMac.revokeDevice(id) }

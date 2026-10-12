@@ -49,7 +49,7 @@ public extension ConnectionProblem {
         case .noInternet: "This device is offline. Alondra reconnects as soon as the network is back."
         case .serverUnreachable: "You’re online, but the server isn’t answering. Alondra keeps trying."
         case .macNotAnswering: "It may be off, or Alondra may not be running on it. Alondra reconnects as soon as it answers."
-        case .alondraNotRunning: "Run `alondra setup` in Terminal to start it. This window connects as soon as it answers."
+        case .alondraNotRunning: "Install it with Homebrew (`brew install bitomule/tap/alondra`), then run `alondra` once. This window connects as soon as it answers."
         case .sessionExpired: "Sign in again to reconnect. Your pairing and saved work are kept."
         case .accessNotConfirmed: "Your session and pairing are kept. Alondra keeps trying."
         case .deviceRevoked: "Pair it again to keep using it."

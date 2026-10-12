@@ -1,6 +1,24 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "Your Mac didn’t get the new folder. Try again.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Tu Mac no ha recibido la carpeta nueva. Vuelve a intentarlo."}}}},
+    "Your Mac couldn’t open this folder.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Tu Mac no ha podido abrir esta carpeta."}}}},
+    "%lld repos": {"localizations": {"en": {"variations": {"plural": {"one": {"stringUnit": {"state": "translated", "value": "%lld repo"}}, "other": {"stringUnit": {"state": "translated", "value": "%lld repos"}}}}}, "es": {"variations": {"plural": {"one": {"stringUnit": {"state": "translated", "value": "%lld repo"}}, "other": {"stringUnit": {"state": "translated", "value": "%lld repos"}}}}}}},
+    "Other…": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Otra carpeta…"}}}},
+    "Projects folder": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Carpeta de proyectos"}}}},
+    "Notifications and access away from home": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Notificaciones y acceso fuera de casa"}}}},
+    "On": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Activado"}}}},
+    "Off": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Desactivado"}}}},
+    "Without it you only get updates while the app is open on the same Wi-Fi.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Sin esto solo ves novedades con la app abierta en la misma wifi."}}}},
+    "To change it, run `alondra relay` on this Mac.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Para cambiarlo, ejecuta `alondra relay` en este Mac."}}}},
+    "Use This Folder": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Usar esta carpeta"}}}},
+    "This Mac’s settings": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Ajustes de este Mac"}}}},
+    "This Mac’s Settings…": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Ajustes de este Mac…"}}}},
+    "Install it with Homebrew (`brew install bitomule/tap/alondra`), then run `alondra` once. This window connects as soon as it answers.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Instálalo con Homebrew (`brew install bitomule/tap/alondra`) y ejecuta `alondra` una vez. Esta ventana se conecta en cuanto responda."}}}},
+    "Install it with Homebrew, then run it once:": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Instálalo con Homebrew y ejecútalo una vez:"}}}},
+    "This window connects as soon as it answers.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Esta ventana se conecta en cuanto responda."}}}},
+    "Not there? On your Mac run:": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "¿No aparece? En tu Mac ejecuta:"}}}},
+    "Is Alondra running on your Mac? Run `alondra` in Terminal, and keep both devices on the same Wi-Fi.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "¿Está Alondra en marcha en tu Mac? Ejecuta `alondra` en Terminal y mantén los dos dispositivos en la misma wifi."}}}},
     "Used %@": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Usado %@"}}}},
     "Not used yet": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Sin uso todavía"}}}},
     "Change": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Cambiar"}}}},
@@ -51,7 +69,6 @@
     "Connecting to %@…": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Conectando con %@…"}}}},
     "Check the code on %@": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Comprueba el código en %@"}}}},
     "Looking for Macs on this network…": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Buscando Mac en esta red…"}}}},
-    "Is Alondra running on your Mac? Run `alondra setup` in Terminal, and keep both devices on the same Wi-Fi.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "¿Está Alondra en marcha en tu Mac? Ejecuta `alondra setup` en Terminal y mantén los dos dispositivos en la misma wifi."}}}},
     "Linked": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Vinculado"}}}},
     "Add by address": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Añadir por dirección"}}}},
     "For a Mac on Tailscale or another network, type its address.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Para un Mac en Tailscale o en otra red, escribe su dirección."}}}},
@@ -234,7 +251,6 @@
     "This device is offline. Alondra reconnects as soon as the network is back.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Este dispositivo no tiene conexión. Alondra se reconectará en cuanto vuelva la red."}}}},
     "You’re online, but the server isn’t answering. Alondra keeps trying.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Tienes conexión, pero el servidor no responde. Alondra lo sigue intentando."}}}},
     "It may be off, or Alondra may not be running on it. Alondra reconnects as soon as it answers.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Puede que esté apagado o que Alondra no esté en marcha en él. Alondra se reconectará en cuanto responda."}}}},
-    "Run `alondra setup` in Terminal to start it. This window connects as soon as it answers.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Ejecuta `alondra setup` en Terminal para ponerlo en marcha. Esta ventana se conecta en cuanto responda."}}}},
     "Sign in again to reconnect. Your pairing and saved work are kept.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Vuelve a iniciar sesión para reconectar. Se conservan la vinculación y tu trabajo guardado."}}}},
     "Something unexpected went wrong. Alondra keeps trying.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Algo inesperado ha fallado. Alondra lo sigue intentando."}}}},
     "Sign In Again": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Volver a iniciar sesión"}}}},
@@ -1799,16 +1815,6 @@
         }
       }
     },
-    "Scan the code from alondra pair": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Escanea el código de alondra pair"
-          }
-        }
-      }
-    },
     "Send": {
       "localizations": {
         "es": {
@@ -1956,26 +1962,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Eso ya no está pendiente"
-          }
-        }
-      }
-    },
-    "The Mac didn’t accept the code. Get a new one with alondra pair.": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "El Mac no aceptó el código. Pide uno nuevo con alondra pair."
-          }
-        }
-      }
-    },
-    "The Mac no longer accepts this iPhone. Pair it again with the code shown by alondra pair.": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "El Mac ya no acepta a este iPhone. Vincúlalo de nuevo con el código que muestra alondra pair."
           }
         }
       }

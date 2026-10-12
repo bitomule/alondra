@@ -54,7 +54,7 @@
     "Details": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Detalles"}}}},
     "Close Inspector": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Cerrar inspector"}}}},
     "Inspector": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Inspector"}}}},
-    "Projects folder": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Carpeta Proyectos"}}}},
+    "Projects folder": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Carpeta de proyectos"}}}},
     "What should the node do?": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "¿Qué debe hacer el nodo?"}}}},
     "Advanced": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Avanzado"}}}},
     "Disallowed tools (one pattern per line)": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Herramientas no permitidas (un patrón por línea)"}}}},
