@@ -133,51 +133,10 @@ impl App {
         }
     }
 
-    pub(super) fn inbox_key(&mut self, k: KeyEvent) -> Flow {
-        self.view_inbox_key(k)
-    }
 
-    fn view_inbox_key(&mut self, key: KeyEvent) -> Flow {
-        if key.code == KeyCode::Enter {
-            if self.screen != Screen::Inbox && !self.schedules_open {
-                return self.open_terminal();
-            }
-            self.open_reader();
-            return Flow::Go;
-        }
-        if key.code == KeyCode::Char('d')
-            && self.card_view.as_ref().is_some_and(|view| view.sections.iter()
-                .flat_map(|section| &section.items)
-                .any(|item| matches!(item, alondra_core::views::Item::ContentRef(content)
-                    if content.kind == alondra_core::views::ContentKind::Diff)))
-        {
-            self.open_reader();
-            return Flow::Go;
-        }
-        if key.code == KeyCode::Char('J') {
-            self.detail_scroll = keys::by(
-                self.detail_scroll,
-                5,
-                self.detail_view.h,
-                self.detail_view.total,
-            );
-            return Flow::Go;
-        }
-        if key.code == KeyCode::Char('K') {
-            self.detail_scroll = keys::by(
-                self.detail_scroll,
-                -5,
-                self.detail_view.h,
-                self.detail_view.total,
-            );
-            return Flow::Go;
-        }
-
-        self.view_action_key(key).unwrap_or(Flow::Go)
-    }
 
     /// Enter on a task or a node opens its session's terminal.
-    fn open_terminal(&mut self) -> Flow {
+    pub(super) fn open_terminal(&mut self) -> Flow {
         let selected = self.selected_view_key();
         let session = self
             .card_view
@@ -284,7 +243,7 @@ impl App {
     }
 
     /// An action that offers options asks which one first; the rest run at once.
-    fn press_card_action(
+    pub(super) fn press_card_action(
         &mut self,
         action: alondra_core::views::Action,
         option: Option<alondra_core::views::ActionOption>,
@@ -323,29 +282,6 @@ impl App {
         Flow::Go
     }
 
-    pub(super) fn schedule_row_key(&mut self, key: KeyEvent) -> Option<Flow> {
-        let document = self
-            .home_view
-            .as_ref()
-            .filter(|view| view.key == "schedules")?;
-        let selected = self.sel.as_ref()?;
-        let row = super::view_render::rows(document)
-            .into_iter()
-            .find_map(|(row, _)| (row.id == selected.0).then_some(row))?;
-        let action = row
-            .actions
-            .iter()
-            .find(|action| {
-                action
-                    .key
-                    .as_deref()
-                    .is_some_and(|hint| hint_matches(hint, key))
-            })?
-            .clone();
-        let epoch = document.data_epoch.clone();
-        let selected = selected.clone();
-        Some(self.run_view_action(&action, None, &selected, epoch))
-    }
 
     pub(super) fn run_view_action(
         &mut self,
@@ -509,7 +445,7 @@ pub(super) fn safe_github_url(value: &str) -> bool {
 }
 
 /// An action with a single option needs no menu: pressing it picks that option.
-fn only_option(action: &alondra_core::views::Action) -> Option<alondra_core::views::ActionOption> {
+pub(super) fn only_option(action: &alondra_core::views::Action) -> Option<alondra_core::views::ActionOption> {
     match action.options.as_slice() {
         [option] if action.option_id.is_none() => Some(option.clone()),
         _ => None,

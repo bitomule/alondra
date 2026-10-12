@@ -1,4 +1,5 @@
 mod agents;
+mod bindings;
 mod draw;
 mod dropped;
 mod files;
@@ -15,6 +16,9 @@ mod view_feed;
 mod view_render;
 mod work;
 
+#[cfg(test)]
+#[path = "tui/tests/keyhints.rs"]
+mod keyhints;
 #[cfg(test)]
 #[path = "tui/tests/parity.rs"]
 mod parity;
@@ -1282,20 +1286,6 @@ impl App {
         self.modal.is_none() && !self.typing()
     }
 
-    fn pairing_key(&mut self, k: KeyEvent) -> bool {
-        let Some(device) = self.pairing_prompt().cloned() else {
-            return false;
-        };
-        if !self.target.is_local() || !k.modifiers.is_empty() {
-            return false;
-        }
-        match k.code {
-            KeyCode::Char('p') => self.answer_pairing(device, true),
-            KeyCode::Char('d') => self.answer_pairing(device, false),
-            _ => return false,
-        }
-        true
-    }
 
     fn typing(&self) -> bool {
         self.composer.is_some()
@@ -1509,14 +1499,6 @@ impl App {
         self.modal = Some(modal);
     }
 
-    fn modal_key(&mut self, key: KeyEvent) -> Flow {
-        if key.code == KeyCode::Enter {
-            self.run_modal();
-        } else {
-            self.modal = None;
-        }
-        Flow::Go
-    }
 
     pub fn flash(&mut self, text: impl Into<String>) {
         self.flash = Some(Flash {
@@ -2376,36 +2358,15 @@ impl App {
             return flow;
         }
         if self.modal.is_some() {
-            return self.modal_key(k);
-        }
-        if self.pairing_answers_keys() && self.pairing_key(k) {
-            return Flow::Go;
+            return self.press(k);
         }
         if self.help {
             self.help_key(k);
             return Flow::Go;
         }
-        if !self.typing() && k.code == KeyCode::Char(']') && k.modifiers.is_empty() {
-            return Flow::NextMac;
-        }
         if self.composer.is_some() {
             self.composer_key(k);
             return Flow::Go;
-        }
-        if self.card_menu.is_some() {
-            return self.card_menu_key(k);
-        }
-        if self.schedules_open {
-            if let Some(flow) = self.schedule_row_key(k) {
-                return flow;
-            }
-            if let Some(flow) = self.view_action_key(k) {
-                return flow;
-            }
-            let flow = self.schedule_key(k);
-            self.load_selected_view();
-            self.sync_open_views();
-            return flow;
         }
         if self.cmdline.is_some() {
             return self.cmdline_key(k);
@@ -2420,101 +2381,18 @@ impl App {
         }
         if self.screen == Screen::Fleet
             && self.reader.is_none()
+            && !self.schedules_open
             && self.search.as_ref().is_some_and(|s| s.editing)
         {
             self.search_key(k);
             return Flow::Go;
         }
-        let cmd = self.keymap.read(k);
-        if let Cmd::Other(k) = cmd
-            && k.modifiers.is_empty()
-        {
-            match k.code {
-                KeyCode::Char('?') => {
-                    self.help = true;
-                    self.help_scroll = 0;
-                    return Flow::Go;
-                }
-                KeyCode::Char(':') => {
-                    self.cmdline = Some(TextInput::default());
-                    return Flow::Go;
-                }
-                _ => {}
-            }
-        }
-        if self.reader.is_some() {
-            self.reader_cmd(cmd);
-            return Flow::Go;
-        }
-        if matches!(cmd, Cmd::Back) && !self.view_navigation.is_empty() {
-            self.view_navigation.pop();
-            self.card_view = None;
-            self.card_view_asked = None;
-            self.load_selected_view();
-            self.sync_open_views();
-            return Flow::Go;
-        }
-        let opens = matches!(cmd, Cmd::Expand)
-            || matches!(cmd, Cmd::Other(k) if k.code == KeyCode::Enter);
-        if opens && (self.toggle_selected_section() || self.toggle_selected_fold()) {
-            return Flow::Go;
-        }
-        match cmd {
-            Cmd::Pending => {}
-            Cmd::Other(k) => match k.code {
-                KeyCode::Char('q') => return Flow::Quit,
-                KeyCode::Tab => self.switch_screen(),
-                KeyCode::BackTab => self.switch_screen_back(),
-                KeyCode::Char('f') => self.show(if self.screen == Screen::Fleet {
-                    Screen::Inbox
-                } else {
-                    Screen::Fleet
-                }),
-                KeyCode::Char('n') => self.compose(
-                    Target::Form {
-                        view: "new_request".into(),
-                    },
-                    "",
-                ),
-                KeyCode::Char('s') if self.screen == Screen::Tasks => {
-                    self.schedules_open = true;
-                    self.home_view = None;
-                    self.screen_view_asked = None;
-                    self.load_screen_view();
-                    self.load_selected_view();
-                    self.sync_open_views();
-                }
-                KeyCode::Char('M') => {
-                    if let Some(flow) = self.view_action_key(k) {
-                        return flow;
-                    }
-                    self.compose_orchestrator_on_load = true;
-                    self.navigate_view("node:orchestrator");
-                }
-                KeyCode::Char('/') if self.screen == Screen::Fleet => {
-                    self.search = Some(Search {
-                        input: TextInput::default(),
-                        editing: true,
-                        typed_at: now_millis(),
-                        remote: Remote::Idle,
-                    });
-                    self.navigate_view("search");
-                }
-                _ => {
-                    if let Some(flow) = self.view_action_key(k) {
-                        return flow;
-                    }
-                    return self.inbox_key(k);
-                }
-            },
-            _ => {
-                if let Some(flow) = self.view_action_key(k) {
-                    return flow;
-                }
-                self.inbox_cmd(cmd);
-            }
-        }
-        Flow::Go
+        let key = match self.keymap.read(k) {
+            Cmd::Pending => return Flow::Go,
+            Cmd::Move(keys::Motion::Top) if k.code == KeyCode::Char('g') => KeyEvent::new(KeyCode::Home, KeyModifiers::NONE),
+            _ => k,
+        };
+        self.press(key)
     }
 
     /// Inbox, Tasks, Agents and round again.
@@ -2576,31 +2454,6 @@ impl App {
         self.load_screen_view();
     }
 
-    fn schedule_key(&mut self, k: KeyEvent) -> Flow {
-        match k.code {
-            KeyCode::Esc | KeyCode::Tab | KeyCode::Char('s') => {
-                self.schedules_open = false;
-                self.reload_schedules();
-            }
-            KeyCode::Char('n') => self.compose(
-                Target::Form {
-                    view: "schedule:new".into(),
-                },
-                "",
-            ),
-            KeyCode::Char('e') => {
-                if let Some(view) = self.selected_view_key() {
-                    self.compose(Target::Form { view }, "");
-                }
-            }
-            KeyCode::Char('r') => self.reload_schedules(),
-            _ => {
-                let cmd = self.keymap.read(k);
-                self.inbox_cmd(cmd);
-            }
-        }
-        Flow::Go
-    }
 
     fn help_key(&mut self, k: KeyEvent) {
         match self.keymap.read(k) {
@@ -3157,10 +3010,7 @@ impl App {
                 let d = keys::lines(m, r.view_h).unwrap_or(0);
                 r.scroll_by(d);
             }
-            Cmd::Back if r.find.is_some() => r.find = None,
-            Cmd::Left | Cmd::Back | Cmd::Expand => self.reader = None,
-            Cmd::Right | Cmd::Pending => {}
-            Cmd::Other(k) => self.reader_key(k),
+            Cmd::Back | Cmd::Left | Cmd::Expand | Cmd::Right | Cmd::Pending | Cmd::Other(_) => {}
         }
     }
 
@@ -3186,118 +3036,100 @@ impl App {
         }
     }
 
-    fn reader_key(&mut self, k: KeyEvent) {
-        let Some(r) = self.reader.as_mut() else {
+    /// A digit in the reader answers with that option, and the comments go with it when it takes text.
+    fn answer_with_comments(&mut self, k: KeyEvent) {
+        let Some(key) = self.reader.as_ref().map(|r| r.key.clone()) else {
             return;
         };
-        let key = r.key.clone();
-        if self
-            .card_view
-            .as_ref()
-            .is_some_and(|view| view.key == key.0)
+        let has_review = self
+            .reviews
+            .get(&key)
+            .is_some_and(|review| !review.is_empty());
+        if has_review {
+            let takes_text = |input: &alondra_core::views::Input| {
+                matches!(input, alondra_core::views::Input::Text { .. })
+            };
+            let accepts_text = self
+                .card_view
+                .as_ref()
+                .and_then(|view| inbox::view_key_choice(view, k))
+                .is_some_and(|(action, option)| {
+                    takes_text(&action.input) || option.is_some_and(|option| takes_text(&option.input))
+                });
+            if !accepts_text {
+                self.fail(tr!("That option takes no text: your comments stay here. Pick one that asks you to write.",
+                    "Esa opción no admite texto: tus comentarios se quedan aquí. Elige una que pida escribir."));
+                return;
+            }
+        }
+        let _ = self.view_action_key(k);
+        if has_review
+            && let Some(review) = self.reviews.get(&key)
+            && let Some(composer) = self.composer.as_mut()
         {
-            match k.code {
-                KeyCode::Char('s') => {
-                    self.send_review();
-                    return;
-                }
-                KeyCode::Char('v') | KeyCode::Char('x') => {
-                    let _ = self.view_action_key(k);
-                    return;
-                }
-                KeyCode::Char(c)
-                    if !c.is_ascii_digit() && !"qcCdsnN/".contains(c)
-                        && self.card_view.as_ref().is_some_and(|view| {
-                            view_render::actions(view).iter().flat_map(|action| &action.options)
-                                .any(|option| option.key.as_deref() == Some(c.encode_utf8(&mut [0; 4])))
-                        }) =>
-                {
-                    let _ = self.view_action_key(k);
-                    return;
-                }
-                KeyCode::Char(c @ '1'..='9') => {
-                    let has_review = self
-                        .reviews
-                        .get(&key)
-                        .is_some_and(|review| !review.is_empty());
-                    if has_review {
-                        let takes_text = |input: &alondra_core::views::Input| {
-                            matches!(input, alondra_core::views::Input::Text { .. })
-                        };
-                        let accepts_text = self
-                            .card_view
-                            .as_ref()
-                            .and_then(|view| inbox::view_key_choice(view, k))
-                            .is_some_and(|(action, option)| {
-                                takes_text(&action.input) || option.is_some_and(|option| takes_text(&option.input))
-                            });
-                        if !accepts_text {
-                            self.fail(tr!("That option takes no text: your comments stay here. Pick one that asks you to write.",
-                                "Esa opción no admite texto: tus comentarios se quedan aquí. Elige una que pida escribir."));
-                            return;
-                        }
-                    }
-                    let _ = self.view_action_key(k);
-                    if has_review
-                        && let Some(review) = self.reviews.get(&key)
-                        && let Some(composer) = self.composer.as_mut()
-                    {
-                        composer.input = TextInput::with(&review.feedback());
-                        composer.chips.extend(review.chips.clone());
-                        if let Target::ViewAction { review, .. } = &mut composer.target {
-                            *review = Some(key);
-                        }
-                    }
-                    return;
-                }
-                _ => {}
+            composer.input = TextInput::with(&review.feedback());
+            composer.chips.extend(review.chips.clone());
+            if let Target::ViewAction { review, .. } = &mut composer.target {
+                *review = Some(key);
             }
         }
-        match k.code {
-            KeyCode::Char('q') => self.reader = None,
-            KeyCode::Char('/') => {
-                r.find = Some(Find {
-                    input: TextInput::default(),
-                    editing: true,
+    }
+
+    fn comment_block(&mut self) {
+        let Some(r) = self.reader.as_ref() else {
+            return;
+        };
+        let Some(b) = r.blocks.get(r.cursor).filter(|b| b.commentable()) else {
+            return;
+        };
+        let (block, quote) = (r.cursor, b.quote());
+        let prefill = self
+            .reviews
+            .get(&r.key)
+            .and_then(|rv| rv.comments.iter().find(|c| c.block == block))
+            .map(|c| c.text.clone())
+            .unwrap_or_default();
+        self.compose(Target::Comment { block, quote }, &prefill);
+    }
+
+    fn comment_general(&mut self) {
+        let Some(key) = self.reader.as_ref().map(|r| r.key.clone()) else {
+            return;
+        };
+        let prefill = self
+            .reviews
+            .get(&key)
+            .map(|rv| rv.general.clone())
+            .unwrap_or_default();
+        self.compose(Target::General { send: false }, &prefill);
+    }
+
+    fn delete_comment(&mut self) {
+        let Some((key, block)) = self.reader.as_ref().map(|r| (r.key.clone(), r.cursor)) else {
+            return;
+        };
+        if let Some(rv) = self.reviews.get_mut(&key) {
+            let before = rv.comments.len();
+            rv.comments.retain(|c| c.block != block);
+            if rv.comments.len() < before {
+                self.flash(tr!("Comment deleted", "Comentario borrado"));
+            }
+        }
+    }
+
+    /// The action the reader's comments are sent with: feedback on a delivery, a reply otherwise.
+    fn review_action(&self, view: &ViewDocument) -> Option<alondra_core::views::Action> {
+        view_render::actions(view).into_iter().find(|action| {
+            action.enabled
+                && matches!(action.input, alondra_core::views::Input::Text { .. })
+                && alondra_core::views::action_id::ActionId::parse(&action.id).is_ok_and(|id| {
+                    matches!(
+                        id.verb,
+                        alondra_core::views::action_id::Verb::Changes
+                            | alondra_core::views::action_id::Verb::Reply
+                    )
                 })
-            }
-            KeyCode::Char(c @ ('n' | 'N')) if r.find.is_some() => {
-                r.jump(c == 'n', false);
-            }
-            KeyCode::Char('c') | KeyCode::Enter => {
-                let Some(b) = r.blocks.get(r.cursor).filter(|b| b.commentable()) else {
-                    return;
-                };
-                let (block, quote) = (r.cursor, b.quote());
-                let prefill = self
-                    .reviews
-                    .get(&key)
-                    .and_then(|rv| rv.comments.iter().find(|c| c.block == block))
-                    .map(|c| c.text.clone())
-                    .unwrap_or_default();
-                self.compose(Target::Comment { block, quote }, &prefill);
-            }
-            KeyCode::Char('C') => {
-                let prefill = self
-                    .reviews
-                    .get(&key)
-                    .map(|rv| rv.general.clone())
-                    .unwrap_or_default();
-                self.compose(Target::General { send: false }, &prefill);
-            }
-            KeyCode::Char('d') => {
-                let block = r.cursor;
-                if let Some(rv) = self.reviews.get_mut(&key) {
-                    let before = rv.comments.len();
-                    rv.comments.retain(|c| c.block != block);
-                    if rv.comments.len() < before {
-                        self.flash(tr!("Comment deleted", "Comentario borrado"));
-                    }
-                }
-            }
-            KeyCode::Char('s') => self.send_review(),
-            _ => {}
-        }
+        })
     }
 
     /// The reader's comments go back to whoever the reading is about: feedback on a delivery, a
@@ -3307,17 +3139,7 @@ impl App {
             return;
         };
         if let Some(view) = self.card_view.as_ref().filter(|view| view.key == key.0) {
-            let action = view_render::actions(view).into_iter().find(|action| {
-                action.enabled
-                    && alondra_core::views::action_id::ActionId::parse(&action.id).is_ok_and(|id| {
-                        matches!(
-                            id.verb,
-                            alondra_core::views::action_id::Verb::Changes
-                                | alondra_core::views::action_id::Verb::Reply
-                        )
-                    })
-            });
-            let Some(action) = action else {
+            let Some(action) = self.review_action(view) else {
                 self.fail(tr!(
                     "Press the number of the option your comments go with",
                     "Pulsa el número de la opción con la que van tus comentarios"

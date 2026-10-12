@@ -5861,3 +5861,71 @@ fn every_card_action_says_whether_it_takes_its_card_out() {
     let held = resolving(&group, "card:g-q2");
     assert!(held.contains(&("reply:g-q2".to_owned(), false)), "a held question is answered in its session; a reply is a message: {held:?}");
 }
+
+const DOCUMENT_QUESTION_CARD: &str = "a98d034b-249e-4487-a89b-57de38c26372";
+
+/// The question of the 9 October report: a node asks for the review of a document, so the terminal
+/// shows its options, Request changes and Request clarification with its three reasons.
+fn document_question_state() -> DomainState {
+    let mut state = golden_fixture();
+    state.documents.insert("design".into(), Document {
+        id: "design".into(), title: "Migration design".into(), current_revision: "design-r1".into(),
+    });
+    state.document_revisions.insert("design-r1".into(), DocumentRevision {
+        id: "design-r1".into(), document_id: "design".into(), number: 1,
+        content_digest: "d".repeat(64), content_reference: "stored/design".into(),
+    });
+    state.interactions.get_mut(&DOCUMENT_QUESTION_CARD.into()).unwrap().subject =
+        Some(InteractionSubject::DocumentReview { document_id: "design".into(), revision_id: "design-r1".into() });
+    state
+}
+
+#[test]
+fn document_question_card_for_the_terminal_matches_golden() {
+    let view = render(&document_question_state(), &golden_live(), Client::Tui, Lang::Es,
+        &format!("card:{DOCUMENT_QUESTION_CARD}"), "2026-09-30T10:00:00Z");
+    let card = card_of(&view);
+    assert!(card.actions.iter().any(|action| action.id.starts_with("changes:")), "{:?}", card.actions);
+    assert!(card.more.iter().chain(&card.actions).any(|action| action.id.starts_with("clarify:")), "{card:?}");
+    assert_golden("card-document-question-es-tui.json", &view,
+        include_str!("../../../../fixtures/views/cards/card-document-question-es-tui.json"));
+}
+
+/// Every row of a view with the rows above it, outermost first.
+fn rows_with_parents(view: &View) -> Vec<(Vec<String>, Row)> {
+    fn walk(row: &Row, parents: &mut Vec<String>, out: &mut Vec<(Vec<String>, Row)>) {
+        out.push((parents.clone(), row.clone()));
+        parents.push(row.id.clone());
+        for child in &row.children {
+            walk(child, parents, out);
+        }
+        parents.pop();
+    }
+    let mut out = Vec::new();
+    for item in view.sections.iter().flat_map(|section| &section.items) {
+        if let Item::Row(row) = item {
+            walk(row, &mut Vec::new(), &mut out);
+        }
+    }
+    out
+}
+
+#[test]
+fn the_golden_tasks_list_folds_the_chain_and_lists_its_tasks_only_under_it() {
+    for (name, golden) in [
+        ("tasks-tui.json", include_str!("../../../../fixtures/views/cards/tasks-tui.json")),
+        ("tasks-ios.json", include_str!("../../../../fixtures/views/cards/tasks-ios.json")),
+        ("tasks-mac.json", include_str!("../../../../fixtures/views/cards/tasks-mac.json")),
+    ] {
+        let view: View = serde_json::from_str(golden).unwrap();
+        let rows = rows_with_parents(&view);
+        let (_, chain) = rows.iter().find(|(_, row)| row.id.starts_with("chain:")).unwrap_or_else(|| panic!("{name}: no chain"));
+        assert!(chain.folded, "{name}: the chain starts folded");
+        assert!(!chain.children.is_empty(), "{name}");
+        for member in &chain.children {
+            let places: Vec<&Vec<String>> = rows.iter().filter(|(_, row)| row.id == member.id).map(|(parents, _)| parents).collect();
+            assert_eq!(places.len(), 1, "{name}: {} is listed once", member.id);
+            assert_eq!(places[0].last(), Some(&chain.id), "{name}: {} hangs only under the chain", member.id);
+        }
+    }
+}

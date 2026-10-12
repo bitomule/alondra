@@ -677,6 +677,15 @@ fn canonical_pr_diff_content_ref_opens_in_the_views_reader() {
     assert!(cut.contains("partial diff\n\nDiff truncated"));
 }
 
+/// The key bar with `view` open as the detail of what is selected.
+fn footer_on(view: alondra_core::views::View) -> Vec<(String, String)> {
+    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
+    let mut app = App::new(tx);
+    app.view_navigation.push(view.key.clone());
+    app.card_view = Some(view);
+    crate::tui::draw::footer_keys(&app)
+}
+
 #[test]
 fn diff_card_footer_names_the_diff_and_comments_shortcut() {
     crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
@@ -686,8 +695,7 @@ fn diff_card_footer_names_the_diff_and_comments_shortcut() {
         "type":"content_ref", "kind":"diff", "title":"Diff", "size":0,
         "digest":"head-1", "fetch":"/diff", "commentable":true
     }]}]);
-    let rendered: alondra_core::views::View = serde_json::from_value(view).unwrap();
-    let keys = crate::tui::draw::view_footer_actions(&rendered);
+    let keys = footer_on(serde_json::from_value(view).unwrap());
     assert!(keys.iter().any(|(key, label)| key == "d" && label == "diff and comments"));
 }
 
@@ -715,8 +723,7 @@ fn view_footer_deduplicates_actions_and_names_merge_methods_for_people() {
             ]
         }]
     }]);
-    let rendered: alondra_core::views::View = serde_json::from_value(view).unwrap();
-    let keys = crate::tui::draw::view_footer_actions(&rendered);
+    let keys = footer_on(serde_json::from_value(view).unwrap());
     assert_eq!(keys.iter().filter(|(_, label)| label == "Ask about the PR").count(), 1);
     assert!(keys.iter().any(|(key, label)| key == "1" && label == "Squash and merge"));
     assert!(keys.iter().any(|(key, label)| key == "2" && label == "Merge commit"));
@@ -778,8 +785,9 @@ fn reader_comments_follow_the_selected_views_text_option() {
     press(&mut app, KeyCode::Char('C'));
     typed(&mut app, "Tighter");
     press(&mut app, KeyCode::Enter);
+    assert!(!crate::tui::draw::footer_keys(&app).iter().any(|(key, _)| key == "2"), "an option without text is not offered");
     press(&mut app, KeyCode::Char('2'));
-    assert!(posted(&app).is_empty() && flash(&app).contains("takes no text"));
+    assert!(posted(&app).is_empty() && app.composer.is_none());
     press(&mut app, KeyCode::Char('1'));
     assert!(
         matches!(app.composer.as_ref().map(|composer| &composer.target),
@@ -1210,8 +1218,19 @@ fn an_empty_inbox_says_all_caught_up_and_offers_the_next_step() {
     assert!(shown.contains("✓ Todo al día") && shown.contains("Tab mira las tareas"), "{shown}");
 }
 
+fn attachable(key: &str) -> alondra_core::views::View {
+    let mut view = view_fixture("card-question.json");
+    view["view"] = serde_json::json!("task");
+    view["key"] = serde_json::json!(key);
+    view["sections"] = serde_json::json!([{"id": "attach", "collapsed": false, "items": [{
+        "type": "row", "id": "attach", "icon": "node", "title": "Attach", "depth": 0, "struck": false,
+        "link": {"kind": "local", "local": {"kind": "attach", "session": "short-a-1"}}
+    }]}]);
+    serde_json::from_value(view).unwrap()
+}
+
 #[test]
-fn footers_name_the_next_screen_the_pane_key_and_the_terminal() {
+fn footers_name_the_next_screen_and_the_terminal_only_when_there_is_one() {
     crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
     let (tx, _rx) = std::sync::mpsc::sync_channel(8);
     let mut app = App::new(tx);
@@ -1219,13 +1238,16 @@ fn footers_name_the_next_screen_the_pane_key_and_the_terminal() {
         crate::tui::draw::footer_keys(app).iter().any(|(k, l)| k == key && l == label)
     };
     app.home_view = Some(serde_json::from_value(view_fixture("home-tui.json")).unwrap());
-    assert!(has(&app, "Tab", "tasks") && has(&app, "^d/^u", "scroll detail") && has(&app, "o", "expand"));
+    assert!(has(&app, "Tab", "tasks"));
     app.screen = Screen::Tasks;
     app.home_view = Some(serde_json::from_value(view_fixture("tasks-ios.json")).unwrap());
-    assert!(has(&app, "h/l", "pane") && has(&app, "⏎", "its terminal") && has(&app, "Tab", "fleet"));
+    assert!(!has(&app, "⏎", "its terminal"), "nothing selected has a terminal");
+    app.view_navigation.push("task:t-1".into());
+    app.card_view = Some(attachable("task:t-1"));
+    assert!(has(&app, "⏎", "its terminal") && has(&app, "Tab", "fleet"));
     app.screen = Screen::Fleet;
     app.home_view = Some(serde_json::from_value(view_fixture("fleet-ios.json")).unwrap());
-    assert!(has(&app, "h/l", "pane") && has(&app, "⏎", "its terminal (← returns)") && has(&app, "Tab", "inbox"));
+    assert!(has(&app, "⏎", "its terminal (← returns)") && has(&app, "Tab", "inbox"));
     crate::i18n::set_for_this_thread(crate::i18n::Lang::Es);
     assert!(has(&app, "Tab", "bandeja") && has(&app, "⏎", "su terminal (← vuelve)"));
 }
@@ -1267,7 +1289,7 @@ fn enter_on_a_task_or_node_opens_its_terminal() {
     ));
     app.card_view = None;
     assert!(matches!(app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)), Flow::Go));
-    assert!(flash(&app).contains("no terminal"), "{}", flash(&app));
+    assert!(app.flash.is_none(), "a task with no terminal does not offer ⏎");
 }
 
 fn status_with(gauges: serde_json::Value) -> alondra_core::views::Status {
@@ -1398,7 +1420,10 @@ fn an_empty_fleet_detail_summarises_the_fleet_from_the_servers_counts() {
 fn help_lists_scheduled_tasks_the_disk_bar_and_says_node_and_fleet() {
     for lang in [crate::i18n::Lang::En, crate::i18n::Lang::Es] {
         crate::i18n::set_for_this_thread(lang);
-        let help: String = crate::tui::draw::help_lines()
+        let (tx, _rx) = std::sync::mpsc::sync_channel(8);
+        let mut app = App::new(tx);
+        app.screen = Screen::Tasks;
+        let help: String = crate::tui::draw::help_lines(&app)
             .iter()
             .map(|line| line.to_string())
             .collect::<Vec<_>>()
@@ -1408,8 +1433,11 @@ fn help_lists_scheduled_tasks_the_disk_bar_and_says_node_and_fleet() {
         assert!(!help.contains("sesión") && !help.contains("session"), "{help}");
     }
     crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
-    let help: String = crate::tui::draw::help_lines().iter().map(|line| line.to_string()).collect();
-    assert!(help.contains("scheduled tasks: n creates one") && help.contains(":fleet"));
+    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
+    let mut app = App::new(tx);
+    app.screen = Screen::Tasks;
+    let help: String = crate::tui::draw::help_lines(&app).iter().map(|line| line.to_string()).collect();
+    assert!(help.contains("scheduled") && help.contains(":fleet"), "{help}");
 }
 
 fn held_plan_card() -> alondra_core::views::View {
@@ -1492,14 +1520,14 @@ fn task_footer_offers_only_the_keys_the_selected_task_answers() {
 
     app.card_view = Some(task_view("t-1", true));
     let keys = crate::tui::draw::footer_keys(&app);
-    assert!(keys.iter().any(|(key, label)| key == "M" && label == "message"), "{keys:?}");
+    assert!(keys.iter().any(|(key, label)| key == "Shift+M" && label == "Message"), "{keys:?}");
     assert!(keys.iter().any(|(key, label)| key == "⏎" && label == "its terminal"), "{keys:?}");
-    assert!(keys.iter().any(|(key, label)| key == "x" && label == "cancel task"), "{keys:?}");
+    assert!(keys.iter().any(|(key, label)| key == "x" && label == "Cancel Task"), "{keys:?}");
     assert!(!keys.iter().any(|(key, _)| key == "r"), "{keys:?}");
 
     app.card_view = Some(task_view("t-1", false));
     let keys = crate::tui::draw::footer_keys(&app);
-    assert!(!keys.iter().any(|(key, _)| key == "M" || key == "⏎" || key == "r"), "{keys:?}");
+    assert!(!keys.iter().any(|(key, _)| key == "Shift+M" || key == "⏎" || key == "r"), "{keys:?}");
     assert!(keys.iter().any(|(key, _)| key == "x"), "{keys:?}");
 }
 
@@ -2171,4 +2199,33 @@ fn a_card_leaves_the_list_only_when_its_action_says_it_takes_it_out() {
         assert_eq!(app.hidden.contains_key(&Key(question_id())), resolves, "resolves_card {resolves}");
         assert_eq!(app.inbox_keys().contains(&Key(question_id())), !resolves);
     }
+}
+
+/// The chain the daemon folds, as each client gets it: id, folded and the tasks under it.
+fn chain_of(name: &str) -> (String, bool, Vec<String>) {
+    fn find(rows: &[alondra_core::views::Row]) -> Option<&alondra_core::views::Row> {
+        rows.iter().find_map(|row| if row.id.starts_with("chain:") { Some(row) } else { find(&row.children) })
+    }
+    let view: alondra_core::views::View = serde_json::from_value(view_fixture(name)).unwrap();
+    let rows: Vec<alondra_core::views::Row> = view.sections.iter().flat_map(|section| &section.items)
+        .filter_map(|item| match item { alondra_core::views::Item::Row(row) => Some(row.clone()), _ => None })
+        .collect();
+    let chain = find(&rows).unwrap_or_else(|| panic!("{name}: no chain"));
+    (chain.id.clone(), chain.folded, chain.children.iter().map(|row| row.id.clone()).collect())
+}
+
+#[test]
+fn the_tui_folds_the_chain_like_ios_and_mac() {
+    let tui = chain_of("tasks-tui.json");
+    assert_eq!(chain_of("tasks-ios.json"), tui, "iOS");
+    assert_eq!(chain_of("tasks-mac.json"), tui, "Mac");
+    assert!(tui.1, "every client starts with the chain folded");
+    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
+    let mut app = App::new(tx);
+    app.screen = Screen::Tasks;
+    app.on_msg(Msg::ViewHome(Ok(serde_json::from_value(view_fixture("tasks-tui.json")).unwrap())));
+    app.reconcile();
+    let keys: Vec<String> = app.inbox_keys().into_iter().map(|key| key.0).collect();
+    assert!(keys.contains(&tui.0), "{keys:?}");
+    assert!(tui.2.iter().all(|member| !keys.contains(member)), "the TUI hides them like iOS and Mac: {keys:?}");
 }

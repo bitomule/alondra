@@ -19,7 +19,7 @@ fn open_finished(app: &mut App, domain: &DomainState, live: &LiveSnapshot) {
     });
 }
 
-fn task_screen(domain: &DomainState, live: &LiveSnapshot, request: &str, task: &str) -> App {
+pub(super) fn task_screen(domain: &DomainState, live: &LiveSnapshot, request: &str, task: &str) -> App {
     let mut app = app_on(Screen::Tasks, build(domain, live, "tasks"));
     open_finished(&mut app, domain, live);
     let row = if app.inbox_keys().iter().any(|key| key.0 == task) { task } else { request };
@@ -80,7 +80,7 @@ fn task(id: &str, request: &str, agent: Option<&str>, title: &str, state: TaskSt
 
 /// Four nodes with one task each, three finished and one working, plus a scheduled task nobody
 /// has started: the owner's fleet on 2026-10-03.
-fn busy() -> (DomainState, LiveSnapshot) {
+pub(super) fn busy() -> (DomainState, LiveSnapshot) {
     let mut domain = DomainState::new("screens");
     domain.revision = 1;
     let mut live = LiveSnapshot::default();
@@ -126,7 +126,7 @@ fn busy() -> (DomainState, LiveSnapshot) {
     (domain, live)
 }
 
-fn build(domain: &DomainState, live: &LiveSnapshot, key: &str) -> views::View {
+pub(super) fn build(domain: &DomainState, live: &LiveSnapshot, key: &str) -> views::View {
     views::build(
         key,
         RenderContext {
@@ -143,7 +143,7 @@ fn build(domain: &DomainState, live: &LiveSnapshot, key: &str) -> views::View {
     .unwrap()
 }
 
-fn app_on(screen: Screen, home: views::View) -> App {
+pub(super) fn app_on(screen: Screen, home: views::View) -> App {
     crate::i18n::set_for_this_thread(crate::i18n::Lang::Es);
     let (tx, _rx) = std::sync::mpsc::sync_channel(64);
     let mut app = App::new(tx);
@@ -330,7 +330,7 @@ fn task_actions_have_unique_keys_and_hide_what_does_not_apply() {
         let footer = draw::footer_keys(&app);
         for key in &keys {
             assert!(
-                footer.iter().any(|(shown, _)| *shown == draw::footer_key(key)),
+                footer.iter().any(|(shown, _)| *shown == if key.chars().all(|c| c.is_ascii_uppercase()) { format!("Shift+{key}") } else { key.to_string() }),
                 "{task}: {key} missing from {footer:?}"
             );
         }
@@ -516,9 +516,9 @@ fn decide_detail_shows_header_content_context_then_numbered_buttons() {
         footer
             .iter()
             .map(|(key, _)| key.as_str())
-            .filter(|key| matches!(*key, "1" | "2" | "3" | "m" | "r" | "⏎"))
+            .filter(|key| matches!(*key, "1" | "2" | "3" | "m" | "r" | "⏎/o"))
             .collect::<Vec<_>>(),
-        ["1", "2", "m", "r", "⏎"],
+        ["1", "2", "m", "r", "⏎/o"],
         "{footer:?}"
     );
 }
@@ -747,7 +747,7 @@ fn cards_read_in_spanish() {
     assert!(screen.contains(" m  Más… (2)"), "{screen}");
     let footer = draw::footer_keys(&app);
     assert!(footer.iter().any(|(key, label)| key == "r" && label == "responder"), "{footer:?}");
-    assert!(footer.iter().any(|(key, label)| key == "⏎" && label == "abrir"), "{footer:?}");
+    assert!(footer.iter().any(|(key, label)| key == "⏎/o" && label == "abrir"), "{footer:?}");
     press(&mut app, KeyCode::Char('m'));
     assert!(rendered(&mut app, 120, 40).contains("MÁS"));
 }
@@ -868,12 +868,12 @@ fn a_blocked_task_action_says_why_instead_of_asking_first() {
     }
     assert_eq!(block(&mut view, "x"), 1, "the task's cancel action, which asks first");
     app.card_view = Some(serde_json::from_value(view).unwrap());
+    assert!(!draw::footer_keys(&app).iter().any(|(key, _)| key == "x"), "a blocked action is not offered");
     press(&mut app, KeyCode::Char('x'));
     assert!(app.modal.is_none(), "no question about something that cannot run");
-    let flash = app.flash.as_ref().expect("its reason");
-    assert_eq!(flash.text, "The task is already closing");
-    assert_eq!(flash.kind, FlashKind::Error);
     assert!(app.posted.borrow().is_empty());
+    let screen = rendered(&mut app, 130, 30);
+    assert!(screen.contains("The task is already closing"), "the detail says why: {screen}");
 }
 
 #[test]
@@ -885,4 +885,65 @@ fn the_fleet_shows_the_limit_but_l_no_longer_changes_it() {
     app.on_key(KeyEvent::new(KeyCode::Char('L'), KeyModifiers::SHIFT));
     assert!(app.card_menu.is_none(), "the limit is changed with `alondra config set max_working_nodes`");
     assert!(app.posted.borrow().is_empty());
+}
+
+/// The golden Tasks list with a chain of two tasks waiting for the first, as the daemon folds it.
+fn chain_of_two() -> views::View {
+    let mut value = super::parity::view_fixture("tasks-tui.json");
+    fn grow(rows: &mut serde_json::Value) {
+        for row in rows.as_array_mut().into_iter().flatten() {
+            if row["id"].as_str().is_some_and(|id| id.starts_with("chain:")) {
+                let mut second = row["children"][0].clone();
+                second["id"] = "t-badge-sync".into();
+                second["link"]["key"] = "task:t-badge-sync".into();
+                second["title"] = "Sync the badge across devices".into();
+                row["children"].as_array_mut().unwrap().push(second);
+                row["title"] = "+2 waiting for this".into();
+            }
+            if let Some(children) = row.get_mut("children") {
+                grow(children);
+            }
+        }
+    }
+    for section in value["sections"].as_array_mut().unwrap() {
+        grow(&mut section["items"]);
+    }
+    serde_json::from_value(value).unwrap()
+}
+
+#[test]
+fn a_chain_starts_folded_and_its_key_unfolds_and_folds_it() {
+    const MEMBERS: [&str; 2] = ["Decrement the badge on retraction", "Sync the badge across devices"];
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+    let mut app = app_on(Screen::Tasks, chain_of_two());
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+    let folded = rendered(&mut app, 120, 34);
+    dump("chain (folded)", &folded);
+    assert!(folded.contains("▸ +2 waiting for this"), "{folded}");
+    for member in MEMBERS {
+        assert!(!folded.contains(member), "{member} is hidden while folded: {folded}");
+    }
+    assert!(!app.inbox_keys().iter().any(|key| key.0 == "t-badge-decrement" || key.0 == "t-badge-sync"),
+        "a folded task cannot be selected");
+
+    app.sel = app.inbox_keys().into_iter().find(|key| key.0.starts_with("chain:"));
+    assert!(draw::footer_keys(&app).contains(&("o/⏎".into(), "unfold".into())), "{:?}", draw::footer_keys(&app));
+    assert!(!draw::footer_keys(&app).iter().any(|(key, _)| key == "r" || key == "1"),
+        "no other task's actions on the chain line: {:?}", draw::footer_keys(&app));
+    press(&mut app, KeyCode::Char('o'));
+    let open = rendered(&mut app, 120, 34);
+    dump("chain (unfolded)", &open);
+    assert!(open.contains("▾ +2 waiting for this"), "{open}");
+    let lines: Vec<&str> = open.lines().collect();
+    let indent = |needle: &str| lines.iter().find(|line| line.contains(needle)).and_then(|line| line.chars().position(|c| c == '↳'))
+        .unwrap_or_else(|| panic!("{needle}: {open}"));
+    for member in MEMBERS {
+        assert!(indent(member) > indent("+2 waiting for this"), "{member} hangs under the chain line: {open}");
+    }
+    assert!(draw::footer_keys(&app).contains(&("o/⏎".into(), "fold".into())));
+    press(&mut app, KeyCode::Char('o'));
+    let again = rendered(&mut app, 120, 34);
+    for member in MEMBERS {
+        assert!(!again.contains(member), "{member} is hidden once folded again: {again}");
+    }
 }

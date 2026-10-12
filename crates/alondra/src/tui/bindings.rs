@@ -1,0 +1,609 @@
+//! The keys of the state on screen, in one table: the key bar, the reader's panel, the help screen
+//! and the key handler all read it, so a key is shown exactly when it does something.
+
+use alondra_core::views::{Action, ActionOption, ContentKind, Item, View};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+use super::keys::{Cmd, Motion};
+use super::{App, Flow, Key, Pane, Screen, Target, view_render};
+
+#[derive(Clone, Debug)]
+pub(super) enum Act {
+    Move,
+    Focus(Pane),
+    Back,
+    Toggle,
+    Open,
+    Terminal,
+    Diff,
+    Form,
+    NextScreen,
+    PrevScreen,
+    NewWork,
+    Orchestrator,
+    Schedules,
+    CloseSchedules,
+    NewSchedule,
+    Search,
+    Quit,
+    Help,
+    CmdLine,
+    NextMac,
+    Button,
+    More,
+    Reply,
+    Pick,
+    CloseMenu,
+    Server(Box<Action>, Option<Box<ActionOption>>),
+    ScreenAction(Box<Action>),
+    RowAction(Box<Action>),
+    ReaderClose,
+    ReaderFind,
+    ReaderFindNext,
+    ReaderFindPrev,
+    ReaderFindClose,
+    ReaderComment,
+    ReaderGeneral,
+    ReaderDelete,
+    ReaderSend,
+    ReaderAnswer,
+    ModalConfirm,
+    ModalCancel,
+    Pairing(bool),
+}
+
+/// Where an entry is listed: on the key bar, or only on the help screen.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum Shown {
+    Bar,
+    Help,
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct Binding {
+    pub keys: Vec<KeyEvent>,
+    pub hint: String,
+    pub label: String,
+    pub shown: Shown,
+    pub act: Act,
+}
+
+/// A terminal sends Shift with a capital and with Shift+Tab; the table names them without it.
+pub(super) fn same(a: &KeyEvent, b: &KeyEvent) -> bool {
+    let strip = |key: &KeyEvent| match key.code {
+        KeyCode::Char(_) | KeyCode::BackTab => key.modifiers - KeyModifiers::SHIFT,
+        _ => key.modifiers,
+    };
+    a.code == b.code && strip(a) == strip(b)
+}
+
+pub(super) fn plain(code: KeyCode) -> KeyEvent {
+    KeyEvent::new(code, KeyModifiers::NONE)
+}
+
+fn char(c: char) -> KeyEvent {
+    plain(KeyCode::Char(c))
+}
+
+fn ctrl(c: char) -> KeyEvent {
+    KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)
+}
+
+fn digit(index: usize) -> Option<KeyEvent> {
+    char::from_digit(index as u32 + 1, 10).filter(|_| index < 9).map(char)
+}
+
+/// The key a server hint names: one character, `enter`, `space` or `esc`.
+fn hinted(hint: &str) -> Option<KeyEvent> {
+    let mut chars = hint.chars();
+    match (chars.next(), chars.next()) {
+        (Some(c), None) => Some(char(c)),
+        _ => match hint.to_ascii_lowercase().as_str() {
+            "enter" | "return" => Some(plain(KeyCode::Enter)),
+            "space" => Some(char(' ')),
+            "esc" | "escape" => Some(plain(KeyCode::Esc)),
+            _ => None,
+        },
+    }
+}
+
+fn selection_keys() -> Vec<KeyEvent> {
+    vec![char('j'), char('k'), plain(KeyCode::Down), plain(KeyCode::Up), ctrl('e'), ctrl('y'),
+        char('G'), plain(KeyCode::End), plain(KeyCode::Home)]
+}
+
+fn page_keys() -> Vec<KeyEvent> {
+    vec![ctrl('d'), ctrl('u'), ctrl('f'), ctrl('b'), plain(KeyCode::PageDown), plain(KeyCode::PageUp), char(' ')]
+}
+
+fn motion(key: &KeyEvent) -> Option<Motion> {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    Some(match key.code {
+        KeyCode::Char('j') | KeyCode::Down if !ctrl => Motion::Down,
+        KeyCode::Char('k') | KeyCode::Up if !ctrl => Motion::Up,
+        KeyCode::Char('e') if ctrl => Motion::Down,
+        KeyCode::Char('y') if ctrl => Motion::Up,
+        KeyCode::Char('G') | KeyCode::End => Motion::Bottom,
+        KeyCode::Home => Motion::Top,
+        KeyCode::Char('d') if ctrl => Motion::HalfDown,
+        KeyCode::Char('u') if ctrl => Motion::HalfUp,
+        KeyCode::Char('f') if ctrl => Motion::PageDown,
+        KeyCode::Char('b') if ctrl => Motion::PageUp,
+        KeyCode::PageDown | KeyCode::Char(' ') => Motion::PageDown,
+        KeyCode::PageUp => Motion::PageUp,
+        _ => return None,
+    })
+}
+
+/// Entries in order of precedence: a key an earlier entry takes is not offered again further down.
+#[derive(Default)]
+pub(super) struct Table(pub Vec<Binding>);
+
+impl Table {
+    fn add(&mut self, keys: Vec<KeyEvent>, hint: &str, label: impl Into<String>, act: Act) {
+        self.put(keys, hint, label, Shown::Bar, act);
+    }
+
+    fn help(&mut self, keys: Vec<KeyEvent>, hint: &str, label: impl Into<String>, act: Act) {
+        self.put(keys, hint, label, Shown::Help, act);
+    }
+
+    fn put(&mut self, keys: Vec<KeyEvent>, hint: &str, label: impl Into<String>, shown: Shown, act: Act) {
+        let free: Vec<KeyEvent> = keys.into_iter()
+            .filter(|key| !self.0.iter().any(|taken| taken.keys.iter().any(|other| same(other, key))))
+            .collect();
+        if free.is_empty() {
+            return;
+        }
+        let hint = if hint.is_empty() { name(&free[0]) } else { hint.to_owned() };
+        self.0.push(Binding { keys: free, hint, label: label.into(), shown, act });
+    }
+
+    pub fn find(&self, key: &KeyEvent) -> Option<&Binding> {
+        self.0.iter().find(|binding| binding.keys.iter().any(|other| same(other, key)))
+    }
+}
+
+/// How the key bar names a key: `⏎`, `Esc`, `Shift+R` for a capital, `^d` for Ctrl.
+pub(super) fn name(key: &KeyEvent) -> String {
+    let base = match key.code {
+        KeyCode::Enter => "⏎".to_owned(),
+        KeyCode::Esc => "Esc".to_owned(),
+        KeyCode::Tab => "Tab".to_owned(),
+        KeyCode::BackTab => "Shift+Tab".to_owned(),
+        KeyCode::Char(' ') => tr!("Space", "Espacio").to_owned(),
+        KeyCode::Char(c) if c.is_ascii_uppercase() => format!("Shift+{c}"),
+        KeyCode::Char(c) => c.to_string(),
+        other => format!("{other:?}"),
+    };
+    if key.modifiers.contains(KeyModifiers::CONTROL) { format!("^{base}") } else { base }
+}
+
+fn has_diff(view: &View) -> bool {
+    view.sections.iter().flat_map(|section| &section.items)
+        .any(|item| matches!(item, Item::ContentRef(content) if content.kind == ContentKind::Diff))
+}
+
+fn has_form(view: &View) -> Option<&Action> {
+    view.sections.iter().flat_map(|section| &section.items).find_map(|item| match item {
+        Item::Form(form) => Some(&form.submit),
+        _ => None,
+    })
+}
+
+impl App {
+    /// The detail document of what is selected, when it is the one loaded.
+    pub(super) fn current_view(&self) -> Option<&View> {
+        let selected = self.selected_view_key()?;
+        self.card_view.as_ref().filter(|view| view.key == selected)
+    }
+
+    fn selected_fold(&self) -> Option<bool> {
+        let id = &self.sel.as_ref()?.0;
+        let home = self.shown_home()?;
+        view_render::rows(&home).iter().any(|(row, _)| row.id == *id && row.folded)
+            .then(|| self.open_rows.contains(id))
+    }
+
+    fn header_selected(&self) -> Option<bool> {
+        let id = view_render::header_section(&self.sel.as_ref()?.0)?;
+        Some(self.open_sections.contains(id))
+    }
+
+    fn detail_overflows(&self) -> bool {
+        self.detail_view.shown && self.detail_view.total > self.detail_view.h
+    }
+
+    pub(super) fn bindings(&self) -> Table {
+        let mut t = Table::default();
+        let finding = self.reader.as_ref().is_some_and(|r| r.find.as_ref().is_some_and(|find| find.editing));
+        let searching = self.screen == Screen::Fleet && self.reader.is_none() && !self.schedules_open
+            && self.search.as_ref().is_some_and(|search| search.editing);
+        if (self.composer.is_some() || self.cmdline.is_some() || finding || searching) && self.modal.is_none() {
+            return t;
+        }
+        if let Some(modal) = &self.modal {
+            t.add(vec![plain(KeyCode::Enter)], "⏎", modal.button.clone(), Act::ModalConfirm);
+            t.add(vec![plain(KeyCode::Esc)], "Esc", tr!("cancel", "cancelar"), Act::ModalCancel);
+            return t;
+        }
+        if self.pairing_answers_keys() && self.target.is_local() && self.pairing_prompt().is_some() {
+            t.add(vec![char('p')], "p", tr!("allow the device", "permitir el dispositivo"), Act::Pairing(true));
+            t.add(vec![char('d')], "d", tr!("deny it", "denegarlo"), Act::Pairing(false));
+        }
+        if let Some(menu) = &self.card_menu {
+            let keys: Vec<KeyEvent> = (0..menu.entries.len()).filter_map(digit).collect();
+            let hint = if keys.len() > 1 { format!("1-{}", keys.len()) } else { "1".into() };
+            t.add(keys, &hint, tr!("pick", "elige"), Act::Pick);
+            t.add(vec![plain(KeyCode::Esc)], "Esc", tr!("back", "volver"), Act::CloseMenu);
+            return t;
+        }
+        if self.reader.is_some() {
+            self.reader_bindings(&mut t);
+        } else if self.schedules_open {
+            self.schedule_bindings(&mut t);
+        } else {
+            self.list_bindings(&mut t);
+        }
+        t.help(vec![char('?')], "?", tr!("help", "ayuda"), Act::Help);
+        t.help(vec![char(':')], ":", tr!("command line: :q :inbox :tasks :fleet :<number>",
+            "línea de órdenes: :q :inbox :tasks :fleet :<número>"), Act::CmdLine);
+        t.help(vec![char(']')], "]", tr!("next Mac, when this terminal is connected to several",
+            "siguiente Mac, si este terminal está conectado a varios"), Act::NextMac);
+        t
+    }
+
+    fn reader_bindings(&self, t: &mut Table) {
+        let Some(r) = self.reader.as_ref() else { return };
+        let mut moves = selection_keys();
+        moves.extend(page_keys());
+        t.add(moves, "j/k", tr!("block", "bloque"), Act::Move);
+        if r.find.is_some() && r.matches().len() > 1 {
+            t.add(vec![char('n')], "n", tr!("next match", "siguiente"), Act::ReaderFindNext);
+            t.add(vec![char('N')], "Shift+N", tr!("previous match", "anterior"), Act::ReaderFindPrev);
+        }
+        if r.find.is_some() {
+            t.add(vec![plain(KeyCode::Esc)], "Esc", tr!("close the search", "cerrar la búsqueda"), Act::ReaderFindClose);
+        }
+        t.add(vec![char('/')], "/", tr!("search", "buscar"), Act::ReaderFind);
+        if r.blocks.get(r.cursor).is_some_and(|block| block.commentable()) {
+            t.add(vec![char('c'), plain(KeyCode::Enter)], "c", tr!("comment", "comentar"), Act::ReaderComment);
+        }
+        t.add(vec![char('C')], "Shift+C", tr!("general comment", "comentario general"), Act::ReaderGeneral);
+        let review = self.reviews.get(&r.key).filter(|review| !review.is_empty());
+        if review.is_some_and(|review| review.comments.iter().any(|comment| comment.block == r.cursor)) {
+            t.add(vec![char('d')], "d", tr!("delete comment", "borrar comentario"), Act::ReaderDelete);
+        }
+        let view = self.card_view.as_ref().filter(|view| view.key == r.key.0);
+        let sends = match view {
+            Some(view) => self.review_action(view).is_some(),
+            None => review.is_some() && r.agent_id.is_some(),
+        };
+        if sends {
+            t.add(vec![char('s')], "s", tr!("send your comments", "enviar tus comentarios"), Act::ReaderSend);
+        }
+        if let Some(view) = view {
+            self.answer_bindings(t, view, true);
+        }
+        let mut close = vec![char('o'), char('q'), char('h'), plain(KeyCode::Left)];
+        if r.find.is_none() {
+            close.insert(0, plain(KeyCode::Esc));
+        }
+        t.add(close, if r.find.is_none() { "Esc/q" } else { "q" }, tr!("back", "volver"), Act::ReaderClose);
+    }
+
+    /// The buttons and actions of the document on screen. In the reader the digits answer, so the
+    /// comments go with the option, and letters the reader uses for itself stay its own.
+    fn answer_bindings(&self, t: &mut Table, view: &View, reading: bool) {
+        let answer = if reading { Act::ReaderAnswer } else { Act::Button };
+        if let Some(card) = view_render::typed_card(view) {
+            for (index, action) in card.actions.iter().take(view_render::BUTTONS).enumerate() {
+                if action.enabled && let Some(key) = digit(index)
+                    && (!reading || self.takes_the_comments(view, key))
+                {
+                    t.add(vec![key], "", super::md::truncate(&action.label, 18), answer.clone());
+                }
+            }
+            if !card.more.is_empty() && !reading {
+                t.add(vec![char('m')], "m", tr!("more", "más"), Act::More);
+            }
+            if card.reply.as_ref().is_some_and(|reply| reply.enabled) {
+                t.add(vec![char('r')], "r", tr!("reply", "responder"), Act::Reply);
+            }
+            if reading {
+                for action in card.actions.iter().chain(&card.more).filter(|action| action.enabled) {
+                    let action = Action::from(action.clone());
+                    if let Some(key) = action.key.as_deref().and_then(hinted)
+                        && key.code.as_char().is_some_and(|c| c.is_ascii_alphabetic())
+                    {
+                        let option = super::inbox::only_option(&action).map(Box::new);
+                        t.add(vec![key], "", action.label.clone(), Act::Server(Box::new(action), option));
+                    }
+                }
+            }
+            return;
+        }
+        for action in view_render::actions(view).into_iter().filter(|action| action.enabled) {
+            if let Some(key) = hinted(view_render::action_hint(&action)) {
+                let option = super::inbox::only_option(&action).map(Box::new);
+                t.add(vec![key], "", action.label.clone(), Act::Server(Box::new(action.clone()), option));
+            }
+            for (index, option) in action.options.iter().enumerate() {
+                let key = match option.key.as_deref() {
+                    Some(hint) => hinted(hint),
+                    None => digit(index),
+                };
+                if let Some(key) = key.filter(|key| !reading || self.takes_the_comments(view, *key)) {
+                    let act = if reading && key.code.as_char().is_some_and(|c| c.is_ascii_digit()) {
+                        Act::ReaderAnswer
+                    } else {
+                        Act::Server(Box::new(action.clone()), Some(Box::new(option.clone())))
+                    };
+                    t.add(vec![key], "", option.label.clone(), act);
+                }
+            }
+        }
+    }
+
+    /// With comments written, an option is offered only when it takes text, so the comments go with it.
+    fn takes_the_comments(&self, view: &View, key: KeyEvent) -> bool {
+        let Some(reader) = self.reader.as_ref() else { return true };
+        if self.reviews.get(&reader.key).is_none_or(|review| review.is_empty()) {
+            return true;
+        }
+        let text = |input: &alondra_core::views::Input| matches!(input, alondra_core::views::Input::Text { .. });
+        super::inbox::view_key_choice(view, key)
+            .is_some_and(|(action, option)| text(&action.input) || option.is_some_and(|option| text(&option.input)))
+    }
+
+    fn schedule_bindings(&self, t: &mut Table) {
+        if self.inbox_keys().len() > 1 {
+            t.add(selection_keys(), "j/k", tr!("move", "mover"), Act::Move);
+        }
+        if let Some(home) = self.home_view.as_ref().filter(|view| view.key == "schedules")
+            && let Some(selected) = self.sel.as_ref()
+            && let Some(row) = view_render::rows(home).into_iter().find_map(|(row, _)| (row.id == selected.0).then_some(row))
+        {
+            for action in &row.actions {
+                if let Some(key) = action.key.as_deref().and_then(hinted) {
+                    t.add(vec![key], "", action.label.clone(), Act::RowAction(Box::new(action.clone())));
+                }
+            }
+        }
+        if let Some(view) = self.current_view() {
+            if has_form(view).is_some() {
+                t.add(vec![char('e'), plain(KeyCode::Enter)], "e", tr!("edit", "editar"), Act::Form);
+            }
+            self.answer_bindings(t, view, false);
+        }
+        self.screen_action_bindings(t);
+        t.add(vec![char('n')], "n", tr!("create", "crear"), Act::NewSchedule);
+        t.add(vec![plain(KeyCode::Esc), plain(KeyCode::Tab), char('s')], "Esc", tr!("back", "volver"), Act::CloseSchedules);
+        t.help(vec![char('q')], "q", tr!("quit", "salir"), Act::Quit);
+    }
+
+    fn screen_action_bindings(&self, t: &mut Table) {
+        let Some(home) = self.home_view.as_ref() else { return };
+        for action in super::draw::screen_actions(home) {
+            if let Some(key) = hinted(view_render::action_hint(&action)) {
+                t.add(vec![key], "", action.label.clone(), Act::ScreenAction(Box::new(action)));
+            }
+        }
+    }
+
+    fn list_bindings(&self, t: &mut Table) {
+        let loaded = self.home_view.is_some();
+        let detail = self.focus == Pane::Detail && self.detail_view.shown;
+        if loaded && detail && self.detail_overflows() {
+            let mut moves = selection_keys();
+            moves.extend(page_keys());
+            t.add(moves, "j/k", tr!("scroll", "desplazar"), Act::Move);
+        } else if loaded && !detail && self.inbox_keys().len() > 1 {
+            t.add(selection_keys(), "j/k", tr!("move", "mover"), Act::Move);
+        }
+        if !self.view_navigation.is_empty() {
+            t.add(vec![plain(KeyCode::Esc)], "Esc", tr!("back", "volver"), Act::Back);
+        }
+        if detail {
+            t.add(vec![char('h'), plain(KeyCode::Left), plain(KeyCode::Esc)], "h/Esc", tr!("list", "lista"), Act::Focus(Pane::List));
+        }
+        let open_close = |open: bool, opened: &'static str, closed: &'static str| if open { opened } else { closed };
+        if let Some(open) = self.header_selected() {
+            t.add(vec![char('o'), plain(KeyCode::Enter)], "o/⏎",
+                open_close(open, tr!("hide", "ocultar"), tr!("show", "mostrar")), Act::Toggle);
+        } else if let Some(open) = self.selected_fold() {
+            t.add(vec![char('o'), plain(KeyCode::Enter)], "o/⏎",
+                open_close(open, tr!("fold", "plegar"), tr!("unfold", "desplegar")), Act::Toggle);
+        } else if let Some(view) = self.current_view() {
+            if has_form(view).is_some() {
+                t.add(vec![char('e'), plain(KeyCode::Enter)], "e", tr!("edit", "editar"), Act::Form);
+            }
+            if has_diff(view) {
+                t.add(vec![char('d')], "d", tr!("diff and comments", "diff y comentarios"), Act::Diff);
+            }
+            self.answer_bindings(t, view, false);
+            if !detail && self.detail_view.shown {
+                t.add(vec![char('l'), plain(KeyCode::Right)], "l", tr!("detail", "detalle"), Act::Focus(Pane::Detail));
+            }
+            match self.screen {
+                Screen::Inbox => {
+                    let mut keys = vec![plain(KeyCode::Enter), char('o')];
+                    if !self.detail_view.shown {
+                        keys.extend([char('l'), plain(KeyCode::Right)]);
+                    }
+                    t.add(keys, "⏎/o", tr!("open", "abrir"), Act::Open);
+                }
+                Screen::Tasks | Screen::Fleet => {
+                    if view_render::attach_session(view).is_some() {
+                        let label = if self.screen == Screen::Fleet {
+                            tr!("its terminal (← returns)", "su terminal (← vuelve)")
+                        } else {
+                            tr!("its terminal", "su terminal")
+                        };
+                        t.add(vec![plain(KeyCode::Enter)], "⏎", label, Act::Terminal);
+                    }
+                    let mut keys = vec![char('o')];
+                    if !self.detail_view.shown {
+                        keys.extend([char('l'), plain(KeyCode::Right)]);
+                    }
+                    t.add(keys, "o", tr!("expand", "expandir"), Act::Open);
+                }
+            }
+        }
+        if !detail && self.detail_overflows() {
+            t.add(page_keys(), "^d/^u", tr!("scroll detail", "desplazar detalle"), Act::Move);
+        }
+        self.screen_action_bindings(t);
+        match self.screen {
+            Screen::Inbox => t.add(vec![char('M')], "Shift+M", tr!("orchestrator", "orquestador"), Act::Orchestrator),
+            Screen::Tasks => t.add(vec![char('s')], "s", tr!("scheduled", "programadas"), Act::Schedules),
+            Screen::Fleet => t.add(vec![char('/')], "/", tr!("search", "buscar"), Act::Search),
+        }
+        let next = match self.screen {
+            Screen::Inbox => tr!("tasks", "tareas"),
+            Screen::Tasks => tr!("fleet", "flota"),
+            Screen::Fleet => tr!("inbox", "bandeja"),
+        };
+        t.add(vec![plain(KeyCode::Tab)], "Tab", next, Act::NextScreen);
+        t.add(vec![char('n')], "n", tr!("new", "nuevo"), Act::NewWork);
+        t.add(vec![char('q')], "q", tr!("quit", "salir"), Act::Quit);
+        t.help(vec![plain(KeyCode::BackTab)], "Shift+Tab", tr!("previous screen", "pantalla anterior"), Act::PrevScreen);
+        t.help(vec![char('M')], "Shift+M", tr!("message the orchestrator", "mensaje al orquestador"), Act::Orchestrator);
+    }
+
+    /// Runs what the table says `key` does now; a key the table does not list does nothing.
+    pub(super) fn press(&mut self, key: KeyEvent) -> Flow {
+        let table = self.bindings();
+        let Some(binding) = table.find(&key) else { return Flow::Go };
+        let act = binding.act.clone();
+        let flow = self.run(act, key);
+        if self.schedules_open {
+            self.load_selected_view();
+            self.sync_open_views();
+        }
+        flow
+    }
+
+    fn run(&mut self, act: Act, key: KeyEvent) -> Flow {
+        match act {
+            Act::Move => {
+                let Some(motion) = motion(&key) else { return Flow::Go };
+                if self.reader.is_some() {
+                    self.reader_cmd(Cmd::Move(motion));
+                } else {
+                    self.inbox_cmd(Cmd::Move(motion));
+                }
+            }
+            Act::Focus(pane) => self.focus = pane,
+            Act::Back => {
+                self.view_navigation.pop();
+                self.card_view = None;
+                self.card_view_asked = None;
+                self.load_selected_view();
+                self.sync_open_views();
+            }
+            Act::Toggle => {
+                let _ = self.toggle_selected_section() || self.toggle_selected_fold();
+            }
+            Act::Open => self.open_reader(),
+            Act::Terminal => return self.open_terminal(),
+            Act::Diff => self.open_reader(),
+            Act::Form => {
+                if let Some(view) = self.current_view().map(|view| view.key.clone()) {
+                    self.compose(Target::Form { view }, "");
+                }
+            }
+            Act::NextScreen => self.switch_screen(),
+            Act::PrevScreen => self.switch_screen_back(),
+            Act::NewWork => self.compose(Target::Form { view: "new_request".into() }, ""),
+            Act::Orchestrator => {
+                self.compose_orchestrator_on_load = true;
+                self.navigate_view("node:orchestrator");
+            }
+            Act::Schedules => {
+                self.schedules_open = true;
+                self.home_view = None;
+                self.screen_view_asked = None;
+                self.load_screen_view();
+                self.load_selected_view();
+                self.sync_open_views();
+            }
+            Act::CloseSchedules => {
+                self.schedules_open = false;
+                self.reload_schedules();
+            }
+            Act::NewSchedule => self.compose(Target::Form { view: "schedule:new".into() }, ""),
+            Act::Search => {
+                self.search = Some(super::Search {
+                    input: super::TextInput::default(),
+                    editing: true,
+                    typed_at: alondra_core::now_millis(),
+                    remote: super::Remote::Idle,
+                });
+                self.navigate_view("search");
+            }
+            Act::Quit => return Flow::Quit,
+            Act::Help => {
+                self.help = true;
+                self.help_scroll = 0;
+            }
+            Act::CmdLine => self.cmdline = Some(super::TextInput::default()),
+            Act::NextMac => return Flow::NextMac,
+            Act::Button | Act::More | Act::Reply => {
+                return self.view_action_key(key).unwrap_or(Flow::Go);
+            }
+            Act::Pick | Act::CloseMenu => return self.card_menu_key(key),
+            Act::Server(action, option) => {
+                let Some(view) = self.current_view().or_else(|| {
+                    let reading = self.reader.as_ref()?.key.0.clone();
+                    self.card_view.as_ref().filter(|view| view.key == reading)
+                }) else {
+                    return Flow::Go;
+                };
+                let epoch = view.data_epoch.clone();
+                let selected = self.sel.clone().unwrap_or_else(|| Key(view.key.clone()));
+                return self.press_card_action(*action, option.map(|option| *option), &selected, epoch);
+            }
+            Act::ScreenAction(action) => {
+                let Some(home) = self.home_view.as_ref() else { return Flow::Go };
+                let (epoch, selected) = (home.data_epoch.clone(), Key(home.key.clone()));
+                return self.press_card_action(*action, None, &selected, epoch);
+            }
+            Act::RowAction(action) => {
+                let Some(home) = self.home_view.as_ref() else { return Flow::Go };
+                let epoch = home.data_epoch.clone();
+                let selected = self.sel.clone().unwrap_or_else(|| Key(home.key.clone()));
+                return self.run_view_action(&action, None, &selected, epoch);
+            }
+            Act::ReaderClose => self.reader = None,
+            Act::ReaderFind => {
+                if let Some(reader) = self.reader.as_mut() {
+                    reader.find = Some(super::Find { input: super::TextInput::default(), editing: true });
+                }
+            }
+            Act::ReaderFindNext | Act::ReaderFindPrev => {
+                if let Some(reader) = self.reader.as_mut() {
+                    reader.jump(matches!(act, Act::ReaderFindNext), false);
+                }
+            }
+            Act::ReaderFindClose => {
+                if let Some(reader) = self.reader.as_mut() {
+                    reader.find = None;
+                }
+            }
+            Act::ReaderComment => self.comment_block(),
+            Act::ReaderGeneral => self.comment_general(),
+            Act::ReaderDelete => self.delete_comment(),
+            Act::ReaderSend => self.send_review(),
+            Act::ReaderAnswer => self.answer_with_comments(key),
+            Act::ModalConfirm => self.run_modal(),
+            Act::ModalCancel => self.modal = None,
+            Act::Pairing(allow) => {
+                if let Some(device) = self.pairing_prompt().cloned() {
+                    self.answer_pairing(device, allow);
+                }
+            }
+        }
+        Flow::Go
+    }
+}

@@ -734,12 +734,16 @@ fn draw_views_card(f: &mut Frame, app: &mut App, area: Rect) {
             None => super::view_render::button_lines(card),
         };
     } else {
-        let actions = visible_detail_actions(document);
+        let mut actions = action_menu(&app.bindings());
+        actions.extend(super::view_render::actions(document).into_iter().filter(|action| !action.enabled).map(|action| {
+            let why = action.disabled_reason.map(|reason| format!(" — {reason}")).unwrap_or_default();
+            Line::from(Span::styled(format!("    {}{why}", action.label), Style::new().fg(DIM)))
+        }));
         if let Some(menu) = &app.card_menu {
             keys = super::view_render::menu_lines(menu);
         } else if !actions.is_empty() {
             lines.push(Line::default());
-            lines.extend(action_menu(&actions));
+            lines.extend(actions);
         }
     }
     let keys_height = (keys.len() as u16).min(inner.height.saturating_sub(4));
@@ -990,34 +994,8 @@ fn draw_comments(f: &mut Frame, app: &App, area: Rect, cursor: usize) {
         None => {
             lines.push(Line::from(tr!("None yet.", "Todavía ninguno.").fg(DIM)));
             lines.push(Line::default());
-            for (hint, label) in [
-                (
-                    "j/k",
-                    tr!("move the cursor by blocks", "mueve el cursor por bloques"),
-                ),
-                (
-                    "^d ^u",
-                    tr!("half a page down / up", "media página abajo / arriba"),
-                ),
-                (
-                    "/",
-                    tr!(
-                        "search the text; n/N next/prev",
-                        "busca en el texto; n/N sig./ant."
-                    ),
-                ),
-                (
-                    "c",
-                    tr!("comment on the marked block", "comenta el bloque marcado"),
-                ),
-                ("Shift+C", tr!("general comment", "comentario general")),
-            ] {
-                lines.push(key(hint, label));
-            }
-            if let Some(view) = app.card_view.as_ref().filter(|view| view.key == r.key.0) {
-                for (hint, label) in view_footer_actions(view) {
-                    lines.push(key(&hint, &label));
-                }
+            for (hint, label) in bar_keys(&app.bindings()) {
+                lines.push(key(&hint, &label));
             }
         }
         Some(rv) => {
@@ -1421,46 +1399,15 @@ fn fleet_summary(app: &App) -> Vec<Line<'static>> {
     lines
 }
 
-/// What a document lets you do, one line each and all alike, as 8ccd131 drew a card's keys: the
-/// choices first, numbered, then every action with its key. Only what can be done is listed.
-pub(super) fn action_menu(actions: &[alondra_core::views::Action]) -> Vec<Line<'static>> {
-    let entry = |key: &str, label: String| {
-        Line::from(vec![
-            keycap(if key == "enter" { "⏎" } else { key }),
-            Span::raw(format!(" {label}")),
-        ])
-    };
-    let mut lines = Vec::new();
-    for action in actions {
-        for (index, option) in action.options.iter().enumerate() {
-            let key = option.key.clone().unwrap_or_else(|| (index + 1).to_string());
-            lines.push(entry(&key, option_label(option)));
-        }
-    }
-    for action in actions {
-        let key = super::view_render::action_hint(action);
-        if key.is_empty() {
-            lines.push(Line::from(Span::styled(
-                format!("    {}", action.label),
-                Style::new().fg(DIM),
-            )));
-        } else {
-            lines.push(entry(key, action.label.clone()));
-        }
-    }
-    lines
-}
-
-/// How the key bar names an action's key: `⏎` for enter and `Shift+R` for a capital, as 8ccd131
-/// did, since a capital needs Shift.
-pub(super) fn footer_key(hint: &str) -> String {
-    match hint {
-        "enter" => "⏎".into(),
-        _ if hint.chars().count() == 1 && hint.chars().all(|c| c.is_ascii_uppercase()) => {
-            format!("Shift+{hint}")
-        }
-        _ => hint.into(),
-    }
+/// What a document lets you do, one line each and all alike, as 8ccd131 drew a card's keys: each
+/// action and option with the key the table gives it. Only what can be done is listed.
+pub(super) fn action_menu(table: &super::bindings::Table) -> Vec<Line<'static>> {
+    table
+        .0
+        .iter()
+        .filter(|binding| matches!(binding.act, super::bindings::Act::Server(..) | super::bindings::Act::Form))
+        .map(|binding| Line::from(vec![keycap(&binding.hint), Span::raw(format!(" {}", binding.label))]))
+        .collect()
 }
 
 /// The actions a list screen offers whatever is selected, such as archiving every finished task.
@@ -1478,331 +1425,95 @@ pub(super) fn screen_actions(view: &alondra_core::views::View) -> Vec<alondra_co
         .collect()
 }
 
-pub(super) fn view_footer_actions(view: &alondra_core::views::View) -> Vec<(String, String)> {
-    let mut keys = Vec::new();
-    let has_diff = view.sections.iter().flat_map(|section| &section.items).any(|item|
-        matches!(item, alondra_core::views::Item::ContentRef(content)
-            if content.kind == alondra_core::views::ContentKind::Diff));
-    for action in super::view_render::actions(view)
-        .into_iter()
-        .filter(|action| action.enabled)
-    {
-        let hint = super::view_render::action_hint(&action);
-        if !hint.is_empty() && !(has_diff && hint.eq_ignore_ascii_case("d")) {
-            let entry = (
-                footer_key(hint),
-                action.label.clone(),
-            );
-            if !keys.contains(&entry) {
-                keys.push(entry);
-            }
-        }
-        for (index, option) in action.options.iter().enumerate() {
-            let hint = option
-                .key
-                .clone()
-                .unwrap_or_else(|| (index + 1).to_string());
-            keys.push((hint, option_label(&option)));
-        }
-    }
-    if has_diff {
-        keys.push(("d".into(), tr!("diff and comments", "diff y comentarios").into()));
-    }
-    keys
-}
-
 pub(super) fn option_label(option: &alondra_core::views::ActionOption) -> String {
     option.label.clone()
 }
 
-pub(super) fn visible_detail_actions(document: &alondra_core::views::View) -> Vec<alondra_core::views::Action> {
-    super::view_render::actions(document)
-        .into_iter()
-        .filter(|action| action.enabled)
+/// The key bar: the composer's keys while it is open, otherwise the table's bar entries.
+pub(super) fn footer_keys(app: &App) -> Vec<(String, String)> {
+    let k = |a: &str, b: &str| (a.to_string(), b.to_string());
+    if app.help {
+        return vec![
+            k("j/k", tr!("scroll", "desplazar")),
+            k(tr!("any other key", "otra tecla"), tr!("closes", "cierra")),
+        ];
+    }
+    if let Some(c) = app.composer.as_ref().filter(|_| app.modal.is_none()) {
+        return composer_keys(c);
+    }
+    if app.reader.as_ref().is_some_and(|reader| reader.find.as_ref().is_some_and(|find| find.editing)) {
+        return vec![k("⏎", tr!("find", "buscar")), k("Esc", tr!("cancel", "cancela"))];
+    }
+    if app.screen == Screen::Fleet && app.reader.is_none() && !app.schedules_open
+        && app.search.as_ref().is_some_and(|search| search.editing)
+    {
+        return vec![k("⏎/↑/↓", tr!("go to the results", "ir a los resultados")), k("Esc", tr!("cancel", "cancela"))];
+    }
+    bar_keys(&app.bindings())
+}
+
+/// A table's bar entries as the key bar names them.
+pub(super) fn bar_keys(table: &super::bindings::Table) -> Vec<(String, String)> {
+    table
+        .0
+        .iter()
+        .filter(|binding| binding.shown == super::bindings::Shown::Bar)
+        .map(|binding| (binding.hint.clone(), binding.label.clone()))
         .collect()
 }
 
-/// The keys a card answers right now: its working buttons, the menu of the rest, the reply, and
-/// the full content.
-fn card_footer_keys(card: &alondra_core::views::Card) -> Vec<(String, String)> {
-    let mut keys = Vec::new();
-    for (index, action) in card.actions.iter().take(super::view_render::BUTTONS).enumerate() {
-        if action.enabled {
-            keys.push(((index + 1).to_string(), super::md::truncate(&action.label, 18)));
-        }
-    }
-    if !card.more.is_empty() {
-        keys.push(("m".into(), tr!("more", "más").into()));
-    }
-    if card.reply.as_ref().is_some_and(|reply| reply.enabled) {
-        keys.push(("r".into(), tr!("reply", "responder").into()));
-    }
-    keys.push(("⏎".into(), tr!("open", "abrir").into()));
-    keys
-}
-
-/// Only an uncertain handoff needs the user: a dispatching one settles by itself.
-pub(super) fn footer_keys(app: &App) -> Vec<(String, String)> {
+fn composer_keys(c: &super::Composer) -> Vec<(String, String)> {
     let k = |a: &str, b: &str| (a.to_string(), b.to_string());
-    if app.composer.is_none() {
-        if let Some(reader) = app.reader.as_ref() {
-            if reader.find.as_ref().is_some_and(|find| find.editing) {
-                return vec![
-                    k("⏎", tr!("find", "buscar")),
-                    k("Esc", tr!("cancel", "cancela")),
-                ];
-            }
-            let mut keys = vec![
-                k("j/k", tr!("block", "bloque")),
-                k("/", tr!("search", "buscar")),
-                k("c", tr!("comment", "comentar")),
-                k("Shift+C", tr!("general", "general")),
-                k("d", tr!("delete", "borrar")),
-            ];
-            if let Some(view) = app
-                .card_view
-                .as_ref()
-                .filter(|view| view.key == reader.key.0)
-            {
-                keys.extend(view_footer_actions(view));
-            }
-            keys.push(k("Esc/o", tr!("back", "volver")));
-            return keys;
-        }
-        if let Some(home) = app.home_view.as_ref() {
-            let mut keys = match app.screen {
-                Screen::Inbox if app.focus == Pane::Detail => {
-                    vec![k("j/k", tr!("scroll", "desplazar"))]
-                }
-                Screen::Inbox => vec![k("j/k", tr!("move", "mover"))],
-                Screen::Tasks | Screen::Fleet if app.schedules_open => {
-                    vec![k("j/k", tr!("move", "mover"))]
-                }
-                Screen::Tasks | Screen::Fleet => vec![
-                    k("j/k", tr!("move", "mover")),
-                    k("h/l", tr!("pane", "panel")),
-                ],
-            };
-            let typed = app.card_view.as_ref().and_then(super::view_render::typed_card);
-            if let Some(menu) = &app.card_menu {
-                return vec![
-                    k(&format!("1-{}", menu.entries.len().max(1)), tr!("pick", "elige")),
-                    k("Esc", tr!("back", "volver")),
-                ];
-            }
-            if !app.schedules_open && typed.is_none() {
-                keys.push(k("o", tr!("expand", "expandir")));
-            }
-            let mut from_server = Vec::new();
-            if let Some(card) = typed {
-                from_server.extend(card_footer_keys(card));
-            } else if let Some(card) = app.card_view.as_ref() {
-                from_server.extend(view_footer_actions(card));
-            } else if let Some(selected) = app.sel.as_ref()
-                && let Some(row) = super::view_render::rows(home)
-                    .into_iter()
-                    .find_map(|(row, _)| (row.id == selected.0).then_some(row))
-            {
-                for action in row.actions.iter().filter(|action| action.enabled) {
-                    let hint = super::view_render::action_hint(action);
-                    if !hint.is_empty() {
-                        from_server.push((
-                            footer_key(hint),
-                            action.label.clone(),
-                        ));
-                    }
-                }
-            }
-            for action in screen_actions(home) {
-                from_server.push((
-                    footer_key(super::view_render::action_hint(&action)),
-                    action.label.clone(),
-                ));
-            }
-            for entry in from_server {
-                if !keys.iter().any(|(key, _)| key == &entry.0) {
-                    keys.push(entry);
-                }
-            }
-            if app.schedules_open {
-                keys.extend([
-                    k("n", tr!("create", "crear")),
-                    k("Esc", tr!("back", "volver")),
-                ]);
-                return keys;
-            }
-            let mut shortcuts = Vec::new();
-            match app.screen {
-                Screen::Inbox => shortcuts.push(k("Shift+M", tr!("orchestrator", "orquestador"))),
-                Screen::Tasks => shortcuts.extend([
-                    k("⏎", tr!("its terminal", "su terminal")),
-                    k("s", tr!("scheduled", "programadas")),
-                ]),
-                Screen::Fleet => shortcuts.extend([
-                    k("/", tr!("search", "buscar")),
-                    k("⏎", tr!("its terminal (← returns)", "su terminal (← vuelve)")),
-                ]),
-            }
-            for shortcut in shortcuts {
-                if !keys.iter().any(|(key, _)| key == &shortcut.0) {
-                    keys.push(shortcut);
-                }
-            }
-            if app.screen == Screen::Inbox {
-                keys.push(k("^d/^u", tr!("scroll detail", "desplazar detalle")));
-            }
-            keys.extend([
-                k(
-                    "Tab",
-                    match app.screen {
-                        Screen::Inbox => tr!("tasks", "tareas"),
-                        Screen::Tasks => tr!("fleet", "flota"),
-                        Screen::Fleet => tr!("inbox", "bandeja"),
-                    },
-                ),
-                k("n", tr!("new", "nuevo")),
-                k("q", tr!("quit", "salir")),
-            ]);
-            return keys;
-        }
-    }
-    if let Some(c) = app.composer.as_ref() {
-        if let Some(form) = c.form.as_ref() {
-            if form.popup.is_some() {
-                return vec![
-                    k("↑/↓", tr!("move", "mover")),
-                    k("⏎", tr!("picks", "elige")),
-                    k("Esc", tr!("closes the list", "cierra la lista")),
-                ];
-            }
-            if form.focus.is_some() {
-                return vec![
-                    k("↑/↓", tr!("setting", "ajuste")),
-                    k("⏎", tr!("shows its values", "muestra sus valores")),
-                    k("p", tr!("project", "proyecto")),
-                    k("i", tr!("issue", "issue")),
-                    k("x", tr!("drop the issue", "quita la issue")),
-                    k("Tab", tr!("back to the text", "vuelve al texto")),
-                ];
-            }
+    if let Some(form) = c.form.as_ref() {
+        if form.popup.is_some() {
             return vec![
-                k("⏎", composer_action(&c.target)),
-                k(
-                    "Tab",
-                    tr!("project, issue and options", "proyecto, issue y opciones"),
-                ),
-                k("Alt+⏎", tr!("new line", "nueva línea")),
-                k(
-                    tr!("drop a file", "arrastra un archivo"),
-                    tr!("attaches it", "lo adjunta"),
-                ),
-                k("Esc", tr!("cancel", "cancela")),
+                k("↑/↓", tr!("move", "mover")),
+                k("⏎", tr!("picks", "elige")),
+                k("Esc", tr!("closes the list", "cierra la lista")),
+            ];
+        }
+        if form.focus.is_some() {
+            return vec![
+                k("↑/↓", tr!("setting", "ajuste")),
+                k("⏎", tr!("shows its values", "muestra sus valores")),
+                k("p", tr!("project", "proyecto")),
+                k("i", tr!("issue", "issue")),
+                k("x", tr!("drop the issue", "quita la issue")),
+                k("Tab", tr!("back to the text", "vuelve al texto")),
             ];
         }
         return vec![
             k("⏎", composer_action(&c.target)),
+            k(
+                "Tab",
+                tr!("project, issue and options", "proyecto, issue y opciones"),
+            ),
             k("Alt+⏎", tr!("new line", "nueva línea")),
-            k("Ctrl+W", tr!("delete word", "borra palabra")),
-            k("Ctrl+U", tr!("delete line", "borra línea")),
-            if c.chips.is_empty() {
-                k(
-                    tr!("drop a file", "arrastra un archivo"),
-                    tr!("attaches it", "lo adjunta"),
-                )
-            } else {
-                k(
-                    tr!("⌫ on empty", "⌫ en vacío"),
-                    tr!("removes the last attachment", "quita el último adjunto"),
-                )
-            },
+            k(
+                tr!("drop a file", "arrastra un archivo"),
+                tr!("attaches it", "lo adjunta"),
+            ),
             k("Esc", tr!("cancel", "cancela")),
         ];
     }
-    match app.screen {
-        Screen::Tasks if app.schedules_open => vec![
-            k("j/k", tr!("move", "mover")),
-            k("n", tr!("new", "nueva")),
-            k("e", tr!("edit", "editar")),
-            k("p", tr!("pause / resume", "pausar / reanudar")),
-            k("⏎", tr!("run", "ejecutar")),
-            k("d d", tr!("delete", "borrar")),
-            k("Esc", tr!("back", "volver")),
-        ],
-        Screen::Tasks => {
-            let mut keys = vec![k("j/k", tr!("move", "mover")), k("h/l", tr!("pane", "panel"))];
-            if app.sel.as_ref().is_some_and(|key| super::view_render::header_section(&key.0).is_some()) {
-                keys.push(k("⏎", tr!("show / hide", "mostrar / ocultar")));
-            }
-            match app.task_sel.as_ref() {
-                Some(super::tasks::TaskKey::Task(id)) => {
-                    let key = format!("task:{}", id.0);
-                    let view = app.card_view.as_ref().filter(|view| view.key == key);
-                    keys.push(k("o", tr!("detail", "detalle")));
-                    if view.and_then(super::view_render::attach_session).is_some() {
-                        keys.push(k("⏎", tr!("its terminal", "su terminal")));
-                    }
-                    for action in view.map(super::view_render::actions).unwrap_or_default() {
-                        let hint = super::view_render::action_hint(&action);
-                        if !hint.is_empty() && action.enabled {
-                            keys.push(k(hint, &action.label.to_lowercase()));
-                        }
-                    }
-                }
-                Some(super::tasks::TaskKey::Request(_)) => {
-                    keys.extend([
-                        k("o", tr!("detail", "detalle")),
-                        k("x", tr!("withdraw", "retirar")),
-                    ]);
-                }
-                None => {}
-            }
-            keys.extend([
-                k("Shift+A", tr!("archive finished", "archivar terminadas")),
-                k("s", tr!("scheduled", "programadas")),
-                k("Tab", tr!("fleet", "flota")),
-                k("n", tr!("new", "nuevo")),
-                k("q", tr!("quit", "salir")),
-            ]);
-            keys
-        }
-        Screen::Fleet if app.orchestrator_selected() => vec![
-            k("j/k", tr!("move", "mover")),
-            k("⏎/o", tr!("activity", "actividad")),
-            k("r", tr!("message", "mensaje")),
-            k("Esc", tr!("back", "volver")),
-            k("n", tr!("new", "nuevo")),
-            k("Tab", tr!("inbox", "bandeja")),
-        ],
-        Screen::Fleet if app.agent_zoom => vec![
-            k("j/k", tr!("scroll", "desplazar")),
-            k("Esc/o", tr!("back", "volver")),
-            k("r", tr!("message", "mensaje")),
-            k("x", tr!("close", "cerrar")),
-            k("a", tr!("its terminal", "su terminal")),
-        ],
-        Screen::Fleet => vec![
-            k("j/k", tr!("move", "mover")),
-            k("h/l", tr!("pane", "panel")),
-            k("/", tr!("search", "buscar")),
-            k("o", tr!("expand", "expandir")),
-            k("r", tr!("message", "mensaje")),
-            k("⏎", tr!("its terminal", "su terminal")),
-            k("x", tr!("close node", "cerrar nodo")),
-            k("n", tr!("new", "nuevo")),
-            k("Tab", tr!("inbox", "bandeja")),
-            k("q", tr!("quit", "salir")),
-        ],
-        Screen::Inbox => vec![
-            k("j/k", tr!("move", "mover")),
-            k("⏎/o", tr!("detail", "detalle")),
-            k("r", tr!("reply", "responder")),
-            k("x", tr!("mark read", "marcar leído")),
-            k("/", tr!("search", "buscar")),
-            k("Tab", tr!("tasks", "tareas")),
-            k("n", tr!("new", "nuevo")),
-            k("q", tr!("quit", "salir")),
-        ],
-    }
+    vec![
+        k("⏎", composer_action(&c.target)),
+        k("Alt+⏎", tr!("new line", "nueva línea")),
+        k("Ctrl+W", tr!("delete word", "borra palabra")),
+        k("Ctrl+U", tr!("delete line", "borra línea")),
+        if c.chips.is_empty() {
+            k(
+                tr!("drop a file", "arrastra un archivo"),
+                tr!("attaches it", "lo adjunta"),
+            )
+        } else {
+            k(
+                tr!("⌫ on empty", "⌫ en vacío"),
+                tr!("removes the last attachment", "quita el último adjunto"),
+            )
+        },
+        k("Esc", tr!("cancel", "cancela")),
+    ]
 }
 
 /// Action results float above the key bar, wrapped, so they never hide the keys or get cut.
@@ -1973,7 +1684,9 @@ fn draw_foot(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
-pub(super) fn help_lines() -> Vec<Line<'static>> {
+/// The help screen: every key of the screen behind it, from the same table the key bar and the
+/// handler read, then what the header bars mean and the keys that work everywhere.
+pub(super) fn help_lines(app: &App) -> Vec<Line<'static>> {
     let section = |t: &str| {
         Line::from(Span::styled(
             format!(" {t}"),
@@ -1986,62 +1699,18 @@ pub(super) fn help_lines() -> Vec<Line<'static>> {
             Span::styled(d.to_string(), Style::new().fg(SOFT)),
         ])
     };
-    vec![
-        section(tr!(
-            "Moving (vim style; arrows work too)",
-            "Moverse (estilo vim; las flechas también valen)"
-        )),
-        row(
-            "j/k  ↓↑",
-            tr!(
-                "down / up; after answering you move to the next one",
-                "abajo / arriba; al contestar pasas solo a la siguiente"
-            ),
-        ),
-        row("gg  Shift+G", tr!("first / last", "primero / último")),
-        row(
-            "Ctrl-d  Ctrl-u",
-            tr!(
-                "half a page down / up (scrolls the detail)",
-                "media página abajo / arriba (desplaza el detalle)"
-            ),
-        ),
-        row(
-            "Ctrl-f  Ctrl-b",
-            tr!(
-                "a full page down / up; also Space, PgDn, PgUp",
-                "página entera abajo / arriba; también Espacio, AvPág, RePág"
-            ),
-        ),
-        row(
-            "h/l  ←→",
-            tr!(
-                "focus the list / the detail pane",
-                "enfocar la lista / el panel de detalle"
-            ),
-        ),
-        row(
-            "o  ⏎",
-            tr!(
-                "expand: open the whole item",
-                "expandir: abrir entero el elemento"
-            ),
-        ),
-        row(
-            "Esc",
-            tr!(
-                "back: close, collapse or leave the detail pane",
-                "volver: cerrar, plegar o salir del panel de detalle"
-            ),
-        ),
-        row(
-            ":",
-            tr!(
-                "command line: :q  :help  :inbox  :tasks  :fleet  :<number>",
-                "línea de órdenes: :q  :help  :inbox  :tasks  :fleet  :<número>"
-            ),
-        ),
-        Line::default(),
+    let table = app.bindings();
+    let (bar, always): (Vec<_>, Vec<_>) = table.0.iter().partition(|binding| binding.shown == super::bindings::Shown::Bar);
+    let mut lines = vec![section(tr!("This screen", "Esta pantalla"))];
+    lines.extend(bar.iter().map(|binding| row(&binding.hint, &binding.label)));
+    if bar.iter().any(|binding| matches!(binding.act, super::bindings::Act::Move)) {
+        lines.push(row(
+            "gg  Shift+G",
+            tr!("first / last; arrows, PgUp and PgDn work too", "primero / último; también flechas, RePág y AvPág"),
+        ));
+    }
+    lines.push(Line::default());
+    lines.extend([
         section(tr!(
             "Bars in the header, left to right",
             "Barras de la cabecera, de izquierda a derecha"
@@ -2079,242 +1748,11 @@ pub(super) fn help_lines() -> Vec<Line<'static>> {
             ),
         ),
         Line::default(),
-        section(tr!("Inbox", "Bandeja")),
-        row(
-            "1-9",
-            tr!(
-                "question: choose an option · delivery with a PR: merge it (⏎ confirms)",
-                "pregunta: elegir una opción · entrega con PR: fusionarla (⏎ confirma)"
-            ),
-        ),
-        row(
-            "1",
-            tr!(
-                "on a PR in conflict: its node resolves the conflicts",
-                "en un PR con conflictos: su nodo los resuelve"
-            ),
-        ),
-        row(
-            "r",
-            tr!(
-                "question: write the answer or reply to its node · delivery or PR: feedback · information: reply",
-                "pregunta: escribir la respuesta o responder a su nodo · entrega o PR: feedback · información: responder"
-            ),
-        ),
-        row(
-            "c",
-            tr!(
-                "send the question back asking for more context",
-                "devolver la pregunta pidiendo más contexto"
-            ),
-        ),
-        row(
-            "p",
-            tr!("ask the PR's node about it", "preguntar al nodo del PR"),
-        ),
-        row(
-            "v",
-            tr!(
-                "accept a delivery (the node still finishes the task) · elsewhere: open its images and files",
-                "aceptar una entrega (el nodo sigue siendo quien termina la tarea) · en lo demás: abrir sus imágenes y ficheros"
-            ),
-        ),
-        row(
-            "x",
-            tr!(
-                "mark information read; nothing is sent to the node",
-                "marcar información leída; no se envía nada al nodo"
-            ),
-        ),
-        row(
-            "d · w",
-            tr!(
-                "the PR in tuicr on its clone (its diff here otherwise) · the PR on GitHub",
-                "el PR en tuicr sobre su copia (si no, su diff aquí) · el PR en GitHub"
-            ),
-        ),
-        row(
-            "Shift+J/Shift+K",
-            tr!("scroll the detail 5 lines", "desplazar el detalle 5 líneas"),
-        ),
-        row(
-            "a",
-            tr!(
-                "open the node's terminal (← on an empty line, Ctrl+Z or /exit returns to Alondra)",
-                "abrir el terminal del nodo (← con la línea vacía, Ctrl+Z o /exit vuelven a Alondra)"
-            ),
-        ),
-        Line::default(),
-        section(tr!("Reading (after o)", "Lectura (tras o)")),
-        row(
-            "j/k",
-            tr!(
-                "next / previous block; long blocks scroll line by line",
-                "bloque siguiente / anterior; los bloques largos avanzan línea a línea"
-            ),
-        ),
-        row(
-            "/  n  Shift+N",
-            tr!(
-                "search the text · next match · previous match",
-                "buscar en el texto · siguiente · anterior"
-            ),
-        ),
-        row(
-            "c · Shift+C · d",
-            tr!(
-                "comment on block · general comment · delete comment",
-                "comentar bloque · comentario general · borrar"
-            ),
-        ),
-        row(
-            "s · v · x",
-            tr!(
-                "send comments as feedback (or to the node) · accept · mark read",
-                "enviar comentarios como feedback (o al nodo) · aceptar · leído"
-            ),
-        ),
-        row(
-            "1-9",
-            tr!(
-                "on a question: answer with that option and your comments",
-                "en una pregunta: contestar con esa opción y tus comentarios"
-            ),
-        ),
-        row("q  o  Esc", tr!("close the reading", "cerrar la lectura")),
-        Line::default(),
-        section(tr!("Tasks", "Tareas")),
-        row(
-            "o",
-            tr!(
-                "expand the task's detail to full screen",
-                "expandir el detalle de la tarea a pantalla completa"
-            ),
-        ),
-        row(
-            "r · ⏎",
-            tr!(
-                "message its node · its node's terminal",
-                "mensaje a su nodo · el terminal de su nodo"
-            ),
-        ),
-        row(
-            "x",
-            tr!(
-                "cancel the task, or withdraw a request without tasks (⏎ confirms)",
-                "descartar la tarea, o retirar una petición sin tareas (⏎ confirma)"
-            ),
-        ),
-        row(
-            "Shift+R",
-            tr!(
-                "reopen a finished or cancelled task",
-                "reabrir una tarea terminada o descartada"
-            ),
-        ),
-        row(
-            "a",
-            tr!(
-                "archive this finished task, or bring an archived one back",
-                "archivar esta tarea terminada, o sacar del archivo una archivada"
-            ),
-        ),
-        row(
-            "Shift+A",
-            tr!(
-                "archive every finished or cancelled task",
-                "archivar todas las tareas terminadas o descartadas"
-            ),
-        ),
-        row(
-            "⏎ · o",
-            tr!(
-                "on Finished or Archived: show or hide them",
-                "en Terminadas o Archivadas: mostrar u ocultar"
-            ),
-        ),
-        row(
-            "s",
-            tr!(
-                "scheduled tasks: n creates one, e edits it, Esc goes back",
-                "tareas programadas: n crea una, e la edita, Esc vuelve"
-            ),
-        ),
-        Line::default(),
-        section(tr!("Fleet", "Flota")),
-        row(
-            "/",
-            tr!(
-                "search names and local node details",
-                "buscar nombres y detalles locales del nodo"
-            ),
-        ),
-        row(
-            "r · ⏎",
-            tr!(
-                "message the node · its terminal",
-                "mensaje al nodo · su terminal"
-            ),
-        ),
-        row(
-            "i",
-            tr!(
-                "interrupt what the node is doing now; it keeps its task",
-                "interrumpir lo que hace ahora el nodo; conserva su tarea"
-            ),
-        ),
-        row(
-            "o",
-            tr!(
-                "expand the node's detail to full screen",
-                "expandir el detalle del nodo a pantalla completa"
-            ),
-        ),
-        row(
-            "x",
-            tr!(
-                "close the node (⏎ confirms; never discards work)",
-                "cerrar el nodo (⏎ confirma; nunca descarta trabajo)"
-            ),
-        ),
-        row(
-            "C · S · R",
-            tr!(
-                "orchestrator: continue without repeating · stop · retry (⏎ confirms each)",
-                "orquestador: continuar sin repetir · detener · reintentar (⏎ confirma cada una)"
-            ),
-        ),
-        Line::default(),
         section(tr!("Always", "Siempre")),
-        row(
-            "Tab",
-            tr!(
-                "inbox → tasks → fleet (Shift+Tab goes back)",
-                "bandeja → tareas → flota (Shift+Tab vuelve)"
-            ),
-        ),
-        row(
-            "n · Shift+M",
-            tr!(
-                "new work for the orchestrator · message the orchestrator",
-                "trabajo nuevo para el orquestador · mensaje al orquestador"
-            ),
-        ),
-        row(
-            "]",
-            tr!(
-                "next Mac, when this terminal is connected to several (tabs in the header)",
-                "siguiente Mac, cuando este terminal está conectado a varios (pestañas de la cabecera)"
-            ),
-        ),
-        row(
-            "p · d",
-            tr!(
-                "when a device asks to use Alondra on this Mac: allow · deny",
-                "cuando un dispositivo pide usar Alondra en este Mac: permitir · denegar"
-            ),
-        ),
-        row("q  Ctrl-c", tr!("quit", "salir")),
+    ]);
+    lines.extend(always.iter().map(|binding| row(&binding.hint, &binding.label)));
+    lines.extend([
+        row("Ctrl-c", tr!("quit", "salir")),
         row(
             tr!("typing", "al escribir"),
             tr!(
@@ -2322,12 +1760,13 @@ pub(super) fn help_lines() -> Vec<Line<'static>> {
                 "las letras van al cuadro de texto; Esc sale"
             ),
         ),
-    ]
+    ]);
+    lines
 }
 
 fn draw_help(f: &mut Frame, app: &mut App) {
     let area = f.area();
-    let mut lines = help_lines();
+    let mut lines = help_lines(app);
     if let Some(status) = &app.view_status {
         for gauge in &status.gauges {
             if let Some(detail) = &gauge.detail {

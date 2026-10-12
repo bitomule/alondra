@@ -177,10 +177,11 @@ pub fn row_lines(row: &Row, width: usize, selected: bool, nested: bool) -> Vec<L
     if row.struck {
         title_style = title_style.add_modifier(Modifier::CROSSED_OUT);
     }
+    let indent = if nested { "  ".repeat(usize::from(row.depth.saturating_sub(1)).max(1)) } else { String::new() };
     let mut first = vec![
         bar.clone(),
         Span::styled(
-            if nested { "  ↳ " } else { "" },
+            if nested { format!("{indent}↳ ") } else { String::new() },
             Style::new().fg(Color::Magenta),
         ),
         Span::styled(
@@ -225,7 +226,7 @@ pub fn row_lines(row: &Row, width: usize, selected: bool, nested: bool) -> Vec<L
     let lead_width: usize = first.iter().map(Span::width).sum();
     let meta_width: usize = meta.iter().map(Span::width).sum();
     let title_width = super::md::str_width(&row.title);
-    let under = if nested { "      " } else { "  " };
+    let under = if nested { format!("{indent}    ") } else { "  ".to_owned() };
     first.push(Span::styled(row.title.clone(), title_style));
     let mut lines = Vec::new();
     if meta.is_empty() || lead_width + title_width + 2 + meta_width <= width {
@@ -238,7 +239,7 @@ pub fn row_lines(row: &Row, width: usize, selected: bool, nested: bool) -> Vec<L
         lines.push(fit(first, width));
     } else {
         lines.push(fit(first, width));
-        let mut second = vec![bar.clone(), Span::raw(under)];
+        let mut second = vec![bar.clone(), Span::raw(under.clone())];
         second.extend(meta);
         lines.push(fit(second, width));
     }
