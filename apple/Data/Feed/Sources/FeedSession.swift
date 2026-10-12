@@ -80,10 +80,18 @@ public actor FeedSession {
     private var subscribers: [UUID: AsyncStream<FeedSnapshot>.Continuation] = [:]
     private var eventSubscribers: [UUID: AsyncStream<FeedEvent>.Continuation] = [:]
     private let retryDelay: @Sendable (Int) async throws -> Void
+    private let reconcileActions: (@Sendable (String, @escaping @Sendable () async -> Bool) async -> Void)?
+    private var recoveryTask: Task<Void, Never>?
+    private var recoveryID: UUID?
+    private var recoveryWanted: (generation: UInt64, epoch: String)?
+    private var recoveredGeneration: UInt64?
+    private var recoveredEpoch: String?
 
     public init(transport: any ViewTransport, client: ViewClient, lang: String,
-                retryDelay: @escaping @Sendable (Int) async throws -> Void = FeedSession.backoff) {
+                retryDelay: @escaping @Sendable (Int) async throws -> Void = FeedSession.backoff,
+                reconcileActions: (@Sendable (String, @escaping @Sendable () async -> Bool) async -> Void)? = nil) {
         self.transport = transport; self.client = client; self.lang = lang; self.retryDelay = retryDelay
+        self.reconcileActions = reconcileActions
     }
 
     /// Capped exponential backoff with full jitter: up to 1, 2, 4, 8, 16, then 30 seconds.
@@ -121,12 +129,15 @@ public actor FeedSession {
         var requiredEpoch: String?
         while true {
             let completion = try await waitForLoad(request, requiredEpoch: requiredEpoch)
+            self.preconditionIsolated()
             try Task.checkCancellation()
             guard active else { throw CancellationError() }
             if case let .failure(error) = completion.result, error is CancellationError { throw error }
-            if !completion.leaseIDs.isEmpty, !completion.leaseIDs.contains(where: { leases[$0] == key }) {
-                throw CancellationError()
+            var ownsLiveLease = completion.leaseIDs.isEmpty
+            for id in completion.leaseIDs {
+                if leases[id] == key { ownsLiveLease = true; break }
             }
+            guard ownsLiveLease else { throw CancellationError() }
             if completion.epochGeneration != epochGeneration {
                 if let document = documents[key], document.dataEpoch == dataEpoch { return .document(document) }
                 request = LoadKey(key: key, known: nil)
@@ -279,6 +290,7 @@ public actor FeedSession {
                     cursor = document.cursor
                 }
                 publish(reset: changedEpoch)
+                scheduleRecovery()
             }
         case let .success(.unchanged(newCursor)):
             if let document = documents[request.key], request.known == document.version,
@@ -442,6 +454,7 @@ public actor FeedSession {
 
     public func stop() {
         active = false
+        recoveryWanted = nil; recoveryTask?.cancel()
         for key in Set(inFlightLoads.keys.map(\.key)) { cancelLoads(key) }
         leases.removeAll(); versions.removeAll(); documents.removeAll()
         loadOwners.removeAll(); loadLifetimes.removeAll()
@@ -491,6 +504,8 @@ public actor FeedSession {
 
     private func restartFeed() {
         generation &+= 1; feedTask?.cancel(); feedTask = nil
+        recoveryWanted = nil; recoveryTask?.cancel()
+        scheduleRecovery()
         guard active, !openKeys.isEmpty, (!subscribers.isEmpty || !eventSubscribers.isEmpty) else { return }
         let currentGeneration = generation
         feedTask = Task { [weak self] in await self?.runFeed(generation: currentGeneration) }
@@ -535,6 +550,7 @@ public actor FeedSession {
                 }
                 let missing = openKeys.filter { versions[$0] == nil }.sorted()
                 if !missing.isEmpty { try await refresh(missing, generation: current) }
+                scheduleRecovery()
                 failures = 0
             } catch is CancellationError { return }
             catch {
@@ -546,6 +562,44 @@ public actor FeedSession {
                 do { try await retryDelay(failures) } catch { return }
             }
         }
+    }
+
+    private func scheduleRecovery() {
+        guard active, let epoch = dataEpoch, let reconcileActions else { return }
+        guard recoveredGeneration != generation || recoveredEpoch != epoch else { return }
+        if recoveryTask != nil {
+            recoveryWanted = (generation, epoch)
+            recoveryTask?.cancel()
+            return
+        }
+        let id = UUID()
+        let current = generation
+        recoveredGeneration = current; recoveredEpoch = epoch
+        recoveryID = id
+        recoveryTask = Task { @concurrent [weak self] in
+            await reconcileActions(epoch, { [weak self] in
+                guard let self else { return false }
+                return await self.recoveryIsCurrent(id, generation: current, epoch: epoch)
+            })
+            await self?.finishedRecovery(id)
+        }
+    }
+
+    private func recoveryIsCurrent(_ id: UUID, generation current: UInt64, epoch: String) -> Bool {
+        active && !Task.isCancelled && recoveryID == id && generation == current && dataEpoch == epoch
+    }
+
+    private func finishedRecovery(_ id: UUID) {
+        guard recoveryID == id else { return }
+        recoveryTask = nil; recoveryID = nil
+        guard let wanted = recoveryWanted else { return }
+        recoveryWanted = nil
+        guard active, wanted.generation == generation, wanted.epoch == dataEpoch else { return }
+        scheduleRecovery()
+    }
+
+    func drainRecovery() async {
+        while let recoveryTask { await recoveryTask.value }
     }
 
     static func isTransient(_ error: any Error) -> Bool {

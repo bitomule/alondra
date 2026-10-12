@@ -14,6 +14,22 @@ public struct AlondraAPIClient: Sendable {
         self.operations = operations
     }
 
+    public func recover<Response>(_ endpoint: Endpoint<Response>, operationID: String) async throws -> Response? {
+        guard endpoint.method != .get else { throw OperationError.invalidEndpoint }
+        let request = try APIRequest(endpoint: endpoint, operationID: operationID)
+        try Task.checkCancellation()
+        switch try await operations.recover(request) {
+        case .unknown: return nil
+        case let .completed(status, body):
+            guard (200..<300).contains(status) else { throw APIError.from(status: status, body: body) }
+            if endpoint.requiresJSONObjectResponse,
+               (try? JSONSerialization.jsonObject(with: body)) as? [String: Any] == nil {
+                throw OperationError.outcomeUnknown
+            }
+            return try endpoint.decode(body)
+        }
+    }
+
     public func send<Response>(_ endpoint: Endpoint<Response>, operationID: String? = nil) async throws -> Response {
         guard endpoint.method == .get || operationID?.isEmpty == false else {
             throw OperationError.operationIdentityRequired

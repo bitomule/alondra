@@ -182,7 +182,7 @@ public struct TriageFeature: Sendable {
                 return .send(.screen(.task))
             case .screen(.loaded(let document)):
                 guard document.key == state.screen.key.rawValue else { return .none }
-                state.optimistic.reconcile(document.version)
+                state.optimistic.reconcile(document.version, dataEpoch: document.dataEpoch)
                 let listed = Set(document.sections.first { $0.id == "queue" }?.cardIds ?? [])
                 // A card answered here is forgotten once it is no longer drawn: until then its own
                 // view still arrives, settled, and must not announce what the person just did.
@@ -232,7 +232,7 @@ public struct TriageFeature: Sendable {
                 return .send(.delegate(.open(key)))
             case .cards(.element(id: let id, action: .actions(.sent(let request)))):
                 guard request.resolvesItsCard else { return stampTimer() }
-                state.optimistic.begin(id, request)
+                state.optimistic.begin(id, request, dataEpoch: state.screen.document?.dataEpoch)
                 return .merge(stampTimer(), sendDeadline(request))
             case .cards(.element(id: _, action: .actions(.settled(let request, let applied)))),
                  .handOffSettled(let request, let applied):
@@ -261,7 +261,7 @@ public struct TriageFeature: Sendable {
                 return .merge(queue, .send(.cards(.element(id: id, action: .actions(.dismiss)))))
             case .handedOff(let request, let cardID):
                 guard request.resolvesItsCard else { return .none }
-                state.optimistic.begin(cardID, request)
+                state.optimistic.begin(cardID, request, dataEpoch: state.screen.document?.dataEpoch)
                 guard !state.stampShowing else {
                     state.newerQueueWaiting = true
                     return sendDeadline(request)

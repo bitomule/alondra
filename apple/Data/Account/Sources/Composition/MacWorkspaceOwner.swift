@@ -29,7 +29,7 @@ public final class MacWorkspaceOwner {
                   isDaemonRunning: { await LoopbackSession.isDaemonRunning() },
                   openLocal: {
                       try await Connection.local(LoopbackSession(identity: identity, deviceName: deviceName),
-                                                       identity: identity)
+                                                       identity: identity, storageDirectory: storageDirectory)
                   },
                   startRemote: { account.store.send(.appeared) },
                   ownMacID: { await LoopbackSession.ownMacID() })

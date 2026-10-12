@@ -27,8 +27,9 @@ public final class AccountSession {
     }
     private func makeRegistry() -> ApprovedSessionRegistry<Connection> {
         let auth = auth
+        let storageDirectory = storageDirectory
         return ApprovedSessionRegistry<Connection>(
-            make: { try Connection(approved: $0, auth: auth) },
+            make: { try await Connection(approved: $0, auth: auth, storageDirectory: storageDirectory) },
             stop: { await $0.deactivate() }, publish: { [weak self] snapshot in
                 guard let self else { throw CancellationError() }
                 return try await self.didReconcile(snapshot)

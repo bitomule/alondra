@@ -51,17 +51,23 @@ final class MacWorkspaceSnapshotTests: XCTestCase {
     }
 
     private func assertWindow<Content: View>(
-        size: CGSize, spanish: Bool = false, variants: [Appearance] = Appearance.allCases, file: StaticString = #filePath, testName: String = #function, line: UInt = #line,
+        size: CGSize, spanish: Bool = false, alignTop: Bool = false, variants: [Appearance] = Appearance.allCases, file: StaticString = #filePath, testName: String = #function, line: UInt = #line,
         @ViewBuilder _ content: () -> Content
     ) {
         let view = AnyView(content().environment(\.locale, spanish ? Locale(identifier: "es_ES") : .current))
         for variant in variants {
             let hosting = NSHostingView(rootView: view.background(Color(nsColor: .windowBackgroundColor)))
             let window = NSWindow(contentRect: CGRect(origin: .zero, size: size), styleMask: [.borderless], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            defer { window.close() }
             window.appearance = variant.appearance
             window.contentView = hosting
             hosting.frame = CGRect(origin: .zero, size: size)
             hosting.layoutSubtreeIfNeeded()
+            if alignTop {
+                window.makeFirstResponder(nil)
+                alignSnapshotViewportToTop(hosting)
+            }
             assertAppSnapshot(
                 of: hosting as NSView,
                 as: .image(perceptualPrecision: 0.98, size: size),
@@ -245,7 +251,7 @@ final class MacWorkspaceSnapshotTests: XCTestCase {
 
     func test_card_deliveryWithItsApprovedPlan_spanish() throws {
         let store = try presentation(detail: "card-delivery-checklist-es-mac", spanish: true)
-        assertWindow(size: CGSize(width: 900, height: 820), spanish: true) { MacServiceDetail(presentation: store) }
+        assertWindow(size: CGSize(width: 900, height: 820), spanish: true, alignTop: true) { MacServiceDetail(presentation: store) }
     }
 
     func test_card_noticeThatBlocksNothing() throws {

@@ -9,12 +9,12 @@ import Testing
 private let status = #"{"version":"s1","summary":"Ready","badge":0,"counts":[],"gauges":[],"orchestrator":{"text":"Ready","tone":"success"}}"#
 
 private func makeDocument(key: String, version: String, sections: String = "[]") throws -> ViewDocument {
-    let json = #"{"protocol":1,"view":"\#(key)","key":"\#(key)","client":"mac","version":"\#(version)","cursor":"c1.abc","data_epoch":"epoch-\#(version)","status":\#(status),"sections":\#(sections),"notices":[]}"#
+    let json = #"{"protocol":1,"view":"\#(key)","key":"\#(key)","client":"mac","version":"\#(version)","cursor":"c1.abc","data_epoch":"epoch","status":\#(status),"sections":\#(sections),"notices":[]}"#
     return try JSONDecoder().decode(ViewDocument.self, from: Data(json.utf8))
 }
 
 private func settledCard(_ key: String, why: String) throws -> ViewDocument {
-    let json = #"{"protocol":1,"view":"settled_card","key":"\#(key)","client":"mac","version":"vs","cursor":"c1.abc","data_epoch":"epoch-vs","status":\#(status),"sections":[],"empty":{"text":"\#(why)","tone":"neutral"}}"#
+    let json = #"{"protocol":1,"view":"settled_card","key":"\#(key)","client":"mac","version":"vs","cursor":"c1.abc","data_epoch":"epoch","status":\#(status),"sections":[],"empty":{"text":"\#(why)","tone":"neutral"}}"#
     return try JSONDecoder().decode(ViewDocument.self, from: Data(json.utf8))
 }
 
@@ -62,6 +62,7 @@ private func makeStore(
 ) throws -> TestStoreOf<MacPresentationFeature> {
     var state = MacPresentationFeature.State()
     state.sidebarDocument = try sidebar(waiting: waiting)
+    state.actionFeature.dataEpoch = try #require(state.sidebarDocument).dataEpoch
     if let selected {
         state.selection = .viewKey(selected)
         state.selectedViewKey = selected
@@ -134,7 +135,7 @@ struct MacServiceNavigationTests {
         #expect(store.state.selection == .viewKey("card:a"))
         #expect(store.state.selectedViewKey == "card:a")
         #expect(store.state.detailDocument?.key == "card:a")
-        #expect(store.state.actionFeature.dataEpoch == "epoch-d1")
+        #expect(store.state.actionFeature.dataEpoch == "epoch")
     }
 
     @Test

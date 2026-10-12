@@ -59,7 +59,7 @@ public struct NodeDetailFeature: Sendable {
             case .task:
                 return .send(.screen(.task))
             case .screen(.loaded(let document)):
-                state.optimistic.reconcile(document.version)
+                state.optimistic.reconcile(document.version, dataEpoch: document.dataEpoch)
                 state.composer.dataEpoch = document.dataEpoch
                 state.actions.dataEpoch = document.dataEpoch
                 guard let message = NodeDetail(document: document).message else { return .none }
@@ -78,11 +78,13 @@ public struct NodeDetailFeature: Sendable {
             case .send:
                 guard state.canSend else { return .none }
                 return .concatenate(.send(.composer(.textChanged(state.draft))), .send(.composer(.submit)))
-            case .composer(.sent):
+            case .composer(.sent(let request)):
+                guard request.dataEpoch == state.composer.dataEpoch else { return .none }
                 state.draft = ""
                 guard let message = state.composer.action else { return .none }
                 return .send(.composer(.present(message)))
             case .composer(.settled(let request, applied: false)):
+                guard request.dataEpoch == state.composer.dataEpoch else { return .none }
                 if state.draft.isEmpty { state.draft = request.input.text ?? "" }
                 return .none
             case .composer(.delegate(let delegate)), .actions(.delegate(let delegate)):
@@ -93,9 +95,10 @@ public struct NodeDetailFeature: Sendable {
                 state.actions.handsOff = wire.command == "close"
                 return .concatenate(.send(.actions(.present(wire))), .send(.actions(.submit)))
             case .actions(.sent(let request)) where state.actions.handsOff:
+                guard request.dataEpoch == state.actions.dataEpoch else { return .none }
                 return .merge(.send(.delegate(.handOff(request))), .run { _ in await dismiss() })
             case .actions(.sent(let request)):
-                state.optimistic.begin(request.actionId, request)
+                state.optimistic.begin(request.actionId, request, dataEpoch: state.screen.document?.dataEpoch)
                 return .none
             case .actions(.settled(let request, let applied)):
                 state.optimistic.settle(request, applied: applied, shown: state.screen.document?.version)

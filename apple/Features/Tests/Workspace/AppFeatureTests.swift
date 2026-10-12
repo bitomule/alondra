@@ -256,7 +256,7 @@ final class AppFeatureTests: XCTestCase {
         }
         await store.send(.open(.inbox, key("card:c-1")))
         let id = try XCTUnwrap(store.state.inboxPath.ids.first)
-        let request = ActionRequest(commandId: "c", dataEpoch: "", client: .ios, lang: "en", actionId: "accept:c-1@1")
+        let request = ActionRequest(commandId: "c", dataEpoch: try XCTUnwrap(store.state.triage.screen.document).dataEpoch, client: .ios, lang: "en", actionId: "accept:c-1@1")
 
         await store.send(.inboxPath(.element(id: id, action: .cardDetail(.delegate(.handOff(request))))))
         await store.receive(\.triage.handedOff)

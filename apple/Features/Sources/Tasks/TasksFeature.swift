@@ -68,7 +68,7 @@ public struct TasksFeature: Sendable {
                 }
             case .screen(.loaded(let document)):
                 state.actions.dataEpoch = document.dataEpoch
-                state.optimistic.reconcile(document.version)
+                state.optimistic.reconcile(document.version, dataEpoch: document.dataEpoch)
                 guard state.pagesVersion != document.version else { return .none }
                 state.pages = [:]
                 state.pagesVersion = nil
@@ -127,7 +127,7 @@ public struct TasksFeature: Sendable {
             case .perform(let action):
                 return .concatenate(.send(.actions(.present(action))), .send(.actions(.submit)))
             case .actions(.sent(let request)):
-                state.optimistic.begin(request.actionId, request)
+                state.optimistic.begin(request.actionId, request, dataEpoch: state.screen.document?.dataEpoch)
                 return .none
             case .actions(.settled(let request, let applied)):
                 state.optimistic.settle(request, applied: applied, shown: state.screen.document?.version)

@@ -6,6 +6,7 @@ swift_library(
     copts = STRICT_SWIFT_CONCURRENCY_COPTS,
     srcs = glob(["Sources/**/*.swift"]),
     module_name = "AlondraTransport",
+    linkopts = ["-lsqlite3"],
     features = ["swift.enable_testing"],
     visibility = ["//visibility:public"],
     deps = [

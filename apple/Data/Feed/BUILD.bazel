@@ -21,6 +21,7 @@ swift_test(
     srcs = glob(["Tests/**/*.swift"]),
     deps = [
         ":AlondraFeed",
+        "//apple/Testing:AlondraTestSupport",
         "//apple/Data/Transport:AlondraTransport",
         "//apple/Contract:AlondraContract",
     ],

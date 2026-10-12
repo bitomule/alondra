@@ -16,6 +16,7 @@ pub(crate) fn router() -> Router<Arc<DomainDaemon>> {
     Router::new()
         .route("/views/{key}", get(local))
         .route("/actions", post(super::actions::local))
+        .route("/operation-results/{id}", get(super::action_results::read))
 }
 
 async fn local(

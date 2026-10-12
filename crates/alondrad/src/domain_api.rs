@@ -544,7 +544,7 @@ async fn capabilities<H: DomainHost>(
     if !signed_read(&*host, &signed) && !producer_current() {
         return domain_error(DomainError::new("forbidden", "signed device or local producer capability required"));
     }
-    let response = capabilities_inner(host.domain());
+    let response = capabilities_supported(host.domain(), host.cutover_committed());
     if !signed_read(&*host, &signed) && !producer_current() {
         return domain_error(DomainError::new("forbidden", "signed device or local producer capability required"));
     }
@@ -552,8 +552,15 @@ async fn capabilities<H: DomainHost>(
 }
 
 fn capabilities_inner(domain: &DomainRuntime) -> Response {
+    capabilities_supported(domain, false)
+}
+fn capabilities_supported(domain: &DomainRuntime, operation_results: bool) -> Response {
     match domain.state() {
-        Ok(state) => Json(json!({"protocol_version": PROTOCOL_VERSION, "data_epoch": state.data_epoch, "revision": state.revision})).into_response(),
+        Ok(state) => {
+            let mut body = json!({"protocol_version": PROTOCOL_VERSION, "data_epoch": state.data_epoch, "revision": state.revision});
+            if operation_results { body["operation_results"] = json!(true); }
+            Json(body).into_response()
+        },
         Err(_) => storage_error(),
     }
 }

@@ -113,7 +113,7 @@ struct AppUpdateTests {
     @Test func aRelayMacOffersPairAgainAndItTargetsThatMac() async throws {
         let (account, _, pairings) = try firstLaunch(userInfoStatus: 200)
         let approved = try #require(try pairings.load())
-        let services = try Connection(approved: approved, auth: account.auth)
+        let services = try await Connection(approved: approved, auth: account.auth)
         #expect(!services.isDirectOnly)
         let opened = Mutex(false)
         let action = try #require(account.pairAgainAction(for: services) { opened.withLock { $0 = true } })

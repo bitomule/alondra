@@ -215,7 +215,7 @@ final class FleetFeatureTests: XCTestCase {
         let store = store()
         await store.send(.screen(.loaded(try Fixtures.document("fleet-ios"))))
         let close = try XCTUnwrap(store.state.overview?.groups.first?.nodes.first?.close?.id)
-        let request = ActionRequest(commandId: "c-1", dataEpoch: "", client: .ios, lang: "en", actionId: close)
+        let request = ActionRequest(commandId: "c-1", dataEpoch: try XCTUnwrap(store.state.screen.document).dataEpoch, client: .ios, lang: "en", actionId: close)
 
         await store.send(.handedOff(request))
         XCTAssertFalse(store.state.overview?.groups.flatMap(\.nodes).contains { $0.close?.id == close } == true)

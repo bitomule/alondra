@@ -80,7 +80,7 @@ public struct FleetFeature: Sendable {
                 }
             case .screen(.loaded(let document)):
                 state.actions.dataEpoch = document.dataEpoch
-                state.optimistic.reconcile(document.version)
+                state.optimistic.reconcile(document.version, dataEpoch: document.dataEpoch)
                 return .none
             case .screen, .search:
                 return .none
@@ -104,7 +104,7 @@ public struct FleetFeature: Sendable {
             case .actions(.response(let response)) where response.outcome == .rejected && state.actions.action?.id?.hasPrefix("close:") == true:
                 return .send(.delegate(.closeRefused(response.message ?? String(localized: "Couldn’t close the node"))))
             case .actions(.sent(let request)), .handedOff(let request):
-                state.optimistic.begin(request.actionId, request)
+                state.optimistic.begin(request.actionId, request, dataEpoch: state.screen.document?.dataEpoch)
                 return .none
             case .actions(.settled(let request, let applied)), .handOffSettled(let request, let applied):
                 state.optimistic.settle(request, applied: applied, shown: state.screen.document?.version)

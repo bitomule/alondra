@@ -20,6 +20,7 @@ final class DirectSessionLifetime: Sendable {
 /// A mutation is sealed once per operation ID and only ever resent as the same bytes: the Mac's
 /// receipt journal runs it once and replays the stored answer.
 public actor DirectSession: OperationAPI {
+    private let journal: EnvelopeJournal?
     private let codec: EnvelopeCodec
     private let router: DirectRouter
     private let http: DirectHTTP
@@ -37,19 +38,22 @@ public actor DirectSession: OperationAPI {
     public init(macID: String, deviceID: String, signing: P256.Signing.PrivateKey,
                 agreement: P256.KeyAgreement.PrivateKey, macSigning: P256.Signing.PublicKey,
                 macAgreement: P256.KeyAgreement.PublicKey, router: DirectRouter, http: DirectHTTP,
+                journal: EnvelopeJournal? = nil,
                 now: @escaping @Sendable () -> UInt64 = { UInt64(max(0, Date().timeIntervalSince1970 * 1000)) },
                 pause: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }) {
         self.init(macID: macID, deviceID: deviceID, signing: signing, agreement: agreement,
             macSigning: macSigning, macAgreement: macAgreement, router: router, http: http,
-            now: now, pause: pause, requestClock: .continuous)
+            journal: journal, now: now, pause: pause, requestClock: .continuous)
     }
 
     init(macID: String, deviceID: String, signing: P256.Signing.PrivateKey,
          agreement: P256.KeyAgreement.PrivateKey, macSigning: P256.Signing.PublicKey,
          macAgreement: P256.KeyAgreement.PublicKey, router: DirectRouter, http: DirectHTTP,
+         journal: EnvelopeJournal? = nil,
          now: @escaping @Sendable () -> UInt64 = { UInt64(max(0, Date().timeIntervalSince1970 * 1000)) },
          pause: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
          requestClock: RequestClock) {
+        self.journal = journal
         self.requestClock = requestClock
         mutations = MutationRunner(clock: requestClock)
         codec = EnvelopeCodec(macID: macID, deviceID: deviceID, signing: signing, agreement: agreement,
@@ -57,6 +61,15 @@ public actor DirectSession: OperationAPI {
         self.router = router
         self.http = http
         self.pause = pause
+    }
+
+    public func recover(_ request: APIRequest) async throws -> APIResponse {
+        guard request.method == "POST", request.path == "/actions", active, let journal, let entry = try await journal.entry(requestID: request.operationID),
+              entry.phase != .retired, let envelope = entry.envelope else { return .unknown }
+        guard entry.semanticTag == (try codec.semanticTag(method: request.method, path: request.path, body: request.body)) else {
+            throw RelaySessionError.operationIdentityConflict
+        }
+        return try await codec.recover(request, envelope: envelope) { try await self.perform($0) }
     }
 
     public func deactivate() async {
@@ -93,12 +106,26 @@ public actor DirectSession: OperationAPI {
         guard !request.operationID.hasPrefix("read-") else { throw RelaySessionError.invalidRequest }
         let tag = try codec.semanticTag(method: request.method, path: request.path, body: request.body)
         let body: Data
+        let durableAction = request.method == "POST" && request.path == "/actions"
+        if durableAction, let journal, let existing = try await journal.entry(requestID: request.operationID) {
+            guard existing.semanticTag == tag else { throw RelaySessionError.operationIdentityConflict }
+            if let live = sealed[request.operationID] {
+                guard let original = existing.envelope,
+                      try JSONDecoder().decode(Envelope.self, from: live.body) == original else {
+                    throw RelaySessionError.operationIdentityConflict
+                }
+            } else { return try await recover(request) }
+        }
         if let existing = sealed[request.operationID] {
             guard existing.tag == tag else { throw RelaySessionError.operationIdentityConflict }
             body = existing.body
         } else {
             body = try seal(requestID: request.operationID, method: request.method, path: request.path, body: request.body)
             try MutationScope.check()
+            if durableAction, let journal {
+                try await journal.reserve(RelayOutboxEntry(requestID: request.operationID, scope: journal.scope,
+                    envelope: JSONDecoder().decode(Envelope.self, from: body), phase: .reserved, semanticTag: tag))
+            }
             sealed[request.operationID] = (tag, body)
             sealedOrder.append(request.operationID)
             if sealedOrder.count > Self.maxSealed {
@@ -108,15 +135,25 @@ public actor DirectSession: OperationAPI {
             }
         }
         mutationEvidence.retain(request.operationID)
-        return try await deliver(body, requestID: request.operationID, mutation: true, timeout: timeout)
+        return try await deliver(body, requestID: request.operationID, mutation: true, timeout: timeout, persistResult: durableAction && journal != nil)
     }
 
     /// Takes over an operation another carrier already sealed and sent: resending those exact
     /// bytes lets the Mac's journal answer with what it stored instead of running it again.
-    public func adopt(_ envelope: Envelope, for request: APIRequest) throws {
+    public func adopt(_ envelope: Envelope, for request: APIRequest) async throws {
         try MutationScope.check()
         guard sealed[request.operationID] == nil, envelope.requestID == request.operationID else { return }
         let tag = try codec.semanticTag(method: request.method, path: request.path, body: request.body)
+        if request.method == "POST", request.path == "/actions", let journal {
+            if let existing = try await journal.entry(requestID: request.operationID) {
+                guard existing.semanticTag == tag, existing.envelope == envelope else {
+                    throw RelaySessionError.operationIdentityConflict
+                }
+            } else {
+                try await journal.reserve(RelayOutboxEntry(requestID: request.operationID, scope: journal.scope,
+                    envelope: envelope, phase: .reserved, semanticTag: tag))
+            }
+        }
         sealed[request.operationID] = (tag, try JSONEncoder().encode(envelope))
         sealedOrder.append(request.operationID)
         if sealedOrder.count > Self.maxSealed {
@@ -142,7 +179,7 @@ public actor DirectSession: OperationAPI {
 
     /// Up to four tries, re-picking the route after a network failure or an impostor. A mutation that may have
     /// reached the Mac without an answer is `.unknown`, never silently dropped.
-    private func deliver(_ body: Data, requestID: String, mutation: Bool, timeout: Duration) async throws -> APIResponse {
+    private func deliver(_ body: Data, requestID: String, mutation: Bool, timeout: Duration, persistResult: Bool = false) async throws -> APIResponse {
         var mayHaveArrived = false
         for attempt in 0..<4 {
             try MutationScope.check()
@@ -170,6 +207,14 @@ public actor DirectSession: OperationAPI {
                 if let envelope = try? JSONDecoder().decode(Envelope.self, from: reply.body),
                    let response = try? codec.opened(envelope, requestID: requestID) {
                     await router.proved(endpoint, in: context, response: response, lifetime: lifetime)
+                    if persistResult, let journal {
+                        _ = try await journal.update(requestID: requestID) { record in
+                            guard record.phase != .retired else { return }
+                            record.phase = .acknowledged
+                            record.lastStatus = "completed"
+                            record.lastResponse = envelope
+                        }
+                    }
                     if Self.saysRevoked(response) { throw DirectSessionError.deviceRevoked }
                     return response
                 }

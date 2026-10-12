@@ -1,3 +1,4 @@
+import AlondraTestSupport
 import AlondraTransport
 import CryptoKit
 import Foundation
@@ -82,7 +83,7 @@ private actor DelayedPostTransport: RelayRequestTransport {
     }
 }
 
-@Suite struct RelayOutboxIntegrationTests {
+@Suite(.temporaryFiles) struct RelayOutboxIntegrationTests {
     private let scope = RelayOutboxScope(
         relay: URL(string: "https://relay.example.test")!, macID: "mac-1", deviceID: "phone-1",
         credentialRevision: "account-session-1"
@@ -227,4 +228,79 @@ private actor DelayedPostTransport: RelayRequestTransport {
         #expect(try await outbox.entry(requestID: id)?.phase == .acknowledged)
         #expect(try await outbox.entry(requestID: id)?.lastRevision == 11)
     }
+    @Test func relaunchKeepsUncertainRequestAndRetiredTombstone() async throws {
+        let directory = try TestFiles.directory()
+        let id = UUID().uuidString
+        let sealed = try envelope(id)
+        let tag = Data("opaque keyed binding".utf8)
+        let transport = LostResponseTransport(response: sealed)
+        let first = RelayOutbox(scope: scope, transport: transport,
+            journal: try EnvelopeJournal(scope: scope, directory: directory))
+        _ = try await first.submitNew(sealed, semanticTag: tag)
+        let relaunched = RelayOutbox(scope: scope, transport: transport,
+            journal: try EnvelopeJournal(scope: scope, directory: directory))
+        #expect(try await relaunched.entry(requestID: id)?.envelope == sealed)
+        #expect(try await relaunched.entry(requestID: id)?.semanticTag == tag)
+        #expect(try await relaunched.reconcile(requestID: id)?.revision == 7)
+        try await relaunched.retireAppliedResponse(requestID: id, revision: 7, verifiedResponse: sealed)
+        let third = RelayOutbox(scope: scope, transport: transport,
+            journal: try EnvelopeJournal(scope: scope, directory: directory))
+        #expect(try await third.entry(requestID: id)?.phase == .retired)
+        #expect(try await third.entry(requestID: id)?.envelope == nil)
+        await #expect(throws: RelayOutboxError.duplicateRequestID) { try await third.submitNew(sealed) }
+        #expect(await transport.postCount == 1)
+    }
+
+    @Test func separateJournalsCannotDispatchTheSameRequestTwice() async throws {
+        let directory = try TestFiles.directory()
+        let id = UUID().uuidString
+        let sealed = try envelope(id)
+        let transport = LostResponseTransport()
+        let first = RelayOutbox(scope: scope, transport: transport,
+            journal: try EnvelopeJournal(scope: scope, directory: directory))
+        let second = RelayOutbox(scope: scope, transport: transport,
+            journal: try EnvelopeJournal(scope: scope, directory: directory))
+        async let a = attempt(first, envelope: sealed)
+        async let b = attempt(second, envelope: sealed)
+        let results = await [a, b]
+        #expect(results.filter { if case .success(.uncertain) = $0 { true } else { false } }.count == 1)
+        #expect(results.filter {
+            if case .failure(let error) = $0 { return error as? RelayOutboxError == .duplicateRequestID }
+            return false
+        }.count == 1)
+        #expect(await transport.postCount == 1)
+        #expect(try await first.entry(requestID: id)?.envelope == sealed)
+    }
+
+    @Test func lostDatabaseIsRefusedBeforeAnyNewDispatch() async throws {
+        let directory = try TestFiles.directory()
+        let journal = try EnvelopeJournal(scope: scope, directory: directory)
+        let transport = LostResponseTransport()
+        let first = RelayOutbox(scope: scope, transport: transport, journal: journal)
+        _ = try await first.submitNew(envelope("original"))
+        let namespace = try #require(FileManager.default.contentsOfDirectory(at: directory,
+            includingPropertiesForKeys: nil).first)
+        try FileManager.default.removeItem(at: namespace.appendingPathComponent("operations.sqlite"))
+        let relaunched = RelayOutbox(scope: scope, transport: transport,
+            journal: try EnvelopeJournal(scope: scope, directory: directory))
+        await #expect(throws: EnvelopeJournalError.corrupt) { try await relaunched.submitNew(envelope("next")) }
+        #expect(await transport.postCount == 1)
+    }
+
+    @Test func credentialsIsolateJournalsAndDiskContainsOnlyCiphertext() async throws {
+        let directory = try TestFiles.directory()
+        let transport = LostResponseTransport()
+        let first = RelayOutbox(scope: scope, transport: transport,
+            journal: try EnvelopeJournal(scope: scope, directory: directory))
+        _ = try await first.submitNew(envelope("same-id"))
+        let namespace = try #require(FileManager.default.contentsOfDirectory(at: directory,
+            includingPropertiesForKeys: nil).first)
+        let changed = RelayOutboxScope(relay: scope.relay, macID: scope.macID,
+            deviceID: scope.deviceID, credentialRevision: "replacement-key")
+        let other = try EnvelopeJournal(scope: changed, directory: directory)
+        #expect(try await other.entry(requestID: "same-id") == nil)
+        let bytes = try Data(contentsOf: namespace.appendingPathComponent("operations.sqlite"))
+        #expect(bytes.range(of: Data("private report".utf8)) == nil)
+    }
+
 }

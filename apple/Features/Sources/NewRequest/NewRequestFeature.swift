@@ -109,11 +109,13 @@ public struct NewRequestFeature: Sendable {
             case .send:
                 guard state.canSend else { return .none }
                 return .send(.actions(.submit))
-            case .actions(.sent):
+            case .actions(.sent(let request)):
+                guard request.dataEpoch == state.actions.dataEpoch else { return .none }
                 state.values["text"] = .string("")
                 guard let form = state.form else { return .none }
                 return .send(.actions(.presentForm(form.submit, state.values, requiresAttachments: true)))
             case .actions(.settled(let request, applied: false)):
+                guard request.dataEpoch == state.actions.dataEpoch else { return .none }
                 guard state.text.isEmpty, let text = request.input.fields?["text"] else { return .none }
                 return Self.set("text", text, in: &state)
             case .actions(.delegate(.completed(let message))):

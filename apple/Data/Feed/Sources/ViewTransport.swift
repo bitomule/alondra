@@ -8,12 +8,14 @@ import Foundation
 public protocol ViewTransport: Sendable {
     func fetchView(key: String, client: ViewClient, lang: String, known: String?) async throws -> ViewFetch
     func fetchChanges(client: ViewClient, lang: String, wait: UInt, cursor: String?, views: [OpenViewVersion]) async throws -> ViewFeed
+    func recoverAction(_ request: ActionRequest, body: Data) async throws -> ActionResponse?
     func submitAction(_ request: ActionRequest, body: Data) async throws -> ActionResponse
     func fetchContent(_ content: ContentRef) async throws -> String
     func fetchAttachment(_ attachment: AlondraContract.Attachment) async throws -> Data
 }
 
 public extension ViewTransport {
+    func recoverAction(_ request: ActionRequest, body: Data) async throws -> ActionResponse? { nil }
     func fetchContent(_ content: ContentRef) async throws -> String { throw FeedError.unsupportedContent }
     func fetchAttachment(_ attachment: AlondraContract.Attachment) async throws -> Data { throw FeedError.unsupportedContent }
 }
@@ -38,6 +40,12 @@ extension AlondraAPIClient: ViewTransport {
         return try await send(Endpoint<ViewFeed>(.get, path: ["changes"], query: query) {
             try ContractCodec.decode(ViewFeed.self, from: $0)
         })
+    }
+
+    public func recoverAction(_ request: ActionRequest, body: Data) async throws -> ActionResponse? {
+        try await recover(Endpoint<ActionResponse>(.post, path: ["actions"], body: body) {
+            try ContractCodec.decode(ActionResponse.self, from: $0)
+        }, operationID: request.commandId)
     }
 
     public func submitAction(_ request: ActionRequest, body: Data) async throws -> ActionResponse {
@@ -257,34 +265,86 @@ struct ViewRoute {
     }
 }
 
-/// Canonical request preparation pins both the UUID and the encoded bytes before the first send.
-/// Calling retry with the same command ID can only re-send that exact command.
+/// Canonical intent is stored before its first dispatch. An unresolved intent is recovered by GET,
+/// including when a new screen supplies another UUID for the same action after relaunch.
 public actor ViewActionSender {
     private struct Pending: Equatable, Sendable { let request: ActionRequest; let body: Data }
     private let transport: any ViewTransport
-    private var pending: [String: Pending] = [:]
+    private let intents: ViewActionIntentStore?
+    private var pending: [String: Pending]
 
-    public init(transport: any ViewTransport) { self.transport = transport }
+    public init(transport: any ViewTransport, intents: ViewActionIntentStore? = nil) {
+        self.transport = transport; self.intents = intents
+        pending = Dictionary(uniqueKeysWithValues: (intents?.restored ?? []).map {
+            ($0.request.commandId, Pending(request: $0.restoredRequest, body: $0.body))
+        })
+    }
 
     public func send(_ request: ActionRequest) async throws -> ActionResponse {
+        try Task.checkCancellation()
         let encoded = try ContractCodec.encode(request)
-        if let existing = pending[request.commandId], existing.body != encoded {
-            throw FeedError.commandIdentityConflict
+        if let intents {
+            switch try await intents.reserve(request, body: encoded) {
+            case let .completed(response):
+                if let response { return response }
+                return try await recover(Pending(request: request, body: encoded))
+            case let .pending(record):
+                let value = Pending(request: record.restoredRequest, body: record.body)
+                pending[value.request.commandId] = value
+                return try await recover(value)
+            case let .created(record):
+                let value = Pending(request: record.restoredRequest, body: record.body)
+                pending[value.request.commandId] = value
+                try Task.checkCancellation()
+                let response = try await transport.submitAction(value.request, body: value.body)
+                try await applied(value, response: response)
+                return response
+            }
         }
-        pending[request.commandId] = Pending(request: request, body: encoded)
-        return try await submit(pending[request.commandId]!)
+        if let existing = pending[request.commandId] {
+            guard existing.body == encoded else { throw FeedError.commandIdentityConflict }
+            return try await recover(existing)
+        }
+        if let existing = pending.keys.sorted().compactMap({ pending[$0] }).first(where: {
+            ViewActionIntentStore.sameIntent($0.request, request)
+        }) { return try await recover(existing) }
+        let value = Pending(request: request, body: encoded)
+        pending[request.commandId] = value
+        let response = try await transport.submitAction(request, body: encoded)
+        try await applied(value, response: response)
+        return response
     }
 
     public func retry(commandID: String) async throws -> ActionResponse {
         guard let value = pending[commandID] else { throw FeedError.unknownCommand }
-        return try await submit(value)
+        return try await recover(value)
     }
 
     public func unresolvedCommandIDs() -> [String] { pending.keys.sorted() }
+    public func unresolvedRequests() -> [ActionRequest] {
+        pending.keys.sorted().compactMap { pending[$0]?.request }
+    }
 
-    private func submit(_ value: Pending) async throws -> ActionResponse {
-        let response = try await transport.submitAction(value.request, body: value.body)
-        pending.removeValue(forKey: value.request.commandId)
+    private func recover(_ value: Pending) async throws -> ActionResponse {
+        guard let response = try await transport.recoverAction(value.request, body: value.body) else {
+            throw OperationError.outcomeUnknown
+        }
+        try await applied(value, response: response)
         return response
+    }
+
+    private func applied(_ value: Pending, response: ActionResponse) async throws {
+        try await intents?.complete(.init(request: value.request, body: value.body), response: response)
+        pending.removeValue(forKey: value.request.commandId)
+    }
+
+    public func reconcilePending(dataEpoch: String, isCurrent: @escaping @Sendable () async -> Bool = { true }) async {
+        let candidates = pending.keys.sorted().compactMap { pending[$0] }.filter { $0.request.dataEpoch == dataEpoch }
+        for value in candidates {
+            guard !Task.isCancelled, await isCurrent() else { return }
+            guard let response = try? await transport.recoverAction(value.request, body: value.body) else { continue }
+            guard !Task.isCancelled, await isCurrent() else { return }
+            try? await applied(value, response: response)
+        }
     }
 }

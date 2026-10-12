@@ -1,6 +1,7 @@
 import AlondraContract
 import AlondraDesign
 import AlondraFeatures
+import AlondraTransport
 import AlondraiOSUI
 import ComposableArchitecture
 import SwiftUI
@@ -101,6 +102,25 @@ final class TriageSnapshotTests: XCTestCase {
             $0.cards[0].replyDraft = "Only if the title stays on one line"
         }
         assertScreen(inWindow: true) { Harness(store: store) }
+    }
+
+    func test_unconfirmedActionKeepsItsCardAndWrittenReply() throws {
+        let document = try Fixtures.card(Fixtures.questionID)
+        let draft = "Only if the title stays on one line"
+        let store = try single(document) { state in
+            state.cards[0].replyDraft = draft
+            guard let action = state.cards[0].replyAction ?? state.cards[0].buttons.first,
+                  let actionID = action.id else { XCTFail("The fixture needs a real card action"); return }
+            state.cards[0].actions.unsure = ActionRequest(
+                commandId: "00000000-0000-4000-8000-000000000001", dataEpoch: document.dataEpoch,
+                client: .ios, lang: "en", actionId: actionID, input: ActionInput(text: draft))
+            state.cards[0].actions.error = OperationError.outcomeUnknown.localizedDescription
+        }
+        XCTAssertEqual(store.state.orderedIDs, [Fixtures.questionID])
+        XCTAssertEqual(store.state.cards[0].replyDraft, draft)
+        XCTAssertEqual(store.state.cards[0].actions.unsure?.dataEpoch, document.dataEpoch)
+        XCTAssertFalse(store.state.cards[0].actions.inFlight)
+        assertScreen(inWindow: true, pixelPrecision: 0.9999) { Harness(store: store) }
     }
 
     func test_decideAnswered() throws {

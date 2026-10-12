@@ -45,21 +45,22 @@ public struct RelayOutboxEntry: Codable, Sendable, Equatable {
 
 }
 
-/// The encrypted envelopes this process sent, by request ID, so a lost response is
-/// reconciled by status instead of POSTed again. Nothing is persisted: a v2 command keeps its
-/// command ID in the draft and a retry after relaunch is a new request the server deduplicates.
+/// Encrypted requests reserved before dispatch, reconciled without replay after an ambiguous send.
 public actor RelayOutbox {
     private let scope: RelayOutboxScope
     private let transport: any RelayRequestTransport
+    private let journal: EnvelopeJournal?
     private var records: [String: RelayOutboxEntry] = [:]
 
-    public init(scope: RelayOutboxScope, transport: any RelayRequestTransport) {
+    public init(scope: RelayOutboxScope, transport: any RelayRequestTransport, journal: EnvelopeJournal? = nil) {
         self.scope = scope
         self.transport = transport
+        self.journal = journal
     }
 
-    public func entry(requestID: String) throws -> RelayOutboxEntry? {
-        records[requestID]
+    public func entry(requestID: String) async throws -> RelayOutboxEntry? {
+        if let journal { return try await journal.entry(requestID: requestID) }
+        return records[requestID]
     }
 
     /// A session record precedes POST. Network failures stay uncertain and never authorize replay.
@@ -72,40 +73,45 @@ public actor RelayOutbox {
         }
         guard envelope.route == scope.macID, envelope.recipient == scope.macID,
               envelope.sender == scope.deviceID else { throw RelayOutboxError.wrongScope }
-        guard records[envelope.requestID] == nil else { throw RelayOutboxError.duplicateRequestID }
+        guard try await entry(requestID: envelope.requestID) == nil else { throw RelayOutboxError.duplicateRequestID }
         try MutationScope.check()
-        records[envelope.requestID] = RelayOutboxEntry(
+        let record = RelayOutboxEntry(
             requestID: envelope.requestID, scope: scope, envelope: envelope, phase: .reserved, semanticTag: semanticTag)
+        if let journal {
+            do { try await journal.reserve(record) }
+            catch EnvelopeJournalError.duplicateRequestID { throw RelayOutboxError.duplicateRequestID }
+        }
+        else { records[envelope.requestID] = record }
         reserved()
 
         do {
             try MutationScope.check()
             let receipt = try await transport.submitRequest(envelope)
             guard receipt.requestID == envelope.requestID else {
-                try? setUncertain(envelope.requestID)
+                try? await setUncertain(envelope.requestID)
                 throw RelayOutboxError.transportResponseMismatch
             }
             do {
-                let saved = try update(envelope.requestID, phase: .acknowledged, receipt: receipt)
+                let saved = try await update(envelope.requestID, phase: .acknowledged, receipt: receipt)
                 return .accepted(Self.receipt(from: saved) ?? receipt)
             } catch {
-                try? setUncertain(envelope.requestID)
+                try? await setUncertain(envelope.requestID)
                 return .uncertain
             }
         } catch RelayOutboxError.transportResponseMismatch {
             return .uncertain
         } catch {
-            try? setUncertain(envelope.requestID)
+            try? await setUncertain(envelope.requestID)
             return .uncertain
         }
     }
 
     /// Read-only reconciliation. A missing/failed status lookup leaves the entry uncertain.
     public func reconcile(requestID: String) async throws -> RelayReceipt? {
-        guard let record = records[requestID], record.phase != .retired else { return nil }
+        guard let record = try await entry(requestID: requestID), record.phase != .retired else { return nil }
         let receipt = try await transport.requestStatus(requestID: requestID)
         guard receipt.requestID == requestID else { throw RelayOutboxError.transportResponseMismatch }
-        let saved = try update(requestID, phase: .acknowledged, receipt: receipt)
+        let saved = try await update(requestID, phase: .acknowledged, receipt: receipt)
         guard saved.phase != .retired else { return nil }
         return Self.receipt(from: saved) ?? receipt
     }
@@ -113,19 +119,25 @@ public actor RelayOutbox {
     /// Call only after the verified completed response has been durably applied to app state.
     /// Keeps a small request-ID tombstone so the same ID can never be POSTed again.
     public func retireAppliedResponse(requestID: String, revision: UInt64,
-                                      verifiedResponse: Envelope) throws {
-        guard var record = records[requestID] else { throw RelayOutboxError.persistenceFailed }
-        guard record.phase == .acknowledged, record.lastStatus == "completed",
-              record.lastRevision == revision, record.lastResponse == verifiedResponse
-        else { throw RelayOutboxError.resultNotApplied }
-        record.phase = .retired
-        record.envelope = nil
-        record.lastResponse = nil
-        records[requestID] = record
+                                      verifiedResponse: Envelope) async throws {
+        let retire: @Sendable (inout RelayOutboxEntry) throws -> Void = { record in
+            guard record.phase == .acknowledged, record.lastStatus == "completed",
+                  record.lastRevision == revision, record.lastResponse == verifiedResponse
+            else { throw RelayOutboxError.resultNotApplied }
+            record.phase = .retired
+            record.envelope = nil
+            record.lastResponse = nil
+        }
+        if let journal { _ = try await journal.update(requestID: requestID, retire) }
+        else {
+            guard var record = records[requestID] else { throw RelayOutboxError.persistenceFailed }
+            try retire(&record)
+            records[requestID] = record
+        }
     }
 
-    private func setUncertain(_ id: String) throws {
-        _ = try update(id, phase: .uncertain, receipt: nil)
+    private func setUncertain(_ id: String) async throws {
+        _ = try await update(id, phase: .uncertain, receipt: nil)
     }
 
     private static func receipt(from record: RelayOutboxEntry) -> RelayReceipt? {
@@ -136,19 +148,23 @@ public actor RelayOutbox {
 
     @discardableResult
     private func update(_ id: String, phase: RelayOutboxEntry.Phase,
-                        receipt: RelayReceipt?) throws -> RelayOutboxEntry {
+                        receipt: RelayReceipt?) async throws -> RelayOutboxEntry {
+        let change: @Sendable (inout RelayOutboxEntry) -> Void = { record in
+            if record.phase == .retired { return }
+            if receipt == nil && record.phase == .acknowledged { return }
+            if let receipt, let lastRevision = record.lastRevision, receipt.revision < lastRevision {
+                return // A delayed read must not roll back a newer observed result.
+            }
+            record.phase = phase
+            if let receipt {
+                record.lastStatus = receipt.status
+                record.lastRevision = receipt.revision
+                record.lastResponse = receipt.response ?? record.lastResponse
+            }
+        }
+        if let journal { return try await journal.update(requestID: id, change) }
         guard var record = records[id] else { throw RelayOutboxError.persistenceFailed }
-        if record.phase == .retired { return record }
-        if receipt == nil && record.phase == .acknowledged { return record }
-        if let receipt, let lastRevision = record.lastRevision, receipt.revision < lastRevision {
-            return record // A delayed read must not roll back a newer observed result.
-        }
-        record.phase = phase
-        if let receipt {
-            record.lastStatus = receipt.status
-            record.lastRevision = receipt.revision
-            record.lastResponse = receipt.response ?? record.lastResponse
-        }
+        change(&record)
         records[id] = record
         return record
     }

@@ -52,16 +52,77 @@ public struct EnvelopeCodec: Sendable {
 
     /// The Mac's sealed answer to `requestID`, whichever carrier brought it.
     public func opened(_ envelope: Envelope, requestID: String) throws -> APIResponse {
+        try opened(envelope, requestID: requestID, nowMilliseconds: now())
+    }
+
+    private func opened(_ envelope: Envelope, requestID: String, nowMilliseconds: UInt64?) throws -> APIResponse {
         guard envelope.kind == "response", envelope.requestID == requestID else {
             throw RelayWireError.invalidResponse
         }
         let bytes = try envelope.open(senderKey: macSigning, recipientKey: agreement,
-            sender: macID, recipient: deviceID, route: macID, nowMilliseconds: now())
+            sender: macID, recipient: deviceID, route: macID, nowMilliseconds: nowMilliseconds)
         guard let json = try JSONSerialization.jsonObject(with: bytes) as? [String: Any],
               let status = json["status"] as? Int, (100...599).contains(status) else { throw RelayWireError.invalidResponse }
         if json["error"] as? String == "uncertain" || status >= 500 { return .unknown }
         let body = try JSONSerialization.data(withJSONObject: json["body"] ?? json, options: [.fragmentsAllowed, .sortedKeys])
         return .completed(status: status, body: body)
+    }
+
+    func recoveryRequest(_ original: APIRequest, envelope: Envelope, offset: Int? = nil) throws -> APIRequest {
+        guard original.method == "POST", original.path == "/actions",
+              envelope.requestID == original.operationID, let body = original.body,
+              let json = try JSONSerialization.jsonObject(with: body) as? [String: Any],
+              let epoch = json["data_epoch"] as? String else { throw OperationError.invalidEndpoint }
+        var query = [("digest", try envelope.recoveryDigest()), ("data_epoch", epoch)]
+        if let offset { query.append(("offset", String(offset))) }
+        return try APIRequest(endpoint: Endpoint<Data>.data(.get,
+            path: ["operation-results", original.operationID], query: query), operationID: UUID().uuidString)
+    }
+
+    func recover(_ original: APIRequest, envelope: Envelope,
+                 read: @Sendable (APIRequest) async throws -> APIResponse) async throws -> APIResponse {
+        struct Attestation: Decodable {
+            let request_id: String
+            let digest: String
+            let data_epoch: String
+            let response: Envelope?
+            let offset: Int?
+            let total: Int?
+            let chunk: Data?
+        }
+        let first = try recoveryRequest(original, envelope: envelope)
+        let epoch = URLComponents(string: first.path)?.queryItems?.first(where: { $0.name == "data_epoch" })?.value
+        let digest = try envelope.recoveryDigest()
+        var bytes = Data()
+        var total: Int?
+        for index in 0..<4 {
+            try Task.checkCancellation()
+            let request = index == 0 ? first : try recoveryRequest(original, envelope: envelope, offset: bytes.count)
+            guard case let .completed(status, body) = try await read(request), status == 200 else { return .unknown }
+            let part = try JSONDecoder().decode(Attestation.self, from: body)
+            guard part.request_id == original.operationID, part.digest == digest, part.data_epoch == epoch else {
+                throw RelayWireError.invalidResponse
+            }
+            if let response = part.response {
+                guard index == 0, part.chunk == nil, part.offset == nil, part.total == nil else {
+                    throw RelayWireError.invalidResponse
+                }
+                return try opened(response, requestID: original.operationID, nowMilliseconds: nil)
+            }
+            guard let chunk = part.chunk, let size = part.total, size > 0, size <= DirectHTTP.maxResponse,
+                  total == nil || total == size, part.offset == bytes.count,
+                  !chunk.isEmpty, chunk.count <= 256 * 1024, bytes.count + chunk.count <= size,
+                  chunk.count == min(256 * 1024, size - bytes.count) else { throw RelayWireError.invalidResponse }
+            total = size
+            bytes.append(chunk)
+            if bytes.count == size {
+                let response = try JSONDecoder().decode(Envelope.self, from: bytes)
+                // Every part crossed the fresh authenticated carrier gate and binds this digest
+                // and epoch. The reconstructed old answer still verifies its pinned signature.
+                return try opened(response, requestID: original.operationID, nowMilliseconds: nil)
+            }
+        }
+        throw RelayWireError.invalidResponse
     }
 
 }

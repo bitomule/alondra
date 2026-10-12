@@ -4,6 +4,11 @@ import Foundation
 /// AlondraAPIClient; they do not see encrypted envelopes or manage transport reconciliation.
 public protocol OperationAPI: Sendable {
     func perform(_ request: APIRequest) async throws -> APIResponse
+    func recover(_ request: APIRequest) async throws -> APIResponse
+}
+
+public extension OperationAPI {
+    func recover(_ request: APIRequest) async throws -> APIResponse { .unknown }
 }
 
 public enum APIResponse: Sendable, Equatable {
@@ -61,6 +66,9 @@ public struct APIRequest: Sendable, Equatable {
     public static func validClientContractRoute(method: HTTPMethod, path: [String]) -> Bool {
         if method == .post, path.count == 2, path[0] == "uploads",
            ["start", "chunk", "finish", "cancel"].contains(path[1]) { return true }
+        if method == .get, path.count == 2, path[0] == "operation-results" {
+            return validOperationID(path[1])
+        }
         switch (method, path) {
         case (.get, ["capabilities"]), (.get, ["changes"]), (.get, ["files", "chunk"]), (.get, ["routes"]),
              (.post, ["actions"]), (.post, ["activity"]), (.post, ["device", "push-binding"]),
@@ -113,6 +121,20 @@ public struct APIRequest: Sendable, Equatable {
     }
 
     public static func validClientQuery(method: HTTPMethod, path: [String], query: [(String, String)]) -> Bool {
+        if path.first == "operation-results" {
+            guard method == .get, path.count == 2, validOperationID(path[1]),
+                  (2...3).contains(query.count), Set(query.map(\.0)).count == query.count,
+                  Set(query.map(\.0)).isSubset(of: ["digest", "data_epoch", "offset"]),
+                  let digest = query.first(where: { $0.0 == "digest" })?.1,
+                  digest.utf8.count == 64, digest.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }),
+                  let epoch = query.first(where: { $0.0 == "data_epoch" })?.1,
+                  RelayHTTPChallenge.validText(epoch) else { return false }
+            if let offset = query.first(where: { $0.0 == "offset" })?.1 {
+                guard !offset.isEmpty, offset.utf8.allSatisfy({ (48...57).contains($0) }),
+                      let value = Int(offset), value <= DirectHTTP.maxResponse, value % (256 * 1024) == 0 else { return false }
+            }
+            return true
+        }
         if path.first == "settings" { return validSettingsQuery(path: path, query: query) }
         guard path.count == 2, path[0] == "views", method == .get else { return true }
         let names = query.map(\.0)
@@ -140,6 +162,12 @@ public struct APIRequest: Sendable, Equatable {
             return extra.isEmpty || (extra.count == 1 && extra["q"] != nil)
         default:
             return extra.isEmpty
+        }
+    }
+
+    static func validOperationID(_ id: String) -> Bool {
+        !id.isEmpty && id.utf8.count <= 128 && id.utf8.allSatisfy {
+            (65...90).contains($0) || (97...122).contains($0) || (48...57).contains($0) || $0 == 45 || $0 == 95
         }
     }
 

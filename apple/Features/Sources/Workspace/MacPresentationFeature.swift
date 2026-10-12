@@ -262,15 +262,17 @@ public struct MacPresentationFeature: Sendable {
                     state.actionTarget = nil
                 }
             case .action(.sent(let request)):
+                guard request.dataEpoch == state.actionFeature.dataEpoch else { return .none }
                 let deadline = sendDeadline(request)
                 guard let target = state.actionTarget else { return deadline }
                 state.actionTarget = nil
                 guard request.resolvesItsCard else { return deadline }
-                state.optimistic.begin(target, request)
+                state.optimistic.begin(target, request, dataEpoch: state.actionFeature.dataEpoch)
                 state.returnReasons[target] = nil
                 state.actionPresented = false
                 return .merge(deadline, leaveCard(target, &state))
             case .action(.settled(let request, let applied)):
+                guard request.dataEpoch == state.actionFeature.dataEpoch else { return .none }
                 let deadline: Effect<Action> = .cancel(id: CancelID.sendDeadline(request.commandId))
                 guard let returned = state.optimistic.settle(request, applied: applied, shown: state.sidebarDocument?.version)
                 else { return deadline }
@@ -283,9 +285,11 @@ public struct MacPresentationFeature: Sendable {
                     .send(.action(.undelivered(request, .unsure)))
                 )
             case .action(.undelivered(let request, let failure)):
+                guard request.dataEpoch == state.actionFeature.dataEpoch else { return .none }
                 state.unsure[request.actionId] = failure == .unsure ? request : nil
                 if let card = state.returning.removeValue(forKey: request.commandId) { state.returnReasons[card] = failure.message }
             case .action(.answered(let request, let reply)):
+                guard request.dataEpoch == state.actionFeature.dataEpoch else { return .none }
                 if state.unsure[request.actionId]?.commandId == request.commandId { state.unsure[request.actionId] = nil }
                 guard let card = state.returning.removeValue(forKey: request.commandId) else { return .none }
                 switch OutcomeStyle(reply) {
@@ -344,13 +348,23 @@ public struct MacPresentationFeature: Sendable {
                 state.detailDocument = nil
                 return .merge(loadView("sidebar"), state.selectedViewKey.map { loadView($0) } ?? .none)
             case let .viewLoaded(key, fetch):
-                state.viewError = nil
                 if case let .document(document) = fetch {
+                    if key != "sidebar", let sidebar = state.sidebarDocument,
+                       document.dataEpoch != sidebar.dataEpoch { return .none }
+                    state.viewError = nil
+                    state.actionFeature.dataEpoch = document.dataEpoch
+                    if key == "sidebar", let detail = state.detailDocument, detail.dataEpoch != document.dataEpoch {
+                        state.detailDocument = nil
+                        state.activeForm = nil
+                        state.actionFeature.action = nil
+                        state.actionPresented = false
+                        state.actionTarget = nil
+                    }
                     if key == "sidebar" {
                         let previous = state.sidebarDocument
                         if previous?.version != document.version { state.returnReasons = [:] }
                         state.sidebarDocument = document
-                        state.optimistic.reconcile(document.version)
+                        state.optimistic.reconcile(document.version, dataEpoch: document.dataEpoch)
                         let links = Self.links(in: document)
                         if case let .viewKey(current)? = state.selection, !links.contains(current),
                            Self.links(in: previous).contains(current) {
@@ -374,7 +388,6 @@ public struct MacPresentationFeature: Sendable {
                             state.openSections.contains($0.id) && state.sectionPages[$0.id] != nil
                         }
                         state.detailDocument = document
-                        state.actionFeature.dataEpoch = document.dataEpoch
                         if state.activeForm != nil,
                            let updated = document.sections.lazy.flatMap(\.items).compactMap({ item -> AlondraContract.Form? in
                                if case let .form(form) = item { form } else { nil }
@@ -389,7 +402,7 @@ public struct MacPresentationFeature: Sendable {
                             section.more.map { loadSection(section.id, key: $0.key, appending: false) }
                         })
                     }
-                }
+                } else { state.viewError = nil }
             case let .viewFailed(_, message): state.viewError = message
             case .settled: break
             case .queryChanged(let query):

@@ -1,5 +1,6 @@
 @testable import AlondraTransport
 import AlondraContract
+import AlondraTestSupport
 import CryptoKit
 import Foundation
 import Testing
@@ -138,7 +139,29 @@ private struct Fixture {
 
 private let answered = APIResponse.completed(status: 200, body: Data(#"{"ok":true}"#.utf8))
 
-@Suite struct DirectSessionTests {
+@Suite(.temporaryFiles) struct DirectSessionTests {
+    @Test func durableActionsDoNotInterceptLiveSettingsRetries() async throws {
+        let fixture = try await Fixture()
+        let scope = RelayOutboxScope(relay: URL(string: "https://relay.fixture.invalid")!, macID: "mac-1",
+            deviceID: "phone-1", credentialRevision: "approved")
+        let directory = try TestFiles.directory()
+        let session = DirectSession(macID: "mac-1", deviceID: "phone-1", signing: fixture.mac.device,
+            agreement: fixture.mac.deviceAgreement, macSigning: fixture.mac.macSigning.publicKey,
+            macAgreement: fixture.mac.macAgreement.publicKey, router: fixture.router,
+            http: DirectHTTP(transport: fixture.mac),
+            journal: try EnvelopeJournal(scope: scope, directory: directory), pause: { _ in })
+        let request = try APIRequest(endpoint: Endpoint<Data>.data(.put, path: ["settings"],
+            body: Data(#"{"projects_root":"/fixture"}"#.utf8)), operationID: "settings-original")
+        #expect(try await session.perform(request) == answered)
+        #expect(try await session.perform(request) == answered)
+        #expect(await fixture.mac.executions(of: request.operationID) == 1)
+        let bodies = await fixture.mac.requestBodies
+        #expect(bodies.count == 2)
+        #expect(bodies.first == bodies.last)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: directory.path).isEmpty, "settings does not consult the action journal")
+        await session.deactivate()
+    }
+
     @Test func aLostAnswerIsResentAsTheSameBytesAndRunsOnce() async throws {
         let f = try await Fixture()
         await f.mac.failRequests(1)
@@ -739,7 +762,10 @@ extension DirectSessionTests {
         if case let .failure(error) = early {
             #expect(cancelled ? error is CancellationError : (error as? URLError)?.code == .timedOut)
         } else { Issue.record("the first waiter must finish before its probe permits dispatch") }
-        #expect(await firstRunner.runningWorkers.count == 1)
+        // The nested session waiter may already have drained after its deadline. The
+        // shared physical discovery remains held independently of either expired waiter.
+        #expect(await probe.probeCount == 1)
+        #expect(await mac.executions(of: "expired-probe") == 0)
         #expect(await !probe.inheritedBudget)
         await probe.release()
         let surviving = await next.result

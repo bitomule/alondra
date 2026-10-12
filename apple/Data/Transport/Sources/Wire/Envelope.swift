@@ -115,6 +115,14 @@ public struct Envelope: Codable, Sendable, Equatable {
         return bytes
     }
 
+    func recoveryDigest() throws -> String {
+        var bytes = try signedBytes()
+        let signatureBytes = try Base64URL.decode(signature)
+        guard signatureBytes.count == 64 else { throw RelayWireError.invalidSignature }
+        try WireFrame.append(signatureBytes, to: &bytes)
+        return SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
+    }
+
     /// A nil `nowMilliseconds` skips the expiry check: push notifications stay actionable
     /// whenever they are tapped, and the server rejects a stale decision by revision.
     public func verify(senderKey: P256.Signing.PublicKey, sender expectedSender: String,

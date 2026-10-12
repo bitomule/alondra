@@ -67,6 +67,7 @@ swift_library(
         "//apple/Data/Feed:AlondraFeed",
         "//apple/Design:AlondraDesign",
         "//apple/Features:AlondraFeatures",
+        "//apple/Data/Transport:AlondraTransport",
         "//apple/iOS/UI:AlondraiOSUI",
         "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
         "@swiftpkg_swift_snapshot_testing//:SnapshotTesting",

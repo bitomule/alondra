@@ -826,7 +826,7 @@ final class TriageFeatureTests: XCTestCase {
         let store = store(try fullFeed())
         await store.send(.task)
         await store.skipReceivedActions()
-        let request = ActionRequest(commandId: "c-1", dataEpoch: "", client: .ios, lang: "en", actionId: "accept:x@1")
+        let request = ActionRequest(commandId: "c-1", dataEpoch: try XCTUnwrap(store.state.screen.document).dataEpoch, client: .ios, lang: "en", actionId: "accept:x@1")
 
         await store.send(.handedOff(request, cardID: ids.delivery))
         XCTAssertEqual(store.state.orderedIDs, [ids.question, ids.information, ids.pullRequest])
@@ -853,7 +853,7 @@ final class TriageFeatureTests: XCTestCase {
             let header = try XCTUnwrap(store.state.header)
             XCTAssertEqual(daemonNumbers, [header.questions, header.toRead].filter { $0 > 0 }, "\(name): with nothing hidden it reads as the Mac's line")
 
-            let request = ActionRequest(commandId: "c-\(name)", dataEpoch: "", client: .ios, lang: spanish ? "es" : "en", actionId: "accept:x@1")
+            let request = ActionRequest(commandId: "c-\(name)", dataEpoch: home.dataEpoch, client: .ios, lang: spanish ? "es" : "en", actionId: "accept:x@1")
             await store.send(.handedOff(request, cardID: ids[0]))
             XCTAssertEqual(store.state.orderedIDs.count, ids.count - 1, name)
             XCTAssertEqual(store.state.header?.waiting, store.state.orderedIDs.count, "\(name): a card the queue hides is not counted")
@@ -869,12 +869,12 @@ final class TriageFeatureTests: XCTestCase {
         await store.skipReceivedActions()
         XCTAssertEqual(store.state.header?.waiting, 4)
 
-        let reply = ActionRequest(commandId: "c-reply", dataEpoch: "", client: .ios, lang: "en", actionId: "msg:view@7")
+        let reply = ActionRequest(commandId: "c-reply", dataEpoch: try XCTUnwrap(store.state.screen.document).dataEpoch, client: .ios, lang: "en", actionId: "msg:view@7")
         await store.send(.handedOff(reply, cardID: ids.question))
         await store.send(.handOffSettled(reply, applied: true))
         XCTAssertEqual(store.state.orderedIDs, queue, "a reply answers nothing: the card still waits")
 
-        let read = ActionRequest(commandId: "c-read", dataEpoch: "", client: .ios, lang: "en", actionId: "read:x@1")
+        let read = ActionRequest(commandId: "c-read", dataEpoch: try XCTUnwrap(store.state.screen.document).dataEpoch, client: .ios, lang: "en", actionId: "read:x@1")
         await store.send(.handedOff(read, cardID: ids.information))
         XCTAssertEqual(store.state.orderedIDs, [ids.question, ids.delivery, ids.pullRequest])
         XCTAssertEqual(store.state.header?.waiting, 3, "the header drops the card the queue hides")
@@ -891,7 +891,7 @@ final class TriageFeatureTests: XCTestCase {
         await store.send(.task)
         await store.skipReceivedActions()
 
-        let reply = ActionRequest(commandId: "c-reply", dataEpoch: "", client: .ios, lang: "es",
+        let reply = ActionRequest(commandId: "c-reply", dataEpoch: try XCTUnwrap(store.state.screen.document).dataEpoch, client: .ios, lang: "es",
                                   actionId: "reply:\(ids.question)@1", input: ActionInput(text: "Ship the concise copy"), resolvesCard: true)
         await store.send(.cards(.element(id: ids.question, action: .actions(.sent(reply)))))
         await clock.advance(by: TriageFeature.stampDuration)
@@ -947,7 +947,7 @@ final class TriageFeatureTests: XCTestCase {
         await store.send(.task)
         await store.skipReceivedActions()
 
-        let reply = ActionRequest(commandId: "c-note", dataEpoch: "", client: .ios, lang: "es",
+        let reply = ActionRequest(commandId: "c-note", dataEpoch: try XCTUnwrap(store.state.screen.document).dataEpoch, client: .ios, lang: "es",
                                   actionId: "reply:\(ids.question)@1", input: ActionInput(text: "Thanks"), resolvesCard: false)
         await store.send(.cards(.element(id: ids.question, action: .actions(.sent(reply)))))
         await clock.advance(by: TriageFeature.stampDuration)

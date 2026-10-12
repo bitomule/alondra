@@ -34,11 +34,12 @@ public actor RelaySession: OperationAPI, PushRegistrationAPI {
                 bearer: @escaping @Sendable () async throws -> String,
                 bearerRefused: @escaping @Sendable () async -> Void = {},
                 transport: (any HTTPTransport)? = nil,
+                journal: EnvelopeJournal? = nil,
                 signing: P256.Signing.PrivateKey, agreement: P256.KeyAgreement.PrivateKey,
                 macSigning: P256.Signing.PublicKey, macAgreement: P256.KeyAgreement.PublicKey,
                 now: @escaping @Sendable () -> UInt64 = { UInt64(Date().timeIntervalSince1970 * 1000) },
                 sleep: @escaping @Sendable () async throws -> Void = { try await Task.sleep(for: .seconds(1)) }) throws {
-        try self.init(scope: scope, bearer: bearer, bearerRefused: bearerRefused, transport: transport,
+        try self.init(scope: scope, bearer: bearer, bearerRefused: bearerRefused, transport: transport, journal: journal,
             signing: signing, agreement: agreement, macSigning: macSigning, macAgreement: macAgreement,
             now: now, sleep: sleep, waitForReadDeadline: { try await ContinuousClock().sleep(until: $0) })
     }
@@ -47,6 +48,7 @@ public actor RelaySession: OperationAPI, PushRegistrationAPI {
                 bearer: @escaping @Sendable () async throws -> String,
                 bearerRefused: @escaping @Sendable () async -> Void = {},
                 transport: (any HTTPTransport)? = nil,
+                journal: EnvelopeJournal? = nil,
                 signing: P256.Signing.PrivateKey, agreement: P256.KeyAgreement.PrivateKey,
                 macSigning: P256.Signing.PublicKey, macAgreement: P256.KeyAgreement.PublicKey,
                 now: @escaping @Sendable () -> UInt64 = { UInt64(Date().timeIntervalSince1970 * 1000) },
@@ -56,13 +58,22 @@ public actor RelaySession: OperationAPI, PushRegistrationAPI {
         let client = try AlondraAPIClient.makeTransport(base: scope.relay, deviceID: scope.deviceID,
             signing: signing, bearer: bearer, bearerRefused: bearerRefused, transport: transport)
         self.client = client; self.scope = scope
-        outbox = RelayOutbox(scope: scope, transport: client)
+        outbox = RelayOutbox(scope: scope, transport: client, journal: journal)
         codec = EnvelopeCodec(macID: scope.macID, deviceID: scope.deviceID, signing: signing,
             agreement: agreement, macSigning: macSigning, macAgreement: macAgreement, now: now)
         self.sleep = sleep
         self.requestClock = requestClock
         mutations = MutationRunner(clock: requestClock)
         self.waitForReadDeadline = waitForReadDeadline
+    }
+
+    public func recover(_ request: APIRequest) async throws -> APIResponse {
+        guard request.method == "POST", request.path == "/actions", active, let entry = try await outbox.entry(requestID: request.operationID),
+              entry.phase != .retired, let envelope = entry.envelope else { return .unknown }
+        guard entry.semanticTag == (try codec.semanticTag(method: request.method, path: request.path, body: request.body)) else {
+            throw RelaySessionError.operationIdentityConflict
+        }
+        return try await codec.recover(request, envelope: envelope) { try await self.perform($0) }
     }
 
     public func registerServicePush(token: String, environment: String, binding: String) async throws {

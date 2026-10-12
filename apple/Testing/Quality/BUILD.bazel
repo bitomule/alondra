@@ -13,6 +13,6 @@ swift_test(
         "//apple/Data/Transport:AlondraTransport",
         "//apple/Features:AlondraFeatures",
         "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
-        "@swiftpkg_xctest_dynamic_overlay//:IssueReportingTestSupport",
+        "@swiftpkg_swift_issue_reporting//:IssueReportingTestSupport",
     ],
 )

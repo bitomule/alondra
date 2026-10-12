@@ -7,7 +7,7 @@ swift_test(
     srcs = ["IssueReportingIntegrationTests.swift"],
     deps = [
         "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
-        "@swiftpkg_xctest_dynamic_overlay//:IssueReportingTestSupport",
+        "@swiftpkg_swift_issue_reporting//:IssueReportingTestSupport",
     ],
     linkopts = ["-Wl,-export_dynamic"],
 )

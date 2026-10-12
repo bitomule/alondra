@@ -28,6 +28,7 @@ use std::{
 };
 
 mod relay;
+pub(crate) mod operation_results;
 
 // Base64 adds ~33%; 760 KiB plus encryption and envelope metadata stays below 1 MiB.
 pub(crate) const MAX_LOCAL_RESPONSE: usize = 760 * 1024;
@@ -312,6 +313,8 @@ pub struct Service {
     direct: DirectConfig,
     /// Writers from either transport share their turn; scheduled relay reads bypass it.
     lane: Arc<tokio::sync::Mutex<()>>,
+    #[cfg(test)]
+    envelope_clock: Option<Arc<std::sync::atomic::AtomicU64>>,
 }
 
 /// A verified encrypted sender with persisted approval (and, through the relay, enrollment).
@@ -470,6 +473,12 @@ fn resolve(home: &Path, path: &Path) -> PathBuf {
 }
 
 impl Service {
+    fn envelope_now(&self) -> u64 {
+        #[cfg(test)]
+        if let Some(clock) = &self.envelope_clock { return clock.load(std::sync::atomic::Ordering::Relaxed); }
+        now_ms()
+    }
+
     pub fn with_hub(mut self, hub: Arc<crate::hub::Hub>) -> Self {
         self.hub = Some(hub);
         self
@@ -792,6 +801,8 @@ impl Service {
             routes: None,
             direct: config.direct,
             lane: Arc::new(tokio::sync::Mutex::new(())),
+            #[cfg(test)]
+            envelope_clock: None,
         }))
     }
 
@@ -903,7 +914,7 @@ impl Service {
                 &e.sender,
                 &self.mac_id,
                 &self.mac_id,
-                now_ms(),
+                self.envelope_now(),
             )
             .map_err(|error| anyhow!("invalid encrypted work: {error}"))?;
         self.auth.usage().touch(&e.sender, alondra_core::now_millis(), false);
@@ -915,6 +926,7 @@ impl Service {
         if self.domain.is_some() {
             anyhow::ensure!(
                 (crate::domain_api::approved_resource_read_path(&request.path)
+                    || operation_results::lookup(&request.path).is_some()
                     || crate::domain_api::is_resource_mutation_path(
                         &request.method,
                         &request.path
@@ -1029,7 +1041,8 @@ impl Service {
             }
         };
         let receipt = self.journal.reserve_receipt(guard.clone())?;
-        let disposition = self.journal.accept_admitted(&e.sender, &e.request_id, &digest, receipt.clone()).await?;
+        let recovery_scope = self.operation_scope(e, &request, &device, transport)?;
+        let disposition = self.journal.accept_admitted(&e.sender, &e.request_id, &digest, recovery_scope, receipt.clone()).await?;
         accepted().await?;
         if request.body.is_none() && domain_read_route(&request) {
             let binding = self.read_receipt_binding(&e.sender, &device, transport)?;
@@ -1119,7 +1132,7 @@ impl Service {
         self.require_device_approval(&envelope.sender, &device, Transport::Direct)
             .map_err(|_| self.revoked_refusal(&envelope))?;
         envelope
-            .verify_signature(&device.signing, &envelope.sender, &self.mac_id, &self.mac_id, now_ms())
+            .verify_signature(&device.signing, &envelope.sender, &self.mac_id, &self.mac_id, self.envelope_now())
             .map_err(|_| DirectRefusal::Unauthorized)?;
         let refusal = |error: anyhow::Error| {
             if error.is::<ReusedRequestId>() {
@@ -1194,7 +1207,7 @@ impl Service {
                     recipient: &request.sender,
                     request_id: &request.request_id,
                     kind: "response",
-                    expires_at_ms: now_ms() + 600_000,
+                    expires_at_ms: self.envelope_now() + 600_000,
                 },
                 &payload,
                 &self.signing,
@@ -1263,6 +1276,11 @@ impl Service {
         approved_method(request)?;
         let device = self.devices.get(sender).context("unapproved device")?;
         let approved = self.approved_device(sender, &device, transport)?;
+        if let Some(lookup) = operation_results::lookup(&request.path) {
+            let result = self.operation_result(sender, &lookup, transport).await?;
+            approved.recheck()?;
+            return Ok(result);
+        }
         if let Some(reply) = self.settings(sender, request).await? {
             approved.recheck()?;
             return Ok(reply.into_value());
@@ -1369,7 +1387,8 @@ impl Service {
         let status = response.status().as_u16();
         let bytes = axum::body::to_bytes(response.into_body(), MAX_LOCAL_RESPONSE).await?;
         approved.recheck()?;
-        let body: Value = serde_json::from_slice(&bytes)?;
+        let mut body: Value = serde_json::from_slice(&bytes)?;
+        if request.path == "/capabilities" && status == 200 { body["operation_results"] = json!(true); }
         Ok(json!({"status":status,"body":body}))
     }
 
@@ -1888,7 +1907,8 @@ fn id_action(path: &str, prefix: &str, action: &str, numeric: bool) -> bool {
 
 fn domain_read_route(request: &LocalRequest) -> bool {
     request.method == "GET"
-        && (crate::domain_api::approved_resource_read_path(&request.path)
+        && (operation_results::lookup(&request.path).is_some()
+            || crate::domain_api::approved_resource_read_path(&request.path)
             || crate::client_routes::approved_read_path(&request.path)
             || crate::views::routes::approved_read_path(&request.path))
 }
@@ -1912,6 +1932,9 @@ fn domain_read_id(id: &str) -> bool {
 /// The relay carries opaque JSON. Only these app operations may be replayed on loopback.
 /// There is deliberately no general URL proxy, no pairing/device management, and no upload.
 fn approved_method(request: &LocalRequest) -> Result<Method> {
+    if request.method == "GET" && request.body.is_none() && operation_results::lookup(&request.path).is_some() {
+        return Ok(Method::GET);
+    }
     if request.method == "GET" && request.body.is_none() && crate::settings::approved_read(&request.path) {
         return Ok(Method::GET);
     }
@@ -2205,12 +2228,12 @@ impl Journal {
     }
 
     async fn accept_admitted(
-        &self, sender: &str, id: &str, digest: &[u8; 32], receipt: Arc<ReceiptAdmission>,
+        &self, sender: &str, id: &str, digest: &[u8; 32], recovery: Option<operation_results::RecoveryScope>, receipt: Arc<ReceiptAdmission>,
     ) -> Result<Disposition> {
         let (sender, id, digest) = (sender.to_owned(), id.to_owned(), *digest);
         self.off_runtime_admitted(receipt.reservation.clone(), move |journal| {
             let _receipt = receipt;
-            journal.accept(&sender, &id, &digest)
+            journal.accept_scoped(&sender, &id, &digest, recovery.as_ref())
         }).await
     }
 
@@ -2278,6 +2301,14 @@ impl Journal {
         };
         if !has_mode {
             migration.execute_batch("ALTER TABLE service_receipts ADD COLUMN execution_mode TEXT NOT NULL DEFAULT 'legacy'")?;
+        }
+        for name in ["recovery_digest", "recovery_binding"] {
+            let exists = {
+                let mut statement = migration.prepare("PRAGMA table_info(service_receipts)")?;
+                let rows = statement.query_map([], |row| row.get::<_, String>(1))?;
+                rows.collect::<rusqlite::Result<Vec<_>>>()?.iter().any(|column| column == name)
+            };
+            if !exists { migration.execute_batch(&format!("ALTER TABLE service_receipts ADD COLUMN {name} BLOB"))?; }
         }
         migration.commit()?;
         Ok(Self { path,
@@ -2562,7 +2593,11 @@ impl Journal {
         .optional()?
         .is_some_and(|state| state == "active"))
     }
+    #[cfg(test)]
     fn accept(&self, sender: &str, id: &str, digest: &[u8; 32]) -> Result<Disposition> {
+        self.accept_scoped(sender, id, digest, None)
+    }
+    fn accept_scoped(&self, sender: &str, id: &str, digest: &[u8; 32], recovery: Option<&operation_results::RecoveryScope>) -> Result<Disposition> {
         let mut c = self.db()?;
         let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let previous: Option<(Vec<u8>, String, Option<Vec<u8>>, String)> = tx.query_row(
@@ -2581,7 +2616,8 @@ impl Journal {
             Some((_, state, _, _)) if state == "executing" => Disposition::Executing,
             Some(_) => Disposition::Accepted,
             None => {
-                tx.execute("INSERT INTO service_receipts(sender,request_id,digest,state) VALUES (?1,?2,?3,'accepted')", params![sender,id,digest.as_slice()])?;
+                tx.execute("INSERT INTO service_receipts(sender,request_id,digest,state,recovery_digest,recovery_binding) VALUES (?1,?2,?3,'accepted',?4,?5)",
+                    params![sender,id,digest.as_slice(),recovery.map(|value|value.digest.as_slice()),recovery.map(|value|value.binding.as_slice())])?;
                 Disposition::Accepted
             }
         };
@@ -2621,6 +2657,7 @@ mod tests {
     mod relay_scheduler_tests;
     mod journal_admission_tests;
     mod journal_transition_tests;
+    mod operation_result_tests;
     use super::*;
     use reqwest::{StatusCode, Url};
     use std::collections::HashSet;
@@ -5883,6 +5920,8 @@ agreement_key = "{}"
             relay: Some(relay::RelayConnector::new(Url::parse("http://127.0.0.1:1/").unwrap(), "owner".into())),
             direct: DirectConfig::default(),
             lane: Arc::new(tokio::sync::Mutex::new(())),
+            #[cfg(test)]
+            envelope_clock: None,
             client: Client::new(),
             mac_id: "mac-test".into(),
             signing: SigningKey::from_slice(&[1u8; 32]).unwrap(),
@@ -5978,6 +6017,8 @@ agreement_key = "{}"
             relay: Some(relay::RelayConnector::new(Url::parse("http://127.0.0.1:1/").unwrap(), "owner".into())),
             direct: DirectConfig::default(),
             lane: Arc::new(tokio::sync::Mutex::new(())),
+            #[cfg(test)]
+            envelope_clock: None,
             client: Client::new(),
             mac_id: "mac-test".into(),
             signing: SigningKey::from_slice(&[1u8; 32]).unwrap(),
@@ -6353,6 +6394,8 @@ agreement_key = "{}"
                     relay: Some(relay::RelayConnector::new(Url::parse(&format!("http://127.0.0.1:{port}/")).unwrap(), "owner".into())),
                     direct: DirectConfig::default(),
                     lane: Arc::new(tokio::sync::Mutex::new(())),
+                    #[cfg(test)]
+                    envelope_clock: None,
                     client: Client::new(),
                     mac_id: "mac-1".into(),
                     signing: SigningKey::from_slice(&[1u8; 32]).unwrap(),
@@ -6496,6 +6539,8 @@ agreement_key = "{}"
             relay: Some(relay::RelayConnector::new(Url::parse(&format!("http://127.0.0.1:{port}/")).unwrap(), "owner".into())),
             direct: DirectConfig::default(),
             lane: Arc::new(tokio::sync::Mutex::new(())),
+            #[cfg(test)]
+            envelope_clock: None,
             client: Client::new(),
             mac_id: "mac-1".into(),
             signing: SigningKey::from_slice(&[1u8; 32]).unwrap(),
@@ -6659,6 +6704,8 @@ agreement_key = "{}"
             relay: Some(relay::RelayConnector::new(Url::parse(&format!("http://127.0.0.1:{relay_port}/")).unwrap(), "owner".into())),
             direct: DirectConfig::default(),
             lane: Arc::new(tokio::sync::Mutex::new(())),
+            #[cfg(test)]
+            envelope_clock: None,
             client: Client::new(),
             mac_id: "mac-1".into(),
             signing: mac_signing,
@@ -6696,6 +6743,8 @@ agreement_key = "{}"
             relay: Some(relay::RelayConnector::new(service.relay_url(), "owner".into())),
             direct: DirectConfig::default(),
             lane: Arc::new(tokio::sync::Mutex::new(())),
+            #[cfg(test)]
+            envelope_clock: None,
             client: Client::new(),
             mac_id: service.mac_id.clone(),
             signing: SigningKey::from_slice(&[1u8; 32]).unwrap(),
@@ -6898,6 +6947,8 @@ agreement_key = "{}"
             relay: Some(relay::RelayConnector::new(service.relay_url(), "owner".into())),
             direct: DirectConfig::default(),
             lane: Arc::new(tokio::sync::Mutex::new(())),
+            #[cfg(test)]
+            envelope_clock: None,
             client: Client::new(),
             mac_id: service.mac_id.clone(),
             signing: SigningKey::from_slice(&[1u8; 32]).unwrap(),

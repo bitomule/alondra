@@ -103,7 +103,7 @@ swift_test(
         "//apple/Data/Account:AlondraAccount",
         "//apple/Data/Transport:AlondraTransport",
         "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
-        "@swiftpkg_xctest_dynamic_overlay//:IssueReportingTestSupport",
+        "@swiftpkg_swift_issue_reporting//:IssueReportingTestSupport",
     ],
 )
 
@@ -119,7 +119,7 @@ swift_test(
         "//apple/Features:AlondraFeatures",
         "//apple/Contract:AlondraContract",
         "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
-        "@swiftpkg_xctest_dynamic_overlay//:IssueReportingTestSupport",
+        "@swiftpkg_swift_issue_reporting//:IssueReportingTestSupport",
     ],
 )
 

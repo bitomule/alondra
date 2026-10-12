@@ -10043,26 +10043,13 @@
         },
         "recordedDirentsInputs": {},
         "envVariables": {
-          "DEVELOPER_DIR": null,
+          "DEVELOPER_DIR": "/Applications/Xcode-27.1.0-Release.Candidate.app/Contents/Developer",
           "XCODE_VERSION": null
         },
         "generatedRepoSpecs": {
           "system_sdk_xcode_locator": {
             "repoRuleId": "@@rules_swift+//tools/explicit_modules:xcode_locator_repo.bzl%xcode_locator_repo",
             "attributes": {}
-          },
-          "system_sdk_xcode_27_1_0_27A9269": {
-            "repoRuleId": "@@rules_swift+//tools/explicit_modules:xcode_explicit_module_repo.bzl%xcode_explicit_module_repo",
-            "attributes": {
-              "exclude_modules": {},
-              "sdks": [
-                "MacOSX",
-                "iPhoneOS",
-                "iPhoneSimulator"
-              ],
-              "xcode_version": "27.1.0.27A9269",
-              "xcode_locator": "@@rules_swift++system_sdk+system_sdk_xcode_locator//:xcode-locator-bin"
-            }
           },
           "system_sdk_xcode_27_0_0_27A266a": {
             "repoRuleId": "@@rules_swift+//tools/explicit_modules:xcode_explicit_module_repo.bzl%xcode_explicit_module_repo",
@@ -10074,6 +10061,19 @@
                 "iPhoneSimulator"
               ],
               "xcode_version": "27.0.0.27A266a",
+              "xcode_locator": "@@rules_swift++system_sdk+system_sdk_xcode_locator//:xcode-locator-bin"
+            }
+          },
+          "system_sdk_xcode_27_1_0_27A9275": {
+            "repoRuleId": "@@rules_swift+//tools/explicit_modules:xcode_explicit_module_repo.bzl%xcode_explicit_module_repo",
+            "attributes": {
+              "exclude_modules": {},
+              "sdks": [
+                "MacOSX",
+                "iPhoneOS",
+                "iPhoneSimulator"
+              ],
+              "xcode_version": "27.1.0.27A9275",
               "xcode_locator": "@@rules_swift++system_sdk+system_sdk_xcode_locator//:xcode-locator-bin"
             }
           },
@@ -10090,15 +10090,29 @@
               "xcode_locator": "@@rules_swift++system_sdk+system_sdk_xcode_locator//:xcode-locator-bin"
             }
           },
+          "system_sdk_xcode_27_1_0_27A9269": {
+            "repoRuleId": "@@rules_swift+//tools/explicit_modules:xcode_explicit_module_repo.bzl%xcode_explicit_module_repo",
+            "attributes": {
+              "exclude_modules": {},
+              "sdks": [
+                "MacOSX",
+                "iPhoneOS",
+                "iPhoneSimulator"
+              ],
+              "xcode_version": "27.1.0.27A9269",
+              "xcode_locator": "@@rules_swift++system_sdk+system_sdk_xcode_locator//:xcode-locator-bin"
+            }
+          },
           "system_sdk": {
             "repoRuleId": "@@rules_swift+//tools/explicit_modules:xcode_explicit_module_hub_repo.bzl%xcode_explicit_module_hub_repo",
             "attributes": {
               "xcode_versions": [
-                "27.1.0.27A9269",
                 "27.0.0.27A266a",
-                "26.3.0.17C529"
+                "27.1.0.27A9275",
+                "26.3.0.17C529",
+                "27.1.0.27A9269"
               ],
-              "default_manifest": "@@rules_swift++system_sdk+system_sdk_xcode_26_3_0_17C529//:module_names.json"
+              "default_manifest": "@@rules_swift++system_sdk+system_sdk_xcode_27_1_0_27A9275//:module_names.json"
             }
           }
         },
@@ -10136,7 +10150,7 @@
         "bzlTransitiveDigest": "Yk2jhc9VpOsrHAy8n4OL599bdy5O8jvzWqS2pBo09h0=",
         "usagesDigest": "3DW2E5BT7hX+gO4Rm+UNLH8Q4NfHyBp0eiZsw768ijU=",
         "recordedFileInputs": {
-          "@@//Package.resolved": "9ef19873180cb9dc940883f5982b97a7ab4e708f84db91a76b21ef27ad2bbd35"
+          "@@//Package.resolved": "7fe7f876169b8506093739adbc69f8f8d7e168fc0f57dee2bfe0c385c97f9fd0"
         },
         "recordedDirentsInputs": {},
         "envVariables": {},
@@ -10145,10 +10159,11 @@
             "repoRuleId": "@@rules_swift_package_manager+//swiftpkg/internal:swift_deps_info.bzl%swift_deps_info",
             "attributes": {
               "direct_dep_pkg_infos": {
+                "@swiftpkg_swift_collections//:pkg_info.json": "swift-collections",
                 "@swiftpkg_highlightswift//:pkg_info.json": "highlightswift",
                 "@swiftpkg_swift_composable_architecture//:pkg_info.json": "swift-composable-architecture",
                 "@swiftpkg_swift_snapshot_testing//:pkg_info.json": "swift-snapshot-testing",
-                "@swiftpkg_xctest_dynamic_overlay//:pkg_info.json": "xctest-dynamic-overlay"
+                "@swiftpkg_swift_issue_reporting//:pkg_info.json": "swift-issue-reporting"
               }
             }
           },
@@ -10157,6 +10172,32 @@
             "attributes": {
               "env": {},
               "package": "/Package.swift"
+            }
+          },
+          "swiftpkg_swift_collections": {
+            "repoRuleId": "@@rules_swift_package_manager+//swiftpkg/internal:swift_package.bzl%swift_package",
+            "attributes": {
+              "bazel_package_name": "swiftpkg_swift_collections",
+              "commit": "a0cb0954ecb21e4e31b0070e6ed5674e8556685a",
+              "remote": "https://github.com/apple/swift-collections",
+              "version": "1.6.0",
+              "env": {},
+              "env_inherit": [],
+              "cached_json_directory": "",
+              "init_submodules": false,
+              "recursive_init_submodules": true,
+              "patch_args": [
+                "-p0"
+              ],
+              "patch_cmds": [],
+              "patch_cmds_win": [],
+              "patch_tool": "",
+              "patches": [],
+              "publicly_expose_all_targets": false,
+              "replace_scm_with_registry": false,
+              "target_deps": {},
+              "module_aliases": {},
+              "dep_module_aliases": ""
             }
           },
           "swiftpkg_highlightswift": {
@@ -10237,13 +10278,13 @@
               "dep_module_aliases": ""
             }
           },
-          "swiftpkg_xctest_dynamic_overlay": {
+          "swiftpkg_swift_issue_reporting": {
             "repoRuleId": "@@rules_swift_package_manager+//swiftpkg/internal:swift_package.bzl%swift_package",
             "attributes": {
-              "bazel_package_name": "swiftpkg_xctest_dynamic_overlay",
-              "commit": "d9308ad679143c26a30dec52daefe82f54af2b82",
-              "remote": "https://github.com/pointfreeco/xctest-dynamic-overlay",
-              "version": "1.13.1",
+              "bazel_package_name": "swiftpkg_swift_issue_reporting",
+              "commit": "71c7c9a761d1ca6ed4ccb6ced040fe1c1a39e8e7",
+              "remote": "https://github.com/pointfreeco/swift-issue-reporting",
+              "version": "2.1.0",
               "env": {},
               "env_inherit": [],
               "cached_json_directory": "",
@@ -10322,32 +10363,6 @@
               "commit": "82440fa0a8b1c381a6d1e8e0fc7bbba53ec63204",
               "remote": "https://github.com/pointfreeco/swift-clocks",
               "version": "1.1.1",
-              "env": {},
-              "env_inherit": [],
-              "cached_json_directory": "",
-              "init_submodules": false,
-              "recursive_init_submodules": true,
-              "patch_args": [
-                "-p0"
-              ],
-              "patch_cmds": [],
-              "patch_cmds_win": [],
-              "patch_tool": "",
-              "patches": [],
-              "publicly_expose_all_targets": false,
-              "replace_scm_with_registry": false,
-              "target_deps": {},
-              "module_aliases": {},
-              "dep_module_aliases": ""
-            }
-          },
-          "swiftpkg_swift_collections": {
-            "repoRuleId": "@@rules_swift_package_manager+//swiftpkg/internal:swift_package.bzl%swift_package",
-            "attributes": {
-              "bazel_package_name": "swiftpkg_swift_collections",
-              "commit": "a66de878e87ef5a3d5d390e0f6d9002aa5541a43",
-              "remote": "https://github.com/apple/swift-collections",
-              "version": "1.7.0",
               "env": {},
               "env_inherit": [],
               "cached_json_directory": "",
@@ -10578,10 +10593,11 @@
         },
         "moduleExtensionMetadata": {
           "explicitRootModuleDirectDeps": [
+            "swiftpkg_swift_collections",
             "swiftpkg_highlightswift",
             "swiftpkg_swift_composable_architecture",
             "swiftpkg_swift_snapshot_testing",
-            "swiftpkg_xctest_dynamic_overlay",
+            "swiftpkg_swift_issue_reporting",
             "swift_deps_info",
             "swift_package"
           ],

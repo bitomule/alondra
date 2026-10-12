@@ -46,6 +46,8 @@ private actor ControlledRelay: HTTPTransport {
     private let barrier: ResponseBarrier
     private var droppedStatuses: Set<String>
     private var replies: [String: Envelope] = [:]
+    private var originals: [String: Envelope] = [:]
+    private var resultReads: [String: Int] = [:]
     private var submissions: [String: Int] = [:]
     private var effects: [String: Int] = [:]
     private var statusReads: [String: Int] = [:]
@@ -61,8 +63,8 @@ private actor ControlledRelay: HTTPTransport {
         self.responseStatus = responseStatus; self.uncertain = uncertain
     }
 
-    func counts(_ id: String) -> (submissions: Int, effects: Int, statusReads: Int) {
-        (submissions[id, default: 0], effects[id, default: 0], statusReads[id, default: 0])
+    func counts(_ id: String) -> (submissions: Int, effects: Int, statusReads: Int, resultReads: Int) {
+        (submissions[id, default: 0], effects[id, default: 0], statusReads[id, default: 0], resultReads[id, default: 0])
     }
 
     func send(_ request: URLRequest) async throws -> HTTPReply {
@@ -76,6 +78,28 @@ private actor ControlledRelay: HTTPTransport {
             let plain = try envelope.open(senderKey: phoneSigning, recipientKey: macAgreement,
                 sender: "phone", recipient: "mac", route: "mac", nowMilliseconds: 1_000)
             let payload = try XCTUnwrap(JSONSerialization.jsonObject(with: plain) as? [String: Any])
+            if payload["method"] as? String == "GET" {
+                XCTAssertNil(payload["body"], "recovery never carries a mutation body")
+                let path = try XCTUnwrap(payload["path"] as? String)
+                let components = try XCTUnwrap(URLComponents(string: path))
+                let id = String(components.path.dropFirst("/operation-results/".count))
+                XCTAssertEqual(components.path, "/operation-results/" + id)
+                XCTAssertTrue(envelope.requestID.hasPrefix("read-"))
+                XCTAssertNotEqual(envelope.requestID, id, "the attestation has its own fresh read identity")
+                let original = try XCTUnwrap(originals[id])
+                let digest = try original.recoveryDigest()
+                XCTAssertEqual(components.queryItems?.first(where: { $0.name == "digest" })?.value, digest)
+                XCTAssertEqual(components.queryItems?.first(where: { $0.name == "data_epoch" })?.value, "fixture")
+                resultReads[id, default: 0] += 1
+                let response = try XCTUnwrap(replies[id])
+                let encoded = try JSONSerialization.jsonObject(with: JSONEncoder().encode(response))
+                let body: [String: Any] = ["request_id": id, "digest": digest, "data_epoch": "fixture", "response": encoded]
+                replies[envelope.requestID] = try Envelope.seal(route: "mac", sender: "mac", recipient: "phone",
+                    requestID: envelope.requestID, kind: "response", expiresAtMilliseconds: 121_000,
+                    plaintext: JSONSerialization.data(withJSONObject: ["status": 200, "body": body]),
+                    senderKey: macSigning, recipientKey: phoneAgreement)
+                return try json(["request_id": envelope.requestID, "status": "queued", "revision": 1])
+            }
             XCTAssertEqual(payload["method"] as? String, "POST")
             XCTAssertEqual(payload["path"] as? String, "/actions")
             let action = try ContractCodec.decode(ActionRequest.self,
@@ -84,6 +108,7 @@ private actor ControlledRelay: HTTPTransport {
             let id = envelope.requestID
             submissions[id, default: 0] += 1
             if replies[id] == nil {
+                originals[id] = envelope
                 effects[id, default: 0] += 1
                 let body: [String: Any] = ["protocol": 1, "outcome": "applied",
                     "stamp": "Saved " + (action.input.text ?? ""), "revision": 2]
@@ -95,6 +120,10 @@ private actor ControlledRelay: HTTPTransport {
                     senderKey: macSigning, recipientKey: phoneAgreement)
             }
             return try json(["request_id": id, "status": "queued", "revision": 1])
+        }
+        if request.httpMethod == "GET", url.path == "/v1/changes" {
+            return try json(["epoch": Base64URL.encode(epoch), "revision": 2,
+                "changes": replies.keys.sorted().map { ["request_id": $0, "status": "completed", "revision": 2] as [String: Any] }])
         }
         if request.httpMethod == "GET", url.path.hasPrefix("/v1/requests/") {
             let id = url.lastPathComponent
@@ -197,12 +226,13 @@ final class ClientConcurrencyTests: XCTestCase {
             XCTAssertEqual(counts.submissions, 1)
             XCTAssertEqual(counts.effects, 1)
             XCTAssertEqual(counts.statusReads, 1)
+            XCTAssertEqual(counts.resultReads, 1)
             let remaining = await fixture.sender.unresolvedCommandIDs()
             XCTAssertEqual(remaining, [firstID])
         }
     }
 
-    func testAnAppliedActionWithALostReceiptRecoversWithoutAnotherSubmission() async throws {
+    func testAnAppliedActionWithALostReceiptRecoversWithoutAnotherActionSubmission() async throws {
         let fixture = try ClientFixture(droppedStatuses: [firstID])
         do {
             _ = try await fixture.sender.send(action(firstID, text: "First"))
@@ -217,7 +247,8 @@ final class ClientConcurrencyTests: XCTestCase {
         let after = await fixture.peer.counts(firstID)
         XCTAssertEqual(after.submissions, 1)
         XCTAssertEqual(after.effects, 1)
-        XCTAssertEqual(after.statusReads, 2)
+        XCTAssertEqual(after.statusReads, 1)
+        XCTAssertEqual(after.resultReads, 1)
         let remaining = await fixture.sender.unresolvedCommandIDs()
         XCTAssertTrue(remaining.isEmpty)
     }

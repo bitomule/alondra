@@ -29,8 +29,9 @@ use_repo(
     "swift_package",
     "swiftpkg_highlightswift",
     "swiftpkg_swift_composable_architecture",
+    "swiftpkg_swift_collections",
     "swiftpkg_swift_snapshot_testing",
-    "swiftpkg_xctest_dynamic_overlay",
+    "swiftpkg_swift_issue_reporting",
 )
 
 rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")

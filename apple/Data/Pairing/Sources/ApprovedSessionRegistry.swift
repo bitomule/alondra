@@ -14,7 +14,7 @@ public final class ApprovedSessionRegistry<Session: AnyObject> {
         public let selectedID: ApprovedPairingID?
         public var selected: Entry? { entries.first { $0.id == selectedID } }
     }
-    private let make: @MainActor (ApprovedServicePairing) throws -> Session
+    private let make: @MainActor (ApprovedServicePairing) async throws -> Session
     private let stop: @MainActor (Session) async -> Void
     // Preparation may suspend, but registry and platform publication share one
     // synchronous MainActor commit after the generation/cancellation guards.
@@ -30,7 +30,7 @@ public final class ApprovedSessionRegistry<Session: AnyObject> {
     /// The account subject the running relay sessions were verified for, if any.
     public var ownerSubject: String? { owner }
 
-    public init(make: @escaping @MainActor (ApprovedServicePairing) throws -> Session,
+    public init(make: @escaping @MainActor (ApprovedServicePairing) async throws -> Session,
                 stop: @escaping @MainActor (Session) async -> Void,
                 publish: @escaping @MainActor (Snapshot) async throws -> (@MainActor () throws -> Void),
                 clearPlatform: @escaping @MainActor () async throws -> Void) {
@@ -61,6 +61,7 @@ public final class ApprovedSessionRegistry<Session: AnyObject> {
         var created: [Entry] = []
         do {
             for approved in authorized {
+                guard current == generation, transition == operation, !Task.isCancelled else { throw CancellationError() }
                 let id = ApprovedPairingID(approved)
                 if let retained = entries[id] {
                     // Never reuse a live capability for silently changed key material.
@@ -72,7 +73,12 @@ public final class ApprovedSessionRegistry<Session: AnyObject> {
                     }
                     next[id] = retained
                 } else {
-                    let entry = Entry(approved: approved, session: try make(approved))
+                    let session = try await make(approved)
+                    guard current == generation, transition == operation, !Task.isCancelled else {
+                        await stop(session)
+                        throw CancellationError()
+                    }
+                    let entry = Entry(approved: approved, session: session)
                     next[id] = entry
                     pending[id] = entry
                     created.append(entry)

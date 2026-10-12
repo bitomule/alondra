@@ -31,7 +31,14 @@ public struct ActionFeature: Sendable {
         public var pendingAttachmentSubmit = false
         public var requiresAttachments = false
         public var handsOff = false
-        public var dataEpoch: String
+        public var dataEpoch: String {
+            didSet {
+                guard dataEpoch != oldValue else { return }
+                pending = nil; inFlight = false; unsure = nil
+                stamp = nil; error = nil; confirmation = nil; changed = nil
+                pendingAttachmentSubmit = false
+            }
+        }
         public var client: ViewClient
         public var lang: String
 
@@ -211,6 +218,7 @@ public struct ActionFeature: Sendable {
             case .sent, .settled:
                 return .none
             case let .answered(request, reply):
+                guard request.dataEpoch == state.dataEpoch else { return .none }
                 guard state.pending?.commandId == request.commandId else {
                     switch OutcomeStyle(reply) {
                     case .success(let message): return .send(.delegate(.completed(message)))
@@ -245,6 +253,7 @@ public struct ActionFeature: Sendable {
                 // Keep the exact request and command ID for an explicit retry.
                 return .send(.delegate(.failed(message)))
             case let .undelivered(request, failure):
+                guard request.dataEpoch == state.dataEpoch else { return .none }
                 guard state.pending?.commandId == request.commandId else {
                     return .send(.delegate(.failed(failure.message)))
                 }
@@ -316,7 +325,7 @@ public struct ActionFeature: Sendable {
                 fields: state.fields.isEmpty ? nil : state.fields),
             resolvesCard: resolvesCard ?? state.action?.resolvesCard
         )
-        guard let unsure = state.unsure, unsure.actionId == request.actionId,
+        guard let unsure = state.unsure, unsure.dataEpoch == request.dataEpoch, unsure.actionId == request.actionId,
               unsure.optionId == request.optionId, unsure.input == request.input else { return request }
         return unsure
     }

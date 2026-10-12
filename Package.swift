@@ -1,4 +1,4 @@
-// swift-tools-version:6.2
+// swift-tools-version:6.4
 
 import PackageDescription
 
@@ -9,6 +9,7 @@ let package = Package(
         .macOS(.v26),
     ],
     dependencies: [
+        .package(url: "https://github.com/apple/swift-collections", exact: "1.6.0"),
         .package(
             url: "https://github.com/appstefan/HighlightSwift",
             exact: "1.1.0"
@@ -22,8 +23,8 @@ let package = Package(
             exact: "1.19.6"
         ),
         .package(
-            url: "https://github.com/pointfreeco/xctest-dynamic-overlay",
-            exact: "1.13.1"
+            url: "https://github.com/pointfreeco/swift-issue-reporting",
+            exact: "2.1.0"
         ),
     ]
 )

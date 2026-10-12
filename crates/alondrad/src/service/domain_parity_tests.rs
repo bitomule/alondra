@@ -313,7 +313,7 @@ async fn signed_loopback_and_sealed_service_share_reads_errors_and_command_recei
         "/pull-requests/missing/diff".to_owned(),
     ];
     for (index, path) in paths.iter().enumerate() {
-        let local = local_get(&client, &base, &phone_key, device_id, path).await;
+        let mut local = local_get(&client, &base, &phone_key, device_id, path).await;
         let remote = encrypted(
             &service,
             &phone_key,
@@ -323,6 +323,12 @@ async fn signed_loopback_and_sealed_service_share_reads_errors_and_command_recei
             json!({"method":"GET","path":path}),
         )
         .await;
+        if path == "/capabilities" {
+            assert!(local["body"].get("operation_results").is_none(),
+                "loopback does not expose encrypted transport receipts");
+            assert_eq!(remote["body"]["operation_results"], true);
+            local["body"]["operation_results"] = json!(true);
+        }
         assert_eq!(remote, local, "local/encrypted mismatch for {path}");
     }
     // This fixture intentionally has a v1 local Hub and a v2-only encrypted
@@ -576,8 +582,11 @@ async fn signed_loopback_and_sealed_service_share_reads_errors_and_command_recei
         pending_after_read + 1
     );
     let updated_path = "/capabilities";
+    let mut updated_local = local_get(&client, &base, &phone_key, device_id, updated_path).await;
+    assert!(updated_local["body"].get("operation_results").is_none());
+    updated_local["body"]["operation_results"] = json!(true);
     assert_eq!(
-        local_get(&client, &base, &phone_key, device_id, updated_path).await,
+        updated_local,
         encrypted(
             &service,
             &phone_key,

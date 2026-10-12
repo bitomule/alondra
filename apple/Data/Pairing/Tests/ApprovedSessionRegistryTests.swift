@@ -115,3 +115,35 @@ private func localPairing(_ mac: String) -> ApprovedServicePairing {
     #expect(created.count == 2)
     #expect(created.allSatisfy { !$0.stopped })
 }
+
+
+@Test @MainActor func logoutDuringAsyncSessionHydrationCannotPrepareOrPublishOldCapabilities() async throws {
+    let gate = PublicationGate()
+    var made: [SessionProbe] = []
+    var prepared: [String] = []
+    var committed: [String] = []
+    let registry = ApprovedSessionRegistry<SessionProbe>(make: { approved in
+        let session = SessionProbe(approved)
+        made.append(session)
+        if approved.ownerSub == "owner-a" { await gate.pause() }
+        return session
+    }, stop: { $0.stopped = true }, publish: { snapshot in
+        let mac = snapshot.selected?.approved.macID ?? "none"
+        prepared.append(mac)
+        return { committed.append(mac) }
+    }, clearPlatform: {})
+    let old = Task { try await registry.reconcile([sessionPairing("a")], verifiedSubject: "owner-a", preferred: nil) }
+    await gate.waitUntilEntered()
+    try await registry.clear()
+    try await registry.reconcile([sessionPairing("b", owner: "owner-b")], verifiedSubject: "owner-b", preferred: nil)
+    gate.resume()
+    await #expect(throws: CancellationError.self) { try await old.value }
+    #expect(prepared == ["b"], "old credentials never enter platform preparation after hydration")
+    #expect(committed == ["b"])
+    #expect(made.count == 2)
+    #expect(made[0].stopped)
+    #expect(!made[1].stopped)
+    #expect(registry.snapshot.selected?.approved.ownerSub == "owner-b")
+    try await registry.clear()
+    #expect(made[1].stopped)
+}

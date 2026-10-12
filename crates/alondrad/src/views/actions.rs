@@ -9,7 +9,7 @@ use alondra_core::domain::{
     InteractionId, InteractionPayload, MergeMethod, Refusal, Revision, Target, TaskId,
 };
 use alondra_core::views::{action_id::{ActionId, Verb}, Lang, Outcome, OutcomeKind, VIEWS_PROTOCOL, refusal_text};
-use axum::{extract::{rejection::JsonRejection, State}, http::StatusCode, response::{IntoResponse, Response}, Extension, Json};
+use axum::{extract::State, http::StatusCode, response::{IntoResponse, Response}, Extension, Json};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -71,16 +71,16 @@ pub(crate) fn approved_path(method: &str, path: &str) -> bool {
 pub(crate) async fn local(
     State(state): State<std::sync::Arc<crate::domain_bootstrap::DomainDaemon>>,
     signed: Option<Extension<crate::auth::Signed>>,
-    body: Result<Json<ActionRequest>, JsonRejection>,
+    body: axum::body::Bytes,
 ) -> Response {
     let home = crate::domain_api::DomainHost::home(&*state).to_owned();
     let Some(device) = crate::domain_bootstrap::signed_device(&home, &signed) else {
         return error("forbidden", "signed user device required");
     };
-    let Ok(Json(request)) = body else { return error("invalid_input", "invalid action request"); };
+    let Ok(request) = serde_json::from_slice::<ActionRequest>(&body) else { return error("invalid_input", "invalid action request"); };
     let domain = state.domain();
     let client = state.client();
-    execute(&domain, &client, &home, &device.device_id, request, None, || {
+    super::action_results::execute_recorded(&domain, &client, &home, &device, &body, request, || {
         crate::domain_bootstrap::signed_device(&home, &signed)
             .map(|_| ())
             .ok_or_else(|| anyhow::anyhow!("device approval was revoked"))
@@ -107,7 +107,7 @@ pub(crate) async fn relay(
     Ok(json!({"status":200,"body":response}))
 }
 
-async fn execute(
+pub(super) async fn execute(
     domain: &crate::domain_runtime::DomainRuntime,
     client: &crate::client_routes::Client,
     home: &std::path::Path,
@@ -275,6 +275,8 @@ pub(crate) struct LocalActions {
     slots: std::sync::Arc<tokio::sync::Semaphore>,
     workers: tokio::sync::Semaphore,
     resources: std::sync::Mutex<std::collections::HashMap<LocalActionResource, std::sync::Weak<tokio::sync::RwLock<()>>>>,
+    pub(super) journal_admissions: std::sync::Arc<tokio::sync::Semaphore>,
+    pub(super) journal_worker: std::sync::Arc<tokio::sync::Semaphore>,
 }
 impl Default for LocalActions {
     fn default() -> Self {
@@ -282,6 +284,8 @@ impl Default for LocalActions {
             receipts: Default::default(), gates: Default::default(),
             slots: std::sync::Arc::new(tokio::sync::Semaphore::new(1024)),
             workers: tokio::sync::Semaphore::new(2), resources: Default::default(),
+            journal_admissions: std::sync::Arc::new(tokio::sync::Semaphore::new(16)),
+            journal_worker: std::sync::Arc::new(tokio::sync::Semaphore::new(1)),
         }
     }
 }
@@ -1754,7 +1758,7 @@ fn error(code: &str, message: &str) -> Response {
     crate::domain_api::domain_error(DomainError::new(code, message))
 }
 
-fn is_uuid_v4(value: &str) -> bool {
+pub(super) fn is_uuid_v4(value: &str) -> bool {
     value.len() == 36
         && [8, 13, 18, 23]
             .into_iter()

@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 public enum LoopbackSessionError: Error, Equatable, Sendable {
@@ -91,6 +92,22 @@ public actor LoopbackSession: OperationAPI {
     /// without a durable outbox, absence is never proof that nothing was sent.
     public func outcome(requestID: String) -> LoopbackOutcome {
         outcomes[requestID] ?? .unknown
+    }
+
+    public func recover(_ request: APIRequest) async throws -> APIResponse {
+        guard active, request.method == "POST", request.path == "/actions", let body = request.body,
+              let object = try JSONSerialization.jsonObject(with: body) as? [String: Any],
+              let epoch = object["data_epoch"] as? String else { return .unknown }
+        let digest = SHA256.hash(data: body).map { String(format: "%02x", $0) }.joined()
+        let read = try APIRequest(endpoint: Endpoint<Data>.data(.get,
+            path: ["operation-results", request.operationID], query: [("digest", digest), ("data_epoch", epoch)]),
+            operationID: UUID().uuidString)
+        guard case let .completed(status, bytes) = try await perform(read), status == 200 else { return .unknown }
+        guard let result = try JSONSerialization.jsonObject(with: bytes) as? [String: Any],
+              result["request_id"] as? String == request.operationID,
+              result["digest"] as? String == digest, result["data_epoch"] as? String == epoch,
+              let response = result["response"] as? [String: Any] else { throw LoopbackSessionError.invalidResponse }
+        return .completed(status: 200, body: try JSONSerialization.data(withJSONObject: response, options: [.sortedKeys]))
     }
 
     public func perform(_ request: APIRequest) async throws -> APIResponse {
