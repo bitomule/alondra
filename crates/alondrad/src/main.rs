@@ -208,7 +208,7 @@ async fn run(diagnostic: Option<String>) -> Result<()> {
         // start the long-running workers or HTTP listener.
         let auth = Arc::new(auth::Auth::open(&config.home)?);
         let service = service::Service::open(&config.home, config.port, auth)?
-            .context("service is not configured; run alondra setup first")?;
+            .context("service is not configured; run alondra first")?;
         service.test_push(&device).await?;
         println!(
             "Encrypted diagnostic push accepted by APNs for {device}. Delivery and decryption must be confirmed on the device."
@@ -536,7 +536,7 @@ async fn run_domain(config: &Config) -> Result<()> {
             Ok(dir) => log!("node plugin {} brought up to date from {}", dir.display(), source.display()),
             Err(error) => log!("could not bring the node plugin up to date from {}: {error:#}", source.display()),
         },
-        None => log!("Alondra's node plugin was not found: run `alondra setup`"),
+        None => log!("Alondra's node plugin was not found: run `alondra doctor --fix`"),
     }
     tokio::spawn(mods_check::run(plugins::node()));
     tokio::spawn(node_revival::run(state_domain.clone()));

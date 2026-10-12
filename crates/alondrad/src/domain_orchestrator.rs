@@ -297,7 +297,7 @@ impl Executor {
             crate::plugins::dir(&self.claude_home, crate::plugins::ORCHESTRATOR),
             crate::plugins::dir(&self.claude_home, crate::plugins::NODE),
         ) else {
-            bail!("Required Alondra plugins are not installed; run alondra setup");
+            bail!("Required Alondra plugins are not installed; run alondra doctor --fix");
         };
         let run_id = process::uuid()?;
         let resume = runtime.session_id.is_some();

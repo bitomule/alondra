@@ -219,7 +219,7 @@ pub async fn launch(hub: &Hub, l: Launch, launcher: &impl Launcher) -> Result<Va
     let Some(plugin) = launcher.plugin() else {
         return Err((
             StatusCode::SERVICE_UNAVAILABLE,
-            "Alondra's plugin was not found: the Alondra marketplace is not registered in Claude Code. Run `alondra setup` in the Alondra repo.".into(),
+            "Alondra's plugin was not found: the Alondra marketplace is not registered in Claude Code. Run `alondra doctor --fix`.".into(),
         ));
     };
     let mut args = crate::options::launch_args(&l.name, l.permission_mode.as_deref(), l.model.as_deref(), &l.prompt, &l.options, l.request_id.as_deref(), &plugin);

@@ -1,0 +1,103 @@
+//! The new CLI with the real binary and no daemon: each `--json` command prints one document,
+//! the exit codes say who has to act (2 usage, 3 a person, 4 the daemon), and `config set`
+//! writes `config.toml` itself while the daemon is stopped.
+
+#[path = "../../test_support.rs"]
+mod test_support;
+
+use std::net::TcpListener;
+use std::process::{Command, Output};
+
+struct Mac {
+    root: test_support::Directory,
+    port: u16,
+}
+
+impl Mac {
+    fn new() -> Self {
+        let root = test_support::Directory::new();
+        std::fs::create_dir_all(root.join("home")).unwrap();
+        let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        Self { root, port }
+    }
+
+    fn run(&self, args: &[&str]) -> Output {
+        Command::new(env!("CARGO_BIN_EXE_alondra"))
+            .args(args)
+            .env_clear()
+            .env("HOME", &*self.root)
+            .env("ALONDRA_HOME", self.root.join("home"))
+            .env("ALONDRA_PORT", self.port.to_string())
+            .env("ALONDRA_LANG", "en")
+            .env("PATH", "/usr/bin:/bin")
+            .output()
+            .unwrap()
+    }
+
+    fn config(&self) -> String {
+        std::fs::read_to_string(self.root.join("home/config.toml")).unwrap_or_default()
+    }
+}
+
+fn document(output: &Output) -> serde_json::Value {
+    assert!(output.status.success(), "{output:?}");
+    serde_json::from_slice(&output.stdout).unwrap_or_else(|e| panic!("stdout is not one JSON document ({e}): {output:?}"))
+}
+
+#[test]
+fn each_json_command_prints_one_document_with_its_schema() {
+    let mac = Mac::new();
+    let list = document(&mac.run(&["config", "list", "--json"]));
+    assert_eq!((list["schema"].as_str(), list["ok"].as_bool()), (Some("alondra.config/1"), Some(true)));
+    assert_eq!(list["settings"]["port"], mac.port.to_string());
+    let one = document(&mac.run(&["--json", "config", "get", "port"]));
+    assert_eq!((one["key"].as_str(), one["value"].as_str()), (Some("port"), Some(mac.port.to_string().as_str())));
+    let relay = document(&mac.run(&["relay", "status", "--json"]));
+    assert_eq!((relay["schema"].as_str(), relay["on"].as_bool()), (Some("alondra.relay/1"), Some(false)));
+}
+
+#[test]
+fn exit_codes_say_who_has_to_act() {
+    let mac = Mac::new();
+    let usage = mac.run(&["answer", "q-1", "--json"]);
+    assert_eq!(usage.status.code(), Some(2), "{usage:?}");
+    assert!(String::from_utf8_lossy(&usage.stderr).contains("--json is not available for `answer`"), "{usage:?}");
+    let old = mac.run(&["setup"]);
+    assert_eq!(old.status.code(), Some(2), "{old:?}");
+    let stderr = String::from_utf8_lossy(&old.stderr);
+    assert!(stderr.contains("unrecognized subcommand 'setup'") && stderr.contains("Devices and Macs"), "the new help comes under the error: {stderr}");
+    let person = mac.run(&["--no-input", "relay", "on"]);
+    assert_eq!(person.status.code(), Some(3), "{person:?}");
+    assert!(String::from_utf8_lossy(&person.stderr).contains("alondra relay on in a terminal"), "{person:?}");
+    let down = mac.run(&["device", "list"]);
+    assert_eq!(down.status.code(), Some(4), "{down:?}");
+    assert!(String::from_utf8_lossy(&down.stderr).contains("alondra doctor --fix"), "{down:?}");
+}
+
+#[test]
+fn config_set_writes_the_file_while_the_daemon_is_stopped() {
+    let mac = Mac::new();
+    std::fs::write(mac.root.join("home/config.toml"), "auto_update = true\n").unwrap();
+    let set = mac.run(&["config", "set", "name", "Ada"]);
+    assert!(set.status.success(), "{set:?}");
+    assert!(mac.config().contains("name = \"Ada\"") && mac.config().contains("auto_update = true"), "{}", mac.config());
+    let refused = mac.run(&["config", "set", "port", "web"]);
+    assert_eq!(refused.status.code(), Some(1), "{refused:?}");
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("port takes a port number from 1 to 65535"), "{refused:?}");
+    let unknown = mac.run(&["config", "set", "auto_update", "false"]);
+    assert!(String::from_utf8_lossy(&unknown.stderr).contains("auto_update cannot be changed here"), "{unknown:?}");
+    assert!(mac.run(&["config", "unset", "name"]).status.success());
+    assert!(!mac.config().contains("name"), "{}", mac.config());
+    assert!(mac.config().contains("auto_update = true"));
+}
+
+#[test]
+fn help_more_lists_the_advanced_commands() {
+    let mac = Mac::new();
+    let more = mac.run(&["help", "more"]);
+    assert!(more.status.success(), "{more:?}");
+    let text = String::from_utf8_lossy(&more.stdout);
+    for command in ["cleanup", "models", "state", "delivery", "orchestrator"] {
+        assert!(text.contains(&format!("  {command}")), "{command}: {text}");
+    }
+}

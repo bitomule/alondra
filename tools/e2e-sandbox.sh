@@ -197,8 +197,8 @@ Synthetic phone (state in $dir/phones):
   $tool --sandbox $dir phone --mac 1 revoke
   $tool --sandbox $dir phone --mac 1 pair --direct
   $tool --sandbox $dir phone --mac 1 request --direct GET /capabilities
-A terminal paired directly (pairing requests: . <Mac home>/env && $dir/bin/alondra devices):
-  ALONDRA_HOME=$dir/client ALONDRA_SANDBOX=1 $dir/bin/alondra connect --host 127.0.0.1:$(direct_port 1)
+A terminal paired directly (pairing requests: . <Mac home>/env && $dir/bin/alondra device list):
+  ALONDRA_HOME=$dir/client ALONDRA_SANDBOX=1 $dir/bin/alondra mac connect --host 127.0.0.1:$(direct_port 1)
 
 Close probes with 'claude rm <id>' when done, then: make e2e-sandbox-stop
 EOF

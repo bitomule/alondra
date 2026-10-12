@@ -99,7 +99,7 @@ fn verify(
 }
 pub fn pair(mac: &str, owner: &str) -> Result<Profile> {
     println!(
-        "On destination {mac}, run `alondra pair` and copy its terminal invitation here. Approval must be entered on that destination Mac."
+        "On destination {mac}, run `alondra device invite` and copy its terminal invitation here. Approval must be entered on that destination Mac."
     );
     print!("Invitation JSON: ");
     io::stdout().flush()?;

@@ -1,35 +1,27 @@
-The hive from the terminal. With no arguments it opens the TUI.
-
 Usage: alondra [OPTIONS] [COMMAND]
 
-Commands:
-  delivery                  Inspect or explicitly resolve uncertain deliveries; Local by default
-  machines                  List Macs enrolled in your service account
-  connect                   Pair this terminal with another Mac: found on this network, at --host, or by Mac ID through the relay
-  login                     Sign in to the Alondra service in your browser
-  account                   Show the signed-in Alondra service account
-  logout                    Sign out of the Alondra service on this Mac
-  status                    Text summary: open questions, fleet and machine
-  models                    How each model the orchestrator chose did: outcomes, questions, time and cost
-  cleanup                   Close the sessions of finished tasks, also the ones stuck working, and the ones stopped without a task; free the tasks of stopped sessions
-  orchestrator-cancel       Stop the active orchestrator execution; inspect partial effects before retrying
-  orchestrator-acknowledge  Continue without replaying the interrupted batch after checking its effects
-  orchestrator-retry        Retry an ambiguous orchestrator run after checking its previous effects
-  answer                    Answer a question by its id; the text goes to the option that takes it
-  send                      Send a message to a Task's node (task id), a node (name, short id or session_id) or the orchestrator
-  cancel                    Cancel tasks by id
-  close                     Close a node's session (name, short id or session_id)
-  attach                    Open a node's terminal (← on an empty line, Ctrl+Z or /exit returns)
-  pair                      Pair an iPhone or iPad: shows a QR code with the public URL and a one-time code
-  devices                   Paired devices and pairing requests waiting on this Mac; --approve, --deny or --revoke one
-  doctor                    Check everything; --fix repairs or finishes the setup
-  update                    Install the newest release with Homebrew and wait until the daemon runs it
-  state                     Audit or safely rebuild the local event-derived state
-  setup                     Set up or repair Alondra: account login, Mac enrollment, daemon, Claude Code plugin and pairing
-  config                    Show the effective settings (environment > config.toml > default)
-  help                      Print this message or the help of the given subcommand(s)
+With no command, opens the terminal app — or sets up this Mac, the first time.
 
-Options:
-  -V, --version  Print the version of this terminal and of the service
-      --json     Machine-readable output
-  -h, --help     Print help
+Set up
+  doctor       Check everything; --fix repairs or finishes the setup
+  update       Install the newest release
+  config       Show or change settings  (list · get · set · unset)
+
+Daily
+  status       Questions, tasks and fleet, as text
+  answer       Answer a question
+  send         Send a message to a task, a node or the orchestrator
+  attach       Open a node's terminal
+  close        Close a node's session
+  cancel       Cancel tasks
+
+Devices and Macs
+  device       Devices that use a Mac  (list · approve · deny · remove · invite)
+  mac          The Macs this terminal uses  (list · connect · forget · reset-identity)
+  account      Your Alondra account  (status · login · logout)
+  relay        Notifications and access away from home  (status · on · off)
+
+More
+  cleanup · models · state · delivery · orchestrator      (alondra help more)
+
+Options: --json  --no-input  -V, --version  -h, --help

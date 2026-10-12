@@ -229,3 +229,39 @@ async fn a_web_page_on_this_mac_is_refused() {
     }
     assert!(!target.exists());
 }
+
+#[test]
+fn config_keys_are_written_and_say_whether_the_daemon_restarts() {
+    let mac = Mac::new();
+    let reply = write_config(&mac.alondra, &json!({"key": "port", "value": "47900"}));
+    assert_eq!((reply.status, &reply.body), (StatusCode::OK, &json!({"key": "port", "restart": true})));
+    let reply = write_config(&mac.alondra, &json!({"key": "name", "value": "Ada"}));
+    assert_eq!(reply.body["restart"], json!(false));
+    let file = std::fs::read_to_string(alondra_core::config::path_in(&mac.alondra)).unwrap();
+    assert!(file.contains("port = 47900") && file.contains("name = \"Ada\""), "{file}");
+    assert_eq!(write_config(&mac.alondra, &json!({"key": "name", "value": null})).status, StatusCode::OK);
+    assert!(!std::fs::read_to_string(alondra_core::config::path_in(&mac.alondra)).unwrap().contains("name"));
+    for (body, code) in [
+        (json!({"key": "auto_update", "value": "true"}), "unknown_key"),
+        (json!({"key": "port", "value": "web"}), "invalid_value"),
+    ] {
+        let reply = write_config(&mac.alondra, &body);
+        assert_eq!((reply.status, reply.body["error"].as_str()), (StatusCode::UNPROCESSABLE_ENTITY, Some(code)), "{body}");
+    }
+    assert_eq!(write_config(&mac.alondra, &json!({"key": "port", "value": "1", "extra": 1})).status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn only_this_macs_terminal_changes_config_keys() {
+    let fixture = Fixture::start().await;
+    let change = json!({"key": "public_url", "value": "https://mac.example"});
+    let (status, body) = fixture.send("PUT", "/settings/config", &change).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "a paired device may not: {body}");
+    let (status, _) = unsigned(&fixture, reqwest::Method::PUT, "/settings/config", Some(change.clone()), true).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "a web page on this Mac may not");
+    assert!(!alondra_core::config::path_in(&fixture.home).exists());
+    let (status, body) = unsigned(&fixture, reqwest::Method::PUT, "/settings/config", Some(change), false).await;
+    assert_eq!((status, &body), (StatusCode::OK, &json!({"key": "public_url", "restart": false})));
+    let file = std::fs::read_to_string(alondra_core::config::path_in(&fixture.home)).unwrap();
+    assert!(file.contains("public_url = \"https://mac.example\""), "{file}");
+}

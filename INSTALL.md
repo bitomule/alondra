@@ -30,7 +30,7 @@ Run every command from the root of this repo unless a step says otherwise.
 - Claude Code with background sessions (`claude --bg`), logged in.
 - `tmux` (Alondra wakes stopped nodes through it), `gh` (logged in, with access to
   `bitomule/alondra`), `jq`, and `tuicr` 0.26 or later (the TUI opens a
-  PR's diff in it; `alondra setup` installs it if it is missing).
+  PR's diff in it; `alondra doctor` says if it is missing).
 
 ```bash
 xcode-select --install 2>/dev/null; sudo xcodebuild -license accept
@@ -70,52 +70,51 @@ export PATH="$HOME/.local/bin:$PATH"
 **Check**
 
 ```bash
-command -v alondra alondrad; alondra --help | head -3; alondra config
+command -v alondra alondrad; alondra --help | head -3; alondra config list
 ```
 
-**Success:** both paths in `~/.local/bin`; the help text; `alondra config` prints the settings
+**Success:** both paths in `~/.local/bin`; the help text; `alondra config list` prints the settings
 in effect (defaults at this point: `port = 47800`, `listen = 127.0.0.1`).
 
-## 3. Configure: `alondra setup`
+## 3. Configure: `alondra`
 
-`alondra setup` writes `~/.alondra/config.toml` (and `apns.json` in step 4), installs the
-launchd service (`~/Library/LaunchAgents/dev.alondra.alondrad.plist`), adds this repo as a
-Claude Code plugin marketplace (alondrad finds the plugin there and loads it into each session
-it launches) and, at the end, shows the pairing QR. It does not enable the plugin for every
-Claude session; if an older install did, it turns that off with `claude plugin disable
-alondra@alondra --scope user`, which sets `"enabledPlugins": {"alondra@alondra": false}` in
-`~/.claude/settings.json`.
-It never asks when it gets `--no-input`, and `--dry-run` shows everything it would do.
+`alondra` on a Mac never set up runs the setup wizard: it asks for the projects folder (the one
+you run it from is the default) and whether to turn on the relay, writes
+`~/.alondra/config.toml`, installs the launchd service
+(`~/Library/LaunchAgents/dev.alondra.alondrad.plist`) and adds this repo as a Claude Code plugin
+marketplace (alondrad finds the plugin there and loads it into each session it launches). It
+does not enable the plugin for every Claude session; if an older install did, it turns that off
+with `claude plugin disable alondra@alondra --scope user`, which sets
+`"enabledPlugins": {"alondra@alondra": false}` in `~/.claude/settings.json`.
+Without a terminal, `alondra doctor --fix --no-input` does the same and never asks; plain
+`alondra doctor` shows what it would change without changing anything.
 
-Values to pass:
+Then set the values the wizard does not ask:
 
-- `--name`: the human's first name. The nodes address them by it.
-- For the iPhone to reach this Mac on the same Wi-Fi: `--listen 0.0.0.0` and
-  `--public-url http://<LocalHostName>.local:47800`, where `<LocalHostName>` is
+- `name`: the human's first name. The nodes address them by it.
+- For the iPhone to reach this Mac on the same Wi-Fi: `listen 0.0.0.0` and
+  `public_url http://<LocalHostName>.local:47800`, where `<LocalHostName>` is
   `scutil --get LocalHostName`. Anyone on that network can reach the port; use it on a network
   you trust. For access from outside home see step 6 instead.
 
-Leave pairing for step 5 (`--skip-pair`): the app is not on the iPhone yet.
-
 ```bash
+alondra doctor                      # what it would change
+alondra doctor --fix --no-input     # or plain `alondra` in a terminal
 H=$(scutil --get LocalHostName)
-alondra setup --no-input --name "<first name>" --listen 0.0.0.0 \
-  --public-url "http://$H.local:47800" --skip-pair --dry-run
+alondra config set name "<first name>"
+alondra config set listen 0.0.0.0
+alondra config set public_url "http://$H.local:47800"
 ```
 
-Read the plan it prints: one `would write …config.toml`, one `would write …plist`, `launchctl
-bootstrap` and `claude plugin marketplace add <this repo>` (plus `claude plugin disable
-alondra@alondra --scope user` on a Mac where an older install enabled it). If it says `Not touching anything, because:` it found an existing
-installation: show the lines to the human before using `--force`. Then run the same command
-without `--dry-run`.
+`config set listen` restarts the daemon so it listens on the new address.
 
 **Check**
 
 ```bash
-alondra config; curl -s http://127.0.0.1:47800/v1/health | jq .config; alondra doctor
+alondra config list; curl -s http://127.0.0.1:47800/v1/health | jq .config; alondra doctor
 ```
 
-**Success:** `alondra config` shows your `name`, `listen = 0.0.0.0`, `public_url`; the health
+**Success:** `alondra config list` shows your `name`, `listen = 0.0.0.0`, `public_url`; the health
 answer has the same values; `alondra doctor` shows ✓ for `config`, `alondrad`, `launchd`,
 `claude`, `plugin`, `tmux`, `tuicr`. Expected at this point: `!` for
 `apns` (step 4) and `pairing` (step 5). Only the sessions Alondra launches load the plugin;
@@ -175,31 +174,18 @@ for p in signing/*.mobileprovision; do security cms -D -i "$p" | plutil -extract
 matching the table, and `development` for the app profile (the extension profile has no
 `aps-environment`; an error on that line for it is fine).
 
-### 4b. APNs key
+### 4b. Notifications
 
-On https://developer.apple.com/account/resources/authkeys: Keys → + → name "Alondra APNs",
-check **Apple Push Notifications service (APNs)** → Continue → Register → Download. It can be
-downloaded only once. Note the **Key ID** (10 characters) and the **Team ID** (top right of
-the portal, or `Membership`).
+Notifications reach the iPhone through the Alondra relay, which holds the APNs key; the CLI no
+longer configures a key of your own:
 
 ```bash
-mkdir -p ~/.alondra && mv ~/Downloads/AuthKey_<KEYID>.p8 ~/.alondra/ && chmod 600 ~/.alondra/AuthKey_<KEYID>.p8
-alondra setup --no-input --apns-key-path ~/.alondra/AuthKey_<KEYID>.p8 \
-  --apns-key-id <KEYID> --apns-team-id <TEAMID> --apns-topic com.<you>.alondra --skip-pair
+alondra relay on
 ```
 
-It writes `~/.alondra/apns.json` (mode 600) and restarts the daemon so it loads the key.
+It signs in in the browser, registers this Mac and restarts the daemon.
 
-**Check**
-
-```bash
-alondra doctor | grep apns
-```
-
-**Success:** `✓ apns       apns.json for com.<you>.alondra` and `✓ apns push  Apple accepts
-the key (test token rejected as expected)`. `✗ apns push  Apple rejects the key:
-{"reason":"InvalidProviderToken"}` means the key ID, team ID and key file do not belong
-together: fix them and rerun the same setup command with `--force`.
+**Check:** `alondra relay status` says it is on and with which account.
 
 ### 4c. Signing file and the apps
 
@@ -245,17 +231,14 @@ Settings → General → VPN & Device Management → trust it.
 
 ## 5. Pair the iPhone
 
-```bash
-alondra pair
-```
-
-It prints a QR with the public URL and a one-time code (10 minutes, one use). On the iPhone:
-Alondra → Settings → Pair with Mac → scan. The Mac app's pairing window shows the same QR.
+Open Alondra on the iPhone on the same Wi-Fi: it finds this Mac, both screens show the same
+code, and you allow it on the Mac (the Mac app, the TUI or `alondra device approve <id>`). A
+device that is not on this network gets an invitation through the relay: `alondra device invite`.
 
 **Check**
 
 ```bash
-alondra devices; alondra doctor
+alondra device list; alondra doctor
 ```
 
 **Success:** the iPhone is listed; `alondra doctor` is all ✓ and exits with code 0. Last
@@ -271,8 +254,8 @@ makes the question appear on the iPhone with a notification.
 
   ```bash
   tailscale serve --https=443 --bg localhost:47800     # accept enabling HTTPS if it asks
-  alondra setup --no-input --force --listen 127.0.0.1 --public-url https://<mac>.<tailnet>.ts.net --skip-pair
-  alondra pair
+  alondra config set listen 127.0.0.1
+  alondra config set public_url https://<mac>.<tailnet>.ts.net
   ```
 
   **Check:** from the iPhone with Wi-Fi off, the app loads the fleet;
@@ -285,12 +268,12 @@ command that fixes it. It exits with 1 when any check is ✗.
 
 | Check | ✗ / ! means | Fix |
 |---|---|---|
-| `config` | `~/.alondra/config.toml` missing (! defaults) or invalid (✗) | `alondra setup`; or fix/remove the file |
-| `alondrad` | ✗ the daemon does not answer on the port. ! it answers with other settings than `config.toml` | `alondra setup`, `tail ~/.alondra/alondrad.log`; ! → `launchctl kickstart -k gui/$(id -u)/dev.alondra.alondrad` |
+| `config` | `~/.alondra/config.toml` missing (! defaults) or invalid (✗) | `alondra doctor --fix`; or fix/remove the file |
+| `alondrad` | ✗ the daemon does not answer on the port. ! it answers with other settings than `config.toml` | `alondra doctor --fix`, `tail ~/.alondra/alondrad.log`; ! → `launchctl kickstart -k gui/$(id -u)/dev.alondra.alondrad` |
 | `hooks` | the port is not 47800, so the plugin's hooks miss the daemon | remove `port` from `config.toml` and `ALONDRA_PORT` |
-| `launchd` | ✗ service not loaded; ! loaded but stopped (usually a crash at start) | `alondra setup`; read `~/.alondra/alondrad.log` |
+| `launchd` | ✗ service not loaded; ! loaded but stopped (usually a crash at start) | `alondra doctor --fix`; read `~/.alondra/alondrad.log` |
 | `claude` | Claude Code is not on `PATH` | install Claude Code |
-| `plugin` | ✗ the marketplace is not registered, so alondrad cannot load the plugin into its nodes; ! the plugin is enabled for every Claude session | ✗ → run from the repo: `claude plugin marketplace add "$PWD"`; ! → `alondra setup` (or the `claude plugin disable … --scope …` doctor prints) |
+| `plugin` | ✗ the marketplace is not registered, so alondrad cannot load the plugin into its nodes; ! the plugin is enabled for every Claude session | ✗ → run from the repo: `claude plugin marketplace add "$PWD"`; ! → `alondra doctor --fix` (or the `claude plugin disable … --scope …` doctor prints) |
 | `tmux` | tmux missing: stopped nodes cannot be woken | `brew install tmux` |
 | `apns` | ! no `apns.json`: no notifications. ✗ invalid file or the `.p8` is missing | step 4b |
 | `apns push` | Apple rejects the key (403) or answers oddly | check key ID, team ID and topic; rerun the step 4b setup command with `--force` |

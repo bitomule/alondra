@@ -443,7 +443,7 @@ fn respond(domain: &DomainRuntime, payload: &Value) -> Result<Reply> {
 pub(crate) const PAUSED_BY_USER: &str = "The user paused you: do nothing and end your turn; only the user can resume you.";
 
 const USER_KEY_FILE: &str = "tui-key.pem";
-const USER_ONLY_COMMANDS: &[&str] = &["answer", "send", "pair", "devices", "orchestrator-retry", "orchestrator-cancel", "orchestrator-acknowledge"];
+const USER_ONLY_COMMANDS: &[&str] = &["answer", "send", "device", "orchestrator"];
 
 /// Nodes share the user's account, so they could run the CLI that signs as the user. The
 /// plugin's hook refuses it; a determined node could still hide the command, which is why
@@ -455,11 +455,13 @@ pub(crate) fn forbidden_for_nodes(tool: Option<&str>, input: Option<&Value>) -> 
         "Bash" => {
             let command = field("command");
             let words: Vec<&str> = command.split(|c: char| c.is_whitespace() || matches!(c, ';' | '&' | '|' | '(' | ')' | '`')).filter(|w| !w.is_empty()).collect();
-            let runs_user_command = words
-                .windows(2)
-                .any(|w| (w[0] == "alondra" || w[0].ends_with("/alondra")) && USER_ONLY_COMMANDS.contains(&w[1]));
+            // Global flags such as --no-input may come before the command.
+            let runs_user_command = words.iter().enumerate()
+                .filter(|(_, w)| **w == "alondra" || w.ends_with("/alondra"))
+                .filter_map(|(at, _)| words[at + 1..].iter().find(|w| !w.starts_with('-')))
+                .any(|command| USER_ONLY_COMMANDS.contains(command));
             if runs_user_command {
-                return Some("Nodes cannot run `alondra answer`, `send`, `pair` or `devices`: they act as the user. Use your Alondra MCP tools (ask, present_result) instead.".into());
+                return Some("Nodes cannot run `alondra answer`, `send`, `device` or `orchestrator`: they act as the user. Use your Alondra MCP tools (ask, present_result) instead.".into());
             }
             let opens_home_database = words.iter().any(|w| *w == "sqlite3" || w.ends_with("/sqlite3"))
                 && words.iter().any(|w| w.contains(".alondra/"))
@@ -1266,7 +1268,9 @@ mod tests {
             "tool_name": tool, "tool_input": input});
         for (tool, input) in [
             ("Bash", json!({"command": "alondra answer 55 Merge"})),
-            ("Bash", json!({"command": "cd /tmp && ~/.local/bin/alondra orchestrator-retry"})),
+            ("Bash", json!({"command": "cd /tmp && ~/.local/bin/alondra orchestrator retry run-1 --confirm"})),
+            ("Bash", json!({"command": "alondra --no-input device approve req-1"})),
+            ("Bash", json!({"command": "alondra device invite"})),
             ("Read", json!({"file_path": "/Users/x/.alondra/tui-key.pem"})),
         ] {
             let (reply, result) = hook(&domain, pre("session-a", tool, &input), None).await;
@@ -1274,7 +1278,9 @@ mod tests {
             assert_eq!(reply["hookSpecificOutput"]["permissionDecision"], "deny", "{input}");
             assert_eq!(hook(&domain, pre("stranger", tool, &input), None).await.0, json!({}), "{input}");
         }
-        assert_eq!(hook(&domain, pre("session-a", "Bash", &json!({"command": "alondra status"})), None).await.0, json!({}));
+        for allowed in ["alondra status", "alondra --json mac list", "alondra doctor --json"] {
+            assert_eq!(hook(&domain, pre("session-a", "Bash", &json!({"command": allowed})), None).await.0, json!({}), "{allowed}");
+        }
     }
 
     #[tokio::test]

@@ -2,7 +2,7 @@ mod checks;
 mod devices_wait;
 mod projects;
 mod render;
-mod system;
+pub mod system;
 mod ui;
 mod wizard;
 
@@ -61,6 +61,11 @@ pub enum Action {
 impl Action {
     fn starts_service(self) -> bool {
         matches!(self, Action::InstallService | Action::ReplaceOtherService | Action::RestartService)
+    }
+
+    /// A browser sign-in: `--yes` cannot do it for a person who is not there.
+    fn needs_person(self) -> bool {
+        matches!(self, Action::SignIn | Action::EnableRelay)
     }
 
     fn progress(self) -> Option<&'static str> {
@@ -134,10 +139,41 @@ pub struct Env<'a> {
     pub deep: bool,
     /// The wizard on a Mac never set up: the projects folder and the relay are asked for.
     pub first_run: bool,
+    /// `--yes`: every repair that would ask is accepted, and the proposed folder taken.
+    pub yes: bool,
+    pub select: Selection,
+}
+
+/// The checks `--only` keeps or `--skip` leaves out, by id.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub enum Selection {
+    #[default]
+    All,
+    Only(Vec<String>),
+    Skip(Vec<String>),
+}
+
+impl Selection {
+    fn runs(&self, id: &str) -> bool {
+        match self {
+            Selection::All => true,
+            Selection::Only(ids) => ids.iter().any(|i| i == id),
+            Selection::Skip(ids) => !ids.iter().any(|i| i == id),
+        }
+    }
+}
+
+/// Every check id, in the order the checks run.
+pub fn check_ids() -> Vec<&'static str> {
+    checks::CHECKS.iter().map(|c| c.id).collect()
+}
+
+fn selected(env: &Env) -> Vec<&'static Check> {
+    checks::CHECKS.iter().filter(|c| env.select.runs(c.id)).collect()
 }
 
 pub fn diagnose(env: &Env) -> Vec<Outcome> {
-    checks::CHECKS.iter().filter_map(|c| (c.run)(env)).collect()
+    selected(env).into_iter().filter_map(|c| (c.run)(env)).collect()
 }
 
 pub struct Repair {
@@ -146,10 +182,11 @@ pub struct Repair {
 }
 
 /// The action a person agreed to (or an automatic one) for this outcome, or none.
-fn chosen(outcome: &Outcome, ui: &mut dyn Ui, applied: &[Action]) -> Result<Option<Action>, Cancelled> {
+fn chosen(env: &Env, outcome: &Outcome, ui: &mut dyn Ui, applied: &[Action]) -> Result<Option<Action>, Cancelled> {
     match &outcome.fix {
         Some(Fix::Auto(action)) => Ok(Some(*action)),
         Some(Fix::Ask { action, .. }) if applied.contains(action) => Ok(Some(*action)),
+        Some(Fix::Ask { action, .. }) if env.yes && (ui.has_person() || !action.needs_person()) => Ok(Some(*action)),
         Some(Fix::Ask { question, default, action, .. }) => Ok(ui.confirm(question, *default)?.filter(|yes| *yes).map(|_| *action)),
         _ => Ok(None),
     }
@@ -194,6 +231,8 @@ fn pick_folder(env: &Env, ui: &mut dyn Ui, question: &str, proposal: &projects::
     let home = env.sys.user_home();
     if let Some(why) = &proposal.refused {
         ui.note(std::slice::from_ref(why));
+    } else if env.yes {
+        return Ok(Some(proposal.folders[0].path.clone()));
     } else {
         let mut options: Vec<String> = proposal.folders.iter().map(|f| projects::label(f, &home)).collect();
         options.push(tr!("Other folder…", "Otra carpeta…").into());
@@ -236,7 +275,7 @@ fn fix_one(env: &Env, ui: &mut dyn Ui, outcome: &Outcome, applied: &mut Vec<Acti
             }
         });
     }
-    let Some(action) = chosen(outcome, ui, applied)? else { return Ok(false) };
+    let Some(action) = chosen(env, outcome, ui, applied)? else { return Ok(false) };
     if !applied.contains(&action) {
         apply(env, ui, action)?;
         applied.push(action);
@@ -250,7 +289,7 @@ fn fix_one(env: &Env, ui: &mut dyn Ui, outcome: &Outcome, applied: &mut Vec<Acti
 pub fn repair(env: &Env, ui: &mut dyn Ui) -> Result<Repair, Cancelled> {
     let (mut outcomes, mut applied, mut ran, mut touched) = (vec![], vec![], vec![], vec![]);
     let mut shown = 0;
-    for check in checks::CHECKS {
+    for check in selected(env) {
         if let Some(mut outcome) = (check.run)(env) {
             if outcome.status != Status::Pass && fix_one(env, ui, &outcome, &mut applied)? {
                 touched.push(check.id);
@@ -302,12 +341,18 @@ pub fn exit_code(outcomes: &[Outcome]) -> i32 {
 }
 
 /// Today's `{ok, checks:[{check,status,detail,fix}]}`, plus `schema`, `id`, `fixable` and
-/// `next_step`.
-pub fn report(outcomes: &[Outcome]) -> Value {
-    let checks: Vec<Value> = outcomes.iter().map(|o| json!({
-        "check": o.name, "id": o.id, "status": o.status.word(), "detail": o.detail,
-        "fix": o.fix.as_ref().map(Fix::text).unwrap_or_default(), "fixable": o.fixable(),
-    })).collect();
+/// `next_step`; the service check also says what `--fix` would install (`install`).
+pub fn report(outcomes: &[Outcome], install: Option<Value>) -> Value {
+    let checks: Vec<Value> = outcomes.iter().map(|o| {
+        let mut check = json!({
+            "check": o.name, "id": o.id, "status": o.status.word(), "detail": o.detail,
+            "fix": o.fix.as_ref().map(Fix::text).unwrap_or_default(), "fixable": o.fixable(),
+        });
+        if o.id == "service" && let Some(install) = &install {
+            check["install"] = install.clone();
+        }
+        check
+    }).collect();
     let next = outcomes.iter().find(|o| o.status == Status::Fail).map(Outcome::next_step).filter(|s| !s.is_empty());
     json!({"schema": "alondra.doctor/1", "ok": !outcomes.iter().any(|o| o.status == Status::Fail), "checks": checks, "next_step": next})
 }
@@ -331,7 +376,7 @@ fn most_recent(devices: &[Value]) -> Option<(String, String)> {
 pub fn test_push(env: &Env) -> TestPushReport {
     let refuse = |code, detail: &str, next: &str| TestPushReport { code, device: None, detail: detail.into(), next: Some(next.into()) };
     if !env.sys.service_config() || !env.sys.relay() {
-        return refuse(3, tr!("off — local network only", "desactivadas: solo red local"), "alondra setup --relay");
+        return refuse(3, tr!("off — local network only", "desactivadas: solo red local"), "alondra relay on");
     }
     if env.sys.health().is_err() {
         return refuse(4, tr!("Alondra isn't running.", "Alondra no está en marcha."), "alondra doctor --fix");
@@ -357,18 +402,20 @@ fn test_push_json(report: &TestPushReport) -> Value {
         "next_step": report.next})
 }
 
-#[derive(Default, Clone, Copy)]
+#[derive(Default, Clone)]
 pub struct Options {
     pub json: bool,
     pub fix: bool,
     pub deep: bool,
     pub test_push: bool,
     pub no_input: bool,
+    pub yes: bool,
+    pub select: Selection,
 }
 
 /// Questions need a person at a terminal: never with `--no-input`, `ALONDRA_NO_INPUT=1`, inside a
 /// session Alondra launched, or without a TTY.
-fn can_ask(no_input: bool) -> bool {
+pub fn can_ask(no_input: bool) -> bool {
     let set = |k: &str| std::env::var(k).is_ok_and(|v| !v.is_empty());
     !no_input
         && std::env::var("ALONDRA_NO_INPUT").as_deref() != Ok("1")
@@ -391,7 +438,7 @@ const WIDTH: usize = 26;
 /// `doctor`: prints its report and returns the exit code.
 fn check(options: Options) -> Result<i32> {
     let sys = system::Real::new();
-    let env = Env { sys: &sys, deep: options.deep, first_run: false };
+    let env = Env { sys: &sys, deep: options.deep, first_run: false, yes: options.yes, select: options.select.clone() };
     if options.test_push {
         let report = test_push(&env);
         if options.json {
@@ -424,7 +471,7 @@ fn check(options: Options) -> Result<i32> {
         diagnose(&env)
     };
     if options.json {
-        println!("{}", serde_json::to_string_pretty(&crate::version::with_warning(report(&outcomes)))?);
+        println!("{}", serde_json::to_string_pretty(&crate::version::with_warning(report(&outcomes, sys.install_target())))?);
     } else if !options.fix {
         for line in render::grouped(&header(), &outcomes) {
             println!("{line}");
@@ -444,7 +491,7 @@ pub fn run(options: Options) -> Result<()> {
 /// waits for a device to pair. Returns the exit code.
 fn wizard() -> i32 {
     let sys = system::Real::new();
-    let env = Env { sys: &sys, deep: false, first_run: true };
+    let env = Env { sys: &sys, deep: false, first_run: true, yes: false, select: Selection::All };
     let mut ui = ui::Interactive { width: WIDTH };
     ui.intro(&trf!("Alondra {CLI} · setting up this Mac", "Alondra {CLI} · configurando este Mac"));
     let finished = repair(&env, &mut ui).and_then(|repair| {

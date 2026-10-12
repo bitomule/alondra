@@ -65,7 +65,7 @@ pub fn ensure_ready(home: &Path) -> io::Result<()> {
     let value: serde_json::Value = serde_json::from_reader(file).map_err(io::Error::other)?;
     if value["version"] != 1 || value["phase"] != "committed" {
         return Err(io::Error::other(
-            "service recovery is pending; resume alondra setup --recover-service before starting the daemon",
+            "service recovery is pending; resume alondra mac reset-identity before starting the daemon",
         ));
     }
     Ok(())

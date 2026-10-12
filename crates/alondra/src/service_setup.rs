@@ -258,8 +258,8 @@ fn register_at(identity: &PublicMac, signing: &SigningKey, token: &str, relay: &
     match response.status().as_u16() {
         200 | 201 => Ok(()),
         401 => bail!(tr!(
-            "Mac enrollment refused the account token or signed proof; run `alondra login` and retry",
-            "el registro del Mac rechazó el token de la cuenta o la prueba firmada; ejecuta `alondra login` y reinténtalo"
+            "Mac enrollment refused the account token or signed proof; run `alondra account login` and retry",
+            "el registro del Mac rechazó el token de la cuenta o la prueba firmada; ejecuta `alondra account login` y reinténtalo"
         )),
         409 => bail!(tr!(
             "Mac identity already belongs to another key or account; explicit recovery is required",
@@ -340,6 +340,29 @@ fn add_relay(home: &Path, owner_sub: &str, relay: &str) -> Result<()> {
     Ok(())
 }
 
+/// Takes the relay out of `service.toml`, keeping this Mac's identity, keys and devices, so
+/// `add_relay` can put it back. Returns whether there was one to take out.
+pub fn remove_relay(home: &Path) -> Result<bool> {
+    let _home = alondra_core::home_lock::HomeLock::shared(home)?;
+    let _lock = alondra_core::service_config::ServiceConfigLock::exclusive(home)?;
+    let path = home.join(SERVICE_FILE);
+    if existing_paths(&path)?.is_none() {
+        return Ok(false);
+    }
+    let mut table: toml::Table = toml::from_str(&fs::read_to_string(&path)?)?;
+    let had = table.remove("relay_url").is_some();
+    table.remove("owner_sub");
+    if !had {
+        return Ok(false);
+    }
+    let temp = path.with_extension("toml.relay");
+    let mut file = OpenOptions::new().write(true).create_new(true).mode(0o600).open(&temp)?;
+    file.write_all(toml::to_string_pretty(&table)?.as_bytes())?;
+    file.sync_all()?;
+    fs::rename(&temp, &path)?;
+    Ok(true)
+}
+
 fn service_file_at(home: &Path, identity: &PublicMac, owner_sub: &str, write: bool, relay: &str) -> Result<bool> {
     let path = home.join(SERVICE_FILE);
     if let Some(existing) = existing_paths(&path)?
@@ -400,18 +423,10 @@ pub fn has_relay(home: &Path) -> Result<bool> {
     Ok(existing_paths(&home.join(SERVICE_FILE))?.is_some_and(|paths| paths.relay_url.is_some()))
 }
 
-/// Gives this Mac its service keys and a relay-free `service.toml`, so devices on the local
-/// network can pair with it. Returns whether the file is new and the daemon must restart.
-pub fn prepare_local(home: &Path) -> Result<bool> {
-    let (created, mac_id) = prepare_local_quietly(home)?;
-    if created {
-        println!("Mac {mac_id} is ready for devices on the local network.");
-    }
-    Ok(created)
-}
 
-/// `prepare_local` without a word on stdout, for `alondra doctor --fix --json`. Returns whether
-/// the file is new, and this Mac's id.
+/// Gives this Mac its service keys and a relay-free `service.toml`, so devices on the local
+/// network can pair with it; quiet, for `alondra doctor --fix --json`. Returns whether the file
+/// is new, and this Mac's id.
 pub fn prepare_local_quietly(home: &Path) -> Result<(bool, String)> {
     let _lock = alondra_core::home_lock::HomeLock::shared(home)?;
     alondra_core::home_lock::ensure_ready(home)?;
@@ -506,12 +521,38 @@ mod tests {
     }
 
     #[test]
+    fn relay_off_takes_out_only_the_relay_and_relay_on_puts_it_back() {
+        let home = crate::test_support::Directory::new();
+        fs::create_dir_all(&*home).unwrap();
+        let (_, mac_id) = prepare_local_quietly(&home).unwrap();
+        add_relay(&home, "owner", "https://relay.example").unwrap();
+        let path = home.join(SERVICE_FILE);
+        let mut table: toml::Table = toml::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        table.insert("devices".into(), toml::Value::Array(vec![toml::Value::String("phone".into())]));
+        fs::write(&path, toml::to_string_pretty(&table).unwrap()).unwrap();
+        let before = table.clone();
+
+        assert!(remove_relay(&home).unwrap());
+        let after: toml::Table = toml::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(!has_relay(&home).unwrap());
+        assert!(after.get("owner_sub").is_none());
+        for key in ["mac_id", "signing_key_path", "agreement_key_path", "devices"] {
+            assert_eq!(after.get(key), before.get(key), "{key}");
+        }
+        assert_eq!(after["mac_id"].as_str(), Some(mac_id.as_str()));
+        assert!(!remove_relay(&home).unwrap(), "a Mac without a relay has nothing to take out");
+
+        add_relay(&home, "owner", "https://relay.example").unwrap();
+        assert!(has_relay(&home).unwrap());
+    }
+
+    #[test]
     fn a_new_mac_is_ready_for_local_devices_without_an_account() {
         let scratch_directory = crate::test_support::Directory::new();
         let home = scratch_directory.parent().unwrap().join(format!("alondra-service-local-{}", SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()));
         fs::create_dir_all(&home).unwrap();
-        assert!(prepare_local(&home).unwrap());
-        assert!(!prepare_local(&home).unwrap());
+        assert!(prepare_local_quietly(&home).unwrap().0);
+        assert!(!prepare_local_quietly(&home).unwrap().0);
         let table: toml::Table = toml::from_str(&fs::read_to_string(home.join(SERVICE_FILE)).unwrap()).unwrap();
         assert!(table.get("relay_url").is_none() && table.get("owner_sub").is_none());
         assert!(table["mac_id"].as_str().unwrap().starts_with("mac-"));
@@ -524,7 +565,7 @@ mod tests {
         let scratch_directory = crate::test_support::Directory::new();
         let home = scratch_directory.parent().unwrap().join(format!("alondra-service-upgrade-{}", SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()));
         fs::create_dir_all(&home).unwrap();
-        prepare_local(&home).unwrap();
+        prepare_local_quietly(&home).unwrap();
         let (identity, _) = load_or_create_keys(&home).unwrap();
         let path = home.join(SERVICE_FILE);
         let with_device = fs::read_to_string(&path).unwrap().replace(
@@ -566,6 +607,6 @@ fn identity_base(home: &Path) -> Result<std::path::PathBuf> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RecoveryOutcome { Cancelled, Committed }
 
-pub fn recover(home: &Path, stop: impl FnOnce() -> Result<()>, input: &mut impl std::io::BufRead, output: &mut impl Write) -> Result<RecoveryOutcome> {
-    recovery::interactive(home, stop, input, output)
+pub fn recover(home: &Path, mac_name: &str, stop: impl FnOnce() -> Result<()>, input: &mut impl std::io::BufRead, output: &mut impl Write) -> Result<RecoveryOutcome> {
+    recovery::interactive(home, mac_name, stop, input, output)
 }

@@ -97,6 +97,10 @@ pub trait System {
     /// Applies one repair. Starting the service waits for the daemon to answer.
     fn apply(&self, action: Action) -> Result<()>;
     fn test_push(&self, device: &str) -> Result<()>;
+    /// The program, marketplace and Claude profile `--fix` would install the service with.
+    fn install_target(&self) -> Option<Value> {
+        None
+    }
 }
 
 pub fn command_output(mut command: Command, timeout: Duration) -> Option<(bool, String)> {
@@ -271,8 +275,18 @@ impl Real {
         }
     }
 
+    /// Restarts the daemon when it runs, so it reads what changed; a stopped one reads it on start.
+    pub fn restart_if_running(&self) -> Result<()> {
+        if self.daemon_answers() { self.start_service(Action::RestartService) } else { Ok(()) }
+    }
+
+    /// Installs the service under the label `config.toml` names now and retires the old one.
+    pub fn relabel_service(&self) -> Result<()> {
+        self.start_service(Action::ReplaceOtherService)
+    }
+
     /// The daemon reads the relay only when it starts.
-    fn enable_relay(&self) -> Result<()> {
+    pub fn enable_relay(&self) -> Result<()> {
         let running = self.daemon_answers();
         match &self.sandbox {
             Some(sandbox) => Sandbox::run(&sandbox.enroll, &self.home)?,
@@ -296,6 +310,10 @@ impl Real {
 impl System for Real {
     fn home(&self) -> PathBuf {
         self.home.clone()
+    }
+
+    fn install_target(&self) -> Option<Value> {
+        self.sandbox.is_none().then(|| self.install().target())
     }
 
     fn user_home(&self) -> PathBuf {

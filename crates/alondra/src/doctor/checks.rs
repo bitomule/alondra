@@ -290,9 +290,9 @@ pub fn hooks_port_check(port: u16) -> Option<Outcome> {
 pub fn apns_file_check(text: Option<&str>, key_exists: impl Fn(&Path) -> bool) -> Outcome {
     let Some(text) = text else {
         return outcome("notifications", "notifications", Group::Devices, Status::Warn,
-            tr!("off: no relay and no APNs key", "desactivadas: sin relay ni llave de APNs"), manual("alondra setup --relay"));
+            tr!("off: no relay and no APNs key", "desactivadas: sin relay ni llave de APNs"), manual("alondra relay on"));
     };
-    let fix = || manual(tr!("alondra setup --relay", "alondra setup --relay"));
+    let fix = || manual(tr!("alondra relay on", "alondra relay on"));
     match serde_json::from_str::<setup::Apns>(text) {
         Err(e) => outcome("notifications", "notifications", Group::Devices, Status::Fail,
             trf!("apns.json is not valid: {e}", "apns.json no es válido: {e}"), fix()),
@@ -312,7 +312,7 @@ pub fn apns_file_check(text: Option<&str>, key_exists: impl Fn(&Path) -> bool) -
 pub fn notifications_check(relay: bool, tested: Option<&super::system::TestPush>, devices: Option<&[Value]>) -> Outcome {
     if !relay {
         return outcome("notifications", "notifications", Group::Devices, Status::Warn,
-            tr!("off — local network only", "desactivadas: solo red local"), manual("alondra setup --relay"));
+            tr!("off — local network only", "desactivadas: solo red local"), manual("alondra relay on"));
     }
     let still_paired = |id: &str| devices.is_none_or(|list| list.iter().any(|d| d.get("id").and_then(Value::as_str) == Some(id)));
     match tested.filter(|t| still_paired(&t.device)) {
@@ -336,7 +336,7 @@ pub fn relay_check(on: bool) -> Outcome {
             "¿Activas las notificaciones y el acceso desde fuera de casa? Necesita una cuenta de Alondra y abre el navegador.").into(),
         default: true,
         action: Action::EnableRelay,
-        instead: "alondra setup --relay".into(),
+        instead: "alondra relay on".into(),
     }))
 }
 

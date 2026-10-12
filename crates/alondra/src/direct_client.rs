@@ -157,6 +157,18 @@ pub fn remember(home: &Path, mac: DirectMac) -> Result<()> {
     save_to(home, macs)
 }
 
+/// Removes the Macs named `name` (their id or their name, any case) from this terminal's list.
+/// Returns the ids it removed.
+pub fn forget(home: &Path, name: &str) -> Result<Vec<String>> {
+    let _lock = StoreLock::acquire(home)?;
+    let (gone, kept): (Vec<DirectMac>, Vec<DirectMac>) = load_from(home)?.into_iter()
+        .partition(|mac| mac.mac_id == name || mac.name.eq_ignore_ascii_case(name));
+    if !gone.is_empty() {
+        save_to(home, kept)?;
+    }
+    Ok(gone.into_iter().map(|mac| mac.mac_id).collect())
+}
+
 fn forget_routes_of_others(home: &Path, mac_id: &str, routes: &[String]) -> Result<()> {
     let _lock = StoreLock::acquire(home)?;
     let mut macs = load_from(home)?;
@@ -194,8 +206,8 @@ pub fn check(mac: &DirectMac, hello: &Hello) -> Check {
 
 fn key_changed(name: &str) -> anyhow::Error {
     anyhow!(trf!(
-        "The identity of {name} has changed: this terminal no longer trusts it. If you reinstalled that Mac, pair again with: alondra connect --repair",
-        "La identidad de {name} ha cambiado: este terminal ya no confía en él. Si has reinstalado ese Mac, vuelve a emparejar con: alondra connect --repair"
+        "The identity of {name} has changed: this terminal no longer trusts it. If you reinstalled that Mac, pair again with: alondra mac connect --repair",
+        "La identidad de {name} ha cambiado: este terminal ya no confía en él. Si has reinstalado ese Mac, vuelve a emparejar con: alondra mac connect --repair"
     ))
 }
 
@@ -314,8 +326,8 @@ impl Connection {
                 401 => Err(anyhow::Error::new(Answered {
                     status,
                     message: trf!(
-                        "{name} no longer accepts this terminal; pair again with: alondra connect",
-                        "{name} ya no acepta este terminal; vuelve a emparejar con: alondra connect"
+                        "{name} no longer accepts this terminal; pair again with: alondra mac connect",
+                        "{name} ya no acepta este terminal; vuelve a emparejar con: alondra mac connect"
                     ),
                 })),
                 409 => Ok((409, json!({"error": "idempotency_conflict"}))),
@@ -556,8 +568,8 @@ fn with_port(host: &str) -> String {
 fn choose(found: &[Found]) -> Result<Found> {
     if found.is_empty() {
         bail!(tr!(
-            "No Mac with Alondra found on this network. Is it on the same Wi-Fi? You can also use: alondra connect --host <address>",
-            "No he encontrado ningún Mac con Alondra en esta red. ¿Está en la misma Wi-Fi? También puedes usar: alondra connect --host <dirección>"
+            "No Mac with Alondra found on this network. Is it on the same Wi-Fi? You can also use: alondra mac connect --host <address>",
+            "No he encontrado ningún Mac con Alondra en esta red. ¿Está en la misma Wi-Fi? También puedes usar: alondra mac connect --host <dirección>"
         ));
     }
     for (index, mac) in found.iter().enumerate() {
@@ -571,7 +583,7 @@ fn choose(found: &[Found]) -> Result<Found> {
     found.get(index).cloned().context("no such Mac")
 }
 
-/// `alondra connect` without a Mac ID: find a Mac on this network (or use `--host`), compare the
+/// `alondra mac connect` without a Mac ID: find a Mac on this network (or use `--host`), compare the
 /// code on both screens, and keep the pairing once the Mac approves it.
 pub fn connect(host: Option<&str>, repair: bool) -> Result<()> {
     let home = crate::client::config().home.clone();
@@ -682,5 +694,19 @@ mod tests {
         fs::set_permissions(store_path(&home), fs::Permissions::from_mode(0o644)).unwrap();
         assert!(load_from(&home).is_err(), "a readable store is refused");
         fs::remove_dir_all(home).unwrap();
+    }
+    #[test]
+    fn forget_takes_a_mac_off_by_id_or_by_name_and_keeps_the_rest() {
+        let home = crate::test_support::Directory::new();
+        fs::create_dir_all(&*home).unwrap();
+        let named = |id: &str, name: &str| DirectMac { name: name.into(), ..mac(id, "sk", "ak") };
+        remember(&home, named("mac-a", "Mac mini")).unwrap();
+        remember(&home, named("mac-b", "Studio")).unwrap();
+        remember(&home, named("mac-c", "Work")).unwrap();
+        assert_eq!(forget(&home, "mac mini").unwrap(), ["mac-a"]);
+        assert_eq!(forget(&home, "mac-b").unwrap(), ["mac-b"]);
+        assert!(forget(&home, "Nowhere").unwrap().is_empty());
+        let left: Vec<String> = load_from(&home).unwrap().into_iter().map(|m| m.mac_id).collect();
+        assert_eq!(left, ["mac-c"]);
     }
 }

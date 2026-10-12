@@ -16,6 +16,8 @@ use crate::client_routes::Reply;
 
 pub(crate) const PATH: &str = "/settings";
 pub(crate) const FOLDERS: &str = "/settings/folders";
+/// The `config.toml` keys `alondra config set` changes; only this Mac's own CLI reaches it.
+pub(crate) const CONFIG: &str = "/settings/config";
 
 static WRITER: Mutex<()> = Mutex::new(());
 
@@ -85,6 +87,29 @@ pub(crate) fn write(home: &Path, user_home: &Path, relay_on: bool, body: &serde_
         return refused.reply(lang);
     }
     read(home, user_home, relay_on)
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ConfigChange {
+    key: String,
+    value: Option<String>,
+}
+
+/// Writes one key of `config.toml`, or takes it out with a null value. `restart` says whether the
+/// daemon reads it only when it starts, so the CLI restarts it.
+pub(crate) fn write_config(home: &Path, body: &serde_json::Value) -> Reply {
+    let Ok(change) = serde_json::from_value::<ConfigChange>(body.clone()) else {
+        return Reply { status: StatusCode::BAD_REQUEST, body: json!({"error": "invalid_input", "message": "invalid setting"}) };
+    };
+    let _writing = WRITER.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    use alondra_core::config::{SetError, restarts_daemon, set_key};
+    match set_key(home, &change.key, change.value.as_deref()) {
+        Ok(()) => Reply { status: StatusCode::OK, body: json!({"key": change.key, "restart": restarts_daemon(&change.key)}) },
+        Err(SetError::UnknownKey) => Reply { status: StatusCode::UNPROCESSABLE_ENTITY, body: json!({"error": "unknown_key", "message": change.key}) },
+        Err(SetError::Invalid) => Reply { status: StatusCode::UNPROCESSABLE_ENTITY, body: json!({"error": "invalid_value", "message": change.key}) },
+        Err(SetError::File(why)) => Reply { status: StatusCode::INTERNAL_SERVER_ERROR, body: json!({"error": "file", "message": why}) },
+    }
 }
 
 enum Refused {

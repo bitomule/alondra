@@ -85,7 +85,7 @@ impl ContextEnv {
             (vars.get("CLAUDE_CONFIG_DIR"), vars.get("CLAUDE_HOME"))
         {
             if config != watcher {
-                bail!(tr!("Claude profile variables disagree; rerun alondra setup with one profile", "las variables del perfil de Claude no coinciden; vuelve a ejecutar alondra setup con un único perfil"));
+                bail!(tr!("Claude profile variables disagree; run alondra doctor --fix with one profile", "las variables del perfil de Claude no coinciden; ejecuta alondra doctor --fix con un único perfil"));
             }
         }
         Ok(Self {
@@ -95,7 +95,7 @@ impl ContextEnv {
                 .unwrap_or_else(|| home.to_owned()),
             path: vars
                 .get("PATH")
-                .context("daemon plist has no PATH; rerun alondra setup")?
+                .context("daemon plist has no PATH; run alondra doctor --fix")?
                 .clone(),
             config_dir: vars
                 .get("CLAUDE_CONFIG_DIR")
@@ -109,7 +109,7 @@ impl ContextEnv {
         let executable = std::env::split_paths(&self.path).map(|p| p.join("claude")).find(|p| {
             use std::os::unix::fs::PermissionsExt;
             p.metadata().is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
-        }).context("Claude Code is missing from the daemon PATH; install Claude Code, then rerun alondra setup")?;
+        }).context("Claude Code is missing from the daemon PATH; install Claude Code, then run alondra doctor --fix")?;
         let username = effective_username()?;
         let mut command = Command::new(executable);
         command
@@ -159,8 +159,8 @@ impl ContextEnv {
             .context("could not start Claude login")?;
         if !wait(&mut child, Duration::from_secs(300))?.success() {
             bail!(tr!(
-                "Claude login did not finish; run `claude auth login`, then rerun `alondra setup`",
-                "el inicio de sesión de Claude no terminó; ejecuta `claude auth login` y vuelve a ejecutar `alondra setup`"
+                "Claude login did not finish; run `claude auth login`, then run `alondra doctor --fix`",
+                "el inicio de sesión de Claude no terminó; ejecuta `claude auth login` y ejecuta `alondra doctor --fix`"
             ));
         }
         Ok(())
@@ -184,7 +184,7 @@ fn wait(child: &mut std::process::Child, timeout: Duration) -> Result<std::proce
         if Instant::now() >= until {
             let _ = child.kill();
             let _ = child.wait();
-            bail!(tr!("Claude authentication command timed out; rerun alondra setup", "el comando de autenticación de Claude superó el tiempo de espera; vuelve a ejecutar alondra setup"));
+            bail!(tr!("Claude authentication command timed out; run alondra doctor --fix", "el comando de autenticación de Claude superó el tiempo de espera; ejecuta alondra doctor --fix"));
         }
         std::thread::sleep(Duration::from_millis(20));
     }
@@ -194,13 +194,13 @@ fn parse_status(success: bool, bytes: &[u8]) -> Result<bool> {
     if bytes.len() > 65536 {
         bail!(tr!("Claude authentication response too large", "la respuesta de autenticación de Claude es demasiado grande"));
     }
-    let value: serde_json::Value = serde_json::from_slice(bytes).map_err(|_| anyhow::anyhow!(tr!("Claude returned invalid authentication status; update Claude Code and rerun alondra setup", "Claude devolvió un estado de autenticación no válido; actualiza Claude Code y vuelve a ejecutar alondra setup")))?;
+    let value: serde_json::Value = serde_json::from_slice(bytes).map_err(|_| anyhow::anyhow!(tr!("Claude returned invalid authentication status; update Claude Code and run alondra doctor --fix", "Claude devolvió un estado de autenticación no válido; actualiza Claude Code y ejecuta alondra doctor --fix")))?;
     match value.get("loggedIn").and_then(serde_json::Value::as_bool) {
         Some(false) => Ok(false),
         Some(true) if success => Ok(true),
         _ => bail!(tr!(
-            "Claude authentication status could not be verified; update Claude Code and rerun alondra setup",
-            "no se pudo verificar el estado de autenticación de Claude; actualiza Claude Code y vuelve a ejecutar alondra setup"
+            "Claude authentication status could not be verified; update Claude Code and run alondra doctor --fix",
+            "no se pudo verificar el estado de autenticación de Claude; actualiza Claude Code y ejecuta alondra doctor --fix"
         )),
     }
 }
@@ -215,15 +215,15 @@ fn ensure_with(
     }
     if !interactive {
         bail!(tr!(
-            "Claude Code is not signed in. Run `claude auth login` for this Mac user, then rerun `alondra setup`",
-            "Claude Code no tiene la sesión iniciada. Ejecuta `claude auth login` con este usuario de Mac y vuelve a ejecutar `alondra setup`"
+            "Claude Code is not signed in. Run `claude auth login` for this Mac user, then run `alondra doctor --fix`",
+            "Claude Code no tiene la sesión iniciada. Ejecuta `claude auth login` con este usuario de Mac y ejecuta `alondra doctor --fix`"
         ));
     }
     login()?;
     if !status()? {
         bail!(tr!(
-            "Claude Code is still not signed in; complete `claude auth login` and rerun `alondra setup`",
-            "Claude Code sigue sin tener la sesión iniciada; completa `claude auth login` y vuelve a ejecutar `alondra setup`"
+            "Claude Code is still not signed in; complete `claude auth login` and run `alondra doctor --fix`",
+            "Claude Code sigue sin tener la sesión iniciada; completa `claude auth login` y ejecuta `alondra doctor --fix`"
         ));
     }
     Ok(())

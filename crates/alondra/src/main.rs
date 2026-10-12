@@ -7,6 +7,7 @@ mod i18n;
 mod attach;
 mod account;
 mod cli;
+mod commands;
 mod client;
 mod direct_client;
 mod claude_auth;
@@ -33,158 +34,156 @@ mod version;
 
 use std::time::Duration;
 
-use alondra_core::now_millis;
 use anyhow::Result;
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 use serde_json::json;
 
 use crate::client::Client;
 
+/// The `Examples:` block under a command's help.
+fn examples(lines: &[&str]) -> String {
+    let heading = tr!("Examples", "Ejemplos");
+    let body: Vec<String> = lines.iter().map(|line| format!("  {line}")).collect();
+    format!("{heading}:\n{}", body.join("\n"))
+}
+
 #[derive(Parser)]
-#[command(name = "alondra", about = tr!("The hive from the terminal. With no arguments it opens the TUI.", "La colmena desde la terminal. Sin argumentos abre la TUI."))]
+#[command(name = "alondra", about = tr!(
+    "With no command, opens the terminal app — or sets up this Mac, the first time.",
+    "Sin comando, abre la app de terminal; la primera vez, configura este Mac."
+))]
 struct Cli {
     #[arg(short = 'V', long, help = tr!("Print the version of this terminal and of the service", "Muestra la versión de este terminal y la del servicio"))]
     version: bool,
-    #[arg(long, requires = "version", help = tr!("Machine-readable output", "Salida para máquinas"))]
+    #[arg(long, global = true, help = tr!("Machine-readable output", "Salida para máquinas"))]
     json: bool,
+    #[arg(long, global = true, help = tr!("Never ask; what needs a person exits with 3", "No pregunta nunca; lo que necesita a una persona sale con 3"))]
+    no_input: bool,
     #[command(subcommand)]
     command: Option<Cmd>,
 }
 
 #[derive(Subcommand)]
 enum Cmd {
-    #[command(about = tr!("Inspect or explicitly resolve uncertain deliveries; Local by default", "Revisa o resuelve a mano las entregas inciertas; Local por defecto"))]
-    Delivery(delivery::Options),
-    #[command(about = tr!("List Macs enrolled in your service account", "Lista los Macs dados de alta en tu cuenta del servicio"))]
-    Machines,
-    #[command(about = tr!(
-        "Pair this terminal with another Mac: found on this network, at --host, or by Mac ID through the relay",
-        "Empareja este terminal con otro Mac: encontrado en esta red, en --host, o por ID de Mac a través del relay"
-    ))]
-    Connect {
-        mac: Option<String>,
-        #[arg(long, conflicts_with = "mac", help = tr!("Address of the Mac (IP or name, optional :port)", "Dirección del Mac (IP o nombre, :puerto opcional)"))]
-        host: Option<String>,
-        #[arg(long, help = tr!("Pair again even if this terminal already trusts that Mac", "Vuelve a emparejar aunque este terminal ya confíe en ese Mac"))]
-        repair: bool,
+    #[command(about = tr!("Check everything; --fix repairs or finishes the setup", "Lo comprueba todo; --fix arregla o termina la instalación"),
+        after_help = examples(&["alondra doctor", "alondra doctor --fix", "alondra doctor --fix --yes --only service"]))]
+    Doctor {
+        #[arg(long, help = tr!("Repair what it can, asking what it needs", "Arregla lo que puede y pregunta lo que necesita"))]
+        fix: bool,
+        #[arg(long, requires = "fix", help = tr!("Accept every repair that would ask, and the proposed projects folder", "Acepta cada arreglo que preguntaría, y la carpeta de proyectos propuesta"))]
+        yes: bool,
+        #[arg(long, value_delimiter = ',', conflicts_with = "skip", value_parser = clap::builder::PossibleValuesParser::new(doctor::check_ids()),
+            help = tr!("Run only these checks, by id", "Solo estas comprobaciones, por id"))]
+        only: Vec<String>,
+        #[arg(long, value_delimiter = ',', value_parser = clap::builder::PossibleValuesParser::new(doctor::check_ids()),
+            help = tr!("Leave out these checks, by id", "Sin estas comprobaciones, por id"))]
+        skip: Vec<String>,
+        #[arg(long, help = tr!("Also run the slow checks (the node mod, up to 3 minutes)", "Ejecuta también las comprobaciones lentas (el mod de nodo, hasta 3 minutos)"))]
+        deep: bool,
+        #[arg(long, conflicts_with_all = ["fix", "deep"], help = tr!("Send a test notification to the device used most recently", "Envía una notificación de prueba al dispositivo usado más recientemente"))]
+        test_push: bool,
     },
-    #[command(about = tr!("Sign in to the Alondra service in your browser", "Inicia sesión en el servicio Alondra desde el navegador"))]
-    Login,
-    #[command(about = tr!("Show the signed-in Alondra service account", "Muestra la cuenta conectada al servicio Alondra"))]
-    Account,
-    #[command(about = tr!("Sign out of the Alondra service on this Mac", "Cierra la sesión del servicio Alondra en este Mac"))]
-    Logout,
-    #[command(about = tr!("Text summary: open questions, fleet and machine", "Resumen en texto: preguntas abiertas, flota y máquina"))]
+    #[command(about = tr!("Install the newest release", "Instala la última versión"),
+        long_about = tr!("Install the newest release with Homebrew and wait until the daemon runs it", "Instala la última versión con Homebrew y espera a que el servidor la ejecute"),
+        after_help = examples(&["alondra update", "alondra update --check"]))]
+    Update {
+        #[arg(long, help = tr!("Only say whether a newer release exists", "Solo dice si hay una versión más nueva"))]
+        check: bool,
+    },
+    #[command(about = tr!("Show or change settings", "Enseña o cambia los ajustes"),
+        after_help = examples(&["alondra config list", "alondra config set projects_root ~/Developer", "alondra config unset port"]))]
+    Config {
+        #[command(subcommand)]
+        command: ConfigCmd,
+    },
+    #[command(about = tr!("Questions, tasks and fleet, as text", "Preguntas, tareas y flota, en texto"),
+        after_help = examples(&["alondra status"]))]
     Status,
-    #[command(about = tr!("How each model the orchestrator chose did: outcomes, questions, time and cost", "Cómo le fue a cada modelo que eligió el orquestador: resultados, preguntas, tiempo y coste"))]
-    Models {
-        #[arg(long, help = tr!("Only launches in this period, like 7d, 12h or 2w", "Solo los lanzamientos de este periodo, como 7d, 12h o 2w"))]
-        since: Option<String>,
-        #[arg(long, help = tr!("Machine-readable output", "Salida para máquinas"))]
-        json: bool,
-    },
-    #[command(about = tr!("Close the sessions of finished tasks, also the ones stuck working, and the ones stopped without a task; free the tasks of stopped sessions", "Cierra las sesiones de tareas terminadas, también las atascadas trabajando, y las paradas sin tarea; libera las tareas de sesiones paradas"))]
-    Cleanup {
-        #[arg(long, help = tr!("Only show what it would close", "Solo enseña lo que cerraría"))]
-        dry_run: bool,
-        #[arg(long, help = tr!("Machine-readable output", "Salida para máquinas"))]
-        json: bool,
-    },
-    #[command(about = tr!("Stop the active orchestrator execution; inspect partial effects before retrying", "Para la ejecución activa del orquestador; revisa los efectos parciales antes de reintentar"))]
-    OrchestratorCancel { run_id: String },
-    #[command(about = tr!("Continue without replaying the interrupted batch after checking its effects", "Sigue sin repetir el lote interrumpido después de revisar sus efectos"))]
-    OrchestratorAcknowledge { run_id: String, #[arg(long, required = true)] confirm: bool },
-    #[command(about = tr!("Retry an ambiguous orchestrator run after checking its previous effects", "Reintenta una ejecución dudosa del orquestador después de revisar sus efectos anteriores"))]
-    OrchestratorRetry { run_id: String, #[arg(long, required = true, help = tr!("Confirm that replay may repeat actions from this execution", "Confirma que repetirla puede repetir acciones de esta ejecución"))] confirm: bool },
-    #[command(about = tr!("Answer a question by its id; the text goes to the option that takes it", "Contesta una pregunta por su id; el texto va a la opción que lo admite"))]
+    #[command(about = tr!("Answer a question", "Contesta una pregunta"),
+        long_about = tr!("Answer a question by its id; the text goes to the option that takes it", "Contesta una pregunta por su id; el texto va a la opción que lo admite"),
+        after_help = examples(&["alondra answer q-12 --option 1", "alondra answer q-12 Use the staging database"]))]
     Answer {
         id: String,
         #[arg(long, help = tr!("Option number or id", "Número o id de la opción"))]
         option: Option<String>,
         text: Vec<String>,
     },
-    #[command(about = tr!("Send a message to a Task's node (task id), a node (name, short id or session_id) or the orchestrator", "Manda un mensaje al nodo de una tarea (id de tarea), a un nodo (nombre, id corto o session_id) o al orquestador"),
-        long_about = tr!("Send a message to a Task's node (task id), a node (name, short id or session_id) or the orchestrator (orchestrator, or the id of the session it runs in). Anything about one task in progress goes to its task id, not to the orchestrator. A message to the orchestrator is maintenance: it acts on it and the user gets no card, unless --reply asks for an answer.", "Manda un mensaje al nodo de una tarea (id de tarea), a un nodo (nombre, id corto o session_id) o al orquestador (orchestrator, o el id de la sesión en la que corre). Lo que trata de una tarea en marcha va a su id de tarea, no al orquestador. Un mensaje al orquestador es de mantenimiento: actúa y el usuario no recibe tarjeta, salvo que --reply pida respuesta."))]
+    #[command(about = tr!("Send a message to a task, a node or the orchestrator", "Manda un mensaje a una tarea, a un nodo o al orquestador"),
+        long_about = tr!("Send a message to a Task's node (task id), a node (name, short id or session_id) or the orchestrator (orchestrator, or the id of the session it runs in). Anything about one task in progress goes to its task id, not to the orchestrator. A message to the orchestrator is maintenance: it acts on it and the user gets no card, unless --reply asks for an answer.", "Manda un mensaje al nodo de una tarea (id de tarea), a un nodo (nombre, id corto o session_id) o al orquestador (orchestrator, o el id de la sesión en la que corre). Lo que trata de una tarea en marcha va a su id de tarea, no al orquestador. Un mensaje al orquestador es de mantenimiento: actúa y el usuario no recibe tarjeta, salvo que --reply pida respuesta."),
+        after_help = examples(&["alondra send t-login-fix Use the new endpoint", "alondra send orchestrator --reply Why is this task waiting?"]))]
     Send {
         node: String,
         #[arg(long, help = tr!("The orchestrator answers the user with a card", "El orquestador responde al usuario con una tarjeta"))]
         reply: bool,
         text: Vec<String>,
     },
-    #[command(about = tr!("Cancel tasks by id", "Cancela tareas por su id"))]
+    #[command(about = tr!("Open a node's terminal", "Abre el terminal de un nodo"),
+        long_about = tr!("Open a node's terminal (← on an empty line, Ctrl+Z or /exit returns)", "Abre el terminal de un nodo (← con la línea vacía, Ctrl+Z o /exit vuelven)"),
+        after_help = examples(&["alondra attach login-fix"]))]
+    Attach { node: String },
+    #[command(about = tr!("Close a node's session", "Cierra la sesión de un nodo"),
+        long_about = tr!("Close a node's session (name, short id or session_id)", "Cierra la sesión de un nodo (nombre, id corto o session_id)"),
+        after_help = examples(&["alondra close login-fix"]))]
+    Close { node: String },
+    #[command(about = tr!("Cancel tasks", "Cancela tareas"),
+        long_about = tr!("Cancel tasks by id", "Cancela tareas por su id"),
+        after_help = examples(&["alondra cancel t-1 t-2 --reason \"Done elsewhere\""]))]
     Cancel {
         #[arg(required = true)]
         tasks: Vec<String>,
         #[arg(long, help = tr!("Why, shown with each task", "Por qué, se muestra en cada tarea"))]
         reason: Option<String>,
     },
-    #[command(about = tr!("Close a node's session (name, short id or session_id)", "Cierra la sesión de un nodo (nombre, id corto o session_id)"))]
-    Close { node: String },
-    #[command(about = tr!("Open a node's terminal (← on an empty line, Ctrl+Z or /exit returns)", "Abre el terminal de un nodo (← con la línea vacía, Ctrl+Z o /exit vuelven)"))]
-    Attach { node: String },
-    #[command(about = tr!(
-        "Pair an iPhone or iPad: shows a QR code with the public URL and a one-time code",
-        "Vincula un iPhone o iPad: enseña un QR con la URL pública y un código de un solo uso"
-    ))]
-    Pair {
-        #[arg(long, help = tr!(
-            "Public URL the device uses to reach the Mac (default: public_url from config.toml)",
-            "URL pública por la que el dispositivo llega al Mac (por defecto: public_url de config.toml)"
-        ))]
-        url: Option<String>,
+    #[command(about = tr!("Devices that use a Mac", "Dispositivos que usan un Mac"),
+        after_help = examples(&["alondra device list", "alondra device approve <id>", "alondra device invite"]))]
+    Device {
+        #[command(subcommand)]
+        command: DeviceCmd,
     },
-    #[command(about = tr!(
-        "Paired devices and pairing requests waiting on this Mac; --approve, --deny or --revoke one",
-        "Dispositivos vinculados y peticiones de emparejamiento pendientes en este Mac; --approve, --deny o --revoke uno"
-    ))]
-    Devices {
-        #[arg(long, help = tr!("Id of the device to unpair", "Id del dispositivo que se desvincula"))]
-        revoke: Option<String>,
-        #[arg(long, conflicts_with_all = ["revoke", "deny"], help = tr!("Id of the pairing request to approve", "Id de la petición de emparejamiento que se aprueba"))]
-        approve: Option<String>,
-        #[arg(long, conflicts_with_all = ["revoke", "approve"], help = tr!("Id of the pairing request to deny", "Id de la petición de emparejamiento que se rechaza"))]
-        deny: Option<String>,
+    #[command(about = tr!("The Macs this terminal uses", "Los Macs que usa este terminal"),
+        after_help = examples(&["alondra mac list", "alondra mac connect --host 192.168.1.20", "alondra mac forget <mac>"]))]
+    Mac {
+        #[command(subcommand)]
+        command: MacCmd,
     },
-    #[command(about = tr!(
-        "Check everything; --fix repairs or finishes the setup",
-        "Lo comprueba todo; --fix arregla o termina la instalación"
-    ))]
-    Doctor {
-        #[arg(long, help = tr!("Machine-readable output", "Salida para máquinas"))]
-        json: bool,
-        #[arg(long, help = tr!("Repair what it can, asking what it needs", "Arregla lo que puede y pregunta lo que necesita"))]
-        fix: bool,
-        #[arg(long, help = tr!("Also run the slow checks (the node mod, up to 3 minutes)", "Ejecuta también las comprobaciones lentas (el mod de nodo, hasta 3 minutos)"))]
-        deep: bool,
-        #[arg(long, conflicts_with_all = ["fix", "deep"], help = tr!("Send a test notification to the device used most recently", "Envía una notificación de prueba al dispositivo usado más recientemente"))]
-        test_push: bool,
-        #[arg(long, help = tr!("Never ask; what needs a person exits with 3", "No pregunta nunca; lo que necesita a una persona sale con 3"))]
-        no_input: bool,
+    #[command(about = tr!("Your Alondra account", "Tu cuenta de Alondra"),
+        after_help = examples(&["alondra account status", "alondra account login"]))]
+    Account {
+        #[command(subcommand)]
+        command: AccountCmd,
     },
-    #[command(about = tr!(
-        "Install the newest release with Homebrew and wait until the daemon runs it",
-        "Instala la última versión con Homebrew y espera a que el servidor la ejecute"
-    ))]
-    Update {
-        #[arg(long, help = tr!("Only say whether a newer release exists", "Solo dice si hay una versión más nueva"))]
-        check: bool,
+    #[command(about = tr!("Notifications and access away from home", "Notificaciones y acceso fuera de casa"),
+        after_help = examples(&["alondra relay status", "alondra relay on"]))]
+    Relay {
+        #[command(subcommand)]
+        command: RelayCmd,
     },
-    #[command(about = tr!("Audit or safely rebuild the local event-derived state", "Audita o reconstruye de forma segura el estado local derivado de eventos"))]
+    #[command(about = tr!("Close the sessions of finished tasks, also the ones stuck working, and the ones stopped without a task; free the tasks of stopped sessions", "Cierra las sesiones de tareas terminadas, también las atascadas trabajando, y las paradas sin tarea; libera las tareas de sesiones paradas"),
+        after_help = examples(&["alondra cleanup --dry-run", "alondra cleanup"]))]
+    Cleanup {
+        #[arg(long, help = tr!("Only show what it would close", "Solo enseña lo que cerraría"))]
+        dry_run: bool,
+    },
+    #[command(about = tr!("How each model the orchestrator chose did: outcomes, questions, time and cost", "Cómo le fue a cada modelo que eligió el orquestador: resultados, preguntas, tiempo y coste"),
+        after_help = examples(&["alondra models --since 7d"]))]
+    Models {
+        #[arg(long, help = tr!("Only launches in this period, like 7d, 12h or 2w", "Solo los lanzamientos de este periodo, como 7d, 12h o 2w"))]
+        since: Option<String>,
+    },
+    #[command(about = tr!("Audit or safely rebuild the local event-derived state", "Audita o reconstruye de forma segura el estado local derivado de eventos"),
+        after_help = examples(&["alondra state audit"]))]
     State {
         #[command(subcommand)]
         command: StateCmd,
     },
-    #[command(about = tr!(
-        "Set up or repair Alondra: account login, Mac enrollment, daemon, Claude Code plugin and pairing",
-        "Configura o repara Alondra: login, alta del Mac, daemon, plugin de Claude Code y vinculación"
-    ))]
-    Setup(Box<setup::Args>),
-    #[command(about = tr!("Show the effective settings (environment > config.toml > default)", "Enseña los ajustes en vigor (entorno > config.toml > por defecto)"))]
-    Config {
-        #[arg(long, help = tr!("Print a single value", "Imprime un solo valor"))]
-        get: Option<String>,
+    #[command(about = tr!("Inspect or explicitly resolve uncertain deliveries; Local by default", "Revisa o resuelve a mano las entregas inciertas; Local por defecto"),
+        after_help = examples(&["alondra delivery list"]))]
+    Delivery(delivery::Options),
+    #[command(about = tr!("Stop, acknowledge or retry an orchestrator run", "Para, da por resuelta o reintenta una ejecución del orquestador"),
+        after_help = examples(&["alondra orchestrator retry <run-id> --confirm"]))]
+    Orchestrator {
         #[command(subcommand)]
-        command: Option<ConfigCmd>,
+        command: OrchestratorCmd,
     },
     /// Node MCP server, started by the node plugin.
     #[command(hide = true)]
@@ -198,9 +197,6 @@ enum Cmd {
         #[command(subcommand)]
         command: node::Cmd,
     },
-    /// Retired: sessions started with an older plugin still call it from their Stop hook
-    #[command(hide = true)]
-    Inbox,
     /// Local Claude Code hook transport; the daemon remains the sole state writer.
     #[command(hide = true)]
     Hook,
@@ -211,11 +207,93 @@ enum Cmd {
 
 #[derive(Subcommand)]
 enum ConfigCmd {
+    #[command(about = tr!("Every setting in effect (environment > config.toml > default)", "Todos los ajustes en vigor (entorno > config.toml > por defecto)"))]
+    List,
+    #[command(about = tr!("One setting's value", "El valor de un ajuste"))]
+    Get { key: String },
     #[command(about = tr!(
-        "Change a setting through the daemon: max_working_nodes <auto|1-12>",
-        "Cambia un ajuste a través del daemon: max_working_nodes <auto|1-12>"
+        "Change a setting: name, projects_root, public_url, listen, port, wake, retention_hours, service_label or max_working_nodes",
+        "Cambia un ajuste: name, projects_root, public_url, listen, port, wake, retention_hours, service_label o max_working_nodes"
     ))]
     Set { key: String, value: String },
+    #[command(about = tr!("Put a setting back to its default", "Devuelve un ajuste a su valor por defecto"))]
+    Unset { key: String },
+}
+
+#[derive(Subcommand)]
+enum DeviceCmd {
+    #[command(about = tr!("Paired devices and pairing requests waiting on this Mac", "Dispositivos vinculados y peticiones de emparejamiento pendientes en este Mac"))]
+    List,
+    #[command(about = tr!("Let a device that asked to pair use this Mac", "Deja usar este Mac a un dispositivo que pidió emparejarse"))]
+    Approve { id: String },
+    #[command(about = tr!("Refuse a pairing request", "Rechaza una petición de emparejamiento"))]
+    Deny { id: String },
+    #[command(about = tr!("Unpair a device", "Desvincula un dispositivo"))]
+    Remove { id: String },
+    #[command(about = tr!("Invite a device that is not on this network, through the relay", "Invita a un dispositivo que no está en esta red, a través del relay"))]
+    Invite,
+}
+
+#[derive(Subcommand)]
+enum MacCmd {
+    #[command(about = tr!("This Mac and the Macs this terminal is connected to", "Este Mac y los Macs a los que está conectado este terminal"))]
+    List,
+    #[command(about = tr!(
+        "Connect this terminal to another Mac: found on this network, at --host, or by Mac ID through the relay",
+        "Conecta este terminal con otro Mac: encontrado en esta red, en --host, o por ID de Mac a través del relay"
+    ))]
+    Connect {
+        mac: Option<String>,
+        #[arg(long, conflicts_with = "mac", help = tr!("Address of the Mac (IP or name, optional :port)", "Dirección del Mac (IP o nombre, :puerto opcional)"))]
+        host: Option<String>,
+        #[arg(long, help = tr!("Pair again even if this terminal already trusts that Mac", "Vuelve a emparejar aunque este terminal ya confíe en ese Mac"))]
+        repair: bool,
+    },
+    #[command(about = tr!("Take a Mac off this terminal's list", "Quita un Mac de la lista de este terminal"))]
+    Forget { mac: String },
+    #[command(about = tr!(
+        "Give this Mac's service a new identity; every device pairs again. Asks you to type the Mac's name",
+        "Da una identidad nueva al servicio de este Mac; todos los dispositivos se vuelven a emparejar. Pide escribir el nombre del Mac"
+    ))]
+    ResetIdentity,
+}
+
+#[derive(Subcommand)]
+enum AccountCmd {
+    #[command(about = tr!("Who is signed in", "Quién tiene la sesión iniciada"))]
+    Status,
+    #[command(about = tr!("Sign in in your browser", "Inicia sesión en el navegador"))]
+    Login,
+    #[command(about = tr!("Sign out on this Mac", "Cierra la sesión en este Mac"))]
+    Logout,
+}
+
+#[derive(Subcommand)]
+enum RelayCmd {
+    #[command(about = tr!("Whether it is on, and with which account", "Si está activado y con qué cuenta"))]
+    Status,
+    #[command(about = tr!("Turn it on: sign in in your browser and register this Mac", "Actívalo: inicia sesión en el navegador y da de alta este Mac"))]
+    On,
+    #[command(about = tr!("Turn it off: devices reach this Mac only on the local network", "Desactívalo: los dispositivos solo llegan a este Mac por la red local"))]
+    Off,
+}
+
+#[derive(Subcommand)]
+enum OrchestratorCmd {
+    #[command(about = tr!("Stop the active orchestrator execution; inspect partial effects before retrying", "Para la ejecución activa del orquestador; revisa los efectos parciales antes de reintentar"))]
+    Cancel { run_id: String },
+    #[command(about = tr!("Continue without replaying the interrupted batch after checking its effects", "Sigue sin repetir el lote interrumpido después de revisar sus efectos"))]
+    Acknowledge {
+        run_id: String,
+        #[arg(long, required = true, help = tr!("Confirm that you checked the batch's effects", "Confirma que revisaste los efectos del lote"))]
+        confirm: bool,
+    },
+    #[command(about = tr!("Retry an ambiguous orchestrator run after checking its previous effects", "Reintenta una ejecución dudosa del orquestador después de revisar sus efectos anteriores"))]
+    Retry {
+        run_id: String,
+        #[arg(long, required = true, help = tr!("Confirm that replay may repeat actions from this execution", "Confirma que repetirla puede repetir acciones de esta ejecución"))]
+        confirm: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -234,50 +312,96 @@ fn main() -> Result<()> {
     if cli.version {
         return version::run(cli.json);
     }
+    if cli.json && !takes_json(cli.command.as_ref()) {
+        let name = std::env::args().nth(1).filter(|a| !a.starts_with('-')).unwrap_or_else(|| "alondra".into());
+        help::localized(Cli::command())
+            .error(clap::error::ErrorKind::ArgumentConflict, trf!("--json is not available for `{name}`", "--json no está disponible para `{name}`"))
+            .exit();
+    }
     let warns = match &cli.command {
-        None | Some(Cmd::McpNode | Cmd::McpOrchestrator | Cmd::Hook | Cmd::Node { .. } | Cmd::Inbox | Cmd::Keys) => false,
-        Some(Cmd::Doctor { json, .. } | Cmd::Models { json, .. } | Cmd::Cleanup { json, .. }) => !json,
-        Some(_) => true,
+        None | Some(Cmd::McpNode | Cmd::McpOrchestrator | Cmd::Hook | Cmd::Node { .. } | Cmd::Keys) => false,
+        Some(_) => !cli.json,
     };
-    let result = run(cli.command);
+    let talks_to_daemon = matches!(&cli.command, Some(Cmd::Status | Cmd::Answer { .. } | Cmd::Send { .. } | Cmd::Attach { .. }
+        | Cmd::Close { .. } | Cmd::Cancel { .. } | Cmd::Device { .. } | Cmd::Orchestrator { .. }));
+    let result = run(cli.command, cli.json, cli.no_input);
     if warns && let Some(warning) = version::older_warning() {
         eprintln!("{warning}");
     }
-    result
+    match result {
+        Err(error) if error.is::<commands::NeedsPerson>() => {
+            eprintln!("{error}");
+            std::process::exit(3)
+        }
+        Err(error) if talks_to_daemon && client::delivery(&error) == client::Delivery::Unsent => {
+            eprintln!("{}", tr!("Alondra isn't running on this Mac. Repair it with alondra doctor --fix.", "Alondra no está en marcha en este Mac. Repáralo con alondra doctor --fix."));
+            std::process::exit(4)
+        }
+        result => result,
+    }
 }
 
-fn run(command: Option<Cmd>) -> Result<()> {
+/// The commands that print a document with `--json`; any other one refuses the flag.
+fn takes_json(command: Option<&Cmd>) -> bool {
+    matches!(command, Some(
+        Cmd::Doctor { .. } | Cmd::Models { .. } | Cmd::Cleanup { .. }
+        | Cmd::Config { command: ConfigCmd::List | ConfigCmd::Get { .. } }
+        | Cmd::Device { command: DeviceCmd::List }
+        | Cmd::Mac { command: MacCmd::List }
+        | Cmd::Account { command: AccountCmd::Status }
+        | Cmd::Relay { command: RelayCmd::Status }
+    ))
+}
+
+fn run(command: Option<Cmd>, json: bool, no_input: bool) -> Result<()> {
     match command {
-        Some(Cmd::Delivery(options)) => delivery::run(options),
-        Some(Cmd::Machines) => service_client::list(),
-        Some(Cmd::Connect { mac: Some(mac), repair, .. }) => service_client::connect(&mac, repair),
-        Some(Cmd::Connect { mac: None, host, repair }) => direct_client::connect(host.as_deref(), repair),
         None => doctor::launch(),
-        Some(Cmd::Login) => account::login(),
-        Some(Cmd::Account) => account::status(),
-        Some(Cmd::Logout) => account::logout(),
+        Some(Cmd::Doctor { fix, yes, only, skip, deep, test_push }) => {
+            let select = match (only.is_empty(), skip.is_empty()) {
+                (false, _) => doctor::Selection::Only(only),
+                (_, false) => doctor::Selection::Skip(skip),
+                _ => doctor::Selection::All,
+            };
+            doctor::run(doctor::Options { json, fix, deep, test_push, no_input, yes, select })
+        }
+        Some(Cmd::Update { check }) => update::run(check),
+        Some(Cmd::Config { command }) => match command {
+            ConfigCmd::List => commands::config_list(json),
+            ConfigCmd::Get { key } => commands::config_get(&key, json),
+            ConfigCmd::Set { key, value } => commands::config_set(&key, Some(&value)),
+            ConfigCmd::Unset { key } => commands::config_set(&key, None),
+        },
         Some(Cmd::Status) => status(),
-        Some(Cmd::Models { since, json }) => models::run(since.as_deref(), json),
-        Some(Cmd::Cleanup { dry_run, json }) => cleanup::run(dry_run, json),
-        Some(Cmd::OrchestratorCancel { run_id }) => cli::recover(ops::Recovery::Cancel, &run_id),
-        Some(Cmd::OrchestratorAcknowledge { run_id, confirm: _ }) => cli::recover(ops::Recovery::Acknowledge, &run_id),
-        Some(Cmd::OrchestratorRetry { run_id, confirm: _ }) => cli::recover(ops::Recovery::Retry, &run_id),
         Some(Cmd::Answer { id, option, text }) => cli::answer_cmd(&id, option.as_deref(), &text.join(" ")),
         Some(Cmd::Send { node, reply, text }) => cli::send(&node, &text.join(" "), reply),
-        Some(Cmd::Cancel { tasks, reason }) => cli::cancel(&tasks, reason.as_deref()),
-        Some(Cmd::Close { node }) => cli::close(&node),
         Some(Cmd::Attach { node }) => cli::attach(&node),
-        Some(Cmd::Pair { url: None }) if client::config().home.join("service.toml").exists() => service_pair::run(&client::config().home),
-        Some(Cmd::Pair { url }) => match url.or_else(|| setup::pairing_url(client::config())) {
-            Some(url) => pair(&url),
-            None => anyhow::bail!(tr!(
-                "No public URL: pass --url or set public_url with `alondra setup --public-url …`",
-                "No hay URL pública: pasa --url o ponla con `alondra setup --public-url …`"
-            )),
+        Some(Cmd::Close { node }) => cli::close(&node),
+        Some(Cmd::Cancel { tasks, reason }) => cli::cancel(&tasks, reason.as_deref()),
+        Some(Cmd::Device { command }) => match command {
+            DeviceCmd::List => commands::device_list(json),
+            DeviceCmd::Approve { id } => commands::device_decide(&id, true),
+            DeviceCmd::Deny { id } => commands::device_decide(&id, false),
+            DeviceCmd::Remove { id } => commands::device_remove(&id),
+            DeviceCmd::Invite => commands::device_invite(),
         },
-        Some(Cmd::Devices { revoke, approve, deny }) => devices(revoke, approve, deny),
-        Some(Cmd::Doctor { json, fix, deep, test_push, no_input }) => doctor::run(doctor::Options { json, fix, deep, test_push, no_input }),
-        Some(Cmd::Update { check }) => update::run(check),
+        Some(Cmd::Mac { command }) => match command {
+            MacCmd::List => commands::mac_list(json),
+            MacCmd::Connect { mac, host, repair } => commands::mac_connect(mac.as_deref(), host.as_deref(), repair),
+            MacCmd::Forget { mac } => commands::mac_forget(&mac),
+            MacCmd::ResetIdentity => commands::mac_reset_identity(no_input),
+        },
+        Some(Cmd::Account { command }) => match command {
+            AccountCmd::Status => commands::account_status(json),
+            AccountCmd::Login => commands::account_login(no_input),
+            AccountCmd::Logout => account::logout(),
+        },
+        Some(Cmd::Relay { command }) => match command {
+            RelayCmd::Status => commands::relay_status(json),
+            RelayCmd::On => commands::relay_on(no_input),
+            RelayCmd::Off => commands::relay_off(no_input),
+        },
+        Some(Cmd::Cleanup { dry_run }) => cleanup::run(dry_run, json),
+        Some(Cmd::Models { since }) => models::run(since.as_deref(), json),
         Some(Cmd::State { command }) => {
             let home = client::config().home.clone();
             match command {
@@ -289,72 +413,39 @@ fn run(command: Option<Cmd>) -> Result<()> {
             }
             Ok(())
         }
-        Some(Cmd::Setup(args)) => setup::run(*args),
-        Some(Cmd::Config { command: Some(ConfigCmd::Set { key, value }), .. }) => set_config(&key, &value),
-        Some(Cmd::Config { get, command: None }) => show_config(get.as_deref()),
+        Some(Cmd::Delivery(options)) => delivery::run(options),
+        Some(Cmd::Orchestrator { command }) => match command {
+            OrchestratorCmd::Cancel { run_id } => cli::recover(ops::Recovery::Cancel, &run_id),
+            OrchestratorCmd::Acknowledge { run_id, confirm: _ } => cli::recover(ops::Recovery::Acknowledge, &run_id),
+            OrchestratorCmd::Retry { run_id, confirm: _ } => cli::recover(ops::Recovery::Retry, &run_id),
+        },
         Some(Cmd::McpNode) => mcp::serve_node(),
         Some(Cmd::McpOrchestrator) => mcp::serve_orchestrator(),
         Some(Cmd::Hook) => hook(),
         Some(Cmd::Node { command }) => node::run(command),
-        Some(Cmd::Inbox) => Ok(()),
         Some(Cmd::Keys) => keys_probe(),
     }
 }
 
+/// `alondra help more` prints the advanced commands; an old or unknown command gets clap's error
+/// with the new help under it.
 fn parse(args: impl IntoIterator<Item = std::ffi::OsString>) -> Cli {
-    let matches = help::localized(Cli::command()).get_matches_from(args);
-    Cli::from_arg_matches(&matches).unwrap_or_else(|e| e.exit())
-}
-
-fn show_config(get: Option<&str>) -> Result<()> {
-    let c = alondra_core::config::Config::load().map_err(|e| anyhow::anyhow!(e))?;
-    let rows = [
-        ("home", c.home.display().to_string()),
-        ("name", c.name.clone()),
-        ("port", c.port.to_string()),
-        ("listen", c.listen.to_string()),
-        ("public_url", c.public_url.clone().unwrap_or_default()),
-        ("legacy_bridge", c.legacy_bridge.to_string()),
-        ("wake", c.wake.to_string()),
-        ("retention_hours", c.retention_hours.to_string()),
-        ("service_label", c.service_label.clone()),
-        ("resume_dead_nodes", c.resume_dead_nodes.to_string()),
-        ("close_free_nodes_after", c.close_free_nodes_after.map(|d| format!("{}s", d.as_secs())).unwrap_or_else(|| "off".into())),
-        ("compact_idle_nodes_at", c.compact_idle_nodes_at.map(|p| format!("{p}%")).unwrap_or_else(|| "off".into())),
-        ("compact_orchestrator_at", c.compact_orchestrator_at.map(|p| format!("{p}%")).unwrap_or_else(|| "off".into())),
-        ("archived_tasks_days", c.archived_tasks_days.to_string()),
-        ("device_expiry_days", c.device_expiry_days.map(|d| d.to_string()).unwrap_or_else(|| "off".into())),
-        ("auto_update", c.auto_update.to_string()),
-        ("max_working_nodes", node_limit(&c.home)),
-    ];
-    match get {
-        Some(key) => match rows.iter().find(|(k, _)| *k == key) {
-            Some((_, v)) => println!("{v}"),
-            None => anyhow::bail!(trf!("unknown setting: {key}", "ajuste desconocido: {key}")),
-        },
-        None => rows.iter().for_each(|(k, v)| println!("{k} = {v}")),
+    let args: Vec<std::ffi::OsString> = args.into_iter().collect();
+    let cmd = help::localized(Cli::command());
+    if args.iter().skip(1).map(|a| a.to_string_lossy()).eq(["help", "more"]) {
+        print!("{}", help::more(&cmd));
+        std::process::exit(0);
     }
-    Ok(())
-}
-
-fn set_config(key: &str, value: &str) -> Result<()> {
-    match key {
-        "max_working_nodes" => cli::set_node_limit(value),
-        _ => anyhow::bail!(trf!("{key} cannot be changed here; settable: max_working_nodes", "{key} no se cambia aquí; se puede cambiar: max_working_nodes")),
-    }
-}
-
-/// What `options.toml` says; the daemon turns `auto` into a number from this Mac's size.
-fn node_limit(home: &std::path::Path) -> String {
-    let text = std::fs::read_to_string(alondra_core::options::path_in(home)).unwrap_or_default();
-    match alondra_core::options::OptionsFile::parse(&text).map(|file| file.max_working_nodes) {
-        Ok(alondra_core::options::NodeLimit::Fixed(count)) => count.to_string(),
-        Ok(alondra_core::options::NodeLimit::Auto) => alondra_core::options::AUTO.into(),
-        Err(_) => {
-            let file = alondra_core::options::FILE_NAME;
-            trf!("unreadable: {file} has an error", "ilegible: {file} tiene un error")
+    let matches = match cmd.clone().try_get_matches_from(&args) {
+        Ok(matches) => matches,
+        Err(error) if error.kind() == clap::error::ErrorKind::InvalidSubcommand => {
+            let _ = error.print();
+            eprintln!("\n{}", cmd.clone().render_help());
+            std::process::exit(2)
         }
-    }
+        Err(error) => error.exit(),
+    };
+    Cli::from_arg_matches(&matches).unwrap_or_else(|e| e.exit())
 }
 
 fn hook() -> Result<()> {
@@ -567,105 +658,6 @@ fn status() -> Result<()> {
     Ok(())
 }
 
-fn pair(url: &str) -> Result<()> {
-    let client = Client::new(Duration::from_secs(10));
-    let r = client.post("/pairing", &json!({}))?;
-    let code = r.get("code").and_then(|c| c.as_str()).unwrap_or_default();
-    let payload = json!({"url": url.trim_end_matches('/'), "code": code}).to_string();
-    let qr = qrcode::QrCode::new(payload.as_bytes())?;
-    let art = qr.render::<qrcode::render::unicode::Dense1x2>().quiet_zone(true).build();
-    println!("{art}");
-    println!("{}", tr!("Scan it from Alondra on the iPhone (Settings → Pair with Mac).", "Escanéalo desde Alondra en el iPhone (Ajustes → Vincular con el Mac)."));
-    println!("{}", trf!("Or by hand: URL {url}  ·  code {code}  ·  expires in 10 minutes and works once.", "O a mano: URL {url}  ·  código {code}  ·  caduca en 10 minutos y sirve una vez."));
-    Ok(())
-}
-
-fn devices(revoke: Option<String>, approve: Option<String>, deny: Option<String>) -> Result<()> {
-    let client = Client::new(Duration::from_secs(10));
-    if let Some(id) = approve {
-        client.post(&format!("/devices/pending/{}/approve", mcp::urlencode(&id)), &serde_json::json!({}))?;
-        println!("{}", trf!("Pairing request {id} approved.", "Petición de emparejamiento {id} aprobada."));
-        return Ok(());
-    }
-    if let Some(id) = deny {
-        client.post(&format!("/devices/pending/{}/deny", mcp::urlencode(&id)), &serde_json::json!({}))?;
-        println!("{}", trf!("Pairing request {id} denied.", "Petición de emparejamiento {id} rechazada."));
-        return Ok(());
-    }
-    let pending: serde_json::Value = client.get("/devices/pending")?;
-    for request in pending["pending"].as_array().into_iter().flatten() {
-        let (id, name, code) = (
-            request["id"].as_str().unwrap_or(""),
-            request["name"].as_str().unwrap_or(""),
-            request["code"].as_str().unwrap_or(""),
-        );
-        println!("{}", trf!(
-            "Waiting: “{name}” wants to use Alondra. Code {code}. Approve: alondra devices --approve {id}",
-            "Pendiente: «{name}» quiere usar Alondra. Código {code}. Aprobar: alondra devices --approve {id}"
-        ));
-    }
-    if let Some(id) = revoke {
-        let path = format!("/devices/{}", mcp::urlencode(&id));
-        client.delete(&path)?;
-        println!("{}", trf!("Device {id} unpaired.", "Dispositivo {id} desvinculado."));
-        return Ok(());
-    }
-    let v: serde_json::Value = client.get("/devices")?;
-    device_lines(&v, now_millis()).iter().for_each(|line| println!("{line}"));
-    Ok(())
-}
-
-/// How long ago `then` was, the way people say it: minutes, then hours, then days.
-fn ago(then: i64, now: i64) -> String {
-    let minutes = (now - then).max(0) / 60_000;
-    let (hours, days) = (minutes / 60, minutes / 1_440);
-    match (days, hours) {
-        (0, 0) => trf!("{minutes} min ago", "hace {minutes} min"),
-        (0, _) => trf!("{hours} h ago", "hace {hours} h"),
-        (1, _) => tr!("1 day ago", "hace 1 día").into(),
-        _ => trf!("{days} days ago", "hace {days} días"),
-    }
-}
-
-/// The paired devices with their last use, then the ones Alondra unpaired on its own lately.
-fn device_lines(v: &serde_json::Value, now: i64) -> Vec<String> {
-    let list = v.get("devices").and_then(|d| d.as_array()).cloned().unwrap_or_default();
-    let mut lines = Vec::new();
-    if list.is_empty() {
-        lines.push(tr!("No paired devices. Devices on the same network pair on their own: open the app, or run alondra connect on the other computer.", "No hay dispositivos vinculados. Los dispositivos de la misma red se emparejan solos: abre la app, o ejecuta alondra connect en el otro ordenador.").to_string());
-    }
-    for d in list {
-        let mut last = match d.get("last_seen").and_then(|x| x.as_i64()) {
-            Some(at) => { let ago = ago(at, now); trf!("used {ago}", "usado {ago}") }
-            None => {
-                let paired = d.get("created_at").and_then(|x| x.as_i64()).map_or_else(String::new, |at| ago(at, now));
-                trf!("never used, paired {paired}", "sin uso, vinculado {paired}")
-            }
-        };
-        if d.get("push_failing").and_then(|x| x.as_bool()) == Some(true) {
-            last.push_str(tr!(" · the relay no longer has its notifications", " · el relay ya no tiene sus notificaciones"));
-        }
-        lines.push(format!("{}  {}  ({last})", d["id"].as_str().unwrap_or(""), d["name"].as_str().unwrap_or("")));
-    }
-    let expired = v.get("expired").and_then(|d| d.as_array()).cloned().unwrap_or_default();
-    if !expired.is_empty() {
-        lines.push(tr!("Unpaired on their own (open the app on the device, or run alondra connect on it, to pair it again):", "Desvinculados solos (abre la app en el dispositivo, o ejecuta alondra connect en él, para volver a vincularlo):").to_string());
-    }
-    for e in expired {
-        let when = ago(e["expired_at_ms"].as_i64().unwrap_or(now), now);
-        let why = match e["reason"].as_str() {
-            Some("relay_forgot") => tr!("the relay no longer has its notifications", "el relay ya no tiene sus notificaciones").to_string(),
-            _ => {
-                let days = e["days"].as_f64().unwrap_or(0.0);
-                trf!("unused for {days} days", "sin uso en {days} días")
-            }
-        };
-        let name = e["name"].as_str().unwrap_or("");
-        lines.push(trf!("  {name} — unpaired on its own {when}: {why}", "  {name} — desvinculado solo {when}: {why}"));
-    }
-    lines
-}
-
 fn keys_probe() -> anyhow::Result<()> {
     use std::io::Read;
     println!("Press keys; q quits. Shows the raw bytes the terminal sends.\r");
@@ -712,58 +704,104 @@ mod mcp_entrypoint_tests {
 }
 
 #[cfg(test)]
-mod destination_tests {
+mod api_tests {
     use super::*;
+    use clap::error::ErrorKind;
+
+    fn parsed(args: &[&str]) -> Cli {
+        Cli::try_parse_from(std::iter::once("alondra").chain(args.iter().copied())).unwrap_or_else(|e| panic!("{args:?}: {e}"))
+    }
+
+    fn refused(args: &[&str]) -> ErrorKind {
+        match Cli::try_parse_from(std::iter::once("alondra").chain(args.iter().copied())) {
+            Ok(_) => panic!("{args:?} parsed"),
+            Err(error) => error.kind(),
+        }
+    }
+
+    #[test]
+    fn every_new_command_parses_with_its_verb() {
+        assert!(matches!(parsed(&["device", "list"]).command, Some(Cmd::Device { command: DeviceCmd::List })));
+        assert!(matches!(parsed(&["device", "approve", "r1"]).command, Some(Cmd::Device { command: DeviceCmd::Approve { id } }) if id == "r1"));
+        assert!(matches!(parsed(&["device", "deny", "r1"]).command, Some(Cmd::Device { command: DeviceCmd::Deny { .. } })));
+        assert!(matches!(parsed(&["device", "remove", "phone"]).command, Some(Cmd::Device { command: DeviceCmd::Remove { .. } })));
+        assert!(matches!(parsed(&["device", "invite"]).command, Some(Cmd::Device { command: DeviceCmd::Invite })));
+        assert!(matches!(parsed(&["mac", "list"]).command, Some(Cmd::Mac { command: MacCmd::List })));
+        assert!(matches!(parsed(&["mac", "connect", "mac-a"]).command, Some(Cmd::Mac { command: MacCmd::Connect { mac: Some(m), host: None, repair: false } }) if m == "mac-a"));
+        assert!(matches!(parsed(&["mac", "connect", "--host", "192.168.1.2", "--repair"]).command, Some(Cmd::Mac { command: MacCmd::Connect { mac: None, host: Some(_), repair: true } })));
+        assert_eq!(refused(&["mac", "connect", "mac-a", "--host", "x"]), ErrorKind::ArgumentConflict);
+        assert!(matches!(parsed(&["mac", "forget", "Mac mini"]).command, Some(Cmd::Mac { command: MacCmd::Forget { mac } }) if mac == "Mac mini"));
+        assert!(matches!(parsed(&["mac", "reset-identity"]).command, Some(Cmd::Mac { command: MacCmd::ResetIdentity })));
+        for (verb, want) in [("status", 0), ("login", 1), ("logout", 2)] {
+            let Some(Cmd::Account { command }) = parsed(&["account", verb]).command else { panic!("{verb}") };
+            assert_eq!(match command { AccountCmd::Status => 0, AccountCmd::Login => 1, AccountCmd::Logout => 2 }, want);
+        }
+        for (verb, want) in [("status", 0), ("on", 1), ("off", 2)] {
+            let Some(Cmd::Relay { command }) = parsed(&["relay", verb]).command else { panic!("{verb}") };
+            assert_eq!(match command { RelayCmd::Status => 0, RelayCmd::On => 1, RelayCmd::Off => 2 }, want);
+        }
+        assert!(matches!(parsed(&["orchestrator", "cancel", "run-1"]).command, Some(Cmd::Orchestrator { command: OrchestratorCmd::Cancel { .. } })));
+        assert!(matches!(parsed(&["orchestrator", "retry", "run-1", "--confirm"]).command, Some(Cmd::Orchestrator { command: OrchestratorCmd::Retry { .. } })));
+        assert!(matches!(parsed(&["orchestrator", "acknowledge", "run-1", "--confirm"]).command, Some(Cmd::Orchestrator { command: OrchestratorCmd::Acknowledge { .. } })));
+        assert_eq!(refused(&["orchestrator", "retry", "run-1"]), ErrorKind::MissingRequiredArgument);
+        assert!(matches!(parsed(&["config", "list"]).command, Some(Cmd::Config { command: ConfigCmd::List })));
+        assert!(matches!(parsed(&["config", "get", "port"]).command, Some(Cmd::Config { command: ConfigCmd::Get { key } }) if key == "port"));
+        assert!(matches!(parsed(&["config", "set", "name", "Ada"]).command, Some(Cmd::Config { command: ConfigCmd::Set { key, value } }) if key == "name" && value == "Ada"));
+        assert!(matches!(parsed(&["config", "unset", "port"]).command, Some(Cmd::Config { command: ConfigCmd::Unset { .. } })));
+        for noun in ["device", "mac", "account", "relay", "orchestrator", "config"] {
+            assert_eq!(refused(&[noun]), ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand, "{noun} needs a verb");
+        }
+    }
+
+    #[test]
+    fn json_and_no_input_are_global_and_json_goes_only_where_a_document_comes_out() {
+        let cli = parsed(&["device", "list", "--json", "--no-input"]);
+        assert!(cli.json && cli.no_input && takes_json(cli.command.as_ref()));
+        let cli = parsed(&["--json", "mac", "list"]);
+        assert!(cli.json && takes_json(cli.command.as_ref()));
+        for args in [&["doctor"][..], &["models"], &["cleanup"], &["config", "list"], &["config", "get", "port"], &["account", "status"], &["relay", "status"]] {
+            assert!(takes_json(parsed(args).command.as_ref()), "{args:?}");
+        }
+        for args in [&["answer", "q", "--option", "1"][..], &["device", "approve", "r"], &["relay", "on"], &["config", "set", "port", "1"], &["status"]] {
+            assert!(!takes_json(parsed(args).command.as_ref()), "{args:?}");
+        }
+        assert!(takes_json(None) == false);
+        assert!(parsed(&["--version", "--json"]).version);
+    }
+
+    #[test]
+    fn doctor_takes_yes_only_and_skip() {
+        let Some(Cmd::Doctor { fix, yes, only, .. }) = parsed(&["doctor", "--fix", "--yes", "--only", "service,plugin"]).command else { panic!() };
+        assert!(fix && yes);
+        assert_eq!(only, ["service", "plugin"]);
+        let Some(Cmd::Doctor { skip, .. }) = parsed(&["doctor", "--skip", "mods", "--skip", "tuicr"]).command else { panic!() };
+        assert_eq!(skip, ["mods", "tuicr"]);
+        assert_eq!(refused(&["doctor", "--yes"]), ErrorKind::MissingRequiredArgument, "--yes only with --fix");
+        assert_eq!(refused(&["doctor", "--only", "service", "--skip", "plugin"]), ErrorKind::ArgumentConflict);
+        assert_eq!(refused(&["doctor", "--only", "everything"]), ErrorKind::InvalidValue);
+        assert!(matches!(parsed(&["doctor", "--fix", "--no-input"]).command, Some(Cmd::Doctor { fix: true, .. })));
+    }
+
+    #[test]
+    fn every_old_name_is_an_error() {
+        for old in [
+            &["setup"][..], &["setup", "--relay"], &["pair"], &["devices"], &["devices", "--approve", "r"], &["machines"],
+            &["connect"], &["connect", "--host", "x"], &["login"], &["logout"], &["inbox"],
+            &["orchestrator-cancel", "r"], &["orchestrator-acknowledge", "r", "--confirm"], &["orchestrator-retry", "r", "--confirm"],
+        ] {
+            assert_eq!(refused(old), ErrorKind::InvalidSubcommand, "{old:?}");
+        }
+        assert_eq!(refused(&["account"]), ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand, "account alone no longer shows the account");
+        assert_eq!(refused(&["config", "--get", "port"]), ErrorKind::UnknownArgument);
+        assert_eq!(refused(&["config"]), ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand);
+        assert_eq!(refused(&["doctor", "--fix", "--force"]), ErrorKind::UnknownArgument);
+    }
+
     #[test]
     fn startup_does_not_accept_remote_destination_flags() {
-        assert!(Cli::try_parse_from(["alondra"]).unwrap().command.is_none());
-        assert!(Cli::try_parse_from(["alondra", "--mac", "mac-a"]).is_err());
-        assert!(Cli::try_parse_from(["alondra", "--remote"]).is_err());
-        let connect = Cli::try_parse_from(["alondra", "connect", "mac-a"]).unwrap();
-        assert!(matches!(connect.command, Some(Cmd::Connect { mac: Some(mac), host: None, repair: false }) if mac == "mac-a"));
-        let direct = Cli::try_parse_from(["alondra", "connect", "--host", "192.168.1.2"]).unwrap();
-        assert!(matches!(direct.command, Some(Cmd::Connect { mac: None, host: Some(host), .. }) if host == "192.168.1.2"));
-        assert!(Cli::try_parse_from(["alondra", "connect", "mac-a", "--host", "x"]).is_err());
-    }
-}
-
-#[cfg(test)]
-mod device_list_tests {
-    use super::*;
-    const DAY: i64 = 86_400_000;
-    const NOW: i64 = 100 * DAY;
-
-    fn listing() -> serde_json::Value {
-        json!({
-            "devices": [
-                {"id": "phone-a", "name": "iPhone", "created_at": 0, "last_seen": NOW - 5 * 60_000, "push_failing": false},
-                {"id": "client-b", "name": "Terminal", "created_at": NOW - 3 * DAY, "last_seen": null, "push_failing": true}
-            ],
-            "expired": [
-                {"id": "phone-c", "name": "Old iPhone", "reason": "unused", "days": 30.0, "expired_at_ms": NOW - 3 * DAY},
-                {"id": "phone-d", "name": "iPad", "reason": "relay_forgot", "days": null, "expired_at_ms": NOW - 2 * 3_600_000}
-            ]
-        })
-    }
-
-    #[test]
-    fn the_list_says_when_each_device_was_last_used_and_which_went_on_their_own() {
-        crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
-        assert_eq!(device_lines(&listing(), NOW), [
-            "phone-a  iPhone  (used 5 min ago)",
-            "client-b  Terminal  (never used, paired 3 days ago · the relay no longer has its notifications)",
-            "Unpaired on their own (open the app on the device, or run alondra connect on it, to pair it again):",
-            "  Old iPhone — unpaired on its own 3 days ago: unused for 30 days",
-            "  iPad — unpaired on its own 2 h ago: the relay no longer has its notifications",
-        ]);
-        crate::i18n::set_for_this_thread(crate::i18n::Lang::Es);
-        assert_eq!(device_lines(&listing(), NOW), [
-            "phone-a  iPhone  (usado hace 5 min)",
-            "client-b  Terminal  (sin uso, vinculado hace 3 días · el relay ya no tiene sus notificaciones)",
-            "Desvinculados solos (abre la app en el dispositivo, o ejecuta alondra connect en él, para volver a vincularlo):",
-            "  Old iPhone — desvinculado solo hace 3 días: sin uso en 30 días",
-            "  iPad — desvinculado solo hace 2 h: el relay ya no tiene sus notificaciones",
-        ]);
+        assert!(parsed(&[]).command.is_none());
+        assert_eq!(refused(&["--mac", "mac-a"]), ErrorKind::UnknownArgument);
+        assert_eq!(refused(&["--remote"]), ErrorKind::UnknownArgument);
     }
 }
 

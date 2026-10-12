@@ -1,7 +1,9 @@
 BIN ?= $(HOME)/.local/bin
 PLUGIN := $(CURDIR)/plugin
-LABEL = $(shell $(BIN)/alondra config --get service_label 2>/dev/null)
+LABEL = $(shell $(BIN)/alondra config get service_label 2>/dev/null)
 DEVICE ?= David iPhone
+# A Rust target's executable: cquery also lists the clippy report it builds beside it.
+exe = $$(bazelisk cquery --output=files $(1) 2>/dev/null | grep -v '\.ok$$')
 export DEVICE
 
 # TestFlight betas go out with the /beta skill, which reads these variables.
@@ -103,8 +105,8 @@ brew-guard:
 
 install: brew-guard build
 	mkdir -p $(BIN) $(PLUGIN)/bin $(HOME)/.alondra
-	install -m 755 $$(bazelisk cquery --output=files //crates/alondrad 2>/dev/null) $(BIN)/alondrad
-	install -m 755 $$(bazelisk cquery --output=files //crates/alondra 2>/dev/null) $(BIN)/alondra
+	install -m 755 $(call exe,//crates/alondrad) $(BIN)/alondrad
+	install -m 755 $(call exe,//crates/alondra) $(BIN)/alondra
 	@echo "Installed in $(BIN). Plugin: $(PLUGIN)"
 
 run: brew-guard install
@@ -120,7 +122,7 @@ doctor:
 	$(BIN)/alondra doctor
 
 setup: brew-guard install
-	$(BIN)/alondra setup --bin $(BIN) --repo $(CURDIR)
+	ALONDRA_BIN=$(BIN) $(BIN)/alondra doctor --fix --no-input
 
 no-holds:
 	@holds=$$(curl -s --max-time 3 http://127.0.0.1:47800/v1/health | sed -n 's/.*"holds":\([0-9]*\).*/\1/p'); \
@@ -132,7 +134,7 @@ restart: no-holds
 	launchctl kickstart -k gui/$$(id -u)/$(LABEL)
 
 launchd: brew-guard no-holds install
-	$(BIN)/alondra setup --bin $(BIN) --skip-plugin --skip-pair
+	ALONDRA_BIN=$(BIN) $(BIN)/alondra doctor --fix --no-input --only service
 
 unlaunchd:
 	launchctl bootout gui/$$(id -u)/$(LABEL) 2>/dev/null || true
@@ -150,8 +152,8 @@ mac:
 # MACS=n daemons in service mode with a loopback relay and a synthetic phone (tools/e2e-sandbox.sh).
 e2e-sandbox:
 	bazelisk build //crates/alondrad //crates/alondra //crates/relay:alondra-relay //tools/sandbox:alondra-sandbox
-	tools/e2e-sandbox.sh $$(bazelisk cquery --output=files //crates/alondrad 2>/dev/null) $$(bazelisk cquery --output=files //crates/alondra 2>/dev/null) \
-		$$(bazelisk cquery --output=files //crates/relay:alondra-relay 2>/dev/null) $$(bazelisk cquery --output=files //tools/sandbox:alondra-sandbox 2>/dev/null)
+	tools/e2e-sandbox.sh $(call exe,//crates/alondrad) $(call exe,//crates/alondra) \
+		$(call exe,//crates/relay:alondra-relay) $(call exe,//tools/sandbox:alondra-sandbox)
 
 e2e-sandbox-stop:
 	tools/e2e-sandbox-stop.sh
@@ -159,15 +161,15 @@ e2e-sandbox-stop:
 # alondra's setup wizard on a new Mac in its own throwaway sandbox (tools/e2e-wizard.py).
 e2e-wizard:
 	bazelisk build //crates/alondrad //crates/alondra //crates/relay:alondra-relay //tools/sandbox:alondra-sandbox
-	tools/e2e-wizard.py $$(bazelisk cquery --output=files //crates/alondrad 2>/dev/null) $$(bazelisk cquery --output=files //crates/alondra 2>/dev/null) \
-		$$(bazelisk cquery --output=files //crates/relay:alondra-relay 2>/dev/null) $$(bazelisk cquery --output=files //tools/sandbox:alondra-sandbox 2>/dev/null)
+	tools/e2e-wizard.py $(call exe,//crates/alondrad) $(call exe,//crates/alondra) \
+		$(call exe,//crates/relay:alondra-relay) $(call exe,//tools/sandbox:alondra-sandbox)
 
 # A document reviewed in the real TUI (inside tmux) against its own sandbox: the node gets the
 # comments and the TUI says they were sent (tools/e2e-doc-review.py). E2E_CAPTURES=<dir> keeps the screens.
 e2e-doc-review:
 	bazelisk build //crates/alondrad //crates/alondra //crates/relay:alondra-relay //tools/sandbox:alondra-sandbox
-	tools/e2e-doc-review.py $$(bazelisk cquery --output=files //crates/alondrad 2>/dev/null) $$(bazelisk cquery --output=files //crates/alondra 2>/dev/null) \
-		$$(bazelisk cquery --output=files //crates/relay:alondra-relay 2>/dev/null) $$(bazelisk cquery --output=files //tools/sandbox:alondra-sandbox 2>/dev/null)
+	tools/e2e-doc-review.py $(call exe,//crates/alondrad) $(call exe,//crates/alondra) \
+		$(call exe,//crates/relay:alondra-relay) $(call exe,//tools/sandbox:alondra-sandbox)
 
 # Every kind of card answered from one client against its own sandbox: each leaves at once and never
 # comes back, and each card of a group opens on its own screen (tools/e2e_cards.py, tests/sandbox/README.md).
@@ -201,20 +203,20 @@ e2e-sandbox-logs:
 # REHEARSAL_ROOT, LIVE_HOME and LEGACY override the defaults (tools/rehearse-cutover.sh).
 rehearse-cutover:
 	bazelisk build //crates/alondrad
-	tools/rehearse-cutover.sh $$(bazelisk cquery --output=files //crates/alondrad 2>/dev/null)
+	tools/rehearse-cutover.sh $(call exe,//crates/alondrad)
 
 # The previous published release must restart into this build on copies of the live HOME
 # (deploy/brew/upgrade-rehearsal.py; the release runs it on the signed archive). Bazel stamps 0.1.0, so the build
 # replaces the newest published release unless FROM=version names another.
 upgrade-rehearsal:
 	bazelisk build //crates/alondrad
-	python3 deploy/brew/upgrade-rehearsal.py --new $$(bazelisk cquery --output=files //crates/alondrad 2>/dev/null) --from $(or $(FROM),latest)
+	python3 deploy/brew/upgrade-rehearsal.py --new $(call exe,//crates/alondrad) --from $(or $(FROM),latest)
 
 # The one-command cutover of the live HOME to domain v2 (docs/domain-v2-live-cutover.md).
 # BACKUP_ROOT, LEGACY_DAEMON and LEGACY_CLI override the defaults (tools/cutover-live.sh).
 cutover-live:
 	bazelisk build //crates/alondrad
-	tools/cutover-live.sh $$(bazelisk cquery --output=files //crates/alondrad 2>/dev/null)
+	tools/cutover-live.sh $(call exe,//crates/alondrad)
 
 # Latency of /v1/health, views and hooks plus alondrad's CPU under N simulated nodes (tools/load_bench.py).
 load-bench:
@@ -224,7 +226,7 @@ load-bench:
 
 soak:
 	bazelisk build //crates/alondrad
-	taskpolicy -b python3 tools/soak.py --binary $$(bazelisk cquery --output=files //crates/alondrad 2>/dev/null) $(SOAK_ARGS)
+	taskpolicy -b python3 tools/soak.py --binary $(call exe,//crates/alondrad) $(SOAK_ARGS)
 
 # The TUI's Tasks tab for the running alondrad's overview, at 130x33, as text (SCREEN=path keeps it).
 tasks-screen:

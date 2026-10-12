@@ -144,6 +144,7 @@ pub(crate) fn router(state: Arc<DomainDaemon>) -> Router {
         .route("/cards/open", get(open_cards))
         .route(crate::settings::PATH, get(settings_read).put(settings_write))
         .route(crate::settings::FOLDERS, get(settings_folders))
+        .route(crate::settings::CONFIG, axum::routing::put(settings_config))
         .merge(crate::domain_api::routes())
         .merge(crate::views::routes::router())
         .merge(crate::notices::router())
@@ -336,6 +337,29 @@ async fn settings_write(
     }
 }
 
+/// `alondra config set` on this Mac: never a device, and never a page open in a browser.
+async fn settings_config(
+    State(state): State<Arc<DomainDaemon>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    signed: Option<Extension<Signed>>,
+    body: Result<Json<Value>, JsonRejection>,
+) -> Response {
+    if signed.is_some() || headers.contains_key(axum::http::header::ORIGIN) {
+        return forbidden("config changes only from this Mac's terminal");
+    }
+    if let Some(refused) = local_only(&peer, &headers) {
+        return refused;
+    }
+    let Ok(Json(body)) = body else {
+        return crate::domain_api::domain_error(DomainError::new("invalid_input", "invalid setting"));
+    };
+    match tokio::task::spawn_blocking(move || crate::settings::write_config(&state.home, &body)).await {
+        Ok(reply) => reply.into_response(),
+        Err(_) => storage(),
+    }
+}
+
 /// The running version, update state and machine gauges, for `alondra update`,
 /// `alondra doctor` and the TUI header on this Mac.
 async fn daemon(
@@ -362,7 +386,7 @@ async fn daemon(
     .into_response()
 }
 
-/// The challenge `alondra pair` signs to approve a phone through the service; local only.
+/// The challenge `alondra device invite` signs to approve a phone through the service; local only.
 async fn service_bootstrap(
     State(state): State<Arc<DomainDaemon>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
@@ -382,7 +406,7 @@ struct ServiceApproveBody {
     signing_key: String,
 }
 
-/// A phone the service paired, approved by `alondra pair` signing with this Mac's key.
+/// A phone the service paired, approved by `alondra device invite` signing with this Mac's key.
 async fn service_approve_device(
     State(state): State<Arc<DomainDaemon>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,

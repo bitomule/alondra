@@ -1,12 +1,12 @@
 import { Lark } from '../public/Lark';
 
-export function meta() { return [{ title: 'Instalar — Alondra' }, { name: 'description', content: 'Instala Alondra en tu Mac con Homebrew, prepáralo con alondra setup y vincula el iPhone o la app de Mac.' }]; }
+export function meta() { return [{ title: 'Instalar — Alondra' }, { name: 'description', content: 'Instala Alondra en tu Mac con Homebrew, prepáralo con alondra y vincula el iPhone o la app de Mac.' }]; }
 
 const STEPS = [
   { title: 'Instala Alondra', commands: ['brew install bitomule/tap/alondra'], body: 'Incluye el servicio, la CLI y la TUI. Las apps de iPhone y de Mac se instalan aparte.' },
-  { title: 'Prepara tu Mac', commands: ['alondra setup'], body: 'El asistente comprueba la instalación y te guía por el inicio de sesión y la configuración. Puedes repetirlo cuando quieras.' },
-  { title: 'Vincula el iPhone o la app de Mac', commands: ['alondra pair'], body: 'Abre la app que te llega por TestFlight, escanea el código y confirma el emparejamiento en tu Mac. Durante la alpha, David te da acceso a TestFlight.' },
-  { title: 'Comprueba y abre la TUI', commands: ['alondra doctor', 'alondra'], body: 'doctor te dice qué funciona, qué falta y cómo arreglarlo. alondra abre la TUI con Bandeja, Tareas, Programadas y Flota.' },
+  { title: 'Prepara tu Mac', commands: ['alondra'], body: 'La primera vez, el asistente te pregunta la carpeta de proyectos y si activas las notificaciones, arranca el servicio y espera a tu iPhone. Después, alondra abre la TUI con Bandeja, Tareas, Programadas y Flota.' },
+  { title: 'Vincula el iPhone o la app de Mac', commands: [], body: 'Abre la app que te llega por TestFlight en la misma wifi: encuentra tu Mac y los dos muestran el mismo código. Permítelo en el Mac. Durante la alpha, David te da acceso a TestFlight.' },
+  { title: 'Si algo falla', commands: ['alondra doctor --fix'], body: 'doctor te dice qué funciona y qué falta; con --fix lo arregla.' },
 ];
 
 export default function Install() {

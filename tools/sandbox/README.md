@@ -16,7 +16,7 @@ bazelisk test //tests/sandbox:doc_review  # the same, opt-in through Bazel
 Mac *n* on `PORT+n`, and its direct listener on `PORT+20+n`. The direct listener binds loopback;
 `SANDBOX_LAN=1` binds it on every interface so a real phone on the same Wi-Fi can reach it.
 Sandbox Macs advertise on Bonjour as `_alondra-sandbox._tcp`, never as `_alondra._tcp`, so real
-apps never list them; `ALONDRA_SANDBOX=1 alondra connect` searches for that type. The iOS and
+apps never list them; `ALONDRA_SANDBOX=1 alondra mac connect` searches for that type. The iOS and
 Mac apps browse it only when built with `--define=alondra_sandbox=1` and launched with
 `ALONDRA_SANDBOX=1` (the Mac app also takes `ALONDRA_PORT` for the sandbox Mac's loopback port).
 
@@ -48,9 +48,9 @@ it matches its own, and approves through `POST /devices/pending/<id>/approve` as
 A terminal can pair directly too, in a HOME of its own:
 
 ```sh
-ALONDRA_HOME=$SANDBOX_DIR/client ALONDRA_SANDBOX=1 alondra connect --host 127.0.0.1:47911
-. $SANDBOX_DIR/mac-1/env && alondra devices            # lists the request with its code
-. $SANDBOX_DIR/mac-1/env && alondra devices --approve <id>
+ALONDRA_HOME=$SANDBOX_DIR/client ALONDRA_SANDBOX=1 alondra mac connect --host 127.0.0.1:47911
+. $SANDBOX_DIR/mac-1/env && alondra device list         # lists the request with its code
+. $SANDBOX_DIR/mac-1/env && alondra device approve <id>
 ALONDRA_HOME=$SANDBOX_DIR/client alondra               # the TUI, with every Mac it paired
 ```
 
@@ -58,7 +58,7 @@ ALONDRA_HOME=$SANDBOX_DIR/client alondra               # the TUI, with every Mac
 response, so `request` times out after 90 s instead of failing fast.
 
 Pairing approves the phone through the daemon's local `POST /service/approve-device`, signed
-with the Mac's key, the same two steps `alondra pair` takes after the code matches. Answering an
+with the Mac's key, the same two steps `alondra device invite` takes after the code matches. Answering an
 ask needs one to exist, and only a Claude session the daemon launched can create one: launch a
 probe node, then `phone request POST /interactions/<id>/answers '<body>'`.
 

@@ -320,7 +320,7 @@ fn wait_for_daemon(mut ready: impl FnMut() -> bool, pause: impl Fn()) -> Result<
         }
         pause();
     }
-    bail!(tr!("alondrad is not answering on this Mac; check ~/.alondra/alondrad.log, then rerun alondra pair", "alondrad no responde en este Mac; revisa ~/.alondra/alondrad.log y vuelve a ejecutar alondra pair"))
+    bail!(tr!("alondrad is not answering on this Mac; check ~/.alondra/alondrad.log, then run alondra device invite again", "alondrad no responde en este Mac; revisa ~/.alondra/alondrad.log y vuelve a ejecutar alondra device invite"))
 }
 
 fn local_approve(
@@ -594,7 +594,7 @@ pub fn run(home: &Path) -> Result<()> {
     let path = home.join("service.toml");
     let text = fs::read_to_string(&path)?;
     if toml::from_str::<toml::Table>(&text)?.get("relay_url").is_none() {
-        bail!(tr!("this Mac has no relay: devices on the same network pair on their own (alondra connect, or the app's search); to pair through the relay, run alondra setup --relay first", "este Mac no tiene relay: los dispositivos de la misma red se emparejan solos (alondra connect, o la búsqueda de la app); para emparejar a través del relay, ejecuta antes alondra setup --relay"));
+        bail!(tr!("this Mac has no relay: devices on the same network pair on their own (alondra mac connect, or the app's search); to pair through the relay, run alondra relay on first", "este Mac no tiene relay: los dispositivos de la misma red se emparejan solos (alondra mac connect, o la búsqueda de la app); para emparejar a través del relay, ejecuta antes alondra relay on"));
     }
     let mut config: ServiceConfig = toml::from_str(&text)?;
     let origin = url::Url::parse(&config.relay_url)?;
@@ -701,7 +701,7 @@ pub fn run(home: &Path) -> Result<()> {
         .quiet_zone(true)
         .build();
     println!("{art}\nScan this QR in Alondra on your iPhone. It expires in 10 minutes.");
-    println!("Terminal invitation (paste into alondra connect on the client):\n{qr}");
+    println!("Terminal invitation (paste into alondra mac connect on the client):\n{qr}");
     let candidate = loop {
         if now_ms()? >= expires {
             bail!(tr!("pairing session expired", "la sesión de emparejamiento ha caducado"));

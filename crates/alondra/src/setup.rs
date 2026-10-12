@@ -4,67 +4,30 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::Duration;
 
-use alondra_core::config::{self, Config, FileConfig};
-use anyhow::{Context, Result, anyhow, bail};
+use alondra_core::config::{self, FileConfig};
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 const TEMPLATE: &str = include_str!("../../../launchd/alondra.plist.in");
 pub const MARKETPLACE: &str = "alondra";
 
-#[derive(clap::Args, Default)]
+/// What the installation should look like beyond `config.toml`: inspect() leaves everything at
+/// its default, and the tests ask for the rest.
+#[derive(Default)]
 pub struct Args {
-    #[arg(long, help = tr!("Name of the person the nodes talk to", "Nombre de la persona con la que hablan los nodos"))]
     pub name: Option<String>,
-    #[arg(long, value_name = "DIRECTORY", help = tr!("Projects folder (created if missing; default ~/Projects)", "Carpeta de proyectos (se crea si falta; por defecto ~/Projects)"))]
-    pub projects_root: Option<PathBuf>,
-    #[arg(long, help = tr!("URL the iPhone uses to reach this Mac", "URL por la que el iPhone llega a este Mac"))]
     pub public_url: Option<String>,
-    #[arg(long, help = tr!("Address alondrad listens on (0.0.0.0 to accept the LAN)", "Dirección en la que escucha alondrad (0.0.0.0 para aceptar la red local)"))]
     pub listen: Option<IpAddr>,
-    #[arg(long)]
     pub port: Option<u16>,
-    #[arg(long, value_name = "true|false", help = tr!("Bridge with the old open-questions.json", "Puente con el open-questions.json antiguo"))]
     pub legacy_bridge: Option<bool>,
-    #[arg(long, value_name = "true|false", help = tr!("Let the service type messages into stopped nodes (default true)", "Deja que el servicio escriba los mensajes en nodos parados (por defecto true)"))]
     pub wake: Option<bool>,
-    #[arg(long)]
     pub retention_hours: Option<f64>,
-    #[arg(long, help = tr!("launchd label of the service", "Etiqueta de launchd del servicio"))]
     pub service_label: Option<String>,
-    #[arg(long, help = tr!("APNs .p8 key", "Llave .p8 de APNs"))]
-    pub apns_key_path: Option<PathBuf>,
-    #[arg(long)]
-    pub apns_key_id: Option<String>,
-    #[arg(long)]
-    pub apns_team_id: Option<String>,
-    #[arg(long, help = tr!("Bundle ID of your iOS app", "Bundle ID de tu app de iOS"))]
-    pub apns_topic: Option<String>,
-    #[arg(long, value_name = "PLIST", help = tr!(
-        "Take the settings from an existing launchd plist (migration from env vars)",
-        "Toma los ajustes de un plist de launchd existente (migración desde variables de entorno)"
-    ))]
     pub from_plist: Option<PathBuf>,
-    #[arg(long, help = tr!("Alondra repo (default: found from the current directory)", "Repo de Alondra (por defecto: se busca desde el directorio actual)"))]
-    pub repo: Option<PathBuf>,
-    #[arg(long, help = tr!("Where alondrad and alondra are installed (default ~/.local/bin)", "Dónde están instalados alondrad y alondra (por defecto ~/.local/bin)"))]
-    pub bin: Option<PathBuf>,
-    #[arg(long)]
     pub skip_service: bool,
-    #[arg(long)]
     pub skip_plugin: bool,
-    #[arg(long)]
-    pub skip_pair: bool,
-    #[arg(long, help = tr!("Explicitly recover the service identity; requires local confirmation and new client pairing", "Recupera a propósito la identidad del servicio; pide confirmación aquí y volver a emparejar los clientes"))]
-    pub recover_service: bool,
-    #[arg(long, help = tr!("Overwrite config.toml / apns.json values that differ", "Sobrescribe los valores de config.toml / apns.json que cambien"))]
     pub force: bool,
-    #[arg(long, help = tr!("Print what would be done without doing it", "Enseña lo que haría sin hacerlo"))]
-    pub dry_run: bool,
-    #[arg(long, help = tr!("Never ask; use flags and defaults", "No pregunta nunca; usa los parámetros y los valores por defecto"))]
-    pub no_input: bool,
-    #[arg(long, help = tr!("Also enroll this Mac with the Alondra relay, to reach it from anywhere", "Da de alta también este Mac en el relay de Alondra, para llegar a él desde cualquier sitio"))]
-    pub relay: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
@@ -414,30 +377,7 @@ pub(crate) fn brew_package_for_executable(executable: &Path) -> Option<(PathBuf,
         .map(|assets| (stable.join("bin"), assets))
 }
 
-pub fn local_host_name() -> Option<String> {
-    let out = Command::new("/usr/sbin/scutil").args(["--get", "LocalHostName"]).output().ok()?;
-    let name = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    (out.status.success() && !name.is_empty()).then_some(name)
-}
 
-pub fn lan_url(port: u16) -> Option<String> {
-    local_host_name().map(|h| format!("http://{h}.local:{port}"))
-}
-
-fn apns_from(args: &Args) -> Result<Option<Apns>> {
-    let parts = (&args.apns_key_path, &args.apns_key_id, &args.apns_team_id, &args.apns_topic);
-    match parts {
-        (None, None, None, None) => Ok(None),
-        (Some(p), Some(k), Some(t), Some(topic)) => {
-            let key_path = if p.is_absolute() { p.clone() } else { std::env::current_dir()?.join(p) };
-            Ok(Some(Apns { key_path, key_id: k.clone(), team_id: t.clone(), topic: topic.clone() }))
-        }
-        _ => Err(anyhow!(tr!(
-            "APNs needs the four values: --apns-key-path --apns-key-id --apns-team-id --apns-topic",
-            "APNs necesita los cuatro valores: --apns-key-path --apns-key-id --apns-team-id --apns-topic"
-        ))),
-    }
-}
 
 fn wanted_from(args: &Args, existing: Option<&FileConfig>) -> Result<FileConfig> {
     let mut wanted = match &args.from_plist {
@@ -514,35 +454,7 @@ fn launchd_pid(text: &str) -> Result<Option<i32>> {
     Ok(Some(pid))
 }
 
-fn process_is_alive(pid: i32) -> Result<bool> {
-    let status = unsafe { libc::kill(pid, 0) };
-    if status == 0 {
-        return Ok(true);
-    }
-    let error = std::io::Error::last_os_error();
-    match error.raw_os_error() {
-        Some(libc::ESRCH) => Ok(false),
-        Some(libc::EPERM) => Ok(true),
-        _ => Err(error.into()),
-    }
-}
 
-fn running_alondrad_pids() -> Result<Vec<i32>> {
-    let output = Command::new("/usr/bin/pgrep")
-        .args(["-x", "alondrad"])
-        .output()
-        .context("could not inspect running daemon processes")?;
-    if output.status.success() {
-        return String::from_utf8(output.stdout)?
-            .lines()
-            .map(|line| line.parse::<i32>().context("invalid daemon process identifier"))
-            .collect();
-    }
-    if output.status.code() == Some(1) && output.stdout.is_empty() {
-        return Ok(Vec::new());
-    }
-    anyhow::bail!(tr!("could not determine whether another daemon is running", "no se pudo comprobar si hay otro daemon en ejecución"))
-}
 
 fn ensure_no_running_daemons(mut pids: impl FnMut() -> Result<Vec<i32>>) -> Result<()> {
     let running = pids()?;
@@ -691,226 +603,6 @@ fn dev_setup_over_brew(running_from_brew: bool, brew_installed: bool, forced: bo
     !running_from_brew && brew_installed && !forced
 }
 
-pub fn run(args: Args) -> Result<()> {
-    let env = |k: &str| std::env::var(k).ok();
-    if !args.dry_run && dev_setup_over_brew(
-        brew_package_for_executable(&std::env::current_exe().ok().and_then(|p| p.canonicalize().ok()).unwrap_or_default()).is_some(),
-        BREW_PREFIXES.iter().any(|p| Path::new(p).exists()),
-        env("FORCE_DEV_INSTALL").is_some_and(|v| !v.is_empty()),
-    ) {
-        bail!(tr!("Alondra is installed with Homebrew; a dev build running setup would point the user's daemon at itself. Use the e2e sandbox (make e2e-sandbox), or set FORCE_DEV_INSTALL=1 if you really mean it", "Alondra está instalada con Homebrew; una build de desarrollo que ejecute setup apuntaría el daemon del usuario a sí misma. Usa el sandbox e2e (make e2e-sandbox), o define FORCE_DEV_INSTALL=1 si de verdad lo quieres"));
-    }
-    let home = config::home_dir(&env);
-    let alondra_home = config::alondra_home(&env);
-    let packaged = installed_package();
-    let brew_executable = std::env::current_exe().ok().and_then(|p| p.canonicalize().ok())
-        .filter(|p| brew_package_for_executable(p).is_some());
-    let paths = Paths {
-        bin: args.bin.clone().or_else(|| packaged.as_ref().map(|(bin, _)| bin.clone())).unwrap_or_else(|| home.join(".local/bin")),
-        repo: args.repo.clone().or_else(|| packaged.as_ref().map(|(_, assets)| assets.clone())).or_else(|| std::env::current_dir().ok().and_then(|d| find_repo(&d))),
-        uid: unsafe { libc::getuid() },
-        home,
-        alondra_home,
-    };
-    let existing = std::fs::read_to_string(paths.config()).ok().and_then(|t| FileConfig::parse(&t).ok());
-    let wanted = wanted_from(&args, existing.as_ref())?;
-    let apns = apns_from(&args)?;
-    let label = wanted
-        .service_label
-        .clone()
-        .or_else(|| existing.as_ref().and_then(|e| e.service_label.clone()))
-        .unwrap_or_else(|| config::DEFAULT_LABEL.into());
-    if args.recover_service {
-        if args.dry_run {
-            println!("would confirm service recovery, stop only this HOME's daemon, preserve tasks/receipts, replace service identity and require new pairings");
-            return Ok(());
-        }
-        if args.no_input { bail!(tr!("--recover-service requires local confirmation; remove --no-input", "--recover-service necesita confirmación local; quita --no-input")); }
-        if args.skip_service { bail!(tr!("--recover-service cannot be combined with --skip-service", "--recover-service no se puede combinar con --skip-service")); }
-        let outcome = crate::service_setup::recover(&paths.alondra_home, || stop_for_recovery(&paths, &label),
-            &mut std::io::stdin().lock(), &mut std::io::stdout().lock())?;
-        return continue_after_recovery(outcome, || {
-            let mut resumed = args;
-            resumed.recover_service = false;
-            run(resumed)
-        });
-    }
-    // Shared ownership excludes a recovery writer; check pending after locking,
-    // before setup can load or change any service trust or launch the daemon.
-    let mut home_lock = if args.dry_run { None } else {
-        let lock = alondra_core::home_lock::HomeLock::shared(&paths.alondra_home)?;
-        alondra_core::home_lock::ensure_ready(&paths.alondra_home)?;
-        Some(lock)
-    };
-    if let (Ok(config), Ok(watcher)) = (std::env::var("CLAUDE_CONFIG_DIR"), std::env::var("CLAUDE_HOME")) {
-        if config != watcher { bail!(tr!("CLAUDE_CONFIG_DIR and CLAUDE_HOME disagree; set one Claude profile before alondra setup", "CLAUDE_CONFIG_DIR y CLAUDE_HOME no coinciden; define un único perfil de Claude antes de alondra setup")); }
-    }
-    let context = claude_context(&paths, &label);
-    let legacy = std::env::var_os("CLAUDE_CONFIG_DIR").is_none()
-        && std::env::var_os("CLAUDE_HOME").is_none()
-        && read_plist(&paths.plist(&label)).is_ok_and(|p| legacy_default_profile(&p, &paths.home));
-    let context = if args.dry_run { context } else { resolve_legacy_profile(context, legacy)? };
-    let seen = observe(&paths, &label, apns.as_ref(), &args, &context);
-    let plan = plan_with_context(&wanted, apns.as_ref(), &args, &paths, &seen, Some(&context));
-
-    if !plan.conflicts.is_empty() {
-        eprintln!("{}", tr!("Not touching anything, because:", "No toco nada, por esto:"));
-        for c in &plan.conflicts {
-            eprintln!("  {c}");
-        }
-        bail!(tr!("setup stopped", "setup detenido"));
-    }
-    if !args.dry_run && !args.skip_service && !seen.binaries {
-        bail!(tr!("alondrad is missing from the configured installation; install the Homebrew formula or pass --bin, then rerun `alondra setup`", "falta alondrad en la instalación configurada; instala la fórmula de Homebrew o pasa --bin, y vuelve a ejecutar `alondra setup`"));
-    }
-    let brew_stamp = paths.alondra_home.join("brew-keg-path");
-    let current_brew_path = brew_executable
-        .as_ref()
-        .map(|executable| executable.to_string_lossy().into_owned());
-    let brew_keg_changed = current_brew_path.as_ref().is_some_and(|current| {
-        std::fs::read_to_string(&brew_stamp).ok().as_deref() != Some(current.as_str())
-    });
-    let defer_brew_service_start = brew_keg_changed && !args.dry_run && !args.skip_service;
-    let projects = crate::setup_projects::select(
-        paths.alondra_home.join(alondra_core::options::FILE_NAME), &paths.home,
-        &std::env::current_dir()?, args.projects_root.as_deref(), args.no_input,
-        args.dry_run, &mut std::io::stdin().lock(), &mut std::io::stdout().lock(),
-    )?;
-    projects.apply(args.dry_run)?;
-    if !args.dry_run {
-        std::fs::create_dir_all(paths.alondra_home.join("runtime/orchestrator"))?;
-    }
-    if args.dry_run {
-        println!("would verify Claude Code authentication in the daemon environment (no login during dry run; legacy default profile migration deferred until authentication probes)");
-    } else {
-        context.ensure(args.no_input)?;
-    }
-    let service_created = if args.dry_run {
-        println!("would prepare this Mac for devices on the local network, and enroll it with the relay if it already uses one or --relay is given");
-        false
-    } else if args.relay || crate::service_setup::has_relay(&paths.alondra_home)? {
-        crate::service_setup::enroll(&paths.alondra_home, args.no_input)?
-    } else {
-        crate::service_setup::prepare_local(&paths.alondra_home)?
-    };
-    for step in &plan.steps {
-        if !args.dry_run && defer_brew_service_start && is_launchd_lifecycle_step(step) {
-            println!("deferred launchd restart until the old daemon is stopped and setup releases HOME");
-            continue;
-        }
-        print_step(step, args.dry_run);
-        if !args.dry_run {
-            execute(step, &context)?;
-        }
-    }
-    let launched_by_plan = plan.steps.iter().any(|step| {
-        matches!(step, Step::Run { program, args } if program == "launchctl"
-            && matches!(args.first().map(String::as_str), Some("bootstrap" | "kickstart")))
-    });
-    let restarted_for_enrollment = service_created && seen.binaries && seen.service_loaded
-        && !launched_by_plan && !defer_brew_service_start;
-    if restarted_for_enrollment {
-        let target = format!("gui/{}/{}", paths.uid, label);
-        execute(&Step::Run {
-            program: "launchctl".into(),
-            args: vec!["kickstart".into(), "-k".into(), target],
-        }, &context)?;
-    }
-    if defer_brew_service_start {
-        let target = format!("gui/{}/{label}", paths.uid);
-        stop_owned_job_and_wait(
-            &target,
-            &paths.alondra_home,
-            &paths.bin.join("alondrad"),
-            launchctl,
-            process_is_alive,
-            50,
-            Duration::from_millis(100),
-        )?;
-        ensure_no_running_daemons(running_alondrad_pids)?;
-        let current = current_brew_path.context("deferred brew start requires a package path")?;
-        let plist = paths.plist(&label);
-        let domain = format!("gui/{}", paths.uid);
-        bootstrap_then_record(&mut home_lock, || {
-            ensure_no_running_daemons(running_alondrad_pids)?;
-            execute(
-                &Step::Run {
-                    program: "launchctl".into(),
-                    args: vec!["bootstrap".into(), domain, plist.display().to_string()],
-                },
-                &context,
-            )
-        }, || execute(&Step::Write {
-            path: brew_stamp,
-            contents: current,
-            private: true,
-        }, &context))?;
-    }
-    if args.dry_run {
-        println!("{}", tr!("(dry run: nothing was written or run)", "(ensayo: no se ha escrito ni ejecutado nada)"));
-        return Ok(());
-    }
-    if args.skip_pair || args.skip_service {
-        return Ok(());
-    }
-    pair_through_relay(&mut home_lock, &paths.alondra_home, || crate::service_pair::run(&paths.alondra_home))
-}
-
-fn pair_through_relay(
-    home_lock: &mut Option<alondra_core::home_lock::HomeLock>,
-    home: &Path,
-    pair: impl FnOnce() -> Result<()>,
-) -> Result<()> {
-    pair_unless_paired(
-        home_lock,
-        || Ok(!crate::service_pair::has_relay(home)? || crate::service_pair::has_paired_device(home)?),
-        pair,
-    )
-}
-
-/// Pairing restarts the daemon, which cannot start while setup still shares HOME.
-fn pair_unless_paired(
-    home_lock: &mut Option<alondra_core::home_lock::HomeLock>,
-    paired: impl FnOnce() -> Result<bool>,
-    pair: impl FnOnce() -> Result<()>,
-) -> Result<()> {
-    if paired()? {
-        return Ok(());
-    }
-    release_home_lock_then(home_lock, pair)
-}
-
-fn print_step(step: &Step, dry: bool) {
-    match step {
-        Step::Write { path, contents, private } => {
-            let p = path.display();
-            if dry {
-                println!("{}", trf!("would write {p}:", "escribiría {p}:"));
-                if !private {
-                    for l in contents.lines() {
-                        println!("    {l}");
-                    }
-                }
-            } else {
-                println!("{}", trf!("✓ wrote {p}", "✓ escrito {p}"));
-            }
-        }
-        Step::Unchanged { path } => {
-            let p = path.display();
-            println!("{}", trf!("= {p} unchanged", "= {p} sin cambios"));
-        }
-        Step::Run { program, args } => {
-            let cmd = format!("{program} {}", args.join(" "));
-            if dry {
-                println!("{}", trf!("would run: {cmd}", "ejecutaría: {cmd}"));
-            } else {
-                println!("{}", trf!("✓ {cmd}", "✓ {cmd}"));
-            }
-        }
-        Step::Warn(w) => println!("! {w}"),
-    }
-}
-
 fn execute(step: &Step, context: &crate::claude_auth::ContextEnv) -> Result<()> {
     match step {
         Step::Write { path, contents, private } => {
@@ -950,12 +642,14 @@ fn execute(step: &Step, context: &crate::claude_auth::ContextEnv) -> Result<()> 
     Ok(())
 }
 
-pub fn pairing_url(config: &Config) -> Option<String> {
-    config.public_url.clone().or_else(|| (!config.listen.is_loopback()).then(|| lan_url(config.port)).flatten())
+
+/// Where a development build's binaries live: `ALONDRA_BIN` (the `Makefile`), else `~/.local/bin`.
+fn dev_bin(dir: Option<String>, home: &Path) -> PathBuf {
+    dir.filter(|d| !d.is_empty()).map(PathBuf::from).unwrap_or_else(|| home.join(".local/bin"))
 }
 
-/// The installation as `alondra setup` with no flags would leave it: what is there, and the steps
-/// that would change it. `alondra doctor` reads it and `doctor --fix` applies parts of it.
+/// The installation as it should be: what is there, and the steps that would change it.
+/// `alondra doctor` reads it and `doctor --fix` applies parts of it.
 pub(crate) struct Installation {
     pub paths: Paths,
     pub label: String,
@@ -978,7 +672,7 @@ pub(crate) fn inspect() -> Installation {
     let home = config::home_dir(&env);
     let packaged = installed_package();
     let paths = Paths {
-        bin: packaged.as_ref().map(|(bin, _)| bin.clone()).unwrap_or_else(|| home.join(".local/bin")),
+        bin: packaged.as_ref().map(|(bin, _)| bin.clone()).unwrap_or_else(|| dev_bin(env("ALONDRA_BIN"), &home)),
         repo: packaged.as_ref().map(|(_, assets)| assets.clone()).or_else(|| std::env::current_dir().ok().and_then(|d| find_repo(&d))),
         uid: unsafe { libc::getuid() },
         home,
@@ -998,6 +692,17 @@ pub(crate) fn inspect() -> Installation {
 }
 
 impl Installation {
+    /// What the LaunchAgent would run and with which Claude profile, for `alondra doctor --json`.
+    pub(crate) fn target(&self) -> Value {
+        let profile = self.context.config_dir.clone();
+        serde_json::json!({
+            "program": self.paths.bin.join("alondrad"),
+            "marketplace": self.paths.repo,
+            "claude_profile": profile,
+            "profile_mode": if profile.is_some() { "explicit" } else { "implicit" },
+        })
+    }
+
     fn is_service_step(&self, step: &Step) -> bool {
         match step {
             Step::Write { path, .. } => *path == self.paths.config() || *path == self.paths.plist(&self.label),
@@ -1079,6 +784,7 @@ mod tests {
     }
 
     use super::*;
+    use alondra_core::config::Config;
 
     // Operational gate only: reads an explicitly authorized installed plist and
     // invokes Claude auth status. Never logs in, writes profiles, or runs setup.
@@ -1653,43 +1359,6 @@ mod brew_upgrade_tests {
     }
 
     #[test]
-    fn setup_releases_shared_home_lock_before_pairing_restarts_the_daemon() {
-        let home = fixture_home();
-        let mut lock = Some(alondra_core::home_lock::HomeLock::shared(&home).unwrap());
-        pair_unless_paired(&mut lock, || Ok(false), || {
-            let daemon_start = alondra_core::home_lock::HomeLock::recovery(&home)?;
-            drop(daemon_start);
-            Ok(())
-        }).unwrap();
-        assert!(lock.is_none());
-        let mut paired = Some(alondra_core::home_lock::HomeLock::shared(&home).unwrap());
-        pair_unless_paired(&mut paired, || Ok(true), || anyhow::bail!("already paired")).unwrap();
-        assert!(paired.is_some());
-        std::fs::remove_dir_all(home).unwrap();
-    }
-
-    const LOCAL_SERVICE_TOML: &str = "mac_id = \"mac-1\"\nsigning_key_path = \"keys/signing.pem\"\nagreement_key_path = \"keys/agreement.pem\"\ndevices = []\n";
-
-    #[test]
-    fn setup_without_relay_finishes_without_pairing() {
-        let home = fixture_home();
-        std::fs::write(home.join("service.toml"), LOCAL_SERVICE_TOML).unwrap();
-        pair_through_relay(&mut None, &home, || anyhow::bail!("pairing needs a relay")).unwrap();
-        std::fs::remove_dir_all(home).unwrap();
-    }
-
-    #[test]
-    fn setup_with_relay_and_no_device_pairs() {
-        let home = fixture_home();
-        let relay = format!("relay_url = \"https://relay.example\"\nowner_sub = \"owner\"\n{LOCAL_SERVICE_TOML}");
-        std::fs::write(home.join("service.toml"), relay).unwrap();
-        let mut paired = false;
-        pair_through_relay(&mut None, &home, || { paired = true; Ok(()) }).unwrap();
-        assert!(paired);
-        std::fs::remove_dir_all(home).unwrap();
-    }
-
-    #[test]
     fn global_running_daemon_blocks_bootstrap_and_setup_retry() {
         let called = std::cell::Cell::new(false);
         let result = bootstrap_then_record(&mut None, || {
@@ -1731,6 +1400,18 @@ mod brew_upgrade_tests {
     }
 }
 
+
+/// `alondra mac reset-identity`: once the person types this Mac's name, this Mac's service gets a
+/// new identity, then `repair` finishes the setup. Cancelling changes nothing.
+pub(crate) fn reset_identity(repair: impl FnOnce() -> Result<()>) -> Result<()> {
+    let install = inspect();
+    if install.dev_over_brew {
+        bail!(tr!("Alondra is installed with Homebrew; a dev build would point the user's daemon at itself. Use the e2e sandbox (make e2e-sandbox), or set FORCE_DEV_INSTALL=1 if you really mean it", "Alondra está instalada con Homebrew; una build de desarrollo apuntaría el daemon del usuario a sí misma. Usa el sandbox e2e (make e2e-sandbox), o define FORCE_DEV_INSTALL=1 si de verdad lo quieres"));
+    }
+    let outcome = crate::service_setup::recover(&install.paths.alondra_home, &crate::client::computer_name(),
+        || stop_for_recovery(&install.paths, &install.label), &mut std::io::stdin().lock(), &mut std::io::stdout().lock())?;
+    continue_after_recovery(outcome, repair)
+}
 
 // Keep the decision in the caller: cancellation must not enter normal setup,
 // which can otherwise log in, enroll, launch services and modify plugins.

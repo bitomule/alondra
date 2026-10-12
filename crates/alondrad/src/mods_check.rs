@@ -31,7 +31,7 @@ pub(crate) struct Outcomes {
 pub(crate) fn judge(plugin: Option<&Path>, outcomes: &Outcomes) -> Status {
     let failed = |detail: String| Status { ok: false, detail };
     let Some(plugin) = plugin else {
-        return failed("Alondra's node plugin was not found: run `alondra setup`".into());
+        return failed("Alondra's node plugin was not found: run `alondra doctor --fix`".into());
     };
     match &outcomes.version {
         Some((true, text)) if mods::runs_mods(text) => {}

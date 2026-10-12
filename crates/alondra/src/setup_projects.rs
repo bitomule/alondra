@@ -66,7 +66,7 @@ pub fn select(
             }
             result => {
                 let why = result.err().map(|e| e.to_string()).unwrap_or_else(|| format!("{value} does not exist"));
-                if no_input || dry_run { bail!(trf!("Configured projects_root is invalid: {why}. Rerun setup --projects-root <directory> to repair it", "El projects_root configurado no es válido: {why}. Vuelve a ejecutar setup --projects-root <directorio> para repararlo")); }
+                if no_input || dry_run { bail!(trf!("Configured projects_root is invalid: {why}. Choose another with alondra config set projects_root <folder>", "El projects_root configurado no es válido: {why}. Elige otra con alondra config set projects_root <carpeta>")); }
                 writeln!(output, "Configured projects_root is invalid: {why}.")?;
             }
         }

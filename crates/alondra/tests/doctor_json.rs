@@ -78,7 +78,7 @@ fn doctor_test_push_json_without_a_relay_exits_3_with_the_next_step() {
     assert_eq!(output.status.code(), Some(3), "{output:?}");
     assert_eq!(doc["schema"], "alondra.doctor/1");
     assert_eq!(doc["test_push"]["sent"], false);
-    assert_eq!(doc["next_step"], "alondra setup --relay");
+    assert_eq!(doc["next_step"], "alondra relay on");
 }
 
 #[test]

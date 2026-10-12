@@ -2,7 +2,7 @@ exports_files(["Cargo.toml", "Cargo.lock", "clippy.toml"])
 
 exports_files(
     ["Makefile"],
-    visibility = ["//deploy/apple:__pkg__"],
+    visibility = ["//crates/alondra:__pkg__", "//deploy/apple:__pkg__"],
 )
 
 # What Claude Code writes beside a mod it loads with --plugin-dir: never part of the plugin.

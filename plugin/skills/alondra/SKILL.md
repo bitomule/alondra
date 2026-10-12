@@ -12,7 +12,7 @@ answers are typed into this session. Alondra sees on its own that you are workin
 ## Never deploy
 
 Never install, restart or replace the Alondra daemon or CLI on the user's machine: no `make
-install`, `brew`, `launchctl`, `alondra setup` or `alondra update`. Test with the e2e sandbox
+install`, `brew`, `launchctl`, `alondra doctor --fix` or `alondra update`. Test with the e2e sandbox
 (`make e2e-sandbox`). Deployment is the coordinator's job.
 
 ## Your task

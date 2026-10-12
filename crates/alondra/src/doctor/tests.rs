@@ -259,7 +259,7 @@ impl System for Fake {
 }
 
 fn env(sys: &Fake) -> Env<'_> {
-    Env { sys, deep: false, first_run: false }
+    Env { sys, deep: false, first_run: false, yes: false, select: Selection::All }
 }
 
 fn find<'a>(outcomes: &'a [Outcome], id: &str) -> &'a Outcome {
@@ -404,7 +404,7 @@ fn notifications_need_the_relay_and_a_test_the_device_accepted() {
     let tested = TestPush { device: "phone-1".into(), name: "iPhone".into(), at: 0 };
     let off = notifications_check(false, Some(&tested), Some(&devices));
     assert_eq!((off.status, off.detail.as_str()), (Status::Warn, "off — local network only"));
-    assert_eq!(off.fix, Some(Fix::Manual("alondra setup --relay".into())));
+    assert_eq!(off.fix, Some(Fix::Manual("alondra relay on".into())));
     let never = notifications_check(true, None, Some(&devices));
     assert_eq!((never.status, never.fix), (Status::Warn, Some(Fix::Manual("alondra doctor --test-push".into()))));
     assert_eq!(notifications_check(true, Some(&tested), Some(&devices)).status, Status::Pass);
@@ -490,7 +490,7 @@ fn the_slow_mod_check_runs_only_with_deep_or_a_changed_plugin() {
     assert!(skipped.detail.contains("--deep checks again"), "{}", skipped.detail);
     assert!(!sys.claude_calls.borrow().iter().any(|c| c.starts_with("plugin")), "{:?}", sys.claude_calls.borrow());
 
-    let deep = Env { sys: &sys, deep: true, first_run: false };
+    let deep = Env { sys: &sys, deep: true, first_run: false, yes: false, select: Selection::All };
     assert_eq!(find(&diagnose(&deep), "mods").detail, "the node mod validates and its tests pass");
     assert!(sys.claude_calls.borrow().contains(&"plugin test /m/plugin".to_string()));
 
@@ -606,6 +606,55 @@ fn a_question_answered_yes_applies_its_repair() {
 }
 
 #[test]
+fn yes_accepts_every_question_and_the_proposed_folder_without_asking() {
+    english();
+    let root = crate::test_support::Directory::new();
+    let cwd = root.join("Projects");
+    folder(&cwd, 2);
+    let sys = new_mac(&cwd);
+    let yes = Env { yes: true, ..wizard_env(&sys) };
+    let mut ui = Recorded::default();
+    let repaired = repair(&yes, &mut ui).unwrap();
+    assert!(!ui.lines.iter().any(|l| l.starts_with("ask ") || l.starts_with("select ")), "{:?}", ui.lines);
+    assert_eq!(*sys.applied.borrow(), vec![Action::SetProjects, Action::PrepareIdentity, Action::InstallService, Action::EnableRelay]);
+    assert_eq!(*sys.options.borrow(), Some(format!("projects_root = {:?}\n", cwd.display().to_string())));
+    assert_eq!(exit_code(&repaired.outcomes), 0);
+}
+
+#[test]
+fn yes_without_a_person_leaves_the_browser_sign_ins_for_one() {
+    english();
+    let sys = Fake::healthy();
+    *sys.signed_in.borrow_mut() = Ok(false);
+    let yes = Env { yes: true, ..env(&sys) };
+    let repaired = repair(&yes, &mut Plain { out: vec![] }).unwrap();
+    assert!(sys.applied.borrow().is_empty());
+    assert_eq!(exit_code(&repaired.outcomes), 3);
+
+    let mut ui = Recorded::default();
+    repair(&yes, &mut ui).unwrap();
+    assert_eq!(*sys.applied.borrow(), vec![Action::SignIn], "with a person at the terminal --yes signs in: {:?}", ui.lines);
+}
+
+#[test]
+fn only_and_skip_run_just_the_checks_they_name() {
+    english();
+    let sys = Fake::healthy();
+    *sys.service_config.borrow_mut() = false;
+    *sys.marketplace.borrow_mut() = false;
+    let only = Env { select: Selection::Only(vec!["plugin".into()]), ..env(&sys) };
+    let ids: Vec<&str> = diagnose(&only).iter().map(|o| o.id).collect();
+    assert_eq!(ids, ["plugin"]);
+    let repaired = repair(&only, &mut Recorded::default()).unwrap();
+    assert_eq!(repaired.applied, vec![Action::RepairPlugin], "identity is not repaired outside --only");
+
+    let skip = Env { select: Selection::Skip(vec!["identity".into(), "mods".into()]), ..env(&sys) };
+    let ids: Vec<&str> = diagnose(&skip).iter().map(|o| o.id).collect();
+    assert!(!ids.contains(&"identity") && !ids.contains(&"mods") && ids.contains(&"service"), "{ids:?}");
+    assert!(check_ids().contains(&"service") && check_ids().contains(&"relay"));
+}
+
+#[test]
 fn without_a_terminal_nothing_is_asked_and_json_says_the_next_step() {
     english();
     let sys = Fake::healthy();
@@ -614,7 +663,7 @@ fn without_a_terminal_nothing_is_asked_and_json_says_the_next_step() {
     let repaired = repair(&env(&sys), &mut Plain { out: &mut out }).unwrap();
     assert!(sys.applied.borrow().is_empty());
     assert_eq!(exit_code(&repaired.outcomes), 3);
-    let doc = report(&repaired.outcomes);
+    let doc = report(&repaired.outcomes, None);
     assert_eq!(doc["next_step"], "claude auth login, then alondra doctor --fix");
     let text = String::from_utf8(out).unwrap();
     assert!(text.contains("✗ Claude Code sign-in: not signed in\n  → claude auth login, then alondra doctor --fix"), "{text}");
@@ -660,7 +709,7 @@ fn exit_codes_put_a_silent_daemon_first_then_breakage_then_a_person() {
 fn json_keeps_todays_fields_and_adds_schema_id_fixable_and_next_step() {
     english();
     let sys = Fake::healthy().stopped();
-    let doc = report(&diagnose(&env(&sys)));
+    let doc = report(&diagnose(&env(&sys)), None);
     assert_eq!(doc["schema"], "alondra.doctor/1");
     assert_eq!(doc["ok"], false);
     let daemon = doc["checks"].as_array().unwrap().iter().find(|c| c["id"] == "alondrad").unwrap();
@@ -672,7 +721,12 @@ fn json_keeps_todays_fields_and_adds_schema_id_fixable_and_next_step() {
     let tmux = doc["checks"].as_array().unwrap().iter().find(|c| c["id"] == "tmux").unwrap();
     assert_eq!((tmux["fix"].as_str(), tmux["fixable"].as_bool()), (Some(""), Some(false)));
     assert_eq!(doc["next_step"], "alondra doctor --fix");
-    assert_eq!(report(&diagnose(&env(&Fake::healthy())))["next_step"], Value::Null);
+    assert_eq!(report(&diagnose(&env(&Fake::healthy())), None)["next_step"], Value::Null);
+    let target = json!({"program": "/opt/homebrew/opt/alondra/bin/alondrad", "profile_mode": "implicit"});
+    let doc = report(&diagnose(&env(&Fake::healthy())), Some(target.clone()));
+    let checks = doc["checks"].as_array().unwrap();
+    assert_eq!(checks.iter().find(|c| c["id"] == "service").unwrap()["install"], target);
+    assert!(checks.iter().filter(|c| c["id"] != "service").all(|c| c.get("install").is_none()));
 }
 
 #[test]
@@ -698,7 +752,7 @@ fn test_push_exit_codes() {
     let no_relay = Fake::healthy();
     *no_relay.relay.borrow_mut() = false;
     let r = test_push(&env(&no_relay));
-    assert_eq!((r.code, r.next.as_deref()), (3, Some("alondra setup --relay")));
+    assert_eq!((r.code, r.next.as_deref()), (3, Some("alondra relay on")));
     assert!(no_relay.pushed.borrow().is_empty());
     assert_eq!(test_push(&env(&Fake::healthy().stopped())).code, 4);
     let mut alone = Fake::healthy();
@@ -827,7 +881,7 @@ fn new_mac(cwd: &Path) -> Fake {
 }
 
 fn wizard_env(sys: &Fake) -> Env<'_> {
-    Env { sys, deep: false, first_run: true }
+    Env { sys, deep: false, first_run: true, yes: false, select: Selection::All }
 }
 
 fn in_order(lines: &[String], expected: &[&str]) {
@@ -880,7 +934,7 @@ fn no_to_the_relay_leaves_the_local_network_and_says_how_to_turn_it_on() {
     let sys = new_mac(&cwd);
     let mut ui = Recorded { choices: vec![Some(0)], answers: vec![Some(false)], ..Default::default() };
     let repaired = repair(&wizard_env(&sys), &mut ui).unwrap();
-    assert!(ui.lines.contains(&"! Notifications and access away from home: off — local network only → alondra setup --relay".to_string()), "{:?}", ui.lines);
+    assert!(ui.lines.contains(&"! Notifications and access away from home: off — local network only → alondra relay on".to_string()), "{:?}", ui.lines);
     assert!(!sys.applied.borrow().contains(&Action::EnableRelay));
     assert_eq!(exit_code(&repaired.outcomes), 0, "local network only is a choice, not a failure");
 }
@@ -947,7 +1001,7 @@ fn a_saved_folder_is_kept_and_one_that_is_gone_is_asked_again() {
     let gone = projects::projects_check(Some("projects_root = \"/nowhere-alondra\"\n"), file, &home, &home, false);
     assert_eq!(gone.status, Status::Fail);
     assert!(matches!(gone.fix, Some(Fix::Choose { .. })));
-    assert_eq!(gone.next_step(), "alondra setup --projects-root <folder>");
+    assert_eq!(gone.next_step(), "alondra config set projects_root <folder>");
     let unset = projects::projects_check(None, file, &home, &home, false);
     assert_eq!(unset.status, Status::Pass, "a configured Mac without one runs on ~/Projects");
     assert_eq!(projects::projects_check(None, file, &home, &home, true).status, Status::Fail, "a first install always asks");

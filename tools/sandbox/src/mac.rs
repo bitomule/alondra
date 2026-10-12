@@ -1,4 +1,4 @@
-//! A sandbox Mac's service identity, in the files `alondra setup` writes on a real Mac.
+//! A sandbox Mac's service identity, in the files `alondra doctor --fix` writes on a real Mac.
 use std::{
     fs::{self, OpenOptions},
     io::Write,
@@ -123,7 +123,7 @@ impl Mac {
     }
 
     /// Adds a phone to `service.toml` and approves it through the daemon's local route,
-    /// signed with this Mac's key: the two steps `alondra pair` takes after the code matches.
+    /// signed with this Mac's key: the two steps `alondra device invite` takes after the code matches.
     pub fn approve_device(&self, local: &str, id: &str, name: &str, signing: &str, agreement: &str) -> Result<()> {
         let path = self.home.join("service.toml");
         let mut service: toml::Table = toml::from_str(&fs::read_to_string(&path)?)?;

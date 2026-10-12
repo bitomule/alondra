@@ -44,7 +44,7 @@ test('installation and privacy are reachable and usable with keyboard', async ({
  await page.getByRole('contentinfo').getByRole('link', { name: 'Instalar' }).click();
  await expect(page).toHaveURL(/\/install$/);
  await expect(page.locator('pre').first()).toHaveText('brew install bitomule/tap/alondra');
- await expect(page.locator('pre')).toHaveText(['brew install bitomule/tap/alondra', 'alondra setup', 'alondra pair', 'alondra doctor', 'alondra']);
+ await expect(page.locator('pre')).toHaveText(['brew install bitomule/tap/alondra', 'alondra', 'alondra doctor --fix']);
  await page.getByRole('contentinfo').getByRole('link', { name: 'Privacidad', exact: true }).click();
  await expect(page.getByRole('heading', { name: 'Qué conoce el servicio' })).toBeVisible();
  await expect(page.getByRole('heading', { name: 'La lista de espera' })).toBeVisible();

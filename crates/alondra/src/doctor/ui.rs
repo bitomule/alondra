@@ -31,6 +31,10 @@ pub trait Ui {
     /// Free text, such as a folder; `None` when there is nobody to ask.
     fn input(&mut self, question: &str) -> Result<Option<String>, Cancelled>;
     fn outro(&mut self, text: &str);
+    /// Whether a person is there to sign in or answer in a browser.
+    fn has_person(&self) -> bool {
+        true
+    }
 }
 
 /// A step's name and detail on one line; a step may have only one of them.
@@ -95,6 +99,10 @@ impl<W: Write> Ui for Plain<W> {
 
     fn outro(&mut self, text: &str) {
         let _ = writeln!(self.out, "{text}");
+    }
+
+    fn has_person(&self) -> bool {
+        false
     }
 }
 

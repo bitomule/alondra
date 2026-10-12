@@ -312,7 +312,7 @@ fn receive_callback(listener: TcpListener, state: &str) -> Result<String> {
             Err(e) => return Err(e.into()),
         }
     }
-    bail!("login timed out; run `alondra login` again")
+    bail!("login timed out; run `alondra account login` again")
 }
 
 fn respond(stream: &mut TcpStream, success: bool) {
@@ -343,7 +343,7 @@ fn decode_stored(bytes: Result<Vec<u8>, security_framework::base::Error>) -> Res
         Err(error) => return Err(error).context("Alondra login is saved in Keychain but cannot be accessed; unlock the login Keychain or restore access for the signed Alondra CLI"),
     };
     let session: Session = serde_json::from_slice(&bytes)
-        .context("saved Alondra login is invalid; repair or remove its Keychain item before running `alondra login`")?;
+        .context("saved Alondra login is invalid; repair or remove its Keychain item before running `alondra account login`")?;
     if session.issuer != ISSUER || session.client_id != CLIENT_ID || session.sub.is_empty() {
         bail!("Keychain login belongs to another issuer or client");
     }
@@ -356,13 +356,13 @@ fn stored_optional() -> Result<Option<Session>> {
 
 fn require_active(session: &Session) -> Result<()> {
     if session.state == SessionState::PendingRevocation {
-        bail!("signed out locally; server revocation is pending; run `alondra account` when online or `alondra login` to reconnect");
+        bail!("signed out locally; server revocation is pending; run `alondra account status` when online or `alondra account login` to reconnect");
     }
     Ok(())
 }
 
 fn stored() -> Result<Session> {
-    let session = stored_optional()?.context("no Alondra service login in Keychain; run `alondra login`")?;
+    let session = stored_optional()?.context("no Alondra service login in Keychain; run `alondra account login`")?;
     require_active(&session)?;
     Ok(session)
 }
@@ -511,7 +511,7 @@ fn complete_refresh(
     }
     let user = identify(&token.access_token)?;
     if user.sub != session.sub {
-        bail!("account subject changed; run `alondra logout` and sign in again");
+        bail!("account subject changed; run `alondra account logout` and sign in again");
     }
     let lifetime = Duration::from_secs(token.expires_in.unwrap_or(0).saturating_sub(30));
     Ok((
@@ -556,9 +556,36 @@ pub fn ensure_token_for_enrollment() -> Result<AccountToken> {
     }
 }
 
+/// Who is signed in, refreshing the login; `None` when nobody is. A sign-out the server had not
+/// confirmed yet finishes here.
+pub fn signed_in_as() -> Result<Option<String>> {
+    let _lock = AccountLock::acquire()?;
+    let Some(session) = stored_optional()? else { return Ok(None) };
+    if session.state == SessionState::PendingRevocation {
+        finish_logout(session)?;
+        return Ok(None);
+    }
+    let (account, preferred_username) = refreshed_locked()?;
+    Ok(Some(preferred_username.unwrap_or(account.sub)))
+}
+
+/// Whether this Mac keeps an Alondra login. It reads only the Keychain item's attributes, so it
+/// never asks to unlock the item or talks to the account server.
+pub fn has_session() -> bool {
+    use security_framework::item::{ItemClass, ItemSearchOptions, Limit};
+    ItemSearchOptions::new()
+        .class(ItemClass::generic_password())
+        .service(KEYCHAIN_SERVICE)
+        .account(ISSUER)
+        .load_attributes(true)
+        .limit(Limit::Max(1))
+        .search()
+        .is_ok_and(|found| !found.is_empty())
+}
+
 pub fn status() -> Result<()> {
     let _lock = AccountLock::acquire()?;
-    let session = stored_optional()?.context("no Alondra service login in Keychain; run `alondra login`")?;
+    let session = stored_optional()?.context("no Alondra service login in Keychain; run `alondra account login`")?;
     if session.state == SessionState::PendingRevocation {
         report_logout(finish_logout(session)?);
         return Ok(());
@@ -582,7 +609,7 @@ pub fn logout() -> Result<()> {
 fn report_logout(revoked: bool) {
     println!("Signed out on this Mac.");
     if !revoked {
-        eprintln!("Server revocation is pending. The saved credential cannot sign in; run `alondra account` when online to complete revocation.");
+        eprintln!("Server revocation is pending. The saved credential cannot sign in; run `alondra account status` when online to complete revocation.");
     }
 }
 
@@ -969,7 +996,7 @@ pub fn token_for_service() -> Result<AccountToken> {
             std::sync::TryLockError::Poisoned(_) => anyhow!("account token cache lock poisoned"),
         })?;
     let _lock = AccountLock::for_service()?;
-    let session = stored().context("sign in with alondra login before connecting to a remote Mac")?;
+    let session = stored().context("sign in with alondra account login before connecting to a remote Mac")?;
     if let Some(token) = cached_for_session(cache.as_ref(), &session)? {
         return Ok(token);
     }

@@ -106,11 +106,11 @@ async fn execute_tick(hub: &Hub, claude_home: &Path, directory: &Path, ownership
     if !resume { transition(hub, Transition::SessionBound { run_id: run_id.clone(), session_id: session.clone() })?; }
     let Some(orchestrator_plugin) = plugins::dir(claude_home, plugins::ORCHESTRATOR) else {
         let _commands = hub.orchestrator_commands.write().await;
-        return finish_failure(hub, &run_id, run.kind, false, "Required Alondra plugins are not installed; run alondra setup".into(), false);
+        return finish_failure(hub, &run_id, run.kind, false, "Required Alondra plugins are not installed; run alondra doctor --fix".into(), false);
     };
     let Some(node_plugin) = plugins::dir(claude_home, plugins::NODE) else {
         let _commands = hub.orchestrator_commands.write().await;
-        return finish_failure(hub, &run_id, run.kind, false, "Required Alondra plugins are not installed; run alondra setup".into(), false);
+        return finish_failure(hub, &run_id, run.kind, false, "Required Alondra plugins are not installed; run alondra doctor --fix".into(), false);
     };
     let plugins = vec![node_plugin.as_path(), orchestrator_plugin.as_path()];
     let prompt = if run.kind == RunKind::Compact { "/compact".into() } else {

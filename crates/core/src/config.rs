@@ -247,8 +247,94 @@ pub fn system_name() -> Option<String> {
         .or_else(|| std::env::var("USER").ok().filter(|u| !u.is_empty()))
 }
 
+/// The `config.toml` keys `alondra config set` changes, and whether the daemon reads each one only
+/// when it starts, so changing it restarts the daemon.
+pub const SETTABLE: &[(&str, bool)] = &[
+    ("name", false),
+    ("public_url", false),
+    ("listen", true),
+    ("port", true),
+    ("wake", true),
+    ("retention_hours", true),
+    ("service_label", true),
+];
+
+pub fn restarts_daemon(key: &str) -> bool {
+    SETTABLE.iter().any(|(k, restarts)| *k == key && *restarts)
+}
+
+/// Why `set_key` refused: the CLI says it in the user's language.
+#[derive(Debug, PartialEq)]
+pub enum SetError {
+    UnknownKey,
+    Invalid,
+    /// The file is unreadable or could not be written.
+    File(String),
+}
+
+fn typed(key: &str, value: &str) -> Result<toml::Value, SetError> {
+    let value = value.trim();
+    let text = || (!value.is_empty()).then(|| toml::Value::String(value.into())).ok_or(SetError::Invalid);
+    match key {
+        "name" => text(),
+        "public_url" => (value.starts_with("http://") || value.starts_with("https://")).then(text).unwrap_or(Err(SetError::Invalid)),
+        "service_label" => (!value.is_empty() && value.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_')))
+            .then(text).unwrap_or(Err(SetError::Invalid)),
+        "listen" => value.parse::<IpAddr>().map(|_| toml::Value::String(value.into())).map_err(|_| SetError::Invalid),
+        "port" => value.parse::<u16>().ok().filter(|p| *p > 0).map(|p| toml::Value::Integer(p.into())).ok_or(SetError::Invalid),
+        "wake" => value.parse::<bool>().map(toml::Value::Boolean).map_err(|_| SetError::Invalid),
+        "retention_hours" => value.parse::<f64>().ok().filter(|h| h.is_finite() && *h > 0.0).map(toml::Value::Float).ok_or(SetError::Invalid),
+        _ => Err(SetError::UnknownKey),
+    }
+}
+
+/// Sets one of `SETTABLE` in `config.toml`, or takes it out with `None` so its default applies.
+/// The rest of the file stays as it was; the new file replaces the old one in one rename.
+pub fn set_key(home: &Path, key: &str, value: Option<&str>) -> Result<(), SetError> {
+    if !SETTABLE.iter().any(|(k, _)| *k == key) {
+        return Err(SetError::UnknownKey);
+    }
+    let path = path_in(home);
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(SetError::File(format!("{}: {e}", path.display()))),
+    };
+    FileConfig::parse(&text).map_err(SetError::File)?;
+    let mut table: toml::Table = toml::from_str(&text).map_err(|e| SetError::File(e.to_string()))?;
+    match value {
+        Some(value) => { table.insert(key.into(), typed(key, value)?); }
+        None => { table.remove(key); }
+    }
+    let rendered = toml::to_string(&table).map_err(|e| SetError::File(e.to_string()))?;
+    FileConfig::parse(&rendered).map_err(|_| SetError::Invalid)?;
+    std::fs::create_dir_all(home).map_err(|e| SetError::File(e.to_string()))?;
+    let next = path.with_extension(format!("toml.{}", std::process::id()));
+    std::fs::write(&next, rendered).and_then(|()| std::fs::rename(&next, &path)).map_err(|e| SetError::File(format!("{}: {e}", path.display())))
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn set_key_changes_one_key_keeps_the_rest_and_refuses_bad_values() {
+        let dir = crate::test_support::Directory::new();
+        std::fs::create_dir_all(&*dir).unwrap();
+        std::fs::write(path_in(&dir), "name = \"David\"\nauto_update = true\n").unwrap();
+        set_key(&dir, "port", Some("47900")).unwrap();
+        set_key(&dir, "listen", Some("0.0.0.0")).unwrap();
+        set_key(&dir, "name", None).unwrap();
+        let file = FileConfig::parse(&std::fs::read_to_string(path_in(&dir)).unwrap()).unwrap();
+        assert_eq!((file.port, file.listen, file.name.clone(), file.auto_update), (Some(47900), Some("0.0.0.0".parse().unwrap()), None, Some(true)));
+        for (key, bad) in [("port", "0"), ("port", "web"), ("listen", "home"), ("wake", "yes"), ("retention_hours", "-1"), ("public_url", "mac.local"), ("service_label", "a b"), ("name", " ")] {
+            assert_eq!(set_key(&dir, key, Some(bad)), Err(SetError::Invalid), "{key} = {bad}");
+        }
+        assert_eq!(set_key(&dir, "auto_update", Some("false")), Err(SetError::UnknownKey));
+        assert_eq!(set_key(&dir, "max_working_nodes", Some("4")), Err(SetError::UnknownKey));
+        assert_eq!(FileConfig::parse(&std::fs::read_to_string(path_in(&dir)).unwrap()).unwrap(), file, "a refused value writes nothing");
+        assert!(std::fs::read_dir(&dir).unwrap().count() == 1, "no temporary file is left");
+        assert!(restarts_daemon("port") && restarts_daemon("wake") && !restarts_daemon("name") && !restarts_daemon("public_url"));
+    }
+
     use super::*;
 
     fn env(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {

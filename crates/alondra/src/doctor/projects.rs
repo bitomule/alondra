@@ -102,7 +102,7 @@ pub fn projects_check(options: Option<&str>, file: &Path, home: &Path, cwd: &Pat
     let fix = Fix::Choose {
         question: question(),
         proposal: propose(cwd, home),
-        instead: tr!("alondra setup --projects-root <folder>", "alondra setup --projects-root <carpeta>").into(),
+        instead: tr!("alondra config set projects_root <folder>", "alondra config set projects_root <carpeta>").into(),
     };
     outcome(Status::Fail, detail, Some(fix))
 }

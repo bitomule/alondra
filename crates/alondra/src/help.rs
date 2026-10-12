@@ -6,7 +6,45 @@ pub fn localized(cmd: Command) -> Command {
     let mut cmd = localize(cmd);
     cmd.build();
     localize_help_subcommands(&mut cmd);
-    cmd
+    let root = root_template(&cmd);
+    cmd.help_template(root)
+}
+
+/// The groups of the top-level help, in order; the rest is under `alondra help more`.
+fn groups() -> [(&'static str, &'static [&'static str]); 3] {
+    [
+        (tr!("Set up", "Instalar"), &["doctor", "update", "config"]),
+        (tr!("Daily", "Día a día"), &["status", "answer", "send", "attach", "close", "cancel"]),
+        (tr!("Devices and Macs", "Dispositivos y Macs"), &["device", "mac", "account", "relay"]),
+    ]
+}
+
+const MORE: &[&str] = &["cleanup", "models", "state", "delivery", "orchestrator"];
+
+/// `name  about  (verb · verb)` for each command, aligned.
+fn lines(cmd: &Command, names: &[&str]) -> String {
+    names.iter().filter_map(|name| cmd.find_subcommand(name)).map(|sub| {
+        let about = sub.get_about().map(ToString::to_string).unwrap_or_default();
+        let verbs: Vec<&str> = sub.get_subcommands().filter(|v| !v.is_hide_set() && v.get_name() != "help").map(|v| v.get_name()).collect();
+        let verbs = if verbs.is_empty() { String::new() } else { format!("  ({})", verbs.join(" · ")) };
+        format!("  {:<13}{about}{verbs}\n", sub.get_name())
+    }).collect()
+}
+
+fn root_template(cmd: &Command) -> String {
+    let usage = tr!("Usage", "Uso");
+    let more = tr!("More", "Más");
+    let options = tr!("Options", "Opciones");
+    let groups: String = groups().iter().map(|(title, names)| format!("{title}\n{}\n", lines(cmd, names))).collect();
+    format!("{usage}: {{usage}}\n\n{{about-with-newline}}\n{groups}{more}\n  {}      (alondra help more)\n\n{options}: --json  --no-input  -V, --version  -h, --help\n",
+        MORE.join(" · "))
+}
+
+/// What `alondra help more` prints: the advanced commands.
+pub fn more(cmd: &Command) -> String {
+    let title = tr!("More commands", "Más comandos");
+    let hint = tr!("Each one's help: alondra <command> --help", "La ayuda de cada uno: alondra <comando> --help");
+    format!("{title}\n{}\n{hint}\n", lines(cmd, MORE))
 }
 
 fn localize(cmd: Command) -> Command {
@@ -101,6 +139,22 @@ mod tests {
             Ok(root) => PathBuf::from(root).join(std::env::var("TEST_WORKSPACE").unwrap_or_else(|_| "_main".into())).join("fixtures/cli").join(name),
             Err(_) => PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/cli").join(name),
         }
+    }
+
+    #[test]
+    fn the_help_groups_every_visible_command_once_and_more_lists_the_advanced_ones() {
+        let cmd = cli(Lang::En);
+        let mut named: Vec<&str> = groups().iter().flat_map(|(_, names)| names.iter().copied()).chain(MORE.iter().copied()).collect();
+        named.sort_unstable();
+        let mut visible: Vec<&str> = cmd.get_subcommands().filter(|s| !s.is_hide_set() && s.get_name() != "help").map(|s| s.get_name()).collect();
+        visible.sort_unstable();
+        assert_eq!(named, visible);
+        let help = cmd.clone().render_help().to_string();
+        assert!(help.contains("  config       Show or change settings  (list · get · set · unset)"), "{help}");
+        assert!(help.contains("cleanup · models · state · delivery · orchestrator      (alondra help more)"), "{help}");
+        let more = more(&cmd);
+        assert!(more.contains("  orchestrator Stop, acknowledge or retry an orchestrator run  (cancel · acknowledge · retry)"), "{more}");
+        assert!(!more.contains("doctor"), "{more}");
     }
 
     #[test]

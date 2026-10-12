@@ -198,8 +198,9 @@ fn cli_recovery_against_restored_service() -> Result<()> {
     let mut output = Vec::new();
     let outcome = interactive_with(
         &home,
+        "Mac Studio",
         || Ok(()),
-        &mut &b"RECOVER\n"[..],
+        &mut &b"Mac Studio\n"[..],
         &mut output,
         LOCAL_CONFIG_ORIGIN,
         || Ok((fixture.owner.clone(), fixture.token.clone())),
@@ -265,6 +266,7 @@ fn cli_recovery_against_restored_service() -> Result<()> {
     assert_eq!(
         interactive_with(
             &home,
+            "Mac Studio",
             || panic!("cancel must not stop"),
             &mut &b"\n"[..],
             &mut output,

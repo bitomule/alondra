@@ -30,6 +30,7 @@ rust_test(
     rustc_env = {"CARGO_BIN_EXE_alondra": "$(rootpath :alondra)"},
     deps = all_crate_deps(normal = True, normal_dev = True),
 ) for name in [
+    "cli_api",
     "doctor_json",
     "domain_mcp",
     "hook_transport",
@@ -48,3 +49,13 @@ rust_test(
     "no_literal_texts",
     "no_sleep_wording",
 ]]
+
+# Reads the checkout itself through the Makefile's runfiles link, so it is never cached.
+rust_test(
+    name = "no_old_commands_test",
+    srcs = ["tests/no_old_commands.rs"],
+    data = ["//:Makefile"],
+    edition = "2024",
+    rustc_env = {"CARGO_MANIFEST_DIR": "crates/alondra"},
+    tags = ["external", "local"],
+)

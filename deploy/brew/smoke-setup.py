@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """Exercise installed CLI autodetection without a checkout, login or host mutations.
 
-Claude/launchctl doubles expose only read-only observation commands. This checks
-setup's proposed plan, not a real Claude registration or launchd installation.
+Claude/launchctl doubles expose only read-only observation commands. This checks what
+`alondra doctor --json` says it would install, not a real Claude registration or launchd
+installation.
 """
 import hashlib
 import json
+import socket
 import os
 import pathlib
 import subprocess
@@ -13,26 +15,30 @@ import sys
 import tempfile
 
 
-def check_plan(output, prefix, smoke_home, explicit_profile=None):
-    expected_daemon = f'<string>{prefix}/bin/alondrad</string>'
-    expected_assets = f'would run: claude plugin marketplace add {prefix}/libexec/alondra'
-    if expected_daemon not in output:
-        raise RuntimeError('Setup did not discover the daemon through the installed opt path')
-    if expected_assets not in output:
-        raise RuntimeError('Setup did not discover packaged marketplace assets through opt')
-    if '(dry run: nothing was written or run)' not in output:
-        raise RuntimeError('Setup did not finish in dry-run mode')
-    for key in ('CLAUDE_CONFIG_DIR', 'CLAUDE_HOME'):
-        if explicit_profile is None:
-            if f'<key>{key}</key>' in output:
-                raise RuntimeError(f'Setup forced an implicit Claude profile: {key}')
-        elif f'<key>{key}</key><string>{explicit_profile}</string>' not in output:
-            raise RuntimeError(f'Setup lost the explicitly requested Claude profile: {key}')
-    marker = '<key>ALONDRA_CLAUDE_PROFILE_MODE</key><string>explicit</string>'
-    if (explicit_profile is None and '<key>ALONDRA_CLAUDE_PROFILE_MODE</key>' in output) or (explicit_profile is not None and marker not in output):
-        raise RuntimeError('Setup did not preserve explicit profile provenance')
-    if '/Cellar/' in output or 'make install' in output:
-        raise RuntimeError('Setup leaked versioned keg paths or requested a source checkout')
+def check_report(doc, prefix, explicit_profile=None):
+    """What `alondra doctor --json` says it would install, read from the service check."""
+    service = next((c for c in doc.get('checks', []) if c.get('id') == 'service'), None)
+    if service is None or 'install' not in service:
+        raise RuntimeError('Doctor did not say what it would install')
+    install = service['install']
+    if install.get('program') != f'{prefix}/bin/alondrad':
+        raise RuntimeError('Doctor did not discover the daemon through the installed opt path')
+    if install.get('marketplace') != f'{prefix}/libexec/alondra':
+        raise RuntimeError('Doctor did not discover packaged marketplace assets through opt')
+    if not service.get('fixable'):
+        raise RuntimeError('Doctor would not install the service on a fresh user')
+    if explicit_profile is None:
+        if install.get('claude_profile') is not None:
+            raise RuntimeError('Doctor forced an implicit Claude profile')
+        if install.get('profile_mode') != 'implicit':
+            raise RuntimeError('Doctor did not keep the implicit profile provenance')
+    else:
+        if install.get('claude_profile') != explicit_profile:
+            raise RuntimeError('Doctor lost the explicitly requested Claude profile')
+        if install.get('profile_mode') != 'explicit':
+            raise RuntimeError('Doctor did not preserve explicit profile provenance')
+    if '/Cellar/' in json.dumps(install) or 'make install' in json.dumps(doc):
+        raise RuntimeError('Doctor leaked versioned keg paths or requested a source checkout')
 
 
 def profile_snapshot(profile):
@@ -52,6 +58,8 @@ def profile_snapshot(profile):
 def check_observations(entries, smoke_home, explicit_profile=None):
     allowed = {
         ('claude', ('--version',)),
+        ('claude', ('--help',)),
+        ('claude', ('auth', 'status', '--json')),
         ('claude', ('plugin', 'list', '--json')),
         ('claude', ('plugin', 'marketplace', 'list', '--json')),
     }
@@ -64,9 +72,15 @@ def check_observations(entries, smoke_home, explicit_profile=None):
                 raise RuntimeError('Claude observation used a different user/profile from the daemon')
         read_only_launchctl = name == 'launchctl' and len(args) == 2 and args[0] == 'print'
         if (name, tuple(args)) not in allowed and not read_only_launchctl:
-            raise RuntimeError(f'Dry-run attempted a mutation: {name} {args}')
+            raise RuntimeError(f'Doctor attempted a mutation: {name} {args}')
     if not saw_claude:
-        raise RuntimeError('Setup did not observe the installed Claude executable')
+        raise RuntimeError('Doctor did not observe the installed Claude executable')
+
+
+def free_port():
+    with socket.socket() as probe:
+        probe.bind(('127.0.0.1', 0))
+        return probe.getsockname()[1]
 
 
 def run_case(prefix, profile_name):
@@ -89,6 +103,10 @@ if name == 'claude' and args == ['--version']:
     print('Claude Code (read-only setup smoke double)')
 elif name == 'claude' and args in (['plugin', 'list', '--json'], ['plugin', 'marketplace', 'list', '--json']):
     print('[]')
+elif name == 'claude' and args == ['--help']:
+    print('Usage: claude [options]')
+elif name == 'claude' and args == ['auth', 'status', '--json']:
+    print('{{"loggedIn": false}}')
 elif name == 'launchctl' and len(args) == 2 and args[0] == 'print':
     sys.exit(1)  # fresh user: no service loaded
 else:
@@ -108,6 +126,8 @@ else:
             'ALONDRA_HOME': str(smoke_home / '.alondra'),
             'ALONDRA_LANG': 'en',
             'PATH': f'{observation_bin}:/usr/bin:/bin:/usr/sbin:/sbin',
+            # A port nothing listens on: the user's own daemon must never answer this run.
+            'ALONDRA_PORT': str(free_port()),
         }
         explicit_profile = str(smoke_home / profile_name) if profile_name is not None else None
         if explicit_profile is not None:
@@ -117,19 +137,21 @@ else:
             environment['CLAUDE_HOME'] = explicit_profile
         before = profile_snapshot(smoke_home)
         result = subprocess.run(
-            [str(prefix / 'bin/alondra'), 'setup', '--dry-run'],
+            [str(prefix / 'bin/alondra'), 'doctor', '--json'],
             cwd=working_directory, env=environment, stdin=subprocess.DEVNULL,
-            text=True, capture_output=True, timeout=30,
+            text=True, capture_output=True, timeout=60,
         )
         print(result.stdout, end='')
-        if result.returncode:
-            raise RuntimeError(f'Setup dry-run failed: {result.stderr}')
-        check_plan(result.stdout, prefix, smoke_home, explicit_profile)
+        try:
+            doc = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            raise RuntimeError(f'Doctor did not print one JSON document (exit {result.returncode}): {result.stderr}')
+        check_report(doc, prefix, explicit_profile)
         if profile_snapshot(smoke_home) != before:
-            raise RuntimeError('Setup dry-run wrote files in the isolated user profile')
+            raise RuntimeError('Doctor wrote files in the isolated user profile')
         check_observations([json.loads(line) for line in calls.read_text().splitlines()], smoke_home, explicit_profile)
         label = 'implicit-unset' if profile_name is None else f'explicit-{profile_name}'
-        print(f'Installed setup profile {label} passed read-only observations; no real login, registration or daemon start tested.')
+        print(f'Installed doctor profile {label} passed read-only observations; no real login, registration or daemon start tested.')
 
 
 def main():

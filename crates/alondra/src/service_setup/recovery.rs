@@ -271,12 +271,14 @@ fn execute(
 
 pub(super) fn interactive(
     home: &Path,
+    mac_name: &str,
     stop: impl FnOnce() -> Result<()>,
     input: &mut impl BufRead,
     output: &mut impl Write,
 ) -> Result<RecoveryOutcome> {
     interactive_with(
         home,
+        mac_name,
         stop,
         input,
         output,
@@ -293,6 +295,7 @@ pub(super) fn interactive(
 // these two boundaries to exercise confirmation/stop/resume without Keychain.
 fn interactive_with(
     home: &Path,
+    mac_name: &str,
     stop: impl FnOnce() -> Result<()>,
     input: &mut impl BufRead,
     output: &mut impl Write,
@@ -308,17 +311,20 @@ fn interactive_with(
                 "Previous service recovery {} is complete. Existing identity will be kept.",
                 op.id
             )?;
-            writeln!(
-                output,
-                "Start a DIFFERENT recovery and remove service client trust again? Type RECOVER to confirm; Enter keeps the current identity."
-            )?;
+            writeln!(output, "{}", trf!(
+                "Start a DIFFERENT recovery and remove service client trust again? Type this Mac's name ({mac_name}) to confirm; Enter keeps the current identity.",
+                "¿Empiezas OTRA recuperación y vuelves a quitar la confianza de los clientes? Escribe el nombre de este Mac ({mac_name}) para confirmarlo; Intro conserva la identidad actual."
+            ))?;
         } else {
             writeln!(
                 output,
                 "Resume service recovery {}. The same new identity will be reused; old client approvals will be removed.",
                 op.id
             )?;
-            writeln!(output, "Type RECOVER to resume; Enter cancels.")?;
+            writeln!(output, "{}", trf!(
+                "Type this Mac's name ({mac_name}) to resume; Enter cancels.",
+                "Escribe el nombre de este Mac ({mac_name}) para continuar; Intro cancela."
+            ))?;
         }
     } else {
         let old: ServiceConfig = toml::from_str(
@@ -329,12 +335,15 @@ fn interactive_with(
             "Recover service identity for {}. Tasks and receipts stay on this Mac. The daemon will stop; all clients of this service need a NEW pairing. Other local approvals stay unchanged.",
             old.mac_id
         )?;
-        writeln!(output, "Type RECOVER to confirm; Enter cancels.")?;
+        writeln!(output, "{}", trf!(
+            "Type this Mac's name ({mac_name}) to confirm; Enter cancels.",
+            "Escribe el nombre de este Mac ({mac_name}) para confirmarlo; Intro cancela."
+        ))?;
     }
     output.flush()?;
     let mut answer = String::new();
     input.read_line(&mut answer)?;
-    if answer.trim() != "RECOVER" {
+    if answer.trim().is_empty() || answer.trim() != mac_name.trim() {
         writeln!(output, "No service identity or approval changed.")?;
         return Ok(RecoveryOutcome::Cancelled);
     }
@@ -395,6 +404,7 @@ fn interactive_with(
 #[cfg(test)]
 mod tests {
     use super::*;
+    const MAC_NAME: &str = "Mac Studio";
     struct Fixture(crate::test_support::Directory);
     impl Drop for Fixture {
         fn drop(&mut self) {
@@ -554,11 +564,12 @@ mod tests {
         let mut stopped = false;
         let outcome = interactive_with(
             home,
+            MAC_NAME,
             || {
                 stopped = true;
                 Ok(())
             },
-            &mut &b"RECOVER\n"[..],
+            &mut &b"Mac Studio\n"[..],
             &mut output,
             RELAY,
             || Ok(("owner".into(), "synthetic-token".into())),
@@ -571,11 +582,12 @@ mod tests {
         assert_eq!(completed.id, op.id);
         assert_eq!(completed.phase, "committed");
         alondra_core::home_lock::ensure_ready(home).unwrap();
-        // Declining a different operation is side-effect free, including login/stop.
+        // Anything but the Mac's name, the old RECOVER word included, declines without side effects.
         let outcome = interactive_with(
             home,
+            MAC_NAME,
             || panic!("cancel must not stop daemon"),
-            &mut &b"\n"[..],
+            &mut &b"RECOVER\n"[..],
             &mut output,
             RELAY,
             || panic!("cancel must not read credentials"),

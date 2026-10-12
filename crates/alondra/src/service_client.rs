@@ -262,11 +262,26 @@ pub fn machines() -> Result<Vec<String>> {
     }
     Ok(directory.macs.into_iter().map(|m| m.mac_id).collect())
 }
-pub fn list() -> Result<()> {
-    for mac in machines()? {
-        println!("{mac}");
+/// The Macs this terminal paired with through the relay, by id.
+pub fn paired() -> Result<Vec<String>> {
+    Ok(load()?.profiles.into_iter().map(|p| p.mac_id).collect())
+}
+
+/// Removes a Mac this terminal paired with through the relay. Returns whether it was there.
+pub fn forget(mac: &str) -> Result<bool> {
+    let _lock = ProfileLock::acquire()?;
+    let mut profiles = load()?;
+    let gone = without(&mut profiles, mac);
+    if gone {
+        save(&profiles)?;
     }
-    Ok(())
+    Ok(gone)
+}
+
+fn without(profiles: &mut Profiles, mac: &str) -> bool {
+    let before = profiles.profiles.len();
+    profiles.profiles.retain(|p| p.mac_id != mac);
+    profiles.profiles.len() != before
 }
 pub fn connect(mac: &str, repair: bool) -> Result<()> {
     let _lock = ProfileLock::acquire()?;
@@ -301,7 +316,7 @@ pub fn initialize(requested: Option<&str>) -> Result<()> {
         .profiles
         .into_iter()
         .find(|p| p.mac_id == mac && p.owner_sub == token.sub)
-        .context("this Mac has no approval for the signed-in account; run alondra connect <mac-id>")?;
+        .context("this Mac has no approval for the signed-in account; run alondra mac connect <mac-id>")?;
     profile.validate()?;
     ACTIVE
         .set(Arc::new(profile))
@@ -620,6 +635,16 @@ mod live_transfer_test;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn forget_takes_off_only_the_mac_it_names() {
+        let profile = |mac: &str| Profile { mac_id: mac.into(), owner_sub: "o".into(), device_id: "d".into(), mac_signing_key: "k".into(),
+            mac_agreement_key: "k".into(), signing_key: "k".into(), agreement_key: "k".into() };
+        let mut profiles = Profiles { profiles: vec![profile("mac-a"), profile("mac-b")] };
+        assert!(without(&mut profiles, "mac-a"));
+        assert!(!without(&mut profiles, "mac-z"));
+        assert_eq!(profiles.profiles.iter().map(|p| p.mac_id.as_str()).collect::<Vec<_>>(), ["mac-b"]);
+    }
 
     #[test]
     fn profile_store_ignores_unknown_root_fields_but_rewrites_only_current_fields() {

@@ -340,7 +340,7 @@ async fn launch_guarded(domain: &DomainRuntime, home: &Path, actor: &Actor, body
         .map_err(|why| DomainError::new("main_checkout", format!("{why}. {} stays as it is and was not launched", task.id)))?;
     let cwd = workplace.dir().to_string_lossy().into_owned();
     let Some(plugin) = launcher.plugin() else {
-        return Err(DomainError::new("unavailable", "Alondra's plugin was not found: run `alondra setup` in the Alondra repo"));
+        return Err(DomainError::new("unavailable", "Alondra's plugin was not found: run `alondra doctor --fix`"));
     };
     let file = crate::domain_schedule_runner::options_at(home).map_err(|error| DomainError::new("invalid_input", format!("options.toml: {error}")))?;
     let request = current.requests.get(&task.request_id);
