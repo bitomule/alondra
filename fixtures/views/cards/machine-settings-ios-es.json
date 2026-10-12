@@ -4,11 +4,11 @@
   "view": "machine",
   "key": "machine",
   "client": "ios",
-  "version": "v39c420d7ab7479c1",
+  "version": "v7ecf4c503671130f",
   "cursor": "cursor-1",
   "title": "Máquina",
   "status": {
-    "version": "ve8b9c2585f93edac",
+    "version": "v6f7d7d059afd4a95",
     "summary": "2 preguntas · 3 por leer · 1 nodo trabajando",
     "badge": 5,
     "counts": [
@@ -25,7 +25,7 @@
       {
         "id": "agents",
         "label": "Flota",
-        "value": 5
+        "value": 4
       },
       {
         "id": "working",

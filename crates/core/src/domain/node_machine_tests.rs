@@ -534,9 +534,12 @@ impl World {
         let at_work = ["Working", "Starting", "Merging", "Stalled", "Failed"];
         let in_fleet = badged(&fleet, &at_work);
         assert_eq!(in_fleet, slots, "Fleet shows at work exactly the nodes that hold a slot");
-        let live: BTreeSet<String> = self.s.agents.values().filter(|a| a.phase.live()).map(|a| a.id.0.clone()).collect();
+        let open_task = |agent: &AgentId| self.s.tasks.values().any(|t| t.agent_id.as_ref() == Some(agent) && !t.archived && !t.state.terminal());
+        let live: BTreeSet<String> = self.s.agents.values()
+            .filter(|a| a.phase.live() && a.phase != NodePhase::Starting { reviving: true } && open_task(&a.id))
+            .map(|a| a.id.0.clone()).collect();
         assert_eq!(rows(&fleet).into_iter().filter(|id| self.s.agents.contains_key(&AgentId(id.clone()))).collect::<BTreeSet<_>>(), live,
-            "Fleet lists every live node and no closed one");
+            "Fleet lists every node with a session on an open task, and no other");
 
         let tasks = self.render("tasks");
         let task_slots: BTreeSet<String> = self.s.slots().iter()

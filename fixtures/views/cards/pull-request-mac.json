@@ -4,11 +4,11 @@
   "view": "pull_request",
   "key": "pull_request:github.com/example/repo#12",
   "client": "mac",
-  "version": "v8b2168551a9c4854",
+  "version": "v36fb302fd2718e82",
   "cursor": "cursor-1",
   "title": "Add the compact schedule editor",
   "status": {
-    "version": "v29e230088bd2c22c",
+    "version": "v8f627439edfdda19",
     "summary": "2 questions · 3 to read · 0 nodes working",
     "badge": 5,
     "counts": [
@@ -25,7 +25,7 @@
       {
         "id": "agents",
         "label": "Fleet",
-        "value": 1
+        "value": 0
       },
       {
         "id": "working",

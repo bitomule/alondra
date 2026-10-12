@@ -27,7 +27,9 @@ pub(crate) fn parse(listing: &str) -> Option<BTreeMap<String, Listed>> {
 }
 
 /// Lists the real sessions once and hands the node machine what it says of every live node
-/// Alondra launched. False when the listing could not be read: nothing is moved then.
+/// Alondra launched, and of every other live node whose session is gone and that holds no open
+/// task, so it closes without ever being brought back. False when the listing could not be read:
+/// nothing is moved then.
 pub(crate) async fn once(domain: &DomainRuntime, sessions: &dyn Sessions) -> bool {
     let listing = match sessions.claude(vec!["agents".into(), "--json".into(), "--all".into()]).await {
         Ok(listing) => listing,
@@ -41,10 +43,12 @@ pub(crate) async fn once(domain: &DomainRuntime, sessions: &dyn Sessions) -> boo
         return false;
     };
     let Ok(state) = domain.state() else { return false };
+    let open_task = |agent: &AgentId| state.tasks.values().any(|task| task.agent_id.as_ref() == Some(agent) && !task.state.terminal());
     let listed: BTreeMap<AgentId, Listed> = state.agents.values()
         .filter(|agent| agent.phase.live() && Some(&agent.id) != state.orchestrator_session.as_ref())
-        .filter(|agent| domain.launched_by_alondra(&agent.id).unwrap_or(false))
-        .map(|agent| (agent.id.clone(), sessions.get(&agent.id.0).copied().unwrap_or(Listed::Absent)))
+        .map(|agent| (agent, sessions.get(&agent.id.0).copied().unwrap_or(Listed::Absent)))
+        .filter(|(agent, listed)| domain.launched_by_alondra(&agent.id).unwrap_or(false) || (*listed == Listed::Absent && !open_task(&agent.id)))
+        .map(|(agent, listed)| (agent.id.clone(), listed))
         .collect();
     match crate::domain_agent_lifecycle::reconcile(domain, listed) {
         Ok(moved) => {
@@ -151,6 +155,25 @@ mod tests {
         let revision = state.revision;
         assert!(once(&domain, &claude).await);
         assert_eq!(domain.state().unwrap().revision, revision, "the same listing again moves nothing");
+    }
+
+    /// 12 October: a scheduled run whose task was cancelled before its session started never
+    /// linked the node to its launch, so the listing skipped it and it worked in Fleet for days.
+    #[tokio::test]
+    async fn a_node_alondra_cannot_tell_it_launched_closes_once_its_session_is_gone() {
+        let home = crate::test_support::Directory::new();
+        std::fs::create_dir_all(&home).unwrap();
+        let domain = open(&home);
+        let now = alondra_core::now_millis();
+        for id in ["unlinked-gone", "unlinked-alive"] {
+            run(&domain, Actor::System, &format!("register-{id}"), Command::RegisterAgent { agent_id: id.into(), name: format!("scheduled/{id}"), at: now });
+            run(&domain, Actor::System, &format!("turn-{id}"), Command::MoveNode { agent_id: id.into(), event: NodeEvent::TurnStarted, at: now });
+        }
+        assert!(!domain.launched_by_alondra(&"unlinked-gone".into()).unwrap());
+        let claude = Claude(Mutex::new(r#"[{"id":"gone","sessionId":"unlinked-gone","state":"done"},{"id":"alive","sessionId":"unlinked-alive","state":"working"}]"#.into()));
+        assert!(once(&domain, &claude).await);
+        assert_eq!(phase(&domain, "unlinked-gone"), NodePhase::Closed);
+        assert_eq!(phase(&domain, "unlinked-alive"), NodePhase::Working, "a session that exists is not Alondra's to judge");
     }
 
     #[tokio::test]

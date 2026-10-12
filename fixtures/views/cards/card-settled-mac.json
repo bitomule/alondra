@@ -4,10 +4,10 @@
   "view": "settled_card",
   "key": "card:a98d034b-249e-4487-a89b-57de38c26372",
   "client": "mac",
-  "version": "v1cd1f4e1632ef81a",
+  "version": "v135388bb75171520",
   "cursor": "cursor-1",
   "status": {
-    "version": "va561a2919d9f4b59",
+    "version": "v59fa41b3a2f6394d",
     "summary": "1 question · 3 to read · 0 nodes working",
     "badge": 4,
     "counts": [
@@ -24,7 +24,7 @@
       {
         "id": "agents",
         "label": "Fleet",
-        "value": 1
+        "value": 0
       },
       {
         "id": "working",

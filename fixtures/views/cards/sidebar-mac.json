@@ -4,10 +4,10 @@
   "view": "sidebar",
   "key": "sidebar",
   "client": "mac",
-  "version": "v605fbb1b1b122bd1",
+  "version": "vf4ba6b57ad2702e7",
   "cursor": "cursor-1",
   "status": {
-    "version": "v7675bad0b5fdf15f",
+    "version": "v1909c6117fc001e2",
     "summary": "5 pending · 1 nodes",
     "badge": 5,
     "counts": [
@@ -24,7 +24,7 @@
       {
         "id": "agents",
         "label": "Fleet",
-        "value": 1
+        "value": 0
       },
       {
         "id": "working",
@@ -221,61 +221,6 @@
               "struck": false
             }
           ]
-        }
-      ]
-    },
-    {
-      "id": "orchestrator",
-      "collapsed": false,
-      "items": [
-        {
-          "type": "row",
-          "id": "orchestrator",
-          "link": {
-            "kind": "view",
-            "key": "node:orchestrator"
-          },
-          "icon": "orchestrator",
-          "title": "Orchestrator",
-          "badges": [
-            {
-              "text": "Idle",
-              "tone": "neutral"
-            }
-          ],
-          "depth": 0,
-          "struck": false
-        }
-      ]
-    },
-    {
-      "id": "project:Demo Garden",
-      "title": "Demo Garden",
-      "count": 1,
-      "collapsed": false,
-      "items": [
-        {
-          "type": "row",
-          "id": "d887a34b-249e-4487-a89b-57de38c26372",
-          "link": {
-            "kind": "view",
-            "key": "node:d887a34b-249e-4487-a89b-57de38c26372"
-          },
-          "icon": "node",
-          "title": "Alondra · iOS",
-          "subtitle": "Reviewing the native beta experience",
-          "badges": [
-            {
-              "text": "Waiting for an answer",
-              "tone": "warning"
-            }
-          ],
-          "trailing": {
-            "kind": "count",
-            "value": 2
-          },
-          "depth": 0,
-          "struck": false
         }
       ]
     },

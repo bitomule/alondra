@@ -29,11 +29,10 @@ final class FleetFeatureTests: XCTestCase {
         return store
     }
 
-    func testReadsTheOrchestratorAndTheNodesByProject() throws {
+    func testReadsEachNodeAsItsTaskAndItsStateByProject() throws {
         let overview = FleetOverview(document: try Fixtures.document("fleet-ios"))
 
-        XCTAssertEqual(overview.orchestrator?.title, "Orchestrator")
-        XCTAssertEqual(overview.orchestrator?.isOrchestrator, true)
+        XCTAssertNil(overview.orchestrator, "the orchestrator is not a node of the fleet")
         XCTAssertEqual(overview.groups.map(\.title), ["Demo Garden", "Zeta", "Alpha"], "nodes whose sessions closed are not listed")
         XCTAssertEqual(overview.groups.map(\.collapsed), [false, false, false])
         XCTAssertEqual(overview.groups.first?.count, 2)
@@ -41,57 +40,16 @@ final class FleetFeatureTests: XCTestCase {
         XCTAssertEqual(node.title, "Restore the native review experience")
         XCTAssertEqual(node.state?.text, "Waiting for an answer")
         XCTAssertEqual(node.state?.tone, .warning)
-        XCTAssertEqual(node.subtitle, "Alondra · iOS")
-        XCTAssertEqual(node.badges, [], "context and cost stay on the node's screen")
-        XCTAssertEqual(overview.orchestrator?.state?.text, "Idle")
-        XCTAssertEqual(node.pending, 2)
-        XCTAssertEqual(node.activity, "Said: “The simulator pass completed successfully.”")
-        XCTAssertEqual(node.activityAt, "2026-09-30T09:58:00Z")
+        XCTAssertNil(node.subtitle)
+        XCTAssertEqual(node.badges, [], "context, cost and the model stay on the node's screen")
+        XCTAssertEqual(node.pending, 0)
+        XCTAssertNil(node.activity, "what it does or said is on the node's screen")
         XCTAssertEqual(node.link, .view(key: "node:d887a34b-249e-4487-a89b-57de38c26372"))
         XCTAssertTrue(node.close?.id?.hasPrefix("close:") == true)
-        XCTAssertNil(overview.orchestrator?.close)
     }
 
-    func testReadsThePaceOfTheFleetApartFromTheNodeGroups() throws {
-        let overview = FleetOverview(document: try Fixtures.document("fleet-pacing-ios-es"))
-
-        let pacing = try XCTUnwrap(overview.pacing)
-        XCTAssertEqual(pacing.summary, "Trabajando 6/6 · En cola 2 · En pausa 2 · Mac: memoria 12 % libre (justo)")
-        XCTAssertEqual(pacing.limitText, "Límite: automático (6)")
-        XCTAssertEqual(pacing.waiting.map(\.title), [
-            "Fix the crash when the schedule list is empty", "Translate the onboarding into Spanish",
-            "Build the importer", "Refresh the App Store screenshots",
-        ])
-        XCTAssertEqual(pacing.waiting.first?.state, "En cola · 1.º de 2 · el Mac va justo de memoria (12 % libre)")
-        XCTAssertEqual(pacing.waiting.map { $0.action?.command }, ["pause", "pause", "resume", "resume"])
-        XCTAssertEqual(pacing.waiting.map(\.paused), [false, false, true, true])
-        XCTAssertFalse(overview.groups.contains { $0.id == "pacing" }, "the pace is not a group of nodes")
-        let paused = overview.groups.flatMap(\.nodes).first { $0.id == "zeta-worker" }
-        XCTAssertEqual(paused?.resume?.id?.hasPrefix("resume:zeta-worker@"), true)
-        XCTAssertNil(paused?.pause)
-    }
-
-    func testResumingAPausedTaskShowsAtOnceAndARefusalBringsItBack() async throws {
-        let gate = Gate()
-        let store = gated(gate, reply: #"{"protocol":1,"outcome":"rejected","message":"Este nodo o esta tarea no está en pausa"}"#)
-        await store.send(.screen(.loaded(try Fixtures.document("fleet-pacing-ios-es"))))
-        let held = try XCTUnwrap(store.state.overview?.pacing?.waiting.last)
-        let resume = try XCTUnwrap(held.action)
-
-        await store.send(.perform(resume))
-        await store.receive(\.actions.sent)
-        let shown = try XCTUnwrap(store.state.overview?.pacing?.waiting.last)
-        XCTAssertEqual(shown.state, "Reanudando…", "it says so before the daemon answers")
-        XCTAssertNil(shown.action)
-        XCTAssertFalse(shown.paused)
-
-        await gate.open()
-        await store.receive(\.actions.settled)
-        XCTAssertEqual(store.state.overview?.pacing?.waiting.last, held, "a refused resume puts the row back")
-    }
-
-    func testTheFleetShowsTheLimitButLeavesChangingItToSettings() throws {
-        let document = try Fixtures.document("fleet-pacing-ios-es")
+    func testTheFleetListsOnlyNodesWithoutThePaceOrTheLimit() throws {
+        let document = try Fixtures.document("fleet-ios-es")
         let actions = document.sections.flatMap(\.items).flatMap { item -> [WireAction] in
             switch item {
             case .actions(let bar): bar.actions
@@ -100,7 +58,7 @@ final class FleetFeatureTests: XCTestCase {
             }
         }
         XCTAssertFalse(actions.contains { $0.command == "set_limit" }, "Nodes at once lives in Settings")
-        XCTAssertEqual(FleetOverview(document: document).pacing?.limitText, "Límite: automático (6)")
+        XCTAssertFalse(document.sections.contains { $0.id == "pacing" }, "waiting tasks show in Tasks, not in Fleet")
     }
 
     func testObservesTheFleetWhenTheTabAppears() async throws {
@@ -271,14 +229,14 @@ final class FleetFeatureTests: XCTestCase {
         let store = store(requests: requests)
         var object = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(Fixtures.document("fleet-ios"))) as? [String: Any])
         var sections = try XCTUnwrap(object["sections"] as? [[String: Any]])
-        var items = try XCTUnwrap(sections[1]["items"] as? [[String: Any]])
+        var items = try XCTUnwrap(sections[0]["items"] as? [[String: Any]])
         let interrupt: [String: Any] = [
             "id": "interrupt:d887a34b-249e-4487-a89b-57de38c26372@0", "label": "Interrupt", "style": "secondary",
             "presentation": "button", "input": ["kind": "none"], "attachments": false,
             "confirm": ["title": "Interrupt", "message": "Stop what this node is doing now?", "button": "Interrupt"], "enabled": true,
         ]
         items[0]["actions"] = [interrupt] + (items[0]["actions"] as? [[String: Any]] ?? [])
-        sections[1]["items"] = items
+        sections[0]["items"] = items
         object["sections"] = sections
         let document = try JSONDecoder().decode(ViewDocument.self, from: JSONSerialization.data(withJSONObject: object))
         await store.send(.screen(.loaded(document)))

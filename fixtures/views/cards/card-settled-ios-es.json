@@ -4,10 +4,10 @@
   "view": "settled_card",
   "key": "card:a98d034b-249e-4487-a89b-57de38c26372",
   "client": "ios",
-  "version": "v436ae4c2cdbf7dbb",
+  "version": "v35683a9012e6bfaf",
   "cursor": "cursor-1",
   "status": {
-    "version": "v23a7a0a296f231ac",
+    "version": "v9ec588db821b55bf",
     "summary": "1 pregunta · 3 por leer · 0 nodos trabajando",
     "badge": 4,
     "counts": [
@@ -24,7 +24,7 @@
       {
         "id": "agents",
         "label": "Flota",
-        "value": 1
+        "value": 0
       },
       {
         "id": "working",

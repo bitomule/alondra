@@ -1004,6 +1004,17 @@ fn node_row<'a>(view: &'a Value, agent: &str) -> &'a Value {
         .unwrap_or_else(|| panic!("no row for {agent} in {view}"))
 }
 
+/// The node's state, then what it runs in the background, as its own screen says them.
+async fn node_shown(fixture: &Fixture, agent: &str, lang: &str) -> Vec<(String, String)> {
+    let node = view_json(fixture, &format!("node:{agent}"), lang).await;
+    node["sections"].as_array().unwrap().iter()
+        .filter(|section| section["id"] == "header" || section["id"] == "readings")
+        .flat_map(|section| section["items"][0]["items"].as_array().unwrap().clone())
+        .filter(|fact| ["State", "Estado", "In the background", "En segundo plano"].contains(&fact["label"].as_str().unwrap()))
+        .map(|fact| (fact["value"].as_str().unwrap().to_owned(), fact["tone"].as_str().unwrap_or("neutral").to_owned()))
+        .collect()
+}
+
 fn badges(row: &Value) -> Vec<(String, String)> {
     row["badges"].as_array().unwrap().iter()
         .map(|badge| (badge["text"].as_str().unwrap().to_owned(), badge["tone"].as_str().unwrap().to_owned()))
@@ -1039,7 +1050,8 @@ async fn fleet_and_node_views_show_what_the_node_mods_report() {
     let a_badges = badges(a);
     assert!(!a_badges.iter().any(|(text, _)| text.contains("Context") || text.contains('$')),
         "context and cost stay on the node's screen: {a_badges:?}");
-    let b_badges = badges(node_row(&fleet, "agent-b"));
+    assert!(!fleet_lists(&fleet, "agent-b"), "a node with no task is not in Fleet");
+    let b_badges = node_shown(&fixture, "agent-b", "en").await;
     assert!(!b_badges.iter().any(|(text, _)| text.contains("Unreachable") || text.contains("conexión")), "a closed connection is never a node state: {b_badges:?}");
 
     let node = view_json(&fixture, "node:agent-b", "en").await;
@@ -1095,7 +1107,8 @@ async fn a_nodes_state_comes_from_its_mods_events_and_connection_not_from_hooks_
     assert_eq!(badges(row)[0].0, "Working", "a node whose connection closed keeps its last factual state while the daemon brings it back");
     crate::domain_agent_lifecycle::node_event(&fixture.domain, &AgentId::from("agent-a"), alondra_core::domain::NodeEvent::SessionLost).unwrap();
     let fleet = view_json(&fixture, "fleet", "en").await;
-    assert_eq!(badges(node_row(&fleet, "agent-a"))[0].0, "Reconnecting", "and says so once its session is lost and Alondra brings it back");
+    assert!(!fleet_lists(&fleet, "agent-a"), "its session is gone: it leaves Fleet while Alondra brings it back");
+    assert_eq!(node_shown(&fixture, "agent-a", "en").await[0].0, "Reconnecting", "and its screen says so");
 }
 
 #[tokio::test]
@@ -1105,8 +1118,7 @@ async fn a_node_the_daemon_never_heard_a_hook_from_shows_once_its_mod_connects()
     let hello: crate::node_reports::Hello = serde_json::from_value(json!({"session_id": "agent-b", "version": "2.1.287", "working": true})).unwrap();
     assert!(fixture.domain.live.node("agent-b").is_none());
     fixture.domain.connect_node(hello, alondra_core::now_millis());
-    let fleet = view_json(&fixture, "fleet", "en").await;
-    assert_eq!(badges(node_row(&fleet, "agent-b"))[0].0, "Working", "a restarted daemon learns the node is mid-turn from its reconnection");
+    assert_eq!(node_shown(&fixture, "agent-b", "en").await[0].0, "Working", "a restarted daemon learns the node is mid-turn from its reconnection");
 }
 
 #[tokio::test]
@@ -1125,8 +1137,7 @@ async fn the_background_badges_come_from_the_mods_subagent_shell_and_end_of_turn
     mods.connect_node(hello, now);
     report(json!({"event": "turn.start", "turn_id": "t1"}), now);
     let badge = async |fixture: &Fixture| {
-        let fleet = view_json(fixture, "fleet", "en").await;
-        badges(node_row(&fleet, "agent-a")).into_iter().map(|(text, _)| text).collect::<Vec<_>>()
+        node_shown(fixture, "agent-a", "en").await.into_iter().map(|(text, _)| text).collect::<Vec<_>>()
     };
     assert!(!badge(&fixture).await.iter().any(|text| text.contains("subagents") || text.contains("shells")));
 
@@ -1182,8 +1193,6 @@ async fn a_node_shows_the_subagents_workflows_and_task_list_its_mod_reports_and_
     assert_eq!(background.len(), 1, "a subagent or workflow is listed once, under its own section: {background:?}");
     assert_eq!(background[0]["title"], "cargo build");
 
-    let fleet = view_json(&fixture, "fleet", "en").await;
-    assert!(badges(node_row(&fleet, "agent-a")).iter().any(|(text, _)| text == "1/2"));
 }
 
 #[tokio::test]
@@ -1196,14 +1205,13 @@ async fn a_background_shell_running_for_long_in_an_idle_node_is_flagged_and_stop
     mods.connect_node(hello, now);
     mods.report(serde_json::from_value(json!({"session_id": "agent-b", "event": "shell.start", "id": "u1", "command": "sleep 99999"})).unwrap(),
         now - 31 * 60 * 1000);
-    let fleet = view_json(&fixture, "fleet", "en").await;
-    let shown = badges(node_row(&fleet, "agent-b"));
+    let shown = node_shown(&fixture, "agent-b", "en").await;
     assert!(shown.contains(&("1 shells · hung?".into(), "warning".into())), "{shown:?}");
     assert_ne!(shown[0].0, "Working", "a shell that has run this long with nothing else going on is not work");
 }
 
 #[tokio::test]
-async fn a_node_whose_turn_ended_with_no_task_is_idle_and_never_reads_disconnected() {
+async fn a_node_whose_turn_ended_with_no_task_is_not_in_fleet_and_never_reads_disconnected() {
     let fixture = Fixture::start().await;
     seed_work(&fixture);
     let domain = &fixture.domain;
@@ -1219,14 +1227,12 @@ async fn a_node_whose_turn_ended_with_no_task_is_idle_and_never_reads_disconnect
     assert!(domain.live.node("ghost").is_none() && domain.live.mods.session("ghost").is_none(), "nothing live: the daemon just restarted");
 
     let fleet = view_json(&fixture, "fleet", "es").await;
-    let project = fleet["sections"].as_array().unwrap().iter()
-        .find(|section| section["items"].as_array().unwrap().iter().any(|item| item["id"] == "ghost")).unwrap();
-    assert_eq!(project["id"], "idle", "a node with no open task is idle, whatever its project");
-    assert_eq!(badges(node_row(&fleet, "ghost"))[0], ("Detenido".into(), "warning".into()), "its turn ended with nothing for anyone");
+    assert!(!fleet_lists(&fleet, "ghost"), "a node with no open task is not in Fleet");
+    assert_eq!(node_shown(&fixture, "ghost", "es").await[0], ("Detenido".into(), "warning".into()), "its turn ended with nothing for anyone");
 }
 
 #[tokio::test]
-async fn a_stopped_node_with_an_open_task_stays_in_fleet_under_its_project_with_a_factual_state() {
+async fn a_node_whose_session_ended_with_its_task_open_leaves_fleet_while_alondra_brings_it_back() {
     let fixture = Fixture::start().await;
     seed_work(&fixture);
     let domain = &fixture.domain;
@@ -1252,10 +1258,8 @@ async fn a_stopped_node_with_an_open_task_stays_in_fleet_under_its_project_with_
         &crate::domain_agent_lifecycle::prepare_event(domain, "end-stopped").unwrap()).unwrap();
 
     let fleet = view_json(&fixture, "fleet", "es").await;
-    let section = fleet["sections"].as_array().unwrap().iter()
-        .find(|section| section["items"].as_array().unwrap().iter().any(|item| item["id"] == "stopped")).unwrap();
-    assert_eq!(section["id"], "project:alondra");
-    assert_eq!(badges(node_row(&fleet, "stopped"))[0], ("Reconectando".into(), "info".into()), "its session ended with its task open: Alondra brings it back");
+    assert!(!fleet_lists(&fleet, "stopped"), "no session, no row in Fleet");
+    assert_eq!(node_shown(&fixture, "stopped", "es").await[0], ("Reconectando".into(), "info".into()), "its session ended with its task open: Alondra brings it back");
 }
 
 #[tokio::test]

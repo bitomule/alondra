@@ -4,11 +4,11 @@
   "view": "card",
   "key": "card:f12d034b-249e-4487-a89b-57de38c26372",
   "client": "ios",
-  "version": "v215e69f0ad423a77",
+  "version": "ve5f49655b9bad8eb",
   "cursor": "cursor-1",
   "title": "The simulator pass is clean",
   "status": {
-    "version": "vca21bf17ff853499",
+    "version": "ve1fd29addaecad00",
     "summary": "2 preguntas · 3 por leer · 0 nodos trabajando",
     "badge": 5,
     "counts": [
@@ -25,7 +25,7 @@
       {
         "id": "agents",
         "label": "Flota",
-        "value": 1
+        "value": 0
       },
       {
         "id": "working",

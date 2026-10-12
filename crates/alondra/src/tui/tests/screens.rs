@@ -188,17 +188,17 @@ fn empty_inbox_shows_one_empty_state_and_no_empty_sections() {
 }
 
 #[test]
-fn fleet_lists_each_node_once_with_its_state_and_no_zero_counters() {
+fn fleet_lists_each_live_node_once_with_its_state_and_the_header_counts_them() {
     let (domain, live) = busy();
     let mut app = app_on(Screen::Fleet, build(&domain, &live, "fleet"));
     let screen = rendered(&mut app, 100, 24);
     dump("fleet", &screen);
-    for title in [NIGHTLY, ODD_STATE] {
-        assert_eq!(screen.matches(title).count(), 1, "{title}: {screen}");
-    }
+    assert_eq!(screen.matches(ODD_STATE).count(), 1, "{screen}");
+    assert!(!screen.contains(NIGHTLY) && !screen.contains("Terminado"), "a node whose task ended is not in Fleet: {screen}");
+    assert!(screen.contains("Flota 1"), "the header counts the rows Fleet lists: {screen}");
     assert!(!screen.contains("↳"), "{screen}");
     assert!(!screen.contains("· 0"), "{screen}");
-    assert!(screen.contains("Terminado") && screen.contains("Trabajando"), "{screen}");
+    assert!(screen.contains("Trabajando"), "{screen}");
 }
 
 #[test]
@@ -877,7 +877,7 @@ fn a_blocked_task_action_says_why_instead_of_asking_first() {
 }
 
 #[test]
-fn the_fleet_shows_the_limit_but_l_no_longer_changes_it() {
+fn l_on_the_fleet_never_changes_the_limit() {
     let (domain, mut live) = busy();
     live.pacing = Some(views::LivePacing { working: 3, limit: 6, fixed: None, auto: 6, memory_free: Some(40), tight: false,
         queued: vec![], paused: vec![] });

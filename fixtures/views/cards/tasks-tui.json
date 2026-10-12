@@ -4,11 +4,11 @@
   "view": "tasks",
   "key": "tasks",
   "client": "tui",
-  "version": "va4ac57659500c96f",
+  "version": "v642ae450edb474d6",
   "cursor": "cursor-1",
   "title": "Tasks",
   "status": {
-    "version": "v2f4c647959130274",
+    "version": "v40cfda0daa29c308",
     "summary": "2 questions · 3 to read · 2 nodes working",
     "badge": 5,
     "counts": [
@@ -25,7 +25,7 @@
       {
         "id": "agents",
         "label": "Fleet",
-        "value": 2
+        "value": 3
       },
       {
         "id": "working",

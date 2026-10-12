@@ -4,11 +4,11 @@
   "view": "fleet",
   "key": "fleet",
   "client": "mac",
-  "version": "vc1ba417426f12037",
+  "version": "v3c4c952328ac789f",
   "cursor": "cursor-1",
   "title": "Fleet",
   "status": {
-    "version": "ve2c2d8cfd09a48c1",
+    "version": "v3877aa7fcba5a278",
     "summary": "2 questions · 3 to read · 2 nodes working",
     "badge": 5,
     "counts": [
@@ -25,7 +25,7 @@
       {
         "id": "agents",
         "label": "Fleet",
-        "value": 5
+        "value": 4
       },
       {
         "id": "working",
@@ -61,34 +61,6 @@
   },
   "sections": [
     {
-      "id": "orchestrator",
-      "collapsed": false,
-      "items": [
-        {
-          "type": "row",
-          "id": "orchestrator",
-          "link": {
-            "kind": "view",
-            "key": "node:orchestrator"
-          },
-          "icon": "orchestrator",
-          "title": "Orchestrator",
-          "badges": [
-            {
-              "text": "Idle",
-              "tone": "neutral"
-            }
-          ],
-          "trailing": {
-            "kind": "text",
-            "text": "Idle"
-          },
-          "depth": 0,
-          "struck": false
-        }
-      ]
-    },
-    {
       "id": "project:Demo Garden",
       "title": "Demo Garden",
       "count": 2,
@@ -103,38 +75,14 @@
           },
           "icon": "node",
           "title": "Restore the native review experience",
-          "subtitle": "Alondra · iOS",
           "badges": [
             {
               "text": "Waiting for an answer",
               "tone": "warning"
             }
           ],
-          "trailing": {
-            "kind": "count",
-            "value": 2
-          },
           "depth": 0,
-          "struck": false,
-          "actions": [
-            {
-              "id": "close:d887a34b-249e-4487-a89b-57de38c26372@6",
-              "label": "Close Node",
-              "style": "destructive",
-              "presentation": "button",
-              "input": {
-                "kind": "none"
-              },
-              "attachments": false,
-              "confirm": {
-                "title": "Close Node",
-                "message": "Close this node?",
-                "button": "Close Node"
-              },
-              "enabled": true,
-              "resolves_card": false
-            }
-          ]
+          "struck": false
         },
         {
           "type": "row",
@@ -145,38 +93,14 @@
           },
           "icon": "node",
           "title": "Wire the badge after the review",
-          "subtitle": "queued",
           "badges": [
             {
               "text": "Waiting for Restore the native review experience",
               "tone": "neutral"
             }
           ],
-          "trailing": {
-            "kind": "count",
-            "value": 0
-          },
           "depth": 0,
-          "struck": false,
-          "actions": [
-            {
-              "id": "close:queued@6",
-              "label": "Close Node",
-              "style": "destructive",
-              "presentation": "button",
-              "input": {
-                "kind": "none"
-              },
-              "attachments": false,
-              "confirm": {
-                "title": "Close Node",
-                "message": "Close this node?",
-                "button": "Close Node"
-              },
-              "enabled": true,
-              "resolves_card": false
-            }
-          ]
+          "struck": false
         }
       ]
     },
@@ -195,38 +119,14 @@
           },
           "icon": "node",
           "title": "Build the importer",
-          "subtitle": "zeta-worker",
           "badges": [
             {
               "text": "Working",
               "tone": "info"
             }
           ],
-          "trailing": {
-            "kind": "count",
-            "value": 0
-          },
           "depth": 0,
-          "struck": false,
-          "actions": [
-            {
-              "id": "close:zeta-worker@6",
-              "label": "Close Node",
-              "style": "destructive",
-              "presentation": "button",
-              "input": {
-                "kind": "none"
-              },
-              "attachments": false,
-              "confirm": {
-                "title": "Close Node",
-                "message": "Close this node?",
-                "button": "Close Node"
-              },
-              "enabled": true,
-              "resolves_card": false
-            }
-          ]
+          "struck": false
         }
       ]
     },
@@ -245,38 +145,14 @@
           },
           "icon": "node",
           "title": "Plan the migration",
-          "subtitle": "alpha-waiting",
           "badges": [
             {
               "text": "Starting",
               "tone": "neutral"
             }
           ],
-          "trailing": {
-            "kind": "count",
-            "value": 0
-          },
           "depth": 0,
-          "struck": false,
-          "actions": [
-            {
-              "id": "close:alpha-waiting@6",
-              "label": "Close Node",
-              "style": "destructive",
-              "presentation": "button",
-              "input": {
-                "kind": "none"
-              },
-              "attachments": false,
-              "confirm": {
-                "title": "Close Node",
-                "message": "Close this node?",
-                "button": "Close Node"
-              },
-              "enabled": true,
-              "resolves_card": false
-            }
-          ]
+          "struck": false
         }
       ]
     }

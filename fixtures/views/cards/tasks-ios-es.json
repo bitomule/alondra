@@ -4,11 +4,11 @@
   "view": "tasks",
   "key": "tasks",
   "client": "ios",
-  "version": "vaf464abb0e4f9598",
+  "version": "v615f1f142e888017",
   "cursor": "cursor-1",
   "title": "Tareas",
   "status": {
-    "version": "v81f04d97e524479f",
+    "version": "v77f3fcc339117184",
     "summary": "2 preguntas · 3 por leer · 2 nodos trabajando",
     "badge": 5,
     "counts": [
@@ -25,7 +25,7 @@
       {
         "id": "agents",
         "label": "Flota",
-        "value": 2
+        "value": 3
       },
       {
         "id": "working",

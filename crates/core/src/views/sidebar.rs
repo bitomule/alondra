@@ -192,15 +192,6 @@ pub(super) fn build(context: &RenderContext<'_>) -> Result<View, BuildError> {
     waiting.count = Some(waiting.items.len() as u32);
     view.sections.push(waiting);
     view.sections.push(task_groups(context));
-    let fleet = super::fleet::list(context);
-    view.sections.extend(fleet.sections.into_iter().filter(|section| section.id == "orchestrator").map(|mut section| {
-        for item in &mut section.items {
-            if let Item::Row(row) = item {
-                row.trailing = None;
-            }
-        }
-        section
-    }));
     view.sections.extend(project_sections(context));
     let (message, action) = if pending.is_empty() {
         (

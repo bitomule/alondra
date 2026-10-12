@@ -60,7 +60,7 @@ pub(super) fn build(projection: &DomainProjection, context: &RenderContext<'_>) 
             Count {
                 id: "agents".into(),
                 label: t!(context.lang, "Fleet", "Flota").into(),
-                value: context.live.nodes.len() as u32,
+                value: context.domain.agents.values().filter(|agent| super::fleet::in_fleet(agent, context)).count() as u32,
             },
             Count {
                 id: "working".into(),

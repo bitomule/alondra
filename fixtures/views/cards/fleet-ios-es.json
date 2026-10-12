@@ -4,11 +4,11 @@
   "view": "fleet",
   "key": "fleet",
   "client": "ios",
-  "version": "v1316c097f01ce78d",
+  "version": "vadac4d47417f5dbc",
   "cursor": "cursor-1",
   "title": "Flota",
   "status": {
-    "version": "veeede61ab853f61e",
+    "version": "v84b03ed1a07a176c",
     "summary": "2 preguntas · 3 por leer · 2 nodos trabajando",
     "badge": 5,
     "counts": [
@@ -25,7 +25,7 @@
       {
         "id": "agents",
         "label": "Flota",
-        "value": 5
+        "value": 4
       },
       {
         "id": "working",
@@ -61,34 +61,6 @@
   },
   "sections": [
     {
-      "id": "orchestrator",
-      "collapsed": false,
-      "items": [
-        {
-          "type": "row",
-          "id": "orchestrator",
-          "link": {
-            "kind": "view",
-            "key": "node:orchestrator"
-          },
-          "icon": "orchestrator",
-          "title": "Orquestador",
-          "badges": [
-            {
-              "text": "Inactivo",
-              "tone": "neutral"
-            }
-          ],
-          "trailing": {
-            "kind": "text",
-            "text": "Inactivo"
-          },
-          "depth": 0,
-          "struck": false
-        }
-      ]
-    },
-    {
       "id": "project:Demo Garden",
       "title": "Demo Garden",
       "count": 2,
@@ -103,33 +75,14 @@
           },
           "icon": "node",
           "title": "Restore the native review experience",
-          "subtitle": "Alondra · iOS",
           "badges": [
             {
               "text": "Esperando respuesta",
               "tone": "warning"
             }
           ],
-          "trailing": {
-            "kind": "count",
-            "value": 2
-          },
           "depth": 0,
           "struck": false,
-          "children": [
-            {
-              "id": "activity",
-              "icon": "notice",
-              "title": "Dijo: «The simulator pass completed successfully.»",
-              "trailing": {
-                "kind": "time",
-                "at": "2026-09-30T09:58:00Z",
-                "format": "relative"
-              },
-              "depth": 0,
-              "struck": false
-            }
-          ],
           "actions": [
             {
               "id": "close:d887a34b-249e-4487-a89b-57de38c26372@6",
@@ -159,17 +112,12 @@
           },
           "icon": "node",
           "title": "Wire the badge after the review",
-          "subtitle": "queued",
           "badges": [
             {
               "text": "Esperando a Restore the native review experience",
               "tone": "neutral"
             }
           ],
-          "trailing": {
-            "kind": "count",
-            "value": 0
-          },
           "depth": 0,
           "struck": false,
           "actions": [
@@ -209,17 +157,12 @@
           },
           "icon": "node",
           "title": "Build the importer",
-          "subtitle": "zeta-worker",
           "badges": [
             {
               "text": "Trabajando",
               "tone": "info"
             }
           ],
-          "trailing": {
-            "kind": "count",
-            "value": 0
-          },
           "depth": 0,
           "struck": false,
           "actions": [
@@ -294,17 +237,12 @@
           },
           "icon": "node",
           "title": "Plan the migration",
-          "subtitle": "alpha-waiting",
           "badges": [
             {
               "text": "Arrancando",
               "tone": "neutral"
             }
           ],
-          "trailing": {
-            "kind": "count",
-            "value": 0
-          },
           "depth": 0,
           "struck": false,
           "actions": [

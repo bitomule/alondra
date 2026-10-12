@@ -4,10 +4,10 @@
   "view": "home",
   "key": "home",
   "client": "ios",
-  "version": "vc4fc58df4cc75f37",
+  "version": "v96e09cf3252a09b4",
   "cursor": "cursor-1",
   "status": {
-    "version": "v29e230088bd2c22c",
+    "version": "v8f627439edfdda19",
     "summary": "2 questions · 3 to read · 0 nodes working",
     "badge": 5,
     "counts": [
@@ -24,7 +24,7 @@
       {
         "id": "agents",
         "label": "Fleet",
-        "value": 1
+        "value": 0
       },
       {
         "id": "working",

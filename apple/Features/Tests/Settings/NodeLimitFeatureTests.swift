@@ -28,7 +28,7 @@ final class NodeLimitFeatureTests: XCTestCase {
 
         let mac = try XCTUnwrap(NodeLimitSetting(document: try Fixtures.document("machine-settings-mac")))
         XCTAssertEqual(mac.detail, "Limit: automatic (6)")
-        XCTAssertNil(NodeLimitSetting(document: try Fixtures.document("fleet-pacing-ios-es")), "the fleet no longer offers it")
+        XCTAssertNil(NodeLimitSetting(document: try Fixtures.document("fleet-ios-es")), "the fleet no longer offers it")
     }
 
     func testAChosenLimitShowsAtOnceAndGoesToTheDaemon() async throws {

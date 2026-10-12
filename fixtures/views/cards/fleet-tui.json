@@ -4,11 +4,11 @@
   "view": "fleet",
   "key": "fleet",
   "client": "tui",
-  "version": "v61cb77ac3265e18b",
+  "version": "v899c016f2885c5f9",
   "cursor": "cursor-1",
   "title": "Fleet",
   "status": {
-    "version": "ve2c2d8cfd09a48c1",
+    "version": "v3877aa7fcba5a278",
     "summary": "2 questions · 3 to read · 2 nodes working",
     "badge": 5,
     "counts": [
@@ -25,7 +25,7 @@
       {
         "id": "agents",
         "label": "Fleet",
-        "value": 5
+        "value": 4
       },
       {
         "id": "working",
@@ -61,34 +61,6 @@
   },
   "sections": [
     {
-      "id": "orchestrator",
-      "collapsed": false,
-      "items": [
-        {
-          "type": "row",
-          "id": "orchestrator",
-          "link": {
-            "kind": "view",
-            "key": "node:orchestrator"
-          },
-          "icon": "orchestrator",
-          "title": "Orchestrator",
-          "badges": [
-            {
-              "text": "Idle",
-              "tone": "neutral"
-            }
-          ],
-          "trailing": {
-            "kind": "text",
-            "text": "Idle"
-          },
-          "depth": 0,
-          "struck": false
-        }
-      ]
-    },
-    {
       "id": "project:Demo Garden",
       "title": "Demo Garden",
       "count": 2,
@@ -103,7 +75,6 @@
           },
           "icon": "node",
           "title": "Restore the native review experience",
-          "subtitle": "Alondra · iOS",
           "badges": [
             {
               "text": "Waiting for an answer",
@@ -142,7 +113,6 @@
           },
           "icon": "node",
           "title": "Wire the badge after the review",
-          "subtitle": "queued",
           "badges": [
             {
               "text": "Waiting for Restore the native review experience",
@@ -189,7 +159,6 @@
           },
           "icon": "node",
           "title": "Build the importer",
-          "subtitle": "zeta-worker",
           "badges": [
             {
               "text": "Working",
@@ -236,7 +205,6 @@
           },
           "icon": "node",
           "title": "Plan the migration",
-          "subtitle": "alpha-waiting",
           "badges": [
             {
               "text": "Starting",

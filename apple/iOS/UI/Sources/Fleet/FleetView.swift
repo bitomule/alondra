@@ -49,10 +49,6 @@ public struct FleetView: View {
                 }
                 .listSectionSpacing(.compact)
             }
-            if let pacing = overview.pacing {
-                PacingSection(pacing: pacing, open: { store.send(.follow($0)) },
-                              perform: { store.send(.perform($0)) })
-            }
             ForEach(overview.groups) { group in
                 let shown = !group.collapsed || opened.contains(group.id)
                 Section {
@@ -190,63 +186,3 @@ private struct ProjectHeader: View {
     }
 }
 
-/// The fleet's pace: how many nodes work against the limit and how the Mac is, the limit and where
-/// it comes from, then every task waiting its turn or paused, each with Pause or Resume.
-private struct PacingSection: View {
-    let pacing: FleetOverview.Pacing
-    let open: (AlondraContract.Link) -> Void
-    let perform: (WireAction) -> Void
-
-    var body: some View {
-        Section {
-            HStack(alignment: .firstTextBaseline, spacing: 10) {
-                Glyph(symbol: "gauge.with.dots.needle.50percent", tint: Palette.slate, size: .small, pulse: false)
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(pacing.summary).font(.subheadline.weight(.semibold)).foregroundStyle(Palette.ink)
-                    if let limitText = pacing.limitText {
-                        Text(limitText).font(.footnote).foregroundStyle(.secondary)
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .listRowBackground(Palette.card.opacity(0.85))
-            ForEach(pacing.waiting) { waiting in
-                WaitingRow(waiting: waiting, open: open, perform: perform)
-                    .listRowBackground(Palette.card.opacity(0.85))
-            }
-        }
-        .listSectionSpacing(.compact)
-    }
-}
-
-private struct WaitingRow: View {
-    let waiting: FleetOverview.Pacing.Waiting
-    let open: (AlondraContract.Link) -> Void
-    let perform: (WireAction) -> Void
-
-    var body: some View {
-        HStack(alignment: .center, spacing: 10) {
-            Button { if let link = waiting.link { open(link) } } label: {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(waiting.title).font(.body.weight(.semibold)).foregroundStyle(Palette.ink)
-                        .lineLimit(2).multilineTextAlignment(.leading)
-                    if let state = waiting.state {
-                        Label(state, systemImage: waiting.paused ? "pause.circle" : "hourglass")
-                            .font(.footnote).foregroundStyle(.secondary)
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(.rect)
-            }
-            .buttonStyle(.plain)
-            if let action = waiting.action {
-                Button(action.label) { perform(action) }
-                    .font(.footnote.weight(.semibold))
-                    .buttonStyle(.bordered)
-                    .tint(waiting.paused ? Palette.sky : Palette.slate)
-                    .accessibilityHint(action.description.map { Text($0) } ?? Text(""))
-            }
-        }
-        .padding(.vertical, 4)
-    }
-}

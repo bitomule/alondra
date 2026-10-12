@@ -4,11 +4,11 @@
   "view": "card",
   "key": "card:cc2d034b-249e-4487-a89b-57de38c26372",
   "client": "ios",
-  "version": "vff664c09146a94ba",
+  "version": "vec28e976cf0890b1",
   "cursor": "cursor-1",
   "title": "Pega este comando en el terminal: confía en todos los repos de ~/Projects",
   "status": {
-    "version": "vca21bf17ff853499",
+    "version": "ve1fd29addaecad00",
     "summary": "2 preguntas · 3 por leer · 0 nodos trabajando",
     "badge": 5,
     "counts": [
@@ -25,7 +25,7 @@
       {
         "id": "agents",
         "label": "Flota",
-        "value": 1
+        "value": 0
       },
       {
         "id": "working",

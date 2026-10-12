@@ -52,11 +52,15 @@ fn interrupt_action(id: &str, context: &RenderContext<'_>) -> Option<super::Acti
 
 /// A node's one state, in 8ccd131's words: a question it blocks on, then what the session does,
 /// then what waits for the user on it, then where its tasks stand.
-/// A node is in Fleet while its session lives: whatever its phase but closed.
+/// A node is in Fleet while Alondra runs it on an open task in a session that exists: never the
+/// orchestrator, a node whose task ended, nor one whose session is gone and is being brought back.
 pub(super) fn in_fleet(agent: &crate::domain::Agent, context: &RenderContext<'_>) -> bool {
     agent.id.0 != "orchestrator"
         && context.domain.orchestrator_session.as_ref() != Some(&agent.id)
         && agent.phase.live()
+        && agent.phase != NodePhase::Starting { reviving: true }
+        && context.domain.tasks.values()
+            .any(|task| task.agent_id.as_ref() == Some(&agent.id) && !task.archived && !task.state.terminal())
 }
 
 pub(super) fn node_state(agent: &AgentId, context: &RenderContext<'_>) -> super::Label {
@@ -152,15 +156,6 @@ fn context_label(percent: u32, lang: super::Lang) -> super::Label {
     }
 }
 
-/// What the node runs now while it works, otherwise what it said last, with when.
-pub(super) fn activity(node: &super::LiveNode, context: &RenderContext<'_>) -> Option<super::Row> {
-    let (text, at) = doing(node, common::working(&node.agent_id, context), context.lang)?;
-    let mut row = common::row("activity", "node", Icon::Notice, text, None);
-    row.link = None;
-    row.trailing = at.map(|at| Trailing::Time { at, format: super::TimeFormat::Relative });
-    Some(row)
-}
-
 /// What a node does, only as facts it reports: the step of its own task list while it works; once it stopped,
 /// the first sentence it said and when. Nothing is inferred from the commands it runs, and a node at work carries
 /// no time, so its row never goes stale.
@@ -204,12 +199,6 @@ fn said(message: &str) -> Option<String> {
 }
 
 const TOOLS: [&str; 12] = ["Bash", "Edit", "Write", "MultiEdit", "NotebookEdit", "Read", "Grep", "Glob", "Agent", "Task", "WebSearch", "WebFetch"];
-
-/// How far the node's task list has got ("3/5"), while a step is still open.
-fn progress_badge(node: &super::LiveNode) -> Option<super::Label> {
-    let done = node.steps.iter().filter(|step| step.state == StepState::Completed).count();
-    (done < node.steps.len()).then(|| super::Label { text: format!("{done}/{}", node.steps.len()), tone: Tone::Neutral })
-}
 
 fn ran_for(secs: u64) -> String {
     match secs {
@@ -341,58 +330,17 @@ pub(super) fn work_sections(node: &super::LiveNode, lang: super::Lang) -> Vec<su
     sections
 }
 
-/// A node and its one task as one Fleet item. On iOS it reads as the task, names the node only
-/// when the name adds something, and says what it does now; the TUI lists the task under the node.
+/// A node as one Fleet item: the title of its task and its state, nothing else.
 pub(super) fn node_row(agent: &crate::domain::Agent, context: &RenderContext<'_>) -> super::Row {
-    let live = context
-        .live
-        .nodes
-        .iter()
-        .find(|node| node.agent_id == agent.id.0);
-    let name = common::agent_label(&agent.id, context);
-    let task = common::current_task(context.domain, &agent.id);
-    let mut row = common::row(&agent.id.0, &format!("node:{}", agent.id), Icon::Node, name.clone(), None);
+    let title = common::current_task(context.domain, &agent.id).map_or_else(|| common::agent_label(&agent.id, context), |task| task.title.clone());
+    let mut row = common::row(&agent.id.0, &format!("node:{}", agent.id), Icon::Node, title, None);
     row.badges.push(node_state(&agent.id, context));
     if context.client == super::Client::Ios {
-        if let Some(task) = task {
-            row.title = task.title.clone();
-            row.subtitle = (task.title != name).then_some(name);
-        }
-        row.children.extend(live.and_then(|node| activity(node, context)));
         row.actions.extend(interrupt_action(&agent.id.0, context));
         row.actions.extend(super::pacing::node_actions(&agent.id, context));
-    } else {
-        if let Some(task) = task {
-            row.title = task.title.clone();
-        }
-        row.subtitle = live.filter(|node| common::working(&node.agent_id, context)).and_then(|node| node.tool.clone())
-            .or_else(|| (row.title != name).then_some(name));
     }
-    row.actions.extend(close_action(&agent.id.0, context));
-    let waiting_until = live.and_then(|node| node.waiting_until.clone());
-    if let Some(at) = waiting_until {
-        row.trailing = Some(Trailing::Time { at, format: super::TimeFormat::Time });
-    } else if context.client == super::Client::Tui {
-        row.trailing = live.and_then(|node| node.state_since.clone())
-            .map(|at| Trailing::Time { at, format: super::TimeFormat::Relative });
-    } else {
-        row.trailing = Some(Trailing::Count {
-            value: context
-                .projection
-                .inbox
-                .iter()
-                .filter(|item| item.pending && item.agent_id.as_ref() == Some(&agent.id))
-                .count() as u32,
-        });
-    }
-    if let Some(live) = live
-        && let Some(text) = &live.background_badge
-    {
-        row.badges.push(super::Label { text: text.clone(), tone: if live.background_suspect { Tone::Warning } else { Tone::Neutral } });
-    }
-    row.badges.extend(live.and_then(progress_badge));
-    if let Some(model) = live.and_then(|live| live.model.as_deref()) {
-        row.badges.push(super::Label { text: crate::model_label::model_label(model), tone: Tone::Neutral });
+    if context.client != super::Client::Mac {
+        row.actions.extend(close_action(&agent.id.0, context));
     }
     row
 }
@@ -405,32 +353,10 @@ pub(super) fn list(context: &RenderContext<'_>) -> View {
         context,
         vec![],
     );
-    let mut orchestrator = common::row(
-        "orchestrator",
-        "node:orchestrator",
-        Icon::Orchestrator,
-        t!(context.lang, "Orchestrator", "Orquestador").into(),
-        common::orchestrator_failure(context).and_then(|text| text.lines().next().map(str::to_owned)),
-    );
-    let state = common::orchestrator_label(context);
-    orchestrator.trailing = Some(Trailing::Text { text: state.text.clone() });
-    orchestrator.badges.push(state);
-    view.sections.push(common::section(
-        "orchestrator",
-        None,
-        vec![Item::Row(orchestrator)],
-    ));
-    if let Some(section) = pacing_section(context) {
-        view.sections.push(section);
-    }
     let mut projects: BTreeMap<String, Vec<(u8, Item)>> = BTreeMap::new();
-    let mut idle: Vec<(Recency, Item)> = vec![];
     for agent in context.domain.agents.values().filter(|agent| in_fleet(agent, context)) {
         let row = Item::Row(node_row(agent, context));
-        match urgency(&agent.id, context) {
-            Some(urgency) => projects.entry(project_of(&agent.id, context)).or_default().push((urgency, row)),
-            None => idle.push((recency(&agent.id, context), row)),
-        }
+        projects.entry(project_of(&agent.id, context)).or_default().push((urgency(&agent.id, context), row));
     }
     let other = t!(context.lang, "Other", "Otros");
     let mut ordered: Vec<_> = projects.into_iter().map(|(project, mut rows)| {
@@ -444,82 +370,19 @@ pub(super) fn list(context: &RenderContext<'_>) -> View {
         section.count = Some(section.items.len() as u32);
         view.sections.push(section);
     }
-    if !idle.is_empty() {
-        idle.sort_by(|a, b| b.0.cmp(&a.0));
-        let items = idle.into_iter().map(|(_, item)| item).collect::<Vec<_>>();
-        let mut section = common::section("idle", Some(t!(context.lang, "Idle", "Inactivos").into()), items);
-        section.count = Some(section.items.len() as u32);
-        section.collapsed = true;
-        view.sections.push(section);
-    }
     view
 }
 
-/// "Working 6/6 · Queued 3 · Mac: memory 12% free (tight)": how many nodes work against the
-/// limit and how the Mac is, with every queued task under it in the order it starts.
-fn pacing_section(context: &RenderContext<'_>) -> Option<super::Section> {
-    let pacing = context.live.pacing.as_ref()?;
-    let lang = context.lang;
-    let (working, limit, queued) = (pacing.working, pacing.limit, pacing.queued.len());
-    let mut parts = vec![tf!(lang, "Working {working}/{limit}", "Trabajando {working}/{limit}")];
-    if queued > 0 {
-        parts.push(tf!(lang, "Queued {queued}", "En cola {queued}"));
-    }
-    let paused = pacing.paused.len();
-    if paused > 0 {
-        parts.push(tf!(lang, "Paused {paused}", "En pausa {paused}"));
-    }
-    if let Some(free) = pacing.memory_free {
-        parts.push(match pacing.tight {
-            true => tf!(lang, "Mac: memory {free}% free (tight)", "Mac: memoria {free} % libre (justo)"),
-            false => tf!(lang, "Mac: memory {free}% free", "Mac: memoria {free} % libre"),
-        });
-    }
-    let mut header = common::row("pacing", "fleet", Icon::Machine, parts.join(" · "), Some(super::pacing::limit_text(pacing, lang)));
-    header.link = None;
-    let mut items = vec![Item::Row(header)];
-    for place in &pacing.queued {
-        let Some(task) = context.domain.tasks.get(&crate::domain::TaskId(place.task_id.clone())) else { continue };
-        let mut row = common::row(&format!("queued:{}", task.id.0), &format!("task:{}", task.id.0), Icon::Task,
-            task.title.clone(), Some(common::queued_label(place, lang)));
-        row.actions.extend(super::pacing::pause_queued_action(task, context));
-        items.push(Item::Row(row));
-    }
-    for paused in &pacing.paused {
-        let Some(task) = context.domain.tasks.get(&crate::domain::TaskId(paused.task_id.clone())) else { continue };
-        let mut row = common::row(&format!("paused:{}", task.id.0), &format!("task:{}", task.id.0), Icon::Task,
-            task.title.clone(), Some(common::paused_label(paused, lang)));
-        row.actions.extend(super::pacing::resume_action(paused, context));
-        items.push(Item::Row(row));
-    }
-    Some(common::section("pacing", None, items))
-}
-
-/// Where a node stands in Fleet: 0 when it needs the user, 1 while it works, 2 while it waits;
-/// `None` when it holds no open task, which puts it among the idle ones.
-fn urgency(agent: &AgentId, context: &RenderContext<'_>) -> Option<u8> {
-    let live_working = common::working(&agent.0, context);
-    let open_task = context.domain.tasks.values()
-        .any(|task| task.agent_id.as_ref() == Some(agent) && !task.archived && !task.state.terminal());
+/// Where a node stands in Fleet: 0 when it needs the user, 1 while it works, 2 while it waits.
+fn urgency(agent: &AgentId, context: &RenderContext<'_>) -> u8 {
     let owes_user = context.projection.inbox.iter()
         .any(|item| item.pending && item.agent_id.as_ref() == Some(agent));
-    if !(live_working || open_task || owes_user) {
-        return None;
-    }
-    Some(match node_state(agent, context).tone {
+    match node_state(agent, context).tone {
         Tone::Warning | Tone::Critical | Tone::YourTurn | Tone::Accent => 0,
         Tone::Info => 1,
         _ if owes_user => 0,
         _ => 2,
-    })
-}
-
-type Recency = (Option<String>, u64);
-
-fn recency(agent: &AgentId, context: &RenderContext<'_>) -> Recency {
-    let live = context.live.nodes.iter().find(|node| node.agent_id == agent.0);
-    let at = live.and_then(|node| node.last_message_at.clone().max(node.state_since.clone()));
-    (at, common::current_task(context.domain, agent).map_or(0, |task| task.revision))
+    }
 }
 
 /// The live node's project; failing that, the project its task's Request is known by through
@@ -583,6 +446,10 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
         }
         if let Some(tool) = &node.tool {
             readings.push(Fact { label: t!(lang, "Running", "Ejecutando").into(), value: tool.clone(), tone: None, link: None });
+        }
+        if let Some(text) = &node.background_badge {
+            readings.push(Fact { label: t!(lang, "In the background", "En segundo plano").into(), value: text.clone(),
+                tone: node.background_suspect.then_some(Tone::Warning), link: None });
         }
         if node.last_turn_aborted && !common::working(&node.agent_id, context) {
             readings.push(Fact { label: t!(lang, "Last turn", "Último turno").into(),

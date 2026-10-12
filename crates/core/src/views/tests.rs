@@ -1450,7 +1450,7 @@ fn task_detail_keeps_dependencies_options_and_human_request_text() {
 }
 
 #[test]
-fn a_tui_fleet_node_is_one_row_named_by_its_task_with_its_state_and_since_when() {
+fn a_tui_fleet_node_is_one_row_named_by_its_task_with_its_state() {
     let mut state = fixture();
     state.interactions.clear();
     state.tasks.get_mut(&"t-1".into()).unwrap().agent_id = Some("a-1".into());
@@ -1467,8 +1467,7 @@ fn a_tui_fleet_node_is_one_row_named_by_its_task_with_its_state_and_since_when()
     assert_eq!(node.title, "Build a feature");
     assert!(node.children.is_empty(), "one task per node: no task row repeats the node");
     assert_eq!(node.badges.first().map(|badge| badge.text.as_str()), Some("Working"));
-    assert_eq!(node.subtitle.as_deref(), Some("cargo test"));
-    assert_eq!(node.trailing, Some(Trailing::Time { at: "2026-09-30T09:58:00Z".into(), format: TimeFormat::Relative }));
+    assert!(node.subtitle.is_none() && node.trailing.is_none(), "{node:?}");
     assert!(view.sections.iter().any(|section| section.title.as_deref() == Some("App")));
 }
 
@@ -1557,8 +1556,6 @@ fn a_running_task_whose_node_lost_its_connection_says_so_instead_of_working() {
     live.nodes[0].disconnected = false;
     live.nodes[0].reconnecting = true;
     assert_eq!(task_state_text(&state, &live, Lang::Es), "Reconectando");
-    let fleet = render(&state, &live, Client::Mac, Lang::Es, "fleet", "");
-    assert!(format!("{fleet:?}").contains("Reconectando"));
     live.nodes[0].reconnecting = false;
     live.nodes[0].disconnected = true;
     let fleet = format!("{:?}", render(&state, &live, Client::Mac, Lang::Es, "fleet", ""));
@@ -1713,8 +1710,8 @@ fn a_fleet_node_shows_the_one_task_it_is_on_not_the_ones_it_finished() {
     state.tasks.get_mut(&"t-1".into()).unwrap().state = TaskState::Done;
     let idle = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::En, "node:a-1", "");
     assert!(header_facts(&idle).iter().all(|fact| fact.label != "Task"), "a node between tasks is on none");
-    state.tasks.get_mut(&"t-1".into()).unwrap().revision = 2;
-    assert_eq!(node_row(&state), "Build a feature", "between tasks a node shows the last one it had");
+    let fleet = render(&state, &LiveSnapshot::default(), Client::Tui, Lang::En, "fleet", "");
+    assert!(fleet.sections.is_empty(), "a node with no open task is not in Fleet");
 }
 
 #[test]
@@ -1775,16 +1772,14 @@ fn each_fleet_node_shows_its_one_phase_and_a_closed_one_leaves() {
         if let Item::Row(row) = item && row.id == id { Some(row.clone()) } else { None }
     });
     assert!(found("recent-queue").is_none(), "a node whose session closed is not in Fleet");
+    assert!(found("home-zero").is_none() && found("claude-mods").is_none(), "a node whose task ended is not in Fleet");
     for (agent, text, tone) in [
         ("one-task", "Espera tu revisión", Tone::Accent),
-        ("home-zero", "Terminado", Tone::Success),
-        ("claude-mods", "Terminado", Tone::Success),
         ("busy", "Trabajando", Tone::Info),
         ("idle", "Detenido", Tone::Warning),
     ] {
         let row = found(agent).unwrap();
         assert_eq!(row.title, "Build a feature", "{agent}");
-        assert_eq!(row.subtitle.as_deref(), Some(agent), "{agent}");
         assert_eq!(row.badges, vec![Label { text: text.into(), tone }], "{agent}");
     }
     let detail = render(&state, &live, Client::Ios, Lang::Es, "node:recent-queue", "");
@@ -2376,12 +2371,6 @@ fn the_mac_sidebar_does_not_say_the_same_thing_twice() {
             assert_ne!(child.subtitle.as_deref(), Some(group.title.as_str()), "a task under \"{}\" does not repeat it", group.title);
         }
     }
-    let orchestrator = sidebar.sections.iter().find(|section| section.id == "orchestrator").unwrap();
-    for item in &orchestrator.items {
-        let Item::Row(row) = item else { continue };
-        assert_eq!(row.trailing, None, "the orchestrator state is the badge, not a second label");
-        assert_eq!(row.badges.len(), 1);
-    }
 }
 
 #[test]
@@ -2960,20 +2949,10 @@ fn node_last_message_keeps_its_time_next_to_the_message() {
     assert!(section.items.iter().any(|item| matches!(item, Item::Markdown(markdown) if markdown.text == "Ready for review")));
     assert!(section.items.iter().any(|item| matches!(item,
         Item::Row(row) if matches!(&row.trailing, Some(Trailing::Time { at, .. }) if at == "2026-09-30T09:58:00Z"))));
-    let fleet = render(&state, &live, Client::Ios, Lang::En, "fleet", "");
-    let node = fleet.sections.iter().flat_map(|section| &section.items).find_map(|item| {
-        if let Item::Row(row) = item && row.id == "a-1" { Some(row) } else { None }
-    }).unwrap();
-    assert!(node.children.iter().any(|child| child.id == "activity"
-        && child.title == "Said: “Ready for review”"
-        && matches!(&child.trailing, Some(Trailing::Time { at, .. }) if at == "2026-09-30T09:58:00Z")));
-    let search = render(&state, &live, Client::Ios, Lang::En, "search?q=Node", "");
-    let Item::Row(result) = &search.sections[0].items[0] else { panic!("search result") };
-    assert!(result.children.iter().any(|child| child.id == "activity"));
 }
 
 #[test]
-fn a_node_shows_the_model_it_runs_on_in_its_row_and_its_detail() {
+fn a_node_shows_the_model_it_runs_on_in_its_detail_not_its_fleet_row() {
     let mut state = fixture();
     state.interactions.clear();
     state.tasks.get_mut(&"t-1".into()).unwrap().agent_id = Some("a-1".into());
@@ -2982,7 +2961,7 @@ fn a_node_shows_the_model_it_runs_on_in_its_row_and_its_detail() {
     let fleet = render(&state, &live, Client::Ios, Lang::En, "fleet", "");
     let row = fleet.sections.iter().flat_map(|section| &section.items)
         .find_map(|item| if let Item::Row(row) = item && row.id == "a-1" { Some(row.clone()) } else { None }).unwrap();
-    assert!(row.badges.iter().any(|badge| badge.text == "Opus 5.5"));
+    assert!(row.badges.iter().all(|badge| badge.text != "Opus 5.5"));
     let detail = render(&state, &live, Client::Ios, Lang::Es, "node:a-1", "");
     let facts: Vec<_> = detail.sections.iter().flat_map(|section| &section.items)
         .flat_map(|item| match item { Item::Facts(facts) => facts.items.clone(), _ => vec![] }).collect();
@@ -3125,26 +3104,6 @@ fn a_running_workflow_shows_its_phase_its_agents_and_how_many_more_there_are() {
 }
 
 #[test]
-fn a_fleet_row_shows_how_far_the_task_list_has_got_until_every_step_is_done() {
-    let mut state = fixture();
-    state.interactions.clear();
-    state.tasks.get_mut(&"t-1".into()).unwrap().agent_id = Some("a-1".into());
-    let mut live = LiveSnapshot::default();
-    live.nodes.push(working_node());
-    for (client, lang) in [(Client::Ios, Lang::En), (Client::Tui, Lang::Es)] {
-        let fleet = render(&state, &live, client, lang, "fleet", "");
-        let row = fleet.sections.iter().flat_map(|section| &section.items)
-            .find_map(|item| if let Item::Row(row) = item && row.id == "a-1" { Some(row.clone()) } else { None }).unwrap();
-        assert!(row.badges.iter().any(|badge| badge.text == "2/5"), "{:?}", row.badges);
-    }
-    for step in &mut live.nodes[0].steps { step.state = StepState::Completed; }
-    let fleet = render(&state, &live, Client::Ios, Lang::En, "fleet", "");
-    let row = fleet.sections.iter().flat_map(|section| &section.items)
-        .find_map(|item| if let Item::Row(row) = item && row.id == "a-1" { Some(row.clone()) } else { None }).unwrap();
-    assert!(row.badges.iter().all(|badge| !badge.text.contains('/')));
-}
-
-#[test]
 fn a_task_detail_says_the_model_it_was_launched_with_and_who_chose_it() {
     let mut state = fixture();
     let model = |state: &DomainState, lang| {
@@ -3188,8 +3147,8 @@ fn an_ios_fleet_item_is_the_node_and_its_one_task_without_readings() {
     let working = item(&state, &live);
     assert_eq!(working.title, "Build a feature");
     assert_eq!(working.subtitle, None, "a node named after its task does not repeat the title");
-    assert_eq!(working.badges.iter().map(|badge| badge.text.as_str()).collect::<Vec<_>>(), ["Trabajando", "2 subagents"],
-        "context, cost and interruptions stay on the node's screen");
+    assert_eq!(working.badges.iter().map(|badge| badge.text.as_str()).collect::<Vec<_>>(), ["Trabajando"],
+        "context, cost, subagents and interruptions stay on the node's screen");
     assert!(working.children.is_empty(), "the task is the item, and nothing is inferred from the command it runs");
     let verbs = |row: &Row| row.actions.iter().map(|action| action.id.split(':').next().unwrap().to_owned()).collect::<Vec<_>>();
     assert_eq!(verbs(&working), ["interrupt", "pause", "close"], "a working node can be interrupted, paused or closed from its card");
@@ -3201,13 +3160,11 @@ fn an_ios_fleet_item_is_the_node_and_its_one_task_without_readings() {
     state.agents.get_mut(&"a-1".into()).unwrap().phase = NodePhase::Stopped;
     state.agents.get_mut(&"a-1".into()).unwrap().name = "alondra-ios".into();
     let resting = item(&state, &live);
-    assert_eq!(resting.subtitle.as_deref(), Some("alondra-ios"), "a node name that adds something stays");
-    assert_eq!(resting.children[0].title, "Dijo: «Earlier note»");
+    assert!(resting.subtitle.is_none() && resting.children.is_empty(), "what it said last is on the node's screen");
     assert_eq!(verbs(&resting), ["close"], "nothing to interrupt once its turn ended");
     let detail = render(&state, &live, Client::Ios, Lang::En, "node:a-1", "");
     let Item::Actions(bar) = &detail.sections.iter().find(|section| section.id == "actions").unwrap().items[0] else { panic!("actions") };
     assert!(bar.actions.iter().all(|action| !action.id.starts_with("interrupt:")));
-    assert!(matches!(&resting.children[0].trailing, Some(Trailing::Time { at, .. }) if at == "2026-09-30T09:50:00Z"));
 
     let tui = render(&state, &live, Client::Tui, Lang::En, "fleet", "");
     let tui_row = tui.sections.iter().flat_map(|section| &section.items)
@@ -4071,7 +4028,8 @@ fn request_option_values_keep_their_description_in_both_languages() {
 
 #[test]
 fn fleet_rows_offer_close_node_with_a_confirmation() {
-    let view = render(&golden_fixture(), &golden_live(), Client::Ios, Lang::En, "fleet", "");
+    let (state, live) = fleet_fixture();
+    let view = render(&state, &live, Client::Ios, Lang::En, "fleet", "");
     let row = view.sections.iter().flat_map(|section| &section.items).find_map(|item| match item {
         Item::Row(row) if row.id == "d887a34b-249e-4487-a89b-57de38c26372" => Some(row),
         _ => None,
@@ -4876,7 +4834,7 @@ fn a_node_with_no_project_anywhere_is_in_other_after_the_named_projects() {
     state.tasks.insert(task.id.clone(), task);
     let view = render(&state, &live, Client::Ios, Lang::En, "fleet", "");
     let ids = section_ids(&view);
-    assert_eq!(&ids[1..4], ["project:Demo Garden", "project:Other", "project:Zeta"],
+    assert_eq!(&ids[0..3], ["project:Demo Garden", "project:Other", "project:Zeta"],
         "Other ties with a named project on urgency and comes after it");
     let es = render(&state, &live, Client::Ios, Lang::Es, "fleet", "");
     assert!(section_ids(&es).contains(&"project:Otros"));
@@ -4886,7 +4844,7 @@ fn a_node_with_no_project_anywhere_is_in_other_after_the_named_projects() {
 fn fleet_projects_come_by_their_most_urgent_node_and_nodes_by_urgency() {
     let (state, live) = fleet_fixture();
     let view = render(&state, &live, Client::Ios, Lang::En, "fleet", "");
-    assert_eq!(section_ids(&view), ["orchestrator", "project:Demo Garden", "project:Zeta", "project:Alpha"]);
+    assert_eq!(section_ids(&view), ["project:Demo Garden", "project:Zeta", "project:Alpha"]);
     assert_eq!(section_rows(&view, "project:Demo Garden"), ["d887a34b-249e-4487-a89b-57de38c26372", "queued"],
         "a node that needs the user comes before one that waits");
 }
@@ -4899,6 +4857,60 @@ fn nodes_whose_sessions_closed_leave_fleet() {
     let rows: Vec<&str> = view.sections.iter().flat_map(|section| &section.items)
         .filter_map(|item| if let Item::Row(row) = item { Some(row.id.as_str()) } else { None }).collect();
     assert!(!rows.contains(&"finished-today") && !rows.contains(&"finished-yesterday"), "{rows:?}");
+}
+
+/// 9 October: Fleet is what is in progress, Alondra's real nodes, their task and their state. A node
+/// whose task ended, one whose session is gone, the orchestrator and the queue stay out of it.
+#[test]
+fn fleet_lists_only_nodes_with_a_session_on_an_open_task() {
+    let (mut state, mut live) = fleet_fixture();
+    let template = state.tasks[&"t-zeta-worker".into()].clone();
+    for (agent, task_state, phase) in [
+        ("reviving", TaskState::Running, NodePhase::Starting { reviving: true }),
+        ("lingering", TaskState::Done, NodePhase::Working),
+        ("cancelled-paused", TaskState::Cancelled, NodePhase::Paused(crate::domain::Pause { reason: crate::domain::PauseReason::ByUser, since: 0, cut: None, turn_since: None, cleanup: Default::default(), released: false })),
+        ("taskless", TaskState::Running, NodePhase::Working),
+    ] {
+        state.agents.insert(agent.into(), Agent { id: agent.into(), name: agent.into(), phase, since: 0 });
+        if agent == "taskless" { continue; }
+        let mut task = template.clone();
+        (task.id, task.agent_id, task.state) = (format!("t-{agent}").into(), Some(agent.into()), task_state);
+        state.tasks.insert(task.id.clone(), task);
+    }
+    state.agents.insert("orchestrator".into(), Agent { id: "orchestrator".into(), name: "orchestrator".into(), phase: NodePhase::Working, since: 0 });
+    live.pacing = Some(LivePacing {
+        working: 1, limit: 2, fixed: None, auto: 2, memory_free: Some(40), tight: false,
+        queued: vec![LiveQueued { task_id: "t-alpha-waiting".into(), position: 1, of: 1, hold: LiveHold::Slots { working: 1, limit: 2 } }],
+        paused: vec![],
+    });
+    for (client, lang) in [(Client::Ios, Lang::En), (Client::Mac, Lang::Es), (Client::Tui, Lang::En)] {
+        let view = render(&state, &live, client, lang, "fleet", "");
+        assert!(section_ids(&view).iter().all(|id| id.starts_with("project:")), "{:?}", section_ids(&view));
+        let rows: Vec<&str> = view.sections.iter().flat_map(|section| &section.items)
+            .filter_map(|item| if let Item::Row(row) = item { Some(row.id.as_str()) } else { None }).collect();
+        assert_eq!(rows.iter().copied().collect::<BTreeSet<_>>(),
+            ["d887a34b-249e-4487-a89b-57de38c26372", "queued", "zeta-worker", "alpha-waiting"].into_iter().collect::<BTreeSet<_>>());
+    }
+}
+
+/// A Fleet row is the node's task and its state, nothing else.
+#[test]
+fn a_fleet_row_is_its_tasks_title_and_its_state() {
+    let (state, mut live) = fleet_fixture();
+    live.nodes.iter_mut().filter(|node| node.agent_id == "zeta-worker").for_each(|node| {
+        node.model = Some("claude-opus-5-5".into());
+        node.background_badge = Some("2 in the background".into());
+    });
+    for client in [Client::Ios, Client::Mac, Client::Tui] {
+        let view = render(&state, &live, client, Lang::En, "fleet", "");
+        let row = view.sections.iter().flat_map(|section| &section.items).find_map(|item| match item {
+            Item::Row(row) if row.id == "zeta-worker" => Some(row),
+            _ => None,
+        }).unwrap();
+        assert_eq!(row.title, "Build the importer");
+        assert_eq!(row.badges.iter().map(|badge| badge.text.as_str()).collect::<Vec<_>>(), ["Working"]);
+        assert!(row.subtitle.is_none() && row.children.is_empty() && row.trailing.is_none(), "{row:?}");
+    }
 }
 
 #[test]
@@ -5290,7 +5302,7 @@ fn generate_know_command_goldens() {
 }
 
 #[test]
-fn fleet_heads_with_the_working_count_and_lists_the_queued_tasks_with_their_place_and_why() {
+fn a_queued_task_says_its_place_and_why_in_its_task_and_fleet_never_lists_the_queue() {
     let mut state = fixture();
     let task = state.tasks.get_mut(&crate::domain::TaskId::from("t-1")).unwrap();
     (task.state, task.final_presentation) = (TaskState::NotStarted, None);
@@ -5303,8 +5315,7 @@ fn fleet_heads_with_the_working_count_and_lists_the_queued_tasks_with_their_plac
         ..LiveSnapshot::default()
     };
     let fleet = serde_json::to_string(&render(&state, &live, Client::Ios, Lang::Es, "fleet", "")).unwrap();
-    assert!(fleet.contains("Trabajando 6/6 · En cola 1 · Mac: memoria 12 % libre (justo)"), "{fleet}");
-    assert!(fleet.contains("En cola · 2.º de 3 · hay 6 de 6 trabajando"), "{fleet}");
+    assert!(!fleet.contains("Trabajando 6/6") && !fleet.contains("En cola") && !fleet.contains("memoria"), "{fleet}");
     let task = serde_json::to_string(&render(&state, &live, Client::Tui, Lang::En, "task:t-1", "")).unwrap();
     assert!(task.contains("Queued · 2nd of 3 · 6 of 6 working"), "{task}");
     let memory = LiveQueued { task_id: "t-1".into(), position: 1, of: 1, hold: LiveHold::Memory { free: Some(12) } };
@@ -5352,8 +5363,7 @@ fn a_paused_task_says_since_when_why_and_when_it_comes_back_in_both_languages() 
         ..LiveSnapshot::default()
     };
     let fleet = serde_json::to_string(&render(&state, &live, Client::Ios, Lang::Es, "fleet", "")).unwrap();
-    assert!(fleet.contains("Trabajando 5/6 · En pausa 1 · Mac: memoria 24 % libre (justo)"), "{fleet}");
-    assert!(fleet.contains("Pausado desde las 14:05 por memoria · se reanuda cuando el Mac lleve 5 min bien (2 hasta ahora)"), "{fleet}");
+    assert!(!fleet.contains("Trabajando 5/6") && !fleet.contains("Pausado desde"), "a paused task shows in Tasks, not in Fleet: {fleet}");
     let task = serde_json::to_string(&render(&state, &live, Client::Tui, Lang::En, "task:t-1", "")).unwrap();
     assert!(task.contains("Paused · For memory since 14:05 · resumes by itself"), "{task}");
     let user = LivePaused { reason: LivePauseReason::User, at: "11:20".into(), ..memory.clone() };
@@ -5423,14 +5433,14 @@ fn pacing_live(queued: Vec<LiveQueued>, paused: Vec<LivePaused>, fixed: Option<u
 }
 
 #[test]
-fn the_fleet_header_says_where_the_limit_comes_from_and_this_macs_settings_change_it() {
+fn the_limit_shows_and_changes_in_this_macs_settings_never_in_the_fleet() {
     let state = fixture();
     let live = pacing_live(vec![], vec![], None);
     for client in [Client::Ios, Client::Mac, Client::Tui] {
         let fleet = render(&state, &live, client, Lang::Es, "fleet", "");
         let text = serde_json::to_string(&fleet).unwrap();
-        assert!(text.contains("Límite: automático (6)"), "{text}");
-        assert!(find_action(&fleet, "set_limit:").is_none(), "{client:?}: the fleet header only shows the limit");
+        assert!(!text.contains("Límite"), "{client:?}: {text}");
+        assert!(find_action(&fleet, "set_limit:").is_none(), "{client:?}");
     }
 
     let machine = render(&state, &live, Client::Ios, Lang::Es, "machine", "");
@@ -5452,7 +5462,7 @@ fn the_fleet_header_says_where_the_limit_comes_from_and_this_macs_settings_chang
 }
 
 #[test]
-fn a_queued_task_offers_pause_and_a_paused_one_offers_resume_where_it_shows() {
+fn a_queued_task_offers_pause_and_a_paused_one_offers_resume_in_its_task_never_in_the_fleet() {
     let mut state = fixture();
     let task = state.tasks.get_mut(&crate::domain::TaskId::from("t-1")).unwrap();
     (task.state, task.final_presentation) = (TaskState::NotStarted, None);
@@ -5460,7 +5470,7 @@ fn a_queued_task_offers_pause_and_a_paused_one_offers_resume_where_it_shows() {
     let live = pacing_live(vec![queued], vec![], None);
     for client in [Client::Ios, Client::Mac, Client::Tui] {
         let fleet = render(&state, &live, client, Lang::En, "fleet", "");
-        assert!(find_action(&fleet, "pause:t-1").is_some(), "{client:?}: {:?}", action_ids(&fleet));
+        assert!(find_action(&fleet, "pause:t-1").is_none(), "{client:?}: {:?}", action_ids(&fleet));
         let detail = render(&state, &live, client, Lang::En, "task:t-1", "");
         assert!(action_ids(&detail).contains(&"pause:t-1".to_owned()), "{client:?}: {:?}", action_ids(&detail));
         assert!(!action_ids(&detail).iter().any(|id| id.starts_with("resume:")));
@@ -5468,8 +5478,9 @@ fn a_queued_task_offers_pause_and_a_paused_one_offers_resume_where_it_shows() {
 
     let paused = LivePaused { task_id: "t-1".into(), session: None, at: "11:20".into(), reason: LivePauseReason::User, fine_minutes: None, next: false, waits_for: None, retry: None };
     let live = pacing_live(vec![], vec![paused], None);
-    let fleet = render(&state, &live, Client::Ios, Lang::Es, "fleet", "");
-    let resume = find_action(&fleet, "resume:t-1").expect("a task taken out of the queue resumes by its id");
+    assert!(find_action(&render(&state, &live, Client::Ios, Lang::Es, "fleet", ""), "resume:t-1").is_none());
+    let task = render(&state, &live, Client::Ios, Lang::Es, "task:t-1", "");
+    let resume = find_action(&task, "resume:t-1").expect("a task taken out of the queue resumes by its id");
     assert_eq!((resume.label.as_str(), resume.description.as_deref()), ("Reanudar", Some("Ahora, aunque se pase del límite")));
     let detail = render(&state, &live, Client::Mac, Lang::En, "task:t-1", "");
     assert!(action_ids(&detail).contains(&"resume:t-1".to_owned()), "{:?}", action_ids(&detail));
@@ -5517,13 +5528,7 @@ fn a_task_detail_shows_its_priority_and_offers_the_three_levels() {
     assert!(find_action(&done, "set_priority:").is_none(), "a finished task has no priority to change");
 }
 
-const PACING_GOLDENS: [(&str, &str, Client, Lang); 11] = [
-    ("fleet-pacing-ios.json", "fleet", Client::Ios, Lang::En),
-    ("fleet-pacing-ios-es.json", "fleet", Client::Ios, Lang::Es),
-    ("fleet-pacing-mac.json", "fleet", Client::Mac, Lang::En),
-    ("fleet-pacing-es-mac.json", "fleet", Client::Mac, Lang::Es),
-    ("fleet-pacing-tui.json", "fleet", Client::Tui, Lang::En),
-    ("fleet-pacing-es-tui.json", "fleet", Client::Tui, Lang::Es),
+const PACING_GOLDENS: [(&str, &str, Client, Lang); 5] = [
     ("task-pacing-ios.json", "task:t-queued-next", Client::Ios, Lang::En),
     ("task-pacing-ios-es.json", "task:t-queued-next", Client::Ios, Lang::Es),
     ("machine-settings-ios.json", "machine", Client::Ios, Lang::En),
@@ -5567,12 +5572,6 @@ fn pacing_views_match_goldens() {
     let (state, live) = pacing_fixture();
     for (filename, key, client, lang) in PACING_GOLDENS {
         let expected = match filename {
-            "fleet-pacing-ios.json" => include_str!("../../../../fixtures/views/cards/fleet-pacing-ios.json"),
-            "fleet-pacing-ios-es.json" => include_str!("../../../../fixtures/views/cards/fleet-pacing-ios-es.json"),
-            "fleet-pacing-mac.json" => include_str!("../../../../fixtures/views/cards/fleet-pacing-mac.json"),
-            "fleet-pacing-es-mac.json" => include_str!("../../../../fixtures/views/cards/fleet-pacing-es-mac.json"),
-            "fleet-pacing-tui.json" => include_str!("../../../../fixtures/views/cards/fleet-pacing-tui.json"),
-            "fleet-pacing-es-tui.json" => include_str!("../../../../fixtures/views/cards/fleet-pacing-es-tui.json"),
             "task-pacing-ios.json" => include_str!("../../../../fixtures/views/cards/task-pacing-ios.json"),
             "machine-settings-ios.json" => include_str!("../../../../fixtures/views/cards/machine-settings-ios.json"),
             "machine-settings-ios-es.json" => include_str!("../../../../fixtures/views/cards/machine-settings-ios-es.json"),

@@ -4,11 +4,11 @@
   "view": "card",
   "key": "card:github.com/example/repo#12",
   "client": "ios",
-  "version": "v15ee47f6e012e51f",
+  "version": "v2edf8ef5f24f67dc",
   "cursor": "cursor-1",
   "title": "Add the compact schedule editor",
   "status": {
-    "version": "vca21bf17ff853499",
+    "version": "ve1fd29addaecad00",
     "summary": "2 preguntas · 3 por leer · 0 nodos trabajando",
     "badge": 5,
     "counts": [
@@ -25,7 +25,7 @@
       {
         "id": "agents",
         "label": "Flota",
-        "value": 1
+        "value": 0
       },
       {
         "id": "working",

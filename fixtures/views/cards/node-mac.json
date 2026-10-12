@@ -4,11 +4,11 @@
   "view": "node",
   "key": "node:d887a34b-249e-4487-a89b-57de38c26372",
   "client": "mac",
-  "version": "ve029a4609c959a29",
+  "version": "v40494f0aa75d9caa",
   "cursor": "cursor-1",
   "title": "Alondra · iOS",
   "status": {
-    "version": "v29e230088bd2c22c",
+    "version": "v8f627439edfdda19",
     "summary": "2 questions · 3 to read · 0 nodes working",
     "badge": 5,
     "counts": [
@@ -25,7 +25,7 @@
       {
         "id": "agents",
         "label": "Fleet",
-        "value": 1
+        "value": 0
       },
       {
         "id": "working",

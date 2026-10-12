@@ -4,10 +4,10 @@
   "view": "home",
   "key": "home",
   "client": "tui",
-  "version": "v88b762318a8d2bf8",
+  "version": "ve0553d0714c1fa19",
   "cursor": "cursor-1",
   "status": {
-    "version": "v29e230088bd2c22c",
+    "version": "v8f627439edfdda19",
     "summary": "2 questions · 3 to read · 0 nodes working",
     "badge": 5,
     "counts": [
@@ -24,7 +24,7 @@
       {
         "id": "agents",
         "label": "Fleet",
-        "value": 1
+        "value": 0
       },
       {
         "id": "working",
