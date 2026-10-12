@@ -56,7 +56,7 @@ public struct TasksView: View {
                 ContentUnavailableView {
                     Label("No tasks yet", systemImage: "checklist")
                 } description: {
-                    Text("Ask for something in New: it shows up here at once, and the orchestrator splits it into tasks.")
+                    Text("Ask for something in New: it shows up here at once, split into tasks.")
                 }
                 .padding(.top, 60)
             } else {

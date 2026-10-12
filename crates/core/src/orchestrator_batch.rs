@@ -121,8 +121,8 @@ impl BatchProblem {
             text.push_str(&tf!(lang, "**It had already done:** {done}.\n\n", "**Ya había hecho:** {done}.\n\n", done = done.join(", ")));
         }
         text.push_str(t!(lang,
-            "**How to choose:** if the fleet already shows those tasks or questions, continue without running it again. If you see none of it, run it again from the start.",
-            "**Cómo elegir:** si en la flota ya ves esas tareas o preguntas, sigue sin repetirlo. Si no ves nada de eso, repítelo desde el principio."));
+            "**How to choose:** if Tasks or your inbox already show those tasks or questions, continue without running it again. If you see none of it, run it again from the start.",
+            "**Cómo elegir:** si en Tareas o en tu bandeja ya ves esas tareas o preguntas, sigue sin repetirlo. Si no ves nada de eso, repítelo desde el principio."));
         let error = self.error.trim();
         if !error.is_empty() {
             let shown: String = error.chars().take(ERROR_SHOWN).collect();

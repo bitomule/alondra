@@ -4,7 +4,7 @@
   "view": "tasks",
   "key": "tasks",
   "client": "ios",
-  "version": "v615f1f142e888017",
+  "version": "v309241d50efe742d",
   "cursor": "cursor-1",
   "title": "Tareas",
   "status": {
@@ -280,7 +280,7 @@
               "id": "r-new",
               "icon": "mission",
               "title": "Import lists from Notes",
-              "subtitle": "El orquestador la está dividiendo",
+              "subtitle": "Preparando sus tareas",
               "trailing": {
                 "kind": "time",
                 "at": "2026-09-30T09:59:00.000Z",

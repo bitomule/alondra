@@ -20,7 +20,6 @@ pub(super) enum Act {
     NextScreen,
     PrevScreen,
     NewWork,
-    Orchestrator,
     Schedules,
     CloseSchedules,
     NewSchedule,
@@ -455,7 +454,7 @@ impl App {
         }
         self.screen_action_bindings(t);
         match self.screen {
-            Screen::Inbox => t.add(vec![char('M')], "Shift+M", tr!("orchestrator", "orquestador"), Act::Orchestrator),
+            Screen::Inbox => {}
             Screen::Tasks => t.add(vec![char('s')], "s", tr!("scheduled", "programadas"), Act::Schedules),
             Screen::Fleet => t.add(vec![char('/')], "/", tr!("search", "buscar"), Act::Search),
         }
@@ -468,7 +467,6 @@ impl App {
         t.add(vec![char('n')], "n", tr!("new", "nuevo"), Act::NewWork);
         t.add(vec![char('q')], "q", tr!("quit", "salir"), Act::Quit);
         t.help(vec![plain(KeyCode::BackTab)], "Shift+Tab", tr!("previous screen", "pantalla anterior"), Act::PrevScreen);
-        t.help(vec![char('M')], "Shift+M", tr!("message the orchestrator", "mensaje al orquestador"), Act::Orchestrator);
     }
 
     /// Runs what the table says `key` does now; a key the table does not list does nothing.
@@ -516,10 +514,6 @@ impl App {
             Act::NextScreen => self.switch_screen(),
             Act::PrevScreen => self.switch_screen_back(),
             Act::NewWork => self.compose(Target::Form { view: "new_request".into() }, ""),
-            Act::Orchestrator => {
-                self.compose_orchestrator_on_load = true;
-                self.navigate_view("node:orchestrator");
-            }
             Act::Schedules => {
                 self.schedules_open = true;
                 self.home_view = None;

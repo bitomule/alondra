@@ -97,7 +97,7 @@
                 "items": [
                   {
                     "id": "",
-                    "label": "The orchestrator picks the project"
+                    "label": "Alondra picks the project"
                   },
                   {
                     "id": "Demo Garden",
@@ -140,7 +140,7 @@
                   {
                     "id": "auto",
                     "label": "Auto",
-                    "description": "The orchestrator picks the model and effort from the task"
+                    "description": "Alondra picks the model and effort from the task"
                   },
                   {
                     "id": "light",

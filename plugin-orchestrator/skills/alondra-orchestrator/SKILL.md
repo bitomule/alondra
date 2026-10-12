@@ -14,7 +14,10 @@ resuming the same conversation for the next batch. Handle the batch, then finish
 sleep, keep a background loop alive or wait for the user or the nodes. Terminal questions and
 permission prompts are unavailable; ask the user with Alondra's `ask`. Auto mode may deny an
 operation: tell the user through Alondra instead of working around it. Finishing a batch never
-finishes a task.
+finishes a task. Every request in the batch leaves it with its tasks, an answer given with
+`close_request`, or a question to the user: an answer written only in this conversation reaches
+nobody. A request left with none of the three comes back to you once, and then reaches the user
+as a problem.
 
 On a new conversation, call `fleet` before deciding what remains to do. Requests, tasks,
 questions and results are durable; a new conversation does not mean they need repeating. Keep

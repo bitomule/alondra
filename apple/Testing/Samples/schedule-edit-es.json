@@ -254,7 +254,7 @@
                   {
                     "id": "auto",
                     "label": "Auto",
-                    "description": "El orquestador elige el modelo y el esfuerzo según la tarea"
+                    "description": "Alondra elige el modelo y el esfuerzo según la tarea"
                   },
                   {
                     "id": "light",

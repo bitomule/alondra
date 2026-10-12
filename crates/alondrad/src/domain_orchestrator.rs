@@ -10,6 +10,7 @@ use alondra_core::delivery::State;
 use alondra_core::domain::{Actor, Command, CommandEnvelope, DomainError, DomainState, InteractionId, InteractionPayload, PROTOCOL_VERSION, QuestionOption, Recipient, Scope};
 use alondra_core::now_millis;
 use alondra_core::orchestrator_batch::{BATCH_CONTINUE, BATCH_CONTINUE_LABEL, BATCH_PROBLEM_PREFIX, BATCH_RETRY, BATCH_RETRY_LABEL, BatchProblem, BatchStop};
+use alondra_core::orchestrator_cards::{STUCK_AFTER, STUCK_PROBLEM_PREFIX, STUCK_RETRY, STUCK_RETRY_LABEL, StuckProblem};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -39,6 +40,9 @@ pub(crate) struct Runtime {
     /// Batches whose execution was interrupted or given up: the next run is
     /// told never to replay them.
     pub pending_resolutions: Vec<Resolution>,
+    /// The Problem that tells the user Claude does not start, while it is open.
+    #[serde(default)]
+    pub stuck_problem: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -93,6 +97,7 @@ const PROBLEM_STOP: &str = "stop";
 const SUBJECT_LINE: usize = 120;
 /// A newer batch card replaces an open one.
 const BATCH_CAUSE: &str = "orchestrator_batch";
+const STUCK_CAUSE: &str = "orchestrator_stuck";
 
 pub(crate) struct Executor {
     pub domain: Arc<DomainRuntime>,
@@ -220,7 +225,7 @@ impl Executor {
 
     fn prompt(&self, runtime: &Runtime, resume: bool, projects_root: Option<&Path>, messages: &[OutboxMessage]) -> Result<String> {
         let state = self.domain.state()?;
-        let mut text = String::from("You are Alondra's orchestrator. Load the alondra-orchestrator skill. Process this inbox batch with the Alondra tools; use Alondra ask for user questions. After processing the batch, finish this invocation. Do not wait or poll for future work. The daemon will resume this conversation when there is more work.\n");
+        let mut text = String::from("You are Alondra's orchestrator. Load the alondra-orchestrator skill. Process this inbox batch with the Alondra tools; use Alondra ask for user questions. Every open Request below with no Task of its own leaves this batch with its Tasks, an answer given with close_request, or a question to the user: an answer written only in this conversation reaches nobody. After processing the batch, finish this invocation. Do not wait or poll for future work. The daemon will resume this conversation when there is more work.\n");
         if !runtime.pending_resolutions.is_empty() {
             text.push_str("\nDURABLE RESOLUTION: Previous interrupted inbox batches have already been resolved and are NOT replayed. Do not repeat or continue any of them unless a NEW User message explicitly authorizes it. This does not mean their business actions succeeded. An open Request below with no Task of its own was not turned into work: handle it now, unless fleet shows an open question about it.\n");
         }
@@ -268,6 +273,9 @@ impl Executor {
                 fits
             }).collect();
         if pending.is_empty() && runtime.pending_resolutions.is_empty() {
+            if runtime.last_error.is_none() {
+                crate::orchestrator_inbox::settle(&self.domain);
+            }
             return Ok(());
         }
         let (Some(orchestrator_plugin), Some(node_plugin)) = (
@@ -398,6 +406,9 @@ impl Executor {
             runtime.retry_at = None;
             runtime.consecutive_failures = 0;
             runtime.pending_resolutions.clear();
+            if let Some(problem) = runtime.stuck_problem.take() {
+                let _ = self.domain.withdraw_problem(&InteractionId(problem));
+            }
             return save(&self.home, &runtime);
         }
         let problem = effects(if output.stream.denied { BatchStop::Denied } else { BatchStop::Interrupted });
@@ -453,6 +464,9 @@ impl Executor {
             let delay = 30_000_i64.saturating_mul(1_i64 << runtime.consecutive_failures.min(5));
             runtime.retry_at = Some(now_millis().saturating_add(delay));
             runtime.failure = Some(Failure::Launch);
+            if runtime.consecutive_failures >= STUCK_AFTER && runtime.stuck_problem.is_none() {
+                runtime.stuck_problem = self.raise_stuck_problem(&run.id, runtime.consecutive_failures, runtime.last_error.as_deref().unwrap_or_default());
+            }
             return save(&self.home, &runtime);
         };
         self.finish(run, State::Uncertain, Some("orchestrator_execution_ambiguous"))?;
@@ -460,6 +474,21 @@ impl Executor {
         save(&self.home, &runtime)?;
         self.raise_batch_problem(&run.id, problem, runtime.last_error.as_deref().unwrap_or_default());
         Ok(())
+    }
+
+    /// Claude did not start several times in a row: the user hears of it, with a way to try at once.
+    fn raise_stuck_problem(&self, run_id: &str, failures: u32, error: &str) -> Option<String> {
+        let id = format!("{STUCK_PROBLEM_PREFIX}{run_id}");
+        let problem = StuckProblem { failures, error: error.to_owned() };
+        let (need, why) = problem.text(alondra_core::views::Lang::En);
+        let option = QuestionOption { id: STUCK_RETRY.into(), label: STUCK_RETRY_LABEL.into(), description: None, inputs: vec![] };
+        match self.domain.raise_worded_problem(&id, STUCK_CAUSE, need, why, problem.to_body(), vec![option], Some(STUCK_RETRY)) {
+            Ok(_) => Some(id),
+            Err(error) => {
+                log!("orchestrator: could not tell the user Claude does not start: {error:?}");
+                None
+            }
+        }
     }
 
     /// A batch whose effects are unknown is the user's call: a Problem card with the ways out,
@@ -486,7 +515,18 @@ impl Executor {
     /// Problem whose execution was settled some other way stops waiting.
     pub(crate) fn apply_problem_answers(&self) -> Result<()> {
         let state = self.domain.state()?;
-        let active = load(&self.home)?.active_run.map(|run| run.id);
+        let mut runtime = load(&self.home)?;
+        if let Some(problem) = runtime.stuck_problem.clone()
+            && let Some(interaction) = state.interactions.get(&InteractionId(problem))
+            && (interaction.withdrawn || matches!(&interaction.payload, InteractionPayload::Question { answer: Some(_), .. }))
+        {
+            runtime.stuck_problem = None;
+            if !interaction.withdrawn {
+                runtime.retry_at = None;
+            }
+            save(&self.home, &runtime)?;
+        }
+        let active = runtime.active_run.map(|run| run.id);
         for (id, interaction) in &state.interactions {
             let Some(run_id) = id.0.strip_prefix(PROBLEM_PREFIX) else { continue };
             let InteractionPayload::Question { answer, .. } = &interaction.payload else { continue };
@@ -977,6 +1017,62 @@ printf '%s\n' '{"type":"result","session_id":"'"$session"'","subtype":"success",
         let runtime = load(&f.executor.home).unwrap();
         assert!(runtime.active_run.is_none() && runtime.last_error.is_none() && runtime.session_id.as_deref() == Some("saved"), "{runtime:?}");
         assert!(outbox(domain).is_empty());
+    }
+
+    #[tokio::test]
+    async fn claude_failing_to_start_three_times_in_a_row_tells_the_user_once_and_a_good_run_takes_it_back() {
+        let f = fixture(NO_DEFERRED_MARKER);
+        let domain = &f.executor.domain;
+        ask_orchestrator(domain, 1);
+        let stuck = || domain.state().unwrap().interactions.values()
+            .filter(|i| i.id.0.starts_with(STUCK_PROBLEM_PREFIX) && !i.withdrawn).map(|i| i.id.clone()).collect::<Vec<_>>();
+        let again = || {
+            let mut runtime = load(&f.executor.home).unwrap();
+            runtime.retry_at = None;
+            save(&f.executor.home, &runtime).unwrap();
+        };
+        for failure in 1..=4 {
+            f.executor.tick(&f.ownership).await.unwrap();
+            assert_eq!(stuck().len(), usize::from(failure >= STUCK_AFTER), "after {failure} failed starts");
+            again();
+        }
+        let problem = stuck().remove(0);
+        let state = domain.state().unwrap();
+        let card = &state.interactions[&problem];
+        assert_eq!(card.card.kind, alondra_core::domain::CardKind::Problem);
+        assert_eq!(card.card.recommended.as_deref(), Some(STUCK_RETRY));
+        assert!(StuckProblem::from_body(&card.body).is_some_and(|body| body.failures == STUCK_AFTER), "{}", card.body);
+
+        let script = std::fs::read_to_string(&f.executor.executable).unwrap().replace(NO_DEFERRED_MARKER, SUCCESS);
+        std::fs::write(&f.executor.executable, script).unwrap();
+        f.executor.tick(&f.ownership).await.unwrap();
+        assert!(stuck().is_empty(), "the orchestrator works again: nothing is left for the user");
+        assert!(load(&f.executor.home).unwrap().stuck_problem.is_none());
+    }
+
+    #[tokio::test]
+    async fn trying_again_now_from_the_card_starts_the_orchestrator_without_waiting_for_its_backoff() {
+        let f = fixture(NO_DEFERRED_MARKER);
+        let domain = &f.executor.domain;
+        ask_orchestrator(domain, 1);
+        for _ in 0..STUCK_AFTER {
+            let mut runtime = load(&f.executor.home).unwrap();
+            runtime.retry_at = None;
+            save(&f.executor.home, &runtime).unwrap();
+            f.executor.tick(&f.ownership).await.unwrap();
+        }
+        let runtime = load(&f.executor.home).unwrap();
+        assert!(runtime.retry_at.is_some(), "{runtime:?}");
+        let problem = runtime.stuck_problem.clone().expect("the user was told");
+        let state = domain.state().unwrap();
+        domain.execute(&Actor::User { user_id: "u".into() }, &CommandEnvelope {
+            protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: "retry-now".into(),
+            expected_revision: state.revision,
+            command: Command::AnswerQuestion { attachments: vec![], interaction_id: InteractionId(problem), option_id: STUCK_RETRY.into(), inputs: Default::default() },
+        }, None, || Ok(())).unwrap();
+        f.executor.apply_problem_answers().unwrap();
+        let runtime = load(&f.executor.home).unwrap();
+        assert!(runtime.retry_at.is_none() && runtime.stuck_problem.is_none(), "{runtime:?}");
     }
 
     #[tokio::test]

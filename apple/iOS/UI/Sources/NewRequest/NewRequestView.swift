@@ -21,7 +21,6 @@ public struct NewRequestView: View {
                         .font(.display(.largeTitle, weight: .bold))
                         .foregroundStyle(Palette.ink)
                         .accessibilityAddTraits(.isHeader)
-                    orchestratorStatus
                 }
                 if store.form != nil {
                     editor
@@ -46,18 +45,6 @@ public struct NewRequestView: View {
         .task { await store.send(.task).finish() }
         .actionDialogs(store.scope(state: \.actions, action: \.actions))
         .sensoryFeedback(.success, trigger: store.actions.stamp)
-    }
-
-    @ViewBuilder private var orchestratorStatus: some View {
-        if let orchestrator = store.orchestrator {
-            Label {
-                Text(verbatim: orchestrator.text)
-            } icon: {
-                Image(systemName: "point.3.connected.trianglepath.dotted")
-            }
-            .font(.subheadline)
-            .foregroundStyle(orchestrator.tone == .critical ? Palette.rose : Color.secondary)
-        }
     }
 
     private var editor: some View {
@@ -104,7 +91,7 @@ public struct NewRequestView: View {
                         if let project = store.project {
                             Text(verbatim: project).font(.subheadline.weight(.semibold))
                         } else {
-                            Text("The orchestrator picks the project").font(.subheadline.weight(.semibold))
+                            Text("Alondra picks the project").font(.subheadline.weight(.semibold))
                         }
                         Text(verbatim: store.optionsSummary.joined(separator: " · "))
                             .font(.caption)
@@ -169,7 +156,7 @@ public struct NewRequestView: View {
             store.send(.send)
         } label: {
             Label {
-                Text("Ask the Orchestrator")
+                Text("Send")
             } icon: {
                 Image(systemName: "paperplane.fill")
             }

@@ -4,7 +4,7 @@
   "view": "tasks",
   "key": "tasks?section=finished&after=0",
   "client": "ios",
-  "version": "v989f6dbe513ec4f6",
+  "version": "v5aaf262014ae5355",
   "cursor": "cursor-1",
   "title": "Tasks",
   "status": {
@@ -280,7 +280,7 @@
               "id": "r-new",
               "icon": "mission",
               "title": "Import lists from Notes",
-              "subtitle": "The orchestrator is splitting it",
+              "subtitle": "Preparing its tasks",
               "trailing": {
                 "kind": "time",
                 "at": "2026-09-30T09:59:00.000Z",

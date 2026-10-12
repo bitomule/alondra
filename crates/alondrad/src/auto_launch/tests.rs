@@ -612,7 +612,7 @@ async fn a_cancelled_dependency_asks_the_user_once_and_starting_without_it_start
     let card = problem(&f, "f1").expect("the user decides");
     assert_eq!(card.card.need, "“Task f0” was cancelled: start “Task f1” without it?");
     assert_eq!(f.domain.state().unwrap().interactions.keys().filter(|id| id.0.starts_with("start-problem-f1")).count(), 1);
-    assert_eq!(told(&f).iter().filter(|id| id.as_str() == "dependency-cancelled-f1-f0").count(), 1);
+    assert!(!told(&f).iter().any(|id| id.starts_with("dependency-cancelled-")), "the user has the card; the orchestrator has nothing to do");
 
     answer(&f, &card.id, alondra_core::domain::START_WITHOUT);
     pass(&f.domain, &f.home, &claude).await.unwrap();

@@ -114,9 +114,6 @@ pub(crate) async fn react(domain: &DomainRuntime, home: &Path, launcher: &impl c
     for reaction in state.react(&facts) {
         match reaction {
             Reaction::Ask(task, problem) => {
-                if let StartProblem::DependencyCancelled { dependency } = &problem {
-                    tell_dependency_cancelled(domain, &state, &task, dependency);
-                }
                 raise(domain, &task, problem)?;
             }
             Reaction::Retry(task) => retry(domain, home, &task, facts.get(&task).is_some_and(|f| f.closed), launcher).await?,
@@ -156,15 +153,5 @@ async fn retry(domain: &DomainRuntime, home: &Path, task: &TaskId, closed: bool,
         _ => {}
     }
     Ok(())
-}
-
-fn tell_dependency_cancelled(domain: &DomainRuntime, state: &DomainState, task: &TaskId, dependency: &TaskId) {
-    let title = |id: &TaskId| state.tasks.get(id).map_or_else(|| id.0.clone(), |task| task.title.clone());
-    let id = format!("dependency-cancelled-{task}-{dependency}");
-    if let Err(error) = domain.tell_orchestrator(&id, format!(
-        "“{}” was cancelled, so “{}” ({task}), which depends on it, cannot start. The user has a card to start it without it or cancel it.",
-        title(dependency), title(task))) {
-        log!("could not tell the orchestrator about {id}: {error:?}");
-    }
 }
 

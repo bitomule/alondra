@@ -25,7 +25,6 @@ public struct NewRequestFeature: Sendable {
             }.first
         }
 
-        public var orchestrator: AlondraContract.Label? { screen.document?.status.orchestrator }
 
         public var text: String {
             guard case .string(let text)? = values["text"] else { return "" }
@@ -41,7 +40,7 @@ public struct NewRequestFeature: Sendable {
             form?.fields.filter { $0.id != "text" && $0.id != "attachments" } ?? []
         }
 
-        /// The project the request goes to; `nil` leaves the choice to the orchestrator.
+        /// The project the request goes to; `nil` leaves the choice to Alondra.
         public var project: String? {
             guard case .string(let id)? = values["project"], !id.isEmpty else { return nil }
             return choiceLabel("project", id: id)

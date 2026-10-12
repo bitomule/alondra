@@ -13,8 +13,8 @@ struct NodeRow: View {
         Button { if let link = node.link { open(link) } } label: {
             VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 8) {
-                    Glyph(symbol: node.isOrchestrator ? "point.3.connected.trianglepath.dotted" : NodeStyle.symbol(tone: node.state?.tone),
-                          tint: tint, size: .small, pulse: !node.isOrchestrator && node.state?.tone == .info)
+                    Glyph(symbol: NodeStyle.symbol(tone: node.state?.tone),
+                          tint: tint, size: .small, pulse: node.state?.tone == .info)
                     if let state = node.stamp ?? node.state?.text {
                         Text(state).font(.caption.weight(.semibold)).foregroundStyle(tint).lineLimit(1)
                     }
@@ -74,6 +74,6 @@ struct NodeRow: View {
     }
 
     private var tint: Color {
-        node.isOrchestrator ? Palette.ember : NodeStyle.tint(tone: node.state?.tone)
+        NodeStyle.tint(tone: node.state?.tone)
     }
 }

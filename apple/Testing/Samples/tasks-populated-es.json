@@ -49,7 +49,7 @@
           "title": "En Alondra la tarea que se ejecutaba esta noche se ha quedado atascada, ¿qué ha fallado? Mira el log del orquestador y el nodo",
           "depth": 0,
           "struck": false,
-          "subtitle": "El orquestador la está dividiendo",
+          "subtitle": "Preparando sus tareas",
           "trailing": {
             "kind": "time",
             "at": "2025-12-31T23:58:00.000Z",

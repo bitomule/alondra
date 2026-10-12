@@ -32,7 +32,6 @@ final class FleetFeatureTests: XCTestCase {
     func testReadsEachNodeAsItsTaskAndItsStateByProject() throws {
         let overview = FleetOverview(document: try Fixtures.document("fleet-ios"))
 
-        XCTAssertNil(overview.orchestrator, "the orchestrator is not a node of the fleet")
         XCTAssertEqual(overview.groups.map(\.title), ["Demo Garden", "Zeta", "Alpha"], "nodes whose sessions closed are not listed")
         XCTAssertEqual(overview.groups.map(\.collapsed), [false, false, false])
         XCTAssertEqual(overview.groups.first?.count, 2)

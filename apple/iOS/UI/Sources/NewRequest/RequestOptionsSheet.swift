@@ -44,7 +44,7 @@ public struct RequestOptionsSheet: View {
                     if let label = store.projectLabel {
                         Text(verbatim: label)
                     } else {
-                        Text("The orchestrator picks")
+                        Text("Alondra picks")
                     }
                 }
             }

@@ -89,9 +89,6 @@ public struct NodeDetailView: View {
                         }
                     }
                 }
-                if let failure = detail.failure {
-                    NodeSection(title: "What went wrong", symbol: "exclamationmark.triangle") { MarkdownView(markdown: failure) }
-                }
                 if let needs = detail.needs {
                     NodeSection(title: "Needs", symbol: "hand.raised") { MarkdownView(markdown: needs) }
                 }
@@ -103,10 +100,8 @@ public struct NodeDetailView: View {
                     NodeSection(title: "What it said last", symbol: "text.quote", at: detail.lastMessageAt,
                                 format: detail.lastMessageFormat) { MarkdownView(markdown: message) }
                 }
-                if !detail.orchestratorActions.isEmpty { orchestratorActions(detail.orchestratorActions) }
             }
             .padding(20)
-            .animation(.smooth, value: detail.orchestratorActions.isEmpty)
         }
         .scrollDismissesKeyboard(.interactively)
         .safeAreaBar(edge: .bottom) { if detail.message != nil { composer(detail) } }
@@ -115,8 +110,8 @@ public struct NodeDetailView: View {
     private func header(_ detail: NodeDetail) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 10) {
-                let tint = store.isOrchestrator ? Palette.sky : NodeStyle.tint(tone: detail.stateTone)
-                Glyph(symbol: store.isOrchestrator ? "point.3.connected.trianglepath.dotted" : NodeStyle.symbol(tone: detail.stateTone),
+                let tint = NodeStyle.tint(tone: detail.stateTone)
+                Glyph(symbol: NodeStyle.symbol(tone: detail.stateTone),
                       tint: tint, size: .small)
                 if let state = detail.state {
                     Text(state.prefix(1).uppercased() + state.dropFirst())
@@ -191,21 +186,6 @@ public struct NodeDetailView: View {
                 }
             }
         }
-    }
-
-    private func orchestratorActions(_ actions: [WireAction]) -> some View {
-        VStack(spacing: 8) {
-            ForEach(actions, id: \.id) { action in
-                Button(role: action.style == .destructive ? .destructive : nil) {
-                    store.send(.perform(action))
-                } label: {
-                    Text(action.label).frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.glass)
-                .disabled(!action.enabled)
-            }
-        }
-        .controlSize(.large).buttonBorderShape(.capsule)
     }
 
     private func composer(_ detail: NodeDetail) -> some View {

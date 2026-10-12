@@ -180,7 +180,7 @@ impl DomainRuntime {
         })
     }
 
-    fn execute_as_system(&self, mut envelope: CommandEnvelope) -> Result<CommandOutcome, StoreError> {
+    pub(super) fn execute_as_system(&self, mut envelope: CommandEnvelope) -> Result<CommandOutcome, StoreError> {
         for _ in 0..5 {
             match self.execute(&Actor::System, &envelope, None, || Ok(())) {
                 Err(StoreError::Domain(error)) if error.code == "stale_revision" => {

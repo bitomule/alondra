@@ -231,7 +231,7 @@ fn builtins() -> [Spec; 2] {
             label: "Effort".into(),
             kind: Kind::Choice,
             values: vec![
-                v(AUTO, "auto", "The orchestrator picks the model and effort from the task"),
+                v(AUTO, "auto", "Alondra picks the model and effort from the task"),
                 v("light", "light", "A quick, cheaper model for small, clear work"),
                 v("normal", "normal", "Claude's default model and effort"),
                 v("hard", "hard", "The strongest model and the most effort"),

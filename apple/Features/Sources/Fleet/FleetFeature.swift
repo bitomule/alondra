@@ -3,7 +3,7 @@ import AlondraFeed
 import ComposableArchitecture
 import Foundation
 
-/// The Fleet tab: the orchestrator, the fleet's pace, every node grouped by project, a search the
+/// The Fleet tab: every node grouped by project, a search the
 /// daemon answers, and the actions the daemon offers: interrupting, pausing, resuming or closing a
 /// node, and changing how many work at once. A closed node leaves the list at once and returns if
 /// the daemon does not close it.

@@ -227,9 +227,7 @@
     "document: %@": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "documento: %@"}}}},
     "question: %@": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "pregunta: %@"}}}},
     "waits for PR #%@ to be merged": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "espera a que se fusione el PR #%@"}}}},
-    "the orchestrator is splitting it": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "el orquestador la está dividiendo"}}}},
     "finished without tasks": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "terminada sin tareas"}}}},
-    "The orchestrator is splitting it into tasks.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "El orquestador la está dividiendo en tareas."}}}},
     "Ask for more context": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Pedir más contexto"}}}},
     "No longer pending": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Ya no está pendiente"}}}},
     "This was already handled or changed. Open Alondra to see where it stands.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Ya se había resuelto o ha cambiado. Abre Alondra para ver en qué punto está."}}}},
@@ -2566,12 +2564,12 @@
         }
       }
     },
-    "The orchestrator picks the project": {
+    "Alondra picks the project": {
       "localizations": {
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "El orquestador elige el proyecto"
+            "value": "Alondra elige el proyecto"
           }
         }
       }
@@ -2586,7 +2584,7 @@
         }
       }
     },
-    "The orchestrator picks": {
+    "Alondra picks": {
       "localizations": {
         "es": {
           "stringUnit": {
@@ -2816,12 +2814,12 @@
         }
       }
     },
-    "Ask for something in New: it shows up here at once, and the orchestrator splits it into tasks.": {
+    "Ask for something in New: it shows up here at once, split into tasks.": {
       "localizations": {
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Pide algo en Nuevo: sale aquí al momento y el orquestador lo reparte en tareas."
+            "value": "Pide algo en Nuevo: sale aquí al momento, repartido en tareas."
           }
         }
       }

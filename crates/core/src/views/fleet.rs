@@ -412,10 +412,24 @@ fn project_of(agent: &AgentId, context: &RenderContext<'_>) -> String {
         .into()
 }
 
+/// Where the CLI posts maintenance for the orchestrator: only the message action, and no screen
+/// links to it, because the orchestrator is Alondra's own.
+fn orchestrator_inbox(id: &str, context: &RenderContext<'_>) -> View {
+    let mut view = common::view("node", &format!("node:{id}"), Some("Alondra".into()), context, vec![]);
+    if let Some(mut message) = common::action(Verb::Msg, "view", context.domain.revision,
+        t!(context.lang, "Message", "Mensaje"), Style::Primary) {
+        message.input = super::Input::Text { placeholder: t!(context.lang, "Write to Alondra…", "Escribe a Alondra…").into(),
+            required: true, multiline: true };
+        message.attachments = true;
+        view.sections.push(common::section("actions", None, vec![Item::Actions(super::ActionBar { actions: vec![message] })]));
+    }
+    view
+}
+
 pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, BuildError> {
     common::id(id)?;
     if let crate::domain::Target::Orchestrator(_) = context.domain.resolve_target(id) {
-        return orchestrator(id, context);
+        return Ok(orchestrator_inbox(id, context));
     }
     let agent = context
         .domain
@@ -640,105 +654,3 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
     Ok(view)
 }
 
-fn orchestrator(id: &str, context: &RenderContext<'_>) -> Result<View, BuildError> {
-    let mut view = common::view(
-        "node",
-        &format!("node:{id}"),
-        Some(t!(context.lang, "Orchestrator", "Orquestador").into()),
-        context,
-        vec![],
-    );
-    let live = context.live.orchestrator.as_ref();
-    let state = common::orchestrator_label(context);
-    view.sections.push(common::section(
-        "header",
-        None,
-        vec![Item::Facts(Facts {
-            items: vec![Fact {
-                label: t!(context.lang, "State", "Estado").into(),
-                value: state.text,
-                tone: Some(state.tone),
-                link: None,
-            }, Fact {
-                label: t!(context.lang, "Queued messages", "Mensajes en cola").into(),
-                value: live.map_or(0, |o| o.queue_depth).to_string(),
-                tone: None,
-                link: None,
-            }].into_iter().chain(context.domain.orchestrator_session.as_ref().map(|session| Fact {
-                label: t!(context.lang, "Session", "Sesión").into(),
-                value: session.0.clone(),
-                tone: None,
-                link: None,
-            })).collect(),
-        })],
-    ));
-    if let Some(failure) = common::orchestrator_failure(context) {
-        view.sections.push(common::section(
-            "failure",
-            None,
-            vec![Item::Markdown(Markdown {
-                text: failure,
-                truncated: false,
-                more: None,
-                commentable: false,
-            })],
-        ));
-    }
-    let mut actions = Vec::new();
-    if let Some(mut message) = common::action(Verb::Msg, "view", context.domain.revision,
-        t!(context.lang, "Message", "Mensaje"), Style::Primary) {
-        message.key = (context.client == super::Client::Tui).then(|| "r".into());
-        message.input = super::Input::Text { placeholder: t!(context.lang, "Write to the orchestrator…", "Escribe al orquestador…").into(),
-            required: true, multiline: true };
-        message.attachments = true;
-        actions.push(message);
-    }
-    actions.extend(orchestrator_decisions(context));
-    view.sections.push(common::section("actions", None, vec![Item::Actions(super::ActionBar { actions })]));
-    Ok(view)
-}
-
-/// What the user can do with the orchestrator's current run: retry or continue past a failed
-/// one, or stop one in progress.
-pub(super) fn orchestrator_decisions(context: &RenderContext<'_>) -> Vec<super::Action> {
-    let live = context.live.orchestrator.as_ref();
-    let mut actions = Vec::new();
-    if let Some(run) = live.and_then(|o| o.active_run_id.as_deref()) {
-        for (enabled, verb, label) in [
-            (live.is_some_and(|o| o.can_retry), Verb::OrchRetry, t!(context.lang, "Retry", "Reintentar")),
-            (live.is_some_and(|o| o.can_retry), Verb::OrchAck, t!(context.lang, "Continue without repeating", "Continuar sin repetir")),
-            (live.is_some_and(|o| o.can_cancel), Verb::OrchStop, t!(context.lang, "Stop", "Detener")),
-        ] {
-            if !enabled { continue; }
-            let style = if verb == Verb::OrchStop { Style::Destructive } else { Style::Secondary };
-            if let Some(mut action) = common::action(verb, "orchestrator", context.domain.revision, label, style) {
-                action.key = (context.client == super::Client::Tui).then(|| match verb {
-                    Verb::OrchRetry => "R",
-                    Verb::OrchAck => "C",
-                    _ => "S",
-                }.into());
-                match super::action_id::ActionId::new(verb, "orchestrator", context.domain.revision, Some(run.into())) {
-                    Ok(id) => {
-                    action.id = id.to_string();
-                    let confirmation = match verb {
-                        Verb::OrchRetry => t!(context.lang,
-                            "Some actions may already have completed. Check the activity and tasks before retrying to avoid repeating work.",
-                            "Puede que algunas acciones ya se hayan completado. Revisa la actividad y las tareas antes de reintentarlo para evitar repetir trabajo."),
-                        Verb::OrchAck => t!(context.lang,
-                            "The interrupted work will not be repeated. Check what was completed first; pending messages will continue.",
-                            "El trabajo interrumpido no se repetirá. Revisa primero qué se completó; los mensajes pendientes continuarán."),
-                        Verb::OrchStop => t!(context.lang,
-                            "Actions already completed will not be undone. You can review the result before continuing.",
-                            "Las acciones ya completadas no se desharán. Puedes revisar el resultado antes de continuar."),
-                        _ => unreachable!(),
-                    };
-                    action.confirm = Some(Confirm { title: label.into(), message: confirmation.into(), button: label.into() });
-                    actions.push(action);
-                    }
-                    Err(_) => eprintln!("Alondra omitted an action with an invalid identifier ({verb:?})"),
-                }
-            }
-        }
-    }
-    actions
-}

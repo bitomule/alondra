@@ -543,8 +543,8 @@ fn empty_list(app: &App) -> Vec<Line<'static>> {
             Line::from(tr!("No tasks yet", "Aún no hay tareas").fg(DIM).bold()),
             Line::from(
                 tr!(
-                    "What you ask for shows up here at once, and the orchestrator splits it into tasks.",
-                    "Lo que pidas sale aquí al momento y el orquestador lo reparte en tareas."
+                    "What you ask for shows up here at once, split into tasks.",
+                    "Lo que pidas sale aquí al momento, repartido en tareas."
                 )
                 .fg(DIM),
             ),
@@ -1290,8 +1290,8 @@ fn draw_composer(f: &mut Frame, app: &App, area: Rect, preview_h: u16) -> Option
             }
         }
         Target::Form { view } if view.starts_with("new_request") => tr!(
-            "New work: the orchestrator turns it into tasks",
-            "Trabajo nuevo: el orquestador lo convierte en tareas"
+            "New work: Alondra turns it into tasks",
+            "Trabajo nuevo: Alondra lo convierte en tareas"
         )
         .into(),
         Target::Form { .. } => c

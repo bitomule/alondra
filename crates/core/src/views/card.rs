@@ -273,7 +273,7 @@ fn node_name(item: &InboxItem, context: &RenderContext<'_>) -> String {
     match &item.agent_id {
         Some(agent_id) => super::common::agent_label(agent_id, context),
         None if item.task_id.is_some() => t!(context.lang, "this node", "este nodo").into(),
-        None => t!(context.lang, "the orchestrator", "el orquestador").into(),
+        None => "Alondra".into(),
     }
 }
 
@@ -327,12 +327,17 @@ fn blocked_reason(item: &InboxItem, context: &RenderContext<'_>) -> Option<Strin
 
 fn meta_line(item: &InboxItem, interaction: Option<&Interaction>, context: &RenderContext<'_>) -> Option<String> {
     let lang = context.lang;
+    let request_title = || interaction.and_then(|i| match &i.scope {
+        Scope::Orchestrator { request_id: Some(request) } => context.domain.requests.get(request).map(|request|
+            request.title.clone().unwrap_or_else(|| super::tasks::summary(&request.body))),
+        _ => None,
+    });
     let who: String = match interaction.map(|i| &i.author) {
         Some(Author::System) => "Alondra".into(),
-        Some(Author::Orchestrator { .. }) => t!(lang, "Orchestrator", "Orquestador").into(),
+        Some(Author::Orchestrator { .. }) => request_title().unwrap_or_else(|| "Alondra".into()),
         _ => match &item.agent_id {
             Some(agent_id) => super::common::agent_label(agent_id, context),
-            None => t!(lang, "Orchestrator", "Orquestador").into(),
+            None => request_title().unwrap_or_else(|| "Alondra".into()),
         },
     };
     let project = item.agent_id.as_ref().and_then(|agent_id| {
@@ -811,6 +816,12 @@ fn pace_text(interaction: &Interaction, domain: &DomainState, lang: Lang) -> Opt
     if interaction.id.0.starts_with(crate::orchestrator_batch::BATCH_PROBLEM_PREFIX) {
         return crate::orchestrator_batch::BatchProblem::from_body(&interaction.body).map(|card| card.text(lang));
     }
+    if interaction.id.0.starts_with(crate::orchestrator_cards::STUCK_PROBLEM_PREFIX) {
+        return crate::orchestrator_cards::StuckProblem::from_body(&interaction.body).map(|card| card.text(lang));
+    }
+    if interaction.id.0.starts_with(crate::orchestrator_cards::UNSPLIT_PROBLEM_PREFIX) {
+        return crate::orchestrator_cards::UnsplitProblem::from_body(&interaction.body).map(|card| card.text(lang));
+    }
     if interaction.id.0.starts_with(crate::close_problem::CLOSE_PROBLEM_PREFIX)
         && let Some(card) = crate::close_problem::CloseProblem::from_body(&interaction.body)
     {
@@ -843,6 +854,9 @@ fn fixed_option_text(interaction: &Interaction, option: &QuestionOption, lang: L
     if let Some((label, description)) = crate::close_problem::option_text(&option.id, &option.label, lang) {
         return (label.into(), Some(description.into()));
     }
+    if let Some((label, description)) = crate::orchestrator_cards::option_text(&option.id, &option.label, lang) {
+        return (label.into(), Some(description.into()));
+    }
     let (label, description): (&str, Option<&str>) = match (option.id.as_str(), option.label.as_str()) {
         ("pause_until_tomorrow", "Pause until tomorrow") => (
             t!(lang, "Pause until tomorrow", "Pausar hasta mañana"),
@@ -872,8 +886,8 @@ fn fixed_option_text(interaction: &Interaction, option: &QuestionOption, lang: L
         (crate::orchestrator_batch::BATCH_RETRY, crate::orchestrator_batch::BATCH_RETRY_LABEL) => (
             t!(lang, "Run it again from the start", "Repetirlo desde el principio"),
             Some(t!(lang,
-                "It handles the same messages again. Choose it only if the fleet shows none of what it did; otherwise it is done twice.",
-                "Vuelve a atender los mismos mensajes. Elígelo solo si en la flota no ves nada de lo que hizo; si no, se hará dos veces.")),
+                "It handles the same messages again. Choose it only if Tasks shows none of what it did; otherwise it is done twice.",
+                "Vuelve a atender los mismos mensajes. Elígelo solo si en Tareas no ves nada de lo que hizo; si no, se hará dos veces.")),
         ),
         _ => return (option.label.clone(), option.description.clone()),
     };
@@ -1246,7 +1260,7 @@ fn reply_action(item: &InboxItem, interaction: Option<&Interaction>, context: &R
     } else {
         (
             action_id(Verb::Msg, "view", context.domain.revision, None)?,
-            t!(lang, "Reply to the orchestrator…", "Responder al orquestador…").into(),
+            t!(lang, "Reply…", "Responder…").into(),
         )
     };
     let mut action = button(id.to_string(), t!(lang, "Reply", "Responder"), Role::Neutral);
@@ -1306,6 +1320,16 @@ fn content_items(item: &InboxItem, context: &RenderContext<'_>) -> Vec<Item> {
     }
     if let Some(content) = start_problem_card(interaction, domain, lang).and_then(|card| card.content) {
         out.push(markdown(content.body));
+        return out;
+    }
+    if interaction.author == Author::System
+        && interaction.id.0.starts_with(crate::orchestrator_cards::STUCK_PROBLEM_PREFIX)
+        && let Some(card) = crate::orchestrator_cards::StuckProblem::from_body(&interaction.body)
+    {
+        let detail = card.detail(lang);
+        if !detail.is_empty() {
+            out.push(markdown(detail));
+        }
         return out;
     }
     if interaction.author == Author::System

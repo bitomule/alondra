@@ -341,9 +341,9 @@ fn task_actions_have_unique_keys_and_hide_what_does_not_apply() {
 }
 
 #[test]
-fn every_node_and_orchestrator_action_has_its_own_key() {
+fn every_node_action_has_its_own_key() {
     let (domain, live) = busy();
-    for key in ["node:a-3", "node:a-0", "node:orchestrator"] {
+    for key in ["node:a-3", "node:a-0"] {
         let actions = view_render::actions(&build(&domain, &live, key));
         assert!(!actions.is_empty(), "{key}");
         let keys: Vec<&str> = actions.iter().map(view_render::action_hint).collect();

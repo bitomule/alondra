@@ -588,30 +588,12 @@ fn schedule_row_keys_post_the_selected_views_action() {
 }
 
 #[test]
-fn global_message_key_opens_the_orchestrator_views_composer() {
+fn no_key_opens_the_orchestrator() {
     let (tx, _rx) = std::sync::mpsc::sync_channel(8);
     let mut app = App::new(tx);
     press(&mut app, KeyCode::Char('M'));
-    assert_eq!(
-        app.view_navigation.last().map(String::as_str),
-        Some("node:orchestrator")
-    );
-    let mut view = view_fixture("card-question.json");
-    view["key"] = serde_json::json!("node:orchestrator");
-    untyped(&mut view);
-    view["sections"][0]["items"][0]["actions"] = serde_json::json!([{
-        "id": "msg:view@1", "label": "Message", "style": "primary",
-        "presentation": "button", "input": {"kind": "text", "placeholder": "Write", "required": true, "multiline": true},
-        "attachments": true, "enabled": true, "key": "M"
-    }]);
-    app.on_msg(Msg::ViewCard {
-        key: "node:orchestrator".into(),
-        result: Ok(serde_json::from_value(view).unwrap()),
-    });
-    assert!(
-        matches!(app.composer.as_ref().map(|composer| &composer.target),
-        Some(Target::ViewAction { action_id, .. }) if action_id == "msg:view@1")
-    );
+    assert!(!app.view_navigation.iter().any(|key| key.contains("orchestrator")), "{:?}", app.view_navigation);
+    assert!(app.composer.is_none());
 }
 
 #[test]
@@ -919,7 +901,7 @@ fn n_opens_the_new_work_composer_with_the_servers_rows() {
     app.on_msg(form_msg("new_request", "new-request-ios.json"));
     let shown = screen(&mut app, 100, 24);
     for expected in [
-        "New work", "Project", "The orchestrator picks the project", "Issue", "none", "PRs",
+        "New work", "Project", "Alondra picks the project", "Issue", "none", "PRs",
         "Review each one", "Effort", "Auto", "Tab",
     ] {
         assert!(shown.contains(expected), "{expected} missing from {shown}");

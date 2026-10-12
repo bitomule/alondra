@@ -254,7 +254,7 @@
                   {
                     "id": "auto",
                     "label": "Auto",
-                    "description": "The orchestrator picks the model and effort from the task"
+                    "description": "Alondra picks the model and effort from the task"
                   },
                   {
                     "id": "light",

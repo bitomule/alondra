@@ -783,6 +783,7 @@ mod producer_revision_tests {
 }
 
 mod capabilities;
+mod inbox;
 mod problems;
 mod rejections;
 

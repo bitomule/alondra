@@ -244,7 +244,7 @@ struct ViewsScreenView: View {
                     } else if isInlineForm, let form = store.form {
                         if isNewRequestScreen {
                             Button { store.send(.action(.submit)) } label: {
-                                Label(store.action.inFlight ? String(localized: "Sending…") : String(localized: "Ask the Orchestrator"),
+                                Label(store.action.inFlight ? String(localized: "Sending…") : String(localized: "Send"),
                                       systemImage: "paperplane.fill")
                                     .font(.headline).frame(maxWidth: .infinity)
                             }

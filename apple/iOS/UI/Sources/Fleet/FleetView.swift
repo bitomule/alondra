@@ -4,7 +4,7 @@ import AlondraFeatures
 import ComposableArchitecture
 import SwiftUI
 
-/// The Fleet tab: the machine, the orchestrator, then every node grouped by project. Search is
+/// The Fleet tab: the pace of the fleet, then every node grouped by project. Search is
 /// answered by the daemon; a node closes from its row.
 public struct FleetView: View {
     @Bindable var store: StoreOf<FleetFeature>
@@ -41,13 +41,6 @@ public struct FleetView: View {
                     .font(.footnote.weight(.medium)).foregroundStyle(.secondary)
                     .listRowBackground(Rectangle().fill(.thinMaterial))
                     .accessibilityIdentifier("fleet.savedDataConnectionLost")
-            }
-            if let orchestrator = overview.orchestrator {
-                Section {
-                    NodeRow(node: orchestrator, open: { store.send(.follow($0)) })
-                        .listRowBackground(Palette.ember.opacity(0.12))
-                }
-                .listSectionSpacing(.compact)
             }
             ForEach(overview.groups) { group in
                 let shown = !group.collapsed || opened.contains(group.id)

@@ -49,7 +49,7 @@
           "title": "In Alondra the task that was running tonight got stuck, what failed? Look at the orchestrator log and the node that ran it",
           "depth": 0,
           "struck": false,
-          "subtitle": "The orchestrator is splitting it",
+          "subtitle": "Preparing its tasks",
           "trailing": {
             "kind": "time",
             "at": "2025-12-31T23:58:00.000Z",

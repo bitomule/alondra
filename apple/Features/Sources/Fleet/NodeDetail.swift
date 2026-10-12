@@ -21,8 +21,6 @@ public struct NodeDetail: Equatable, Sendable {
     public var tasks: [Row] = []
     public var needs: Markdown?
     public var summary: Markdown?
-    /// Why the orchestrator's last run failed, in the user's words.
-    public var failure: Markdown?
     public var lastMessage: Markdown?
     public var lastMessageAt: String?
     public var lastMessageFormat = TimeFormat.relative
@@ -33,7 +31,6 @@ public struct NodeDetail: Equatable, Sendable {
     public var pause: WireAction?
     public var resume: WireAction?
     public var close: WireAction?
-    public var orchestratorActions: [WireAction] = []
     public var facts: [Fact] = []
     /// What the node mod reports: reachability, the tool it runs, its last turn, context and cost.
     public var readings: [Fact] = []
@@ -55,7 +52,6 @@ public struct NodeDetail: Equatable, Sendable {
             case "tasks": tasks = Self.rows(items)
             case "needs": needs = Self.markdown(items)
             case "summary": summary = Self.markdown(items)
-            case "failure": failure = Self.markdown(items)
             case "last_message":
                 lastMessage = Self.markdown(items)
                 if let time = Self.rows(items).compactMap(\.time).first {
@@ -70,23 +66,12 @@ public struct NodeDetail: Equatable, Sendable {
         }
     }
 
-    /// The node as it is after what was just sent: an orchestrator decision taken here leaves the
-    /// screen and the state says what happens next.
+    /// The node as it is after what was just sent: a paused or resumed node says so at once.
     public func hiding(_ optimistic: Optimistic) -> NodeDetail {
-        if let sent = [pause, resume].compactMap({ $0 }).first(where: { optimistic.hides($0.id) }) {
-            var detail = self
-            (detail.pause, detail.resume, detail.interrupt) = (nil, nil, nil)
-            detail.state = sent.stamp ?? detail.state
-            return detail
-        }
-        guard let taken = orchestratorActions.first(where: { optimistic.hides($0.id) }) else { return self }
+        guard let sent = [pause, resume].compactMap({ $0 }).first(where: { optimistic.hides($0.id) }) else { return self }
         var detail = self
-        detail.orchestratorActions = []
-        detail.state = switch taken.command {
-        case "orch_retry": String(localized: "Retrying")
-        case "orch_stop": String(localized: "Stopping")
-        default: String(localized: "Continuing")
-        }
+        (detail.pause, detail.resume, detail.interrupt) = (nil, nil, nil)
+        detail.state = sent.stamp ?? detail.state
         return detail
     }
 
@@ -98,7 +83,6 @@ public struct NodeDetail: Equatable, Sendable {
             case "pause": pause = action
             case "resume": resume = action
             case "close": close = action
-            case "orch_retry", "orch_ack", "orch_stop": orchestratorActions.append(action)
             default: break
             }
         }

@@ -225,7 +225,7 @@ fn relay(master: &Fd, mut ws: libc::winsize, child: &mut Child, over: Over, unti
 
 pub fn attach(short_id: &str, over: Over) -> Result<()> {
     if short_id == "alondra-orchestrator" {
-        bail!("{}", tr!("Alondra manages the orchestrator automatically. Open its activity in the fleet.", "Alondra gestiona el orquestador automáticamente. Abre su actividad en la flota."));
+        bail!("{}", tr!("Alondra manages the orchestrator automatically", "Alondra gestiona el orquestador automáticamente"));
     }
     let (master, slave, ws) = open_pty()?;
     let mut cmd = Command::new("claude");

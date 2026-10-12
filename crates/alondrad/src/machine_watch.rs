@@ -1,6 +1,6 @@
 //! What the daemon does when the Mac stops nodes: the disk nearly full, or a node that declared
 //! with `wait_for_machine` that it waits for the machine. One incident at a
-//! time puts one Problem in front of the user, tells the orchestrator, reminds once after
+//! time puts one Problem in front of the user, reminds once after
 //! `REMIND_AFTER_MS` and, once the Mac recovers, withdraws the card. The nodes that waited are not
 //! woken here: they wait paused at the fleet gate, which brings them back one at a time within the
 //! limit (`fleet_pause`). A disk below `disk::low_line()` opens an incident before any node fails,
@@ -8,8 +8,9 @@
 //! was launched on, so a repository on an external disk is watched too.
 //!
 //! Memory opens no incident: the user can do nothing about it that Alondra does not do already.
-//! `pace` holds launches, pauses nodes and resumes them as the Mac's memory comes and goes, and
-//! only the orchestrator hears of it.
+//! `pace` holds launches, pauses nodes and resumes them as the Mac's memory comes and goes. The
+//! orchestrator hears of neither: it has nothing to do about the machine, and `launch` says why a
+//! task is queued.
 //!
 //! With the disk full the domain may not be able to write the card, so the user then hears it by
 //! a push, which writes nothing to disk.
@@ -87,7 +88,6 @@ pub(crate) enum Action {
     Raise { id: String, card: MachineCard },
     Withdraw(String),
     Push(MachineCard),
-    TellOrchestrator(String),
     /// The incident is over: its declared waits are left to the fleet gate.
     Release(Vec<String>),
 }
@@ -121,24 +121,6 @@ pub(crate) fn failing(machine: &Machine, previous: Option<MachineCause>) -> Opti
     (machine.disk_total > 0 && machine.disk_available < line).then_some(MachineCause::Disk)
 }
 
-/// What the orchestrator hears when memory changes for real: entering pressure and being Fine
-/// again, never the swings between Tight and AtLimit.
-pub(crate) fn pacing_notice(from: Health, to: Health, mac: &MacState) -> Option<String> {
-    let free = mac.free_percent.map(|free| format!(" ({free}% free)")).unwrap_or_default();
-    let free = match mac.pressure {
-        _ if to == Health::Fine => free,
-        Some(MemoryPressure::Warning | MemoryPressure::Critical) => format!("{free}, and macOS reports memory pressure"),
-        _ if mac.near_pressure => format!("{free}, and memory is about to reach macOS memory pressure"),
-        _ => free,
-    };
-    match (from, to) {
-        (Health::Fine, _) => Some(format!(
-            "The Mac is short of memory{free}: Alondra keeps new launches in the queue and pauses working nodes, lowest priority first, until it has been fine for 5 minutes; then it resumes and starts them one by one. Launch as usual; do not hold launches back, wake or message paused nodes yourself.")),
-        (_, Health::Fine) => Some(format!("The Mac has memory again{free}: Alondra resumes the paused nodes and starts the queued launches one by one.")),
-        _ => None,
-    }
-}
-
 fn card_for(cause: MachineCause, machine: &Machine, disk: Option<&str>, waiting: &[Waiter], minutes: Option<u64>) -> MachineCard {
     MachineCard {
         cause,
@@ -159,12 +141,6 @@ pub(crate) fn tightest(machine: Machine, volumes: &[(String, crate::disk::Space)
             (Machine { disk_available: space.free, disk_total: space.total, ..machine }, Some(name.clone())),
         _ => (machine, None),
     }
-}
-
-fn orchestrator_text(card: &MachineCard, opening: bool) -> String {
-    let (_, why) = card.text(Lang::En);
-    let lead = if opening { "Machine at its limit" } else { "The machine is still at its limit" };
-    format!("{lead}: {why} Do not launch or wake nodes until Alondra says it recovered; {} has a card about it.", crate::domain_messages::user_name())
 }
 
 /// One sample of the incident: the gauges, the nodes waiting, and whether the user just said they
@@ -188,14 +164,6 @@ pub(crate) fn step_on(previous: Option<Incident>, machine: &Machine, disk: Optio
     let declared_only = incident.cause == MachineCause::Declared;
     if declared_only || (fine && (fixed || (incident.healthy >= HEALTHY_SAMPLES && settled))) {
         let mut actions: Vec<Action> = incident.card.into_iter().map(Action::Withdraw).collect();
-        let names = waiting.iter().map(|waiter| waiter.name.as_str()).collect::<Vec<_>>().join(", ");
-        if !declared_only {
-            actions.push(Action::TellOrchestrator(if names.is_empty() {
-                "The machine recovered.".into()
-            } else {
-                format!("The machine recovered: Alondra brings back the nodes that waited for it ({names}) one at a time, within the limit.")
-            }));
-        }
         if !waiting.is_empty() {
             actions.push(Action::Release(waiting.iter().map(|waiter| waiter.session.clone()).collect()));
         }
@@ -211,7 +179,6 @@ pub(crate) fn step_on(previous: Option<Incident>, machine: &Machine, disk: Optio
         actions.extend(incident.card.take().map(Action::Withdraw));
         if remind {
             incident.reminded = true;
-            actions.push(Action::TellOrchestrator(orchestrator_text(&card, false)));
             actions.push(Action::Push(card.clone()));
         }
         incident.cards += 1;
@@ -230,7 +197,7 @@ fn open(cause: MachineCause, machine: &Machine, disk: Option<&str>, waiting: &[W
     let card = card_for(cause, machine, disk, waiting, None);
     let id = format!("{MACHINE_PREFIX}{now}");
     let incident = Incident { since: now, cause, card: Some(id.clone()), cards: 1, nodes_shown: waiting.len(), reminded: false, healthy: 0, fine_since: None };
-    (Some(incident), vec![Action::TellOrchestrator(orchestrator_text(&card, true)), Action::Raise { id, card }])
+    (Some(incident), vec![Action::Raise { id, card }])
 }
 
 /// The volume the machine's own disk gauge measures.
@@ -448,12 +415,6 @@ async fn act(domain: &DomainRuntime, alerts: &impl Alerts, actions: Vec<Action>)
                 let _ = domain.withdraw_problem(&alondra_core::domain::InteractionId(id));
             }
             Action::Push(card) => alerts.tell(push_text(card), false).await,
-            Action::TellOrchestrator(text) => {
-                let id = format!("{MACHINE_PREFIX}note-{}", crate::auth::random_hex(6));
-                if let Err(error) = domain.tell_orchestrator(&id, text) {
-                    log!("could not tell the orchestrator about the machine: {error:?}");
-                }
-            }
             Action::Release(sessions) => {
                 log!("the machine recovered: {} node(s) that waited come back through the fleet gate", sessions.len());
                 domain.live.machine_watch.forget(&sessions);
@@ -467,8 +428,8 @@ fn worse(from: Health, to: Health) -> bool {
     rank(to) > rank(from)
 }
 
-/// A new sample into the Mac's health: a real change of health tells the orchestrator and the
-/// gate, and reaching the limit lowers how many nodes the gate lets work.
+/// A new sample into the Mac's health: a real change of health tells the gate, and reaching the
+/// limit lowers how many nodes the gate lets work.
 pub(crate) fn pace(domain: &DomainRuntime, machine: &Machine) {
     let watch = &domain.live.machine_watch;
     let change = watch.sample(machine);
@@ -485,12 +446,6 @@ pub(crate) fn pace(domain: &DomainRuntime, machine: &Machine) {
     }
     if worse(from, to) {
         domain.live.gate.saturated(domain, working, now);
-    }
-    if let Some(text) = pacing_notice(from, to, &mac) {
-        let id = format!("{MACHINE_PREFIX}pacing-{}", crate::auth::random_hex(6));
-        if let Err(error) = domain.tell_orchestrator(&id, text) {
-            log!("could not tell the orchestrator about the Mac's memory: {error:?}");
-        }
     }
     domain.live.gate.poke();
 }
@@ -574,7 +529,7 @@ mod tests {
     }
 
     #[test]
-    fn a_full_disk_with_a_stopped_node_raises_one_card_and_tells_the_orchestrator() {
+    fn a_full_disk_with_a_stopped_node_raises_one_card() {
         let phase0 = [waiter("s1", "Fase 0: quitar versión de identificadores", 0)];
         let (incident, actions) = step(None, &machine(0, 50), &phase0, false, 1_000);
         let incident = incident.unwrap();
@@ -583,7 +538,6 @@ mod tests {
         assert_eq!(cards.len(), 1);
         assert_eq!(cards[0].text(Lang::Es).0, "Libera espacio en disco: quedan 0 B");
         assert_eq!(cards[0].nodes, ["Fase 0: quitar versión de identificadores"]);
-        assert!(actions.iter().any(|action| matches!(action, Action::TellOrchestrator(text) if text.starts_with("Machine at its limit: Disk nearly full (0 B free). Alondra starts no new node until there is space. Stopped: Fase 0"))));
 
         let both = [phase0[0].clone(), waiter("s2", "Lumo", 2_000)];
         let (still, actions) = step(Some(incident), &machine(0, 50), &both, false, 11_000);
@@ -660,7 +614,6 @@ mod tests {
                 reminders += 1;
                 assert_eq!(minute, 30, "the reminder comes at 30 minutes");
                 assert_eq!(raised(&actions)[0].minutes, Some(30));
-                assert!(actions.iter().any(|action| matches!(action, Action::TellOrchestrator(text) if text.starts_with("The machine is still at its limit"))));
             } else {
                 assert!(actions.is_empty(), "nothing else at minute {minute}: {actions:?}");
             }
@@ -830,7 +783,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_full_disk_puts_one_card_and_tells_the_orchestrator_and_i_have_fixed_it_withdraws_it() {
+    async fn a_full_disk_puts_one_card_tells_the_orchestrator_nothing_and_i_have_fixed_it_withdraws_it() {
         let (_home, domain) = world();
         let session = "fase0";
         domain.live.machine_watch.declare(session, "disk full, 0 bytes free", 0, now_millis());
@@ -845,8 +798,7 @@ mod tests {
         let cards = open_machine_cards(&domain);
         assert_eq!(cards.len(), 1, "one card for the incident, not one per sample");
         assert_eq!(cards[0].card.need, "Free up disk space: 0 B left");
-        assert!(orchestrator_inbox(&domain).iter().any(|text| text.starts_with("Machine at its limit: Disk nearly full (0 B free). Alondra starts no new node until there is space. Stopped: fase0.")),
-            "{:?}", orchestrator_inbox(&domain));
+        assert!(orchestrator_inbox(&domain).is_empty(), "the orchestrator has nothing to do about it: {:?}", orchestrator_inbox(&domain));
         assert!(told.0.lock().unwrap().is_empty(), "the card got through: no push in its place");
 
         *disk.lock().unwrap() = 50 * GB;
@@ -859,7 +811,7 @@ mod tests {
         watcher.abort();
         assert!(open_machine_cards(&domain).is_empty());
         assert!(node.texts().is_empty(), "the fleet gate brings the node back, not the machine watch");
-        assert!(orchestrator_inbox(&domain).iter().any(|text| text == "The machine recovered: Alondra brings back the nodes that waited for it (fase0) one at a time, within the limit."));
+        assert!(orchestrator_inbox(&domain).is_empty(), "{:?}", orchestrator_inbox(&domain));
     }
 
     #[tokio::test]
@@ -937,13 +889,13 @@ mod tests {
         assert!(domain.live.machine_watch.incident().is_none());
         assert!(open_machine_cards(&domain).is_empty(), "{:?}", open_machine_cards(&domain));
         assert!(told.0.lock().unwrap().is_empty(), "no push: {:?}", told.0.lock().unwrap());
-        assert!(orchestrator_inbox(&domain).iter().any(|text| text.starts_with("The Mac is short of memory")), "{:?}", orchestrator_inbox(&domain));
+        assert!(orchestrator_inbox(&domain).is_empty(), "pacing asks nothing of the orchestrator: {:?}", orchestrator_inbox(&domain));
 
         clock.lock().unwrap().1 = false;
         until("the Mac fine again", || domain.live.machine_watch.mac().health == Health::Fine).await;
         watcher.abort();
         assert!(!holds(&domain), "the gate lets nodes start and resume once memory is back");
-        assert!(orchestrator_inbox(&domain).iter().any(|text| text.starts_with("The Mac has memory again")));
+        assert!(orchestrator_inbox(&domain).is_empty(), "{:?}", orchestrator_inbox(&domain));
         let state = domain.state().unwrap();
         let cards = state.interactions.values().filter(|card| card.id.0.starts_with(MACHINE_PREFIX) && matches!(card.payload, InteractionPayload::Question { .. })).count();
         assert_eq!(cards, 0, "never a machine card, open or withdrawn");

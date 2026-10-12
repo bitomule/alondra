@@ -3,7 +3,7 @@ import AlondraFeed
 import ComposableArchitecture
 import Foundation
 
-/// One node (or the orchestrator): who it is, what it is doing, what it needs, what it said last,
+/// One node: who it is, what it is doing, what it needs, what it said last,
 /// a composer to write to it, and the actions the daemon offers (close, retry, stop).
 @Reducer
 public struct NodeDetailFeature: Sendable {
@@ -24,7 +24,6 @@ public struct NodeDetailFeature: Sendable {
         }
 
         public var detail: NodeDetail? { screen.document.map { NodeDetail(document: $0).hiding(optimistic) } }
-        public var isOrchestrator: Bool { screen.key.rawValue == "node:orchestrator" }
 
         public var canSend: Bool {
             composer.action != nil

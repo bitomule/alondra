@@ -961,12 +961,7 @@ pub(crate) async fn pass_at(domain: &DomainRuntime, home: &Path, launcher: &impl
     let choices = |request: &alondra_core::domain::RequestId| request_choices(domain, request).ok().flatten();
     log!("the fleet gate starts {task}, queued since {}", row.enqueued_at);
     if let Err(error) = launch_from(domain, home, &Actor::System, body, choices, launcher, Origin::Admitted).await {
-        let title = state.tasks.get(&task).map_or_else(|| task.0.clone(), |task| task.title.clone());
-        let text = format!("Alondra could not start the queued task “{title}” ({task}): {} It tries again by itself, and then asks the user.",
-            error.message);
-        if let Err(error) = domain.tell_orchestrator(&format!("queued-launch-failed-{task}-{}", crate::auth::random_hex(4)), text) {
-            log!("could not tell the orchestrator that the queued launch of {task} failed: {error:?}");
-        }
+        log!("the fleet gate could not start {task}: {}", error.message);
     }
     Ok(())
 }

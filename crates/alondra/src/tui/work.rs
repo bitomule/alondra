@@ -568,7 +568,7 @@ mod tests {
         assert_eq!(
             labels,
             [
-                ("Project", "The orchestrator picks the project"),
+                ("Project", "Alondra picks the project"),
                 ("Issue", "none"),
                 ("PRs", "Review each one"),
                 ("Effort", "Auto"),

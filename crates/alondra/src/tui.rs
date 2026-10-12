@@ -745,7 +745,6 @@ pub struct App {
     card_view_asked: Option<String>,
     screen_view_asked: Option<String>,
     view_navigation: Vec<String>,
-    compose_orchestrator_on_load: bool,
     reader_after_view: Option<String>,
     /// Whether this terminal is behind its daemon, and what to do about it.
     pub updated: updated::Watch,
@@ -1184,7 +1183,6 @@ impl App {
             card_view_asked: None,
             screen_view_asked: None,
             view_navigation: vec![],
-            compose_orchestrator_on_load: false,
             reader_after_view: None,
             updated: updated::Watch::default(),
         }
@@ -1902,21 +1900,6 @@ impl App {
                         self.reader_after_view = None;
                         self.open_reader();
                     }
-                    if key == "node:orchestrator" && self.compose_orchestrator_on_load {
-                        self.compose_orchestrator_on_load = false;
-                        let message = self.card_view.as_ref().and_then(|view| {
-                            view_render::actions(view).into_iter().find(|action| {
-                                action.id.starts_with("msg:")
-                            })
-                        });
-                        if let Some(key) = message
-                            .as_ref()
-                            .and_then(|action| view_render::action_hint(action).chars().next())
-                        {
-                            let _ = self
-                                .view_action_key(KeyEvent::new(KeyCode::Char(key), KeyModifiers::NONE));
-                        }
-                    }
                 }
             }
             Msg::ViewCard {
@@ -1932,9 +1915,6 @@ impl App {
                     self.card_view_asked = None;
                     if self.reader_after_view.as_deref() == Some(&key) {
                         self.reader_after_view = None;
-                    }
-                    if key == "node:orchestrator" {
-                        self.compose_orchestrator_on_load = false;
                     }
                     self.fail(error);
                 }
@@ -2416,7 +2396,6 @@ impl App {
         self.screen = screen;
         self.card_menu = None;
         self.view_navigation.clear();
-        self.compose_orchestrator_on_load = false;
         self.reader_after_view = None;
         self.schedules_open = false;
         self.focus = Pane::List;
@@ -2432,20 +2411,6 @@ impl App {
         self.load_screen_view();
         self.load_selected_view();
         self.sync_open_views();
-    }
-
-    fn message_orchestrator(&mut self) {
-        let name = tr!("the orchestrator", "el orquestador").to_string();
-        let message = ops::Message::to(None, ops::MessageKind::Message, String::new());
-        self.compose(
-            Target::Message {
-                key: None,
-                message,
-                title: String::new(),
-                name,
-            },
-            "",
-        );
     }
 
     fn reload_schedules(&mut self) {

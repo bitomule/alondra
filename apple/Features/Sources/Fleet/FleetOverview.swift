@@ -2,7 +2,7 @@ import AlondraContract
 import Foundation
 
 /// What the Fleet list reads from the `fleet` view, and from the `search?q=` view that has the same
-/// shape: the orchestrator row, then one group of nodes per project.
+/// shape: one group of nodes per project.
 public struct FleetOverview: Equatable, Sendable {
     /// A node and its one task as one item: the task's title, the node's name when it adds
     /// something, its state, and what it does now or said last.
@@ -15,7 +15,6 @@ public struct FleetOverview: Equatable, Sendable {
         public var badges: [AlondraContract.Label]
         public var pending: UInt32
         public var link: AlondraContract.Link?
-        public var isOrchestrator: Bool
         public var activity: String?
         public var activityAt: String?
         public var interrupt: WireAction?
@@ -33,7 +32,6 @@ public struct FleetOverview: Equatable, Sendable {
             badges = Array(row.badges.dropFirst())
             if case .count(let value)? = row.trailing { pending = value } else { pending = 0 }
             link = row.link
-            isOrchestrator = row.icon == .orchestrator
             let activity = row.children.first { $0.id == "activity" }
             self.activity = activity?.title
             if case .time(let at, _)? = activity?.trailing { activityAt = at }
@@ -52,7 +50,6 @@ public struct FleetOverview: Equatable, Sendable {
         public var nodes: [Node]
     }
 
-    public var orchestrator: Node?
     public var groups: [Group] = []
     public var empty: Notice?
 
@@ -63,15 +60,16 @@ public struct FleetOverview: Equatable, Sendable {
                 if case .row(let row) = item { return Node(row: row) }
                 return nil
             }
-            if section.id == "orchestrator" {
-                orchestrator = nodes.first
-            } else if !nodes.isEmpty {
+            if section.id != Self.internalSection, !nodes.isEmpty {
                 groups.append(Group(id: section.id, title: section.title, count: section.count, collapsed: section.collapsed, nodes: nodes))
             }
         }
     }
 
-    public var isEmpty: Bool { orchestrator == nil && groups.isEmpty }
+    /// What a daemon from before the orchestrator became internal still sends; it is not a node.
+    static let internalSection = "orchestrator"
+
+    public var isEmpty: Bool { groups.isEmpty }
 
     /// The list as it is after what was just sent: a closing node is gone, an interrupted one no
     /// longer offers Interrupt, and a paused or resumed one says so.
@@ -87,7 +85,6 @@ public struct FleetOverview: Equatable, Sendable {
             return node
         }
         var overview = self
-        overview.orchestrator = orchestrator.map(shown)
         overview.groups = groups.compactMap { group in
             var group = group
             let before = group.nodes.count

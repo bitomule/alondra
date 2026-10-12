@@ -344,7 +344,7 @@ fn closed_notice(answer: &Value, name: &str) -> Result<String> {
 pub fn attach(name: &str) -> Result<()> {
     let client = Client::for_user(Duration::from_secs(10));
     let (agent, _runtime) = if orchestrator_view(&client, name).is_some() { (None, None) } else { resolved(&client, name)? };
-    let Some(agent) = agent else { bail!(tr!("Alondra manages the orchestrator automatically; open its activity in the Fleet screen", "Alondra gestiona el orquestador automáticamente; abre su actividad en la pantalla Flota")) };
+    let Some(agent) = agent else { bail!(tr!("Alondra manages the orchestrator automatically", "Alondra gestiona el orquestador automáticamente")) };
     let view = client.views(&format!("node:{agent}"), None)?;
     let session = local_attach(&view).context("This node has no attachable session")?;
     crate::attach::attach(&session, crate::attach::Over::Shell)

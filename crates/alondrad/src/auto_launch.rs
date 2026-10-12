@@ -176,19 +176,12 @@ pub(crate) async fn pass(domain: &DomainRuntime, home: &Path, launcher: &impl La
                     if let Some(problem) = crate::start_failures::problem_of(code, &error.message, Some(&plan.cwd)) {
                         crate::start_failures::failed(domain, &task.id, problem, now)?;
                     }
-                    tell(domain, &format!("auto-launch-failed-{}-{}", task.id, crate::auth::random_hex(4)), format!(
-                        "Alondra could not start “{}” ({}) by itself: {} It tries again by itself, and then asks the user.",
-                        task.title, task.id, sentence(&error.message)));
+                    log!("could not start {} by itself: {}", task.id, error.message);
                 }
             },
         }
     }
     Ok(())
-}
-
-fn sentence(message: &str) -> String {
-    let message = message.trim();
-    if message.ends_with(['.', '!', '?']) { message.to_owned() } else { format!("{message}.") }
 }
 
 fn tell(domain: &DomainRuntime, id: &str, body: String) {

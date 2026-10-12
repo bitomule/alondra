@@ -23,6 +23,7 @@ pub mod options;
 pub mod projects_folder;
 pub mod orchestrator;
 pub mod orchestrator_batch;
+pub mod orchestrator_cards;
 pub mod pr;
 pub mod sessions;
 pub mod stack;

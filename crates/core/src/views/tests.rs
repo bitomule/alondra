@@ -2618,21 +2618,6 @@ fn a_chain_folds_flat_under_its_first_open_task_each_after_what_it_waits_for() {
     assert_eq!(find(&fold.children, "t-6").subtitle.as_deref(), Some("espera a Install PR 2b"));
 }
 
-#[test]
-fn ambiguous_orchestrator_run_exposes_both_choices_with_confirmation() {
-    let state = fixture();
-    let live = LiveSnapshot { orchestrator: Some(live::LiveOrchestrator {
-        working: false, summary: Some("An execution needs a decision".into()), failure: None,
-        queue_depth: 2, active_run_id: Some("run-1".into()), can_retry: true, can_cancel: false,
-    }), ..Default::default() };
-    let view = render(&state, &live, Client::Ios, Lang::En, "node:orchestrator", "2026-09-30T10:00:00Z");
-    let actions: Vec<_> = view.sections.iter().flat_map(|section| &section.items).filter_map(|item| {
-        if let Item::Actions(bar) = item { Some(&bar.actions) } else { None }
-    }).flatten().collect();
-    assert!(actions.iter().any(|action| action.id.starts_with("orch_retry:") && action.confirm.is_some()));
-    assert!(actions.iter().any(|action| action.id.starts_with("orch_ack:") && action.confirm.is_some()));
-    assert!(!actions.iter().any(|action| action.id.starts_with("orch_stop:")));
-}
 fn orchestrator_waiting(can_retry: bool) -> LiveSnapshot {
     LiveSnapshot { orchestrator: Some(live::LiveOrchestrator {
         working: false, summary: Some("Claude exited without a successful terminal result".into()), failure: None,
@@ -2749,46 +2734,6 @@ fn a_batch_that_stopped_halfway_reads_in_spanish_with_what_it_did_and_how_to_cho
     assert_eq!(card_of(&english).need.as_deref(), Some(need.as_str()));
 }
 
-fn orchestrator_screen(live: Option<live::LiveOrchestrator>, lang: Lang) -> (Vec<Fact>, Option<String>, Vec<String>) {
-    let live = LiveSnapshot { orchestrator: live, ..Default::default() };
-    let view = render(&fixture(), &live, Client::Ios, lang, "node:orchestrator", "");
-    let items = |id: &'static str| view.sections.iter().filter(move |section| section.id == id).flat_map(|section| &section.items);
-    let facts = items("header").flat_map(|item| match item { Item::Facts(facts) => facts.items.clone(), _ => vec![] }).collect();
-    let failure = items("failure").find_map(|item| match item { Item::Markdown(text) => Some(text.text.clone()), _ => None });
-    let verbs = items("actions").flat_map(|item| match item { Item::Actions(bar) => bar.actions.clone(), _ => vec![] })
-        .map(|action| action.id.split(':').next().unwrap().to_owned()).collect();
-    (facts, failure, verbs)
-}
-
-#[test]
-fn the_orchestrator_screen_says_it_failed_and_why_in_the_users_language() {
-    let refused = live::LiveOrchestrator {
-        working: false, summary: Some("Claude denied a required tool permission in auto mode".into()),
-        failure: Some("denied".into()), queue_depth: 0, active_run_id: Some("run-1".into()), can_retry: true, can_cancel: false,
-    };
-    let (facts, failure, verbs) = orchestrator_screen(Some(refused), Lang::Es);
-    assert_eq!((facts[0].value.as_str(), facts[0].tone), ("Falló", Some(Tone::Warning)));
-    let failure = failure.expect("the failure is shown");
-    assert!(failure.contains("le negó una de las herramientas de Alondra"), "{failure}");
-    assert!(!failure.contains("Claude denied"), "Alondra's English diagnostic is not shown: {failure}");
-    assert_eq!(verbs, ["msg", "orch_retry", "orch_ack"]);
-
-    let crashed = live::LiveOrchestrator {
-        working: false, summary: Some("exit status: 1".into()), failure: Some("interrupted".into()),
-        queue_depth: 0, active_run_id: Some("run-1".into()), can_retry: true, can_cancel: false,
-    };
-    let failure = orchestrator_screen(Some(crashed), Lang::En).1.unwrap();
-    assert!(failure.starts_with("Its last run stopped partway") && failure.ends_with("Detail: `exit status: 1`"), "{failure}");
-
-    let fine = live::LiveOrchestrator {
-        working: false, summary: None, failure: None, queue_depth: 0, active_run_id: None, can_retry: false, can_cancel: false,
-    };
-    let (facts, failure, verbs) = orchestrator_screen(Some(fine), Lang::Es);
-    assert_eq!(facts[0].value, "Inactivo");
-    assert_eq!(failure, None);
-    assert_eq!(verbs, ["msg"], "a run that finished leaves nothing to decide");
-}
-
 #[test]
 fn a_request_not_split_yet_says_it_waits_for_the_users_decision() {
     let mut state = fixture();
@@ -2798,7 +2743,7 @@ fn a_request_not_split_yet_says_it_waits_for_the_users_decision() {
         (block, row.subtitle.unwrap())
     };
     assert_eq!(subtitle(&orchestrator_waiting(true)), ("block:for-you".into(), "Esperando tu decisión".into()));
-    assert_eq!(subtitle(&orchestrator_waiting(false)), ("block:in-progress".into(), "El orquestador la está dividiendo".into()));
+    assert_eq!(subtitle(&orchestrator_waiting(false)), ("block:in-progress".into(), "Preparando sus tareas".into()));
 }
 
 #[test]
@@ -4437,7 +4382,6 @@ fn every_tui_action_a_screen_offers_has_its_own_key() {
         "card:hf-weekly-2026-09-30",
         "tasks",
         "node:d887a34b-249e-4487-a89b-57de38c26372",
-        "node:orchestrator",
         "task:t-651c38484cd2f34e74d5107ba05f7f15",
         "request:r-9f2156b5a8894e53901f0af576dff6a2",
         "pull_request:github.com/example/repo#12",
@@ -4635,7 +4579,7 @@ fn an_orchestrator_answer_waits_in_every_inbox_after_its_request_closes() {
         panic!("the answer renders as a card");
     };
     assert_eq!(card.title, "Sí. Para el cifrado una imagen son bytes como cualquier otro.");
-    assert_eq!(card.meta.as_deref(), Some("Orquestador"));
+    assert_eq!(card.meta.as_deref(), Some("Cifrar imágenes vía R2"), "signed with its request, never with the orchestrator");
     assert!(card.actions.iter().any(|action| action.id.starts_with("read:")));
     assert!(card.reply.as_ref().is_some_and(|reply| reply.id.starts_with("msg:view@")),
         "the answer is replied to the orchestrator");
@@ -5594,20 +5538,6 @@ fn generate_pacing_goldens() {
     }
 }
 
-#[test]
-fn the_orchestrator_is_opened_by_its_shortcuts_and_by_the_session_it_runs_in_now() {
-    let mut state = fixture();
-    state.orchestrator_session = Some("6f1c2b9e-1111-4a2b-9c3d-0123456789ab".into());
-    let live = LiveSnapshot::default();
-    for key in ["node:orchestrator", "node:6f1c2b9e-1111-4a2b-9c3d-0123456789ab", "node:0123456789ab"] {
-        let view = render(&state, &live, Client::Ios, Lang::Es, key, "");
-        assert_eq!(view.key, key);
-        let facts: Vec<Fact> = view.sections.iter().filter(|section| section.id == "header").flat_map(|section| &section.items)
-            .flat_map(|item| match item { Item::Facts(facts) => facts.items.clone(), _ => vec![] }).collect();
-        assert!(facts.iter().any(|fact| fact.label == "Sesión" && fact.value == "6f1c2b9e-1111-4a2b-9c3d-0123456789ab"), "{key}: {facts:?}");
-    }
-}
-
 fn a_pr_card_that_cannot_merge_says_why() {
     let mut state = golden_fixture();
     let key = "card:hf-weekly-2026-09-30";
@@ -5925,6 +5855,32 @@ fn the_golden_tasks_list_folds_the_chain_and_lists_its_tasks_only_under_it() {
             let places: Vec<&Vec<String>> = rows.iter().filter(|(_, row)| row.id == member.id).map(|(parents, _)| parents).collect();
             assert_eq!(places.len(), 1, "{name}: {} is listed once", member.id);
             assert_eq!(places[0].last(), Some(&chain.id), "{name}: {} hangs only under the chain", member.id);
+        }
+    }
+}
+
+/// The orchestrator is Alondra's own: no screen lists it, counts it or opens it.
+#[test]
+fn no_screen_shows_the_orchestrator() {
+    let mut state = golden_fixture();
+    state.orchestrator_session = Some("6f1c2b9e-1111-4a2b-9c3d-0123456789ab".into());
+    state.agents.insert("orchestrator".into(), Agent { id: "orchestrator".into(), name: "orchestrator".into(), phase: NodePhase::Working, since: 0 });
+    let live = golden_live();
+    for (client, lang) in [(Client::Ios, Lang::En), (Client::Ios, Lang::Es), (Client::Mac, Lang::Es), (Client::Tui, Lang::En)] {
+        let screens: &[&str] = if client == Client::Mac { &["fleet", "sidebar", "tasks"] } else { &["fleet", "tasks", "home"] };
+        for key in screens.iter().copied() {
+            let view = render(&state, &live, client, lang, key, "");
+            let text = serde_json::to_string(&(&view.title, &view.sections)).unwrap().to_lowercase();
+            assert!(!text.contains("orchestrator") && !text.contains("orquestador"), "{client:?} {key}: {text}");
+        }
+        for key in ["node:orchestrator", "node:6f1c2b9e-1111-4a2b-9c3d-0123456789ab"] {
+            let view = render(&state, &live, client, lang, key, "");
+            let text = serde_json::to_string(&(&view.title, &view.sections)).unwrap().to_lowercase();
+            assert!(!text.contains("orquestador") && !text.contains("orchestrator"), "{client:?} {key}: {text}");
+            let verbs: Vec<_> = view.sections.iter().flat_map(|section| &section.items)
+                .flat_map(|item| match item { Item::Actions(bar) => bar.actions.clone(), _ => vec![] })
+                .map(|action| action.id.split(':').next().unwrap().to_owned()).collect();
+            assert_eq!(verbs, ["msg"], "{client:?} {key}: only where maintenance is posted");
         }
     }
 }

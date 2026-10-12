@@ -29,6 +29,7 @@ mod domain_merges;
 mod domain_holds;
 mod domain_messages;
 mod domain_orchestrator;
+mod orchestrator_inbox;
 mod domain_orchestrator_reads;
 mod domain_orchestrator_tools;
 mod domain_reads;

@@ -245,7 +245,7 @@ async fn eight_nodes_stopped_by_memory_come_back_by_themselves_by_priority_withi
     let paused: Vec<String> = fleet.domain.live.gate.pauses(&fleet.domain).paused.into_values().map(|paused| paused.task.0).collect();
     assert_eq!(paused, ["t7"]);
     assert_eq!(fleet.events("pause").len(), 5, "no flapping: nothing was paused again");
-    assert_eq!(fleet.notices, 2, "the orchestrator heard memory run out and come back, once each");
+    assert_eq!(fleet.notices, 0, "the orchestrator has nothing to do about memory");
 
     let pacing = fleet.domain.live.gate.live(&fleet.domain, now).unwrap();
     assert_eq!(pacing.paused.len(), 1);
@@ -270,7 +270,7 @@ async fn memory_swinging_for_an_hour_resumes_no_paused_node() {
     }
     assert!(fleet.events("resume").is_empty(), "{:?}", fleet.log);
     assert_eq!(fleet.events("pause").len(), 2, "{:?}", fleet.log);
-    assert_eq!(fleet.notices, 1, "only entering the pressure");
+    assert_eq!(fleet.notices, 0, "the orchestrator has nothing to do about memory");
 }
 
 /// A resume followed by the Mac short of memory again doubles the step between resumes and lowers

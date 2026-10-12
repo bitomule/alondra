@@ -32,7 +32,7 @@ final class TasksBoardTests: XCTestCase {
         let request = try XCTUnwrap(board.active.requests.first)
 
         XCTAssertEqual(request.id, "r-5")
-        XCTAssertEqual(request.state, "The orchestrator is splitting it")
+        XCTAssertEqual(request.state, "Preparing its tasks")
         XCTAssertTrue(request.tasks.isEmpty)
     }
 
@@ -147,7 +147,7 @@ final class TasksBoardTests: XCTestCase {
 
         XCTAssertTrue(request.isLoose, "it reads as one more row of its block, its time inside the row")
         XCTAssertEqual(request.tasks.map(\.title), ["Import lists from Notes"])
-        XCTAssertEqual(request.tasks.first?.state, "The orchestrator is splitting it")
+        XCTAssertEqual(request.tasks.first?.state, "Preparing its tasks")
         XCTAssertNotNil(request.tasks.first?.activityAt)
         XCTAssertNil(request.tasks.first?.link)
     }

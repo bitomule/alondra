@@ -1323,12 +1323,12 @@
         }
       }
     },
-    "The orchestrator picks the model and effort from the task": {
+    "Alondra picks the model and effort from the task": {
       "localizations": {
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "El orquestador elige modelo y esfuerzo según la tarea"
+            "value": "Alondra elige modelo y esfuerzo según la tarea"
           }
         }
       }

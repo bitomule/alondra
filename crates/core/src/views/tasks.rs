@@ -315,7 +315,7 @@ fn request_state(request: &Request, tasks: &[&Task], context: &RenderContext<'_>
     } else if without_tasks && context.live.orchestrator.as_ref().is_some_and(|o| o.can_retry) {
         t!(context.lang, "Waiting for your decision", "Esperando tu decisión")
     } else if without_tasks {
-        t!(context.lang, "The orchestrator is splitting it", "El orquestador la está dividiendo")
+        t!(context.lang, "Preparing its tasks", "Preparando sus tareas")
     } else {
         t!(context.lang, "Active", "Activa")
     }

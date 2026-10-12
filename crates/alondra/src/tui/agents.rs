@@ -30,17 +30,6 @@ impl App {
         self.runtime.as_ref()?.node(id)
     }
 
-    /// The orchestrator's session, which is not a domain agent but has its own place on top.
-    pub fn orchestrator(&self) -> Option<&FleetNode> {
-        self.runtime.as_ref()?.orchestrator_node()
-    }
-
-    pub fn orchestrator_selected(&self) -> bool {
-        self.agent_sel
-            .as_ref()
-            .is_some_and(|id| self.orchestrator().is_some_and(|o| o.session_id == id.0))
-    }
-
     /// What each thread of the agent does, from its own route; nothing from an alondrad without it.
     pub fn agent_activity(&self, id: &AgentId) -> Vec<Activity> {
         match &self.threads {

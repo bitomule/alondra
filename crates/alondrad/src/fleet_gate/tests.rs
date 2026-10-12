@@ -1,5 +1,5 @@
 use super::*;
-use crate::machine_watch::{Action, pacing_notice, step_on};
+use crate::machine_watch::{Action, step_on};
 use crate::node_reports::{Envelope, Report};
 use alondra_core::Machine;
 use alondra_core::domain::{AgentId, Command, CommandEnvelope, PROTOCOL_VERSION};
@@ -148,7 +148,8 @@ fn in_automatic_the_limit_october_9_lowered_to_3_and_2_climbs_back_by_itself() {
 /// lets through, once the Mac entered pressure, with a task waiting the whole time.
 #[derive(Debug, Default, PartialEq)]
 struct Hour {
-    notices: Vec<String>,
+    /// How many times the Mac went from fine to short of memory.
+    pressured: usize,
     cards: usize,
     withdrawn: usize,
     admitted: usize,
@@ -164,20 +165,19 @@ fn swing(low: u32, high: u32) -> Hour {
     while now < 60 * MIN {
         let free = if (now / (3 * MIN)) % 2 == 0 { low } else { high };
         let machine = Machine { at: now, memory_free_percent: Some(free), cpus: 11, load: [5.0; 3], ..Machine::default() };
-        if let Some((from, to)) = mac.step(&machine, now) {
-            hour.notices.extend(pacing_notice(from, to, &mac));
+        if let Some((Health::Fine, _)) = mac.step(&machine, now) {
+            hour.pressured += 1;
         }
         let (next, actions) = step_on(incident, &machine, None, &[], false, now);
         incident = next;
         for action in actions {
             match action {
-                Action::TellOrchestrator(text) => hour.notices.push(text),
                 Action::Raise { .. } => hour.cards += 1,
                 Action::Withdraw(_) => hour.withdrawn += 1,
                 _ => {}
             }
         }
-        if !hour.notices.is_empty() && decide(&head, 0, 6, &mac, last_admission, SPACING, now).is_ok() {
+        if hour.pressured > 0 && decide(&head, 0, 6, &mac, last_admission, SPACING, now).is_ok() {
             hour.admitted += 1;
             last_admission = Some(now);
         }
@@ -187,34 +187,32 @@ fn swing(low: u32, high: u32) -> Hour {
 }
 
 #[test]
-fn memory_swinging_between_9_and_16_percent_for_an_hour_resumes_nothing_and_tells_once() {
+fn memory_swinging_between_9_and_16_percent_for_an_hour_resumes_nothing_and_enters_the_pressure_once() {
     let hour = swing(9, 16);
-    assert_eq!(hour.notices.len(), 1, "only entering the pressure: {:?}", hour.notices);
-    assert!(hour.notices[0].starts_with("The Mac is short of memory (9% free)"), "{:?}", hour.notices);
+    assert_eq!(hour.pressured, 1, "only entering the pressure: {hour:?}");
     assert_eq!((hour.cards, hour.withdrawn, hour.admitted), (0, 0, 0), "memory never puts a card in front of the user: {hour:?}");
 }
 
 #[test]
 fn memory_swinging_between_9_and_22_percent_never_stays_fine_long_enough_to_count_as_recovered() {
     let hour = swing(9, 22);
-    assert_eq!(hour.notices.len(), 1, "only entering the pressure: {:?}", hour.notices);
+    assert_eq!(hour.pressured, 1, "only entering the pressure: {hour:?}");
     assert_eq!((hour.cards, hour.withdrawn, hour.admitted), (0, 0, 0), "memory never puts a card in front of the user: {hour:?}");
 }
 
 #[test]
 fn memory_back_above_20_percent_for_5_minutes_recovers_once_and_lets_the_queue_go() {
     let mut mac = MacState::default();
-    let mut notices = vec![];
+    let mut recovered = 0;
     let mut now = 0;
     for free in std::iter::repeat_n(8, 6).chain(std::iter::repeat_n(30, 32)) {
-        if let Some((from, to)) = mac.step(&Machine { memory_free_percent: Some(free), cpus: 11, load: [5.0; 3], ..Machine::default() }, now) {
-            notices.extend(pacing_notice(from, to, &mac));
+        if let Some((_, Health::Fine)) = mac.step(&Machine { memory_free_percent: Some(free), cpus: 11, load: [5.0; 3], ..Machine::default() }, now) {
+            recovered += 1;
         }
         now += SAMPLE;
     }
     assert_eq!(mac.health, Health::Fine);
-    assert_eq!(notices.len(), 2, "{notices:?}");
-    assert_eq!(notices[1], "The Mac has memory again (30% free): Alondra resumes the paused nodes and starts the queued launches one by one.");
+    assert_eq!(recovered, 1);
 }
 
 struct Home(crate::test_support::Directory);
@@ -503,4 +501,22 @@ fn a_node_waiting_for_the_machine_leaves_its_slot_and_comes_back_through_the_gat
     let snapshot = gate.snapshot(&domain, now + 5 * MIN).unwrap();
     assert_eq!((snapshot.working, snapshot.working_tasks.into_iter().collect::<Vec<_>>()), (1, vec![TaskId::from("t1")]),
         "back from its wait it takes its slot again");
+}
+
+/// 9 October: 59 notices to the orchestrator, one per swing of the Mac's memory, and none ever read.
+#[test]
+fn memory_coming_and_going_for_an_hour_tells_the_orchestrator_nothing() {
+    let (_home, domain) = world();
+    let base = alondra_core::now_millis();
+    create(&domain, "t1");
+    start(&domain, "t1", base);
+    let mut now = base;
+    while now < base + 60 * MIN {
+        let free = if ((now - base) / (6 * MIN)) % 2 == 0 { 8 } else { 40 };
+        crate::machine_watch::pace(&domain, &Machine { at: now, memory_free_percent: Some(free), cpus: 11, load: [5.0; 3], ..Machine::default() });
+        now += SAMPLE;
+    }
+    let state = domain.state().unwrap();
+    let told: Vec<_> = state.interactions.values().filter(|i| i.recipient == alondra_core::domain::Recipient::Orchestrator).map(|i| i.id.0.clone()).collect();
+    assert!(told.is_empty(), "{told:?}");
 }

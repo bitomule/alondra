@@ -4,7 +4,7 @@
   "view": "tasks",
   "key": "tasks",
   "client": "tui",
-  "version": "v642ae450edb474d6",
+  "version": "v94fa8ca0e5a6daae",
   "cursor": "cursor-1",
   "title": "Tasks",
   "status": {
@@ -238,7 +238,7 @@
               "id": "r-new",
               "icon": "mission",
               "title": "Import lists from Notes",
-              "subtitle": "The orchestrator is splitting it",
+              "subtitle": "Preparing its tasks",
               "trailing": {
                 "kind": "time",
                 "at": "2026-09-30T09:59:00.000Z",

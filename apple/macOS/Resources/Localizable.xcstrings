@@ -2125,16 +2125,6 @@
         }
       }
     },
-    "the orchestrator is splitting it": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "el orquestador la reparte"
-          }
-        }
-      }
-    },
     "Tasks": {
       "localizations": {
         "es": {
@@ -2391,16 +2381,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Historia"
-          }
-        }
-      }
-    },
-    "The orchestrator is splitting it into tasks.": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "El orquestador la está repartiendo en tareas."
           }
         }
       }

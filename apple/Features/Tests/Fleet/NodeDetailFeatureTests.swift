@@ -72,7 +72,6 @@ final class NodeDetailFeatureTests: XCTestCase {
         XCTAssertEqual(detail.now.first?.detail, "Task Check the Spanish strings")
         XCTAssertEqual(detail.message?.id, "msg:\(node)@6")
         XCTAssertEqual(detail.close?.id, "close:\(node)@6")
-        XCTAssertTrue(detail.orchestratorActions.isEmpty)
     }
 
     func testTheFolderIsTheFactThatIsAPathWhateverTheLanguage() throws {
@@ -224,102 +223,6 @@ final class NodeDetailFeatureTests: XCTestCase {
         XCTAssertEqual(handedOff.value.map(\.actionId), [close.id])
         XCTAssertTrue(requests.value.isEmpty, "the app delivers the close; the screen never waits for it")
         XCTAssertTrue(dismissed.value)
-    }
-
-    func testReadsWhyTheOrchestratorFailed() throws {
-        let document = try Fixtures.document("node-ios", edit: { object in
-            var sections = object["sections"] as? [[String: Any]] ?? []
-            sections.append(["id": "failure", "collapsed": false, "items": [[
-                "type": "markdown", "text": "Su última ejecución falló.", "truncated": false, "commentable": false,
-            ]]])
-            object["sections"] = sections
-        })
-
-        XCTAssertEqual(NodeDetail(document: document).failure?.text, "Su última ejecución falló.")
-        XCTAssertNil(NodeDetail(document: try self.document()).failure)
-    }
-
-    func testTheOrchestratorOffersRetryContinueAndStopEachWithAConfirmation() async throws {
-        let requests = LockIsolated<[ActionRequest]>([])
-        let store = store(requests: requests, key: .node("orchestrator"))
-        let document = try Fixtures.document("node-ios", edit: { object in
-            object["key"] = "node:orchestrator"
-            var bar = items(of: "actions", in: object)
-            bar[0]["actions"] = ["orch_retry:orchestrator@2~run1", "orch_ack:orchestrator@2~run1", "orch_stop:orchestrator@2~run1"].map {
-                ["id": $0, "label": String($0.prefix(while: { $0 != ":" })), "style": "secondary", "presentation": "button",
-                 "input": ["kind": "none"], "attachments": false, "enabled": true,
-                 "confirm": ["title": "Confirm", "message": "Sure?", "button": "Go"]] as [String: Any]
-            }
-            replaceItems(of: "actions", in: &object, with: bar)
-        })
-
-        await store.send(.screen(.loaded(document)))
-        XCTAssertTrue(store.state.isOrchestrator)
-        let actions = try XCTUnwrap(store.state.detail?.orchestratorActions)
-        XCTAssertEqual(actions.map { $0.id?.prefix(while: { $0 != ":" }) }, ["orch_retry", "orch_ack", "orch_stop"])
-
-        await store.send(.perform(actions[2]))
-        await store.skipReceivedActions()
-        XCTAssertNotNil(store.state.actions.confirmation)
-        XCTAssertTrue(requests.value.isEmpty)
-        await store.send(.actions(.confirm))
-        await store.skipReceivedActions()
-        XCTAssertEqual(requests.value.map(\.actionId), ["orch_stop:orchestrator@2~run1"])
-    }
-
-    private func orchestratorDocument(version: String = "v1") throws -> ViewDocument {
-        try Fixtures.document("node-ios", edit: { object in
-            object["key"] = "node:orchestrator"
-            object["version"] = version
-            var bar = items(of: "actions", in: object)
-            bar[0]["actions"] = ["orch_retry:orchestrator@2~run1", "orch_ack:orchestrator@2~run1", "orch_stop:orchestrator@2~run1"].map {
-                ["id": $0, "label": String($0.prefix(while: { $0 != ":" })), "style": "secondary", "presentation": "button",
-                 "input": ["kind": "none"], "attachments": false, "enabled": true] as [String: Any]
-            }
-            replaceItems(of: "actions", in: &object, with: bar)
-        })
-    }
-
-    func testAnOrchestratorDecisionLeavesAtOnceShowsWhatHappensNextAndComesBackIfItFails() async throws {
-        let gate = Gate()
-        let store = store(key: .node("orchestrator"))
-        store.dependencies.viewsClient.perform = { _ in
-            await gate.wait()
-            return try Fixtures.response(#"{"protocol":1,"outcome":"rejected","message":"The run already moved on"}"#)
-        }
-        let document = try orchestratorDocument()
-        await store.send(.screen(.loaded(document)))
-        let before = try XCTUnwrap(store.state.detail)
-        let retry = try XCTUnwrap(before.orchestratorActions.first)
-
-        await store.send(.perform(retry))
-        await store.receive(\.actions.sent)
-        XCTAssertEqual(store.state.detail?.orchestratorActions, [], "the decision leaves before the daemon answers")
-        XCTAssertEqual(store.state.detail?.state, "Retrying")
-
-        await store.send(.screen(.loaded(document)))
-        XCTAssertEqual(store.state.detail?.orchestratorActions, [], "a stale view cannot offer it again")
-
-        await gate.open()
-        await store.receive(\.actions.settled)
-        XCTAssertEqual(store.state.detail, before)
-        await store.receive(\.delegate.failed, "The run already moved on")
-    }
-
-    func testStoppingTheOrchestratorSaysItIsStoppingUntilANewerViewArrives() async throws {
-        let store = store(key: .node("orchestrator"))
-        await store.send(.screen(.loaded(try orchestratorDocument())))
-        let stop = try XCTUnwrap(store.state.detail?.orchestratorActions.last)
-
-        await store.send(.perform(stop))
-        await store.receive(\.actions.sent)
-        XCTAssertEqual(store.state.detail?.state, "Stopping")
-        await store.receive(\.actions.settled)
-        await store.send(.screen(.loaded(try orchestratorDocument())))
-        XCTAssertEqual(store.state.detail?.state, "Stopping", "the view it was applied over is stale")
-
-        await store.send(.screen(.loaded(try orchestratorDocument(version: "v2"))))
-        XCTAssertEqual(store.state.detail?.orchestratorActions.count, 3, "a newer view rules")
     }
 
     func testTheTaskAndTheWaitingCardOpenTheirScreens() async {

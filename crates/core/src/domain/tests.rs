@@ -4102,3 +4102,36 @@ fn preview_matches_execution_without_changing_the_input() {
         }
     }
 }
+
+/// 97 messages to the orchestrator stayed open after their tasks ended: `close_request` waits for
+/// the tasks and nobody came back once they had.
+#[test]
+fn a_message_closes_when_its_last_task_ends_and_a_users_request_does_not() {
+    let mut s = fixture();
+    exec(&mut s, user(), Command::CreateRequest {
+        request_id: "m".into(), body: "Launch two more".into(), auto_merge: false, maintenance: false, message: true,
+    }).unwrap();
+    exec(&mut s, orchestrator(), Command::TitleRequest { request_id: "m".into(), title: "Two more".into() }).unwrap();
+    for task in ["m-1", "m-2"] {
+        exec(&mut s, orchestrator(), Command::CreateTask {
+            task_id: task.into(), request_id: "m".into(), title: task.into(), agent_id: None, review_prs: false,
+            dependencies: BTreeSet::new(), stack: None, launch: Some(crate::domain::LaunchPlan::new("node", "/tmp")),
+        }).unwrap();
+    }
+    exec(&mut s, user(), Command::CancelTask { task_id: "m-1".into() }).unwrap();
+    assert!(!s.requests[&"m".into()].closed, "one of its tasks is still open");
+    exec(&mut s, user(), Command::CancelTask { task_id: "m-2".into() }).unwrap();
+    assert!(s.requests[&"m".into()].closed);
+    exec(&mut s, user(), Command::CancelTask { task_id: "t".into() }).unwrap();
+    assert!(!s.requests[&"r".into()].closed, "the orchestrator may still add work to a request of the user's");
+}
+
+#[test]
+fn alondra_closes_a_request_but_never_one_with_open_tasks() {
+    let mut s = fixture();
+    let close = |withdrawn| Command::CloseRequest { request_id: "r".into(), answer: None, withdrawn, title: None };
+    assert!(exec(&mut s, Actor::System, close(false)).is_err());
+    exec(&mut s, user(), Command::CancelTask { task_id: "t".into() }).unwrap();
+    exec(&mut s, Actor::System, close(true)).unwrap();
+    assert!(s.requests[&"r".into()].closed && s.requests[&"r".into()].withdrawn);
+}

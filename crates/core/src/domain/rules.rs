@@ -916,6 +916,20 @@ impl DomainState {
         Ok(())
     }
     /// R22: a Request closed with an answer tells the user, unless something already did.
+    /// A message to the orchestrator that made tasks is done once the last of them ends: nobody
+    /// is left to close it, since `close_request` waits for its tasks.
+    fn close_finished_messages(&mut self) {
+        let mut open: BTreeSet<RequestId> = BTreeSet::new();
+        let mut ended: BTreeSet<RequestId> = BTreeSet::new();
+        for task in self.tasks.values() {
+            if task.state.terminal() { &mut ended } else { &mut open }.insert(task.request_id.clone());
+        }
+        for request in self.requests.values_mut().filter(|request| request.message && !request.closed) {
+            if ended.contains(&request.id) && !open.contains(&request.id) {
+                request.closed = true;
+            }
+        }
+    }
     fn tell_the_answer(&mut self, actor: &Actor, request: &RequestId, answer: &str, title: Option<&str>,
         created: &mut Vec<String>, effects: &mut Vec<DomainEffect>) -> Result<()> {
         let tasks: BTreeSet<&TaskId> = self.tasks.values().filter(|t| &t.request_id == request).map(|t| &t.id).collect();
@@ -1873,6 +1887,7 @@ impl DomainState {
             next.derive_states();
         }
         next.retire_cards_of_ended_tasks(&mut effects);
+        next.close_finished_messages();
         let acting_before = self.acting();
         for (task_id, card) in next.acting() {
             if acting_before.get(&task_id).map(|before| &before.interaction) != Some(&card.interaction) {
@@ -2192,7 +2207,9 @@ impl DomainState {
                 }
             }
             Command::CloseRequest { request_id, answer, withdrawn, title } => {
-                self.manager(actor)?;
+                if !matches!(actor, Actor::System) {
+                    self.manager(actor)?;
+                }
                 if self
                     .tasks
                     .values()

@@ -192,7 +192,7 @@ final class NewRequestFeatureTests: XCTestCase {
 
     func testProjectsAreFilteredByEveryWordTyped() throws {
         let projects = try ContractCodec.decode([ChoiceItem].self, from: Data(
-            #"[{"id":"","label":"The orchestrator picks the project"},{"id":"Demo Garden","label":"Demo Garden"},{"id":"Lumo","label":"Lumo"}]"#.utf8))
+            #"[{"id":"","label":"Alondra picks the project"},{"id":"Demo Garden","label":"Demo Garden"},{"id":"Lumo","label":"Lumo"}]"#.utf8))
 
         XCTAssertEqual(ProjectChoices.filter(projects, query: "").count, 3)
         XCTAssertEqual(ProjectChoices.filter(projects, query: "gar dem").map(\.id), ["Demo Garden"])
