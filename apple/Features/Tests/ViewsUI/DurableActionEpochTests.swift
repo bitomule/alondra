@@ -23,8 +23,17 @@ final class DurableActionEpochTests: XCTestCase {
         let store = TestStore(initialState: state) { ActionFeature() } withDependencies: {
             $0.uuid = .constant(UUID(uuidString: self.newID)!)
         }
-        await store.send(.submit) { $0.stamp = "Sent" }
-        await store.receive(\.sent, request(newID, epoch: "new-epoch"))
+        let current = request(newID, epoch: "new-epoch")
+        await store.send(.submit) {
+            $0.pending = current
+            $0.inFlight = true
+        }
+        await store.receive(\.prepared) {
+            $0.pending = nil
+            $0.inFlight = false
+            $0.stamp = "Sent"
+        }
+        await store.receive(\.sent, current)
         await store.finish()
     }
 

@@ -558,7 +558,7 @@ fn capabilities_supported(domain: &DomainRuntime, operation_results: bool) -> Re
     match domain.state() {
         Ok(state) => {
             let mut body = json!({"protocol_version": PROTOCOL_VERSION, "data_epoch": state.data_epoch, "revision": state.revision});
-            if operation_results { body["operation_results"] = json!(true); }
+            if operation_results { body["operation_results"] = json!(true);body["operation_journal"] = json!(true); }
             Json(body).into_response()
         },
         Err(_) => storage_error(),

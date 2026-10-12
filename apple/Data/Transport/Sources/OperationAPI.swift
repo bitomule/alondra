@@ -5,10 +5,12 @@ import Foundation
 public protocol OperationAPI: Sendable {
     func perform(_ request: APIRequest) async throws -> APIResponse
     func recover(_ request: APIRequest) async throws -> APIResponse
+    func retireActions(_ acknowledgment: ActionJournalAcknowledgment) async throws
 }
 
 public extension OperationAPI {
     func recover(_ request: APIRequest) async throws -> APIResponse { .unknown }
+    func retireActions(_ acknowledgment: ActionJournalAcknowledgment) async throws {}
 }
 
 public enum APIResponse: Sendable, Equatable {
@@ -34,6 +36,11 @@ public struct APIRequest: Sendable, Equatable {
     public let method: String
     public let path: String
     public let body: Data?
+
+    var isActionJournalControl: Bool {
+        method == "GET" && path.hasPrefix("/operation-journal?") && body == nil
+            || method == "POST" && path == "/operation-journal/ack" && body != nil
+    }
 
     init<Response>(endpoint: Endpoint<Response>, operationID: String) throws {
         let resourceRead = endpoint.path == ["capabilities"] && endpoint.method == .get
@@ -64,6 +71,8 @@ public struct APIRequest: Sendable, Equatable {
 
     /// The daemon routes available to the Views client.
     public static func validClientContractRoute(method: HTTPMethod, path: [String]) -> Bool {
+        if method == .get, path == ["operation-journal"] { return true }
+        if method == .post, path == ["operation-journal", "ack"] { return true }
         if method == .post, path.count == 2, path[0] == "uploads",
            ["start", "chunk", "finish", "cancel"].contains(path[1]) { return true }
         if method == .get, path.count == 2, path[0] == "operation-results" {
@@ -121,6 +130,11 @@ public struct APIRequest: Sendable, Equatable {
     }
 
     public static func validClientQuery(method: HTTPMethod, path: [String], query: [(String, String)]) -> Bool {
+        if path.first == "operation-journal" {
+            if method == .post { return path == ["operation-journal", "ack"] && query.isEmpty }
+            return method == .get && path == ["operation-journal"] && query.count == 1
+                && query[0].0 == "data_epoch" && RelayHTTPChallenge.validText(query[0].1)
+        }
         if path.first == "operation-results" {
             guard method == .get, path.count == 2, validOperationID(path[1]),
                   (2...3).contains(query.count), Set(query.map(\.0)).count == query.count,

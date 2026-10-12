@@ -8,6 +8,8 @@ import Foundation
 public protocol ViewTransport: Sendable {
     func fetchView(key: String, client: ViewClient, lang: String, known: String?) async throws -> ViewFetch
     func fetchChanges(client: ViewClient, lang: String, wait: UInt, cursor: String?, views: [OpenViewVersion]) async throws -> ViewFeed
+    func actionJournal(dataEpoch: String) async throws -> ActionJournalState?
+    func acknowledgeActions(_ acknowledgment: ActionJournalAcknowledgment) async throws
     func recoverAction(_ request: ActionRequest, body: Data) async throws -> ActionResponse?
     func submitAction(_ request: ActionRequest, body: Data) async throws -> ActionResponse
     func fetchContent(_ content: ContentRef) async throws -> String
@@ -15,6 +17,8 @@ public protocol ViewTransport: Sendable {
 }
 
 public extension ViewTransport {
+    func actionJournal(dataEpoch: String) async throws -> ActionJournalState? { nil }
+    func acknowledgeActions(_ acknowledgment: ActionJournalAcknowledgment) async throws { throw OperationError.invalidEndpoint }
     func recoverAction(_ request: ActionRequest, body: Data) async throws -> ActionResponse? { nil }
     func fetchContent(_ content: ContentRef) async throws -> String { throw FeedError.unsupportedContent }
     func fetchAttachment(_ attachment: AlondraContract.Attachment) async throws -> Data { throw FeedError.unsupportedContent }
@@ -272,6 +276,12 @@ public actor ViewActionSender {
     private let transport: any ViewTransport
     private let intents: ViewActionIntentStore?
     private var pending: [String: Pending]
+    private var retirementDeferred = false
+    private var retirementRequested = false
+    private var retirementTask: Task<Void, Never>?
+    private var lastRetirement: ActionJournalAcknowledgment?
+    private var journalEpoch: String?
+    private var journalDescriptor: ActionJournalState?
 
     public init(transport: any ViewTransport, intents: ViewActionIntentStore? = nil) {
         self.transport = transport; self.intents = intents
@@ -280,11 +290,56 @@ public actor ViewActionSender {
         })
     }
 
+    private func journalState(dataEpoch: String) async throws -> ActionJournalState? {
+        if journalEpoch == dataEpoch { return journalDescriptor }
+        let descriptor = try await transport.actionJournal(dataEpoch: dataEpoch)
+        try Task.checkCancellation()
+        journalEpoch = dataEpoch; journalDescriptor = descriptor
+        return descriptor
+    }
+
+    public func prepare(_ request: ActionRequest) async throws -> ActionRequest {
+        try Task.checkCancellation()
+        guard let intents else { return request }
+        if ActionOperationID(rawValue: request.commandId) != nil { return request }
+        let descriptor = try await journalState(dataEpoch: request.dataEpoch)
+        try Task.checkCancellation()
+        guard let descriptor else {
+            let history = try await intents.acknowledgmentRanges()
+            guard history.generation == 0 else { throw OperationError.outcomeUnknown }
+            return request
+        }
+        let record: ViewActionIntentStore.Record
+        do { record = try await intents.prepareNew(request, generation: descriptor.generation) }
+        catch ViewActionIntentError.capacityExceeded {
+            scheduleRetirement()
+            await drainRetirement()
+            try Task.checkCancellation()
+            record = try await intents.prepareNew(request, generation: descriptor.generation)
+        }
+        pending = pending.filter { _, value in
+            guard let identity = ActionOperationID(rawValue: value.request.commandId) else { return true }
+            return identity.generation >= descriptor.generation
+        }
+        try Task.checkCancellation()
+        pending[record.request.commandId] = Pending(request: record.restoredRequest, body: record.body)
+        scheduleRetirement()
+        return record.restoredRequest
+    }
+
+    public func retirementNeedsRetry() -> Bool { retirementDeferred }
+
     public func send(_ request: ActionRequest) async throws -> ActionResponse {
         try Task.checkCancellation()
         let encoded = try ContractCodec.encode(request)
         if let intents {
-            switch try await intents.reserve(request, body: encoded) {
+            var allowLegacy = false
+            if ActionOperationID(rawValue: request.commandId) == nil {
+                let descriptor = try await journalState(dataEpoch: request.dataEpoch)
+                let history = try await intents.acknowledgmentRanges()
+                allowLegacy = descriptor == nil && history.generation == 0
+            }
+            switch try await intents.reserve(request, body: encoded, allowLegacyDispatch: allowLegacy) {
             case let .completed(response):
                 if let response { return response }
                 return try await recover(Pending(request: request, body: encoded))
@@ -336,15 +391,78 @@ public actor ViewActionSender {
     private func applied(_ value: Pending, response: ActionResponse) async throws {
         try await intents?.complete(.init(request: value.request, body: value.body), response: response)
         pending.removeValue(forKey: value.request.commandId)
+        if ActionOperationID(rawValue: value.request.commandId) != nil { scheduleRetirement() }
+    }
+
+    private func scheduleRetirement() {
+        retirementRequested = true
+        guard retirementTask == nil else { return }
+        retirementTask = Task { [weak self] in await self?.runRetirement() }
+    }
+
+    private func runRetirement() async {
+        while retirementRequested {
+            retirementRequested = false
+            await retireCompleted()
+        }
+        retirementTask = nil
+    }
+
+    // Tests synchronize with cleanup without making the action's UX wait for another network round trip.
+    func drainRetirement() async {
+        while let task = retirementTask { await task.value }
+    }
+
+    private func retireCompleted() async {
+        guard let intents else { return }
+        do {
+            let acknowledgment = try await intents.acknowledgmentRanges()
+            guard acknowledgment.generation > 0, !acknowledgment.ranges.isEmpty else { return }
+            let message = ActionJournalAcknowledgment(dataEpoch: acknowledgment.dataEpoch,
+                generation: acknowledgment.generation,
+                ranges: acknowledgment.ranges.map { ActionOperationRange(first: $0.first, last: $0.last) })
+            guard message != lastRetirement else { return }
+            try await transport.acknowledgeActions(message)
+            try await intents.markAcknowledged(message)
+            lastRetirement = message
+            retirementDeferred = false
+        } catch {
+            // The outcome is already committed locally; cleanup failure cannot turn it into a new send.
+            retirementDeferred = true
+        }
     }
 
     public func reconcilePending(dataEpoch: String, isCurrent: @escaping @Sendable () async -> Bool = { true }) async {
+        guard !Task.isCancelled, await isCurrent() else {
+            await drainRetirement()
+            return
+        }
+        journalEpoch = nil; journalDescriptor = nil
+        _ = try? await journalState(dataEpoch: dataEpoch)
+        guard !Task.isCancelled, await isCurrent() else {
+            await drainRetirement()
+            return
+        }
+        scheduleRetirement()
+        await drainRetirement()
         let candidates = pending.keys.sorted().compactMap { pending[$0] }.filter { $0.request.dataEpoch == dataEpoch }
         for value in candidates {
-            guard !Task.isCancelled, await isCurrent() else { return }
+            guard !Task.isCancelled, await isCurrent() else {
+                await drainRetirement()
+                return
+            }
             guard let response = try? await transport.recoverAction(value.request, body: value.body) else { continue }
-            guard !Task.isCancelled, await isCurrent() else { return }
+            guard !Task.isCancelled, await isCurrent() else {
+                await drainRetirement()
+                return
+            }
             try? await applied(value, response: response)
         }
+        await drainRetirement()
     }
+}
+
+public extension ActionRequest {
+    var deliveryCorrelationID: String { ActionOperationID.nonce(from: commandId) }
+    static func deliveryNonce(_ commandID: String) -> String { ActionOperationID.nonce(from: commandID) }
 }

@@ -51,6 +51,7 @@ public actor RelayOutbox {
     private let transport: any RelayRequestTransport
     private let journal: EnvelopeJournal?
     private var records: [String: RelayOutboxEntry] = [:]
+    private var retirement: ActionJournalAcknowledgment?
 
     public init(scope: RelayOutboxScope, transport: any RelayRequestTransport, journal: EnvelopeJournal? = nil) {
         self.scope = scope
@@ -60,6 +61,9 @@ public actor RelayOutbox {
 
     public func entry(requestID: String) async throws -> RelayOutboxEntry? {
         if let journal { return try await journal.entry(requestID: requestID) }
+        if retirement?.retires(requestID) == true {
+            return RelayOutboxEntry(requestID: requestID, scope: scope, envelope: nil, phase: .retired)
+        }
         return records[requestID]
     }
 
@@ -136,6 +140,13 @@ public actor RelayOutbox {
         }
     }
 
+    public func retireActions(_ acknowledgment: ActionJournalAcknowledgment) async throws {
+        try await journal?.retire(acknowledgment)
+        let merged = try acknowledgment.merging(retirement)
+        retirement = merged
+        records = records.filter { !merged.retires($0.key) }
+    }
+
     private func setUncertain(_ id: String) async throws {
         _ = try await update(id, phase: .uncertain, receipt: nil)
     }
@@ -163,7 +174,12 @@ public actor RelayOutbox {
             }
         }
         if let journal { return try await journal.update(requestID: id, change) }
-        guard var record = records[id] else { throw RelayOutboxError.persistenceFailed }
+        guard var record = records[id] else {
+            if retirement?.retires(id) == true {
+                return RelayOutboxEntry(requestID: id, scope: scope, envelope: nil, phase: .retired)
+            }
+            throw RelayOutboxError.persistenceFailed
+        }
         change(&record)
         records[id] = record
         return record

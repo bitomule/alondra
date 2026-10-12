@@ -14,8 +14,10 @@ private actor IntentPeer: ViewTransport {
     private(set) var recoveries: [ActionRequest] = []
     private let result: ActionResponse
     private let answerRecovery: Bool
-    init(answerRecovery: Bool = true) throws {
+    private let recoveryCompleted: @Sendable () -> Void
+    init(answerRecovery: Bool = true, recoveryCompleted: @escaping @Sendable () -> Void = {}) throws {
         self.answerRecovery = answerRecovery
+        self.recoveryCompleted = recoveryCompleted
         result = try ContractCodec.decode(ActionResponse.self,
             from: Data(#"{"protocol":1,"outcome":"applied","stamp":"Saved original answer","revision":2}"#.utf8))
     }
@@ -29,6 +31,7 @@ private actor IntentPeer: ViewTransport {
     func recoverAction(_ request: ActionRequest, body: Data) async throws -> ActionResponse? {
         #expect(try ContractCodec.encode(request) == body)
         recoveries.append(request)
+        recoveryCompleted()
         return answerRecovery ? result : nil
     }
 }
@@ -44,15 +47,15 @@ private actor IntentPeer: ViewTransport {
     @Test func relaunchRecoversTheOriginalIntentWhenTheScreenCreatesAnotherUUID() async throws {
         let directory = try TestFiles.directory()
         let peer = try IntentPeer()
-        let originalStore = try await ViewActionIntentStore(directory: directory, keyMaterial: material, scope: scope)
+        let originalStore = try await ViewActionIntentStore(directory: directory, keyMaterial: material, scope: scope, allowLegacyDispatch: true)
         let original = ViewActionSender(transport: peer, intents: originalStore)
         await #expect(throws: OperationError.outcomeUnknown) { try await original.send(request()) }
         #expect(await peer.posts.map(\.commandId) == [originalIntentID])
         let ciphertext = try Data(contentsOf: #require(try FileManager.default.contentsOfDirectory(at: directory,
-            includingPropertiesForKeys: nil).first(where: { $0.pathExtension == "intents" })))
+            includingPropertiesForKeys: nil).first(where: { $0.pathExtension == "sqlite" })))
         #expect(ciphertext.range(of: Data("Private original answer".utf8)) == nil)
 
-        let reopened = try await ViewActionIntentStore(directory: directory, keyMaterial: material, scope: scope)
+        let reopened = try await ViewActionIntentStore(directory: directory, keyMaterial: material, scope: scope, allowLegacyDispatch: true)
         let restored = ViewActionSender(transport: peer, intents: reopened)
         #expect(await restored.unresolvedCommandIDs() == [originalIntentID])
         #expect(await restored.unresolvedRequests().first?.resolvesItsCard == true)
@@ -64,7 +67,7 @@ private actor IntentPeer: ViewTransport {
         #expect(await peer.recoveries.first?.resolvesItsCard == true)
         #expect(await restored.unresolvedCommandIDs().isEmpty)
         let afterRetirement = ViewActionSender(transport: peer, intents:
-            try await ViewActionIntentStore(directory: directory, keyMaterial: material, scope: scope))
+            try await ViewActionIntentStore(directory: directory, keyMaterial: material, scope: scope, allowLegacyDispatch: true))
         #expect(await afterRetirement.unresolvedCommandIDs().isEmpty)
     }
 
@@ -72,17 +75,17 @@ private actor IntentPeer: ViewTransport {
         let directory = try TestFiles.directory()
         let peer = try IntentPeer(answerRecovery: false)
         let first = ViewActionSender(transport: peer, intents:
-            try await ViewActionIntentStore(directory: directory, keyMaterial: material, scope: scope))
+            try await ViewActionIntentStore(directory: directory, keyMaterial: material, scope: scope, allowLegacyDispatch: true))
         await #expect(throws: OperationError.outcomeUnknown) { try await first.send(request()) }
         let restored = ViewActionSender(transport: peer, intents:
-            try await ViewActionIntentStore(directory: directory, keyMaterial: material, scope: scope))
+            try await ViewActionIntentStore(directory: directory, keyMaterial: material, scope: scope, allowLegacyDispatch: true))
         await #expect(throws: OperationError.outcomeUnknown) { try await restored.send(request(replacementIntentID)) }
         await #expect(throws: OperationError.outcomeUnknown) { try await restored.retry(commandID: originalIntentID) }
         #expect(await peer.posts.map(\.commandId) == [originalIntentID])
         #expect(await peer.recoveries.map(\.commandId) == [originalIntentID, originalIntentID])
         #expect(await restored.unresolvedCommandIDs() == [originalIntentID])
         let reopened = ViewActionSender(transport: peer, intents:
-            try await ViewActionIntentStore(directory: directory, keyMaterial: material, scope: scope))
+            try await ViewActionIntentStore(directory: directory, keyMaterial: material, scope: scope, allowLegacyDispatch: true))
         #expect(await reopened.unresolvedRequests() == [request()])
     }
 
@@ -90,10 +93,10 @@ private actor IntentPeer: ViewTransport {
         let directory = try TestFiles.directory()
         let peer = try IntentPeer()
         let first = ViewActionSender(transport: peer, intents:
-            try await ViewActionIntentStore(directory: directory, keyMaterial: material, scope: scope))
+            try await ViewActionIntentStore(directory: directory, keyMaterial: material, scope: scope, allowLegacyDispatch: true))
         await #expect(throws: OperationError.outcomeUnknown) { try await first.send(request()) }
         let restored = ViewActionSender(transport: peer, intents:
-            try await ViewActionIntentStore(directory: directory, keyMaterial: material, scope: scope))
+            try await ViewActionIntentStore(directory: directory, keyMaterial: material, scope: scope, allowLegacyDispatch: true))
         await #expect(throws: OperationError.outcomeUnknown) {
             try await restored.send(request(replacementIntentID, epoch: "new-epoch"))
         }
@@ -106,32 +109,32 @@ private actor IntentPeer: ViewTransport {
         let directory = try TestFiles.directory()
         let peer = try IntentPeer()
         let first = ViewActionSender(transport: peer, intents:
-            try await ViewActionIntentStore(directory: directory, keyMaterial: material, scope: scope))
+            try await ViewActionIntentStore(directory: directory, keyMaterial: material, scope: scope, allowLegacyDispatch: true))
         await #expect(throws: OperationError.outcomeUnknown) { try await first.send(request()) }
         let otherScope = ActionIntentScope(service: scope.service, device: "other-phone", credentialRevision: "new-credential")
         let other = ViewActionSender(transport: peer, intents:
-            try await ViewActionIntentStore(directory: directory, keyMaterial: Data(repeating: 8, count: 32), scope: otherScope))
+            try await ViewActionIntentStore(directory: directory, keyMaterial: Data(repeating: 8, count: 32), scope: otherScope, allowLegacyDispatch: true))
         #expect(await other.unresolvedCommandIDs().isEmpty)
         await #expect(throws: FeedError.unknownCommand) { try await other.retry(commandID: originalIntentID) }
         #expect(await peer.recoveries.isEmpty)
         #expect(await peer.posts.count == 1)
         await #expect(throws: ViewActionIntentError.unreadableStore) {
-            try await ViewActionIntentStore(directory: directory, keyMaterial: Data(repeating: 8, count: 32), scope: scope)
+            try await ViewActionIntentStore(directory: directory, keyMaterial: Data(repeating: 8, count: 32), scope: scope, allowLegacyDispatch: true)
         }
     }
 
     @Test func deletingAnInitializedStoreCannotAuthorizeAnotherPOST() async throws {
         let directory = try TestFiles.directory()
         let peer = try IntentPeer()
-        let store = try await ViewActionIntentStore(directory: directory, keyMaterial: material, scope: scope)
+        let store = try await ViewActionIntentStore(directory: directory, keyMaterial: material, scope: scope, allowLegacyDispatch: true)
         let sender = ViewActionSender(transport: peer, intents: store)
         let file = try #require(try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
-            .first(where: { $0.pathExtension == "intents" }))
+            .first(where: { $0.pathExtension == "sqlite" }))
         try FileManager.default.removeItem(at: file)
         await #expect(throws: ViewActionIntentError.unreadableStore) { try await sender.send(request()) }
         #expect(await peer.posts.isEmpty)
         await #expect(throws: ViewActionIntentError.unreadableStore) {
-            try await ViewActionIntentStore(directory: directory, keyMaterial: material, scope: scope)
+            try await ViewActionIntentStore(directory: directory, keyMaterial: material, scope: scope, allowLegacyDispatch: true)
         }
         #expect(!FileManager.default.fileExists(atPath: file.path))
     }
@@ -140,15 +143,15 @@ private actor IntentPeer: ViewTransport {
         let directory = try TestFiles.directory()
         let peer = try IntentPeer()
         let first = ViewActionSender(transport: peer, intents:
-            try await ViewActionIntentStore(directory: directory, keyMaterial: material, scope: scope))
+            try await ViewActionIntentStore(directory: directory, keyMaterial: material, scope: scope, allowLegacyDispatch: true))
         let second = ViewActionSender(transport: peer, intents:
-            try await ViewActionIntentStore(directory: directory, keyMaterial: material, scope: scope))
+            try await ViewActionIntentStore(directory: directory, keyMaterial: material, scope: scope, allowLegacyDispatch: true))
         await #expect(throws: OperationError.outcomeUnknown) { try await first.send(request()) }
         await #expect(throws: OperationError.outcomeUnknown) {
             try await second.send(request(replacementIntentID, epoch: "other-epoch"))
         }
         let restored = ViewActionSender(transport: peer, intents:
-            try await ViewActionIntentStore(directory: directory, keyMaterial: material, scope: scope))
+            try await ViewActionIntentStore(directory: directory, keyMaterial: material, scope: scope, allowLegacyDispatch: true))
         #expect(await restored.unresolvedCommandIDs() == [originalIntentID, replacementIntentID])
         #expect(await peer.posts.map(\.commandId) == [originalIntentID, replacementIntentID])
     }
@@ -157,15 +160,15 @@ private actor IntentPeer: ViewTransport {
         let directory = try TestFiles.directory()
         let peer = try IntentPeer()
         let first = ViewActionSender(transport: peer, intents:
-            try await ViewActionIntentStore(directory: directory, keyMaterial: material, scope: scope))
+            try await ViewActionIntentStore(directory: directory, keyMaterial: material, scope: scope, allowLegacyDispatch: true))
         let second = ViewActionSender(transport: peer, intents:
-            try await ViewActionIntentStore(directory: directory, keyMaterial: material, scope: scope))
+            try await ViewActionIntentStore(directory: directory, keyMaterial: material, scope: scope, allowLegacyDispatch: true))
         await #expect(throws: OperationError.outcomeUnknown) { try await first.send(request()) }
         #expect(try await second.send(request(replacementIntentID)).outcome == .applied)
         #expect(await peer.posts.map(\.commandId) == [originalIntentID])
         #expect(await peer.recoveries.map(\.commandId) == [originalIntentID])
         let restored = ViewActionSender(transport: peer, intents:
-            try await ViewActionIntentStore(directory: directory, keyMaterial: material, scope: scope))
+            try await ViewActionIntentStore(directory: directory, keyMaterial: material, scope: scope, allowLegacyDispatch: true))
         #expect(try await restored.send(request()).outcome == .applied)
         #expect(await peer.posts.count == 1)
         #expect(await peer.recoveries.count == 1, "a verified durable completion survives presentation/relaunch without another network request")
@@ -174,7 +177,7 @@ private actor IntentPeer: ViewTransport {
     @Test func capacityReservesRoomForEveryAdmittedPendingCompletion() async throws {
         let directory = try TestFiles.directory()
         let peer = try IntentPeer()
-        let store = try await ViewActionIntentStore(directory: directory, keyMaterial: material, scope: scope, completedLimit: 2)
+        let store = try await ViewActionIntentStore(directory: directory, keyMaterial: material, scope: scope, completedLimit: 2, allowLegacyDispatch: true)
         let sender = ViewActionSender(transport: peer, intents: store)
         await #expect(throws: OperationError.outcomeUnknown) { try await sender.send(request()) }
         _ = try await sender.retry(commandID: originalIntentID)
@@ -187,7 +190,7 @@ private actor IntentPeer: ViewTransport {
         #expect(await peer.posts.map(\.commandId) == [originalIntentID, replacementIntentID])
         _ = try await sender.retry(commandID: replacementIntentID)
         let reopened = ViewActionSender(transport: peer, intents:
-            try await ViewActionIntentStore(directory: directory, keyMaterial: material, scope: scope, completedLimit: 2))
+            try await ViewActionIntentStore(directory: directory, keyMaterial: material, scope: scope, completedLimit: 2, allowLegacyDispatch: true))
         #expect(await reopened.unresolvedCommandIDs().isEmpty)
         #expect(try await reopened.send(request()).outcome == .applied)
         #expect(try await reopened.send(request(replacementIntentID, epoch: "second-epoch")).outcome == .applied)
@@ -196,20 +199,18 @@ private actor IntentPeer: ViewTransport {
 
     @Test func reconciliationReadsOnlyItsEpochAndKeepsALateResultPending() async throws {
         let directory = try TestFiles.directory()
-        let peer = try IntentPeer()
+        let current = Mutex(true)
+        let peer = try IntentPeer(recoveryCompleted: { current.withLock { $0 = false } })
         let sender = ViewActionSender(transport: peer, intents:
-            try await ViewActionIntentStore(directory: directory, keyMaterial: material, scope: scope))
+            try await ViewActionIntentStore(directory: directory, keyMaterial: material, scope: scope, allowLegacyDispatch: true))
         await #expect(throws: OperationError.outcomeUnknown) { try await sender.send(request()) }
         await sender.reconcilePending(dataEpoch: "other-epoch")
         #expect(await peer.recoveries.isEmpty)
-        let checks = Mutex(0)
-        await sender.reconcilePending(dataEpoch: "epoch", isCurrent: {
-            checks.withLock { count in count += 1; return count == 1 }
-        })
+        await sender.reconcilePending(dataEpoch: "epoch", isCurrent: { current.withLock { $0 } })
         #expect(await sender.unresolvedCommandIDs() == [originalIntentID])
         #expect(await peer.posts.count == 1)
         let restored = ViewActionSender(transport: peer, intents:
-            try await ViewActionIntentStore(directory: directory, keyMaterial: material, scope: scope))
+            try await ViewActionIntentStore(directory: directory, keyMaterial: material, scope: scope, allowLegacyDispatch: true))
         #expect(await restored.unresolvedCommandIDs() == [originalIntentID])
         await restored.reconcilePending(dataEpoch: "epoch")
         #expect(await restored.unresolvedCommandIDs().isEmpty)
@@ -221,14 +222,14 @@ private actor IntentPeer: ViewTransport {
         let directory = try TestFiles.directory()
         let peer = try IntentPeer()
         let first = ViewActionSender(transport: peer, intents:
-            try await ViewActionIntentStore(directory: directory, keyMaterial: material, scope: scope))
+            try await ViewActionIntentStore(directory: directory, keyMaterial: material, scope: scope, allowLegacyDispatch: true))
         await #expect(throws: OperationError.outcomeUnknown) { try await first.send(request()) }
-        let file = try #require(try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil).first(where: { $0.pathExtension == "intents" }))
+        let file = try #require(try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil).first(where: { $0.pathExtension == "sqlite" }))
         var corrupt = try Data(contentsOf: file)
         corrupt[corrupt.startIndex] ^= 1
         try corrupt.write(to: file)
         await #expect(throws: ViewActionIntentError.unreadableStore) {
-            try await ViewActionIntentStore(directory: directory, keyMaterial: material, scope: scope)
+            try await ViewActionIntentStore(directory: directory, keyMaterial: material, scope: scope, allowLegacyDispatch: true)
         }
         #expect(try Data(contentsOf: file) == corrupt)
         #expect(await peer.posts.count == 1)

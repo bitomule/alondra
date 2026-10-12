@@ -66,6 +66,13 @@ public enum SendFailure: Equatable, Sendable {
         }
     }
 
+    public init(preparation error: any Error) {
+        let failure = Self(error)
+        self = failure == .unsure
+            ? .answered(String(localized: "Alondra couldn’t prepare this request."))
+            : failure
+    }
+
     public init(_ error: any Error) {
         switch error {
         case let error as APIError:

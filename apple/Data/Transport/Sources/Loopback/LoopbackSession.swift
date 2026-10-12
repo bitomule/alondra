@@ -54,6 +54,11 @@ public actor LoopbackSession: OperationAPI {
         self.now = now
     }
 
+    public func retireActions(_ acknowledgment: ActionJournalAcknowledgment) async throws {
+        outcomes = outcomes.filter { !acknowledgment.retires($0.key) }
+        mutationEvidence.retireActions(acknowledgment)
+    }
+
     public static func makeURLSession() -> URLSession {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.waitsForConnectivity = false
@@ -111,7 +116,7 @@ public actor LoopbackSession: OperationAPI {
     }
 
     public func perform(_ request: APIRequest) async throws -> APIResponse {
-        guard request.method != "GET" else { return try await performPrepared(request) }
+        guard request.method != "GET", !request.isActionJournalControl else { return try await performPrepared(request) }
         let startedAt = requestClock.now()
         let owner = MutationScope.current?.id ?? UUID()
         let lease = mutationEvidence.acquire(request.operationID, owner: owner)
@@ -138,7 +143,7 @@ public actor LoopbackSession: OperationAPI {
             result = try await fileChunk(request.path)
         default:
             result = try await exchange(method: request.method, target: request.path, body: request.body,
-                                        operationID: request.operationID)
+                                        operationID: request.isActionJournalControl ? nil : request.operationID)
         }
         switch result {
         case let .completed(status, body): return .completed(status: status, body: body)

@@ -7,6 +7,7 @@ pub mod home_lock;
 pub mod service_config;
 pub mod delivery;
 pub mod activity;
+pub mod operation_id;
 pub mod artifact;
 pub mod automerge;
 pub mod config;

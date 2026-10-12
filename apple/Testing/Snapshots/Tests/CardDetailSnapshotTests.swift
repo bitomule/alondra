@@ -112,11 +112,21 @@ final class CardDetailSnapshotTests: XCTestCase {
     }
 
     /// Send in the reply field of an orchestrator notice sends: no sheet with a second field opens.
-    func test_orchestratorNoticeReplySent() throws {
-        let store = ScreenStores.cardDetail(try Fixtures.orchestratorNotice())
+    func test_orchestratorNoticeReplySent() async throws {
+        let handoff = AsyncStream<Void>.makeStream()
+        let store = ScreenStores.cardDetailWithHandoff(try Fixtures.orchestratorNotice(),
+            onHandOff: { handoff.continuation.yield(()) })
         store.send(.replyChanged("Stop the Lumo node, it can wait"))
-        store.send(.actionTapped(try XCTUnwrap(store.subject?.replyAction)))
+        let reply = try XCTUnwrap(store.subject?.replyAction)
+        let send = store.send(.actionTapped(reply))
+        await send.finish()
+        handoff.continuation.finish()
+        var events = handoff.stream.makeAsyncIterator()
+        let handedOff: Void? = await events.next()
+        XCTAssertNotNil(handedOff, "capture starts after the real sent reducer reaches its dismissal handoff")
         XCTAssertNil(store.composition)
+        XCTAssertEqual(store.reply, "")
+        XCTAssertEqual(store.actions.stamp, reply.stamp ?? String(localized: "Sent"))
         assertDetail(store)
     }
 

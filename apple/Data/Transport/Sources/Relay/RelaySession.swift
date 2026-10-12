@@ -99,6 +99,13 @@ public actor RelaySession: OperationAPI, PushRegistrationAPI {
     /// Product callers use AlondraAPIClient. This capability preserves the caller's durable
     /// operation identity through encrypted dispatch and status-only reconciliation.
     public func perform(_ request: APIRequest) async throws -> APIResponse {
+        if request.isActionJournalControl {
+            switch try await waitForReadCompletion(requestID: "control-" + UUID().uuidString,
+                path: request.path, seconds: 15, method: request.method, body: request.body) {
+            case let .completed(status, body): return .completed(status: status, body: body)
+            case .unknown: return .unknown
+            }
+        }
         if request.method == "GET", request.path.hasPrefix("/changes?"), request.body == nil,
            let wait = EnvelopeRequestPolicy.viewsChangeWait(request.path) {
             switch try await waitForReadCompletion(requestID: "read-" + UUID().uuidString, path: request.path,
@@ -267,6 +274,11 @@ public actor RelaySession: OperationAPI, PushRegistrationAPI {
     }
 
     /// Only after the use case durably records a verified result. Retains the outbox tombstone.
+    public func retireActions(_ acknowledgment: ActionJournalAcknowledgment) async throws {
+        try await outbox.retireActions(acknowledgment)
+        mutationEvidence.retireActions(acknowledgment)
+    }
+
     public func retireAppliedResponse(requestID: String) async throws {
         guard let entry = try await outbox.entry(requestID: requestID),
               let revision = entry.lastRevision, let response = entry.lastResponse,
@@ -280,7 +292,7 @@ public actor RelaySession: OperationAPI, PushRegistrationAPI {
     /// Relay changes wake this read's status query; they never invalidate daemon content
     /// themselves. The completed response still crosses the same authenticated envelope gate.
     private func waitForReadCompletion(requestID: String, path: String, seconds: Int,
-                                       deadlineSlack: Int = 5) async throws -> RelayOperationResult {
+                                       deadlineSlack: Int = 5, method: String = "GET", body: Data? = nil) async throws -> RelayOperationResult {
         // Includes bootstrap, the one submission, status reconciliation and every HTTP wait.
         let deadline = requestClock.now().advanced(by: .seconds(seconds + deadlineSlack))
         let waitForDeadline = waitForReadDeadline
@@ -290,7 +302,7 @@ public actor RelaySession: OperationAPI, PushRegistrationAPI {
                 try Task.checkCancellation()
                 return .unknown
             }
-            group.addTask { try await self.readUntilChange(requestID: requestID, path: path, deadline: deadline) }
+            group.addTask { try await self.readUntilChange(requestID: requestID, path: path, method: method, body: body, deadline: deadline) }
             defer { group.cancelAll() }
             let result = try await group.next() ?? .unknown
             try Task.checkCancellation()
@@ -305,10 +317,10 @@ public actor RelaySession: OperationAPI, PushRegistrationAPI {
         guard requestClock.now() < deadline else { throw RelaySessionError.outcomeUnknown }
     }
 
-    private func readUntilChange(requestID: String, path: String, deadline: ContinuousClock.Instant) async throws -> RelayOperationResult {
+    private func readUntilChange(requestID: String, path: String, method: String, body: Data?, deadline: ContinuousClock.Instant) async throws -> RelayOperationResult {
         var bootstrap = try await currentBootstrap()
         try checkReadDeadline(deadline)
-        let envelope = try sealRequest(requestID: requestID, method: "GET", path: path, body: nil)
+        let envelope = try sealRequest(requestID: requestID, method: method, path: path, body: body)
         try checkReadDeadline(deadline)
         do {
             let receipt: RelayReceipt

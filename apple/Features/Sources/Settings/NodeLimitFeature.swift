@@ -88,7 +88,11 @@ public struct NodeLimitSetting: Equatable, Sendable {
                 let request = ActionRequest(commandId: uuid().uuidString.lowercased(), dataEpoch: setting.dataEpoch,
                                             client: state.client, lang: state.lang, actionId: actionID, optionId: option.id)
                 return .run { [viewsClient] send in
-                    do { await send(.answered(try await viewsClient.perform(request))) }
+                    do {
+                        let prepared = try await viewsClient.prepare(request)
+                        try Task.checkCancellation()
+                        await send(.answered(try await viewsClient.perform(prepared)))
+                    }
                     catch { await send(.failed(String(localized: "Your Mac didn’t get the new limit. Try again."))) }
                 }
             case .answered(let reply):

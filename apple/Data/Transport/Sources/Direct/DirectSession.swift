@@ -72,13 +72,20 @@ public actor DirectSession: OperationAPI {
         return try await codec.recover(request, envelope: envelope) { try await self.perform($0) }
     }
 
+    public func retireActions(_ acknowledgment: ActionJournalAcknowledgment) async throws {
+        try await journal?.retire(acknowledgment)
+        sealed = sealed.filter { !acknowledgment.retires($0.key) }
+        sealedOrder.removeAll { acknowledgment.retires($0) }
+        mutationEvidence.retireActions(acknowledgment)
+    }
+
     public func deactivate() async {
         lifetime.deactivate()
         await mutations.cancelAll()
     }
 
     public func perform(_ request: APIRequest) async throws -> APIResponse {
-        guard request.method != "GET" else { return try await performPrepared(request) }
+        guard request.method != "GET", !request.isActionJournalControl else { return try await performPrepared(request) }
         let startedAt = requestClock.now()
         let owner = MutationScope.current?.id ?? UUID()
         let lease = mutationEvidence.acquire(request.operationID, owner: owner)
@@ -98,6 +105,11 @@ public actor DirectSession: OperationAPI {
                                                                   hasBody: request.body != nil)
         else { throw RelaySessionError.invalidRequest }
         let timeout = Duration.seconds((wait ?? 0) + 20)
+        if request.isActionJournalControl {
+            let requestID = "control-" + UUID().uuidString
+            let body = try seal(requestID: requestID, method: request.method, path: request.path, body: request.body)
+            return try await deliver(body, requestID: requestID, mutation: false, timeout: timeout)
+        }
         if request.method == "GET" {
             let requestID = "read-" + UUID().uuidString
             let body = try seal(requestID: requestID, method: "GET", path: request.path, body: nil)

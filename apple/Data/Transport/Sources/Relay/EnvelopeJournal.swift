@@ -10,7 +10,7 @@ public enum EnvelopeJournalError: Error, Sendable, Equatable {
 /// One pairing namespace. Blocking disk operations run on a dedicated serial queue; SQLite
 /// transactions also serialize writers from another app process using this namespace.
 public final class EnvelopeJournal: Sendable {
-    private static let schema = 1
+    private static let schema = 2
     let scope: RelayOutboxScope
     private let directory: URL
     private let queue = DispatchQueue(label: "alondra.operation-journal")
@@ -25,7 +25,13 @@ public final class EnvelopeJournal: Sendable {
     }
 
     public func entry(requestID: String) async throws -> RelayOutboxEntry? {
-        try await perform { database in try Self.read(database, id: requestID, scope: self.scope) }
+        try await perform { database in
+            if let entry = try Self.read(database, id: requestID, scope: self.scope) { return entry }
+            if try Self.isRetired(database, id: requestID) {
+                return RelayOutboxEntry(requestID: requestID, scope: self.scope, envelope: nil, phase: .retired)
+            }
+            return nil
+        }
     }
 
     public func entries() async throws -> [RelayOutboxEntry] {
@@ -48,6 +54,7 @@ public final class EnvelopeJournal: Sendable {
     func reserve(_ entry: RelayOutboxEntry) async throws {
         try await perform { database in
             guard entry.scope == self.scope else { throw EnvelopeJournalError.wrongScope }
+            if try Self.isRetired(database, id: entry.requestID) { throw EnvelopeJournalError.duplicateRequestID }
             guard try Self.read(database, id: entry.requestID, scope: self.scope) == nil else {
                 throw EnvelopeJournalError.duplicateRequestID
             }
@@ -58,6 +65,9 @@ public final class EnvelopeJournal: Sendable {
     func update(requestID: String, _ change: @escaping @Sendable (inout RelayOutboxEntry) throws -> Void) async throws -> RelayOutboxEntry {
         try await perform { database in
             guard var entry = try Self.read(database, id: requestID, scope: self.scope) else {
+                if try Self.isRetired(database, id: requestID) {
+                    return RelayOutboxEntry(requestID: requestID, scope: self.scope, envelope: nil, phase: .retired)
+                }
                 throw EnvelopeJournalError.corrupt
             }
             try change(&entry)
@@ -65,6 +75,81 @@ public final class EnvelopeJournal: Sendable {
             try Self.write(database, entry: entry)
             return entry
         }
+    }
+
+    private struct Retirement: Codable {
+        var generation: UInt64 = 0
+        var epochTag = ""
+        var ranges: [ActionOperationRange] = []
+    }
+
+    public func retire(_ acknowledgment: ActionJournalAcknowledgment) async throws {
+        guard (1...ActionOperationID.maximumCounter).contains(acknowledgment.generation),
+              !acknowledgment.dataEpoch.isEmpty, acknowledgment.ranges.count <= 129,
+              acknowledgment.ranges.allSatisfy({ $0.first > 0 && $0.first <= $0.last && $0.last <= ActionOperationID.maximumCounter })
+        else { throw EnvelopeJournalError.corrupt }
+        try await perform { database in
+            var state = try Self.retirement(database)
+            guard acknowledgment.generation >= state.generation else { return }
+            let tag = ActionOperationID.tag(for: acknowledgment.dataEpoch)
+            if acknowledgment.generation > state.generation {
+                state = Retirement(generation: acknowledgment.generation, epochTag: tag)
+            }
+            guard state.epochTag == tag else { throw EnvelopeJournalError.corrupt }
+            let sorted = (state.ranges + acknowledgment.ranges).sorted { $0.first < $1.first }
+            var merged: [ActionOperationRange] = []
+            for range in sorted {
+                if let last = merged.last, range.first <= last.last + 1 {
+                    merged[merged.count - 1] = ActionOperationRange(first: last.first, last: max(last.last, range.last))
+                } else { merged.append(range) }
+            }
+            guard merged.count <= 129 else { throw EnvelopeJournalError.corrupt }
+            state.ranges = merged
+            let update = try Self.prepare(database, "UPDATE action_retirement SET state=? WHERE singleton=1")
+            defer { sqlite3_finalize(update) }
+            try Self.bind(try JSONEncoder().encode(state), statement: update, index: 1)
+            guard sqlite3_step(update) == SQLITE_DONE, sqlite3_changes(database) == 1 else { throw EnvelopeJournalError.corrupt }
+            try Self.execute(database, "DELETE FROM operations WHERE action_generation < \(state.generation)")
+            for range in merged {
+                let removal = try Self.prepare(database, "DELETE FROM operations WHERE action_generation=? AND action_epoch=? AND action_sequence BETWEEN ? AND ?")
+                defer { sqlite3_finalize(removal) }
+                sqlite3_bind_int64(removal, 1, Int64(state.generation))
+                try Self.bind(Data(tag.utf8), statement: removal, index: 2, text: true)
+                sqlite3_bind_int64(removal, 3, Int64(range.first)); sqlite3_bind_int64(removal, 4, Int64(range.last))
+                guard sqlite3_step(removal) == SQLITE_DONE else { throw EnvelopeJournalError.unavailable }
+            }
+        }
+    }
+
+    private static func createRetirement(_ database: OpaquePointer) throws {
+        try execute(database, "ALTER TABLE operations ADD COLUMN action_generation INTEGER")
+        try execute(database, "ALTER TABLE operations ADD COLUMN action_epoch TEXT")
+        try execute(database, "ALTER TABLE operations ADD COLUMN action_sequence INTEGER")
+        try execute(database, "CREATE INDEX operations_action ON operations(action_generation,action_epoch,action_sequence)")
+        try execute(database, "CREATE TABLE action_retirement(singleton INTEGER PRIMARY KEY CHECK(singleton=1),state BLOB NOT NULL)")
+        let insert = try prepare(database, "INSERT INTO action_retirement VALUES(1,?)")
+        defer { sqlite3_finalize(insert) }
+        try bind(try JSONEncoder().encode(Retirement()), statement: insert, index: 1)
+        guard sqlite3_step(insert) == SQLITE_DONE else { throw EnvelopeJournalError.corrupt }
+    }
+
+    private static func retirement(_ database: OpaquePointer) throws -> Retirement {
+        let query = try prepare(database, "SELECT state FROM action_retirement WHERE singleton=1")
+        defer { sqlite3_finalize(query) }
+        guard sqlite3_step(query) == SQLITE_ROW else { throw EnvelopeJournalError.corrupt }
+        let state = try JSONDecoder().decode(Retirement.self, from: bytes(query))
+        guard state.generation <= ActionOperationID.maximumCounter, state.ranges.count <= 129,
+              state.ranges.allSatisfy({ $0.first > 0 && $0.first <= $0.last && $0.last <= ActionOperationID.maximumCounter })
+        else { throw EnvelopeJournalError.corrupt }
+        return state
+    }
+
+    private static func isRetired(_ database: OpaquePointer, id: String) throws -> Bool {
+        guard let ticket = ActionOperationID(rawValue: id) else { return false }
+        let state = try retirement(database)
+        if ticket.generation < state.generation { return true }
+        return ticket.generation == state.generation && ticket.epochTag == state.epochTag
+            && state.ranges.contains { $0.first <= ticket.sequence && ticket.sequence <= $0.last }
     }
 
     private func perform<Result: Sendable>(_ operation: @escaping @Sendable (OpaquePointer) throws -> Result) async throws -> Result {
@@ -125,6 +210,10 @@ public final class EnvelopeJournal: Sendable {
                     defer { sqlite3_finalize(insert) }
                     try Self.bind(try JSONEncoder().encode(scope), statement: insert, index: 1)
                     guard sqlite3_step(insert) == SQLITE_DONE else { throw EnvelopeJournalError.unavailable }
+                    try Self.createRetirement(database)
+                    try Self.execute(database, "PRAGMA user_version=\(Self.schema)")
+                } else if schema == 1 {
+                    try Self.createRetirement(database)
                     try Self.execute(database, "PRAGMA user_version=\(Self.schema)")
                 } else if schema != Self.schema { throw EnvelopeJournalError.corrupt }
                 try Self.execute(database, "COMMIT")
@@ -181,10 +270,15 @@ public final class EnvelopeJournal: Sendable {
     }
 
     private static func write(_ database: OpaquePointer, entry: RelayOutboxEntry) throws {
-        let statement = try prepare(database, "INSERT INTO operations(request_id,entry) VALUES(?,?) ON CONFLICT(request_id) DO UPDATE SET entry=excluded.entry")
+        let statement = try prepare(database, "INSERT INTO operations(request_id,entry,action_generation,action_epoch,action_sequence) VALUES(?,?,?,?,?) ON CONFLICT(request_id) DO UPDATE SET entry=excluded.entry")
         defer { sqlite3_finalize(statement) }
         try bind(Data(entry.requestID.utf8), statement: statement, index: 1, text: true)
         try bind(try JSONEncoder().encode(entry), statement: statement, index: 2)
+        if let ticket = ActionOperationID(rawValue: entry.requestID) {
+            sqlite3_bind_int64(statement, 3, Int64(ticket.generation))
+            try bind(Data(ticket.epochTag.utf8), statement: statement, index: 4, text: true)
+            sqlite3_bind_int64(statement, 5, Int64(ticket.sequence))
+        } else { sqlite3_bind_null(statement, 3); sqlite3_bind_null(statement, 4); sqlite3_bind_null(statement, 5) }
         guard sqlite3_step(statement) == SQLITE_DONE else { throw EnvelopeJournalError.unavailable }
     }
 

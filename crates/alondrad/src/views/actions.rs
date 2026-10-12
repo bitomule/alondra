@@ -363,7 +363,7 @@ async fn execute_inner(
     if request.protocol != VIEWS_PROTOCOL {
         return Ok(error_value_lang(lang, "incompatible_protocol", "Update Alondra"));
     }
-    if !matches!(request.client.as_str(), "ios" | "mac" | "tui") || !is_uuid_v4(&request.command_id) {
+    if !matches!(request.client.as_str(), "ios" | "mac" | "tui") || !alondra_core::operation_id::valid_action_id(&request.command_id) {
         return Ok(error_value_lang(lang, "invalid_input", "invalid action request"));
     }
     let attachments = match resolve_attachments(home, &request.input.attachments) {
@@ -924,8 +924,8 @@ fn execute_value(
         Ok(action) => action,
         Err(_) => return Ok(error_value_lang(lang, "invalid_input", "invalid action_id")),
     };
-    if !is_uuid_v4(&request.command_id) {
-        return Ok(error_value_lang(lang, "invalid_input", "command_id must be a UUID v4"));
+    if !alondra_core::operation_id::valid_action_id(&request.command_id) {
+        return Ok(error_value_lang(lang, "invalid_input", "command_id must be a supported operation ID"));
     }
     let command_id = CommandId(request.command_id.clone());
     let state = match domain.state() {
@@ -1725,7 +1725,7 @@ fn localize<'a>(lang: Lang, message: &'a str) -> &'a str {
         "invalid client" => "Cliente no válido",
         "device approval was revoked" => "Se ha revocado la aprobación del dispositivo",
         "text is required" | "This option needs text" => "Escribe un texto",
-        "command_id must be a UUID v4" => "El identificador del comando no es válido",
+        "command_id must be a supported operation ID" => "El identificador del comando no es válido",
         "An attachment is no longer available" => "Un archivo adjunto ya no está disponible",
         "Choose an option" => "Elige una opción",
         "This item is no longer available" => "Este elemento ya no está disponible",

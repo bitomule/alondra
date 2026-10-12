@@ -919,6 +919,12 @@ impl Service {
             .map_err(|error| anyhow!("invalid encrypted work: {error}"))?;
         self.auth.usage().touch(&e.sender, alondra_core::now_millis(), false);
         let request: LocalRequest = serde_json::from_slice(&plaintext)?;
+        if e.request_id.starts_with("op_") {
+            anyhow::ensure!(alondra_core::operation_id::OperationId::parse(&e.request_id).is_some()
+                && crate::views::actions::approved_path(&request.method,&request.path)
+                && request.body.as_ref().and_then(|body|body["command_id"].as_str())==Some(e.request_id.as_str()),
+                "structured operation cannot be reclassified as a legacy request");
+        }
         anyhow::ensure!(
             request.path != "/commands",
             "generic command endpoint is not part of the service contract"
@@ -927,6 +933,7 @@ impl Service {
             anyhow::ensure!(
                 (crate::domain_api::approved_resource_read_path(&request.path)
                     || operation_results::lookup(&request.path).is_some()
+                    || crate::operation_journal::control(&request.method,&request.path,request.body.is_some())
                     || crate::domain_api::is_resource_mutation_path(
                         &request.method,
                         &request.path
@@ -1040,9 +1047,34 @@ impl Service {
                 ExecutionLane::Mutation(turn) => Some(turn.acquire().await),
             }
         };
+        if crate::operation_journal::control(&request.method,&request.path,request.body.is_some()) {
+            accepted().await?;
+            self.require_device_approval(&e.sender,&device,transport)?;
+            let result = self.operation_control(&e.sender,&request,transport).await?;
+            let response = self.encode_response(e,&device,&result,&request)?;
+            return Ok((response,device,guard));
+        }
         let receipt = self.journal.reserve_receipt(guard.clone())?;
         let recovery_scope = self.operation_scope(e, &request, &device, transport)?;
-        let disposition = self.journal.accept_admitted(&e.sender, &e.request_id, &digest, recovery_scope, receipt.clone()).await?;
+        let legacy_scope = self.domain.as_ref().map(|domain| {
+            self.operation_journal_scope(&e.sender, &device, transport, &domain.state()?.data_epoch.0)
+        }).transpose()?;
+        let disposition = match self.journal.accept_admitted(&e.sender, &e.request_id, &digest, recovery_scope,request.method=="GET" && request.body.is_none(), legacy_scope, receipt.clone()).await {
+            Ok(disposition)=>disposition,
+            Err(error) if error.is::<crate::operation_journal::Capacity>()=>{
+                accepted().await?;
+                self.require_device_approval(&e.sender,&device,transport)?;
+                let response = self.encode_response(e,&device,&json!({"status":429,"body":{"error":"operation_capacity"}}),&request)?;
+                return Ok((response,device,guard));
+            },
+            Err(error) if error.is::<crate::operation_journal::Retired>()=>{
+                accepted().await?;
+                self.require_device_approval(&e.sender,&device,transport)?;
+                let response=self.encode_response(e,&device,&json!({"status":410,"body":{"error":"outcome_unknown"}}),&request)?;
+                return Ok((response,device,guard));
+            },
+            Err(error)=>return Err(error),
+        };
         accepted().await?;
         if request.body.is_none() && domain_read_route(&request) {
             let binding = self.read_receipt_binding(&e.sender, &device, transport)?;
@@ -1059,6 +1091,7 @@ impl Service {
             && request.method == "GET"
             && request.body.is_none();
         let response = match disposition {
+            Disposition::Retired => self.encode_response(e,&device,&json!({"status":410,"body":{"error":"outcome_unknown"}}),&request)?,
             Disposition::Completed(bytes) => bytes,
             Disposition::ExecutingLocal => {
                 self.execute_atomic_local(e, &device, &request, &digest, transport, receipt.clone())
@@ -1276,6 +1309,9 @@ impl Service {
         approved_method(request)?;
         let device = self.devices.get(sender).context("unapproved device")?;
         let approved = self.approved_device(sender, &device, transport)?;
+        if crate::operation_journal::control(&request.method,&request.path,request.body.is_some()) {
+            return self.operation_control(sender,request,transport).await;
+        }
         if let Some(lookup) = operation_results::lookup(&request.path) {
             let result = self.operation_result(sender, &lookup, transport).await?;
             approved.recheck()?;
@@ -1388,7 +1424,7 @@ impl Service {
         let bytes = axum::body::to_bytes(response.into_body(), MAX_LOCAL_RESPONSE).await?;
         approved.recheck()?;
         let mut body: Value = serde_json::from_slice(&bytes)?;
-        if request.path == "/capabilities" && status == 200 { body["operation_results"] = json!(true); }
+        if request.path == "/capabilities" && status == 200 { body["operation_results"] = json!(true);body["operation_journal"] = json!(true); }
         Ok(json!({"status":status,"body":body}))
     }
 
@@ -1907,7 +1943,8 @@ fn id_action(path: &str, prefix: &str, action: &str, numeric: bool) -> bool {
 
 fn domain_read_route(request: &LocalRequest) -> bool {
     request.method == "GET"
-        && (operation_results::lookup(&request.path).is_some()
+        && (crate::operation_journal::query_epoch(&request.path).is_some()
+            || operation_results::lookup(&request.path).is_some()
             || crate::domain_api::approved_resource_read_path(&request.path)
             || crate::client_routes::approved_read_path(&request.path)
             || crate::views::routes::approved_read_path(&request.path))
@@ -1932,6 +1969,9 @@ fn domain_read_id(id: &str) -> bool {
 /// The relay carries opaque JSON. Only these app operations may be replayed on loopback.
 /// There is deliberately no general URL proxy, no pairing/device management, and no upload.
 fn approved_method(request: &LocalRequest) -> Result<Method> {
+    if crate::operation_journal::control(&request.method,&request.path,request.body.is_some()) {
+        return Ok(Method::from_bytes(request.method.as_bytes())?);
+    }
     if request.method == "GET" && request.body.is_none() && operation_results::lookup(&request.path).is_some() {
         return Ok(Method::GET);
     }
@@ -2136,6 +2176,7 @@ fn single_query_value(query: &str, key: &str, values: &[&str]) -> bool {
 }
 
 enum Disposition {
+    Retired,
     Accepted,
     Executing,
     ExecutingLocal,
@@ -2166,6 +2207,8 @@ struct Journal {
     accept_jobs: Arc<tokio::sync::Semaphore>,
     #[cfg(test)]
     before_write: Option<Arc<ReceiptWriteHook>>,
+    #[cfg(test)]
+    _fixture_directory: Option<Arc<crate::test_support::Directory>>,
 }
 impl Journal {
     fn reserve_receipt(&self, reservation: Arc<WorkGuard>) -> Result<Arc<ReceiptAdmission>> {
@@ -2228,12 +2271,12 @@ impl Journal {
     }
 
     async fn accept_admitted(
-        &self, sender: &str, id: &str, digest: &[u8; 32], recovery: Option<operation_results::RecoveryScope>, receipt: Arc<ReceiptAdmission>,
+        &self, sender: &str, id: &str, digest: &[u8; 32], recovery: Option<operation_results::RecoveryScope>, read_only:bool, legacy_scope:Option<crate::operation_journal::Scope>, receipt: Arc<ReceiptAdmission>,
     ) -> Result<Disposition> {
         let (sender, id, digest) = (sender.to_owned(), id.to_owned(), *digest);
         self.off_runtime_admitted(receipt.reservation.clone(), move |journal| {
             let _receipt = receipt;
-            journal.accept_scoped(&sender, &id, &digest, recovery.as_ref())
+            journal.accept_classified(&sender, &id, &digest, recovery.as_ref(),read_only,legacy_scope.as_ref())
         }).await
     }
 
@@ -2247,6 +2290,7 @@ impl Journal {
         tokio::task::spawn_blocking(move || operation(&journal)).await?
     }
     fn open(path: PathBuf) -> Result<Self> {
+        crate::operation_journal::guard(&path)?;
         // Resolve only the parent (macOS temporary roots may themselves be
         // aliases). Never canonicalize the final filename: that would erase
         // evidence of a symlink before SQLite can enforce NOFOLLOW.
@@ -2311,12 +2355,15 @@ impl Journal {
             if !exists { migration.execute_batch(&format!("ALTER TABLE service_receipts ADD COLUMN {name} BLOB"))?; }
         }
         migration.commit()?;
+        crate::operation_journal::initialize(&path,&mut c,crate::operation_journal::Backend::Encrypted)?;
         Ok(Self { path,
             receipt_admissions: Arc::new(tokio::sync::Semaphore::new(MAX_JOURNAL_RECEIPTS)),
             accept_admissions: Arc::new(tokio::sync::Semaphore::new(MAX_JOURNAL_ACCEPTS)),
             accept_jobs: Arc::new(tokio::sync::Semaphore::new(1)),
             #[cfg(test)]
             before_write: None,
+            #[cfg(test)]
+            _fixture_directory: None,
         })
     }
     fn connect(path: &Path) -> Result<Connection> {
@@ -2545,6 +2592,7 @@ impl Journal {
         let bytes = encode(result)?;
         tx.execute("UPDATE service_receipts SET state='completed',response=?3 WHERE sender=?1 AND request_id=?2",
             params![sender,id,&bytes])?;
+        self.trim_replies(&tx,sender)?;
         tx.commit()?;
         Ok(bytes)
     }
@@ -2597,9 +2645,17 @@ impl Journal {
     fn accept(&self, sender: &str, id: &str, digest: &[u8; 32]) -> Result<Disposition> {
         self.accept_scoped(sender, id, digest, None)
     }
+    #[cfg(test)]
     fn accept_scoped(&self, sender: &str, id: &str, digest: &[u8; 32], recovery: Option<&operation_results::RecoveryScope>) -> Result<Disposition> {
+        self.accept_classified(sender,id,digest,recovery,false,None)
+    }
+    fn accept_classified(&self, sender: &str, id: &str, digest: &[u8; 32], recovery: Option<&operation_results::RecoveryScope>,read_only:bool,legacy_scope:Option<&crate::operation_journal::Scope>) -> Result<Disposition> {
         let mut c = self.db()?;
         let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let identity = match recovery.and_then(|recovery|recovery.operation.as_ref()) {
+            Some(scope)=>crate::operation_journal::admit(&tx,scope,id,crate::operation_journal::Backend::Encrypted)?,
+            None=>None,
+        };
         let previous: Option<(Vec<u8>, String, Option<Vec<u8>>, String)> = tx.query_row(
             "SELECT digest,state,response,execution_mode FROM service_receipts WHERE sender=?1 AND request_id=?2",
             params![sender,id], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional()?;
@@ -2607,6 +2663,7 @@ impl Journal {
             Some((prior, _, _, _)) if prior != digest => {
                 return Err(ReusedRequestId.into());
             }
+            Some((_, state, _, _)) if state=="retired" => Disposition::Retired,
             Some((_, state, response, _)) if state == "completed" => {
                 Disposition::Completed(response.context("completed receipt missing response")?)
             }
@@ -2616,8 +2673,18 @@ impl Journal {
             Some((_, state, _, _)) if state == "executing" => Disposition::Executing,
             Some(_) => Disposition::Accepted,
             None => {
+                if identity.is_none() && !read_only && legacy_scope.map(|scope|crate::operation_journal::opted_in(&tx,scope)).transpose()?.unwrap_or(false) {
+                    let count:i64 = tx.query_row("SELECT count(*) FROM service_receipts WHERE sender=?1 AND journal_issuer IS NULL AND execution_mode<>'read'",params![sender],|row|row.get(0))?;
+                    if count>=crate::operation_journal::MAX_LEGACY as i64 { return Err(crate::operation_journal::Capacity.into()); }
+                }
                 tx.execute("INSERT INTO service_receipts(sender,request_id,digest,state,recovery_digest,recovery_binding) VALUES (?1,?2,?3,'accepted',?4,?5)",
                     params![sender,id,digest.as_slice(),recovery.map(|value|value.digest.as_slice()),recovery.map(|value|value.binding.as_slice())])?;
+                if read_only { tx.execute("UPDATE service_receipts SET execution_mode='read' WHERE sender=?1 AND request_id=?2",params![sender,id])?; }
+                if let Some(identity) = &identity {
+                    let scope = recovery.and_then(|recovery|recovery.operation.as_ref()).unwrap();
+                    tx.execute("UPDATE service_receipts SET journal_issuer=?3,journal_generation=?4,journal_sequence=?5 WHERE sender=?1 AND request_id=?2",
+                        params![sender,id,scope.issuer,crate::operation_journal::sql_counter(identity.generation)?,crate::operation_journal::sql_counter(identity.sequence)?])?;
+                }
                 Disposition::Accepted
             }
         };
@@ -2639,10 +2706,28 @@ impl Journal {
     }
 
     fn complete(&self, sender: &str, id: &str, response: &[u8]) -> Result<()> {
-        let c = self.db()?;
-        let n = c.execute("UPDATE service_receipts SET state='completed', response=?3 WHERE sender=?1 AND request_id=?2 AND state='executing'", params![sender,id,response])?;
-        if n != 1 {
-            bail!("operation receipt no longer executing");
+        let mut c = self.db()?;
+        let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let n = tx.execute("UPDATE service_receipts SET state='completed', response=?3 WHERE sender=?1 AND request_id=?2 AND state='executing'", params![sender,id,response])?;
+        if n!=1 { bail!("operation receipt no longer executing"); }
+        self.trim_replies(&tx,sender)?;
+        tx.commit()?;Ok(())
+    }
+    fn trim_replies(&self,tx:&rusqlite::Transaction<'_>,sender:&str)->Result<()> {
+        for read_only in [true,false] {
+            let predicate = if read_only { "execution_mode='read'" } else { "execution_mode<>'read' AND journal_issuer IS NULL" };
+            let rows:Vec<(String,i64)> = {
+                let mut statement = tx.prepare(&format!("SELECT request_id,length(response) FROM service_receipts WHERE sender=?1 AND state='completed' AND response IS NOT NULL AND {predicate} ORDER BY rowid DESC"))?;
+                statement.query_map(params![sender],|row|Ok((row.get(0)?,row.get(1)?)))?.collect::<rusqlite::Result<_>>()?
+            };
+            let mut bytes=0usize;
+            for (index,(id,len)) in rows.into_iter().enumerate() {
+                bytes=bytes.saturating_add(usize::try_from(len)?);
+                if index>=crate::operation_journal::MAX_CACHED_REPLIES || bytes>crate::operation_journal::MAX_CACHED_BYTES {
+                    if read_only { tx.execute("DELETE FROM service_receipts WHERE sender=?1 AND request_id=?2",params![sender,id])?; }
+                    else { tx.execute("UPDATE service_receipts SET response=NULL,state='retired',recovery_digest=NULL,recovery_binding=NULL WHERE sender=?1 AND request_id=?2",params![sender,id])?; }
+                }
+            }
         }
         Ok(())
     }
@@ -7717,5 +7802,76 @@ agreement_key = "{}"
             "a device that is not paired gets nothing");
         drop(service);
         drop(domain);
+    }
+}
+
+#[cfg(test)]
+impl Service {
+    pub(crate) async fn process_fixture_service(
+        directory: Arc<crate::test_support::Directory>,
+        domain: Arc<crate::domain_runtime::DomainRuntime>,
+        relay_url: &str,
+    ) -> Arc<Self> {
+        let home: &Path = &directory;
+        let signing = SigningKey::from_slice(&[33u8; 32]).unwrap();
+        let agreement = SecretKey::from_slice(&[34u8; 32]).unwrap();
+        if !home.join("service.toml").exists() {
+            for (name, bytes) in [("signing.key", [1u8; 32]), ("agreement.key", [2u8; 32])] {
+                let path = home.join(name);
+                std::fs::write(&path, URL_SAFE_NO_PAD.encode(bytes)).unwrap();
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
+                }
+            }
+            std::fs::write(
+            home.join("devices.json"),
+            serde_json::to_vec(&json!([{
+                "id":"phone-1","name":"Fixture iPhone","created_at":0,"last_seen":null,
+                "public_key":base64::engine::general_purpose::STANDARD.encode(signing.verifying_key().to_sec1_bytes())
+            }]))
+            .unwrap(),
+        )
+        .unwrap();
+            let config = format!(
+                r#"relay_url = "{relay_url}"
+mac_id = "mac-1"
+owner_sub = "owner"
+signing_key_path = "signing.key"
+agreement_key_path = "agreement.key"
+[[devices]]
+device_id = "phone-1"
+signing_key = "{}"
+agreement_key = "{}"
+"#,
+                URL_SAFE_NO_PAD.encode(signing.verifying_key().to_sec1_bytes()),
+                URL_SAFE_NO_PAD.encode(agreement.public_key().to_sec1_bytes())
+            );
+            std::fs::write(home.join("service.toml"), config).unwrap();
+        }
+        let client = crate::client_routes::Client::open(domain.clone(), home, Default::default());
+        let mut service = Service::open(home, 0, Arc::new(Auth::open(home).unwrap()))
+            .unwrap()
+            .unwrap()
+            .with_domain(domain)
+            .with_client(client);
+        assert_eq!(
+            service.relay_url(),
+            reqwest::Url::parse(relay_url).unwrap(),
+            "fixture relay identity changed"
+        );
+        assert_eq!(&service.signing.to_bytes()[..], &[1u8; 32]);
+        assert_eq!(&service.agreement.to_bytes()[..], &[2u8; 32]);
+        service.client = reqwest::Client::builder()
+            .pool_max_idle_per_host(0)
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .unwrap();
+        service.journal._fixture_directory = Some(directory.clone());
+        let service = Arc::new(service);
+        let epoch = service.bootstrap().await.unwrap();
+        service.enroll(&epoch).await.unwrap();
+        service
     }
 }

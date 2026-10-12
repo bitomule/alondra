@@ -394,6 +394,11 @@ final class MutationEvidenceStore: Sendable {
         }
     }
 
+    func retireActions(_ acknowledgment: ActionJournalAcknowledgment) {
+        let retired = entries.withLock { $0.keys.filter { acknowledgment.retires($0) } }
+        for requestID in retired { forget(requestID) }
+    }
+
     private func released(_ requestID: String, evidence: MutationDispatchEvidence) {
         entries.withLock { entries in
             guard let entry = entries[requestID], entry.evidence === evidence,

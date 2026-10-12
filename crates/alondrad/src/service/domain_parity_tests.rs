@@ -327,7 +327,7 @@ async fn signed_loopback_and_sealed_service_share_reads_errors_and_command_recei
             assert!(local["body"].get("operation_results").is_none(),
                 "loopback does not expose encrypted transport receipts");
             assert_eq!(remote["body"]["operation_results"], true);
-            local["body"]["operation_results"] = json!(true);
+            local["body"]["operation_results"] = json!(true);local["body"]["operation_journal"] = json!(true);
         }
         assert_eq!(remote, local, "local/encrypted mismatch for {path}");
     }
@@ -584,7 +584,7 @@ async fn signed_loopback_and_sealed_service_share_reads_errors_and_command_recei
     let updated_path = "/capabilities";
     let mut updated_local = local_get(&client, &base, &phone_key, device_id, updated_path).await;
     assert!(updated_local["body"].get("operation_results").is_none());
-    updated_local["body"]["operation_results"] = json!(true);
+    updated_local["body"]["operation_results"] = json!(true);updated_local["body"]["operation_journal"] = json!(true);
     assert_eq!(
         updated_local,
         encrypted(

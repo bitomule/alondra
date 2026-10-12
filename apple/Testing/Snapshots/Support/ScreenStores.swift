@@ -52,12 +52,32 @@ enum ScreenStores {
     static func cardDetail(
         _ document: ViewDocument, edit: (inout CardDetailFeature.State) -> Void = { _ in }
     ) -> StoreOf<CardDetailFeature> {
+        makeCardDetail(document, edit: edit, onHandOff: nil)
+    }
+
+    static func cardDetailWithHandoff(
+        _ document: ViewDocument, onHandOff: @escaping @MainActor @Sendable () -> Void
+    ) -> StoreOf<CardDetailFeature> {
+        makeCardDetail(document, edit: { _ in }, onHandOff: onHandOff)
+    }
+
+    private static func makeCardDetail(
+        _ document: ViewDocument, edit: (inout CardDetailFeature.State) -> Void,
+        onHandOff: (@MainActor @Sendable () -> Void)?
+    ) -> StoreOf<CardDetailFeature> {
         var state = CardDetailFeature.State(key: ViewKey(rawValue: document.key))
         state.screen.document = document
         state.screen.phase = .loaded
         state.actions.dataEpoch = document.dataEpoch
         edit(&state)
-        return Store(initialState: state) { CardDetailFeature() } withDependencies: { quiet(&$0) }
+        return Store(initialState: state) { CardDetailFeature() } withDependencies: {
+            quiet(&$0)
+            if let onHandOff {
+                $0.dismiss = DismissEffect(onHandOff)
+                $0.continuousClock = TestClock()
+                $0.uuid = .constant(UUID(uuidString: "00000000-0000-4000-8000-000000000001")!)
+            }
+        }
     }
 
     static func cardDetail(state: CardDetailFeature.State) -> StoreOf<CardDetailFeature> {

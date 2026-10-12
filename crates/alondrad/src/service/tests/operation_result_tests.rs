@@ -259,3 +259,85 @@ async fn a_large_valid_expired_receipt_is_recovered_in_bounded_fresh_chunks_with
     let wrong = operation_results::lookup(&(path+"&offset=1048576")).unwrap();
     assert_eq!(f.service.operation_result("phone-1",&wrong,Transport::Direct).await.unwrap()["status"],422);
 }
+
+#[tokio::test]
+async fn authenticated_control_ack_removes_modern_receipts_without_reopening_a_retired_effect() {
+    let f=Fixture::new();let epoch=f.domain.state().unwrap().data_epoch.0.clone();
+    let descriptor=f.opened(&f.direct(f.work("journal-control-read","GET",&format!("/operation-journal?data_epoch={epoch}"),None)).await);
+    let generation=descriptor["body"]["generation"].as_u64().unwrap();
+    let id=format!("op_{}_{generation}_1_5f0c2d9e-8d0b-4c71-9b0e-2b6f5d8f1a10",alondra_core::operation_id::epoch_tag(&epoch));
+    let legacy=f.action();let device=f.service.devices.get("phone-1").unwrap();
+    let mut payload:Value=serde_json::from_slice(&legacy.open(&device.signing,&f.service.agreement,"phone-1","mac-1","mac-1",1_000).unwrap()).unwrap();
+    payload["body"]["command_id"]=json!(id);
+    let original=f.work(&id,"POST","/actions",Some(payload["body"].clone()));
+    assert_eq!(f.opened(&f.direct(original.clone()).await)["body"]["outcome"],"applied");
+    let ack=json!({"data_epoch":epoch,"generation":generation,"ranges":[{"first":1,"last":1}]});
+    for suffix in ["first","repeated"] {
+        let result=f.opened(&f.direct(f.work(&format!("journal-control-{suffix}"),"POST","/operation-journal/ack",Some(ack.clone()))).await);
+        assert_eq!(result["body"]["acknowledged"],true,"{result}");
+    }
+    let c=f.service.journal.db().unwrap();
+    assert_eq!(c.query_row("SELECT count(*) FROM service_receipts WHERE request_id=?1",params![id],|row|row.get::<_,i64>(0)).unwrap(),0);
+    assert_eq!(c.query_row("SELECT count(*) FROM service_receipts WHERE request_id LIKE 'journal-control-%'",[],|row|row.get::<_,i64>(0)).unwrap(),0);
+    let options=alondra_core::options::path_in(&f.home);
+    let changed=std::fs::read_to_string(&options).unwrap().replace("max_working_nodes = 4","max_working_nodes = 5");
+    std::fs::write(&options,&changed).unwrap();
+    assert_eq!(f.opened(&f.direct(original).await)["status"],410);
+    let mut forged_body=payload["body"].clone();
+    forged_body["command_id"]=json!("5f0c2d9e-8d0b-4c71-9b0e-2b6f5d8f1a11");
+    assert!(f.service.handle_direct(f.work(&id,"POST","/actions",Some(forged_body))).await.is_err(),
+        "a retired encrypted ID cannot become a fresh legacy action");
+    assert!(f.service.handle_direct(f.work(&id,"PUT",crate::settings::PATH,Some(json!({})))).await.is_err(),
+        "a retired encrypted ID cannot be reclassified to another mutation path");
+    assert_eq!(std::fs::read_to_string(&options).unwrap(),changed);
+}
+
+#[test]
+fn compacted_legacy_proofs_and_bounded_read_cache_never_rerun_mutations() {
+    let f=Fixture::new();
+    for index in 0..70 {
+        let id=format!("legacy-{index}");f.service.journal.accept("phone-1",&id,&[7;32]).unwrap();
+        f.service.journal.executing("phone-1",&id,&[7;32]).unwrap();f.service.journal.complete("phone-1",&id,b"legacy response").unwrap();
+    }
+    assert!(matches!(f.service.journal.accept("phone-1","legacy-0",&[7;32]).unwrap(),Disposition::Retired));
+    assert!(f.service.journal.accept("phone-1","legacy-0",&[8;32]).is_err());
+    let c=f.service.journal.db().unwrap();
+    assert_eq!(c.query_row("SELECT count(*) FROM service_receipts WHERE response IS NOT NULL",[],|row|row.get::<_,i64>(0)).unwrap(),64);
+    assert_eq!(c.query_row("SELECT count(*) FROM service_receipts",[],|row|row.get::<_,i64>(0)).unwrap(),70);
+    for index in 0..70 {
+        let id=format!("read-{index}");f.service.journal.accept_classified("phone-1",&id,&[9;32],None,true,None).unwrap();
+        f.service.journal.executing("phone-1",&id,&[9;32]).unwrap();f.service.journal.complete("phone-1",&id,b"read response").unwrap();
+    }
+    assert_eq!(c.query_row("SELECT count(*) FROM service_receipts WHERE execution_mode='read'",[],|row|row.get::<_,i64>(0)).unwrap(),64);
+    assert_eq!(c.query_row("SELECT count(*) FROM service_receipts WHERE request_id LIKE 'legacy-%'",[],|row|row.get::<_,i64>(0)).unwrap(),70);
+}
+
+#[tokio::test]
+async fn a_full_legacy_proof_budget_refuses_legacy_before_effect_but_keeps_modern_actions_available() {
+    let f=Fixture::new();let c=f.service.journal.db().unwrap();
+    c.execute("WITH RECURSIVE ids(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM ids WHERE n<?1)
+        INSERT INTO service_receipts(sender,request_id,digest,state) SELECT 'phone-1','legacy-budget-'||n,?2,'retired' FROM ids",
+        params![crate::operation_journal::MAX_LEGACY as i64,&[7u8;32]]).unwrap();
+    let options=alondra_core::options::path_in(&f.home);let before=std::fs::read(&options).ok();
+    let epoch=f.domain.state().unwrap().data_epoch.0.clone();
+    let descriptor=f.opened(&f.direct(f.work("full-legacy-descriptor","GET",&format!("/operation-journal?data_epoch={epoch}"),None)).await);
+    let rejected=f.opened(&f.direct(f.action()).await);
+    assert_eq!(rejected["status"],429);assert_eq!(rejected["body"]["error"],"operation_capacity");assert_eq!(std::fs::read(&options).ok(),before);
+    let id=format!("op_{}_{}_1_5f0c2d9e-8d0b-4c71-9b0e-2b6f5d8f1a10",alondra_core::operation_id::epoch_tag(&epoch),descriptor["body"]["generation"].as_u64().unwrap());
+    let original=f.action();let device=f.service.devices.get("phone-1").unwrap();
+    let mut payload:Value=serde_json::from_slice(&original.open(&device.signing,&f.service.agreement,"phone-1","mac-1","mac-1",1_000).unwrap()).unwrap();
+    payload["body"]["command_id"]=json!(id);
+    let applied=f.opened(&f.direct(f.work(&id,"POST","/actions",Some(payload["body"].clone()))).await);
+    assert_eq!(applied["body"]["outcome"],"applied","{applied}");
+}
+
+#[tokio::test]
+async fn preupgrade_unclassified_reads_do_not_block_an_old_client_until_explicit_journal_opt_in() {
+    let f=Fixture::new();let c=f.service.journal.db().unwrap();
+    c.execute("WITH RECURSIVE ids(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM ids WHERE n<?1)
+        INSERT INTO service_receipts(sender,request_id,digest,state) SELECT 'phone-1','old-read-'||n,?2,'retired' FROM ids",
+        params![crate::operation_journal::MAX_LEGACY as i64+1,&[7u8;32]]).unwrap();
+    assert_eq!(f.opened(&f.direct(f.action()).await)["body"]["outcome"],"applied");
+    assert_eq!(c.query_row("SELECT count(*) FROM operation_issuers",[],|row|row.get::<_,i64>(0)).unwrap(),0,
+        "legacy validation must not silently opt the old client in");
+}

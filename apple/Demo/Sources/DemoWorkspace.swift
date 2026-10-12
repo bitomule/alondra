@@ -27,6 +27,7 @@ enum DemoWorkspace {
                     continuation.onTermination = { _ in task.cancel() }
                 }
             },
+            prepare: { $0 },
             perform: { _ in try response() },
             fetchContent: { reference in
                 if reference.kind == .diff {

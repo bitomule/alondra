@@ -57,6 +57,11 @@ public actor RoutedSession: OperationAPI, PushRegistrationAPI {
     /// The path the last answered request took.
     public var route: ConnectionRoute? { lastRoute }
 
+    public func retireActions(_ acknowledgment: ActionJournalAcknowledgment) async throws {
+        try await direct?.retireActions(acknowledgment)
+        try await relay?.retireActions(acknowledgment)
+    }
+
     public func recover(_ request: APIRequest) async throws -> APIResponse {
         if let relay, let result = try? await relay.recover(request), result != .unknown { return result }
         if let direct, directAllowed() { return try await direct.recover(request) }
@@ -64,7 +69,7 @@ public actor RoutedSession: OperationAPI, PushRegistrationAPI {
     }
 
     public func perform(_ request: APIRequest) async throws -> APIResponse {
-        guard request.method != "GET" else { return try await performPrepared(request) }
+        guard request.method != "GET", !request.isActionJournalControl else { return try await performPrepared(request) }
         return try await mutations.run(conservativeUnknown: true, startedAt: requestClock.now(), unknown: { APIResponse.unknown }) {
             try await self.performPrepared(request)
         }

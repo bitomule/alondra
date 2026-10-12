@@ -1,4 +1,4 @@
-load("@build_bazel_rules_swift//swift:swift.bzl", "swift_library", "swift_test")
+load("@build_bazel_rules_swift//swift:swift.bzl", "swift_binary", "swift_library", "swift_test")
 load("//apple:swift.bzl", "STRICT_SWIFT_CONCURRENCY_COPTS")
 
 swift_library(
@@ -6,6 +6,7 @@ swift_library(
     copts = STRICT_SWIFT_CONCURRENCY_COPTS,
     srcs = glob(["Sources/**/*.swift"]),
     module_name = "AlondraFeed",
+    linkopts = ["-lsqlite3"],
     features = ["swift.enable_testing"],
     visibility = ["//visibility:public"],
     deps = [
@@ -25,4 +26,25 @@ swift_test(
         "//apple/Data/Transport:AlondraTransport",
         "//apple/Contract:AlondraContract",
     ],
+)
+
+# Runs only fixture children under Bazel's temporary directory; never launches a live daemon.
+swift_binary(
+    name = "ActionJournalProcessClient",
+    testonly = True,
+    copts = STRICT_SWIFT_CONCURRENCY_COPTS,
+    srcs = glob(["ProcessFixtures/*.swift"]),
+    deps = [
+        ":AlondraFeed",
+        "//apple/Contract:AlondraContract",
+        "//apple/Data/Transport:AlondraTransport",
+    ],
+)
+
+swift_test(
+    name = "ActionJournalProcessTests",
+    copts = STRICT_SWIFT_CONCURRENCY_COPTS,
+    srcs = ["ProcessTests/ActionJournalProcessTests.swift", "ProcessFixtures/ProcessProtocol.swift"],
+    data = [":ActionJournalProcessClient", "//crates/alondrad:alondrad_test", "//crates/relay:alondra_relay_test"],
+    deps = ["//apple/Contract:AlondraContract", "//apple/Testing:AlondraTestSupport"],
 )

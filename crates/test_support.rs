@@ -12,47 +12,109 @@ pub struct Directory {
 }
 
 impl Directory {
+    /// The spawning test owns cleanup while child processes retain this guard.
+    pub fn for_process_fixture(path: &Path, token: &str) -> std::io::Result<Self> {
+        use std::io::{Error, ErrorKind};
+        let invalid = || Error::new(ErrorKind::InvalidInput, "invalid process fixture directory");
+        if !path.is_absolute()
+            || token.is_empty()
+            || !token
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        {
+            return Err(invalid());
+        }
+        let metadata = std::fs::symlink_metadata(path)?;
+        if !metadata.is_dir() || metadata.file_type().is_symlink() {
+            return Err(invalid());
+        }
+        let canonical = path.canonicalize()?;
+        let marker = canonical.join(".alondra-process-fixture");
+        let metadata = std::fs::symlink_metadata(&marker)?;
+        if !metadata.is_file()
+            || metadata.file_type().is_symlink()
+            || std::fs::read(marker)? != format!("alondra-process-fixture:{token}\n").as_bytes()
+        {
+            return Err(invalid());
+        }
+        Ok(Self {
+            path: canonical,
+            owner: None,
+        })
+    }
+
     pub fn new() -> Self {
-        let owner = tempfile::Builder::new().prefix("at-").tempdir().expect("create test directory");
-        let path = owner.path().canonicalize().expect("resolve test directory").join("work");
-        Self { path, owner: Some(owner) }
+        let owner = tempfile::Builder::new()
+            .prefix("at-")
+            .tempdir()
+            .expect("create test directory");
+        let path = owner
+            .path()
+            .canonicalize()
+            .expect("resolve test directory")
+            .join("work");
+        Self {
+            path,
+            owner: Some(owner),
+        }
     }
 }
 
 impl Deref for Directory {
     type Target = Path;
-    fn deref(&self) -> &Path { &self.path }
+    fn deref(&self) -> &Path {
+        &self.path
+    }
 }
 
 impl AsRef<Path> for Directory {
-    fn as_ref(&self) -> &Path { &self.path }
+    fn as_ref(&self) -> &Path {
+        &self.path
+    }
 }
 
 impl Drop for Directory {
     fn drop(&mut self) {
-        if let Err(error) = self.owner.take().expect("test directory owner").close() {
+        let Some(owner) = self.owner.take() else {
+            return;
+        };
+        if let Err(error) = owner.close() {
             if std::thread::panicking() {
-                eprintln!("Failed to remove test directory {}: {error}", self.path.display());
+                eprintln!(
+                    "Failed to remove test directory {}: {error}",
+                    self.path.display()
+                );
             } else {
-                panic!("Failed to remove test directory {}: {error}", self.path.display());
+                panic!(
+                    "Failed to remove test directory {}: {error}",
+                    self.path.display()
+                );
             }
         }
     }
 }
-
 
 pub struct Owned<T> {
     value: T,
     _directory: Directory,
 }
 impl<T> Owned<T> {
-    pub fn new(value: T, directory: Directory) -> Self { Self { value, _directory: directory } }
+    pub fn new(value: T, directory: Directory) -> Self {
+        Self {
+            value,
+            _directory: directory,
+        }
+    }
 }
 impl<T> Deref for Owned<T> {
     type Target = T;
-    fn deref(&self) -> &T { &self.value }
+    fn deref(&self) -> &T {
+        &self.value
+    }
 }
 
 impl AsRef<std::ffi::OsStr> for Directory {
-    fn as_ref(&self) -> &std::ffi::OsStr { self.path.as_os_str() }
+    fn as_ref(&self) -> &std::ffi::OsStr {
+        self.path.as_os_str()
+    }
 }

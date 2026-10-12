@@ -1009,6 +1009,7 @@ async fn main() -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod http_tests {
+    mod process_fixture { include!("operation_process_fixture.rs"); }
     include!("pg_fault_tests.rs");
     use super::*;
     use alondra_e2e::{Context, Envelope, sign_http_challenge};

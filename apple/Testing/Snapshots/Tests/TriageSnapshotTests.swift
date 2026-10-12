@@ -104,6 +104,37 @@ final class TriageSnapshotTests: XCTestCase {
         assertScreen(inWindow: true) { Harness(store: store) }
     }
 
+    func test_preparingActionKeepsItsCardAndWrittenReply() throws {
+        let document = try Fixtures.card(Fixtures.questionID)
+        let draft = "Only if the title stays on one line"
+        let store = try single(document) { state in
+            guard let action = state.cards[0].replyAction, let actionID = action.id else {
+                XCTFail("The preparing fixture needs the card’s real reply action")
+                return
+            }
+            state.cards[0].replyDraft = draft
+            state.cards[0].actions.action = action
+            state.cards[0].actions.requiresAttachments = action.attachments
+            state.cards[0].actions.text = draft
+            state.cards[0].actions.pending = ActionRequest(
+                commandId: "00000000-0000-4000-8000-000000000001", dataEpoch: document.dataEpoch,
+                client: .ios, lang: "en", actionId: actionID, input: ActionInput(text: draft),
+                resolvesCard: action.resolvesCard)
+            state.cards[0].actions.inFlight = true
+            state.cards[0].actions.stamp = nil
+        }
+        XCTAssertEqual(store.state.orderedIDs, [Fixtures.questionID])
+        XCTAssertEqual(store.state.cards[0].replyDraft, draft)
+        XCTAssertEqual(store.state.cards[0].actions.text, draft)
+        XCTAssertEqual(store.state.cards[0].actions.pending?.dataEpoch, document.dataEpoch)
+        XCTAssertEqual(store.state.cards[0].actions.pending?.commandId, "00000000-0000-4000-8000-000000000001")
+        XCTAssertTrue(store.state.cards[0].actions.inFlight)
+        XCTAssertNil(store.state.cards[0].actions.stamp, "the written reply remains visible while its intent is being prepared")
+        XCTAssertFalse(store.state.cards[0].actions.canSubmit)
+        XCTAssertNil(store.state.cards[0].actions.unsure)
+        assertScreen(inWindow: true) { Harness(store: store) }
+    }
+
     func test_unconfirmedActionKeepsItsCardAndWrittenReply() throws {
         let document = try Fixtures.card(Fixtures.questionID)
         let draft = "Only if the title stays on one line"

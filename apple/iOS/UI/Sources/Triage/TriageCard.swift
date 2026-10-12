@@ -88,6 +88,7 @@ struct TriageCard: View {
         .overlay(alignment: room == nil ? .bottomLeading : .topLeading) {
             if let reply = store.replyAction { placedComposer(reply) }
         }
+        .disabled(store.actions.inFlight && store.actions.stamp == nil)
     }
 
     /// Where the picked layout keeps room for the reply field, and the text size it has there.
