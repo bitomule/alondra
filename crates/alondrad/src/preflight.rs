@@ -49,11 +49,7 @@ fn snapshot(home: &Path, into: &Path) -> Result<()> {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
             Err(e) => return Err(e.into()),
         }
-        let from = Connection::open_with_flags(
-            &source,
-            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NOFOLLOW,
-        )
-        .with_context(|| format!("reading {name}"))?;
+        let from = open_source(&source).with_context(|| format!("reading {name}"))?;
         let mut to = Connection::open(into.join(name))?;
         std::fs::set_permissions(into.join(name), std::fs::Permissions::from_mode(0o600))?;
         rusqlite::backup::Backup::new(&from, &mut to)?
@@ -78,6 +74,20 @@ fn snapshot(home: &Path, into: &Path) -> Result<()> {
         )?;
     }
     Ok(())
+}
+
+/// A WAL database with no daemon running has no `-wal` and no `-shm`, and SQLite cannot open it
+/// read-only in a folder it may not write: with no `-wal` nobody is writing and the file alone is
+/// the whole database, so it is opened as immutable. With a live writer it is opened as usual.
+fn open_source(source: &Path) -> rusqlite::Result<Connection> {
+    let mut wal = source.as_os_str().to_owned();
+    wal.push("-wal");
+    let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NOFOLLOW;
+    if Path::new(&wal).exists() {
+        return Connection::open_with_flags(source, flags);
+    }
+    let uri = format!("file:{}?immutable=1", source.display());
+    Connection::open_with_flags(uri, flags | OpenFlags::SQLITE_OPEN_URI)
 }
 
 fn copy_private_file(source: &Path, target: &Path) -> Result<()> {
@@ -275,5 +285,23 @@ mod tests {
         assert!(run(&config).is_err());
         assert_eq!(contents(&home), before);
         std::fs::remove_dir_all(home).unwrap();
+    }
+
+    /// 13 Oct: with the daemon down, the upgrade rehearsal could not read the live domain.db (WAL,
+    /// no -wal or -shm) from its read-only sandbox: "unable to open database file".
+    #[test]
+    fn a_wal_database_with_no_daemon_is_read_from_a_folder_it_may_not_write() {
+        let (home, _config) = home("wal");
+        let source = home.join("domain.db");
+        {
+            let db = Connection::open(&source).unwrap();
+            db.execute_batch("PRAGMA journal_mode=WAL; CREATE TABLE t(v); INSERT INTO t VALUES (42);").unwrap();
+        }
+        assert!(!home.join("domain.db-wal").exists() && !home.join("domain.db-shm").exists());
+        std::fs::set_permissions(&*home, std::fs::Permissions::from_mode(0o500)).unwrap();
+        let read = open_source(&source).and_then(|db| db.query_row("SELECT v FROM t", [], |row| row.get::<_, i64>(0)));
+        std::fs::set_permissions(&*home, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(read.unwrap(), 42);
+        assert!(!home.join("domain.db-shm").exists(), "the live folder is left as it was");
     }
 }
