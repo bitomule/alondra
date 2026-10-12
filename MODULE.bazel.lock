@@ -677,8 +677,8 @@
         "bzlTransitiveDigest": "UvQf9r2bSvJv7U+jRyqYj19oBr1RA6pb7W74NQs9Qeg=",
         "usagesDigest": "2g6pxya9RYC7UntLz/yBloEuUrj+sd69Obb6fEWlBHA=",
         "recordedFileInputs": {
-          "@@//Cargo.lock": "3409e7fd97a79d6ae849b2007d4c3917281dc617fd1f6db4fa7c3daa635f14ab",
-          "@@//Cargo.toml": "a7847d4e26433b3ef09905d60945bfc8e140497d1b5f0afaee9cc52c3b2618eb",
+          "@@//Cargo.lock": "e5f89454e1f5d3edf68c805b58f3c9328081ecda6acccfc3e7c19f8fff5ed609",
+          "@@//Cargo.toml": "524e3d34efe794fc8c3c7be8980339ce2cb84744a7a0510c7b1bbf6fbce4bfd4",
           "@@//crates/alondra/Cargo.toml": "60d0339ceb3ee2e91e5b5a11c00855b0940333838a251a57dd7f2f78cb9069d9",
           "@@//crates/alondrad/Cargo.toml": "013d31abde65af18d4c10b4497a3271ab534e7bef079f430c449d91ed0e9d741",
           "@@//crates/core/Cargo.toml": "013861e638dc0a52d626ec296d7fec942cf225546eb32015abbddef071dfbf67",
@@ -10043,26 +10043,13 @@
         },
         "recordedDirentsInputs": {},
         "envVariables": {
-          "DEVELOPER_DIR": "/Applications/Xcode-27.1.0-Release.Candidate.app/Contents/Developer",
+          "DEVELOPER_DIR": null,
           "XCODE_VERSION": null
         },
         "generatedRepoSpecs": {
           "system_sdk_xcode_locator": {
             "repoRuleId": "@@rules_swift+//tools/explicit_modules:xcode_locator_repo.bzl%xcode_locator_repo",
             "attributes": {}
-          },
-          "system_sdk_xcode_27_0_0_27A266a": {
-            "repoRuleId": "@@rules_swift+//tools/explicit_modules:xcode_explicit_module_repo.bzl%xcode_explicit_module_repo",
-            "attributes": {
-              "exclude_modules": {},
-              "sdks": [
-                "MacOSX",
-                "iPhoneOS",
-                "iPhoneSimulator"
-              ],
-              "xcode_version": "27.0.0.27A266a",
-              "xcode_locator": "@@rules_swift++system_sdk+system_sdk_xcode_locator//:xcode-locator-bin"
-            }
           },
           "system_sdk_xcode_27_1_0_27A9275": {
             "repoRuleId": "@@rules_swift+//tools/explicit_modules:xcode_explicit_module_repo.bzl%xcode_explicit_module_repo",
@@ -10077,40 +10064,11 @@
               "xcode_locator": "@@rules_swift++system_sdk+system_sdk_xcode_locator//:xcode-locator-bin"
             }
           },
-          "system_sdk_xcode_26_3_0_17C529": {
-            "repoRuleId": "@@rules_swift+//tools/explicit_modules:xcode_explicit_module_repo.bzl%xcode_explicit_module_repo",
-            "attributes": {
-              "exclude_modules": {},
-              "sdks": [
-                "MacOSX",
-                "iPhoneOS",
-                "iPhoneSimulator"
-              ],
-              "xcode_version": "26.3.0.17C529",
-              "xcode_locator": "@@rules_swift++system_sdk+system_sdk_xcode_locator//:xcode-locator-bin"
-            }
-          },
-          "system_sdk_xcode_27_1_0_27A9269": {
-            "repoRuleId": "@@rules_swift+//tools/explicit_modules:xcode_explicit_module_repo.bzl%xcode_explicit_module_repo",
-            "attributes": {
-              "exclude_modules": {},
-              "sdks": [
-                "MacOSX",
-                "iPhoneOS",
-                "iPhoneSimulator"
-              ],
-              "xcode_version": "27.1.0.27A9269",
-              "xcode_locator": "@@rules_swift++system_sdk+system_sdk_xcode_locator//:xcode-locator-bin"
-            }
-          },
           "system_sdk": {
             "repoRuleId": "@@rules_swift+//tools/explicit_modules:xcode_explicit_module_hub_repo.bzl%xcode_explicit_module_hub_repo",
             "attributes": {
               "xcode_versions": [
-                "27.0.0.27A266a",
-                "27.1.0.27A9275",
-                "26.3.0.17C529",
-                "27.1.0.27A9269"
+                "27.1.0.27A9275"
               ],
               "default_manifest": "@@rules_swift++system_sdk+system_sdk_xcode_27_1_0_27A9275//:module_names.json"
             }

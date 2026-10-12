@@ -520,3 +520,32 @@ fn memory_coming_and_going_for_an_hour_tells_the_orchestrator_nothing() {
     let told: Vec<_> = state.interactions.values().filter(|i| i.recipient == alondra_core::domain::Recipient::Orchestrator).map(|i| i.id.0.clone()).collect();
     assert!(told.is_empty(), "{told:?}");
 }
+
+/// 0.2.64 hung on its first start after an upgrade from 0.2.63 with paused nodes: reading the
+/// start facts held the domain store while the gate handed the old pauses to the node machine,
+/// which needs that store too.
+#[test]
+fn reading_start_facts_hands_pauses_an_older_daemon_saved_without_holding_the_store() {
+    let home = crate::test_support::Directory::new();
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::write(home.join(FILE), serde_json::json!({
+        "learned": {"cap": null, "since": null}, "last_admission": null,
+        "pauses": {
+            "step": {"step": 180_000, "last_resume": null, "saturated_at": null}, "last_pause": 1, "owed": {}, "held": {},
+            "paused": {"agent-t1": {"task": "t1", "reason": {"kind": "memory"}, "since": 1, "cleanup": "done", "released": false}},
+        },
+    }).to_string()).unwrap();
+    let domain = Arc::new(DomainRuntime::open(&home).unwrap());
+    run(&domain, Actor::User { user_id: "u".into() }, Command::CreateRequest { request_id: "r".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
+    create(&domain, "t1");
+    run(&domain, Actor::System, Command::RegisterAgent { agent_id: AgentId("agent-t1".into()), name: "agent-t1".into(), at: 0 });
+    run(&domain, Actor::User { user_id: "u".into() }, Command::AssignTask { task_id: "t1".into(), agent_id: AgentId("agent-t1".into()), model: None });
+    assert!(!domain.live.gate.lock().legacy.is_empty(), "the old pause is still waiting to be handed over");
+    let (sent, received) = std::sync::mpsc::channel();
+    let reading = Arc::clone(&domain);
+    std::thread::spawn(move || {
+        let state = reading.state().unwrap();
+        sent.send(crate::start_failures::facts(&reading, &state).is_ok()).ok();
+    });
+    assert_eq!(received.recv_timeout(std::time::Duration::from_secs(5)), Ok(true), "reading the start facts deadlocked");
+}

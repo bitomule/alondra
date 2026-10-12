@@ -65,12 +65,12 @@ pub(crate) fn raise(domain: &DomainRuntime, task: &TaskId, problem: StartProblem
 
 /// What the daemon knows of how every open task gets going.
 pub(crate) fn facts(domain: &DomainRuntime, state: &DomainState) -> Result<BTreeMap<TaskId, StartFacts>> {
+    let held = domain.live.gate.pauses(domain).held;
     let store = domain.store.lock().expect("domain store poisoned");
     let planned = store.planned_tasks()?;
     let autos = store.auto_launches()?;
     let retries = store.start_retries()?;
     let queued: Vec<TaskId> = store.launch_queue()?.into_iter().map(|row| row.task_id).collect();
-    let held = domain.live.gate.pauses(domain).held;
     let now = alondra_core::now_millis();
     let mut out = BTreeMap::new();
     for task in state.tasks.values().filter(|task| !task.state.terminal() && !task.archived) {
