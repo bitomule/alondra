@@ -6,9 +6,10 @@
 //! be at warning with a third of memory free: warning for 30 s is Tight, warning for 2 min or one
 //! critical sample is AtLimit, and recovering also needs the pressure back to normal.
 //! To stop before that warning, the counters macOS weighs count too: it warns when the compressor
-//! passes half of the memory it weighs and clears below 40 %. At 40 %, or with less margin left than
-//! the biggest one-minute burst of the last 30 minutes, the Mac is Tight after 20 s; at 45 % for
-//! 30 s it is AtLimit.
+//! passes half of the memory it weighs and clears below 40 %. At 40 % the Mac is Tight after 20 s;
+//! at 45 % for 30 s it is AtLimit. The margin against recent bursts is only recorded: from 9 to
+//! 12 Oct it alone held the fleet 18 % of the time with macOS at normal pressure, and foresaw 3 of
+//! 380 warnings the share did not.
 //! See docs/fleet-pacing.md.
 use std::collections::VecDeque;
 
@@ -114,13 +115,11 @@ impl MacState {
         self.pressure = machine.memory_pressure;
         self.step_compressor(machine.compressor, now);
         let share = self.compressor.map(|compressor| compressor.share());
-        let margin = self.compressor.map(|compressor| compressor.margin());
-        let near = share.is_some_and(|share| share >= NEAR_SHARE) || margin.is_some_and(|margin| margin < self.burst);
-        let near = held(&mut self.near, near, now);
+        let near = held(&mut self.near, share.is_some_and(|share| share >= NEAR_SHARE), now);
         self.near_pressure = near >= NEAR_HOLDS;
         let crowded = held(&mut self.crowded, share.is_some_and(|share| share >= CROWDED_SHARE), now);
         let uncrowded = held(&mut self.uncrowded, share.is_none_or(|share| share < NEAR_SHARE), now);
-        let clear = held(&mut self.clear, share.is_none_or(|share| share < CLEAR_SHARE) && margin.is_none_or(|margin| margin >= self.burst), now);
+        let clear = held(&mut self.clear, share.is_none_or(|share| share < CLEAR_SHARE), now);
         let pressed = matches!(machine.memory_pressure, Some(MemoryPressure::Warning | MemoryPressure::Critical));
         let warned = held(&mut self.warned, pressed, now);
         let calm = held(&mut self.calm, !pressed, now);
@@ -495,25 +494,15 @@ mod tests {
     ];
 
     #[test]
-    fn todays_compile_bursts_find_the_mac_tight_before_macos_warns_from_the_second_one_on() {
+    fn todays_compile_bursts_hold_the_mac_while_the_compressor_is_high_and_at_its_limit_in_the_worst() {
         let mut state = MacState::default();
-        let mut before_warnings = vec![];
         let mut healths = vec![];
-        let mut previous = MemoryPressure::Normal;
         for &(seconds, uncompressed, compressor, level, free) in TODAY {
             let pressure = MemoryPressure::from_kernel_level(level).unwrap();
-            if pressure != MemoryPressure::Normal && previous == MemoryPressure::Normal {
-                before_warnings.push(state.health);
-            }
-            previous = pressure;
             state.step(&weighed(free, pressure, uncompressed, compressor), seconds * 1000);
             healths.push(state.health);
         }
-        assert!(before_warnings.len() >= 5, "{before_warnings:?}");
-        assert_eq!(before_warnings[0], Health::Fine, "nothing foretells the day's first burst");
-        assert!(before_warnings[1..].iter().all(|&health| health != Health::Fine), "{before_warnings:?}");
-        let first = healths.iter().position(|&health| health != Health::Fine).unwrap();
-        assert!(healths[first..].iter().all(|&health| health != Health::Fine), "Fine again while the bursts went on");
+        assert!(healths.contains(&Health::Tight));
         assert!(healths.contains(&Health::AtLimit));
     }
 
@@ -548,7 +537,7 @@ mod tests {
     }
 
     #[test]
-    fn after_one_burst_the_mac_stays_tight_while_another_like_it_would_reach_the_warning() {
+    fn a_past_burst_does_not_hold_the_mac_once_macos_is_back_to_normal_with_the_compressor_low() {
         let mut state = MacState::default();
         let mut now = 0;
         while now < 10 * 60_000 {
@@ -560,19 +549,20 @@ mod tests {
         state.step(&with_margin(-1.0, MemoryPressure::Warning), now);
         now += SAMPLE;
         let burst_ended = now;
-        let mut fine_at = None;
+        let mut held_until = burst_ended;
         while now < burst_ended + 40 * 60_000 {
-            if state.step(&with_margin(5.0, MemoryPressure::Normal), now) == Some((Health::Tight, Health::Fine)) {
-                fine_at = Some(now - burst_ended);
+            state.step(&with_margin(5.0, MemoryPressure::Normal), now);
+            if state.health != Health::Fine {
+                held_until = now;
             }
             if now == burst_ended + 20_000 {
-                assert_eq!(state.health, Health::Tight, "5 GB left is less than the 6 GB burst");
-                assert!(state.near_pressure);
+                assert!(!state.near_pressure, "5 GB left with the compressor low is not near the warning");
             }
             now += SAMPLE;
         }
-        let fine_at = fine_at.unwrap();
-        assert!((35 * 60_000..36 * 60_000).contains(&fine_at), "Fine {} s after the burst", fine_at / 1000);
+        let held = held_until - burst_ended;
+        assert!(held <= 6 * 60_000, "held {} s after the burst, not for half an hour", held / 1000);
+        assert_eq!(state.health, Health::Fine);
     }
 
     #[test]
