@@ -240,6 +240,49 @@ mod tests {
         assert!(read("queued").is_empty(), "a notice not handed yet still waits");
     }
 
+    /// 0.2.64's first start on the real data swept 443 such notices back to back. The live views
+    /// take the store again and again with work in between, and the sweep took it in every gap, so
+    /// the HTTP server's workers waited on it for seconds and the daemon stopped answering.
+    #[test]
+    fn the_startup_sweep_leaves_the_store_to_a_caller_that_needs_it_again_and_again() {
+        const NOTICES: u64 = 150;
+        const TAKES: u64 = 20;
+        let home = crate::test_support::Directory::new();
+        std::fs::create_dir_all(&home).unwrap();
+        let domain = open(&home);
+        for n in 0..NOTICES {
+            domain.tell_orchestrator(&format!("notice-{n}"), format!("Task {n} ended")).unwrap();
+        }
+        {
+            let mut store = domain.store.lock().unwrap();
+            for message in store.pending_messages().unwrap() {
+                let claim = store.claim_orchestrator_message(message.id).unwrap().unwrap();
+                assert!(store.finish_message(claim.attempt_id, claim.version, alondra_core::delivery::State::Handed, None).unwrap());
+            }
+        }
+        let start = domain.state().unwrap().revision;
+        let read = || domain.state().unwrap().revision - start;
+
+        let read_meanwhile = std::thread::scope(|scope| {
+            scope.spawn(|| crate::domain_orchestrator::read_handed_notices_in_background(&domain));
+            while read() == 0 {
+                std::thread::yield_now();
+            }
+            let before = read();
+            for _ in 0..TAKES {
+                drop(domain.store.lock().unwrap());
+                let working = std::time::Instant::now();
+                while working.elapsed() < std::time::Duration::from_micros(300) {
+                    std::hint::spin_loop();
+                }
+            }
+            read() - before
+        });
+
+        assert_eq!(read(), NOTICES, "every handed notice is read");
+        assert!(read_meanwhile <= TAKES / 2, "the sweep read {read_meanwhile} notices while another caller took the store {TAKES} times");
+    }
+
     #[test]
     fn the_listing_says_each_session_by_its_id_and_a_stopped_or_done_one_is_absent() {
         let listing = r#"[{"id":"9462eaef","sessionId":"9462eaef-2d59","state":"done"},{"id":"200ea49d","sessionId":"200ea49d-a71d","state":"working"},

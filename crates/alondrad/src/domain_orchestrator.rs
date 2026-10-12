@@ -109,6 +109,19 @@ pub(crate) struct Executor {
 /// A notice for the orchestrator is read once Alondra handed it over (or gave it up): it no
 /// longer waits for anyone.
 pub(crate) fn read_handed_notices(domain: &DomainRuntime) {
+    read_handed(domain, |_| {});
+}
+
+/// The startup sweep finds every notice an older daemon never read: 443 on the real data, each a
+/// command that holds the domain store. Back to back they kept the store from the HTTP server's
+/// two workers for seconds, so the sweep hands it back after each notice for as long as it held it.
+pub(crate) fn read_handed_notices_in_background(domain: &DomainRuntime) {
+    read_handed(domain, |held| std::thread::sleep(held.max(SWEEP_PAUSE)));
+}
+
+const SWEEP_PAUSE: Duration = Duration::from_millis(2);
+
+fn read_handed(domain: &DomainRuntime, pause: impl Fn(Duration)) {
     let out = match domain.store.lock().expect("domain store poisoned").orchestrator_notices_out() {
         Ok(out) => out,
         Err(error) => return log!("could not list the orchestrator's handed notices: {error:#}"),
@@ -126,9 +139,11 @@ pub(crate) fn read_handed_notices(domain: &DomainRuntime) {
             command_id: format!("orchestrator-read-{id}").into(), expected_revision: state.revision,
             command: Command::MarkRead { interaction_id: id.as_str().into() },
         };
+        let started = std::time::Instant::now();
         if let Err(error) = domain.execute(&Actor::System, &envelope, None, || Ok(())) {
             log!("could not mark the orchestrator's notice {id} read: {error:?}");
         }
+        pause(started.elapsed());
     }
 }
 

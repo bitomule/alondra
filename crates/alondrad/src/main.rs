@@ -527,7 +527,7 @@ async fn run_domain(config: &Config) -> Result<()> {
     }
     node_reconcile::once(&domain, &node_close::Machine).await;
     let handed = domain.clone();
-    tokio::task::spawn_blocking(move || domain_orchestrator::read_handed_notices(&handed));
+    tokio::task::spawn_blocking(move || domain_orchestrator::read_handed_notices_in_background(&handed));
     tokio::spawn(node_reconcile::run(domain.clone(), Arc::new(node_close::Machine)));
     tokio::spawn(fleet_gate::run(domain.clone(), config.home.clone(), orchestrate::ClaudeCli));
     let transport = tokio::spawn(domain_transport::run(hooks, domain.clone()));
