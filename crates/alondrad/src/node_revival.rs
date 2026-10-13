@@ -11,7 +11,7 @@
 //! to not started, waiting for a relaunch.
 use crate::domain_runtime::DomainRuntime;
 use crate::orchestrate::Launcher;
-use alondra_core::domain::{Actor, AgentId, Command, CommandEnvelope, NodeEvent, QuestionOption, TaskId, PROTOCOL_VERSION};
+use alondra_core::domain::{Actor, AgentId, Command, CommandEnvelope, NodeEvent, NodePhase, QuestionOption, TaskId, PROTOCOL_VERSION};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -135,13 +135,16 @@ pub(crate) fn session_ended_in(domain: &DomainRuntime, claude_home: &std::path::
 }
 
 /// The sessions whose agent works on an open task and whose mod is connected, yet shows no
-/// activity inside a turn: the session stopped processing and nothing will resume it. A session
-/// with a held card open waits for the user: restarting it would cut the call and withdraw the
-/// card, and the node would put the same card to the user again.
+/// activity inside a turn: the session stopped processing and nothing will resume it. Only a node
+/// the node machine has in a turn can stall: a quiet mod says nothing of one paused (the gate
+/// brings it back), waiting on the user, resting or being brought back already. A session with a
+/// held card open waits for the user: restarting it would cut the call and withdraw the card, and
+/// the node would put the same card to the user again.
 pub(crate) fn stalled_sessions(domain: &DomainRuntime, now: alondra_core::Millis) -> Vec<String> {
     let Ok(state) = domain.state() else { return vec![] };
-    state.agents.keys()
-        .map(|agent| agent.0.clone())
+    state.agents.values()
+        .filter(|agent| matches!(agent.phase, NodePhase::Working | NodePhase::Delivered { in_turn: true }))
+        .map(|agent| agent.id.0.clone())
         .filter(|session| open_task(&state, session) && !domain.live.is_closed(session))
         .filter(|session| !crate::domain_holds::waits_on_user(&state, session))
         .filter(|session| domain.live.gate.paused(&domain, session).is_none())
@@ -262,11 +265,12 @@ fn still_stalled(domain: &DomainRuntime, session: &str) -> bool {
 }
 
 /// Whether the session still has to be brought back: its agent works on an open task and its mod
-/// holds no connection.
+/// holds no connection. A paused node is the gate's: it resumes it in its turn, and brings it back
+/// first if its session is gone.
 fn needed(domain: &DomainRuntime, session: &str) -> bool {
     let Ok(state) = domain.state() else { return false };
     let agent = AgentId(session.to_owned());
-    state.agents.contains_key(&agent)
+    state.agents.get(&agent).is_some_and(|agent| !matches!(agent.phase, NodePhase::Paused(_)))
         && state.tasks.values().any(|task| task.agent_id.as_ref() == Some(&agent) && !task.state.terminal() && !task.archived && task.wrap_up.asked_at.is_none())
         && !domain.live.is_closed(session)
         && !domain.live.mods.connected(session)
@@ -701,6 +705,46 @@ mod tests {
         let (_home, finished) = world(false);
         let _link = silent_turn(&finished);
         assert!(stalled_sessions(&finished, alondra_core::now_millis()).is_empty(), "no open task: nothing to resume");
+    }
+
+    fn move_node(domain: &DomainRuntime, id: &str, event: NodeEvent) {
+        command(domain, Actor::System, id, Command::MoveNode { agent_id: SESSION.into(), event, at: alondra_core::now_millis() });
+    }
+
+    fn declared() -> NodeEvent {
+        NodeEvent::Paused { pause: alondra_core::domain::Pause {
+            reason: alondra_core::domain::PauseReason::Declared { reason: "The build queue is full".into() },
+            since: alondra_core::now_millis(), cut: None, turn_since: None, cleanup: alondra_core::domain::PauseCleanup::Done, released: false,
+        } }
+    }
+
+    /// 13 October: 1d6d53c5 ended its turn blocked on the user without its turn end reaching
+    /// Alondra, so its mod still said "in a turn"; it was queued as stalled 73 times. Only the node
+    /// machine says whether a turn runs: once it says the turn is over, a quiet mod is no stall.
+    #[tokio::test]
+    async fn a_quiet_mod_is_no_stall_once_the_node_machine_says_no_turn_runs() {
+        let (_home, domain) = world(true);
+        let _link = silent_turn(&domain);
+        assert_eq!(stalled_sessions(&domain, alondra_core::now_millis()), [SESSION]);
+        command(&domain, Actor::System, "listed", Command::ReconcileNodes {
+            listed: [(SESSION.into(), alondra_core::domain::Listed::Blocked)].into(), at: alondra_core::now_millis(),
+        });
+        assert_eq!(domain.state().unwrap().node_phase(&SESSION.into()), Some(&NodePhase::Stopped));
+        assert!(stalled_sessions(&domain, alondra_core::now_millis()).is_empty(), "blocked on the user, not stalled");
+    }
+
+    /// 13 October: db23219f, paused and without a session, logged "waits at the fleet gate to come
+    /// back" 4154 times since 9 October, asking the gate under the key the gate itself resumes it by.
+    #[tokio::test]
+    async fn a_paused_node_whose_session_is_gone_is_left_to_the_gate() {
+        let (_home, domain) = world(true);
+        move_node(&domain, "turn", NodeEvent::TurnStarted);
+        move_node(&domain, "paused", declared());
+        assert!(!needed(&domain, SESSION));
+        let claude = Respawner::new(&domain, 1);
+        tokio::time::timeout(Duration::from_secs(5), revive(&domain, SESSION, &claude, &FAST)).await
+            .expect("revival leaves a paused node at once");
+        assert_eq!(claude.calls(), 0, "the gate brings it back in its turn");
     }
 
     #[tokio::test]

@@ -20,6 +20,10 @@ fn api_error() -> PauseReason {
     PauseReason::ApiError(ApiRetry { error: "server_error".into(), detail: None, attempt: 1, at: SINCE + 30_000, outage: false })
 }
 
+fn declared() -> PauseReason {
+    PauseReason::Declared { reason: "The build queue is full".into() }
+}
+
 fn phases() -> Vec<NodePhase> {
     vec![
         NodePhase::Starting { reviving: false },
@@ -29,6 +33,7 @@ fn phases() -> Vec<NodePhase> {
         NodePhase::WaitingUser { in_turn: false },
         NodePhase::Paused(pause(PauseReason::Memory)),
         NodePhase::Paused(pause(PauseReason::ByUser)),
+        NodePhase::Paused(pause(declared())),
         NodePhase::Paused(pause(api_error())),
         NodePhase::Delivered { in_turn: true },
         NodePhase::Delivered { in_turn: false },
@@ -57,6 +62,7 @@ fn forbidden(phase: &NodePhase, event: &NodeEvent) -> Option<&'static str> {
         (P::Closed, _) => Some("node_closed"),
         (P::Paused(Pause { reason: PauseReason::ByUser, .. }), E::TurnStarted) => Some("paused_by_user"),
         (P::Paused(Pause { reason: PauseReason::Memory, .. }), E::TurnStarted) => Some("paused_for_memory"),
+        (P::Paused(Pause { reason: PauseReason::Declared { .. }, .. }), E::TurnStarted) => Some("waits_for_machine"),
         (P::Starting { .. }, E::StartFailed | E::RevivalFailed) => None,
         (_, E::StartFailed | E::RevivalFailed) => Some("not_starting"),
         (P::Paused(_), E::Paused { .. }) => Some("already_paused"),
@@ -102,6 +108,7 @@ forbid! {
 
     paused_by_the_user_refuses_a_turn: NodePhase::Paused(pause(PauseReason::ByUser)), NodeEvent::TurnStarted => "paused_by_user";
     paused_for_memory_refuses_a_turn_it_starts_by_itself: NodePhase::Paused(pause(PauseReason::Memory)), NodeEvent::TurnStarted => "paused_for_memory";
+    waiting_for_the_machine_refuses_a_turn_it_starts_by_itself: NodePhase::Paused(pause(declared())), NodeEvent::TurnStarted => "waits_for_machine";
 
     working_refuses_a_failed_start: NodePhase::Working, NodeEvent::StartFailed => "not_starting";
     working_refuses_a_failed_revival: NodePhase::Working, NodeEvent::RevivalFailed => "not_starting";
@@ -189,14 +196,21 @@ fn every_transition_the_table_allows_is_accepted_and_every_other_refused() {
     }
 }
 
+/// 13 October: a node called `wait_for_machine` and the hook of that very call reported a turn a
+/// second later, which read as the node going on by itself: the pause was undone at once and the
+/// node counted as working again. Only the gate ends a declared wait, and it sees a new turn itself.
 #[test]
-fn a_paused_node_holds_no_slot_and_only_a_turn_it_began_after_the_pause_brings_it_back() {
-    let paused = NodePhase::Paused(pause(PauseReason::Declared { reason: "The build queue is full".into() }));
+fn a_node_waiting_for_the_machine_holds_no_slot_and_only_the_gate_brings_it_back() {
+    let paused = NodePhase::Paused(pause(declared()));
     assert!(!paused.holds_slot());
     assert_eq!(next(&paused, SINCE, &NodeEvent::TurnEnded, &OPEN, AT).unwrap(), paused, "the turn the pause cut ends");
     assert_eq!(next(&paused, SINCE, &NodeEvent::Listed { listed: Listed::Working }, &OPEN, AT).unwrap(), paused,
         "a listing has no turn times: it never undoes a pause");
-    assert_eq!(next(&paused, SINCE, &NodeEvent::TurnStarted, &OPEN, AT).unwrap(), NodePhase::Working, "it went on by itself");
+    assert_eq!(next(&paused, SINCE, &NodeEvent::TurnStarted, &OPEN, AT).unwrap_err().code, "waits_for_machine",
+        "a hook of its own turn is no resume");
+    let resumed = next(&paused, SINCE, &NodeEvent::Resumed, &OPEN, AT).unwrap();
+    assert_eq!(resumed, NodePhase::Starting { reviving: false });
+    assert_eq!(next(&resumed, SINCE, &NodeEvent::TurnStarted, &OPEN, AT).unwrap(), NodePhase::Working);
 }
 
 #[test]
@@ -273,8 +287,29 @@ fn a_stopped_node_listed_blocked_stays_stopped_and_holds_no_slot() {
     assert_eq!(stopped, NodePhase::Stopped);
     assert_eq!(next(&stopped, SINCE, &blocked, &OPEN, AT).unwrap(), NodePhase::Stopped);
     assert!(!NodePhase::Stopped.holds_slot());
-    assert_eq!(next(&NodePhase::Working, SINCE, &blocked, &OPEN, AT).unwrap(), NodePhase::Working,
-        "a permission prompt inside a turn is still work");
+}
+
+/// 13 October: 1d6d53c5 ended its turn asking for a repro in its own terminal and its turn end
+/// never reached Alondra. Claude Code listed it blocked for 8.5 hours while the node machine said
+/// Working: it held a slot, counted in "1 node working", and nothing asked the user anything.
+/// Blocked is never work: a wait Alondra can answer is a held card, and one it cannot rests the
+/// node, which Alondra sends back to ask through a card.
+#[test]
+fn a_node_listed_blocked_is_never_at_work() {
+    let blocked = NodeEvent::Listed { listed: Listed::Blocked };
+    let late = SINCE + START_GRACE;
+    for phase in [NodePhase::Working, NodePhase::Starting { reviving: true }, NodePhase::Starting { reviving: false }] {
+        let moved = next(&phase, SINCE, &blocked, &OPEN, late).unwrap();
+        assert_eq!(moved, NodePhase::Stopped, "{phase:?}");
+        assert!(!moved.holds_slot());
+    }
+    let card = TaskFacts { card: true, ..OPEN };
+    assert_eq!(next(&NodePhase::WaitingUser { in_turn: true }, SINCE, &blocked, &card, AT).unwrap(), NodePhase::WaitingUser { in_turn: true },
+        "a held permission or question already waits on its card");
+    let delivered = TaskFacts { delivered: true, ..OPEN };
+    assert_eq!(next(&NodePhase::Delivered { in_turn: true }, SINCE, &blocked, &delivered, AT).unwrap(), NodePhase::Delivered { in_turn: false });
+    let starting = NodePhase::Starting { reviving: false };
+    assert_eq!(next(&starting, SINCE, &blocked, &OPEN, AT).unwrap(), starting, "a resumed start is listed as it was a moment more");
 }
 
 /// 13 October: t-gate-count-mismatch delivered and Claude Code listed its session done, which read

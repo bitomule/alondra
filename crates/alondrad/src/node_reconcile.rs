@@ -389,6 +389,10 @@ mod tests {
 
         let claude_code = Respawn { domain: domain.clone(), hello, asked: Mutex::new(vec![]), link: Mutex::new(None) };
         crate::node_revival::revive(&domain, NODE, &claude_code, &QUICK).await;
+        assert!(claude_code.asked.lock().unwrap().is_empty(), "a paused node comes back through the gate, not revival");
+        crate::fleet_gate::pass(&domain, &home, &claude_code).await.unwrap();
+        assert!(!matches!(phase(&domain, NODE), NodePhase::Paused(_)), "the gate resumed it");
+        crate::node_revival::revive(&domain, NODE, &claude_code, &QUICK).await;
         assert_eq!(*claude_code.asked.lock().unwrap(), ["c0ffee00"], "the same session is resumed, conversation and all");
         assert_eq!(domain.live.mods.session(NODE).and_then(|reported| reported.cwd).as_deref(), worktree.to_str(), "in the same worktree");
         assert!(told(&claude_code).ends_with("Your Claude usage limit has reset. Carry on with what you were doing."));

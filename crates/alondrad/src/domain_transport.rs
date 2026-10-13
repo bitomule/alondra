@@ -592,14 +592,17 @@ pub(crate) fn behind_hung_work(domain: &DomainRuntime, now: alondra_core::Millis
 /// result nor a question: whether Alondra still sends it back (`Some(true)`) or its cap was
 /// reached and the user told (`Some(false)`). A node the user drives, one the node machine
 /// paused, one waiting on a card, one whose session stopped mid-turn (restarted by
-/// `node_revival`) and one that is not connected are not stopped this way.
+/// `node_revival`) and one that is not connected are not stopped this way. One Claude Code shows
+/// blocked waits on the user in a terminal nobody reads, whatever turn its mod last reported: it
+/// is sent back too, so it asks through a card.
 /// `stop_blocks` reads the count kept for a Task, so a caller holding the store can answer.
 pub(crate) fn stopped_without_delivering(domain: &DomainRuntime, state: &DomainState, agent_id: &AgentId,
     now: alondra_core::Millis, stop_blocks: impl Fn(&TaskId) -> Option<(u32, i64)>) -> Option<bool> {
     let session = agent_id.0.as_str();
     let idle = domain.live.mods.session(session).is_some_and(|reported| reported.connection.is_some()
-        && reported.working_since.is_none() && reported.tool.is_none()
-        && (reported.background.is_empty() || reported.background_hung(now)) && !reported.silent(now));
+        && reported.tool.is_none() && (reported.background.is_empty() || reported.background_hung(now))
+        && (reported.job.as_ref().is_some_and(|job| job.phase == crate::job_state::Phase::Blocked)
+            || reported.working_since.is_none() && !reported.silent(now)));
     if !idle || driven_by_user(domain, agent_id) || paused(state, agent_id)
         || domain.live.is_closed(session) || domain.live.gate.paused(domain, session).is_some()
         || crate::domain_holds::waits_on_user(state, session)
@@ -874,6 +877,27 @@ mod tests {
         domain.store.lock().unwrap().pending_messages().unwrap().into_iter()
             .filter(|m| m.agent_id.as_deref() == Some(agent))
             .map(|m| (m.id, m.state)).collect()
+    }
+
+    /// 13 October: David answered 1d6d53c5's card while Claude Code listed it blocked; the answer is
+    /// what unblocks it. Whatever its listing, the answer goes down the node's connection the
+    /// moment one is open, and the node no longer counts as working while it waited.
+    #[tokio::test]
+    async fn the_answer_to_a_node_listed_blocked_is_handed_to_it() {
+        let fixture = Fixture::new();
+        let domain = fixture.open();
+        answered_question(&domain, "agent-a");
+        lifecycle::node_event(&domain, &"agent-a".into(), NodeEvent::TurnStarted).unwrap();
+        assert_eq!(domain.state().unwrap().node_phase(&"agent-a".into()), Some(&NodePhase::Working));
+        lifecycle::reconcile(&domain, [("agent-a".into(), Listed::Blocked)].into()).unwrap();
+        assert_ne!(domain.state().unwrap().node_phase(&"agent-a".into()), Some(&NodePhase::Working));
+        let mut sent = BTreeSet::new();
+        let lines = pending_lines(&domain, "agent-a", &mut sent).unwrap();
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].contains("Yes."), "{}", lines[0]);
+        let ids: Vec<String> = sent.iter().map(|id| crate::node_push::outbox_id(*id)).collect();
+        hand_over(&domain, "agent-a", &ids).unwrap();
+        assert!(agent_outbox(&domain, "agent-a").is_empty(), "handed");
     }
 
     #[test]
@@ -1656,6 +1680,32 @@ mod tests {
         assert!(behind_hung_work(&domain, now, &mut reminded).is_empty(), "the cap: the user is told instead");
         assert_eq!(problems(&domain).iter().map(|card| card.card.need.as_str()).collect::<Vec<_>>(),
             ["Agent A cannot manage to deliver “Task”"]);
+    }
+
+    /// 13 October: 1d6d53c5 ended its turn asking for a repro in its own terminal; neither its turn
+    /// end nor its mod's reached Alondra, so the mod still said "in a turn" and nothing sent it back
+    /// for 8.5 hours. Claude Code's job says blocked: it is no work, and it is sent back to ask
+    /// through a card.
+    #[tokio::test]
+    async fn a_node_claude_code_shows_blocked_is_sent_back_to_ask_through_a_card() {
+        let fixture = Fixture::new();
+        let domain = fixture.open();
+        node_with_task(&domain);
+        let now = alondra_core::now_millis();
+        let mut reminded = std::collections::HashMap::new();
+        hook(&domain, json!({"session_id": "agent-a", "hook_event_name": "UserPromptSubmit", "prompt": "go"}), Some(6)).await.1.unwrap();
+        quiet_since(&domain, now - HUNG_REMINDER_GAP);
+        domain.report(serde_json::from_value(json!({"session_id": "agent-a", "event": "turn.start", "turn_id": "t"})).unwrap(), now - HUNG_REMINDER_GAP);
+        lifecycle::reconcile(&domain, [("agent-a".into(), Listed::Blocked)].into()).unwrap();
+        assert_eq!(domain.state().unwrap().node_phase(&"agent-a".into()), Some(&NodePhase::Stopped), "blocked is no work");
+        assert!(behind_hung_work(&domain, now, &mut reminded).is_empty(), "without Claude Code's word, its mod's turn is left alone");
+
+        domain.live.mods.set_job("agent-a", Some(crate::job_state::Job {
+            phase: crate::job_state::Phase::Blocked, detail: "needs user repro".into(), tasks: 0, updated_at: now, settings: None, worktree: None,
+        }), None);
+        let sent = behind_hung_work(&domain, now, &mut reminded);
+        assert_eq!(sent.len(), 1);
+        assert!(sent[0].1.starts_with("[Alondra] Do not end your turn yet"), "{}", sent[0].1);
     }
 
     #[tokio::test]

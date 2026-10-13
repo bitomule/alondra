@@ -103,7 +103,10 @@ pub enum PauseCleanup {
 
 /// What `claude agents` says of a session when Alondra lists them. `Blocked` is a session that
 /// waits on the user (a question, a permission, an error only they clear, or a turn that ended
-/// saying it cannot go on): inside a turn that is still work, after its end it is no work at all.
+/// saying it cannot go on). It is never work: every wait inside a turn that Alondra can answer (a
+/// permission, a plan, a question) is a held card that already moves the node to `WaitingUser`, so
+/// a blocked session without one waits on something only its terminal shows, and it rests like an
+/// idle one, where Alondra sends it back to ask through a card.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Listed {
@@ -235,6 +238,8 @@ pub fn next(phase: &NodePhase, since: Millis, event: &NodeEvent, f: &TaskFacts, 
             return refuse("paused_by_user", "Only the user resumes a node they paused"),
         (P::Paused(Pause { reason: PauseReason::Memory, .. }), NodeEvent::TurnStarted) =>
             return refuse("paused_for_memory", "Alondra brings back a node it paused for memory once the Mac has room"),
+        (P::Paused(Pause { reason: PauseReason::Declared { .. }, .. }), NodeEvent::TurnStarted) =>
+            return refuse("waits_for_machine", "A node that said it waits for the machine comes back when the gate resumes it"),
         (P::Closing, NodeEvent::TurnStarted | NodeEvent::TurnEnded | NodeEvent::TurnFailed) => P::Closing,
         (_, NodeEvent::TurnStarted) => P::Working,
         (P::Paused(_), NodeEvent::TurnEnded | NodeEvent::TurnFailed) => phase.clone(),
@@ -268,15 +273,14 @@ fn observe(phase: &NodePhase, since: Millis, listed: Listed, f: &TaskFacts, at: 
         (P::Closing, Listed::Absent | Listed::Done) => P::Closed,
         (P::Closing, _) => P::Closing,
         (P::Paused(_), _) => phase.clone(),
-        (P::Starting { reviving: false }, Listed::Absent | Listed::Idle | Listed::Done) if young => phase.clone(),
+        (P::Starting { reviving: false }, Listed::Absent | Listed::Idle | Listed::Blocked | Listed::Done) if young => phase.clone(),
         (P::Starting { reviving: true }, Listed::Absent) => phase.clone(),
         (_, Listed::Absent) => if f.open && !f.closing { P::Starting { reviving: true } } else { P::Closed },
         (_, Listed::Done) if !f.open || f.closing => P::Closed,
-        (P::WaitingUser { .. } | P::Delivered { in_turn: false } | P::Stopped, Listed::Idle | Listed::Done) => phase.clone(),
-        (_, Listed::Idle | Listed::Done) => rest(f),
-        (P::WaitingUser { .. } | P::Delivered { .. }, Listed::Working | Listed::Blocked) => phase.clone(),
-        (P::Stopped, Listed::Blocked) => phase.clone(),
-        (_, Listed::Working | Listed::Blocked) => P::Working,
+        (P::WaitingUser { .. } | P::Delivered { in_turn: false } | P::Stopped, Listed::Idle | Listed::Blocked | Listed::Done) => phase.clone(),
+        (_, Listed::Idle | Listed::Blocked | Listed::Done) => rest(f),
+        (P::WaitingUser { .. } | P::Delivered { .. }, Listed::Working) => phase.clone(),
+        (_, Listed::Working) => P::Working,
     }
 }
 
