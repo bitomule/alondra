@@ -20,6 +20,7 @@ pub(crate) fn parse(listing: &str) -> Option<BTreeMap<String, Listed>> {
             "working" => Listed::Working,
             "idle" => Listed::Idle,
             "blocked" => Listed::Blocked,
+            "done" => Listed::Done,
             _ => Listed::Absent,
         };
         Some((id.to_owned(), listed))
@@ -47,7 +48,7 @@ pub(crate) async fn once(domain: &DomainRuntime, sessions: &dyn Sessions) -> boo
     let listed: BTreeMap<AgentId, Listed> = state.agents.values()
         .filter(|agent| agent.phase.live() && Some(&agent.id) != state.orchestrator_session.as_ref())
         .map(|agent| (agent, sessions.get(&agent.id.0).copied().unwrap_or(Listed::Absent)))
-        .filter(|(agent, listed)| domain.launched_by_alondra(&agent.id).unwrap_or(false) || (*listed == Listed::Absent && !open_task(&agent.id)))
+        .filter(|(agent, listed)| domain.launched_by_alondra(&agent.id).unwrap_or(false) || (matches!(listed, Listed::Absent | Listed::Done) && !open_task(&agent.id)))
         .map(|(agent, listed)| (agent.id.clone(), listed))
         .collect();
     match crate::domain_agent_lifecycle::reconcile(domain, listed) {
@@ -284,14 +285,14 @@ mod tests {
     }
 
     #[test]
-    fn the_listing_says_each_session_by_its_id_and_a_stopped_or_done_one_is_absent() {
+    fn the_listing_says_each_session_by_its_id_and_a_stopped_one_is_absent() {
         let listing = r#"[{"id":"9462eaef","sessionId":"9462eaef-2d59","state":"done"},{"id":"200ea49d","sessionId":"200ea49d-a71d","state":"working"},
             {"id":"316f9b7e","sessionId":"316f9b7e-3d4a","state":"idle"},{"id":"30fdb363","sessionId":"30fdb363-1965","state":"stopped"}]
             warning: something on stderr"#;
         let parsed = parse(listing).unwrap();
         assert_eq!(parsed["200ea49d-a71d"], Listed::Working);
         assert_eq!(parsed["316f9b7e-3d4a"], Listed::Idle);
-        assert_eq!(parsed["9462eaef-2d59"], Listed::Absent);
+        assert_eq!(parsed["9462eaef-2d59"], Listed::Done);
         assert_eq!(parsed["30fdb363-1965"], Listed::Absent);
         assert_eq!(parse("claude: command not found"), None);
     }

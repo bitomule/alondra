@@ -507,8 +507,8 @@ pub(crate) const STOP_BLOCKS: u32 = 3;
 /// after `STOP_BLOCKS` turn ends in a row the user gets a Problem card and the node may stop. A
 /// delivery or a question starts the count again; the count is kept in the domain store, so a
 /// restart does not reset it. A session the user drives (not a background node, or one whose
-/// terminal they attached to), work running in the background and a node stopped by the machine
-/// are never held; background work that has hung (`Reported::background_hung`) is no such work.
+/// terminal they attached to), work running in the background and a node the machine paused are
+/// never held; background work that has hung (`Reported::background_hung`) is no such work.
 /// The turn ended behind background work of its own that will wake it: the node still works.
 fn works_in_background(domain: &DomainRuntime, agent_id: &AgentId, payload: &Value) -> bool {
     payload.get("background_tasks").and_then(Value::as_array).is_some_and(|tasks| !tasks.is_empty())
@@ -516,7 +516,7 @@ fn works_in_background(domain: &DomainRuntime, agent_id: &AgentId, payload: &Val
 }
 
 fn undelivered(domain: &DomainRuntime, agent_id: &AgentId, payload: &Value) -> Result<Option<String>> {
-    if driven_by_user(domain, agent_id) || works_in_background(domain, agent_id, payload) || stopped_by_machine(domain, agent_id) {
+    if driven_by_user(domain, agent_id) || works_in_background(domain, agent_id, payload) || paused(&*domain.state()?, agent_id) {
         return Ok(None);
     }
     hold_back(domain, agent_id)
@@ -526,9 +526,12 @@ fn driven_by_user(domain: &DomainRuntime, agent_id: &AgentId) -> bool {
     !domain.live.mods.is_node(&agent_id.0) || domain.live.node(&agent_id.0).is_some_and(|node| node.attached)
 }
 
-fn stopped_by_machine(domain: &DomainRuntime, agent_id: &AgentId) -> bool {
-    domain.live.node(&agent_id.0).is_some_and(|node| node.status == alondra_core::NodeStatus::WaitingMachine
-        || node.turn_signal == Some(alondra_core::TurnSignal::WaitingMachine))
+/// The node machine paused the node (the Mac, its own `wait_for_machine`, Alondra's pacing of
+/// usage, the user, an API error's retry): the one stop that is not Alondra's to undo, and it ends
+/// with the resume whoever writes to the node then. What the node says of itself, such as a
+/// budget it thinks is spent, is no pause.
+fn paused(state: &DomainState, agent_id: &AgentId) -> bool {
+    matches!(state.node_phase(agent_id), Some(alondra_core::domain::NodePhase::Paused(_)))
 }
 
 /// How long a node that ended its turn behind hung background work is left before Alondra sends
@@ -569,8 +572,8 @@ pub(crate) fn behind_hung_work(domain: &DomainRuntime, now: alondra_core::Millis
 
 /// The node of an open Task ended its turn with nothing running that will wake it, neither a
 /// result nor a question: whether Alondra still sends it back (`Some(true)`) or its cap was
-/// reached and the user told (`Some(false)`). A node the user drives or paused, one the machine
-/// stopped, one waiting on a card, one whose session stopped mid-turn (restarted by
+/// reached and the user told (`Some(false)`). A node the user drives, one the node machine
+/// paused, one waiting on a card, one whose session stopped mid-turn (restarted by
 /// `node_revival`) and one that is not connected are not stopped this way.
 /// `stop_blocks` reads the count kept for a Task, so a caller holding the store can answer.
 pub(crate) fn stopped_without_delivering(domain: &DomainRuntime, state: &DomainState, agent_id: &AgentId,
@@ -579,7 +582,7 @@ pub(crate) fn stopped_without_delivering(domain: &DomainRuntime, state: &DomainS
     let idle = domain.live.mods.session(session).is_some_and(|reported| reported.connection.is_some()
         && reported.working_since.is_none() && reported.tool.is_none()
         && (reported.background.is_empty() || reported.background_hung(now)) && !reported.silent(now));
-    if !idle || driven_by_user(domain, agent_id) || stopped_by_machine(domain, agent_id)
+    if !idle || driven_by_user(domain, agent_id) || paused(state, agent_id)
         || domain.live.is_closed(session) || domain.live.gate.paused(domain, session).is_some()
         || crate::domain_holds::waits_on_user(state, session)
     {
@@ -1545,6 +1548,76 @@ mod tests {
         connect(now - HUNG_REMINDER_GAP);
         assert_eq!(behind_hung_work(&domain, now, &mut reminded).len(), 1);
         assert_eq!(domain.store.lock().unwrap().stop_blocks(&"task".into()).unwrap().map(|(blocks, _)| blocks), Some(1));
+    }
+
+    /// What `wait_for_machine` records: the gate's declared pause, which the node machine holds,
+    /// and the live view's signal.
+    fn waits_for_machine(domain: &DomainRuntime, now: alondra_core::Millis) {
+        let reason = "Memory: the Bazel tests are cut for lack of memory".to_owned();
+        assert!(domain.live.gate.hold_back(domain, "agent-a", crate::fleet_pause::Reason::Declared { reason: reason.clone() }, now));
+        domain.live.apply(&alondra_core::Event::WaitingMachine { session_id: "agent-a".into(), reason });
+        assert!(matches!(domain.state().unwrap().node_phase(&"agent-a".into()), Some(NodePhase::Paused(_))));
+    }
+
+    fn quiet_since(domain: &DomainRuntime, at: alondra_core::Millis) {
+        domain.connect_node(serde_json::from_value(json!({"session_id": "agent-a", "version": "2.1.291"})).unwrap(), at);
+    }
+
+    /// While the machine pauses a node, its turn ends are its own: no reminder, no count, no card.
+    #[tokio::test]
+    async fn a_node_the_machine_paused_is_left_alone() {
+        let fixture = Fixture::new();
+        let domain = fixture.open();
+        node_with_task(&domain);
+        let now = alondra_core::now_millis();
+        let mut reminded = std::collections::HashMap::new();
+        hook(&domain, json!({"session_id": "agent-a", "hook_event_name": "UserPromptSubmit", "prompt": "go"}), Some(6)).await.1.unwrap();
+        waits_for_machine(&domain, now);
+        assert_eq!(hook(&domain, json!({"session_id": "agent-a", "hook_event_name": "Stop"}), Some(6)).await.0, json!({}));
+        quiet_since(&domain, now - HUNG_REMINDER_GAP);
+        assert!(behind_hung_work(&domain, now, &mut reminded).is_empty());
+        assert_eq!(domain.store.lock().unwrap().stop_blocks(&"task".into()).unwrap(), None);
+        assert!(problems(&domain).is_empty());
+    }
+
+    /// t-gate-count-mismatch, 10 Oct: it waited for the machine at 07:43, Alondra resumed it at
+    /// 15:55, and at 15:59 it ended its turn saying its budget was spent. Alondra's own resume left
+    /// the live view saying it waited for the machine, so the Stop hook let it stop and nothing
+    /// sent it back for two days. Claude Code listed it blocked, its session alive and idle. Only
+    /// the node machine's pause excuses a node: this one is sent back, and the user told at the cap.
+    #[tokio::test]
+    async fn a_node_resumed_after_waiting_for_the_machine_that_stops_on_a_spent_budget_is_sent_back() {
+        let fixture = Fixture::new();
+        let domain = fixture.open();
+        node_with_task(&domain);
+        let mut now = alondra_core::now_millis();
+        let mut reminded = std::collections::HashMap::new();
+        hook(&domain, json!({"session_id": "agent-a", "hook_event_name": "UserPromptSubmit", "prompt": "go"}), Some(6)).await.1.unwrap();
+        waits_for_machine(&domain, now);
+        lifecycle::node_event(&domain, &"agent-a".into(), NodeEvent::Resumed).unwrap();
+        hook(&domain, json!({"session_id": "agent-a", "hook_event_name": "UserPromptSubmit",
+            "prompt": "[From Alondra · 15:55] You waited for the machine since 07:43. The Mac is fine again: carry on with your task."}), Some(6)).await.1.unwrap();
+        assert_eq!(domain.live.node("agent-a").unwrap().turn_signal, Some(alondra_core::TurnSignal::WaitingMachine),
+            "Alondra's resume leaves the live view's signal as it was");
+
+        let stop = json!({"session_id": "agent-a", "hook_event_name": "Stop",
+            "last_assistant_message": "The fix is not finished. I stop because the weekly budget is exhausted (1% left)."});
+        assert!(reminder_only(&hook(&domain, stop, Some(6)).await.0), "a spent budget is no pause");
+
+        lifecycle::node_event(&domain, &"agent-a".into(), NodeEvent::TurnEnded).unwrap();
+        lifecycle::reconcile(&domain, [("agent-a".into(), Listed::Blocked)].into()).unwrap();
+        assert_eq!(domain.state().unwrap().node_phase(&"agent-a".into()), Some(&NodePhase::Stopped), "blocked waits on the user: no work");
+        quiet_since(&domain, now - HUNG_REMINDER_GAP);
+        for round in 1..STOP_BLOCKS {
+            let sent = behind_hung_work(&domain, now, &mut reminded);
+            assert_eq!(sent.len(), 1, "round {round}");
+            assert!(sent[0].1.starts_with("[Alondra] Do not end your turn yet"), "{}", sent[0].1);
+            now += HUNG_REMINDER_GAP;
+        }
+        assert!(problems(&domain).is_empty());
+        assert!(behind_hung_work(&domain, now, &mut reminded).is_empty(), "the cap: the user is told instead");
+        assert_eq!(problems(&domain).iter().map(|card| card.card.need.as_str()).collect::<Vec<_>>(),
+            ["Agent A cannot manage to deliver “Task”"]);
     }
 
     #[tokio::test]

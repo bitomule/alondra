@@ -44,7 +44,7 @@ fn events() -> Vec<NodeEvent> {
         NodeEvent::StartFailed, NodeEvent::RevivalFailed, NodeEvent::Paused { pause: pause(PauseReason::Usage) },
         NodeEvent::PauseCleanup { cleanup: PauseCleanup::Done }, NodeEvent::PauseReleased, NodeEvent::Resumed,
     ];
-    all.extend([Listed::Working, Listed::Idle, Listed::Blocked, Listed::Absent].map(|listed| NodeEvent::Listed { listed }));
+    all.extend([Listed::Working, Listed::Idle, Listed::Blocked, Listed::Done, Listed::Absent].map(|listed| NodeEvent::Listed { listed }));
     all
 }
 
@@ -260,6 +260,34 @@ fn a_node_that_delivers_keeps_its_slot_until_its_turn_ends() {
     assert!(back.holds_slot(), "a turn it starts after delivering is work too");
     assert_eq!(next(&delivering, SINCE, &NodeEvent::Listed { listed: Listed::Idle }, &delivered, AT).unwrap(), rested,
         "an idle listing frees the slot when the turn end was missed");
+}
+
+/// t-gate-count-mismatch ended its turn with "budget exhausted (1% left)" and Claude Code listed
+/// it blocked, waiting on the user: it is stopped, not at work, and Alondra must send it back.
+#[test]
+fn a_stopped_node_listed_blocked_stays_stopped_and_holds_no_slot() {
+    let blocked = NodeEvent::Listed { listed: Listed::Blocked };
+    let stopped = next(&NodePhase::Working, SINCE, &NodeEvent::TurnEnded, &OPEN, AT).unwrap();
+    assert_eq!(stopped, NodePhase::Stopped);
+    assert_eq!(next(&stopped, SINCE, &blocked, &OPEN, AT).unwrap(), NodePhase::Stopped);
+    assert!(!NodePhase::Stopped.holds_slot());
+    assert_eq!(next(&NodePhase::Working, SINCE, &blocked, &OPEN, AT).unwrap(), NodePhase::Working,
+        "a permission prompt inside a turn is still work");
+}
+
+/// 13 October: t-gate-count-mismatch delivered and Claude Code listed its session done, which read
+/// as gone, so a node waiting on the user's review showed as brought back. Done is a turn that
+/// ended: with its task open the node rests, without one it has finished.
+#[test]
+fn a_session_listed_done_rests_while_its_task_needs_it_and_closes_once_it_does_not() {
+    let done = NodeEvent::Listed { listed: Listed::Done };
+    let delivered = TaskFacts { delivered: true, ..OPEN };
+    assert_eq!(next(&NodePhase::Working, SINCE, &done, &OPEN, SINCE + START_GRACE).unwrap(), NodePhase::Stopped);
+    assert_eq!(next(&NodePhase::Stopped, SINCE, &done, &OPEN, AT).unwrap(), NodePhase::Stopped);
+    assert_eq!(next(&NodePhase::Delivered { in_turn: true }, SINCE, &done, &delivered, AT).unwrap(), NodePhase::Delivered { in_turn: false });
+    let over = TaskFacts { open: false, closing: true, ..OPEN };
+    assert_eq!(next(&NodePhase::Closing, SINCE, &done, &over, AT).unwrap(), NodePhase::Closed);
+    assert_eq!(next(&NodePhase::Working, SINCE, &done, &TaskFacts::default(), AT).unwrap(), NodePhase::Closed);
 }
 
 #[test]

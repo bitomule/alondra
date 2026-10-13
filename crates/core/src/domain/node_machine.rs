@@ -101,13 +101,18 @@ pub enum PauseCleanup {
     Done,
 }
 
-/// What `claude agents` says of a session when Alondra lists them.
+/// What `claude agents` says of a session when Alondra lists them. `Blocked` is a session that
+/// waits on the user (a question, a permission, an error only they clear, or a turn that ended
+/// saying it cannot go on): inside a turn that is still work, after its end it is no work at all.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Listed {
     Working,
     Idle,
     Blocked,
+    /// Its turn ended and it waits for its next prompt, its process alive or not: a message resumes
+    /// it. A node whose task still needs it rests as when idle; any other has finished.
+    Done,
     Absent,
 }
 
@@ -258,15 +263,17 @@ fn observe(phase: &NodePhase, since: Millis, listed: Listed, f: &TaskFacts, at: 
     use NodePhase as P;
     let young = at - since < START_GRACE;
     match (phase, listed) {
-        (P::Closing, Listed::Absent) => P::Closed,
+        (P::Closing, Listed::Absent | Listed::Done) => P::Closed,
         (P::Closing, _) => P::Closing,
         (P::Paused(_), _) => phase.clone(),
-        (P::Starting { reviving: false }, Listed::Absent | Listed::Idle) if young => phase.clone(),
+        (P::Starting { reviving: false }, Listed::Absent | Listed::Idle | Listed::Done) if young => phase.clone(),
         (P::Starting { reviving: true }, Listed::Absent) => phase.clone(),
         (_, Listed::Absent) => if f.open && !f.closing { P::Starting { reviving: true } } else { P::Closed },
-        (P::WaitingUser { .. } | P::Delivered { in_turn: false } | P::Stopped, Listed::Idle) => phase.clone(),
-        (_, Listed::Idle) => rest(f),
+        (_, Listed::Done) if !f.open || f.closing => P::Closed,
+        (P::WaitingUser { .. } | P::Delivered { in_turn: false } | P::Stopped, Listed::Idle | Listed::Done) => phase.clone(),
+        (_, Listed::Idle | Listed::Done) => rest(f),
         (P::WaitingUser { .. } | P::Delivered { .. }, Listed::Working | Listed::Blocked) => phase.clone(),
+        (P::Stopped, Listed::Blocked) => phase.clone(),
         (_, Listed::Working | Listed::Blocked) => P::Working,
     }
 }
