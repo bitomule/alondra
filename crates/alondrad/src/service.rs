@@ -224,6 +224,7 @@ struct DeviceConfig {
     agreement_key: String,
 }
 
+#[derive(Clone)]
 struct Device {
     signing: VerifyingKey,
     agreement: PublicKey,
@@ -337,7 +338,7 @@ struct Work {
     request_id: String,
     envelope: Envelope,
 }
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct LocalRequest {
     method: String,
@@ -579,28 +580,32 @@ impl Service {
                     return Ok(bytes);
                 }
             };
-            return approval_bound_commit(
-                &self.home,
-                || self.require_device_approval(&envelope.sender, device, transport),
-                || {
-                    self.journal.complete_push_preferences(
-                        &envelope.sender,
-                        &envelope.request_id,
-                        digest,
-                        &binding,
-                        quiet,
-                        revision,
+            #[cfg(test)]
+            self.journal.before_write(ReceiptWrite::PushPreferences, &envelope.request_id).await;
+            let (home, auth, envelope, device, request, digest, signing, mac_id) = (
+                self.home.clone(), self.auth.clone(), envelope.clone(), device.clone(),
+                request.clone(), *digest, self.signing.clone(), self.mac_id.clone(),
+            );
+            #[cfg(test)]
+            let clock = self.envelope_clock.clone();
+            return self.journal.write_receipt(receipt, move |journal| {
+                approval_bound_commit(
+                    &home,
+                    || Self::require_approval(&auth, &home, journal, &envelope.sender, &device, transport),
+                    || journal.complete_push_preferences(
+                        &envelope.sender, &envelope.request_id, &digest, &binding, quiet, revision,
                         |mut result| {
-                            if request.path == PUSH_BINDING_ROUTE
-                                && result["error"] == "stale_push_preferences"
-                            {
+                            if request.path == PUSH_BINDING_ROUTE && result["error"] == "stale_push_preferences" {
                                 result["kind"] = json!("stale_push_preferences");
                             }
-                            self.encode_response(envelope, device, &result, request)
+                            let now = now_ms();
+                            #[cfg(test)]
+                            let now = clock.as_ref().map_or(now, |clock| clock.load(std::sync::atomic::Ordering::Relaxed));
+                            Self::seal_response(&signing, &mac_id, now + 600_000, &envelope, &device, &result, &request)
                         },
-                    )
-                },
-            );
+                    ),
+                )
+            }).await;
         }
         approved_method(request)?;
         if let Some(domain) = &self.domain {
@@ -1231,19 +1236,26 @@ impl Service {
         result: &Value,
         local_request: &LocalRequest,
     ) -> Result<Vec<u8>> {
+        Self::seal_response(&self.signing, &self.mac_id, self.envelope_now() + 600_000, request, device, result, local_request)
+    }
+
+    fn seal_response(
+        signing: &SigningKey, mac_id: &str, expires_at_ms: u64,
+        request: &Envelope, device: &Device, result: &Value, local_request: &LocalRequest,
+    ) -> Result<Vec<u8>> {
         let seal = |value: &Value| -> Result<Vec<u8>> {
             let payload = serde_json::to_vec(value)?;
             let envelope = Envelope::seal_random(
                 EnvelopeContext {
-                    route: &self.mac_id,
-                    sender: &self.mac_id,
+                    route: mac_id,
+                    sender: mac_id,
                     recipient: &request.sender,
                     request_id: &request.request_id,
                     kind: "response",
-                    expires_at_ms: self.envelope_now() + 600_000,
+                    expires_at_ms,
                 },
                 &payload,
-                &self.signing,
+                signing,
                 &device.agreement,
             )
             .map_err(|error| anyhow!("seal response: {error}"))?;
@@ -1701,14 +1713,18 @@ impl Service {
     }
 
     fn require_device_approval(&self, id: &str, device: &Device, transport: Transport) -> Result<()> {
+        Self::require_approval(&self.auth, &self.home, &self.journal, id, device, transport)
+    }
+
+    fn require_approval(auth: &Auth, home: &Path, journal: &Journal, id: &str, device: &Device, transport: Transport) -> Result<()> {
         // The diagnostic is a separate process: re-read persisted approval so
         // revocation by the running daemon is observed after bootstrap too.
-        if !self.auth.approved_key_matches(id, &device.signing)
-            || !Auth::open(&self.home)?.approved_key_matches(id, &device.signing)
+        if !auth.approved_key_matches(id, &device.signing)
+            || !Auth::open(home)?.approved_key_matches(id, &device.signing)
         {
             bail!("device is not locally approved");
         }
-        if transport == Transport::Relay && !self.journal.enrollment_active(id)? {
+        if transport == Transport::Relay && !journal.enrollment_active(id)? {
             bail!("device is not actively enrolled with the relay");
         }
         Ok(())
@@ -2190,7 +2206,7 @@ enum EnrollmentDecision {
 }
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ReceiptWrite { Executing, ExecutingLocal, Complete }
+enum ReceiptWrite { Executing, ExecutingLocal, Complete, PushPreferences }
 #[cfg(test)]
 type ReceiptWriteHook = dyn Fn(ReceiptWrite, &str) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync;
 
@@ -2207,6 +2223,8 @@ struct Journal {
     accept_jobs: Arc<tokio::sync::Semaphore>,
     #[cfg(test)]
     before_write: Option<Arc<ReceiptWriteHook>>,
+    #[cfg(test)]
+    push_sql_entry: Option<Arc<dyn Fn() + Send + Sync>>,
     #[cfg(test)]
     _fixture_directory: Option<Arc<crate::test_support::Directory>>,
 }
@@ -2362,6 +2380,8 @@ impl Journal {
             accept_jobs: Arc::new(tokio::sync::Semaphore::new(1)),
             #[cfg(test)]
             before_write: None,
+            #[cfg(test)]
+            push_sql_entry: None,
             #[cfg(test)]
             _fixture_directory: None,
         })
@@ -2568,6 +2588,8 @@ impl Journal {
         encode: impl FnOnce(Value) -> Result<Vec<u8>>,
     ) -> Result<Vec<u8>> {
         let mut c = self.db()?;
+        #[cfg(test)]
+        if let Some(enter) = &self.push_sql_entry { enter(); }
         let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let (stored_digest, state, response, mode): (Vec<u8>, String, Option<Vec<u8>>, String) = tx.query_row(
             "SELECT digest,state,response,execution_mode FROM service_receipts WHERE sender=?1 AND request_id=?2",
@@ -2742,6 +2764,7 @@ mod tests {
     mod relay_scheduler_tests;
     mod journal_admission_tests;
     mod journal_transition_tests;
+    mod push_commit_tests;
     mod operation_result_tests;
     use super::*;
     use reqwest::{StatusCode, Url};
