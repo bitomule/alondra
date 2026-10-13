@@ -8,6 +8,7 @@ public protocol Transport: RelayRequestTransport {
     func bootstrapIfNeeded() async throws -> RelayBootstrap
     func health() async throws -> Bool
     func submit(_ envelope: Envelope) async throws -> RelayJob
+    func acknowledgeResult(requestID: String, revision: UInt64) async throws
     func status(requestID: String) async throws -> RelayJob
     func waitForRequest(requestID: String, waitSeconds: UInt64) async throws -> RelayReceipt
     func changes(since: UInt64, epoch: String?, waitSeconds: UInt64) async throws -> RelayChanges
@@ -17,6 +18,7 @@ public protocol Transport: RelayRequestTransport {
 
 public extension Transport {
     func bootstrapIfNeeded() async throws -> RelayBootstrap { try await bootstrap() }
+    func acknowledgeResult(requestID: String, revision: UInt64) async throws {}
 }
 
 public extension AlondraAPIClient {

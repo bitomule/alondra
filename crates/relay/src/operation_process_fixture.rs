@@ -10,6 +10,11 @@ struct Harness {
     actions: AtomicU64,
     reads: AtomicU64,
     bootstraps: AtomicU64,
+    hold_work: AtomicBool,
+    work_permits: Semaphore,
+    dispatched: tokio::sync::mpsc::UnboundedSender<String>,
+    dispatches: tokio::sync::Mutex<tokio::sync::mpsc::UnboundedReceiver<String>>,
+    dispatch_history: std::sync::Mutex<std::collections::VecDeque<String>>,
 }
 fn emit(value: Value) {
     let stdout = std::io::stdout();
@@ -56,7 +61,27 @@ async fn barrier(
             released.await;
         }
     }
-    next.run(request).await
+    let work = request.method() == Method::GET && path == "/v1/work";
+    let response = next.run(request).await;
+    if work && response.status() == StatusCode::OK {
+        let held = harness.hold_work.load(Ordering::Relaxed);
+        if held {
+            let permit = harness.work_permits.acquire().await.unwrap();
+            permit.forget();
+        }
+        let (parts, body) = response.into_parts();
+        let bytes = to_bytes(body, state::MAX_RESPONSE_BYTES).await.unwrap();
+        let item: Value = serde_json::from_slice(&bytes).unwrap();
+        let id = item["request_id"].as_str().unwrap().to_owned();
+        {
+            let mut history = harness.dispatch_history.lock().unwrap();
+            if history.len() == 512 { history.pop_front(); }
+            history.push_back(id.clone());
+        }
+        if held { harness.dispatched.send(id).unwrap(); }
+        return Response::from_parts(parts, Body::from(bytes));
+    }
+    response
 }
 
 #[ignore = "stdin-controlled real relay for the separate client process E2E target"]
@@ -100,6 +125,11 @@ async fn full_stack_fixture_relay() {
         },
     )
     .unwrap();
+    auth.enroll(
+        &auth::Identity { device_id: "mac-1".into(), owner_sub: "owner".into() },
+        PhoneDevice { device_id: "noise-phone".into(), owner_sub: "owner".into(),
+            signing_key: key_bytes(&SigningKey::from_slice(&[35u8; 32]).unwrap()) },
+    ).unwrap();
     let epoch = URL_SAFE_NO_PAD.encode(auth.server_epoch());
     let server = Arc::new(Server {
         lab_waiters: Arc::default(),
@@ -119,12 +149,18 @@ async fn full_stack_fixture_relay() {
         epoch,
         test_directory: Some(directory),
     });
+    let (dispatched, dispatches) = tokio::sync::mpsc::unbounded_channel();
     let harness = Arc::new(Harness {
         hold: AtomicBool::new(false),
         release: Notify::new(),
         actions: AtomicU64::new(0),
         reads: AtomicU64::new(0),
         bootstraps: AtomicU64::new(0),
+        hold_work: AtomicBool::new(false),
+        work_permits: Semaphore::new(0),
+        dispatched,
+        dispatches: tokio::sync::Mutex::new(dispatches),
+        dispatch_history: std::sync::Mutex::default(),
     });
     let routes =
         router(server.clone()).layer(middleware::from_fn_with_state(harness.clone(), barrier));
@@ -166,6 +202,31 @@ async fn full_stack_fixture_relay() {
     });
     while let Some(command) = incoming.recv().await {
         match command["command"].as_str().unwrap() {
+            "hold_work" => {
+                harness.hold_work.store(true, Ordering::Relaxed);
+                emit(json!({"event":"work_armed"}));
+            }
+            "step_work" => {
+                harness.work_permits.add_permits(1);
+                let id = harness.dispatches.lock().await.recv().await.unwrap();
+                emit(json!({"event":"work_dispatched","command_id":id}));
+            }
+            "release_work" => {
+                harness.hold_work.store(false, Ordering::Relaxed);
+                harness.work_permits.add_permits(512);
+                emit(json!({"event":"work_released"}));
+            }
+            "queue_stats" => {
+                let mut stats = server.queue.process_fixture_statistics();
+                stats["event"] = json!("queue_stats");
+                let pending_noise = (0..32).filter(|ordinal| {
+                    server.queue.get("owner", "noise-phone", &format!("noise-{ordinal:03}"), now_ms())
+                        .is_ok_and(|job| !matches!(job.status, state::JobStatus::Completed | state::JobStatus::Expired))
+                }).count();
+                stats["pending_noise"] = json!(pending_noise);
+                stats["dispatch_history"] = json!(*harness.dispatch_history.lock().unwrap());
+                emit(stats);
+            }
             "hold_next_action" => {
                 harness.hold.store(true, Ordering::Relaxed);
                 emit(json!({"event":"armed","kind":"action"}));
@@ -188,6 +249,7 @@ async fn full_stack_fixture_relay() {
         }
     }
     harness.release.notify_waiters();
+    harness.work_permits.add_permits(512);
     let _ = stop.send(());
     // Cancel only waits admitted by this fixture before graceful shutdown.
     {
@@ -196,6 +258,7 @@ async fn full_stack_fixture_relay() {
         server.queue.notify_mac_revoked("mac-1");
     }
     server.queue.notify_phone_revoked("phone-1");
+    server.queue.notify_phone_revoked("noise-phone");
     serving.await.unwrap();
     reader.join().unwrap();
     emit(json!({"event":"stopped"}));

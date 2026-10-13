@@ -3,8 +3,8 @@ import Foundation
 import Security
 
 /// Transport for the opaque relay protocol. Pairing and Keychain ownership belong to the caller.
-/// POST /v1/requests is issued once. The caller must persist its encoded envelope before sending,
-/// then resolve an ambiguous network failure with GET /v1/requests/{id}.
+/// Persist the encoded envelope before dispatch. An explicit admission refusal permits retrying
+/// those same bytes; an ambiguous network failure permits only GET /v1/requests/{id}.
 actor RelayTransport: Transport {
     private let base: URL
     private let deviceID: String
@@ -176,6 +176,14 @@ actor RelayTransport: Transport {
         return job
     }
 
+    public func acknowledgeResult(requestID: String, revision: UInt64) async throws {
+        guard Self.validRequestID(requestID) else { throw RelayWireError.invalidField }
+        guard bootstrapValue?.resultAcknowledgment == true else { return }
+        let body = try Self.encoder.encode(["revision": revision])
+        let response = try await send("POST", target: "/v1/requests/\(requestID)/ack", body: body, signed: true)
+        guard response.status == 204 else { throw Self.error(response.status) }
+    }
+
     public func status(requestID: String) async throws -> RelayJob {
         guard Self.validRequestID(requestID) else { throw RelayWireError.invalidField }
         let job: RelayJob = try await get("/v1/requests/\(requestID)", signed: true)
@@ -219,6 +227,7 @@ actor RelayTransport: Transport {
     }
 
     private func send(_ method: String, target: String, body: Data, signed: Bool) async throws -> HTTPReply {
+        try Task.checkCancellation()
         guard target.hasPrefix("/"), !target.hasPrefix("//"), !target.contains("#"),
               let url = URL(string: target, relativeTo: base)?.absoluteURL,
               url.host == base.host, url.scheme == base.scheme else { throw RelayWireError.invalidEndpoint }
@@ -239,6 +248,7 @@ actor RelayTransport: Transport {
             try MutationScope.check()
             guard let epoch else { throw RelayWireError.invalidResponse }
             let token = try await MutationScope.$current.withValue(nil) { try await bearer() }
+            try Task.checkCancellation()
             try MutationScope.check()
             guard !token.isEmpty, !token.utf8.contains(where: { $0 <= 32 || $0 == 127 }) else {
                 throw RelayWireError.invalidField
@@ -261,11 +271,16 @@ actor RelayTransport: Transport {
             request.setValue(Base64URL.encode(signature), forHTTPHeaderField: "x-device-signature")
         }
         request.timeoutInterval = try MutationScope.remaining(cap: .seconds(request.timeoutInterval)).requestTimeInterval
+        try Task.checkCancellation()
         try MutationScope.check()
         if method == "POST", target == "/v1/requests" { try MutationScope.possibleDispatch() }
         let reply = try await transport.send(request)
-        if let budget = MutationScope.current, budget.interruption != nil || Task.isCancelled { return reply }
+        if Task.isCancelled || MutationScope.current?.interruption != nil { return reply }
         guard signed, signedEpoch == epoch, signedBearer == latestBearer else { return reply }
+        let refusal = try? JSONDecoder().decode([String: String].self, from: reply.body)
+        let admissionRefused = method == "POST" && target == "/v1/requests"
+            && (reply.status == 429 && refusal == ["error": "queue_full"]
+                || reply.status == 503 && refusal == ["error": "server_busy"])
         if reply.status == 401 {
             // A relay restart changes its epoch, and an epoch that already worked is the likely
             // cause: bootstrap again first. A 401 with a fresh epoch is about the access token,
@@ -281,6 +296,7 @@ actor RelayTransport: Transport {
             epochProven = true
             proofGeneration &+= 1
         }
+        if admissionRefused { throw RelayWireError.admissionFull }
         return reply
     }
 

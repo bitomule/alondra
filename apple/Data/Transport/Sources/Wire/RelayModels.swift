@@ -4,13 +4,15 @@ public struct RelayBootstrap: Decodable, Sendable {
     public let protocolVersion: Int
     public let epoch: String
     public let requestWait: Bool
-    enum CodingKeys: String, CodingKey { case protocolVersion = "protocol", epoch, requestWait = "request_wait" }
+    public let resultAcknowledgment: Bool
+    enum CodingKeys: String, CodingKey { case protocolVersion = "protocol", epoch, requestWait = "request_wait", resultAcknowledgment = "result_ack" }
 
     public init(from decoder: any Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         protocolVersion = try values.decode(Int.self, forKey: .protocolVersion)
         epoch = try values.decode(String.self, forKey: .epoch)
         requestWait = try values.decodeIfPresent(Bool.self, forKey: .requestWait) ?? false
+        resultAcknowledgment = try values.decodeIfPresent(Bool.self, forKey: .resultAcknowledgment) ?? false
     }
 }
 

@@ -50,13 +50,15 @@ public actor RelayOutbox {
     private let scope: RelayOutboxScope
     private let transport: any RelayRequestTransport
     private let journal: EnvelopeJournal?
+    private let admissionWait: (@Sendable () async throws -> Void)?
     private var records: [String: RelayOutboxEntry] = [:]
     private var retirement: ActionJournalAcknowledgment?
 
-    public init(scope: RelayOutboxScope, transport: any RelayRequestTransport, journal: EnvelopeJournal? = nil) {
+    public init(scope: RelayOutboxScope, transport: any RelayRequestTransport, journal: EnvelopeJournal? = nil, admissionWait: (@Sendable () async throws -> Void)? = nil) {
         self.scope = scope
         self.transport = transport
         self.journal = journal
+        self.admissionWait = admissionWait
     }
 
     public func entry(requestID: String) async throws -> RelayOutboxEntry? {
@@ -90,7 +92,15 @@ public actor RelayOutbox {
 
         do {
             try MutationScope.check()
-            let receipt = try await transport.submitRequest(envelope)
+            let receipt: RelayReceipt
+            while true {
+                try MutationScope.check()
+                do { receipt = try await transport.submitRequest(envelope); break }
+                catch RelayWireError.admissionFull {
+                    guard let admissionWait else { throw RelayWireError.admissionFull }
+                    try await admissionWait()
+                }
+            }
             guard receipt.requestID == envelope.requestID else {
                 try? await setUncertain(envelope.requestID)
                 throw RelayOutboxError.transportResponseMismatch

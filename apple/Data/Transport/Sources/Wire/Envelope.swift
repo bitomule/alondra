@@ -4,7 +4,7 @@ import Security
 
 public enum RelayWireError: Error, Equatable, Sendable {
     case invalidEndpoint, invalidField, invalidEncoding, invalidSignature, wrongIdentity, expired
-    case invalidResponse, unauthorized, conflict, outcomeUnknown, server(Int)
+    case invalidResponse, unauthorized, conflict, outcomeUnknown, admissionFull, server(Int)
 }
 
 enum Base64URL {

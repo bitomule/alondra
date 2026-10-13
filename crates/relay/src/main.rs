@@ -75,6 +75,7 @@ fn router(server: Arc<Server>) -> Router {
         .route("/v1/mac/push", post(send_push))
         .route("/v1/requests", post(submit))
         .route("/v1/requests/{id}", get(request_status))
+        .route("/v1/requests/{id}/ack", post(acknowledge_result))
         .route("/v1/changes", get(changes))
         .route("/v1/work", get(work))
         .route("/v1/work/{id}/receipt", post(receipt))
@@ -105,7 +106,7 @@ async fn ready(State(server): State<Arc<Server>>) -> impl IntoResponse {
 async fn bootstrap(State(server): State<Arc<Server>>) -> impl IntoResponse {
     (
         StatusCode::OK,
-        Json(json!({"protocol":1,"epoch":server.epoch,"request_wait":true})),
+        Json(json!({"protocol":1,"epoch":server.epoch,"request_wait":true,"result_ack":true})),
     )
 }
 
@@ -290,12 +291,30 @@ fn unauthorized() -> (StatusCode, Json<Value>) {
 fn queued_error(e: QueueError) -> (StatusCode, Json<Value>) {
     match e {
         QueueError::Full => error(StatusCode::TOO_MANY_REQUESTS, "queue_full"),
+        QueueError::PayloadTooLarge => error(StatusCode::PAYLOAD_TOO_LARGE, "envelope_too_large"),
         QueueError::Conflict => error(StatusCode::CONFLICT, "request_id_conflict"),
         QueueError::NotFound | QueueError::WrongDevice => error(StatusCode::NOT_FOUND, "not_found"),
         QueueError::NotReceived => error(StatusCode::CONFLICT, "mac_receipt_required"),
         QueueError::Expired => error(StatusCode::GONE, "outcome_unknown"),
         QueueError::ResultEvicted => error(StatusCode::GONE, "result_evicted"),
     }
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ResultAcknowledgment { revision: u64 }
+
+async fn acknowledge_result(
+    State(server): State<Arc<Server>>, axum::extract::Path(id): axum::extract::Path<String>,
+    headers: HeaderMap, method: Method, uri: Uri, body: Bytes,
+) -> ApiResult {
+    if body.len() > 1024 { return Err(error(StatusCode::PAYLOAD_TOO_LARGE, "body_too_large")); }
+    let _gate = server.device_gate.read().await;
+    let who = server.auth.authenticate_phone(&headers, &method, &uri, &body, now_ms()).await.map_err(authentication_error)?;
+    let acknowledgment: ResultAcknowledgment = serde_json::from_slice(&body)
+        .map_err(|_|error(StatusCode::BAD_REQUEST,"invalid_acknowledgment"))?;
+    server.queue.acknowledge(&who.owner_sub,&who.device_id,&id,acknowledgment.revision,now_ms()).map_err(queued_error)?;
+    Ok(StatusCode::NO_CONTENT.into_response())
 }
 
 async fn enroll(

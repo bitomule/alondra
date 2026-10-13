@@ -184,8 +184,17 @@ private struct RelayServerEvent: Decodable, Sendable {
     var actionPosts: Int?
     var readPosts: Int?
     var bootstrapGets: Int?
+    var pending: Int?
+    var pendingNoise: Int?
+    var cachedPayloadBytes: Int?
+    var reservedResponseBytes: Int?
+    var admittedByteCharge: Int?
+    var dispatchHistory: [String]?
     enum CodingKeys: String, CodingKey {
-        case event, bearer
+        case event, bearer, pending
+        case pendingNoise = "pending_noise", cachedPayloadBytes = "cached_payload_bytes"
+        case reservedResponseBytes = "reserved_response_bytes", admittedByteCharge = "admitted_byte_charge"
+        case dispatchHistory = "dispatch_history"
         case expiredBearer = "expired_bearer"
         case baseURL = "base_url", macID = "mac_id", deviceID = "device_id"
         case signingSeed = "signing_seed_base64", agreementSeed = "agreement_seed_base64"
@@ -630,6 +639,182 @@ private struct RelayServerEvent: Decodable, Sendable {
             try relay.send(ServerCommand(command: "stop"))
             #expect(try await relay.next(RelayServerEvent.self).event == "stopped")
         }
+    }
+
+    @Test(arguments: 0..<3)
+    func aSaturatedPhoneCannotKeepAnotherPhoneFromAnsweringAndOpeningConsecutiveDetails(cohort: Int) async throws {
+        func elapsedMilliseconds(since start: ContinuousClock.Instant) -> Double {
+            let duration = start.duration(to: ContinuousClock().now).components
+            return Double(duration.seconds) * 1000 + Double(duration.attoseconds) / 1_000_000_000_000_000
+        }
+        let relay = try launchRelay(home: TestFiles.directory())
+        defer { relay.cleanup() }
+        let relayReady = try await relay.next(RelayServerEvent.self)
+        let daemon = try FixtureProcess(executable: executable("crates/alondrad/alondrad_test"),
+            arguments: ["--ignored", "--exact", "operation_journal::process_fixture::full_stack_fixture_server", "--nocapture"],
+            home: try TestFiles.directory(), prefix: "ALONDRA_FIXTURE ",
+            additionalEnvironment: ["ALONDRA_FIXTURE_RELAY_URL": try #require(relayReady.baseURL)])
+        defer { daemon.cleanup() }
+        let daemonReady = try await daemon.next(ServerEvent.self)
+        let configuration = try relayConfiguration(relay: relayReady, daemon: daemonReady)
+        let interactiveHome = try TestFiles.directory(), interactiveConfig = interactiveHome.appending(path: "fixture.json")
+        try JSONEncoder().encode(configuration).write(to: interactiveConfig)
+        let interactive = try launchClient(home: interactiveHome, config: interactiveConfig)
+        defer { interactive.cleanup() }
+        #expect(try await interactive.next(ProcessClientEvent.self).event == "ready")
+        try interactive.send(ProcessClientCommand(command: "prepare", nonce: "70000000-0000-4000-8000-000000000002"))
+        let preparedEvent = try await interactive.next(ProcessClientEvent.self)
+        let answer = try #require(preparedEvent.request)
+        #expect(preparedEvent.event == "prepared")
+
+        let relayConfiguration = try #require(configuration.relay)
+        let noisyConfiguration = ProcessClientConfiguration(baseURL: configuration.baseURL, dataEpoch: configuration.dataEpoch,
+            actionID: configuration.actionID, deviceID: "noise-phone", signingSeed: Data(repeating: 35, count: 32).base64EncodedString(),
+            optionID: configuration.optionID, relay: .init(baseURL: relayConfiguration.baseURL, bearer: relayConfiguration.bearer,
+                macID: relayConfiguration.macID, agreementSeed: Data(repeating: 36, count: 32).base64EncodedString(),
+                macSigningSeed: relayConfiguration.macSigningSeed, macAgreementSeed: relayConfiguration.macAgreementSeed))
+        let noisyHome = try TestFiles.directory(), noisyConfig = noisyHome.appending(path: "fixture.json")
+        try JSONEncoder().encode(noisyConfiguration).write(to: noisyConfig)
+        let noisy = try launchClient(home: noisyHome, config: noisyConfig)
+        defer { noisy.cleanup() }
+        #expect(try await noisy.next(ProcessClientEvent.self).event == "ready")
+        try noisy.send(ProcessClientCommand(command: "start_transfer"))
+        #expect(try await noisy.next(ProcessClientEvent.self).event == "transfer_chunk_held")
+        try relay.send(ServerCommand(command: "hold_work"))
+        #expect(try await relay.next(RelayServerEvent.self).event == "work_armed")
+        try noisy.send(ProcessClientCommand(command: "preload_noise"))
+        let preloaded = try await noisy.next(ProcessClientEvent.self)
+        let expectedNoiseIDs = (0..<32).map { String(format: "noise-%03d", $0) }
+        #expect(preloaded.event == "noise_preloaded" && preloaded.envelopeIDs == expectedNoiseIDs)
+        try relay.send(ServerCommand(command: "queue_stats"))
+        let before = try await relay.next(RelayServerEvent.self)
+        #expect(before.event == "queue_stats" && before.pendingNoise == 32)
+        #expect(try #require(before.cachedPayloadBytes) > 0)
+        #expect(try #require(before.reservedResponseBytes) >= 32 * 1024 * 1024)
+
+        try noisy.send(ProcessClientCommand(command: "release_transfer"))
+        #expect(try await noisy.next(ProcessClientEvent.self).event == "transfer_admission_rejected")
+        try noisy.send(ProcessClientCommand(command: "start_blocked_read", key: "card:fixture-detail-c"))
+        #expect(try await noisy.next(ProcessClientEvent.self).event == "read_admission_rejected")
+        let actionStarted = ContinuousClock().now
+        try interactive.send(ProcessClientCommand(command: "start_action"))
+        #expect(try await interactive.next(ProcessClientEvent.self).event == "action_started")
+        try interactive.send(ProcessClientCommand(command: "await_action_admitted"))
+        #expect(try await interactive.next(ProcessClientEvent.self).envelopeIDs == [answer.commandId])
+        var dispatchIDs: [String] = []
+        for _ in 0..<2 {
+            try relay.send(ServerCommand(command: "step_work"))
+            let dispatched = try await relay.next(RelayServerEvent.self)
+            #expect(dispatched.event == "work_dispatched")
+            dispatchIDs.append(try #require(dispatched.commandID))
+        }
+        #expect(dispatchIDs.first == "noise-000")
+        #expect(dispatchIDs.last == answer.commandId, "a second phone gets the next turn after one noisy request")
+        var held = dispatchIDs.last == answer.commandId
+        // Complete the finite workload even on the old FIFO so regression evidence is a failed assertion, not a hung process.
+        if !held {
+            try relay.send(ServerCommand(command: "release_work"))
+            #expect(try await relay.next(RelayServerEvent.self).event == "work_released")
+        }
+        try interactive.send(ProcessClientCommand(command: "finish_action"))
+        let applied = try await interactive.next(ProcessClientEvent.self)
+        let actionElapsedMilliseconds = elapsedMilliseconds(since: actionStarted)
+        var interactiveErrors = applied.event == "answered" ? 0 : 1
+        var detailElapsedMilliseconds: [Double] = []
+        #expect(applied.event == "answered" && applied.response?.outcome == .applied)
+        #expect(try await stats(daemon).effects == 1)
+        for key in ["card:fixture-detail-b", "card:fixture-detail-c"] {
+            let detailStarted = ContinuousClock().now
+            try interactive.send(ProcessClientCommand(command: "start_detail", key: key))
+            let accepted = try await interactive.next(ProcessClientEvent.self)
+            #expect(accepted.event == "detail_admitted")
+            let id = try #require(accepted.envelopeIDs?.first)
+            if held {
+                var selected = false
+                for _ in 0..<6 {
+                    try relay.send(ServerCommand(command: "step_work"))
+                    let dispatched = try await relay.next(RelayServerEvent.self)
+                    let dispatchedID = try #require(dispatched.commandID)
+                    dispatchIDs.append(dispatchedID)
+                    if dispatchedID == id { selected = true; break }
+                }
+                #expect(selected, "consecutive details progress while the noisy phone still owns pending work")
+                if !selected {
+                    held = false
+                    try relay.send(ServerCommand(command: "release_work"))
+                    #expect(try await relay.next(RelayServerEvent.self).event == "work_released")
+                }
+            }
+            try interactive.send(ProcessClientCommand(command: "finish_detail"))
+            let detail = try await interactive.next(ProcessClientEvent.self)
+            detailElapsedMilliseconds.append(elapsedMilliseconds(since: detailStarted))
+            if detail.event != "detail_finished" { interactiveErrors += 1 }
+            #expect(detail.event == "detail_finished" && detail.detailKeys == [key] && detail.readErrors == 0)
+        }
+        try relay.send(ServerCommand(command: "queue_stats"))
+        let during = try await relay.next(RelayServerEvent.self)
+        #expect(try #require(during.pendingNoise) >= 24, "interactive work finishes before the noisy backlog drains")
+        if held {
+            try relay.send(ServerCommand(command: "release_work"))
+            #expect(try await relay.next(RelayServerEvent.self).event == "work_released")
+        }
+        try noisy.send(ProcessClientCommand(command: "finish_detail"))
+        let resumedRead = try await noisy.next(ProcessClientEvent.self)
+        #expect(resumedRead.event == "detail_finished" && resumedRead.detailKeys == ["card:fixture-detail-c"] && resumedRead.readErrors == 0)
+        try noisy.send(ProcessClientCommand(command: "finish_transfer"))
+        let transfer = try await noisy.next(ProcessClientEvent.self)
+        #expect(transfer.event == "transfer_finished" && transfer.transferBytes == 192 * 1024 + 17)
+        #expect(transfer.transferDigest?.count == 64)
+        try noisy.send(ProcessClientCommand(command: "verify_noise"))
+        let completed = try await noisy.next(ProcessClientEvent.self)
+        #expect(completed.event == "noise_verified" && completed.envelopeIDs == expectedNoiseIDs && completed.readErrors == 0)
+        try noisy.send(ProcessClientCommand(command: "saturation_metrics"))
+        let metrics = try await noisy.next(ProcessClientEvent.self)
+        #expect(metrics.event == "saturation_metrics" && metrics.immutableResubmissions == true)
+        #expect(try #require(metrics.admissionRejections) >= 2)
+        for client in [interactive, noisy] {
+            try client.send(ProcessClientCommand(command: "drain_acknowledgments"))
+            #expect(try await client.next(ProcessClientEvent.self).event == "acknowledgments_drained")
+        }
+        try relay.send(ServerCommand(command: "queue_stats"))
+        let after = try await relay.next(RelayServerEvent.self)
+        #expect(after.pendingNoise == 0 && after.pending == 0)
+        #expect(after.reservedResponseBytes == 0)
+        #expect(after.admittedByteCharge == after.cachedPayloadBytes)
+        let final = try await stats(daemon)
+        #expect(final.effects == 1)
+        let history = after.dispatchHistory ?? []
+        let actionRank: Int
+        if let firstNoise = history.firstIndex(of: "noise-000"), let answerIndex = history.firstIndex(of: answer.commandId) {
+            actionRank = answerIndex - firstNoise + 1
+        } else { actionRank = 0 }
+        #expect(actionRank == 2)
+        func queueMetrics(_ event: RelayServerEvent) -> [String: Int] {
+            ["pending": event.pending ?? -1, "pending_noise": event.pendingNoise ?? -1,
+             "cached_payload_bytes": event.cachedPayloadBytes ?? -1,
+             "reserved_response_bytes": event.reservedResponseBytes ?? -1,
+             "admitted_byte_charge": event.admittedByteCharge ?? -1]
+        }
+        let measured: [String: Any] = [
+            "cohort": cohort, "action_relative_rank": actionRank, "dispatch_history": history,
+            "controlled_dispatch_ids": dispatchIDs, "action_elapsed_ms": actionElapsedMilliseconds,
+            "detail_elapsed_ms": detailElapsedMilliseconds, "interactive_errors": interactiveErrors,
+            "noisy_read_errors": resumedRead.event == "detail_finished" ? resumedRead.readErrors ?? 0 : 1,
+            "transfer_errors": transfer.event == "transfer_finished" ? 0 : 1,
+            "transfer_bytes": transfer.transferBytes ?? 0,
+            "noise_verification_errors": completed.event == "noise_verified" ? completed.readErrors ?? 0 : 1,
+            "effects": final.effects ?? -1, "before": queueMetrics(before), "during": queueMetrics(during),
+            "after": queueMetrics(after), "client_metrics": try JSONSerialization.jsonObject(with: JSONEncoder().encode(metrics))
+        ]
+        print("saturation E2E " + String(decoding: try JSONSerialization.data(withJSONObject: measured, options: [.sortedKeys]), as: UTF8.self))
+        for client in [interactive, noisy] {
+            try client.send(ProcessClientCommand(command: "quit"))
+            #expect(try await client.next(ProcessClientEvent.self).event == "stopped")
+        }
+        try daemon.send(ServerCommand(command: "stop"))
+        #expect(try await daemon.next(ServerEvent.self).event == "stopped")
+        try relay.send(ServerCommand(command: "stop"))
+        #expect(try await relay.next(RelayServerEvent.self).event == "stopped")
     }
 
     @Test func actualPreviousStoreGrowthIsComparedWithSQLiteAfterTheResponseCacheFills() async throws {

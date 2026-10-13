@@ -28,6 +28,11 @@ public actor RelaySession: OperationAPI, PushRegistrationAPI {
     let mutationEvidence = MutationEvidenceStore()
     private let waitForReadDeadline: @Sendable (ContinuousClock.Instant) async throws -> Void
     private var active = true
+    private let durableOutbox: Bool
+    private var resultAcknowledgments: [(id: String, revision: UInt64)] = []
+    private var acknowledgmentTask: Task<Void, Never>?
+    private var acknowledgingID: String?
+
 
     public init(scope: RelayOutboxScope,
                 bearer: @escaping @Sendable () async throws -> String,
@@ -59,7 +64,8 @@ public actor RelaySession: OperationAPI, PushRegistrationAPI {
         let client = try AlondraAPIClient.makeTransport(base: scope.relay, deviceID: scope.deviceID,
             signing: signing, bearer: bearer, bearerRefused: bearerRefused, bearerRefusedForToken: bearerRefusedForToken, transport: transport)
         self.client = client; self.scope = scope
-        outbox = RelayOutbox(scope: scope, transport: client, journal: journal)
+        outbox = RelayOutbox(scope: scope, transport: client, journal: journal, admissionWait: sleep)
+        durableOutbox = journal != nil
         codec = EnvelopeCodec(macID: scope.macID, deviceID: scope.deviceID, signing: signing,
             agreement: agreement, macSigning: macSigning, macAgreement: macAgreement, now: now)
         self.sleep = sleep
@@ -120,6 +126,8 @@ public actor RelaySession: OperationAPI, PushRegistrationAPI {
 
     public func deactivate() async {
         active = false
+        resultAcknowledgments.removeAll()
+        acknowledgmentTask?.cancel()
         await mutations.cancelAll()
         if let concrete = client as? RelayTransport { await concrete.cancelBootstrap() }
     }
@@ -298,13 +306,41 @@ public actor RelaySession: OperationAPI, PushRegistrationAPI {
         }
     }
 
-    private func verified(_ receipt: RelayReceipt, requestID: String) throws -> RelayOperationResult? {
+    private func verified(_ receipt: RelayReceipt, requestID: String, acknowledge: Bool? = nil) throws -> RelayOperationResult? {
         guard active else { return .unknown }
         guard let result = try codec.verified(receipt, requestID: requestID) else { return nil }
         switch result {
         case .unknown: return .unknown
-        case let .completed(status, body): return .completed(status: status, body: body)
+        case let .completed(status, body):
+            if acknowledge ?? durableOutbox { enqueueAcknowledgment(receipt) }
+            return .completed(status: status, body: body)
         }
+    }
+
+    private func enqueueAcknowledgment(_ receipt: RelayReceipt) {
+        guard active, receipt.status == "completed", receipt.response != nil,
+              acknowledgingID != receipt.requestID,
+              !resultAcknowledgments.contains(where: { $0.id == receipt.requestID }),
+              resultAcknowledgments.count < 128 else { return }
+        resultAcknowledgments.append((receipt.requestID, receipt.revision))
+        guard acknowledgmentTask == nil else { return }
+        acknowledgmentTask = MutationScope.$current.withValue(nil) {
+            Task { @concurrent [weak self] in await self?.sendAcknowledgments() }
+        }
+    }
+
+    private func sendAcknowledgments() async {
+        while active, !Task.isCancelled, !resultAcknowledgments.isEmpty {
+            let result = resultAcknowledgments.removeFirst()
+            acknowledgingID = result.id
+            try? await client.acknowledgeResult(requestID: result.id, revision: result.revision)
+            acknowledgingID = nil
+        }
+        acknowledgmentTask = nil
+    }
+
+    func drainAcknowledgments() async {
+        while let acknowledgmentTask { await acknowledgmentTask.value }
     }
 
     /// Only after the use case durably records a verified result. Retains the outbox tombstone.
@@ -359,14 +395,16 @@ public actor RelaySession: OperationAPI, PushRegistrationAPI {
         do {
             let receipt: RelayReceipt
             do {
-                do {
-                    receipt = try await client.submitRequest(envelope)
-                } catch RelayWireError.unauthorized {
-                    // The relay refused the request outright, so nothing was queued: refresh the epoch once.
+                var refreshed = false
+                while true {
                     try checkReadDeadline(deadline)
-                    bootstrap = try await client.bootstrap()
-                    try checkReadDeadline(deadline)
-                    receipt = try await client.submitRequest(envelope)
+                    do { receipt = try await client.submitRequest(envelope); break }
+                    catch RelayWireError.admissionFull {
+                        try await pauseReadRecovery(deadline)
+                    } catch RelayWireError.unauthorized where !refreshed {
+                        refreshed = true
+                        bootstrap = try await client.bootstrap()
+                    }
                 }
             } catch is CancellationError { throw CancellationError() }
             catch {
@@ -375,7 +413,7 @@ public actor RelaySession: OperationAPI, PushRegistrationAPI {
                 receipt = try await readStatus(requestID: requestID, deadline: deadline)
             }
             try checkReadDeadline(deadline)
-            if let result = try verified(receipt, requestID: requestID) { return result }
+            if let result = try verified(receipt, requestID: requestID, acknowledge: method == "GET" && body == nil) { return result }
             if receipt.status == "expired" { return .unknown }
             var revision = receipt.revision
             while requestClock.now() < deadline {
@@ -386,14 +424,14 @@ public actor RelaySession: OperationAPI, PushRegistrationAPI {
                     do {
                         let current = try await client.waitForRequest(requestID: requestID, waitSeconds: wait)
                         try checkReadDeadline(deadline)
-                        if let result = try verified(current, requestID: requestID) { return result }
+                        if let result = try verified(current, requestID: requestID, acknowledge: method == "GET" && body == nil) { return result }
                         if current.status == "expired" { return .unknown }
                         try await pauseReadRecovery(deadline)
                     } catch {
                         guard Self.transientReadFailure(error) else { throw error }
                         try await pauseReadRecovery(deadline)
                         let current = try await readStatus(requestID: requestID, deadline: deadline)
-                        if let result = try verified(current, requestID: requestID) { return result }
+                        if let result = try verified(current, requestID: requestID, acknowledge: method == "GET" && body == nil) { return result }
                         if current.status == "expired" { return .unknown }
                     }
                     continue
@@ -405,7 +443,7 @@ public actor RelaySession: OperationAPI, PushRegistrationAPI {
                     guard Self.transientReadFailure(error) else { throw error }
                     try await pauseReadRecovery(deadline)
                     let current = try await readStatus(requestID: requestID, deadline: deadline)
-                    if let result = try verified(current, requestID: requestID) { return result }
+                    if let result = try verified(current, requestID: requestID, acknowledge: method == "GET" && body == nil) { return result }
                     if current.status == "expired" { return .unknown }
                     continue
                 }
@@ -418,7 +456,7 @@ public actor RelaySession: OperationAPI, PushRegistrationAPI {
                 guard job.status == "completed" else { continue }
                 let completed = try await readStatus(requestID: requestID, deadline: deadline)
                 try checkReadDeadline(deadline)
-                if let result = try verified(completed, requestID: requestID) { return result }
+                if let result = try verified(completed, requestID: requestID, acknowledge: method == "GET" && body == nil) { return result }
             }
             return .unknown
         } catch is CancellationError { throw CancellationError() }

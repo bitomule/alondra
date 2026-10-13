@@ -6,6 +6,9 @@ use tokio::sync::Notify;
 
 pub const MAX_PENDING: usize = 128;
 pub const MAX_PER_DEVICE: usize = 32;
+const MAX_PENDING_PER_OWNER: usize = 64;
+const MAX_QUEUE_BYTES: usize = 256 * 1024 * 1024;
+const MAX_OWNER_BYTES: usize = 128 * 1024 * 1024;
 /// Full envelopes/results, including pending work. Metadata-only dedupe has its own bound.
 pub const MAX_STORED: usize = 512;
 pub const MAX_TOMBSTONES: usize = 8192;
@@ -54,6 +57,7 @@ struct Job {
     expires_at_ms: u64,
     dispatched_at_ms: Option<u64>,
     tombstone_at_ms: Option<u64>,
+    payload_bytes: usize,
 }
 
 /// A terminal result can leave the ciphertext cache without making its ID reusable.
@@ -86,12 +90,25 @@ struct Inner {
     tombstones: HashMap<String, Tombstone>,
     revision: u64,
     sequence: u64,
+    last_dispatch: HashMap<String, HashMap<String, u64>>,
+}
+
+struct Capacity {
+    bytes: usize,
+    owner_bytes: usize,
+    owner_pending: usize,
+}
+impl Default for Capacity {
+    fn default() -> Self {
+        Self { bytes: MAX_QUEUE_BYTES, owner_bytes: MAX_OWNER_BYTES, owner_pending: MAX_PENDING_PER_OWNER }
+    }
 }
 
 #[derive(Default)]
 pub struct Queue {
     inner: Mutex<Inner>,
     waiters: Waiters,
+    capacity: Capacity,
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -167,11 +184,22 @@ pub enum QueueError {
     NotReceived,
     Expired,
     ResultEvicted,
+    PayloadTooLarge,
 }
 
 impl Queue {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    #[cfg(test)]
+    pub(super) fn process_fixture_statistics(&self) -> serde_json::Value {
+        let inner = self.inner.lock().unwrap();
+        let pending = inner.jobs.values().filter(|job| !terminal(job.status)).count();
+        serde_json::json!({"pending":pending,"retained_jobs":inner.jobs.len(),"tombstones":inner.tombstones.len(),
+            "cached_payload_bytes":inner.jobs.values().map(|job|job.payload_bytes).sum::<usize>(),
+            "reserved_response_bytes":pending*MAX_RESPONSE_BYTES,"admitted_byte_charge":inner.jobs.values().map(byte_charge).sum::<usize>(),
+            "routing_cursors":inner.last_dispatch.values().map(HashMap::len).sum::<usize>()})
     }
 
     /// Subscribe before the live authorization/snapshot check, then enable a
@@ -228,13 +256,19 @@ impl Queue {
                 previous.client_result()
             } else { Err(QueueError::Conflict) };
         }
+        let bytes = payload_bytes(&envelope);
+        if bytes > MAX_ENVELOPE_BYTES { return Err(QueueError::PayloadTooLarge); }
+        let charge = bytes + MAX_RESPONSE_BYTES;
         let pending = inner.jobs.values().filter(|j| !terminal(j.status)).count();
-        let per_device = inner
-            .jobs
-            .values()
-            .filter(|j| j.phone_id == phone_id && !terminal(j.status))
-            .count();
-        if pending >= MAX_PENDING || per_device >= MAX_PER_DEVICE {
+        let per_device = inner.jobs.values().filter(|j| j.phone_id == phone_id && !terminal(j.status)).count();
+        let owner_pending = inner.jobs.values().filter(|j| j.owner_sub == owner_sub && !terminal(j.status)).count();
+        let total_bytes: usize = inner.jobs.values().map(byte_charge).sum();
+        let owner_bytes: usize = inner.jobs.values().filter(|j| j.owner_sub == owner_sub).map(byte_charge).sum();
+        if pending >= MAX_PENDING || per_device >= MAX_PER_DEVICE
+            || owner_pending >= self.capacity.owner_pending
+            || total_bytes.saturating_add(charge) > self.capacity.bytes
+            || owner_bytes.saturating_add(charge) > self.capacity.owner_bytes
+        {
             return Err(QueueError::Full);
         }
         if inner.jobs.len() >= MAX_STORED {
@@ -256,6 +290,7 @@ impl Queue {
             expires_at_ms,
             dispatched_at_ms: None,
             tombstone_at_ms: None,
+            payload_bytes: bytes,
         };
         let result = view(&job);
         inner.jobs.insert(request_id.into(), job);
@@ -278,10 +313,15 @@ impl Queue {
                             && j.dispatched_at_ms
                                 .is_some_and(|t| now_ms.saturating_sub(t) >= LEASE_MS)))
             })
-            .min_by_key(|(_, j)| j.sequence)
+            .min_by_key(|(_, j)| (
+                inner.last_dispatch.get(&j.mac_id).and_then(|phones|phones.get(&j.phone_id)).copied().unwrap_or(0),
+                j.sequence,
+            ))
             .map(|(id, _)| id.clone())?;
         inner.revision += 1;
         let revision = inner.revision;
+        let route = { let job = &inner.jobs[&id]; (job.mac_id.clone(), job.phone_id.clone()) };
+        inner.last_dispatch.entry(route.0).or_default().insert(route.1, revision);
         let j = inner.jobs.get_mut(&id).unwrap();
         // A durable Mac receipt survives a lease retry; never downgrade it.
         if j.status == JobStatus::Queued || j.status == JobStatus::Dispatched {
@@ -364,10 +404,13 @@ impl Queue {
         if j.status != JobStatus::Received {
             return Err(QueueError::NotReceived);
         }
+        let bytes = payload_bytes(&response);
+        if bytes > MAX_RESPONSE_BYTES { return Err(QueueError::PayloadTooLarge); }
         inner.revision += 1;
         let revision = inner.revision;
         let j = inner.jobs.get_mut(id).unwrap();
         j.response = Some(response);
+        j.payload_bytes = bytes;
         j.envelope = serde_json::Value::Null;
         j.status = JobStatus::Completed;
         j.revision = revision;
@@ -375,6 +418,20 @@ impl Queue {
         let result = view(j);
         self.waiters.notify(&j.owner_sub, &j.mac_id, Some(&j.phone_id));
         Ok(result)
+    }
+
+    pub fn acknowledge(&self, owner: &str, phone: &str, id: &str, revision: u64, now: u64) -> Result<(), QueueError> {
+        let mut inner = self.inner.lock().unwrap();
+        expire(&mut inner, &self.waiters, now);
+        if let Some(tombstone) = inner.tombstones.get(id) {
+            return if tombstone.owner_sub == owner && tombstone.phone_id == phone && tombstone.status == JobStatus::Completed {
+                Ok(())
+            } else { Err(QueueError::NotFound) };
+        }
+        let job = inner.jobs.get(id).ok_or(QueueError::NotFound)?;
+        if job.owner_sub != owner || job.phone_id != phone { return Err(QueueError::NotFound); }
+        if job.status != JobStatus::Completed || job.revision != revision { return Err(QueueError::Conflict); }
+        compact_terminal(&mut inner, &self.waiters, id)
     }
 
     pub fn get(
@@ -416,13 +473,14 @@ impl Queue {
         inner.jobs.retain(|_,job|job.owner_sub!=owner);
         inner.tombstones.retain(|_,job|job.owner_sub!=owner);
         inner.revision+=1;
+        prune_dispatches(&mut inner);
         drop(inner);self.notify_owner_revoked(owner);
     }
 
     pub fn purge_mac(&self,mac_id:&str) {
         let mut inner=self.inner.lock().unwrap();
         inner.jobs.retain(|_,j|j.mac_id!=mac_id);inner.tombstones.retain(|_,t|t.mac_id!=mac_id);
-        inner.revision+=1;drop(inner);self.notify_mac_revoked(mac_id);
+        inner.revision+=1;prune_dispatches(&mut inner);drop(inner);self.notify_mac_revoked(mac_id);
     }
 
     /// Drop pending and completed ciphertext for a revoked phone immediately.
@@ -435,6 +493,7 @@ impl Queue {
         if removed > 0 {
             inner.revision += 1;
         }
+        prune_dispatches(&mut inner);
         drop(inner);
         // Revocation must wake idle clients even when no ciphertext was queued.
         self.notify_phone_revoked(phone_id);
@@ -470,6 +529,31 @@ impl Queue {
     }
 }
 
+fn payload_bytes(value: &serde_json::Value) -> usize {
+    struct Counter(usize);
+    impl std::io::Write for Counter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0 += bytes.len();
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+    }
+    let mut counter = Counter(0);
+    serde_json::to_writer(&mut counter, value).expect("JSON Value serializes");
+    counter.0
+}
+fn byte_charge(job: &Job) -> usize {
+    job.payload_bytes + if terminal(job.status) { 0 } else { MAX_RESPONSE_BYTES }
+}
+fn prune_dispatches(inner: &mut Inner) {
+    let routes: std::collections::HashSet<_> = inner.jobs.values().map(|job| (job.mac_id.as_str(), job.phone_id.as_str()))
+        .chain(inner.tombstones.values().map(|job| (job.mac_id.as_str(),job.phone_id.as_str()))).collect();
+    inner.last_dispatch.retain(|mac,phones| {
+        phones.retain(|phone,_|routes.contains(&(mac.as_str(),phone.as_str())));
+        !phones.is_empty()
+    });
+}
+
 /// Object order is irrelevant to Value equality; canonicalize recursively before hashing.
 fn response_hash(value: &serde_json::Value) -> [u8; 32] {
     fn canonical(value: &serde_json::Value) -> serde_json::Value {
@@ -495,7 +579,12 @@ fn compact_oldest_terminal(inner: &mut Inner, waiters: &Waiters) -> Result<(), Q
     let id = inner.jobs.values().filter(|j| terminal(j.status))
         .min_by_key(|j| (j.tombstone_at_ms, j.sequence))
         .map(|j| j.id.clone()).ok_or(QueueError::Full)?;
-    let job = inner.jobs.remove(&id).unwrap();
+    compact_terminal(inner, waiters, &id)
+}
+
+fn compact_terminal(inner: &mut Inner, waiters: &Waiters, id: &str) -> Result<(), QueueError> {
+    if inner.tombstones.len() >= MAX_TOMBSTONES { return Err(QueueError::Full); }
+    let job = inner.jobs.remove(id).unwrap();
     inner.revision += 1;
     let tombstone = Tombstone {
         id: job.id, owner_sub: job.owner_sub, phone_id: job.phone_id, mac_id: job.mac_id,
@@ -505,7 +594,7 @@ fn compact_oldest_terminal(inner: &mut Inner, waiters: &Waiters) -> Result<(), Q
         until_ms: job.tombstone_at_ms.expect("terminal job has retention deadline"),
     };
     waiters.notify(&tombstone.owner_sub, &tombstone.mac_id, Some(&tombstone.phone_id));
-    inner.tombstones.insert(id, tombstone);
+    inner.tombstones.insert(id.to_owned(), tombstone);
     Ok(())
 }
 
@@ -530,6 +619,7 @@ fn view_without_response(j: &Job) -> JobView {
 }
 
 fn expire(inner: &mut Inner, waiters: &Waiters, now_ms: u64) {
+    let prior_routes = (inner.jobs.len(), inner.tombstones.len());
     let mut expired = Vec::new();
     for (id, j) in &inner.jobs {
         if !terminal(j.status) && j.expires_at_ms <= now_ms {
@@ -543,12 +633,14 @@ fn expire(inner: &mut Inner, waiters: &Waiters, now_ms: u64) {
         j.revision = inner.revision;
         j.tombstone_at_ms = Some(now_ms.saturating_add(TOMBSTONE_MS));
         j.envelope = serde_json::Value::Null;
+        j.payload_bytes = 0;
         waiters.notify(&j.owner_sub, &j.mac_id, Some(&j.phone_id));
     }
     inner
         .jobs
         .retain(|_, j| j.tombstone_at_ms.is_none_or(|until| now_ms < until));
     inner.tombstones.retain(|_, t| now_ms < t.until_ms);
+    if prior_routes != (inner.jobs.len(), inner.tombstones.len()) { prune_dispatches(inner); }
 }
 
 #[cfg(test)]
@@ -969,3 +1061,6 @@ mod tests {
     }
 
 }
+
+#[cfg(test)]
+mod capacity_tests;

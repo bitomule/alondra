@@ -952,6 +952,7 @@ impl Service {
                     )
                     || crate::client_routes::approved_read_path(&request.path)
                     || crate::client_routes::approved_write_path(&request.path)
+                    || crate::client_routes::upload_step(&request.path).is_some()
                     || crate::client_routes::parse_put(&request.path).is_some()
                     || agent_message(&request.path).is_some()
                     || crate::domain_orchestrator::decision_route(&request.path).is_some()
@@ -4356,6 +4357,30 @@ agreement_key = "{}"
             "a reference that itself exceeds the budget cannot be pushed"
         );
     }
+    #[test]
+    fn encrypted_upload_steps_cross_the_domain_admission_gate_without_opening_other_routes() {
+        let (_directory, service, _) = push_fixture();
+        activate_push(&service);
+        let domain = Arc::new(crate::domain_runtime::DomainRuntime::open(&service.home).unwrap());
+        let service = service.with_domain(domain);
+        for (index, step) in ["start", "chunk", "finish", "cancel"].into_iter().enumerate() {
+            let path = format!("/uploads/{step}");
+            let valid = changes_work(&service, &format!("upload-{index}"), json!({"method":"POST","path":path,"body":{}}));
+            let prepared = service.prepare_work(&valid, Transport::Relay).unwrap().unwrap();
+            assert_eq!(prepared.request.path, path);
+            drop(prepared);
+            for (method, body) in [("GET",Some(json!({}))), ("PUT",Some(json!({}))), ("POST",None)] {
+                let mut payload = json!({"method":method,"path":path});
+                if let Some(body) = body { payload["body"]=body; }
+                let invalid = changes_work(&service,&format!("invalid-{index}-{method}"),payload);
+                assert!(service.prepare_work(&invalid,Transport::Relay).is_err());
+            }
+        }
+        let other=changes_work(&service,"unknown-upload",json!({"method":"POST","path":"/uploads/other","body":{}}));
+        assert!(service.prepare_work(&other,Transport::Relay).is_err());
+        assert!(service.inflight.lock().unwrap().is_empty());
+    }
+
     fn activate_push(service: &Service) {
         let key = service
             .devices
@@ -7838,6 +7863,8 @@ impl Service {
         let home: &Path = &directory;
         let signing = SigningKey::from_slice(&[33u8; 32]).unwrap();
         let agreement = SecretKey::from_slice(&[34u8; 32]).unwrap();
+        let noise_signing = SigningKey::from_slice(&[35u8; 32]).unwrap();
+        let noise_agreement = SecretKey::from_slice(&[36u8; 32]).unwrap();
         if !home.join("service.toml").exists() {
             for (name, bytes) in [("signing.key", [1u8; 32]), ("agreement.key", [2u8; 32])] {
                 let path = home.join(name);
@@ -7853,6 +7880,9 @@ impl Service {
             serde_json::to_vec(&json!([{
                 "id":"phone-1","name":"Fixture iPhone","created_at":0,"last_seen":null,
                 "public_key":base64::engine::general_purpose::STANDARD.encode(signing.verifying_key().to_sec1_bytes())
+            }, {
+                "id":"noise-phone","name":"Fixture noisy iPhone","created_at":0,"last_seen":null,
+                "public_key":base64::engine::general_purpose::STANDARD.encode(noise_signing.verifying_key().to_sec1_bytes())
             }]))
             .unwrap(),
         )
@@ -7867,9 +7897,15 @@ agreement_key_path = "agreement.key"
 device_id = "phone-1"
 signing_key = "{}"
 agreement_key = "{}"
+[[devices]]
+device_id = "noise-phone"
+signing_key = "{}"
+agreement_key = "{}"
 "#,
                 URL_SAFE_NO_PAD.encode(signing.verifying_key().to_sec1_bytes()),
-                URL_SAFE_NO_PAD.encode(agreement.public_key().to_sec1_bytes())
+                URL_SAFE_NO_PAD.encode(agreement.public_key().to_sec1_bytes()),
+                URL_SAFE_NO_PAD.encode(noise_signing.verifying_key().to_sec1_bytes()),
+                URL_SAFE_NO_PAD.encode(noise_agreement.public_key().to_sec1_bytes())
             );
             std::fs::write(home.join("service.toml"), config).unwrap();
         }

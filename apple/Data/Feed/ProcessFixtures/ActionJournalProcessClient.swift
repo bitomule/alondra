@@ -52,10 +52,101 @@ private final class ClientInput: Sendable {
         var actionTask: Task<ActionResponse, any Error>?
         var staleTask: Task<RelayJob, any Error>?
         var coldReads: [Task<String, any Error>] = []
+        var detailTask: Task<String, any Error>?
+        var transferTask: Task<ViewUploadedAttachment, any Error>?
+        let measurementStarted = ContinuousClock().now
+        let cpuStarted = try processCPU()
+        let transferData = Data((0..<(192 * 1024 + 17)).map { UInt8($0 % 251) })
         while true {
             let command = try await input.next()
             do {
                 switch command.command {
+                case "preload_noise":
+                    guard config.deviceID == "noise-phone", let raw = setup.raw, let codec = setup.codec else { throw ProcessClientError.invalidCommand }
+                    var ids: [String] = [], bytes = 0
+                    for ordinal in 0..<32 {
+                        let id = String(format: "noise-%03d", ordinal)
+                        let envelope = try codec.sealRequest(requestID: id, method: "GET",
+                            path: "/views/card%3Afixture-detail-b?protocol=1&client=ios&lang=en", body: nil)
+                        let job = try await raw.submit(envelope)
+                        guard job.requestID == id, ["queued", "dispatched"].contains(job.status) else { throw ProcessClientError.invalidCommand }
+                        ids.append(id); bytes += try JSONEncoder().encode(envelope).count
+                    }
+                    try emit(.init(event: "noise_preloaded", envelopeIDs: ids, envelopeBytes: bytes))
+                case "await_action_admitted":
+                    guard let mapping = setup.mapping, let request = prepared else { throw ProcessClientError.invalidCommand }
+                    let id = await mapping.waitForAccepted(containing: request.commandId)
+                    try emit(.init(event: "action_admitted", envelopeIDs: [id]))
+                case "start_detail", "start_blocked_read":
+                    guard detailTask == nil, let key = command.key, let mapping = setup.mapping else { throw ProcessClientError.invalidCommand }
+                    let rejectedBefore = await mapping.rejectionCount()
+                    detailTask = Task {
+                        guard case let .document(document) = try await api.fetchView(key: key, client: .ios, lang: "en"),
+                              document.key == key, document.dataEpoch == config.dataEpoch else { throw ProcessClientError.invalidCommand }
+                        return document.key
+                    }
+                    if command.command == "start_blocked_read" {
+                        await mapping.waitForRejections(rejectedBefore + 1)
+                        try emit(.init(event: "read_admission_rejected", admissionRejections: await mapping.rejectionCount()))
+                    } else {
+                        let id = await mapping.waitForAccepted(containing: key.replacingOccurrences(of: ":", with: "%3A"))
+                        try emit(.init(event: "detail_admitted", envelopeIDs: [id]))
+                    }
+                case "finish_detail":
+                    guard let task = detailTask else { throw ProcessClientError.invalidCommand }
+                    let key = try await task.value
+                    try emit(.init(event: "detail_finished", detailKeys: [key], readAttempts: 1, readErrors: 0))
+                    detailTask = nil
+                case "start_transfer":
+                    guard transferTask == nil, let mapping = setup.mapping,
+                          let id = UUID(uuidString: "70000000-0000-4000-8000-000000000001") else { throw ProcessClientError.invalidCommand }
+                    await mapping.holdFirstTransferChunk()
+                    transferTask = Task {
+                        do { return try await api.uploadViewAttachment(transferData, name: "saturation.bin", transferID: id) }
+                        catch { await mapping.transferFailed(error); throw error }
+                    }
+                    try await mapping.waitForTransferChunk()
+                    try emit(.init(event: "transfer_chunk_held"))
+                case "release_transfer":
+                    guard transferTask != nil, let mapping = setup.mapping else { throw ProcessClientError.invalidCommand }
+                    let rejectedBefore = await mapping.rejectionCount()
+                    await mapping.releaseTransferChunk()
+                    await mapping.waitForRejections(rejectedBefore + 1)
+                    try emit(.init(event: "transfer_admission_rejected", admissionRejections: await mapping.rejectionCount()))
+                case "finish_transfer":
+                    guard let transferTask else { throw ProcessClientError.invalidCommand }
+                    let uploaded = try await transferTask.value
+                    let downloaded = try await downloadTransfer(api: api, uploaded: uploaded)
+                    guard downloaded == transferData else { throw ProcessClientError.invalidCommand }
+                    try emit(.init(event: "transfer_finished", transferBytes: downloaded.count, transferDigest: uploaded.contentDigest))
+                case "verify_noise":
+                    guard let raw = setup.raw, let codec = setup.codec else { throw ProcessClientError.invalidCommand }
+                    var ids: [String] = []
+                    for ordinal in 0..<32 {
+                        let id = String(format: "noise-%03d", ordinal)
+                        let receipt = try await raw.waitForRequest(requestID: id, waitSeconds: 25)
+                        guard let response = try codec.verified(receipt, requestID: id),
+                              case let .completed(status, body) = response, status == 200,
+                              case let .document(document) = try ContractCodec.decode(ViewFetch.self, from: body),
+                              document.key == "card:fixture-detail-b", document.dataEpoch == config.dataEpoch else { throw ProcessClientError.invalidCommand }
+                        try await raw.acknowledgeResult(requestID: id, revision: receipt.revision)
+                        ids.append(id)
+                    }
+                    try emit(.init(event: "noise_verified", readAttempts: 32, readErrors: 0, envelopeIDs: ids))
+                case "drain_acknowledgments":
+                    guard let session = setup.session else { throw ProcessClientError.invalidCommand }
+                    await sender.drainRetirement()
+                    await session.drainAcknowledgments()
+                    try emit(.init(event: "acknowledgments_drained"))
+                case "saturation_metrics":
+                    guard let mapping = setup.mapping else { throw ProcessClientError.invalidCommand }
+                    let metrics = await mapping.saturationMetrics()
+                    var usage = rusage()
+                    guard getrusage(RUSAGE_SELF, &usage) == 0 else { throw ProcessClientError.measurementUnavailable }
+                    try emit(.init(event: "saturation_metrics", envelopeIDs: metrics.ids,
+                        admissionRejections: metrics.rejections, immutableResubmissions: metrics.immutable,
+                        observedMicroseconds: microseconds(measurementStarted.duration(to: ContinuousClock().now)),
+                        observedCPUMicroseconds: try processCPU() - cpuStarted, peakResidentBytes: Int(usage.ru_maxrss)))
                 case "prepare":
                     guard let nonce = command.nonce else { throw ProcessClientError.invalidCommand }
                     let draft = ActionRequest(commandId: nonce, dataEpoch: config.dataEpoch, client: config.relay == nil ? .mac : .ios, lang: "en",
@@ -215,10 +306,13 @@ private final class ClientInput: Sendable {
                     try emit(.init(event: "history", history: await compareHistory(directory: directory)))
                 case "quit":
                     await setup.mapping?.releaseBootstrap()
+                    await setup.mapping?.releaseTransferChunk()
                     for task in coldReads { task.cancel(); _ = await task.result }
                     await setup.mapping?.releaseUnauthorized()
                     if let staleTask { _ = await staleTask.result }
                     if let actionTask { _ = await actionTask.result }
+                    if let detailTask { _ = await detailTask.result }
+                    if let transferTask { _ = await transferTask.result }
                     await sender.drainRetirement()
                     await setup.stop()
                     try emit(.init(event: "stopped")); return
@@ -247,6 +341,7 @@ private final class ClientInput: Sendable {
         var credentials: FixtureCredentials? = nil
         var raw: (any Transport)? = nil
         var session: RelaySession? = nil
+        var codec: EnvelopeCodec? = nil
     }
     private static func setup(config: ProcessClientConfiguration, directory: URL) async throws -> Setup {
         guard let seed = Data(base64Encoded: config.signingSeed) else { throw ProcessClientError.invalidConfiguration }
@@ -274,7 +369,9 @@ private final class ClientInput: Sendable {
                 signing: signing, agreement: agreement, macSigning: macSigning, macAgreement: macAgreement)
             return Setup(api: .init(serviceURL: base, deviceID: config.deviceID, operations: session),
                 material: agreement.rawRepresentation, scope: .init(service: base.absoluteString + "/" + relay.macID,
-                    device: config.deviceID, credentialRevision: revision), stop: { await session.deactivate() }, mapping: mapping, credentials: credentials, raw: raw, session: session)
+                    device: config.deviceID, credentialRevision: revision), stop: { await session.deactivate() }, mapping: mapping, credentials: credentials, raw: raw, session: session,
+                codec: EnvelopeCodec(macID: relay.macID, deviceID: config.deviceID, signing: signing, agreement: agreement,
+                    macSigning: macSigning, macAgreement: macAgreement, now: { UInt64(Date().timeIntervalSince1970 * 1000) }))
         }
         guard let base = URL(string: config.baseURL) else { throw ProcessClientError.invalidConfiguration }
         let identity = LoopbackIdentityStore(directory: directory.appending(path: "identity"), makeKey: { .software(signing) })
@@ -285,6 +382,43 @@ private final class ClientInput: Sendable {
         return Setup(api: .init(serviceURL: base, deviceID: config.deviceID, operations: session), material: material,
             scope: .init(service: config.baseURL, device: config.deviceID, credentialRevision: try await identity.credentialRevision()),
             stop: { await session.deactivate() }, mapping: nil)
+    }
+    private struct DownloadChunk: Decodable, Sendable {
+        let contentDigest: String
+        let version: String
+        let data: String
+        let offset: Int
+        let total: Int
+        let nextOffset: Int
+        let eof: Bool
+        enum CodingKeys: String, CodingKey {
+            case version, data, offset, total, eof
+            case contentDigest = "content_digest", nextOffset = "next_offset"
+        }
+    }
+    private static func downloadTransfer(api: AlondraAPIClient, uploaded: ViewUploadedAttachment) async throws -> Data {
+        guard uploaded.contentReference.hasPrefix("files/") else { throw ProcessClientError.invalidCommand }
+        var downloaded = Data(), version: String?
+        for _ in 0..<4 {
+            let query = [("path", uploaded.contentReference), ("offset", String(downloaded.count))]
+                + (version.map { [("version", $0)] } ?? [])
+            let chunk = try await api.send(Endpoint<DownloadChunk>(.get, path: ["files", "chunk"], query: query) {
+                try JSONDecoder().decode(DownloadChunk.self, from: $0)
+            })
+            let encoded = chunk.data.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
+            guard chunk.contentDigest == uploaded.contentDigest, !chunk.version.isEmpty,
+                  version == nil || version == chunk.version, chunk.total == Int(uploaded.bytes),
+                  chunk.offset == downloaded.count, chunk.nextOffset <= chunk.total,
+                  chunk.nextOffset > chunk.offset,
+                  let bytes = Data(base64Encoded: encoded + String(repeating: "=", count: (4 - encoded.count % 4) % 4)),
+                  bytes.count == chunk.nextOffset - chunk.offset else { throw ProcessClientError.invalidCommand }
+            downloaded.append(bytes); version = chunk.version
+            if chunk.eof {
+                guard downloaded.count == Int(uploaded.bytes), chunk.nextOffset == chunk.total else { throw ProcessClientError.invalidCommand }
+                return downloaded
+            }
+        }
+        throw ProcessClientError.invalidCommand
     }
     private static func compareHistory(directory: URL) async throws -> [ProcessHistorySample] {
         let modernDirectory = directory.appending(path: "history-modern")
@@ -372,6 +506,40 @@ private actor FixtureRelayHTTP: HTTPTransport {
     private var others = 0
     private var bootstraps = 0
     private var operationResults: [String] = []
+    private var accepted: [(id: String, path: String)] = []
+    private var acceptanceWaiters: [(String, CheckedContinuation<String, Never>)] = []
+    private var rejectedAdmissions = 0
+    private var rejectionWaiters: [(Int, CheckedContinuation<Void, Never>)] = []
+    private var envelopeBodies: [String: Data] = [:]
+    private var immutableBodies = true
+    private var holdTransferChunk = false
+    private var transferChunkHeld = false
+    private var transferChunkArrival: CheckedContinuation<Void, any Error>?
+    private var transferStartupError: (any Error)?
+    private var transferChunkRelease: CheckedContinuation<Void, Never>?
+    func holdFirstTransferChunk() { holdTransferChunk = true }
+    func waitForTransferChunk() async throws {
+        if transferChunkHeld { return }
+        if let transferStartupError { throw transferStartupError }
+        try await withCheckedThrowingContinuation { transferChunkArrival = $0 }
+    }
+    func transferFailed(_ error: any Error) {
+        transferStartupError = error
+        transferChunkArrival?.resume(throwing: error); transferChunkArrival = nil
+    }
+    func releaseTransferChunk() { transferChunkRelease?.resume(); transferChunkRelease = nil }
+    func rejectionCount() -> Int { rejectedAdmissions }
+    func waitForRejections(_ count: Int) async {
+        if rejectedAdmissions >= count { return }
+        await withCheckedContinuation { rejectionWaiters.append((count, $0)) }
+    }
+    func waitForAccepted(containing value: String) async -> String {
+        if let item = accepted.first(where: { $0.id == value || $0.path.contains(value) }) { return item.id }
+        return await withCheckedContinuation { acceptanceWaiters.append((value, $0)) }
+    }
+    func saturationMetrics() -> (ids: [String], rejections: Int, immutable: Bool) {
+        (envelopeBodies.keys.sorted(), rejectedAdmissions, immutableBodies)
+    }
     private let phoneSigning: P256.Signing.PublicKey
     private let macAgreement: P256.KeyAgreement.PrivateKey
     private let macID: String
@@ -413,13 +581,19 @@ private actor FixtureRelayHTTP: HTTPTransport {
               var components = URLComponents(url: url, resolvingAgainstBaseURL: false),
               let target = URLComponents(url: destination, resolvingAgainstBaseURL: false) else { throw ProcessClientError.invalidConfiguration }
         var answer = false, read = false
+        var submitted: (id: String, path: String)?
         if request.httpMethod == "POST", url.path == "/v1/requests", let body = request.httpBody,
            let envelope = try? JSONDecoder().decode(Envelope.self, from: body) {
+            if let previous = envelopeBodies[envelope.requestID], previous != body { immutableBodies = false }
+            envelopeBodies[envelope.requestID] = body
             answer = ActionOperationID(rawValue: envelope.requestID) != nil
             read = envelope.requestID.hasPrefix("read-")
             if answer { mutations += 1 } else { others += 1 }
             let bytes = try envelope.open(senderKey: phoneSigning, recipientKey: macAgreement,
                 sender: deviceID, recipient: macID, route: macID, nowMilliseconds: nil)
+            if let payload = try JSONSerialization.jsonObject(with: bytes) as? [String: Any], let path = payload["path"] as? String {
+                submitted = (envelope.requestID, path)
+            }
             if let payload = try JSONSerialization.jsonObject(with: bytes) as? [String: Any],
                payload["method"] as? String == "GET", let path = payload["path"] as? String,
                path.hasPrefix("/operation-results/"), let components = URLComponents(string: path) {
@@ -436,7 +610,34 @@ private actor FixtureRelayHTTP: HTTPTransport {
         guard let mapped = components.url else { throw ProcessClientError.invalidConfiguration }
         var actual = request; actual.url = mapped
         if request.httpMethod == "GET", url.path == "/v1/bootstrap" { bootstraps += 1 }
+        if submitted?.path == "/uploads/chunk", holdTransferChunk {
+            holdTransferChunk = false
+            await withCheckedContinuation {
+                transferChunkRelease = $0
+                transferChunkHeld = true
+                transferChunkArrival?.resume(returning: ()); transferChunkArrival = nil
+            }
+        }
         let reply = try await network.send(actual)
+        if let submitted {
+            if reply.status == 200 || reply.status == 202 {
+                accepted.append(submitted)
+                var remaining: [(String, CheckedContinuation<String, Never>)] = []
+                for (value, waiter) in acceptanceWaiters {
+                    if submitted.id == value || submitted.path.contains(value) { waiter.resume(returning: submitted.id) }
+                    else { remaining.append((value, waiter)) }
+                }
+                acceptanceWaiters = remaining
+            } else if reply.status == 429,
+                      let body = try JSONSerialization.jsonObject(with: reply.body) as? [String: Any], body["error"] as? String == "queue_full" {
+                rejectedAdmissions += 1
+                var remaining: [(Int, CheckedContinuation<Void, Never>)] = []
+                for (count, waiter) in rejectionWaiters {
+                    if rejectedAdmissions >= count { waiter.resume() } else { remaining.append((count, waiter)) }
+                }
+                rejectionWaiters = remaining
+            }
+        }
         if answer, faults.lostReplies > 0 {
             faults.lostReplies -= 1
             throw URLError(.networkConnectionLost)

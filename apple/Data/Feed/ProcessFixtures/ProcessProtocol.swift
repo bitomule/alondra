@@ -25,6 +25,7 @@ struct ProcessClientCommand: Codable, Sendable {
     var request: ActionRequest? = nil
     var count: Int? = nil
     var network: ProcessNetworkFaults? = nil
+    var key: String? = nil
 }
 /// The office network between the client and the relay: answers cut before they leave, replies
 /// lost after the relay took the answer, status reads and lookups lost on the way back.
@@ -69,4 +70,13 @@ struct ProcessClientEvent: Codable, Sendable {
     var readErrors: Int? = nil
     var coldCompletionMicroseconds: Double? = nil
     var undelivered: [String]? = nil
+    var envelopeIDs: [String]? = nil
+    var envelopeBytes: Int? = nil
+    var admissionRejections: Int? = nil
+    var immutableResubmissions: Bool? = nil
+    var transferBytes: Int? = nil
+    var transferDigest: String? = nil
+    var observedMicroseconds: Double? = nil
+    var observedCPUMicroseconds: Double? = nil
+    var peakResidentBytes: Int? = nil
 }
