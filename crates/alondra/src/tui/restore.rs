@@ -19,6 +19,8 @@ pub struct Restore {
     pub restarted_for: String,
     pub screen: String,
     pub schedules_open: bool,
+    #[serde(default)]
+    pub rules_open: bool,
     pub detail_focused: bool,
     pub sel: Option<Key>,
     pub list_scroll: usize,
@@ -92,6 +94,7 @@ mod tests {
             restarted_for: "0.2.53".into(),
             screen: "tasks".into(),
             schedules_open: false,
+            rules_open: false,
             detail_focused: true,
             sel: Some(Key("card-1".into())),
             list_scroll: 4,

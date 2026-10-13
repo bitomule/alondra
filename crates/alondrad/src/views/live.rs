@@ -477,6 +477,7 @@ async fn gather_at(
             }
         }
     }
+    let (allowed_rules, allow_always_missing) = allowed_rules(client, keys);
     LiveSnapshot {
         closed_nodes: client.domain.live.closed_sessions(),
         closed_tasks: client.domain.live.closed_task_ids(),
@@ -506,7 +507,31 @@ async fn gather_at(
         launch_refusals,
         start_waits,
         pacing: client.domain.live.gate.live(&client.domain, now),
+        allowed_rules,
+        allow_always_missing,
     }
+}
+
+/// This Mac's rules «allow always», checked against their files only when its settings are on
+/// screen, and the cards whose rules Claude Code never wrote.
+fn allowed_rules(client: &crate::client_routes::Client, keys: &[String]) -> (Vec<alondra_core::views::LiveAllowedRule>, Vec<String>) {
+    use crate::allow_always::RuleState;
+    let rows = if keys.iter().any(|key| key == "machine") {
+        crate::allow_always::reconcile(&client.domain)
+    } else {
+        client.domain.store.lock().expect("domain store poisoned").allowed_rules().unwrap_or_default()
+    };
+    let mut missing: Vec<String> = rows.iter().filter(|row| row.state == RuleState::Missing).map(|row| row.interaction_id.clone()).collect();
+    missing.sort();
+    missing.dedup();
+    let active = rows.into_iter().filter(|row| row.state == RuleState::Active).map(|row| alondra_core::views::LiveAllowedRule {
+        id: row.id,
+        repo: std::path::Path::new(&row.repo).file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or(row.repo.clone()),
+        rule: row.rule,
+        added: timestamp(row.added_at),
+        task_id: row.task_id,
+    }).collect();
+    (active, missing)
 }
 
 fn home_relative(folder: &str) -> String {

@@ -340,6 +340,7 @@ public struct CardDetailView: View {
             }
             .glassRole(action.cardRole)
             .disabled(disabled)
+            AllowAlwaysDescription(action: action)
             if !action.enabled, let reason = action.disabledReason {
                 Text(reason).font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
             }

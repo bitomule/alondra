@@ -239,6 +239,7 @@ impl App {
             }
             .into(),
             schedules_open: self.schedules_open,
+            rules_open: self.rules.is_some(),
             detail_focused: self.focus == Pane::Detail,
             sel: self.sel.clone(),
             list_scroll: self.list_scroll,
@@ -275,6 +276,9 @@ impl App {
             self.home_view = None;
             self.screen_view_asked = None;
             self.load_screen_view();
+        }
+        if r.rules_open {
+            self.open_rules();
         }
         if r.detail_focused {
             self.focus = Pane::Detail;
@@ -496,6 +500,7 @@ mod tests {
             restarted_for: NEWER.into(),
             screen: "fleet".into(),
             schedules_open: false,
+            rules_open: false,
             detail_focused: false,
             sel: None,
             list_scroll: 0,

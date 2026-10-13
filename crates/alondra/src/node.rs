@@ -135,7 +135,9 @@ fn permission_card(payload: &Value, id: &str) -> Option<Value> {
     }
     Some(json!({"session_id": session_id, "id": id, "kind": "permission", "tool": tool,
         "input": payload.get("tool_input").cloned().unwrap_or(Value::Null),
-        "suggestions": payload.get("permission_suggestions").cloned().unwrap_or(Value::Null), "withdraw_when_gone": true}))
+        "suggestions": payload.get("permission_suggestions").cloned().unwrap_or(Value::Null),
+        "cwd": payload.get("cwd").cloned().unwrap_or(Value::Null),
+        "permission_mode": payload.get("permission_mode").cloned().unwrap_or(Value::Null), "withdraw_when_gone": true}))
 }
 
 fn permission_decision(answer: &Value) -> Option<Value> {
@@ -215,7 +217,7 @@ mod tests {
 
     fn prompt() -> Value {
         json!({"session_id": "session-1", "hook_event_name": "PermissionRequest", "permission_mode": "auto",
-            "tool_name": "Bash", "tool_input": {"command": "git push origin main", "description": "Push"},
+            "cwd": "/repo/.claude/worktrees/t-1", "tool_name": "Bash", "tool_input": {"command": "git push origin main", "description": "Push"},
             "permission_suggestions": [suggestion()]})
     }
 
@@ -234,7 +236,7 @@ mod tests {
     fn a_permission_prompt_becomes_a_permission_card_withdrawn_with_its_hook() {
         assert_eq!(permission_card(&prompt(), "permission-1"), Some(json!({"session_id": "session-1", "id": "permission-1",
             "kind": "permission", "tool": "Bash", "input": {"command": "git push origin main", "description": "Push"},
-            "suggestions": [suggestion()], "withdraw_when_gone": true})));
+            "suggestions": [suggestion()], "cwd": "/repo/.claude/worktrees/t-1", "permission_mode": "auto", "withdraw_when_gone": true})));
     }
 
     #[test]

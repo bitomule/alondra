@@ -106,6 +106,9 @@ Pick the tool by what you need:
   wait per task.
 - In a background session, menu questions (`AskUserQuestion`), permission prompts and plans
   also reach the user in Alondra, and their answer comes back as Claude's own.
+- Run a command that may need the user's approval on its own, not chained with `;`, `&&` or a
+  pipe to other commands, and run read-only checks (`git status`, `tail`, `ls`) as separate
+  calls. Never chain a delete or a `reset --hard` with anything else.
 - Nodes send no notices: there is no tool for status, findings or "I am waiting". To decide use
   `ask`, to need an action `request_action`, for input
   `request_input`, to have the user try something `request_test`; report results in

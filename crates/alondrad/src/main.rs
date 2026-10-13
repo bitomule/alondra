@@ -4,6 +4,7 @@ mod test_support;
 
 #[macro_use]
 mod log;
+mod allow_always;
 mod approval_lease;
 mod operation_journal;
 mod api_failures;

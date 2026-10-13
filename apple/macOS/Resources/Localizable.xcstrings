@@ -1,6 +1,10 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "Permissions allowed always": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Permisos permitidos siempre"}}}},
+    "Nodes in each repo run these commands without asking. Remove one and the next call asks again.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Los nodos de cada repo ejecutan estos comandos sin preguntar. Si quitas uno, la siguiente llamada vuelve a preguntar."}}}},
+    "Your Mac didn’t remove the permission. Try again.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Tu Mac no ha quitado el permiso. Inténtalo de nuevo."}}}},
+    "Your Mac didn’t remove the permission.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Tu Mac no ha quitado el permiso."}}}},
     "Your Mac didn’t get the new folder. Try again.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Tu Mac no ha recibido la carpeta nueva. Vuelve a intentarlo."}}}},
     "Your Mac couldn’t open this folder.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Tu Mac no ha podido abrir esta carpeta."}}}},
     "%lld repos": {"localizations": {"en": {"variations": {"plural": {"one": {"stringUnit": {"state": "translated", "value": "%lld repo"}}, "other": {"stringUnit": {"state": "translated", "value": "%lld repos"}}}}}, "es": {"variations": {"plural": {"one": {"stringUnit": {"state": "translated", "value": "%lld repo"}}, "other": {"stringUnit": {"state": "translated", "value": "%lld repos"}}}}}}},

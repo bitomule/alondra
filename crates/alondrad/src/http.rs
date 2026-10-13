@@ -210,42 +210,26 @@ const PERMISSION_TITLE_CHARS: usize = 100;
 const DESTRUCTIVE: &str = "⚠️ destructivo";
 
 fn destructive(command: &str) -> bool {
-    !risks(command).is_empty()
+    !alondra_core::allow_always::risks(command).is_empty()
 }
 
-/// What each risky part of a command does, in plain words, one line per risk, checked segment by
-/// segment so `cd x && rm y` is read as two commands.
+/// What each risky part of a command does, in plain words, one line per kind of risk. The parts
+/// come from the same reading that keeps «allow always» off them, so the two never disagree.
 fn risks(command: &str) -> Vec<&'static str> {
-    let mut found = vec![];
-    for segment in command.split(|c: char| matches!(c, ';' | '&' | '|' | '(' | ')' | '`' | '\n')) {
-        let words: Vec<&str> = segment.split_whitespace().collect();
-        let has = |w: &str| words.contains(&w);
-        let force = words.iter().any(|w| w.starts_with("--force"));
-        let short_flag_with = |f: char| words.iter().any(|w| w.starts_with('-') && !w.starts_with("--") && w.contains(f));
-        let risk = if has("push") && (force || short_flag_with('f')) {
-            Some("`push --force`: reescribe la rama remota; puede borrar commits que no tienes en local")
-        } else if has("worktree") && has("remove") && force {
-            Some("`worktree remove --force`: borra el worktree aunque tenga cambios sin commit")
-        } else if has("branch") && has("-D") {
-            Some("`branch -D`: borra la rama aunque no esté mergeada; sus commits sin push se pierden")
-        } else if has("reset") && has("--hard") {
-            Some("`reset --hard`: descarta todos los cambios sin commit")
-        } else if has("clean") && short_flag_with('f') {
-            Some("`clean -f`: borra los ficheros que git no sigue")
-        } else if has("rm") && !has("git") {
-            Some("`rm`: borra ficheros sin pasar por la papelera")
-        } else if force {
-            Some("`--force`: se salta las comprobaciones de seguridad del comando")
-        } else if has("-D") || has("--hard") {
-            Some("`-D` / `--hard`: variante forzada del comando, sin comprobaciones")
-        } else {
-            None
-        };
-        if let Some(r) = risk.filter(|r| !found.contains(r)) {
-            found.push(r);
-        }
-    }
-    found
+    use alondra_core::allow_always::RiskKind;
+    alondra_core::allow_always::risks(command).into_iter().map(|risk| match risk.kind {
+        RiskKind::PushForce => "`push --force`: reescribe la rama remota; puede borrar commits que no tienes en local",
+        RiskKind::WorktreeRemoveForce => "`worktree remove --force`: borra el worktree aunque tenga cambios sin commit",
+        RiskKind::BranchForceDelete => "`branch -D`: borra la rama aunque no esté mergeada; sus commits sin push se pierden",
+        RiskKind::ResetHard => "`reset --hard`: descarta todos los cambios sin commit",
+        RiskKind::CleanForce => "`clean -f`: borra los ficheros que git no sigue",
+        RiskKind::DiscardsChanges => "`checkout --` / `restore` / `stash drop`: descarta cambios sin commit",
+        RiskKind::RewritesHistory => "`filter-branch` / `update-ref` / `reflog`: reescribe la historia de git",
+        RiskKind::Deletes => "`rm` / `clean`: borra ficheros sin pasar por la papelera",
+        RiskKind::Overwrites => "`cp` / `mv` / `chmod` / `sed -i`: sobrescribe o cambia ficheros",
+        RiskKind::Force => "`--force`: se salta las comprobaciones de seguridad del comando",
+        RiskKind::ForcedVariant => "`-D` / `--hard`: variante forzada del comando, sin comprobaciones",
+    }).collect()
 }
 
 pub(crate) fn permission_title(tool: Option<&str>, input: &Value, summary: Option<&str>) -> String {
@@ -2997,7 +2981,7 @@ mod tests {
             ("git worktree remove --force wt; git branch -D wt", &["`worktree remove --force`", "`branch -D`"]),
             ("git reset --hard origin/main", &["`reset --hard`"]),
             ("git clean -fdx", &["`clean -f`"]),
-            ("cd build && rm -rf out", &["`rm`"]),
+            ("cd build && rm -rf out", &["`rm` / `clean`"]),
             ("brew upgrade --force node", &["`--force`"]),
             ("git rm old.txt", &[]),
             ("git branch -d merged && git push origin main", &[]),

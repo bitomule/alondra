@@ -575,6 +575,10 @@ pub struct CardSpec {
     /// the open one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cause: Option<String>,
+    /// A command permission's «allow always»: the rules it adds, or why it is not offered. Only
+    /// the daemon sets it, and only a held permission shows it or acts on it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow_always: Option<crate::allow_always::AllowAlways>,
 }
 /// A place that holds one open card at a time: a new card in it replaces the open one.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -660,6 +664,7 @@ impl CardSpec {
             verify: None,
             group: None,
             cause: None,
+            allow_always: None,
         }
     }
     pub fn cause(mut self, cause: impl Into<String>) -> Self {
@@ -823,7 +828,7 @@ impl Hold {
         self.options_offering(false)
     }
 
-    /// `always` adds a permission's "allow and remember" between its yes and its no.
+    /// `always` adds a permission's «allow always» between its yes and its no.
     pub fn options_offering(self, always: bool) -> Vec<QuestionOption> {
         let note = || vec![InputSpec { id: Self::NOTE.into(), kind: InputKind::Text, required: false }];
         let option = |id: &str, label: &str, description: Option<&str>, inputs: Vec<InputSpec>| QuestionOption {
@@ -833,7 +838,7 @@ impl Hold {
             Hold::Permission => {
                 let mut options = vec![option(Self::ALLOW, "Allow", None, vec![])];
                 if always {
-                    options.push(option(Self::ALWAYS, "Always for this", None, vec![]));
+                    options.push(option(Self::ALWAYS, "Allow always", None, vec![]));
                 }
                 options.push(option(Self::DENY, "Deny", Some("Write the reason"), note()));
                 options
@@ -844,23 +849,6 @@ impl Hold {
                 option(Self::DECLINE, "Decline", None, vec![])],
             Hold::Question => vec![],
         }
-    }
-
-    /// The permission update Claude Code suggested that "Always for this" applies: the first rule
-    /// that allows the call and is kept for the project, the narrowest place that outlives the
-    /// session (this checkout's local settings, then the project's shared ones, then the session
-    /// alone). Never the user's global settings, a mode change or a directory grant, which reach
-    /// further than the one call the user is answering.
-    pub fn always_suggestion(suggestions: &serde_json::Value) -> Option<serde_json::Value> {
-        const SCOPES: [&str; 3] = ["localSettings", "projectSettings", "session"];
-        let text = |entry: &serde_json::Value, key: &str| entry.get(key).and_then(serde_json::Value::as_str).map(str::to_owned);
-        let entries = suggestions.as_array()?;
-        SCOPES.iter().find_map(|scope| entries.iter().find(|entry| {
-            text(entry, "type").as_deref() == Some("addRules")
-                && text(entry, "behavior").as_deref() == Some("allow")
-                && text(entry, "destination").as_deref() == Some(scope)
-                && entry.get("rules").and_then(serde_json::Value::as_array).is_some_and(|rules| !rules.is_empty())
-        })).cloned()
     }
 
     pub fn approves(self, option_id: &str) -> bool {

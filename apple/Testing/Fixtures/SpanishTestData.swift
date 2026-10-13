@@ -45,7 +45,9 @@ enum SpanishTestData {
         "Changes": "Cambios", "Diff": "Diferencias", "Description": "Descripción", "Request changes": "Pedir cambios",
         "Describe the changes": "Describe los cambios", "Changes requested": "Cambios solicitados",
         "Approve": "Aprobar", "Approved": "Aprobado", "6 steps": "6 pasos", "Command": "Comando", "Yes": "Sí",
-        "Always for this": "Siempre para esto", "Blocks release": "Bloquea la publicación", "Retry now": "Reintentar ahora",
+        "Allow always": "Permitir siempre",
+        "Allows this now and stops asking in `alondra` for:\n· `make build` with any arguments: runs what the repo's `Makefile` says, even if the node changes it\n`tail` already didn't ask. You can remove it in Settings › Permissions.":
+            "Permite esto ahora y en `alondra` deja de preguntar por:\n· `make build` con cualquier argumento: ejecuta lo que diga el `Makefile` del repo, también si el nodo lo cambia\n`tail` ya no preguntaba. Puedes quitarlo en Ajustes › Permisos.", "Blocks release": "Bloquea la publicación", "Retry now": "Reintentar ahora",
         "Skip this run": "Saltar esta ejecución", "Diagnosis": "Diagnóstico", "folder not found": "carpeta no encontrada",
         "Blocks the schedule": "Bloquea la programación", "Why each option": "Por qué cada opción",
         "2 options": "2 opciones", "5 options": "5 opciones", "Write my own answer": "Escribir mi respuesta",

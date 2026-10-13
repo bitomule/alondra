@@ -61,6 +61,24 @@ pub struct LiveSnapshot {
     pub start_waits: BTreeMap<String, LiveStartWait>,
     #[serde(default)]
     pub pacing: Option<LivePacing>,
+    /// The rules «allow always» added on this Mac that its repos' settings still have.
+    #[serde(default)]
+    pub allowed_rules: Vec<LiveAllowedRule>,
+    /// Permission cards whose «allow always» Claude Code never wrote.
+    #[serde(default)]
+    pub allow_always_missing: Vec<String>,
+}
+
+/// A rule «allow always» added on this Mac: what it lets through, in which repo, and from where.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LiveAllowedRule {
+    pub id: i64,
+    pub repo: String,
+    /// As Claude Code matches it: `make build *`.
+    pub rule: String,
+    /// When it was added, as local ISO time.
+    pub added: String,
+    pub task_id: Option<String>,
 }
 
 /// What a task never started waits for before Alondra starts it by itself.

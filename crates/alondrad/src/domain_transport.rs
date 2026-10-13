@@ -139,6 +139,7 @@ async fn node_hold(mut stream: UnixStream, domain: &DomainRuntime, card: Value) 
         Ok(card) => card,
         Err(error) => return refuse(stream, format!("invalid hold: {error}")).await,
     };
+    let mut written = None;
     let reply = match crate::domain_holds::post(domain, &card, domain.live.mods.is_node(&card.session_id))? {
         crate::domain_holds::Posted::NotHeld => json!({"held": false}),
         crate::domain_holds::Posted::Denied(reason) => crate::domain_holds::denied(card.kind, &reason),
@@ -152,7 +153,19 @@ async fn node_hold(mut stream: UnixStream, domain: &DomainRuntime, card: Value) 
             let state = domain.state()?;
             match (answer, state.holds.get(&id)) {
                 (Some(answer), Some(hold)) => {
-                    crate::domain_holds::mod_reply(*hold, &card.input, &card.suggestions, &answer, &crate::domain_messages::user_name())
+                    let interaction = state.interactions.get(&id);
+                    let allow = interaction.and_then(|interaction| interaction.card.allow_always.as_ref());
+                    let reply = crate::domain_holds::mod_reply(*hold, &card.input, allow, &answer, &crate::domain_messages::user_name());
+                    if let Some(rules) = allow.and_then(alondra_core::allow_always::AllowAlways::rules)
+                        && answer.first().is_some_and(|answer| answer.option_id == alondra_core::domain::Hold::ALWAYS)
+                    {
+                        let task = interaction.and_then(|interaction| match &interaction.scope {
+                            alondra_core::domain::Scope::Task { task_id } => Some(task_id.0.clone()),
+                            _ => None,
+                        });
+                        written = Some((rules.to_vec(), task, id.0.clone()));
+                    }
+                    reply
                 }
                 _ if card.kind == crate::domain_holds::Kind::Plan => {
                     crate::domain_holds::denied(card.kind, &crate::domain_holds::plan_gone(domain, &card.session_id)?)
@@ -164,6 +177,9 @@ async fn node_hold(mut stream: UnixStream, domain: &DomainRuntime, card: Value) 
     stream.write_all(&200u16.to_be_bytes()).await?;
     stream.write_all(&serde_json::to_vec(&reply)?).await?;
     stream.shutdown().await?;
+    if let Some((rules, task, interaction)) = written {
+        crate::allow_always::chosen(domain, card.cwd.as_deref(), &rules, task.as_deref(), &interaction).await;
+    }
     Ok(())
 }
 
@@ -1943,50 +1959,92 @@ mod tests {
         }
     }
 
-    fn suggested(agent: &str) -> Value {
-        let mut card = permission(agent);
-        card["suggestions"] = json!([
-            {"type": "addRules", "rules": [{"toolName": "Bash", "ruleContent": "rm -rf build"}], "behavior": "allow", "destination": "userSettings"},
-            {"type": "addRules", "rules": [{"toolName": "Bash", "ruleContent": "rm -rf build"}], "behavior": "allow", "destination": "localSettings"}]);
-        card
+    /// A repo with a worktree where Alondra's nodes work, in a folder the test owns.
+    fn repo_with_worktree() -> (crate::test_support::Directory, std::path::PathBuf, std::path::PathBuf) {
+        let dir = crate::test_support::Directory::new();
+        let root = dir.join("app");
+        std::fs::create_dir_all(&root).unwrap();
+        let git = |dir: &std::path::Path, args: &[&str]| assert!(std::process::Command::new("git").arg("-C").arg(dir).args(args).output().unwrap().status.success(), "{args:?}");
+        git(&root, &["init", "-q", "-b", "main"]);
+        git(&root, &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "first"]);
+        let worktree = root.join(".claude/worktrees/t-1");
+        git(&root, &["worktree", "add", "-q", "-b", "t-1", worktree.to_str().unwrap()]);
+        (dir, root, worktree)
+    }
+
+    fn command_card(agent: &str, command: &str, worktree: &std::path::Path, suggestions: Value) -> Value {
+        json!({"session_id": agent, "id": "toolu-bash", "kind": "permission", "tool": "Bash",
+            "input": {"command": command, "description": "Build"}, "suggestions": suggestions,
+            "cwd": worktree.to_str().unwrap(), "permission_mode": "default"})
+    }
+
+    fn rule(content: &str, destination: &str) -> Value {
+        json!({"type": "addRules", "rules": [{"toolName": "Bash", "ruleContent": content}], "behavior": "allow", "destination": destination})
+    }
+
+    fn option_ids(domain: &DomainRuntime, id: &InteractionId) -> Vec<String> {
+        let InteractionPayload::Question { options, .. } = &domain.state().unwrap().interactions[id].payload else { panic!("question") };
+        options.iter().map(|o| o.id.clone()).collect()
     }
 
     #[tokio::test]
-    async fn always_allows_the_call_and_hands_back_the_suggested_rule() {
+    async fn allow_always_hands_back_alondras_own_rules_for_the_repo_and_remembers_them() {
+        let (_dir, root, worktree) = repo_with_worktree();
         let fixture = Fixture::new();
         let domain = fixture.open();
         working_agent(&domain, "agent-a");
-        let (reply, id) = held_card(&domain, suggested("agent-a"), Hold::ALWAYS, None).await;
+        let card = command_card("agent-a", "make build 2>&1 | tail -1", &worktree, json!([rule("make build *", "userSettings")]));
+        let (reply, id) = held_card(&domain, card, Hold::ALWAYS, None).await;
         assert_eq!((reply["held"].as_bool(), reply["allowed"].as_bool()), (Some(true), Some(true)), "{reply}");
         assert_eq!(reply["permissions"], json!([{"type": "addRules", "behavior": "allow", "destination": "localSettings",
-            "rules": [{"toolName": "Bash", "ruleContent": "rm -rf build"}]}]));
-        let InteractionPayload::Question { options, .. } = &domain.state().unwrap().interactions[&id].payload else { panic!("question") };
-        assert_eq!(options.iter().map(|o| o.id.as_str()).collect::<Vec<_>>(), ["allow", "always", "deny"]);
+            "rules": [{"toolName": "Bash", "ruleContent": "make build *"}]}]), "never the user's global settings");
+        assert_eq!(option_ids(&domain, &id), ["allow", "always", "deny"]);
+        assert_eq!(domain.state().unwrap().interactions[&id].card.allow_always, Some(alondra_core::allow_always::AllowAlways::Offered {
+            repo: "app".into(), rules: vec!["make build *".into()], quiet: vec!["tail".into()] }));
+        let rows = crate::allow_always::reconcile(&domain);
+        assert_eq!(rows.len(), 1);
+        assert_eq!((rows[0].rule.as_str(), rows[0].interaction_id.as_str(), rows[0].task_id.as_deref()), ("make build *", id.0.as_str(), Some("task-agent-a")));
+        assert_eq!(rows[0].settings, root.join(".claude/settings.local.json").to_string_lossy());
+        assert_eq!(rows[0].state, crate::allow_always::RuleState::Missing, "Claude Code never wrote it in this test, so it is not listed as active");
+        std::fs::create_dir_all(root.join(".claude")).unwrap();
+        std::fs::write(root.join(".claude/settings.local.json"), r#"{"permissions":{"allow":["Bash(make build *)"]}}"#).unwrap();
+        assert_eq!(crate::allow_always::reconcile(&domain)[0].state, crate::allow_always::RuleState::Active);
+        let removed = crate::allow_always::remove_rule(&domain, rows[0].id).unwrap().unwrap();
+        assert_eq!(removed.rule, "make build *");
+        assert_eq!(std::fs::read_to_string(root.join(".claude/settings.local.json")).unwrap(), r#"{"permissions":{"allow":[]}}"#);
+        assert_eq!(crate::allow_always::reconcile(&domain)[0].state, crate::allow_always::RuleState::Removed);
+        assert!(crate::allow_always::remove_rule(&domain, rows[0].id).is_ok(), "removing again is harmless");
     }
 
     #[tokio::test]
-    async fn plain_allow_and_deny_carry_no_rule_even_when_claude_suggested_one() {
+    async fn a_command_that_keeps_asking_offers_no_always_whatever_claude_code_suggests() {
+        let (_dir, _root, worktree) = repo_with_worktree();
         for option in [Hold::ALLOW, Hold::DENY] {
             let fixture = Fixture::new();
             let domain = fixture.open();
             working_agent(&domain, "agent-a");
-            let (reply, _) = held_card(&domain, suggested("agent-a"), option, None).await;
+            let card = command_card("agent-a", "make build && rm -rf out", &worktree,
+                json!([rule("make build *", "localSettings"), rule("rm -rf out", "localSettings")]));
+            let (reply, id) = held_card(&domain, card, option, None).await;
             assert!(reply.get("permissions").is_none(), "{option}: {reply}");
+            assert_eq!(option_ids(&domain, &id), ["allow", "deny"], "no disabled third option");
+            assert_eq!(domain.state().unwrap().interactions[&id].card.allow_always,
+                Some(alondra_core::allow_always::Refusal::new("rm -rf out", alondra_core::allow_always::Why::Deletes).into()));
+            assert!(crate::allow_always::reconcile(&domain).is_empty(), "nothing is remembered");
         }
     }
 
     #[tokio::test]
-    async fn without_a_usable_suggestion_there_is_no_always() {
-        for suggestions in [json!([]), Value::Null, json!([{"type": "setMode", "mode": "acceptEdits", "destination": "session"}])] {
-            let fixture = Fixture::new();
-            let domain = fixture.open();
-            working_agent(&domain, "agent-a");
-            let mut card = permission("agent-a");
-            card["suggestions"] = suggestions.clone();
-            let (_, id) = held_card(&domain, card, Hold::ALLOW, None).await;
-            let InteractionPayload::Question { options, .. } = &domain.state().unwrap().interactions[&id].payload else { panic!("question") };
-            assert_eq!(options.iter().map(|o| o.id.as_str()).collect::<Vec<_>>(), ["allow", "deny"], "{suggestions}");
-        }
+    async fn a_prompt_from_a_hook_that_does_not_say_where_it_runs_has_no_always() {
+        let fixture = Fixture::new();
+        let domain = fixture.open();
+        working_agent(&domain, "agent-a");
+        let mut card = permission("agent-a");
+        card["suggestions"] = json!([rule("make build *", "localSettings")]);
+        let (reply, id) = held_card(&domain, card, Hold::ALLOW, None).await;
+        assert!(reply.get("permissions").is_none());
+        assert_eq!(option_ids(&domain, &id), ["allow", "deny"]);
+        assert_eq!(domain.state().unwrap().interactions[&id].card.allow_always, None);
     }
 
     #[tokio::test]

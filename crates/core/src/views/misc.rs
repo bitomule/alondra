@@ -398,6 +398,9 @@ pub(super) fn machine(context: &RenderContext<'_>) -> View {
     if let Some(section) = settings_section(context) {
         view.sections.push(section);
     }
+    if let Some(section) = super::allow_always::section(context) {
+        view.sections.push(section);
+    }
     if let Some(update) = &context.live.update {
         view.notices.push(update.clone());
     }

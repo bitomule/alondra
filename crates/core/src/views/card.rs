@@ -737,7 +737,7 @@ fn held_option(hold: Hold, option: &QuestionOption, lang: Lang) -> (String, Inpu
     let yes = hold.approves(&option.id);
     let (label, placeholder): (&str, &str) = match (hold, yes) {
         (Hold::Permission, true) => (t!(lang, "Allow", "Permitir"), ""),
-        (Hold::Permission, false) if option.id == Hold::ALWAYS => (t!(lang, "Always for this", "Siempre para esto"), ""),
+        (Hold::Permission, false) if option.id == Hold::ALWAYS => (t!(lang, "Allow always", "Permitir siempre"), ""),
         (Hold::Permission, false) => (t!(lang, "Deny", "Denegar"), t!(lang, "Write the reason", "Escribe el motivo")),
         (Hold::Plan, true) => (t!(lang, "Approve", "Aprobar"), ""),
         (Hold::Plan, false) => (t!(lang, "Request changes", "Pedir cambios"), t!(lang, "Write what to change", "Escribe qué cambiar")),
@@ -764,6 +764,9 @@ fn held_option(hold: Hold, option: &QuestionOption, lang: Lang) -> (String, Inpu
 /// option the system wrote, otherwise the label its author gave. Never the option's id.
 pub fn answer_label(state: &DomainState, interaction: &Interaction, option: &QuestionOption, lang: Lang) -> String {
     match state.holds.get(&interaction.id).copied().filter(|hold| *hold != Hold::Question) {
+        Some(Hold::Permission) if option.id == Hold::ALWAYS => interaction.card.allow_always.as_ref()
+            .and_then(|offer| super::allow_always::chosen(offer, lang))
+            .unwrap_or_else(|| held_option(Hold::Permission, option, lang).0),
         Some(hold) => held_option(hold, option, lang).0,
         None => fixed_option_text(interaction, option, lang).0,
     }
@@ -956,7 +959,12 @@ fn answer_actions(
             };
             let mut action = button(id.to_string(), &label, role);
             action.option_id = Some(option.id.clone());
-            action.description = fixed_description.filter(|_| matches!(hold, None | Some(Hold::Question)));
+            action.description = match hold {
+                None | Some(Hold::Question) => fixed_description,
+                Some(Hold::Permission) if option.id == Hold::ALWAYS => interaction.card.allow_always.as_ref()
+                    .and_then(|offer| super::allow_always::description(offer, lang)),
+                Some(_) => None,
+            };
             action.input = input;
             action.attachments = option.inputs.iter().any(|input| input.kind == crate::domain::InputKind::Text);
             action.stamp = Some(t!(lang, "Answered", "Respondida").into());
@@ -1350,6 +1358,15 @@ fn content_items(item: &InboxItem, context: &RenderContext<'_>) -> Vec<Item> {
             DomainContent::Diff if summary::diff_stats(&content.body).is_some() => fenced(&content.body, "diff"),
             _ => content.body.clone(),
         }));
+    }
+    if domain.holds.get(&interaction.id) == Some(&Hold::Permission) {
+        if let Some(line) = interaction.card.allow_always.as_ref().and_then(|offer| super::allow_always::refusal(offer, lang)) {
+            out.push(markdown(line));
+        }
+        if context.live.allow_always_missing.contains(&interaction.id.0) {
+            out.push(markdown(t!(lang, "Claude Code did not save these rules, so this command will keep asking.",
+                "Claude Code no guardó estas reglas, así que este comando seguirá preguntando.").into()));
+        }
     }
     out
 }

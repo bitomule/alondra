@@ -42,6 +42,10 @@ ALTER TABLE agents DROP COLUMN connected;";
 /// asks the user once Alondra stops sending it back by itself. Kept outside the domain state,
 /// like stop_blocks.
 const API_FAILURES: &str = "CREATE TABLE IF NOT EXISTS api_failures(agent_id TEXT PRIMARY KEY, failures INTEGER NOT NULL CHECK(failures BETWEEN 0 AND 255), first_at INTEGER NOT NULL, last_at INTEGER NOT NULL, card TEXT);";
+/// The rules «allow always» added to a repo's local settings on this Mac, one per settings file
+/// and rule, and whether the file still has them. Kept outside the domain state: the file is the
+/// truth, this only remembers which of its rules came from Alondra and from which card.
+const ALLOWED_RULES: &str = "CREATE TABLE IF NOT EXISTS allowed_rules(id INTEGER PRIMARY KEY, repo TEXT NOT NULL, settings TEXT NOT NULL, rule TEXT NOT NULL, added_at INTEGER NOT NULL, task_id TEXT, interaction_id TEXT NOT NULL, machine TEXT NOT NULL, state TEXT NOT NULL CHECK(state IN('pending','active','missing','removed')), UNIQUE(settings, rule));";
 const STOP_BLOCKS: &str = "CREATE TABLE IF NOT EXISTS stop_blocks(task_id TEXT PRIMARY KEY, blocks INTEGER NOT NULL CHECK(blocks>=0), marker INTEGER NOT NULL);";
 /// What became of a task's node, kept beside the task; created on every open like task_models.
 const TASK_WRAP_UPS: &str = "CREATE TABLE IF NOT EXISTS task_wrap_ups(\
@@ -481,6 +485,7 @@ impl DomainStore {
         tx.execute_batch(MODEL_METRICS)?;
         tx.execute_batch(STOP_BLOCKS)?;
         tx.execute_batch(API_FAILURES)?;
+        tx.execute_batch(ALLOWED_RULES)?;
         tx.execute_batch(TASK_WRAP_UPS)?;
         tx.execute_batch(TASK_RELATIONS)?;
         tx.execute_batch(MAINTENANCE_REQUESTS)?;
@@ -1011,6 +1016,25 @@ impl DomainStore {
                 "INSERT INTO api_failures(agent_id,failures,first_at,last_at,card) VALUES(?1,?2,?3,?4,?5) ON CONFLICT(agent_id) DO UPDATE SET failures=excluded.failures,first_at=excluded.first_at,last_at=excluded.last_at,card=excluded.card",
                 params![agent.0, streak.failures, streak.first_at, streak.last_at, streak.card.as_ref().map(|card| card.0.as_str())])?,
         };
+        Ok(())
+    }
+    pub(crate) fn record_allowed_rule(&self, rule: &crate::allow_always::AllowedRule) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO allowed_rules(repo,settings,rule,added_at,task_id,interaction_id,machine,state) VALUES(?1,?2,?3,?4,?5,?6,?7,?8) ON CONFLICT(settings,rule) DO UPDATE SET repo=excluded.repo,added_at=excluded.added_at,task_id=excluded.task_id,interaction_id=excluded.interaction_id,machine=excluded.machine,state=excluded.state",
+            params![rule.repo, rule.settings, rule.rule, rule.added_at, rule.task_id, rule.interaction_id, rule.machine, rule.state.as_str()])?;
+        Ok(())
+    }
+    pub(crate) fn allowed_rules(&self) -> Result<Vec<crate::allow_always::AllowedRule>> {
+        let mut statement = self.conn.prepare("SELECT id,repo,settings,rule,added_at,task_id,interaction_id,machine,state FROM allowed_rules ORDER BY repo,rule")?;
+        let rows = statement.query_map([], |row| Ok(crate::allow_always::AllowedRule {
+            id: row.get(0)?, repo: row.get(1)?, settings: row.get(2)?, rule: row.get(3)?, added_at: row.get(4)?, task_id: row.get(5)?,
+            interaction_id: row.get(6)?, machine: row.get(7)?,
+            state: crate::allow_always::RuleState::parse(&row.get::<_, String>(8)?),
+        }))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+    pub(crate) fn set_allowed_rule_state(&self, id: i64, state: crate::allow_always::RuleState) -> Result<()> {
+        self.conn.execute("UPDATE allowed_rules SET state=?2 WHERE id=?1", params![id, state.as_str()])?;
         Ok(())
     }
     pub(crate) fn stop_blocks(&self, task_id: &TaskId) -> Result<Option<(u32, i64)>> {

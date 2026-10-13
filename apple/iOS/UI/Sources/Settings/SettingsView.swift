@@ -15,6 +15,7 @@ public struct SettingsView: View {
         Form {
             account
             NodeLimitSection(store: store.scope(state: \.nodeLimit, action: \.nodeLimit))
+            AllowedRulesSection(store: store.scope(state: \.allowedRules, action: \.allowedRules))
             if store.supportsNotifications { notifications }
             about
         }
@@ -58,6 +59,7 @@ public struct SettingsView: View {
         }
         .task { await store.send(.appeared).finish() }
         .task { await store.send(.nodeLimit(.task)).finish() }
+        .task { await store.send(.allowedRules(.task)).finish() }
         .onDisappear { store.send(.disappeared) }
         .onChange(of: phase) { _, phase in if phase == .active { store.send(.refreshPermission) } }
     }

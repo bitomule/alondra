@@ -4,7 +4,7 @@
   "view": "machine",
   "key": "machine",
   "client": "ios",
-  "version": "v7ecf4c503671130f",
+  "version": "va85e167b546e4dcb",
   "cursor": "cursor-1",
   "title": "Máquina",
   "status": {
@@ -209,6 +209,61 @@
               },
               "attachments": false,
               "enabled": true,
+              "resolves_card": false
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "allowed_rules",
+      "title": "Permisos permitidos siempre",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "rule-3",
+          "icon": "check",
+          "title": "`make build` con cualquier argumento: ejecuta lo que diga el `Makefile` del repo, también si el nodo lo cambia",
+          "subtitle": "alondra · añadido 29 sept · tarea «Build the importer»",
+          "depth": 0,
+          "struck": false,
+          "actions": [
+            {
+              "id": "remove_rule:rule-3@6",
+              "label": "Quitar",
+              "style": "destructive",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "stamp": "Quitado",
+              "resolves_card": false
+            }
+          ]
+        },
+        {
+          "type": "row",
+          "id": "rule-4",
+          "icon": "check",
+          "title": "`cargo test` con cualquier argumento",
+          "subtitle": "alondra · añadido 30 sept",
+          "depth": 0,
+          "struck": false,
+          "actions": [
+            {
+              "id": "remove_rule:rule-4@6",
+              "label": "Quitar",
+              "style": "destructive",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "stamp": "Quitado",
               "resolves_card": false
             }
           ]

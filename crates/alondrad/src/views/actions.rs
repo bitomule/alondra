@@ -209,6 +209,7 @@ enum LocalActionResource {
     PullRequest(String),
     OrchestratorDecision,
     NodeLimitSettings,
+    AllowedRules,
 }
 enum LocalResourceGuard {
     Read { _guard: tokio::sync::OwnedRwLockReadGuard<()> },
@@ -264,6 +265,7 @@ impl LocalActionResource {
             },
             Verb::OrchRetry | Verb::OrchAck | Verb::OrchStop => add(Self::OrchestratorDecision, true),
             Verb::SetLimit => add(Self::NodeLimitSettings, true),
+            Verb::RemoveRule => add(Self::AllowedRules, true),
             _ => {},
         }
         keys.into_iter().collect()
@@ -327,7 +329,7 @@ impl LocalActions {
 fn is_external(verb: Verb) -> bool {
     matches!(verb, Verb::Reply | Verb::AskPr | Verb::Conflicts | Verb::Msg | Verb::Relaunch | Verb::Close | Verb::Interrupt |
         Verb::OrchRetry | Verb::OrchAck | Verb::OrchStop | Verb::SchedRun | Verb::SchedToggle |
-        Verb::SchedDelete | Verb::SchedSave | Verb::NewRequest | Verb::CloseUnmerged | Verb::Pause | Verb::Resume | Verb::SetLimit)
+        Verb::SchedDelete | Verb::SchedSave | Verb::NewRequest | Verb::CloseUnmerged | Verb::Pause | Verb::Resume | Verb::SetLimit | Verb::RemoveRule)
 }
 
 async fn execute_action(
@@ -440,6 +442,7 @@ async fn execute_external(
         Verb::Pause => "Paused",
         Verb::Resume => "Resumed",
         Verb::SetLimit => "Limit updated",
+        Verb::RemoveRule => "Removed",
         _ => return Ok(no_longer_available(lang, "This action is no longer available")),
     };
     let stamp = if lang == Lang::Es { match action.verb {
@@ -450,7 +453,7 @@ async fn execute_external(
         Verb::SchedRun => "Ejecución iniciada", Verb::SchedToggle => "Tarea actualizada",
         Verb::SchedDelete => "Tarea eliminada", Verb::SchedSave => "Tarea guardada",
         Verb::NewRequest => "Solicitud enviada", Verb::CloseUnmerged => "PR cerrada",
-        Verb::Pause => "En pausa", Verb::Resume => "Reanudado", Verb::SetLimit => "Límite actualizado", _ => stamp,
+        Verb::Pause => "En pausa", Verb::Resume => "Reanudado", Verb::SetLimit => "Límite actualizado", Verb::RemoveRule => "Quitado", _ => stamp,
     }} else { stamp };
     let to_applied = |status: u16, body: Value| -> Value { applied(action.verb, lang, stamp, state.revision, status, body) };
     match action.verb {
@@ -629,6 +632,19 @@ async fn execute_external(
                     Ok(to_applied(200, json!({"max_working_nodes": limit})))
                 }
                 Err(why) => Ok(error_value_lang(lang, "conflict", why)),
+            }
+        }
+        Verb::RemoveRule => {
+            let Some(id) = action.subject.strip_prefix("rule-").and_then(|id| id.parse::<i64>().ok()) else {
+                return Ok(no_longer_available(lang, "This permission is no longer listed"));
+            };
+            match crate::allow_always::remove_rule(domain, id) {
+                Ok(Some(rule)) => Ok(to_applied(200, json!({"removed": rule.rule, "repo": rule.repo}))),
+                Ok(None) => Ok(no_longer_available(lang, "This permission is no longer listed")),
+                Err(why) => {
+                    log!("allow always: could not remove rule {id}: {why:#}");
+                    Ok(error_value_lang(lang, "conflict", "Alondra could not change the repo's settings file"))
+                }
             }
         }
         Verb::OrchRetry | Verb::OrchAck | Verb::OrchStop => {
@@ -1560,6 +1576,7 @@ fn applied_outcome(verb: Verb, lang: Lang, stamp: &str, accepted: Accepted) -> O
         Verb::Pause => Outcome::done(say("Paused. Alondra does not resume it by itself: only you do.", "En pausa. Alondra no la reanuda sola: solo tú.")),
         Verb::Resume => Outcome::done(say("Resumed now, even over the limit.", "Reanudada ya, aunque se pase del límite.")),
         Verb::SetLimit => Outcome::done(say("Limit changed: it counts from now on.", "Límite cambiado: cuenta desde ahora.")),
+        Verb::RemoveRule => Outcome::done(say("Removed: the next call of that command asks again.", "Quitado: la próxima llamada de ese comando vuelve a preguntar.")),
         Verb::SetPriority => Outcome::done(say("Priority changed. The queue follows it now.", "Prioridad cambiada. La cola ya la sigue.")),
         _ => Outcome::done(stamp.to_owned()),
     }
@@ -1738,6 +1755,8 @@ fn localize<'a>(lang: Lang, message: &'a str) -> &'a str {
         "Alondra could not start the task" => "Alondra no pudo arrancar la tarea",
         "This item has changed" => "Este elemento ha cambiado",
         "This action is no longer available" => "Esta acción ya no está disponible",
+        "This permission is no longer listed" => "Este permiso ya no está en la lista",
+        "Alondra could not change the repo's settings file" => "Alondra no pudo cambiar el fichero de ajustes del repo",
         "This item has no active node" => "Este elemento no tiene un nodo activo",
         "This node is no longer available" => "Este nodo ya no está disponible",
         "This pull request is no longer open" => "Esta PR ya no está abierta",

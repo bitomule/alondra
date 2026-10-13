@@ -27,6 +27,7 @@ public struct MacSettingsView<PairingContent: View>: View {
             }
             macsSection
             NodeLimitSection(store: store.scope(state: \.nodeLimit, action: \.nodeLimit))
+            AllowedRulesSection(store: store.scope(state: \.allowedRules, action: \.allowedRules))
             if store.devices != nil || store.devicesError != nil { devicesSection }
             if store.supportsNotifications {
                 notifications
@@ -87,6 +88,7 @@ public struct MacSettingsView<PairingContent: View>: View {
         .modifier(MacSettingsDeviceDialogs(store: store))
         .task { await store.send(.appeared).finish() }
         .task { await store.send(.nodeLimit(.task)).finish() }
+        .task { await store.send(.allowedRules(.task)).finish() }
         .onDisappear { store.send(.disappeared) }
         .onChange(of: phase) { _, phase in if phase == .active { store.send(.refreshPermission) } }
     }

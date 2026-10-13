@@ -254,6 +254,7 @@ struct TriageCard: View {
                     .glassRole(action.cardRole)
                     .accessibilityIdentifier(actionIdentifier(action))
             }
+            AllowAlwaysDescription(action: action)
         }
     }
 

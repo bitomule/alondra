@@ -397,11 +397,19 @@ pub fn card_lines(card: &Card, width: usize) -> Vec<Line<'static>> {
 
 pub const BUTTONS: usize = 3;
 
+/// The permission answer whose effect outlasts the card, so its button says what it allows.
+const ALLOW_ALWAYS: &str = "always";
+
 /// What the keys of a card do: its buttons numbered from 1, the menu of the rest, the reply.
-pub fn button_lines(card: &Card) -> Vec<Line<'static>> {
+pub fn button_lines(card: &Card, width: usize) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     for (index, action) in card.actions.iter().take(BUTTONS).enumerate() {
         lines.extend(button_line(&(index + 1).to_string(), action));
+        if action.option_id.as_deref() == Some(ALLOW_ALWAYS)
+            && let Some(description) = &action.description
+        {
+            lines.extend(button_description(description, width));
+        }
     }
     if !card.more.is_empty() {
         lines.push(Line::from(vec![
@@ -429,6 +437,24 @@ fn role_color(action: &Action) -> Color {
 
 fn button_line(key: &str, action: &Action) -> Vec<Line<'static>> {
     vec![Line::from(vec![keycap_span(key, role_color(action)), Span::raw(format!(" {}", action.label))])]
+}
+
+/// A button's description under it, indented past its key and wrapped to the pane, in grey.
+fn button_description(description: &str, width: usize) -> Vec<Line<'static>> {
+    const INDENT: &str = "    ";
+    description
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .flat_map(|line| super::md::render(&super::md::parse(line), width.saturating_sub(INDENT.len())).lines)
+        .map(|line| {
+            let mut spans = vec![Span::raw(INDENT)];
+            spans.extend(line.spans.into_iter().map(|span| match span.style.fg {
+                Some(_) => span,
+                None => span.fg(DIM),
+            }));
+            Line::from(spans)
+        })
+        .collect()
 }
 
 /// A numbered list the user picks from: the rest of a card's actions, or the options of one.

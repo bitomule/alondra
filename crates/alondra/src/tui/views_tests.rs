@@ -201,3 +201,127 @@ fn an_item_kind_from_a_newer_daemon_shows_as_a_row_asking_to_update() {
     }).collect();
     assert_eq!(rows, ["Update the TUI to see this"]);
 }
+
+fn drawn(app: &mut App, width: u16, height: u16) -> String {
+    let backend = ratatui::backend::TestBackend::new(width, height);
+    let mut terminal = ratatui::Terminal::new(backend).unwrap();
+    terminal.draw(|frame| draw::draw(frame, app)).unwrap();
+    let buffer = terminal.backend().buffer();
+    buffer
+        .content()
+        .chunks(buffer.area.width as usize)
+        .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+const ALLOWS: &str = "Allows this now and stops asking in `alondra` for:\n· `make build` with any arguments\nYou can remove it in Settings › Permissions.";
+
+#[test]
+fn the_allow_always_button_says_what_it_allows_and_the_other_buttons_do_not() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+    let mut app = app();
+    app.on_msg(Msg::ViewHome(Ok(serde_json::from_value(super::parity::view_fixture("home-tui.json")).unwrap())));
+    app.reconcile();
+    let mut card = super::parity::view_fixture("card-question.json");
+    let key = card["key"].as_str().unwrap().to_owned();
+    let buttons = &mut card["sections"][0]["items"][0]["actions"];
+    buttons[0]["label"] = json!("Allow always");
+    buttons[0]["option_id"] = json!("always");
+    buttons[0]["description"] = json!(ALLOWS);
+    buttons[1]["description"] = json!("Preserve the more conversational explanation.");
+    app.sel = Some(Key(key.trim_start_matches("card:").to_owned()));
+    app.on_msg(Msg::ViewCard { key, result: Ok(serde_json::from_value(card).unwrap()) });
+
+    let screen = drawn(&mut app, 180, 50);
+    let under = |text: &str| screen.lines().position(|line| line.contains(text));
+    let button = under("Allow always").expect(&screen);
+    assert_eq!(under("Allows this now and stops asking in alondra for:"), Some(button + 1), "{screen}");
+    assert_eq!(under("· make build with any arguments"), Some(button + 2), "{screen}");
+    assert_eq!(under("You can remove it in Settings › Permissions."), Some(button + 3), "{screen}");
+    assert!(under("Keep the warmer copy").is_some(), "{screen}");
+    assert_eq!(under("Preserve the more conversational explanation."), None, "{screen}");
+}
+
+fn rule(id: &str, title: &str, subtitle: &str) -> Value {
+    json!({"type": "row", "id": id, "icon": "check", "title": title, "subtitle": subtitle, "depth": 0, "struck": false,
+        "actions": [{"id": format!("remove_rule:{id}@6"), "label": "Remove", "style": "destructive", "presentation": "button",
+            "input": {"kind": "none"}, "attachments": false, "enabled": true, "stamp": "Removed", "resolves_card": false}]})
+}
+
+fn machine(rules: Vec<Value>) -> ViewDocument {
+    let mut view = super::parity::view_fixture("machine-ios.json");
+    view["key"] = json!("machine");
+    view["sections"] = json!([{"id": "gauges", "collapsed": false, "items": [
+        {"type": "facts", "items": [{"label": "Memory", "value": "6.1 GB of 16 GB"}]}]}]);
+    if !rules.is_empty() {
+        view["sections"].as_array_mut().unwrap().push(json!({
+            "id": "allowed_rules", "title": "Permissions allowed always", "collapsed": false, "items": rules}));
+    }
+    serde_json::from_value(view).unwrap()
+}
+
+fn rules_open(rules: Vec<Value>) -> App {
+    let mut app = app();
+    app.screen = Screen::Fleet;
+    press(&mut app, KeyCode::Char('a'));
+    assert!(app.rules.is_some(), "a on the Fleet opens the rules");
+    app.on_msg(Msg::ViewCard { key: "machine".into(), result: Ok(machine(rules)) });
+    app
+}
+
+fn shown_rules(app: &App) -> Vec<String> {
+    app.rules.as_ref().unwrap().rows().iter().map(|row| row.id.clone()).collect()
+}
+
+#[test]
+fn the_rules_panel_lists_each_rule_of_the_machine_view_and_esc_closes_it() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+    let mut app = rules_open(vec![
+        rule("rule-3", "`make build` with any arguments", "alondra · added 29 Sep · task «Build the importer»"),
+        rule("rule-4", "`cargo test` with any arguments", "alondra · added 30 Sep"),
+    ]);
+    let screen = drawn(&mut app, 120, 30);
+    assert!(screen.contains("Permissions allowed always"), "{screen}");
+    assert!(screen.contains("make build with any arguments"), "{screen}");
+    assert!(screen.contains("alondra · added 29 Sep · task «Build the importer»"), "{screen}");
+    assert!(screen.contains("cargo test with any arguments"), "{screen}");
+    assert!(screen.contains("x Remove"), "{screen}");
+    press(&mut app, KeyCode::Char('j'));
+    assert_eq!(app.rules.as_ref().unwrap().selected().map(|row| row.id.as_str()), Some("rule-4"));
+    press(&mut app, KeyCode::Esc);
+    assert!(app.rules.is_none());
+
+    let mut empty = rules_open(vec![]);
+    let screen = drawn(&mut empty, 120, 30);
+    assert!(screen.contains("No command is allowed always yet"), "{screen}");
+}
+
+#[test]
+fn remove_hides_the_rule_at_once_and_a_refusal_brings_it_back_with_its_message() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+    let mut app = rules_open(vec![
+        rule("rule-3", "`make build` with any arguments", "alondra · added 29 Sep"),
+        rule("rule-4", "`cargo test` with any arguments", "alondra · added 30 Sep"),
+    ]);
+    press(&mut app, KeyCode::Char('x'));
+    let request = app.posted.borrow().last().cloned().unwrap();
+    assert_eq!(request.0, "/actions");
+    assert_eq!(request.1["action_id"], "remove_rule:rule-3@6");
+    assert_eq!(shown_rules(&app), ["rule-4"], "the rule leaves before the Mac answers");
+
+    let refused = view_action_result(json!({"outcome": "rejected", "message": "That rule was already removed"})).unwrap();
+    app.on_msg(Msg::ViewAction { request: request.1, result: Ok(refused) });
+    assert_eq!(shown_rules(&app), ["rule-3", "rule-4"]);
+    let flash = app.flash.as_ref().unwrap();
+    assert!(flash.kind == FlashKind::Error);
+    assert_eq!(flash.text, "That rule was already removed");
+
+    press(&mut app, KeyCode::Char('x'));
+    let request = app.posted.borrow().last().cloned().unwrap();
+    let asked = app.spawned.borrow().len();
+    let applied = view_action_result(json!({"outcome": "applied", "stamp": "Removed"})).unwrap();
+    app.on_msg(Msg::ViewAction { request: request.1, result: Ok(applied) });
+    assert_eq!(shown_rules(&app), ["rule-4"]);
+    assert_eq!(app.spawned.borrow().len(), asked + 1, "the list is asked again once it is gone");
+}

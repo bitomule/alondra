@@ -58,7 +58,8 @@ extension Fixtures {
             item["content_row"] = ["kind": "command", "icon": "warning", "label": "Command", "summary": "alondra update"]
             item["actions"] = [
                 button("ans:\(id)@1", "Yes", role: "advance", optionID: "allow"),
-                button("ans:\(id)@1", "Always for this", optionID: "always"),
+                button("ans:\(id)@1", "Allow always", optionID: "always",
+                       extra: ["description": "Allows this now and stops asking in `alondra` for:\n· `make build` with any arguments: runs what the repo's `Makefile` says, even if the node changes it\n`tail` already didn't ask. You can remove it in Settings › Permissions."]),
                 button("ans:\(id)@1", "No", optionID: "deny"),
             ]
         }

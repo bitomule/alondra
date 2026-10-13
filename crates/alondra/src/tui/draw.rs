@@ -70,6 +70,8 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     };
     if app.reader.is_some() {
         draw_reader(f, app, body);
+    } else if app.rules.is_some() {
+        draw_rules(f, app, body);
     } else if let Some(view) = app.shown_home().map(std::borrow::Cow::into_owned) {
         draw_views_inbox(f, app, &view, body);
     } else {
@@ -731,7 +733,7 @@ fn draw_views_card(f: &mut Frame, app: &mut App, area: Rect) {
     if let Some(card) = super::view_render::typed_card(document) {
         keys = match &app.card_menu {
             Some(menu) => super::view_render::menu_lines(menu),
-            None => super::view_render::button_lines(card),
+            None => super::view_render::button_lines(card, inner.width as usize),
         };
     } else {
         let mut actions = action_menu(&app.bindings());
@@ -766,6 +768,44 @@ fn draw_views_card(f: &mut Frame, app: &mut App, area: Rect) {
         shown.extend(keys);
         f.render_widget(Paragraph::new(shown), keys_area);
     }
+}
+
+fn draw_rules(f: &mut Frame, app: &mut App, area: Rect) {
+    let Some(rules) = app.rules.as_mut() else { return };
+    let title = rules
+        .title()
+        .unwrap_or(tr!("Permissions allowed always", "Permisos permitidos siempre"))
+        .to_owned();
+    let block = panel(Line::from(format!(" {title} ").bold()), true);
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    let width = inner.width.saturating_sub(1) as usize;
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    let mut selected = (0, 0);
+    for (index, row) in rules.rows().into_iter().enumerate() {
+        if index > 0 {
+            lines.push(Line::default());
+        }
+        let start = lines.len();
+        lines.extend(super::rules::row_lines(row, width, index == rules.sel));
+        if index == rules.sel {
+            selected = (start, lines.len());
+        }
+    }
+    if lines.is_empty() {
+        let message = match (&rules.view, &rules.failed) {
+            (Some(_), _) => tr!("No command is allowed always yet", "Ningún comando se permite siempre todavía").to_owned(),
+            (None, Some(error)) => error.clone(),
+            (None, None) => tr!("Loading…", "Cargando…").to_owned(),
+        };
+        centered_lines(f, inner, vec![Line::from(message.fg(DIM))]);
+        return;
+    }
+    let total = lines.len();
+    keep_visible(&mut rules.scroll, selected, inner.height as usize, total);
+    f.render_widget(Paragraph::new(lines).scroll((rules.scroll as u16, 0)), inner);
+    highlight(f, Rect { width: inner.width.saturating_sub(1), ..inner }, selected.0..selected.1, rules.scroll);
+    scrollbar(f, inner, total, rules.scroll);
 }
 
 /// What a row says first: a child's own text, a root's name.

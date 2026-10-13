@@ -169,6 +169,25 @@ final class AccountSnapshotTests: XCTestCase {
         assertScreen([.light], language: .spanish, inWindow: true) { ScreenFrame(height: 1100) { SettingsView(store: store) } }
     }
 
+    func test_settings_permissionsAllowedAlways() throws {
+        let document = try ScreenFixtures.document("machine-settings-ios")
+        let store = settings {
+            $0.nodeLimit.setting = NodeLimitSetting(document: document)
+            $0.allowedRules.rules = AllowedRule.all(in: document)
+        }
+        assertScreen([.light, .dark], inWindow: true) { ScreenFrame(height: 1500) { SettingsView(store: store) } }
+    }
+
+    func test_settings_permissionsAllowedAlways_spanish() throws {
+        let document = try ScreenFixtures.document("machine-settings-ios-es")
+        let store = settings {
+            $0.nodeLimit.setting = NodeLimitSetting(document: document)
+            $0.allowedRules.rules = AllowedRule.all(in: document)
+            $0.allowedRules.error = "Alondra no pudo cambiar el fichero de ajustes del repo"
+        }
+        assertScreen([.light], language: .spanish, inWindow: true) { ScreenFrame(height: 1500) { SettingsView(store: store) } }
+    }
+
     func test_settings_alertsOffAndNothingToSelect() {
         let store = settings {
             $0.notifications = NotificationSettings(permission: .denied, delivery: .idle, quietHours: QuietHours())

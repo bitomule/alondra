@@ -4128,16 +4128,81 @@ fn a_held_plan_is_reviewed_with_block_comments_request_changes_and_approve() {
 }
 
 #[test]
-fn a_permission_card_with_a_suggestion_offers_yes_always_and_no_in_that_order() {
+fn a_permission_card_that_can_stop_asking_offers_allow_always_saying_exactly_what_stops_asking() {
+    use crate::allow_always::AllowAlways;
     use crate::domain::{CardKind, Hold};
-    let mut state = held_fixture(Hold::Permission, spec(CardKind::Authorize, "Allow cleaning the build", ""));
-    state.interactions.get_mut(&"i-1".into()).unwrap().payload =
-        InteractionPayload::Question { options: Hold::Permission.options_offering(true), answer: None };
+    let mut state = held_fixture(Hold::Permission, spec(CardKind::Authorize, "Allow building", ""));
+    let interaction = state.interactions.get_mut(&"i-1".into()).unwrap();
+    interaction.payload = InteractionPayload::Question { options: Hold::Permission.options_offering(true), answer: None };
+    interaction.card.allow_always = Some(AllowAlways::Offered { repo: "alondra".into(),
+        rules: vec!["make mac-snapshots-record *".into()], quiet: vec!["tail".into(), "git status".into()] });
     let view = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::Es, "card:i-1", "");
     let card = card_of(&view);
     assert_eq!(answers(card).iter().map(|a| (a.option_id.as_deref().unwrap(), a.label.as_str(), a.role)).collect::<Vec<_>>(),
-        [("allow", "Permitir", Some(Role::Risk)), ("always", "Siempre para esto", Some(Role::Neutral)),
+        [("allow", "Permitir", Some(Role::Risk)), ("always", "Permitir siempre", Some(Role::Neutral)),
          ("deny", "Denegar", Some(Role::Neutral))]);
+    assert_eq!(answers(card)[1].description.as_deref(), Some("Permite esto ahora y en `alondra` deja de preguntar por:\n\
+        · `make mac-snapshots-record` con cualquier argumento: ejecuta lo que diga el `Makefile` del repo, también si el nodo lo cambia\n\
+        `tail` y `git status` ya no preguntaban. Puedes quitarlo en Ajustes › Permisos."));
+    let view = render(&state, &LiveSnapshot::default(), Client::Mac, Lang::En, "card:i-1", "");
+    assert_eq!(answers(card_of(&view))[1].description.as_deref(), Some("Allows this now and stops asking in `alondra` for:\n\
+        · `make mac-snapshots-record` with any arguments: runs what the repo's `Makefile` says, even if the node changes it\n\
+        `tail` and `git status` already didn't ask. You can remove it in Settings › Permissions."));
+    let option = QuestionOption { id: Hold::ALWAYS.into(), label: "Allow always".into(), description: None, inputs: vec![] };
+    assert_eq!(answer_label(&state, &state.interactions[&"i-1".into()], &option, Lang::Es),
+        "Permitido siempre: `make mac-snapshots-record …` en `alondra`");
+}
+
+#[test]
+fn a_permission_card_without_allow_always_says_why_in_one_line() {
+    use crate::allow_always::{Refusal, Why};
+    use crate::domain::{CardKind, Hold};
+    let mut state = held_fixture(Hold::Permission, spec(CardKind::Authorize, "Allow building", ""));
+    state.interactions.get_mut(&"i-1".into()).unwrap().card.allow_always = Some(Refusal::new("rm -rf out", Why::Deletes).into());
+    let view = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::Es, "card:i-1", "");
+    let card = card_of(&view);
+    assert_eq!(answers(card).iter().map(|a| a.option_id.as_deref().unwrap()).collect::<Vec<_>>(), ["allow", "deny"],
+        "no disabled third option");
+    assert!(answers(card).iter().all(|a| a.description.is_none()));
+    let text = serde_json::to_string(&view).unwrap();
+    assert!(text.contains("No se puede permitir siempre: `rm -rf out` borra o sobrescribe ficheros y siempre pregunta."), "{text}");
+    let view = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::En, "card:i-1", "");
+    assert!(serde_json::to_string(&view).unwrap().contains("Can't allow always: `rm -rf out` deletes or overwrites files and always asks."));
+    let mut missing = held_fixture(Hold::Permission, spec(CardKind::Authorize, "Allow building", ""));
+    missing.interactions.get_mut(&"i-1".into()).unwrap().card.allow_always = Some(crate::allow_always::AllowAlways::Offered {
+        repo: "app".into(), rules: vec!["make build *".into()], quiet: vec![] });
+    let live = LiveSnapshot { allow_always_missing: vec!["i-1".into()], ..LiveSnapshot::default() };
+    let view = render(&missing, &live, Client::Ios, Lang::Es, "card:i-1", "");
+    assert!(serde_json::to_string(&view).unwrap().contains("Claude Code no guardó estas reglas"));
+}
+
+#[test]
+fn a_question_card_never_shows_an_allow_always_a_node_slipped_into_it() {
+    use crate::allow_always::AllowAlways;
+    use crate::domain::{CardKind, Hold};
+    let mut state = held_fixture(Hold::Question, spec(CardKind::Decide, "Which database?", ""));
+    let interaction = state.interactions.get_mut(&"i-1".into()).unwrap();
+    interaction.payload = InteractionPayload::Question { options: vec![QuestionOption { id: Hold::ALWAYS.into(),
+        label: "Always".into(), description: None, inputs: vec![] }], answer: None };
+    interaction.card.allow_always = Some(AllowAlways::Offered { repo: "app".into(), rules: vec!["make build *".into()], quiet: vec![] });
+    let view = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::En, "card:i-1", "");
+    assert!(!serde_json::to_string(&view).unwrap().contains("stops asking"));
+}
+
+#[test]
+fn this_macs_settings_list_the_rules_allowed_always_with_a_remove_button() {
+    let state = DomainState::new("test-epoch");
+    let live = LiveSnapshot { allowed_rules: vec![LiveAllowedRule { id: 7, repo: "alondra".into(), rule: "make build *".into(),
+        added: "2026-10-13T10:00:00.000+02:00".into(), task_id: None }], ..LiveSnapshot::default() };
+    let view = render(&state, &live, Client::Ios, Lang::Es, "machine", "");
+    let section = view.sections.iter().find(|section| section.id == "allowed_rules").expect("listed");
+    assert_eq!(section.title.as_deref(), Some("Permisos permitidos siempre"));
+    let Item::Row(row) = &section.items[0] else { panic!("row") };
+    assert_eq!(row.title, "`make build` con cualquier argumento: ejecuta lo que diga el `Makefile` del repo, también si el nodo lo cambia");
+    assert_eq!(row.subtitle.as_deref(), Some("alondra · añadido 13 oct"));
+    assert_eq!(row.actions.iter().map(|a| (a.id.as_str(), a.label.as_str())).collect::<Vec<_>>(), [("remove_rule:rule-7@0", "Quitar")]);
+    let empty = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::Es, "machine", "");
+    assert!(empty.sections.iter().all(|section| section.id != "allowed_rules"), "nothing to list, no section");
 }
 
 #[test]
@@ -5562,6 +5627,12 @@ fn pacing_fixture() -> (DomainState, LiveSnapshot) {
         ],
     });
     live.nodes.iter_mut().filter(|node| node.agent_id == "zeta-worker").for_each(|node| node.working = false);
+    live.allowed_rules = vec![
+        LiveAllowedRule { id: 3, repo: "alondra".into(), rule: "make build *".into(), added: "2026-09-29T09:12:00.000+02:00".into(),
+            task_id: Some("t-zeta-worker".into()) },
+        LiveAllowedRule { id: 4, repo: "alondra".into(), rule: "cargo test *".into(), added: "2026-09-30T08:40:00.000+02:00".into(),
+            task_id: None },
+    ];
     (state, live)
 }
 

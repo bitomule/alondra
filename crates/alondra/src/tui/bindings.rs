@@ -23,6 +23,9 @@ pub(super) enum Act {
     Schedules,
     CloseSchedules,
     NewSchedule,
+    Rules,
+    CloseRules,
+    RemoveRule,
     Search,
     Quit,
     Help,
@@ -239,6 +242,8 @@ impl App {
         }
         if self.reader.is_some() {
             self.reader_bindings(&mut t);
+        } else if self.rules.is_some() {
+            self.rules_bindings(&mut t);
         } else if self.schedules_open {
             self.schedule_bindings(&mut t);
         } else {
@@ -381,6 +386,18 @@ impl App {
         t.help(vec![char('q')], "q", tr!("quit", "salir"), Act::Quit);
     }
 
+    fn rules_bindings(&self, t: &mut Table) {
+        let Some(rules) = self.rules.as_ref() else { return };
+        if rules.rows().len() > 1 {
+            t.add(selection_keys(), "j/k", tr!("move", "mover"), Act::Move);
+        }
+        if let Some(action) = rules.selected().and_then(super::rules::remove_action) {
+            t.add(vec![char('x'), plain(KeyCode::Delete), plain(KeyCode::Backspace)], "x", action.label.clone(), Act::RemoveRule);
+        }
+        t.add(vec![plain(KeyCode::Esc), char('a')], "Esc", tr!("back", "volver"), Act::CloseRules);
+        t.help(vec![char('q')], "q", tr!("quit", "salir"), Act::Quit);
+    }
+
     fn screen_action_bindings(&self, t: &mut Table) {
         let Some(home) = self.home_view.as_ref() else { return };
         for action in super::draw::screen_actions(home) {
@@ -456,7 +473,10 @@ impl App {
         match self.screen {
             Screen::Inbox => {}
             Screen::Tasks => t.add(vec![char('s')], "s", tr!("scheduled", "programadas"), Act::Schedules),
-            Screen::Fleet => t.add(vec![char('/')], "/", tr!("search", "buscar"), Act::Search),
+            Screen::Fleet => {
+                t.add(vec![char('/')], "/", tr!("search", "buscar"), Act::Search);
+                t.add(vec![char('a')], "a", tr!("allowed always", "permitidos siempre"), Act::Rules);
+            }
         }
         let next = match self.screen {
             Screen::Inbox => tr!("tasks", "tareas"),
@@ -488,6 +508,8 @@ impl App {
                 let Some(motion) = motion(&key) else { return Flow::Go };
                 if self.reader.is_some() {
                     self.reader_cmd(Cmd::Move(motion));
+                } else if let Some(rules) = self.rules.as_mut() {
+                    rules.step(motion);
                 } else {
                     self.inbox_cmd(Cmd::Move(motion));
                 }
@@ -527,6 +549,9 @@ impl App {
                 self.reload_schedules();
             }
             Act::NewSchedule => self.compose(Target::Form { view: "schedule:new".into() }, ""),
+            Act::Rules => self.open_rules(),
+            Act::CloseRules => self.close_rules(),
+            Act::RemoveRule => self.remove_rule(),
             Act::Search => {
                 self.search = Some(super::Search {
                     input: super::TextInput::default(),

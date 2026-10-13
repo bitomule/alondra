@@ -4,7 +4,7 @@
   "view": "machine",
   "key": "machine",
   "client": "ios",
-  "version": "v5d80f28fd45c7e2f",
+  "version": "v871d49e4bc71d5b9",
   "cursor": "cursor-1",
   "title": "Machine",
   "status": {
@@ -209,6 +209,61 @@
               },
               "attachments": false,
               "enabled": true,
+              "resolves_card": false
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "allowed_rules",
+      "title": "Permissions allowed always",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "rule-3",
+          "icon": "check",
+          "title": "`make build` with any arguments: runs what the repo's `Makefile` says, even if the node changes it",
+          "subtitle": "alondra · added 29 Sep · task «Build the importer»",
+          "depth": 0,
+          "struck": false,
+          "actions": [
+            {
+              "id": "remove_rule:rule-3@6",
+              "label": "Remove",
+              "style": "destructive",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "stamp": "Removed",
+              "resolves_card": false
+            }
+          ]
+        },
+        {
+          "type": "row",
+          "id": "rule-4",
+          "icon": "check",
+          "title": "`cargo test` with any arguments",
+          "subtitle": "alondra · added 30 Sep",
+          "depth": 0,
+          "struck": false,
+          "actions": [
+            {
+              "id": "remove_rule:rule-4@6",
+              "label": "Remove",
+              "style": "destructive",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "stamp": "Removed",
               "resolves_card": false
             }
           ]

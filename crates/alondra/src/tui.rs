@@ -8,6 +8,7 @@ mod input;
 mod keys;
 mod md;
 mod restore;
+mod rules;
 mod tasks;
 mod updated;
 mod usage_banner;
@@ -647,6 +648,8 @@ pub struct App {
     pub offline: bool,
     pub screen: Screen,
     pub schedules_open: bool,
+    /// This Mac's permissions allowed always, open over the Fleet.
+    pub rules: Option<rules::Rules>,
     pub sel: Option<Key>,
     sel_idx: usize,
     pub list_scroll: usize,
@@ -1111,6 +1114,7 @@ impl App {
             offline: false,
             screen: Screen::Inbox,
             schedules_open: false,
+            rules: None,
             sel: None,
             sel_idx: 0,
             list_scroll: 0,
@@ -1397,6 +1401,9 @@ impl App {
         }
         if let Some(card) = self.card_view.as_ref() {
             open.insert(card.key.clone(), card.version.clone());
+        }
+        if let Some(view) = self.rules.as_ref().and_then(|rules| rules.view.as_ref()) {
+            open.insert(view.key.clone(), view.version.clone());
         }
     }
 
@@ -1874,6 +1881,9 @@ impl App {
                 key,
                 result: Ok(view),
             } => {
+                if key == rules::VIEW {
+                    self.rules_loaded(Ok(&view));
+                }
                 if view.view == alondra_core::views::SETTLED_VIEW {
                     if self.selected_view_key().as_deref() == Some(&key) {
                         self.close_settled_card(&key, view);
@@ -1906,6 +1916,9 @@ impl App {
                 key,
                 result: Err(error),
             } => {
+                if key == rules::VIEW {
+                    self.rules_loaded(Err(&error));
+                }
                 if self.card_view_asked.as_deref() == Some(&key) {
                     if key.starts_with("search") {
                         if let Some(search) = self.search.as_mut() {
@@ -2136,6 +2149,7 @@ impl App {
             Some(body) => format!("{}\n{body}", outcome.title),
             None => outcome.title.clone(),
         };
+        self.rule_answered(command, matches!(outcome.kind, OutcomeKind::Done | OutcomeKind::Started));
         match outcome.kind {
             OutcomeKind::Done | OutcomeKind::Started => {
                 if let Some(key) = origin {
@@ -2398,6 +2412,7 @@ impl App {
         self.view_navigation.clear();
         self.reader_after_view = None;
         self.schedules_open = false;
+        self.rules = None;
         self.focus = Pane::List;
         self.agent_zoom = false;
         self.task_zoom = false;
