@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:a98d034b-249e-4487-a89b-57de38c26372",
   "client": "tui",
-  "version": "vc73fb0a08c3e02c6",
+  "version": "ve246eea03cc8b1f0",
   "cursor": "cursor-1",
   "title": "Choose the welcome copy",
   "status": {
@@ -91,7 +91,7 @@
             },
             "attachments": true,
             "enabled": true,
-            "stamp": "Enviado",
+            "stamp": "Respondiste",
             "key": "r",
             "resolves_card": true
           },
@@ -110,7 +110,7 @@
               },
               "attachments": true,
               "enabled": true,
-              "stamp": "Respondida",
+              "stamp": "Respondiste",
               "key": "4",
               "resolves_card": true
             },

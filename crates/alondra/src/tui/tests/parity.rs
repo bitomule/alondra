@@ -2183,6 +2183,35 @@ fn a_card_leaves_the_list_only_when_its_action_says_it_takes_it_out() {
     }
 }
 
+/// David wrote «Hazlo tú» under the orchestrator's Decide card and the card stayed: its reply went
+/// out as a new message to the orchestrator. The reply field of an open question answers it, so
+/// the card leaves the list the moment it is sent.
+#[test]
+fn words_written_under_an_orchestrator_decide_answer_it_and_take_it_out() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+    let card = view_fixture("card-orchestrator-decide-tui.json");
+    let decide = card["sections"][0]["items"][0].clone();
+    let id = decide["id"].as_str().unwrap().to_owned();
+    let mut home = view_fixture("home-tui.json");
+    home["sections"][0]["items"].as_array_mut().unwrap().insert(0, decide);
+    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
+    let mut app = App::new(tx);
+    app.on_msg(Msg::ViewHome(Ok(serde_json::from_value(home).unwrap())));
+    app.reconcile();
+    app.sel = Some(Key(id.clone()));
+    app.on_msg(Msg::ViewCard { key: format!("card:{id}"), result: Ok(serde_json::from_value(card).unwrap()) });
+    press(&mut app, KeyCode::Char('r'));
+    typed(&mut app, "Hazlo tú");
+    press(&mut app, KeyCode::Enter);
+    let sent = posted(&app);
+    assert_eq!(sent.len(), 1);
+    let action = sent[0].1["action_id"].as_str().unwrap();
+    assert!(action.starts_with(&format!("reply:{id}@")), "the words answer the card, never a new message: {action}");
+    assert_eq!(sent[0].1["input"]["text"], "Hazlo tú");
+    assert!(app.hidden.contains_key(&Key(id.clone())), "the answered card leaves at once");
+    assert!(!app.inbox_keys().contains(&Key(id)));
+}
+
 /// The chain the daemon folds, as each client gets it: id, folded and the tasks under it.
 fn chain_of(name: &str) -> (String, bool, Vec<String>) {
     fn find(rows: &[alondra_core::views::Row]) -> Option<&alondra_core::views::Row> {

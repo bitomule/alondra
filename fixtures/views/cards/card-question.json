@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:a98d034b-249e-4487-a89b-57de38c26372",
   "client": "ios",
-  "version": "vfa308dd39e948d10",
+  "version": "veae0657a79ac4458",
   "cursor": "cursor-1",
   "title": "Choose the welcome copy",
   "status": {
@@ -91,7 +91,7 @@
             },
             "attachments": true,
             "enabled": true,
-            "stamp": "Sent",
+            "stamp": "You answered",
             "resolves_card": true
           },
           "more": [
@@ -109,7 +109,7 @@
               },
               "attachments": true,
               "enabled": true,
-              "stamp": "Answered",
+              "stamp": "You answered",
               "resolves_card": true
             },
             {

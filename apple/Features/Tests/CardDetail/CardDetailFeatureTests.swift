@@ -376,6 +376,26 @@ final class CardDetailFeatureTests: XCTestCase {
         XCTAssertEqual(feed.requests.first?.input.text, "Restarted it")
     }
 
+    /// David wrote «Hazlo tú» under the orchestrator's Decide card: it went out as a new message
+    /// and the card stayed. The reply field of an open question answers that card.
+    @MainActor
+    func testWordsUnderAnOrchestratorDecideAnswerThatCard() async throws {
+        let feed = FeedStub()
+        let store = store(try Fixtures.orchestratorDecide(), feed: feed)
+        let reply = try XCTUnwrap(store.state.subject?.replyAction)
+        XCTAssertEqual(reply.resolvesCard, true)
+        XCTAssertEqual(reply.stamp, "You answered")
+
+        await store.send(.replyChanged("Hazlo tú"))
+        await store.send(.actionTapped(reply))
+        await store.skipReceivedActions()
+
+        let request = try XCTUnwrap(feed.requests.first)
+        XCTAssertTrue(request.actionId.hasPrefix("reply:\(Fixtures.orchestratorDecideID)@"), request.actionId)
+        XCTAssertEqual(request.input.text, "Hazlo tú")
+        XCTAssertTrue(request.resolvesItsCard, "the card leaves the queue on send")
+    }
+
     @MainActor
     func testRequestingClarificationFromTheDetailAsksForTheReasonFirst() async throws {
         let feed = FeedStub()

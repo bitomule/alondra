@@ -33,6 +33,17 @@ private func decodeAction(_ json: String) throws -> AlondraContract.Action {
     try JSONDecoder().decode(AlondraContract.Action.self, from: Data(json.utf8))
 }
 
+/// The reply action of a card the daemon rendered, from its golden.
+private func goldenReply(_ name: String) throws -> AlondraContract.Action {
+    let root = ProcessInfo.processInfo.environment["TEST_SRCDIR"].map(URL.init(fileURLWithPath:))
+    let workspace = ProcessInfo.processInfo.environment["TEST_WORKSPACE"] ?? "_main"
+    let url = try #require(root).appendingPathComponent("\(workspace)/fixtures/views/cards/\(name)")
+    let view = try #require(try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+    let sections = try #require(view["sections"] as? [[String: Any]])
+    let card = try #require((sections.first?["items"] as? [[String: Any]])?.first)
+    return try JSONDecoder().decode(AlondraContract.Action.self, from: JSONSerialization.data(withJSONObject: try #require(card["reply"])))
+}
+
 private func answer() throws -> AlondraContract.Action {
     try decodeAction(#"{"id":"answer:x@1","label":"Answer","style":"primary","presentation":"button","input":{"kind":"text","required":true,"multiline":true},"attachments":false,"enabled":true}"#)
 }
@@ -286,6 +297,25 @@ struct MacAnsweringTests {
         let reply = try decodeAction(#"{"id":"reply:a@1","label":"Reply","style":"secondary","role":"neutral","presentation":"button","input":{"kind":"text","required":true,"multiline":true},"attachments":true,"enabled":true,"resolves_card":true}"#)
         await store.send(.sendReply(reply, text: "Use the compact one"))
         await store.skipReceivedActions()
+        #expect(store.state.optimistic.hides("a"))
+        #expect(store.state.selection == .viewKey("card:b"))
+    }
+
+    /// David wrote «Hazlo tú» under the orchestrator's Decide card and it stayed: the reply went
+    /// out as a new message. The reply the daemon renders for it now answers that card.
+    @Test
+    func wordsUnderAnOrchestratorDecideAnswerItAndTakeItOut() async throws {
+        let sent = LockIsolated<[ActionRequest]>([])
+        let store = try makeStore(waiting: ["a", "b"], selected: "card:a", load: unchangedSidebar)
+        store.dependencies.viewsClient.perform = { request in
+            sent.withValue { $0.append(request) }
+            return try response("applied")
+        }
+        let reply = try goldenReply("card-orchestrator-decide-mac.json")
+        await store.send(.sendReply(reply, text: "Hazlo tú"))
+        await store.skipReceivedActions()
+        #expect(sent.value.first?.actionId.hasPrefix("reply:memory-pause-livelock-ask@") == true)
+        #expect(sent.value.first?.input.text == "Hazlo tú")
         #expect(store.state.optimistic.hides("a"))
         #expect(store.state.selection == .viewKey("card:b"))
     }

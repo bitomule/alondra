@@ -113,6 +113,7 @@ swift_test(
     linkopts = ["-Wl,-export_dynamic"],
     name = "AlondraMacServiceNavigationTests",
     srcs = ["macOS/Tests/MacServiceNavigationTests.swift"],
+    data = ["//fixtures/views:cards"],
     deps = [
         "//apple/Data/Feed:AlondraFeed",
         "//apple/Data/Transport:AlondraTransport",

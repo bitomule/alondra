@@ -177,7 +177,7 @@ e2e-doc-review:
 # e2e-ios-cards the iOS app in a pooled simulator. E2E_CAPTURES=<dir> keeps what each client showed.
 E2E_CARDS = bazelisk build //crates/alondrad //crates/alondra //crates/relay:alondra-relay //tools/sandbox:alondra-sandbox && \
 	python3 tools/e2e_cards.py $(if $(E2E_CAPTURES),--captures $(E2E_CAPTURES)) --client $(1) \
-		$$(bazelisk cquery --output=files //crates/alondrad //crates/alondra //crates/relay:alondra-relay //tools/sandbox:alondra-sandbox 2>/dev/null | grep -v '\.ok$$')
+		$$(bazelisk cquery --output=files '//crates/alondrad + //crates/alondra + //crates/relay:alondra-relay + //tools/sandbox:alondra-sandbox' 2>/dev/null | grep -v '\.ok$$')
 
 e2e-relay-cards:
 	$(call E2E_CARDS,relay)
@@ -207,7 +207,7 @@ e2e-ios-offline:
 	bazelisk build $(E2E_IOS_APP) //crates/alondrad //crates/alondra //crates/relay:alondra-relay //tools/sandbox:alondra-sandbox
 	export E2E_IOS_IPA=$$(bazelisk cquery --output=files $(E2E_IOS_APP) 2>/dev/null | grep '\.ipa$$'); \
 	python3 tools/e2e_ios_offline.py $(if $(E2E_CAPTURES),--captures $(E2E_CAPTURES)) \
-		$$(bazelisk cquery --output=files //crates/alondrad //crates/alondra //crates/relay:alondra-relay //tools/sandbox:alondra-sandbox 2>/dev/null | grep -v '\.ok$$')
+		$$(bazelisk cquery --output=files '//crates/alondrad + //crates/alondra + //crates/relay:alondra-relay + //tools/sandbox:alondra-sandbox' 2>/dev/null | grep -v '\.ok$$')
 
 # MAC=n for that daemon's log, MAC=relay for the relay's.
 e2e-sandbox-logs:

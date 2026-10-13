@@ -873,6 +873,27 @@ final class TriageFeatureTests: XCTestCase {
         XCTAssertTrue(store.state.optimistic.hides(ids.question))
     }
 
+    /// David wrote «Hazlo tú» in the reply field of the orchestrator's Decide card at the front
+    /// of the queue: it answers that card, which leaves at once.
+    @MainActor
+    func testWordsUnderAnOrchestratorDecideAnswerItAndTakeItOut() async throws {
+        let decide = Fixtures.orchestratorDecideID
+        let feed = FeedStub([try Fixtures.home(queue: [decide] + queue), try Fixtures.orchestratorDecide()] + (try queue.map(Fixtures.card)))
+        let store = store(feed)
+        await store.send(.task)
+        await store.skipReceivedActions()
+        XCTAssertEqual(store.state.orderedIDs.first, decide)
+        let reply = try XCTUnwrap(store.state.cards[id: decide]?.replyAction)
+        XCTAssertTrue(reply.id?.hasPrefix("reply:\(decide)@") == true, reply.id ?? "")
+
+        await store.send(.cards(.element(id: decide, action: .replyChanged("Hazlo tú"))))
+        await store.send(.cards(.element(id: decide, action: .replySent(reply))))
+        await store.skipReceivedActions()
+        XCTAssertTrue(store.state.optimistic.hides(decide))
+        XCTAssertEqual(feed.requests.map(\.actionId), [try XCTUnwrap(reply.id)])
+        XCTAssertEqual(feed.requests.first?.input.text, "Hazlo tú")
+    }
+
     /// The card's own view keeps arriving after the person answered it, now settled. Once the
     /// queue no longer listed it, the phone forgot it was answered here and announced
     /// "Already answered" about the answer it had just sent.

@@ -2208,6 +2208,47 @@ fn card_variants_match_goldens() {
     }
 }
 
+/// The orchestrator's Decide card David answered in words on 13 October: its reply field is the
+/// answer to it, so every client takes it out on send.
+fn orchestrator_decide_fixture() -> DomainState {
+    use crate::domain::{CardKind, ContentKind as Content, QuestionOption};
+    let mut state = golden_fixture();
+    let option = |id: &str, label: &str, description: &str| QuestionOption {
+        id: id.into(), label: label.into(), description: Some(description.into()), inputs: vec![],
+    };
+    state.interactions.insert("memory-pause-livelock-ask".into(), Interaction {
+        attachments: vec![], id: "memory-pause-livelock-ask".into(), scope: Scope::Orchestrator { request_id: None },
+        author: Author::Orchestrator { generation: 1 }, recipient: Recipient::User,
+        body: "Who fixes the memory pauses that cut the same build in a loop?".into(), blocking: false, subject: None,
+        payload: InteractionPayload::Question {
+            options: vec![
+                option("mine", "I'll fold it into my change", "No task is created."),
+                option("new_task", "Create a task", "A node measures the loop and changes the pause rule."),
+            ],
+            answer: None,
+        },
+        revision: 1, order: 20, withdrawn: false,
+        card: spec(CardKind::Decide, "Decide who fixes the memory pauses that cut the same build in a loop",
+            "A node found a loop in the memory rule that leaves a task stuck.")
+            .content(Content::Diagnosis, "Resumed, the node relaunches the build; memory turns Tight in 50 s and it is paused again."),
+        clarification: None,
+    });
+    state
+}
+
+#[test]
+fn an_orchestrator_decide_card_matches_its_golden() {
+    let state = orchestrator_decide_fixture();
+    for (client, filename, expected) in [
+        (Client::Ios, "card-orchestrator-decide.json", include_str!("../../../../fixtures/views/cards/card-orchestrator-decide.json")),
+        (Client::Mac, "card-orchestrator-decide-mac.json", include_str!("../../../../fixtures/views/cards/card-orchestrator-decide-mac.json")),
+        (Client::Tui, "card-orchestrator-decide-tui.json", include_str!("../../../../fixtures/views/cards/card-orchestrator-decide-tui.json")),
+    ] {
+        let actual = render(&state, &golden_live(), client, Lang::En, "card:memory-pause-livelock-ask", "2026-09-30T10:00:00Z");
+        assert_golden(filename, &actual, expected);
+    }
+}
+
 /// The beta candidate delivered against the plan its node had approved: every point with what
 /// proves it, the commit linked to the PR's repository.
 fn checklist_delivery_fixture() -> DomainState {
@@ -3291,7 +3332,40 @@ fn every_card_can_be_replied_to_in_text_with_attachments() {
     assert!(information.reply.as_ref().unwrap().id.starts_with("reply:i-2@"), "a task's card replies to its node");
     let view = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::En, "card:i-4", "");
     let Item::Card(orchestrator) = &view.sections[0].items[0] else { panic!("card") };
-    assert!(orchestrator.reply.as_ref().unwrap().id.starts_with("msg:view@"), "the orchestrator's card replies to the orchestrator");
+    let answer = orchestrator.reply.as_ref().unwrap();
+    assert!(answer.id.starts_with("reply:i-4@"), "words under the orchestrator's open question answer it: {}", answer.id);
+    assert!(answer.resolves_card, "the answered question leaves the queue");
+    assert_eq!(answer.stamp.as_deref(), Some("You answered"));
+}
+
+#[test]
+fn words_under_an_orchestrator_decide_answer_it_on_every_client() {
+    use crate::domain::{CardKind, QuestionOption};
+    let mut state = fixture();
+    let option = |id: &str, label: &str| QuestionOption { id: id.into(), label: label.into(), description: None, inputs: vec![] };
+    let decide = state.interactions.get_mut(&"i-4".into()).unwrap();
+    decide.scope = Scope::Orchestrator { request_id: Some("r-1".into()) };
+    decide.payload = InteractionPayload::Question { options: vec![option("mine", "I'll do it"), option("new_task", "Create a task")], answer: None };
+    decide.card = spec(CardKind::Decide, "Decide who fixes the memory pauses", "A node found a loop.");
+    for client in [Client::Ios, Client::Mac, Client::Tui] {
+        let view = render(&state, &LiveSnapshot::default(), client, Lang::Es, "card:i-4", "");
+        let Item::Card(card) = &view.sections[0].items[0] else { panic!("card") };
+        let reply = card.reply.as_ref().expect("the decide card has a reply field");
+        assert!(reply.id.starts_with("reply:i-4@"), "{client:?}: {}", reply.id);
+        assert!(reply.resolves_card, "{client:?}");
+        assert_eq!(reply.stamp.as_deref(), Some("Respondiste"), "{client:?}");
+    }
+    state.holds.insert("i-4".into(), crate::domain::Hold::Permission);
+    let view = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::En, "card:i-4", "");
+    let Item::Card(held) = &view.sections[0].items[0] else { panic!("card") };
+    assert!(held.reply.as_ref().unwrap().id.starts_with("msg:view@"), "a held question is not answered by a message");
+    state.holds.clear();
+    let InteractionPayload::Question { answer, .. } = &mut state.interactions.get_mut(&"i-4".into()).unwrap().payload else { unreachable!() };
+    *answer = Some(crate::domain::Answer { option_id: "mine".into(), inputs: Default::default(), attachments: vec![], responder: "u".into(), at_revision: Default::default() });
+    let view = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::En, "card:i-4", "");
+    if let Some(Item::Card(answered)) = view.sections.first().and_then(|section| section.items.first()) {
+        assert!(answered.reply.as_ref().is_none_or(|reply| reply.id.starts_with("msg:view@")), "an answered question is not answered twice");
+    }
 }
 
 #[test]

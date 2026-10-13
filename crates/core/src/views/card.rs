@@ -921,7 +921,7 @@ fn answer_actions(
             let mut action = button(id.to_string(), t!(lang, "Send my answer", "Enviar mi respuesta"), Role::Advance);
             action.input = text_input(t!(lang, "Your answer", "Tu respuesta"), true);
             action.attachments = true;
-            action.stamp = Some(t!(lang, "Answered", "Respondida").into());
+            action.stamp = Some(t!(lang, "You answered", "Respondiste").into());
             buttons.push(with_availability(action, available, lang));
         }
     } else {
@@ -975,7 +975,7 @@ fn answer_actions(
                 let mut action = button(id.to_string(), t!(lang, "Write my own answer", "Escribir mi respuesta"), Role::Neutral);
                 action.input = text_input(t!(lang, "Answer in your own words…", "Responde con tus palabras…"), true);
                 action.attachments = true;
-                action.stamp = Some(t!(lang, "Answered", "Respondida").into());
+                action.stamp = Some(t!(lang, "You answered", "Respondiste").into());
                 more.push(with_availability(action, available, lang));
             }
         }
@@ -1256,15 +1256,19 @@ fn local_action(label: &str, key: &str, local: LocalLink) -> Action {
 }
 
 /// Text to the node (or the orchestrator) the card came from; every card has it but a task's start
-/// problem, which no node is behind, and a machine card, which Alondra raises itself.
+/// problem, which no node is behind, and a machine card, which Alondra raises itself. Under an
+/// open question it is the answer to that question, the orchestrator's included.
 fn reply_action(item: &InboxItem, interaction: Option<&Interaction>, context: &RenderContext<'_>) -> Option<Action> {
     let lang = context.lang;
     let interaction = interaction.filter(|interaction| start_problem_of(interaction).is_none() && !is_machine_card(interaction))?;
+    let answers = answered_by_reply(interaction, context.domain);
     let (id, placeholder) = if matches!(interaction.scope, Scope::Task { .. }) {
         (
             action_id(Verb::Reply, &interaction.id.0, interaction.revision, None)?,
             tf!(lang, "Reply to {node}…", "Responder a {node}…", node = node_name(item, context)),
         )
+    } else if answers && matches!(interaction.author, Author::Orchestrator { .. }) {
+        (action_id(Verb::Reply, &interaction.id.0, interaction.revision, None)?, t!(lang, "Reply…", "Responder…").into())
     } else {
         (
             action_id(Verb::Msg, "view", context.domain.revision, None)?,
@@ -1274,10 +1278,17 @@ fn reply_action(item: &InboxItem, interaction: Option<&Interaction>, context: &R
     let mut action = button(id.to_string(), t!(lang, "Reply", "Responder"), Role::Neutral);
     action.input = text_input(&placeholder, true);
     action.attachments = true;
-    action.stamp = Some(t!(lang, "Sent", "Enviado").into());
+    action.stamp = Some(if answers { t!(lang, "You answered", "Respondiste") } else { t!(lang, "Sent", "Enviado") }.into());
     action.key = (context.client != Client::Ios).then(|| "r".into());
     action.enabled = !interaction.withdrawn;
     Some(action)
+}
+
+/// Words written under an open question to the user are its answer, whoever asked it.
+fn answered_by_reply(interaction: &Interaction, domain: &DomainState) -> bool {
+    matches!(interaction.recipient, Recipient::User)
+        && matches!(interaction.payload, InteractionPayload::Question { answer: None, .. } | InteractionPayload::ActionRequest { answer: None, .. })
+        && !domain.holds.contains_key(&interaction.id)
 }
 
 // ---------------------------------------------------------------------------------------------

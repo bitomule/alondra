@@ -1191,6 +1191,8 @@ fn map_merge(
     }, stamp.to_owned()))
 }
 
+const ANSWER_STAMP_LIMIT: usize = 60;
+
 fn map_action(
     state: &alondra_core::domain::DomainState,
     action: &ActionId,
@@ -1199,6 +1201,7 @@ fn map_action(
     lang: Lang,
 ) -> Option<(Command, String)> {
     let stamp = |en: &str, es: &str| if lang == Lang::Es { es } else { en }.to_owned();
+    let answered_with = |text: &str| format!("{} · {}", stamp("You answered", "Respondiste"), alondra_core::domain::clip(text, ANSWER_STAMP_LIMIT));
     match action.verb {
         Verb::Ans => {
             let interaction = state.interactions.get(&InteractionId(action.subject.clone()))?;
@@ -1223,7 +1226,7 @@ fn map_action(
             }, match option {
                 Some(option) => format!("{} · {}", stamp("Answered", "Respondida"),
                     alondra_core::views::answer_label(state, interaction, option, lang)),
-                None => stamp("Answered", "Respondida"),
+                None => answered_with(request.input.text.as_deref().unwrap_or_default()),
             }))
         }
         Verb::Ctx => {
@@ -1243,7 +1246,7 @@ fn map_action(
                 if text.is_empty() { return None; }
                 let inputs = std::collections::BTreeMap::from([("text".to_owned(), alondra_core::domain::InputValue::Text(text.into()))]);
                 return Some((Command::AnswerQuestion { interaction_id: interaction.id.clone(), option_id: String::new(),
-                    inputs, attachments: attachments.to_vec() }, stamp("Answered", "Respondida")));
+                    inputs, attachments: attachments.to_vec() }, answered_with(text)));
             }
             let interaction = current_delivery(state, interaction);
             let InteractionPayload::Delivery { targets, .. } = &interaction.payload else { return None; };
@@ -3138,6 +3141,47 @@ mod tests {
         };
         assert_eq!(answer.inputs["text"], alondra_core::domain::InputValue::Text("Neither: keep the old one".into()));
         assert!(!state.projection().inbox.iter().any(|item| item.id == "interaction:question" && item.pending));
+    }
+
+    /// David wrote «Hazlo tú» under the orchestrator's Decide card: it is the answer to that card,
+    /// never a loose request.
+    #[tokio::test]
+    async fn words_under_a_decide_card_answer_it_and_reach_whoever_asked_with_its_id() {
+        use alondra_core::domain::{CardKind, CardSpec, Recipient, Scope, QuestionOption};
+        let option = |id: &str| QuestionOption { id: id.into(), label: id.into(), description: None, inputs: vec![] };
+        for (asker, scope, recipient_kind) in [
+            (Actor::Orchestrator { generation: 0 }, Scope::Orchestrator { request_id: None }, "orchestrator"),
+            (Actor::Agent { agent_id: "agent-a".into() }, Scope::Task { task_id: "task".into() }, "agent"),
+        ] {
+            let (home, domain, client) = action_home();
+            presented_pr(&domain);
+            apply_seed_command(&domain, asker, "ask", Command::AskQuestion {
+                attachments: vec![], interaction_id: "decide".into(), scope, recipient: Recipient::User,
+                body: "Who fixes the memory pauses?".into(), blocking: false, options: vec![option("mine"), option("new_task")],
+                card: CardSpec::derived(CardKind::Decide, "Decide who fixes the memory pauses"),
+            });
+            let requests = domain.state().unwrap().requests.len();
+            let revision = domain.state().unwrap().interactions[&"decide".into()].revision;
+            let reply = ActionId::new(Verb::Reply, "decide", revision, None).unwrap();
+            assert!(alondra_core::views::resolves_card(&domain.state().unwrap(), &reply), "{recipient_kind}: the card leaves the queue");
+            let applied = act(&home, &domain, &client, FIRST, reply, None, Some("Hazlo tú")).await;
+            assert_eq!(applied["outcome"], "applied", "{recipient_kind}: {applied}");
+            assert_eq!(applied["stamp"], "Respondiste · Hazlo tú", "{recipient_kind}: {applied}");
+            let state = domain.state().unwrap();
+            let InteractionPayload::Question { answer: Some(answer), .. } = &state.interactions[&"decide".into()].payload else {
+                panic!("{recipient_kind}: the words answered the card: {applied}")
+            };
+            assert_eq!(answer.inputs["text"], alondra_core::domain::InputValue::Text("Hazlo tú".into()));
+            assert_eq!(state.requests.len(), requests, "{recipient_kind}: no loose request");
+            let message = domain.store.lock().unwrap().pending_messages().unwrap().into_iter()
+                .find(|message| message.interaction_id.as_deref() == Some("decide") && message.recipient_kind == recipient_kind)
+                .unwrap_or_else(|| panic!("{recipient_kind} is told the card was answered"));
+            let told = crate::domain_transport::render(&state, &message);
+            assert!(told.ends_with("Hazlo tú"), "{recipient_kind}: {told}");
+            if recipient_kind == "orchestrator" {
+                assert!(told.contains("(card decide)"), "the orchestrator knows which card: {told}");
+            }
+        }
     }
 
     #[tokio::test]

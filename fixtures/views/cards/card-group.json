@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:g-q2",
   "client": "ios",
-  "version": "vddca2f3872417299",
+  "version": "vd0d1b50438faec3c",
   "cursor": "cursor-1",
   "title": "Ship it today?",
   "status": {
@@ -70,7 +70,7 @@
             },
             "attachments": true,
             "enabled": true,
-            "stamp": "Sent",
+            "stamp": "You answered",
             "resolves_card": true
           },
           "more": [
@@ -88,7 +88,7 @@
               },
               "attachments": true,
               "enabled": true,
-              "stamp": "Answered",
+              "stamp": "You answered",
               "resolves_card": true
             },
             {

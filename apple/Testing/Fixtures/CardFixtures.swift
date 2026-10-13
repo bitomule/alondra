@@ -65,6 +65,13 @@ extension Fixtures {
         }
     }
 
+    static let orchestratorDecideID = "memory-pause-livelock-ask"
+
+    /// The orchestrator's Decide card as the daemon renders it: its reply field answers it.
+    static func orchestratorDecide() throws -> ViewDocument {
+        try document("card-orchestrator-decide") { _ in }
+    }
+
     /// A notice from the orchestrator, outside any task: its reply goes to the orchestrator.
     static func orchestratorNotice() throws -> ViewDocument {
         try card("card-information") { item in

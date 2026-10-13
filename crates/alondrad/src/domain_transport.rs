@@ -800,8 +800,8 @@ pub(crate) fn render(state: &DomainState, message: &OutboxMessage) -> String {
             _ => None,
         };
         text = match request_title {
-            Some(title) => format!("About \"{question}\" (request \"{}\"): {text}", title.trim()),
-            None => format!("About \"{question}\": {text}"),
+            Some(title) => format!("About \"{question}\" (card {}, request \"{}\"): {text}", interaction.id.0, title.trim()),
+            None => format!("About \"{question}\" (card {}): {text}", interaction.id.0),
         };
     } else if let Author::Agent { agent_id } = &interaction.author {
         let other_open = state.interactions.values().any(|other| {
@@ -986,7 +986,7 @@ mod tests {
         let message = domain.store.lock().unwrap().pending_messages().unwrap().into_iter()
             .find(|message| message.interaction_id.as_deref() == Some("orchestrator-question")
                 && message.recipient_kind == "orchestrator").unwrap();
-        assert_eq!(render(&state, &message), "About \"Ship this?\" (request \"Work\"): Yes.");
+        assert_eq!(render(&state, &message), "About \"Ship this?\" (card orchestrator-question, request \"Work\"): Yes.");
     }
 
     #[test]
@@ -1070,7 +1070,7 @@ mod tests {
         free_text_answer(&domain, user_actor(), "q", "Sí, la veo pendiente");
         let rendered = rendered_for(&domain, "q", "orchestrator");
         assert_eq!(rendered,
-            "About \"Tu mensaje sobre el nodo de Parcel llegó cortado. ¿Qué te muestra la app para la…\" (request \"Work\"): Sí, la veo pendiente");
+            "About \"Tu mensaje sobre el nodo de Parcel llegó cortado. ¿Qué te muestra la app para la…\" (card q, request \"Work\"): Sí, la veo pendiente");
         assert!(rendered.len() < question.len() / 4, "{} of {}", rendered.len(), question.len());
     }
 
@@ -1135,7 +1135,7 @@ mod tests {
     }
 
     #[test]
-    fn a_free_text_answer_to_the_orchestrator_names_the_question_and_request() {
+    fn a_free_text_answer_to_the_orchestrator_names_the_question_its_card_and_request() {
         let fixture = Fixture::new();
         let domain = fixture.open();
         node_with_task(&domain);
@@ -1143,7 +1143,7 @@ mod tests {
             Scope::Orchestrator { request_id: Some("request".into()) }, Recipient::User, "Which name?");
         free_text_answer(&domain, user_actor(), "q", "Call it Atlas");
         assert_eq!(rendered_for(&domain, "q", "orchestrator"),
-            "About \"Which name?\" (request \"Work\"): Call it Atlas");
+            "About \"Which name?\" (card q, request \"Work\"): Call it Atlas");
     }
 
     #[test]

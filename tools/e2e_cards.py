@@ -11,6 +11,8 @@ kind in front of the user:
   group      four questions asked together (group-q1 … group-q4)
   permission a tool permission the node waits on (the real `alondra hook`)
   delivery   a final result to accept
+  orchestrator a Decide card the orchestrator asks, answered in its reply field: the words answer
+             that card and reach the orchestrator with its id, never as a new request
 
 Run it directly to keep a seeded sandbox up for a person or a simulator:
   tools/e2e_cards.py <alondrad> <alondra> <alondra-relay> <alondra-sandbox>
@@ -44,16 +46,31 @@ CARDS = {
     "group-q4": "When does the beta close?",
     "permission": "git push",
     "delivery": "Review the migration report",
+    "orchestrator": "Decide who fixes the memory pauses",
 }
+
+ORCHESTRATOR_ANSWER = "Do it yourself"
 
 
 class Sandbox:
     def __init__(self, binaries, port):
         named = {os.path.basename(p): os.path.abspath(p) for p in binaries if not p.endswith(".ok")}
         daemon, cli, relay, tool = (named[name] for name in ("alondrad", "alondra", "alondra-relay", "alondra-sandbox"))
-        self.scratch = tempfile.mkdtemp(prefix="alondra-cards-")
+        # The daemon opens its action journal without following a symlink, and /var is one on macOS;
+        # its sockets also need a short path, which /private/var/folders/… is not.
+        self.scratch = tempfile.mkdtemp(prefix="alondra-cards-", dir="/private/tmp")
         self.dir = os.path.join(self.scratch, "sandbox")
-        env = dict(os.environ, SANDBOX_DIR=self.dir, SANDBOX_PORT=str(port), MACS="1")
+        fake = os.path.join(self.scratch, "fake-bin")
+        os.makedirs(fake)
+        os.symlink(os.path.join(REPO, "tools/e2e_fake_orchestrator.py"), os.path.join(fake, "claude"))
+        self.orchestrator_log = os.path.join(self.scratch, "orchestrator.jsonl")
+        card = {"interaction_id": "orchestrator-decide", "scope": {"kind": "orchestrator", "request_id": None},
+                "recipient": {"kind": "user"}, "need": CARDS["orchestrator"], "why": "A node found a loop in the memory rule.",
+                "blocking": False, "options": [{"id": "mine", "label": "I'll do it", "description": "No task is created", "inputs": []},
+                                               {"id": "new_task", "label": "Create a task", "description": "A node fixes it", "inputs": []}]}
+        env = dict(os.environ, SANDBOX_DIR=self.dir, SANDBOX_PORT=str(port), MACS="1", PATH=f"{fake}:{os.environ['PATH']}", SANDBOX_WAKE="1",
+                   E2E_ORCHESTRATOR_LOG=self.orchestrator_log, E2E_ORCHESTRATOR_CARD=json.dumps(card),
+                   E2E_ALONDRA=os.path.join(self.dir, "bin/alondra"))
         try:
             subprocess.run([os.path.join(REPO, "tools/e2e-sandbox.sh"), daemon, cli, relay, tool], env=env, check=True,
                            stdout=subprocess.DEVNULL)
@@ -192,6 +209,36 @@ def seed(asker, deliverer):
     asker.permission(CARDS["permission"])
 
 
+def seed_orchestrator(sandbox, node):
+    """A node's question to the orchestrator wakes it, and it asks the user its Decide card."""
+    node.call(("ask", {"interaction_id": "to-orchestrator", "scope": node.scope(), "recipient": {"kind": "orchestrator"},
+                       "need": "Tell me who fixes the memory pauses", "why": "My build is cut in a loop.", "blocking": False,
+                       "options": [{"id": "wait", "label": "Wait", "description": "Keep waiting", "inputs": []},
+                                   {"id": "go", "label": "Go on", "description": "Go on without it", "inputs": []}]}))
+    deadline = time.time() + TIMEOUT
+    while not os.path.exists(sandbox.orchestrator_log + ".asked"):
+        if time.time() > deadline:
+            log = "".join(open(os.path.join(sandbox.home, "alondrad.log")).readlines()[-40:])
+            raise AssertionError(f"the orchestrator never asked its card:\n{log}")
+        time.sleep(0.5)
+
+
+def check_orchestrator_answered(sandbox):
+    """The words written under the orchestrator's card reached it as the answer to that card."""
+    deadline = time.time() + TIMEOUT
+    while True:
+        prompts = [json.loads(line)["prompt"] for line in open(sandbox.orchestrator_log)]
+        if any("(card orchestrator-decide" in prompt and ORCHESTRATOR_ANSWER in prompt for prompt in prompts):
+            break
+        assert time.time() < deadline, f"the orchestrator was never told the answer to its card: {prompts}"
+        time.sleep(0.5)
+    loose = subprocess.run(["sqlite3", "-readonly", os.path.join(sandbox.home, "domain.db"),
+                            f"select count(*) from requests where body = '{ORCHESTRATOR_ANSWER}'"],
+                           capture_output=True, text=True, check=True).stdout.strip()
+    assert loose == "0", f"the answer also became {loose} new request(s)"
+    print("ok: the orchestrator got the answer to its card, with its id, and no new request", file=sys.stderr, flush=True)
+
+
 ANSWERS = {
     "option": ("ans:", "stable", None),
     "text": ("reply:", None, "Faster sync and a new settings screen"),
@@ -202,6 +249,7 @@ ANSWERS = {
     "group-q4": ("ans:", "a", None),
     "permission": ("ans:", "allow", None),
     "delivery": ("accept:", None, None),
+    "orchestrator": ("reply:", None, ORCHESTRATOR_ANSWER),
 }
 
 
@@ -398,6 +446,7 @@ def main():
     try:
         nodes = [Node(sandbox), Node(sandbox)]
         seed(*nodes)
+        seed_orchestrator(sandbox, nodes[1])
         if args.captures:
             os.makedirs(args.captures, exist_ok=True)
         if args.client in ("relay", "direct"):
@@ -412,6 +461,8 @@ def main():
             print("seeded; Ctrl+C stops the sandbox", file=sys.stderr, flush=True)
             while True:
                 time.sleep(3600)
+        if args.client != "hold":
+            check_orchestrator_answered(sandbox)
         print(f"e2e cards ({args.client}): every card left at once once answered and none came back.")
     except KeyboardInterrupt:
         pass

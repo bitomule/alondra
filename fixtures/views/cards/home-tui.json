@@ -4,7 +4,7 @@
   "view": "home",
   "key": "home",
   "client": "tui",
-  "version": "ve0553d0714c1fa19",
+  "version": "v018dc0f861cc7ed9",
   "cursor": "cursor-1",
   "status": {
     "version": "v8f627439edfdda19",
@@ -270,7 +270,7 @@
             },
             "attachments": true,
             "enabled": true,
-            "stamp": "Sent",
+            "stamp": "You answered",
             "key": "r",
             "resolves_card": true
           },
@@ -289,7 +289,7 @@
               },
               "attachments": true,
               "enabled": true,
-              "stamp": "Answered",
+              "stamp": "You answered",
               "key": "3",
               "resolves_card": true
             },

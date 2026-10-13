@@ -4,7 +4,8 @@
 # and Mac service keys, plus a loopback relay and token issuer they and the synthetic phone use.
 # Each Mac also listens for direct connections on PORT+20+n (loopback; SANDBOX_LAN=1 opens it to
 # the LAN to try a real phone) and advertises itself on Bonjour as _alondra-sandbox._tcp.
-# Sandbox mode: test/ nodes allowed, wake off. Stop everything with tools/e2e-sandbox-stop.sh.
+# Sandbox mode: test/ nodes allowed, wake off (SANDBOX_WAKE=1 turns it on, for a fake claude on PATH).
+# Stop everything with tools/e2e-sandbox-stop.sh.
 # NEW_MAC=1 adds one more Mac that nothing has set up, for `alondra`'s setup wizard: its daemon
 # starts only when the wizard installs the service, through scripts that stand in for launchd
 # and the relay account.
@@ -109,7 +110,7 @@ while [ "$i" -le "$macs" ]; do
 	printf 'port = %s\n' "$port" >"$home/config.toml"
 	printf '{"enabledPlugins": {"alondra@alondra": false, "alondra-orchestrator@alondra": false}, "env": {"ALONDRA_LAUNCHED": "1"}}\n' >"$home/settings.json"
 	printf 'export ALONDRA_HOME="%s"\nexport ALONDRA_PORT="%s"\n' "$home" "$port" >"$home/env"
-	ALONDRA_HOME="$home" ALONDRA_PORT="$port" ALONDRA_SANDBOX=1 ALONDRA_WAKE=0 ALONDRA_PLUGIN_SOURCE="$repo/plugin" \
+	ALONDRA_HOME="$home" ALONDRA_PORT="$port" ALONDRA_SANDBOX=1 ALONDRA_WAKE="${SANDBOX_WAKE:-0}" ALONDRA_PLUGIN_SOURCE="$repo/plugin" \
 		nohup "$dir/bin/alondrad" >"$home/alondrad.log" 2>&1 &
 	echo $! >"$home/alondrad.pid"
 	wait_until "Mac $i's alondrad" "curl -sf http://127.0.0.1:$port/daemon" "$home/alondrad.log"

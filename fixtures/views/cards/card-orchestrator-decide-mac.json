@@ -1,0 +1,231 @@
+{
+  "protocol": 1,
+  "data_epoch": "test-epoch",
+  "view": "card",
+  "key": "card:memory-pause-livelock-ask",
+  "client": "mac",
+  "version": "vf59265730d54abb5",
+  "cursor": "cursor-1",
+  "title": "Decide who fixes the memory pauses that cut the same build in a loop",
+  "status": {
+    "version": "v7215d8069318fd96",
+    "summary": "3 questions · 3 to read · 0 nodes working",
+    "badge": 6,
+    "counts": [
+      {
+        "id": "inbox",
+        "label": "Inbox",
+        "value": 6
+      },
+      {
+        "id": "tasks",
+        "label": "Tasks",
+        "value": 1
+      },
+      {
+        "id": "agents",
+        "label": "Fleet",
+        "value": 0
+      },
+      {
+        "id": "working",
+        "label": "working",
+        "value": 0
+      },
+      {
+        "id": "waiting",
+        "label": "waiting",
+        "value": 1
+      }
+    ],
+    "gauges": [
+      {
+        "id": "memory",
+        "label": "Memory",
+        "value": 0.38,
+        "text": "6.1 GB of 16 GB",
+        "level": "calm"
+      },
+      {
+        "id": "disk",
+        "label": "Disk available",
+        "value": 0.72,
+        "text": "120 GB",
+        "level": "calm"
+      }
+    ],
+    "orchestrator": {
+      "text": "idle",
+      "tone": "neutral"
+    }
+  },
+  "sections": [
+    {
+      "id": "card",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "card",
+          "id": "memory-pause-livelock-ask",
+          "kind": "decide",
+          "need": "Decide who fixes the memory pauses that cut the same build in a loop",
+          "why": "A node found a loop in the memory rule that leaves a task stuck.",
+          "meta": "Alondra",
+          "content_row": {
+            "kind": "diagnosis",
+            "icon": "warning",
+            "label": "Diagnosis",
+            "summary": "Resumed, the node relaunches the build; memory turns Tight…"
+          },
+          "reply": {
+            "id": "reply:memory-pause-livelock-ask@1",
+            "label": "Reply",
+            "style": "secondary",
+            "role": "neutral",
+            "presentation": "button",
+            "input": {
+              "kind": "text",
+              "placeholder": "Reply…",
+              "required": true,
+              "multiline": true
+            },
+            "attachments": true,
+            "enabled": true,
+            "stamp": "You answered",
+            "key": "r",
+            "resolves_card": true
+          },
+          "more": [
+            {
+              "id": "ans:memory-pause-livelock-ask@1",
+              "label": "Write my own answer",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "text",
+                "placeholder": "Answer in your own words…",
+                "required": true,
+                "multiline": true
+              },
+              "attachments": true,
+              "enabled": true,
+              "stamp": "You answered",
+              "key": "3",
+              "resolves_card": true
+            },
+            {
+              "id": "clarify:memory-pause-livelock-ask@1",
+              "label": "Request clarification",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "options",
+              "options": [
+                {
+                  "id": "unclear",
+                  "label": "It is unclear",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                },
+                {
+                  "id": "contradicts",
+                  "label": "It contradicts something",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                },
+                {
+                  "id": "missing_context",
+                  "label": "It lacks context",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                }
+              ],
+              "input": {
+                "kind": "text",
+                "placeholder": "What should it clarify?",
+                "required": false,
+                "multiline": true
+              },
+              "attachments": false,
+              "enabled": true,
+              "stamp": "Clarification requested",
+              "key": "c",
+              "resolves_card": false
+            }
+          ],
+          "link": {
+            "kind": "view",
+            "key": "card:memory-pause-livelock-ask"
+          },
+          "icon": "question",
+          "eyebrow": {
+            "text": "Decide",
+            "tone": "accent"
+          },
+          "title": "Decide who fixes the memory pauses that cut the same build in a loop",
+          "subtitle": "A node found a loop in the memory rule that leaves a task stuck.",
+          "state": {
+            "text": "Doesn't block",
+            "tone": "neutral"
+          },
+          "detail": "included",
+          "actions": [
+            {
+              "id": "ans:memory-pause-livelock-ask@1",
+              "label": "I'll fold it into my change",
+              "style": "secondary",
+              "role": "neutral",
+              "option_id": "mine",
+              "description": "No task is created.",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "stamp": "Answered",
+              "key": "1",
+              "resolves_card": true
+            },
+            {
+              "id": "ans:memory-pause-livelock-ask@1",
+              "label": "Create a task",
+              "style": "secondary",
+              "role": "neutral",
+              "option_id": "new_task",
+              "description": "A node measures the loop and changes the pause rule.",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "stamp": "Answered",
+              "key": "2",
+              "resolves_card": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "content",
+      "title": "Content",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "markdown",
+          "text": "Resumed, the node relaunches the build; memory turns Tight in 50 s and it is paused again.",
+          "truncated": false,
+          "commentable": false
+        }
+      ]
+    }
+  ]
+}
