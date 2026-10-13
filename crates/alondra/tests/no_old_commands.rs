@@ -13,6 +13,7 @@ const OLD: &[&str] = &[
 const SCANNED: &[&str] = &[
     "crates", "plugin", "plugin-orchestrator", "apple", "web/app", "web/e2e", "tools", "deploy",
     "Makefile", "README.md", "INSTALL.md", "AGENTS.md", "docs/direct.md",
+    "docs/building-from-source.md",
 ];
 
 const SKIPPED_DIRS: &[&str] = &["node_modules", "target", "build", ".build", "DerivedData", "dist"];

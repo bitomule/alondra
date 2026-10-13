@@ -17,7 +17,7 @@ tools for the orchestrator to act.
 
 ## Trying it
 
-On a new Mac, follow [`INSTALL.md`](INSTALL.md) (written for an agent to execute).
+On a new Mac, follow [`INSTALL.md`](INSTALL.md) (two lines with Homebrew). To build from the repo, see [`docs/building-from-source.md`](docs/building-from-source.md).
 
 ```bash
 make install        # builds with Bazel and installs alondra and alondrad in ~/.local/bin
