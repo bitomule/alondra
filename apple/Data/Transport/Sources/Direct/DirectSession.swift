@@ -117,7 +117,16 @@ public actor DirectSession: OperationAPI {
         return result
     }
 
-    private func performPrepared(_ request: APIRequest) async throws -> APIResponse {
+    /// One short try at a read, for a caller with another carrier to fall back on: a slow or
+    /// silent Mac hands the read over in seconds instead of after four full timeouts.
+    public func quickRead(_ request: APIRequest) async throws -> APIResponse {
+        guard request.method == "GET", !request.isActionJournalControl else { return try await perform(request) }
+        return try await performPrepared(request, quick: true)
+    }
+
+    static let quickReadSlack = 8
+
+    private func performPrepared(_ request: APIRequest, quick: Bool = false) async throws -> APIResponse {
         try MutationScope.check()
         guard active else { throw CancellationError() }
         let wait = EnvelopeRequestPolicy.viewsChangeWait(request.path)
@@ -125,7 +134,7 @@ public actor DirectSession: OperationAPI {
               wait != nil || EnvelopeRequestPolicy.validViewsPath(method: request.method, path: request.path,
                                                                   hasBody: request.body != nil)
         else { throw RelaySessionError.invalidRequest }
-        let timeout = Duration.seconds((wait ?? 0) + 20)
+        let timeout = Duration.seconds((wait ?? 0) + (quick ? Self.quickReadSlack : 20))
         if request.isActionJournalControl {
             let requestID = "control-" + UUID().uuidString
             let body = try seal(requestID: requestID, method: request.method, path: request.path, body: request.body)
@@ -134,7 +143,7 @@ public actor DirectSession: OperationAPI {
         if request.method == "GET" {
             let requestID = "read-" + UUID().uuidString
             let body = try seal(requestID: requestID, method: "GET", path: request.path, body: nil)
-            return try await deliver(body, requestID: requestID, mutation: false, timeout: timeout)
+            return try await deliver(body, requestID: requestID, mutation: false, timeout: timeout, attempts: quick ? 1 : 4)
         }
         guard !request.operationID.hasPrefix("read-") else { throw RelaySessionError.invalidRequest }
         let tag = try codec.semanticTag(method: request.method, path: request.path, body: request.body)
@@ -210,25 +219,31 @@ public actor DirectSession: OperationAPI {
         return json["error"] as? String == "device_revoked"
     }
 
-    /// Up to four tries, re-picking the route after a network failure or an impostor. A mutation that may have
+    /// Up to `attempts` tries, re-picking the route after a network failure or an impostor. A mutation that may have
     /// reached the Mac without an answer is `.unknown`, never silently dropped.
-    private func deliver(_ body: Data, requestID: String, mutation: Bool, timeout: Duration, persistResult: Bool = false) async throws -> APIResponse {
+    private func deliver(_ body: Data, requestID: String, mutation: Bool, timeout: Duration, attempts: Int = 4,
+                         persistResult: Bool = false) async throws -> APIResponse {
         var mayHaveArrived = false
-        for attempt in 0..<4 {
+        var routeError = DirectRouteError.unreachable
+        for attempt in 0..<attempts {
             try MutationScope.check()
             guard active else { throw CancellationError() }
             if attempt > 0 { try await pause(.milliseconds(500 * attempt)) }
             try MutationScope.check()
             let endpoint: DirectEndpoint
             do { endpoint = try await router.endpoint() }
-            catch is DirectRouteError where mayHaveArrived { break }
+            catch let error as DirectRouteError where mayHaveArrived {
+                routeError = error
+                break
+            }
             try MutationScope.check()
             let context = await router.requestContext()
             try MutationScope.check()
             let reply: HTTPReply
             do { reply = try await http.post(endpoint, path: "/direct/request", body: body, timeout: timeout) }
             catch let error as URLError where error.code == .cancelled { throw CancellationError() }
-            catch is URLError {
+            catch let error as URLError {
+                if error.isLocalNetworkDenied { routeError = .localNetworkDenied }
                 mayHaveArrived = true
                 await router.invalidate()
                 continue
@@ -270,6 +285,6 @@ public actor DirectSession: OperationAPI {
             }
         }
         if mutation && mayHaveArrived { return .unknown }
-        throw DirectRouteError.unreachable
+        throw routeError
     }
 }

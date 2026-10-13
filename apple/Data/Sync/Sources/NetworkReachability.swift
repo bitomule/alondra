@@ -11,11 +11,18 @@ public final class NetworkReachability: @unchecked Sendable {
     private var online = true
     private var network = ""
     private var listeners: [UUID: AsyncStream<Bool>.Continuation] = [:]
+    private var hintListeners: [UUID: AsyncStream<Void>.Continuation] = [:]
 
     private init() {
         monitor.pathUpdateHandler = { [weak self] path in
-            self?.lock.withLock { self?.network = Self.signature(of: path) }
-            self?.update(path.status == .satisfied)
+            guard let self else { return }
+            let signature = Self.signature(of: path)
+            let moved = lock.withLock {
+                defer { network = signature }
+                return online && path.status == .satisfied && !network.isEmpty && network != signature
+            }
+            update(path.status == .satisfied)
+            if moved { hint() }
         }
         monitor.start(queue: DispatchQueue(label: "alondra.network-reachability"))
     }
@@ -43,6 +50,21 @@ public final class NetworkReachability: @unchecked Sendable {
         continuation.yield(current)
         continuation.onTermination = { [weak self] _ in self?.lock.withLock { _ = self?.listeners.removeValue(forKey: id) } }
         return stream
+    }
+
+    /// Yields when this device moves to another network while online, and on every `hint()`:
+    /// signs that a connection that failed may work now.
+    public func retryHints() -> AsyncStream<Void> {
+        let id = UUID()
+        let (stream, continuation) = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        lock.withLock { hintListeners[id] = continuation }
+        continuation.onTermination = { [weak self] _ in self?.lock.withLock { _ = self?.hintListeners.removeValue(forKey: id) } }
+        return stream
+    }
+
+    /// Something reached this device from outside, such as a push.
+    public func hint() {
+        for target in lock.withLock({ Array(hintListeners.values) }) { target.yield() }
     }
 
     private func update(_ satisfied: Bool) {

@@ -8,6 +8,18 @@ public enum DirectRouteError: Error, Equatable, Sendable {
     /// Like `unreachable`, and an address already proved on this network now answers as the same
     /// Mac ID with other keys. Only a hint: nothing the app trusts changes until the person pairs again.
     case identityChanged
+    /// Like `unreachable`, and the system refused a local address because Local Network access is
+    /// off for this app.
+    case localNetworkDenied
+}
+
+extension URLError {
+    /// iOS refuses a local address with -1009 and a path that says why when Local Network access
+    /// is off; the code alone reads as "no internet".
+    var isLocalNetworkDenied: Bool {
+        code == .notConnectedToInternet
+            && userInfo["_NSURLErrorNWPathKey"].map { String(describing: $0).localizedCaseInsensitiveContains("local network prohibited") } == true
+    }
 }
 
 public enum DirectSessionError: Error, Equatable, Sendable {
@@ -94,6 +106,7 @@ public actor DirectRouter {
     private var generation: UInt64 = 0
     private var validationGeneration: UInt64 = 0
     private var identityChangedOn: String?
+    private var localNetworkDeniedOn: String?
 
     /// `saved` are addresses a sealed answer proved before, on some network; `network` names the
     /// current one.
@@ -249,18 +262,25 @@ public actor DirectRouter {
         let candidates = candidates.filter { rejected[$0] == nil }
         probePreference = candidates.first?.rank
         let http = http
-        let selected = await withTaskGroup(of: (Int, DirectMacIdentity?).self) { group in
+        let selected = await withTaskGroup(of: (Int, DirectMacIdentity?, Bool).self) { group in
             for (index, endpoint) in candidates.enumerated() {
-                group.addTask { (index, try? await http.hello(at: endpoint)) }
+                group.addTask {
+                    let identity: DirectMacIdentity
+                    do { identity = try await http.hello(at: endpoint) }
+                    catch { return (index, nil, (error as? URLError)?.isLocalNetworkDenied == true) }
+                    return (index, identity, false)
+                }
             }
             var answers = [DirectMacIdentity?](repeating: nil, count: candidates.count)
             var finished = [Bool](repeating: false, count: candidates.count)
-            for await (index, identity) in group {
+            var denied = false
+            for await (index, identity, refused) in group {
                 answers[index] = identity
+                denied = denied || refused
                 finished[index] = true
                 if let winner = answers.firstIndex(where: { $0?.macID == pinned.macID && $0?.sameKeys(as: pinned) == true }),
                    finished[..<winner].allSatisfy({ $0 }) {
-                    let selection = Result { try select(candidates: candidates, answers: answers,
+                    let selection = Result { try select(candidates: candidates, answers: answers, denied: denied,
                         startedOn: startedOn, generation: startedGeneration,
                         validationGeneration: startedValidationGeneration) }
                     probeResolved = true
@@ -271,14 +291,14 @@ public actor DirectRouter {
                 }
                 probeObserved?(.answered(candidates[index]))
             }
-            return Result { try select(candidates: candidates, answers: answers,
+            return Result { try select(candidates: candidates, answers: answers, denied: denied,
                 startedOn: startedOn, generation: startedGeneration,
                 validationGeneration: startedValidationGeneration) }
         }
         return try selected.get()
     }
 
-    private func select(candidates: [DirectEndpoint], answers: [DirectMacIdentity?],
+    private func select(candidates: [DirectEndpoint], answers: [DirectMacIdentity?], denied: Bool,
                         startedOn: String, generation startedGeneration: UInt64,
                         validationGeneration startedValidationGeneration: UInt64) throws -> DirectProbeSelection {
         try Task.checkCancellation()
@@ -301,9 +321,11 @@ public actor DirectRouter {
             discardValidation()
             failedAt = (now(), startedOn)
             if changedOn != nil { identityChangedOn = changedOn }
+            localNetworkDeniedOn = denied ? startedOn : nil
             throw unreachable
         }
         identityChangedOn = nil
+        localNetworkDeniedOn = nil
         current = candidates[index]
         validationGeneration &+= 1
         validated = (now(), startedOn)
@@ -313,7 +335,9 @@ public actor DirectRouter {
     }
 
     private var unreachable: DirectRouteError {
-        identityChangedOn != nil && identityChangedOn == network() ? .identityChanged : .unreachable
+        if identityChangedOn != nil && identityChangedOn == network() { return .identityChanged }
+        if localNetworkDeniedOn != nil && localNetworkDeniedOn == network() { return .localNetworkDenied }
+        return .unreachable
     }
 
     private static func unique(_ endpoints: [DirectEndpoint]) -> [DirectEndpoint] {

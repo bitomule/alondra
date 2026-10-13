@@ -10,21 +10,24 @@ public struct DiagnosedConnectionLost: View {
     let signIn: (() -> Void)?
     let settings: (() -> Void)?
     let pairAgain: (() -> Void)?
+    let localNetworkSettings: (() -> Void)?
     @State private var problem: ConnectionProblem = .unexpected
 
     public init(failure: String, diagnose: @escaping @Sendable () async -> ConnectionProblem,
                 retry: @escaping () -> Void, signIn: (() -> Void)?, settings: (() -> Void)?,
-                pairAgain: (() -> Void)? = nil) {
+                pairAgain: (() -> Void)? = nil, localNetworkSettings: (() -> Void)? = nil) {
         self.failure = failure
         self.diagnose = diagnose
         self.retry = retry
         self.signIn = signIn
         self.settings = settings
         self.pairAgain = pairAgain
+        self.localNetworkSettings = localNetworkSettings
     }
 
     public var body: some View {
-        ConnectionLostView(problem: problem, retry: retry, signIn: signIn, settings: settings, pairAgain: pairAgain)
+        ConnectionLostView(problem: problem, retry: retry, signIn: signIn, settings: settings, pairAgain: pairAgain,
+                           localNetworkSettings: localNetworkSettings)
             .task(id: failure) { problem = await diagnose() }
     }
 }

@@ -20,6 +20,8 @@ public struct ViewsClient: Sendable {
     public var observe: @Sendable (ViewKey) -> AsyncThrowingStream<ViewFetch, any Error> = { _ in
         AsyncThrowingStream { $0.finish(throwing: ViewsClientError.notInstalled) }
     }
+    /// Yields each time the app retries the connection on purpose; never finishes on its own.
+    public var reconnections: @Sendable () async -> AsyncStream<Void> = { AsyncStream { _ in } }
     public var prepare: @Sendable (ActionRequest) async throws -> ActionRequest = { $0 }
     /// Delivers an answer until the Mac answers it; throws only when it can never be delivered.
     public var perform: @Sendable (ActionRequest) async throws -> ActionOutcome
@@ -42,6 +44,7 @@ public struct ViewsClient: Sendable {
             closeScreen: { owner in await openSet.remove(owner: owner) },
             feed: { await session.events() },
             observe: { key in ViewObservation.stream(session: session, key: key) },
+            reconnections: { await session.reconnections() },
             prepare: { request in try await sender.prepare(request) },
             perform: { request in try await sender.deliver(request) },
             undeliveredCards: { sender.undelivered.stream() },
@@ -106,6 +109,7 @@ private enum ViewsClientKey: DependencyKey {
         closeScreen: { _ in },
         feed: { AsyncStream { $0.finish() } },
         observe: { _ in AsyncThrowingStream { $0.finish(throwing: ViewsClientError.notInstalled) } },
+        reconnections: { AsyncStream { _ in } },
         prepare: { $0 },
         perform: { _ in throw ViewsClientError.notInstalled },
         undeliveredCards: { AsyncStream { $0.finish() } },

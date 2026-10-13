@@ -68,6 +68,27 @@ final class TriageSnapshotTests: XCTestCase {
         assertScreen(inWindow: true) { Harness(store: store) }
     }
 
+    func test_offlineWithTheSavedQueueSaysWhy() throws {
+        let store = try single(try Fixtures.card(Fixtures.questionID)) { $0.screen.phase = .failed("offline") }
+        assertScreen([.light, .dark], inWindow: true) { Harness(store: store, height: 320).environment(\.connectionRecovery, Self.localNetworkOff) }
+    }
+
+    func test_offlineWithTheSavedQueueSaysWhy_es() throws {
+        let store = try single(try Fixtures.spanishCard(Fixtures.questionID), spanish: true) { $0.screen.phase = .failed("offline") }
+        assertScreen([.light], language: .spanish, inWindow: true) {
+            Harness(store: store, height: 320).environment(\.connectionRecovery, Self.localNetworkOff)
+        }
+    }
+
+    private static let localNetworkOff = ConnectionRecovery(diagnose: { await TriageSnapshotTests.neverAnswered() }, retry: {}, localNetworkSettings: {},
+                                                          known: .localNetworkDenied)
+
+    /// A diagnosis still in flight, so the capture shows what was already known and nothing redraws under it.
+    private static func neverAnswered() async -> ConnectionProblem {
+        try? await Task.sleep(for: .seconds(3600))
+        return .localNetworkDenied
+    }
+
     // MARK: One card of each kind
 
     func test_decide() throws {

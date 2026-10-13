@@ -12,6 +12,8 @@ final class ScreenFeatureTests: XCTestCase {
     ) -> TestStoreOf<ScreenFeature> {
         TestStore(initialState: ScreenFeature.State(key: .tasks)) { ScreenFeature() } withDependencies: {
             $0.viewsClient.observe = { _ in stream }
+            $0.continuousClock = TestClock()
+            $0.withRandomNumberGenerator = WithRandomNumberGenerator(Ceiling())
         }
     }
 
@@ -56,7 +58,11 @@ final class ScreenFeatureTests: XCTestCase {
 
         await store.send(.task)
         input.finish(throwing: CancellationError())
-        await store.receive(\.failed) { $0.phase = .failed("Couldn’t load this from your Mac. Try again.") }
+        await store.receive(\.failed) {
+            $0.phase = .failed("Couldn’t load this from your Mac. Try again.")
+            $0.failures = 1
+        }
+        await store.send(.stop)
         await store.finish()
     }
 
@@ -117,18 +123,86 @@ final class ScreenFeatureTests: XCTestCase {
                 continuation.finish()
             },
         ])
+        let clock = TestClock()
         let store = TestStore(initialState: ScreenFeature.State(key: .tasks)) {
             ScreenFeature()
         } withDependencies: {
             $0.viewsClient.observe = { _ in streams.withValue { $0.removeFirst() } }
+            $0.continuousClock = clock
+            $0.withRandomNumberGenerator = WithRandomNumberGenerator(Ceiling())
         }
 
         await store.send(.task)
         await store.receive(\.loaded) { $0.document = first; $0.phase = .loaded }
-        await store.receive(\.failed) { $0.phase = .failed(message) }
-        await store.send(.retry)
-        await store.receive(\.loaded) { $0.document = again; $0.phase = .loaded }
+        await store.receive(\.failed) { $0.phase = .failed(message); $0.failures = 1 }
+        await clock.advance(by: .seconds(1))
+        await store.receive(\.retry)
+        await store.receive(\.loaded) { $0.document = again; $0.phase = .loaded; $0.failures = 0 }
         await store.receive(\.ended)
+        await store.finish()
+    }
+
+    /// The iPhone stayed on «saved data · connection lost» until the app was killed: a failed
+    /// observation was never tried again, whatever happened to the network.
+    @MainActor
+    func testAFailedScreenTriesAgainOnItsOwnSlowerEachTime() async throws {
+        let document = try Fixtures.document("tasks-ios")
+        let attempts = LockIsolated(0)
+        let clock = TestClock()
+        let store = TestStore(initialState: ScreenFeature.State(key: .tasks)) {
+            ScreenFeature()
+        } withDependencies: {
+            $0.viewsClient.observe = { _ in
+                let attempt = attempts.withValue { $0 += 1; return $0 }
+                return AsyncThrowingStream { continuation in
+                    if attempt < 3 { continuation.finish(throwing: Boom()) } else { continuation.yield(.document(document)) }
+                }
+            }
+            $0.continuousClock = clock
+            $0.withRandomNumberGenerator = WithRandomNumberGenerator(Ceiling())
+        }
+        let message = "Couldn’t load this from your Mac. Try again."
+
+        await store.send(.task)
+        await store.receive(\.failed) { $0.phase = .failed(message); $0.failures = 1 }
+        await clock.advance(by: .milliseconds(999))
+        await clock.advance(by: .milliseconds(1))
+        await store.receive(\.retry) { $0.phase = .loading }
+        await store.receive(\.failed) { $0.phase = .failed(message); $0.failures = 2 }
+        await clock.advance(by: .milliseconds(1999))
+        XCTAssertEqual(attempts.value, 2, "the second wait is longer than the first")
+        await clock.advance(by: .milliseconds(1))
+        await store.receive(\.retry) { $0.phase = .loading }
+        await store.receive(\.loaded) { $0.document = document; $0.phase = .loaded; $0.failures = 0 }
+        await store.send(.stop)
+        await store.finish()
+    }
+
+    @MainActor
+    func testAFailedScreenTriesAgainAtOnceWhenTheAppRetriesTheConnection() async throws {
+        let document = try Fixtures.document("tasks-ios")
+        let attempts = LockIsolated(0)
+        let (reconnections, reconnect) = AsyncStream<Void>.makeStream()
+        let store = TestStore(initialState: ScreenFeature.State(key: .tasks)) {
+            ScreenFeature()
+        } withDependencies: {
+            $0.viewsClient.observe = { _ in
+                let attempt = attempts.withValue { $0 += 1; return $0 }
+                return AsyncThrowingStream { continuation in
+                    if attempt == 1 { continuation.finish(throwing: Boom()) } else { continuation.yield(.document(document)) }
+                }
+            }
+            $0.viewsClient.reconnections = { reconnections }
+            $0.continuousClock = TestClock()
+            $0.withRandomNumberGenerator = WithRandomNumberGenerator(Ceiling())
+        }
+
+        await store.send(.task)
+        await store.receive(\.failed) { $0.phase = .failed("Couldn’t load this from your Mac. Try again."); $0.failures = 1 }
+        reconnect.yield()
+        await store.receive(\.retry) { $0.phase = .loading }
+        await store.receive(\.loaded) { $0.document = document; $0.phase = .loaded; $0.failures = 0 }
+        await store.send(.stop)
         await store.finish()
     }
 
@@ -143,6 +217,11 @@ final class ScreenFeatureTests: XCTestCase {
         await observing.cancel()
         await fulfillment(of: [stopped], timeout: 10)
     }
+}
+
+/// Always the top of the jitter range, so each backoff wait is its full ceiling.
+private struct Ceiling: RandomNumberGenerator {
+    mutating func next() -> UInt64 { .max }
 }
 
 /// A screen with others opened below it, as the queue has its cards and a card its detail.

@@ -85,6 +85,7 @@ public actor FeedSession {
     private var feedTask: Task<Void, Never>?
     private var subscribers: [UUID: AsyncStream<FeedSnapshot>.Continuation] = [:]
     private var eventSubscribers: [UUID: AsyncStream<FeedEvent>.Continuation] = [:]
+    private var reconnectionSubscribers: [UUID: AsyncStream<Void>.Continuation] = [:]
     private let retryDelay: @Sendable (Int) async throws -> Void
     private let reconcileActions: (@Sendable (String, @escaping @Sendable () async -> Bool) async -> Void)?
     private var recoveryTask: Task<Void, Never>?
@@ -515,6 +516,8 @@ public actor FeedSession {
         subscribers.removeAll()
         for continuation in eventSubscribers.values { continuation.finish() }
         eventSubscribers.removeAll()
+        for continuation in reconnectionSubscribers.values { continuation.finish() }
+        reconnectionSubscribers.removeAll()
     }
 
     public var openViewKeys: [String] { openKeys.sorted() }
@@ -531,6 +534,21 @@ public actor FeedSession {
         let value = snapshot
         for continuation in subscribers.values { continuation.yield(value) }
         for continuation in eventSubscribers.values { continuation.yield(.snapshot(value)) }
+    }
+
+    /// Yields each time the connection is retried on purpose (back in the foreground, a new
+    /// network, a push), so a screen that failed tries again then instead of waiting out its backoff.
+    public func reconnections() -> AsyncStream<Void> {
+        let id = UUID()
+        let (stream, continuation) = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        guard active else { continuation.finish(); return stream }
+        reconnectionSubscribers[id] = continuation
+        continuation.onTermination = { [weak self] _ in Task { await self?.removeReconnectionSubscriber(id) } }
+        return stream
+    }
+
+    private func removeReconnectionSubscriber(_ id: UUID) {
+        reconnectionSubscribers.removeValue(forKey: id)
     }
 
     private func emit(_ event: FeedEvent) {
@@ -607,7 +625,8 @@ public actor FeedSession {
             catch {
                 // The cursor is kept, so the next poll resumes where this one stopped, or is
                 // answered with a reset when the Mac's data changed meanwhile. Only a refusal
-                // that retrying cannot fix ends the feed; reconnect() starts it again.
+                // that retrying cannot fix ends the feed; reconnect() starts it again. Any route,
+                // relay or network failure is retried, slower each time.
                 guard !Task.isCancelled, generation == current, Self.isTransient(error) else { return }
                 failures += 1
                 do { try await retryDelay(failures) } catch { return }
@@ -653,25 +672,24 @@ public actor FeedSession {
         while let recoveryTask { await recoveryTask.value }
     }
 
+    /// False only for a refusal from the Mac itself or a request no retry can fix.
     static func isTransient(_ error: any Error) -> Bool {
         func retryable(_ status: Int) -> Bool { status == 408 || status == 429 || status >= 500 }
         switch error {
-        case is URLError, is LoadError, OperationError.outcomeUnknown, FeedError.unexpectedUnchanged:
-            return true
         case let error as APIError:
             switch error {
             case .conflict, .unavailable: return true
             case let .server(status, _, _, _), let .unexpected(status): return retryable(status)
             case .unauthorized, .forbidden: return false
             }
-        case let error as RelayWireError:
-            switch error {
-            case .outcomeUnknown, .conflict: return true
-            case let .server(status): return retryable(status)
-            default: return false
-            }
-        default:
+        case let error as FeedError:
+            return error == .unexpectedUnchanged
+        case is DirectSessionError, RelaySessionError.invalidRequest, RelaySessionError.operationIdentityConflict,
+             RelayWireError.unauthorized, RelayWireError.invalidEndpoint, RelayWireError.invalidField,
+             OperationError.invalidEndpoint:
             return false
+        default:
+            return true
         }
     }
 
@@ -722,7 +740,11 @@ public actor FeedSession {
     }
 
     /// Opening a new view after an ended/failed feed starts a fresh poll for the current union.
-    public func reconnect() { restartFeed() }
+    public func reconnect() {
+        restartFeed()
+        guard active else { return }
+        for continuation in reconnectionSubscribers.values { continuation.yield() }
+    }
 
     static func validViewKey(_ key: String) -> Bool {
         ViewRoute.parse(key) != nil

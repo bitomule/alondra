@@ -27,6 +27,8 @@ public enum ConnectionProblem: Equatable, Sendable {
     /// same Mac with another identity. Only a hint: nothing is trusted or replaced until the person
     /// pairs again.
     case macChangedIdentity
+    /// The system refuses this app the local network, and the Mac answers on nothing else.
+    case localNetworkDenied
     /// An earlier sign-out could not reach the server; it has to finish before signing in again.
     case signOutIncomplete
     case unexpected
@@ -38,7 +40,7 @@ public enum ConnectionProblem: Equatable, Sendable {
 
     public var needsAction: Bool {
         switch self {
-        case .sessionExpired, .deviceRevoked, .signOutIncomplete: true
+        case .sessionExpired, .deviceRevoked, .signOutIncomplete, .localNetworkDenied: true
         default: false
         }
     }

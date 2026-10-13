@@ -15,6 +15,7 @@ public extension ConnectionProblem {
         case .accessNotConfirmed: "Alondra can’t confirm your access right now"
         case .deviceRevoked(let macName): Self.revokedTitle(macName)
         case .macNotOnNetwork, .macChangedIdentity: "Your Mac isn’t answering"
+        case .localNetworkDenied: "Alondra can’t use your local network"
         case .signOutIncomplete: "Signing out didn’t finish"
         case .unexpected: "Can’t connect right now"
         }
@@ -44,6 +45,30 @@ public extension ConnectionProblem {
         #endif
     }
 
+    /// A few words for a header over saved data: what is wrong, without the way out.
+    var summary: LocalizedStringResource {
+        switch self {
+        case .noInternet: "no internet"
+        case .serverUnreachable: "the server isn’t answering"
+        case .macNotAnswering, .macNotOnNetwork, .macChangedIdentity: "your Mac isn’t answering"
+        case .alondraNotRunning: "Alondra isn’t running"
+        case .sessionExpired: "session expired"
+        case .accessNotConfirmed: "access not confirmed"
+        case .deviceRevoked: "no longer paired"
+        case .localNetworkDenied: "Local Network is off"
+        case .signOutIncomplete: "sign-out didn’t finish"
+        case .unexpected: "connection lost"
+        }
+    }
+
+    private static var localNetworkHint: LocalizedStringResource {
+        #if canImport(UIKit)
+        "Turn on Local Network for Alondra in Settings. It reconnects as soon as you do."
+        #else
+        "Turn on Local Network for Alondra in System Settings › Privacy & Security. It reconnects as soon as you do."
+        #endif
+    }
+
     var detail: LocalizedStringResource {
         switch self {
         case .noInternet: "This device is offline. Alondra reconnects as soon as the network is back."
@@ -56,6 +81,7 @@ public extension ConnectionProblem {
         case .macChangedIdentity: "There’s a Mac with this name but a different identity. Pair it again only if you reinstalled that Mac."
         case .macNotOnNetwork: "It may be in sleep mode, or on another network. Alondra reconnects as soon as it answers; to reach it away from home, turn on Tailscale on both."
         case .signOutIncomplete: "Alondra couldn’t finish signing this device out. Finish signing out, then sign in again to reconnect."
+        case .localNetworkDenied: Self.localNetworkHint
         case .unexpected: "Something unexpected went wrong. Alondra keeps trying."
         }
     }
@@ -71,6 +97,7 @@ public extension ConnectionProblem {
         case .deviceRevoked: "lock.slash"
         case .macChangedIdentity: "questionmark.circle"
         case .macNotOnNetwork: "moon.zzz"
+        case .localNetworkDenied: "network.slash"
         case .signOutIncomplete: "rectangle.portrait.and.arrow.right"
         case .unexpected: "exclamationmark.triangle"
         }

@@ -149,7 +149,7 @@ struct ViewsScreenView: View {
                         }
                         ForEach(document.notices, id: \.text) { notice in NoticeView(notice: notice) }
                         if store.key.rawValue == "fleet", store.document != nil, store.error != nil {
-                            Label(String(localized: "saved data · connection lost"), systemImage: "wifi.slash")
+                            SavedDataLabel()
                                 .font(.footnote.weight(.medium)).foregroundStyle(.secondary)
                                 .padding(.horizontal, 12).padding(.vertical, 8)
                                 .frame(maxWidth: .infinity, alignment: .leading)

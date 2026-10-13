@@ -66,6 +66,28 @@ final class FeedRecoveryTests: XCTestCase {
         XCTAssertFalse(FeedSession.isTransient(APIError.forbidden(kind: nil, detail: nil, reasons: [])))
         XCTAssertFalse(FeedSession.isTransient(RelayWireError.unauthorized))
         XCTAssertFalse(FeedSession.isTransient(APIError.server(status: 400, kind: nil, detail: "invalid_changes_query", reasons: [])))
+        XCTAssertFalse(FeedSession.isTransient(DirectSessionError.deviceRevoked))
+    }
+
+    /// The changes loop ended for good on these, so the iPhone never heard of a change again until
+    /// it was killed: a relay that could not reach the Mac, a Mac with no direct route.
+    func testLosingEveryRouteToTheMacIsRetried() {
+        XCTAssertTrue(FeedSession.isTransient(RelaySessionError.outcomeUnknown))
+        XCTAssertTrue(FeedSession.isTransient(DirectRouteError.unreachable))
+        XCTAssertTrue(FeedSession.isTransient(DirectRouteError.localNetworkDenied))
+        XCTAssertTrue(FeedSession.isTransient(URLError(.notConnectedToInternet)))
+    }
+
+    func testReconnectingTellsEveryObserver() async {
+        let session = FeedSession(transport: FailingTransport(), client: .ios, lang: "en")
+        var first = await session.reconnections().makeAsyncIterator()
+        var second = await session.reconnections().makeAsyncIterator()
+        await session.reconnect()
+        let heard = (await first.next() != nil, await second.next() != nil)
+        XCTAssertTrue(heard.0 && heard.1)
+        await session.stop()
+        let afterStop = await first.next()
+        XCTAssertNil(afterStop, "a stopped session ends its reconnections")
     }
 }
 
@@ -167,5 +189,17 @@ private actor SupersedingMac: ViewTransport {
 
     func submitAction(_ request: ActionRequest, body: Data) async throws -> ActionResponse {
         throw FeedError.unknownCommand
+    }
+}
+
+private struct FailingTransport: ViewTransport {
+    func fetchView(key: String, client: ViewClient, lang: String, known: String?) async throws -> ViewFetch {
+        throw URLError(.notConnectedToInternet)
+    }
+    func fetchChanges(client: ViewClient, lang: String, wait: UInt, cursor: String?, views: [OpenViewVersion]) async throws -> ViewFeed {
+        throw URLError(.notConnectedToInternet)
+    }
+    func submitAction(_ request: ActionRequest, body: Data) async throws -> ActionResponse {
+        throw URLError(.notConnectedToInternet)
     }
 }

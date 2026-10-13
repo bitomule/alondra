@@ -248,7 +248,8 @@ final class AccountSnapshotTests: XCTestCase {
 
     private func lost(_ problem: ConnectionProblem?, pairAgain: (() -> Void)? = nil) -> some View {
         ScreenFrame(height: 700) {
-            ConnectionLostView(problem: problem, retry: {}, signIn: {}, settings: {}, signOut: {}, pairAgain: pairAgain)
+            ConnectionLostView(problem: problem, retry: {}, signIn: {}, settings: {}, signOut: {}, pairAgain: pairAgain,
+                               localNetworkSettings: {})
                 .background(Palette.night)
         }
     }
@@ -305,6 +306,14 @@ final class AccountSnapshotTests: XCTestCase {
 
     func test_connectionLost_macNotAnsweringItMayBeAsleep_spanish() {
         assertScreen([.light], language: .spanish, inWindow: true, animatedPixels: true) { lost(.macNotOnNetwork) }
+    }
+
+    func test_connectionLost_localNetworkDenied() {
+        assertScreen([.light, .dark], inWindow: true) { lost(.localNetworkDenied) }
+    }
+
+    func test_connectionLost_localNetworkDenied_spanish() {
+        assertScreen([.light], language: .spanish, inWindow: true) { lost(.localNetworkDenied) }
     }
 
     // MARK: Local Network permission

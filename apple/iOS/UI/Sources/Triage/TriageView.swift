@@ -91,7 +91,7 @@ public struct TriageView: View {
                 .lineLimit(typeSize.isAccessibilitySize ? 1 : nil)
                 .minimumScaleFactor(0.5)
             if store.isOffline {
-                Label("saved data · connection lost", systemImage: "wifi.slash")
+                SavedDataLabel()
                     .font(.subheadline.weight(.medium)).foregroundStyle(Palette.rose).lineLimit(1)
             } else {
                 summary

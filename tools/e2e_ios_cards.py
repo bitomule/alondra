@@ -94,6 +94,17 @@ class Simulator:
         subprocess.run(["simpool", "release", "--key", self.key], capture_output=True)
 
 
+def pair(simulator, sandbox):
+    """Pairs the app with the sandbox Mac found on Bonjour, as a person would, until the queue shows."""
+    simulator.until(lambda ids: "findMac.allow" in ids or "findMac.mac" in ids, "the app never showed pairing", 60)
+    if "findMac.allow" in simulator.ids():
+        simulator.tap("findMac.allow")
+    simulator.until(lambda ids: "findMac.mac" in ids, "the sandbox Mac never appeared on Bonjour", 60)
+    simulator.tap("findMac.mac")
+    sandbox.approve_pairing()
+    simulator.until(lambda ids: any(i.startswith("triage.need.") for i in ids), "the queue never showed", 60)
+
+
 def check(sandbox, answers, kind_of, captures):
     ipa = os.environ.get("E2E_IOS_IPA")
     assert ipa and os.path.exists(ipa), "E2E_IOS_IPA names the simulator build of //apple:AlondraiOS with --define=alondra_sandbox=1"
@@ -101,13 +112,7 @@ def check(sandbox, answers, kind_of, captures):
     simulator = None
     try:
         simulator = Simulator(ipa, scratch)
-        simulator.until(lambda ids: "findMac.allow" in ids or "findMac.mac" in ids, "the app never showed pairing", 60)
-        if "findMac.allow" in simulator.ids():
-            simulator.tap("findMac.allow")
-        simulator.until(lambda ids: "findMac.mac" in ids, "the sandbox Mac never appeared on Bonjour", 60)
-        simulator.tap("findMac.mac")
-        sandbox.approve_pairing()
-        simulator.until(lambda ids: any(i.startswith("triage.need.") for i in ids), "the queue never showed", 60)
+        pair(simulator, sandbox)
         simulator.capture(captures, "queue")
         answered = []
         skipped = 0

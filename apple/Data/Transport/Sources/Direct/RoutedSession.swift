@@ -15,8 +15,10 @@ extension RelaySession: RelayOperations {}
 ///
 /// With a relay, no request waits on the direct path: the relay goes first and the direct path
 /// is probed in the background, at most once a minute or when the network changes. Once a
-/// sealed answer comes back directly, requests go direct until that path fails. When the relay
-/// itself is out of reach (no internet, relay down) the direct path is tried inline.
+/// sealed answer comes back directly, requests go direct until that path fails; a read gets one
+/// short try there, so a slow Mac or a refused local network hands it to the relay in seconds.
+/// When the relay itself is out of reach (no internet, relay down) or cannot get the Mac's
+/// answer, the direct path is tried inline.
 public actor RoutedSession: OperationAPI, PushRegistrationAPI {
     private let direct: DirectSession?
     private let router: DirectRouter?
@@ -131,17 +133,18 @@ public actor RoutedSession: OperationAPI, PushRegistrationAPI {
             guard let direct else { throw DirectRouteError.unreachable }
             return try await viaDirect(direct, request)
         }
+        let read = request.method == "GET"
         if !relayFirst, let direct, directAllowed() {
-            do { return try await viaDirect(direct, request) }
-            catch where Self.directFailed(error) { relayFirst = true }
+            do { return try await viaDirect(direct, request, quick: read) }
+            catch where Self.relayCanTakeOver(error, read: read) { relayFirst = true }
         }
         startProbe()
         do {
             let response = try await relay.perform(request)
             lastRoute = .relay
-            // The relay could not say whether the Mac ran it: ask the Mac directly with the same
-            // envelope, which it answers from its journal if it already did.
-            if response == .unknown, request.method != "GET", let direct, directAllowed(),
+            // The relay could not get the Mac's answer: ask the Mac directly. A change goes with
+            // the same envelope, which the Mac answers from its journal if it already ran it.
+            if response == .unknown, let direct, directAllowed(),
                let answered = try? await resend(request, from: relay, over: direct), answered != .unknown {
                 return answered
             }
@@ -202,8 +205,9 @@ public actor RoutedSession: OperationAPI, PushRegistrationAPI {
         await probe?.value
     }
 
-    private func viaDirect(_ direct: DirectSession, _ request: APIRequest) async throws -> APIResponse {
-        let response = try await direct.perform(request)
+    private func viaDirect(_ direct: DirectSession, _ request: APIRequest, quick: Bool = false) async throws -> APIResponse {
+        let response: APIResponse
+        if quick { response = try await direct.quickRead(request) } else { response = try await direct.perform(request) }
         lastRoute = await router?.route
         return response
     }
@@ -230,5 +234,16 @@ public actor RoutedSession: OperationAPI, PushRegistrationAPI {
     /// No address proved to be this Mac: the relay's own answer is the one to believe.
     private static func directFailed(_ error: any Error) -> Bool {
         error is DirectRouteError
+    }
+
+    /// A change moves to the relay only when it never left this device; a read moves on any
+    /// failure except the Mac's own sealed refusal.
+    private static func relayCanTakeOver(_ error: any Error, read: Bool) -> Bool {
+        if directFailed(error) { return true }
+        guard read, !Task.isCancelled else { return false }
+        switch error {
+        case is CancellationError, is DirectSessionError, RelaySessionError.operationIdentityConflict: return false
+        default: return true
+        }
     }
 }

@@ -8,12 +8,13 @@ extension View {
     /// snapshot stays visible and the window subtitle names the problem instead.
     func connectionLostOverlay(store: StoreOf<MacAppFeature>, diagnose: @escaping @Sendable () async -> ConnectionProblem,
                                retry: @escaping () -> Void, signIn: (() -> Void)?,
-                               pairAgain: (() -> Void)?) -> some View {
+                               pairAgain: (() -> Void)?, localNetworkSettings: (() -> Void)?) -> some View {
         overlay {
             let hasSnapshot = store.macPresentation.sidebarDocument != nil
             if let failure = store.macPresentation.viewError, !hasSnapshot {
                 DiagnosedConnectionLost(failure: failure, diagnose: diagnose, retry: retry, signIn: signIn,
-                                        settings: { store.send(.settingsPresented(true)) }, pairAgain: pairAgain)
+                                        settings: { store.send(.settingsPresented(true)) }, pairAgain: pairAgain,
+                                        localNetworkSettings: localNetworkSettings)
                     .background(.background)
             }
         }

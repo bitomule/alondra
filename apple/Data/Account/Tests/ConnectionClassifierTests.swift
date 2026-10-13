@@ -38,4 +38,10 @@ struct ConnectionClassifierTests {
     @Test func aMacThatSimplyDoesNotAnswerStaysNotAnswering() {
         #expect(ConnectionClassifier.problem(for: DirectRouteError.unreachable, local: false, networkOffline: false) == .macNotOnNetwork)
     }
+
+    @Test func aRefusedLocalNetworkAsksThePersonToTurnItOn() {
+        let problem = ConnectionClassifier.problem(for: DirectRouteError.localNetworkDenied, local: false, networkOffline: false)
+        #expect(problem == .localNetworkDenied)
+        #expect(problem.needsAction)
+    }
 }

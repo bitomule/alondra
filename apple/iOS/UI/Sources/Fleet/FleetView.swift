@@ -37,7 +37,7 @@ public struct FleetView: View {
     private func list(_ overview: FleetOverview) -> some View {
         List {
             if case .failed = store.screen.phase {
-                Label("saved data · connection lost", systemImage: "wifi.slash")
+                SavedDataLabel()
                     .font(.footnote.weight(.medium)).foregroundStyle(.secondary)
                     .listRowBackground(Rectangle().fill(.thinMaterial))
                     .accessibilityIdentifier("fleet.savedDataConnectionLost")

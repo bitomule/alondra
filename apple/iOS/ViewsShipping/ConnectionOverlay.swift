@@ -9,12 +9,13 @@ extension View {
     /// snapshot stays visible and the headers name the problem instead.
     func connectionLostOverlay(store: StoreOf<AppFeature>, diagnose: @escaping @Sendable () async -> ConnectionProblem,
                                retry: @escaping () -> Void, signIn: (() -> Void)?,
-                               pairAgain: (() -> Void)?) -> some View {
+                               pairAgain: (() -> Void)?, localNetworkSettings: (() -> Void)?) -> some View {
         overlay {
             let hasSnapshot = store.triage.screen.document != nil
             if let failure = store.triage.loadError, !hasSnapshot {
                 DiagnosedConnectionLost(failure: failure, diagnose: diagnose, retry: retry, signIn: signIn,
-                                        settings: { store.send(.settingsPresented(true)) }, pairAgain: pairAgain)
+                                        settings: { store.send(.settingsPresented(true)) }, pairAgain: pairAgain,
+                                        localNetworkSettings: localNetworkSettings)
                     .background(DawnBackground())
                     .transition(.opacity)
             }

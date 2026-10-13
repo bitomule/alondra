@@ -2,6 +2,7 @@ import AlondraDesign
 import AlondraTransport
 import AlondraContract
 import AlondraAccount
+import AlondraNetworkReachability
 import AlondraNotifications
 import Foundation
 import Observation
@@ -302,6 +303,7 @@ final class NotificationResponder: NSObject, UNUserNotificationCenterDelegate {
 
     func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification, withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
         let isRemotePush = notification.request.trigger is UNPushNotificationTrigger
+        if isRemotePush { NetworkReachability.shared.hint() }
         completionHandler(ForegroundPresentation.options(isRemotePush: isRemotePush))
         if isRemotePush { Task { @MainActor [arrived] in await arrived() } }
     }

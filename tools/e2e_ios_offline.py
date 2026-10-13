@@ -1,0 +1,105 @@
+#!/usr/bin/env python3
+"""The iOS app in a pooled simulator loses its Mac with the app open and finds it again by itself.
+
+make e2e-ios-offline builds the simulator app with the sandbox's Bonjour service and runs this
+against a throwaway sandbox (one Mac, paired over the local network, as on the same Wi-Fi):
+
+1. The Mac's daemon is frozen (SIGSTOP) long enough for every request in flight to time out
+   and the next ones to find no route, then thawed. A card withdrawn after that must leave the
+   queue on its own, without touching the app.
+2. With the app in the background the daemon is frozen and thawed again, a second card is
+   withdrawn, and the app comes back to the foreground: the queue must catch up at once.
+
+E2E_CAPTURES=<dir> keeps what the app showed at each step. FREEZE=<seconds> changes how long the
+Mac stays frozen (90 by default: longer than a held changes poll plus its retry).
+"""
+
+import argparse
+import os
+import shutil
+import signal
+import subprocess
+import sys
+import tempfile
+import time
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import e2e_cards
+import e2e_ios_cards
+
+FIRST = "Pick the release channel"
+SECOND = "Name the beta build"
+ON_ITS_OWN = 45
+AT_ONCE = 8
+
+
+def shown(simulator, need):
+    return any(i.startswith("triage.need.") and need[:30] in label for i, label in simulator.elements().items())
+
+
+def until_gone(simulator, need, seconds, what):
+    deadline = time.time() + seconds
+    while shown(simulator, need):
+        assert time.time() < deadline, what
+        time.sleep(0.5)
+    return seconds - (deadline - time.time())
+
+
+def frozen(daemon, seconds):
+    os.kill(daemon, signal.SIGSTOP)
+    try:
+        time.sleep(seconds)
+    finally:
+        os.kill(daemon, signal.SIGCONT)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--captures", help="keep what the app showed at each step here")
+    parser.add_argument("binaries", nargs="+")
+    args = parser.parse_args()
+    signal.signal(signal.SIGTERM, lambda signum, _frame: sys.exit(128 + signum))
+    ipa = os.environ.get("E2E_IOS_IPA")
+    assert ipa and os.path.exists(ipa), "E2E_IOS_IPA names the simulator build of //apple:AlondraiOS with --define=alondra_sandbox=1"
+    freeze = int(os.environ.get("FREEZE", "90"))
+    if args.captures:
+        os.makedirs(args.captures, exist_ok=True)
+    os.environ["SANDBOX_LAN"] = "1"
+    sandbox = e2e_cards.Sandbox(args.binaries, int(os.environ.get("SANDBOX_PORT", "47960")))
+    scratch = tempfile.mkdtemp(prefix="alondra-ios-offline-")
+    node = simulator = None
+    try:
+        node = e2e_cards.Node(sandbox)
+        node.call(node.ask("first", FIRST, ["stable", "beta"]), node.ask("second", SECOND, ["one", "two"]))
+        simulator = e2e_ios_cards.Simulator(ipa, scratch)
+        e2e_ios_cards.pair(simulator, sandbox)
+        simulator.until(lambda _: shown(simulator, FIRST), "the first card never showed", 60)
+        daemon = int(open(os.path.join(sandbox.home, "alondrad.pid")).read())
+
+        frozen(daemon, freeze)
+        simulator.capture(args.captures, "after-freeze")
+        node.call(("withdraw", {"interaction_id": "first"}))
+        took = until_gone(simulator, FIRST, ON_ITS_OWN, f"the queue never caught up within {ON_ITS_OWN}s of the Mac answering again")
+        simulator.capture(args.captures, "caught-up")
+        print(f"ok (ios): with the app open, the queue caught up {took:.1f}s after the Mac answered again", file=sys.stderr, flush=True)
+
+        simulator.until(lambda _: shown(simulator, SECOND), "the second card never showed", 30)
+        subprocess.run(["xcrun", "simctl", "launch", simulator.udid, "com.apple.Preferences"], capture_output=True)
+        frozen(daemon, freeze)
+        node.call(("withdraw", {"interaction_id": "second"}))
+        subprocess.run(["xcrun", "simctl", "launch", simulator.udid, e2e_ios_cards.BUNDLE], check=True, capture_output=True)
+        took = until_gone(simulator, SECOND, AT_ONCE, f"back in the foreground, the queue did not catch up within {AT_ONCE}s")
+        simulator.capture(args.captures, "foreground")
+        print(f"ok (ios): back in the foreground, the queue caught up in {took:.1f}s", file=sys.stderr, flush=True)
+        print("e2e ios offline: the app found its Mac again by itself, and at once on returning to the foreground.")
+    finally:
+        if simulator:
+            simulator.stop()
+        if node:
+            node.stop()
+        sandbox.stop()
+        shutil.rmtree(scratch, ignore_errors=True)
+
+
+if __name__ == "__main__":
+    main()

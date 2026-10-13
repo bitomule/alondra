@@ -11,18 +11,21 @@ public struct ConnectionLostView: View {
     let settings: (() -> Void)?
     let signOut: (() -> Void)?
     let pairAgain: (() -> Void)?
+    let localNetworkSettings: (() -> Void)?
 
     /// `problem == nil` means the first attempt is still in flight. `pairAgain` starts pairing with
     /// the Mac this screen is about; without it a revoked device is sent to Settings.
+    /// `localNetworkSettings` opens the system setting that lets Alondra use the local network.
     public init(problem: ConnectionProblem?, retry: @escaping () -> Void,
                 signIn: (() -> Void)? = nil, settings: (() -> Void)? = nil, signOut: (() -> Void)? = nil,
-                pairAgain: (() -> Void)? = nil) {
+                pairAgain: (() -> Void)? = nil, localNetworkSettings: (() -> Void)? = nil) {
         self.problem = problem
         self.retry = retry
         self.signIn = signIn
         self.settings = settings
         self.signOut = signOut
         self.pairAgain = pairAgain
+        self.localNetworkSettings = localNetworkSettings
     }
 
     public var body: some View {
@@ -88,6 +91,12 @@ public struct ConnectionLostView: View {
                     .buttonStyle(.glassProminent)
                     .controlSize(.large)
                     .tint(Palette.dawn)
+            } else if problem == .localNetworkDenied, let localNetworkSettings {
+                Button("Open Settings", systemImage: "gearshape", action: localNetworkSettings)
+                    .buttonStyle(.glassProminent)
+                    .controlSize(.large)
+                    .tint(Palette.dawn)
+                    .accessibilityIdentifier("connection.localNetworkSettings")
             } else if problem.isDeviceRevoked, let pairAgain {
                 pairAgainButton(pairAgain)
             } else if problem.isDeviceRevoked, let settings {
@@ -123,7 +132,8 @@ public struct ConnectionLostView: View {
                 }
                 .padding(.top, 6)
             }
-            if let settings, !problem.isDeviceRevoked, problem != .signOutIncomplete {
+            if let settings, !problem.isDeviceRevoked, problem != .signOutIncomplete,
+               problem != .localNetworkDenied || localNetworkSettings == nil {
                 Button("Settings", systemImage: "gearshape", action: settings)
                     .buttonStyle(.borderless)
                     .font(.footnote)

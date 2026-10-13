@@ -1,5 +1,6 @@
 import AlondraAccount
 import AlondraDesign
+import AlondraNetworkReachability
 import SwiftUI
 import UIKit
 
@@ -40,6 +41,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         notifications.push.didFailToRegister(error)
     }
     func application(_ application: UIApplication, didReceiveRemoteNotification userInfo: [AnyHashable: Any]) async -> UIBackgroundFetchResult {
-        await notifications.retract(userInfo) ? .newData : .noData
+        NetworkReachability.shared.hint()
+        return await notifications.retract(userInfo) ? .newData : .noData
     }
 }

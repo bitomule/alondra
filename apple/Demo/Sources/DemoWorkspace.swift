@@ -27,6 +27,7 @@ enum DemoWorkspace {
                     continuation.onTermination = { _ in task.cancel() }
                 }
             },
+            reconnections: { AsyncStream { _ in } },
             prepare: { $0 },
             perform: { _ in try response() },
             undeliveredCards: { AsyncStream { $0.finish() } },

@@ -118,10 +118,14 @@ private struct ApprovedServiceScene: View {
                                            pairAgain: owner.pairAgainAction(for: services) {
                                                context.settings.requestLinkMac(unopened: { owner.pairAgain(macID: nil) })
                                                store.send(.settingsPresented(true))
-                                           })
+                                           },
+                                           localNetworkSettings: { owner.openLocalNetworkSettings() })
+                    .environment(\.connectionRecovery, ConnectionRecovery(diagnose: { await services.diagnose() }, retry: retry,
+                                                                          localNetworkSettings: { owner.openLocalNetworkSettings() }))
             } else { ProgressView("Opening workspace…") }
         }
-        .retriesConnection(networkChanges: { NetworkReachability.shared.changes() }) { retry() }
+        .retriesConnection(networkChanges: { NetworkReachability.shared.changes() },
+                           hints: { NetworkReachability.shared.retryHints() }) { retry() }
         .onChange(of: owner.store.restorationInFlight) { wasSigningIn, signingIn in
             if wasSigningIn && !signingIn { retry() }
         }

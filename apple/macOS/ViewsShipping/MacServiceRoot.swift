@@ -142,7 +142,8 @@ private struct MacServiceWindow: View {
                                                    context.settings.requestLinkMac(unopened: { account.pairAgain(macID: nil) })
                                                    store.send(.settingsPresented(true))
                                                }
-                                           })
+                                           },
+                                           localNetworkSettings: account.map { account in { account.openLocalNetworkSettings() } })
                     .onChange(of: notices.openedCard, initial: true) { _, card in
                         guard let card else { return }
                         store.send(.macPresentation(.select(.viewKey("card:\(card)"))))
@@ -153,7 +154,8 @@ private struct MacServiceWindow: View {
             }
         }
         .task { await context.connect(services) }
-        .retriesConnection(networkChanges: { NetworkReachability.shared.changes() }) { retry() }
+        .retriesConnection(networkChanges: { NetworkReachability.shared.changes() },
+                           hints: { NetworkReachability.shared.retryHints() }) { retry() }
         .onChange(of: account?.store.restorationInFlight) { wasSigningIn, signingIn in
             if wasSigningIn == true && signingIn == false { retry() }
         }

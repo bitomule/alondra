@@ -782,3 +782,79 @@ extension DirectSessionTests {
         await session.deactivate()
     }
 }
+
+/// The Mac's direct port as a slow Mac or a refused local network leaves it.
+private actor ImpairedDirectPort: HTTPTransport {
+    enum Impairment { case none, slow, localNetworkDenied }
+    private let mac: FakeDirectMac
+    private var impairment = Impairment.none
+    private(set) var requestTimeouts: [TimeInterval] = []
+
+    init(mac: FakeDirectMac) { self.mac = mac }
+
+    func impair(_ value: Impairment) { impairment = value }
+
+    func send(_ request: URLRequest) async throws -> HTTPReply {
+        switch impairment {
+        case .none: return try await mac.send(request)
+        case .localNetworkDenied:
+            throw URLError(.notConnectedToInternet,
+                           userInfo: ["_NSURLErrorNWPathKey": "unsatisfied (Local network prohibited), interface: en0[802.11]"])
+        case .slow:
+            guard request.url?.path == "/direct/request" else { return try await mac.send(request) }
+            requestTimeouts.append(request.timeoutInterval)
+            throw URLError(.timedOut)
+        }
+    }
+}
+
+private actor UnknownReadsRelay: RelayOperations {
+    func perform(_ request: APIRequest) async throws -> APIResponse { .unknown }
+    func sentEnvelope(for requestID: String) async -> Envelope? { nil }
+    func registerServicePush(token: String, environment: String, binding: String) async throws {}
+    func deactivate() async {}
+}
+
+extension RoutedSessionTests {
+    private func impaired(_ f: Fixture) async -> (ImpairedDirectPort, DirectRouter, DirectSession) {
+        let port = ImpairedDirectPort(mac: f.mac)
+        let http = DirectHTTP(transport: port)
+        let router = DirectRouter(pinned: await f.mac.identity, saved: [lan], http: http, network: { "home" })
+        return (port, router, DirectSession(macID: "mac-1", deviceID: "phone-1", signing: f.mac.device,
+            agreement: f.mac.deviceAgreement, macSigning: f.mac.macSigning.publicKey,
+            macAgreement: f.mac.macAgreement.publicKey, router: router, http: http, pause: { _ in }))
+    }
+
+    /// On the same Wi-Fi as a slow Mac the iPhone waited four 20-second timeouts on the direct
+    /// path before asking the relay, and the screen gave up first.
+    @Test func aSlowMacHandsAReadToTheRelayAfterOneShortTry() async throws {
+        let f = try await Fixture(saved: [lan])
+        let (port, router, direct) = await impaired(f)
+        let relay = FakeRelay()
+        let routed = RoutedSession(direct: direct, router: router, relay: relay)
+        for _ in 0..<200 where await routed.route != .localNetwork {
+            _ = try? await routed.perform(f.read())
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(await routed.route == .localNetwork)
+        await port.impair(.slow)
+        #expect(try await routed.perform(f.read()) == viaRelay)
+        #expect(await port.requestTimeouts == [TimeInterval(DirectSession.quickReadSlack)])
+        #expect(await routed.route == .relay)
+    }
+
+    @Test func aReadTheRelayCouldNotGetIsAskedDirectly() async throws {
+        let f = try await Fixture(saved: [lan])
+        let routed = RoutedSession(direct: f.session, router: f.router, relay: UnknownReadsRelay(), probeInterval: .seconds(3600))
+        #expect(try await routed.perform(f.read()) == answered)
+        #expect(await routed.route == .localNetwork)
+    }
+
+    @Test func aRefusedLocalNetworkIsNamedWhenNothingElseAnswers() async throws {
+        let f = try await Fixture(saved: [lan])
+        let (port, router, direct) = await impaired(f)
+        await port.impair(.localNetworkDenied)
+        let routed = RoutedSession(direct: direct, router: router, relay: nil)
+        await #expect(throws: DirectRouteError.localNetworkDenied) { try await routed.perform(f.read()) }
+    }
+}
