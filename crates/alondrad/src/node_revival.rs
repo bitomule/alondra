@@ -18,10 +18,12 @@ use tokio::sync::mpsc;
 
 const RETRY: &str = "retry";
 const CANCEL: &str = "cancel";
+const RELAUNCH: &str = "relaunch";
 const STALL_CHECK: Duration = Duration::from_secs(30);
 const DISK_RECHECK: Duration = Duration::from_secs(10);
 const GATE_RECHECK: Duration = Duration::from_secs(30);
 const CONTINUE: &str = "Alondra restarted your session because it had stopped processing in the middle of a turn. Check where you were and continue your task.";
+const CARRY_ON: &str = "Your session had ended while your task was still open, and Alondra restarted it. Check where you were and continue your task.";
 
 pub(crate) struct Timing {
     /// How long a lost connection gets to come back by itself: the mod redials from 1 s up to 30 s.
@@ -189,7 +191,7 @@ pub(crate) async fn revive_stalled(domain: &DomainRuntime, session: &str, launch
             }
             domain.live.set_reconnecting(session, false);
         }
-        if !still_stalled(domain, session) || !ask_to_retry(domain, session, &error).await {
+        if !still_stalled(domain, session) || !ask_to_retry(domain, session, &error, launcher).await {
             break;
         }
     }
@@ -224,10 +226,31 @@ async fn until_admitted(domain: &DomainRuntime, session: &str, still: impl Fn() 
     }
 }
 
-/// The mod's connection is recorded a moment before its push link attaches.
 async fn tell_to_continue(domain: &DomainRuntime, session: &str) {
+    say(domain, session, CONTINUE, false).await;
+}
+
+/// A restarted session starts no turn of its own (`claude respawn` resumes the conversation and
+/// waits): the gate's resume it missed, else a word to carry on when its task still needs work
+/// from it rather than an answer from the user.
+async fn tell_to_carry_on(domain: &DomainRuntime, session: &str) {
+    if let Some(owed) = domain.live.gate.take_owed(session) {
+        say(domain, session, &owed, true).await;
+    } else if needs_work(domain, session) {
+        say(domain, session, CARRY_ON, false).await;
+    }
+}
+
+fn needs_work(domain: &DomainRuntime, session: &str) -> bool {
+    let Ok(state) = domain.state() else { return false };
+    let facts = state.task_facts(&AgentId(session.to_owned()));
+    facts.open && !facts.closing && !facts.card && !facts.held && !facts.delivered
+}
+
+/// The mod's connection is recorded a moment before its push link attaches.
+async fn say(domain: &DomainRuntime, session: &str, text: &str, as_user: bool) {
     for _ in 0..250 {
-        if domain.live.pushes.message(session, crate::node_push::ALONDRA, CONTINUE, false).is_ok() {
+        if domain.live.pushes.message(session, crate::node_push::ALONDRA, text, as_user).is_ok() {
             return;
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
@@ -280,13 +303,16 @@ async fn restart_until_back(domain: &DomainRuntime, session: &str, launcher: &im
             }
             domain.live.set_reconnecting(session, true);
             match launcher.respawn(&short).await {
-                Ok(()) if domain.live.mods.wait_connected(session, timing.settle).await => return,
+                Ok(()) if domain.live.mods.wait_connected(session, timing.settle).await => {
+                    tell_to_carry_on(domain, session).await;
+                    return;
+                }
                 Ok(()) => error = "the restarted session did not connect back to Alondra".into(),
                 Err(reason) => error = reason,
             }
             domain.live.set_reconnecting(session, false);
         }
-        if !needed(domain, session) || !ask_to_retry(domain, session, &error).await {
+        if !needed(domain, session) || !ask_to_retry(domain, session, &error, launcher).await {
             return;
         }
     }
@@ -377,15 +403,18 @@ pub(crate) fn take_out(domain: &DomainRuntime, session: &str, reason: &str, cwd:
 }
 
 /// The card for the user once restarts keep failing; true when they ask for another round. The
-/// other way out cancels the node's open tasks, so none is left with a node nothing brings back.
-async fn ask_to_retry(domain: &DomainRuntime, session: &str, error: &str) -> bool {
+/// other ways out hand the node's open tasks to a new node in the same folder, or cancel them, so
+/// none is left with a node nothing brings back.
+async fn ask_to_retry(domain: &DomainRuntime, session: &str, error: &str, launcher: &impl Launcher) -> bool {
     let name = domain.state().ok().and_then(|state| state.agents.get(&AgentId(session.to_owned())).map(|agent| agent.name.clone()))
         .unwrap_or_else(|| session.to_owned());
     let body = format!("{name} is not responding to Alondra while its task is open, and restarting its session with `claude respawn` failed: {error}");
-    let options = vec![
-        QuestionOption { id: RETRY.into(), label: "Try again".into(), description: None, inputs: vec![] },
-        QuestionOption { id: CANCEL.into(), label: "Cancel its task".into(), description: Some("The task closes and Alondra closes the node".into()), inputs: vec![] },
-    ];
+    let mut options = vec![QuestionOption { id: RETRY.into(), label: "Try again".into(), description: Some("Alondra restarts the same session once more".into()), inputs: vec![] }];
+    if !releasable_tasks(domain, session).is_empty() {
+        options.insert(0, QuestionOption { id: RELAUNCH.into(), label: "Relaunch (Recommended)".into(),
+            description: Some("A new node takes over the task in the same folder, with its files and uncommitted work".into()), inputs: vec![] });
+    }
+    options.push(QuestionOption { id: CANCEL.into(), label: "Cancel its task".into(), description: Some("The task closes and Alondra closes the node".into()), inputs: vec![] });
     let card = match crate::domain_holds::ask(domain, session, body, options) {
         Ok(Some(card)) => card,
         Ok(None) => return false,
@@ -396,6 +425,10 @@ async fn ask_to_retry(domain: &DomainRuntime, session: &str, error: &str) -> boo
     };
     match crate::domain_holds::wait(domain, &card).await {
         Ok(Some(answers)) if answers[0].option_id == RETRY => true,
+        Ok(Some(answers)) if answers[0].option_id == RELAUNCH => {
+            relaunch_elsewhere(domain, session, &answers[0].responder, launcher).await;
+            false
+        }
         Ok(Some(answers)) if answers[0].option_id == CANCEL => {
             cancel_tasks_of(domain, session, &answers[0].responder);
             false
@@ -403,6 +436,38 @@ async fn ask_to_retry(domain: &DomainRuntime, session: &str, error: &str) -> boo
         _ => false,
     }
 }
+
+/// The node's open tasks a new node can take over: those with no result in front of the user.
+fn releasable_tasks(domain: &DomainRuntime, session: &str) -> Vec<TaskId> {
+    let agent = AgentId(session.to_owned());
+    domain.state().map(|state| state.tasks.values()
+        .filter(|task| task.agent_id.as_ref() == Some(&agent) && !task.state.terminal() && !task.archived && task.final_presentation.is_none())
+        .map(|task| task.id.clone()).collect()).unwrap_or_default()
+}
+
+/// The user chose a new node for what this one could not be brought back for: the node closes,
+/// its tasks are freed and each starts again, in their name, in the folder it worked in.
+async fn relaunch_elsewhere(domain: &DomainRuntime, session: &str, user: &str, launcher: &impl Launcher) {
+    let cwd = domain.live.mods.session(session).and_then(|reported| reported.cwd)
+        .or_else(|| releasable_tasks(domain, session).iter().find_map(|task| domain.task_worktree(task).ok().flatten()));
+    let freed = match take_out(domain, session, RELAUNCHED, cwd) {
+        Ok(freed) => freed,
+        Err(failure) => {
+            log!("could not free the tasks of {session} to relaunch them: {failure:#}");
+            return;
+        }
+    };
+    let actor = Actor::User { user_id: user.to_owned() };
+    for task in freed {
+        let relaunched: std::pin::Pin<Box<dyn std::future::Future<Output = Result<serde_json::Value, alondra_core::domain::DomainError>> + Send + '_>> =
+            Box::pin(crate::domain_orchestrator_tools::relaunch(domain, domain.home(), &actor, &task, launcher));
+        if let Err(error) = relaunched.await {
+            log!("could not relaunch {task} after its node could not be restarted: {}", error.message);
+        }
+    }
+}
+
+const RELAUNCHED: &str = "node replaced after its session could not be restarted";
 
 /// The user chose to cancel what the node could not be brought back for: done in their name.
 fn cancel_tasks_of(domain: &DomainRuntime, session: &str, user: &str) {
@@ -470,12 +535,13 @@ mod tests {
     struct Respawner {
         domain: Arc<DomainRuntime>,
         calls: Mutex<Vec<String>>,
+        launched_in: Mutex<Vec<String>>,
         works_from: usize,
     }
 
     impl Respawner {
         fn new(domain: &Arc<DomainRuntime>, works_from: usize) -> Self {
-            Self { domain: domain.clone(), calls: Mutex::new(vec![]), works_from }
+            Self { domain: domain.clone(), calls: Mutex::new(vec![]), launched_in: Mutex::new(vec![]), works_from }
         }
 
         fn calls(&self) -> usize {
@@ -484,8 +550,13 @@ mod tests {
     }
 
     impl Launcher for Respawner {
-        async fn run(&self, _: &str, _: &[String]) -> Result<String, crate::orchestrate::Refusal> {
-            unreachable!("a revival never launches")
+        async fn run(&self, cwd: &str, _: &[String]) -> Result<String, crate::orchestrate::Refusal> {
+            self.launched_in.lock().unwrap().push(cwd.to_owned());
+            Err((axum::http::StatusCode::BAD_GATEWAY, "the test launches nothing".into()))
+        }
+
+        fn plugin(&self) -> Option<std::path::PathBuf> {
+            Some("/synthetic/plugin".into())
         }
 
         async fn stop(&self, _: &str) {}
@@ -697,6 +768,39 @@ mod tests {
         assert!(!domain.live.is_reconnecting(SESSION));
         let state = domain.state().unwrap();
         assert!(state.tasks.values().all(|task| task.state.terminal()), "no task is left with a node nothing brings back");
+    }
+
+    /// The same session cannot be brought back: the card's first way out hands the task to a new
+    /// node in the folder the old one worked in, where its uncommitted work still is.
+    #[tokio::test]
+    async fn a_session_that_cannot_be_restarted_is_relaunched_in_its_folder_from_the_card() {
+        let (home, domain) = world(true);
+        let folder = home.0.join("worktrees/t-probe");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join("staged.rs"), "uncommitted work").unwrap();
+        let hello = json!({"session_id": SESSION, "version": "2.1.291", "cwd": folder.to_str().unwrap()});
+        let connection = domain.connect_node(serde_json::from_value(hello).unwrap(), 3);
+        domain.live.mods.disconnect(SESSION, connection);
+        let claude = Arc::new(Respawner::new(&domain, usize::MAX));
+        let watching = tokio::spawn({
+            let (domain, claude) = (domain.clone(), claude.clone());
+            async move { revive(&domain, SESSION, &*claude, &FAST).await }
+        });
+        let card = the_card(&domain).await;
+        let state = domain.state().unwrap();
+        let options: Vec<&str> = match &state.interactions[&card].payload {
+            alondra_core::domain::InteractionPayload::Question { options, .. } => options.iter().map(|option| option.label.as_str()).collect(),
+            other => panic!("a question, not {other:?}"),
+        };
+        assert_eq!(options, ["Relaunch", "Try again", "Cancel its task"]);
+        assert_eq!(state.interactions[&card].card.recommended.as_deref(), Some(RELAUNCH));
+        answer(&domain, card, RELAUNCH);
+        watching.await.unwrap();
+        assert_eq!(claude.calls(), 3, "no more restarts of the old session");
+        assert_eq!(*claude.launched_in.lock().unwrap(), [folder.to_str().unwrap()], "a new node starts in the old one's folder");
+        let state = domain.state().unwrap();
+        assert_eq!(state.agents[&AgentId(SESSION.into())].phase, alondra_core::domain::NodePhase::Closed);
+        assert_eq!(std::fs::read_to_string(folder.join("staged.rs")).unwrap(), "uncommitted work");
     }
 
     #[tokio::test]

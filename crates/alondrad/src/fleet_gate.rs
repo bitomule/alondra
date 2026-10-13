@@ -430,6 +430,17 @@ impl FleetGate {
         Ok(())
     }
 
+    /// What the gate still owes a node it let back while it was unreachable, taken so that whoever
+    /// reaches the node first says it once.
+    pub(crate) fn take_owed(&self, session: &str) -> Option<String> {
+        let mut inner = self.lock();
+        let owed = inner.saved.pauses.owed.remove(session);
+        if owed.is_some() {
+            self.save(&inner);
+        }
+        owed
+    }
+
     /// A start that no longer waits: its task ended, or its caller gave up on it.
     pub(crate) fn forget(&self, key: &Key) {
         self.lock().asking.remove(key);

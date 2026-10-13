@@ -12,15 +12,25 @@ use std::time::Duration;
 pub(crate) const EVERY: Duration = Duration::from_secs(60);
 
 /// What the listing says of each session, by session id; `None` when it is not the JSON list.
+/// Claude Code keeps a session's row after its process stops: it stops the process of a session
+/// that sat settled for a while (an hour, eight when linked to claude.ai, a minute when the Mac is
+/// short of memory), and lists a `pid` only while the process lives. A `done` row is a finished
+/// turn either way, as a message resumes it. Any other row without a process, when the listing
+/// names processes, has no session behind it, whatever its state says; a listing that names none
+/// is read by its states alone.
 pub(crate) fn parse(listing: &str) -> Option<BTreeMap<String, Listed>> {
     let list = serde_json::Deserializer::from_str(listing.get(listing.find('[')?..)?).into_iter::<Vec<Value>>().next()?.ok()?;
+    let names_processes = list.iter().any(|session| session.get("pid").is_some_and(Value::is_u64));
     Some(list.iter().filter_map(|session| {
         let id = session.get("sessionId").and_then(Value::as_str)?;
+        let running = session.get("pid").is_some_and(Value::is_u64);
         let listed = match session.get("state").and_then(Value::as_str)? {
+            "done" => Listed::Done,
+            _ if names_processes && !running => Listed::Absent,
             "working" => Listed::Working,
             "idle" => Listed::Idle,
             "blocked" => Listed::Blocked,
-            "done" => Listed::Done,
+            "failed" if running => Listed::Idle,
             _ => Listed::Absent,
         };
         Some((id.to_owned(), listed))
@@ -284,6 +294,141 @@ mod tests {
         assert!(read_meanwhile <= TAKES / 2, "the sweep read {read_meanwhile} notices while another caller took the store {TAKES} times");
     }
 
+    struct Respawn {
+        domain: std::sync::Arc<DomainRuntime>,
+        hello: serde_json::Value,
+        asked: Mutex<Vec<String>>,
+        link: Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<String>>>,
+    }
+
+    impl crate::orchestrate::Launcher for Respawn {
+        async fn run(&self, _: &str, _: &[String]) -> Result<String, crate::orchestrate::Refusal> {
+            unreachable!("bringing a session back launches nothing new")
+        }
+
+        async fn stop(&self, _: &str) {}
+
+        async fn respawn(&self, short: &str) -> Result<(), String> {
+            self.asked.lock().unwrap().push(short.to_owned());
+            let hello: crate::node_reports::Hello = serde_json::from_value(self.hello.clone()).unwrap();
+            let session = hello.session_id.clone();
+            let connection = self.domain.connect_node(hello, alondra_core::now_millis());
+            *self.link.lock().unwrap() = Some(self.domain.live.pushes.attach(&session, connection));
+            Ok(())
+        }
+    }
+
+    fn tasks_view(domain: &DomainRuntime) -> String {
+        use alondra_core::views::{build, Client, Lang, LiveSnapshot, RenderContext, Transport};
+        let state = domain.state().unwrap();
+        let view = build("tasks", RenderContext {
+            domain: &state, projection: &state.projection(), live: &LiveSnapshot::default(), client: Client::Mac, lang: Lang::Es,
+            transport: Transport::Loopback, cursor: "", rendered_at: "",
+        }).unwrap();
+        serde_json::to_string(&view).unwrap()
+    }
+
+    fn paused_for_usage(domain: &DomainRuntime, node: &str) {
+        let now = alondra_core::now_millis();
+        run(domain, Actor::System, &format!("turn-end-{node}"), Command::MoveNode { agent_id: node.into(), event: NodeEvent::TurnEnded, at: now });
+        let usage = alondra_core::domain::Pause {
+            reason: alondra_core::domain::PauseReason::Usage, since: now, cut: None, turn_since: None,
+            cleanup: alondra_core::domain::PauseCleanup::Done, released: false,
+        };
+        run(domain, Actor::System, &format!("pause-{node}"), Command::MoveNode { agent_id: node.into(), event: NodeEvent::Paused { pause: usage }, at: now });
+    }
+
+    /// A node of `launch` connected from `worktree`, with uncommitted work in it, and the hello its
+    /// mod says again when its session is resumed.
+    fn in_worktree(domain: &DomainRuntime, home: &std::path::Path, node: &str) -> (std::path::PathBuf, serde_json::Value, u64) {
+        let worktree = home.join(format!("worktrees/{node}"));
+        std::fs::create_dir_all(&worktree).unwrap();
+        std::fs::write(worktree.join("staged.rs"), "uncommitted work").unwrap();
+        let hello = serde_json::json!({"session_id": node, "version": "2.1.291", "cwd": worktree.to_str().unwrap()});
+        let connection = domain.connect_node(serde_json::from_value(hello.clone()).unwrap(), alondra_core::now_millis());
+        drop(domain.live.pushes.attach(node, connection));
+        (worktree, hello, connection)
+    }
+
+    /// Claude Code stopped the settled session: its mod's connection drops.
+    fn retired(domain: &DomainRuntime, node: &str, connection: u64) {
+        domain.live.pushes.detach(node, connection);
+        domain.live.mods.disconnect(node, connection);
+    }
+
+    const QUICK: crate::node_revival::Timing = crate::node_revival::Timing {
+        grace: Duration::from_millis(30), settle: Duration::from_millis(500), pauses: [Duration::from_millis(5); 2],
+    };
+
+    fn told(claude_code: &Respawn) -> String {
+        let line = claude_code.link.lock().unwrap().as_mut().unwrap().try_recv().expect("a resumed session starts no turn by itself");
+        serde_json::from_str::<serde_json::Value>(&line).unwrap()["text"].as_str().unwrap().to_owned()
+    }
+
+    /// 10–12 October, “El orquestador deja de verse”: the node ended its turn paused for the usage
+    /// limit, with its work uncommitted in its worktree. Eight hours later Claude Code stopped the
+    /// settled session (`bg retire …: settled, idle 8h`) and listed it `done` with no process. When
+    /// usage came back the session was resumed, and nothing told it to carry on: it sat idle until
+    /// Claude Code stopped it again eight hours later.
+    #[tokio::test]
+    async fn a_paused_node_whose_session_claude_code_stopped_comes_back_and_carries_on_in_its_worktree() {
+        const NODE: &str = "c0ffee00-81db-4cdb-8e95-6a2aaab612d3";
+        let home = crate::test_support::Directory::new();
+        std::fs::create_dir_all(&home).unwrap();
+        let domain = std::sync::Arc::new(open(&home));
+        launch(&domain, NODE);
+        let (worktree, hello, connection) = in_worktree(&domain, &home, NODE);
+        paused_for_usage(&domain, NODE);
+        retired(&domain, NODE, connection);
+        let claude = Claude(Mutex::new(format!(
+            r#"[{{"id":"c0ffee00","sessionId":"{NODE}","state":"done"}},{{"id":"another","sessionId":"another","state":"working","pid":56103}}]"#)));
+        assert!(once(&domain, &claude).await);
+        assert!(!domain.live.mods.connected(NODE), "nothing says it is connected");
+        let tasks = tasks_view(&domain);
+        assert!(!tasks.contains("Sin conexión") && tasks.contains("Por el límite de uso"), "it says what it waits for: {tasks}");
+
+        let claude_code = Respawn { domain: domain.clone(), hello, asked: Mutex::new(vec![]), link: Mutex::new(None) };
+        crate::node_revival::revive(&domain, NODE, &claude_code, &QUICK).await;
+        assert_eq!(*claude_code.asked.lock().unwrap(), ["c0ffee00"], "the same session is resumed, conversation and all");
+        assert_eq!(domain.live.mods.session(NODE).and_then(|reported| reported.cwd).as_deref(), worktree.to_str(), "in the same worktree");
+        assert!(told(&claude_code).ends_with("Your Claude usage limit has reset. Carry on with what you were doing."));
+        assert!(!matches!(phase(&domain, NODE), NodePhase::Paused(_)), "its pause is over");
+        assert_eq!(std::fs::read_to_string(worktree.join("staged.rs")).unwrap(), "uncommitted work");
+    }
+
+    /// The same without a pause: a node whose turn ended with its task still open loses its session
+    /// to Claude Code, and once resumed it is told to carry on rather than left idle.
+    #[tokio::test]
+    async fn a_resumed_session_whose_task_still_needs_it_is_told_to_carry_on() {
+        const NODE: &str = "c0ffee01-81db-4cdb-8e95-6a2aaab612d3";
+        let home = crate::test_support::Directory::new();
+        std::fs::create_dir_all(&home).unwrap();
+        let domain = std::sync::Arc::new(open(&home));
+        launch(&domain, NODE);
+        let (_, hello, connection) = in_worktree(&domain, &home, NODE);
+        run(&domain, Actor::System, "turn-end", Command::MoveNode { agent_id: NODE.into(), event: NodeEvent::TurnEnded, at: alondra_core::now_millis() });
+        retired(&domain, NODE, connection);
+        let claude_code = Respawn { domain: domain.clone(), hello, asked: Mutex::new(vec![]), link: Mutex::new(None) };
+        crate::node_revival::revive(&domain, NODE, &claude_code, &QUICK).await;
+        assert_eq!(*claude_code.asked.lock().unwrap(), ["c0ffee01"]);
+        assert!(told(&claude_code).contains("continue your task"));
+    }
+
+    /// A row Claude Code keeps after the process stopped, other than `done`, is no session: a
+    /// node listed `blocked` without one is brought back, not left resting on a ghost.
+    #[tokio::test]
+    async fn a_node_whose_row_has_no_process_is_brought_back() {
+        let home = crate::test_support::Directory::new();
+        std::fs::create_dir_all(&home).unwrap();
+        let domain = open(&home);
+        launch(&domain, "ghost");
+        run(&domain, Actor::System, "turn-end", Command::MoveNode { agent_id: "ghost".into(), event: NodeEvent::TurnEnded, at: alondra_core::now_millis() });
+        assert_eq!(phase(&domain, "ghost"), NodePhase::Stopped);
+        let claude = Claude(Mutex::new(r#"[{"id":"ghost","sessionId":"ghost","state":"blocked"},{"id":"alive","sessionId":"alive","state":"working","pid":44234}]"#.into()));
+        assert!(once(&domain, &claude).await);
+        assert_eq!(phase(&domain, "ghost"), NodePhase::Starting { reviving: true });
+    }
+
     #[test]
     fn the_listing_says_each_session_by_its_id_and_a_stopped_one_is_absent() {
         let listing = r#"[{"id":"9462eaef","sessionId":"9462eaef-2d59","state":"done"},{"id":"200ea49d","sessionId":"200ea49d-a71d","state":"working"},
@@ -295,5 +440,26 @@ mod tests {
         assert_eq!(parsed["9462eaef-2d59"], Listed::Done);
         assert_eq!(parsed["30fdb363-1965"], Listed::Absent);
         assert_eq!(parse("claude: command not found"), None);
+    }
+
+    /// What `claude agents --json --all` listed on 13 October: a row keeps its last state after
+    /// Claude Code stops its process, and only a running one names its `pid`.
+    #[test]
+    fn a_listing_that_names_processes_reads_a_row_without_one_as_gone() {
+        let listing = r#"[{"id":"f537833a","sessionId":"f537833a","state":"done"},
+            {"id":"b1464d88","sessionId":"b1464d88","state":"done","pid":43635,"status":"idle"},
+            {"id":"57988e41","sessionId":"57988e41","state":"failed","pid":41821,"status":"idle"},
+            {"id":"db23219f","sessionId":"db23219f","state":"blocked"},
+            {"id":"8906cf70","sessionId":"8906cf70","state":"blocked","pid":56103,"status":"busy"},
+            {"id":"d9228a21","sessionId":"d9228a21","state":"working","pid":44234,"status":"busy"},
+            {"id":"5d6f5f9e","sessionId":"5d6f5f9e","state":"stopped"}]"#;
+        let parsed = parse(listing).unwrap();
+        assert_eq!(parsed["f537833a"], Listed::Done, "done, its process stopped: a message resumes it");
+        assert_eq!(parsed["b1464d88"], Listed::Done, "done, its process still there");
+        assert_eq!(parsed["57988e41"], Listed::Idle);
+        assert_eq!(parsed["db23219f"], Listed::Absent, "blocked when its process stopped");
+        assert_eq!(parsed["8906cf70"], Listed::Blocked);
+        assert_eq!(parsed["d9228a21"], Listed::Working);
+        assert_eq!(parsed["5d6f5f9e"], Listed::Absent);
     }
 }
