@@ -233,6 +233,8 @@ pub fn next(phase: &NodePhase, since: Millis, event: &NodeEvent, f: &TaskFacts, 
     let moved = match (phase, event) {
         (P::Paused(Pause { reason: PauseReason::ByUser, .. }), NodeEvent::TurnStarted) =>
             return refuse("paused_by_user", "Only the user resumes a node they paused"),
+        (P::Paused(Pause { reason: PauseReason::Memory, .. }), NodeEvent::TurnStarted) =>
+            return refuse("paused_for_memory", "Alondra brings back a node it paused for memory once the Mac has room"),
         (P::Closing, NodeEvent::TurnStarted | NodeEvent::TurnEnded | NodeEvent::TurnFailed) => P::Closing,
         (_, NodeEvent::TurnStarted) => P::Working,
         (P::Paused(_), NodeEvent::TurnEnded | NodeEvent::TurnFailed) => phase.clone(),

@@ -56,6 +56,7 @@ fn forbidden(phase: &NodePhase, event: &NodeEvent) -> Option<&'static str> {
     match (phase, event) {
         (P::Closed, _) => Some("node_closed"),
         (P::Paused(Pause { reason: PauseReason::ByUser, .. }), E::TurnStarted) => Some("paused_by_user"),
+        (P::Paused(Pause { reason: PauseReason::Memory, .. }), E::TurnStarted) => Some("paused_for_memory"),
         (P::Starting { .. }, E::StartFailed | E::RevivalFailed) => None,
         (_, E::StartFailed | E::RevivalFailed) => Some("not_starting"),
         (P::Paused(_), E::Paused { .. }) => Some("already_paused"),
@@ -100,6 +101,7 @@ forbid! {
     closed_refuses_an_absent_session: NodePhase::Closed, NodeEvent::Listed { listed: Listed::Absent } => "node_closed";
 
     paused_by_the_user_refuses_a_turn: NodePhase::Paused(pause(PauseReason::ByUser)), NodeEvent::TurnStarted => "paused_by_user";
+    paused_for_memory_refuses_a_turn_it_starts_by_itself: NodePhase::Paused(pause(PauseReason::Memory)), NodeEvent::TurnStarted => "paused_for_memory";
 
     working_refuses_a_failed_start: NodePhase::Working, NodeEvent::StartFailed => "not_starting";
     working_refuses_a_failed_revival: NodePhase::Working, NodeEvent::RevivalFailed => "not_starting";

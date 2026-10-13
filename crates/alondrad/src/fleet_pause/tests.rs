@@ -11,7 +11,7 @@ const MIN: Millis = 60_000;
 const SAMPLE: Millis = 10_000;
 
 fn candidate(session: &str, priority: TaskPriority, turn_since: Millis, waits_on_user: bool) -> Candidate {
-    Candidate { session: session.into(), task: session.into(), priority, turn_since, waits_on_user }
+    Candidate { session: session.into(), task: session.into(), priority, turn_since, waits_on_user, cuts: 0 }
 }
 
 #[test]
@@ -22,10 +22,24 @@ fn the_lowest_priority_and_then_the_latest_turn_is_paused_never_one_waiting_on_t
         candidate("normal-new", TaskPriority::Normal, 40, false),
         candidate("low-asks", TaskPriority::Low, 90, true),
     ];
-    assert_eq!(choose(&working).map(|node| node.session.as_str()), Some("normal-new"), "the Low one waits on the user");
-    assert_eq!(choose(&working[..1]), None, "the last node working is never paused");
+    assert_eq!(choose(&working, false).map(|node| node.session.as_str()), Some("normal-new"), "the Low one waits on the user");
+    assert_eq!(choose(&working[..1], false), None, "the last node working is never paused");
     let asking = [candidate("a", TaskPriority::Normal, 0, true), candidate("b", TaskPriority::Normal, 1, true)];
-    assert_eq!(choose(&asking), None);
+    assert_eq!(choose(&asking, false), None);
+}
+
+/// A node brought back after a cut reruns what was cut, so it goes after the nodes cut fewer
+/// times; one cut `SPARED_AFTER` times is let finish, unless macOS reports critical pressure.
+#[test]
+fn the_fewest_cuts_go_first_and_a_node_cut_twice_is_let_finish_unless_pressure_is_critical() {
+    let cut = |session, turn_since, cuts| Candidate { cuts, ..candidate(session, TaskPriority::Normal, turn_since, false) };
+    let working = [cut("old", 10, 0), cut("rerun", 90, 1)];
+    assert_eq!(choose(&working, false).map(|node| node.session.as_str()), Some("old"), "the latest turn is the one rerunning a cut");
+    let working = [cut("old", 10, 0), cut("rerun", 90, 1), candidate("low", TaskPriority::Low, 5, false)];
+    assert_eq!(choose(&working, false).map(|node| node.session.as_str()), Some("low"), "priority still comes first");
+    let working = [Candidate { priority: TaskPriority::High, ..cut("high", 10, 0) }, cut("rerun", 90, SPARED_AFTER)];
+    assert_eq!(choose(&working, false), None, "cut twice and the one due: nobody is paused and it finishes");
+    assert_eq!(choose(&working, true).map(|node| node.session.as_str()), Some("rerun"), "critical pressure cuts it all the same");
 }
 
 #[test]
@@ -169,8 +183,13 @@ impl Fleet {
     }
 
     async fn tick(&mut self, free: u32, now: Millis) {
+        self.tick_with(Machine { at: now, memory_free_percent: Some(free), cpus: 11, load: [5.0; 3], ..Machine::default() }).await;
+    }
+
+    async fn tick_with(&mut self, machine: Machine) {
+        let now = machine.at;
         let before = self.orchestrator_inbox();
-        crate::machine_watch::pace(&self.domain, &Machine { at: now, memory_free_percent: Some(free), cpus: 11, load: [5.0; 3], ..Machine::default() });
+        crate::machine_watch::pace(&self.domain, &machine);
         self.notices += self.orchestrator_inbox() - before;
         crate::fleet_gate::pass_at(&self.domain, &self.home.0, &NoLaunch, now).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(2)).await;
@@ -407,9 +426,10 @@ async fn a_node_the_user_paused_that_starts_a_turn_by_itself_is_stopped_again_an
     assert!(fleet.domain.live.gate.paused_by_user(&fleet.domain, "agent-t2"));
 }
 
-/// A node Alondra paused for memory that starts a turn by itself went on: it is no longer paused.
+/// A node Alondra paused for memory that starts a turn by itself (Alondra stopped its background
+/// build and Claude Code told it so) is stopped again and stays paused until Alondra resumes it.
 #[tokio::test]
-async fn a_node_paused_for_memory_that_starts_a_turn_by_itself_is_no_longer_paused() {
+async fn a_node_paused_for_memory_that_starts_a_turn_by_itself_is_stopped_again_and_stays_paused() {
     use TaskPriority::Normal;
     let base = alondra_core::now_millis();
     let mut fleet = Fleet::new(&[("t1", Normal), ("t2", Normal)], Limit::Fixed(6), base - 10 * MIN);
@@ -417,8 +437,74 @@ async fn a_node_paused_for_memory_that_starts_a_turn_by_itself_is_no_longer_paus
     assert_eq!(tasks(&fleet.events("pause")), ["t2"]);
     fleet.domain.report(Envelope { session_id: "agent-t2".into(), report: Report::TurnStart }, base + 12_000);
     fleet.tick(50, base + 20_000).await;
-    assert!(fleet.domain.live.gate.paused(&fleet.domain, "agent-t2").is_none());
-    assert_eq!(tasks(&fleet.events("pause")), ["t2"]);
+    assert_eq!(tasks(&fleet.events("pause")), ["t2", "t2"], "its new turn is cut");
+    assert_eq!(fleet.domain.live.gate.paused(&fleet.domain, "agent-t2").map(|paused| paused.reason), Some(Reason::Memory));
+    assert_eq!(phase(&fleet, "t2").key(), "paused");
+    assert!(fleet.events("resume").is_empty());
+}
+
+/// The loop of 13 October: memory runs out with two nodes building, Alondra pauses the newer one
+/// and stops its build; the build's end wakes the node, which runs the build again and is paused
+/// again a minute later, over and over; once brought back it reruns the build, saturates the Mac
+/// and, its turn being the newest, is the one paused again. Here the Mac's memory follows the
+/// builds under way (one fits, two exhaust it with macOS warning, three would be critical) and a
+/// node wakes 12 s after each cut, as Claude Code wakes a node whose background command died.
+/// The node needing 8 uninterrupted minutes finishes, the other gets its turn back afterwards, the
+/// Mac never reaches critical pressure and, once a node is paused, it stays out of memory's way.
+#[tokio::test]
+async fn a_node_whose_build_saturates_the_mac_finishes_it_instead_of_being_cut_again_and_again() {
+    use TaskPriority::Normal;
+    const BUILD: Millis = 8 * MIN;
+    let base = alondra_core::now_millis();
+    let mut fleet = Fleet::new(&[("long", Normal), ("rerun", Normal)], Limit::Fixed(6), base - 10 * MIN);
+    let mut progress: Millis = 0;
+    let mut finished_at = None;
+    let mut cut_builds = 0;
+    let mut critical = 0;
+    let mut exhausted: Millis = 0;
+    let mut wakes: Vec<(Millis, &str)> = vec![];
+    let mut now = base;
+    while now < base + 90 * MIN {
+        let building: Vec<&str> = ["long", "rerun"].into_iter().filter(|task| phase(&fleet, task) == NodePhase::Working).collect();
+        let pressure = match building.len() {
+            0 | 1 => alondra_core::MemoryPressure::Normal,
+            2 => alondra_core::MemoryPressure::Warning,
+            _ => alondra_core::MemoryPressure::Critical,
+        };
+        critical += usize::from(pressure == alondra_core::MemoryPressure::Critical);
+        exhausted += if building.len() >= 2 { SAMPLE } else { 0 };
+        let free = 70u32.saturating_sub(33 * building.len() as u32);
+        let seen = fleet.log.len();
+        fleet.tick_with(Machine { at: now, memory_free_percent: Some(free), memory_pressure: Some(pressure), cpus: 11, load: [5.0; 3], ..Machine::default() }).await;
+        for (_, what, task) in &fleet.log[seen..] {
+            if *what == "pause" && building.contains(&task.as_str()) {
+                wakes.push((now + 12_000, if task == "long" { "long" } else { "rerun" }));
+                if task == "rerun" {
+                    cut_builds += 1;
+                    progress = 0;
+                }
+            }
+        }
+        for (_, task) in wakes.iter().filter(|(at, _)| *at <= now) {
+            fleet.domain.report(Envelope { session_id: format!("agent-{task}"), report: Report::TurnStart }, now);
+        }
+        wakes.retain(|(at, _)| *at > now);
+        if finished_at.is_none() && phase(&fleet, "rerun") == NodePhase::Working {
+            progress += SAMPLE;
+            if progress >= BUILD {
+                fleet.end_turn("rerun", now);
+                finished_at = Some(now);
+            }
+        }
+        now += SAMPLE;
+    }
+    let finished_at = finished_at.unwrap_or_else(|| panic!("the build never finished after {cut_builds} cuts: {:?}", fleet.log));
+    assert!(cut_builds <= SPARED_AFTER as usize, "its build was cut {cut_builds} times: {:?}", fleet.log);
+    assert!(finished_at < base + 30 * MIN, "it finished at minute {}", (finished_at - base) / MIN);
+    assert_eq!(phase(&fleet, "long"), NodePhase::Working, "the other node is back at work once the Mac has room: {:?}", fleet.log);
+    assert_eq!(critical, 0, "the Mac never reached critical pressure");
+    assert!(exhausted <= 3 * MIN, "a pause relieves the Mac until Alondra resumes the node, yet two builds ran together for {} s: {:?}",
+        exhausted / 1000, fleet.log);
 }
 
 /// The user's own message ends their pause, since it is what the node goes on with; the

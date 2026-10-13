@@ -371,9 +371,10 @@ fn respond(domain: &DomainRuntime, payload: &Value) -> Result<Reply> {
     };
     let event = text(payload, "hook_event_name").unwrap_or_default();
     let tool = text(payload, "tool_name");
-    if event == "PreToolUse" && domain.live.gate.paused_by_user(domain, &session_id) {
+    if event == "PreToolUse" && let Some(reason) = domain.live.gate.holding(domain, &session_id) {
+        let why = if reason == crate::fleet_pause::Reason::ByUser { PAUSED_BY_USER } else { PAUSED_FOR_MEMORY };
         return Ok(Reply::Plain(json!({"hookSpecificOutput": {"hookEventName": "PreToolUse",
-            "permissionDecision": "deny", "permissionDecisionReason": PAUSED_BY_USER}})));
+            "permissionDecision": "deny", "permissionDecisionReason": why}})));
     }
     if event == "PreToolUse" && tool.as_deref().is_some_and(|t| t.starts_with("mcp__plugin_alondra")) {
         return Ok(Reply::Plain(json!({"hookSpecificOutput": {"hookEventName": "PreToolUse",
@@ -441,6 +442,7 @@ fn respond(domain: &DomainRuntime, payload: &Value) -> Result<Reply> {
 /// A node the user paused may run nothing until the user resumes it or writes to it, whatever
 /// started its turn.
 pub(crate) const PAUSED_BY_USER: &str = "The user paused you: do nothing and end your turn; only the user can resume you.";
+pub(crate) const PAUSED_FOR_MEMORY: &str = "Alondra paused you because the Mac is out of memory: do nothing and end your turn; Alondra tells you when to carry on.";
 
 const USER_KEY_FILE: &str = "tui-key.pem";
 const USER_ONLY_COMMANDS: &[&str] = &["answer", "send", "device", "orchestrator"];
@@ -1438,6 +1440,26 @@ mod tests {
         let (reply, _) = hook(&domain, json!({"session_id": "agent-a", "hook_event_name": "PreToolUse", "tool_name": "Bash"}), Some(6)).await;
         assert_ne!(reply["hookSpecificOutput"]["permissionDecision"], "deny", "{reply}");
         assert_eq!(hook(&domain, json!({"session_id": "agent-a", "hook_event_name": "Stop"}), Some(6)).await.0["decision"], "block");
+    }
+
+    /// A node paused for memory wakes up when Alondra stops the build the pause cut: that turn
+    /// runs no tool, so it cannot start the build again, and its turn end is not held back.
+    #[tokio::test]
+    async fn a_node_paused_for_memory_runs_no_tool_until_it_is_resumed() {
+        let fixture = Fixture::new();
+        let domain = fixture.open();
+        node_with_task(&domain);
+        assert!(domain.live.gate.hold_back(&domain, "agent-a", crate::fleet_pause::Reason::Memory, alondra_core::now_millis()));
+        for tool in ["Bash", "mcp__plugin_alondra_alondra__wait_for_machine"] {
+            let (reply, result) = hook(&domain, json!({"session_id": "agent-a", "hook_event_name": "PreToolUse", "tool_name": tool}), Some(6)).await;
+            result.unwrap();
+            assert_eq!(reply["hookSpecificOutput"]["permissionDecision"], "deny", "{tool}: {reply}");
+            assert_eq!(reply["hookSpecificOutput"]["permissionDecisionReason"], PAUSED_FOR_MEMORY);
+        }
+        hook(&domain, json!({"session_id": "agent-a", "hook_event_name": "UserPromptSubmit"}), Some(6)).await.1.unwrap();
+        assert_eq!(domain.state().unwrap().node_phase(&AgentId("agent-a".into())).map(NodePhase::key), Some("paused"),
+            "the hooks of that turn do not take it out of the pause");
+        assert_eq!(hook(&domain, json!({"session_id": "agent-a", "hook_event_name": "Stop"}), Some(6)).await.0, json!({}));
     }
 
     #[tokio::test]

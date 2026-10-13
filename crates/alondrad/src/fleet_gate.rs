@@ -328,7 +328,7 @@ impl FleetGate {
     pub(crate) fn hold_back(&self, domain: &DomainRuntime, session: &str, reason: Reason, now: Millis) -> bool {
         let Some(task) = domain.state().ok().and_then(|state| open_task_of(&state, session)) else { return false };
         let mut inner = self.lock_with(domain);
-        if inner.saved.pauses.paused.get(session).is_some_and(|paused| paused.reason == Reason::ByUser) {
+        if inner.saved.pauses.paused.get(session).is_some_and(|paused| paused.reason.holds()) {
             return true;
         }
         let turn_since = domain.live.mods.session(session).and_then(|reported| reported.working_since);
@@ -370,11 +370,16 @@ impl FleetGate {
         self.lock_with(domain).saved.pauses.paused.get(session).is_some_and(|paused| paused.reason == Reason::ByUser)
     }
 
-    /// The user wrote to a node they paused: their message is what it goes on with, so the pause
-    /// ends without the resume notice.
+    /// The reason of a pause that holds the node until Alondra or the user ends it, if it has one.
+    pub(crate) fn holding(&self, domain: &DomainRuntime, session: &str) -> Option<Reason> {
+        self.lock_with(domain).saved.pauses.paused.get(session).map(|paused| paused.reason.clone()).filter(Reason::holds)
+    }
+
+    /// The user wrote to a node paused by them or for memory: their message is what it goes on
+    /// with, so the pause ends without the resume notice.
     pub(crate) fn release_by_user_message(&self, domain: &DomainRuntime, session: &str) {
         let mut inner = self.lock_with(domain);
-        if inner.saved.pauses.paused.get(session).is_some_and(|paused| paused.reason == Reason::ByUser) {
+        if inner.saved.pauses.paused.get(session).is_some_and(|paused| paused.reason.holds()) {
             inner.saved.pauses.paused.remove(session);
             log!("{session} is no longer paused: the user wrote to it");
             self.save_with(domain, &inner);
@@ -916,8 +921,9 @@ pub(crate) async fn pass_at(domain: &DomainRuntime, home: &Path, launcher: &impl
         let queued = queued_launches(domain, &state);
         let mut inner = gate.lock_with(domain);
         inner.asking.retain(|key, _| still_waits(&state, key));
-        let health = domain.live.machine_watch.mac().health;
-        crate::fleet_pause::look(domain, &state, &mut inner.saved.pauses, health, now);
+        let mac = domain.live.machine_watch.mac();
+        let critical = mac.pressure == Some(alondra_core::MemoryPressure::Critical);
+        crate::fleet_pause::look(domain, &state, &mut inner.saved.pauses, mac.health, critical, now);
         deliver_owed(domain, &mut inner);
         let snapshot = snapshot_locked(domain, &state, &inner, queued, now);
         inner.saved.learned.learn(snapshot.setting, snapshot.mac.health, !snapshot.queue.is_empty(), now);
