@@ -118,6 +118,14 @@ pub(super) fn queued<'a>(task: &crate::domain::Task, context: &'a RenderContext<
     context.live.pacing.as_ref()?.queued.iter().find(|queued| queued.task_id == task.id.0)
 }
 
+/// The place in the gate's queue of a task whose node lost its session and waits there to be
+/// restarted. Kept apart from `queued`: such a task is no launch the user can pause or release.
+pub(super) fn coming_back_queued<'a>(task: &crate::domain::Task, context: &'a RenderContext<'_>) -> Option<&'a super::LiveQueued> {
+    let agent = task.agent_id.as_ref()?;
+    (context.domain.node_phase(agent) == Some(&crate::domain::NodePhase::Lost)).then_some(())?;
+    context.live.pacing.as_ref()?.queued.iter().find(|queued| queued.task_id == task.id.0)
+}
+
 pub(super) fn ordinal(position: usize, lang: super::Lang) -> String {
     match lang {
         super::Lang::Es => format!("{position}.º"),

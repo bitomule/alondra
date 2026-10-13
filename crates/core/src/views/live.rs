@@ -237,8 +237,6 @@ pub struct LiveNode {
     /// The model id the node's main thread runs on.
     #[serde(default)]
     pub model: Option<String>,
-    #[serde(default)]
-    pub reconnecting: bool,
     /// Its connection to Alondra has been gone for longer than it takes to come back by itself, and
     /// no restart runs: whatever it showed last is stale.
     #[serde(default)]

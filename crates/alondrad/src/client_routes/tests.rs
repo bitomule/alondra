@@ -1107,8 +1107,92 @@ async fn a_nodes_state_comes_from_its_mods_events_and_connection_not_from_hooks_
     assert_eq!(badges(row)[0].0, "Working", "a node whose connection closed keeps its last factual state while the daemon brings it back");
     crate::domain_agent_lifecycle::node_event(&fixture.domain, &AgentId::from("agent-a"), alondra_core::domain::NodeEvent::SessionLost).unwrap();
     let fleet = view_json(&fixture, "fleet", "en").await;
-    assert!(!fleet_lists(&fleet, "agent-a"), "its session is gone: it leaves Fleet while Alondra brings it back");
-    assert_eq!(node_shown(&fixture, "agent-a", "en").await[0].0, "Reconnecting", "and its screen says so");
+    assert!(!fleet_lists(&fleet, "agent-a"), "its session is gone: it leaves Fleet while it waits to be brought back");
+    assert_eq!(node_shown(&fixture, "agent-a", "en").await[0].0, "Waiting for the machine", "and its screen says it waits");
+    crate::domain_agent_lifecycle::node_event(&fixture.domain, &AgentId::from("agent-a"), alondra_core::domain::NodeEvent::RevivalAdmitted).unwrap();
+    assert_eq!(node_shown(&fixture, "agent-a", "en").await[0].0, "Reconnecting", "the gate let it back: Alondra restarts it");
+    assert!(fleet_lists(&view_json(&fixture, "fleet", "en").await, "agent-a"), "a node being restarted is in Fleet");
+}
+
+/// The last minute of the Mac as `pace` samples it: macOS at warning, or normal with room.
+fn memory(fixture: &Fixture, pressure: alondra_core::MemoryPressure, at: &[i64]) {
+    for &at in at {
+        let machine = alondra_core::Machine { at, memory_free_percent: Some(50), memory_pressure: Some(pressure), cpus: 11, load: [1.0; 3],
+            ..alondra_core::Machine::default() };
+        crate::machine_watch::pace(&fixture.domain, &machine);
+    }
+}
+
+/// 13 October: quill's (1d6d53c5) session ended and its restart waited at the fleet gate for
+/// memory ("waits at the fleet gate to come back: Pressure(Warning)", every 30 s), while its task
+/// and its screen said «Reconectando». A lost node held by the gate waits for the machine, queued
+/// with what holds it; «Reconectando» only once the gate lets it back and the restart runs.
+#[tokio::test]
+async fn a_lost_node_the_gate_holds_for_memory_waits_for_the_machine_and_reconnects_only_once_admitted() {
+    use alondra_core::{MemoryPressure, domain::NodeEvent, domain::NodePhase};
+    struct Claude {
+        domain: Arc<DomainRuntime>,
+        go: tokio::sync::Notify,
+        asked: std::sync::atomic::AtomicUsize,
+    }
+    impl crate::orchestrate::Launcher for Claude {
+        async fn run(&self, _: &str, _: &[String]) -> Result<String, crate::orchestrate::Refusal> {
+            unreachable!("bringing a session back launches nothing new")
+        }
+        async fn stop(&self, _: &str) {}
+        async fn respawn(&self, _: &str) -> Result<(), String> {
+            self.asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.go.notified().await;
+            let hello = serde_json::from_value(json!({"session_id": "agent-a", "version": "2.1.287"})).unwrap();
+            self.domain.connect_node(hello, alondra_core::now_millis());
+            Ok(())
+        }
+    }
+    let fixture = Fixture::start().await;
+    seed_work(&fixture);
+    observe_sessions(&fixture);
+    fixture.agent("agent-a", "start-1", Command::StartTask { task_id: "task-1".into() });
+    let agent = AgentId::from("agent-a");
+    let hello = serde_json::from_value(json!({"session_id": "agent-a", "version": "2.1.287"})).unwrap();
+    let connection = fixture.domain.connect_node(hello, alondra_core::now_millis());
+    fixture.domain.live.mods.disconnect("agent-a", connection);
+    crate::domain_agent_lifecycle::node_event(&fixture.domain, &agent, NodeEvent::SessionLost).unwrap();
+    let now = alondra_core::now_millis();
+    memory(&fixture, MemoryPressure::Warning, &[now - 120_000, now - 90_000, now - 61_000]);
+
+    let claude = Arc::new(Claude { domain: fixture.domain.clone(), go: tokio::sync::Notify::new(), asked: Default::default() });
+    let timing = crate::node_revival::Timing { grace: Duration::from_millis(30), settle: Duration::from_secs(5), pauses: [Duration::from_millis(5); 2] };
+    let revival = tokio::spawn({
+        let (domain, claude) = (fixture.domain.clone(), claude.clone());
+        async move { crate::node_revival::revive(&domain, "agent-a", &*claude, &timing).await }
+    });
+    let queued = || fixture.domain.live.gate.live(&fixture.domain, alondra_core::now_millis()).unwrap().queued;
+    for _ in 0..500 {
+        if !queued().is_empty() { break; }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(queued().iter().any(|queued| queued.task_id == "task-1"), "its restart waits at the gate");
+    let phase = || fixture.domain.state().unwrap().agents[&agent].phase.clone();
+    assert_eq!(phase(), NodePhase::Lost);
+    assert_eq!(claude.asked.load(std::sync::atomic::Ordering::SeqCst), 0, "nothing restarts it while the Mac has no room");
+    assert_eq!(node_shown(&fixture, "agent-a", "es").await[0].0, "Esperando máquina");
+    let held = view_json(&fixture, "tasks", "es").await.to_string();
+    assert!(held.contains("En cola · 1.º de 1") && held.contains("El Mac va justo de memoria") && !held.contains("Reconectando"), "{held}");
+
+    memory(&fixture, MemoryPressure::Normal, &[alondra_core::now_millis()]);
+    crate::fleet_gate::pass(&fixture.domain, &fixture.home, &*claude).await.unwrap();
+    for _ in 0..500 {
+        if claude.asked.load(std::sync::atomic::Ordering::SeqCst) > 0 { break; }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(phase(), NodePhase::Starting { reviving: true }, "the gate let it back, and its slot counts");
+    assert_eq!(node_shown(&fixture, "agent-a", "es").await[0].0, "Reconectando");
+    let admitted = view_json(&fixture, "tasks", "es").await.to_string();
+    assert!(admitted.contains("Reconectando") && !admitted.contains("En cola"), "{admitted}");
+
+    claude.go.notify_one();
+    revival.await.unwrap();
+    assert!(fixture.domain.live.mods.connected("agent-a"), "the restarted session connected back");
 }
 
 #[tokio::test]
@@ -1259,7 +1343,8 @@ async fn a_node_whose_session_ended_with_its_task_open_leaves_fleet_while_alondr
 
     let fleet = view_json(&fixture, "fleet", "es").await;
     assert!(!fleet_lists(&fleet, "stopped"), "no session, no row in Fleet");
-    assert_eq!(node_shown(&fixture, "stopped", "es").await[0], ("Reconectando".into(), "info".into()), "its session ended with its task open: Alondra brings it back");
+    assert_eq!(node_shown(&fixture, "stopped", "es").await[0], ("Esperando máquina".into(), "neutral".into()),
+        "its session ended with its task open: it waits for the gate to be brought back");
 }
 
 #[tokio::test]

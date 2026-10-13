@@ -87,7 +87,7 @@ pub(crate) fn facts(domain: &DomainRuntime, state: &DomainState) -> Result<BTree
             (None, None) => Start::Ready,
         };
         let node = match task.agent_id.as_ref().and_then(|id| state.agents.get(id)) {
-            Some(agent) if agent.phase == NodePhase::Starting { reviving: true } => match crate::domain_holds::waits_on_user(state, &agent.id.0) {
+            Some(agent) if agent.phase.coming_back() => match crate::domain_holds::waits_on_user(state, &agent.id.0) {
                 true => NodeFact::Asking,
                 false => NodeFact::Reviving,
             },

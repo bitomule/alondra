@@ -30,12 +30,13 @@ const MODEL_METRICS: &str = include_str!("domain_store/model_metrics.sql");
 /// How many turn ends in a row Alondra held back for a Task, since its node last delivered or
 /// asked (`marker`, the order of that card). Kept outside the domain state, like task_models.
 /// Domains written before the node machine kept a `connected` flag per agent. A connected agent
-/// was at work; one with an open task is being brought back; the rest are closed. The first
+/// was at work; one with an open task lost its session and waits to be brought back; the rest are
+/// closed. The first
 /// listing of real sessions after the daemon starts corrects what the flag got wrong.
 const AGENT_PHASES: &str = "ALTER TABLE agents ADD COLUMN phase TEXT NOT NULL DEFAULT '{\"kind\":\"closed\"}' CHECK(json_valid(phase) AND json_type(phase,'$.kind')='text');\
 ALTER TABLE agents ADD COLUMN since INTEGER NOT NULL DEFAULT 0;\
 UPDATE agents SET phase=CASE WHEN connected=1 THEN '{\"kind\":\"working\"}' \
- WHEN EXISTS(SELECT 1 FROM tasks t WHERE t.agent_id=agents.id AND t.archived=0 AND t.state NOT IN('done','cancelled')) THEN '{\"kind\":\"starting\",\"reviving\":true}' \
+ WHEN EXISTS(SELECT 1 FROM tasks t WHERE t.agent_id=agents.id AND t.archived=0 AND t.state NOT IN('done','cancelled')) THEN '{\"kind\":\"lost\"}' \
  ELSE '{\"kind\":\"closed\"}' END;\
 ALTER TABLE agents DROP COLUMN connected;";
 /// The turns of a node a Claude API error ended in a row, the first and the last, and the card that

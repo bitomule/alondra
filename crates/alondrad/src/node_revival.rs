@@ -2,8 +2,9 @@
 //! simply disconnect: its Claude Code background session is restarted with `claude respawn <id>`
 //! ("Restart a background session ... so it picks up the current Claude binary", `claude respawn
 //! --help`, Claude Code 2.1.287), a bounded number of times, and its mod's `session.start`
-//! reconnects it. Fleet shows the node's last state throughout, and "Reconnecting" only while a
-//! restart runs. When restarts keep failing the user gets a card with the error, not a node state.
+//! reconnects it. The node machine has it lost while it waits for the fleet gate, and restarting,
+//! shown as "Reconnecting", only once the gate let it back. When restarts keep failing the user
+//! gets a card with the error, not a node state.
 //!
 //! A session the user stops, kills or deletes in Claude agents is not a crash: Claude Code writes
 //! the state `stopped` into its job file (`crashed` for a signal), or removes the job folder, and
@@ -183,7 +184,6 @@ pub(crate) async fn revive_stalled(domain: &DomainRuntime, session: &str, launch
                 break 'rounds;
             }
             let previous = domain.live.mods.session(session).and_then(|reported| reported.connection);
-            domain.live.set_reconnecting(session, true);
             match launcher.respawn(&short).await {
                 Ok(()) if domain.live.mods.wait_reconnected(session, previous, timing.settle).await => {
                     tell_to_continue(domain, session).await;
@@ -192,13 +192,11 @@ pub(crate) async fn revive_stalled(domain: &DomainRuntime, session: &str, launch
                 Ok(()) => error = "the restarted session did not connect back to Alondra".into(),
                 Err(reason) => error = reason,
             }
-            domain.live.set_reconnecting(session, false);
         }
         if !still_stalled(domain, session) || !ask_to_retry(domain, session, &error, launcher).await {
             break;
         }
     }
-    domain.live.set_reconnecting(session, false);
     domain.live.end_watch(session);
 }
 
@@ -285,7 +283,6 @@ pub(crate) async fn revive(domain: &DomainRuntime, session: &str, launcher: &imp
     if !domain.live.mods.wait_connected(session, timing.grace).await && needed(domain, session) {
         restart_until_back(domain, session, launcher, timing).await;
     }
-    domain.live.set_reconnecting(session, false);
     domain.live.end_watch(session);
 }
 
@@ -305,7 +302,7 @@ async fn restart_until_back(domain: &DomainRuntime, session: &str, launcher: &im
             {
                 return;
             }
-            domain.live.set_reconnecting(session, true);
+            move_node(domain, session, NodeEvent::RevivalAdmitted);
             match launcher.respawn(&short).await {
                 Ok(()) if domain.live.mods.wait_connected(session, timing.settle).await => {
                     tell_to_carry_on(domain, session).await;
@@ -314,11 +311,21 @@ async fn restart_until_back(domain: &DomainRuntime, session: &str, launcher: &im
                 Ok(()) => error = "the restarted session did not connect back to Alondra".into(),
                 Err(reason) => error = reason,
             }
-            domain.live.set_reconnecting(session, false);
+            move_node(domain, session, NodeEvent::SessionLost);
         }
         if !needed(domain, session) || !ask_to_retry(domain, session, &error, launcher).await {
             return;
         }
+    }
+}
+
+/// The node machine alone says whether the node waits at the gate or is being restarted: the gate
+/// letting it back makes it restart, holding a slot, and a restart that did not connect back leaves
+/// it lost, waiting for the gate again.
+fn move_node(domain: &DomainRuntime, session: &str, event: NodeEvent) {
+    let key = event.key();
+    if let Err(failure) = crate::domain_agent_lifecycle::node_event(domain, &AgentId(session.to_owned()), event) {
+        log!("could not record {key} for {session}: {failure}");
     }
 }
 
@@ -514,6 +521,10 @@ mod tests {
         }, None, || Ok(())).unwrap();
     }
 
+    fn phase(domain: &DomainRuntime) -> NodePhase {
+        domain.state().unwrap().agents[&AgentId(SESSION.into())].phase.clone()
+    }
+
     fn hello() -> crate::node_reports::Hello {
         serde_json::from_value(json!({"session_id": SESSION, "version": "2.1.287"})).unwrap()
     }
@@ -597,11 +608,13 @@ mod tests {
     #[tokio::test]
     async fn a_lost_connection_with_an_open_task_restarts_the_session_and_shows_reconnecting_only_meanwhile() {
         let (_home, domain) = world(true);
+        crate::domain_agent_lifecycle::node_event(&domain, &AgentId(SESSION.into()), NodeEvent::SessionLost).unwrap();
+        assert_eq!(phase(&domain), NodePhase::Lost);
         let claude = Respawner::new(&domain, 1);
         revive(&domain, SESSION, &claude, &FAST).await;
         assert_eq!(*claude.calls.lock().unwrap(), ["ab1234cd"], "`claude respawn` takes the short id");
         assert!(domain.live.mods.connected(SESSION), "the restarted session's mod connected back");
-        assert!(!domain.live.is_reconnecting(SESSION), "and nothing says it is reconnecting any more");
+        assert_eq!(phase(&domain), NodePhase::Starting { reviving: true }, "the gate let it back: it restarts until its first turn");
         assert!(domain.state().unwrap().interactions.is_empty(), "a restart that works asks the user nothing");
     }
 
@@ -649,7 +662,6 @@ mod tests {
         let line: serde_json::Value = serde_json::from_str(&link.try_recv().unwrap()).unwrap();
         assert!(line["text"].as_str().unwrap().contains("continue your task"), "{line}");
         assert!(stalled_sessions(&domain, alondra_core::now_millis()).is_empty(), "the restarted session is not stalled");
-        assert!(!domain.live.is_reconnecting(SESSION));
         assert!(domain.state().unwrap().interactions.is_empty());
     }
 
@@ -803,13 +815,13 @@ mod tests {
         });
         let card = the_card(&domain).await;
         assert_eq!(claude.calls(), 3, "one restart and two retries, no more");
+        assert_eq!(phase(&domain), NodePhase::Lost, "no restart runs while the card waits: it holds no slot");
         let state = domain.state().unwrap();
         assert!(state.interactions[&card].body.contains("no such session"), "the error reaches the user: {}", state.interactions[&card].body);
         assert!(state.interactions[&card].body.contains("alondra/probe"));
         answer(&domain, card, "cancel");
         watching.await.unwrap();
         assert_eq!(claude.calls(), 3, "cancelling stops");
-        assert!(!domain.live.is_reconnecting(SESSION));
         let state = domain.state().unwrap();
         assert!(state.tasks.values().all(|task| task.state.terminal()), "no task is left with a node nothing brings back");
     }
@@ -915,7 +927,7 @@ mod tests {
         revive(&domain, SESSION, &claude, &FAST).await;
         assert_eq!(claude.calls(), 0, "no `claude respawn`");
         freed(&domain);
-        assert!(!domain.live.mods.connected(SESSION) && !domain.live.is_reconnecting(SESSION));
+        assert!(!domain.live.mods.connected(SESSION));
     }
 
     #[tokio::test]

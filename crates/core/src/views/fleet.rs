@@ -52,13 +52,14 @@ fn interrupt_action(id: &str, context: &RenderContext<'_>) -> Option<super::Acti
 
 /// A node's one state, in 8ccd131's words: a question it blocks on, then what the session does,
 /// then what waits for the user on it, then where its tasks stand.
-/// A node is in Fleet while Alondra runs it on an open task in a session that exists: never the
-/// orchestrator, a node whose task ended, nor one whose session is gone and is being brought back.
+/// A node is in Fleet while Alondra runs it on an open task in a session that exists or that it is
+/// restarting: never the orchestrator, a node whose task ended, nor one whose session is lost and
+/// waits for the gate to be restarted.
 pub(super) fn in_fleet(agent: &crate::domain::Agent, context: &RenderContext<'_>) -> bool {
     agent.id.0 != "orchestrator"
         && context.domain.orchestrator_session.as_ref() != Some(&agent.id)
         && agent.phase.live()
-        && agent.phase != NodePhase::Starting { reviving: true }
+        && agent.phase != NodePhase::Lost
         && context.domain.tasks.values()
             .any(|task| task.agent_id.as_ref() == Some(&agent.id) && !task.archived && !task.state.terminal())
 }
@@ -85,6 +86,7 @@ pub(super) fn node_state(agent: &AgentId, context: &RenderContext<'_>) -> super:
     let phase = context.domain.node_phase(agent).cloned().unwrap_or(NodePhase::Closed);
     let (text, tone) = match phase {
         NodePhase::Starting { reviving: true } => (t!(lang, "Reconnecting", "Reconectando"), Tone::Info),
+        NodePhase::Lost => (t!(lang, "Waiting for the machine", "Esperando máquina"), Tone::Neutral),
         NodePhase::Starting { reviving: false } => (t!(lang, "Starting", "Arrancando"), Tone::Neutral),
         NodePhase::Working if merging => (t!(lang, "Merging", "Fusionando"), Tone::Info),
         NodePhase::Working if key == Some("stalled") => (t!(lang, "Stalled", "Parado"), Tone::Critical),

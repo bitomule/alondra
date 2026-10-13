@@ -216,7 +216,7 @@ impl World {
             Step::NodeBack(n) => {
                 if let Some(task) = self.pick(n, |t, f| t.agent_id.is_some() && f.node == NodeFact::Reviving) {
                     let agent = self.agent_of(&task).unwrap();
-                    if self.s.node_phase(&agent) != Some(&NodePhase::Starting { reviving: true }) {
+                    if !self.s.node_phase(&agent).is_some_and(NodePhase::coming_back) {
                         return;
                     }
                     self.must(Actor::System, Command::MoveNode { agent_id: agent, event: NodeEvent::TurnStarted, at: 0 });

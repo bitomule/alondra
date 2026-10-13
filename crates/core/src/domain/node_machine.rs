@@ -15,8 +15,12 @@ pub const START_GRACE: Millis = 3 * 60_000;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum NodePhase {
-    /// Admitted, or being restarted after its session was lost; no turn has begun yet.
+    /// Admitted, or let back by the gate and being restarted after its session was lost; no turn
+    /// has begun yet.
     Starting { reviving: bool },
+    /// Its session is gone while its task still needs it, and it waits for the gate to let Alondra
+    /// restart it. Nothing runs, so it holds no slot and is never shown as reconnecting.
+    Lost,
     /// A turn is running.
     Working,
     /// A card of its task waits for the user, whether its turn still runs or ended. Whatever it
@@ -39,11 +43,16 @@ pub enum NodePhase {
 }
 
 impl NodePhase {
-    /// Takes one of the node limit's slots: a node admitted and starting, or in a turn, delivered or
-    /// not. One being
-    /// brought back after its session was lost already had its slot counted when it was admitted.
+    /// Takes one of the node limit's slots: a node the gate admitted and that is starting, fresh or
+    /// restarted after its session was lost, or one in a turn, delivered or not. A lost node waiting
+    /// for the gate takes none.
     pub fn holds_slot(&self) -> bool {
-        matches!(self, Self::Starting { reviving: false } | Self::Working | Self::Delivered { in_turn: true })
+        matches!(self, Self::Starting { .. } | Self::Working | Self::Delivered { in_turn: true })
+    }
+    /// Its session is gone and Alondra brings it back: lost and waiting for the gate, or being
+    /// restarted. Its task keeps it, yet it is no connected node.
+    pub fn coming_back(&self) -> bool {
+        matches!(self, Self::Lost | Self::Starting { reviving: true })
     }
     pub fn live(&self) -> bool {
         !matches!(self, Self::Closed)
@@ -52,6 +61,7 @@ impl NodePhase {
         match self {
             Self::Starting { reviving: false } => "starting",
             Self::Starting { reviving: true } => "reviving",
+            Self::Lost => "lost",
             Self::Working => "working",
             Self::WaitingUser { .. } => "waiting_user",
             Self::Paused(_) => "paused",
@@ -133,6 +143,8 @@ pub enum NodeEvent {
     StartFailed,
     /// Restarting the lost session failed; a card asks the user what to do.
     RevivalFailed,
+    /// The gate let a lost node back: Alondra restarts its session now.
+    RevivalAdmitted,
     Paused { pause: Pause },
     PauseCleanup { cleanup: PauseCleanup },
     PauseReleased,
@@ -150,6 +162,7 @@ impl NodeEvent {
             Self::SessionClosed => "session_closed",
             Self::StartFailed => "start_failed",
             Self::RevivalFailed => "revival_failed",
+            Self::RevivalAdmitted => "revival_admitted",
             Self::Paused { .. } => "paused",
             Self::PauseCleanup { .. } => "pause_cleanup",
             Self::PauseReleased => "pause_released",
@@ -232,7 +245,7 @@ pub fn next(phase: &NodePhase, since: Millis, event: &NodeEvent, f: &TaskFacts, 
     if event.timed() && at < since {
         return refuse("stale", "The report is older than the node's state");
     }
-    let lost = || if f.open && !f.closing { P::Starting { reviving: true } } else { P::Closed };
+    let lost = || if f.open && !f.closing { P::Lost } else { P::Closed };
     let moved = match (phase, event) {
         (P::Paused(Pause { reason: PauseReason::ByUser, .. }), NodeEvent::TurnStarted) =>
             return refuse("paused_by_user", "Only the user resumes a node they paused"),
@@ -250,6 +263,8 @@ pub fn next(phase: &NodePhase, since: Millis, event: &NodeEvent, f: &TaskFacts, 
         (_, NodeEvent::SessionClosed) => P::Closed,
         (P::Starting { .. }, NodeEvent::StartFailed | NodeEvent::RevivalFailed) => P::Closed,
         (_, NodeEvent::StartFailed | NodeEvent::RevivalFailed) => return refuse("not_starting", "The node is not starting"),
+        (P::Lost, NodeEvent::RevivalAdmitted) => P::Starting { reviving: true },
+        (_, NodeEvent::RevivalAdmitted) => return refuse("not_lost", "Only a node whose session was lost is let back"),
         (P::Starting { .. } | P::Working | P::Delivered { in_turn: true } | P::Stopped, NodeEvent::Paused { pause }) => P::Paused(pause.clone()),
         (P::Paused(_), NodeEvent::Paused { .. }) => return refuse("already_paused", "The node is already paused"),
         (_, NodeEvent::Paused { .. }) => return refuse("not_working", "Only a node at work, or one whose turn ended with nothing pending, can be paused"),
@@ -264,8 +279,8 @@ pub fn next(phase: &NodePhase, since: Millis, event: &NodeEvent, f: &TaskFacts, 
 }
 
 /// What the listing of real sessions says moves a node. It carries no turn times, so it never
-/// overrides a pause, and it leaves a node that has only just started alone. A node being brought
-/// back stays so until its revival ends: it holds no slot, and the user's "try again" restarts it.
+/// overrides a pause, and it leaves a node that has only just started, or restarted, alone. A node
+/// whose session is absent past that is lost: it waits for the gate again, holding no slot.
 fn observe(phase: &NodePhase, since: Millis, listed: Listed, f: &TaskFacts, at: Millis) -> NodePhase {
     use NodePhase as P;
     let young = at - since < START_GRACE;
@@ -274,8 +289,8 @@ fn observe(phase: &NodePhase, since: Millis, listed: Listed, f: &TaskFacts, at: 
         (P::Closing, _) => P::Closing,
         (P::Paused(_), _) => phase.clone(),
         (P::Starting { reviving: false }, Listed::Absent | Listed::Idle | Listed::Blocked | Listed::Done) if young => phase.clone(),
-        (P::Starting { reviving: true }, Listed::Absent) => phase.clone(),
-        (_, Listed::Absent) => if f.open && !f.closing { P::Starting { reviving: true } } else { P::Closed },
+        (P::Starting { reviving: true }, Listed::Absent) if young => phase.clone(),
+        (_, Listed::Absent) => if f.open && !f.closing { P::Lost } else { P::Closed },
         (_, Listed::Done) if !f.open || f.closing => P::Closed,
         (P::WaitingUser { .. } | P::Delivered { in_turn: false } | P::Stopped, Listed::Idle | Listed::Blocked | Listed::Done) => phase.clone(),
         (_, Listed::Idle | Listed::Blocked | Listed::Done) => rest(f),

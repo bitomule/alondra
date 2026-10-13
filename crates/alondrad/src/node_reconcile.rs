@@ -160,7 +160,7 @@ mod tests {
         assert!(once(&domain, &claude).await);
         let state = domain.state().unwrap();
         assert_eq!(state.slots().iter().map(|agent| agent.id.0.as_str()).collect::<Vec<_>>(), ["alive"], "only the session that exists works");
-        assert_eq!(phase(&domain, "vanished"), NodePhase::Starting { reviving: true }, "its task is open: Alondra brings it back, holding no slot");
+        assert_eq!(phase(&domain, "vanished"), NodePhase::Lost, "its task is open: it waits for the gate to be brought back, holding no slot");
         assert_eq!(phase(&domain, "finished"), NodePhase::Closed, "its task is over and its session gone: it leaves Fleet");
 
         let revision = state.revision;
@@ -218,7 +218,7 @@ mod tests {
 
         let domain = open(&home);
         assert_eq!(phase(&domain, "alive"), NodePhase::Working);
-        assert_eq!(phase(&domain, "open-gone"), NodePhase::Starting { reviving: true });
+        assert_eq!(phase(&domain, "open-gone"), NodePhase::Lost);
         let claude = Claude(Mutex::new(r#"[{"id":"alive","sessionId":"alive","state":"working"}]"#.into()));
         assert!(once(&domain, &claude).await);
         assert_eq!(phase(&domain, "done-ghost"), NodePhase::Closed);
@@ -430,7 +430,7 @@ mod tests {
         assert_eq!(phase(&domain, "ghost"), NodePhase::Stopped);
         let claude = Claude(Mutex::new(r#"[{"id":"ghost","sessionId":"ghost","state":"blocked"},{"id":"alive","sessionId":"alive","state":"working","pid":44234}]"#.into()));
         assert!(once(&domain, &claude).await);
-        assert_eq!(phase(&domain, "ghost"), NodePhase::Starting { reviving: true });
+        assert_eq!(phase(&domain, "ghost"), NodePhase::Lost);
     }
 
     #[test]

@@ -242,7 +242,6 @@ async fn gather_at(
                 context_window: reported.context.as_ref().map(|context| context.window),
                 cost_cents: reported.cost_usd.map(|usd| (usd * 100.0).round().max(0.0) as u64),
                 model: reported.model.clone(),
-                reconnecting: agent.phase == NodePhase::Starting { reviving: true },
                 disconnected: agent.phase == NodePhase::Closed && open_task,
                 waiting_until: exhausted.as_ref().filter(|_| node.usage_limited).map(|exhausted| timestamp(exhausted.until)),
             })

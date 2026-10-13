@@ -28,6 +28,7 @@ fn phases() -> Vec<NodePhase> {
     vec![
         NodePhase::Starting { reviving: false },
         NodePhase::Starting { reviving: true },
+        NodePhase::Lost,
         NodePhase::Working,
         NodePhase::WaitingUser { in_turn: true },
         NodePhase::WaitingUser { in_turn: false },
@@ -46,7 +47,7 @@ fn phases() -> Vec<NodePhase> {
 fn events() -> Vec<NodeEvent> {
     let mut all = vec![
         NodeEvent::TurnStarted, NodeEvent::TurnEnded, NodeEvent::TurnFailed, NodeEvent::SessionLost, NodeEvent::SessionClosed,
-        NodeEvent::StartFailed, NodeEvent::RevivalFailed, NodeEvent::Paused { pause: pause(PauseReason::Usage) },
+        NodeEvent::StartFailed, NodeEvent::RevivalFailed, NodeEvent::RevivalAdmitted, NodeEvent::Paused { pause: pause(PauseReason::Usage) },
         NodeEvent::PauseCleanup { cleanup: PauseCleanup::Done }, NodeEvent::PauseReleased, NodeEvent::Resumed,
     ];
     all.extend([Listed::Working, Listed::Idle, Listed::Blocked, Listed::Done, Listed::Absent].map(|listed| NodeEvent::Listed { listed }));
@@ -65,6 +66,8 @@ fn forbidden(phase: &NodePhase, event: &NodeEvent) -> Option<&'static str> {
         (P::Paused(Pause { reason: PauseReason::Declared { .. }, .. }), E::TurnStarted) => Some("waits_for_machine"),
         (P::Starting { .. }, E::StartFailed | E::RevivalFailed) => None,
         (_, E::StartFailed | E::RevivalFailed) => Some("not_starting"),
+        (P::Lost, E::RevivalAdmitted) => None,
+        (_, E::RevivalAdmitted) => Some("not_lost"),
         (P::Paused(_), E::Paused { .. }) => Some("already_paused"),
         (P::Starting { .. } | P::Working | P::Delivered { in_turn: true } | P::Stopped, E::Paused { .. }) => None,
         (_, E::Paused { .. }) => Some("not_working"),
@@ -97,6 +100,7 @@ forbid! {
     closed_refuses_closing_again: NodePhase::Closed, NodeEvent::SessionClosed => "node_closed";
     closed_refuses_a_failed_start: NodePhase::Closed, NodeEvent::StartFailed => "node_closed";
     closed_refuses_a_failed_revival: NodePhase::Closed, NodeEvent::RevivalFailed => "node_closed";
+    closed_refuses_a_revival: NodePhase::Closed, NodeEvent::RevivalAdmitted => "node_closed";
     closed_refuses_a_pause: NodePhase::Closed, NodeEvent::Paused { pause: pause(PauseReason::Memory) } => "node_closed";
     closed_refuses_a_pause_cleanup: NodePhase::Closed, NodeEvent::PauseCleanup { cleanup: PauseCleanup::Done } => "node_closed";
     closed_refuses_a_pause_release: NodePhase::Closed, NodeEvent::PauseReleased => "node_closed";
@@ -126,6 +130,17 @@ forbid! {
     stopped_refuses_a_failed_revival: NodePhase::Stopped, NodeEvent::RevivalFailed => "not_starting";
     closing_refuses_a_failed_start: NodePhase::Closing, NodeEvent::StartFailed => "not_starting";
     closing_refuses_a_failed_revival: NodePhase::Closing, NodeEvent::RevivalFailed => "not_starting";
+    lost_refuses_a_failed_start: NodePhase::Lost, NodeEvent::StartFailed => "not_starting";
+    lost_refuses_a_failed_revival: NodePhase::Lost, NodeEvent::RevivalFailed => "not_starting";
+
+    starting_refuses_a_revival: NodePhase::Starting { reviving: false }, NodeEvent::RevivalAdmitted => "not_lost";
+    reviving_refuses_a_second_revival: NodePhase::Starting { reviving: true }, NodeEvent::RevivalAdmitted => "not_lost";
+    working_refuses_a_revival: NodePhase::Working, NodeEvent::RevivalAdmitted => "not_lost";
+    waiting_refuses_a_revival: NodePhase::WaitingUser { in_turn: false }, NodeEvent::RevivalAdmitted => "not_lost";
+    paused_refuses_a_revival: NodePhase::Paused(pause(PauseReason::Memory)), NodeEvent::RevivalAdmitted => "not_lost";
+    delivered_refuses_a_revival: NodePhase::Delivered { in_turn: false }, NodeEvent::RevivalAdmitted => "not_lost";
+    stopped_refuses_a_revival: NodePhase::Stopped, NodeEvent::RevivalAdmitted => "not_lost";
+    closing_refuses_a_revival: NodePhase::Closing, NodeEvent::RevivalAdmitted => "not_lost";
 
     paused_refuses_a_second_pause: NodePhase::Paused(pause(PauseReason::Memory)), NodeEvent::Paused { pause: pause(PauseReason::Usage) } => "already_paused";
     paused_for_an_api_error_refuses_a_second_pause: NodePhase::Paused(pause(api_error())), NodeEvent::Paused { pause: pause(api_error()) } => "already_paused";
@@ -135,6 +150,7 @@ forbid! {
     waiting_refuses_a_pause: NodePhase::WaitingUser { in_turn: false }, NodeEvent::Paused { pause: pause(PauseReason::Memory) } => "not_working";
     delivered_refuses_a_pause: NodePhase::Delivered { in_turn: false }, NodeEvent::Paused { pause: pause(PauseReason::Memory) } => "not_working";
     closing_refuses_a_pause: NodePhase::Closing, NodeEvent::Paused { pause: pause(PauseReason::Memory) } => "not_working";
+    lost_refuses_a_pause: NodePhase::Lost, NodeEvent::Paused { pause: pause(PauseReason::Memory) } => "not_working";
 
     starting_refuses_a_pause_cleanup: NodePhase::Starting { reviving: false }, NodeEvent::PauseCleanup { cleanup: PauseCleanup::Done } => "not_paused";
     starting_refuses_a_pause_release: NodePhase::Starting { reviving: false }, NodeEvent::PauseReleased => "not_paused";
@@ -142,6 +158,9 @@ forbid! {
     reviving_refuses_a_pause_cleanup: NodePhase::Starting { reviving: true }, NodeEvent::PauseCleanup { cleanup: PauseCleanup::Done } => "not_paused";
     reviving_refuses_a_pause_release: NodePhase::Starting { reviving: true }, NodeEvent::PauseReleased => "not_paused";
     reviving_refuses_a_resume: NodePhase::Starting { reviving: true }, NodeEvent::Resumed => "not_paused";
+    lost_refuses_a_pause_cleanup: NodePhase::Lost, NodeEvent::PauseCleanup { cleanup: PauseCleanup::Done } => "not_paused";
+    lost_refuses_a_pause_release: NodePhase::Lost, NodeEvent::PauseReleased => "not_paused";
+    lost_refuses_a_resume: NodePhase::Lost, NodeEvent::Resumed => "not_paused";
     working_refuses_a_pause_cleanup: NodePhase::Working, NodeEvent::PauseCleanup { cleanup: PauseCleanup::Done } => "not_paused";
     working_refuses_a_pause_release: NodePhase::Working, NodeEvent::PauseReleased => "not_paused";
     working_refuses_a_resume: NodePhase::Working, NodeEvent::Resumed => "not_paused";
@@ -298,7 +317,7 @@ fn a_stopped_node_listed_blocked_stays_stopped_and_holds_no_slot() {
 fn a_node_listed_blocked_is_never_at_work() {
     let blocked = NodeEvent::Listed { listed: Listed::Blocked };
     let late = SINCE + START_GRACE;
-    for phase in [NodePhase::Working, NodePhase::Starting { reviving: true }, NodePhase::Starting { reviving: false }] {
+    for phase in [NodePhase::Working, NodePhase::Starting { reviving: true }, NodePhase::Starting { reviving: false }, NodePhase::Lost] {
         let moved = next(&phase, SINCE, &blocked, &OPEN, late).unwrap();
         assert_eq!(moved, NodePhase::Stopped, "{phase:?}");
         assert!(!moved.holds_slot());
@@ -327,15 +346,48 @@ fn a_session_listed_done_rests_while_its_task_needs_it_and_closes_once_it_does_n
     assert_eq!(next(&NodePhase::Working, SINCE, &done, &TaskFacts::default(), AT).unwrap(), NodePhase::Closed);
 }
 
+/// 13 October: quill's session ended and its restart waited at the fleet gate for memory, every
+/// 30 s, while its task said «Reconectando». A lost node waits for the gate holding no slot; only
+/// once the gate lets it back is it restarted, and only then does it hold one.
+#[test]
+fn a_lost_session_waits_for_the_gate_and_is_restarted_only_once_admitted() {
+    let lost = next(&NodePhase::Working, SINCE, &NodeEvent::SessionLost, &OPEN, AT).unwrap();
+    assert_eq!(lost, NodePhase::Lost);
+    assert!(!lost.holds_slot() && lost.coming_back());
+    let admitted = next(&lost, SINCE, &NodeEvent::RevivalAdmitted, &OPEN, AT).unwrap();
+    assert_eq!(admitted, NodePhase::Starting { reviving: true });
+    assert!(admitted.holds_slot() && admitted.coming_back(), "the gate counted its start");
+    assert_eq!(next(&admitted, SINCE, &NodeEvent::SessionLost, &OPEN, AT).unwrap(), NodePhase::Lost,
+        "a restart that did not connect back leaves it lost, waiting for the gate again");
+    assert_eq!(next(&admitted, SINCE, &NodeEvent::TurnStarted, &OPEN, AT).unwrap(), NodePhase::Working, "it came back");
+    assert_eq!(next(&lost, SINCE, &NodeEvent::Listed { listed: Listed::Working }, &OPEN, AT).unwrap(), NodePhase::Working,
+        "a session that came back by itself works again");
+    let over = TaskFacts { open: false, closing: true, ..OPEN };
+    assert_eq!(next(&NodePhase::Working, SINCE, &NodeEvent::SessionLost, &over, AT).unwrap(), NodePhase::Closed,
+        "with no open task nothing brings it back");
+}
+
+/// A node the previous daemon saved as being restarted, whose session is still absent once a
+/// start has had its time, is lost: it waits for the gate again instead of holding a slot.
+#[test]
+fn a_restart_absent_past_the_start_grace_is_lost_again() {
+    let reviving = NodePhase::Starting { reviving: true };
+    let absent = NodeEvent::Listed { listed: Listed::Absent };
+    assert_eq!(next(&reviving, SINCE, &absent, &OPEN, SINCE + 1).unwrap(), reviving, "a restart in progress is not listed yet");
+    assert_eq!(next(&reviving, SINCE, &absent, &OPEN, SINCE + START_GRACE).unwrap(), NodePhase::Lost);
+    assert_eq!(next(&reviving, SINCE, &absent, &TaskFacts { open: false, closing: true, ..OPEN }, SINCE + START_GRACE).unwrap(), NodePhase::Closed,
+        "with its task over, a session that is gone has finished");
+}
+
 #[test]
 fn a_session_missing_from_the_listing_frees_its_slot_once_its_start_had_time() {
     let starting = NodePhase::Starting { reviving: false };
     let absent = NodeEvent::Listed { listed: Listed::Absent };
     assert_eq!(next(&starting, SINCE, &absent, &OPEN, SINCE + 1).unwrap(), starting, "a start in progress is not listed yet");
-    assert_eq!(next(&starting, SINCE, &absent, &OPEN, SINCE + START_GRACE).unwrap(), NodePhase::Starting { reviving: true });
-    let reviving = NodePhase::Starting { reviving: true };
-    assert_eq!(next(&reviving, SINCE, &absent, &OPEN, SINCE + 24 * 60 * 60_000).unwrap(), reviving,
-        "a node being brought back holds no slot and waits for its revival to end");
+    let lost = next(&starting, SINCE, &absent, &OPEN, SINCE + START_GRACE).unwrap();
+    assert_eq!(lost, NodePhase::Lost);
+    assert!(!lost.holds_slot());
+    assert_eq!(next(&lost, SINCE, &absent, &OPEN, SINCE + 24 * 60 * 60_000).unwrap(), lost, "a lost node waits for the gate");
     assert_eq!(next(&NodePhase::Working, SINCE, &absent, &TaskFacts::default(), AT).unwrap(), NodePhase::Closed,
         "a node without an open task whose session is gone is closed");
 }
@@ -353,6 +405,7 @@ enum Step {
     Resume(usize),
     Vanish(usize),
     Lost(usize),
+    Revive { pick: usize, back: bool },
     UserCloses(usize),
     Cancel(usize),
     Tick(i64),
@@ -374,6 +427,7 @@ fn step() -> impl Strategy<Value = Step> {
         2 => (0usize..8).prop_map(Step::Resume),
         2 => (0usize..8).prop_map(Step::Vanish),
         1 => (0usize..8).prop_map(Step::Lost),
+        2 => (0usize..8, any::<bool>()).prop_map(|(pick, back)| Step::Revive { pick, back }),
         1 => (0usize..8).prop_map(Step::UserCloses),
         1 => (0usize..8).prop_map(Step::Cancel),
         2 => (1i64..20).prop_map(|minutes| Step::Tick(minutes * 60_000)),
@@ -450,8 +504,8 @@ impl World {
             }
             let young = self.now - agent.since < START_GRACE;
             assert!(match agent.phase {
-                NodePhase::Closed | NodePhase::Paused(_) | NodePhase::Starting { reviving: true } => true,
-                NodePhase::Starting { reviving: false } => young,
+                NodePhase::Closed | NodePhase::Paused(_) | NodePhase::Lost => true,
+                NodePhase::Starting { .. } => young,
                 _ => false,
             }, "{id:?} has no session yet is {:?}", agent.phase);
         }
@@ -564,6 +618,16 @@ impl World {
                 self.real.remove(&agent);
                 self.event(&agent, NodeEvent::SessionLost, self.now);
             }
+            Step::Revive { pick, back } => {
+                let Some(agent) = self.pick(pick, |a, _| a.phase == NodePhase::Lost) else { return };
+                assert!(self.event(&agent, NodeEvent::RevivalAdmitted, self.now), "the gate always lets a lost node back");
+                assert_eq!(self.s.node_phase(&agent), Some(&NodePhase::Starting { reviving: true }));
+                if back {
+                    self.real.insert(agent, Listed::Idle);
+                } else {
+                    self.event(&agent, NodeEvent::SessionLost, self.now);
+                }
+            }
             Step::UserCloses(n) => {
                 let Some(agent) = self.pick(n, |a, _| a.phase.live()) else { return };
                 if let Some(task) = self.open_task(&agent) {
@@ -612,14 +676,14 @@ impl World {
         assert!(self.s.paused_nodes().keys().all(|id| !slots.contains(&id.0)), "a paused node holds a slot");
 
         let fleet = self.render("fleet");
-        let at_work = ["Working", "Starting", "Merging", "Stalled", "Failed", "Waiting for your review", "Delivering results"];
+        let at_work = ["Working", "Starting", "Reconnecting", "Merging", "Stalled", "Failed", "Waiting for your review", "Delivering results"];
         let delivered: BTreeSet<String> = self.s.agents.values().filter(|a| a.phase == NodePhase::Delivered { in_turn: false })
             .map(|a| a.id.0.clone()).collect();
         let in_fleet: BTreeSet<String> = badged(&fleet, &at_work).difference(&delivered).cloned().collect();
         assert_eq!(in_fleet, slots, "Fleet shows at work exactly the nodes that hold a slot");
         let open_task = |agent: &AgentId| self.s.tasks.values().any(|t| t.agent_id.as_ref() == Some(agent) && !t.archived && !t.state.terminal());
         let live: BTreeSet<String> = self.s.agents.values()
-            .filter(|a| a.phase.live() && a.phase != NodePhase::Starting { reviving: true } && open_task(&a.id))
+            .filter(|a| a.phase.live() && a.phase != NodePhase::Lost && open_task(&a.id))
             .map(|a| a.id.0.clone()).collect();
         assert_eq!(rows(&fleet).into_iter().filter(|id| self.s.agents.contains_key(&AgentId(id.clone()))).collect::<BTreeSet<_>>(), live,
             "Fleet lists every node with a session on an open task, and no other");
@@ -627,9 +691,10 @@ impl World {
         let tasks = self.render("tasks");
         let task_slots: BTreeSet<String> = self.s.slots().iter()
             .filter_map(|a| self.s.node_task(&a.id).filter(|t| !t.state.terminal()).map(|t| t.id.0.clone())).collect();
-        let task_slots: BTreeSet<String> = self.s.slots().iter().filter(|a| !matches!(a.phase, NodePhase::Delivered { .. }))
+        let task_slots: BTreeSet<String> = self.s.slots().iter()
+            .filter(|a| !matches!(a.phase, NodePhase::Delivered { .. }) && !(a.phase.coming_back() && self.s.task_facts(&a.id).delivered))
             .filter_map(|a| self.s.node_task(&a.id).filter(|t| !t.state.terminal()).map(|t| t.id.0.clone())).collect();
-        let listed = badged(&tasks, &["Working", "Making changes", "Resolving conflicts", "Answering you"]);
+        let listed = badged(&tasks, &["Working", "Reconnecting", "Making changes", "Resolving conflicts", "Answering you"]);
         assert_eq!(listed, task_slots, "the Tasks list says at work of the tasks whose node holds a slot");
 
         let header = fleet.status.counts.iter().find(|count| count.id == "working").map(|count| count.value as usize);

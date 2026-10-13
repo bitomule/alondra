@@ -312,7 +312,7 @@ async fn launch_guarded(domain: &DomainRuntime, home: &Path, actor: &Actor, body
     if task.state.terminal() {
         return Err(conflict(format!("{} is closed; reopen it first", body.task)));
     }
-    if replaced.is_none() && task.agent_id.as_ref().and_then(|id| current.agents.get(id)).is_some_and(|a| a.phase.live() && a.phase != alondra_core::domain::NodePhase::Starting { reviving: true }) {
+    if replaced.is_none() && task.agent_id.as_ref().and_then(|id| current.agents.get(id)).is_some_and(|a| a.phase.live() && !a.phase.coming_back()) {
         return Err(conflict(format!("{} already has a connected agent; send it what to do", body.task)));
     }
     if let Some(exhausted) = domain.live.usage_pause.current() {

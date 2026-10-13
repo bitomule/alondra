@@ -660,15 +660,16 @@ fn still_waits(state: &DomainState, key: &Key) -> bool {
         Key::Resume(session) => open_task_of(state, session).is_some(),
         Key::Task(task) => state.tasks.get(task).is_some_and(|task| !task.archived && !task.state.terminal()
             && !matches!(task.state, TaskState::Closing)
-            && task.agent_id.as_ref().is_none_or(|agent| !state.agents.get(agent).is_some_and(|agent| agent.phase.live() && agent.phase != NodePhase::Starting { reviving: true }))),
+            && task.agent_id.as_ref().is_none_or(|agent| !state.agents.get(agent).is_some_and(|agent| agent.phase.live() && !agent.phase.coming_back()))),
         Key::Run(run) => state.schedule.runs.get(&run.as_str().into()).is_some_and(|run| run.state == ScheduleRunState::Sent
             && run.launch.as_ref().is_some_and(|launch| launch.state == ScheduleLaunchState::Pending)),
     }
 }
 
 /// The tasks whose node takes a slot, as the node machine says: the one count the gate, Fleet, the
-/// Tasks list and the header share. A paused node, one that waits on the user and one being brought
-/// back hold none, whatever their session still reports.
+/// Tasks list and the header share. A paused node, one that waits on the user and one whose session
+/// was lost and waits for the gate hold none, whatever their session still reports; one the gate let
+/// back and Alondra is restarting holds one.
 pub(crate) fn working_tasks(state: &DomainState) -> BTreeSet<TaskId> {
     state.slots().into_iter()
         .filter_map(|agent| state.node_task(&agent.id).filter(|task| !task.state.terminal()).map(|task| task.id.clone()))

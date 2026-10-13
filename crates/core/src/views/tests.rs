@@ -167,9 +167,7 @@ fn render<'a>(
     }
     for node in &live.nodes {
         let Some(agent) = domain.agents.get_mut(&node.agent_id.as_str().into()).filter(|agent| agent.phase.live()) else { continue };
-        if node.reconnecting {
-            agent.phase = NodePhase::Starting { reviving: true };
-        } else if node.disconnected {
+        if node.disconnected {
             agent.phase = NodePhase::Closed;
         } else if node.quiet && !node.working {
             agent.phase = NodePhase::Stopped;
@@ -1554,12 +1552,42 @@ fn a_running_task_whose_node_lost_its_connection_says_so_instead_of_working() {
     assert_eq!(task_state_text(&state, &live, Lang::Es), "Sin conexión");
     assert_eq!(task_state_text(&state, &live, Lang::En), "No connection");
     live.nodes[0].disconnected = false;
-    live.nodes[0].reconnecting = true;
-    assert_eq!(task_state_text(&state, &live, Lang::Es), "Reconectando");
-    live.nodes[0].reconnecting = false;
+    live.nodes[0].quiet = false;
+    let mut reviving = state.clone();
+    reviving.agents.insert("a-1".into(), Agent { id: "a-1".into(), name: "Node One".into(), phase: NodePhase::Starting { reviving: true }, since: 0 });
+    assert_eq!(task_state_text(&reviving, &live, Lang::Es), "Reconectando");
     live.nodes[0].disconnected = true;
     let fleet = format!("{:?}", render(&state, &live, Client::Mac, Lang::Es, "fleet", ""));
     assert!(!fleet.contains("Node One"), "a node whose session is gone for good leaves Fleet: {fleet}");
+}
+
+/// 13 October: quill's session ended and its restart waited at the fleet gate for memory while
+/// its task said «Reconectando». A lost node waits at the gate like any start: queued, with what
+/// holds it, and «Reconectando» only once the gate let it back.
+#[test]
+fn a_running_task_whose_node_waits_at_the_gate_to_come_back_says_it_is_queued_not_reconnecting() {
+    let mut state = fixture();
+    state.interactions.clear();
+    let task = state.tasks.get_mut(&"t-1".into()).unwrap();
+    task.state = TaskState::Running;
+    task.agent_id = Some("a-1".into());
+    state.agents.insert("a-1".into(), Agent { id: "a-1".into(), name: "Node One".into(), phase: NodePhase::Lost, since: 0 });
+    let held = pacing_live(vec![LiveQueued { task_id: "t-1".into(), position: 1, of: 1, hold: LiveHold::Memory { free: Some(12) } }], vec![], None);
+    let (block, row) = active_row(&state, &held, Client::Mac, Lang::Es, "t-1");
+    assert_eq!(row.badges[0].text, "En cola · 1.º de 1");
+    assert_eq!(row.subtitle.as_deref(), Some("El Mac va justo de memoria (12 % libre)"));
+    assert_eq!(block, "block:waiting");
+    let node = serde_json::to_string(&render(&state, &held, Client::Tui, Lang::Es, "node:a-1", "")).unwrap();
+    assert!(node.contains("Esperando máquina") && !node.contains("Reconectando"), "{node}");
+    let fleet = serde_json::to_string(&render(&state, &held, Client::Tui, Lang::Es, "fleet", "")).unwrap();
+    assert!(!fleet.contains("Node One"), "a lost node has no session to show in Fleet: {fleet}");
+    assert_eq!(task_state_text(&state, &LiveSnapshot::default(), Lang::Es), "Esperando máquina", "before it reaches the gate");
+
+    state.agents.get_mut(&"a-1".into()).unwrap().phase = NodePhase::Starting { reviving: true };
+    let admitted = pacing_live(vec![], vec![], None);
+    assert_eq!(task_state_text(&state, &admitted, Lang::Es), "Reconectando");
+    let node = serde_json::to_string(&render(&state, &admitted, Client::Tui, Lang::Es, "node:a-1", "")).unwrap();
+    assert!(node.contains("Reconectando") && !node.contains("Esperando máquina"), "{node}");
 }
 
 #[test]
@@ -4923,13 +4951,15 @@ fn nodes_whose_sessions_closed_leave_fleet() {
 }
 
 /// 9 October: Fleet is what is in progress, Alondra's real nodes, their task and their state. A node
-/// whose task ended, one whose session is gone, the orchestrator and the queue stay out of it.
+/// whose task ended, one whose session is lost and waits for the gate, the orchestrator and the
+/// queue stay out of it; one the gate let back and Alondra is restarting is in it.
 #[test]
 fn fleet_lists_only_nodes_with_a_session_on_an_open_task() {
     let (mut state, mut live) = fleet_fixture();
     let template = state.tasks[&"t-zeta-worker".into()].clone();
     for (agent, task_state, phase) in [
         ("reviving", TaskState::Running, NodePhase::Starting { reviving: true }),
+        ("lost", TaskState::Running, NodePhase::Lost),
         ("lingering", TaskState::Done, NodePhase::Working),
         ("cancelled-paused", TaskState::Cancelled, NodePhase::Paused(crate::domain::Pause { reason: crate::domain::PauseReason::ByUser, since: 0, cut: None, turn_since: None, cleanup: Default::default(), released: false })),
         ("taskless", TaskState::Running, NodePhase::Working),
@@ -4952,7 +4982,7 @@ fn fleet_lists_only_nodes_with_a_session_on_an_open_task() {
         let rows: Vec<&str> = view.sections.iter().flat_map(|section| &section.items)
             .filter_map(|item| if let Item::Row(row) = item { Some(row.id.as_str()) } else { None }).collect();
         assert_eq!(rows.iter().copied().collect::<BTreeSet<_>>(),
-            ["d887a34b-249e-4487-a89b-57de38c26372", "queued", "zeta-worker", "alpha-waiting"].into_iter().collect::<BTreeSet<_>>());
+            ["d887a34b-249e-4487-a89b-57de38c26372", "queued", "zeta-worker", "alpha-waiting", "reviving"].into_iter().collect::<BTreeSet<_>>());
     }
 }
 

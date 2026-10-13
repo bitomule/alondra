@@ -128,6 +128,10 @@ fn running(task: &Task, context: &RenderContext<'_>) -> Presentation {
         .or_else(|| context.live.task_since.get(&task.id.0).cloned());
     let warn = |state: &str| Presentation { since: active_at.clone(), ..Presentation::new(state, Tone::Warning, Block::ForYou, fact.clone()) };
     let state = match (&phase, context.domain.task_handed_back(&task.id)) {
+        (NodePhase::Lost, _) => return match common::coming_back_queued(task, context) {
+            Some(queued) => in_queue(task, queued, lang),
+            None => Presentation::new(t!(lang, "Waiting for the machine", "Esperando máquina"), Tone::Neutral, Block::Waiting, None),
+        },
         (NodePhase::Starting { reviving: true }, _) => t!(lang, "Reconnecting", "Reconectando"),
         (NodePhase::Working | NodePhase::Starting { .. }, Some(Instruction::Changes)) => t!(lang, "Making changes", "Corrigiendo"),
         (NodePhase::Working | NodePhase::Starting { .. }, Some(Instruction::Conflicts)) => t!(lang, "Resolving conflicts", "Resolviendo conflictos"),
@@ -264,21 +268,7 @@ fn not_started(task: &Task, context: &RenderContext<'_>) -> Presentation {
         return chained(task, context);
     }
     if let Some(queued) = common::queued(task, context) {
-        let place = common::ordinal(queued.position, lang);
-        let of = queued.of;
-        let fact = match &queued.hold {
-            LiveHold::Next if queued.position == 1 => Some(t!(lang, "Starts within a minute", "Arranca en menos de un minuto").into()),
-            LiveHold::Slots { working, limit } => Some(tf!(lang, "{working} of {limit} working", "Hay {working} de {limit} trabajando")),
-            LiveHold::Memory { free: Some(free) } => Some(tf!(lang, "The Mac is short of memory ({free}% free)", "El Mac va justo de memoria ({free} % libre)")),
-            LiveHold::Memory { free: None } => Some(t!(lang, "The Mac is short of memory", "El Mac va justo de memoria").into()),
-            LiveHold::Cpu { load, cpus } => Some(tf!(lang, "The Mac is very busy (load {load} on {cpus} cores)", "El Mac está muy cargado (carga {load} en {cpus} núcleos)")),
-            LiveHold::Disk => Some(t!(lang, "The disk is nearly full", "El disco está casi lleno").into()),
-            LiveHold::Next => priority(task, lang),
-        };
-        return Presentation {
-            queue: Some(queued.position),
-            ..Presentation::new(tf!(lang, "Queued · {place} of {of}", "En cola · {place} de {of}"), Tone::Neutral, Waiting, fact)
-        };
+        return in_queue(task, queued, lang);
     }
     match context.live.start_waits.get(&task.id.0) {
         Some(_) if context.live.usage_exhausted.is_some() => Presentation::new(
@@ -288,6 +278,25 @@ fn not_started(task: &Task, context: &RenderContext<'_>) -> Presentation {
             Some(t!(lang, "Starts when there is room", "Arranca cuando haya sitio").into())),
         None => Presentation::new(common::node_closed_label(lang), Tone::Warning, ForYou,
             Some(t!(lang, "Its session ended before it delivered", "Su sesión terminó sin que entregara").into())),
+    }
+}
+
+/// A task waiting at the gate: its place in the queue and what holds it there.
+fn in_queue(task: &Task, queued: &super::LiveQueued, lang: super::Lang) -> Presentation {
+    let place = common::ordinal(queued.position, lang);
+    let of = queued.of;
+    let fact = match &queued.hold {
+        LiveHold::Next if queued.position == 1 => Some(t!(lang, "Starts within a minute", "Arranca en menos de un minuto").into()),
+        LiveHold::Slots { working, limit } => Some(tf!(lang, "{working} of {limit} working", "Hay {working} de {limit} trabajando")),
+        LiveHold::Memory { free: Some(free) } => Some(tf!(lang, "The Mac is short of memory ({free}% free)", "El Mac va justo de memoria ({free} % libre)")),
+        LiveHold::Memory { free: None } => Some(t!(lang, "The Mac is short of memory", "El Mac va justo de memoria").into()),
+        LiveHold::Cpu { load, cpus } => Some(tf!(lang, "The Mac is very busy (load {load} on {cpus} cores)", "El Mac está muy cargado (carga {load} en {cpus} núcleos)")),
+        LiveHold::Disk => Some(t!(lang, "The disk is nearly full", "El disco está casi lleno").into()),
+        LiveHold::Next => priority(task, lang),
+    };
+    Presentation {
+        queue: Some(queued.position),
+        ..Presentation::new(tf!(lang, "Queued · {place} of {of}", "En cola · {place} de {of}"), Tone::Neutral, Block::Waiting, fact)
     }
 }
 

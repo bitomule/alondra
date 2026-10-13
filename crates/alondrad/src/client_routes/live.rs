@@ -45,7 +45,6 @@ pub(crate) struct Live {
     pub(crate) gate: crate::fleet_gate::FleetGate,
     watching: Mutex<std::collections::HashSet<String>>,
     launching: Mutex<std::collections::HashSet<String>>,
-    reconnecting: Mutex<std::collections::HashSet<String>>,
     /// When Alondra last cut the turn of a session it has to close, by session.
     close_interrupts: Mutex<HashMap<String, i64>>,
     closed: Mutex<std::collections::BTreeSet<String>>,
@@ -174,16 +173,6 @@ impl Live {
             Some(at) => interrupts.insert(session_id.to_owned(), at),
             None => interrupts.remove(session_id),
         };
-    }
-
-    /// A restart of the session is running.
-    pub(crate) fn set_reconnecting(&self, session_id: &str, on: bool) {
-        let mut sessions = self.reconnecting.lock().expect("revivals poisoned");
-        if on { sessions.insert(session_id.to_owned()); } else { sessions.remove(session_id); }
-    }
-
-    pub(crate) fn is_reconnecting(&self, session_id: &str) -> bool {
-        self.reconnecting.lock().expect("revivals poisoned").contains(session_id)
     }
 
     pub(crate) fn observe(&self, payload: &Value) {
