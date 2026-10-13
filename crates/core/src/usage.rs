@@ -102,9 +102,102 @@ pub fn compute(limits: &[RateLimit], day_start: Option<f64>, measured_at: Millis
     })
 }
 
+fn words(text: &str) -> Vec<&str> {
+    text.split(|c: char| !c.is_alphanumeric()).filter(|word| !word.is_empty()).collect()
+}
+
+/// Text that names memory, disk or CPU is about the Mac, even if it says "usage".
+fn about_the_mac(words: &[&str]) -> bool {
+    let mac = ["memory", "memoria", "ram", "swap", "disk", "disco", "cpu", "load", "carga"];
+    words.iter().any(|word| mac.contains(word))
+}
+
+/// Whether a declared wait is about the subscription's usage rather than the Mac's resources.
+pub fn usage_wait(reason: &str) -> bool {
+    let reason = reason.to_lowercase();
+    let words = words(&reason);
+    if about_the_mac(&words) {
+        return false;
+    }
+    let usage_words = ["usage", "weekly", "semanal", "quota", "cuota", "token", "tokens", "budget", "presupuesto", "subscription", "suscripción", "suscripcion"];
+    let usage_phrases = ["de uso", "uso semanal", "uso de la", "rate limit", "5-hour", "5 hour", "5 horas", "5h"];
+    words.iter().any(|word| usage_words.contains(word)) || usage_phrases.iter().any(|phrase| reason.contains(phrase))
+}
+
+/// Whether a node's question asks whether to stop, pause or wait for the subscription's usage.
+/// That is never a node's call, nor the orchestrator's: the user decides on the usage card and
+/// Alondra paces the fleet. Narrower than `usage_wait`: a question must name the usage and a stop,
+/// and a lone "token" (a login token, say) is not usage.
+pub fn usage_stop_question(text: &str) -> bool {
+    let text = text.to_lowercase();
+    let words = words(&text);
+    if about_the_mac(&words) {
+        return false;
+    }
+    let usage_words = ["usage", "quota", "quotas", "cuota", "budget", "presupuesto", "subscription", "suscripción", "suscripcion", "5h"];
+    let usage_phrases = [
+        "de uso", "uso semanal", "uso de la", "rate limit", "weekly limit", "5-hour", "5 hour", "límite semanal", "limite semanal",
+        "límite de 5", "limite de 5", "token budget", "tokens left", "out of tokens",
+    ];
+    let stop_words = [
+        "stop", "stops", "stopping", "pause", "pausing", "hold", "holding", "wait", "waiting", "halt", "parar", "paro", "pare", "paramos",
+        "detener", "detengo", "pausar", "pauso", "pausa", "esperar", "espero", "espere", "esperamos", "frenar", "freno",
+    ];
+    let stop_phrases = ["until the reset", "until it resets", "hasta el reinicio", "hasta que se reinicie", "hasta que reinicie"];
+    let usage = words.iter().any(|word| usage_words.contains(word)) || usage_phrases.iter().any(|phrase| text.contains(phrase));
+    let stop = words.iter().any(|word| stop_words.contains(word)) || stop_phrases.iter().any(|phrase| text.contains(phrase));
+    usage && stop
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_wait_for_the_subscriptions_usage_is_refused_and_the_macs_resources_are_not() {
+        for usage in [
+            "Límite de uso semanal casi agotado (98 %); retomo el lunes 12 oct a las 02:00",
+            "weekly usage limit at 99%",
+            "Rate limit reached",
+            "Presupuesto de tokens agotado",
+            "límite de 5 horas",
+        ] {
+            assert!(usage_wait(usage), "{usage}");
+        }
+        for mac in [
+            "Sin memoria: el build murió por falta de memoria",
+            "disk full",
+            "Disco casi lleno",
+            "memory usage at 95%",
+            "CPU load too high",
+            "uso de memoria al 95 %",
+        ] {
+            assert!(!usage_wait(mac), "{mac}");
+        }
+    }
+
+    #[test]
+    fn a_question_about_stopping_for_usage_is_told_apart_from_other_questions() {
+        for stop in [
+            "Weekly usage is at 92%: should I stop until the reset?",
+            "Hold until the reset? The 5-hour limit is almost used",
+            "¿Paro hasta que se reinicie el límite de uso?",
+            "Uso semanal al 95 %: ¿espero al lunes?",
+            "Pause the task to save quota?",
+        ] {
+            assert!(usage_stop_question(stop), "{stop}");
+        }
+        for other in [
+            "Which API should I use?",
+            "Should I wait for the token refresh fix to land?",
+            "¿Espero a que termine la revisión de la PR 12?",
+            "Memory usage is at 95%: should I wait before building?",
+            "Show the weekly usage on the Fleet screen?",
+            "¿Paro el servidor de pruebas al acabar?",
+        ] {
+            assert!(!usage_stop_question(other), "{other}");
+        }
+    }
 
     /// This Mac on 23 Sep at ~21:30: 53% of the week used, 12% at the day's first measurement,
     /// reset in just under 5 days. The guard said "41% against the 18% that today's slice allows".

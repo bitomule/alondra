@@ -1158,3 +1158,33 @@ fn delivery_blocker_queries_exclude_self_and_closed_query_targets() {
     assert!(s.blocked_by(&"d".into()).is_empty());
     assert_eq!(s.blocked_by(&"d".into()), expanded_blocker_scan(&s, &"d".into()));
 }
+
+/// 10 Oct: a node asked the orchestrator whether to stop for usage, after the user had chosen to
+/// keep going on the usage card; the orchestrator answered "Hold until the reset" and the node sat
+/// idle until its session was gone. Only the user and Alondra's pacing stop for usage.
+#[test]
+fn a_node_never_asks_whether_to_stop_for_usage() {
+    let mut s = fixture();
+    let refusal = ("usage_is_not_a_stop".to_owned(), Some("card.need".to_owned()));
+    let to_orchestrator = |id: &str, card: CardSpec, options: Vec<QuestionOption>| Command::AskQuestion {
+        attachments: vec![], interaction_id: id.into(), scope: scope("t"), recipient: Recipient::Orchestrator,
+        body: "Usage".into(), blocking: true, options, card,
+    };
+    let hold = vec![option("hold", "Hold until the reset"), option("go", "Keep going")];
+    assert_eq!(refused(&mut s, agent(), to_orchestrator("o1",
+        CardSpec::new(CardKind::Decide, "Should I stop for the weekly usage?").why("Weekly usage is at 92%"), hold.clone())), refusal);
+    assert_eq!(refused(&mut s, agent(), to_orchestrator("o2",
+        CardSpec::new(CardKind::Decide, "Pick how to go on").why("The 5-hour limit is almost used"), hold)), refusal);
+    assert_eq!(refused(&mut s, agent(), ask("u1", "t", true, decide("¿Paro hasta que se reinicie el límite de uso?"))), refusal);
+    assert_eq!(refused(&mut s, agent(), asks(vec![gq("Which name?", &["Atlas", "Borealis"]), gq("¿Pauso la tarea por el uso semanal?", &["Sí", "No"])])), refusal);
+    let mut until_reset = CardSpec::new(CardKind::Do, "Tell me when the usage quota resets so I can stop waiting").why("Usage is at 99%");
+    until_reset.verify = Some("I read the usage".into());
+    assert_eq!(refused(&mut s, agent(), Command::RequestAction {
+        attachments: vec![], interaction_id: "d1".into(), scope: scope("t"), recipient: Recipient::User, body: "Usage".into(),
+        blocking: true, options: vec![], card: until_reset,
+    }), refusal);
+
+    ok(&mut s, agent(), to_orchestrator("o3", CardSpec::new(CardKind::Decide, "Which API should I use?").why("Two clients fit"), two()));
+    ok(&mut s, agent(), ask("u2", "t", false, decide("Should I wait for the token refresh fix to land?")));
+    ok(&mut s, agent(), ask("u3", "t", false, decide("Memory usage is at 95%: wait before building?")));
+}

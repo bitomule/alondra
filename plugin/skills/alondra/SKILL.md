@@ -199,6 +199,10 @@ Pick the tool by what you need:
   when the Mac has room for you, and then you run again what was cut.
 - Alondra may pause you when the Mac runs out of memory: your turn is interrupted, and later a
   message says when and what was cut. Carry on from there and run again what was cut.
+- Never stop on your own for the subscription's usage, and never ask the user or the orchestrator
+  whether to stop or wait for it: only the user (on the usage card) and Alondra (pacing the fleet)
+  decide that, and Alondra refuses such a question. If Alondra pauses you for usage, Alondra
+  resumes you.
 
 ## What a delivery is not
 

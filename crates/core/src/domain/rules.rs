@@ -10,6 +10,21 @@ fn refuse<T>(code: &str, field: &str, fix: &str) -> Result<T> {
     error.subject = Some(field.into());
     Err(error)
 }
+/// Stopping for the subscription's usage is decided by the user on the usage card and by
+/// Alondra's pacing, never by a node or the orchestrator: a node's question about it is refused
+/// before anyone can answer "hold".
+fn usage_is_not_a_stop(card: &CardSpec, options: &[QuestionOption]) -> Result<()> {
+    let mut asked = vec![card.need.as_str(), card.why.as_str()];
+    for option in options {
+        asked.push(&option.label);
+        asked.extend(option.description.as_deref());
+    }
+    if crate::usage::usage_stop_question(&asked.join("\n")) {
+        return refuse("usage_is_not_a_stop", "card.need",
+            "The subscription's usage is never a reason to stop or wait: Alondra paces usage and the user decides on the usage card. Do not ask; carry on with your task");
+    }
+    Ok(())
+}
 /// The command a card arrives with, which bounds the kinds it may be.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Source {
@@ -568,6 +583,9 @@ impl DomainState {
             _ => self.card_author(actor, scope, source)?,
         };
         self.recipient(to)?;
+        if matches!(author, Author::Agent { .. }) && matches!(source, Source::Question | Source::Action) {
+            usage_is_not_a_stop(card, options)?;
+        }
         if card.kind == CardKind::Propose {
             self.suggestion(&author, scope, to, options)?;
         }

@@ -99,20 +99,6 @@ pub(crate) const USAGE_WAIT_REFUSED: &str = "wait_for_machine is only for the Ma
     Subscription usage (weekly or 5-hour limits, tokens, budget) is never a reason to wait: Alondra paces usage itself \
     and the user decides whether to keep going. Carry on with your task.";
 
-/// Whether a declared wait is about the subscription's usage rather than the Mac's resources. A
-/// reason that names memory, disk or CPU is the Mac's, even if it says "usage".
-pub(crate) fn usage_wait(reason: &str) -> bool {
-    let reason = reason.to_lowercase();
-    let words: Vec<&str> = reason.split(|c: char| !c.is_alphanumeric()).filter(|word| !word.is_empty()).collect();
-    let mac = ["memory", "memoria", "ram", "swap", "disk", "disco", "cpu", "load", "carga"];
-    if words.iter().any(|word| mac.contains(word)) {
-        return false;
-    }
-    let usage_words = ["usage", "weekly", "semanal", "quota", "cuota", "token", "tokens", "budget", "presupuesto", "subscription", "suscripción", "suscripcion"];
-    let usage_phrases = ["de uso", "uso semanal", "uso de la", "rate limit", "5-hour", "5 hour", "5 horas", "5h"];
-    words.iter().any(|word| usage_words.contains(word)) || usage_phrases.iter().any(|phrase| reason.contains(phrase))
-}
-
 /// What the gauges say is wrong. Once the disk was the cause it must climb past
 /// `disk::recovered_line()` to count as fine, so a disk hovering at the line does not flap. Memory
 /// and the CPU load open none: they only pace the fleet at the gate.
@@ -499,29 +485,6 @@ mod tests {
 
     fn waiter(session: &str, name: &str, at: Millis) -> Waiter {
         Waiter { session: session.into(), name: name.into(), reason: "disk full".into(), at }
-    }
-
-    #[test]
-    fn a_wait_for_the_subscriptions_usage_is_refused_and_the_macs_resources_are_not() {
-        for usage in [
-            "Límite de uso semanal casi agotado (98 %); retomo el lunes 12 oct a las 02:00",
-            "weekly usage limit at 99%",
-            "Rate limit reached",
-            "Presupuesto de tokens agotado",
-            "límite de 5 horas",
-        ] {
-            assert!(usage_wait(usage), "{usage}");
-        }
-        for mac in [
-            "Sin memoria: el build murió por falta de memoria",
-            "disk full",
-            "Disco casi lleno",
-            "memory usage at 95%",
-            "CPU load too high",
-            "uso de memoria al 95 %",
-        ] {
-            assert!(!usage_wait(mac), "{mac}");
-        }
     }
 
     fn raised(actions: &[Action]) -> Vec<&MachineCard> {

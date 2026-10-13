@@ -117,6 +117,10 @@ user follows tasks, not nodes.
   week a launch still goes ahead, with a `warning` in its result: say so in your answer to the
   user. When Claude usage has run out, `launch` is refused with `usage_exhausted` until the time
   it names; the task stays as it is, and Alondra resumes your batches by itself when usage is back.
+- Usage is never your reason to stop a node. Only the user (on the usage card) and Alondra (its
+  pacing) decide to stop for usage. Never tell a node to stop, wait or hold until a reset because
+  of usage, whatever the numbers say; if a node asks, answer that it keeps working on its task.
+  A node Alondra paused for usage is resumed by Alondra, never by you.
 - Claude Code starts sessions only in repositories the user trusts, and only the user grants that
   trust; Alondra never does. A `launch` refused with `workspace_untrusted`, or a scheduled task
   Alondra says could not start because Claude Code does not trust its repository, goes to the
