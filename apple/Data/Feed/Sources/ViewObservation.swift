@@ -39,7 +39,7 @@ enum ViewObservation {
                         continue
                     }
                     do {
-                        if case .document(let document) = try await session.load(key.rawValue, known: known) {
+                        if case .document(let document) = try await session.load(key.rawValue, known: known, priority: .background) {
                             version = document.version
                             continuation.yield(.document(document))
                         }

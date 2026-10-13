@@ -112,14 +112,17 @@ final class PushCenter {
         }
     }
 
-    func activate() async {
+    func activate(whileCurrent isCurrent: @escaping @MainActor () -> Bool = { true }) async {
+        guard isCurrent(), !Task.isCancelled else { return }
         do {
             _ = try await center.requestAuthorization(options: [.alert, .sound, .badge])
         } catch {
+            guard isCurrent(), !Task.isCancelled else { return }
             registration = .failed(String(localized: "Alerts couldn’t be turned on. Try again in a moment."))
         }
+        guard isCurrent(), !Task.isCancelled else { return }
         await refreshAuthorization()
-        guard authorization == .authorized else { return }
+        guard isCurrent(), !Task.isCancelled, authorization == .authorized else { return }
         UIApplication.shared.registerForRemoteNotifications()
     }
 

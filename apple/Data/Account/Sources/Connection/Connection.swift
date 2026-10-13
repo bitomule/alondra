@@ -60,7 +60,7 @@ public actor Connection {
         if approved.relayURL != nil, approved.ownerSub != nil {
             relay = try RelaySession(
                 scope: scope,
-                bearer: { try await auth.bearerToken() }, bearerRefused: { await auth.accessTokenRefused() }, journal: journal,
+                bearer: { try await auth.bearerToken() }, bearerRefusedForToken: { await auth.accessTokenRefused(ifMatches: $0) }, journal: journal,
                 signing: signing, agreement: agreement,
                 macSigning: macSigning, macAgreement: macAgreement)
         }

@@ -1,5 +1,6 @@
 import AlondraTestSupport
 import AlondraAccount
+@testable import AlondraNotifications
 import AlondraPairing
 import AlondraTransport
 import CryptoKit
@@ -103,8 +104,47 @@ private func waitUntil(_ condition: @MainActor () -> Bool) async throws {
 }
 
 @MainActor
+private final class StartupPermissionGate {
+    let entered: AsyncStream<Void>
+    private let signal: AsyncStream<Void>.Continuation
+    private var waiter: CheckedContinuation<Void, Never>?
+    init() { (entered, signal) = AsyncStream.makeStream() }
+    func request() async {
+        await withCheckedContinuation { waiter = $0; signal.yield(()) }
+    }
+    func release() { waiter?.resume(); waiter = nil }
+}
+
+@MainActor
 @Suite(.temporaryFiles)
 struct AccountRestoreTests {
+    @Test func theFirstConnectionIsPublishedBeforeTheNotificationPermissionDecision() async throws {
+        let activation = DeferredPushActivation(), permission = StartupPermissionGate()
+        let auth = AuthSession(transport: Offline(), browser: NoBrowser(), storage: MemoryCredential(nil))
+        var registered = false
+        let owner = AccountSession(auth: auth, displayName: "Fixture client",
+            storageDirectory: try TestFiles.directory(), didReconcile: { _ in
+                let commit = await activation.prepare { isCurrent in
+                    await permission.request()
+                    if isCurrent() { registered = true }
+                }
+                return { commit() }
+            }, pairingStore: try MemoryPairings([pairing("local-fixture", relay: false)]),
+            browse: { AsyncStream { $0.finish() } })
+        var entered = permission.entered.makeAsyncIterator()
+        let restoration = Task { try await owner.prepareNotificationSession() }
+        _ = await entered.next()
+        let publishedBeforeDecision = owner.services != nil
+        let macsBeforeDecision = owner.macs.map(\.macID)
+        #expect(!registered)
+        permission.release()
+        try await restoration.value
+        await activation.drain()
+        #expect(publishedBeforeDecision)
+        #expect(macsBeforeDecision == ["local-fixture"])
+        #expect(registered)
+    }
+
     @Test func startingWithoutNetworkKeepsBothKindsOfMac() async throws {
         let owner = try account(credential: RefreshCredential(token: "refresh"),
                                 pairings: [pairing("mac-home", relay: false), pairing("mac-office", relay: true)])

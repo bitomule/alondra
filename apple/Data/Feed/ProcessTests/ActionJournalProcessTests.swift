@@ -169,6 +169,7 @@ private struct RelayServerEvent: Decodable, Sendable {
     let event: String
     var baseURL: String?
     var bearer: String?
+    var expiredBearer: String?
     var macID: String?
     var deviceID: String?
     var signingSeed: String?
@@ -180,6 +181,7 @@ private struct RelayServerEvent: Decodable, Sendable {
     var readPosts: Int?
     enum CodingKeys: String, CodingKey {
         case event, bearer
+        case expiredBearer = "expired_bearer"
         case baseURL = "base_url", macID = "mac_id", deviceID = "device_id"
         case signingSeed = "signing_seed_base64", agreementSeed = "agreement_seed_base64"
         case macSigningSeed = "mac_signing_seed_base64", macAgreementSeed = "mac_agreement_seed_base64"
@@ -399,6 +401,97 @@ private struct RelayServerEvent: Decodable, Sendable {
         #expect(try await restarted.next(ServerEvent.self).event == "stopped")
         try relay.send(ServerCommand(command: "stop"))
         #expect(try await relay.next(RelayServerEvent.self).event == "stopped")
+    }
+
+    @Test(arguments: [false, true])
+    func answeringACardAndImmediatelyOpeningOtherDetailsKeepsTheConnectionUsable(withRelay: Bool) async throws {
+        let relay: FixtureProcess?
+        let relayReady: RelayServerEvent?
+        if withRelay {
+            relay = try FixtureProcess(executable: executable("crates/relay/alondra_relay_test"),
+                arguments: ["--ignored", "--exact", "http_tests::process_fixture::full_stack_fixture_relay", "--nocapture"],
+                home: try TestFiles.directory(), prefix: "ALONDRA_FIXTURE ")
+            relayReady = try await relay!.next(RelayServerEvent.self)
+        } else { relay = nil; relayReady = nil }
+        defer { relay?.cleanup() }
+        let daemonHome = try TestFiles.directory()
+        var environment: [String: String] = [:]
+        if let relayReady { environment["ALONDRA_FIXTURE_RELAY_URL"] = try #require(relayReady.baseURL) }
+        let daemon = try FixtureProcess(executable: executable("crates/alondrad/alondrad_test"),
+            arguments: ["--ignored", "--exact", "operation_journal::process_fixture::full_stack_fixture_server", "--nocapture"],
+            home: daemonHome, prefix: "ALONDRA_FIXTURE ", additionalEnvironment: environment)
+        defer { daemon.cleanup() }
+        let ready = try await daemon.next(ServerEvent.self)
+        var config = ProcessClientConfiguration(baseURL: ready.baseURL ?? "https://fixture-relay.invalid",
+            dataEpoch: try #require(ready.dataEpoch), actionID: try #require(ready.actionID),
+            deviceID: try #require(ready.deviceID ?? relayReady?.deviceID), signingSeed: try #require(ready.signingSeed ?? relayReady?.signingSeed), optionID: ready.optionID)
+        if let relayReady {
+            config = .init(baseURL: "https://fixture-relay.invalid", dataEpoch: config.dataEpoch,
+                actionID: config.actionID, deviceID: try #require(relayReady.deviceID), signingSeed: try #require(relayReady.signingSeed),
+                optionID: config.optionID, relay: .init(baseURL: try #require(relayReady.baseURL), bearer: try #require(relayReady.bearer),
+                    macID: try #require(relayReady.macID), agreementSeed: try #require(relayReady.agreementSeed),
+                    macSigningSeed: try #require(relayReady.macSigningSeed), macAgreementSeed: try #require(relayReady.macAgreementSeed),
+                    expiredBearer: try #require(relayReady.expiredBearer)))
+        }
+        let clientHome = try TestFiles.directory(), configFile = clientHome.appending(path: "fixture.json")
+        try JSONEncoder().encode(config).write(to: configFile)
+        let client = try launchClient(home: clientHome, config: configFile)
+        defer { client.cleanup() }
+        #expect(try await client.next(ProcessClientEvent.self).event == "ready")
+        try client.send(ProcessClientCommand(command: "prepare", nonce: "60000000-0000-4000-8000-000000000001"))
+        let prepared = try await client.next(ProcessClientEvent.self)
+        let original = try #require(prepared.request)
+        if withRelay {
+            try client.send(ProcessClientCommand(command: "hold_stale_authorization"))
+            #expect(try await client.next(ProcessClientEvent.self).event == "stale_authorization_held")
+        }
+        let responseGate = relay ?? daemon
+        try responseGate.send(ServerCommand(command: "hold_next_action"))
+        if let relay { #expect(try await relay.next(RelayServerEvent.self).event == "armed") }
+        else { #expect(try await daemon.next(ServerEvent.self).event == "armed") }
+        try client.send(ProcessClientCommand(command: "start_action"))
+        #expect(try await client.next(ProcessClientEvent.self).event == "action_started")
+        if let relay { #expect(try await relay.next(RelayServerEvent.self).commandID == original.commandId) }
+        else { #expect(try await daemon.next(ServerEvent.self).commandID == original.commandId) }
+        let before = try await stats(daemon)
+        #expect(before.effects == 1)
+        var verifiedDetails = 0
+        var failedBursts = 0
+        for round in 0..<2 {
+            if withRelay, round == 1 {
+                try client.send(ProcessClientCommand(command: "release_stale_authorization"))
+                let finished = try await client.next(ProcessClientEvent.self)
+                #expect(finished.event == "stale_authorization_finished" && finished.authorizationRefusals == 0)
+            }
+            try client.send(ProcessClientCommand(command: "detail_burst"))
+            let details = try await client.next(ProcessClientEvent.self)
+            if details.event == "details_loaded" { verifiedDetails += details.detailKeys?.count ?? 0 }
+            else { failedBursts += 1 }
+            #expect(details.event == "details_loaded")
+            #expect(details.detailKeys == Array(repeating: "card:fixture-detail-b", count: 4)
+                + Array(repeating: "card:fixture-detail-c", count: 4))
+        }
+        try responseGate.send(ServerCommand(command: "release"))
+        if let relay { #expect(try await relay.next(RelayServerEvent.self).event == "released") }
+        else { #expect(try await daemon.next(ServerEvent.self).event == "released") }
+        try client.send(ProcessClientCommand(command: "finish_action"))
+        let answer = try await client.next(ProcessClientEvent.self)
+        #expect(answer.event == "answered" && answer.response?.outcome == .applied)
+        let final = try await stats(daemon)
+        #expect(final.effects == 1)
+        if let relay {
+            try relay.send(ServerCommand(command: "stats"))
+            #expect(try await relay.next(RelayServerEvent.self).actionPosts == 1)
+        } else { #expect(final.actionPosts == 1) }
+        print("action-detail E2E relay=\(withRelay) verified_details=\(verifiedDetails) failed_bursts=\(failedBursts) action_effects=\(final.effects ?? -1)")
+        try client.send(ProcessClientCommand(command: "quit"))
+        #expect(try await client.next(ProcessClientEvent.self).event == "stopped")
+        try daemon.send(ServerCommand(command: "stop"))
+        #expect(try await daemon.next(ServerEvent.self).event == "stopped")
+        if let relay {
+            try relay.send(ServerCommand(command: "stop"))
+            #expect(try await relay.next(RelayServerEvent.self).event == "stopped")
+        }
     }
 
     @Test func actualPreviousStoreGrowthIsComparedWithSQLiteAfterTheResponseCacheFills() async throws {

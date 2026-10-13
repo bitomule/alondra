@@ -11,16 +11,19 @@ actor RelayTransport: Transport {
     private let signer: @Sendable (Data) throws -> Data
     private let bearer: @Sendable () async throws -> String
     private let bearerRefused: @Sendable () async -> Void
+    private let bearerRefusedForToken: (@Sendable (String) async -> Void)?
     private let transport: any HTTPTransport
     private var epoch: Data?
     /// A signed request has been accepted with the current epoch, so the relay knew it.
     private var epochProven = false
+    private var latestBearer: String?
     private let now: @Sendable () -> UInt64
 
     public init(base: URL, deviceID: String,
                 signer: @escaping @Sendable (Data) throws -> Data,
                 bearer: @escaping @Sendable () async throws -> String,
                 bearerRefused: @escaping @Sendable () async -> Void = {},
+                bearerRefusedForToken: (@Sendable (String) async -> Void)? = nil,
                 transport: any HTTPTransport,
                 now: @escaping @Sendable () -> UInt64) throws {
         let scheme = base.scheme?.lowercased()
@@ -29,7 +32,7 @@ actor RelayTransport: Transport {
               base.path.isEmpty || base.path == "/", RelayHTTPChallenge.validText(deviceID)
         else { throw RelayWireError.invalidEndpoint }
         self.base = base; self.deviceID = deviceID; self.signer = signer
-        self.bearer = bearer; self.bearerRefused = bearerRefused; self.transport = transport; self.now = now
+        self.bearer = bearer; self.bearerRefused = bearerRefused; self.bearerRefusedForToken = bearerRefusedForToken; self.transport = transport; self.now = now
     }
 
     public func bootstrap() async throws -> RelayBootstrap {
@@ -119,6 +122,8 @@ actor RelayTransport: Transport {
             request.httpBody = body
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         }
+        var signedEpoch: Data?
+        var signedBearer: String?
         if signed {
             try MutationScope.check()
             if epoch == nil { _ = try await bootstrap() }
@@ -129,6 +134,9 @@ actor RelayTransport: Transport {
             guard !token.isEmpty, !token.utf8.contains(where: { $0 <= 32 || $0 == 127 }) else {
                 throw RelayWireError.invalidField
             }
+            signedEpoch = epoch
+            signedBearer = token
+            latestBearer = token
             let timestamp = now()
             let random = try Self.randomNonce()
             let challenge = try RelayHTTPChallenge.message(deviceID: deviceID, method: method,
@@ -148,13 +156,18 @@ actor RelayTransport: Transport {
         if method == "POST", target == "/v1/requests" { try MutationScope.possibleDispatch() }
         let reply = try await transport.send(request)
         if let budget = MutationScope.current, budget.interruption != nil || Task.isCancelled { return reply }
-        guard signed else { return reply }
+        guard signed, signedEpoch == epoch, signedBearer == latestBearer else { return reply }
         if reply.status == 401 {
             // A relay restart changes its epoch, and an epoch that already worked is the likely
             // cause: bootstrap again first. A 401 with a fresh epoch is about the access token,
             // never that the Mac revoked this device: renew it before the next request.
             if epochProven { epochProven = false; epoch = nil }
-            else { await MutationScope.$current.withValue(nil) { await bearerRefused() } }
+            else {
+                await MutationScope.$current.withValue(nil) {
+                    if let bearerRefusedForToken, let signedBearer { await bearerRefusedForToken(signedBearer) }
+                    else { await bearerRefused() }
+                }
+            }
         } else if reply.status < 500 {
             epochProven = true
         }

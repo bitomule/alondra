@@ -138,7 +138,7 @@ async fn full_stack_fixture_relay() {
         .unwrap();
     });
     emit(
-        json!({"event":"ready","base_url":base,"bearer":jwt("owner",now_ms()),"mac_id":"mac-1","device_id":"phone-1",
+        json!({"event":"ready","base_url":base,"bearer":jwt("owner",now_ms()),"expired_bearer":jwt("owner",0),"mac_id":"mac-1","device_id":"phone-1",
         "signing_seed_base64":base64::engine::general_purpose::STANDARD.encode([33u8;32]),
         "agreement_seed_base64":base64::engine::general_purpose::STANDARD.encode([34u8;32]),
         "mac_signing_seed_base64":base64::engine::general_purpose::STANDARD.encode([1u8;32]),

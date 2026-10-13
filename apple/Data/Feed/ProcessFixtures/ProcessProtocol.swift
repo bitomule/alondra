@@ -17,6 +17,7 @@ struct ProcessRelayConfiguration: Codable, Sendable {
     let agreementSeed: String
     let macSigningSeed: String
     let macAgreementSeed: String
+    var expiredBearer: String? = nil
 }
 struct ProcessClientCommand: Codable, Sendable {
     let command: String
@@ -50,4 +51,6 @@ struct ProcessClientEvent: Codable, Sendable {
     var history: [ProcessHistorySample]? = nil
     var mutativeEnvelopePosts: Int? = nil
     var otherEnvelopePosts: Int? = nil
+    var detailKeys: [String]? = nil
+    var authorizationRefusals: Int? = nil
 }

@@ -49,7 +49,9 @@ public actor FeedSession {
             self.epochGeneration = epochGeneration; self.retired = retired; self.leaseIDs = leaseIDs
         }
     }
+    public enum LoadPriority: Sendable { case interactive, background }
     private struct LoadWaiter {
+        let priority: LoadPriority
         let continuation: CheckedContinuation<LoadCompletion, Never>
     }
     private struct InFlightLoad {
@@ -57,11 +59,15 @@ public actor FeedSession {
         var lifetime: UUID
         var epochGeneration: UInt64
         let requiredEpoch: String?
+        var priority: LoadPriority
         var task: Task<Void, Never>?
         var waiters: [UUID: LoadWaiter]
     }
     private var inFlightLoads: [LoadKey: InFlightLoad] = [:]
     private static let loadLimit = 4
+    private static let backgroundLimit = loadLimit - 1
+    private var runningPriorities: [UUID: LoadPriority] = [:]
+    private var interactiveAdmissions = 0
     private(set) var runningLoadTasks: [UUID: Task<Void, Never>] = [:]
     var runningLoadIDs: Set<UUID> { Set(runningLoadTasks.keys) }
     private var pendingLoads: [(request: LoadKey, id: UUID)] = []
@@ -122,6 +128,10 @@ public actor FeedSession {
         return stream
     }
 
+    public func load(_ key: String, known: String?, priority: LoadPriority) async throws -> ViewFetch {
+        try await ViewLoadContext.$priority.withValue(priority) { try await self.load(key, known: known) }
+    }
+
     public func load(_ key: String, known: String? = nil) async throws -> ViewFetch {
         guard active else { throw CancellationError() }
         guard Self.validViewKey(key) else { throw FeedError.invalidKey }
@@ -178,6 +188,7 @@ public actor FeedSession {
     }
 
     private func waitForLoad(_ request: LoadKey, requiredEpoch: String?) async throws -> LoadCompletion {
+        let priority = ViewLoadContext.priority
         let waiter = UUID()
         return try await withTaskCancellationHandler {
             try Task.checkCancellation()
@@ -185,15 +196,24 @@ public actor FeedSession {
                 if Task.isCancelled {
                     continuation.resume(returning: LoadCompletion(owner: UUID(), lifetime: UUID(), result: .failure(CancellationError()), epochGeneration: epochGeneration))
                 } else if var load = inFlightLoads[request] {
-                    load.waiters[waiter] = LoadWaiter(continuation: continuation)
+                    load.waiters[waiter] = LoadWaiter(priority: priority, continuation: continuation)
+                    if priority == .interactive {
+                        load.priority = .interactive
+                    }
                     inFlightLoads[request] = load
+                    admitLoads()
                 } else {
-                    startLoad(request, waiters: [waiter: LoadWaiter(continuation: continuation)], requiredEpoch: requiredEpoch)
+                    startLoad(request, waiters: [waiter: LoadWaiter(priority: priority, continuation: continuation)], requiredEpoch: requiredEpoch)
                 }
             }
         } onCancel: {
             Task { await self.cancelLoadWaiter(waiter) }
         }
+    }
+
+    private static func priority(of waiters: [UUID: LoadWaiter]) -> LoadPriority {
+        for waiter in waiters.values where waiter.priority == .interactive { return .interactive }
+        return .background
     }
 
     private func startLoad(_ request: LoadKey, waiters: [UUID: LoadWaiter], requiredEpoch: String? = nil) {
@@ -202,14 +222,36 @@ public actor FeedSession {
         loadLifetimes[request.key] = lifetime
         loadOwners[request.key] = id
         cursorLoadOwner = id
-        inFlightLoads[request] = InFlightLoad(id: id, lifetime: lifetime, epochGeneration: epochGeneration, requiredEpoch: requiredEpoch, task: nil, waiters: waiters)
+        inFlightLoads[request] = InFlightLoad(id: id, lifetime: lifetime, epochGeneration: epochGeneration, requiredEpoch: requiredEpoch, priority: Self.priority(of: waiters), task: nil, waiters: waiters)
         pendingLoads.append((request, id))
         admitLoads()
     }
 
     private func admitLoads() {
+        guard active else { return }
+        var live: [(request: LoadKey, id: UUID)] = []
+        for pending in pendingLoads where inFlightLoads[pending.request]?.id == pending.id { live.append(pending) }
+        pendingLoads = live
         while runningLoadTasks.count < Self.loadLimit, !pendingLoads.isEmpty {
-            let next = pendingLoads.removeFirst()
+            var interactive: Int?
+            var background: Int?
+            var runningBackground = 0
+            for priority in runningPriorities.values where priority == .background { runningBackground += 1 }
+            let backgroundAvailable = runningBackground < Self.backgroundLimit
+            for index in pendingLoads.indices {
+                let priority = inFlightLoads[pendingLoads[index].request]?.priority
+                if interactive == nil, priority == .interactive { interactive = index }
+                if background == nil, backgroundAvailable, priority == .background { background = index }
+            }
+            let index: Int
+            if let background, interactive == nil || interactiveAdmissions >= 3 {
+                index = background
+                interactiveAdmissions = 0
+            } else if let interactive {
+                index = interactive
+                interactiveAdmissions = min(3, interactiveAdmissions + 1)
+            } else { break }
+            let next = pendingLoads.remove(at: index)
             guard var load = inFlightLoads[next.request], load.id == next.id else { continue }
             let transport = self.transport
             let client = self.client
@@ -226,6 +268,7 @@ public actor FeedSession {
             }
             load.task = task
             runningLoadTasks[next.id] = task
+            runningPriorities[next.id] = load.priority
             inFlightLoads[next.request] = load
         }
     }
@@ -233,6 +276,7 @@ public actor FeedSession {
     private func finishLoad(_ request: LoadKey, id: UUID, result: Result<ViewFetch, any Error>) {
         completeLoad(request, id: id, result: result)
         runningLoadTasks.removeValue(forKey: id)
+        runningPriorities.removeValue(forKey: id)
         admitLoads()
     }
 
@@ -247,7 +291,11 @@ public actor FeedSession {
             pendingLoads.removeAll { $0.id == load.id }
             if let current = currentLoad(request.key), var owner = inFlightLoads[current] {
                 owner.waiters.merge(load.waiters) { existing, _ in existing }
+                if Self.priority(of: owner.waiters) == .interactive {
+                    owner.priority = .interactive
+                }
                 inFlightLoads[current] = owner
+                admitLoads()
             } else {
                 let cancelled = LoadCompletion(owner: load.id, lifetime: load.lifetime, result: .failure(CancellationError()), epochGeneration: load.epochGeneration)
                 for waiter in load.waiters.values { waiter.continuation.resume(returning: cancelled) }
@@ -355,6 +403,9 @@ public actor FeedSession {
     private func cancelLoadWaiter(_ id: UUID) {
         guard let request = inFlightLoads.first(where: { $0.value.waiters[id] != nil })?.key,
               var load = inFlightLoads[request], let waiter = load.waiters.removeValue(forKey: id) else { return }
+        if load.task == nil {
+            load.priority = Self.priority(of: load.waiters)
+        }
         inFlightLoads[request] = load
         waiter.continuation.resume(returning: LoadCompletion(owner: load.id, lifetime: load.lifetime, result: .failure(CancellationError()), epochGeneration: load.epochGeneration))
         let needed = inFlightLoads.contains { $0.key.key == request.key && !$0.value.waiters.isEmpty }
@@ -653,7 +704,7 @@ public actor FeedSession {
     private func refreshKey(_ key: String, generation current: UInt64) async throws {
         guard !Task.isCancelled, generation == current, openKeys.contains(key) else { return }
         let wasMissing = versions[key] == nil
-        do { _ = try await load(key, known: versions[key]) }
+        do { _ = try await load(key, known: versions[key], priority: .background) }
         catch FeedError.missingView { return }
         guard !Task.isCancelled, generation == current, openKeys.contains(key) else { return }
         if wasMissing, documents[key] != nil { emit(.stale([key])) }
@@ -676,4 +727,8 @@ public actor FeedSession {
     static func validViewKey(_ key: String) -> Bool {
         ViewRoute.parse(key) != nil
     }
+}
+
+private enum ViewLoadContext {
+    @TaskLocal static var priority: FeedSession.LoadPriority = .interactive
 }

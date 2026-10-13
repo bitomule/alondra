@@ -261,6 +261,11 @@ public actor AuthSession {
 
     /// The relay refused the access token without a sealed revocation from the Mac. The next
     /// request renews it; only a renewal answered with invalid_grant ends the session.
+    public func accessTokenRefused(ifMatches token: String) {
+        guard accessToken == token else { return }
+        accessTokenRefused()
+    }
+
     public func accessTokenRefused() {
         guard accessToken != nil else { return }
         // Repeated refusals renew at most once a minute; the session stays either way.

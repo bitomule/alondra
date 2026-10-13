@@ -215,6 +215,16 @@ async fn full_stack_fixture_server() {
                 card: CardSpec::derived(CardKind::Provide, "Answer the question"),
             },
         );
+        for id in ["fixture-detail-b", "fixture-detail-c"] {
+            seed(&domain, Actor::Agent { agent_id: "fixture-agent".into() }, id,
+                Command::AskQuestion {
+                    attachments: vec![], interaction_id: id.into(),
+                    scope: Scope::Task { task_id: "fixture-task".into() }, recipient: Recipient::User,
+                    body: format!("Independent detail {id}"), blocking: false,
+                    options: vec![QuestionOption { id: "yes".into(), label: "Yes".into(), description: None, inputs: vec![] }],
+                    card: CardSpec::derived(CardKind::Provide, "Another question"),
+                });
+        }
     }
     let current = domain.state().unwrap();
     let epoch = current.data_epoch.0.clone();

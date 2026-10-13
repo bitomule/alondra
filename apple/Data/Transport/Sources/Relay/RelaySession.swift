@@ -33,13 +33,14 @@ public actor RelaySession: OperationAPI, PushRegistrationAPI {
     public init(scope: RelayOutboxScope,
                 bearer: @escaping @Sendable () async throws -> String,
                 bearerRefused: @escaping @Sendable () async -> Void = {},
+                bearerRefusedForToken: (@Sendable (String) async -> Void)? = nil,
                 transport: (any HTTPTransport)? = nil,
                 journal: EnvelopeJournal? = nil,
                 signing: P256.Signing.PrivateKey, agreement: P256.KeyAgreement.PrivateKey,
                 macSigning: P256.Signing.PublicKey, macAgreement: P256.KeyAgreement.PublicKey,
                 now: @escaping @Sendable () -> UInt64 = { UInt64(Date().timeIntervalSince1970 * 1000) },
                 sleep: @escaping @Sendable () async throws -> Void = { try await Task.sleep(for: .seconds(1)) }) throws {
-        try self.init(scope: scope, bearer: bearer, bearerRefused: bearerRefused, transport: transport, journal: journal,
+        try self.init(scope: scope, bearer: bearer, bearerRefused: bearerRefused, bearerRefusedForToken: bearerRefusedForToken, transport: transport, journal: journal,
             signing: signing, agreement: agreement, macSigning: macSigning, macAgreement: macAgreement,
             now: now, sleep: sleep, waitForReadDeadline: { try await ContinuousClock().sleep(until: $0) })
     }
@@ -47,6 +48,7 @@ public actor RelaySession: OperationAPI, PushRegistrationAPI {
     init(scope: RelayOutboxScope,
                 bearer: @escaping @Sendable () async throws -> String,
                 bearerRefused: @escaping @Sendable () async -> Void = {},
+                bearerRefusedForToken: (@Sendable (String) async -> Void)? = nil,
                 transport: (any HTTPTransport)? = nil,
                 journal: EnvelopeJournal? = nil,
                 signing: P256.Signing.PrivateKey, agreement: P256.KeyAgreement.PrivateKey,
@@ -56,7 +58,7 @@ public actor RelaySession: OperationAPI, PushRegistrationAPI {
                 waitForReadDeadline: @escaping @Sendable (ContinuousClock.Instant) async throws -> Void,
                 requestClock: RequestClock = .continuous) throws {
         let client = try AlondraAPIClient.makeTransport(base: scope.relay, deviceID: scope.deviceID,
-            signing: signing, bearer: bearer, bearerRefused: bearerRefused, transport: transport)
+            signing: signing, bearer: bearer, bearerRefused: bearerRefused, bearerRefusedForToken: bearerRefusedForToken, transport: transport)
         self.client = client; self.scope = scope
         outbox = RelayOutbox(scope: scope, transport: client, journal: journal)
         codec = EnvelopeCodec(macID: scope.macID, deviceID: scope.deviceID, signing: signing,

@@ -149,6 +149,24 @@ struct TransientRefusalTests {
         #expect(remote(AuthError.noSession) == .sessionExpired)
     }
 
+    @Test func anOldRelayRefusalCannotInvalidateARenewedTokenOrConsumeItsRenewalBudget() async throws {
+        let issuer = ScriptedIssuer(tokens: [tokens("first", refresh: "r1"), tokens("second", refresh: "r2"),
+                                             tokens("third", refresh: "r3")], userInfo: [])
+        let clock = Mutex(Date(timeIntervalSince1970: 2_000_000_000))
+        let session = AuthSession(transport: issuer, browser: NoBrowser(), storage: Storage("r0"),
+                                  now: { clock.withLock { $0 } })
+        #expect(try await session.bearerToken() == "first")
+        await session.accessTokenRefused(ifMatches: "first")
+        #expect(try await session.bearerToken() == "second")
+        clock.withLock { $0 = $0.addingTimeInterval(61) }
+        await session.accessTokenRefused(ifMatches: "first")
+        #expect(try await session.bearerToken() == "second")
+        #expect(await issuer.tokenCalls == 2)
+        await session.accessTokenRefused(ifMatches: "second")
+        #expect(try await session.bearerToken() == "third")
+        #expect(await issuer.tokenCalls == 3)
+    }
+
     @Test func repeatedRelayRefusalsRenewAtMostOnceAMinute() async throws {
         let issuer = ScriptedIssuer(tokens: [tokens("first", refresh: "r1"), tokens("second", refresh: "r2"),
                                              tokens("third", refresh: "r3")], userInfo: [])

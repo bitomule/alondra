@@ -24,6 +24,7 @@ final class NotificationRuntime {
         catch { self.error = String(localized: "Alondra couldn’t reconnect to answer this alert. Open the app to reconnect.") }
     })
     private var identity: ObjectIdentifier?
+    @ObservationIgnored private let activation = DeferredPushActivation()
     private var generation = 0
     private(set) var error: String?
 
@@ -42,6 +43,7 @@ final class NotificationRuntime {
 
     func prepare(_ snapshot: ApprovedSessionRegistry<Connection>.Snapshot) async throws -> (@MainActor () throws -> Void) {
         generation += 1
+        activation.cancel()
         let current = generation
         var contexts: [NotificationDecryptionContext] = []
         var clients: [NotificationClient] = []
@@ -70,10 +72,15 @@ final class NotificationRuntime {
         guard Set(clients.map(\.identity)).count == clients.count,
               Set(clients.map(\.binding)).count == clients.count else { throw ProvisioningError.binding }
         do {
-            await push.refreshAuthorization()
-            guard current == generation, !Task.isCancelled else { throw CancellationError() }
-            if push.authorization == .notDetermined, !clients.isEmpty { await push.activate() }
-            guard current == generation, !Task.isCancelled else { throw CancellationError() }
+            let activate = await activation.prepare { [weak self, push] isCurrent in
+                await push.refreshAuthorization()
+                guard let self, isCurrent(), current == self.generation else { return }
+                if push.authorization == .notDetermined, !clients.isEmpty {
+                    await push.activate(whileCurrent: isCurrent)
+                } else if push.authorization == .authorized {
+                    push.registerWithAPNs()
+                }
+            }
             guard let vault else { throw ProvisioningError.missingKeychainGroup }
             let routes = zip(clients, contexts).map { NotificationRoutingCoordinator.Entry(client: $0.0, context: $0.1) }
             // Validate the routing snapshot before the atomic vault/publication commit.
@@ -90,7 +97,7 @@ final class NotificationRuntime {
                     try await select(id)
                 }
                 error = nil
-                if push.authorization == .authorized { push.registerWithAPNs() }
+                activate()
             }
         } catch {
             if current == generation { self.error = String(localized: "Alerts for this Mac couldn’t be set up. Alondra tries again when you reopen the app.") }
@@ -99,6 +106,7 @@ final class NotificationRuntime {
     }
 
     func deactivate() async throws {
+        activation.cancel()
         generation += 1
         let current = generation
         identity = nil
@@ -119,6 +127,7 @@ final class NotificationRuntime {
 
     /// The account session ended without a sign-out: its bindings stop receiving pushes.
     func retireBindings() {
+        activation.cancel()
         bindings.retire(into: unregistrar.ledger)
         drainUnregistrations()
     }
