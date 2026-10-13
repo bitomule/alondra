@@ -5,7 +5,15 @@ use crate::domain::{DeliveryTarget, DomainState, Interaction, InteractionId, Int
 /// moment it is sent when this is true, and leave it in place otherwise: they never work it out
 /// from the action's name. The daemon decides what a message becomes with the same rule.
 pub fn resolves_card(domain: &DomainState, action: &ActionId) -> bool {
-    always_resolves(action.verb) || handed_back(domain, action)
+    always_resolves(action.verb) || (handed_back(domain, action) && !reply_to_delivery(domain, action))
+}
+
+/// A reply to a delivery reaches its node and stays in the card's history, but the delivery stays
+/// in front of the user: they can still accept it while the node acts on the reply.
+fn reply_to_delivery(domain: &DomainState, action: &ActionId) -> bool {
+    action.verb == Verb::Reply
+        && domain.interactions.get(&InteractionId(action.subject.clone()))
+            .is_some_and(|interaction| matches!(interaction.payload, InteractionPayload::Delivery { .. }))
 }
 
 /// An answer, an acceptance, a read or a request for changes always settles the card it came from.
@@ -14,8 +22,8 @@ pub fn always_resolves(verb: Verb) -> bool {
 }
 
 /// A reply to a delivery, a question about a presented PR or a request to resolve its conflicts
-/// is feedback on that delivery, and a reply to an open question answers it: either way its card
-/// leaves the queue. With nothing to hand back the text only reaches the node, and the card stays.
+/// is feedback on that delivery, and a reply to an open question answers it. With nothing to hand
+/// back the text only reaches the node.
 pub fn handed_back(domain: &DomainState, action: &ActionId) -> bool {
     match action.verb {
         Verb::Reply => domain.interactions.get(&InteractionId(action.subject.clone()))

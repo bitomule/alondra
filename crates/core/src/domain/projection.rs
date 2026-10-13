@@ -148,13 +148,13 @@ impl DomainState {
         }
     }
     /// The instruction a delivery went back to its Agent with, since its acceptance. Only the
-    /// Agent presenting again puts it back in front of the user.
+    /// Agent presenting again puts it back in front of the user. A reply only reaches the Agent:
+    /// the delivery stays in front of the user, who can still accept it.
     pub fn handed_back(&self, presentation: &Interaction) -> Option<Instruction> {
         let InteractionPayload::Delivery { acceptance, feedback, .. } = &presentation.payload else {
             return None;
         };
-        feedback
-            .last()
+        last_hand_back(feedback)
             .filter(|f| acceptance.as_ref().is_none_or(|a| f.at_revision > a.at_revision))
             .map(|f| f.instruction)
     }
@@ -167,7 +167,7 @@ impl DomainState {
         let InteractionPayload::Delivery { feedback, .. } = &self.interactions.get(task.final_presentation.as_ref()?)?.payload else {
             return None;
         };
-        let (number, reason) = merge_failure(&feedback.last()?.body)?;
+        let (number, reason) = merge_failure(&last_hand_back(feedback)?.body)?;
         Some((number, reason.to_owned()))
     }
     pub fn task_handed_back(&self, task_id: &TaskId) -> Option<Instruction> {
@@ -690,4 +690,8 @@ mod inbox_order_tests {
         }
     }
 
+}
+
+fn last_hand_back(feedback: &[Feedback]) -> Option<&Feedback> {
+    feedback.iter().rev().find(|f| f.instruction != Instruction::Reply)
 }

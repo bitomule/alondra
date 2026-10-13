@@ -4232,7 +4232,6 @@ fn a_pr_sent_back_leaves_waiting_for_you_and_its_task_says_what_alondra_asked() 
         (Actor::System, Instruction::Conflicts, "Resolving conflicts", "Resolviendo conflictos"),
         (user.clone(), Instruction::Changes, "Making changes", "Corrigiendo"),
         (user.clone(), Instruction::Question, "Answering you", "Respondiéndote"),
-        (user.clone(), Instruction::Reply, "Answering you", "Respondiéndote"),
     ] {
         let mut state = presented.clone();
         execute(&mut state, actor, Command::SubmitFeedback {
@@ -4256,6 +4255,61 @@ fn a_pr_sent_back_leaves_waiting_for_you_and_its_task_says_what_alondra_asked() 
     let card = serde_json::to_string(&render(&state, &live, Client::Tui, Lang::En, "card:d", "")).unwrap();
     assert!(card.contains("Alondra couldn't merge #12") && card.contains("its checks failed (lint)")
         && !card.contains("Conflicts were reported"), "{card}");
+}
+
+fn pause_for_memory(state: &mut DomainState) {
+    let pause = crate::domain::Pause { reason: crate::domain::PauseReason::Memory, since: 2, cut: None, turn_since: Some(1),
+        cleanup: Default::default(), released: false };
+    execute(state, crate::domain::Actor::System, crate::domain::Command::MoveNode { agent_id: "a".into(), event: crate::domain::NodeEvent::Paused { pause }, at: 2 });
+}
+
+/// The harness-tests result of 12 October: the user replied on the delivery of PR #909, its node was
+/// paused for memory seconds later and never presented again, and the result could not be accepted.
+#[test]
+fn a_reply_on_a_presented_pr_keeps_it_in_waiting_for_you_with_its_merge_while_the_node_is_paused() {
+    use crate::domain::{Actor, Command, DeliveryTarget, Instruction};
+    let live = LiveSnapshot::default();
+    let mut state = presented_pr();
+    let presented = render(&state, &live, Client::Ios, Lang::Es, "card:d", "");
+    let presented = card_of(&presented);
+    let reply = presented.actions.iter().chain(&presented.more).chain(&presented.reply)
+        .find(|action| action.id.starts_with("reply:")).expect("the delivery offers a reply").clone();
+    assert!(!reply.resolves_card, "a reply leaves the delivery in front of the user");
+    execute(&mut state, Actor::User { user_id: "u".into() }, Command::SubmitFeedback {
+        attachments: vec![], presentation_id: "d".into(), body: "Pass the findings to the orchestrator".into(),
+        instruction: Instruction::Reply, targets: vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: "head1".into() }],
+    });
+    execute(&mut state, Actor::System, Command::MoveNode { agent_id: "a".into(), event: crate::domain::NodeEvent::TurnStarted, at: 1 });
+    pause_for_memory(&mut state);
+    let home = render(&state, &live, Client::Ios, Lang::Es, "home", "");
+    assert_eq!(home.sections[0].card_ids, ["d"], "the result still waits for the user");
+    let card = render(&state, &live, Client::Ios, Lang::Es, "card:d", "");
+    assert_eq!(card.view, "card", "never a settled card with nothing to press");
+    let merge = card_of(&card).actions.clone().into_iter().find(|action| action.id.starts_with("merge:")).expect("the card offers the merge");
+    assert!(merge.enabled, "{merge:?}");
+}
+
+#[test]
+fn a_task_whose_node_is_paused_says_what_it_owes_the_user_never_no_connection() {
+    use crate::domain::{Actor, Command, DeliveryTarget, Instruction};
+    let live = LiveSnapshot::default();
+    for (instruction, english, spanish) in [
+        (Instruction::Changes, "has your changes pending", "tiene pendientes tus cambios"),
+        (Instruction::Question, "has your question pending", "tiene pendiente tu pregunta"),
+    ] {
+        let mut state = presented_pr();
+        execute(&mut state, Actor::User { user_id: "u".into() }, Command::SubmitFeedback {
+            attachments: vec![], presentation_id: "d".into(), body: "Back to you".into(), instruction,
+            targets: vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: "head1".into() }],
+        });
+        execute(&mut state, Actor::System, Command::MoveNode { agent_id: "a".into(), event: crate::domain::NodeEvent::TurnStarted, at: 1 });
+        pause_for_memory(&mut state);
+        assert!(render(&state, &live, Client::Ios, Lang::En, "home", "").sections[0].card_ids.is_empty(), "{instruction:?}");
+        let task = |lang| serde_json::to_string(&render(&state, &live, Client::Tui, lang, "task:t", "")).unwrap();
+        let (en, es) = (task(Lang::En), task(Lang::Es));
+        assert!(en.contains("Paused") && en.contains("For memory") && en.contains(english) && !en.contains("No connection"), "{en}");
+        assert!(es.contains("Pausada") && es.contains(spanish) && !es.contains("Sin conexión"), "{es}");
+    }
 }
 
 #[test]
@@ -5778,8 +5832,8 @@ fn every_card_action_says_whether_it_takes_its_card_out() {
     ]), "a notice leaves when read; a reply to it is a message to its node");
     assert_eq!(resolving(&state, "card:hf-weekly-2026-09-30"), owned(&[
         ("merge:hf-weekly-2026-09-30", true), ("changes:github.com/example/repo#12", true),
-        ("close_unmerged:hf-weekly-2026-09-30", true), ("", false), ("reply:hf-weekly-2026-09-30", true),
-    ]), "merging, asking for changes, closing and replying all hand the delivery back; the link opens GitHub");
+        ("close_unmerged:hf-weekly-2026-09-30", true), ("", false), ("reply:hf-weekly-2026-09-30", false),
+    ]), "merging, asking for changes and closing settle the delivery; a reply reaches its node and the delivery stays; the link opens GitHub");
 
     let mut group = group_state(&[0]);
     assert_eq!(resolving(&group, "card:g-q2"), owned(&[

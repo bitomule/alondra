@@ -5,7 +5,7 @@ use super::{
     Icon, LiveHold, LivePauseReason, RenderContext, Tone, common,
     text::{t, tf},
 };
-use crate::domain::{Attention, Instruction, NodePhase, PrState, Task, TaskPriority, TaskState, WaitReason};
+use crate::domain::{Attention, Instruction, NodePhase, PauseReason, PrState, Task, TaskPriority, TaskState, WaitReason};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum Block {
@@ -75,7 +75,7 @@ fn classify(task: &Task, context: &RenderContext<'_>) -> Presentation {
                 None => tf!(lang, "Waits for the Mac since {at}", "Espera al Mac desde las {at}"),
             },
         };
-        return Presentation::new(t!(lang, "Paused", "Pausada"), Tone::Neutral, Waiting, Some(fact));
+        return Presentation::new(t!(lang, "Paused", "Pausada"), Tone::Neutral, Waiting, Some(with_pending(fact, task, context)));
     }
     if let Some((_, reason)) = domain.task_merge_failure(&task.id) {
         return Presentation::new(t!(lang, "Couldn't merge", "No se pudo fusionar"), Tone::Warning, ForYou, Some(reason));
@@ -136,10 +136,36 @@ fn running(task: &Task, context: &RenderContext<'_>) -> Presentation {
         (NodePhase::WaitingUser { .. }, _) => return warn(t!(lang, "Needs you", "Te necesita")),
         (NodePhase::Delivered { .. }, _) => return Presentation::new(t!(lang, "Delivered", "Entregada"), Tone::Info, Block::InProgress, fact),
         (NodePhase::Stopped, _) => return warn(t!(lang, "No activity", "Sin actividad")),
-        (NodePhase::Paused(_) | NodePhase::Closing | NodePhase::Closed, _) => return warn(t!(lang, "No connection", "Sin conexión")),
+        (NodePhase::Paused(pause), _) => {
+            let fact = match &pause.reason {
+                PauseReason::Memory => t!(lang, "For memory · resumes by itself", "Por memoria · se reanuda sola").to_owned(),
+                PauseReason::ByUser => t!(lang, "You paused it", "La pausaste").to_owned(),
+                PauseReason::Usage => t!(lang, "For the usage limit · back when it resets", "Por el límite de uso · vuelve cuando se reinicie").to_owned(),
+                PauseReason::ApiError(_) => t!(lang, "Claude API error · retries by itself", "Error de la API de Claude · reintenta sola").to_owned(),
+                PauseReason::Declared { reason } => match reason.trim().trim_end_matches('.') {
+                    "" => t!(lang, "Waits for the Mac", "Espera al Mac").to_owned(),
+                    reason => reason.to_owned(),
+                },
+            };
+            return Presentation::new(t!(lang, "Paused", "Pausada"), Tone::Neutral, Block::Waiting, Some(with_pending(fact, task, context)));
+        }
+        (NodePhase::Closing | NodePhase::Closed, _) => return warn(t!(lang, "No connection", "Sin conexión")),
     };
     let step = node.and_then(|node| super::fleet::step(node, lang));
     Presentation { active_at, ..Presentation::new(state, Tone::Accent, Block::InProgress, step) }
+}
+
+/// What a paused task's node still owes the user, when its delivery went back to it.
+fn with_pending(fact: String, task: &Task, context: &RenderContext<'_>) -> String {
+    let lang = context.lang;
+    let pending = match context.domain.task_handed_back(&task.id) {
+        Some(Instruction::Changes) => t!(lang, "has your changes pending", "tiene pendientes tus cambios"),
+        Some(Instruction::Question) => t!(lang, "has your question pending", "tiene pendiente tu pregunta"),
+        Some(Instruction::Conflicts) => t!(lang, "has the PR's conflicts pending", "tiene pendientes los conflictos de la PR"),
+        Some(Instruction::Reply) => t!(lang, "has your reply pending", "tiene pendiente tu respuesta"),
+        None => return fact,
+    };
+    format!("{fact} · {pending}")
 }
 
 fn closing(task: &Task, context: &RenderContext<'_>) -> Presentation {

@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:hf-weekly-2026-09-30",
   "client": "ios",
-  "version": "v4e6e97181d42be1d",
+  "version": "v54d699ecd5dfa358",
   "cursor": "cursor-1",
   "title": "Add the compact schedule editor",
   "status": {
@@ -92,7 +92,7 @@
             "attachments": true,
             "enabled": true,
             "stamp": "Enviado",
-            "resolves_card": true
+            "resolves_card": false
           },
           "more": [
             {

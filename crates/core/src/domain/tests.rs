@@ -3307,7 +3307,7 @@ fn waiting(s: &DomainState, id: &str) -> bool {
 
 #[test]
 fn a_delivery_sent_back_with_an_instruction_waits_on_its_agent_until_it_presents_again() {
-    for instruction in [Instruction::Changes, Instruction::Question, Instruction::Reply, Instruction::Conflicts] {
+    for instruction in [Instruction::Changes, Instruction::Question, Instruction::Conflicts] {
         let mut s = fixture();
         register(&mut s);
         present(&mut s, "d", pr_targets());
@@ -3326,6 +3326,20 @@ fn a_delivery_sent_back_with_an_instruction_waits_on_its_agent_until_it_presents
         assert!(waiting(&s, "d2"));
         assert_eq!((s.tasks[&"t".into()].state, s.task_handed_back(&"t".into())), (TaskState::ForYourReview, None));
     }
+}
+
+#[test]
+fn a_reply_reaches_the_agent_and_the_delivery_stays_acceptable() {
+    let mut s = fixture();
+    register(&mut s);
+    present(&mut s, "d", pr_targets());
+    let outcome = hand_back(&mut s, user(), Instruction::Reply).unwrap();
+    assert!(matches!(&outcome.effects[..], [DomainEffect::NotifyAgent { message, .. }]
+        if message == &Instruction::Reply.message("Back to you")));
+    assert!(waiting(&s, "d"), "the delivery is still in front of the user");
+    assert_eq!(s.task_handed_back(&"t".into()), None);
+    exec(&mut s, user(), Command::AcceptDelivery { presentation_id: "d".into(), targets: pr_targets() }).unwrap();
+    assert!(s.accepted(&s.interactions[&"d".into()]));
 }
 
 #[test]
