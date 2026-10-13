@@ -100,6 +100,10 @@ public actor LoopbackSession: OperationAPI {
     }
 
     public func recover(_ request: APIRequest) async throws -> APIResponse {
+        try await lookup(request).response
+    }
+
+    public func lookup(_ request: APIRequest) async throws -> OperationLookup {
         guard active, request.method == "POST", request.path == "/actions", let body = request.body,
               let object = try JSONSerialization.jsonObject(with: body) as? [String: Any],
               let epoch = object["data_epoch"] as? String else { return .unknown }
@@ -107,12 +111,21 @@ public actor LoopbackSession: OperationAPI {
         let read = try APIRequest(endpoint: Endpoint<Data>.data(.get,
             path: ["operation-results", request.operationID], query: [("digest", digest), ("data_epoch", epoch)]),
             operationID: UUID().uuidString)
-        guard case let .completed(status, bytes) = try await perform(read), status == 200 else { return .unknown }
+        let answer = try await perform(read)
+        if case .completed(404, _) = answer { return .absent }
+        guard case let .completed(status, bytes) = answer, status == 200 else { return .unknown }
         guard let result = try JSONSerialization.jsonObject(with: bytes) as? [String: Any],
               result["request_id"] as? String == request.operationID,
               result["digest"] as? String == digest, result["data_epoch"] as? String == epoch,
               let response = result["response"] as? [String: Any] else { throw LoopbackSessionError.invalidResponse }
         return .completed(status: 200, body: try JSONSerialization.data(withJSONObject: response, options: [.sortedKeys]))
+    }
+
+    /// The daemon records an action by its ID and exact bytes, so sending the same again only
+    /// returns what it already did.
+    public func resend(_ request: APIRequest) async throws -> APIResponse {
+        guard active, request.method == "POST", request.path == "/actions", request.body != nil else { return .unknown }
+        return try await perform(request)
     }
 
     public func perform(_ request: APIRequest) async throws -> APIResponse {

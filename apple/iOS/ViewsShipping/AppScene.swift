@@ -126,6 +126,7 @@ private struct ApprovedServiceScene: View {
             if wasSigningIn && !signingIn { retry() }
         }
         .task {
+            notifications.macReached = { await services.macReached() }
             await context.connect(services)
             context.consumeNotification(notifications, services: services, active: phase == .active)
         }

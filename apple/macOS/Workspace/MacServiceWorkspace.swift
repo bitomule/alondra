@@ -140,7 +140,7 @@ public struct MacServiceSidebar: View {
 
     private func visibleRows(_ section: ViewSection) -> [Row] {
         let rows = section.items.compactMap { item -> Row? in
-            guard case let .row(row) = item, !presentation.optimistic.hides(row.id) else { return nil }
+            guard case let .row(row) = item, !(presentation.optimistic.hides(row.id) || presentation.undelivered.contains(row.id)) else { return nil }
             return row
         }
         return presentation.withState { state in
@@ -159,7 +159,7 @@ public struct MacServiceSidebar: View {
         let count = Int(section.count ?? 0)
         guard section.id == "waiting" else { return count }
         let hidden = section.items.filter { item in
-            if case let .row(row) = item { presentation.optimistic.hides(row.id) } else { false }
+            if case let .row(row) = item { presentation.optimistic.hides(row.id) || presentation.undelivered.contains(row.id) } else { false }
         }.count
         return max(count - hidden, 0)
     }

@@ -29,6 +29,7 @@ enum DemoWorkspace {
             },
             prepare: { $0 },
             perform: { _ in try response() },
+            undeliveredCards: { AsyncStream { $0.finish() } },
             fetchContent: { reference in
                 if reference.kind == .diff {
                     return """

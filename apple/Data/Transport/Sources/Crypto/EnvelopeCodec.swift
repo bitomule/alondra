@@ -27,6 +27,14 @@ public struct EnvelopeCodec: Sendable {
         return try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
     }
 
+    /// Whether an envelope this device sealed can still be sent as is: the relay and the Mac refuse
+    /// it once it expires, and it must arrive with time to spare.
+    public func resendable(_ envelope: Envelope) -> Bool {
+        let (deadline, overflow) = now().addingReportingOverflow(Self.resendMargin)
+        return !overflow && deadline < envelope.expiresAtMilliseconds
+    }
+    static let resendMargin: UInt64 = 15_000
+
     public func semanticTag(method: String, path: String, body: Data?) throws -> Data {
         let key = HKDF<SHA256>.deriveKey(inputKeyMaterial: SymmetricKey(data: agreement.rawRepresentation),
             salt: Data(), info: Data("alondra-operation-binding-v1".utf8), outputByteCount: 32)
@@ -81,6 +89,12 @@ public struct EnvelopeCodec: Sendable {
 
     func recover(_ original: APIRequest, envelope: Envelope,
                  read: @Sendable (APIRequest) async throws -> APIResponse) async throws -> APIResponse {
+        try await lookup(original, envelope: envelope, read: read).response
+    }
+
+    /// `.absent` only when the Mac itself sealed a 404: it holds no finished result for these bytes.
+    func lookup(_ original: APIRequest, envelope: Envelope,
+                read: @Sendable (APIRequest) async throws -> APIResponse) async throws -> OperationLookup {
         struct Attestation: Decodable {
             let request_id: String
             let digest: String
@@ -98,7 +112,9 @@ public struct EnvelopeCodec: Sendable {
         for index in 0..<4 {
             try Task.checkCancellation()
             let request = index == 0 ? first : try recoveryRequest(original, envelope: envelope, offset: bytes.count)
-            guard case let .completed(status, body) = try await read(request), status == 200 else { return .unknown }
+            let answer = try await read(request)
+            if index == 0, case .completed(404, _) = answer { return .absent }
+            guard case let .completed(status, body) = answer, status == 200 else { return .unknown }
             let part = try JSONDecoder().decode(Attestation.self, from: body)
             guard part.request_id == original.operationID, part.digest == digest, part.data_epoch == epoch else {
                 throw RelayWireError.invalidResponse
@@ -107,7 +123,7 @@ public struct EnvelopeCodec: Sendable {
                 guard index == 0, part.chunk == nil, part.offset == nil, part.total == nil else {
                     throw RelayWireError.invalidResponse
                 }
-                return try opened(response, requestID: original.operationID, nowMilliseconds: nil)
+                return try Self.lookup(opened(response, requestID: original.operationID, nowMilliseconds: nil))
             }
             guard let chunk = part.chunk, let size = part.total, size > 0, size <= DirectHTTP.maxResponse,
                   total == nil || total == size, part.offset == bytes.count,
@@ -119,10 +135,16 @@ public struct EnvelopeCodec: Sendable {
                 let response = try JSONDecoder().decode(Envelope.self, from: bytes)
                 // Every part crossed the fresh authenticated carrier gate and binds this digest
                 // and epoch. The reconstructed old answer still verifies its pinned signature.
-                return try opened(response, requestID: original.operationID, nowMilliseconds: nil)
+                return try Self.lookup(opened(response, requestID: original.operationID, nowMilliseconds: nil))
             }
         }
         throw RelayWireError.invalidResponse
     }
 
+    private static func lookup(_ response: APIResponse) -> OperationLookup {
+        switch response {
+        case let .completed(status, body): .completed(status: status, body: body)
+        case .unknown: .unknown
+        }
+    }
 }

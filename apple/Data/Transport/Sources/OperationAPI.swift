@@ -5,11 +5,24 @@ import Foundation
 public protocol OperationAPI: Sendable {
     func perform(_ request: APIRequest) async throws -> APIResponse
     func recover(_ request: APIRequest) async throws -> APIResponse
+    /// Sends again the sealed bytes of an action this device already sent: the relay and the Mac
+    /// recognise them and never run it twice. Throws `OperationError.sealExpired` once they are too
+    /// old to be accepted, and is `.unknown` when nothing was sealed for it.
+    func resend(_ request: APIRequest) async throws -> APIResponse
+    /// What the Mac holds for an action this device sent, telling apart "no result" from no answer.
+    func lookup(_ request: APIRequest) async throws -> OperationLookup
     func retireActions(_ acknowledgment: ActionJournalAcknowledgment) async throws
 }
 
 public extension OperationAPI {
     func recover(_ request: APIRequest) async throws -> APIResponse { .unknown }
+    func resend(_ request: APIRequest) async throws -> APIResponse { .unknown }
+    func lookup(_ request: APIRequest) async throws -> OperationLookup {
+        switch try await recover(request) {
+        case let .completed(status, body): .completed(status: status, body: body)
+        case .unknown: .unknown
+        }
+    }
     func retireActions(_ acknowledgment: ActionJournalAcknowledgment) async throws {}
 }
 
@@ -18,14 +31,27 @@ public enum APIResponse: Sendable, Equatable {
     case unknown
 }
 
+/// What the Mac said about an action this device sent.
+public enum OperationLookup: Sendable, Equatable {
+    case completed(status: Int, body: Data)
+    /// The Mac answered that it holds no finished result for it.
+    case absent
+    case unknown
+
+    var response: APIResponse {
+        if case let .completed(status, body) = self { return .completed(status: status, body: body) }
+        return .unknown
+    }
+}
+
 public enum OperationError: LocalizedError, Sendable, Equatable {
     case operationIdentityRequired, invalidConfiguration, invalidEndpoint
-    case outcomeUnknown
+    case outcomeUnknown, sealExpired
 
     public var errorDescription: String? {
         switch self {
         case .outcomeUnknown: String(localized: "The Mac didn’t confirm it. Try again.")
-        case .operationIdentityRequired, .invalidConfiguration, .invalidEndpoint:
+        case .operationIdentityRequired, .invalidConfiguration, .invalidEndpoint, .sealExpired:
             String(localized: "Alondra couldn’t prepare this request.")
         }
     }

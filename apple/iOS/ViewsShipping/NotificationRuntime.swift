@@ -18,11 +18,13 @@ final class NotificationRuntime {
         file: AppStorageLocation.applicationSupport(bundleID: "com.bitomule.alondra").appendingPathComponent("push-unregistration.json")))
     @ObservationIgnored var selectSession: (@MainActor (ApprovedPairingID) async throws -> Void)?
     @ObservationIgnored var prepareSession: (@MainActor () async throws -> Void)?
+    /// A push came from the Mac: it is reachable, so answers still waiting for it go now.
+    @ObservationIgnored var macReached: (@MainActor () async -> Void)?
     @ObservationIgnored private lazy var responder = NotificationResponder(push: push, prepare: { [weak self] in
         guard let self else { return }
         do { try await prepareSession?() }
         catch { self.error = String(localized: "Alondra couldn’t reconnect to answer this alert. Open the app to reconnect.") }
-    })
+    }, arrived: { [weak self] in await self?.macReached?() })
     private var identity: ObjectIdentifier?
     @ObservationIgnored private let activation = DeferredPushActivation()
     private var generation = 0
@@ -147,6 +149,7 @@ final class NotificationRuntime {
     /// A Mac's silent push saying which of its cards still wait: their notifications stay, the
     /// rest leave Notification Center, and the icon badge follows the Mac's queue.
     func retract(_ userInfo: [AnyHashable: Any]) async -> Bool {
+        await macReached?()
         guard let vault, let payload = NotificationDecoder.open(userInfo: userInfo, store: vault),
               let retraction = DeliveredNotificationSync.Retraction(userInfo: payload) else { return false }
         await removeDelivered(of: retraction.binding, outside: retraction.queue)

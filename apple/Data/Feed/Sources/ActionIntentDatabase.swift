@@ -257,6 +257,50 @@ final class ActionIntentDatabase: Sendable {
         try put(db, table: "recent", id: completed.commandID, value: completed)
         try trimRecent(db)
     }
+    /// The same answer under the next operation ID of its generation; the old ID is retired, so
+    /// once the Mac is told it refuses that one for good.
+    func reissue(_ db: OpaquePointer, record: ViewActionIntentStore.Record) throws -> ViewActionIntentStore.Record {
+        guard let existing: ViewActionIntentStore.Record = try get(db, table: "pending", id: record.request.commandId),
+              existing.body == record.body, let ticket = Ticket(rawValue: record.request.commandId, dataEpoch: record.request.dataEpoch)
+        else { throw ViewActionIntentError.invalidRecord }
+        var state = try metadata(db)
+        guard ticket.generation == state.generation, state.activeEpoch == record.request.dataEpoch, state.next <= Self.maxCounter,
+              let operation = Ticket(dataEpoch: record.request.dataEpoch, generation: state.generation, sequence: state.next, nonce: ticket.nonce)
+        else { throw ViewActionIntentError.invalidRecord }
+        let entries = try pending(db)
+        let outstanding = UInt64(entries.count) + Self.count(state.retired) - Self.count(state.acknowledged)
+        guard outstanding < UInt64(ViewActionIntentStore.maxPending) else { throw ViewActionIntentError.capacityExceeded }
+        let original = existing.restoredRequest
+        let next = ActionRequest(protocolVersion: original.protocolVersion, commandId: operation.rawValue, dataEpoch: original.dataEpoch,
+            client: original.client, lang: original.lang, actionId: original.actionId, optionId: original.optionId,
+            input: original.input, resolvesCard: original.resolvesItsCard)
+        let replacement = ViewActionIntentStore.Record(request: next, body: try ContractCodec.encode(next), phase: .prepared)
+        try ViewActionIntentStore.validate(replacement)
+        state.retired = Self.merged(state.retired + [Interval(first: ticket.sequence, last: ticket.sequence)])
+        guard state.retired.count <= ViewActionIntentStore.maxPending + 1 else { throw ViewActionIntentError.unreadableStore }
+        state.next += 1
+        try remove(db, table: "pending", id: record.request.commandId)
+        try put(db, table: "pending", id: replacement.request.commandId, value: replacement)
+        try requirePendingBudget(db)
+        try writeMetadata(db, state)
+        return replacement
+    }
+
+    /// An answer that can never be delivered leaves the queue; a ticketed ID is retired with it.
+    func discard(_ db: OpaquePointer, record: ViewActionIntentStore.Record) throws {
+        guard let existing: ViewActionIntentStore.Record = try get(db, table: "pending", id: record.request.commandId),
+              existing.body == record.body else { return }
+        if let ticket = Ticket(rawValue: record.request.commandId) {
+            var state = try metadata(db)
+            if ticket.generation == state.generation {
+                state.retired = Self.merged(state.retired + [Interval(first: ticket.sequence, last: ticket.sequence)])
+                guard state.retired.count <= ViewActionIntentStore.maxPending + 1 else { throw ViewActionIntentError.unreadableStore }
+                try writeMetadata(db, state)
+            }
+        }
+        try remove(db, table: "pending", id: record.request.commandId)
+    }
+
     func markAcknowledged(_ db: OpaquePointer, acknowledgment: ActionJournalAcknowledgment) throws {
         var state = try metadata(db)
         guard acknowledgment.generation > 0 else { throw ViewActionIntentError.invalidRecord }

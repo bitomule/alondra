@@ -240,7 +240,7 @@ final class AppFeatureTests: XCTestCase {
     // MARK: Hand-off
 
     @MainActor
-    func testAnActionSentFromAReviewThatLeftIsDeliveredByTheAppAndAFailureBringsTheCardBack() async throws {
+    func testAnActionSentFromAReviewThatLeftIsDeliveredByTheAppAndARefusalSaysWhyWithoutBringingTheCardBack() async throws {
         let gate = Gate()
         let cards = ["c-1", "c-2"]
         var state = AppFeature.State()
@@ -266,8 +266,8 @@ final class AppFeatureTests: XCTestCase {
         await store.receive(\.handOffAnswered)
         XCTAssertEqual(performed.value, [request])
         await store.receive(\.triage.handOffSettled)
-        XCTAssertEqual(store.state.triage.orderedIDs, cards)
-        XCTAssertEqual(store.state.triage.currentID, "c-1")
+        XCTAssertEqual(store.state.triage.orderedIDs, ["c-2"], "never back as unanswered")
+        XCTAssertEqual(store.state.triage.currentID, "c-2")
         XCTAssertEqual(store.state.notice?.event, .failure("This card has changed"))
     }
 

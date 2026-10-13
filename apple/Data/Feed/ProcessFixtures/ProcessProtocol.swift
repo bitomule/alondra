@@ -24,6 +24,15 @@ struct ProcessClientCommand: Codable, Sendable {
     var nonce: String? = nil
     var request: ActionRequest? = nil
     var count: Int? = nil
+    var network: ProcessNetworkFaults? = nil
+}
+/// The office network between the client and the relay: answers cut before they leave, replies
+/// lost after the relay took the answer, status reads and lookups lost on the way back.
+struct ProcessNetworkFaults: Codable, Sendable {
+    var cutAnswers = 0
+    var lostReplies = 0
+    var lostStatus = 0
+    var lostLookups = 0
 }
 struct ProcessHistorySample: Codable, Sendable {
     let operations: Int
@@ -59,4 +68,5 @@ struct ProcessClientEvent: Codable, Sendable {
     var readAttempts: Int? = nil
     var readErrors: Int? = nil
     var coldCompletionMicroseconds: Double? = nil
+    var undelivered: [String]? = nil
 }

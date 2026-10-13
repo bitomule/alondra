@@ -1,4 +1,5 @@
 import AlondraContract
+import AlondraFeed
 import AlondraTransport
 import Foundation
 
@@ -68,7 +69,7 @@ public enum SendFailure: Equatable, Sendable {
 
     public init(preparation error: any Error) {
         let failure = Self(error)
-        self = failure == .unsure
+        self = failure == .unsure || error is ViewActionIntentError || error is FeedError
             ? .answered(String(localized: "Alondra couldn’t prepare this request."))
             : failure
     }
@@ -86,6 +87,15 @@ public enum SendFailure: Equatable, Sendable {
             case .unavailable:
                 self = .unsure
             }
+        case let error as ActionDeliveryError:
+            switch error {
+            case .dataReset:
+                self = .answered(String(localized: "Your Mac’s data was reset, so this answer no longer applies."))
+            case .answeredBefore:
+                self = .answered(String(localized: "Your Mac already had this answer."))
+            }
+        case is ViewActionIntentError, is FeedError:
+            self = .answered(String(localized: "Alondra couldn’t save this answer on this device."))
         case DirectSessionError.deviceRevoked:
             self = .answered(String(localized: "This device is no longer approved. Approve it again from the Mac."))
         case is DirectRouteError:

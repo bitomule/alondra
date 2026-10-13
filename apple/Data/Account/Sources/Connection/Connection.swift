@@ -126,7 +126,14 @@ public actor Connection {
     public func networkChanged() async {
         guard active else { return }
         await (operations as? RoutedSession)?.networkChanged()
+        await viewActionSender.retryNow()
         await viewsFeed.reconnect()
+    }
+
+    /// Something arrived from the Mac: whatever this device still has to tell it goes now.
+    public func macReached() async {
+        guard active else { return }
+        await viewActionSender.retryNow()
     }
 
     private init(operations: any FeedOperations, server: URL, deviceID: String, macName: String?, macID: String?,
@@ -146,11 +153,13 @@ public actor Connection {
         viewsFeed = FeedSession(transport: api, client: client, lang: preferred == "es" ? "es" : "en",
             reconcileActions: { epoch, isCurrent in
                 await sender.reconcilePending(dataEpoch: epoch, isCurrent: isCurrent)
+                if await isCurrent() { await sender.resumeDeliveries(dataEpoch: epoch) }
             })
     }
 
     public func deactivate() async {
         active = false
+        await viewActionSender.stop()
         await viewsFeed.stop()
         await operations.deactivate()
     }

@@ -68,6 +68,56 @@ public actor RoutedSession: OperationAPI, PushRegistrationAPI {
         return .unknown
     }
 
+    public func lookup(_ request: APIRequest) async throws -> OperationLookup {
+        if let relay, let result = try? await relay.lookup(request), result != .unknown { return result }
+        if let direct, directAllowed() { return try await direct.lookup(request) }
+        return .unknown
+    }
+
+    public func resend(_ request: APIRequest) async throws -> APIResponse {
+        guard request.method != "GET" else { return .unknown }
+        return try await mutations.run(knownDispatched: true, conservativeUnknown: true, startedAt: requestClock.now(), unknown: { APIResponse.unknown }) {
+            try await self.resendPrepared(request)
+        }
+    }
+
+    /// The relay first when it holds the sealed bytes; the direct path with those same bytes when
+    /// the relay does not answer or never had them.
+    private func resendPrepared(_ request: APIRequest) async throws -> APIResponse {
+        try MutationScope.check()
+        var relayFailure: (any Error)?
+        if let relay {
+            do {
+                let response = try await relay.resend(request)
+                if response != .unknown {
+                    lastRoute = .relay
+                    return response
+                }
+            } catch OperationError.sealExpired {
+                throw OperationError.sealExpired
+            } catch where !(error is CancellationError) {
+                relayFailure = error
+            }
+        }
+        guard let direct, directAllowed() else {
+            if let relayFailure { throw relayFailure }
+            return .unknown
+        }
+        do {
+            try MutationScope.check()
+            let envelope = await relay?.sentEnvelope(for: request.operationID)
+            let response = try await direct.resend(request, adopting: envelope)
+            if response != .unknown {
+                lastRoute = await router?.route
+                relayFirst = false
+            }
+            return response
+        } catch where Self.directFailed(error) {
+            if let relayFailure { throw relayFailure }
+            return .unknown
+        }
+    }
+
     public func perform(_ request: APIRequest) async throws -> APIResponse {
         guard request.method != "GET", !request.isActionJournalControl else { return try await performPrepared(request) }
         return try await mutations.run(conservativeUnknown: true, startedAt: requestClock.now(), unknown: { APIResponse.unknown }) {

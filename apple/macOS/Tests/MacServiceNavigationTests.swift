@@ -331,61 +331,46 @@ struct MacAnsweringTests {
     }
 
     @Test
-    func aRefusedActionBringsTheCardBack() async throws {
-        let store = try makeStore(waiting: ["a", "b"], selected: "card:a")
+    func aRefusedActionKeepsTheCardOutUntilTheDaemonListsItAgain() async throws {
+        let store = try makeStore(waiting: ["a", "b"], selected: "card:a", load: unchangedSidebar)
         await store.send(.beginViewAction(try answer()))
         await store.send(.action(.sent(request("1"))))
         await store.send(.action(.settled(request("1"), applied: false)))
-        #expect(!store.state.optimistic.hides("a"))
+        await store.skipReceivedActions(strict: false)
+        #expect(store.state.optimistic.hides("a"), "never back as unanswered")
+
+        await store.send(.viewLoaded("sidebar", .document(try sidebar(version: "v2", waiting: ["a", "b"]))))
+        #expect(!store.state.optimistic.hides("a"), "the daemon's newer list decides")
     }
 
     @Test
-    func aRefusalShowsTheCardAgainWithTheServersWords() async throws {
+    func aRefusalSaysTheServersWordsWithoutReopeningTheCard() async throws {
         let store = try answering(Daemon { _ in try refused("PR #12 must merge first: this one builds on it.") })
         await store.send(.beginViewAction(try optionButton()))
         await store.receive(\.action.delegate.failed, "PR #12 must merge first: this one builds on it.")
         await store.skipReceivedActions()
-        #expect(!store.state.optimistic.hides("a"))
-        #expect(store.state.selection == .viewKey("card:a"))
-        #expect(store.state.detailDocument?.key == "card:a")
-        #expect(store.state.returnReasons["a"] == "PR #12 must merge first: this one builds on it.", "the card says why it is back")
+        #expect(store.state.optimistic.hides("a"))
+        #expect(store.state.selection == .viewKey("card:b"))
+        #expect(store.state.returnReasons["a"] == "PR #12 must merge first: this one builds on it.")
     }
 
     @Test
-    func aMacThatCannotBeReachedSaysNothingWasSentAndSendsAFreshCommandNextTime() async throws {
-        let daemon = Daemon { call in
-            if call == 1 { throw URLError(.cannotConnectToHost) }
-            return try response("applied")
-        }
+    func anAnswerThatCanNeverBeDeliveredSaysWhyAndKeepsTheCardOut() async throws {
+        let daemon = Daemon { _ in throw ActionDeliveryError.dataReset }
         let store = try answering(daemon)
         await store.send(.beginViewAction(try optionButton()))
-        await store.receive(\.action.delegate.failed, "Couldn’t reach your Mac. Nothing was sent; try again.")
+        await store.receive(\.action.delegate.failed, "Your Mac’s data was reset, so this answer no longer applies.")
         await store.skipReceivedActions()
-        #expect(store.state.selection == .viewKey("card:a"))
-        #expect(store.state.returnReasons["a"] == "Couldn’t reach your Mac. Nothing was sent; try again.")
-
-        await store.send(.beginViewAction(try optionButton()))
-        await store.skipReceivedActions()
-        #expect(daemon.requests.count == 2)
-        #expect(daemon.requests.first?.commandId != daemon.requests.last?.commandId)
+        #expect(store.state.optimistic.hides("a"))
+        #expect(store.state.selection == .viewKey("card:b"))
     }
 
     @Test
-    func aMacThatAnswersWithAnErrorSaysNothingChanged() async throws {
-        let store = try answering(Daemon { _ in throw APIError.server(status: 500, kind: nil, detail: "panicked", reasons: []) })
-        await store.send(.beginViewAction(try optionButton()))
-        await store.receive(\.action.delegate.failed, "Your Mac couldn’t do it. Nothing changed; try again.")
-        await store.skipReceivedActions()
-        #expect(store.state.selection == .viewKey("card:a"))
-        #expect(store.state.returnReasons["a"] == "Your Mac couldn’t do it. Nothing changed; try again.")
-    }
-
-    @Test
-    func noAnswerInTimeBringsTheCardBackAndTheRetryIsTheSameCommand() async throws {
+    func anAnswerStillOnItsWayKeepsTheCardOutHoweverLongItTakes() async throws {
         let clock = TestClock<Duration>()
         let hold = Hold()
-        let daemon = Daemon { call in
-            if call == 1 { await hold.wait() }
+        let daemon = Daemon { _ in
+            await hold.wait()
             return try response("applied")
         }
         let store = try answering(daemon, clock: clock)
@@ -394,20 +379,25 @@ struct MacAnsweringTests {
         #expect(store.state.optimistic.hides("a"))
         #expect(store.state.selection == .viewKey("card:b"))
 
-        await clock.advance(by: TriageFeature.sendDeadline)
-        await store.receive(\.action.delegate.failed,
-                            "Your Mac didn’t confirm it. It may have arrived: try again and it won’t be done twice.")
-        await store.skipReceivedActions()
-        #expect(!store.state.optimistic.hides("a"))
-        #expect(store.state.selection == .viewKey("card:a"))
-
-        await store.send(.beginViewAction(try optionButton()))
-        await store.skipReceivedActions()
-        #expect(daemon.requests.count == 2)
-        #expect(daemon.requests.last == daemon.requests.first, "the Mac does it once even if the first one arrived")
+        await clock.advance(by: .seconds(600))
+        await store.skipReceivedActions(strict: false)
         #expect(store.state.optimistic.hides("a"))
-        #expect(store.state.returnReasons["a"] == nil, "answering again clears why it came back")
+        #expect(store.state.selection == .viewKey("card:b"))
+        #expect(store.state.actionFeature.error == nil, "no error while it is still going")
+        #expect(daemon.requests.count == 1)
         await hold.release()
+        await store.skipReceivedActions(strict: false)
+        #expect(store.state.optimistic.hides("a"))
+    }
+
+    @Test
+    func cardsWhoseAnswerIsStillOnItsWayStayOutOfTheSidebarAfterARelaunch() async throws {
+        let store = try makeStore(waiting: ["a", "b"], selected: "card:b")
+        await store.send(.undeliveredChanged(["a"]))
+        #expect(store.state.hides("a"))
+        #expect(!store.state.hides("b"))
+        await store.send(.undeliveredChanged([]))
+        #expect(!store.state.hides("a"))
     }
 
     @Test
@@ -435,7 +425,7 @@ struct MacAnsweringTests {
         #expect(store.state.actionFeature.error == nil)
         #expect(store.state.actionPresented)
         #expect(store.state.selection == .viewKey("card:b"), "the open sheet is not pulled away")
-        #expect(!store.state.optimistic.hides("a"))
+        #expect(store.state.optimistic.hides("a"), "the refused card is not put back as unanswered")
         #expect(store.state.returnReasons["a"] == "It already moved on")
     }
 
@@ -457,10 +447,10 @@ struct MacAnsweringTests {
 
     @Test
     func whyACardCameBackIsForgottenOnceTheServerSendsANewerList() async throws {
-        let store = try answering(Daemon { _ in throw URLError(.cannotConnectToHost) })
+        let store = try answering(Daemon { _ in try refused("It already moved on") })
         await store.send(.beginViewAction(try optionButton()))
         await store.skipReceivedActions()
-        #expect(store.state.returnReasons["a"] == "Couldn’t reach your Mac. Nothing was sent; try again.")
+        #expect(store.state.returnReasons["a"] == "It already moved on")
 
         await store.send(.viewLoaded("sidebar", .document(try sidebar(version: "v2", waiting: ["a", "b"]))))
         #expect(store.state.returnReasons.isEmpty)
@@ -468,7 +458,7 @@ struct MacAnsweringTests {
 
     @Test
     func whyACardCameBackIsForgottenWhenTheConnectionComesBack() async throws {
-        let store = try answering(Daemon { _ in throw URLError(.cannotConnectToHost) })
+        let store = try answering(Daemon { _ in try refused("It already moved on") })
         await store.send(.beginViewAction(try optionButton()))
         await store.skipReceivedActions()
         #expect(!store.state.returnReasons.isEmpty)

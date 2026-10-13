@@ -95,6 +95,14 @@ public actor ViewActionIntentStore {
         let database = database
         try await database.perform { try database.complete($0, record: record, response: response) }
     }
+    func reissue(_ record: Record) async throws -> Record {
+        let database = database
+        return try await database.perform { try database.reissue($0, record: record) }
+    }
+    func discard(_ record: Record) async throws {
+        let database = database
+        try await database.perform { try database.discard($0, record: record) }
+    }
     func markAcknowledged(_ acknowledgment: ActionJournalAcknowledgment) async throws {
         let database = database
         try await database.perform { try database.markAcknowledged($0, acknowledgment: acknowledgment) }

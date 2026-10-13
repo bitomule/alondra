@@ -64,12 +64,33 @@ public actor DirectSession: OperationAPI {
     }
 
     public func recover(_ request: APIRequest) async throws -> APIResponse {
+        try await lookup(request).response
+    }
+
+    public func lookup(_ request: APIRequest) async throws -> OperationLookup {
         guard request.method == "POST", request.path == "/actions", active, let journal, let entry = try await journal.entry(requestID: request.operationID),
               entry.phase != .retired, let envelope = entry.envelope else { return .unknown }
         guard entry.semanticTag == (try codec.semanticTag(method: request.method, path: request.path, body: request.body)) else {
             throw RelaySessionError.operationIdentityConflict
         }
-        return try await codec.recover(request, envelope: envelope) { try await self.perform($0) }
+        return try await codec.lookup(request, envelope: envelope) { try await self.perform($0) }
+    }
+
+    public func resend(_ request: APIRequest) async throws -> APIResponse {
+        try await resend(request, adopting: nil)
+    }
+
+    /// The same as `resend`, for an action another carrier sealed and sent as `envelope`.
+    public func resend(_ request: APIRequest, adopting envelope: Envelope?) async throws -> APIResponse {
+        guard request.method == "POST", request.path == "/actions", active, let journal else { return .unknown }
+        let entry = try await journal.entry(requestID: request.operationID)
+        guard entry?.phase != .retired, let original = entry?.envelope ?? envelope else { return .unknown }
+        if let entry, entry.semanticTag != (try codec.semanticTag(method: request.method, path: request.path, body: request.body)) {
+            throw RelaySessionError.operationIdentityConflict
+        }
+        guard codec.resendable(original) else { throw OperationError.sealExpired }
+        try await adopt(original, for: request)
+        return try await perform(request)
     }
 
     public func retireActions(_ acknowledgment: ActionJournalAcknowledgment) async throws {

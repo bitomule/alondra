@@ -46,10 +46,14 @@ public struct MacPresentationFeature: Sendable {
         public var optimistic = Optimistic()
         /// Requests that went out without an answer, by action: pressing the same again resends them.
         public var unsure: [String: ActionRequest] = [:]
-        /// Why a card came back, by card, until it is answered again.
+        /// Why the daemon did not take a card's answer, by card, shown when the card is listed again.
         public var returnReasons: [String: String] = [:]
-        /// Cards an action just failed to leave, by the command that failed, until its reason arrives.
+        /// Cards whose answer the daemon did not take, by that command, until its reason arrives.
         public var returning: [String: String] = [:]
+        /// Cards answered on this Mac whose answer has not reached the daemon yet, also after a relaunch.
+        public var undelivered: Set<String> = []
+        /// Whether the sidebar leaves a row out: answered here and not yet given back by the daemon.
+        public func hides(_ id: String) -> Bool { optimistic.hides(id) || undelivered.contains(id) }
         public var activeForm: AlondraContract.Form?
         public var pickerFieldID: String?
         public var pickerDocument: ViewDocument?
@@ -111,11 +115,11 @@ public struct MacPresentationFeature: Sendable {
         case contentPresented(Bool)
         case actionPresented(Bool)
         case action(ActionFeature.Action)
-        case sendTimedOut(ActionRequest)
+        case undeliveredChanged(Set<String>)
     }
     @Dependency(\.continuousClock) var clock
     @Dependency(\.viewsClient) var viewsClient
-    private enum CancelID: Hashable { case search, picker, sendDeadline(String) }
+    private enum CancelID: Hashable { case search, picker, undelivered }
     public var body: some ReducerOf<Self> {
         Reduce { state, action in
             switch action {
@@ -262,28 +266,20 @@ public struct MacPresentationFeature: Sendable {
                     state.actionTarget = nil
                 }
             case .action(.sent(let request)):
-                guard request.dataEpoch == state.actionFeature.dataEpoch else { return .none }
-                let deadline = sendDeadline(request)
-                guard let target = state.actionTarget else { return deadline }
+                guard request.dataEpoch == state.actionFeature.dataEpoch, let target = state.actionTarget else { return .none }
                 state.actionTarget = nil
-                guard request.resolvesItsCard else { return deadline }
+                guard request.resolvesItsCard else { return .none }
                 state.optimistic.begin(target, request, dataEpoch: state.actionFeature.dataEpoch)
                 state.returnReasons[target] = nil
                 state.actionPresented = false
-                return .merge(deadline, leaveCard(target, &state))
+                return leaveCard(target, &state)
             case .action(.settled(let request, let applied)):
                 guard request.dataEpoch == state.actionFeature.dataEpoch else { return .none }
-                let deadline: Effect<Action> = .cancel(id: CancelID.sendDeadline(request.commandId))
-                guard let returned = state.optimistic.settle(request, applied: applied, shown: state.sidebarDocument?.version)
-                else { return deadline }
+                let shown = state.sidebarDocument?.version
+                guard let returned = state.optimistic.settle(request, applied: applied, shown: shown) else { return .none }
+                state.optimistic.hold(returned, shown: shown, dataEpoch: request.dataEpoch)
                 state.returning[request.commandId] = returned
-                return .merge(deadline, bringBack(returned, &state))
-            case .sendTimedOut(let request):
-                return .concatenate(
-                    .cancel(id: ActionFeature.DeliveryID(commandID: request.commandId)),
-                    .send(.action(.settled(request, applied: false))),
-                    .send(.action(.undelivered(request, .unsure)))
-                )
+                return loadView("sidebar", known: shown)
             case .action(.undelivered(let request, let failure)):
                 guard request.dataEpoch == state.actionFeature.dataEpoch else { return .none }
                 state.unsure[request.actionId] = failure == .unsure ? request : nil
@@ -294,8 +290,14 @@ public struct MacPresentationFeature: Sendable {
                 guard let card = state.returning.removeValue(forKey: request.commandId) else { return .none }
                 switch OutcomeStyle(reply) {
                 case .failure(let reason): state.returnReasons[card] = reason
-                case .ask where state.actionFeature.pending?.commandId == request.commandId: state.actionTarget = card
-                case .ask, .success: break
+                case .ask where state.actionFeature.pending?.commandId == request.commandId:
+                    state.optimistic.release(card)
+                    state.actionTarget = card
+                    return bringBack(card, &state)
+                case .ask:
+                    state.optimistic.release(card)
+                    return bringBack(card, &state)
+                case .success: break
                 }
             case .action(.response(let reply)) where reply.outcome == .changed:
                 state.actionPresented = true
@@ -335,7 +337,9 @@ public struct MacPresentationFeature: Sendable {
                 let before = appending ? state.sectionPages[id]?.items ?? [] : []
                 state.sectionPages[id] = SectionPage(items: before + loaded.items, more: loaded.more)
             case .appeared:
-                return loadAndOpenView("sidebar", visibleKeys: visibleViewKeys(state))
+                return .merge(loadAndOpenView("sidebar", visibleKeys: visibleViewKeys(state)), watchUndelivered())
+            case .undeliveredChanged(let cards):
+                state.undelivered = cards
             case .viewsStale(let keys):
                 let visible = Set(["sidebar", state.selectedViewKey].compactMap { $0 })
                 return .merge(keys.filter(visible.contains).map { key in
@@ -461,24 +465,23 @@ public struct MacPresentationFeature: Sendable {
         Scope(state: \.actionFeature, action: \.action) { ActionFeature() }
     }
 
-    private func sendDeadline(_ request: ActionRequest) -> Effect<Action> {
-        .run { [clock] send in
-            try await clock.sleep(for: TriageFeature.sendDeadline)
-            await send(.sendTimedOut(request))
-        }
-        .cancellable(id: CancelID.sendDeadline(request.commandId), cancelInFlight: true)
-    }
-
-    /// An action the daemon did not apply: its card is shown again, unless the person is already
+    /// The daemon asks about an answer again: its card is shown, unless the person is already
     /// answering another one.
     private func bringBack(_ id: String, _ state: inout State) -> Effect<Action> {
-        guard !state.actionPresented,
+        guard !state.actionPresented || state.actionTarget == id,
               let key = Self.waitingEntries(in: state.sidebarDocument).first(where: { $0.id == id })?.key,
               key != state.selectedViewKey else { return .none }
         state.selection = .viewKey(key)
         state.selectedViewKey = key
         state.detailDocument = nil
         return loadAndOpenView(key, visibleKeys: visibleViewKeys(state))
+    }
+
+    private func watchUndelivered() -> Effect<Action> {
+        .run { [viewsClient] send in
+            for await cards in viewsClient.undeliveredCards() { await send(.undeliveredChanged(cards)) }
+        }
+        .cancellable(id: CancelID.undelivered, cancelInFlight: true)
     }
 
     /// A settled card leaves the detail for the next waiting one, or for nothing.
@@ -494,8 +497,8 @@ public struct MacPresentationFeature: Sendable {
 
     private func leaveCard(_ id: String, _ state: inout State) -> Effect<Action> {
         guard let key = state.selectedViewKey, Self.cardID(forViewKey: key) == id else { return .none }
-        let optimistic = state.optimistic
-        let available = Set(Self.waitingEntries(in: state.sidebarDocument).filter { !optimistic.hides($0.id) }.map(\.key))
+        let hidden = state
+        let available = Set(Self.waitingEntries(in: state.sidebarDocument).filter { !hidden.hides($0.id) }.map(\.key))
         guard let next = Self.nextKey(after: key, in: state.sidebarDocument, available: available) else { return .none }
         state.selection = .viewKey(next)
         state.selectedViewKey = next

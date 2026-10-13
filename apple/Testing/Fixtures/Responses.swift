@@ -18,6 +18,11 @@ enum Responses {
         try response(#"{"protocol":1,"outcome":"rejected","message":"raw domain text","result":{"kind":"refused","title":"\#(title)"}}"#)
     }
 
+    /// The daemon asks again: what was answered changed, and `button` sends it anyway.
+    static func changed(_ message: String, actionId: String, button: String = "Send anyway") throws -> ActionResponse {
+        try response(#"{"protocol":1,"outcome":"changed","message":"\#(message)","confirm":{"action_id":"\#(actionId)","button":"\#(button)"}}"#)
+    }
+
     private static func response(_ json: String) throws -> ActionResponse {
         try ContractCodec.decode(ActionResponse.self, from: Data(json.utf8))
     }

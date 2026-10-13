@@ -69,12 +69,44 @@ public actor RelaySession: OperationAPI, PushRegistrationAPI {
     }
 
     public func recover(_ request: APIRequest) async throws -> APIResponse {
+        try await lookup(request).response
+    }
+
+    public func lookup(_ request: APIRequest) async throws -> OperationLookup {
         guard request.method == "POST", request.path == "/actions", active, let entry = try await outbox.entry(requestID: request.operationID),
               entry.phase != .retired, let envelope = entry.envelope else { return .unknown }
         guard entry.semanticTag == (try codec.semanticTag(method: request.method, path: request.path, body: request.body)) else {
             throw RelaySessionError.operationIdentityConflict
         }
-        return try await codec.recover(request, envelope: envelope) { try await self.perform($0) }
+        return try await codec.lookup(request, envelope: envelope) { try await self.perform($0) }
+    }
+
+    public func resend(_ request: APIRequest) async throws -> APIResponse {
+        guard request.method == "POST", request.path == "/actions", active, let entry = try await outbox.entry(requestID: request.operationID),
+              entry.phase != .retired, let envelope = entry.envelope else { return .unknown }
+        guard entry.semanticTag == (try codec.semanticTag(method: request.method, path: request.path, body: request.body)) else {
+            throw RelaySessionError.operationIdentityConflict
+        }
+        guard codec.resendable(envelope) else { throw OperationError.sealExpired }
+        let owner = MutationScope.current?.id ?? UUID()
+        let lease = mutationEvidence.acquire(request.operationID, owner: owner)
+        defer { mutationEvidence.release(lease) }
+        let result = try await mutations.run(knownDispatched: true, dispatchEvidence: lease.evidence, ownerID: owner,
+                                             startedAt: requestClock.now(), unknown: { RelayOperationResult.unknown }) {
+            try await self.resendPrepared(requestID: request.operationID)
+        }
+        switch result {
+        case let .completed(status, body): return .completed(status: status, body: body)
+        case .unknown: return .unknown
+        }
+    }
+
+    private func resendPrepared(requestID: String) async throws -> RelayOperationResult {
+        try MutationScope.check()
+        guard active else { throw CancellationError() }
+        if case let .accepted(receipt) = try await outbox.resubmit(requestID: requestID),
+           let result = try verified(receipt, requestID: requestID) { return result }
+        return try await resume(requestID: requestID)
     }
 
     public func registerServicePush(token: String, environment: String, binding: String) async throws {

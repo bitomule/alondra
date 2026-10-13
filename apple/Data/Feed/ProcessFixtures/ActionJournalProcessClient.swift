@@ -42,9 +42,11 @@ private final class ClientInput: Sendable {
         let store = try await ViewActionIntentStore(directory: directory.appending(path: "intents"),
             keyMaterial: setup.material, scope: setup.scope)
         let api = setup.api
-        let sender = ViewActionSender(transport: api, intents: store)
+        let sender = ViewActionSender(transport: api, intents: store,
+            retryPolicy: ActionRetryPolicy(delay: { _ in .milliseconds(50) }, sleep: { try await Task.sleep(for: $0) }))
         try emit(.init(event: "ready", pid: ProcessInfo.processInfo.processIdentifier,
-            pendingIDs: store.restored.map(\.request.commandId), pendingPhases: store.restored.map { $0.phase.rawValue }))
+            pendingIDs: store.restored.map(\.request.commandId), pendingPhases: store.restored.map { $0.phase.rawValue },
+            undelivered: sender.undelivered.current.sorted()))
         let input = ClientInput()
         var prepared: ActionRequest?
         var actionTask: Task<ActionResponse, any Error>?
@@ -64,6 +66,25 @@ private final class ClientInput: Sendable {
                     guard let request = command.request ?? prepared else { throw ProcessClientError.invalidCommand }
                     let response = try await sender.send(request)
                     try emit(.init(event: "answered", request: request, response: response))
+                case "network":
+                    guard let faults = command.network, let mapping = setup.mapping else { throw ProcessClientError.invalidCommand }
+                    await mapping.impose(faults)
+                    try emit(.init(event: "network_set"))
+                case "deliver":
+                    guard let request = command.request ?? prepared else { throw ProcessClientError.invalidCommand }
+                    let response = try await sender.deliver(request)
+                    try emit(.init(event: "answered", request: request, response: response,
+                        pendingIDs: await sender.unresolvedCommandIDs(), undelivered: sender.undelivered.current.sorted()))
+                case "start_delivery":
+                    guard actionTask == nil, let request = command.request ?? prepared else { throw ProcessClientError.invalidCommand }
+                    actionTask = Task { try await sender.deliver(request) }
+                    try emit(.init(event: "delivery_started"))
+                case "resume":
+                    await sender.reconcilePending(dataEpoch: config.dataEpoch)
+                    await sender.resumeDeliveries(dataEpoch: config.dataEpoch)
+                    await sender.drainDeliveries()
+                    try emit(.init(event: "resumed", pendingIDs: await sender.unresolvedCommandIDs(),
+                        undelivered: sender.undelivered.current.sorted()))
                 case "start_action":
                     guard actionTask == nil, let request = command.request ?? prepared else { throw ProcessClientError.invalidCommand }
                     actionTask = Task { try await sender.send(request) }
@@ -167,9 +188,16 @@ private final class ClientInput: Sendable {
                     let reads = await setup.mapping?.readCounts()
                     try emit(.init(event: "transport_metrics", mutativeEnvelopePosts: counts.0, otherEnvelopePosts: counts.1,
                         bootstrapGets: reads?.bootstraps, operationResultGets: reads?.results.count, operationResultIDs: reads?.results))
+                case "await_answer_attempt":
+                    while await (setup.mapping?.counts().0 ?? 1) == 0 { try await Task.sleep(for: .milliseconds(20)) }
+                    try emit(.init(event: "answer_attempted"))
                 case "drain":
                     await sender.drainRetirement()
                     try emit(.init(event: "retirement_drained"))
+                case "resend":
+                    guard let request = command.request ?? prepared,
+                          let reply = try await api.resendAction(request, body: ContractCodec.encode(request)) else { throw ProcessClientError.invalidCommand }
+                    try emit(.init(event: "replayed", response: reply))
                 case "replay_http":
                     guard let request = command.request else { throw ProcessClientError.invalidCommand }
                     let reply = try await api.submitAction(request, body: ContractCodec.encode(request))
@@ -374,6 +402,8 @@ private actor FixtureRelayHTTP: HTTPTransport {
         await withCheckedContinuation { arrival = $0 }
     }
     func releaseUnauthorized() { refusal?.resume(); refusal = nil }
+    private var faults = ProcessNetworkFaults()
+    func impose(_ faults: ProcessNetworkFaults) { self.faults = faults }
     init(destination: URL, phoneSigning: P256.Signing.PublicKey, macAgreement: P256.KeyAgreement.PrivateKey, macID: String, deviceID: String) {
         self.destination = destination; self.phoneSigning = phoneSigning; self.macAgreement = macAgreement
         self.macID = macID; self.deviceID = deviceID
@@ -382,9 +412,12 @@ private actor FixtureRelayHTTP: HTTPTransport {
         guard let url = request.url, url.host == "fixture-relay.invalid",
               var components = URLComponents(url: url, resolvingAgainstBaseURL: false),
               let target = URLComponents(url: destination, resolvingAgainstBaseURL: false) else { throw ProcessClientError.invalidConfiguration }
+        var answer = false, read = false
         if request.httpMethod == "POST", url.path == "/v1/requests", let body = request.httpBody,
            let envelope = try? JSONDecoder().decode(Envelope.self, from: body) {
-            if ActionOperationID(rawValue: envelope.requestID) != nil { mutations += 1 } else { others += 1 }
+            answer = ActionOperationID(rawValue: envelope.requestID) != nil
+            read = envelope.requestID.hasPrefix("read-")
+            if answer { mutations += 1 } else { others += 1 }
             let bytes = try envelope.open(senderKey: phoneSigning, recipientKey: macAgreement,
                 sender: deviceID, recipient: macID, route: macID, nowMilliseconds: nil)
             if let payload = try JSONSerialization.jsonObject(with: bytes) as? [String: Any],
@@ -393,11 +426,29 @@ private actor FixtureRelayHTTP: HTTPTransport {
                 operationResults.append(String(components.path.dropFirst("/operation-results/".count)))
             }
         }
+        let status = request.httpMethod == "GET" && url.path.hasPrefix("/v1/requests/op_")
+        read = read || request.httpMethod == "GET" && url.path.hasPrefix("/v1/requests/read-")
+        if answer, faults.cutAnswers > 0 {
+            faults.cutAnswers -= 1
+            throw URLError(.networkConnectionLost)
+        }
         components.scheme = target.scheme; components.host = target.host; components.port = target.port
         guard let mapped = components.url else { throw ProcessClientError.invalidConfiguration }
         var actual = request; actual.url = mapped
         if request.httpMethod == "GET", url.path == "/v1/bootstrap" { bootstraps += 1 }
         let reply = try await network.send(actual)
+        if answer, faults.lostReplies > 0 {
+            faults.lostReplies -= 1
+            throw URLError(.networkConnectionLost)
+        }
+        if status, faults.lostStatus > 0 {
+            faults.lostStatus -= 1
+            throw URLError(.timedOut)
+        }
+        if read, faults.lostLookups > 0 {
+            faults.lostLookups -= 1
+            throw URLError(.networkConnectionLost)
+        }
         if request.httpMethod == "GET", url.path == "/v1/bootstrap" {
             if holdBootstrapRequest {
                 await withCheckedContinuation {

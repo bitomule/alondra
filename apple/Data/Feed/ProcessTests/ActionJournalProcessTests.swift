@@ -656,4 +656,120 @@ private struct RelayServerEvent: Decodable, Sendable {
         try client.send(ProcessClientCommand(command: "quit"))
         #expect(try await client.next(ProcessClientEvent.self).event == "stopped")
     }
+
+    /// A real relay and daemon, and the configuration a client process needs to reach them.
+    private struct RelayStack {
+        let relay: FixtureProcess
+        let daemon: FixtureProcess
+        let config: URL
+        let clientHome: URL
+
+        func stop() async throws {
+            try daemon.send(ServerCommand(command: "stop"))
+            #expect(try await daemon.next(ServerEvent.self).event == "stopped")
+            try relay.send(ServerCommand(command: "stop"))
+            #expect(try await relay.next(RelayServerEvent.self).event == "stopped")
+        }
+    }
+
+    private func relayStack() async throws -> RelayStack {
+        let relay = try FixtureProcess(executable: executable("crates/relay/alondra_relay_test"),
+            arguments: ["--ignored", "--exact", "http_tests::process_fixture::full_stack_fixture_relay", "--nocapture"],
+            home: try TestFiles.directory(), prefix: "ALONDRA_FIXTURE ")
+        let relayReady = try await relay.next(RelayServerEvent.self)
+        #expect(relayReady.event == "ready")
+        let relayURL = try #require(relayReady.baseURL)
+        let daemonHome = try TestFiles.directory()
+        let token = "60000000-0000-4000-8000-000000000001"
+        try Data("alondra-process-fixture:\(token)\n".utf8).write(to: daemonHome.appending(path: ".alondra-process-fixture"))
+        let daemon = try FixtureProcess(executable: executable("crates/alondrad/alondrad_test"),
+            arguments: ["--ignored", "--exact", "operation_journal::process_fixture::full_stack_fixture_server", "--nocapture"],
+            home: daemonHome, prefix: "ALONDRA_FIXTURE ",
+            additionalEnvironment: ["ALONDRA_FIXTURE_RELAY_URL": relayURL, "ALONDRA_FIXTURE_HOME": daemonHome.path, "ALONDRA_FIXTURE_TOKEN": token])
+        let daemonReady = try await daemon.next(ServerEvent.self)
+        #expect(daemonReady.event == "ready")
+        let configuration = ProcessClientConfiguration(baseURL: "https://fixture-relay.invalid", dataEpoch: try #require(daemonReady.dataEpoch),
+            actionID: try #require(daemonReady.actionID), deviceID: try #require(relayReady.deviceID), signingSeed: try #require(relayReady.signingSeed),
+            optionID: daemonReady.optionID,
+            relay: .init(baseURL: relayURL, bearer: try #require(relayReady.bearer), macID: try #require(relayReady.macID),
+                agreementSeed: try #require(relayReady.agreementSeed), macSigningSeed: try #require(relayReady.macSigningSeed),
+                macAgreementSeed: try #require(relayReady.macAgreementSeed)))
+        let clientHome = try TestFiles.directory(), config = clientHome.appending(path: "fixture.json")
+        try JSONEncoder().encode(configuration).write(to: config)
+        return RelayStack(relay: relay, daemon: daemon, config: config, clientHome: clientHome)
+    }
+
+    @Test func anAnswerOverAnUnreliableNetworkReachesTheMacOnceAndComesBackApplied() async throws {
+        let stack = try await relayStack()
+        defer { stack.relay.cleanup(); stack.daemon.cleanup() }
+        let client = try launchClient(home: stack.clientHome, config: stack.config)
+        defer { client.cleanup() }
+        #expect(try await client.next(ProcessClientEvent.self).event == "ready")
+        try client.send(ProcessClientCommand(command: "prepare", nonce: "60000000-0000-4000-8000-000000000002"))
+        let prepared = try #require(try await client.next(ProcessClientEvent.self).request)
+
+        try client.send(ProcessClientCommand(command: "network", network: .init(cutAnswers: 1, lostReplies: 1, lostStatus: 2)))
+        #expect(try await client.next(ProcessClientEvent.self).event == "network_set")
+        try client.send(ProcessClientCommand(command: "deliver"))
+        let delivered = try await client.next(ProcessClientEvent.self)
+
+        #expect(delivered.event == "answered", "the answer arrives on its own, with no error: \(delivered.error ?? "")")
+        #expect(delivered.response?.outcome == .applied)
+        #expect(delivered.pendingIDs == [] && delivered.undelivered == [], "nothing is left to send and no card is held back")
+        try client.send(ProcessClientCommand(command: "transport_metrics"))
+        let transport = try await client.next(ProcessClientEvent.self)
+        #expect(try #require(transport.mutativeEnvelopePosts) >= 2, "one cut before the relay, one whose reply was lost")
+        #expect(try await stats(stack.daemon).effects == 1)
+
+        try client.send(ProcessClientCommand(command: "resend", request: prepared))
+        let duplicate = try await client.next(ProcessClientEvent.self)
+        #expect(duplicate.event == "replayed" && duplicate.response?.outcome == .applied,
+                "the same sealed answer again is answered with what the Mac already did")
+        try stack.relay.send(ServerCommand(command: "stats"))
+        let relayStats = try await stack.relay.next(RelayServerEvent.self)
+        #expect(try #require(relayStats.actionPosts) >= 2, "the relay received the same answer more than once")
+        #expect(try await stats(stack.daemon).effects == 1, "and the Mac ran it once")
+
+        try client.send(ProcessClientCommand(command: "deliver", request: prepared))
+        let again = try await client.next(ProcessClientEvent.self)
+        #expect(again.event == "answered" && again.response?.outcome == .applied, "delivering it again only reads what this device kept")
+        #expect(try await stats(stack.daemon).effects == 1)
+
+        try client.send(ProcessClientCommand(command: "quit"))
+        #expect(try await client.next(ProcessClientEvent.self).event == "stopped")
+        try await stack.stop()
+    }
+
+    @Test func anAnswerCutOffUntilTheAppIsKilledIsDeliveredAfterTheRelaunchAndItsCardStaysOutMeanwhile() async throws {
+        let stack = try await relayStack()
+        defer { stack.relay.cleanup(); stack.daemon.cleanup() }
+        let first = try launchClient(home: stack.clientHome, config: stack.config)
+        defer { first.cleanup() }
+        #expect(try await first.next(ProcessClientEvent.self).event == "ready")
+        try first.send(ProcessClientCommand(command: "prepare", nonce: "60000000-0000-4000-8000-000000000003"))
+        let prepared = try #require(try await first.next(ProcessClientEvent.self).request)
+        try first.send(ProcessClientCommand(command: "network", network: .init(cutAnswers: 1_000)))
+        #expect(try await first.next(ProcessClientEvent.self).event == "network_set")
+        try first.send(ProcessClientCommand(command: "start_delivery"))
+        #expect(try await first.next(ProcessClientEvent.self).event == "delivery_started")
+        try first.send(ProcessClientCommand(command: "await_answer_attempt"))
+        #expect(try await first.next(ProcessClientEvent.self).event == "answer_attempted")
+        #expect(first.killAndWait() == SIGKILL)
+        #expect(try await stats(stack.daemon).effects == 0, "nothing reached the Mac")
+
+        let relaunched = try launchClient(home: stack.clientHome, config: stack.config)
+        defer { relaunched.cleanup() }
+        let ready = try await relaunched.next(ProcessClientEvent.self)
+        #expect(ready.pendingIDs == [prepared.commandId], "the answer survived the kill")
+        #expect(ready.undelivered?.count == 1, "its card stays answered in the queue drawn after the relaunch")
+        try relaunched.send(ProcessClientCommand(command: "resume"))
+        let resumed = try await relaunched.next(ProcessClientEvent.self)
+        #expect(resumed.event == "resumed")
+        #expect(resumed.pendingIDs == [] && resumed.undelivered == [])
+        #expect(try await stats(stack.daemon).effects == 1)
+
+        try relaunched.send(ProcessClientCommand(command: "quit"))
+        #expect(try await relaunched.next(ProcessClientEvent.self).event == "stopped")
+        try await stack.stop()
+    }
 }

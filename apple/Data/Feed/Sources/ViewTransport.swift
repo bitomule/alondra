@@ -2,6 +2,7 @@ import AlondraTransport
 import AlondraContract
 import CryptoKit
 import Foundation
+import Synchronization
 
 /// Transport boundary used by the feed and action actors. The API client implementation
 /// preserves the view/action bytes and operation identity through loopback or relay.
@@ -12,6 +13,10 @@ public protocol ViewTransport: Sendable {
     func acknowledgeActions(_ acknowledgment: ActionJournalAcknowledgment) async throws
     func recoverAction(_ request: ActionRequest, body: Data) async throws -> ActionResponse?
     func submitAction(_ request: ActionRequest, body: Data) async throws -> ActionResponse
+    /// What the Mac holds for an action already sent, telling apart "nothing finished" from no answer.
+    func lookupAction(_ request: ActionRequest, body: Data) async throws -> Recorded<ActionResponse>
+    /// Sends an action again with the sealed bytes it already went out with, or seals it now if it never left.
+    func resendAction(_ request: ActionRequest, body: Data) async throws -> ActionResponse?
     func fetchContent(_ content: ContentRef) async throws -> String
     func fetchAttachment(_ attachment: AlondraContract.Attachment) async throws -> Data
 }
@@ -20,6 +25,11 @@ public extension ViewTransport {
     func actionJournal(dataEpoch: String) async throws -> ActionJournalState? { nil }
     func acknowledgeActions(_ acknowledgment: ActionJournalAcknowledgment) async throws { throw OperationError.invalidEndpoint }
     func recoverAction(_ request: ActionRequest, body: Data) async throws -> ActionResponse? { nil }
+    func lookupAction(_ request: ActionRequest, body: Data) async throws -> Recorded<ActionResponse> {
+        guard let response = try await recoverAction(request, body: body) else { return .unknown }
+        return .answered(response)
+    }
+    func resendAction(_ request: ActionRequest, body: Data) async throws -> ActionResponse? { nil }
     func fetchContent(_ content: ContentRef) async throws -> String { throw FeedError.unsupportedContent }
     func fetchAttachment(_ attachment: AlondraContract.Attachment) async throws -> Data { throw FeedError.unsupportedContent }
 }
@@ -54,6 +64,18 @@ extension AlondraAPIClient: ViewTransport {
 
     public func submitAction(_ request: ActionRequest, body: Data) async throws -> ActionResponse {
         try await send(Endpoint<ActionResponse>(.post, path: ["actions"], body: body) {
+            try ContractCodec.decode(ActionResponse.self, from: $0)
+        }, operationID: request.commandId)
+    }
+
+    public func lookupAction(_ request: ActionRequest, body: Data) async throws -> Recorded<ActionResponse> {
+        try await lookup(Endpoint<ActionResponse>(.post, path: ["actions"], body: body) {
+            try ContractCodec.decode(ActionResponse.self, from: $0)
+        }, operationID: request.commandId)
+    }
+
+    public func resendAction(_ request: ActionRequest, body: Data) async throws -> ActionResponse? {
+        try await resend(Endpoint<ActionResponse>(.post, path: ["actions"], body: body) {
             try ContractCodec.decode(ActionResponse.self, from: $0)
         }, operationID: request.commandId)
     }
@@ -275,7 +297,13 @@ public actor ViewActionSender {
     private struct Pending: Equatable, Sendable { let request: ActionRequest; let body: Data }
     private let transport: any ViewTransport
     private let intents: ViewActionIntentStore?
-    private var pending: [String: Pending]
+    private let retryPolicy: ActionRetryPolicy
+    private let signal = RetrySignal()
+    public nonisolated let undelivered = UndeliveredCards()
+    private var pending: [String: Pending] { didSet { publishUndelivered() } }
+    private var deliveries: [String: Task<ActionResponse, any Error>] = [:]
+    private var activeEpoch: String?
+    private var stopped = false
     private var retirementDeferred = false
     private var retirementRequested = false
     private var retirementTask: Task<Void, Never>?
@@ -283,11 +311,12 @@ public actor ViewActionSender {
     private var journalEpoch: String?
     private var journalDescriptor: ActionJournalState?
 
-    public init(transport: any ViewTransport, intents: ViewActionIntentStore? = nil) {
-        self.transport = transport; self.intents = intents
+    public init(transport: any ViewTransport, intents: ViewActionIntentStore? = nil, retryPolicy: ActionRetryPolicy = .live) {
+        self.transport = transport; self.intents = intents; self.retryPolicy = retryPolicy
         pending = Dictionary(uniqueKeysWithValues: (intents?.restored ?? []).map {
             ($0.request.commandId, Pending(request: $0.restoredRequest, body: $0.body))
         })
+        undelivered.update(Set(pending.values.compactMap(\.request.answeredCard)))
     }
 
     private func journalState(dataEpoch: String) async throws -> ActionJournalState? {
@@ -298,11 +327,26 @@ public actor ViewActionSender {
         return descriptor
     }
 
+    /// The Mac's journal numbers every answer, so an answer cannot be numbered before it is known
+    /// once; until then it waits for the network like any undelivered answer.
+    private func reachableJournalState(dataEpoch: String) async throws -> ActionJournalState? {
+        var attempt = 0
+        while true {
+            let wakes = signal.generation
+            do { return try await journalState(dataEpoch: dataEpoch) }
+            catch where ActionDeliveryDisposition(error) == .retry && !(error is CancellationError) {}
+            try checkDelivering()
+            if wakes != signal.generation { attempt = 0; continue }
+            attempt += 1
+            await pause(attempt, since: wakes)
+        }
+    }
+
     public func prepare(_ request: ActionRequest) async throws -> ActionRequest {
         try Task.checkCancellation()
         guard let intents else { return request }
         if ActionOperationID(rawValue: request.commandId) != nil { return request }
-        let descriptor = try await journalState(dataEpoch: request.dataEpoch)
+        let descriptor = try await reachableJournalState(dataEpoch: request.dataEpoch)
         try Task.checkCancellation()
         guard let descriptor else {
             let history = try await intents.acknowledgmentRanges()
@@ -368,6 +412,175 @@ public actor ViewActionSender {
         let response = try await transport.submitAction(request, body: encoded)
         try await applied(value, response: response)
         return response
+    }
+
+    /// Delivers an answer whatever the network does: it goes again on its own, waiting longer each
+    /// time and at once on `retryNow`, until the Mac answers it. Throws only when it can never be
+    /// delivered. The delivery goes on when the caller stops waiting for it.
+    public func deliver(_ request: ActionRequest) async throws -> ActionResponse {
+        try Task.checkCancellation()
+        let key = request.deliveryCorrelationID
+        if let running = deliveries[key] { return try await running.value }
+        let task = try startDelivery(Pending(request: request, body: ContractCodec.encode(request)))
+        return try await task.value
+    }
+
+    /// The network came back, the app came to the front or a push arrived: every waiting answer goes now.
+    public func retryNow() {
+        signal.fire()
+    }
+
+    /// Answers left from an earlier launch go on by themselves.
+    public func resumeDeliveries(dataEpoch: String) {
+        activeEpoch = dataEpoch
+        publishUndelivered()
+        for value in pending.keys.sorted().compactMap({ pending[$0] }) where value.request.dataEpoch == dataEpoch {
+            _ = try? startDelivery(value)
+        }
+    }
+
+    public func stop() {
+        stopped = true
+        for task in deliveries.values { task.cancel() }
+        deliveries.removeAll()
+        signal.fire()
+    }
+
+    // Tests wait for deliveries started without a caller.
+    func drainDeliveries() async {
+        while let task = deliveries.values.first { _ = try? await task.value }
+    }
+
+    @discardableResult
+    private func startDelivery(_ value: Pending) throws -> Task<ActionResponse, any Error> {
+        guard !stopped else { throw CancellationError() }
+        let key = value.request.deliveryCorrelationID
+        if let running = deliveries[key] { return running }
+        let task = Task { try await self.keepDelivering(value, key: key) }
+        deliveries[key] = task
+        return task
+    }
+
+    private func keepDelivering(_ start: Pending, key: String) async throws -> ActionResponse {
+        defer { deliveries[key] = nil }
+        var current = start
+        var attempt = 0
+        while true {
+            try checkDelivering()
+            let wakes = signal.generation
+            do {
+                return try await attemptDelivery(&current)
+            } catch where ActionDeliveryDisposition(error) == .final {
+                await discard(current)
+                throw error
+            } catch {}
+            try checkDelivering()
+            if let activeEpoch, activeEpoch != current.request.dataEpoch {
+                await discard(current)
+                throw ActionDeliveryError.dataReset
+            }
+            if wakes != signal.generation {
+                attempt = 0
+                continue
+            }
+            attempt += 1
+            await pause(attempt, since: wakes)
+        }
+    }
+
+    private func checkDelivering() throws {
+        if stopped || Task.isCancelled { throw CancellationError() }
+    }
+
+    private func pause(_ attempt: Int, since wakes: Int) async {
+        let delay = retryPolicy.delay(attempt), sleep = retryPolicy.sleep, signal = signal
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask { try? await sleep(delay) }
+            group.addTask { await signal.wait(since: wakes) }
+            await group.next()
+            group.cancelAll()
+        }
+    }
+
+    /// One try: the first dispatch, or for an answer already sent, what the Mac holds and else the
+    /// same sealed bytes again. Bytes too old to be accepted become the same answer under a new ID,
+    /// only once the Mac said it never finished the old one.
+    private func attemptDelivery(_ current: inout Pending) async throws -> ActionResponse {
+        let request = current.request, encoded = current.body
+        guard let intents else {
+            if let existing = pending[request.commandId] {
+                guard existing.body == encoded else { throw FeedError.commandIdentityConflict }
+                return try await recoverOrResend(&current)
+            }
+            pending[request.commandId] = current
+            let response = try await transport.submitAction(request, body: encoded)
+            try await applied(current, response: response)
+            return response
+        }
+        var allowLegacy = false
+        if ActionOperationID(rawValue: request.commandId) == nil {
+            let descriptor = try await journalState(dataEpoch: request.dataEpoch)
+            let history = try await intents.acknowledgmentRanges()
+            allowLegacy = descriptor == nil && history.generation == 0
+        }
+        switch try await intents.reserve(request, body: encoded, allowLegacyDispatch: allowLegacy) {
+        case let .completed(response):
+            if let response { return response }
+            switch try await transport.lookupAction(request, body: encoded) {
+            case let .answered(response):
+                try await applied(current, response: response)
+                return response
+            case .absent: throw ActionDeliveryError.answeredBefore
+            case .unknown: throw OperationError.outcomeUnknown
+            }
+        case let .pending(record):
+            current = Pending(request: record.restoredRequest, body: record.body)
+            pending[current.request.commandId] = current
+            return try await recoverOrResend(&current)
+        case let .created(record):
+            current = Pending(request: record.restoredRequest, body: record.body)
+            pending[current.request.commandId] = current
+            try Task.checkCancellation()
+            let response = try await transport.submitAction(current.request, body: current.body)
+            try await applied(current, response: response)
+            return response
+        }
+    }
+
+    private func recoverOrResend(_ current: inout Pending) async throws -> ActionResponse {
+        var held: Recorded<ActionResponse> = .unknown
+        do { held = try await transport.lookupAction(current.request, body: current.body) }
+        catch where ActionDeliveryDisposition(error) == .retry {}
+        if case let .answered(response) = held {
+            try await applied(current, response: response)
+            return response
+        }
+        do {
+            if let response = try await transport.resendAction(current.request, body: current.body) {
+                try await applied(current, response: response)
+                return response
+            }
+        } catch OperationError.sealExpired {
+            guard case .absent = held, let intents, ActionOperationID(rawValue: current.request.commandId) != nil else { throw OperationError.outcomeUnknown }
+            let record = try await intents.reissue(.init(request: current.request, body: current.body))
+            pending.removeValue(forKey: current.request.commandId)
+            current = Pending(request: record.restoredRequest, body: record.body)
+            pending[current.request.commandId] = current
+            scheduleRetirement()
+            return try await attemptDelivery(&current)
+        }
+        throw OperationError.outcomeUnknown
+    }
+
+    private func discard(_ value: Pending) async {
+        try? await intents?.discard(.init(request: value.request, body: value.body))
+        pending.removeValue(forKey: value.request.commandId)
+        scheduleRetirement()
+    }
+
+    private func publishUndelivered() {
+        let cards = pending.values.filter { activeEpoch == nil || $0.request.dataEpoch == activeEpoch }.compactMap(\.request.answeredCard)
+        undelivered.update(Set(cards))
     }
 
     public func retry(commandID: String) async throws -> ActionResponse {
@@ -437,8 +650,10 @@ public actor ViewActionSender {
             await drainRetirement()
             return
         }
+        let known = journalEpoch == dataEpoch ? journalDescriptor : nil
         journalEpoch = nil; journalDescriptor = nil
-        _ = try? await journalState(dataEpoch: dataEpoch)
+        do { _ = try await journalState(dataEpoch: dataEpoch) }
+        catch { if let known { journalEpoch = dataEpoch; journalDescriptor = known } }
         guard !Task.isCancelled, await isCurrent() else {
             await drainRetirement()
             return

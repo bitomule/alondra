@@ -110,6 +110,24 @@ public actor RelayOutbox {
         }
     }
 
+    /// Posts a reserved envelope again, byte for byte. The relay answers a request ID it already
+    /// holds with that same job and the Mac's journal recognises the bytes, so it never runs twice.
+    /// A job it already finished comes back without its answer, which only a status read carries.
+    public func resubmit(requestID: String) async throws -> RelaySubmission {
+        guard let record = try await entry(requestID: requestID), record.phase != .retired,
+              let envelope = record.envelope else { return .uncertain }
+        do {
+            try MutationScope.check()
+            let receipt = try await transport.submitRequest(envelope)
+            guard receipt.requestID == requestID, receipt.status != "completed" || receipt.response != nil else { return .uncertain }
+            let saved = try await update(requestID, phase: .acknowledged, receipt: receipt)
+            return .accepted(Self.receipt(from: saved) ?? receipt)
+        } catch {
+            try? await setUncertain(requestID)
+            return .uncertain
+        }
+    }
+
     /// Read-only reconciliation. A missing/failed status lookup leaves the entry uncertain.
     public func reconcile(requestID: String) async throws -> RelayReceipt? {
         guard let record = try await entry(requestID: requestID), record.phase != .retired else { return nil }

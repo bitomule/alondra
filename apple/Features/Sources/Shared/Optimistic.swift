@@ -44,6 +44,17 @@ public struct Optimistic: Equatable, Sendable {
         return isSending(pending.target) ? nil : pending.target
     }
 
+    /// Keeps an item out after an action the daemon answered without applying it: only a newer
+    /// view shows it again, where the daemon puts it, never back in front as if unanswered.
+    public mutating func hold(_ id: String, shown version: String?, dataEpoch: String) {
+        applied[id] = Applied(version: version, epoch: dataEpoch)
+    }
+
+    /// The daemon asks about the item again: it shows at once.
+    public mutating func release(_ id: String) {
+        applied.removeValue(forKey: id)
+    }
+
     /// A view arrived: whatever it shows of an applied action is the daemon's word from now on.
     public mutating func reconcile(_ version: String?, dataEpoch: String? = nil) {
         if let dataEpoch { sending = sending.filter { $0.value.epoch == dataEpoch } }

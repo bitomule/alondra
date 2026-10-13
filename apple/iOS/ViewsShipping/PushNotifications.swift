@@ -281,10 +281,13 @@ final class PushCenter {
 final class NotificationResponder: NSObject, UNUserNotificationCenterDelegate {
     private let push: PushCenter
     private let prepare: @MainActor @Sendable () async -> Void
+    private let arrived: @MainActor @Sendable () async -> Void
 
-    init(push: PushCenter, prepare: @escaping @MainActor @Sendable () async -> Void = {}) {
+    init(push: PushCenter, prepare: @escaping @MainActor @Sendable () async -> Void = {},
+         arrived: @escaping @MainActor @Sendable () async -> Void = {}) {
         self.push = push
         self.prepare = prepare
+        self.arrived = arrived
     }
 
     func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse, withCompletionHandler completionHandler: @escaping () -> Void) {
@@ -300,6 +303,7 @@ final class NotificationResponder: NSObject, UNUserNotificationCenterDelegate {
     func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification, withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
         let isRemotePush = notification.request.trigger is UNPushNotificationTrigger
         completionHandler(ForegroundPresentation.options(isRemotePush: isRemotePush))
+        if isRemotePush { Task { @MainActor [arrived] in await arrived() } }
     }
 }
 

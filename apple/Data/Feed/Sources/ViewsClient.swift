@@ -21,7 +21,10 @@ public struct ViewsClient: Sendable {
         AsyncThrowingStream { $0.finish(throwing: ViewsClientError.notInstalled) }
     }
     public var prepare: @Sendable (ActionRequest) async throws -> ActionRequest = { $0 }
+    /// Delivers an answer until the Mac answers it; throws only when it can never be delivered.
     public var perform: @Sendable (ActionRequest) async throws -> ActionOutcome
+    /// The cards answered on this device whose answer the Mac has not confirmed yet.
+    public var undeliveredCards: @Sendable () -> AsyncStream<Set<String>> = { AsyncStream { $0.finish() } }
     public var fetchContent: @Sendable (ContentRef) async throws -> String
     public var fetchAttachment: @Sendable (Attachment) async throws -> Data
 
@@ -40,7 +43,8 @@ public struct ViewsClient: Sendable {
             feed: { await session.events() },
             observe: { key in ViewObservation.stream(session: session, key: key) },
             prepare: { request in try await sender.prepare(request) },
-            perform: { request in try await sender.send(request) },
+            perform: { request in try await sender.deliver(request) },
+            undeliveredCards: { sender.undelivered.stream() },
             fetchContent: { content in try await session.fetchContent(content) },
             fetchAttachment: { attachment in try await session.fetchAttachment(attachment) }
         )
@@ -104,6 +108,7 @@ private enum ViewsClientKey: DependencyKey {
         observe: { _ in AsyncThrowingStream { $0.finish(throwing: ViewsClientError.notInstalled) } },
         prepare: { $0 },
         perform: { _ in throw ViewsClientError.notInstalled },
+        undeliveredCards: { AsyncStream { $0.finish() } },
         fetchContent: { _ in throw ViewsClientError.notInstalled },
         fetchAttachment: { _ in throw ViewsClientError.notInstalled }
     )
