@@ -5,6 +5,7 @@ import CryptoKit
 /// retain requests, retry mutations, or own app state. Its concrete implementation is internal.
 public protocol Transport: RelayRequestTransport {
     func bootstrap() async throws -> RelayBootstrap
+    func bootstrapIfNeeded() async throws -> RelayBootstrap
     func health() async throws -> Bool
     func submit(_ envelope: Envelope) async throws -> RelayJob
     func status(requestID: String) async throws -> RelayJob
@@ -12,6 +13,10 @@ public protocol Transport: RelayRequestTransport {
     func changes(since: UInt64, epoch: String?, waitSeconds: UInt64) async throws -> RelayChanges
     func registerPush(_ registration: RelayPushRegistration) async throws
     func pairingRequest(method: String, target: String, body: Data) async throws -> HTTPReply
+}
+
+public extension Transport {
+    func bootstrapIfNeeded() async throws -> RelayBootstrap { try await bootstrap() }
 }
 
 public extension AlondraAPIClient {

@@ -148,6 +148,10 @@ public actor RoutedSession: OperationAPI, PushRegistrationAPI {
         await relay?.deactivate()
     }
 
+    func drainProbe() async {
+        await probe?.value
+    }
+
     private func viaDirect(_ direct: DirectSession, _ request: APIRequest) async throws -> APIResponse {
         let response = try await direct.perform(request)
         lastRoute = await router?.route

@@ -1,6 +1,6 @@
 @testable import AlondraFeed
 import AlondraContract
-import AlondraTransport
+@testable import AlondraTransport
 import CryptoKit
 import Foundation
 import Darwin
@@ -49,6 +49,7 @@ private final class ClientInput: Sendable {
         var prepared: ActionRequest?
         var actionTask: Task<ActionResponse, any Error>?
         var staleTask: Task<RelayJob, any Error>?
+        var coldReads: [Task<String, any Error>] = []
         while true {
             let command = try await input.next()
             do {
@@ -69,9 +70,41 @@ private final class ClientInput: Sendable {
                     try emit(.init(event: "action_started"))
                 case "finish_action":
                     guard let task = actionTask else { throw ProcessClientError.invalidCommand }
-                    let response = try await task.value
                     actionTask = nil
+                    let response = try await task.value
                     try emit(.init(event: "answered", response: response))
+                case "start_cold_reads":
+                    guard coldReads.isEmpty, let mapping = setup.mapping, let session = setup.session else { throw ProcessClientError.invalidCommand }
+                    let (arrivals, continuation) = AsyncStream<Int>.makeStream(bufferingPolicy: .bufferingNewest(1))
+                    await session.observeBootstrapWaiters { continuation.yield($0) }
+                    await mapping.holdBootstrap()
+                    for ordinal in 0..<4 {
+                        let key = ordinal % 2 == 0 ? "card:fixture-detail-b" : "card:fixture-detail-c"
+                        coldReads.append(Task {
+                            guard case let .document(document) = try await api.fetchView(key: key, client: .ios, lang: "en"),
+                                  document.key == key, document.dataEpoch == config.dataEpoch else { throw ProcessClientError.invalidCommand }
+                            return key
+                        })
+                    }
+                    await mapping.waitForBootstrap()
+                    for await count in arrivals where count == 4 { break }
+                    await session.observeBootstrapWaiters(nil)
+                    continuation.finish()
+                    try emit(.init(event: "cold_bootstrap_held"))
+                case "finish_cold_reads":
+                    guard !coldReads.isEmpty, let mapping = setup.mapping else { throw ProcessClientError.invalidCommand }
+                    let releasedAt = await mapping.releaseBootstrap()
+                    var keys: [String] = []
+                    var errors = 0
+                    for task in coldReads {
+                        do { keys.append(try await task.value) }
+                        catch { errors += 1 }
+                    }
+                    let completionMicroseconds = microseconds(releasedAt.duration(to: ContinuousClock().now))
+                    let attempts = coldReads.count
+                    coldReads.removeAll()
+                    try emit(.init(event: "cold_reads_finished", detailKeys: keys.sorted(), readAttempts: attempts, readErrors: errors,
+                        coldCompletionMicroseconds: completionMicroseconds))
                 case "detail_burst":
                     let feed = FeedSession(transport: api, client: config.relay == nil ? .mac : .ios, lang: "en")
                     let keys = try await withThrowingTaskGroup(of: String.self) { group in
@@ -89,6 +122,26 @@ private final class ClientInput: Sendable {
                     }
                     await feed.stop()
                     try emit(.init(event: "details_loaded", detailKeys: keys))
+                case "measured_detail_burst":
+                    let results = await withTaskGroup(of: String?.self) { group in
+                        for ordinal in 0..<8 {
+                            let key = ordinal % 2 == 0 ? "card:fixture-detail-b" : "card:fixture-detail-c"
+                            group.addTask {
+                                do {
+                                    guard case let .document(document) = try await api.fetchView(key: key, client: .ios, lang: "en"),
+                                          document.key == key, document.dataEpoch == config.dataEpoch else { return nil }
+                                    return key
+                                } catch { return nil }
+                            }
+                        }
+                        var keys: [String] = []
+                        var errors = 0
+                        for await key in group {
+                            if let key { keys.append(key) } else { errors += 1 }
+                        }
+                        return (keys.sorted(), errors)
+                    }
+                    try emit(.init(event: "details_measured", detailKeys: results.0, readAttempts: 8, readErrors: results.1))
                 case "hold_stale_authorization":
                     guard staleTask == nil, let relay = config.relay, let expired = relay.expiredBearer,
                           let credentials = setup.credentials, let mapping = setup.mapping, let raw = setup.raw else {
@@ -111,7 +164,9 @@ private final class ClientInput: Sendable {
                     try emit(.init(event: "reconciled", pendingIDs: await sender.unresolvedCommandIDs()))
                 case "transport_metrics":
                     let counts = await setup.mapping?.counts() ?? (0, 0)
-                    try emit(.init(event: "transport_metrics", mutativeEnvelopePosts: counts.0, otherEnvelopePosts: counts.1))
+                    let reads = await setup.mapping?.readCounts()
+                    try emit(.init(event: "transport_metrics", mutativeEnvelopePosts: counts.0, otherEnvelopePosts: counts.1,
+                        bootstrapGets: reads?.bootstraps, operationResultGets: reads?.results.count, operationResultIDs: reads?.results))
                 case "drain":
                     await sender.drainRetirement()
                     try emit(.init(event: "retirement_drained"))
@@ -131,6 +186,8 @@ private final class ClientInput: Sendable {
                 case "history":
                     try emit(.init(event: "history", history: await compareHistory(directory: directory)))
                 case "quit":
+                    await setup.mapping?.releaseBootstrap()
+                    for task in coldReads { task.cancel(); _ = await task.result }
                     await setup.mapping?.releaseUnauthorized()
                     if let staleTask { _ = await staleTask.result }
                     if let actionTask { _ = await actionTask.result }
@@ -161,6 +218,7 @@ private final class ClientInput: Sendable {
         let mapping: FixtureRelayHTTP?
         var credentials: FixtureCredentials? = nil
         var raw: (any Transport)? = nil
+        var session: RelaySession? = nil
     }
     private static func setup(config: ProcessClientConfiguration, directory: URL) async throws -> Setup {
         guard let seed = Data(base64Encoded: config.signingSeed) else { throw ProcessClientError.invalidConfiguration }
@@ -176,7 +234,8 @@ private final class ClientInput: Sendable {
             let revision = SHA256.hash(data: signing.publicKey.x963Representation + agreement.publicKey.x963Representation
                 + macSigning.x963Representation + macAgreement.x963Representation).map { String(format: "%02x", $0) }.joined()
             let scope = RelayOutboxScope(relay: base, macID: relay.macID, deviceID: config.deviceID, credentialRevision: revision)
-            let mapping = FixtureRelayHTTP(destination: destination)
+            let mapping = FixtureRelayHTTP(destination: destination, phoneSigning: signing.publicKey,
+                macAgreement: try P256.KeyAgreement.PrivateKey(rawRepresentation: macAgreementSeed), macID: relay.macID, deviceID: config.deviceID)
             let credentials = FixtureCredentials(token: relay.bearer, rejected: relay.expiredBearer ?? relay.bearer)
             let raw = try AlondraAPIClient.makeTransport(base: base, deviceID: config.deviceID, signing: signing,
                 bearer: { await credentials.value() }, bearerRefused: { await credentials.refuse() },
@@ -187,7 +246,7 @@ private final class ClientInput: Sendable {
                 signing: signing, agreement: agreement, macSigning: macSigning, macAgreement: macAgreement)
             return Setup(api: .init(serviceURL: base, deviceID: config.deviceID, operations: session),
                 material: agreement.rawRepresentation, scope: .init(service: base.absoluteString + "/" + relay.macID,
-                    device: config.deviceID, credentialRevision: revision), stop: { await session.deactivate() }, mapping: mapping, credentials: credentials, raw: raw)
+                    device: config.deviceID, credentialRevision: revision), stop: { await session.deactivate() }, mapping: mapping, credentials: credentials, raw: raw, session: session)
         }
         guard let base = URL(string: config.baseURL) else { throw ProcessClientError.invalidConfiguration }
         let identity = LoopbackIdentityStore(directory: directory.appending(path: "identity"), makeKey: { .software(signing) })
@@ -283,6 +342,28 @@ private actor FixtureRelayHTTP: HTTPTransport {
     private let network = AlondraAPIClient.makeHTTPTransport()
     private var mutations = 0
     private var others = 0
+    private var bootstraps = 0
+    private var operationResults: [String] = []
+    private let phoneSigning: P256.Signing.PublicKey
+    private let macAgreement: P256.KeyAgreement.PrivateKey
+    private let macID: String
+    private let deviceID: String
+    private var holdBootstrapRequest = false
+    private var bootstrapHeld = false
+    private var bootstrapReleases: [CheckedContinuation<Void, Never>] = []
+    private var bootstrapArrival: CheckedContinuation<Void, Never>?
+    func holdBootstrap() { holdBootstrapRequest = true }
+    func waitForBootstrap() async {
+        if bootstrapHeld { return }
+        await withCheckedContinuation { bootstrapArrival = $0 }
+    }
+    @discardableResult func releaseBootstrap() -> ContinuousClock.Instant {
+        let releasedAt = ContinuousClock().now
+        holdBootstrapRequest = false
+        for waiter in bootstrapReleases { waiter.resume() }
+        bootstrapReleases.removeAll()
+        return releasedAt
+    }
     private var holdRefusal = false
     private var refusalHeld = false
     private var refusal: CheckedContinuation<Void, Never>?
@@ -293,7 +374,10 @@ private actor FixtureRelayHTTP: HTTPTransport {
         await withCheckedContinuation { arrival = $0 }
     }
     func releaseUnauthorized() { refusal?.resume(); refusal = nil }
-    init(destination: URL) { self.destination = destination }
+    init(destination: URL, phoneSigning: P256.Signing.PublicKey, macAgreement: P256.KeyAgreement.PrivateKey, macID: String, deviceID: String) {
+        self.destination = destination; self.phoneSigning = phoneSigning; self.macAgreement = macAgreement
+        self.macID = macID; self.deviceID = deviceID
+    }
     func send(_ request: URLRequest) async throws -> HTTPReply {
         guard let url = request.url, url.host == "fixture-relay.invalid",
               var components = URLComponents(url: url, resolvingAgainstBaseURL: false),
@@ -301,11 +385,27 @@ private actor FixtureRelayHTTP: HTTPTransport {
         if request.httpMethod == "POST", url.path == "/v1/requests", let body = request.httpBody,
            let envelope = try? JSONDecoder().decode(Envelope.self, from: body) {
             if ActionOperationID(rawValue: envelope.requestID) != nil { mutations += 1 } else { others += 1 }
+            let bytes = try envelope.open(senderKey: phoneSigning, recipientKey: macAgreement,
+                sender: deviceID, recipient: macID, route: macID, nowMilliseconds: nil)
+            if let payload = try JSONSerialization.jsonObject(with: bytes) as? [String: Any],
+               payload["method"] as? String == "GET", let path = payload["path"] as? String,
+               path.hasPrefix("/operation-results/"), let components = URLComponents(string: path) {
+                operationResults.append(String(components.path.dropFirst("/operation-results/".count)))
+            }
         }
         components.scheme = target.scheme; components.host = target.host; components.port = target.port
         guard let mapped = components.url else { throw ProcessClientError.invalidConfiguration }
         var actual = request; actual.url = mapped
+        if request.httpMethod == "GET", url.path == "/v1/bootstrap" { bootstraps += 1 }
         let reply = try await network.send(actual)
+        if request.httpMethod == "GET", url.path == "/v1/bootstrap" {
+            if holdBootstrapRequest {
+                await withCheckedContinuation {
+                    bootstrapReleases.append($0); bootstrapHeld = true
+                    bootstrapArrival?.resume(); bootstrapArrival = nil
+                }
+            }
+        }
         if holdRefusal, reply.status == 401 {
             holdRefusal = false
             await withCheckedContinuation {
@@ -317,4 +417,5 @@ private actor FixtureRelayHTTP: HTTPTransport {
         return reply
     }
     func counts() -> (Int, Int) { (mutations, others) }
+    func readCounts() -> (bootstraps: Int, results: [String]) { (bootstraps, operationResults) }
 }

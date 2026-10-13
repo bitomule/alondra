@@ -53,4 +53,10 @@ struct ProcessClientEvent: Codable, Sendable {
     var otherEnvelopePosts: Int? = nil
     var detailKeys: [String]? = nil
     var authorizationRefusals: Int? = nil
+    var bootstrapGets: Int? = nil
+    var operationResultGets: Int? = nil
+    var operationResultIDs: [String]? = nil
+    var readAttempts: Int? = nil
+    var readErrors: Int? = nil
+    var coldCompletionMicroseconds: Double? = nil
 }

@@ -9,6 +9,7 @@ struct Harness {
     release: Notify,
     actions: AtomicU64,
     reads: AtomicU64,
+    bootstraps: AtomicU64,
 }
 fn emit(value: Value) {
     let stdout = std::io::stdout();
@@ -22,6 +23,9 @@ async fn barrier(
     next: Next,
 ) -> Response {
     let path = request.uri().path().to_owned();
+    if request.method() == Method::GET && path == "/v1/bootstrap" {
+        harness.bootstraps.fetch_add(1, Ordering::Relaxed);
+    }
     let upload = request.method() == Method::POST
         && path.starts_with("/v1/work/")
         && path.ends_with("/response");
@@ -120,10 +124,16 @@ async fn full_stack_fixture_relay() {
         release: Notify::new(),
         actions: AtomicU64::new(0),
         reads: AtomicU64::new(0),
+        bootstraps: AtomicU64::new(0),
     });
     let routes =
         router(server.clone()).layer(middleware::from_fn_with_state(harness.clone(), barrier));
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = std::env::var("ALONDRA_FIXTURE_RELAY_PORT")
+        .map(|value| value.parse::<u16>().unwrap())
+        .unwrap_or(0);
+    let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port))
+        .await
+        .unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
     let (stop, stopped) = tokio::sync::oneshot::channel();
     let serving = tokio::spawn(async move {
@@ -165,8 +175,14 @@ async fn full_stack_fixture_relay() {
                 emit(json!({"event":"released"}));
             }
             "stats" => emit(
-                json!({"event":"stats","action_posts":harness.actions.load(Ordering::Relaxed),"read_posts":harness.reads.load(Ordering::Relaxed)}),
+                json!({"event":"stats","action_posts":harness.actions.load(Ordering::Relaxed),"read_posts":harness.reads.load(Ordering::Relaxed),"bootstrap_gets":harness.bootstraps.load(Ordering::Relaxed)}),
             ),
+            "expire_action" => {
+                let id = command["request_id"].as_str().unwrap();
+                let job = server.queue.get("owner", "phone-1", id, now_ms().saturating_add(120_001)).unwrap();
+                assert_eq!(job.status, state::JobStatus::Expired);
+                emit(json!({"event":"expired","command_id":id}));
+            }
             "stop" => break,
             other => panic!("unexpected relay fixture command {other}"),
         }

@@ -461,7 +461,7 @@ private let viaRelay = APIResponse.completed(status: 200, body: Data(#"{"relay":
         let routed = RoutedSession(direct: f.session, router: f.router, relay: relay)
         #expect(try await routed.perform(f.read()) == viaRelay)
         #expect(await routed.route == .relay)
-        for _ in 0..<100 where await f.mac.hosts.isEmpty { try await Task.sleep(for: .milliseconds(10)) }
+        await routed.drainProbe()
         #expect(await f.mac.hosts == [lan.host])
         #expect(try await routed.perform(f.read()) == answered)
         #expect(await routed.route == .localNetwork)

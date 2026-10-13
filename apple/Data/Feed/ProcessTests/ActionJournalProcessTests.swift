@@ -141,7 +141,11 @@ private final class FixtureProcess: Sendable {
         try? input.close(); try? output.close(); try? errorOutput.close()
     }
 }
-private struct ServerCommand: Encodable { let command: String }
+private struct ServerCommand: Encodable {
+    let command: String
+    var requestID: String? = nil
+    enum CodingKeys: String, CodingKey { case command; case requestID = "request_id" }
+}
 private struct ServerEvent: Decodable, Sendable {
     let event: String
     var baseURL: String?
@@ -179,6 +183,7 @@ private struct RelayServerEvent: Decodable, Sendable {
     var commandID: String?
     var actionPosts: Int?
     var readPosts: Int?
+    var bootstrapGets: Int?
     enum CodingKeys: String, CodingKey {
         case event, bearer
         case expiredBearer = "expired_bearer"
@@ -186,6 +191,7 @@ private struct RelayServerEvent: Decodable, Sendable {
         case signingSeed = "signing_seed_base64", agreementSeed = "agreement_seed_base64"
         case macSigningSeed = "mac_signing_seed_base64", macAgreementSeed = "mac_agreement_seed_base64"
         case commandID = "command_id", actionPosts = "action_posts", readPosts = "read_posts"
+        case bootstrapGets = "bootstrap_gets"
     }
 }
 
@@ -206,6 +212,138 @@ private struct RelayServerEvent: Decodable, Sendable {
         let result = try await server.next(ServerEvent.self)
         #expect(result.event == "stats")
         return result
+    }
+    private func launchRelay(home: URL, port: Int? = nil) throws -> FixtureProcess {
+        try FixtureProcess(executable: executable("crates/relay/alondra_relay_test"),
+            arguments: ["--ignored", "--exact", "http_tests::process_fixture::full_stack_fixture_relay", "--nocapture"],
+            home: home, prefix: "ALONDRA_FIXTURE ",
+            additionalEnvironment: port.map { ["ALONDRA_FIXTURE_RELAY_PORT": String($0)] } ?? [:])
+    }
+    private func relayConfiguration(relay: RelayServerEvent, daemon: ServerEvent) throws -> ProcessClientConfiguration {
+        .init(baseURL: "https://fixture-relay.invalid", dataEpoch: try #require(daemon.dataEpoch),
+            actionID: try #require(daemon.actionID), deviceID: try #require(relay.deviceID),
+            signingSeed: try #require(relay.signingSeed), optionID: daemon.optionID,
+            relay: .init(baseURL: try #require(relay.baseURL), bearer: try #require(relay.bearer),
+                macID: try #require(relay.macID), agreementSeed: try #require(relay.agreementSeed),
+                macSigningSeed: try #require(relay.macSigningSeed), macAgreementSeed: try #require(relay.macAgreementSeed)))
+    }
+
+    @Test func fourColdReadsShareOneRealBootstrapBeforeAnyAnswerIsReleased() async throws {
+        let relay = try launchRelay(home: TestFiles.directory())
+        defer { relay.cleanup() }
+        let relayReady = try await relay.next(RelayServerEvent.self)
+        let daemon = try FixtureProcess(executable: executable("crates/alondrad/alondrad_test"),
+            arguments: ["--ignored", "--exact", "operation_journal::process_fixture::full_stack_fixture_server", "--nocapture"],
+            home: TestFiles.directory(), prefix: "ALONDRA_FIXTURE ",
+            additionalEnvironment: ["ALONDRA_FIXTURE_RELAY_URL": try #require(relayReady.baseURL)])
+        defer { daemon.cleanup() }
+        let ready = try await daemon.next(ServerEvent.self)
+        let clientHome = try TestFiles.directory(), config = clientHome.appending(path: "fixture.json")
+        try JSONEncoder().encode(relayConfiguration(relay: relayReady, daemon: ready)).write(to: config)
+        let client = try launchClient(home: clientHome, config: config)
+        defer { client.cleanup() }
+        #expect(try await client.next(ProcessClientEvent.self).event == "ready")
+        try relay.send(ServerCommand(command: "stats"))
+        let before = try await relay.next(RelayServerEvent.self)
+        try client.send(ProcessClientCommand(command: "start_cold_reads"))
+        #expect(try await client.next(ProcessClientEvent.self).event == "cold_bootstrap_held")
+        try relay.send(ServerCommand(command: "stats"))
+        let held = try await relay.next(RelayServerEvent.self)
+        #expect(try #require(held.bootstrapGets) == #require(before.bootstrapGets) + 1)
+        #expect(held.readPosts == before.readPosts, "all four readers are waiting for the same bootstrap")
+        try client.send(ProcessClientCommand(command: "finish_cold_reads"))
+        let reads = try await client.next(ProcessClientEvent.self)
+        #expect(reads.event == "cold_reads_finished" && reads.readAttempts == 4 && reads.readErrors == 0)
+        #expect(reads.detailKeys == ["card:fixture-detail-b", "card:fixture-detail-b", "card:fixture-detail-c", "card:fixture-detail-c"])
+        try relay.send(ServerCommand(command: "stats"))
+        let after = try await relay.next(RelayServerEvent.self)
+        #expect(after.bootstrapGets == held.bootstrapGets)
+        #expect(try #require(after.readPosts) == #require(before.readPosts) + 4)
+        let completionMicroseconds = try #require(reads.coldCompletionMicroseconds)
+        let bootstrapGets = try #require(after.bootstrapGets) - #require(before.bootstrapGets)
+        print("cold relay reads attempts=\(reads.readAttempts ?? -1) errors=\(reads.readErrors ?? -1) client_bootstrap_gets=\(bootstrapGets) observed_completion_microseconds=\(completionMicroseconds)")
+        try client.send(ProcessClientCommand(command: "quit"))
+        #expect(try await client.next(ProcessClientEvent.self).event == "stopped")
+        try daemon.send(ServerCommand(command: "stop"))
+        #expect(try await daemon.next(ServerEvent.self).event == "stopped")
+        try relay.send(ServerCommand(command: "stop"))
+        #expect(try await relay.next(RelayServerEvent.self).event == "stopped")
+    }
+
+    @Test func aRealRelayRestartKeepsDetailsUsableAndRecoversTheAppliedActionWithoutAnotherPost() async throws {
+        let relayHome = try TestFiles.directory()
+        let relay = try launchRelay(home: relayHome)
+        defer { relay.cleanup() }
+        let relayReady = try await relay.next(RelayServerEvent.self)
+        let relayURL = try #require(relayReady.baseURL)
+        let port = try #require(URL(string: relayURL)?.port)
+        let daemon = try FixtureProcess(executable: executable("crates/alondrad/alondrad_test"),
+            arguments: ["--ignored", "--exact", "operation_journal::process_fixture::full_stack_fixture_server", "--nocapture"],
+            home: TestFiles.directory(), prefix: "ALONDRA_FIXTURE ",
+            additionalEnvironment: ["ALONDRA_FIXTURE_RELAY_URL": relayURL])
+        defer { daemon.cleanup() }
+        let ready = try await daemon.next(ServerEvent.self)
+        let daemonPID = daemon.pid
+        let clientHome = try TestFiles.directory(), config = clientHome.appending(path: "fixture.json")
+        try JSONEncoder().encode(relayConfiguration(relay: relayReady, daemon: ready)).write(to: config)
+        let client = try launchClient(home: clientHome, config: config)
+        defer { client.cleanup() }
+        #expect(try await client.next(ProcessClientEvent.self).event == "ready")
+        try client.send(ProcessClientCommand(command: "prepare", nonce: "70000000-0000-4000-8000-000000000001"))
+        let original = try #require(try await client.next(ProcessClientEvent.self).request)
+        try relay.send(ServerCommand(command: "hold_next_action"))
+        #expect(try await relay.next(RelayServerEvent.self).event == "armed")
+        try client.send(ProcessClientCommand(command: "start_action"))
+        #expect(try await client.next(ProcessClientEvent.self).event == "action_started")
+        #expect(try await relay.next(RelayServerEvent.self).commandID == original.commandId)
+        let applied = try await stats(daemon)
+        #expect(applied.effects == 1 && applied.journalRecords == 1)
+        try client.send(ProcessClientCommand(command: "measured_detail_burst"))
+        let beforeReads = try await client.next(ProcessClientEvent.self)
+        #expect(beforeReads.readAttempts == 8 && beforeReads.readErrors == 0)
+        #expect(beforeReads.detailKeys == Array(repeating: "card:fixture-detail-b", count: 4) + Array(repeating: "card:fixture-detail-c", count: 4))
+        try client.send(ProcessClientCommand(command: "transport_metrics"))
+        let beforeTransport = try await client.next(ProcessClientEvent.self)
+        #expect(beforeTransport.mutativeEnvelopePosts == 1 && beforeTransport.operationResultGets == 0)
+        try relay.send(ServerCommand(command: "expire_action", requestID: original.commandId))
+        let expired = try await relay.next(RelayServerEvent.self)
+        #expect(expired.event == "expired" && expired.commandID == original.commandId)
+        try relay.send(ServerCommand(command: "stats"))
+        #expect(try await relay.next(RelayServerEvent.self).actionPosts == 1)
+        #expect(relay.killAndWait() == SIGKILL)
+        try client.send(ProcessClientCommand(command: "finish_action"))
+        let uncertain = try await client.next(ProcessClientEvent.self)
+        #expect(uncertain.event == "error" && uncertain.error == "outcomeUnknown")
+        let restarted = try launchRelay(home: relayHome, port: port)
+        defer { restarted.cleanup() }
+        let restartedReady = try await restarted.next(RelayServerEvent.self)
+        #expect(restarted.pid != relay.pid && restartedReady.baseURL == relayURL)
+        #expect(restartedReady.signingSeed == relayReady.signingSeed && restartedReady.macAgreementSeed == relayReady.macAgreementSeed)
+        try client.send(ProcessClientCommand(command: "measured_detail_burst"))
+        let afterReads = try await client.next(ProcessClientEvent.self)
+        #expect(afterReads.readAttempts == 8 && afterReads.readErrors == 0)
+        #expect(afterReads.detailKeys == beforeReads.detailKeys)
+        try client.send(ProcessClientCommand(command: "send", request: original))
+        let recovered = try await client.next(ProcessClientEvent.self)
+        #expect(recovered.event == "answered" && recovered.response?.outcome == .applied)
+        #expect(recovered.request?.commandId == original.commandId)
+        try client.send(ProcessClientCommand(command: "drain"))
+        #expect(try await client.next(ProcessClientEvent.self).event == "retirement_drained")
+        try client.send(ProcessClientCommand(command: "transport_metrics"))
+        let afterTransport = try await client.next(ProcessClientEvent.self)
+        #expect(afterTransport.mutativeEnvelopePosts == beforeTransport.mutativeEnvelopePosts)
+        #expect(afterTransport.operationResultGets == 1 && afterTransport.operationResultIDs == [original.commandId])
+        let final = try await stats(daemon)
+        #expect(daemon.pid == daemonPID && final.effects == 1 && final.journalRecords == 0)
+        try restarted.send(ServerCommand(command: "stats"))
+        #expect(try await restarted.next(RelayServerEvent.self).actionPosts == 0)
+        print("relay restart reads_before=\(beforeReads.readAttempts ?? -1) errors_before=\(beforeReads.readErrors ?? -1) reads_after=\(afterReads.readAttempts ?? -1) errors_after=\(afterReads.readErrors ?? -1) effects=\(final.effects ?? -1) fresh_result_gets=\(afterTransport.operationResultGets ?? -1) action_posts=1 daemon_pid=\(daemonPID)")
+        try client.send(ProcessClientCommand(command: "quit"))
+        #expect(try await client.next(ProcessClientEvent.self).event == "stopped")
+        try daemon.send(ServerCommand(command: "stop"))
+        #expect(try await daemon.next(ServerEvent.self).event == "stopped")
+        try restarted.send(ServerCommand(command: "stop"))
+        #expect(try await restarted.next(RelayServerEvent.self).event == "stopped")
     }
 
     @Test func actualClientProcessCutsRecoverTheOriginalSignedHTTPActionAndRetireItsReplay() async throws {

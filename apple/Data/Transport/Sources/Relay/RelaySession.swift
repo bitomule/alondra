@@ -28,7 +28,6 @@ public actor RelaySession: OperationAPI, PushRegistrationAPI {
     let mutationEvidence = MutationEvidenceStore()
     private let waitForReadDeadline: @Sendable (ContinuousClock.Instant) async throws -> Void
     private var active = true
-    private var relayBootstrap: RelayBootstrap?
 
     public init(scope: RelayOutboxScope,
                 bearer: @escaping @Sendable () async throws -> String,
@@ -90,6 +89,7 @@ public actor RelaySession: OperationAPI, PushRegistrationAPI {
     public func deactivate() async {
         active = false
         await mutations.cancelAll()
+        if let concrete = client as? RelayTransport { await concrete.cancelBootstrap() }
     }
 
     /// The envelope this session sent for an operation, so another carrier can resend the very
@@ -331,9 +331,8 @@ public actor RelaySession: OperationAPI, PushRegistrationAPI {
                     receipt = try await client.submitRequest(envelope)
                 } catch RelayWireError.unauthorized {
                     // The relay refused the request outright, so nothing was queued: refresh the epoch once.
-                    relayBootstrap = nil
                     try checkReadDeadline(deadline)
-                    bootstrap = try await currentBootstrap()
+                    bootstrap = try await client.bootstrap()
                     try checkReadDeadline(deadline)
                     receipt = try await client.submitRequest(envelope)
                 }
@@ -392,8 +391,6 @@ public actor RelaySession: OperationAPI, PushRegistrationAPI {
             return .unknown
         } catch is CancellationError { throw CancellationError() }
         catch {
-            if case RelayWireError.unauthorized = error { relayBootstrap = nil }
-            if case RelayWireError.conflict = error { relayBootstrap = nil }
             return .unknown
         }
     }
@@ -427,11 +424,12 @@ public actor RelaySession: OperationAPI, PushRegistrationAPI {
                 .cannotConnectToHost, .cannotFindHost, .dnsLookupFailed].contains(error.code)
     }
 
+    func observeBootstrapWaiters(_ observer: (@Sendable (Int) -> Void)?) async {
+        if let concrete = client as? RelayTransport { await concrete.observeBootstrapWaiters(observer) }
+    }
+
     /// The relay epoch only changes when the relay restarts; a rejection clears it.
     private func currentBootstrap() async throws -> RelayBootstrap {
-        if let relayBootstrap { return relayBootstrap }
-        let fresh = try await client.bootstrap()
-        relayBootstrap = fresh
-        return fresh
+        try await client.bootstrapIfNeeded()
     }
 }
