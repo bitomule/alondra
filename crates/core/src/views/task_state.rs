@@ -134,7 +134,7 @@ fn running(task: &Task, context: &RenderContext<'_>) -> Presentation {
         (NodePhase::Working | NodePhase::Starting { .. }, Some(Instruction::Question | Instruction::Reply)) => t!(lang, "Answering you", "Respondiéndote"),
         (NodePhase::Working | NodePhase::Starting { .. }, _) => t!(lang, "Working", "Trabajando"),
         (NodePhase::WaitingUser { .. }, _) => return warn(t!(lang, "Needs you", "Te necesita")),
-        (NodePhase::Delivered, _) => return Presentation::new(t!(lang, "Delivered", "Entregada"), Tone::Info, Block::InProgress, fact),
+        (NodePhase::Delivered { .. }, _) => return Presentation::new(t!(lang, "Delivered", "Entregada"), Tone::Info, Block::InProgress, fact),
         (NodePhase::Stopped, _) => return warn(t!(lang, "No activity", "Sin actividad")),
         (NodePhase::Paused(_) | NodePhase::Closing | NodePhase::Closed, _) => return warn(t!(lang, "No connection", "Sin conexión")),
     };

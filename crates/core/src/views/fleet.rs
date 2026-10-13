@@ -94,9 +94,9 @@ pub(super) fn node_state(agent: &AgentId, context: &RenderContext<'_>) -> super:
         NodePhase::WaitingUser { .. } => (t!(lang, "Waiting for an answer", "Esperando respuesta"), Tone::Warning),
         NodePhase::Paused(Pause { reason: PauseReason::ByUser, .. }) => (t!(lang, "Paused", "En pausa"), Tone::Neutral),
         NodePhase::Paused(_) => (t!(lang, "Waiting for the machine", "Esperando máquina"), Tone::Neutral),
-        NodePhase::Delivered if reviewing || tasks.contains(&TaskState::ForYourReview) =>
+        NodePhase::Delivered { .. } if reviewing || tasks.contains(&TaskState::ForYourReview) =>
             (t!(lang, "Waiting for your review", "Espera tu revisión"), Tone::Accent),
-        NodePhase::Delivered => (t!(lang, "Delivering results", "Entrega resultado"), Tone::Success),
+        NodePhase::Delivered { .. } => (t!(lang, "Delivering results", "Entrega resultado"), Tone::Success),
         NodePhase::Stopped => match awaited_title(agent, context) {
             Some(title) => return super::Label { text: tf!(lang, "Waiting for {title}", "Esperando a {title}", title = title), tone: Tone::Neutral },
             None => (t!(lang, "Stopped", "Detenido"), Tone::Warning),

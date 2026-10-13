@@ -203,7 +203,7 @@
       "name": "Instance a",
       "phase": {
         "kind": "waiting_user",
-        "in_turn": false
+        "in_turn": true
       },
       "since": 0
     }

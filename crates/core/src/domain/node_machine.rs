@@ -24,8 +24,12 @@ pub enum NodePhase {
     WaitingUser { in_turn: bool },
     /// Stopped by Alondra (the machine, the usage limit) or by the user; it comes back through the gate.
     Paused(Pause),
-    /// Its final result is in front of the user.
-    Delivered,
+    /// Its final result is in front of the user. A turn it still runs after delivering (final
+    /// checks, a push) is real work, so it keeps its slot until that turn ends.
+    Delivered {
+        #[serde(default)]
+        in_turn: bool,
+    },
     /// Its turn ended with nothing for anyone: Alondra sends it back to its task or asks the user.
     Stopped,
     /// Its task is over and it cleans up before its session closes.
@@ -35,10 +39,11 @@ pub enum NodePhase {
 }
 
 impl NodePhase {
-    /// Takes one of the node limit's slots: a node admitted and starting, or in a turn. One being
+    /// Takes one of the node limit's slots: a node admitted and starting, or in a turn, delivered or
+    /// not. One being
     /// brought back after its session was lost already had its slot counted when it was admitted.
     pub fn holds_slot(&self) -> bool {
-        matches!(self, Self::Starting { reviving: false } | Self::Working)
+        matches!(self, Self::Starting { reviving: false } | Self::Working | Self::Delivered { in_turn: true })
     }
     pub fn live(&self) -> bool {
         !matches!(self, Self::Closed)
@@ -50,7 +55,7 @@ impl NodePhase {
             Self::Working => "working",
             Self::WaitingUser { .. } => "waiting_user",
             Self::Paused(_) => "paused",
-            Self::Delivered => "delivered",
+            Self::Delivered { .. } => "delivered",
             Self::Stopped => "stopped",
             Self::Closing => "closing",
             Self::Closed => "closed",
@@ -185,7 +190,7 @@ fn rest(f: &TaskFacts) -> NodePhase {
     } else if f.card || f.held {
         NodePhase::WaitingUser { in_turn: false }
     } else if f.delivered {
-        NodePhase::Delivered
+        NodePhase::Delivered { in_turn: false }
     } else {
         NodePhase::Stopped
     }
@@ -200,9 +205,11 @@ pub fn settle(phase: NodePhase, f: &TaskFacts) -> NodePhase {
         NodePhase::Closing => NodePhase::Closing,
         _ if f.closing => NodePhase::Closing,
         NodePhase::Working | NodePhase::Starting { reviving: false } if f.held || f.card => NodePhase::WaitingUser { in_turn: true },
-        NodePhase::Working | NodePhase::Starting { reviving: false } if f.delivered => NodePhase::Delivered,
-        NodePhase::WaitingUser { in_turn: true } if !f.held && !f.card => if f.delivered { NodePhase::Delivered } else { NodePhase::Working },
-        NodePhase::WaitingUser { in_turn: false } | NodePhase::Delivered | NodePhase::Stopped => rest(f),
+        NodePhase::Working | NodePhase::Starting { reviving: false } if f.delivered => NodePhase::Delivered { in_turn: true },
+        NodePhase::WaitingUser { in_turn: true } if !f.held && !f.card => if f.delivered { NodePhase::Delivered { in_turn: true } } else { NodePhase::Working },
+        NodePhase::Delivered { in_turn: true } if f.held || f.card => NodePhase::WaitingUser { in_turn: true },
+        NodePhase::Delivered { in_turn: true } if !f.delivered => NodePhase::Working,
+        NodePhase::WaitingUser { in_turn: false } | NodePhase::Delivered { in_turn: false } | NodePhase::Stopped => rest(f),
         phase => phase,
     }
 }
@@ -231,7 +238,7 @@ pub fn next(phase: &NodePhase, since: Millis, event: &NodeEvent, f: &TaskFacts, 
         (_, NodeEvent::SessionClosed) => P::Closed,
         (P::Starting { .. }, NodeEvent::StartFailed | NodeEvent::RevivalFailed) => P::Closed,
         (_, NodeEvent::StartFailed | NodeEvent::RevivalFailed) => return refuse("not_starting", "The node is not starting"),
-        (P::Starting { .. } | P::Working | P::Stopped, NodeEvent::Paused { pause }) => P::Paused(pause.clone()),
+        (P::Starting { .. } | P::Working | P::Delivered { in_turn: true } | P::Stopped, NodeEvent::Paused { pause }) => P::Paused(pause.clone()),
         (P::Paused(_), NodeEvent::Paused { .. }) => return refuse("already_paused", "The node is already paused"),
         (_, NodeEvent::Paused { .. }) => return refuse("not_working", "Only a node at work, or one whose turn ended with nothing pending, can be paused"),
         (P::Paused(pause), NodeEvent::PauseCleanup { cleanup }) => P::Paused(Pause { cleanup: *cleanup, ..pause.clone() }),
@@ -257,9 +264,9 @@ fn observe(phase: &NodePhase, since: Millis, listed: Listed, f: &TaskFacts, at: 
         (P::Starting { reviving: false }, Listed::Absent | Listed::Idle) if young => phase.clone(),
         (P::Starting { reviving: true }, Listed::Absent) => phase.clone(),
         (_, Listed::Absent) => if f.open && !f.closing { P::Starting { reviving: true } } else { P::Closed },
-        (P::WaitingUser { .. } | P::Delivered | P::Stopped, Listed::Idle) => phase.clone(),
+        (P::WaitingUser { .. } | P::Delivered { in_turn: false } | P::Stopped, Listed::Idle) => phase.clone(),
         (_, Listed::Idle) => rest(f),
-        (P::WaitingUser { .. } | P::Delivered, Listed::Working | Listed::Blocked) => phase.clone(),
+        (P::WaitingUser { .. } | P::Delivered { .. }, Listed::Working | Listed::Blocked) => phase.clone(),
         (_, Listed::Working | Listed::Blocked) => P::Working,
     }
 }

@@ -30,7 +30,8 @@ fn phases() -> Vec<NodePhase> {
         NodePhase::Paused(pause(PauseReason::Memory)),
         NodePhase::Paused(pause(PauseReason::ByUser)),
         NodePhase::Paused(pause(api_error())),
-        NodePhase::Delivered,
+        NodePhase::Delivered { in_turn: true },
+        NodePhase::Delivered { in_turn: false },
         NodePhase::Stopped,
         NodePhase::Closing,
         NodePhase::Closed,
@@ -58,7 +59,7 @@ fn forbidden(phase: &NodePhase, event: &NodeEvent) -> Option<&'static str> {
         (P::Starting { .. }, E::StartFailed | E::RevivalFailed) => None,
         (_, E::StartFailed | E::RevivalFailed) => Some("not_starting"),
         (P::Paused(_), E::Paused { .. }) => Some("already_paused"),
-        (P::Starting { .. } | P::Working | P::Stopped, E::Paused { .. }) => None,
+        (P::Starting { .. } | P::Working | P::Delivered { in_turn: true } | P::Stopped, E::Paused { .. }) => None,
         (_, E::Paused { .. }) => Some("not_working"),
         (_, E::PauseCleanup { .. } | E::PauseReleased | E::Resumed) if !paused => Some("not_paused"),
         _ => None,
@@ -110,8 +111,8 @@ forbid! {
     paused_refuses_a_failed_revival: NodePhase::Paused(pause(PauseReason::Memory)), NodeEvent::RevivalFailed => "not_starting";
     paused_by_the_user_refuses_a_failed_start: NodePhase::Paused(pause(PauseReason::ByUser)), NodeEvent::StartFailed => "not_starting";
     paused_by_the_user_refuses_a_failed_revival: NodePhase::Paused(pause(PauseReason::ByUser)), NodeEvent::RevivalFailed => "not_starting";
-    delivered_refuses_a_failed_start: NodePhase::Delivered, NodeEvent::StartFailed => "not_starting";
-    delivered_refuses_a_failed_revival: NodePhase::Delivered, NodeEvent::RevivalFailed => "not_starting";
+    delivered_refuses_a_failed_start: NodePhase::Delivered { in_turn: false }, NodeEvent::StartFailed => "not_starting";
+    delivered_refuses_a_failed_revival: NodePhase::Delivered { in_turn: false }, NodeEvent::RevivalFailed => "not_starting";
     stopped_refuses_a_failed_start: NodePhase::Stopped, NodeEvent::StartFailed => "not_starting";
     stopped_refuses_a_failed_revival: NodePhase::Stopped, NodeEvent::RevivalFailed => "not_starting";
     closing_refuses_a_failed_start: NodePhase::Closing, NodeEvent::StartFailed => "not_starting";
@@ -123,7 +124,7 @@ forbid! {
     paused_by_the_user_refuses_a_second_pause: NodePhase::Paused(pause(PauseReason::ByUser)), NodeEvent::Paused { pause: pause(PauseReason::Memory) } => "already_paused";
     waiting_in_turn_refuses_a_pause: NodePhase::WaitingUser { in_turn: true }, NodeEvent::Paused { pause: pause(PauseReason::Memory) } => "not_working";
     waiting_refuses_a_pause: NodePhase::WaitingUser { in_turn: false }, NodeEvent::Paused { pause: pause(PauseReason::Memory) } => "not_working";
-    delivered_refuses_a_pause: NodePhase::Delivered, NodeEvent::Paused { pause: pause(PauseReason::Memory) } => "not_working";
+    delivered_refuses_a_pause: NodePhase::Delivered { in_turn: false }, NodeEvent::Paused { pause: pause(PauseReason::Memory) } => "not_working";
     closing_refuses_a_pause: NodePhase::Closing, NodeEvent::Paused { pause: pause(PauseReason::Memory) } => "not_working";
 
     starting_refuses_a_pause_cleanup: NodePhase::Starting { reviving: false }, NodeEvent::PauseCleanup { cleanup: PauseCleanup::Done } => "not_paused";
@@ -141,9 +142,9 @@ forbid! {
     waiting_refuses_a_pause_cleanup: NodePhase::WaitingUser { in_turn: false }, NodeEvent::PauseCleanup { cleanup: PauseCleanup::Done } => "not_paused";
     waiting_refuses_a_pause_release: NodePhase::WaitingUser { in_turn: false }, NodeEvent::PauseReleased => "not_paused";
     waiting_refuses_a_resume: NodePhase::WaitingUser { in_turn: false }, NodeEvent::Resumed => "not_paused";
-    delivered_refuses_a_pause_cleanup: NodePhase::Delivered, NodeEvent::PauseCleanup { cleanup: PauseCleanup::Done } => "not_paused";
-    delivered_refuses_a_pause_release: NodePhase::Delivered, NodeEvent::PauseReleased => "not_paused";
-    delivered_refuses_a_resume: NodePhase::Delivered, NodeEvent::Resumed => "not_paused";
+    delivered_refuses_a_pause_cleanup: NodePhase::Delivered { in_turn: false }, NodeEvent::PauseCleanup { cleanup: PauseCleanup::Done } => "not_paused";
+    delivered_refuses_a_pause_release: NodePhase::Delivered { in_turn: false }, NodeEvent::PauseReleased => "not_paused";
+    delivered_refuses_a_resume: NodePhase::Delivered { in_turn: false }, NodeEvent::Resumed => "not_paused";
     stopped_refuses_a_pause_cleanup: NodePhase::Stopped, NodeEvent::PauseCleanup { cleanup: PauseCleanup::Done } => "not_paused";
     stopped_refuses_a_pause_release: NodePhase::Stopped, NodeEvent::PauseReleased => "not_paused";
     stopped_refuses_a_resume: NodePhase::Stopped, NodeEvent::Resumed => "not_paused";
@@ -164,7 +165,7 @@ macro_rules! stale {
 stale! {
     a_late_turn_start_never_moves_a_paused_node: NodePhase::Paused(pause(PauseReason::Memory)), NodeEvent::TurnStarted;
     a_late_turn_start_never_moves_a_waiting_node: NodePhase::WaitingUser { in_turn: false }, NodeEvent::TurnStarted;
-    a_late_turn_start_never_moves_a_delivered_node: NodePhase::Delivered, NodeEvent::TurnStarted;
+    a_late_turn_start_never_moves_a_delivered_node: NodePhase::Delivered { in_turn: false }, NodeEvent::TurnStarted;
     a_late_turn_start_never_moves_a_stopped_node: NodePhase::Stopped, NodeEvent::TurnStarted;
     a_late_turn_end_never_moves_a_working_node: NodePhase::Working, NodeEvent::TurnEnded;
     a_late_failed_turn_never_moves_a_working_node: NodePhase::Working, NodeEvent::TurnFailed;
@@ -237,13 +238,28 @@ fn an_api_error_is_retried_a_growing_wait_apart_and_asks_the_user_only_when_othe
 }
 
 #[test]
-fn an_open_card_or_a_delivery_takes_the_node_out_of_the_slots_even_inside_a_turn() {
+fn an_open_card_takes_the_node_out_of_the_slots_even_inside_a_turn() {
     let card = TaskFacts { card: true, ..OPEN };
     assert_eq!(next(&NodePhase::Stopped, SINCE, &NodeEvent::TurnStarted, &card, AT).unwrap(), NodePhase::WaitingUser { in_turn: true });
-    let delivered = TaskFacts { delivered: true, ..OPEN };
-    assert_eq!(next(&NodePhase::Working, SINCE, &NodeEvent::TurnEnded, &delivered, AT).unwrap(), NodePhase::Delivered);
     assert_eq!(settle(NodePhase::WaitingUser { in_turn: true }, &OPEN), NodePhase::Working, "the answer lets its turn go on");
     assert_eq!(settle(NodePhase::WaitingUser { in_turn: false }, &OPEN), NodePhase::Stopped);
+}
+
+/// t-stale-delivery-retract delivered at 11:53, its node went on with final checks and the gate
+/// gave its slot to t-release-0259: Fleet showed 7 of 6 working.
+#[test]
+fn a_node_that_delivers_keeps_its_slot_until_its_turn_ends() {
+    let delivered = TaskFacts { delivered: true, ..OPEN };
+    let delivering = settle(NodePhase::Working, &delivered);
+    assert_eq!(delivering, NodePhase::Delivered { in_turn: true });
+    assert!(delivering.holds_slot(), "its final checks are real work");
+    let rested = next(&delivering, SINCE, &NodeEvent::TurnEnded, &delivered, AT).unwrap();
+    assert_eq!(rested, NodePhase::Delivered { in_turn: false });
+    assert!(!rested.holds_slot());
+    let back = next(&rested, SINCE, &NodeEvent::TurnStarted, &delivered, AT).unwrap();
+    assert!(back.holds_slot(), "a turn it starts after delivering is work too");
+    assert_eq!(next(&delivering, SINCE, &NodeEvent::Listed { listed: Listed::Idle }, &delivered, AT).unwrap(), rested,
+        "an idle listing frees the slot when the turn end was missed");
 }
 
 #[test]
@@ -531,8 +547,10 @@ impl World {
         assert!(self.s.paused_nodes().keys().all(|id| !slots.contains(&id.0)), "a paused node holds a slot");
 
         let fleet = self.render("fleet");
-        let at_work = ["Working", "Starting", "Merging", "Stalled", "Failed"];
-        let in_fleet = badged(&fleet, &at_work);
+        let at_work = ["Working", "Starting", "Merging", "Stalled", "Failed", "Waiting for your review", "Delivering results"];
+        let delivered: BTreeSet<String> = self.s.agents.values().filter(|a| a.phase == NodePhase::Delivered { in_turn: false })
+            .map(|a| a.id.0.clone()).collect();
+        let in_fleet: BTreeSet<String> = badged(&fleet, &at_work).difference(&delivered).cloned().collect();
         assert_eq!(in_fleet, slots, "Fleet shows at work exactly the nodes that hold a slot");
         let open_task = |agent: &AgentId| self.s.tasks.values().any(|t| t.agent_id.as_ref() == Some(agent) && !t.archived && !t.state.terminal());
         let live: BTreeSet<String> = self.s.agents.values()
@@ -543,6 +561,8 @@ impl World {
 
         let tasks = self.render("tasks");
         let task_slots: BTreeSet<String> = self.s.slots().iter()
+            .filter_map(|a| self.s.node_task(&a.id).filter(|t| !t.state.terminal()).map(|t| t.id.0.clone())).collect();
+        let task_slots: BTreeSet<String> = self.s.slots().iter().filter(|a| !matches!(a.phase, NodePhase::Delivered { .. }))
             .filter_map(|a| self.s.node_task(&a.id).filter(|t| !t.state.terminal()).map(|t| t.id.0.clone())).collect();
         let listed = badged(&tasks, &["Working", "Making changes", "Resolving conflicts", "Answering you"]);
         assert_eq!(listed, task_slots, "the Tasks list says at work of the tasks whose node holds a slot");
