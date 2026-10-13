@@ -6,6 +6,23 @@ import Testing
 private enum ReadFault: Sendable, Equatable {
     case changesNetwork, changesBusy, completedStatus, lostSubmission, deadline, cancelled
     case changedEpoch, wrongResponseIdentity, refusedStatus, none
+    /// Degraded networks: every exchange slow, 30% of them lost, the relay unreachable for 20 s
+    /// or for good, a read the relay never received, a job the Mac only gets after the relay's
+    /// 30 s lease, and a Mac that never answers.
+    case slowNetwork, lossy, relayCut, relayGone, neverQueued, leaseRedelivery, macSilent
+}
+
+/// SplitMix64: the same losses on every run.
+private struct SeededLoss {
+    private var state: UInt64
+    init(seed: UInt64) { state = seed }
+    mutating func drops(percent: UInt64) -> Bool {
+        state &+= 0x9E37_79B9_7F4A_7C15
+        var z = state
+        z = (z ^ (z >> 30)) &* 0xBF58_476D_1CE4_E5B9
+        z = (z ^ (z >> 27)) &* 0x94D0_49BB_1331_11EB
+        return (z ^ (z >> 31)) % 100 < percent
+    }
 }
 
 private actor ReadRecoveryPeer: HTTPTransport {
@@ -28,11 +45,17 @@ private actor ReadRecoveryPeer: HTTPTransport {
     private(set) var readID: String?
     private(set) var readStatuses = 0
     private(set) var backoffs = 0
+    private(set) var backoffAttempts: [Int] = []
+    private(set) var losses = 0
+    private var loss = SeededLoss(seed: 42)
+    private var lostOnce = false
+    private let startedAt: ContinuousClock.Instant
     private(set) var responseBytes = 0
     private(set) var exchangeCount = 0
 
     init(_ fault: ReadFault, requestWait: Bool = false) {
         self.fault = fault; self.requestWait = requestWait
+        startedAt = time.clock.now()
         let pair = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
         actionEntered = pair.stream; actionContinuation = pair.continuation
     }
@@ -42,12 +65,26 @@ private actor ReadRecoveryPeer: HTTPTransport {
             macID: "mac", deviceID: "phone", credentialRevision: "fixture"), bearer: { "fixture-token" },
             transport: self, signing: phoneSigning, agreement: phoneAgreement,
             macSigning: macSigning.publicKey, macAgreement: macAgreement.publicKey, now: { 1_000 },
-            sleep: { await self.backoff() }, waitForReadDeadline: time.clock.waitUntil, requestClock: time.clock)
+            sleep: { await self.backoff($0) }, waitForReadDeadline: time.clock.waitUntil, requestClock: time.clock)
     }
 
-    func backoff() {
+    func backoff(_ attempt: Int) {
         backoffs += 1
-        time.advance(by: fault == .deadline ? .seconds(16) : .seconds(1))
+        backoffAttempts.append(attempt)
+        time.advance(by: fault == .deadline ? .seconds(41) : RelaySession.retryBackoff.delay(attempt: attempt, random: 1))
+    }
+
+    private var elapsed: Duration { startedAt.duration(to: time.clock.now()) }
+
+    /// What a degraded network does to one exchange before it reaches the relay.
+    private func degrade(_ url: URL) throws {
+        if fault == .slowNetwork { time.advance(by: .seconds(5)) }
+        guard url.path != "/v1/bootstrap" else { return }
+        if fault == .relayGone || (fault == .relayCut && elapsed < .seconds(20)) { throw URLError(.cannotConnectToHost) }
+        if fault == .lossy, loss.drops(percent: 30) {
+            losses += 1
+            throw URLError(losses.isMultiple(of: 2) ? .timedOut : .networkConnectionLost)
+        }
     }
 
     func releaseAction() {
@@ -57,6 +94,7 @@ private actor ReadRecoveryPeer: HTTPTransport {
     func send(_ request: URLRequest) async throws -> HTTPReply {
         exchangeCount += 1
         let url = try #require(request.url)
+        try degrade(url)
         if url.path == "/v1/bootstrap" {
             return try json(requestWait ? ["protocol": 1, "epoch": epoch, "request_wait": true] : ["protocol": 1, "epoch": epoch])
         }
@@ -67,6 +105,10 @@ private actor ReadRecoveryPeer: HTTPTransport {
             let plaintext = try envelope.open(senderKey: phoneSigning.publicKey, recipientKey: macAgreement,
                 sender: "phone", recipient: "mac", route: "mac", nowMilliseconds: 1_000)
             let payload = try #require(try JSONSerialization.jsonObject(with: plaintext) as? [String: Any])
+            if fault == .neverQueued, !lostOnce {
+                lostOnce = true
+                throw URLError(.networkConnectionLost)
+            }
             submissions.append(envelope.requestID)
             let method = try #require(payload["method"] as? String)
             let body: [String: Any]
@@ -91,13 +133,17 @@ private actor ReadRecoveryPeer: HTTPTransport {
         }
         if url.path == "/v1/changes" {
             changes += 1
+            if fault == .macSilent {
+                time.advance(by: .seconds(25))
+                return try json(["epoch": epoch, "revision": 1, "changes": []])
+            }
             switch fault {
             case .changesNetwork, .deadline: throw URLError(.networkConnectionLost)
             case .changesBusy: return HTTPReply(status: 429, body: Data())
             case .cancelled: throw CancellationError()
             default: break
             }
-            let id = try #require(readID)
+            guard let id = readID else { return try json(["epoch": epoch, "revision": 1, "changes": []]) }
             return try json(["epoch": fault == .changedEpoch ? Base64URL.encode(Data(repeating: 8, count: 16)) : epoch,
                 "revision": 2, "changes": [["request_id": id, "status": "completed", "revision": 2],
                     ["request_id": "action-A", "status": "completed", "revision": 2]]])
@@ -110,14 +156,23 @@ private actor ReadRecoveryPeer: HTTPTransport {
             #expect(request.timeoutInterval == 35)
             if fault == .changesNetwork { throw URLError(.networkConnectionLost) }
             if fault == .cancelled { throw CancellationError() }
+            if fault == .macSilent || (fault == .leaseRedelivery && elapsed < .seconds(31)) {
+                let wait = Duration.seconds(try #require(url.query?.split(separator: "=").last.flatMap { Int($0) }))
+                // The relay answers the long poll as soon as the re-leased job completes.
+                time.advance(by: fault == .macSilent ? wait : min(wait, .seconds(31) - elapsed))
+                if fault == .macSilent || elapsed < .seconds(31) {
+                    return try json(["request_id": url.lastPathComponent, "status": "queued", "revision": 1])
+                }
+            }
         }
         statusIDs.append(id)
         if id == "action-A" {
             actionContinuation.yield(())
             await withCheckedContinuation { actionWaiter = $0 }
         } else {
-            #expect(id == readID)
+            guard id == readID else { return HTTPReply(status: 404, body: Data()) }
             readStatuses += 1
+            if fault == .macSilent { return try json(["request_id": id, "status": "queued", "revision": 1]) }
             if fault == .refusedStatus { return HTTPReply(status: 403, body: Data()) }
             if readStatuses == 1, fault == .completedStatus || fault == .lostSubmission {
                 return HTTPReply(status: 503, body: Data())
@@ -245,8 +300,10 @@ private actor ReadRecoveryPeer: HTTPTransport {
     @Test private func transientFailureCannotRenewTheReadDeadline() async throws {
         let peer = ReadRecoveryPeer(.deadline)
         let session = try await peer.session()
-        #expect(try await session.execute(requestID: "detail-B", method: "GET",
-            path: "/views/card:B?protocol=1&client=ios&lang=en") == .unknown)
+        await #expect(throws: URLError(.networkConnectionLost)) {
+            try await session.execute(requestID: "detail-B", method: "GET",
+                path: "/views/card:B?protocol=1&client=ios&lang=en")
+        }
         #expect(await peer.submissions.count == 1)
         #expect(await peer.changes == 1)
         #expect(await peer.statusIDs.isEmpty)
@@ -263,6 +320,46 @@ private actor ReadRecoveryPeer: HTTPTransport {
         }
         #expect(await peer.statusIDs.isEmpty)
         #expect(await peer.backoffs == 0)
+        await session.deactivate()
+    }
+
+    @Test(arguments: [(ReadFault.slowNetwork, false), (.lossy, false), (.lossy, true), (.neverQueued, false),
+                      (.relayCut, false), (.relayCut, true), (.leaseRedelivery, true)])
+    private func degradedNetworksStillDeliverTheRead(_ fault: ReadFault, requestWait: Bool) async throws {
+        let peer = ReadRecoveryPeer(fault, requestWait: requestWait)
+        let session = try await peer.session()
+        let result = try await session.execute(requestID: "detail-B", method: "GET",
+            path: "/views/card:B?protocol=1&client=ios&lang=en")
+        #expect(result == .completed(status: 200, body: Data(#"{"card":"B","detail":"Second card"}"#.utf8)))
+        let submissions = await peer.submissions
+        #expect(submissions.allSatisfy { $0 == submissions.first }, "a resent read is the same request")
+        if fault == .neverQueued { #expect(await peer.backoffAttempts == [0]) }
+        if fault == .relayCut {
+            let attempts = await peer.backoffAttempts
+            #expect(attempts == Array(attempts.indices), "each failure in a row waits longer: \(attempts)")
+            #expect(attempts.count >= 5)
+        }
+        await session.deactivate()
+    }
+
+    @Test private func aRelayThatStaysUnreachableFailsWithTheNetworkError() async throws {
+        let peer = ReadRecoveryPeer(.relayGone)
+        let session = try await peer.session()
+        await #expect(throws: URLError(.cannotConnectToHost)) {
+            try await session.execute(requestID: "detail-B", method: "GET",
+                path: "/views/card:B?protocol=1&client=ios&lang=en")
+        }
+        let attempts = await peer.backoffAttempts
+        #expect(attempts.prefix(4) == [0, 1, 2, 3])
+        await session.deactivate()
+    }
+
+    @Test(arguments: [false, true])
+    private func aMacThatNeverAnswersEndsAsUnknownNotAsANetworkError(_ requestWait: Bool) async throws {
+        let peer = ReadRecoveryPeer(.macSilent, requestWait: requestWait)
+        let session = try await peer.session()
+        #expect(try await session.execute(requestID: "detail-B", method: "GET",
+            path: "/views/card:B?protocol=1&client=ios&lang=en") == .unknown)
         await session.deactivate()
     }
 }

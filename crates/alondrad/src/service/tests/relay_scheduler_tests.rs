@@ -1,6 +1,7 @@
 use super::*;
 use axum::extract::Path;
 use std::collections::VecDeque;
+use super::relay::UPLOAD_RETRY_DELAYS;
 
 #[tokio::test]
 async fn a_held_response_upload_does_not_block_the_next_ordinary_relay_request() {
@@ -394,6 +395,7 @@ async fn relay_delivery_slots_bound_uploads_and_release_on_admission_cancel_and_
 
 #[tokio::test]
 async fn a_late_upload_failure_requests_resync_and_replays_the_receipt_without_another_effect() {
+    const FAILED_UPLOADS: usize = UPLOAD_RETRY_DELAYS.len() + 1;
     let (_directory, mut service, phone) = push_fixture();
     activate_push(&service);
     let effects = Arc::new(AtomicUsize::new(0));
@@ -417,7 +419,7 @@ async fn a_late_upload_failure_requests_resync_and_replays_the_receipt_without_a
                 async move {
                     let mut replies = replies.lock().unwrap();
                     replies.push(body.to_vec());
-                    if replies.len() == 1 { StatusCode::SERVICE_UNAVAILABLE } else { StatusCode::ACCEPTED }
+                    if replies.len() <= FAILED_UPLOADS { StatusCode::SERVICE_UNAVAILABLE } else { StatusCode::ACCEPTED }
                 }
             }
         }));
@@ -441,9 +443,9 @@ async fn a_late_upload_failure_requests_resync_and_replays_the_receipt_without_a
     service.handle(work, &[7;16]).await.unwrap();
     assert_eq!(effects.load(Ordering::SeqCst), 1);
     let results = opened_results(&service, &phone, &replies);
-    assert_eq!(results, vec![json!({"status":200,"body":{"saved":true}});2]);
+    assert_eq!(results, vec![json!({"status":200,"body":{"saved":true}}); FAILED_UPLOADS + 1]);
     let replies = replies.lock().unwrap();
-    assert_eq!(replies[0], replies[1], "redelivery must upload the same stored ciphertext");
+    assert!(replies.iter().all(|reply| *reply == replies[0]), "redelivery must upload the same stored ciphertext");
     drop(replies);
     local_server.abort();
     relay_server.abort();
@@ -1101,4 +1103,114 @@ async fn card_action_and_background_uploads_leave_room_for_two_detail_reads() {
     assert!(before_release.contains(&"detail-one".to_owned()));
     assert!(before_release.contains(&"detail-two".to_owned()));
     assert_eq!(peak.load(Ordering::SeqCst), 4);
+}
+
+/// Forwards to `target`, closing a connection instead whenever `cut` says so for the request it
+/// carries: a dropped packet or a network that resets the connection mid-request.
+async fn lossy_proxy(target: std::net::SocketAddr, cut: Arc<dyn Fn(&[u8]) -> bool + Send + Sync>) -> std::net::SocketAddr {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        while let Ok((mut client, _)) = listener.accept().await {
+            let cut = cut.clone();
+            tokio::spawn(async move {
+                let Ok(mut upstream) = tokio::net::TcpStream::connect(target).await else { return };
+                let (mut client_read, mut client_write) = client.split();
+                let (mut upstream_read, mut upstream_write) = upstream.split();
+                let forward = async {
+                    let mut buffer = vec![0u8; 64 * 1024];
+                    loop {
+                        let read = client_read.read(&mut buffer).await.unwrap_or(0);
+                        if read == 0 || cut(&buffer[..read]) { return; }
+                        if upstream_write.write_all(&buffer[..read]).await.is_err() { return; }
+                    }
+                };
+                tokio::select! {
+                    () = forward => {}
+                    _ = tokio::io::copy(&mut upstream_read, &mut client_write) => {}
+                }
+            });
+        }
+    });
+    address
+}
+
+async fn upload_through(statuses: Vec<StatusCode>, cut_first_upload: bool) -> (bool, bool, usize, usize, bool) {
+    let (_directory, mut service, phone) = push_fixture();
+    activate_push(&service);
+    let effects = Arc::new(AtomicUsize::new(0));
+    let local = Router::new().route("/v1/questions/1/answer", post({
+        let effects = effects.clone();
+        move || {
+            effects.fetch_add(1, Ordering::SeqCst);
+            async { axum::Json(json!({"saved":true})) }
+        }
+    }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    service.local_port = listener.local_addr().unwrap().port();
+    let local_server = tokio::spawn(axum::serve(listener, local).into_future());
+    let replies = Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
+    let statuses = Arc::new(Mutex::new(VecDeque::from(statuses)));
+    let relay = Router::new()
+        .route("/v1/work/{id}/receipt", post(|| async { StatusCode::ACCEPTED }))
+        .route("/v1/work/{id}/response", post({
+            let (replies, statuses) = (replies.clone(), statuses.clone());
+            move |body: Bytes| {
+                let (replies, statuses) = (replies.clone(), statuses.clone());
+                async move {
+                    replies.lock().unwrap().push(body.to_vec());
+                    statuses.lock().unwrap().pop_front().unwrap_or(StatusCode::ACCEPTED)
+                }
+            }
+        }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let relay_address = listener.local_addr().unwrap();
+    let relay_server = tokio::spawn(axum::serve(listener, relay).into_future());
+    let cuts = Arc::new(AtomicUsize::new(usize::from(cut_first_upload)));
+    let proxy = lossy_proxy(relay_address, Arc::new({
+        let cuts = cuts.clone();
+        move |bytes: &[u8]| {
+            let upload = bytes.starts_with(b"POST /v1/work/") && bytes.windows(9).any(|w| w == b"/response");
+            upload && cuts.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| left.checked_sub(1)).is_ok()
+        }
+    })).await;
+    service.set_relay_url(Url::parse(&format!("http://{proxy}/")).unwrap());
+    let service = Arc::new(service);
+    let work = changes_work(&service, "lossy-upload", json!({"method":"POST","path":"/v1/questions/1/answer","body":{"text":"fixture"}}));
+    let mut tasks = tokio::task::JoinSet::new();
+    service.schedule_work(repeat_work(&work), [7;16], &mut tasks).await.unwrap();
+    let delivered = tasks.join_next().await.unwrap().unwrap().is_ok();
+    let resynced = service.relay.as_ref().unwrap().resync_pending();
+    let results = opened_results(&service, &phone, &replies);
+    let same_bytes = {
+        let replies = replies.lock().unwrap();
+        replies.iter().all(|reply| *reply == replies[0])
+    };
+    assert!(results.iter().all(|result| *result == json!({"status":200,"body":{"saved":true}})));
+    local_server.abort();
+    relay_server.abort();
+    let _ = local_server.await;
+    let _ = relay_server.await;
+    (delivered, resynced, effects.load(Ordering::SeqCst), results.len(), same_bytes && cuts.load(Ordering::SeqCst) == 0)
+}
+
+#[tokio::test]
+async fn a_response_upload_cut_by_the_network_or_a_busy_relay_is_resent_until_it_lands() {
+    let (delivered, resynced, effects, uploads, same_bytes) =
+        upload_through(vec![StatusCode::SERVICE_UNAVAILABLE, StatusCode::TOO_MANY_REQUESTS], true).await;
+    assert!(delivered, "a passing outage must not fail the delivery");
+    assert!(!resynced, "a passing outage must not drop the work poll for a new epoch");
+    assert_eq!(effects, 1);
+    assert_eq!(uploads, 3, "the cut upload never reached the relay; two busy answers, then it landed");
+    assert!(same_bytes, "every attempt resends the same sealed response");
+}
+
+#[tokio::test]
+async fn a_response_the_relay_refuses_is_not_resent() {
+    let (delivered, resynced, effects, uploads, _) = upload_through(vec![StatusCode::CONFLICT], false).await;
+    assert!(!delivered);
+    assert!(resynced, "a refusal still forces a fresh epoch");
+    assert_eq!(effects, 1);
+    assert_eq!(uploads, 1);
 }

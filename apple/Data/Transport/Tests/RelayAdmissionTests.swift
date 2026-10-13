@@ -23,7 +23,7 @@ private actor AdmissionPeer: HTTPTransport {
     func session(journal: EnvelopeJournal? = nil) throws -> RelaySession {
         try RelaySession(scope: Self.scope, bearer: { "token" }, transport: self, journal: journal,
             signing: signing, agreement: agreement, macSigning: macSigning.publicKey, macAgreement: macAgreement.publicKey,
-            now: { 1_000 }, sleep: { await self.pause() }, waitForReadDeadline: clock.clock.waitUntil, requestClock: clock.clock)
+            now: { 1_000 }, sleep: { _ in await self.pause() }, waitForReadDeadline: clock.clock.waitUntil, requestClock: clock.clock)
     }
     static let scope = RelayOutboxScope(relay: URL(string: "https://relay.fixture.invalid")!, macID: "mac", deviceID: "phone", credentialRevision: "fixture")
     func pause() { waits += 1; clock.advance(by: fault == .expiredWait ? .seconds(121) : .seconds(1)) }

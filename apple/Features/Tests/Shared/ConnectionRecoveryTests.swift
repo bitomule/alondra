@@ -67,13 +67,10 @@ final class ConnectionRecoveryTests: XCTestCase {
         let store = world.screen()
 
         await store.send(.task)
-        await store.receive(\.failed, timeout: .seconds(5)) {
-            $0.phase = .failed("Couldn’t load this from your Mac. Try again.")
-            $0.failures = 1
-        }
+        await store.receive(\.loadFailed, timeout: .seconds(5)) { $0.failures = 1 }
         await world.mac.set(relay: .answers)
         await world.clock.advance(by: .seconds(1))
-        await store.receive(\.retry) { $0.phase = .loading }
+        await store.receive(\.retry)
         await store.receive(\.loaded, timeout: .seconds(5)) { $0.document = world.tasks; $0.phase = .loaded; $0.failures = 0 }
         await store.send(.stop)
         await world.end()
@@ -86,14 +83,11 @@ final class ConnectionRecoveryTests: XCTestCase {
         let store = world.screen()
 
         await store.send(.task)
-        await store.receive(\.failed, timeout: .seconds(5)) {
-            $0.phase = .failed("Couldn’t load this from your Mac. Try again.")
-            $0.failures = 1
-        }
+        await store.receive(\.loadFailed, timeout: .seconds(5)) { $0.failures = 1 }
         await world.mac.set(direct: .answers)
         await world.routed.networkChanged()
         await world.feed.reconnect()
-        await store.receive(\.retry) { $0.phase = .loading }
+        await store.receive(\.retry)
         await store.receive(\.loaded, timeout: .seconds(5)) { $0.document = world.tasks; $0.phase = .loaded; $0.failures = 0 }
         await store.send(.stop)
         await world.end()

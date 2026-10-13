@@ -44,7 +44,7 @@ private actor ControlledRelay: HTTPTransport {
     private let responseStatus: Int
     private let uncertain: Bool
     private let barrier: ResponseBarrier
-    private var droppedStatuses: Set<String>
+    private var droppedStatuses: [String: Int]
     private var replies: [String: Envelope] = [:]
     private var originals: [String: Envelope] = [:]
     private var resultReads: [String: Int] = [:]
@@ -55,7 +55,7 @@ private actor ControlledRelay: HTTPTransport {
 
     init(phoneSigning: P256.Signing.PublicKey, phoneAgreement: P256.KeyAgreement.PublicKey,
          macSigning: P256.Signing.PrivateKey, macAgreement: P256.KeyAgreement.PrivateKey,
-         heldID: String?, barrier: ResponseBarrier, droppedStatuses: Set<String>,
+         heldID: String?, barrier: ResponseBarrier, droppedStatuses: [String: Int],
          responseStatus: Int, uncertain: Bool) {
         self.phoneSigning = phoneSigning; self.phoneAgreement = phoneAgreement
         self.macSigning = macSigning; self.macAgreement = macAgreement
@@ -129,7 +129,10 @@ private actor ControlledRelay: HTTPTransport {
             let id = url.lastPathComponent
             statusReads[id, default: 0] += 1
             if id == heldID { await barrier.hold() }
-            if droppedStatuses.remove(id) != nil { throw URLError(.networkConnectionLost) }
+            if let left = droppedStatuses[id], left > 0 {
+                droppedStatuses[id] = left - 1
+                throw URLError(.networkConnectionLost)
+            }
             let response = try XCTUnwrap(replies[id])
             let encoded = try JSONSerialization.jsonObject(with: JSONEncoder().encode(response))
             return try json(["request_id": id, "status": "completed", "revision": 2, "response": encoded])
@@ -162,7 +165,7 @@ private struct ClientFixture: Sendable {
     let peer: ControlledRelay
     let sender: ViewActionSender
 
-    init(heldID: String? = nil, droppedStatuses: Set<String> = [],
+    init(heldID: String? = nil, droppedStatuses: [String: Int] = [:],
          responseStatus: Int = 200, uncertain: Bool = false) throws {
         let phoneSigning = try P256.Signing.PrivateKey(rawRepresentation: Data(repeating: 1, count: 32))
         let phoneAgreement = try P256.KeyAgreement.PrivateKey(rawRepresentation: Data(repeating: 2, count: 32))
@@ -176,7 +179,7 @@ private struct ClientFixture: Sendable {
         let session = try RelaySession(scope: RelayOutboxScope(relay: url, macID: "mac", deviceID: "phone",
             credentialRevision: "fixture"), bearer: { "synthetic-bearer" }, transport: peer,
             signing: phoneSigning, agreement: phoneAgreement, macSigning: macSigning.publicKey,
-            macAgreement: macAgreement.publicKey, now: { 1_000 }, sleep: {})
+            macAgreement: macAgreement.publicKey, now: { 1_000 }, sleep: { _ in })
         sender = ViewActionSender(transport: AlondraAPIClient(serviceURL: url, deviceID: "phone", operations: session))
     }
 }
@@ -232,8 +235,20 @@ final class ClientConcurrencyTests: XCTestCase {
         }
     }
 
+    func testAPassingLossOfTheReceiptRecoversByItselfWithoutAnotherActionSubmission() async throws {
+        let fixture = try ClientFixture(droppedStatuses: [firstID: 1])
+        let answer = try await fixture.sender.send(action(firstID, text: "First"))
+        XCTAssertEqual(answer.stamp, "Saved First")
+        let counts = await fixture.peer.counts(firstID)
+        XCTAssertEqual(counts.submissions, 1)
+        XCTAssertEqual(counts.effects, 1)
+        XCTAssertEqual(counts.statusReads, 2)
+        let remaining = await fixture.sender.unresolvedCommandIDs()
+        XCTAssertTrue(remaining.isEmpty)
+    }
+
     func testAnAppliedActionWithALostReceiptRecoversWithoutAnotherActionSubmission() async throws {
-        let fixture = try ClientFixture(droppedStatuses: [firstID])
+        let fixture = try ClientFixture(droppedStatuses: [firstID: 10])
         do {
             _ = try await fixture.sender.send(action(firstID, text: "First"))
             XCTFail("Losing the result must preserve uncertainty")
@@ -242,12 +257,13 @@ final class ClientConcurrencyTests: XCTestCase {
         XCTAssertEqual(pending, [firstID])
         let before = await fixture.peer.counts(firstID)
         XCTAssertEqual(before.effects, 1)
+        XCTAssertEqual(before.statusReads, 10, "every status poll of the send was lost")
         let answer = try await fixture.sender.retry(commandID: firstID)
         XCTAssertEqual(answer.stamp, "Saved First")
         let after = await fixture.peer.counts(firstID)
         XCTAssertEqual(after.submissions, 1)
         XCTAssertEqual(after.effects, 1)
-        XCTAssertEqual(after.statusReads, 1)
+        XCTAssertEqual(after.statusReads, 10)
         XCTAssertEqual(after.resultReads, 1)
         let remaining = await fixture.sender.unresolvedCommandIDs()
         XCTAssertTrue(remaining.isEmpty)

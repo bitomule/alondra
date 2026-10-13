@@ -208,6 +208,6 @@ private struct ScenarioFixture {
         try RelaySession(scope: scope,
             bearer: { try await auth.bearerToken() },
             transport: peer, signing: phoneSign, agreement: phoneAgreement,
-            macSigning: macSign.publicKey, macAgreement: macAgreement.publicKey, now: { 1000 }, sleep: {})
+            macSigning: macSign.publicKey, macAgreement: macAgreement.publicKey, now: { 1000 }, sleep: { _ in })
     }
 }

@@ -763,6 +763,14 @@ impl Service {
             .redirect(reqwest::redirect::Policy::none())
             // PR merge and GitHub issue refresh can take close to 90 seconds locally.
             .timeout(Duration::from_secs(95))
+            .connect_timeout(Duration::from_secs(10))
+            .tcp_keepalive(Duration::from_secs(30))
+            .pool_idle_timeout(Duration::from_secs(60))
+            // A pooled relay connection the network dropped silently fails the next upload with
+            // a broken pipe; pings find it first.
+            .http2_keep_alive_interval(Duration::from_secs(20))
+            .http2_keep_alive_timeout(Duration::from_secs(10))
+            .http2_keep_alive_while_idle(true)
             .build()?;
         let journal_path = match config.journal_path {
             Some(path) => {

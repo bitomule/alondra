@@ -6,13 +6,17 @@ import Foundation
 /// Loads one server view and keeps it current: the load and refresh plumbing every screen
 /// embeds, with no rendering. The screen starts it from `.task`, so it stops when the screen leaves.
 /// A load that fails is tried again on its own, slower each time, and at once when the app
-/// retries the connection; what was already shown stays on screen meanwhile.
+/// retries the connection; what was already shown stays on screen meanwhile. A failure that
+/// usually clears by itself is only shown, with its reason, once it keeps happening.
 @Reducer
 public struct ScreenFeature: Sendable {
     public init() {}
 
     @ObservableState
     public struct State: Equatable {
+        /// Failures in a row of the kind that clears by itself before the screen shows one.
+        public static let passingFailuresShown = 3
+
         public enum Phase: Equatable, Sendable {
             case loading
             case loaded
@@ -35,6 +39,7 @@ public struct ScreenFeature: Sendable {
         case loaded(ViewDocument)
         case missing
         case failed(String)
+        case loadFailed(LoadFailure)
         /// The observation ended on its own, without an error and without the screen stopping it.
         case ended
     }
@@ -61,7 +66,7 @@ public struct ScreenFeature: Sendable {
                     } catch is CancellationError where Task.isCancelled {
                         return
                     } catch {
-                        return await send(.failed(String(localized: "Couldn’t load this from your Mac. Try again.")))
+                        return await send(.loadFailed(LoadFailure(error)))
                     }
                     guard !Task.isCancelled else { return }
                     await send(.ended)
@@ -86,6 +91,12 @@ public struct ScreenFeature: Sendable {
             case .failed(let message):
                 state.phase = .failed(message)
                 state.failures += 1
+                return retryLater(state)
+            case .loadFailed(let failure):
+                state.failures += 1
+                if !failure.isPassing || state.failures >= State.passingFailuresShown {
+                    state.phase = .failed(failure.message)
+                }
                 return retryLater(state)
             }
         }

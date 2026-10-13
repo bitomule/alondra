@@ -25,6 +25,33 @@ use std::{
 // The relay accepts a 256 KiB envelope; its work wrapper adds routing metadata.
 const MAX_WORK_BYTES: usize = 256 * 1024 + 4096;
 pub(super) const MAX_ORDINARY_DELIVERIES: usize = 4;
+/// The relay answers a work poll within its 25 s wait; a connection silent past that is dead.
+const WORK_POLL_TIMEOUT: Duration = Duration::from_secs(40);
+/// About 7.5 s of waits, well inside the relay's 30 s lease on a job it handed out.
+#[cfg(not(test))]
+pub(super) const UPLOAD_RETRY_DELAYS: [Duration; 4] = [
+    Duration::from_millis(500), Duration::from_secs(1), Duration::from_secs(2), Duration::from_secs(4),
+];
+#[cfg(test)]
+pub(super) const UPLOAD_RETRY_DELAYS: [Duration; 4] = [Duration::from_millis(5); 4];
+
+/// A dropped connection, a timeout or a busy relay; never a refusal the relay meant.
+pub(super) fn transient_upload_failure(error: &anyhow::Error) -> bool {
+    error.chain().filter_map(|cause| cause.downcast_ref::<reqwest::Error>()).any(|error| match error.status() {
+        Some(status) => status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error(),
+        None => error.is_connect() || error.is_timeout() || error.is_request() || error.is_body(),
+    })
+}
+
+/// Between half and all of `delay`, so uploads failed by one outage do not retry in step.
+fn jittered(delay: Duration) -> Duration {
+    let mut random = [0u8; 2];
+    let fraction = match SystemRandom::new().fill(&mut random) {
+        Ok(()) => f64::from(u16::from_le_bytes(random)) / f64::from(u16::MAX),
+        Err(_) => 1.0,
+    };
+    delay.mul_f64(0.5 + fraction / 2.0)
+}
 
 pub(crate) struct RelayConnector {
     url: Url,
@@ -288,7 +315,9 @@ impl Service {
                 }
                 let path = "/v1/work?wait_s=25";
                 let response = tokio::select! {
-                    response = self.signed(Method::GET, path, Vec::new(), &epoch) => response?.error_for_status()?,
+                    response = tokio::time::timeout(WORK_POLL_TIMEOUT, self.signed(Method::GET, path, Vec::new(), &epoch)) => response
+                        .map_err(|_| anyhow!("the relay held the work poll past {}s", WORK_POLL_TIMEOUT.as_secs()))??
+                        .error_for_status()?,
                     () = relay.wake.notified() => return Ok(()),
                 };
                 if response.status() == StatusCode::NO_CONTENT {
@@ -303,6 +332,25 @@ impl Service {
             *enrolled_epoch = None;
         }
         result
+    }
+
+    /// Posts a receipt or a response, resending the same bytes while the network or a busy
+    /// relay fails it: the relay accepts a repeated upload, and a lost one would otherwise hold
+    /// the phone's request until the relay's lease hands the job out again.
+    async fn upload(&self, path: &str, body: &[u8], epoch: &[u8; 16]) -> Result<()> {
+        let mut delays = UPLOAD_RETRY_DELAYS.iter();
+        loop {
+            let result = async {
+                Self::drain_ack(self.signed(Method::POST, path, body.to_vec(), epoch).await?).await
+            }.await;
+            match result {
+                Err(error) if transient_upload_failure(&error) => match delays.next() {
+                    Some(delay) => tokio::time::sleep(jittered(*delay)).await,
+                    None => return Err(error),
+                },
+                done => return done,
+            }
+        }
     }
 
     async fn drain_ack(response: reqwest::Response) -> Result<()> {
@@ -409,11 +457,7 @@ impl Service {
         } else { None };
         let receipt_path = format!("/v1/work/{}/receipt", e.request_id);
         let (response, device, guard) = self.execute(e, prepared, Transport::Relay, || async {
-                Self::drain_ack(
-                    self.signed(Method::POST, &receipt_path, Vec::new(), epoch)
-                        .await?,
-                )
-                .await
+                self.upload(&receipt_path, &[], epoch).await
             })
             .await?;
         Ok(RelayDelivery { response, device, guard, approval_binding })
@@ -440,11 +484,7 @@ impl Service {
                 } else { self.require_device_approval(&e.sender, &device, Transport::Relay) }
             },
             || async {
-                Self::drain_ack(
-                    self.signed(Method::POST, &response_path, response, epoch)
-                        .await?,
-                )
-                .await
+                self.upload(&response_path, &response, epoch).await
             },
         )
         .await?;

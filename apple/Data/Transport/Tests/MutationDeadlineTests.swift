@@ -205,7 +205,7 @@ private actor DeadlineRelayPeer: HTTPTransport {
                 macID: "mac-1", deviceID: "phone-1", credentialRevision: "fixture"),
             bearer: bearer, transport: self, signing: phoneSigning, agreement: phoneAgreement,
             macSigning: macSigning.publicKey, macAgreement: macAgreement.publicKey, now: { 1_000 },
-            sleep: { self.clock.advance(by: .seconds(1)) },
+            sleep: { _ in self.clock.advance(by: .seconds(1)) },
             waitForReadDeadline: clock.clock.waitUntil, requestClock: clock.clock)
     }
 }

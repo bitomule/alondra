@@ -22,10 +22,22 @@ public actor RelaySession: OperationAPI, PushRegistrationAPI {
     private let outbox: RelayOutbox
     private let scope: RelayOutboxScope
     private let codec: EnvelopeCodec
-    private let sleep: @Sendable () async throws -> Void
+    private let sleep: @Sendable (Int) async throws -> Void
     private let requestClock: RequestClock
     let mutations: MutationRunner
     let mutationEvidence = MutationEvidenceStore()
+    /// The failure of each read's latest relay exchange, cleared by any answer: when the read runs
+    /// out of time it says whether the network failed it or the Mac never answered.
+    private var readFailures: [String: any Error] = [:]
+
+    /// Covers the relay handing a lost job out again after its 30 s lease, and a Mac restarting.
+    static let readSeconds = 35
+    static let retryBackoff = ConnectionBackoff(initial: .milliseconds(500), maximum: .seconds(4))
+
+    /// `attempt` counts this request's consecutive failed exchanges, from 0.
+    @Sendable public static func retryPause(_ attempt: Int) async throws {
+        try await Task.sleep(for: retryBackoff.delay(attempt: attempt, random: .random(in: 0...1)))
+    }
     private let waitForReadDeadline: @Sendable (ContinuousClock.Instant) async throws -> Void
     private var active = true
     private let durableOutbox: Bool
@@ -43,7 +55,7 @@ public actor RelaySession: OperationAPI, PushRegistrationAPI {
                 signing: P256.Signing.PrivateKey, agreement: P256.KeyAgreement.PrivateKey,
                 macSigning: P256.Signing.PublicKey, macAgreement: P256.KeyAgreement.PublicKey,
                 now: @escaping @Sendable () -> UInt64 = { UInt64(Date().timeIntervalSince1970 * 1000) },
-                sleep: @escaping @Sendable () async throws -> Void = { try await Task.sleep(for: .seconds(1)) }) throws {
+                sleep: @escaping @Sendable (Int) async throws -> Void = RelaySession.retryPause) throws {
         try self.init(scope: scope, bearer: bearer, bearerRefused: bearerRefused, bearerRefusedForToken: bearerRefusedForToken, transport: transport, journal: journal,
             signing: signing, agreement: agreement, macSigning: macSigning, macAgreement: macAgreement,
             now: now, sleep: sleep, waitForReadDeadline: { try await ContinuousClock().sleep(until: $0) })
@@ -58,13 +70,13 @@ public actor RelaySession: OperationAPI, PushRegistrationAPI {
                 signing: P256.Signing.PrivateKey, agreement: P256.KeyAgreement.PrivateKey,
                 macSigning: P256.Signing.PublicKey, macAgreement: P256.KeyAgreement.PublicKey,
                 now: @escaping @Sendable () -> UInt64 = { UInt64(Date().timeIntervalSince1970 * 1000) },
-                sleep: @escaping @Sendable () async throws -> Void = { try await Task.sleep(for: .seconds(1)) },
+                sleep: @escaping @Sendable (Int) async throws -> Void = RelaySession.retryPause,
                 waitForReadDeadline: @escaping @Sendable (ContinuousClock.Instant) async throws -> Void,
                 requestClock: RequestClock = .continuous) throws {
         let client = try AlondraAPIClient.makeTransport(base: scope.relay, deviceID: scope.deviceID,
             signing: signing, bearer: bearer, bearerRefused: bearerRefused, bearerRefusedForToken: bearerRefusedForToken, transport: transport)
         self.client = client; self.scope = scope
-        outbox = RelayOutbox(scope: scope, transport: client, journal: journal, admissionWait: sleep)
+        outbox = RelayOutbox(scope: scope, transport: client, journal: journal, admissionWait: { [sleep] in try await sleep(1) })
         durableOutbox = journal != nil
         codec = EnvelopeCodec(macID: scope.macID, deviceID: scope.deviceID, signing: signing,
             agreement: agreement, macSigning: macSigning, macAgreement: macAgreement, now: now)
@@ -205,7 +217,8 @@ public actor RelaySession: OperationAPI, PushRegistrationAPI {
         if method == "GET" {
             // Read identities are private and never share the durable mutation namespace.
             guard body == nil else { throw RelaySessionError.invalidRequest }
-            return try await waitForReadCompletion(requestID: "read-" + UUID().uuidString, path: path, seconds: statusPolls)
+            return try await waitForReadCompletion(requestID: "read-" + UUID().uuidString, path: path,
+                                                   seconds: max(statusPolls, Self.readSeconds))
         }
         guard !requestID.hasPrefix("read-") else { throw RelaySessionError.invalidRequest }
         let tag = try codec.semanticTag(method: method, path: path, body: body)
@@ -279,7 +292,7 @@ public actor RelaySession: OperationAPI, PushRegistrationAPI {
             do {
                 try Task.checkCancellation()
                 try MutationScope.check()
-                if attempt > 0 { try await sleep() }
+                if attempt > 0 { try await sleep(attempt - 1) }
                 try MutationScope.check()
                 guard active else { return .unknown }
                 if let receipt = try await reconcileRead(requestID: requestID),
@@ -288,6 +301,7 @@ public actor RelaySession: OperationAPI, PushRegistrationAPI {
                     return result
                 }
             } catch is CancellationError { return .unknown }
+            catch where Self.transientReadFailure(error) { continue }
             catch { return .unknown }
         }
         return .unknown
@@ -366,7 +380,8 @@ public actor RelaySession: OperationAPI, PushRegistrationAPI {
         // Includes bootstrap, the one submission, status reconciliation and every HTTP wait.
         let deadline = requestClock.now().advanced(by: .seconds(seconds + deadlineSlack))
         let waitForDeadline = waitForReadDeadline
-        return try await withThrowingTaskGroup(of: RelayOperationResult.self) { group in
+        defer { readFailures[requestID] = nil }
+        let result: RelayOperationResult = try await withThrowingTaskGroup(of: RelayOperationResult.self) { group in
             group.addTask {
                 try await waitForDeadline(deadline)
                 try Task.checkCancellation()
@@ -379,6 +394,8 @@ public actor RelaySession: OperationAPI, PushRegistrationAPI {
             guard requestClock.now() < deadline else { return .unknown }
             return result
         }
+        if result == .unknown, let failure = readFailures[requestID] { throw failure }
+        return result
     }
 
     private func checkReadDeadline(_ deadline: ContinuousClock.Instant) throws {
@@ -388,30 +405,17 @@ public actor RelaySession: OperationAPI, PushRegistrationAPI {
     }
 
     private func readUntilChange(requestID: String, path: String, method: String, body: Data?, deadline: ContinuousClock.Instant) async throws -> RelayOperationResult {
-        var bootstrap = try await currentBootstrap()
+        var failures = 0
+        var bootstrap: RelayBootstrap
+        // Out of time while the relay was unreachable: the deadline reports the stored failure.
+        do { bootstrap = try await readBootstrap(requestID: requestID, failures: &failures, deadline: deadline) }
+        catch RelaySessionError.outcomeUnknown { return .unknown }
         try checkReadDeadline(deadline)
         let envelope = try sealRequest(requestID: requestID, method: method, path: path, body: body)
         try checkReadDeadline(deadline)
         do {
-            let receipt: RelayReceipt
-            do {
-                var refreshed = false
-                while true {
-                    try checkReadDeadline(deadline)
-                    do { receipt = try await client.submitRequest(envelope); break }
-                    catch RelayWireError.admissionFull {
-                        try await pauseReadRecovery(deadline)
-                    } catch RelayWireError.unauthorized where !refreshed {
-                        refreshed = true
-                        bootstrap = try await client.bootstrap()
-                    }
-                }
-            } catch is CancellationError { throw CancellationError() }
-            catch {
-                // A lost submission response authorizes only GET reconciliation, never POST.
-                try checkReadDeadline(deadline)
-                receipt = try await readStatus(requestID: requestID, deadline: deadline)
-            }
+            let receipt = try await submitRead(envelope, requestID: requestID, bootstrap: &bootstrap,
+                                               failures: &failures, deadline: deadline)
             try checkReadDeadline(deadline)
             if let result = try verified(receipt, requestID: requestID, acknowledge: method == "GET" && body == nil) { return result }
             if receipt.status == "expired" { return .unknown }
@@ -423,14 +427,15 @@ public actor RelaySession: OperationAPI, PushRegistrationAPI {
                 if bootstrap.requestWait {
                     do {
                         let current = try await client.waitForRequest(requestID: requestID, waitSeconds: wait)
+                        answered(requestID, failures: &failures)
                         try checkReadDeadline(deadline)
                         if let result = try verified(current, requestID: requestID, acknowledge: method == "GET" && body == nil) { return result }
                         if current.status == "expired" { return .unknown }
-                        try await pauseReadRecovery(deadline)
+                        try await pauseReadRecovery(deadline, attempt: 0)
                     } catch {
                         guard Self.transientReadFailure(error) else { throw error }
-                        try await pauseReadRecovery(deadline)
-                        let current = try await readStatus(requestID: requestID, deadline: deadline)
+                        try await failed(requestID, error, failures: &failures, deadline: deadline)
+                        let current = try await readStatus(requestID: requestID, failures: &failures, deadline: deadline)
                         if let result = try verified(current, requestID: requestID, acknowledge: method == "GET" && body == nil) { return result }
                         if current.status == "expired" { return .unknown }
                     }
@@ -439,10 +444,11 @@ public actor RelaySession: OperationAPI, PushRegistrationAPI {
                 let update: RelayChanges
                 do {
                     update = try await client.changes(since: revision, epoch: bootstrap.epoch, waitSeconds: wait)
+                    answered(requestID, failures: &failures)
                 } catch {
                     guard Self.transientReadFailure(error) else { throw error }
-                    try await pauseReadRecovery(deadline)
-                    let current = try await readStatus(requestID: requestID, deadline: deadline)
+                    try await failed(requestID, error, failures: &failures, deadline: deadline)
+                    let current = try await readStatus(requestID: requestID, failures: &failures, deadline: deadline)
                     if let result = try verified(current, requestID: requestID, acknowledge: method == "GET" && body == nil) { return result }
                     if current.status == "expired" { return .unknown }
                     continue
@@ -454,7 +460,7 @@ public actor RelaySession: OperationAPI, PushRegistrationAPI {
                 guard let job = update.changes.first(where: { $0.requestID == requestID }) else { continue }
                 if job.status == "expired" { return .unknown }
                 guard job.status == "completed" else { continue }
-                let completed = try await readStatus(requestID: requestID, deadline: deadline)
+                let completed = try await readStatus(requestID: requestID, failures: &failures, deadline: deadline)
                 try checkReadDeadline(deadline)
                 if let result = try verified(completed, requestID: requestID, acknowledge: method == "GET" && body == nil) { return result }
             }
@@ -465,33 +471,97 @@ public actor RelaySession: OperationAPI, PushRegistrationAPI {
         }
     }
 
-    private func readStatus(requestID: String, deadline: ContinuousClock.Instant) async throws -> RelayReceipt {
+    private func readBootstrap(requestID: String, failures: inout Int, deadline: ContinuousClock.Instant) async throws -> RelayBootstrap {
         while true {
-            try checkReadDeadline(deadline)
             do {
-                let receipt = try await client.requestStatus(requestID: requestID)
-                try checkReadDeadline(deadline)
-                return receipt
-            } catch {
-                guard Self.transientReadFailure(error) else { throw error }
-                try await pauseReadRecovery(deadline)
+                let bootstrap = try await currentBootstrap()
+                answered(requestID, failures: &failures)
+                return bootstrap
+            } catch where Self.transientReadFailure(error) {
+                try await failed(requestID, error, failures: &failures, deadline: deadline)
             }
         }
     }
 
-    private func pauseReadRecovery(_ deadline: ContinuousClock.Instant) async throws {
+    /// A read the relay never queued goes out again as the same bytes: the relay keeps one job
+    /// per request ID, so a repeat that did arrive only finds the job it already has.
+    private func submitRead(_ envelope: Envelope, requestID: String, bootstrap: inout RelayBootstrap,
+                            failures: inout Int, deadline: ContinuousClock.Instant) async throws -> RelayReceipt {
+        while true {
+            do {
+                do {
+                    let receipt = try await client.submitRequest(envelope)
+                    answered(requestID, failures: &failures)
+                    return receipt
+                } catch RelayWireError.admissionFull {
+                    // Refused at the door, so nothing was queued: wait and send it again.
+                    try await failed(requestID, RelayWireError.admissionFull, failures: &failures, deadline: deadline)
+                    continue
+                } catch RelayWireError.unauthorized {
+                    // The relay refused the request outright, so nothing was queued: refresh the epoch once.
+                    try checkReadDeadline(deadline)
+                    bootstrap = try await client.bootstrap()
+                    try checkReadDeadline(deadline)
+                    let receipt = try await client.submitRequest(envelope)
+                    answered(requestID, failures: &failures)
+                    return receipt
+                }
+            } catch is CancellationError { throw CancellationError() }
+            catch {
+                // A lost submission response authorizes only GET reconciliation, never POST.
+                let lost = Self.transientReadFailure(error)
+                if lost { readFailures[requestID] = error }
+                try checkReadDeadline(deadline)
+                do { return try await readStatus(requestID: requestID, failures: &failures, deadline: deadline) }
+                catch RelayWireError.server(404) where lost {
+                    try await failed(requestID, error, failures: &failures, deadline: deadline)
+                }
+            }
+        }
+    }
+
+    private func readStatus(requestID: String, failures: inout Int, deadline: ContinuousClock.Instant) async throws -> RelayReceipt {
+        while true {
+            try checkReadDeadline(deadline)
+            do {
+                let receipt = try await client.requestStatus(requestID: requestID)
+                answered(requestID, failures: &failures)
+                try checkReadDeadline(deadline)
+                return receipt
+            } catch {
+                guard Self.transientReadFailure(error) else { throw error }
+                try await failed(requestID, error, failures: &failures, deadline: deadline)
+            }
+        }
+    }
+
+    private func answered(_ requestID: String, failures: inout Int) {
+        readFailures[requestID] = nil
+        failures = 0
+    }
+
+    private func failed(_ requestID: String, _ error: any Error, failures: inout Int,
+                        deadline: ContinuousClock.Instant) async throws {
+        readFailures[requestID] = error
+        try await pauseReadRecovery(deadline, attempt: failures)
+        failures += 1
+    }
+
+    private func pauseReadRecovery(_ deadline: ContinuousClock.Instant, attempt: Int) async throws {
         try checkReadDeadline(deadline)
-        try await sleep()
+        try await sleep(attempt)
         try checkReadDeadline(deadline)
     }
 
-    private static func transientReadFailure(_ error: any Error) -> Bool {
+    static func transientReadFailure(_ error: any Error) -> Bool {
+        if case RelayWireError.admissionFull = error { return true }
         if case let RelayWireError.server(status) = error {
             return status == 429 || (500...599).contains(status)
         }
         guard let error = error as? URLError else { return false }
-        return [.timedOut, .networkConnectionLost, .notConnectedToInternet,
-                .cannotConnectToHost, .cannotFindHost, .dnsLookupFailed].contains(error.code)
+        return [.timedOut, .networkConnectionLost, .notConnectedToInternet, .cannotConnectToHost,
+                .cannotFindHost, .dnsLookupFailed, .secureConnectionFailed, .cannotLoadFromNetwork,
+                .badServerResponse, .resourceUnavailable].contains(error.code)
     }
 
     func observeBootstrapWaiters(_ observer: (@Sendable (Int) -> Void)?) async {

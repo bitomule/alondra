@@ -1,6 +1,7 @@
 import AlondraContract
 import AlondraFeatures
 import AlondraFeed
+import AlondraTransport
 import ComposableArchitecture
 import XCTest
 
@@ -58,7 +59,7 @@ final class ScreenFeatureTests: XCTestCase {
 
         await store.send(.task)
         input.finish(throwing: CancellationError())
-        await store.receive(\.failed) {
+        await store.receive(\.loadFailed) {
             $0.phase = .failed("Couldn’t load this from your Mac. Try again.")
             $0.failures = 1
         }
@@ -134,7 +135,7 @@ final class ScreenFeatureTests: XCTestCase {
 
         await store.send(.task)
         await store.receive(\.loaded) { $0.document = first; $0.phase = .loaded }
-        await store.receive(\.failed) { $0.phase = .failed(message); $0.failures = 1 }
+        await store.receive(\.loadFailed) { $0.phase = .failed(message); $0.failures = 1 }
         await clock.advance(by: .seconds(1))
         await store.receive(\.retry)
         await store.receive(\.loaded) { $0.document = again; $0.phase = .loaded; $0.failures = 0 }
@@ -164,11 +165,11 @@ final class ScreenFeatureTests: XCTestCase {
         let message = "Couldn’t load this from your Mac. Try again."
 
         await store.send(.task)
-        await store.receive(\.failed) { $0.phase = .failed(message); $0.failures = 1 }
+        await store.receive(\.loadFailed) { $0.phase = .failed(message); $0.failures = 1 }
         await clock.advance(by: .milliseconds(999))
         await clock.advance(by: .milliseconds(1))
         await store.receive(\.retry) { $0.phase = .loading }
-        await store.receive(\.failed) { $0.phase = .failed(message); $0.failures = 2 }
+        await store.receive(\.loadFailed) { $0.phase = .failed(message); $0.failures = 2 }
         await clock.advance(by: .milliseconds(1999))
         XCTAssertEqual(attempts.value, 2, "the second wait is longer than the first")
         await clock.advance(by: .milliseconds(1))
@@ -198,7 +199,7 @@ final class ScreenFeatureTests: XCTestCase {
         }
 
         await store.send(.task)
-        await store.receive(\.failed) { $0.phase = .failed("Couldn’t load this from your Mac. Try again."); $0.failures = 1 }
+        await store.receive(\.loadFailed) { $0.phase = .failed("Couldn’t load this from your Mac. Try again."); $0.failures = 1 }
         reconnect.yield()
         await store.receive(\.retry) { $0.phase = .loading }
         await store.receive(\.loaded) { $0.document = document; $0.phase = .loaded; $0.failures = 0 }
@@ -216,6 +217,92 @@ final class ScreenFeatureTests: XCTestCase {
         let observing = await store.send(.task)
         await observing.cancel()
         await fulfillment(of: [stopped], timeout: 10)
+    }
+
+    /// At the office every network hiccup put «Couldn’t load this from your Mac» on screen, though
+    /// the next try a second later worked.
+    @MainActor
+    func testAPassingFailureKeepsLoadingUntilItPersistsThenSaysWhy() async throws {
+        let document = try Fixtures.document("tasks-ios")
+        let attempts = LockIsolated(0)
+        let clock = TestClock()
+        let store = TestStore(initialState: ScreenFeature.State(key: .tasks)) {
+            ScreenFeature()
+        } withDependencies: {
+            $0.viewsClient.observe = { _ in
+                let attempt = attempts.withValue { $0 += 1; return $0 }
+                return AsyncThrowingStream { continuation in
+                    if attempt <= 3 { continuation.finish(throwing: URLError(.networkConnectionLost)) }
+                    else { continuation.yield(.document(document)) }
+                }
+            }
+            $0.continuousClock = clock
+            $0.withRandomNumberGenerator = WithRandomNumberGenerator(Ceiling())
+        }
+
+        await store.send(.task)
+        await store.receive(\.loadFailed) { $0.failures = 1 }
+        await clock.advance(by: .seconds(1))
+        await store.receive(\.retry)
+        await store.receive(\.loadFailed) { $0.failures = 2 }
+        await clock.advance(by: .seconds(2))
+        await store.receive(\.retry)
+        await store.receive(\.loadFailed) {
+            $0.failures = 3
+            $0.phase = .failed("The connection to the Alondra server dropped. Trying again…")
+        }
+        await clock.advance(by: .seconds(4))
+        await store.receive(\.retry) { $0.phase = .loading }
+        await store.receive(\.loaded) { $0.document = document; $0.phase = .loaded; $0.failures = 0 }
+        await store.send(.stop)
+        await store.finish()
+    }
+
+    @MainActor
+    func testAPassingFailureKeepsTheShownDocumentWithoutAnError() async throws {
+        let first = try Fixtures.document("tasks-ios", version: "v1")
+        let again = try Fixtures.document("tasks-ios", version: "v2")
+        let streams = LockIsolated([
+            AsyncThrowingStream<ViewFetch, any Error> { continuation in
+                continuation.yield(.document(first))
+                continuation.finish(throwing: OperationError.outcomeUnknown)
+            },
+            AsyncThrowingStream<ViewFetch, any Error> { continuation in continuation.yield(.document(again)) },
+        ])
+        let clock = TestClock()
+        let store = TestStore(initialState: ScreenFeature.State(key: .tasks)) {
+            ScreenFeature()
+        } withDependencies: {
+            $0.viewsClient.observe = { _ in streams.withValue { $0.removeFirst() } }
+            $0.continuousClock = clock
+            $0.withRandomNumberGenerator = WithRandomNumberGenerator(Ceiling())
+        }
+
+        await store.send(.task)
+        await store.receive(\.loaded) { $0.document = first; $0.phase = .loaded }
+        await store.receive(\.loadFailed) { $0.failures = 1 }
+        await clock.advance(by: .seconds(1))
+        await store.receive(\.retry)
+        await store.receive(\.loaded) { $0.document = again; $0.failures = 0 }
+        await store.send(.stop)
+        await store.finish()
+    }
+
+    func testEachFailureSaysItsReason() {
+        XCTAssertEqual(LoadFailure(URLError(.timedOut)), .connectionDropped)
+        XCTAssertEqual(LoadFailure(URLError(.secureConnectionFailed)), .connectionDropped)
+        XCTAssertEqual(LoadFailure(RelayWireError.server(502)), .connectionDropped)
+        XCTAssertEqual(LoadFailure(RelayWireError.server(503)), .serverBusy)
+        XCTAssertEqual(LoadFailure(RelayWireError.server(429)), .serverBusy)
+        XCTAssertEqual(LoadFailure(RelayWireError.admissionFull), .serverBusy)
+        XCTAssertEqual(LoadFailure(OperationError.outcomeUnknown), .macSilent)
+        XCTAssertEqual(LoadFailure(DirectRouteError.unreachable), .macSilent)
+        XCTAssertEqual(LoadFailure(RelayWireError.unauthorized), .refused)
+        XCTAssertEqual(LoadFailure(URLError(.cancelled)), .refused)
+        XCTAssertEqual(LoadFailure(Boom()), .refused)
+        XCTAssertFalse(LoadFailure.refused.isPassing)
+        XCTAssertEqual(LoadFailure.macSilent.message, "Your Mac didn’t answer in time. Trying again…")
+        XCTAssertEqual(LoadFailure.serverBusy.message, "The Alondra server is busy. Trying again…")
     }
 }
 
