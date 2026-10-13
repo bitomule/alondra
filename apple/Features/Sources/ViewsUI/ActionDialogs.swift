@@ -4,7 +4,8 @@ import SwiftUI
 public extension View {
     /// The two questions an action can raise, asked the same way on iPhone and Mac: the server's
     /// confirmation, and the notice that what the person looked at has changed. The words come from
-    /// the server; the confirming button is red only when the action itself is destructive.
+    /// the server; the confirming button is red only when the action itself is destructive. A send
+    /// is felt the moment it is tapped; a failure is felt later, with its notice.
     func actionDialogs(_ store: StoreOf<ActionFeature>) -> some View {
         modifier(ActionDialogs(store: store))
     }
@@ -15,6 +16,7 @@ private struct ActionDialogs: ViewModifier {
 
     func body(content: Content) -> some View {
         content
+            .sensoryFeedback(.success, trigger: store.sends)
             .alert(
                 store.confirmation?.title ?? "",
                 isPresented: Binding(

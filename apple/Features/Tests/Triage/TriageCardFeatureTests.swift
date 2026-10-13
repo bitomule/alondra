@@ -217,6 +217,74 @@ final class TriageCardFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.stamp, "Answered")
     }
 
+    /// The haptic follows `sends`: it changes on the tap, before the intent is even prepared, and
+    /// the Mac's answer does not change it again.
+    @MainActor
+    func testTheMergeIsFeltTheMomentItIsTappedAndNotWhenTheMacAnswers() async throws {
+        let feed = FeedStub()
+        let (preparing, prepared) = AsyncStream<Void>.makeStream()
+        let (answering, answered) = AsyncStream<Void>.makeStream()
+        var state = TriageCardFeature.State(id: Fixtures.pullRequestID)
+        state.screen.document = try Fixtures.card(Fixtures.pullRequestID)
+        let store = TestStore(initialState: state) { TriageCardFeature() } withDependencies: {
+            $0.viewsClient.prepare = { request in
+                for await _ in preparing { break }
+                return request
+            }
+            $0.viewsClient.perform = { request in
+                for await _ in answering { break }
+                return try await feed.perform()(request)
+            }
+        }
+        store.exhaustivity = .off
+        let merge = try action(store, verb: "merge")
+
+        await store.send(.menuOptionPicked(merge, optionID: "squash"))
+        await store.receive(\.submit)
+        await store.receive(\.actions.submit)
+        XCTAssertEqual(store.state.actions.sends, 1, "the tap is felt at once")
+        XCTAssertNil(store.state.stamp, "while the intent is prepared nothing has been answered yet")
+        prepared.yield()
+        await store.receive(\.actions.sent)
+        answered.yield()
+        await store.receive(\.actions.response)
+        XCTAssertNotNil(store.state.stamp)
+        XCTAssertEqual(store.state.actions.sends, 1, "the Mac's answer is not felt a second time")
+    }
+
+    @MainActor
+    func testAMergeThatFailsTakesItsStampBackAndSaysWhyAfterTheTapWasFelt() async throws {
+        var state = TriageCardFeature.State(id: Fixtures.pullRequestID)
+        state.screen.document = try Fixtures.card(Fixtures.pullRequestID)
+        let store = TestStore(initialState: state) { TriageCardFeature() } withDependencies: {
+            $0.viewsClient.perform = { _ in throw URLError(.notConnectedToInternet) }
+        }
+        store.exhaustivity = .off
+        let merge = try action(store, verb: "merge")
+
+        await store.send(.menuOptionPicked(merge, optionID: "squash"))
+        await store.receive(\.actions.submit)
+        XCTAssertEqual(store.state.actions.sends, 1)
+        await store.receive(\.actions.undelivered)
+        await store.receive(\.actions.delegate.failed)
+        XCTAssertNil(store.state.stamp, "the card shows again with its buttons")
+        XCTAssertNotNil(store.state.actions.error)
+        XCTAssertEqual(store.state.actions.sends, 1)
+    }
+
+    @MainActor
+    func testAConfirmationIsFeltWhenConfirmedNotWhenAsked() async throws {
+        let store = try await store(Fixtures.pullRequestID, loaded: try Fixtures.card(Fixtures.pullRequestID))
+        let close = try XCTUnwrap(store.state.menu.first { $0.confirm != nil })
+
+        await store.send(.actionTapped(close))
+        await store.receive(\.actions.submit)
+        XCTAssertNotNil(store.state.actions.confirmation)
+        XCTAssertEqual(store.state.actions.sends, 0, "asking is not sending")
+        await store.send(.actions(.confirm))
+        XCTAssertEqual(store.state.actions.sends, 1)
+    }
+
     @MainActor
     func testADisabledButtonSendsNothing() async throws {
         let feed = FeedStub()

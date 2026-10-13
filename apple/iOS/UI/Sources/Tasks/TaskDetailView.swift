@@ -41,7 +41,6 @@ public struct TaskDetailView: View {
         .toolbar(.hidden, for: .tabBar)
         .task { await store.send(.task).finish() }
         .actionDialogs(store.scope(state: \.actions, action: \.actions))
-        .sensoryFeedback(.success, trigger: store.actions.stamp)
     }
 
     private func open(_ link: AlondraContract.Link?) {

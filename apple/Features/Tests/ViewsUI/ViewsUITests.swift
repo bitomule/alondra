@@ -100,6 +100,7 @@ final class ViewsUITests: XCTestCase {
         await store.send(.submit) {
             $0.inFlight = true
             $0.pending = request
+            $0.sends = 1
         }
         await store.receive(\.prepared) { $0.stamp = "Sent" }
         await store.receive(\.sent, request)

@@ -44,7 +44,6 @@ public struct NewRequestView: View {
         }
         .task { await store.send(.task).finish() }
         .actionDialogs(store.scope(state: \.actions, action: \.actions))
-        .sensoryFeedback(.success, trigger: store.actions.stamp)
     }
 
     private var editor: some View {

@@ -122,7 +122,7 @@ final class ActionPreparationTests: XCTestCase {
             $0.viewsClient.perform = { await peer.perform($0) }
         }
         await store.send(.submit) {
-            $0.pending = draft; $0.inFlight = true
+            $0.pending = draft; $0.inFlight = true; $0.sends = 1
         }
         let started = await starts.next()
         XCTAssertEqual(started, draft)
@@ -159,7 +159,7 @@ final class ActionPreparationTests: XCTestCase {
             $0.viewsClient.perform = { _ in XCTFail("handoff preparation must not deliver the action itself"); throw CancellationError() }
         }
         await store.send(.submit) {
-            $0.pending = draft; $0.inFlight = true
+            $0.pending = draft; $0.inFlight = true; $0.sends = 1
         }
         let started = await starts.next()
         XCTAssertEqual(started, draft)
@@ -184,7 +184,7 @@ final class ActionPreparationTests: XCTestCase {
             $0.viewsClient.perform = { _ in XCTFail("an obsolete preparation cannot dispatch"); throw CancellationError() }
         }
         await store.send(.action(.submit)) {
-            $0.action.pending = draft; $0.action.inFlight = true
+            $0.action.pending = draft; $0.action.inFlight = true; $0.action.sends = 1
         }
         let started = await starts.next()
         XCTAssertEqual(started, draft)
@@ -209,7 +209,7 @@ final class ActionPreparationTests: XCTestCase {
             $0.viewsClient.perform = { _ in XCTFail("a dismissed preparation cannot dispatch"); throw CancellationError() }
         }
         await store.send(.submit) {
-            $0.pending = draft; $0.inFlight = true
+            $0.pending = draft; $0.inFlight = true; $0.sends = 1
         }
         let started = await starts.next()
         XCTAssertEqual(started, draft)
@@ -235,7 +235,7 @@ final class ActionPreparationTests: XCTestCase {
             $0.viewsClient.perform = { _ in XCTFail("a cancelled preparation cannot dispatch"); throw CancellationError() }
         }
         let preparation = await store.send(.submit) {
-            $0.pending = draft; $0.inFlight = true
+            $0.pending = draft; $0.inFlight = true; $0.sends = 1
         }
         let started = await starts.next()
         XCTAssertEqual(started, draft)
@@ -261,7 +261,7 @@ final class ActionPreparationTests: XCTestCase {
                 }
             }
             await store.send(.submit) {
-                $0.pending = draft; $0.inFlight = true
+                $0.pending = draft; $0.inFlight = true; $0.sends = 1
             }
             await store.receive(\.undelivered) {
                 $0.pending = nil; $0.inFlight = false; $0.stamp = nil
@@ -301,7 +301,7 @@ final class ActionPreparationTests: XCTestCase {
                 $0.viewsClient.prepare = { try await gate.prepare($0) }
                 $0.viewsClient.perform = { _ in XCTFail("handoff cannot dispatch in the child"); throw CancellationError() }
             }
-            await store.send(.submit) { $0.pending = draft; $0.inFlight = true }
+            await store.send(.submit) { $0.pending = draft; $0.inFlight = true; $0.sends = 1 }
             let started = await starts.next()
             XCTAssertEqual(started, draft)
             await store.send(presentation)
@@ -354,7 +354,7 @@ final class ActionPreparationTests: XCTestCase {
             $0.viewsClient.prepare = { try await gate.prepare($0) }
             $0.viewsClient.perform = { _ in XCTFail("the dismissed preparation cannot dispatch"); throw CancellationError() }
         }
-        await store.send(.submit) { $0.pending = draft; $0.inFlight = true }
+        await store.send(.submit) { $0.pending = draft; $0.inFlight = true; $0.sends = 1 }
         let started = await starts.next()
         XCTAssertEqual(started, draft)
         await store.send(.dismiss) { $0.action = nil; $0.pending = nil; $0.inFlight = false }

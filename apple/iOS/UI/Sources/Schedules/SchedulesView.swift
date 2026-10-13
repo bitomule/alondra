@@ -33,7 +33,6 @@ public struct SchedulesView: View {
         .refreshable { await store.send(.refresh).finish() }
         .task { await store.send(.task).finish() }
         .actionDialogs(store.scope(state: \.actions, action: \.actions))
-        .sensoryFeedback(.success, trigger: store.actions.stamp)
     }
 
     @ViewBuilder private var content: some View {

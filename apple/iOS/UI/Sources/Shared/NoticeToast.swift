@@ -31,12 +31,7 @@ public struct NoticeToast: View {
         }
         .padding(.bottom, 92)
         .animation(.spring(duration: 0.45, bounce: 0.3), value: store.notice)
-        .sensoryFeedback(trigger: store.notice) { _, new in
-            guard let new else { return nil }
-            if new.failure { return .error }
-            if case .actionCompleted = new.event { return .success }
-            return nil
-        }
+        .sensoryFeedback(.error, trigger: store.notice) { _, new in new?.failure == true }
     }
 
     @ViewBuilder private func noticeText(_ event: WorkspaceNotice.Event) -> some View {

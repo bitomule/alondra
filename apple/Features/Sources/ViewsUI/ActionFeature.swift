@@ -22,6 +22,9 @@ public struct ActionFeature: Sendable {
         public var pending: ActionRequest?
         public var inFlight = false
         public var stamp: String?
+        /// How many times the person has sent an action from here. The screen plays its haptic on
+        /// each send, the moment it is tapped, without waiting for the Mac.
+        public var sends = 0
         public var error: String?
         public var changed: ChangedNotice?
         /// The last request that went out and got no answer. Sending the same again reuses its
@@ -195,6 +198,7 @@ public struct ActionFeature: Sendable {
                     state.confirmation = confirm
                     return .none
                 }
+                state.sends += 1
                 if state.requiresAttachments, !state.attachmentPicker.allReady {
                     state.pendingAttachmentSubmit = true
                     return .send(.attachmentPicker(.prepareForSubmission))
@@ -204,6 +208,7 @@ public struct ActionFeature: Sendable {
             case .confirm:
                 guard state.confirmation != nil else { return .none }
                 state.confirmation = nil
+                state.sends += 1
                 if state.requiresAttachments, !state.attachmentPicker.allReady {
                     state.pendingAttachmentSubmit = true
                     return .send(.attachmentPicker(.prepareForSubmission))
@@ -216,6 +221,7 @@ public struct ActionFeature: Sendable {
             case .sendChangedAction:
                 guard let changed = state.changed else { return .none }
                 state.changed = nil
+                state.sends += 1
                 state.pending = makeRequest(state, actionID: changed.actionId, resolvesCard: changed.resolvesCard)
                 return send(&state)
             case let .prepared(draft, request):

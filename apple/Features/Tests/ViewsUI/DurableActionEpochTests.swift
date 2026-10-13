@@ -27,6 +27,7 @@ final class DurableActionEpochTests: XCTestCase {
         await store.send(.submit) {
             $0.pending = current
             $0.inFlight = true
+            $0.sends = 1
         }
         await store.receive(\.prepared) {
             $0.pending = nil

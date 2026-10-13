@@ -202,6 +202,17 @@ final class TriageSnapshotTests: XCTestCase {
         assertScreen(language: .spanish, inWindow: true) { Harness(store: store) }
     }
 
+    /// Once the merge is sent the stamp covers the whole card: no button shows through it.
+    func test_aMergeSentHidesTheCardButtonsUnderTheStamp() throws {
+        for spanish in [false, true] {
+            let store = try pullRequest(spanish: spanish) { actions, card in
+                actions.action = try XCTUnwrap(card.actions.first { $0.id?.hasPrefix("merge:") == true })
+                actions.stamp = spanish ? "Fusionando…" : "Merging…"
+            }
+            assertScreen([.light, .dark], language: language(spanish), inWindow: true) { Harness(store: store) }
+        }
+    }
+
     func test_aMergeTheServerMarksUnusableIsNotOnTheCard() throws {
         let blocked = try Fixtures.card("card-pr") { item in
             var actions = try XCTUnwrap(item["actions"] as? [[String: Any]])

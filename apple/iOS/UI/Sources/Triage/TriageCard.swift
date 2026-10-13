@@ -20,6 +20,8 @@ struct TriageCard: View {
     @FocusState private var replyFocused: Bool
     @FocusState private var roomFocused: Bool
     @State private var room: ComposerRoom?
+    @State private var choosing: AlondraContract.Action?
+    @State private var showsMore = false
     @Environment(\.dynamicTypeSize) private var typeSize
 
     private var kind: Kind { Kind(card) }
@@ -32,6 +34,8 @@ struct TriageCard: View {
         Color.clear
             .overlay(alignment: .topLeading) {
                 content.padding(.horizontal, 20).padding(.vertical, 20)
+                    .allowsHitTesting(stamp == nil)
+                    .accessibilityHidden(stamp != nil)
             }
         .blur(radius: stamp == nil ? 0 : 10)
         .opacity(stamp == nil ? 1 : 0.4)
@@ -43,7 +47,6 @@ struct TriageCard: View {
         .shadow(color: .black.opacity(isFront ? 0.22 : 0.08), radius: isFront ? 24 : 8, y: isFront ? 14 : 4)
         .scaleEffect(stamp == nil ? 1 : 1.02)
         .animation(.spring(duration: 0.35, bounce: 0.4), value: stamp)
-        .sensoryFeedback(.success, trigger: stamp) { _, new in new != nil }
         .accessibilityAction(named: "Open") { openDetail() }
         .accessibilityActions {
             if let onSkip { Button("Leave for Later", action: onSkip) }
@@ -117,7 +120,7 @@ struct TriageCard: View {
     /// With no room in the picked layout the field stays over the bottom of the card while it has
     /// the keyboard, so the person keeps writing; once they leave it, the buttons show again.
     private func placedComposer(_ reply: AlondraContract.Action) -> some View {
-        let shown = room != nil || replyFocused
+        let shown = (room != nil || replyFocused) && stamp == nil
         return composer(reply, live: true)
             .dynamicTypeSize(room?.typeSize ?? typeSize)
             .frame(width: room?.frame.width)
@@ -234,21 +237,26 @@ struct TriageCard: View {
             .buttonBorderShape(.capsule)
             .font(.headline)
         }
+        .opacity(stamp == nil ? 1 : 0)
     }
 
+    /// Buttons with options, and More, ask in a dialog anchored to them, never a menu: iOS 27 draws
+    /// a closing menu's button above everything else while it folds back, over the stamp.
     @ViewBuilder private func actionButton(_ action: AlondraContract.Action) -> some View {
         VStack(spacing: 4) {
             if action.presentation == .menu, !action.options.isEmpty {
-                Menu {
-                    ForEach(action.options, id: \.id) { option in
-                        Button(option.label) { store.send(.menuOptionPicked(action, optionID: option.id)) }
+                Button { choosing = action } label: { GlassBarLabel(action.label) }
+                    .glassRole(action.cardRole)
+                    .accessibilityIdentifier(actionIdentifier(action))
+                    .confirmationDialog(
+                        action.label,
+                        isPresented: Binding(get: { choosing == action }, set: { if !$0 { choosing = nil } }),
+                        titleVisibility: .hidden
+                    ) {
+                        ForEach(action.options, id: \.id) { option in
+                            Button(option.label) { store.send(.menuOptionPicked(action, optionID: option.id)) }
+                        }
                     }
-                } label: {
-                    GlassBarLabel(action.label)
-                }
-                .menuStyle(.button)
-                .glassRole(action.cardRole)
-                .accessibilityIdentifier(actionIdentifier(action))
             } else {
                 Button { perform(action) } label: { GlassBarLabel(action.label).multilineTextAlignment(.center) }
                     .glassRole(action.cardRole)
@@ -263,15 +271,14 @@ struct TriageCard: View {
     }
 
     private var moreMenu: some View {
-        Menu {
-            ForEach(Array(store.menu.enumerated()), id: \.offset) { _, action in
-                Button(action.label) { perform(action) }
+        Button { showsMore = true } label: { Image(systemName: "ellipsis.circle") }
+            .buttonStyle(.glass)
+            .accessibilityLabel("More actions")
+            .confirmationDialog("More actions", isPresented: $showsMore, titleVisibility: .hidden) {
+                ForEach(Array(store.menu.enumerated()), id: \.offset) { _, action in
+                    Button(action.label) { perform(action) }
+                }
             }
-        } label: {
-            Image(systemName: "ellipsis.circle")
-        }
-        .menuStyle(.button).buttonStyle(.glass)
-        .accessibilityLabel("More actions")
     }
 
     private func perform(_ action: AlondraContract.Action) {
