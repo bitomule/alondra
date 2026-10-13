@@ -103,7 +103,7 @@ pub struct LivePacing {
     #[serde(default)]
     pub auto: u32,
     pub memory_free: Option<u32>,
-    /// The Mac is short of memory: Tight or at its limit.
+    /// Memory has no room for one more node to start; the nodes at work go on.
     pub tight: bool,
     pub queued: Vec<LiveQueued>,
     /// Nodes Alondra or the user paused, in the order they come back.
@@ -120,10 +120,10 @@ pub struct LivePaused {
     /// Local clock time it was paused at, "14:05".
     pub at: String,
     pub reason: LivePauseReason,
-    /// Whole minutes the Mac has had memory without a break, while it has.
+    /// Always `None` since memory stopped pausing nodes; kept for apps that decode it.
     #[serde(default)]
     pub fine_minutes: Option<u32>,
-    /// Nothing but the step between two resumes holds it back.
+    /// Nothing but the minute between two admissions holds it back.
     #[serde(default)]
     pub next: bool,
     /// What the node said it waits for, when it declared the wait itself.

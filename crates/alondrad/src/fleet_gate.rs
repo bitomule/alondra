@@ -1,7 +1,10 @@
 //! The gate every node start passes through: at most the working-node limit at once, one start
-//! a minute, none while the Mac is short of memory, and no new start while its CPU is overloaded.
-//! What does not fit waits in a queue ordered by priority, then resumed work before new starts,
-//! then age. See docs/fleet-pacing.md.
+//! a minute, none while memory has no room for one more node (`MacState::room`, which reserves
+//! margin for every node admitted in the last `IN_FLIGHT`), and no new start while the CPU is
+//! overloaded. Memory only ever holds starts and resumes: it never pauses a working node. The
+//! limit is the user's number, or in automatic the most this Mac's hardware takes. What does not
+//! fit waits in a queue ordered by priority, then resumed work before new starts, then age. See
+//! docs/fleet-pacing.md.
 //!
 //! Launches the orchestrator or the user asked for wait in the durable `launch_queue` and this
 //! gate starts them; the automatic launches, the scheduled runs and the revival of lost nodes keep
@@ -10,7 +13,7 @@
 use crate::domain_orchestrator_tools::{LaunchBody, Origin, launch_from, request_choices};
 use crate::domain_runtime::DomainRuntime;
 use crate::fleet_pause::{Pauses, Paused, Reason};
-use crate::machine_state::{Health, MacState};
+use crate::machine_state::{MacState, NoRoom};
 use alondra_core::domain::{Actor, AgentId, DomainState, NodeEvent, NodePhase, Pause, PauseCleanup, PauseReason, ScheduleLaunchState, ScheduleRunState, TaskId, TaskPriority, TaskState};
 use alondra_core::views::{LiveHold, LivePacing, LivePaused, LivePauseReason, LiveQueued};
 use alondra_core::Millis;
@@ -23,9 +26,9 @@ use std::time::Duration;
 
 const FILE: &str = "fleet-gate.json";
 pub(crate) const SPACING: Millis = 60_000;
-/// A node admitted this recently counts as working even before its mod reports a turn.
+/// A node admitted this recently counts as working even before its mod reports a turn, and its
+/// memory, which does not show yet, is reserved before one more starts.
 const IN_FLIGHT: Millis = 3 * 60_000;
-const LEARN_STEP: Millis = crate::machine_state::RECOVERY_WINDOW;
 const TICK: Duration = Duration::from_secs(10);
 /// How often the log repeats why the queue waits while the reason stays the same.
 const HOLD_LOG_EVERY: Millis = 10 * 60_000;
@@ -51,7 +54,7 @@ pub(crate) struct Waiting {
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Hold {
     Slots { working: usize, limit: u32 },
-    Memory { health: Health, free: Option<u32> },
+    Memory { why: NoRoom, free: Option<u32> },
     Cpu { load: f64, cpus: usize },
     Spacing { until: Millis },
     Disk,
@@ -62,11 +65,11 @@ pub(crate) fn ordered(mut queue: Vec<Waiting>) -> Vec<Waiting> {
     queue
 }
 
-/// Whether `head` may start now. Memory holds everything; the CPU holds only new starts.
-pub(crate) fn decide(head: &Waiting, working: usize, limit: u32, mac: &MacState, last_admission: Option<Millis>, spacing: Millis, now: Millis) -> Result<(), Hold> {
-    if mac.health != Health::Fine {
-        return Err(Hold::Memory { health: mac.health, free: mac.free_percent });
-    }
+/// Whether `head` may start now, with `in_flight` nodes admitted in the last `IN_FLIGHT`. Memory
+/// holds every start and resume; the CPU holds only new starts.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn decide(head: &Waiting, working: usize, limit: u32, mac: &MacState, in_flight: usize, last_admission: Option<Millis>, spacing: Millis, now: Millis) -> Result<(), Hold> {
+    mac.room(in_flight, now).map_err(|why| Hold::Memory { why, free: mac.free_percent })?;
     if mac.cpu_busy && !head.resuming {
         return Err(Hold::Cpu { load: mac.load, cpus: mac.cpus });
     }
@@ -79,52 +82,26 @@ pub(crate) fn decide(head: &Waiting, working: usize, limit: u32, mac: &MacState,
     Ok(())
 }
 
-/// The working-node limit the user chose: a number the gate keeps to whatever the memory does, or
-/// automatic, up to what this Mac takes and lowered by what the gate learned.
+/// The working-node limit the user chose: a number, or automatic, the most this Mac's hardware
+/// takes. Memory never lowers it: it only holds starts while it has no room.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Limit {
     Fixed(u32),
     Auto { max: u32 },
 }
 
-/// What the gate learned about how many nodes this Mac takes, in automatic only: lowered when the
-/// Mac reaches its limit, raised by one every `LEARN_STEP` the Mac stays fine with someone waiting.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct Learned {
-    pub cap: Option<u32>,
-    since: Option<Millis>,
-}
-
-impl Learned {
-    pub(crate) fn limit(&self, setting: Limit) -> u32 {
-        match setting {
-            Limit::Fixed(count) => count,
-            Limit::Auto { max } => self.cap.map_or(max, |cap| cap.min(max)),
-        }
-    }
-
-    pub(crate) fn at_limit(&mut self, working: usize) {
-        self.cap = Some((working.saturating_sub(1)).max(1) as u32);
-        self.since = None;
-    }
-
-    pub(crate) fn learn(&mut self, setting: Limit, health: Health, queued: bool, now: Millis) {
-        let (Some(cap), Limit::Auto { max }) = (self.cap, setting) else { return };
-        if health != Health::Fine || !queued {
-            self.since = None;
-            return;
-        }
-        let since = *self.since.get_or_insert(now);
-        if now - since >= LEARN_STEP {
-            self.cap = (cap + 1 < max).then_some(cap + 1);
-            self.since = Some(now);
+impl Limit {
+    pub(crate) fn count(self) -> u32 {
+        match self {
+            Limit::Fixed(count) | Limit::Auto { max: count } => count,
         }
     }
 }
 
+/// What the gate keeps across restarts. Fields an older daemon wrote, such as the limit it learned
+/// or the step between resumes, are ignored.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 struct Saved {
-    learned: Learned,
     last_admission: Option<Millis>,
     #[serde(default)]
     pauses: Pauses,
@@ -166,7 +143,7 @@ struct Inner {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Cause {
     Slots,
-    Memory(Health),
+    Memory,
     Cpu,
     Disk,
 }
@@ -176,7 +153,7 @@ impl Cause {
         match hold {
             Hold::Spacing { .. } => None,
             Hold::Slots { .. } => Some(Self::Slots),
-            Hold::Memory { health, .. } => Some(Self::Memory(*health)),
+            Hold::Memory { .. } => Some(Self::Memory),
             Hold::Cpu { .. } => Some(Self::Cpu),
             Hold::Disk => Some(Self::Disk),
         }
@@ -222,8 +199,9 @@ pub(crate) struct Snapshot {
     /// The tasks behind `working`: the busy ones and those starting.
     pub working_tasks: BTreeSet<TaskId>,
     pub limit: u32,
-    pub setting: Limit,
     pub mac: MacState,
+    /// Nodes admitted in the last `IN_FLIGHT`, whose memory is reserved.
+    pub in_flight: usize,
     pub hold: Option<Hold>,
     pub disk_low: bool,
 }
@@ -281,37 +259,6 @@ impl FleetGate {
 
     pub(crate) fn subscribe(&self) -> tokio::sync::watch::Receiver<u64> {
         self.turn.subscribe()
-    }
-
-    /// The Mac reached its limit with `working` nodes: in automatic, the gate admits fewer from now
-    /// on; a number the user chose stays.
-    pub(crate) fn at_limit(&self, domain: &DomainRuntime, working: usize) {
-        let mut inner = self.lock();
-        if matches!(limit_setting(domain, inner.tuning), Limit::Auto { .. }) {
-            inner.saved.learned.at_limit(working);
-        }
-        self.save(&inner);
-    }
-
-    /// The Mac's memory got worse with `working` nodes at work: a resume shortly before is blamed,
-    /// which doubles the step between resumes and, in automatic, lowers how many nodes work.
-    pub(crate) fn saturated(&self, domain: &DomainRuntime, working: usize, now: Millis) {
-        let mut inner = self.lock_with(domain);
-        let auto = matches!(limit_setting(domain, inner.tuning), Limit::Auto { .. });
-        if inner.saved.pauses.step.saturated(now) {
-            if auto {
-                inner.saved.learned.at_limit(working);
-            }
-            log!("the Mac saturated again after a resume: the step between resumes is now {} min", inner.saved.pauses.step.step / 60_000);
-        }
-        self.save_with(domain, &inner);
-    }
-
-    /// The user chose a limit: what the gate learned before no longer applies.
-    pub(crate) fn forget_learned(&self) {
-        let mut inner = self.lock();
-        inner.saved.learned = Learned::default();
-        self.save(&inner);
     }
 
     pub(crate) fn paused(&self, domain: &DomainRuntime, session: &str) -> Option<Paused> {
@@ -375,8 +322,8 @@ impl FleetGate {
         self.lock_with(domain).saved.pauses.paused.get(session).map(|paused| paused.reason.clone()).filter(Reason::holds)
     }
 
-    /// The user wrote to a node paused by them or for memory: their message is what it goes on
-    /// with, so the pause ends without the resume notice.
+    /// The user wrote to a node paused by them, or for memory by an older daemon: their message is
+    /// what it goes on with, so the pause ends without the resume notice.
     pub(crate) fn release_by_user_message(&self, domain: &DomainRuntime, session: &str) {
         let mut inner = self.lock_with(domain);
         if inner.saved.pauses.paused.get(session).is_some_and(|paused| paused.reason.holds()) {
@@ -466,7 +413,6 @@ impl FleetGate {
             let task = task_of(&state, &waiting.key)?;
             Some(LiveQueued { task_id: task.0, position: index + 1, of: total, hold: hold.clone().unwrap_or(LiveHold::Next) })
         }).collect();
-        let fine_minutes = snapshot.mac.fine_for(now).map(|fine| (fine / 60_000) as u32);
         let mut order: Vec<String> = snapshot.queue.iter().filter(|waiting| is_paused(waiting))
             .filter_map(|waiting| match &waiting.key { Key::Resume(session) => Some(session.clone()), _ => None }).collect();
         let rest: Vec<String> = pauses.paused.keys().filter(|session| !order.contains(session)).cloned().collect();
@@ -493,7 +439,7 @@ impl FleetGate {
                     }),
                     _ => None,
                 },
-                fine_minutes,
+                fine_minutes: None,
                 next,
                 waits_for: match &entry.reason {
                     Reason::Declared { reason } => Some(reason.clone()),
@@ -505,7 +451,7 @@ impl FleetGate {
             session: None,
             at: crate::usage_pause::clock_text(held.since, now, false),
             reason: LivePauseReason::User,
-            fine_minutes,
+            fine_minutes: None,
             next: false,
             waits_for: None,
             retry: None,
@@ -517,26 +463,20 @@ impl FleetGate {
             fixed,
             auto,
             memory_free: snapshot.mac.free_percent,
-            tight: snapshot.mac.health != Health::Fine,
+            tight: snapshot.mac.room(snapshot.in_flight, now).is_err(),
             queued,
             paused,
         })
     }
 }
 
-/// Whether `head` may start now, with everything the gate knows: the disk, the Mac, the limit, the
-/// spacing of starts and, for a paused node, the step between two resumes.
+/// Whether `head` may start now, with everything the gate knows: the disk, the Mac, the limit and
+/// the spacing of starts, which resumes keep too.
 fn hold_of(inner: &Inner, head: &Waiting, snapshot: &Snapshot, now: Millis) -> Result<(), Hold> {
     if snapshot.disk_low {
         return Err(Hold::Disk);
     }
-    decide(head, snapshot.working, snapshot.limit, &snapshot.mac, inner.saved.last_admission, inner.tuning.spacing, now)?;
-    let paused = matches!(&head.key, Key::Resume(session) if inner.saved.pauses.paused.get(session)
-        .is_some_and(|paused| !matches!(paused.reason, Reason::ApiError(_))));
-    if let Some(until) = inner.saved.pauses.step.next_at().filter(|until| paused && *until > now) {
-        return Err(Hold::Spacing { until });
-    }
-    Ok(())
+    decide(head, snapshot.working, snapshot.limit, &snapshot.mac, snapshot.in_flight, inner.saved.last_admission, inner.tuning.spacing, now)
 }
 
 fn reason_of(reason: &PauseReason) -> Reason {
@@ -623,12 +563,8 @@ fn hand_pauses(domain: &DomainRuntime, wanted: &BTreeMap<String, Paused>) {
 /// A paused node's turn came: it is told to carry on, or brought back first if it is not connected.
 fn resume_locked(domain: &DomainRuntime, inner: &mut Inner, session: &str, now: Millis) {
     let Some(paused) = inner.saved.pauses.paused.remove(session) else { return };
-    match &paused.reason {
-        Reason::ByUser => {}
-        Reason::ApiError(retry) => if retry.outage {
-            domain.live.api_watch.probed(now);
-        },
-        _ => inner.saved.pauses.step.resumed(now),
+    if let Reason::ApiError(retry) = &paused.reason && retry.outage {
+        domain.live.api_watch.probed(now);
     }
     log!("resuming {session} ({}), paused since {}", paused.task, paused.since);
     let text = crate::fleet_pause::resume_text(&paused, now);
@@ -681,7 +617,7 @@ pub(crate) fn hold_line(queued: usize, head: &str, priority: TaskPriority, hold:
             }
             why
         }
-        Hold::Memory { health, free } => format!("the Mac's memory is {health:?} ({} free)", free.map_or_else(|| "unknown".into(), |free| format!("{free}%"))),
+        Hold::Memory { why, free } => format!("memory has no room for one more node: {why} ({} free)", free.map_or_else(|| "unknown".into(), |free| format!("{free}%"))),
         Hold::Cpu { load, cpus } => format!("the CPU is overloaded (load {load:.0} on {cpus} cores), which holds new starts"),
         Hold::Disk => "the disk is nearly full".into(),
     };
@@ -728,13 +664,6 @@ fn still_waits(state: &DomainState, key: &Key) -> bool {
         Key::Run(run) => state.schedule.runs.get(&run.as_str().into()).is_some_and(|run| run.state == ScheduleRunState::Sent
             && run.launch.as_ref().is_some_and(|launch| launch.state == ScheduleLaunchState::Pending)),
     }
-}
-
-/// The tasks whose node is in a turn: what the gate may pause for memory.
-pub(crate) fn busy_tasks(state: &DomainState) -> BTreeSet<TaskId> {
-    state.agents.values().filter(|agent| agent.phase == NodePhase::Working)
-        .filter_map(|agent| state.node_task(&agent.id).filter(|task| !task.state.terminal()).map(|task| task.id.clone()))
-        .collect()
 }
 
 /// The tasks whose node takes a slot, as the node machine says: the one count the gate, Fleet, the
@@ -813,6 +742,7 @@ fn snapshot_locked(domain: &DomainRuntime, state: &DomainState, inner: &Inner, q
             && state.tasks.get(task).is_none_or(|task| !task.state.terminal())))
         .collect();
     let working = busy.len() + in_flight.len();
+    let admitted = inner.admitted.iter().filter(|(_, at)| now - at < IN_FLIGHT).count();
     let working_tasks = busy.into_iter().chain(in_flight.into_iter().flatten()).collect();
     let mut all: BTreeMap<Key, Waiting> = inner.asking.iter().filter(|(key, _)| still_waits(state, key))
         .map(|(key, waiting)| (key.clone(), waiting.clone())).collect();
@@ -832,11 +762,10 @@ fn snapshot_locked(domain: &DomainRuntime, state: &DomainState, inner: &Inner, q
         }
     }
     let queue = ordered(all.into_values().collect());
-    let setting = limit_setting(domain, inner.tuning);
-    let limit = inner.saved.learned.limit(setting);
+    let limit = limit_setting(domain, inner.tuning).count();
     let mac = domain.live.machine_watch.mac();
     let disk_low = domain.live.machine_watch.disk_low();
-    let mut snapshot = Snapshot { queue, working, working_tasks, limit, setting, mac, hold: None, disk_low };
+    let mut snapshot = Snapshot { queue, working, working_tasks, limit, mac, in_flight: admitted, hold: None, disk_low };
     snapshot.hold = snapshot.queue.first().and_then(|head| hold_of(inner, head, &snapshot, now).err());
     snapshot
 }
@@ -914,13 +843,13 @@ pub(crate) async fn run(domain: Arc<DomainRuntime>, home: PathBuf, launcher: imp
     }
 }
 
-/// One look at the queue: learns the limit, drops what no longer waits, and lets the head start.
+/// One look at the queue: drops what no longer waits, and lets the head start.
 pub(crate) async fn pass(domain: &DomainRuntime, home: &Path, launcher: &impl crate::orchestrate::Launcher) -> anyhow::Result<()> {
     pass_at(domain, home, launcher, alondra_core::now_millis()).await
 }
 
-/// `pass` at `now`: pauses one more node while the Mac is at its limit, then lets the head of the
-/// queue go, a paused node by telling it to carry on.
+/// `pass` at `now`: looks at the pauses, then lets the head of the queue go, a paused node by
+/// telling it to carry on. It never pauses a working node.
 pub(crate) async fn pass_at(domain: &DomainRuntime, home: &Path, launcher: &impl crate::orchestrate::Launcher, now: Millis) -> anyhow::Result<()> {
     let state = domain.state()?;
     let rows = domain.store.lock().expect("domain store poisoned").launch_queue()?;
@@ -932,12 +861,9 @@ pub(crate) async fn pass_at(domain: &DomainRuntime, home: &Path, launcher: &impl
         let queued = queued_launches(domain, &state);
         let mut inner = gate.lock_with(domain);
         inner.asking.retain(|key, _| still_waits(&state, key));
-        let mac = domain.live.machine_watch.mac();
-        let critical = mac.pressure == Some(alondra_core::MemoryPressure::Critical);
-        crate::fleet_pause::look(domain, &state, &mut inner.saved.pauses, mac.health, critical, now);
+        crate::fleet_pause::look(domain, &state, &mut inner.saved.pauses, now);
         deliver_owed(domain, &mut inner);
         let snapshot = snapshot_locked(domain, &state, &inner, queued, now);
-        inner.saved.learned.learn(snapshot.setting, snapshot.mac.health, !snapshot.queue.is_empty(), now);
         gate.save_with(domain, &inner);
         let held = snapshot.queue.first().zip(snapshot.hold.as_ref());
         if inner.told.due(held.and_then(|(_, hold)| Cause::of(hold)), now) && let Some((head, hold)) = held {

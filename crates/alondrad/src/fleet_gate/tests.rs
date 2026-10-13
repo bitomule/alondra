@@ -1,11 +1,12 @@
 use super::*;
-use crate::machine_watch::{Action, step_on};
+use crate::machine_watch::step_on;
 use crate::node_reports::{Envelope, Report};
 use alondra_core::Machine;
 use alondra_core::domain::{AgentId, Command, CommandEnvelope, PROTOCOL_VERSION};
 
 const MIN: Millis = 60_000;
 const SAMPLE: Millis = 10_000;
+const GIB: i64 = 1 << 30;
 
 fn waiting(key: &str, priority: TaskPriority, resuming: bool, since: Millis) -> Waiting {
     Waiting { key: Key::Task(key.into()), priority, resuming, since }
@@ -40,180 +41,59 @@ fn fine() -> MacState {
 fn memory_holds_every_start_and_the_cpu_only_new_ones() {
     let new = waiting("new", TaskPriority::Normal, false, 0);
     let resumed = waiting("resumed", TaskPriority::Normal, true, 0);
-    assert_eq!(decide(&new, 0, 6, &fine(), None, SPACING, 0), Ok(()));
+    assert_eq!(decide(&new, 0, 6, &fine(), 0, None, SPACING, MIN), Ok(()));
 
-    let mut tight = fine();
-    tight.step(&Machine { memory_free_percent: Some(3), cpus: 11, ..Machine::default() }, SAMPLE);
-    assert!(matches!(decide(&resumed, 0, 6, &tight, None, SPACING, SAMPLE), Err(Hold::Memory { health: Health::AtLimit, free: Some(3) })));
+    let mut short = fine();
+    short.step(&Machine { memory_free_percent: Some(3), cpus: 11, ..Machine::default() }, SAMPLE);
+    assert_eq!(decide(&resumed, 0, 6, &short, 0, None, SPACING, MIN), Err(Hold::Memory { why: NoRoom::Free { free: 3 }, free: Some(3) }));
 
     let mut busy = fine();
     (busy.cpu_busy, busy.load) = (true, 52.0);
-    assert!(matches!(decide(&new, 0, 6, &busy, None, SPACING, 0), Err(Hold::Cpu { cpus: 11, .. })));
-    assert_eq!(decide(&resumed, 0, 6, &busy, None, SPACING, 0), Ok(()), "the CPU only holds new starts");
+    assert!(matches!(decide(&new, 0, 6, &busy, 0, None, SPACING, MIN), Err(Hold::Cpu { cpus: 11, .. })));
+    assert_eq!(decide(&resumed, 0, 6, &busy, 0, None, SPACING, MIN), Ok(()), "the CPU only holds new starts");
 }
 
 #[test]
 fn one_start_a_minute_and_never_past_the_limit() {
     let new = waiting("new", TaskPriority::Normal, false, 0);
-    assert_eq!(decide(&new, 6, 6, &fine(), None, SPACING, 0), Err(Hold::Slots { working: 6, limit: 6 }));
-    assert_eq!(decide(&new, 2, 6, &fine(), Some(0), SPACING, 59_000), Err(Hold::Spacing { until: SPACING }));
-    assert_eq!(decide(&new, 2, 6, &fine(), Some(0), SPACING, SPACING), Ok(()));
+    assert_eq!(decide(&new, 6, 6, &fine(), 0, None, SPACING, MIN), Err(Hold::Slots { working: 6, limit: 6 }));
+    assert_eq!(decide(&new, 2, 6, &fine(), 0, Some(MIN), SPACING, MIN + 59_000), Err(Hold::Spacing { until: MIN + SPACING }));
+    assert_eq!(decide(&new, 2, 6, &fine(), 0, Some(MIN), SPACING, MIN + SPACING), Ok(()));
 }
 
+/// An hour of memory swinging between 9 % and 22 % free every 3 minutes, sampled every 10 s, with
+/// a task waiting the whole time: no card for the user, and a start only once every sample of the
+/// last minute had 20 % free.
 #[test]
-fn the_learned_limit_drops_below_what_hit_the_limit_and_climbs_one_every_5_fine_minutes() {
-    let auto = Limit::Auto { max: 6 };
-    let mut learned = Learned::default();
-    assert_eq!(learned.limit(auto), 6);
-    learned.at_limit(6);
-    assert_eq!(learned.limit(auto), 5);
-    learned.learn(auto, Health::Fine, true, 0);
-    learned.learn(auto, Health::Fine, true, 4 * MIN);
-    assert_eq!(learned.limit(auto), 5);
-    learned.learn(auto, Health::Tight, true, 4 * MIN + SAMPLE);
-    learned.learn(auto, Health::Fine, true, 5 * MIN);
-    learned.learn(auto, Health::Fine, true, 9 * MIN);
-    assert_eq!(learned.limit(auto), 5, "the climb starts again after the Mac was not fine");
-    learned.learn(auto, Health::Fine, false, 10 * MIN);
-    learned.learn(auto, Health::Fine, true, 11 * MIN);
-    learned.learn(auto, Health::Fine, true, 16 * MIN);
-    assert_eq!(learned.limit(auto), 6);
-    assert_eq!(learned.cap, None, "back at the automatic limit it follows it again");
-    learned.at_limit(1);
-    assert_eq!(learned.limit(auto), 1, "always at least one");
-}
-
-#[test]
-fn a_number_the_user_chose_is_the_limit_whatever_the_gate_learned() {
-    let mut learned = Learned::default();
-    learned.at_limit(3);
-    assert_eq!(learned.limit(Limit::Auto { max: 4 }), 2);
-    assert_eq!(learned.limit(Limit::Fixed(4)), 4);
-    learned.learn(Limit::Fixed(4), Health::Fine, true, 0);
-    learned.learn(Limit::Fixed(4), Health::Fine, true, 60 * MIN);
-    assert_eq!(learned.cap, Some(2), "a fixed number learns nothing");
-}
-
-/// The Mac's memory on 9 October 2026 from 17:35, as `machine-samples/2026-10-09.csv` recorded it:
-/// minutes since 17:35, the health from then on, and the nodes the gate counted as working.
-const OCTOBER_9: &[(Millis, Health, usize)] = &[
-    (0, Health::Tight, 4), (1, Health::AtLimit, 4), (2, Health::Tight, 3),
-    (57, Health::Fine, 2), (59, Health::Tight, 3), (61, Health::AtLimit, 3), (62, Health::Tight, 3),
-    (66, Health::Fine, 3), (74, Health::Tight, 3), (81, Health::Fine, 3), (82, Health::Tight, 3),
-    (91, Health::Fine, 3), (96, Health::Tight, 3), (101, Health::Fine, 3), (105, Health::Tight, 3),
-    (122, Health::Fine, 3), (123, Health::Tight, 2), (150, Health::Fine, 2), (158, Health::Tight, 2),
-    (165, Health::Fine, 2), (182, Health::Fine, 2),
-];
-
-/// The learned limit every minute of `OCTOBER_9`, with tasks queued the whole time.
-fn october_9(setting: Limit) -> Vec<(Millis, u32)> {
-    let mut learned = Learned::default();
-    let mut health = Health::Fine;
-    let mut limits = vec![];
-    for minute in 0..=OCTOBER_9.last().unwrap().0 {
-        if let Some(&(_, next, working)) = OCTOBER_9.iter().find(|(at, ..)| *at == minute) {
-            if next == Health::AtLimit && health != Health::AtLimit {
-                learned.at_limit(working);
-            }
-            health = next;
-        }
-        for sample in 0..6 {
-            learned.learn(setting, health, true, minute * MIN + sample * SAMPLE);
-        }
-        limits.push((minute, learned.limit(setting)));
-    }
-    limits
-}
-
-fn clock(minute: Millis) -> String {
-    let at = 17 * 60 + 35 + minute;
-    format!("{:02}:{:02}", at / 60, at % 60)
-}
-
-/// When the limit changed: every minute it differs from the minute before.
-fn changes(limits: &[(Millis, u32)]) -> Vec<(String, u32)> {
-    limits.windows(2).filter(|pair| pair[0].1 != pair[1].1).map(|pair| (clock(pair[1].0), pair[1].1)).collect()
-}
-
-#[test]
-fn in_automatic_the_limit_october_9_lowered_to_3_and_2_climbs_back_by_itself() {
-    let limits = october_9(Limit::Auto { max: 4 });
-    assert_eq!(changes(&limits), [
-        ("17:36".into(), 3), ("18:36".into(), 2), ("18:46".into(), 3), ("20:10".into(), 4),
-    ], "it drops at each AtLimit and climbs one step every 5 minutes the Mac stays fine");
-}
-
-/// What an hour of memory swinging between `low` and `high` every 3 minutes does, sampled every
-/// 10 s: the notices the orchestrator gets, the cards the user gets, and how many starts the gate
-/// lets through, once the Mac entered pressure, with a task waiting the whole time.
-#[derive(Debug, Default, PartialEq)]
-struct Hour {
-    /// How many times the Mac went from fine to short of memory.
-    pressured: usize,
-    cards: usize,
-    withdrawn: usize,
-    admitted: usize,
-}
-
-fn swing(low: u32, high: u32) -> Hour {
+fn memory_swinging_for_an_hour_puts_no_card_in_front_of_the_user_and_admits_only_after_a_minute_of_room() {
+    const SWING: Millis = 3 * MIN;
     let mut mac = MacState::default();
     let mut incident = None;
-    let mut hour = Hour::default();
+    let mut actions = vec![];
+    let mut admitted = vec![];
     let head = waiting("queued", TaskPriority::Normal, false, 0);
     let mut last_admission = None;
     let mut now = 0;
     while now < 60 * MIN {
-        let free = if (now / (3 * MIN)) % 2 == 0 { low } else { high };
+        let free = if (now / SWING) % 2 == 0 { 9 } else { 22 };
         let machine = Machine { at: now, memory_free_percent: Some(free), cpus: 11, load: [5.0; 3], ..Machine::default() };
-        if let Some((Health::Fine, _)) = mac.step(&machine, now) {
-            hour.pressured += 1;
-        }
-        let (next, actions) = step_on(incident, &machine, None, &[], false, now);
+        mac.step(&machine, now);
+        let (next, taken) = step_on(incident, &machine, None, &[], false, now);
         incident = next;
-        for action in actions {
-            match action {
-                Action::Raise { .. } => hour.cards += 1,
-                Action::Withdraw(_) => hour.withdrawn += 1,
-                _ => {}
-            }
-        }
-        if hour.pressured > 0 && decide(&head, 0, 6, &mac, last_admission, SPACING, now).is_ok() {
-            hour.admitted += 1;
+        actions.extend(taken);
+        if decide(&head, 0, 6, &mac, 0, last_admission, SPACING, now).is_ok() {
+            admitted.push(now);
             last_admission = Some(now);
         }
         now += SAMPLE;
     }
-    hour
+    assert!(actions.is_empty(), "memory never puts a card in front of the user: {actions:?}");
+    assert_eq!(admitted.len(), 30, "three starts a minute apart in each of the ten swings up: {admitted:?}");
+    assert!(admitted.iter().all(|at| (at / SWING) % 2 == 1 && at % SWING >= ROOM_SINCE_SWING), "{admitted:?}");
 }
 
-#[test]
-fn memory_swinging_between_9_and_16_percent_for_an_hour_resumes_nothing_and_enters_the_pressure_once() {
-    let hour = swing(9, 16);
-    assert_eq!(hour.pressured, 1, "only entering the pressure: {hour:?}");
-    assert_eq!((hour.cards, hour.withdrawn, hour.admitted), (0, 0, 0), "memory never puts a card in front of the user: {hour:?}");
-}
-
-#[test]
-fn memory_swinging_between_9_and_22_percent_never_stays_fine_long_enough_to_count_as_recovered() {
-    let hour = swing(9, 22);
-    assert_eq!(hour.pressured, 1, "only entering the pressure: {hour:?}");
-    assert_eq!((hour.cards, hour.withdrawn, hour.admitted), (0, 0, 0), "memory never puts a card in front of the user: {hour:?}");
-}
-
-#[test]
-fn memory_back_above_20_percent_for_5_minutes_recovers_once_and_lets_the_queue_go() {
-    let mut mac = MacState::default();
-    let mut recovered = 0;
-    let mut now = 0;
-    for free in std::iter::repeat_n(8, 6).chain(std::iter::repeat_n(30, 32)) {
-        if let Some((_, Health::Fine)) = mac.step(&Machine { memory_free_percent: Some(free), cpus: 11, load: [5.0; 3], ..Machine::default() }, now) {
-            recovered += 1;
-        }
-        now += SAMPLE;
-    }
-    assert_eq!(mac.health, Health::Fine);
-    assert_eq!(recovered, 1);
-}
+/// The last sample at 9 % is 10 s before the swing up, so the minute after it ends 50 s in.
+const ROOM_SINCE_SWING: Millis = 50_000;
 
 struct Home(crate::test_support::Directory);
 impl Drop for Home {
@@ -333,8 +213,10 @@ fn a_review_follows_the_priority_of_the_task_it_reviews() {
     assert_eq!(reopened.state().unwrap().tasks[&TaskId::from("review")].priority, TaskPriority::High, "kept in the store");
 }
 
+/// The learned limit is gone: two minutes of macOS warning with 6 nodes working hold new starts,
+/// and the automatic limit stays what the hardware takes.
 #[test]
-fn a_macos_warning_held_with_31_percent_free_and_6_nodes_working_lowers_the_limit_to_5() {
+fn a_macos_warning_with_31_percent_free_and_6_nodes_working_holds_new_starts_and_keeps_the_automatic_limit() {
     let (_home, domain) = world();
     domain.live.gate.tune(Tuning { spacing: SPACING, limit: Some(Limit::Auto { max: 6 }) });
     let base = alondra_core::now_millis();
@@ -350,8 +232,9 @@ fn a_macos_warning_held_with_31_percent_free_and_6_nodes_working_lowers_the_limi
         now += SAMPLE;
     }
     let snapshot = domain.live.gate.snapshot(&domain, now).unwrap();
-    assert_eq!(snapshot.mac.health, Health::AtLimit);
-    assert_eq!((snapshot.working, snapshot.limit), (6, 5));
+    assert_eq!(snapshot.mac.room(0, now), Err(NoRoom::Pressure(alondra_core::MemoryPressure::Warning)));
+    assert_eq!((snapshot.working, snapshot.limit), (6, 6));
+    assert!(domain.live.gate.live(&domain, now).unwrap().tight, "no room for new starts");
 }
 
 #[test]
@@ -389,21 +272,21 @@ fn the_log_says_why_the_queue_waits_and_repeats_it_only_when_its_cause_changes_o
     let slots = Hold::Slots { working: 3, limit: 3 };
     assert_eq!(hold_line(4, "t-x", TaskPriority::High, &slots, &working, &on_user, 0).unwrap(),
         "the fleet gate holds 4 waiting (next t-x, High): 3 of 3 working (t-a, t-b, 1 starting); waiting on the user, not counted: t-c");
-    assert_eq!(hold_line(1, "t-x", TaskPriority::Low, &Hold::Memory { health: Health::Tight, free: Some(12) }, &[], &[], 2).unwrap(),
-        "the fleet gate holds 1 waiting (next t-x, Low): the Mac's memory is Tight (12% free); 2 node(s) paused");
+    let margin = Hold::Memory { why: NoRoom::Margin { margin: GIB / 2, needed: 2 * GIB }, free: Some(42) };
+    assert_eq!(hold_line(1, "t-x", TaskPriority::Low, &margin, &[], &[], 2).unwrap(),
+        "the fleet gate holds 1 waiting (next t-x, Low): memory has no room for one more node: 0.5 GiB left before macOS's memory warning, 2 GiB needed (42% free); 2 node(s) paused");
     assert_eq!(hold_line(1, "t-x", TaskPriority::Normal, &Hold::Cpu { load: 52.4, cpus: 11 }, &[], &[], 0).unwrap(),
         "the fleet gate holds 1 waiting (next t-x, Normal): the CPU is overloaded (load 52 on 11 cores), which holds new starts");
     assert_eq!(hold_line(1, "t-x", TaskPriority::Normal, &Hold::Spacing { until: 5 }, &[], &[], 0), None, "the minute between starts is not news");
 
     let mut told = Told::default();
-    let tight = |free| Cause::of(&Hold::Memory { health: Health::Tight, free: Some(free) });
+    let tight = |free| Cause::of(&Hold::Memory { why: NoRoom::Free { free }, free: Some(free) });
     assert!(told.due(tight(12), 0));
     for (second, free) in (10..).step_by(10).zip([11, 9, 13, 8, 12]) {
         assert!(!told.due(tight(free), second * 1_000), "free memory moving from sample to sample is the same cause");
     }
     assert!(!told.due(tight(7), 9 * MIN), "the same cause within 10 minutes");
     assert!(told.due(tight(7), 10 * MIN), "said again after 10 minutes");
-    assert!(told.due(Cause::of(&Hold::Memory { health: Health::AtLimit, free: Some(7) }), 10 * MIN + 1), "Tight to AtLimit is news at once");
     assert!(told.due(Cause::of(&Hold::Cpu { load: 52.4, cpus: 11 }), 10 * MIN + 2), "a new cause at once");
     assert!(!told.due(Cause::of(&Hold::Cpu { load: 61.0, cpus: 11 }), 10 * MIN + 3), "a different load is the same cause");
     assert!(!told.due(None, 11 * MIN));
@@ -448,8 +331,8 @@ fn with_a_fixed_4_an_afternoon_of_memory_pressure_ends_with_4_working_once_the_m
     let now = base + 20 * MIN;
     sample(&domain, 50, base + 11 * MIN, now);
     let snapshot = domain.live.gate.snapshot(&domain, now).unwrap();
-    assert_eq!((snapshot.mac.health, snapshot.working, snapshot.limit), (Health::Fine, 2, 4),
-        "reaching its limit with 4 and then 3 working never lowers the number the user chose");
+    assert_eq!((snapshot.mac.room(0, now), snapshot.working, snapshot.limit), (Ok(()), 2, 4),
+        "memory short with 4 and then 3 working never lowers the number the user chose");
     for id in ["t5", "t6"] {
         assert_eq!(ask(&domain, id, now), Ok(()), "{id} takes a free slot of the 4");
         start(&domain, id, now);
@@ -457,22 +340,39 @@ fn with_a_fixed_4_an_afternoon_of_memory_pressure_ends_with_4_working_once_the_m
     assert_eq!(domain.live.gate.snapshot(&domain, now).unwrap().working, 4);
 }
 
+/// The Mac with `margin_gib` left before macOS's warning, sampled every 10 s from `from` until `to`.
+fn margin(domain: &DomainRuntime, margin_gib: f64, from: Millis, to: Millis) {
+    const PAGE: u64 = 16_384;
+    const WEIGHED: u64 = 900_000;
+    let compressor = ((WEIGHED as f64 - margin_gib * ((1 << 30) / PAGE) as f64) / 2.0) as u64;
+    let counters = alondra_core::MemoryCompressor { page_size: PAGE, uncompressed_pages: WEIGHED - compressor, compressor_pages: compressor, ..Default::default() };
+    let mut now = from;
+    while now < to {
+        crate::machine_watch::pace(domain, &Machine { at: now, memory_free_percent: Some(40), memory_pressure: Some(alondra_core::MemoryPressure::Normal),
+            compressor: Some(counters), cpus: 11, load: [5.0; 3], ..Machine::default() });
+        now += SAMPLE;
+    }
+}
+
+/// Nodes admitted in the last 3 minutes do not show their memory yet: with 4 of them the next start
+/// needs 5 GiB between the Mac and macOS's warning, and 4.5 GiB is enough once they are 3 minutes in.
 #[test]
-fn in_automatic_the_same_afternoon_lowers_the_limit_and_5_fine_minutes_raise_it_again() {
+fn with_4_nodes_admitted_in_the_last_3_minutes_the_next_start_needs_5_gib_of_margin() {
     let (_home, domain) = world();
-    domain.live.gate.tune(Tuning { spacing: 0, limit: Some(Limit::Auto { max: 4 }) });
-    for id in ["t1", "t2", "t3", "t4"] {
+    domain.live.gate.tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(6)) });
+    for id in ["t1", "t2", "t3", "t4", "t5"] {
         create(&domain, id);
     }
     let base = alondra_core::now_millis();
+    margin(&domain, 4.5, base - MIN, base + SAMPLE);
     for id in ["t1", "t2", "t3", "t4"] {
-        assert_eq!(ask(&domain, id, base), Ok(()));
+        assert_eq!(ask(&domain, id, base), Ok(()), "{id}");
         start(&domain, id, base);
     }
-    sample(&domain, 3, base, base + MIN);
-    assert_eq!(domain.live.gate.snapshot(&domain, base + MIN).unwrap().limit, 3);
-    domain.live.gate.forget_learned();
-    assert_eq!(domain.live.gate.snapshot(&domain, base + MIN).unwrap().limit, 4, "choosing a limit forgets what the gate learned");
+    assert_eq!(ask(&domain, "t5", base), Err(Hold::Memory { why: NoRoom::Margin { margin: 4 * GIB + GIB / 2, needed: 5 * GIB }, free: Some(40) }));
+    margin(&domain, 4.5, base + SAMPLE, base + 3 * MIN);
+    assert_eq!(ask(&domain, "t5", base + 3 * MIN - 1), Err(Hold::Memory { why: NoRoom::Margin { margin: 4 * GIB + GIB / 2, needed: 5 * GIB }, free: Some(40) }));
+    assert_eq!(ask(&domain, "t5", base + 3 * MIN), Ok(()), "the four are no longer in flight");
 }
 
 #[test]

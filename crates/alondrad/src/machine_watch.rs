@@ -8,9 +8,9 @@
 //! was launched on, so a repository on an external disk is watched too.
 //!
 //! Memory opens no incident: the user can do nothing about it that Alondra does not do already.
-//! `pace` holds launches, pauses nodes and resumes them as the Mac's memory comes and goes. The
-//! orchestrator hears of neither: it has nothing to do about the machine, and `launch` says why a
-//! task is queued.
+//! `pace` takes each sample into `MacState`, from which the gate reads whether there is room for
+//! one more node; memory never pauses a working node. The orchestrator hears of neither: it has
+//! nothing to do about the machine, and `launch` says why a task is queued.
 //!
 //! With the disk full the domain may not be able to write the card, so the user then hears it by
 //! a push, which writes nothing to disk.
@@ -27,7 +27,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use crate::domain_runtime::DomainRuntime;
-use crate::machine_state::{Health, MacState};
+use crate::machine_state::{MacState, NoRoom};
 use crate::usage_pause::Alerts;
 
 pub(crate) const FILE: &str = "machine-incident.json";
@@ -68,7 +68,8 @@ struct Record {
     /// Mount points of the volumes nodes were launched on, other than the Mac's own disk.
     #[serde(default)]
     volumes: BTreeSet<PathBuf>,
-    #[serde(default)]
+    /// Measured again for a minute after every start, so never saved.
+    #[serde(skip)]
     mac: MacState,
     #[serde(default)]
     sampled_at: Millis,
@@ -245,18 +246,18 @@ impl MachineWatch {
         self.record.lock().expect("machine watch poisoned").mac.clone()
     }
 
-    /// Takes a new sample into the Mac's health; a sample already taken changes nothing.
-    fn sample(&self, machine: &Machine) -> Option<(Health, Health)> {
+    /// Takes a new sample; returns whether there is room for one more node when that changed. A
+    /// sample already taken changes nothing.
+    fn sample(&self, machine: &Machine, now: Millis) -> Option<Result<(), NoRoom>> {
         let mut record = self.record.lock().expect("machine watch poisoned");
         if machine.at != 0 && machine.at == record.sampled_at {
             return None;
         }
         record.sampled_at = machine.at;
-        let change = record.mac.step(machine, machine.at);
-        if change.is_some() {
-            self.save(&record);
-        }
-        change
+        let before = record.mac.room(0, now);
+        record.mac.step(machine, now);
+        let after = record.mac.room(0, now);
+        (before.is_ok() != after.is_ok()).then_some(after)
     }
 
     fn home(&self) -> Option<&Path> {
@@ -409,29 +410,22 @@ async fn act(domain: &DomainRuntime, alerts: &impl Alerts, actions: Vec<Action>)
     }
 }
 
-fn worse(from: Health, to: Health) -> bool {
-    let rank = |health| match health { Health::Fine => 0, Health::Tight => 1, Health::AtLimit => 2 };
-    rank(to) > rank(from)
-}
-
-/// A new sample into the Mac's health: a real change of health tells the gate, and reaching the
-/// limit lowers how many nodes the gate lets work.
+/// A new sample of the Mac: kept in the samples file, and when memory gains or loses room for one
+/// more node, one line in the log and a look of the gate.
 pub(crate) fn pace(domain: &DomainRuntime, machine: &Machine) {
     let watch = &domain.live.machine_watch;
-    let change = watch.sample(machine);
-    let mac = watch.mac();
     let now = if machine.at == 0 { now_millis() } else { machine.at };
+    let change = watch.sample(machine, now);
+    let mac = watch.mac();
     let working = domain.state().map(|state| crate::fleet_gate::working_tasks(&state).len()).unwrap_or(0);
     if let Some(home) = watch.home() {
         crate::machine_state::record(&home.join(crate::machine_state::SAMPLES_DIR), now, &mac, working);
     }
-    let Some((from, to)) = change else { return };
-    log!("the Mac's memory went from {from:?} to {to:?} ({:?}% free, {working} node(s) working)", mac.free_percent);
-    if to == Health::AtLimit {
-        domain.live.gate.at_limit(domain, working);
-    }
-    if worse(from, to) {
-        domain.live.gate.saturated(domain, working, now);
+    let Some(room) = change else { return };
+    let free = mac.free_percent.map_or_else(|| "unknown".into(), |free| format!("{free}%"));
+    match room {
+        Ok(()) => log!("memory has room for one more node again ({free} free, {working} node(s) working)"),
+        Err(why) => log!("memory has no room for one more node: {why} ({free} free, {working} node(s) working); running nodes go on"),
     }
     domain.live.gate.poke();
 }
@@ -673,8 +667,8 @@ mod tests {
     }
 
     /// 9 Oct 2026: «Libera memoria: macOS avisa de presión de memoria (38% libre)», with
-    /// «Responder al orquestador», asked the user for what Alondra already does by pausing and
-    /// resuming the fleet. Memory, however long and however hard, opens no incident.
+    /// «Responder al orquestador», asked the user for what Alondra already does by holding new
+    /// starts. Memory, however long and however hard, opens no incident.
     #[test]
     fn memory_under_pressure_for_hours_with_nodes_waiting_opens_no_incident_and_no_card() {
         let stopped = [Waiter { reason: "killed for lack of memory".into(), ..waiter("s1", "Lumo", 0) }];
@@ -688,7 +682,7 @@ mod tests {
             assert!(next.is_none() && actions.is_empty(), "no incident, card or push at {now}: {actions:?}");
             incident = next;
         }
-        assert_eq!(mac.health, Health::AtLimit, "the gauges still see the pressure, and the gate paces by them");
+        assert_eq!(mac.room(0, 3 * 60 * MIN), Err(NoRoom::Pressure(MemoryPressure::Critical)), "the gauges still see the pressure, and the gate holds new starts by them");
     }
 
     #[test]
@@ -827,9 +821,9 @@ mod tests {
         Machine { at, memory_pressure: Some(if under { MemoryPressure::Critical } else { MemoryPressure::Normal }), ..machine(100 * GB, free) }
     }
 
-    fn holds(domain: &DomainRuntime) -> bool {
+    fn holds(domain: &DomainRuntime, now: Millis) -> bool {
         let head = crate::fleet_gate::Waiting { key: crate::fleet_gate::Key::Task("t".into()), priority: Default::default(), resuming: false, since: 0 };
-        crate::fleet_gate::decide(&head, 0, 4, &domain.live.machine_watch.mac(), None, 0, 0).is_err()
+        crate::fleet_gate::decide(&head, 0, 4, &domain.live.machine_watch.mac(), 0, None, 0, now).is_err()
     }
 
     #[tokio::test]
@@ -845,19 +839,21 @@ mod tests {
             Some(pressed(clock.0, clock.1))
         }, told.clone(), Duration::from_millis(1)));
 
-        until("the Mac at its limit", || domain.live.machine_watch.mac().health == Health::AtLimit).await;
-        assert!(holds(&domain), "the gate holds starts while memory is at its limit");
-        until("an hour of pressure", || clock.lock().unwrap().0 >= 60 * MIN).await;
-        assert!(holds(&domain));
+        let now = || clock.lock().unwrap().0;
+        until("a minute of pressure", || now() >= 2 * MIN).await;
+        assert!(holds(&domain, now()), "the gate holds starts while memory has no room");
+        until("an hour of pressure", || now() >= 60 * MIN).await;
+        assert!(holds(&domain, now()));
         assert!(domain.live.machine_watch.incident().is_none());
         assert!(open_machine_cards(&domain).is_empty(), "{:?}", open_machine_cards(&domain));
         assert!(told.0.lock().unwrap().is_empty(), "no push: {:?}", told.0.lock().unwrap());
         assert!(orchestrator_inbox(&domain).is_empty(), "pacing asks nothing of the orchestrator: {:?}", orchestrator_inbox(&domain));
 
         clock.lock().unwrap().1 = false;
-        until("the Mac fine again", || domain.live.machine_watch.mac().health == Health::Fine).await;
+        let back = now();
+        until("a minute of room", || now() >= back + 2 * MIN).await;
         watcher.abort();
-        assert!(!holds(&domain), "the gate lets nodes start and resume once memory is back");
+        assert!(!holds(&domain, now()), "the gate lets nodes start and resume once memory is back");
         assert!(orchestrator_inbox(&domain).is_empty(), "{:?}", orchestrator_inbox(&domain));
         let state = domain.state().unwrap();
         let cards = state.interactions.values().filter(|card| card.id.0.starts_with(MACHINE_PREFIX) && matches!(card.payload, InteractionPayload::Question { .. })).count();

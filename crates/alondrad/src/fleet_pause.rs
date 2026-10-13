@@ -1,37 +1,27 @@
-//! Pausing working nodes when the Mac runs out of memory and bringing them back through the gate.
-//! While the Mac is AtLimit one node is paused at a time, a minute apart: the lowest priority, then
-//! the one cut for memory the fewest times, then the one whose turn started last; never a node
-//! waiting on the user, never the last one working, and nobody when that node was already cut
-//! `SPARED_AFTER` times, unless macOS reports critical pressure. Pausing interrupts the node's turn
-//! and then stops what its shells left running; a turn the node starts by itself while paused is
-//! cut again. Paused nodes wait in the gate's queue ahead of new starts of their priority; they
-//! come back one at a time once the Mac has been fine for 5 minutes, a step apart that doubles
-//! whenever a resume saturates the Mac again. See docs/fleet-pacing.md §7.
+//! Paused nodes and bringing them back through the gate. Memory never pauses a working node: it
+//! only holds new starts, since cutting a build that uses a lot of memory only makes it run again.
+//! A node is paused by the user, by its own wait for the machine, for Claude usage or after an API
+//! error. A pause by the user interrupts the node's turn and then stops what its shells left
+//! running; a turn the node starts by itself while held is cut again. Paused nodes wait in the
+//! gate's queue ahead of new starts of their priority and come back as starts do, one a minute,
+//! when there is a slot and room. A pause an older daemon made for memory returns at once and
+//! comes back the same way. See docs/fleet-pacing.md §7.
 use crate::domain_runtime::DomainRuntime;
-use crate::machine_state::Health;
-use alondra_core::domain::{ApiRetry, DomainState, NodePhase, TaskId, TaskPriority, TaskState};
+use alondra_core::domain::{ApiRetry, DomainState, TaskId, TaskState};
 use alondra_core::Millis;
 use serde::{Deserialize, Serialize};
-use std::cmp::Reverse;
 use std::collections::BTreeMap;
 
-pub(crate) const PAUSE_EVERY: Millis = 60_000;
 const TERMINATE_AFTER: Millis = 10_000;
 const KILL_AFTER: Millis = 20_000;
-pub(crate) const STEP: Millis = 3 * 60_000;
-const STEP_MAX: Millis = 30 * 60_000;
-/// Saturation this soon after a resume is blamed on it.
-const BLAME_WINDOW: Millis = 10 * 60_000;
-const CALM_RESET: Millis = 30 * 60_000;
 /// A wait the Mac's gauges do not explain, such as a build queue, gets this long before it returns.
 pub(crate) const DECLARED_GRACE: Millis = 5 * 60_000;
-/// Cuts for memory after which a node is let finish what it reruns, unless macOS reports critical
-/// pressure.
-pub(crate) const SPARED_AFTER: u32 = 2;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum Reason {
+    /// Only an older daemon paused for memory: such a node returns at once and comes back as soon
+    /// as the gate admits it. Kept so the pauses it left can be read.
     Memory,
     /// The node said it waits for the machine.
     Declared { reason: String },
@@ -89,47 +79,6 @@ impl Paused {
     }
 }
 
-/// The time between two resumes, doubled when a resume is followed by saturation and set back once
-/// the Mac stays calm.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct Step {
-    pub step: Millis,
-    pub last_resume: Option<Millis>,
-    pub saturated_at: Option<Millis>,
-}
-
-impl Default for Step {
-    fn default() -> Self {
-        Self { step: STEP, last_resume: None, saturated_at: None }
-    }
-}
-
-impl Step {
-    /// The Mac went Tight or AtLimit: true when a recent resume is to blame, which doubles the step.
-    pub(crate) fn saturated(&mut self, now: Millis) -> bool {
-        self.saturated_at = Some(now);
-        let blamed = self.last_resume.is_some_and(|at| now - at <= BLAME_WINDOW);
-        if blamed {
-            self.step = (self.step * 2).min(STEP_MAX);
-        }
-        blamed
-    }
-
-    pub(crate) fn calm(&mut self, now: Millis) {
-        if self.step != STEP && self.saturated_at.is_none_or(|at| now - at >= CALM_RESET) {
-            self.step = STEP;
-        }
-    }
-
-    pub(crate) fn resumed(&mut self, now: Millis) {
-        self.last_resume = Some(now);
-    }
-
-    pub(crate) fn next_at(&self) -> Option<Millis> {
-        self.last_resume.map(|at| at + self.step)
-    }
-}
-
 /// Everything about pauses the gate keeps across restarts.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Pauses {
@@ -137,17 +86,12 @@ pub(crate) struct Pauses {
     /// saved them in the gate's file; they are still read once, never written.
     #[serde(default, skip_serializing)]
     pub paused: BTreeMap<String, Paused>,
-    pub step: Step,
-    pub last_pause: Option<Millis>,
     /// Sessions admitted back while unreachable: told to carry on once they connect again.
     #[serde(default)]
     pub owed: BTreeMap<String, String>,
     /// Queued launches the user paused, with what the queue held for them.
     #[serde(default)]
     pub held: BTreeMap<TaskId, Held>,
-    /// By session: how many times memory cut the node's work since its turn last ended.
-    #[serde(default)]
-    pub cuts: BTreeMap<String, u32>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -157,36 +101,12 @@ pub(crate) struct Held {
     pub since: Millis,
 }
 
-/// A working node that could be paused.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct Candidate {
-    pub session: String,
-    pub task: TaskId,
-    pub priority: TaskPriority,
-    pub turn_since: Millis,
-    pub waits_on_user: bool,
-    pub cuts: u32,
-}
-
-/// The node to pause, given every node working: none while only one works. A node already cut
-/// reruns what was cut, so the latest turn is not the one that loses the least: the fewest cuts go
-/// first. When the node due is one cut `SPARED_AFTER` times, nobody is paused and it finishes,
-/// unless macOS reports critical pressure.
-pub(crate) fn choose(working: &[Candidate], critical: bool) -> Option<&Candidate> {
-    if working.len() < 2 {
-        return None;
-    }
-    let due = working.iter().filter(|node| !node.waits_on_user)
-        .max_by_key(|node| (node.priority, Reverse(node.cuts), node.turn_since, node.session.clone()))?;
-    (critical || due.cuts < SPARED_AFTER).then_some(due)
-}
-
 /// What a node is told when it comes back.
 pub(crate) fn resume_text(paused: &Paused, now: Millis) -> String {
     let at = crate::usage_pause::clock_text(paused.since, now, false);
     let cut = paused.cut.as_ref().map(|cut| format!(", in the middle of `{cut}`")).unwrap_or_default();
     match &paused.reason {
-        Reason::Memory => format!("Alondra stopped you at {at} because the Mac ran out of memory{cut}. The Mac has been fine for 5 minutes: carry on with your task and run again what was cut."),
+        Reason::Memory => format!("Alondra stopped you at {at} because the Mac ran out of memory{cut}. The Mac has room again: carry on with your task and run again what was cut."),
         Reason::Declared { .. } => format!("You waited for the machine since {at}. The Mac is fine again: carry on with your task; if it still cannot go on, call wait_for_machine again with the reason."),
         Reason::Usage => "Your Claude usage limit has reset. Carry on with what you were doing.".into(),
         Reason::ApiError(retry) => crate::api_failures::resume_text(&retry.error, retry.detail.as_deref()),
@@ -201,34 +121,8 @@ fn cut_of(domain: &DomainRuntime, session: &str) -> Option<String> {
     Some(crate::node_reports::short_label(tool.summary.as_deref().unwrap_or(&tool.name)))
 }
 
-pub(crate) fn waits_on_user(domain: &DomainRuntime, state: &DomainState, task: &TaskId, session: &str) -> bool {
-    state.tasks.get(task).is_some_and(|task| task.state == TaskState::NeedsYou)
-        || crate::domain_holds::waits_on_user(state, session)
-        || domain.live.node(session).is_some_and(|node| node.waiting_permission)
-}
-
 pub(crate) fn session_of(state: &DomainState, task: &TaskId) -> Option<String> {
     state.tasks.get(task)?.agent_id.as_ref().map(|agent| agent.0.clone())
-}
-
-/// The nodes working now that are not paused already.
-pub(crate) fn candidates(domain: &DomainRuntime, state: &DomainState, pauses: &Pauses) -> Vec<Candidate> {
-    crate::fleet_gate::busy_tasks(state).into_iter().filter_map(|task| {
-        let session = session_of(state, &task)?;
-        if pauses.paused.contains_key(&session) {
-            return None;
-        }
-        let reported = domain.live.mods.session(&session);
-        let turn_since = reported.and_then(|reported| reported.working_since.or(reported.started_at)).unwrap_or(0);
-        Some(Candidate {
-            waits_on_user: waits_on_user(domain, state, &task, &session),
-            priority: state.tasks.get(&task).map_or(TaskPriority::Normal, |task| task.priority),
-            cuts: pauses.cuts.get(&session).copied().unwrap_or(0),
-            session,
-            task,
-            turn_since,
-        })
-    }).collect()
 }
 
 /// Stops a node's turn and records it as paused.
@@ -242,10 +136,10 @@ pub(crate) fn stop(domain: &DomainRuntime, pauses: &mut Pauses, session: &str, t
     pauses.paused.insert(session.to_owned(), Paused { task, reason, since: now, cut, turn_since, cleanup: Cleanup::Pending, released: false });
 }
 
-/// One look at the pauses: forgets the nodes that went on or ended, stops again a node paused for
-/// memory or by the user that started a turn by itself, stops what interrupted nodes left running,
-/// and pauses one more node while the Mac is AtLimit.
-pub(crate) fn look(domain: &DomainRuntime, state: &DomainState, pauses: &mut Pauses, health: Health, critical: bool, now: Millis) {
+/// One look at the pauses: forgets the nodes that went on or ended, stops again a node paused by
+/// the user, or for memory by an older daemon, that started a turn by itself, and stops what
+/// interrupted nodes left running. It never pauses a working node.
+pub(crate) fn look(domain: &DomainRuntime, state: &DomainState, pauses: &mut Pauses, now: Millis) {
     pauses.paused.retain(|session, paused| {
         let open = state.tasks.get(&paused.task).is_some_and(|task| !task.archived && !task.state.terminal() && !matches!(task.state, TaskState::Closing))
             && session_of(state, &paused.task).as_deref() == Some(session.as_str())
@@ -267,24 +161,7 @@ pub(crate) fn look(domain: &DomainRuntime, state: &DomainState, pauses: &mut Pau
         open && !went_on
     });
     pauses.owed.retain(|session, _| pauses.paused.contains_key(session) || state.agents.contains_key(&alondra_core::domain::AgentId(session.clone())));
-    pauses.cuts.retain(|session, _| matches!(state.node_phase(&alondra_core::domain::AgentId(session.clone())),
-        Some(NodePhase::Starting { .. } | NodePhase::Working | NodePhase::Paused(_))));
     clean_up(domain, pauses, now);
-    match health {
-        Health::AtLimit => {
-            if pauses.last_pause.is_some_and(|at| now - at < PAUSE_EVERY) {
-                return;
-            }
-            let working = candidates(domain, state, pauses);
-            if let Some(victim) = choose(&working, critical).cloned() {
-                stop(domain, pauses, &victim.session, victim.task, Reason::Memory, now);
-                *pauses.cuts.entry(victim.session).or_default() += 1;
-                pauses.last_pause = Some(now);
-            }
-        }
-        Health::Fine => pauses.step.calm(now),
-        Health::Tight => {}
-    }
 }
 
 /// What the interruption left running in an interrupted node's shells: terminated after

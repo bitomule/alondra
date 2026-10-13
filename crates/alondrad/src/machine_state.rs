@@ -1,96 +1,94 @@
-//! How the Mac is doing, with hysteresis: memory decides between Fine, Tight and AtLimit, and the
-//! CPU load only decides whether new nodes may start. Entering pressure is quick (30 s, or one
-//! sample under 5 %); counting the Mac as recovered takes 20 % free without a break for
-//! `RECOVERY_WINDOW`, so memory swinging between 9 % and 16 % or 22 % never looks like a recovery.
-//! The pressure level macOS reports counts too, since it follows the compressor and swap and can
-//! be at warning with a third of memory free: warning for 30 s is Tight, warning for 2 min or one
-//! critical sample is AtLimit, and recovering also needs the pressure back to normal.
-//! To stop before that warning, the counters macOS weighs count too: it warns when the compressor
-//! passes half of the memory it weighs and clears below 40 %. At 40 % the Mac is Tight after 20 s;
-//! at 45 % for 30 s it is AtLimit. The margin against recent bursts is only recorded: from 9 to
-//! 12 Oct it alone held the fleet 18 % of the time with macOS at normal pressure, and foresaw 3 of
-//! 380 warnings the share did not.
-//! See docs/fleet-pacing.md.
+//! Whether the Mac has room for one more node. Memory never stops what already runs: it only
+//! answers, for the fleet gate, whether one more node may start or a paused one resume.
+//!
+//! There is room when every sample of the last `ROOM_WINDOW` has macOS at normal pressure and a
+//! margin to macOS's warning of at least 1 GiB, plus 1 GiB for each node admitted in the last
+//! 3 minutes, whose memory does not show yet. The margin is what XNU weighs: it warns once the
+//! compressor holds more pages than all uncompressed memory, so the margin is uncompressed minus
+//! compressor memory (`MemoryCompressor::margin`). Where the system gives no compressor counters,
+//! 20 % free stands in for it. Over 33,145 samples of 10–13 Oct this rule keeps starts open 92 % of
+//! the time with the Mac idle and macOS normal, where the hysteresis it replaced kept them open
+//! 42 %; a start it lets through by mistake costs at most one macOS warning, since nothing is paused.
+//!
+//! The window must be covered: a daemon that just started measures for a minute before it admits.
+//! The CPU load only holds new starts. See docs/fleet-pacing.md §1.
 use std::collections::VecDeque;
 
 use alondra_core::{Machine, MemoryCompressor, MemoryPressure, Millis};
-use serde::{Deserialize, Serialize};
 
-const TIGHT_BELOW: u32 = 15;
-const AT_LIMIT_BELOW: u32 = 10;
-const AT_ONCE_BELOW: u32 = 5;
-const FINE_FROM: u32 = 20;
-const PRESSURE_HOLDS: Millis = 30_000;
-const WARNING_HOLDS: Millis = 2 * 60_000;
-pub(crate) const RECOVERY_WINDOW: Millis = 5 * 60_000;
-pub(crate) const NEAR_SHARE: f64 = 0.40;
-const CROWDED_SHARE: f64 = 0.45;
-const CLEAR_SHARE: f64 = 0.35;
-const NEAR_HOLDS: Millis = 20_000;
-const BURST_SPAN: Millis = 60_000;
-const BURST_MEMORY: Millis = 30 * 60_000;
+/// How long memory must have had room before one more node starts.
+pub(crate) const ROOM_WINDOW: Millis = 60_000;
+const GIB: i64 = 1 << 30;
+/// The margin to macOS's warning kept with nobody starting, and again for each node in flight.
+const MARGIN_PER_NODE: i64 = GIB;
+/// Free memory that counts as room where the system gives no compressor counters.
+const ROOM_FREE: u32 = 20;
 const LOAD_BUSY_PER_CORE: f64 = 4.0;
 const LOAD_CALM_PER_CORE: f64 = 3.0;
 const LOAD_BUSY_HOLDS: Millis = 60_000;
 const LOAD_CALM_HOLDS: Millis = 2 * 60_000;
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum Health {
-    #[default]
-    Fine,
-    Tight,
-    AtLimit,
+/// Why one more node may not start.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum NoRoom {
+    /// The daemon has not seen a minute of samples yet.
+    Measuring,
+    Pressure(MemoryPressure),
+    /// The margin to macOS's warning, in bytes, and what the nodes in flight need.
+    Margin { margin: i64, needed: i64 },
+    /// Free memory, without compressor counters.
+    Free { free: u32 },
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+impl std::fmt::Display for NoRoom {
+    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let gib = |bytes: i64| bytes as f64 / GIB as f64;
+        match self {
+            NoRoom::Measuring => write!(out, "the daemon is measuring memory for its first minute"),
+            NoRoom::Pressure(pressure) => write!(out, "macOS reports {pressure:?} memory pressure"),
+            NoRoom::Margin { margin, needed } => write!(out, "{:.1} GiB left before macOS's memory warning, {:.0} GiB needed", gib(*margin), gib(*needed)),
+            NoRoom::Free { free } => write!(out, "{free}% free, {ROOM_FREE}% needed"),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Sample {
+    at: Millis,
+    pressure: Option<MemoryPressure>,
+    free: u32,
+    margin: Option<i64>,
+}
+
+impl Sample {
+    fn room(&self, needed: i64) -> Result<(), NoRoom> {
+        if let Some(pressure) = self.pressure.filter(|pressure| *pressure != MemoryPressure::Normal) {
+            return Err(NoRoom::Pressure(pressure));
+        }
+        match self.margin {
+            Some(margin) if margin < needed => Err(NoRoom::Margin { margin, needed }),
+            None if self.free < ROOM_FREE => Err(NoRoom::Free { free: self.free }),
+            _ => Ok(()),
+        }
+    }
+}
+
+/// The Mac as the gate reads it: the last sample's gauges, the samples of the last minute, and
+/// whether the CPU holds new starts. Nothing of it is kept across restarts.
+#[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct MacState {
-    pub health: Health,
     /// No new node starts while the CPU load stays this high.
     pub cpu_busy: bool,
     pub free_percent: Option<u32>,
-    #[serde(default)]
     pub pressure: Option<MemoryPressure>,
-    #[serde(default)]
     pub compressor: Option<MemoryCompressor>,
-    /// The biggest drop of margin to macOS's warning within a minute, over the last 30 minutes.
-    #[serde(default)]
-    pub burst: i64,
-    /// Memory is near macOS's memory pressure, though macOS does not report it yet.
-    #[serde(default)]
-    pub near_pressure: bool,
-    #[serde(default)]
     pub swap_rates: Option<(f64, f64)>,
     pub load: f64,
     pub cpus: usize,
-    below_tight: Option<Millis>,
-    below_limit: Option<Millis>,
-    from_limit: Option<Millis>,
-    from_fine: Option<Millis>,
-    #[serde(default)]
-    warned: Option<Millis>,
-    #[serde(default)]
-    calm: Option<Millis>,
-    #[serde(default)]
-    near: Option<Millis>,
-    #[serde(default)]
-    crowded: Option<Millis>,
-    #[serde(default)]
-    uncrowded: Option<Millis>,
-    #[serde(default)]
-    clear: Option<Millis>,
-    #[serde(skip)]
-    margins: VecDeque<Margin>,
+    /// The samples of the last `ROOM_WINDOW` and the one before them, which shows it is covered.
+    samples: VecDeque<Sample>,
     load_high: Option<Millis>,
     load_low: Option<Millis>,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-struct Margin {
-    at: Millis,
-    bytes: i64,
-    /// How much margin was lost into this sample from any sample in the minute before.
-    drop: i64,
 }
 
 fn held(since: &mut Option<Millis>, holds: bool, now: Millis) -> Millis {
@@ -103,72 +101,35 @@ fn held(since: &mut Option<Millis>, holds: bool, now: Millis) -> Millis {
 }
 
 impl MacState {
-    /// Takes one sample and returns the change of health it caused, if any.
-    pub(crate) fn step(&mut self, machine: &Machine, now: Millis) -> Option<(Health, Health)> {
-        self.step_with(machine, now, RECOVERY_WINDOW)
-    }
-
-    pub(crate) fn step_with(&mut self, machine: &Machine, now: Millis, recovery: Millis) -> Option<(Health, Health)> {
+    /// Takes one sample; one without a memory reading only counts for the CPU.
+    pub(crate) fn step(&mut self, machine: &Machine, now: Millis) {
         self.step_load(machine, now);
-        let free = machine.memory_free_percent?;
-        self.free_percent = Some(free);
-        self.pressure = machine.memory_pressure;
-        self.step_compressor(machine.compressor, now);
-        let share = self.compressor.map(|compressor| compressor.share());
-        let near = held(&mut self.near, share.is_some_and(|share| share >= NEAR_SHARE), now);
-        self.near_pressure = near >= NEAR_HOLDS;
-        let crowded = held(&mut self.crowded, share.is_some_and(|share| share >= CROWDED_SHARE), now);
-        let uncrowded = held(&mut self.uncrowded, share.is_none_or(|share| share < NEAR_SHARE), now);
-        let clear = held(&mut self.clear, share.is_none_or(|share| share < CLEAR_SHARE), now);
-        let pressed = matches!(machine.memory_pressure, Some(MemoryPressure::Warning | MemoryPressure::Critical));
-        let warned = held(&mut self.warned, pressed, now);
-        let calm = held(&mut self.calm, !pressed, now);
-        let tight = held(&mut self.below_tight, free < TIGHT_BELOW, now).max(warned);
-        let limit = held(&mut self.below_limit, free < AT_LIMIT_BELOW, now);
-        let out_of_limit = held(&mut self.from_limit, free >= AT_LIMIT_BELOW, now).min(calm).min(uncrowded);
-        let fine = held(&mut self.from_fine, free >= FINE_FROM, now).min(calm).min(clear);
-        let to_limit = free < AT_ONCE_BELOW
-            || limit >= PRESSURE_HOLDS
-            || crowded >= PRESSURE_HOLDS
-            || machine.memory_pressure == Some(MemoryPressure::Critical)
-            || warned >= WARNING_HOLDS;
-        let next = match self.health {
-            Health::Fine if to_limit => Health::AtLimit,
-            Health::Fine if tight >= PRESSURE_HOLDS || self.near_pressure => Health::Tight,
-            Health::Tight if to_limit => Health::AtLimit,
-            Health::Tight if fine >= recovery => Health::Fine,
-            Health::AtLimit if out_of_limit >= PRESSURE_HOLDS => if fine >= recovery { Health::Fine } else { Health::Tight },
-            health => health,
-        };
-        let before = std::mem::replace(&mut self.health, next);
-        (before != next).then_some((before, next))
-    }
-
-    /// How long memory has been at 20 % free or more, and macOS without pressure and far from it,
-    /// without a break.
-    pub(crate) fn fine_for(&self, now: Millis) -> Option<Millis> {
-        Some(now - self.from_fine?.max(self.calm?).max(self.clear?))
-    }
-
-    fn step_compressor(&mut self, compressor: Option<MemoryCompressor>, now: Millis) {
-        let previous = std::mem::replace(&mut self.compressor, compressor);
-        let Some(compressor) = compressor else {
-            self.margins.clear();
-            self.burst = 0;
-            self.swap_rates = None;
-            return;
-        };
-        self.swap_rates = previous.zip(self.margins.back().map(|margin| margin.at)).filter(|&(_, at)| now > at).map(|(before, at)| {
+        let Some(free) = machine.memory_free_percent else { return };
+        let before = self.samples.back().map(|sample| sample.at).zip(self.compressor);
+        self.swap_rates = machine.compressor.zip(before).filter(|&(_, (at, _))| now > at).map(|(compressor, (at, before))| {
             let seconds = (now - at) as f64 / 1000.0;
             (compressor.swapins.saturating_sub(before.swapins) as f64 / seconds, compressor.swapouts.saturating_sub(before.swapouts) as f64 / seconds)
         });
-        let bytes = compressor.margin();
-        let drop = self.margins.iter().filter(|margin| now - margin.at <= BURST_SPAN).map(|margin| margin.bytes - bytes).max().unwrap_or(0).max(0);
-        self.margins.push_back(Margin { at: now, bytes, drop });
-        while self.margins.front().is_some_and(|margin| now - margin.at > BURST_MEMORY) {
-            self.margins.pop_front();
+        self.free_percent = Some(free);
+        self.pressure = machine.memory_pressure;
+        self.compressor = machine.compressor;
+        self.samples.push_back(Sample { at: now, pressure: machine.memory_pressure, free, margin: machine.compressor.map(|compressor| compressor.margin()) });
+        while self.samples.get(1).is_some_and(|next| next.at <= now - ROOM_WINDOW) {
+            self.samples.pop_front();
         }
-        self.burst = self.margins.iter().map(|margin| margin.drop).max().unwrap_or(0);
+    }
+
+    /// Whether one more node may start with `in_flight` nodes admitted in the last 3 minutes. A
+    /// system that never reported memory always has room; one that did needs `ROOM_WINDOW` of it.
+    pub(crate) fn room(&self, in_flight: usize, now: Millis) -> Result<(), NoRoom> {
+        let Some(first) = self.samples.front() else { return Ok(()) };
+        if first.at > now - ROOM_WINDOW {
+            return Err(NoRoom::Measuring);
+        }
+        let needed = MARGIN_PER_NODE * (1 + in_flight as i64);
+        let recent: Vec<&Sample> = self.samples.iter().filter(|sample| sample.at > now - ROOM_WINDOW).collect();
+        let judged = if recent.is_empty() { self.samples.back().into_iter().collect() } else { recent };
+        judged.into_iter().rev().try_for_each(|sample| sample.room(needed))
     }
 
     fn step_load(&mut self, machine: &Machine, now: Millis) {
@@ -188,7 +149,8 @@ impl MacState {
     }
 }
 
-/// A day file started by an older Alondra keeps its rows and gains the current header.
+/// A day file started by an older Alondra gains the current header, and its rows are moved to the
+/// current columns by name, so a column added or dropped never shifts the ones after it.
 fn rewrite_header(file: &std::path::Path) -> std::io::Result<()> {
     use std::io::BufRead;
     let mut header = String::new();
@@ -197,8 +159,18 @@ fn rewrite_header(file: &std::path::Path) -> std::io::Result<()> {
         return Ok(());
     }
     let text = std::fs::read_to_string(file)?;
-    let rows = text.split_once('\n').map_or("", |(_, rows)| rows);
-    std::fs::write(file, format!("{SAMPLES_HEADER}\n{rows}"))
+    let mut lines = text.lines();
+    let old: Vec<&str> = lines.next().unwrap_or_default().split(',').collect();
+    let mut rewritten = format!("{SAMPLES_HEADER}\n");
+    for line in lines {
+        let values: Vec<&str> = line.split(',').collect();
+        let row: Vec<&str> = SAMPLES_HEADER.split(',')
+            .map(|column| old.iter().position(|name| *name == column).and_then(|index| values.get(index).copied()).unwrap_or_default())
+            .collect();
+        rewritten.push_str(&row.join(","));
+        rewritten.push('\n');
+    }
+    std::fs::write(file, rewritten)
 }
 
 /// Where every sample is kept for a week, one CSV file a day, to tune the thresholds with this
@@ -206,7 +178,8 @@ fn rewrite_header(file: &std::path::Path) -> std::io::Result<()> {
 pub(crate) const SAMPLES_DIR: &str = "machine-samples";
 const KEEP_DAYS: Millis = 7 * 24 * 60 * 60_000;
 
-const SAMPLES_HEADER: &str = "at,memory_free_percent,load_1m,cpus,health,cpu_busy,working,memory_pressure,compressor_share,margin_gb,burst_gb,compressor_pages,uncompressed_pages,stored_pages,swap_used_mb,swapins_per_s,swapouts_per_s";
+/// `health` says whether the gate had room for one more node with none in flight.
+const SAMPLES_HEADER: &str = "at,memory_free_percent,load_1m,cpus,health,cpu_busy,working,memory_pressure,compressor_share,margin_gb,compressor_pages,uncompressed_pages,stored_pages,swap_used_mb,swapins_per_s,swapouts_per_s";
 const GB: f64 = (1u64 << 30) as f64;
 
 pub(crate) fn record(dir: &std::path::Path, now: Millis, mac: &MacState, working: usize) {
@@ -223,13 +196,13 @@ pub(crate) fn record(dir: &std::path::Path, now: Millis, mac: &MacState, working
             writeln!(out, "{SAMPLES_HEADER}")?;
         }
         let free = mac.free_percent.map(|free| free.to_string()).unwrap_or_default();
-        let health = serde_json::to_value(mac.health).ok().and_then(|value| value.as_str().map(str::to_owned)).unwrap_or_default();
+        let room = if mac.room(0, now).is_ok() { "room" } else { "no_room" };
         let pressure = mac.pressure.and_then(|pressure| serde_json::to_value(pressure).ok()).and_then(|value| value.as_str().map(str::to_owned)).unwrap_or_default();
         let compressor = mac.compressor.map(|c| {
             let swap = mac.swap_rates.map(|(ins, outs)| format!("{ins:.0},{outs:.0}")).unwrap_or_else(|| ",".into());
-            format!("{:.3},{:.2},{:.2},{},{},{},{},{swap}", c.share(), c.margin() as f64 / GB, mac.burst as f64 / GB, c.compressor_pages, c.uncompressed_pages, c.stored_pages, c.swap_used >> 20)
-        }).unwrap_or_else(|| ",,,,,,,,".into());
-        writeln!(out, "{now},{free},{:.2},{},{health},{},{working},{pressure},{compressor}", mac.load, mac.cpus, mac.cpu_busy)
+            format!("{:.3},{:.2},{},{},{},{},{swap}", c.share(), c.margin() as f64 / GB, c.compressor_pages, c.uncompressed_pages, c.stored_pages, c.swap_used >> 20)
+        }).unwrap_or_else(|| ",,,,,,,".into());
+        writeln!(out, "{now},{free},{:.2},{},{room},{},{working},{pressure},{compressor}", mac.load, mac.cpus, mac.cpu_busy)
     });
     if let Err(error) = written {
         log!("could not record the machine sample in {}: {error}", file.display());
@@ -251,6 +224,10 @@ mod tests {
     use super::*;
 
     const SAMPLE: Millis = 10_000;
+    const MIN: Millis = 60_000;
+    const PAGE: u64 = 16_384;
+    const GIB_PAGES: u64 = (1 << 30) / PAGE;
+    const WEIGHED: u64 = 900_000;
 
     fn machine(free: u32) -> Machine {
         Machine { memory_free_percent: Some(free), cpus: 11, load: [5.0, 5.0, 5.0], ..Machine::default() }
@@ -259,154 +236,6 @@ mod tests {
     fn pressed(free: u32, pressure: MemoryPressure) -> Machine {
         Machine { memory_pressure: Some(pressure), ..machine(free) }
     }
-
-    /// Feeds `free` under `pressure` every 10 s for `span` from `from`; returns the changes and the next time.
-    fn feed_pressed(state: &mut MacState, free: u32, pressure: MemoryPressure, from: Millis, span: Millis) -> (Vec<(Health, Health)>, Millis) {
-        let mut changes = vec![];
-        let mut now = from;
-        while now < from + span {
-            changes.extend(state.step(&pressed(free, pressure), now));
-            now += SAMPLE;
-        }
-        (changes, now)
-    }
-
-    /// Feeds `free` every 10 s for `span` from `from`; returns the changes and the next time.
-    fn feed(state: &mut MacState, free: u32, from: Millis, span: Millis) -> (Vec<(Health, Health)>, Millis) {
-        let mut changes = vec![];
-        let mut now = from;
-        while now < from + span {
-            changes.extend(state.step(&machine(free), now));
-            now += SAMPLE;
-        }
-        (changes, now)
-    }
-
-    #[test]
-    fn memory_under_15_percent_for_30_seconds_is_tight() {
-        let mut state = MacState::default();
-        let (changes, _) = feed(&mut state, 14, 0, 30_000);
-        assert!(changes.is_empty(), "20 s under 15 % is not yet tight");
-        assert_eq!(state.step(&machine(14), 30_000), Some((Health::Fine, Health::Tight)));
-    }
-
-    #[test]
-    fn under_10_percent_for_30_seconds_or_under_5_once_is_at_limit() {
-        let mut state = MacState::default();
-        feed(&mut state, 9, 0, 30_000);
-        assert_eq!(state.step(&machine(9), 30_000), Some((Health::Fine, Health::AtLimit)));
-        let mut state = MacState::default();
-        assert_eq!(state.step(&machine(4), 0), Some((Health::Fine, Health::AtLimit)));
-    }
-
-    #[test]
-    fn at_limit_goes_back_to_tight_after_30_seconds_at_10_percent() {
-        let mut state = MacState::default();
-        state.step(&machine(3), 0);
-        let (changes, _) = feed(&mut state, 12, SAMPLE, 40_000);
-        assert_eq!(changes, vec![(Health::AtLimit, Health::Tight)]);
-    }
-
-    #[test]
-    fn fine_again_only_after_5_minutes_at_20_percent_without_a_break() {
-        let mut state = MacState::default();
-        state.step(&machine(3), 0);
-        let (changes, now) = feed(&mut state, 25, SAMPLE, 4 * 60_000);
-        assert_eq!(changes, vec![(Health::AtLimit, Health::Tight)]);
-        let (_, now) = feed(&mut state, 18, now, SAMPLE);
-        let (changes, now) = feed(&mut state, 25, now, 4 * 60_000 + 50_000);
-        assert!(changes.is_empty(), "the dip to 18 % started the window again");
-        let (changes, _) = feed(&mut state, 25, now, 20_000);
-        assert_eq!(changes, vec![(Health::Tight, Health::Fine)]);
-    }
-
-    #[test]
-    fn the_cpu_closes_starts_after_a_minute_over_4_per_core_and_opens_after_2_minutes_under_3() {
-        let mut state = MacState::default();
-        let busy = |load: f64| Machine { load: [load, load, load], ..machine(50) };
-        let mut now = 0;
-        while now < 60_000 {
-            state.step(&busy(50.0), now);
-            assert!(!state.cpu_busy);
-            now += SAMPLE;
-        }
-        state.step(&busy(50.0), now);
-        assert!(state.cpu_busy);
-        now += SAMPLE;
-        let calm_from = now;
-        while now < calm_from + 120_000 {
-            state.step(&busy(30.0), now);
-            assert!(state.cpu_busy);
-            now += SAMPLE;
-        }
-        state.step(&busy(30.0), now);
-        assert!(!state.cpu_busy);
-    }
-
-    #[test]
-    fn no_memory_reading_changes_nothing() {
-        let mut state = MacState::default();
-        state.step(&machine(3), 0);
-        assert_eq!(state.step(&Machine { memory_free_percent: None, ..machine(0) }, SAMPLE), None);
-        assert_eq!(state.health, Health::AtLimit);
-    }
-
-    #[test]
-    fn a_macos_warning_with_31_percent_free_is_tight_after_30_seconds_and_at_limit_after_2_minutes() {
-        let mut state = MacState::default();
-        let (changes, now) = feed_pressed(&mut state, 31, MemoryPressure::Warning, 0, 30_000);
-        assert!(changes.is_empty(), "20 s of warning is not yet tight");
-        let (changes, now) = feed_pressed(&mut state, 31, MemoryPressure::Warning, now, SAMPLE);
-        assert_eq!(changes, vec![(Health::Fine, Health::Tight)]);
-        let (changes, now) = feed_pressed(&mut state, 31, MemoryPressure::Warning, now, WARNING_HOLDS - 40_000);
-        assert!(changes.is_empty(), "under 2 min of warning stays tight");
-        assert_eq!(state.step(&pressed(31, MemoryPressure::Warning), now), Some((Health::Tight, Health::AtLimit)));
-        assert_eq!(state.pressure, Some(MemoryPressure::Warning));
-    }
-
-    #[test]
-    fn one_critical_sample_is_at_limit_and_a_short_warning_changes_nothing() {
-        let mut state = MacState::default();
-        assert_eq!(state.step(&pressed(40, MemoryPressure::Critical), 0), Some((Health::Fine, Health::AtLimit)));
-        let mut state = MacState::default();
-        let (_, now) = feed_pressed(&mut state, 40, MemoryPressure::Warning, 0, 20_000);
-        let (changes, _) = feed_pressed(&mut state, 40, MemoryPressure::Normal, now, 5 * 60_000);
-        assert!(changes.is_empty());
-        assert_eq!(state.health, Health::Fine);
-    }
-
-    #[test]
-    fn plenty_of_memory_free_is_no_recovery_until_macos_has_no_pressure_for_5_minutes() {
-        let mut state = MacState::default();
-        state.step(&pressed(45, MemoryPressure::Critical), 0);
-        let (changes, now) = feed_pressed(&mut state, 45, MemoryPressure::Warning, SAMPLE, 10 * 60_000);
-        assert!(changes.is_empty(), "45 % free under warning stays at its limit: {changes:?}");
-        assert_eq!(state.fine_for(now), None);
-        let (changes, now) = feed_pressed(&mut state, 45, MemoryPressure::Normal, now, 4 * 60_000);
-        assert_eq!(changes, vec![(Health::AtLimit, Health::Tight)]);
-        let (_, now) = feed_pressed(&mut state, 45, MemoryPressure::Warning, now, SAMPLE);
-        let (changes, now) = feed_pressed(&mut state, 45, MemoryPressure::Normal, now, 4 * 60_000 + 50_000);
-        assert!(changes.is_empty(), "the warning started the window again");
-        let (changes, _) = feed_pressed(&mut state, 45, MemoryPressure::Normal, now, 20_000);
-        assert_eq!(changes, vec![(Health::Tight, Health::Fine)]);
-    }
-
-    #[test]
-    fn the_pressure_level_goes_into_the_samples_file() {
-        let dir = crate::test_support::Directory::new();
-        let mut state = MacState::default();
-        state.step(&pressed(31, MemoryPressure::Warning), 0);
-        record(&dir, 1_791_500_000_000, &state, 6);
-        let day = std::fs::read_dir(&*dir).unwrap().next().unwrap().unwrap().path();
-        let text = std::fs::read_to_string(day).unwrap();
-        let mut lines = text.lines();
-        assert_eq!(lines.next(), Some(SAMPLES_HEADER));
-        assert_eq!(lines.next(), Some("1791500000000,31,5.00,11,fine,false,6,warning,,,,,,,,,"));
-    }
-
-    const PAGE: u64 = 16_384;
-    const GIB_PAGES: u64 = (1 << 30) / PAGE;
-    const WEIGHED: u64 = 900_000;
 
     fn weighed(free: u32, pressure: MemoryPressure, uncompressed: u64, compressor: u64) -> Machine {
         let counters = MemoryCompressor { page_size: PAGE, uncompressed_pages: uncompressed, compressor_pages: compressor, ..MemoryCompressor::default() };
@@ -419,9 +248,86 @@ mod tests {
         weighed(40, pressure, WEIGHED - compressor, compressor)
     }
 
+    /// Feeds `machine` every 10 s from `from` until `to`, and returns `to`.
+    fn feed(state: &mut MacState, machine: &Machine, from: Millis, to: Millis) -> Millis {
+        let mut now = from;
+        while now < to {
+            state.step(machine, now);
+            now += SAMPLE;
+        }
+        to
+    }
+
+    /// This Mac (18 GB) on 13 October from 17:54 to 18:33, as `machine-samples/2026-10-13.csv`
+    /// recorded it, with no node at work and macOS at normal pressure the whole time, while the gate
+    /// of the time held 11 tasks: seconds, uncompressed pages, compressor pages, % free.
+    const IDLE: &[(Millis, u64, u64, u32)] = &[
+    (0, 465262, 354772, 40), (10, 503376, 346690, 44), (20, 518309, 331084, 45), (30, 525430, 324537, 45),
+    (40, 526690, 322826, 46), (50, 523381, 326069, 45), (60, 469871, 342098, 41), (70, 514776, 334502, 45),
+    (80, 517311, 331700, 45), (90, 524307, 325105, 45), (100, 523534, 325539, 45), (110, 528288, 320790, 46),
+    (120, 470172, 348590, 41), (130, 521053, 327704, 45), (140, 522852, 326228, 45), (150, 532130, 317082, 46),
+    (160, 533551, 315642, 46), (170, 539270, 310161, 47), (180, 493608, 325965, 43), (190, 531540, 318129, 46),
+    (200, 532397, 316495, 46), (210, 541838, 307474, 47), (220, 542191, 306794, 47), (230, 518888, 326280, 45),
+    (240, 487329, 328779, 42), (250, 499327, 345490, 43), (260, 502250, 342468, 43), (270, 509367, 334880, 44),
+    (280, 513636, 330913, 44), (290, 518642, 326846, 45), (300, 459215, 348199, 40), (310, 511317, 333886, 44),
+    (320, 514569, 330757, 45), (330, 519626, 325218, 45), (340, 522451, 322466, 45), (350, 530359, 318096, 46),
+    (360, 508077, 319820, 44), (370, 528971, 319738, 46), (380, 531239, 316995, 46), (390, 535385, 313275, 46),
+    (400, 538930, 309568, 47), (410, 556082, 292527, 48), (420, 510813, 307869, 44), (430, 552082, 296705, 48),
+    (440, 563170, 285543, 49), (450, 561524, 287337, 49), (460, 553480, 295479, 48), (470, 557337, 291386, 48),
+    (480, 507469, 311939, 44), (490, 544915, 303706, 47), (500, 553787, 295074, 48), (510, 559891, 289310, 49),
+    (520, 542834, 305896, 47), (530, 544721, 304406, 47), (540, 499353, 320093, 43), (550, 511923, 337225, 44),
+    (560, 504761, 343821, 44), (570, 507901, 341146, 44), (580, 512591, 336208, 44), (590, 520424, 328850, 45),
+    (600, 479018, 347353, 41), (610, 517069, 332227, 45), (620, 521517, 327773, 45), (630, 539021, 310361, 47),
+    (640, 540986, 307970, 47), (650, 546674, 302918, 47), (660, 523055, 326250, 45), (670, 529986, 319712, 46),
+    (680, 531122, 318168, 46), (690, 539769, 309717, 47), (700, 543801, 305183, 47), (710, 544686, 303835, 47),
+    (720, 502093, 317005, 43), (730, 544111, 304867, 47), (740, 547248, 301402, 47), (750, 549686, 299441, 48),
+    (760, 551308, 298088, 48), (770, 550239, 299002, 48), (780, 501289, 318267, 43), (790, 536802, 313011, 46),
+    (800, 536234, 312622, 46), (810, 540876, 307768, 47), (820, 544476, 304822, 47), (830, 542343, 306891, 47),
+    (841, 523259, 326062, 45), (851, 499496, 349871, 43), (861, 477502, 349989, 41), (871, 479821, 360104, 41),
+    (881, 481391, 358552, 42), (891, 487259, 353423, 42), (901, 486028, 353377, 42), (911, 498553, 342719, 43),
+    (921, 500892, 340306, 43), (931, 515438, 325450, 45), (941, 519138, 317532, 45), (951, 455582, 354279, 39),
+    (961, 494327, 345916, 43), (971, 501312, 339300, 43), (981, 496478, 343828, 43), (991, 502514, 338549, 43),
+    (1001, 499942, 339916, 43), (1011, 502781, 338539, 44), (1021, 483527, 357466, 42), (1031, 500053, 341028, 43),
+    (1041, 505193, 336263, 44), (1051, 503358, 336705, 44), (1061, 501188, 340345, 43), (1071, 494797, 346636, 43),
+    (1081, 479556, 360610, 41), (1091, 502429, 339246, 44), (1101, 506451, 334791, 44), (1111, 511892, 329782, 44),
+    (1121, 509799, 331876, 44), (1131, 509703, 331403, 44), (1141, 483612, 357885, 42), (1151, 475960, 362954, 41),
+    (1161, 511869, 334639, 44), (1171, 517990, 329742, 45), (1181, 529671, 319212, 46), (1191, 534029, 314085, 46),
+    (1201, 540322, 308015, 47), (1211, 537756, 310195, 47), (1221, 543843, 304561, 47), (1221, 543843, 304561, 47),
+    (1221, 543843, 304561, 47), (1231, 526583, 321652, 46), (1241, 541468, 307163, 47), (1251, 521316, 327447, 45),
+    (1262, 511989, 337001, 44), (1262, 511989, 337001, 44), (1273, 520515, 328227, 45), (1283, 520736, 328004, 45),
+    (1293, 524124, 323595, 45), (1293, 524124, 323595, 45), (1303, 517858, 321423, 45), (1313, 511212, 316344, 44),
+    (1323, 511721, 318112, 44), (1333, 520887, 308111, 45), (1343, 518114, 309878, 45), (1353, 503848, 324873, 44),
+    (1363, 508432, 322276, 44), (1373, 515545, 315473, 45), (1383, 532477, 315885, 46), (1393, 541305, 307829, 47),
+    (1403, 558542, 290032, 48), (1413, 559661, 289100, 49), (1423, 571085, 278237, 50), (1433, 571616, 277474, 50),
+    (1443, 576979, 272229, 50), (1453, 570429, 278987, 49), (1463, 571127, 278033, 50), (1473, 571869, 276740, 50),
+    (1483, 573021, 276102, 50), (1493, 542260, 291174, 47), (1503, 550611, 298482, 48), (1513, 554525, 294765, 48),
+    (1523, 558828, 290284, 48), (1533, 547195, 302208, 47), (1543, 549967, 299336, 48), (1553, 550461, 298351, 48),
+    (1563, 555526, 294065, 48), (1573, 561127, 288120, 49), (1583, 562032, 287427, 49), (1593, 559892, 289458, 49),
+    (1603, 533955, 315644, 46), (1613, 533327, 314948, 46), (1623, 531658, 318026, 46), (1633, 536574, 312763, 46),
+    (1643, 544155, 305020, 47), (1653, 542538, 306701, 47), (1663, 542931, 306424, 47), (1673, 547969, 301508, 47),
+    (1683, 551598, 297869, 48), (1693, 551946, 297357, 48), (1703, 552503, 296865, 48), (1713, 553789, 295905, 48),
+    (1723, 553292, 296063, 48), (1733, 553835, 295687, 48), (1743, 555559, 293906, 48), (1753, 548061, 301580, 47),
+    (1763, 549009, 300774, 48), (1773, 549849, 299775, 48), (1783, 550209, 299514, 48), (1793, 550621, 299380, 48),
+    (1803, 551507, 298040, 48), (1813, 552172, 297878, 48), (1823, 554368, 290806, 48), (1833, 575250, 274484, 50),
+    (1843, 575518, 273845, 50), (1853, 581604, 267590, 50), (1863, 583594, 266116, 51), (1873, 588966, 260439, 51),
+    (1883, 590494, 259583, 51), (1893, 590663, 258835, 51), (1903, 594777, 254982, 52), (1913, 594664, 254893, 52),
+    (1923, 594932, 255073, 52), (1933, 595245, 254505, 52), (1943, 595680, 254365, 52), (1953, 595445, 254197, 52),
+    (1963, 595673, 254088, 52), (1973, 602282, 246970, 52), (1983, 602025, 247636, 52), (1993, 602913, 246892, 52),
+    (2003, 603753, 246467, 52), (2013, 603784, 246148, 52), (2023, 601084, 248657, 52), (2033, 600936, 248391, 52),
+    (2043, 592581, 256746, 51), (2053, 534629, 315269, 46), (2063, 539319, 309132, 47), (2073, 545570, 302898, 47),
+    (2083, 548906, 300454, 48), (2093, 556281, 292376, 48), (2103, 546146, 302365, 47), (2113, 549082, 299676, 48),
+    (2123, 550949, 298013, 48), (2133, 549408, 299216, 48), (2143, 550969, 297920, 48), (2153, 551261, 297241, 48),
+    (2163, 555568, 293479, 48), (2173, 561074, 287332, 49), (2183, 562657, 286203, 49), (2193, 563552, 285338, 49),
+    (2203, 549845, 298539, 48), (2223, 557207, 291357, 48), (2233, 538810, 309733, 47), (2243, 542973, 305922, 47),
+    (2253, 544853, 304094, 47), (2264, 545860, 302608, 47), (2274, 559947, 288636, 49), (2284, 576941, 271636, 50),
+    (2294, 580175, 268593, 50), (2304, 580186, 268448, 50), (2314, 581059, 267735, 50), (2324, 580911, 267611, 50),
+    (2334, 582657, 266105, 51), (2344, 567265, 281495, 49), (2354, 558744, 289560, 48), (2364, 560820, 287827, 49),
+    (2374, 552958, 294920, 48), (2384, 556892, 291383, 48), (2394, 567255, 281366, 49),
+    ];
+
     /// This Mac (18 GB) on 9 October from 15:51 to 16:26, while up to six compilers ran at once,
     /// one sample every 10 s: seconds, uncompressed pages, compressor pages, macOS level, % free.
-    const TODAY: &[(Millis, u64, u64, i32, u32)] = &[
+    const OCTOBER_9_BUILDS: &[(Millis, u64, u64, i32, u32)] = &[
     (0, 720502, 141579, 1, 63), (10, 705893, 139432, 1, 61), (20, 730621, 136066, 1, 63),
     (30, 711046, 135402, 1, 62), (40, 734582, 130451, 1, 64), (50, 731205, 118171, 1, 64),
     (60, 748278, 117429, 1, 65), (71, 733859, 111970, 1, 64), (81, 737338, 127128, 1, 64),
@@ -494,84 +400,128 @@ mod tests {
     ];
 
     #[test]
-    fn todays_compile_bursts_hold_the_mac_while_the_compressor_is_high_and_at_its_limit_in_the_worst() {
+    fn todays_idle_40_minutes_with_macos_normal_have_room_for_one_more_node() {
         let mut state = MacState::default();
-        let mut healths = vec![];
-        for &(seconds, uncompressed, compressor, level, free) in TODAY {
+        let mut held = vec![];
+        for &(seconds, uncompressed, compressor, free) in IDLE {
+            let now = seconds * 1000;
+            state.step(&weighed(free, MemoryPressure::Normal, uncompressed, compressor), now);
+            if now >= ROOM_WINDOW && let Err(why) = state.room(0, now) {
+                held.push((seconds, why));
+            }
+        }
+        assert!(held.is_empty(), "held with no node at work and macOS normal: {held:?}");
+    }
+
+    /// Up to six compilers at once: every sample macOS warned in, and the minute after it, has no
+    /// room for one more node; once the builds calm down there is room again.
+    #[test]
+    fn a_build_that_brings_macos_to_warning_leaves_no_room_until_a_minute_after_it_clears() {
+        let mut state = MacState::default();
+        let mut warned = vec![];
+        let mut last_warning = None;
+        for &(seconds, uncompressed, compressor, level, free) in OCTOBER_9_BUILDS {
+            let now = seconds * 1000;
             let pressure = MemoryPressure::from_kernel_level(level).unwrap();
-            state.step(&weighed(free, pressure, uncompressed, compressor), seconds * 1000);
-            healths.push(state.health);
+            state.step(&weighed(free, pressure, uncompressed, compressor), now);
+            let room = state.room(0, now);
+            if pressure == MemoryPressure::Warning {
+                assert_eq!(room, Err(NoRoom::Pressure(MemoryPressure::Warning)), "at {seconds} s");
+                warned.push(seconds);
+                last_warning = Some(now);
+            } else if last_warning.is_some_and(|at| now - at < ROOM_WINDOW) {
+                assert!(room.is_err(), "{seconds} s, under a minute after a warning");
+            }
         }
-        assert!(healths.contains(&Health::Tight));
-        assert!(healths.contains(&Health::AtLimit));
+        assert_eq!(warned.len(), 39, "the samples macOS warned in: {warned:?}");
+        let end = OCTOBER_9_BUILDS.last().unwrap().0 * 1000;
+        assert_eq!(state.room(0, end), Ok(()), "the builds are over");
     }
 
     #[test]
-    fn last_nights_slow_climb_is_tight_and_then_at_its_limit_before_macos_warns() {
+    fn four_nodes_admitted_in_the_last_3_minutes_need_5_gib_of_margin() {
         let mut state = MacState::default();
-        let mut tight_at = None;
-        let mut limit_at = None;
-        let mut swapped = 0;
-        let mut now = 0;
-        while now <= 20 * 60_000 {
-            let share = 0.30 + 0.25 * now as f64 / (20 * 60_000) as f64;
-            let compressor = (share * WEIGHED as f64) as u64;
-            let pressure = if share > 0.5 { MemoryPressure::Warning } else { MemoryPressure::Normal };
-            let free = 42 - (11 * now / (20 * 60_000)) as u32;
-            swapped += 2_700 * 10;
-            let mut machine = weighed(free, pressure, WEIGHED - compressor, compressor);
-            machine.compressor.as_mut().unwrap().swapouts = swapped;
-            match state.step(&machine, now) {
-                Some((Health::Fine, Health::Tight)) => tight_at = Some((share, pressure)),
-                Some((Health::Tight, Health::AtLimit)) => limit_at = Some((share, pressure)),
-                _ => {}
-            }
-            now += SAMPLE;
-        }
-        let (share, pressure) = tight_at.unwrap();
-        assert!((0.40..0.42).contains(&share) && pressure == MemoryPressure::Normal, "Tight at {share:.3} under {pressure:?}");
-        let (share, pressure) = limit_at.unwrap();
-        assert!((0.45..0.47).contains(&share) && pressure == MemoryPressure::Normal, "AtLimit at {share:.3} under {pressure:?}");
-        let (_, outs) = state.swap_rates.unwrap();
-        assert!((outs - 2_700.0).abs() < 1.0, "{outs}");
+        let now = feed(&mut state, &with_margin(4.5, MemoryPressure::Normal), 0, 2 * MIN);
+        assert_eq!(state.room(3, now), Ok(()), "4 GiB needed for 3 in flight");
+        assert_eq!(state.room(4, now), Err(NoRoom::Margin { margin: 4 * GIB + GIB / 2, needed: 5 * GIB }));
+        let now = feed(&mut state, &with_margin(5.0, MemoryPressure::Normal), now, now + MIN);
+        assert_eq!(state.room(4, now), Ok(()));
+        assert_eq!(state.room(0, now), Ok(()));
+        let now = feed(&mut state, &with_margin(0.9, MemoryPressure::Normal), now, now + SAMPLE);
+        assert!(matches!(state.room(0, now), Err(NoRoom::Margin { needed: GIB, .. })),
+            "even with nobody starting, 1 GiB stays between the Mac and macOS's warning");
     }
 
     #[test]
-    fn a_past_burst_does_not_hold_the_mac_once_macos_is_back_to_normal_with_the_compressor_low() {
+    fn without_compressor_counters_a_minute_at_20_percent_free_and_normal_pressure_is_room() {
         let mut state = MacState::default();
-        let mut now = 0;
-        while now < 10 * 60_000 {
-            assert_eq!(state.step(&with_margin(5.0, MemoryPressure::Normal), now), None);
-            now += SAMPLE;
-        }
-        state.step(&with_margin(-1.0, MemoryPressure::Warning), now);
-        now += SAMPLE;
-        state.step(&with_margin(-1.0, MemoryPressure::Warning), now);
-        now += SAMPLE;
-        let burst_ended = now;
-        let mut held_until = burst_ended;
-        while now < burst_ended + 40 * 60_000 {
-            state.step(&with_margin(5.0, MemoryPressure::Normal), now);
-            if state.health != Health::Fine {
-                held_until = now;
-            }
-            if now == burst_ended + 20_000 {
-                assert!(!state.near_pressure, "5 GB left with the compressor low is not near the warning");
-            }
-            now += SAMPLE;
-        }
-        let held = held_until - burst_ended;
-        assert!(held <= 6 * 60_000, "held {} s after the burst, not for half an hour", held / 1000);
-        assert_eq!(state.health, Health::Fine);
+        let now = feed(&mut state, &machine(19), 0, 2 * MIN);
+        assert_eq!(state.room(0, now), Err(NoRoom::Free { free: 19 }));
+        let now = feed(&mut state, &machine(20), now, now + 4 * SAMPLE);
+        assert_eq!(state.room(0, now), Err(NoRoom::Free { free: 19 }), "the last sample at 19 % is still within the minute");
+        let now = feed(&mut state, &machine(20), now, now + SAMPLE);
+        assert_eq!(state.room(0, now), Ok(()));
+        let now = feed(&mut state, &pressed(50, MemoryPressure::Warning), now, now + SAMPLE);
+        assert_eq!(state.room(0, now), Err(NoRoom::Pressure(MemoryPressure::Warning)), "macOS's own level counts without counters too");
+        assert_eq!(state.room(0, now + MIN), Err(NoRoom::Pressure(MemoryPressure::Warning)), "the last sample stands while no new one comes");
     }
 
     #[test]
-    fn the_compressor_counters_go_into_the_samples_file_and_an_old_header_is_replaced() {
+    fn a_daemon_that_just_started_measures_for_a_minute_and_a_system_without_memory_readings_always_has_room() {
+        let mut state = MacState::default();
+        assert_eq!(state.room(5, 0), Ok(()));
+        state.step(&Machine { memory_free_percent: None, ..machine(0) }, 0);
+        assert_eq!(state.room(0, MIN), Ok(()), "a sample without a memory reading only counts for the CPU");
+        let now = feed(&mut state, &machine(60), MIN, MIN + 50_000);
+        assert_eq!(state.room(0, now), Err(NoRoom::Measuring));
+        let now = feed(&mut state, &machine(60), now, now + SAMPLE);
+        assert_eq!(state.room(0, now), Ok(()));
+    }
+
+    #[test]
+    fn the_cpu_closes_starts_after_a_minute_over_4_per_core_and_opens_after_2_minutes_under_3() {
+        let mut state = MacState::default();
+        let busy = |load: f64| Machine { load: [load, load, load], ..machine(50) };
+        let mut now = 0;
+        while now < 60_000 {
+            state.step(&busy(50.0), now);
+            assert!(!state.cpu_busy);
+            now += SAMPLE;
+        }
+        state.step(&busy(50.0), now);
+        assert!(state.cpu_busy);
+        now += SAMPLE;
+        let calm_from = now;
+        while now < calm_from + 120_000 {
+            state.step(&busy(30.0), now);
+            assert!(state.cpu_busy);
+            now += SAMPLE;
+        }
+        state.step(&busy(30.0), now);
+        assert!(!state.cpu_busy);
+    }
+
+    #[test]
+    fn the_pressure_level_goes_into_the_samples_file() {
+        let dir = crate::test_support::Directory::new();
+        let mut state = MacState::default();
+        state.step(&pressed(31, MemoryPressure::Warning), 0);
+        record(&dir, 1_791_500_000_000, &state, 6);
+        let day = std::fs::read_dir(&*dir).unwrap().next().unwrap().unwrap().path();
+        let text = std::fs::read_to_string(day).unwrap();
+        let mut lines = text.lines();
+        assert_eq!(lines.next(), Some(SAMPLES_HEADER));
+        assert_eq!(lines.next(), Some("1791500000000,31,5.00,11,no_room,false,6,warning,,,,,,,,"));
+    }
+
+    #[test]
+    fn the_compressor_counters_go_into_the_samples_file_and_an_older_file_moves_to_the_current_columns() {
         let dir = crate::test_support::Directory::new();
         let now = 1_791_500_000_000;
         let day = dir.join(format!("{}.csv", crate::node_reports::local_day(now)));
         std::fs::create_dir_all(&*dir).unwrap();
-        std::fs::write(&day, "at,memory_free_percent,load_1m,cpus,health,cpu_busy,working\n1,40,1.00,11,fine,false,2\n").unwrap();
+        std::fs::write(&day, "at,memory_free_percent,load_1m,cpus,health,cpu_busy,working,memory_pressure,compressor_share,margin_gb,burst_gb,compressor_pages,uncompressed_pages,stored_pages,swap_used_mb,swapins_per_s,swapouts_per_s\n\
+            1,40,1.00,11,tight,false,2,normal,0.318,5.00,0.89,286160,613840,0,6700,30,0\n").unwrap();
         let mut state = MacState::default();
         let mut machine = with_margin(5.0, MemoryPressure::Normal);
         machine.compressor.as_mut().unwrap().swap_used = 6_700 << 20;
@@ -582,8 +532,8 @@ mod tests {
         let text = std::fs::read_to_string(day).unwrap();
         assert_eq!(text.lines().collect::<Vec<_>>(), [
             SAMPLES_HEADER,
-            "1,40,1.00,11,fine,false,2",
-            "1791500000000,40,5.00,11,fine,false,6,normal,0.318,5.00,0.00,286160,613840,0,6700,30,0",
+            "1,40,1.00,11,tight,false,2,normal,0.318,5.00,286160,613840,0,6700,30,0",
+            "1791500000000,40,5.00,11,room,false,6,normal,0.318,5.00,286160,613840,0,6700,30,0",
         ]);
     }
 }
