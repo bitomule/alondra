@@ -2775,6 +2775,7 @@ mod tests {
     mod journal_transition_tests;
     mod push_commit_tests;
     mod operation_result_tests;
+    mod approval_lease_deadlock_tests;
     use super::*;
     use reqwest::{StatusCode, Url};
     use std::collections::HashSet;
