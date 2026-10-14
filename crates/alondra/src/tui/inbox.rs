@@ -47,11 +47,15 @@ impl App {
     }
 
     /// Items waiting for the user, as the daemon counts them, else as the inbox shows them.
+    /// The server's count of what waits for the user, less the cards answered here that it still lists.
     pub fn attention(&self) -> usize {
+        let answered = self.home_view.iter().flat_map(|home| &home.sections).flat_map(|section| &section.items)
+            .filter(|item| matches!(item, alondra_core::views::Item::Card(card) if self.optimistic.hides(&Key(card.id.clone()))))
+            .count();
         self.view_status
             .as_ref()
             .and_then(|s| s.counts.iter().find(|c| c.id == "inbox"))
-            .map_or_else(|| self.inbox_count(), |c| c.value as usize)
+            .map_or_else(|| self.inbox_count(), |c| (c.value as usize).saturating_sub(answered))
     }
 
     pub(super) fn move_inbox(&mut self, to: isize) {
@@ -395,6 +399,7 @@ impl App {
             origin: selected.clone(),
             stamp: action.stamp.clone(),
             hides: action.resolves_card,
+            label: option.map_or_else(|| action.label.clone(), |option| option.label.clone()),
         };
         if option.is_none() && action.option_id.is_some() {
             let (text, chips, review) = self.take_card_words();

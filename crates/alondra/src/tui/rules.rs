@@ -145,8 +145,17 @@ impl App {
         }
         rules.hidden.insert(id.clone());
         rules.clamp();
-        let acting = Acting { origin: Key(id), stamp: action.stamp.clone(), hides: false };
+        let acting = Acting { origin: Key(id), stamp: action.stamp.clone(), hides: false, label: action.label.clone() };
         self.submit_view_request(request, Some(acting));
+    }
+
+    /// A Remove the Mac has not confirmed in time: the rule is back in the list while it goes on
+    /// being sent, and leaves with the list asked again if it arrives.
+    pub(super) fn rule_overdue(&mut self, command: &str) {
+        let Some(rules) = self.rules.as_mut() else { return };
+        if let Some(id) = rules.removing.get(command) {
+            rules.hidden.remove(id);
+        }
     }
 
     /// The Mac answered a Remove: done, the list is asked again; refused, the rule is back.

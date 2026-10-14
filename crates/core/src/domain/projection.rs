@@ -165,15 +165,33 @@ impl DomainState {
         }
     }
     /// The instruction a delivery went back to its Agent with, since its acceptance. Only the
-    /// Agent presenting again puts it back in front of the user.
+    /// Agent presenting again puts it back in front of the user, except after a reply: that one
+    /// holds it only while its node attends to it (`open_reply`).
     pub fn handed_back(&self, presentation: &Interaction) -> Option<Instruction> {
         let InteractionPayload::Delivery { acceptance, feedback, .. } = &presentation.payload else {
             return None;
         };
-        feedback
-            .last()
+        let reply = feedback.last().filter(|_| self.open_reply(presentation) && self.node_attends(presentation));
+        reply
+            .or_else(|| last_hand_back(feedback))
             .filter(|f| acceptance.as_ref().is_none_or(|a| f.at_revision > a.at_revision))
             .map(|f| f.instruction)
+    }
+    /// A reply is the last thing that changed the delivery: its node has not ended a turn, been
+    /// paused or lost its session since, and nothing else moved the delivery.
+    pub fn open_reply(&self, presentation: &Interaction) -> bool {
+        let InteractionPayload::Delivery { feedback, .. } = &presentation.payload else {
+            return false;
+        };
+        feedback.last().is_some_and(|f| f.instruction == Instruction::Reply && f.at_revision == presentation.revision)
+    }
+    /// The delivery's node can act on what the user sends it now: it is not paused, lost or gone.
+    pub fn node_attends(&self, presentation: &Interaction) -> bool {
+        let Scope::Task { task_id } = &presentation.scope else {
+            return false;
+        };
+        self.tasks.get(task_id).and_then(|t| t.agent_id.as_ref()).and_then(|id| self.agents.get(id))
+            .is_some_and(|a| !matches!(a.phase, NodePhase::Paused(_) | NodePhase::Lost | NodePhase::Closing | NodePhase::Closed))
     }
     /// The same for an active Task, through its current final delivery.
     /// The PR number and reason when the current final delivery went back because Alondra
@@ -707,4 +725,8 @@ mod inbox_order_tests {
         }
     }
 
+}
+
+fn last_hand_back(feedback: &[Feedback]) -> Option<&Feedback> {
+    feedback.iter().rev().find(|f| f.instruction != Instruction::Reply)
 }

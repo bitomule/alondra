@@ -1037,7 +1037,7 @@ impl DomainState {
     }
     /// §5: a decision on a delivery is judged against the presentation's
     /// revision, so every decision or invalidation on it must move that revision.
-    fn decided(&mut self, presentation: &InteractionId) {
+    pub(super) fn decided(&mut self, presentation: &InteractionId) {
         if let Some(p) = self.interactions.get_mut(presentation) {
             p.revision = self.revision + 1;
         }

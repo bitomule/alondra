@@ -22,3 +22,6 @@ __pycache__/
 # Apple release artifacts (make build-release)
 /.beta-build/
 
+
+# make e2e-tui-optimistic screens
+/.e2e-captures/

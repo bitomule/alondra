@@ -231,6 +231,15 @@ fn refuse<T>(code: &str, message: &str) -> Result<T> {
     Err(DomainError::new(code, message))
 }
 
+/// The move ends what the node was doing for its task: a turn, or its work at all.
+fn ends_attention(from: &NodePhase, to: &NodePhase) -> bool {
+    use NodePhase as P;
+    let in_turn = |phase: &NodePhase| matches!(phase, P::Starting { .. } | P::Working | P::WaitingBackground(_)
+        | P::WaitingUser { in_turn: true } | P::Delivered { in_turn: true });
+    let gone = |phase: &NodePhase| matches!(phase, P::Paused(_) | P::Lost | P::Closing | P::Closed);
+    (in_turn(from) && !in_turn(to)) || (!gone(from) && gone(to))
+}
+
 /// Where a node rests once its turn is over.
 fn rest(f: &TaskFacts) -> NodePhase {
     if f.closing {
@@ -459,10 +468,27 @@ impl DomainState {
     pub(super) fn move_node(&mut self, agent: &AgentId, event: &NodeEvent, at: Millis) -> Result<()> {
         if let Some(moved) = self.node_next(agent, event, at)? {
             let a = self.agents.get_mut(agent).expect("checked by node_next");
+            let ends_attention = ends_attention(&a.phase, &moved);
             a.phase = moved;
             a.since = a.since.max(at);
+            if ends_attention {
+                self.return_replied_delivery(agent);
+            }
         }
         Ok(())
+    }
+
+    /// A delivery the user replied to comes back to them, the same one, once its node is done
+    /// with the reply: it ended its turn without presenting again, or it cannot act on it.
+    fn return_replied_delivery(&mut self, agent: &AgentId) {
+        let delivery = self.tasks.values()
+            .filter(|t| !t.state.terminal() && t.agent_id.as_ref() == Some(agent))
+            .filter_map(|t| t.final_presentation.as_ref().and_then(|p| self.interactions.get(p)))
+            .find(|p| self.open_reply(p))
+            .map(|p| p.id.clone());
+        if let Some(delivery) = delivery {
+            self.decided(&delivery);
+        }
     }
 
     /// Every node the listing of real sessions speaks of takes what it says: listed as Claude Code

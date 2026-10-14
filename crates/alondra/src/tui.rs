@@ -7,6 +7,7 @@ mod inbox;
 mod input;
 mod keys;
 mod md;
+mod optimistic;
 mod restore;
 mod rules;
 mod tasks;
@@ -39,6 +40,9 @@ pub struct Acting {
     pub stamp: Option<String>,
     /// The server's `resolves_card`: the card leaves the list the moment the action is sent.
     pub hides: bool,
+    /// The action's label, which the notice names when the answer does not arrive.
+    #[serde(default)]
+    pub label: String,
 }
 
 #[derive(Debug)]
@@ -123,7 +127,8 @@ pub use tasks::state_label;
 
 const SETTLE_MS: i64 = 700;
 const FLASH_MS: i64 = 4500;
-const HIDE_GRACE_MS: i64 = 15_000;
+/// How long a notice that an answer did not arrive stays on screen.
+const NOTICE_MS: i64 = 12_000;
 const CLOCK_MS: i64 = 20_000;
 const IDLE_POLL: Duration = Duration::from_millis(250);
 const ACTIVITY_EVERY_MS: i64 = 60_000;
@@ -168,6 +173,7 @@ pub struct Flash {
     pub text: String,
     pub kind: FlashKind,
     pub at: i64,
+    pub ttl: i64,
 }
 
 /// A question the user answers with ⏎ or Esc before an action runs.
@@ -194,6 +200,7 @@ enum ModalThen {
         hides: bool,
         origin: Option<Key>,
         review: Option<Key>,
+        label: String,
     },
 }
 
@@ -655,11 +662,16 @@ pub struct App {
     pub list_scroll: usize,
     pub detail_scroll: usize,
     settle_until: i64,
-    hidden: HashMap<Key, i64>,
+    /// What the user did that no view shows yet: one rule for every action this terminal sends.
+    optimistic: optimistic::Optimistic,
+    /// The detail each answered card had when it left, so it comes back whole if the answer does not arrive.
+    left_views: HashMap<Key, ViewDocument>,
     /// Reader comments on their way, by command: they stay until the Mac confirms them.
     review_sends: HashMap<String, Key>,
     /// The card whose comments were just sent, so its closing does not hide that they went.
     review_sent: Option<Key>,
+    /// Who the comments of a reader closed on sending go to, for the word that they arrived.
+    review_agents: HashMap<Key, String>,
     pub agent_sel: Option<AgentId>,
     agent_idx: usize,
     pub agent_scroll: usize,
@@ -669,16 +681,12 @@ pub struct App {
     /// A step that takes a second press within a few seconds, until when, and the key that
     /// answers it; Esc or any other key cancels.
     modal: Option<Modal>,
-    /// Cards hidden while their action is in flight, by the command that hides them.
-    in_flight: HashMap<String, Key>,
     /// Where the selection landed when each card left: if it is still there when the card comes
     /// back, the user has not moved and the card is selected again.
     left_on: HashMap<Key, Option<Key>>,
     /// A question that arrived while the user was typing or answering another; it opens when
     /// they are done.
     deferred_modal: Option<Modal>,
-    /// The last action whose answer never came: sending the same one again keeps its command id.
-    unsure: Option<Value>,
     pressed: KeyCode,
     /// Every request that is not a domain command, as the tests read what it would have sent.
     #[cfg(test)]
@@ -1120,9 +1128,11 @@ impl App {
             list_scroll: 0,
             detail_scroll: 0,
             settle_until: 0,
-            hidden: HashMap::new(),
+            optimistic: Default::default(),
+            left_views: HashMap::new(),
             review_sends: HashMap::new(),
             review_sent: None,
+            review_agents: HashMap::new(),
             agent_sel: None,
             agent_idx: 0,
             agent_scroll: 0,
@@ -1130,10 +1140,8 @@ impl App {
             agent_view: View::default(),
             agent_zoom: false,
             modal: None,
-            in_flight: HashMap::new(),
             left_on: HashMap::new(),
             deferred_modal: None,
-            unsure: None,
             pressed: KeyCode::Null,
             #[cfg(test)]
             posted: Default::default(),
@@ -1417,47 +1425,88 @@ impl App {
         self.sync_open_views();
     }
 
-    fn submit_view_request(&mut self, mut request: Value, acting: Option<Acting>) {
-        let same = |earlier: &Value| {
-            ["action_id", "option_id", "input"]
-                .iter()
-                .all(|field| earlier[field] == request[field])
-        };
-        if self.unsure.as_ref().is_some_and(same)
-            && let Some(earlier) = self.unsure.take()
-        {
-            if let (Some(review), Some(earlier_command)) = (
-                request["command_id"].as_str().and_then(|command| self.review_sends.remove(command)),
-                earlier["command_id"].as_str(),
-            ) {
-                self.review_sends.insert(earlier_command.to_owned(), review);
+    /// Every action this terminal sends goes out here. Its card leaves at once when the daemon says
+    /// the action takes it away, from the list and from the detail, and nothing says it is on its
+    /// way: the answer is tried again in silence until the daemon confirms it (`optimistic`).
+    fn submit_view_request(&mut self, request: Value, acting: Option<Acting>) {
+        let target = acting.as_ref().filter(|acting| acting.hides).map(|acting| acting.origin.clone());
+        let now = now_millis();
+        let request = match self.optimistic.same_action(&request) {
+            Some(earlier) => {
+                if let (Some(review), Some(command)) = (request["command_id"].as_str().and_then(|command| self.review_sends.remove(command)), Some(earlier.clone())) {
+                    self.review_sends.insert(command, review);
+                }
+                self.optimistic.again(&earlier, now);
+                self.optimistic.request(&earlier).cloned().unwrap_or(request)
             }
-            request = earlier;
+            None => {
+                let answer = optimistic::Answer {
+                    card: acting.as_ref().map(|acting| self.card_title(&acting.origin)).unwrap_or_default(),
+                    label: acting.as_ref().map(|acting| acting.label.clone()).unwrap_or_default(),
+                };
+                self.optimistic.begin(request.clone(), target.clone(), answer, now);
+                request
+            }
+        };
+        if let Some(stamp) = acting.and_then(|acting| acting.stamp) {
+            self.flash(stamp);
         }
-        let text = acting
-            .as_ref()
-            .and_then(|acting| acting.stamp.clone())
-            .unwrap_or_else(|| tr!("Sending…", "Enviando…").to_owned());
-        self.pending(text);
-        if let (Some(command), Some(acting)) = (request["command_id"].as_str(), acting)
-            && acting.hides
-        {
-            self.in_flight.insert(command.to_owned(), acting.origin.clone());
-            self.hide(acting.origin.clone());
-            self.left_on.insert(acting.origin, self.sel.clone());
+        if let Some(key) = target {
+            if let Some(view) = self.card_view.clone().filter(|view| view.key == format!("card:{}", key.0)) {
+                self.left_views.insert(key.clone(), view);
+            }
+            self.leave_detail_of(&key);
+            self.reconcile();
+            self.left_on.insert(key, self.sel.clone());
         }
+        self.post_action(request);
+    }
+
+    fn post_action(&mut self, request: Value) {
         #[cfg(test)]
         self.posted
             .borrow_mut()
             .push(("/actions".into(), request.clone()));
         self.action_sent();
         self.spawn(move |tx, target| {
-            let result = Client::for_target(target, Duration::from_secs(30))
+            let result = Client::for_target(target, optimistic::ATTEMPT_TIMEOUT)
                 .post("/actions", &request)
                 .map_err(|error| crate::client::delivery(&error))
                 .and_then(view_action_result);
             let _ = tx.send(Msg::ViewAction { request, result });
         });
+    }
+
+    /// The card just answered leaves the detail too: a view opened over the list for it closes, and
+    /// so does the reader, whose comments stay until the daemon confirms they arrived.
+    fn leave_detail_of(&mut self, key: &Key) {
+        let card_key = format!("card:{}", key.0);
+        let acted_on = |view: &String| *view == card_key || self.card_view.as_ref().is_some_and(|open| open.key == *view);
+        if let Some(reader) = self.reader.take_if(|reader| acted_on(&reader.key.0)) {
+            self.review_agents.insert(reader.key, reader.agent);
+        }
+        if self.view_navigation.last().is_some_and(acted_on) {
+            self.view_navigation.pop();
+            self.card_view = None;
+            self.card_view_asked = None;
+            self.detail_scroll = 0;
+            self.load_selected_view();
+            self.sync_open_views();
+        }
+    }
+
+    /// What the user reads the card as: its title in the queue, else the open view's.
+    fn card_title(&self, key: &Key) -> String {
+        let from_home = self.home_view.as_ref().and_then(|home| {
+            home.sections.iter().flat_map(|section| &section.items).find_map(|item| match item {
+                alondra_core::views::Item::Card(card) if card.id == key.0 => card.need.clone(),
+                _ => None,
+            })
+        });
+        from_home
+            .or_else(|| self.card_view.as_ref().and_then(|view| view.title.clone()))
+            .map(|title| md::one_line(&title))
+            .unwrap_or_default()
     }
 
     fn run_modal(&mut self) {
@@ -1482,6 +1531,7 @@ impl App {
                 hides,
                 origin,
                 review,
+                label,
             } => {
                 let data_epoch = request["data_epoch"].as_str().unwrap_or_default();
                 let option_id = request["option_id"].as_str();
@@ -1494,6 +1544,7 @@ impl App {
                     origin,
                     stamp: None,
                     hides,
+                    label,
                 });
                 self.submit_view_request(fresh, acting);
             }
@@ -1510,6 +1561,7 @@ impl App {
             text: text.into(),
             kind: FlashKind::Success,
             at: now_millis(),
+            ttl: FLASH_MS,
         });
     }
 
@@ -1518,6 +1570,7 @@ impl App {
             text: text.into(),
             kind: FlashKind::Pending,
             at: now_millis(),
+            ttl: FLASH_MS,
         });
     }
 
@@ -1526,6 +1579,7 @@ impl App {
             text: text.into(),
             kind: FlashKind::Error,
             at: now_millis(),
+            ttl: FLASH_MS,
         });
     }
 
@@ -1547,8 +1601,23 @@ impl App {
         self.flash(view.empty.map(|notice| notice.text).unwrap_or_default());
     }
 
+    /// A notice the user must not miss: it stays longer than a flash.
+    pub fn notice(&mut self, text: impl Into<String>) {
+        self.flash = Some(Flash {
+            text: text.into(),
+            kind: FlashKind::Error,
+            at: now_millis(),
+            ttl: NOTICE_MS,
+        });
+    }
+
+    /// The daemon already settled the card while the queue still lists it: it stays out until a
+    /// newer view says where it is.
     fn hide(&mut self, key: Key) {
-        self.hidden.insert(key, now_millis());
+        let (version, epoch) = self.home_view.as_ref()
+            .map(|home| (Some(home.version.clone()), home.data_epoch.clone()))
+            .unwrap_or_default();
+        self.optimistic.hold(key, version, epoch);
         self.reconcile();
     }
 
@@ -1846,6 +1915,7 @@ impl App {
                     return;
                 }
                 self.screen_view_asked = None;
+                self.optimistic.reconcile(&view.version, &view.data_epoch);
                 self.view_data_epoch = Some(view.data_epoch.clone());
                 self.view_status = Some(view.status.clone());
                 let changed = self.home_view.as_ref().is_none_or(|home| home.key != view.key || home.version != view.version);
@@ -2020,9 +2090,6 @@ impl App {
                     self.flash(text);
                 }
                 Err(e) => {
-                    if let Some(k) = key {
-                        self.hidden.remove(&k);
-                    }
                     self.fail(trf!(
                         "Not confirmed: {e}. Check before repeating.",
                         "Sin confirmar: {e}. Revísalo antes de repetir."
@@ -2110,33 +2177,11 @@ impl App {
 
     fn view_action_done(&mut self, request: Value, result: Result<ViewActionReply, Delivery>) {
         let command = request["command_id"].as_str().unwrap_or_default();
-        let origin = self.in_flight.remove(command);
-        let review = self.review_sends.remove(command);
-        if self.unsure.as_ref().is_some_and(|earlier| earlier["command_id"] == request["command_id"]) {
-            self.unsure = None;
-        }
-        let lang = i18n::lang();
         let outcome = match result {
             Ok(ViewActionReply::Outcome(outcome)) => outcome,
-            Err(Delivery::Unsent) => alondra_core::views::transport_failure(lang),
-            Err(Delivery::Unanswered) => {
-                self.unsure = Some(request.clone());
-                Outcome {
-                    kind: OutcomeKind::Failed,
-                    title: tr!(
-                        "Not sure it arrived; check before repeating.",
-                        "No sé si llegó; revisa antes de repetir."
-                    )
-                    .to_owned(),
-                    body: Some(
-                        tr!(
-                            "Repeating the same action won't do it twice.",
-                            "Si repites la misma acción, no se hará dos veces."
-                        )
-                        .to_owned(),
-                    ),
-                    next: None,
-                }
+            Err(Delivery::Unsent | Delivery::Unanswered) => {
+                self.optimistic.failed(command, now_millis());
+                return;
             }
             Err(Delivery::Answered(message)) => Outcome {
                 kind: OutcomeKind::Failed,
@@ -2145,16 +2190,25 @@ impl App {
                 next: None,
             },
         };
+        let applied = matches!(outcome.kind, OutcomeKind::Done | OutcomeKind::Started);
+        let shown = self.home_view.as_ref().map(|home| home.version.clone());
+        let settled = self.optimistic.settle(command, applied, shown)
+            .unwrap_or(optimistic::Settled { target: None, was_overdue: false, comes_back: false });
+        let origin = settled.target.clone();
+        let review = self.review_sends.remove(command);
         let text = match &outcome.body {
             Some(body) => format!("{}\n{body}", outcome.title),
             None => outcome.title.clone(),
         };
-        self.rule_answered(command, matches!(outcome.kind, OutcomeKind::Done | OutcomeKind::Started));
+        self.rule_answered(command, applied);
         match outcome.kind {
             OutcomeKind::Done | OutcomeKind::Started => {
-                if let Some(key) = origin {
-                    self.left_on.remove(&key);
-                    self.hidden.insert(key, now_millis());
+                if let Some(key) = &origin {
+                    self.left_on.remove(key);
+                    self.left_views.remove(key);
+                    if settled.was_overdue {
+                        self.reconcile();
+                    }
                 }
                 let text = match review {
                     Some(key) => self.review_delivered(key),
@@ -2167,12 +2221,16 @@ impl App {
                 }
             }
             OutcomeKind::Refused | OutcomeKind::Failed => {
-                self.show_again(origin);
+                if settled.comes_back {
+                    self.show_again(origin);
+                }
                 self.fail(text);
             }
             OutcomeKind::Changed => {
                 self.flash = None;
-                self.show_again(origin.clone());
+                if settled.comes_back {
+                    self.show_again(origin.clone());
+                }
                 let Some(next) = outcome.next else {
                     self.fail(text);
                     return;
@@ -2188,6 +2246,7 @@ impl App {
                         hides: next.resolves_card,
                         origin,
                         review,
+                        label: next.label.clone(),
                     },
                 };
                 if self.typing() || self.modal.is_some() {
@@ -2199,6 +2258,46 @@ impl App {
         }
     }
 
+    /// Sends again what is due and brings back the cards whose answer is overdue.
+    fn tick_answers(&mut self, now: i64) -> bool {
+        for request in self.optimistic.due(now) {
+            self.post_action(request);
+        }
+        let overdue = self.optimistic.expire(now);
+        let any = !overdue.is_empty();
+        for overdue in overdue {
+            self.answer_overdue(overdue);
+        }
+        any
+    }
+
+    /// An answer the daemon has not confirmed in time: its card is back where it was, and the user
+    /// is told which answer did not arrive. It goes on being sent.
+    fn answer_overdue(&mut self, overdue: optimistic::Overdue) {
+        self.rule_overdue(&overdue.command);
+        self.show_again(overdue.target);
+        let optimistic::Answer { card, label } = overdue.answer;
+        self.notice(match (card.is_empty(), label.is_empty()) {
+            (false, false) => trf!(
+                "Your answer “{label}” to “{card}” didn't reach your Mac. The card is back; Alondra keeps trying.",
+                "Tu respuesta «{label}» a «{card}» no llegó a tu Mac. La tarjeta ha vuelto; Alondra sigue intentándolo."
+            ),
+            (false, true) => trf!(
+                "Your answer to “{card}” didn't reach your Mac. The card is back; Alondra keeps trying.",
+                "Tu respuesta a «{card}» no llegó a tu Mac. La tarjeta ha vuelto; Alondra sigue intentándolo."
+            ),
+            (true, false) => trf!(
+                "Your answer “{label}” didn't reach your Mac. Alondra keeps trying.",
+                "Tu respuesta «{label}» no llegó a tu Mac. Alondra sigue intentándolo."
+            ),
+            (true, true) => tr!(
+                "An answer didn't reach your Mac. Alondra keeps trying.",
+                "Una respuesta no llegó a tu Mac. Alondra sigue intentándolo."
+            )
+            .to_owned(),
+        });
+    }
+
     /// The comments reached the Mac: they leave the reader, which closes, and the user is told
     /// where they went.
     fn review_delivered(&mut self, key: Key) -> String {
@@ -2208,6 +2307,7 @@ impl App {
             .as_ref()
             .filter(|reader| reader.key == key)
             .map(|reader| reader.agent.clone())
+            .or_else(|| self.review_agents.remove(&key))
             .unwrap_or_default();
         if self.reader.as_ref().is_some_and(|reader| reader.key == key) {
             self.reader = None;
@@ -2225,21 +2325,14 @@ impl App {
         let Some(key) = origin else {
             return;
         };
-        self.hidden.remove(&key);
         let left_on = self.left_on.remove(&key);
+        let view = self.left_views.remove(&key);
         if left_on.is_none_or(|left_on| left_on == self.sel) {
             self.sel = Some(key);
-            self.card_view = None;
+            self.card_view = view;
             self.card_view_asked = None;
         }
         self.reconcile();
-    }
-
-    /// A card leaves while its action runs and for a short while after it is done, so the server
-    /// has time to take it away; if it still has it then, it comes back.
-    fn is_hidden(&self, key: &Key, now: i64) -> bool {
-        self.in_flight.values().any(|acting| acting == key)
-            || self.hidden.get(key).is_some_and(|at| now - at < HIDE_GRACE_MS)
     }
 
     /// The home view as the user sees it: cards whose action is in flight are not there.
@@ -2248,10 +2341,9 @@ impl App {
         let paged = |section: &alondra_core::views::Section| section.collapsed && section.items.is_empty()
             && self.open_sections.contains(&section.id) && self.section_pages.contains_key(&section.id);
         let blocks = home.sections.iter().any(view_render::has_blocks);
-        if self.hidden.is_empty() && self.in_flight.is_empty() && !home.sections.iter().any(paged) && !blocks {
+        if self.optimistic.is_empty() && !home.sections.iter().any(paged) && !blocks {
             return Some(std::borrow::Cow::Borrowed(home));
         }
-        let now = now_millis();
         let mut shown = home.clone();
         view_render::lift_blocks(&mut shown.sections);
         for section in &mut shown.sections {
@@ -2259,10 +2351,15 @@ impl App {
                 section.items = page.items.clone();
                 section.more = page.more.clone();
             }
+            let before = section.items.len();
             section.items.retain(|item| match item {
-                alondra_core::views::Item::Card(card) => !self.is_hidden(&Key(card.id.clone()), now),
+                alondra_core::views::Item::Card(card) => !self.optimistic.hides(&Key(card.id.clone())),
                 _ => true,
             });
+            let gone = (before - section.items.len()) as u32;
+            if let Some(count) = section.count.as_mut() {
+                *count = count.saturating_sub(gone);
+            }
         }
         Some(std::borrow::Cow::Owned(shown))
     }
@@ -2270,7 +2367,7 @@ impl App {
     fn on_timers(&mut self) -> bool {
         let now = now_millis();
         let mut dirty = false;
-        if self.flash.as_ref().is_some_and(|f| now - f.at > FLASH_MS) {
+        if self.flash.as_ref().is_some_and(|f| now - f.at > f.ttl) {
             self.flash = None;
             dirty = true;
         }
@@ -2278,13 +2375,7 @@ impl App {
             self.last_clock = now;
             dirty = true;
         }
-        let hidden = self.hidden.len();
-        let in_flight: HashSet<Key> = self.in_flight.values().cloned().collect();
-        self.hidden.retain(|key, at| in_flight.contains(key) || now - *at < HIDE_GRACE_MS);
-        if self.hidden.len() != hidden {
-            self.reconcile();
-            dirty = true;
-        }
+        dirty |= self.tick_answers(now);
         let waiting = self.pairing.len();
         self.pairing.retain(|d| d.expires_at_ms > now);
         dirty |= self.pairing.len() != waiting;
@@ -3137,6 +3228,12 @@ impl App {
                 _ => return,
             };
             let epoch = view.data_epoch.clone();
+            let acting = Acting {
+                origin: self.sel.clone().unwrap_or_else(|| Key(view.key.clone())),
+                stamp: action.stamp.clone(),
+                hides: action.resolves_card,
+                label: action.label.clone(),
+            };
             let review = self.reviews.get(&key);
             let text = review
                 .filter(|review| !review.is_empty())
@@ -3153,7 +3250,7 @@ impl App {
                     option_id: None,
                     required,
                     allow_attachments: action.attachments,
-                    acting: None,
+                    acting: Some(acting),
                     review: Some(key.clone()),
                 },
                 &text,

@@ -5,7 +5,17 @@ use crate::domain::{DeliveryTarget, DomainState, Interaction, InteractionId, Int
 /// moment it is sent when this is true, and leave it in place otherwise: they never work it out
 /// from the action's name. The daemon decides what a message becomes with the same rule.
 pub fn resolves_card(domain: &DomainState, action: &ActionId) -> bool {
-    always_resolves(action.verb) || handed_back(domain, action)
+    always_resolves(action.verb) || (handed_back(domain, action) && !reply_nobody_attends(domain, action))
+}
+
+/// A reply to a delivery takes it away while its node acts on it, and the delivery comes back once
+/// the node is done with it (`DomainState::open_reply`). A node that is paused, lost or gone cannot
+/// act on it now, so the delivery stays in front of the user.
+fn reply_nobody_attends(domain: &DomainState, action: &ActionId) -> bool {
+    action.verb == Verb::Reply
+        && domain.interactions.get(&InteractionId(action.subject.clone()))
+            .is_some_and(|interaction| matches!(interaction.payload, InteractionPayload::Delivery { .. })
+                && !domain.node_attends(interaction))
 }
 
 /// An answer, an acceptance, a read or a request for changes always settles the card it came from.

@@ -14,7 +14,7 @@ BETA_GROUP := Internal Pilot,Private Pilot
 APPLE_VERSION = $(shell sed -n 's/^ *version = "\(.*\)".*/\1/p' tools/shared.bzl)
 APPLE_BUILD = $(shell sed -n 's/^ *build_number = "\(.*\)".*/\1/p' tools/shared.bzl)
 
-.PHONY: version-guard increment-version build-release snapshots-record snapshots-verify tui-shots mac-snapshots-record mac-snapshots-verify no-holds build test install run tui setup launchd unlaunchd restart status doctor cargo-test mac device device-console e2e-sandbox e2e-sandbox-stop e2e-wizard e2e-doc-review e2e-sandbox-logs e2e-relay-cards e2e-direct-cards e2e-allow-always e2e-cards-tui e2e-ios-cards e2e-ios-offline soak load-bench tasks-screen rehearse-cutover upgrade-rehearsal cutover-live clean-xcode-test-results e2e-journeys e2e-explore
+.PHONY: version-guard increment-version build-release snapshots-record snapshots-verify tui-shots mac-snapshots-record mac-snapshots-verify no-holds build test install run tui setup launchd unlaunchd restart status doctor cargo-test mac device device-console e2e-sandbox e2e-sandbox-stop e2e-wizard e2e-doc-review e2e-sandbox-logs e2e-relay-cards e2e-direct-cards e2e-allow-always e2e-cards-tui e2e-tui-optimistic e2e-ios-cards e2e-ios-offline soak load-bench tasks-screen rehearse-cutover upgrade-rehearsal cutover-live clean-xcode-test-results e2e-journeys e2e-explore
 
 build:
 	bazelisk build //crates/... //apple:AlondraMac
@@ -187,6 +187,15 @@ e2e-direct-cards:
 
 e2e-cards-tui:
 	$(call E2E_CARDS,tui)
+
+# The TUI's optimistic answers in the real TUI inside tmux, against its own sandbox: a reply leaves and
+# its delivery comes back once its node stops (waits for the Mac), and an answer to a frozen alondrad comes back after
+# 30 s with a notice (tools/e2e_tui_optimistic.py). Screens land in E2E_CAPTURES (.e2e-captures by
+# default); PNG=1 also renders them as images.
+e2e-tui-optimistic:
+	bazelisk build //crates/alondrad //crates/alondra //crates/relay:alondra-relay //tools/sandbox:alondra-sandbox
+	python3 tools/e2e_tui_optimistic.py --captures $(or $(E2E_CAPTURES),$(CURDIR)/.e2e-captures) $(if $(PNG),--png) \
+		$$(bazelisk cquery --output=files '//crates/alondrad + //crates/alondra + //crates/relay:alondra-relay + //tools/sandbox:alondra-sandbox' 2>/dev/null | grep -v '\.ok$$')
 
 E2E_IOS_APP = //apple:AlondraiOS --ios_multi_cpus=sim_arm64 --define=alondra_sandbox=1
 

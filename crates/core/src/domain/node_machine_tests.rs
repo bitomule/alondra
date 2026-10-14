@@ -459,6 +459,7 @@ enum Step {
     Answer(usize),
     Deliver(usize),
     Accept(usize),
+    Reply(usize),
     Pause { pick: usize, by_user: bool },
     Resume(usize),
     Vanish(usize),
@@ -482,6 +483,7 @@ fn step() -> impl Strategy<Value = Step> {
         2 => (0usize..8).prop_map(Step::Answer),
         2 => (0usize..8).prop_map(Step::Deliver),
         1 => (0usize..8).prop_map(Step::Accept),
+        2 => (0usize..8).prop_map(Step::Reply),
         2 => (0usize..8, prop::bool::weighted(0.3)).prop_map(|(pick, by_user)| Step::Pause { pick, by_user }),
         2 => (0usize..8).prop_map(Step::Resume),
         2 => (0usize..8).prop_map(Step::Vanish),
@@ -570,11 +572,33 @@ impl World {
         }
     }
 
+    /// A delivery the user replied to is away only while its node attends to the reply: once the
+    /// node ends a turn, pauses, loses its session or closes, it is back in front of the user.
+    fn replied_and_away(&self, agent: &AgentId) -> bool {
+        self.open_task(agent).and_then(|task| self.s.task_handed_back(&task)) == Some(Instruction::Reply)
+    }
+
     fn apply(&mut self, step: &Step) {
         self.now += 1_000;
         if !matches!(step, Step::Replay) {
             self.last = None;
         }
+        let ending = match step {
+            Step::Turn { pick, start: false, late: false } => self.pick(*pick, |a, _| a.phase.live()),
+            Step::Pause { pick, .. } => self.pick(*pick, |a, _| a.phase.holds_slot()),
+            Step::Lost(n) | Step::UserCloses(n) => self.pick(*n, |a, _| a.phase.live()),
+            _ => None,
+        };
+        let phase_before = ending.as_ref().and_then(|agent| self.s.node_phase(agent).cloned());
+        self.apply_step(step);
+        if let Some(agent) = ending
+            && self.s.node_phase(&agent).cloned() != phase_before
+        {
+            assert!(!self.replied_and_away(&agent), "{step:?} ended {agent:?}'s attention, yet its replied delivery stays away");
+        }
+    }
+
+    fn apply_step(&mut self, step: &Step) {
         match step.clone() {
             Step::Launch => {
                 self.nodes += 1;
@@ -665,6 +689,15 @@ impl World {
                     self.event(&agent, NodeEvent::SessionClosed, self.now);
                 }
                 self.real.remove(&agent);
+            }
+            Step::Reply(n) => {
+                let Some(agent) = self.pick(n, |_, t| t.is_some_and(|t| t.state == TaskState::ForYourReview)) else { return };
+                let task = self.open_task(&agent).unwrap();
+                let presentation = self.s.tasks[&task].final_presentation.clone().unwrap();
+                self.must(user(), Command::SubmitFeedback { attachments: vec![], presentation_id: presentation.clone(),
+                    targets: vec![DeliveryTarget::Text { text: "Done".into() }], body: "Why this way?".into(), instruction: Instruction::Reply });
+                let attends = self.s.node_attends(&self.s.interactions[&presentation]);
+                assert_eq!(self.replied_and_away(&agent), attends, "a reply takes the delivery away exactly when its node can act on it");
             }
             Step::Pause { pick, by_user } => {
                 let Some(agent) = self.pick(pick, |a, _| a.phase.holds_slot()) else { return };

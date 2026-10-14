@@ -188,7 +188,7 @@ fn merge_end_to_end_one_press_one_post_then_started() {
     assert_eq!(sent[0].1["action_id"], action_id);
     assert_eq!(sent[0].1["option_id"], "squash");
     assert_eq!(flash(&app), "Merging…");
-    assert!(app.hidden.contains_key(&Key(pr_id.clone())));
+    assert!(app.optimistic.hides(&Key(pr_id.clone())));
     assert!(!app.inbox_keys().contains(&Key(pr_id)), "the card leaves the list at once");
     let after = screen(&mut app, 120, 30);
     assert!(!after.contains("Review the beta candidate"), "the card is not drawn: {after}");
@@ -245,7 +245,7 @@ fn a_refused_action_brings_the_card_back_with_the_servers_words() {
     let (pr_id, _) = one_method_merge_card(&mut app);
     press(&mut app, KeyCode::Char('1'));
     let request = posted(&app)[0].1.clone();
-    assert!(app.hidden.contains_key(&Key(pr_id.clone())));
+    assert!(app.optimistic.hides(&Key(pr_id.clone())));
     app.on_msg(Msg::ViewAction {
         request,
         result: view_action_result(serde_json::json!({
@@ -253,7 +253,7 @@ fn a_refused_action_brings_the_card_back_with_the_servers_words() {
             "result":{"kind":"refused", "title":"PR #11 must merge first.", "body":"This one builds on it."}
         })),
     });
-    assert!(!app.hidden.contains_key(&Key(pr_id.clone())), "the card is back");
+    assert!(!app.optimistic.hides(&Key(pr_id.clone())), "the card is back");
     assert!(app.inbox_keys().contains(&Key(pr_id)));
     let back = screen(&mut app, 120, 30);
     assert!(back.contains("Review the beta candidate"), "the card is drawn again: {back}");
@@ -264,19 +264,23 @@ fn a_refused_action_brings_the_card_back_with_the_servers_words() {
 }
 
 #[test]
-fn a_transport_failure_says_nothing_was_sent_not_the_error_chain() {
+fn an_answer_that_does_not_reach_the_mac_is_tried_again_in_silence_with_the_same_command() {
     crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
     let (tx, _rx) = std::sync::mpsc::sync_channel(8);
     let mut app = App::new(tx);
     let (pr_id, _) = one_method_merge_card(&mut app);
     press(&mut app, KeyCode::Char('1'));
     let request = posted(&app)[0].1.clone();
-    app.on_msg(Msg::ViewAction {
-        request,
-        result: Err(Delivery::Unsent),
-    });
-    assert_eq!(flash(&app), "Couldn't reach your Mac. Nothing was sent; try again.");
-    assert!(!app.hidden.contains_key(&Key(pr_id)));
+    let shown = flash(&app).to_owned();
+    for failure in [Delivery::Unsent, Delivery::Unanswered] {
+        app.on_msg(Msg::ViewAction { request: request.clone(), result: Err(failure) });
+        assert!(app.optimistic.hides(&Key(pr_id.clone())), "the card stays out while it is retried");
+        assert_eq!(flash(&app), shown, "nothing says it failed");
+        app.tick_answers(now_millis() + 20_000);
+    }
+    let sent = posted(&app);
+    assert_eq!(sent.len(), 3, "sent again after each failure");
+    assert!(sent.iter().all(|(_, body)| *body == request), "the very same request, so the daemon does it once");
 }
 
 #[test]
@@ -1531,8 +1535,8 @@ fn a_changed_modal_hides_the_card_it_came_from_not_the_selected_one() {
     app.sel = Some(other.clone());
     press(&mut app, KeyCode::Enter);
     assert_eq!(posted(&app).len(), 2);
-    assert!(app.hidden.contains_key(&Key(origin)), "the card the action came from leaves");
-    assert!(!app.hidden.contains_key(&other), "the selected card stays");
+    assert!(app.optimistic.hides(&Key(origin)), "the card the action came from leaves");
+    assert!(!app.optimistic.hides(&other), "the selected card stays");
 }
 
 #[test]
@@ -1564,26 +1568,121 @@ fn an_answer_the_terminal_cannot_read_is_not_reported_as_nothing_sent() {
 }
 
 #[test]
-fn a_timeout_asks_to_check_and_repeating_the_action_sends_the_same_command() {
+fn an_answer_unconfirmed_for_thirty_seconds_brings_its_card_back_saying_which_answer_did_not_arrive() {
     crate::i18n::set_for_this_thread(crate::i18n::Lang::Es);
     let (tx, _rx) = std::sync::mpsc::sync_channel(8);
     let mut app = App::new(tx);
     let (origin, _) = one_method_merge_card(&mut app);
+    let title = app.card_title(&Key(origin.clone()));
     press(&mut app, KeyCode::Char('1'));
     let first = posted(&app)[0].1.clone();
+    let began = now_millis();
     app.on_msg(Msg::ViewAction { request: first.clone(), result: Err(Delivery::Unanswered) });
-    assert_eq!(
-        flash(&app),
-        "No sé si llegó; revisa antes de repetir.\nSi repites la misma acción, no se hará dos veces."
-    );
-    assert!(app.inbox_keys().contains(&Key(origin.clone())), "the card is back to check");
-    assert_eq!(app.sel, Some(Key(origin)), "and selected again");
+    app.tick_answers(began + optimistic::CONFIRMATION_MS - 1_000);
+    assert!(!app.inbox_keys().contains(&Key(origin.clone())), "still out before thirty seconds");
+
+    app.tick_answers(began + optimistic::CONFIRMATION_MS + 1);
+    assert!(app.inbox_keys().contains(&Key(origin.clone())), "the card is back where it was");
+    assert_eq!(app.sel, Some(Key(origin.clone())), "and selected again");
+    assert_eq!(app.card_view.as_ref().map(|view| view.key.clone()), Some(format!("card:{origin}")),
+        "with its detail, never waiting on the Mac that did not answer");
+    let drawn = screen(&mut app, 120, 30);
+    assert!(drawn.contains("Review the beta candidate"), "{drawn}");
+    let notice = flash(&app);
+    assert!(notice.starts_with("Tu respuesta «") && notice.contains(&format!("» a «{title}» no llegó a tu Mac")), "{notice}");
+    assert_eq!(app.flash.as_ref().map(|f| (f.kind, f.ttl)), Some((FlashKind::Error, NOTICE_MS)));
+
     one_method_merge_card(&mut app);
     press(&mut app, KeyCode::Char('1'));
     let sent = posted(&app);
-    assert_eq!(sent.len(), 2);
-    assert_eq!(sent[1].1["command_id"], first["command_id"], "the daemon runs one command once");
-    assert_eq!(sent[1].1, first, "the very same request, so the daemon's receipt matches it");
+    assert_eq!(sent.len(), 3, "the retry after the failure, then the answer again");
+    assert_eq!(sent.last().unwrap().1, first, "answering again sends the same command, which the daemon does once");
+    assert!(!app.inbox_keys().contains(&Key(origin)), "and the card leaves again");
+}
+
+/// 14 October: David wrote his changes in the reply of the Redraft PR's delivery from the TUI and
+/// the card stayed on screen. A reply the daemon says takes the card away leaves the queue and the
+/// detail the moment it is sent, with nothing saying it is on its way.
+#[test]
+fn a_reply_written_on_a_delivery_leaves_the_queue_and_the_detail_at_once() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
+    let mut app = App::new(tx);
+    let id = "hf-weekly-2026-09-30";
+    app.on_msg(Msg::ViewHome(Ok(serde_json::from_value(view_fixture("home-tui.json")).unwrap())));
+    app.reconcile();
+    app.sel = Some(Key(id.into()));
+    let mut card = view_fixture("card-pr.json");
+    card["key"] = format!("card:{id}").into();
+    card["sections"][0]["items"][0]["reply"]["resolves_card"] = true.into();
+    app.on_msg(Msg::ViewCard { key: format!("card:{id}"), result: Ok(serde_json::from_value(card).unwrap()) });
+    assert!(screen(&mut app, 120, 30).contains("Review the beta candidate"));
+
+    let waiting = app.attention();
+    let listed = |app: &App| app.shown_home().and_then(|home| home.sections[0].count);
+    let count = listed(&app);
+    press(&mut app, KeyCode::Char('r'));
+    typed(&mut app, "No blurry photo found; make it a row like Albums");
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(app.attention(), waiting - 1, "the inbox tab counts it out at once");
+    assert_eq!(listed(&app), count.map(|count| count - 1), "and so does its section");
+    let sent = posted(&app);
+    assert_eq!(sent.len(), 1);
+    assert!(sent[0].1["action_id"].as_str().unwrap().starts_with("reply:"), "{sent:?}");
+    assert!(!app.inbox_keys().contains(&Key(id.into())), "out of the queue before the Mac answers");
+    let drawn = screen(&mut app, 120, 30);
+    assert!(!drawn.contains("Review the beta candidate"), "out of the detail too: {drawn}");
+    assert!(!drawn.contains("Sending") && !drawn.contains("sending"), "nothing says it is on its way: {drawn}");
+}
+
+#[test]
+fn a_card_opened_from_a_link_leaves_the_detail_the_moment_it_is_answered() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
+    let mut app = App::new(tx);
+    app.on_msg(Msg::ViewHome(Ok(serde_json::from_value(view_fixture("home-tui.json")).unwrap())));
+    app.reconcile();
+    let key = format!("card:{}", question_id());
+    let mut card = view_fixture("card-question.json");
+    card["sections"][0]["items"][0]["actions"][0]["resolves_card"] = true.into();
+    app.navigate_view(&key);
+    app.on_msg(Msg::ViewCard { key: key.clone(), result: Ok(serde_json::from_value(card).unwrap()) });
+    let need = app.card_view.as_ref().and_then(|view| view.title.clone()).unwrap_or_default();
+    assert!(screen(&mut app, 120, 30).contains(&need), "the linked card is open");
+
+    press(&mut app, KeyCode::Char('1'));
+    assert_eq!(posted(&app).len(), 1);
+    assert!(!app.view_navigation.contains(&key), "the view opened for it closes");
+    assert!(app.card_view.as_ref().is_none_or(|view| view.key != key), "its detail is gone before the Mac answers");
+}
+
+#[test]
+fn views_that_arrive_before_the_mac_confirms_never_bring_the_card_back() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
+    let mut app = App::new(tx);
+    let (origin, _) = one_method_merge_card(&mut app);
+    press(&mut app, KeyCode::Char('1'));
+    let request = posted(&app)[0].1.clone();
+    let mut home: ViewDocument = serde_json::from_value(view_fixture("home-tui.json")).unwrap();
+    for version in ["same-as-before", "rendered-while-sending"] {
+        home.version = version.into();
+        app.on_msg(Msg::ViewHome(Ok(home.clone())));
+        assert!(!app.inbox_keys().contains(&Key(origin.clone())), "{version}: the answer is still on its way");
+    }
+    home.version = "shown-when-confirmed".into();
+    app.on_msg(Msg::ViewHome(Ok(home.clone())));
+    app.on_msg(Msg::ViewAction { request, result: applied("done", "Merged") });
+    app.on_msg(Msg::ViewHome(Ok(home.clone())));
+    assert!(!app.inbox_keys().contains(&Key(origin.clone())), "the view the daemon had when it confirmed is older than the answer");
+    let mut after = home.clone();
+    after.version = "after-the-answer".into();
+    for section in &mut after.sections {
+        section.items.retain(|item| !matches!(item, alondra_core::views::Item::Card(card) if card.id == origin));
+    }
+    app.on_msg(Msg::ViewHome(Ok(after)));
+    assert!(!app.inbox_keys().contains(&Key(origin)), "the daemon's newer view no longer lists it");
+    assert!(app.optimistic.is_empty(), "nothing is left to remember");
 }
 
 #[test]
@@ -1665,7 +1764,7 @@ fn cancelling_a_composer_leaves_no_stale_stamp_for_the_next_action() {
     app.on_msg(Msg::ViewAction { request, result: Ok(changed) });
     press(&mut app, KeyCode::Enter);
     assert_eq!(posted(&app).len(), 1);
-    assert_eq!(flash(&app), "Sending…", "not the cancelled answer's «Replying…»");
+    assert!(!flash(&app).contains("Replying…"), "not the cancelled answer's stamp: {}", flash(&app));
 }
 
 #[test]
@@ -1780,9 +1879,12 @@ fn a_done_card_stays_away_and_comes_back_only_if_the_server_still_has_it() {
     assert!(!app.inbox_keys().contains(&Key(origin.clone())), "the server has not taken it away yet");
     assert!(!screen(&mut app, 120, 30).contains("Review the beta candidate"));
 
-    app.hidden.insert(Key(origin.clone()), now_millis() - HIDE_GRACE_MS - 1);
-    app.on_timers();
-    assert!(app.inbox_keys().contains(&Key(origin)), "the server still has it, so it is still there");
+    let mut stale: ViewDocument = serde_json::from_value(view_fixture("home-tui.json")).unwrap();
+    app.on_msg(Msg::ViewHome(Ok(stale.clone())));
+    assert!(!app.inbox_keys().contains(&Key(origin.clone())), "a view rendered before the answer cannot bring it back");
+    stale.version = "after-the-answer".into();
+    app.on_msg(Msg::ViewHome(Ok(stale)));
+    assert!(app.inbox_keys().contains(&Key(origin)), "a newer view still has it, so it is still there");
     assert!(screen(&mut app, 120, 30).contains("Review the beta candidate"));
 }
 
@@ -1855,7 +1957,7 @@ fn a_changed_question_waits_for_the_open_one_and_enter_answers_the_one_on_screen
     let sent = posted(&app);
     assert_eq!(sent.len(), 3);
     assert_eq!(sent[2].1["action_id"], "merge:fresh");
-    assert!(app.in_flight.values().any(|key| *key == Key(a.clone())), "it is A that leaves");
+    assert!(app.optimistic.hides(&Key(a.clone())), "it is A that leaves");
 }
 
 #[test]
@@ -2067,7 +2169,7 @@ fn a_card_settled_elsewhere_closes_and_says_why_instead_of_drawing_it() {
     app.on_msg(Msg::ViewCard { key, result: Ok(settled(&card, "Ya no hace falta")) });
     assert!(app.card_view.is_none());
     assert_eq!(flash(&app), "Ya no hace falta");
-    assert!(app.hidden.contains_key(&Key(question_id())), "the inbox leaves the settled card");
+    assert!(app.optimistic.hides(&Key(question_id())), "the inbox leaves the settled card");
 }
 
 #[test]
@@ -2091,7 +2193,7 @@ fn reader_with_a_comment(app: &mut App) -> String {
     view["sections"][0]["items"][0]["actions"] = serde_json::json!([
         {"id":format!("changes:{id}@1"), "label":"Request changes", "style":"secondary",
          "presentation":"button", "input":{"kind":"text","placeholder":"Describe", "required":true,"multiline":true},
-         "attachments":true,"enabled":true,"key":"s"}
+         "attachments":true,"enabled":true,"key":"s","resolves_card":true}
     ]);
     let key = format!("card:{id}");
     app.view_navigation.push(key.clone());
@@ -2124,13 +2226,13 @@ fn sent_reader_comments_close_the_reader_and_say_they_went_not_that_the_card_is_
     let sent = posted(&app);
     assert!(sent[0].1["input"]["text"].as_str().unwrap().contains("Tighter"));
 
+    assert!(app.reader.is_none(), "the reader closes the moment the comments leave");
+    assert!(!app.view_navigation.contains(&key), "and so does the card they answer");
     app.on_msg(Msg::ViewCard { key: key.clone(), result: Ok(settled_card(&key)) });
     let sending = screen(&mut app, 140, 30);
-    assert!(sending.contains("enviando tus comentarios"), "{sending}");
-    assert!(!sending.contains("ya no está en la bandeja"), "{sending}");
+    assert!(!sending.contains("enviando") && !sending.contains("ya no está en la bandeja"), "{sending}");
 
     app.on_msg(Msg::ViewAction { request: sent[0].1.clone(), result: applied("done", "Cambios solicitados") });
-    assert!(app.reader.is_none(), "the reader closes once the Mac has the comments");
     assert!(app.reviews.is_empty(), "sent comments are not left as unsent");
     assert_eq!(flash(&app), "Comentarios enviados a Alondra · iOS");
     let after = screen(&mut app, 140, 30);
@@ -2147,8 +2249,7 @@ fn reader_comments_the_mac_did_not_take_stay_in_the_reader() {
     press(&mut app, KeyCode::Enter);
     let sent = posted(&app);
     app.on_msg(Msg::ViewAction { request: sent[0].1.clone(), result: applied("refused", "Ya no está disponible") });
-    assert!(app.reader.is_some());
-    assert_eq!(app.reviews.values().map(|review| review.count()).sum::<usize>(), 1);
+    assert_eq!(app.reviews.values().map(|review| review.count()).sum::<usize>(), 1, "the comments wait for the user to open them again");
     assert!(app.review_sends.is_empty());
 }
 
@@ -2193,7 +2294,7 @@ fn a_card_leaves_the_list_only_when_its_action_says_it_takes_it_out() {
         app.on_msg(Msg::ViewCard { key: format!("card:{}", question_id()), result: Ok(serde_json::from_value(card).unwrap()) });
         press(&mut app, KeyCode::Char('1'));
         assert_eq!(posted(&app).len(), 1, "the action is sent either way");
-        assert_eq!(app.hidden.contains_key(&Key(question_id())), resolves, "resolves_card {resolves}");
+        assert_eq!(app.optimistic.hides(&Key(question_id())), resolves, "resolves_card {resolves}");
         assert_eq!(app.inbox_keys().contains(&Key(question_id())), !resolves);
     }
 }
@@ -2223,7 +2324,7 @@ fn words_written_under_an_orchestrator_decide_answer_it_and_take_it_out() {
     let action = sent[0].1["action_id"].as_str().unwrap();
     assert!(action.starts_with(&format!("reply:{id}@")), "the words answer the card, never a new message: {action}");
     assert_eq!(sent[0].1["input"]["text"], "Hazlo tú");
-    assert!(app.hidden.contains_key(&Key(id.clone())), "the answered card leaves at once");
+    assert!(app.optimistic.hides(&Key(id.clone())), "the answered card leaves at once");
     assert!(!app.inbox_keys().contains(&Key(id)));
 }
 

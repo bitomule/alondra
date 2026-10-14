@@ -849,12 +849,7 @@ fn draw_reader(f: &mut Frame, app: &mut App, area: Rect) {
         Span::raw(" "),
     ];
     let n_comments = review.map(|rv| rv.count()).unwrap_or(0);
-    if app.review_sends.values().any(|key| *key == r.key) {
-        title.push(Span::styled(
-            tr!(" sending your comments… ", " enviando tus comentarios… "),
-            Style::new().fg(Color::Black).bg(COMMENT),
-        ));
-    } else if !still_there && app.loaded {
+    if !still_there && app.loaded && !app.review_sends.values().any(|key| *key == r.key) {
         let gone = match (n_comments > 0, r.agent_id.is_some(), r.agent.is_empty()) {
             (true, true, false) => {
                 let agent = &r.agent;

@@ -3339,6 +3339,34 @@ fn a_delivery_sent_back_with_an_instruction_waits_on_its_agent_until_it_presents
     }
 }
 
+fn node(s: &mut DomainState, event: NodeEvent) {
+    exec(s, Actor::System, Command::MoveNode { agent_id: "a".into(), event, at: 0 }).unwrap();
+}
+
+#[test]
+fn a_reply_takes_the_delivery_away_until_its_node_ends_the_turn_and_then_the_same_one_is_back() {
+    let mut s = fixture();
+    register(&mut s);
+    present(&mut s, "d", pr_targets());
+    assert_eq!(pending_ids(&s), ["d"]);
+    let outcome = hand_back(&mut s, user(), Instruction::Reply).unwrap();
+    assert!(matches!(&outcome.effects[..], [DomainEffect::NotifyAgent { message, .. }]
+        if message == &Instruction::Reply.message("Back to you")));
+    assert!(!waiting(&s, "d"), "the node acts on the reply");
+    assert_eq!((s.tasks[&"t".into()].state, s.task_handed_back(&"t".into())), (TaskState::Running, Some(Instruction::Reply)));
+    node(&mut s, NodeEvent::TurnStarted);
+    assert!(!waiting(&s, "d"), "a turn on the reply keeps it away");
+
+    let back = exec(&mut s, Actor::System, Command::MoveNode { agent_id: "a".into(), event: NodeEvent::TurnEnded, at: 0 }).unwrap();
+    assert!(waiting(&s, "d"), "the node answered: the same delivery waits for the user again");
+    assert!(back.effects.iter().any(|effect| matches!(effect, DomainEffect::NotifyUser { interaction_id, .. } if interaction_id.0 == "d")),
+        "the user is told it is back: {:?}", back.effects);
+    assert_eq!((s.tasks[&"t".into()].state, s.task_handed_back(&"t".into())), (TaskState::ForYourReview, None));
+    assert_eq!(s.node_phase(&"a".into()), Some(&NodePhase::Delivered { in_turn: false }), "never stopped with nothing to show");
+    exec(&mut s, user(), Command::AcceptDelivery { presentation_id: "d".into(), targets: pr_targets() }).unwrap();
+    assert!(s.accepted(&s.interactions[&"d".into()]));
+}
+
 fn pending_ids(s: &DomainState) -> Vec<String> {
     s.inbox_projection().into_iter().filter(|item| item.pending)
         .map(|item| item.id.trim_start_matches("interaction:").to_owned()).collect()
@@ -3376,6 +3404,36 @@ fn a_reply_to_a_delivery_takes_it_out_of_the_queue_and_nothing_later_brings_it_b
     present(&mut s, "d2", pr_targets());
     assert!(pending_ids(&s).contains(&"d2".to_owned()) && !pending_ids(&s).contains(&"d".to_owned()), "the next presentation is a new card");
     assert_eq!((s.tasks[&"t".into()].state, s.task_handed_back(&"t".into())), (TaskState::ForYourReview, None));
+}
+
+#[test]
+fn a_replied_delivery_comes_back_once_its_node_cannot_act_on_the_reply() {
+    let pause = || Pause { reason: PauseReason::Memory, since: 0, cut: None, turn_since: None, cleanup: PauseCleanup::Pending, released: false };
+    for event in [NodeEvent::Paused { pause: pause() }, NodeEvent::SessionLost, NodeEvent::SessionClosed] {
+        let mut s = fixture();
+        register(&mut s);
+        present(&mut s, "d", pr_targets());
+        hand_back(&mut s, user(), Instruction::Reply).unwrap();
+        assert!(!waiting(&s, "d"));
+        node(&mut s, event.clone());
+        assert!(waiting(&s, "d"), "{event:?}: the user can accept it while the node is away");
+        if matches!(event, NodeEvent::Paused { .. }) {
+            node(&mut s, NodeEvent::Resumed);
+            assert!(waiting(&s, "d"), "a node coming back never takes it away again");
+        }
+    }
+}
+
+#[test]
+fn a_reply_to_a_node_that_cannot_act_keeps_the_delivery_in_front_of_the_user() {
+    let mut s = fixture();
+    register(&mut s);
+    present(&mut s, "d", pr_targets());
+    node(&mut s, NodeEvent::Paused { pause: Pause { reason: PauseReason::Memory, since: 0, cut: None, turn_since: None,
+        cleanup: PauseCleanup::Pending, released: false } });
+    hand_back(&mut s, user(), Instruction::Reply).unwrap();
+    assert!(waiting(&s, "d"), "nobody acts on the reply now, so the delivery stays");
+    assert_eq!(s.task_handed_back(&"t".into()), None);
 }
 
 #[test]
