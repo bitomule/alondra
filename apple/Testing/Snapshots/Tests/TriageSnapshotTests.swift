@@ -256,17 +256,6 @@ final class TriageSnapshotTests: XCTestCase {
         }
     }
 
-    func test_aMergeTheServerMarksUnusableIsNotOnTheCard() throws {
-        let blocked = try Fixtures.card("card-pr") { item in
-            var actions = try XCTUnwrap(item["actions"] as? [[String: Any]])
-            actions[0]["enabled"] = false
-            actions[0]["disabled_reason"] = "Merge #11 first"
-            item["actions"] = actions
-        }
-        let store = try single(blocked)
-        assertScreen(inWindow: true) { Harness(store: store) }
-    }
-
     // MARK: What an action asks first, and what it says after
 
     private static let changedReply = [

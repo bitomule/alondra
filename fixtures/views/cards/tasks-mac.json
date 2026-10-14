@@ -4,7 +4,7 @@
   "view": "tasks",
   "key": "tasks",
   "client": "mac",
-  "version": "ve72d46e3d95df855",
+  "version": "v946ab7472af75eba",
   "cursor": "cursor-1",
   "title": "Tasks",
   "status": {
@@ -196,6 +196,7 @@
                   "id": "pause:a-badge@6",
                   "label": "Pause",
                   "style": "secondary",
+                  "role": "neutral",
                   "presentation": "button",
                   "input": {
                     "kind": "none"
@@ -254,6 +255,7 @@
                   "id": "pause:a-lumo@6",
                   "label": "Pause",
                   "style": "secondary",
+                  "role": "neutral",
                   "presentation": "button",
                   "input": {
                     "kind": "none"
@@ -371,6 +373,7 @@
               "id": "archive_done:view@6",
               "label": "Archive Completed",
               "style": "secondary",
+              "role": "neutral",
               "presentation": "button",
               "input": {
                 "kind": "none"

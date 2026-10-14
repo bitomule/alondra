@@ -71,13 +71,13 @@ final class OutcomeStyleTests: XCTestCase {
                        "This changed while you were looking. It’s updated now; try again.")
     }
 
-    func testOnlyADestructiveActionIsPaintedRed() throws {
-        let allow = try action(#"{"id":"ans:p@1","label":"Allow","style":"primary","role":"risk","presentation":"button","input":{"kind":"none"},"attachments":false,"enabled":true}"#)
+    func testAButtonIsPaintedInTheRoleTheServerSends() throws {
+        let allow = try action(#"{"id":"ans:p@1","label":"Allow","style":"primary","role":"advance","presentation":"button","input":{"kind":"none"},"attachments":false,"enabled":true}"#)
         let close = try action(#"{"id":"close_unmerged:t-1@1","label":"Close without merging","style":"destructive","role":"risk","presentation":"button","input":{"kind":"none"},"attachments":false,"enabled":true}"#)
         let changes = try action(Self.changes)
-        XCTAssertEqual(allow.paintedRole, .advance, "a risky role alone is not red")
+        XCTAssertEqual(allow.paintedRole, .advance)
         XCTAssertEqual(close.paintedRole, .risk)
-        XCTAssertEqual(changes.paintedRole, .neutral)
+        XCTAssertEqual(changes.paintedRole, .neutral, "a button the server left unpainted reads plain")
     }
 
     func testOnlyADestructiveActionConfirmsInRed() throws {

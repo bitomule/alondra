@@ -4,7 +4,7 @@
   "view": "fleet",
   "key": "fleet",
   "client": "tui",
-  "version": "v0153f90ff683fd0e",
+  "version": "v9491fe284b84ef67",
   "cursor": "cursor-1",
   "title": "Flota",
   "status": {
@@ -88,6 +88,7 @@
               "id": "close:d887a34b-249e-4487-a89b-57de38c26372@6",
               "label": "Cerrar nodo",
               "style": "destructive",
+              "role": "risk",
               "presentation": "button",
               "input": {
                 "kind": "none"
@@ -126,6 +127,7 @@
               "id": "close:queued@6",
               "label": "Cerrar nodo",
               "style": "destructive",
+              "role": "risk",
               "presentation": "button",
               "input": {
                 "kind": "none"
@@ -172,6 +174,7 @@
               "id": "close:release-runner@6",
               "label": "Cerrar nodo",
               "style": "destructive",
+              "role": "risk",
               "presentation": "button",
               "input": {
                 "kind": "none"
@@ -210,6 +213,7 @@
               "id": "close:zeta-worker@6",
               "label": "Cerrar nodo",
               "style": "destructive",
+              "role": "risk",
               "presentation": "button",
               "input": {
                 "kind": "none"
@@ -248,6 +252,7 @@
               "id": "close:paused-builder@6",
               "label": "Cerrar nodo",
               "style": "destructive",
+              "role": "risk",
               "presentation": "button",
               "input": {
                 "kind": "none"
@@ -294,6 +299,7 @@
               "id": "close:alpha-waiting@6",
               "label": "Cerrar nodo",
               "style": "destructive",
+              "role": "risk",
               "presentation": "button",
               "input": {
                 "kind": "none"

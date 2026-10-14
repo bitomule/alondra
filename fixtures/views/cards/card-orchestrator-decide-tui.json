@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:memory-pause-livelock-ask",
   "client": "tui",
-  "version": "v58ca7cc6d0bab8fe",
+  "version": "v8d8ab4ee3b173ec4",
   "cursor": "cursor-1",
   "title": "Decide who fixes the memory pauses that cut the same build in a loop",
   "status": {
@@ -164,7 +164,6 @@
               "style": "secondary",
               "role": "neutral",
               "option_id": "mine",
-              "description": "No task is created.",
               "presentation": "button",
               "input": {
                 "kind": "none"
@@ -181,7 +180,6 @@
               "style": "secondary",
               "role": "neutral",
               "option_id": "new_task",
-              "description": "A node measures the loop and changes the pause rule.",
               "presentation": "button",
               "input": {
                 "kind": "none"

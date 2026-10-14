@@ -109,17 +109,6 @@ public enum SendFailure: Equatable, Sendable {
 }
 
 public extension WireAction {
-    /// The colour a button is painted in, on every card and every client: red only for an action the
-    /// server styles destructive, whatever its role says.
-    var paintedRole: ActionRole {
-        if style == .destructive { return .risk }
-        return role == .advance || style == .primary ? .advance : .neutral
-    }
-}
-
-public extension Card {
-    /// The buttons a card shows: an action the server marks unusable is never painted, so no card
-    /// waits greyed out.
-    var usableActions: [WireAction] { actions.filter(\.enabled) }
-    var usableMore: [WireAction] { more.filter(\.enabled) }
+    /// The colour a button is painted in: the server settles it for every client.
+    var paintedRole: ActionRole { role ?? .neutral }
 }

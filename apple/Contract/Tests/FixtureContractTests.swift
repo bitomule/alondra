@@ -35,6 +35,27 @@ final class FixtureContractTests: XCTestCase {
         }
     }
 
+    /// The apps draw a card's buttons as they come: the server already chose the three, left out
+    /// what cannot be used, painted each one and put words only under «Allow always».
+    func testEveryCardButtonComesReadyToPaint() throws {
+        var checked = 0
+        for url in try fixtureURLs() {
+            let document = try ContractCodec.decode(ViewDocument.self, from: Data(contentsOf: url))
+            for case let .card(card) in document.sections.flatMap(\.items) {
+                let name = "\(url.lastPathComponent) \(card.id)"
+                XCTAssertLessThanOrEqual(card.actions.count, 3, name)
+                for action in card.actions + card.more + (card.reply.map { [$0] } ?? []) {
+                    XCTAssertTrue(action.enabled, "\(name): \(action.label)")
+                    XCTAssertNotNil(action.role, "\(name): \(action.label)")
+                    XCTAssertEqual(action.role == .risk, action.style == .destructive, "\(name): \(action.label)")
+                    if action.description != nil { XCTAssertEqual(action.optionId, "always", "\(name): \(action.label)") }
+                }
+                checked += card.actions.count
+            }
+        }
+        XCTAssertGreaterThan(checked, 10, "the card fixtures lost their buttons")
+    }
+
     func testEveryViewFixtureSurvivesAReencode() throws {
         for url in try fixtureURLs() {
             let document = try ContractCodec.decode(ViewDocument.self, from: Data(contentsOf: url))

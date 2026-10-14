@@ -76,6 +76,16 @@ pub enum Style {
     Destructive,
     Plain,
 }
+impl Style {
+    /// The colour a button of this style is painted in when nothing else decides it.
+    pub fn role(self) -> Role {
+        match self {
+            Style::Primary => Role::Advance,
+            Style::Destructive => Role::Risk,
+            Style::Secondary | Style::Plain => Role::Neutral,
+        }
+    }
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Presentation {

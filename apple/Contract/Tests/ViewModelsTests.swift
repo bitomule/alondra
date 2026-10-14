@@ -41,7 +41,7 @@ final class ViewModelsTests: XCTestCase {
             if case let .card(card) = item { card } else { nil }
         }.first)
         XCTAssertEqual(decide.actions.compactMap(\.optionId), ["clear", "warm"])
-        XCTAssertEqual(decide.actions.first?.description, "Use a short title and one explanatory sentence.")
+        XCTAssertTrue(decide.actions.allSatisfy { $0.description == nil }, "only «Allow always» carries words under its button")
     }
 
     func testFeedStatusKeepsEveryClaudeGaugeTheMacSends() throws {

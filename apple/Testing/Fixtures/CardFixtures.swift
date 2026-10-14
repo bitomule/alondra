@@ -101,17 +101,19 @@ extension Fixtures {
         }
     }
 
-    /// A decision with five options: three buttons show and two wait under "More…".
+    /// A decision with five options, as the daemon sends it: three buttons, and the other two
+    /// under "More…" before its own extras.
     static func crowdedDecision(id: String = "decide-5") throws -> ViewDocument {
         try retargeted(
             id: id, kind: "decide", need: "Pick the release channel", why: "Five channels are open and one ships first."
         ) { item in
             item["content_row"] = ["kind": "options", "icon": "notice", "label": "Why each option", "summary": "5 options"]
-            item["actions"] = ["Stable", "Beta", "Nightly", "Preview", "Internal"].enumerated().map { index, name in
+            let options = ["Stable", "Beta", "Nightly", "Preview", "Internal"].enumerated().map { index, name in
                 button("ans:\(id)@1", index == 0 ? "★ \(name)" : name, role: index == 0 ? "advance" : "neutral",
                        optionID: name.lowercased())
             }
-            item["more"] = [clarify(id: id)]
+            item["actions"] = Array(options.prefix(3))
+            item["more"] = Array(options.dropFirst(3)) + [clarify(id: id)]
         }
     }
 

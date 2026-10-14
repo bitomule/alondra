@@ -4,7 +4,7 @@
   "view": "fleet",
   "key": "fleet",
   "client": "ios",
-  "version": "vadac4d47417f5dbc",
+  "version": "v777d1e01dca4bd27",
   "cursor": "cursor-1",
   "title": "Flota",
   "status": {
@@ -88,6 +88,7 @@
               "id": "close:d887a34b-249e-4487-a89b-57de38c26372@6",
               "label": "Cerrar nodo",
               "style": "destructive",
+              "role": "risk",
               "presentation": "button",
               "input": {
                 "kind": "none"
@@ -125,6 +126,7 @@
               "id": "close:queued@6",
               "label": "Cerrar nodo",
               "style": "destructive",
+              "role": "risk",
               "presentation": "button",
               "input": {
                 "kind": "none"
@@ -170,6 +172,7 @@
               "id": "interrupt:zeta-worker@6",
               "label": "Interrumpir",
               "style": "secondary",
+              "role": "neutral",
               "presentation": "button",
               "input": {
                 "kind": "none"
@@ -187,6 +190,7 @@
               "id": "pause:zeta-worker@6",
               "label": "Pausar",
               "style": "secondary",
+              "role": "neutral",
               "presentation": "button",
               "input": {
                 "kind": "none"
@@ -205,6 +209,7 @@
               "id": "close:zeta-worker@6",
               "label": "Cerrar nodo",
               "style": "destructive",
+              "role": "risk",
               "presentation": "button",
               "input": {
                 "kind": "none"
@@ -250,6 +255,7 @@
               "id": "close:alpha-waiting@6",
               "label": "Cerrar nodo",
               "style": "destructive",
+              "role": "risk",
               "presentation": "button",
               "input": {
                 "kind": "none"

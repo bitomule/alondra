@@ -103,7 +103,7 @@ final class TriageCardFeatureTests: XCTestCase {
     }
 
     @MainActor
-    func testAtMostThreeButtonsShowAndTheRestGoUnderMoreBeforeTheExtras() async throws {
+    func testTheButtonsAndMoreAreTheDaemonsSplit() async throws {
         let store = try await store("decide-5", loaded: try Fixtures.crowdedDecision())
 
         XCTAssertEqual(store.state.buttons.count, 3)

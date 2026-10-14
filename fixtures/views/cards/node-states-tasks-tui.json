@@ -4,7 +4,7 @@
   "view": "tasks",
   "key": "tasks",
   "client": "tui",
-  "version": "vbfd86a2f1bc72980",
+  "version": "vadb7808ed01bf239",
   "cursor": "cursor-1",
   "title": "Tareas",
   "status": {
@@ -222,6 +222,7 @@
                   "id": "pause:zeta-worker@6",
                   "label": "Pausar",
                   "style": "secondary",
+                  "role": "neutral",
                   "presentation": "button",
                   "input": {
                     "kind": "none"
@@ -275,6 +276,7 @@
                   "id": "resume:paused-builder@6",
                   "label": "Reanudar",
                   "style": "primary",
+                  "role": "advance",
                   "description": "Ahora, aunque se pase del límite",
                   "presentation": "button",
                   "input": {
@@ -321,6 +323,7 @@
               "id": "archive_done:view@6",
               "label": "Archivar terminadas",
               "style": "secondary",
+              "role": "neutral",
               "presentation": "button",
               "input": {
                 "kind": "none"

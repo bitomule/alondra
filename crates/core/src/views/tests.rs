@@ -6429,3 +6429,43 @@ fn a_release_whose_published_delivery_is_open_shows_its_card_wherever_it_says_it
         assert_eq!(said.waiting_nodes, 1, "{client:?}");
     }
 }
+
+#[test]
+fn every_card_button_leaves_the_server_ready_to_paint() {
+    use crate::allow_always::AllowAlways;
+    use crate::domain::{CardKind, Hold};
+    let mut permission = held_fixture(Hold::Permission, spec(CardKind::Authorize, "Allow building", ""));
+    let interaction = permission.interactions.get_mut(&"i-1".into()).unwrap();
+    interaction.payload = InteractionPayload::Question { options: Hold::Permission.options_offering(true), answer: None };
+    interaction.card.allow_always = Some(AllowAlways::Offered { repo: "alondra".into(), rules: vec!["make build".into()], quiet: vec![] });
+    let states = [(golden_fixture(), golden_live()), (pr_fixture(), LiveSnapshot::default()), (permission, LiveSnapshot::default())];
+    let mut checked = 0;
+    let mut captions = 0;
+    for (state, live) in &states {
+        for client in [Client::Ios, Client::Mac, Client::Tui] {
+            for lang in [Lang::En, Lang::Es] {
+                let home = render(state, live, Client::Ios, lang, "home", "2026-09-30T10:00:00Z");
+                for id in home.sections.iter().flat_map(|section| &section.card_ids) {
+                    let view = render(state, live, client, lang, &format!("card:{id}"), "2026-09-30T10:00:00Z");
+                    let card = card_of(&view);
+                    assert!(card.actions.len() <= 3, "{id}: {} buttons", card.actions.len());
+                    for action in card.actions.iter().chain(&card.more).chain(&card.reply) {
+                        assert!(action.enabled, "{id}: {} is disabled", action.label);
+                        let role = action.role.unwrap_or_else(|| panic!("{id}: {} has no role", action.label));
+                        assert_eq!(role == Role::Risk, action.style == Style::Destructive, "{id}: {} is {role:?} as {:?}", action.label, action.style);
+                        if action.description.is_some() {
+                            assert_eq!(action.option_id.as_deref(), Some(Hold::ALWAYS), "{id}: words under {}", action.label);
+                            captions += 1;
+                        }
+                    }
+                    if let Some(reply) = &card.reply {
+                        assert!(matches!(&reply.input, Input::Text { placeholder, .. } if !placeholder.is_empty()), "{id}: reply without placeholder");
+                    }
+                    checked += 1;
+                }
+            }
+        }
+    }
+    assert!(checked >= 30, "only {checked} cards checked");
+    assert!(captions > 0, "«Allow always» lost its words");
+}

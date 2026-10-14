@@ -341,7 +341,7 @@ public struct CardDetailView: View {
             }
             .glassRole(action.cardRole)
             .disabled(disabled)
-            AllowAlwaysDescription(action: action)
+            ButtonCaption(action: action)
             if !action.enabled, let reason = action.disabledReason {
                 Text(reason).font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
             }
@@ -365,16 +365,12 @@ public struct CardDetailView: View {
     }
 
     private func composer(_ action: AlondraContract.Action) -> some View {
-        let placeholder: String = {
-            if case .text(let placeholder, _, _) = action.input, let placeholder { return placeholder }
-            return String(localized: "Reply to the node…")
-        }()
         let empty = !store.state.hasFeedback
         return HStack(alignment: .bottom, spacing: 8) {
             if action.attachments {
                 AttachButton(store: store.scope(state: \.attachments, action: \.attachments)).padding(.leading, 6).padding(.bottom, 4)
             }
-            TextField(placeholder, text: Binding(get: { store.reply }, set: { store.send(.replyChanged($0)) }), axis: .vertical)
+            TextField(action.replyPlaceholder, text: Binding(get: { store.reply }, set: { store.send(.replyChanged($0)) }), axis: .vertical)
                 .lineLimit(1...4).focused($replyFocused)
                 .padding(.leading, 16).padding(.vertical, 10)
             Button {

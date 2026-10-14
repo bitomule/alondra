@@ -4,7 +4,7 @@
   "view": "tasks",
   "key": "tasks",
   "client": "tui",
-  "version": "v73e4d92b0e94c8da",
+  "version": "v88f09d1d6da8e46d",
   "cursor": "cursor-1",
   "title": "Tasks",
   "status": {
@@ -191,6 +191,7 @@
                   "id": "pause:a-badge@6",
                   "label": "Pause",
                   "style": "secondary",
+                  "role": "neutral",
                   "presentation": "button",
                   "input": {
                     "kind": "none"
@@ -250,6 +251,7 @@
                   "id": "pause:a-lumo@6",
                   "label": "Pause",
                   "style": "secondary",
+                  "role": "neutral",
                   "presentation": "button",
                   "input": {
                     "kind": "none"
@@ -373,6 +375,7 @@
               "id": "archive_done:view@6",
               "label": "Archive Completed",
               "style": "secondary",
+              "role": "neutral",
               "presentation": "button",
               "input": {
                 "kind": "none"

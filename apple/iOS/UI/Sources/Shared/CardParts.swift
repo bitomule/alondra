@@ -39,7 +39,7 @@ struct CardContentRow: View {
     var body: some View {
         Button(action: open) {
             HStack(spacing: 12) {
-                Image(systemName: Self.symbol(row.kind)).font(.title3).foregroundStyle(tint)
+                Image(systemName: row.symbol).font(.title3).foregroundStyle(tint)
                     .frame(width: 28)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(row.label).font(.subheadline.weight(.semibold)).foregroundStyle(Palette.ink)
@@ -61,21 +61,6 @@ struct CardContentRow: View {
         .buttonStyle(PressStyle())
         .accessibilityElement(children: .combine)
         .accessibilityHint(Text("Opens the details"))
-    }
-
-    static func symbol(_ kind: String) -> String {
-        switch kind {
-        case "diff": "plusminus"
-        case "command": "terminal"
-        case "plan": "list.bullet.clipboard"
-        case "document": "doc.richtext"
-        case "report": "doc.text"
-        case "steps": "checklist"
-        case "options": "list.bullet"
-        case "diagnosis": "stethoscope"
-        case "attachments": "paperclip"
-        default: "doc.text"
-        }
     }
 }
 

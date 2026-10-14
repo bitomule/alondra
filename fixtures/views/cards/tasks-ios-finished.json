@@ -4,7 +4,7 @@
   "view": "tasks",
   "key": "tasks?section=finished&after=0",
   "client": "ios",
-  "version": "vcfe915215d043b74",
+  "version": "v05daa7b64cd7ae63",
   "cursor": "cursor-1",
   "title": "Tasks",
   "status": {
@@ -213,6 +213,7 @@
                   "id": "pause:a-badge@6",
                   "label": "Pause",
                   "style": "secondary",
+                  "role": "neutral",
                   "presentation": "button",
                   "input": {
                     "kind": "none"
@@ -281,6 +282,7 @@
                   "id": "pause:a-lumo@6",
                   "label": "Pause",
                   "style": "secondary",
+                  "role": "neutral",
                   "presentation": "button",
                   "input": {
                     "kind": "none"
@@ -524,6 +526,7 @@
               "id": "archive_done:view@6",
               "label": "Archive Completed",
               "style": "secondary",
+              "role": "neutral",
               "presentation": "button",
               "input": {
                 "kind": "none"

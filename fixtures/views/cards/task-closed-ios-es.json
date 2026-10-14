@@ -4,7 +4,7 @@
   "view": "task",
   "key": "task:t-651c38484cd2f34e74d5107ba05f7f15",
   "client": "ios",
-  "version": "ve19443095a7f2088",
+  "version": "vc3514bc58a0d8629",
   "cursor": "cursor-1",
   "title": "Restore the native review experience",
   "status": {
@@ -198,6 +198,7 @@
               "id": "relaunch:t-651c38484cd2f34e74d5107ba05f7f15@6",
               "label": "Relanzar",
               "style": "primary",
+              "role": "advance",
               "presentation": "button",
               "input": {
                 "kind": "none"
@@ -210,6 +211,7 @@
               "id": "set_priority:t-651c38484cd2f34e74d5107ba05f7f15@6",
               "label": "Prioridad",
               "style": "secondary",
+              "role": "neutral",
               "presentation": "menu",
               "options": [
                 {
@@ -251,6 +253,7 @@
               "id": "cancel:t-651c38484cd2f34e74d5107ba05f7f15@6",
               "label": "Cancelar tarea",
               "style": "destructive",
+              "role": "risk",
               "presentation": "button",
               "input": {
                 "kind": "none"

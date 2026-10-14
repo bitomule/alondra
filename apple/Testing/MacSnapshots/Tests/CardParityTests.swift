@@ -47,27 +47,6 @@ final class CardParityTests: XCTestCase {
         }
     }
 
-    func testAnActionTheServerMarksUnusableIsOnNeitherCard() throws {
-        for name in ["card-pr", "card-pr-mac"] {
-            let original = try document(name)
-            var object = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(original)) as? [String: Any])
-            var sections = try XCTUnwrap(object["sections"] as? [[String: Any]])
-            var items = try XCTUnwrap(sections[0]["items"] as? [[String: Any]])
-            var actions = try XCTUnwrap(items[0]["actions"] as? [[String: Any]])
-            actions[0]["enabled"] = false
-            actions[0]["disabled_reason"] = "Merge #11 first"
-            items[0]["actions"] = actions
-            sections[0]["items"] = items
-            object["sections"] = sections
-            let blocked = try ContractCodec.decode(ViewDocument.self, from: JSONSerialization.data(withJSONObject: object))
-
-            XCTAssertFalse(phone(blocked).contains { $0.label == "Merge" }, name)
-            XCTAssertFalse(try mac(blocked).contains { $0.label == "Merge" }, name)
-            XCTAssertTrue(phone(blocked).allSatisfy(\.enabled), name)
-            XCTAssertTrue(try mac(blocked).allSatisfy(\.enabled), name)
-        }
-    }
-
     func testClosingWithoutMergingIsTheOnlyRedActionAndTheOnlyOneThatAsksFirst() throws {
         let card = try mac(try document("card-pr-mac"))
         let red = card.filter { $0.paintedRole == .risk }

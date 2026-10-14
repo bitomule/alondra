@@ -397,9 +397,6 @@ pub fn card_lines(card: &Card, width: usize) -> Vec<Line<'static>> {
 
 pub const BUTTONS: usize = 3;
 
-/// The permission answer whose effect outlasts the card, so its button says what it allows.
-const ALLOW_ALWAYS: &str = "always";
-
 /// The card's own field: the one place on it where the user writes.
 pub fn card_reply(view: &View) -> Option<Action> {
     typed_card(view).and_then(|card| card.reply.clone()).map(Action::from)
@@ -411,9 +408,7 @@ pub fn button_lines(card: &Card, width: usize, draft: Option<&str>) -> Vec<Line<
     let mut lines = Vec::new();
     for (index, action) in card.actions.iter().take(BUTTONS).enumerate() {
         lines.extend(button_line(&(index + 1).to_string(), action));
-        if action.option_id.as_deref() == Some(ALLOW_ALWAYS)
-            && let Some(description) = &action.description
-        {
+        if let Some(description) = &action.description {
             lines.extend(button_description(description, width));
         }
     }

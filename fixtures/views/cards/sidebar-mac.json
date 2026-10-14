@@ -4,7 +4,7 @@
   "view": "sidebar",
   "key": "sidebar",
   "client": "mac",
-  "version": "vf4ba6b57ad2702e7",
+  "version": "v7d54323593f397df",
   "cursor": "cursor-1",
   "status": {
     "version": "v1909c6117fc001e2",
@@ -236,6 +236,7 @@
             "id": "",
             "label": "Start",
             "style": "plain",
+            "role": "neutral",
             "presentation": "button",
             "input": {
               "kind": "none"

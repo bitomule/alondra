@@ -4,7 +4,7 @@
   "view": "fleet",
   "key": "fleet",
   "client": "tui",
-  "version": "v899c016f2885c5f9",
+  "version": "v853a4eb84fd7a63a",
   "cursor": "cursor-1",
   "title": "Fleet",
   "status": {
@@ -88,6 +88,7 @@
               "id": "close:d887a34b-249e-4487-a89b-57de38c26372@6",
               "label": "Close Node",
               "style": "destructive",
+              "role": "risk",
               "presentation": "button",
               "input": {
                 "kind": "none"
@@ -126,6 +127,7 @@
               "id": "close:queued@6",
               "label": "Close Node",
               "style": "destructive",
+              "role": "risk",
               "presentation": "button",
               "input": {
                 "kind": "none"
@@ -172,6 +174,7 @@
               "id": "close:zeta-worker@6",
               "label": "Close Node",
               "style": "destructive",
+              "role": "risk",
               "presentation": "button",
               "input": {
                 "kind": "none"
@@ -218,6 +221,7 @@
               "id": "close:alpha-waiting@6",
               "label": "Close Node",
               "style": "destructive",
+              "role": "risk",
               "presentation": "button",
               "input": {
                 "kind": "none"

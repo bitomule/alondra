@@ -36,14 +36,11 @@ public struct TriageCardFeature: Sendable {
             }.first
         }
 
-        /// A card shows at most three buttons.
-        public static let visibleLimit = 3
+        /// The buttons under the card, as the daemon sends them.
+        public var buttons: [WireAction] { card?.actions ?? [] }
 
-        /// The buttons under the card, in the order the daemon sends them.
-        public var buttons: [WireAction] { card.map { Array($0.usableActions.prefix(Self.visibleLimit)) } ?? [] }
-
-        /// What "More…" holds: the actions past the third, then the daemon's own extras.
-        public var menu: [WireAction] { card.map { Array($0.usableActions.dropFirst(Self.visibleLimit)) + $0.usableMore } ?? [] }
+        /// What "More…" holds, as the daemon sends it.
+        public var menu: [WireAction] { card?.more ?? [] }
 
         /// The field that writes to the node; every card has it.
         public var replyAction: WireAction? { card?.reply }

@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:memory-pause-livelock-ask",
   "client": "ios",
-  "version": "v7442e59ced13294c",
+  "version": "v42529393acd6625e",
   "cursor": "cursor-1",
   "title": "Decide who fixes the memory pauses that cut the same build in a loop",
   "status": {
@@ -162,7 +162,6 @@
               "style": "secondary",
               "role": "neutral",
               "option_id": "mine",
-              "description": "No task is created.",
               "presentation": "button",
               "input": {
                 "kind": "none"
@@ -178,7 +177,6 @@
               "style": "secondary",
               "role": "neutral",
               "option_id": "new_task",
-              "description": "A node measures the loop and changes the pause rule.",
               "presentation": "button",
               "input": {
                 "kind": "none"

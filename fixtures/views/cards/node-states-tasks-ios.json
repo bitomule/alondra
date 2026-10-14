@@ -4,7 +4,7 @@
   "view": "tasks",
   "key": "tasks",
   "client": "ios",
-  "version": "v4dbd7307901c9851",
+  "version": "v2d8714eab0fba9e6",
   "cursor": "cursor-1",
   "title": "Tasks",
   "status": {
@@ -270,6 +270,7 @@
                   "id": "pause:zeta-worker@6",
                   "label": "Pause",
                   "style": "secondary",
+                  "role": "neutral",
                   "presentation": "button",
                   "input": {
                     "kind": "none"
@@ -335,6 +336,7 @@
                   "id": "resume:paused-builder@6",
                   "label": "Resume",
                   "style": "primary",
+                  "role": "advance",
                   "description": "Now, even over the limit",
                   "presentation": "button",
                   "input": {
@@ -380,6 +382,7 @@
               "id": "archive_done:view@6",
               "label": "Archive Completed",
               "style": "secondary",
+              "role": "neutral",
               "presentation": "button",
               "input": {
                 "kind": "none"

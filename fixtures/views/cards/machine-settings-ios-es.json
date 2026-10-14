@@ -4,7 +4,7 @@
   "view": "machine",
   "key": "machine",
   "client": "ios",
-  "version": "va85e167b546e4dcb",
+  "version": "v96bb2b1d09cdbb46",
   "cursor": "cursor-1",
   "title": "Máquina",
   "status": {
@@ -96,6 +96,7 @@
               "id": "set_limit:limit@6",
               "label": "Nodos a la vez",
               "style": "secondary",
+              "role": "neutral",
               "presentation": "menu",
               "options": [
                 {
@@ -233,6 +234,7 @@
               "id": "remove_rule:rule-3@6",
               "label": "Quitar",
               "style": "destructive",
+              "role": "risk",
               "presentation": "button",
               "input": {
                 "kind": "none"
@@ -257,6 +259,7 @@
               "id": "remove_rule:rule-4@6",
               "label": "Quitar",
               "style": "destructive",
+              "role": "risk",
               "presentation": "button",
               "input": {
                 "kind": "none"

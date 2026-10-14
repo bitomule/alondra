@@ -218,7 +218,7 @@ fn drawn(app: &mut App, width: u16, height: u16) -> String {
 const ALLOWS: &str = "Allows this now and stops asking in `alondra` for:\n· `make build` with any arguments\nYou can remove it in Settings › Permissions.";
 
 #[test]
-fn the_allow_always_button_says_what_it_allows_and_the_other_buttons_do_not() {
+fn a_button_shows_the_words_the_server_puts_under_it() {
     crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
     let mut app = app();
     app.on_msg(Msg::ViewHome(Ok(serde_json::from_value(super::parity::view_fixture("home-tui.json")).unwrap())));
@@ -239,8 +239,8 @@ fn the_allow_always_button_says_what_it_allows_and_the_other_buttons_do_not() {
     assert_eq!(under("Allows this now and stops asking in alondra for:"), Some(button + 1), "{screen}");
     assert_eq!(under("· make build with any arguments"), Some(button + 2), "{screen}");
     assert_eq!(under("You can remove it in Settings › Permissions."), Some(button + 3), "{screen}");
-    assert!(under("Keep the warmer copy").is_some(), "{screen}");
-    assert_eq!(under("Preserve the more conversational explanation."), None, "{screen}");
+    let warm = under("Keep the warmer copy").expect(&screen);
+    assert_eq!(under("Preserve the more conversational explanation."), Some(warm + 1), "{screen}");
 }
 
 fn rule(id: &str, title: &str, subtitle: &str) -> Value {

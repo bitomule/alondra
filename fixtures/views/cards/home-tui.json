@@ -4,7 +4,7 @@
   "view": "home",
   "key": "home",
   "client": "tui",
-  "version": "v54639b2a9e6ba16b",
+  "version": "v293a0c3eda146abb",
   "cursor": "cursor-1",
   "status": {
     "version": "v8f627439edfdda19",
@@ -382,7 +382,6 @@
               "style": "primary",
               "role": "advance",
               "option_id": "clear",
-              "description": "Use a short title and one explanatory sentence.",
               "presentation": "button",
               "input": {
                 "kind": "none"
@@ -399,7 +398,6 @@
               "style": "secondary",
               "role": "neutral",
               "option_id": "warm",
-              "description": "Preserve the more conversational explanation.",
               "presentation": "button",
               "input": {
                 "kind": "none"

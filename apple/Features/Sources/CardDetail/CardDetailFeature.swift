@@ -57,6 +57,9 @@ public struct CardDetailFeature: Sendable {
 
     /// What the detail shows, whether the daemon sent a card or a document revision.
     public struct Subject: Equatable, Sendable {
+        /// An action bar shows at most three buttons; the rest go behind "More…".
+        static let barLimit = 3
+
         public let card: Card?
         public let title: String
         public let sections: [ViewSection]
@@ -73,15 +76,15 @@ public struct CardDetailFeature: Sendable {
             title = card?.title ?? card?.need ?? document.title ?? ""
             sections = document.sections.filter { $0.id != "card" && $0.id != "actions" }
             if let card {
-                buttons = Array(card.usableActions.prefix(TriageCardFeature.State.visibleLimit))
-                menu = Array(card.usableActions.dropFirst(TriageCardFeature.State.visibleLimit)) + card.usableMore
+                buttons = card.actions
+                menu = card.more
                 replyAction = card.reply
             } else {
                 let bar = document.sections.flatMap(\.items).flatMap { item -> [WireAction] in
                     if case .actions(let bar) = item { bar.actions } else { [] }
                 }
-                buttons = Array(bar.prefix(TriageCardFeature.State.visibleLimit))
-                menu = Array(bar.dropFirst(TriageCardFeature.State.visibleLimit))
+                buttons = Array(bar.prefix(Self.barLimit))
+                menu = Array(bar.dropFirst(Self.barLimit))
                 replyAction = nil
             }
         }

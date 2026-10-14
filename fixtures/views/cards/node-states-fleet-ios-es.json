@@ -4,7 +4,7 @@
   "view": "fleet",
   "key": "fleet",
   "client": "ios",
-  "version": "v3513af4f7d84d3b0",
+  "version": "v74263ab70273fdc8",
   "cursor": "cursor-1",
   "title": "Flota",
   "status": {
@@ -88,6 +88,7 @@
               "id": "close:d887a34b-249e-4487-a89b-57de38c26372@6",
               "label": "Cerrar nodo",
               "style": "destructive",
+              "role": "risk",
               "presentation": "button",
               "input": {
                 "kind": "none"
@@ -125,6 +126,7 @@
               "id": "close:queued@6",
               "label": "Cerrar nodo",
               "style": "destructive",
+              "role": "risk",
               "presentation": "button",
               "input": {
                 "kind": "none"
@@ -170,6 +172,7 @@
               "id": "close:release-runner@6",
               "label": "Cerrar nodo",
               "style": "destructive",
+              "role": "risk",
               "presentation": "button",
               "input": {
                 "kind": "none"
@@ -207,6 +210,7 @@
               "id": "interrupt:zeta-worker@6",
               "label": "Interrumpir",
               "style": "secondary",
+              "role": "neutral",
               "presentation": "button",
               "input": {
                 "kind": "none"
@@ -224,6 +228,7 @@
               "id": "pause:zeta-worker@6",
               "label": "Pausar",
               "style": "secondary",
+              "role": "neutral",
               "presentation": "button",
               "input": {
                 "kind": "none"
@@ -242,6 +247,7 @@
               "id": "close:zeta-worker@6",
               "label": "Cerrar nodo",
               "style": "destructive",
+              "role": "risk",
               "presentation": "button",
               "input": {
                 "kind": "none"
@@ -279,6 +285,7 @@
               "id": "resume:paused-builder@6",
               "label": "Reanudar",
               "style": "primary",
+              "role": "advance",
               "description": "Ahora, aunque se pase del límite",
               "presentation": "button",
               "input": {
@@ -293,6 +300,7 @@
               "id": "close:paused-builder@6",
               "label": "Cerrar nodo",
               "style": "destructive",
+              "role": "risk",
               "presentation": "button",
               "input": {
                 "kind": "none"
@@ -338,6 +346,7 @@
               "id": "close:alpha-waiting@6",
               "label": "Cerrar nodo",
               "style": "destructive",
+              "role": "risk",
               "presentation": "button",
               "input": {
                 "kind": "none"

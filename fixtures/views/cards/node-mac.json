@@ -4,7 +4,7 @@
   "view": "node",
   "key": "node:d887a34b-249e-4487-a89b-57de38c26372",
   "client": "mac",
-  "version": "vfc6b731a2339210a",
+  "version": "v706d538f11eb0987",
   "cursor": "cursor-1",
   "title": "Alondra · iOS",
   "status": {
@@ -238,6 +238,7 @@
               "id": "msg:d887a34b-249e-4487-a89b-57de38c26372@6",
               "label": "Message",
               "style": "primary",
+              "role": "advance",
               "presentation": "button",
               "input": {
                 "kind": "text",
@@ -253,6 +254,7 @@
               "id": "close:d887a34b-249e-4487-a89b-57de38c26372@6",
               "label": "Close Node",
               "style": "destructive",
+              "role": "risk",
               "presentation": "button",
               "input": {
                 "kind": "none"

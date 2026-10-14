@@ -4,7 +4,7 @@
   "view": "fleet",
   "key": "fleet",
   "client": "ios",
-  "version": "vefe5f34d3e2f880f",
+  "version": "v0cfeceb4eb4f7d23",
   "cursor": "cursor-1",
   "title": "Fleet",
   "status": {
@@ -88,6 +88,7 @@
               "id": "close:d887a34b-249e-4487-a89b-57de38c26372@6",
               "label": "Close Node",
               "style": "destructive",
+              "role": "risk",
               "presentation": "button",
               "input": {
                 "kind": "none"
@@ -125,6 +126,7 @@
               "id": "close:queued@6",
               "label": "Close Node",
               "style": "destructive",
+              "role": "risk",
               "presentation": "button",
               "input": {
                 "kind": "none"
@@ -170,6 +172,7 @@
               "id": "close:release-runner@6",
               "label": "Close Node",
               "style": "destructive",
+              "role": "risk",
               "presentation": "button",
               "input": {
                 "kind": "none"
@@ -207,6 +210,7 @@
               "id": "interrupt:zeta-worker@6",
               "label": "Interrupt",
               "style": "secondary",
+              "role": "neutral",
               "presentation": "button",
               "input": {
                 "kind": "none"
@@ -224,6 +228,7 @@
               "id": "pause:zeta-worker@6",
               "label": "Pause",
               "style": "secondary",
+              "role": "neutral",
               "presentation": "button",
               "input": {
                 "kind": "none"
@@ -242,6 +247,7 @@
               "id": "close:zeta-worker@6",
               "label": "Close Node",
               "style": "destructive",
+              "role": "risk",
               "presentation": "button",
               "input": {
                 "kind": "none"
@@ -279,6 +285,7 @@
               "id": "resume:paused-builder@6",
               "label": "Resume",
               "style": "primary",
+              "role": "advance",
               "description": "Now, even over the limit",
               "presentation": "button",
               "input": {
@@ -293,6 +300,7 @@
               "id": "close:paused-builder@6",
               "label": "Close Node",
               "style": "destructive",
+              "role": "risk",
               "presentation": "button",
               "input": {
                 "kind": "none"
@@ -338,6 +346,7 @@
               "id": "close:alpha-waiting@6",
               "label": "Close Node",
               "style": "destructive",
+              "role": "risk",
               "presentation": "button",
               "input": {
                 "kind": "none"

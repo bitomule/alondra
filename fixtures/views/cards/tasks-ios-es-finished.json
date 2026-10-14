@@ -4,7 +4,7 @@
   "view": "tasks",
   "key": "tasks?section=finished&after=0",
   "client": "ios",
-  "version": "vf3aa2325f9cccf53",
+  "version": "v0fcb0caff535db22",
   "cursor": "cursor-1",
   "title": "Tareas",
   "status": {
@@ -213,6 +213,7 @@
                   "id": "pause:a-badge@6",
                   "label": "Pausar",
                   "style": "secondary",
+                  "role": "neutral",
                   "presentation": "button",
                   "input": {
                     "kind": "none"
@@ -281,6 +282,7 @@
                   "id": "pause:a-lumo@6",
                   "label": "Pausar",
                   "style": "secondary",
+                  "role": "neutral",
                   "presentation": "button",
                   "input": {
                     "kind": "none"
@@ -524,6 +526,7 @@
               "id": "archive_done:view@6",
               "label": "Archivar terminadas",
               "style": "secondary",
+              "role": "neutral",
               "presentation": "button",
               "input": {
                 "kind": "none"

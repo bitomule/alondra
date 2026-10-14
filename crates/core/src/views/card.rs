@@ -528,12 +528,26 @@ pub(super) fn from_item(item: &InboxItem, context: &RenderContext<'_>, included:
     }
     let settles = |mut action: Action| {
         action.resolves_card = ActionId::parse(&action.id).is_ok_and(|id| super::resolves_card(context.domain, &id));
-        action
+        painted(action)
     };
     card.reply = reply_action(item, interaction, context).map(settles).and_then(CardAction::usable);
     card.actions = visible.into_iter().map(settles).filter_map(CardAction::usable).collect();
     card.more = more.into_iter().map(settles).filter_map(CardAction::usable).collect();
     Ok(card)
+}
+
+/// How a card's button reads is settled here, once, for every client: red only when its style is
+/// destructive, and words under it only for «Allow always», which says exactly what stops asking.
+fn painted(mut action: Action) -> Action {
+    action.role = Some(match (action.style, action.role) {
+        (Style::Destructive, _) => Role::Risk,
+        (_, Some(Role::Advance)) | (Style::Primary, _) => Role::Advance,
+        _ => Role::Neutral,
+    });
+    if action.option_id.as_deref() != Some(Hold::ALWAYS) {
+        action.description = None;
+    }
+    action
 }
 
 fn attachment_refs(interaction: Option<&Interaction>) -> Vec<Attachment> {

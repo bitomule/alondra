@@ -233,7 +233,7 @@ public struct CardView: View {
                     }
                 }
             }
-            let actions = card.usableActions.filter { $0.id.map(excludedActionIDs.contains) != true }
+            let actions = card.actions.filter { $0.id.map(excludedActionIDs.contains) != true }
             if !actions.isEmpty { ActionButtons(actions: actions, onAction: onAction, onLink: onLink) }
         }
         .padding(16).frame(maxWidth: .infinity, alignment: .leading)

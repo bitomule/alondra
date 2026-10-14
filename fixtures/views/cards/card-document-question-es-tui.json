@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:a98d034b-249e-4487-a89b-57de38c26372",
   "client": "tui",
-  "version": "v7c8fbdaf1fc0a6d7",
+  "version": "vec6dc9c774db7c81",
   "cursor": "cursor-1",
   "title": "Choose the welcome copy",
   "status": {
@@ -203,7 +203,6 @@
               "style": "primary",
               "role": "advance",
               "option_id": "clear",
-              "description": "Use a short title and one explanatory sentence.",
               "presentation": "button",
               "input": {
                 "kind": "none"
@@ -220,7 +219,6 @@
               "style": "secondary",
               "role": "neutral",
               "option_id": "warm",
-              "description": "Preserve the more conversational explanation.",
               "presentation": "button",
               "input": {
                 "kind": "none"
