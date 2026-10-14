@@ -23,6 +23,23 @@ pub struct DomainProjection {
     #[serde(default)]
     pub superseded_acceptances: Vec<SupersededAcceptance>,
 }
+impl DomainProjection {
+    /// The cards a task waits on the user with: the one source for every view that says a task
+    /// or its node waits for the user, so none says it without a card to show.
+    pub fn waiting_cards<'a>(&'a self, task: &'a TaskId) -> impl Iterator<Item = &'a InboxItem> + 'a {
+        self.inbox.iter().filter(move |item| item.pending && item.task_id.as_ref() == Some(task))
+    }
+    /// Whether the task waits for an answer, an action or a review from the user; a card that is
+    /// only to be read never holds the task.
+    pub fn waits_for_user(&self, task: &TaskId) -> bool {
+        self.waiting_cards(task).any(|item| item.kind != "information")
+    }
+    /// Whether everything the task waits for is the review of its delivery, not an answer.
+    pub fn waits_for_review(&self, task: &TaskId) -> bool {
+        self.waits_for_user(task)
+            && self.waiting_cards(task).filter(|item| item.kind != "information").all(|item| item.kind == "delivery")
+    }
+}
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InboxCounts {
     pub roots: u64,

@@ -1514,7 +1514,7 @@ fn a_task_that_has_not_started_says_what_refused_its_launch() {
     });
     assert_eq!(task_line(&state, &live, Lang::Es), "No arrancó · Claude Code no confía en ~/Projects/indie-apps");
     assert_eq!(task_line(&state, &live, Lang::En), "Didn't start · Claude Code doesn't trust ~/Projects/indie-apps");
-    assert_eq!(active_row(&state, &live, Client::Mac, Lang::Es, "t-1").0, "block:for-you");
+    assert_eq!(active_row(&state, &live, Client::Mac, Lang::Es, "t-1").0, "block:waiting", "no card asks for it, so it is not «Para ti»");
     live.launch_refusals.insert("t-1".into(), LiveLaunchRefusal { reason: "usage_exhausted".into(), detail: None });
     assert_eq!(task_line(&state, &live, Lang::Es), "No arrancó · Se acabó el uso de Claude");
     live.launch_refusals.insert("t-1".into(), LiveLaunchRefusal {
@@ -1537,7 +1537,7 @@ fn a_running_task_whose_node_does_nothing_says_no_activity_instead_of_working() 
     live.nodes[0].quiet = true;
     assert_eq!(task_state_text(&state, &live, Lang::Es), "Sin actividad");
     assert_eq!(task_state_text(&state, &live, Lang::En), "No activity");
-    assert_eq!(active_row(&state, &live, Client::Mac, Lang::En, "t-1").0, "block:for-you", "a node doing nothing waits for the user");
+    assert_eq!(active_row(&state, &live, Client::Mac, Lang::En, "t-1").0, "block:waiting", "a node doing nothing has no card, so it never says it waits for the user");
 }
 
 #[test]
@@ -1802,7 +1802,7 @@ fn each_fleet_node_shows_its_one_phase_and_a_closed_one_leaves() {
     assert!(found("recent-queue").is_none(), "a node whose session closed is not in Fleet");
     assert!(found("home-zero").is_none() && found("claude-mods").is_none(), "a node whose task ended is not in Fleet");
     for (agent, text, tone) in [
-        ("one-task", "Espera tu revisión", Tone::Accent),
+        ("one-task", "Entrega resultado", Tone::Success),
         ("busy", "Trabajando", Tone::Info),
         ("idle", "Detenido", Tone::Warning),
     ] {
@@ -1895,6 +1895,10 @@ fn two_tasks_with_body(body: &str) -> DomainState {
     second.id = "t-2".into();
     second.title = "Second thing".into();
     state.tasks.insert("t-2".into(), second);
+    let mut asked = state.interactions[&"i-1".into()].clone();
+    asked.id = "i-1-second".into();
+    asked.scope = Scope::Task { task_id: "t-2".into() };
+    state.interactions.insert(asked.id.clone(), asked);
     state.requests.get_mut(&"r-1".into()).unwrap().body = body.into();
     state
 }
@@ -1930,7 +1934,9 @@ fn an_untitled_request_with_several_tasks_has_no_header_and_its_tasks_stand_loos
     let state = two_tasks_with_body(body);
     for client in [Client::Ios, Client::Mac, Client::Tui] {
         let rows = tasks_items(&state, client, Lang::En);
-        assert_eq!(rows[0].children.iter().map(|row| (row.id.as_str(), row.depth)).collect::<Vec<_>>(), [("t-1", 1), ("t-2", 1)], "{client:?}");
+        let mut loose: Vec<_> = rows.iter().flat_map(|block| &block.children).map(|row| (row.id.as_str(), row.depth)).collect();
+        loose.sort();
+        assert_eq!(loose, [("t-1", 1), ("t-2", 1)], "{client:?}");
         assert!(every_text(&rows).iter().all(|text| !text.contains("Can Alondra")), "the prompt is never a title");
     }
 }
@@ -1979,6 +1985,10 @@ fn a_request_row_links_to_its_most_recently_changed_task() {
     earlier.id = "t-0".into();
     earlier.revision = 3;
     state.tasks.insert("t-0".into(), earlier);
+    state.interactions.clear();
+    for task in state.tasks.values_mut() {
+        (task.state, task.agent_id, task.final_presentation) = (TaskState::Running, Some("a-1".into()), None);
+    }
     state.requests.get_mut(&"r-1".into()).unwrap().title = Some("Three tasks".into());
     state.requests.insert("r-2".into(), Request::new("r-2".into(), "Still splitting".into()));
 
@@ -5815,16 +5825,23 @@ fn block_ids(state: &DomainState, live: &LiveSnapshot) -> Vec<(String, Vec<Strin
 #[test]
 fn the_active_list_is_for_you_then_in_progress_then_waiting_each_in_its_own_order() {
     let mut state = fixture();
+    let question = state.interactions[&"i-1".into()].clone();
     state.interactions.clear();
     state.tasks.clear();
-    for (id, task_state) in [("t-old", TaskState::NotStarted), ("t-new", TaskState::NotStarted), ("t-busy", TaskState::Running),
+    for (id, task_state) in [("t-old", TaskState::NeedsYou), ("t-new", TaskState::NeedsYou), ("t-busy", TaskState::Running),
         ("t-run2", TaskState::Running), ("t-q2", TaskState::NotStarted), ("t-q1", TaskState::NotStarted)] {
         task_in(&mut state, id, "r-1", task_state);
+    }
+    for task in ["t-old", "t-new"] {
+        let mut asked = question.clone();
+        asked.id = format!("q-{task}").into();
+        asked.scope = Scope::Task { task_id: task.into() };
+        state.interactions.insert(asked.id.clone(), asked);
     }
     for (id, agent) in [("t-busy", "a-busy"), ("t-run2", "a-other")] {
         state.tasks.get_mut(&id.into()).unwrap().agent_id = Some(agent.into());
     }
-    let mut live = LiveSnapshot { closed_tasks: vec!["t-old".into(), "t-new".into()], ..LiveSnapshot::default() };
+    let mut live = LiveSnapshot::default();
     for (id, at) in [("t-old", "2026-10-08T08:00:00+02:00"), ("t-new", "2026-10-08T09:00:00+02:00")] {
         live.task_since.insert(id.into(), at.into());
     }
@@ -5859,7 +5876,12 @@ fn a_request_has_a_header_only_when_it_is_not_a_message_to_the_orchestrator() {
     let mut state = fixture();
     state.interactions.clear();
     state.tasks.clear();
-    for id in ["t-a", "t-b"] { task_in(&mut state, id, "r-1", TaskState::Running); }
+    for id in ["t-a", "t-b"] {
+        task_in(&mut state, id, "r-1", TaskState::Running);
+        let agent = crate::domain::AgentId(format!("a-{id}"));
+        state.agents.insert(agent.clone(), Agent { id: agent.clone(), name: id.into(), phase: NodePhase::Working, since: 0 });
+        state.tasks.get_mut(&id.into()).unwrap().agent_id = Some(agent);
+    }
     state.requests.get_mut(&"r-1".into()).unwrap().title = Some("Resume the queue and two new bugs".into());
     state.requests.get_mut(&"r-1".into()).unwrap().message = true;
     let ids = |state: &DomainState| rows_of(state, Client::Ios, Lang::En).into_iter().map(|row| row.id).collect::<Vec<_>>();
@@ -5868,7 +5890,11 @@ fn a_request_has_a_header_only_when_it_is_not_a_message_to_the_orchestrator() {
     assert_eq!(ids(&state), ["group:r-1", "t-a", "t-b"], "a request with a real title and several tasks keeps its header");
     let (_, header) = active_row(&state, &LiveSnapshot::default(), Client::Ios, Lang::En, "group:r-1");
     assert_eq!(header.title, "Resume the queue and two new bugs");
-    for id in ["t-a", "t-b"] { state.tasks.get_mut(&id.into()).unwrap().state = TaskState::NotStarted; }
+    for id in ["t-a", "t-b"] {
+        let task = state.tasks.get_mut(&id.into()).unwrap();
+        task.state = TaskState::NotStarted;
+        task.agent_id = None;
+    }
     let live = LiveSnapshot { start_waits: [("t-a".into(), LiveStartWait::Room), ("t-b".into(), LiveStartWait::Room)].into(), ..LiveSnapshot::default() };
     let waiting = active_blocks(&state, &live, Client::Mac, Lang::En);
     assert_eq!(waiting[0].children.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(), ["t-a", "t-b"],
@@ -6111,5 +6137,121 @@ fn no_screen_shows_the_orchestrator() {
                 .map(|action| action.id.split(':').next().unwrap().to_owned()).collect();
             assert_eq!(verbs, ["msg"], "{client:?} {key}: only where maintenance is posted");
         }
+    }
+}
+
+/// 13 October: the daemon release task delivered its version PR and then the published release;
+/// both were accepted and its node had gone, yet an app said there was something to review with
+/// no card in the inbox nor in the task. What says a task waits for the user, and every count of
+/// it, comes from the cards the inbox shows.
+fn release_delivered_twice(published: Option<crate::domain::Acceptance>) -> DomainState {
+    let mut state = fixture();
+    let delivery = state.interactions[&"i-3".into()].clone();
+    state.interactions.clear();
+    let task = state.tasks.get_mut(&"t-1".into()).unwrap();
+    task.title = "Release the daemon with the memory pause fix".into();
+    task.agent_id = Some("a-1".into());
+    task.final_presentation = Some("published-1".into());
+    let version_pr = Some(crate::domain::Acceptance { user_id: "phone".into(), at_revision: 2, valid: false });
+    for (order, (id, accepted)) in [("pr-1", version_pr), ("published-1", published)].into_iter().enumerate() {
+        let mut card = delivery.clone();
+        card.id = id.into();
+        card.order = order as u64 + 1;
+        card.blocking = false;
+        card.author = Author::Agent { agent_id: "a-1".into() };
+        if let InteractionPayload::Delivery { acceptance, .. } = &mut card.payload {
+            *acceptance = accepted;
+        }
+        state.interactions.insert(card.id.clone(), card);
+    }
+    state.agents.get_mut(&"a-1".into()).unwrap().phase = NodePhase::Delivered { in_turn: false };
+    state.derive_states();
+    with_cards(&state)
+}
+
+/// Everything a client says about the release task and its node, and the counts beside it.
+struct Said {
+    inbox: u32,
+    for_you: Vec<String>,
+    for_you_count: Option<String>,
+    row_state: String,
+    detail_cards: usize,
+    node: Option<String>,
+    waiting_nodes: u32,
+}
+
+fn said(state: &DomainState, client: Client, lang: Lang) -> Said {
+    let live = LiveSnapshot::default();
+    let blocks = active_blocks(state, &live, client, lang);
+    let for_you_block = blocks.iter().find(|block| block.id == "block:for-you");
+    let for_you = for_you_block.map(|block| block.children.iter().map(|row| row.id.clone()).collect()).unwrap_or_default();
+    let for_you_count = for_you_block.and_then(|block| match &block.trailing {
+        Some(Trailing::Text { text }) => Some(text.clone()),
+        _ => None,
+    });
+    let row_state = active_row(state, &live, client, lang, "t-1").1.badges[0].text.clone();
+    let detail = render(state, &live, client, lang, "task:t-1", "");
+    let detail_cards = detail.sections.iter().filter(|section| section.id == "waiting").map(|section| section.items.len()).sum();
+    let fleet = render(state, &live, client, lang, "fleet", "");
+    let node = fleet.sections.iter().flat_map(|section| &section.items).find_map(|item| match item {
+        Item::Row(row) if row.id == "a-1" => row.badges.first().map(|badge| badge.text.clone()),
+        _ => None,
+    });
+    let waiting_nodes = fleet.status.counts.iter().find(|count| count.id == "waiting").map_or(0, |count| count.value);
+    Said { inbox: inbox_badge(state), for_you, for_you_count, row_state, detail_cards, node, waiting_nodes }
+}
+
+const CLAIMS: [&str; 6] = ["Ready for review", "Para revisar", "Needs you", "Te necesita", "Waiting for your review", "Espera tu revisión"];
+
+fn says_nothing_waits(state: &DomainState) {
+    for client in [Client::Ios, Client::Mac, Client::Tui] {
+        for lang in [Lang::En, Lang::Es] {
+            let said = said(state, client, lang);
+            assert_eq!((said.inbox, said.detail_cards), (0, 0), "{client:?}: no card waits");
+            assert!(said.for_you.is_empty() && said.for_you_count.is_none(), "{client:?}: nothing is «For you»: {:?}", said.for_you);
+            assert!(!CLAIMS.contains(&said.row_state.as_str()), "{client:?}: the task says {}", said.row_state);
+            assert!(!said.node.as_deref().is_some_and(|node| CLAIMS.contains(&node)), "{client:?}: the node says {:?}", said.node);
+            assert_eq!(said.waiting_nodes, 0, "{client:?}: no node counted as waiting");
+        }
+    }
+}
+
+#[test]
+fn a_release_whose_two_deliveries_were_accepted_says_nothing_waits_for_you_on_any_client() {
+    says_nothing_waits(&release_delivered_twice(Some(crate::domain::Acceptance { user_id: "phone".into(), at_revision: 4, valid: true })));
+}
+
+#[test]
+fn a_release_whose_published_delivery_was_withdrawn_says_nothing_waits_for_you_on_any_client() {
+    let mut state = release_delivered_twice(None);
+    state.interactions.get_mut(&"published-1".into()).unwrap().withdrawn = true;
+    state.derive_states();
+    assert_eq!(state.tasks[&"t-1".into()].state, TaskState::ForYourReview, "the task still reads as in review");
+    says_nothing_waits(&state);
+}
+
+#[test]
+fn a_release_whose_node_asks_the_orchestrator_says_nothing_waits_for_you_on_any_client() {
+    let mut state = release_delivered_twice(None);
+    let mut asked = fixture().interactions[&"i-1".into()].clone();
+    asked.id = "ask-orchestrator".into();
+    asked.recipient = Recipient::Orchestrator;
+    state.interactions.insert(asked.id.clone(), asked);
+    state.interactions.get_mut(&"published-1".into()).unwrap().withdrawn = true;
+    state.derive_states();
+    assert_eq!(state.tasks[&"t-1".into()].state, TaskState::NeedsYou, "a blocking question to anyone reads as needing the user");
+    says_nothing_waits(&state);
+}
+
+#[test]
+fn a_release_whose_published_delivery_is_open_shows_its_card_wherever_it_says_it_waits() {
+    let state = release_delivered_twice(None);
+    for client in [Client::Ios, Client::Mac, Client::Tui] {
+        let said = said(&state, client, Lang::Es);
+        assert_eq!((said.inbox, said.detail_cards), (1, 1), "{client:?}: the inbox and the task show its one card");
+        assert_eq!((said.for_you, said.for_you_count.as_deref()), (vec!["t-1".to_owned()], Some("1")), "{client:?}");
+        assert_eq!(said.row_state, "Para revisar", "{client:?}");
+        assert_eq!(said.node.as_deref(), Some("Espera tu revisión"), "{client:?}");
+        assert_eq!(said.waiting_nodes, 1, "{client:?}");
     }
 }

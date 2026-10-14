@@ -61,13 +61,6 @@ fn reviewed_revision<'a>(
             _ => None,
         })
 }
-/// A delivery that carries a pull request or a document: the node waits for a review of it.
-pub(super) fn is_review_delivery(item: &InboxItem, domain: &DomainState) -> bool {
-    interaction_of(item, domain).is_some_and(|interaction| {
-        matches!(interaction.payload, InteractionPayload::Delivery { .. })
-            && (pr_target(interaction, domain).is_some() || reviewed_revision(interaction).is_some())
-    })
-}
 /// The pending card that stands for a pull request, whichever way it is addressed.
 pub(super) fn item_for_pr<'a>(projection: &'a DomainProjection, pr_id: &PrId, domain: &DomainState) -> Option<&'a InboxItem> {
     projection.inbox.iter().find(|item| {

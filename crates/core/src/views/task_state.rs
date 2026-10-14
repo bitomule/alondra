@@ -78,23 +78,36 @@ fn classify(task: &Task, context: &RenderContext<'_>) -> Presentation {
         return Presentation::new(t!(lang, "Paused", "Pausada"), Tone::Neutral, Waiting, Some(with_pending(fact, task, context)));
     }
     if let Some((_, reason)) = domain.task_merge_failure(&task.id) {
-        return Presentation::new(t!(lang, "Couldn't merge", "No se pudo fusionar"), Tone::Warning, ForYou, Some(reason));
+        return Presentation::new(t!(lang, "Couldn't merge", "No se pudo fusionar"), Tone::Warning, InProgress, Some(reason));
     }
+    let waits = context.projection.waits_for_user(&task.id);
     if let Attention::Wait(reason @ WaitReason::Answer { .. }) = domain.attention(task) {
-        return waiting_for(task, &reason, context);
+        return if waits { for_you(task, context) } else { waiting_for(task, &reason, context) };
     }
     match task.state {
-        TaskState::Running => running(task, context),
-        TaskState::NeedsYou => Presentation::new(t!(lang, "Needs you", "Te necesita"), Tone::Warning, ForYou, open_questions(task, context)),
+        TaskState::NeedsYou | TaskState::ForYourReview if waits => for_you(task, context),
+        TaskState::Running | TaskState::NeedsYou => running(task, context),
         TaskState::ForYourReview | TaskState::AwaitingBlocker => match domain.attention(task) {
             Attention::Wait(reason) => waiting_for(task, &reason, context),
+            _ if domain.task_handed_back(&task.id).is_some() => running(task, context),
             _ if task.state == TaskState::ForYourReview =>
-                Presentation::new(t!(lang, "Ready for review", "Para revisar"), Tone::Info, ForYou, review_fact(task, context)),
+                Presentation::new(t!(lang, "Delivered", "Entregada"), Tone::Info, InProgress, review_fact(task, context)),
             _ => Presentation::new(t!(lang, "Waiting", "Esperando"), Tone::Info, Waiting, None),
         },
         TaskState::WaitingDependency => waiting_dependency(task, context),
         TaskState::NotStarted => not_started(task, context),
         TaskState::Done | TaskState::Cancelled | TaskState::Closing => unreachable!("handled above"),
+    }
+}
+
+/// A task with a card waiting for the user: the only way into the For You block, so the block
+/// never lists a task whose card the inbox and the task's detail do not show.
+fn for_you(task: &Task, context: &RenderContext<'_>) -> Presentation {
+    let lang = context.lang;
+    if context.projection.waits_for_review(&task.id) {
+        Presentation::new(t!(lang, "Ready for review", "Para revisar"), Tone::Info, Block::ForYou, review_fact(task, context))
+    } else {
+        Presentation::new(t!(lang, "Needs you", "Te necesita"), Tone::Warning, Block::ForYou, open_questions(task, context))
     }
 }
 
@@ -126,7 +139,11 @@ fn running(task: &Task, context: &RenderContext<'_>) -> Presentation {
     let (fact, said_at) = doing.map_or((None, None), |(fact, at)| (Some(fact), at));
     let active_at = said_at.or_else(|| node.and_then(|node| node.state_since.clone()))
         .or_else(|| context.live.task_since.get(&task.id.0).cloned());
-    let warn = |state: &str| Presentation { since: active_at.clone(), ..Presentation::new(state, Tone::Warning, Block::ForYou, fact.clone()) };
+    if !matches!(phase, NodePhase::Working | NodePhase::Starting { .. } | NodePhase::Lost | NodePhase::Paused(_))
+        && context.projection.waits_for_user(&task.id) {
+        return for_you(task, context);
+    }
+    let warn = |state: &str| Presentation { since: active_at.clone(), ..Presentation::new(state, Tone::Warning, Block::Waiting, fact.clone()) };
     let state = match (&phase, context.domain.task_handed_back(&task.id)) {
         (NodePhase::Lost, _) => return match common::coming_back_queued(task, context) {
             Some(queued) => in_queue(task, queued, lang),
@@ -137,9 +154,8 @@ fn running(task: &Task, context: &RenderContext<'_>) -> Presentation {
         (NodePhase::Working | NodePhase::Starting { .. }, Some(Instruction::Conflicts)) => t!(lang, "Resolving conflicts", "Resolviendo conflictos"),
         (NodePhase::Working | NodePhase::Starting { .. }, Some(Instruction::Question | Instruction::Reply)) => t!(lang, "Answering you", "Respondiéndote"),
         (NodePhase::Working | NodePhase::Starting { .. }, _) => t!(lang, "Working", "Trabajando"),
-        (NodePhase::WaitingUser { .. }, _) => return warn(t!(lang, "Needs you", "Te necesita")),
+        (NodePhase::WaitingUser { .. } | NodePhase::Stopped, _) => return warn(t!(lang, "No activity", "Sin actividad")),
         (NodePhase::Delivered { .. }, _) => return Presentation::new(t!(lang, "Delivered", "Entregada"), Tone::Info, Block::InProgress, fact),
-        (NodePhase::Stopped, _) => return warn(t!(lang, "No activity", "Sin actividad")),
         (NodePhase::Paused(pause), _) => {
             let fact = match &pause.reason {
                 PauseReason::Memory => t!(lang, "For memory · resumes by itself", "Por memoria · se reanuda sola").to_owned(),
@@ -185,7 +201,7 @@ fn closing(task: &Task, context: &RenderContext<'_>) -> Presentation {
 fn waiting_for(task: &Task, reason: &WaitReason, context: &RenderContext<'_>) -> Presentation {
     let lang = context.lang;
     match reason {
-        WaitReason::Answer { need } => Presentation::new(t!(lang, "Needs you", "Te necesita"), Tone::Warning, Block::ForYou,
+        WaitReason::Answer { need } => Presentation::new(t!(lang, "Waiting for an answer", "Esperando respuesta"), Tone::Info, Block::Waiting,
             Some(tf!(lang, "“{need}”", "«{need}»"))),
         WaitReason::UpstreamPr { number } => waiting_pr(*number, lang),
         WaitReason::NodeFixing { .. } => Presentation::new(t!(lang, "Resolving conflicts", "Resolviendo conflictos"), Tone::Accent,
@@ -238,7 +254,7 @@ fn not_started(task: &Task, context: &RenderContext<'_>) -> Presentation {
         return Presentation::new(t!(lang, "Starting", "Arrancando"), Tone::Accent, InProgress,
             Some(t!(lang, "Opening its session", "Abriendo su sesión").into()));
     }
-    let didnt_start = |fact: String| Presentation::new(common::launch_failed_label(lang), Tone::Warning, ForYou, Some(fact));
+    let didnt_start = |fact: String| Presentation::new(common::launch_failed_label(lang), Tone::Warning, Waiting, Some(fact));
     if let Some(super::LiveStartWait::Retry { at }) = context.live.start_waits.get(&task.id.0) {
         return Presentation::new(common::launch_failed_label(lang), Tone::Warning, Waiting,
             Some(tf!(lang, "Trying again at {at}", "Reintento a las {at}")));
@@ -261,7 +277,7 @@ fn not_started(task: &Task, context: &RenderContext<'_>) -> Presentation {
         });
     }
     if common::node_closed(task, context) {
-        return Presentation::new(common::node_closed_label(lang), Tone::Warning, ForYou,
+        return Presentation::new(common::node_closed_label(lang), Tone::Warning, Waiting,
             Some(t!(lang, "You closed its session before it delivered", "Cerraste su sesión sin que entregara").into()));
     }
     if !open_dependencies(task, context).is_empty() {
@@ -276,7 +292,7 @@ fn not_started(task: &Task, context: &RenderContext<'_>) -> Presentation {
             Some(t!(lang, "Claude usage ran out · starts when it is back", "Se acabó el uso de Claude · arranca cuando vuelva").into())),
         Some(_) => Presentation::new(t!(lang, "Queued", "En cola"), Tone::Neutral, Waiting,
             Some(t!(lang, "Starts when there is room", "Arranca cuando haya sitio").into())),
-        None => Presentation::new(common::node_closed_label(lang), Tone::Warning, ForYou,
+        None => Presentation::new(common::node_closed_label(lang), Tone::Warning, Waiting,
             Some(t!(lang, "Its session ended before it delivered", "Su sesión terminó sin que entregara").into())),
     }
 }

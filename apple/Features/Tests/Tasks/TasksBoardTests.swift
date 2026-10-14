@@ -84,7 +84,7 @@ final class TasksBoardTests: XCTestCase {
         let daemons = TasksBoard(document: try Fixtures.document("tasks-ios"))
         XCTAssertNotNil(daemons.archiveCompleted, "the BlurCamera request has finished tasks")
         XCTAssertEqual(daemons.schedules?.count, 0, "the daemon sends no count when nothing is scheduled")
-        XCTAssertEqual(daemons.active.requests.count, 7)
+        XCTAssertEqual(daemons.active.requests.count, 8)
         XCTAssertEqual(daemons.active.count, 8, "the active work is counted in tasks")
     }
 
@@ -110,11 +110,11 @@ final class TasksBoardTests: XCTestCase {
         let board = TasksBoard(document: try Fixtures.document("tasks-ios"))
 
         XCTAssertEqual(board.active.blocks.map(\.title), ["For you", "In progress", "Waiting"])
-        XCTAssertEqual(board.active.blocks.map(\.count), [4, 3, 1], "a block counts its tasks, not the ones folded in a chain")
+        XCTAssertEqual(board.active.blocks.map(\.count), [1, 4, 3], "a block counts its tasks, not the ones folded in a chain")
         XCTAssertEqual(board.active.blocks.map(\.isCompact), [false, false, true], "only waiting work reads as short lines")
         let forYou = try XCTUnwrap(board.active.blocks.first)
-        XCTAssertEqual(forYou.requests.map(\.isLoose), [false, true, true], "a request with a real title keeps its header")
-        XCTAssertEqual(forYou.requests.first?.title, "BlurCamera · weekly improvement")
+        XCTAssertEqual(forYou.requests.flatMap(\.tasks).filter { $0.depth == 0 }.map(\.state), ["Needs you"],
+                       "only a task with a card waiting for you is For you")
     }
 
     func testAChainOfWaitingTasksFoldsUnderItsFirstTaskFromOneAndOpensOneLevelDeep() throws {
@@ -166,10 +166,10 @@ final class TasksBoardTests: XCTestCase {
         let board = TasksBoard(document: try Fixtures.document("tasks-ios"))
         XCTAssertTrue(board.finished.requests.isEmpty)
         XCTAssertEqual(board.finished.more?.remaining, UInt32(board.finished.count))
-        let live = try XCTUnwrap(board.active.requests.first { $0.id == "group:r-blurcamera" })
-        XCTAssertEqual(live.tasks.filter { $0.depth == 0 }.map(\.title), ["Link the website in app.json", "Photos extension hint after the first blur"])
-        XCTAssertEqual(live.tasks.filter { $0.depth == 0 }.map(\.state), ["Didn't start", "No activity"])
-        XCTAssertEqual(live.tasks.first?.activity, "Claude Code doesn't trust ~/Projects/indie-apps")
+        let live = board.active.requests.filter { $0.id.hasPrefix("t-hf-") }
+        XCTAssertEqual(live.map(\.isLoose), [true, true], "a request whose tasks wait stands loose in Waiting")
+        XCTAssertEqual(live.flatMap(\.tasks).filter { $0.depth == 0 }.map(\.title), ["Photos extension hint after the first blur", "Link the website in app.json"])
+        XCTAssertEqual(live.flatMap(\.tasks).filter { $0.depth == 0 }.map(\.state), ["No activity", "Didn't start"])
 
         let page = try Fixtures.document("tasks-ios-finished")
         let ended = page.sections.first { $0.id == "finished" }?.items.compactMap { item -> String? in

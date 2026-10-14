@@ -312,7 +312,7 @@ fn request_state(request: &Request, tasks: &[&Task], context: &RenderContext<'_>
         t!(context.lang, "Answered", "Respondida")
     } else if request.closed || (!without_tasks && tasks.iter().all(|task| task.state.terminal())) {
         t!(context.lang, "Finished", "Terminada")
-    } else if without_tasks && context.live.orchestrator.as_ref().is_some_and(|o| o.can_retry) {
+    } else if without_tasks && orchestrator_asks(context) {
         t!(context.lang, "Waiting for your decision", "Esperando tu decisión")
     } else if without_tasks {
         t!(context.lang, "Preparing its tasks", "Preparando sus tareas")
@@ -472,7 +472,7 @@ fn active_items(buckets: &BTreeMap<&RequestId, Bucket>, context: &RenderContext<
             Entry::Group(_, tasks) => tasks.clone(),
             Entry::Request(request) => {
                 let since = context.live.request_times.get(&request.id.0).cloned();
-                let block = if splitting_waits_for_you(context) { Block::ForYou } else { Block::InProgress };
+                let block = if orchestrator_asks(context) { Block::ForYou } else { Block::InProgress };
                 let presentation = task_state::Presentation::waiting_request(block, since);
                 return (block, order(&presentation));
             }
@@ -484,12 +484,23 @@ fn active_items(buckets: &BTreeMap<&RequestId, Bucket>, context: &RenderContext<
     };
     let mut blocks: BTreeMap<Block, Vec<(Entry<'_>, Order)>> = BTreeMap::new();
     for entry in entries {
-        let (block, key) = lead(&entry);
-        match entry {
-            Entry::Group(_, tasks) if block == Block::Waiting => {
+        let Entry::Group(request, tasks) = entry else {
+            let (block, key) = lead(&entry);
+            blocks.entry(block).or_default().push((entry, key));
+            continue;
+        };
+        let mut by_block: BTreeMap<Block, Vec<&Task>> = BTreeMap::new();
+        for task in tasks {
+            by_block.entry(shown[&task.id].block).or_default().push(task);
+        }
+        for (block, tasks) in by_block {
+            if tasks.len() > 1 && block != Block::Waiting {
+                let entry = Entry::Group(request, tasks);
+                let (_, key) = lead(&entry);
+                blocks.entry(block).or_default().push((entry, key));
+            } else {
                 for task in tasks { blocks.entry(block).or_default().push((Entry::Task(task), order(&shown[&task.id]))); }
             }
-            entry => blocks.entry(block).or_default().push((entry, key)),
         }
     }
     let projects = projects(&listed, context);
@@ -509,7 +520,7 @@ fn active_items(buckets: &BTreeMap<&RequestId, Bucket>, context: &RenderContext<
                 Entry::Task(task) => {
                     count += 1;
                     let mut line = entry_row(task, 1, &shown, &chains, &projects, context);
-                    if block == Block::Waiting && let Some(name) = grouped(task).map(request_name) {
+                    if let Some(name) = grouped(task).map(request_name) {
                         append_fact(&mut line, &name, context);
                     }
                     row.children.push(line);
@@ -540,9 +551,11 @@ fn active_items(buckets: &BTreeMap<&RequestId, Bucket>, context: &RenderContext<
     (items, listed.len() as u32)
 }
 
-/// A request not split yet waits for the user when the orchestrator stopped and asks whether to retry.
-fn splitting_waits_for_you(context: &RenderContext<'_>) -> bool {
+/// A request not split yet waits for the user while the orchestrator stopped and its card asking
+/// whether to retry is in the inbox; without that card nothing says it waits for the user.
+fn orchestrator_asks(context: &RenderContext<'_>) -> bool {
     context.live.orchestrator.as_ref().is_some_and(|orchestrator| orchestrator.can_retry)
+        && context.projection.inbox.iter().any(|item| item.pending && item.task_id.is_none() && item.kind != "information")
 }
 
 /// Where a task goes inside its block: what needs the user longest waiting first; what works most recently active

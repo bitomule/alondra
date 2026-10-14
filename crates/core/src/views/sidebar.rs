@@ -14,7 +14,7 @@ fn task_subtitle(task: &Task, context: &RenderContext<'_>, group: Option<&str>) 
     let state = common::instruction_label(task, context.domain, context.lang)
         .or_else(|| common::failed_launch(task, context.domain).map(|_| common::launch_failed_label(context.lang)))
         .or_else(|| common::node_closed(task, context).then(|| common::node_closed_label(context.lang)))
-        .unwrap_or_else(|| task_state_label(task.state, context.lang));
+        .unwrap_or_else(|| task_state_label(shown_state(task, context), context.lang));
     let state = queued.as_deref().unwrap_or(state);
     let project = project.filter(|project| !project.is_empty() && *project != "others");
     let state = (group != Some(state)).then_some(state);
@@ -22,6 +22,16 @@ fn task_subtitle(task: &Task, context: &RenderContext<'_>, group: Option<&str>) 
         (Some(project), Some(state)) => Some(format!("{project} · {state}")),
         (Some(text), None) | (None, Some(text)) => Some(text.into()),
         (None, None) => None,
+    }
+}
+
+/// The state a task is listed under: «Needs you» and «In review» only with a card waiting for the
+/// user, the same one the inbox and the task's detail show.
+fn shown_state(task: &Task, context: &RenderContext<'_>) -> TaskState {
+    match (task.state, context.projection.waits_for_user(&task.id)) {
+        (TaskState::NeedsYou, false) => TaskState::Running,
+        (TaskState::ForYourReview, false) => TaskState::AwaitingBlocker,
+        (state, _) => state,
     }
 }
 
@@ -54,7 +64,7 @@ fn task_groups(context: &RenderContext<'_>) -> super::Section {
     let mut rows = Vec::new();
     for (state, id, title) in states {
         let children: Vec<_> = context.domain.tasks.values()
-            .filter(|task| !task.archived && task.state == state)
+            .filter(|task| !task.archived && shown_state(task, context) == state)
             .map(|task| {
                 let (icon, tone) = common::task_presentation(state);
                 let mut row = common::row(&task.id.0, &format!("task:{}", task.id),

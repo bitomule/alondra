@@ -4,7 +4,7 @@
   "view": "tasks",
   "key": "tasks",
   "client": "ios",
-  "version": "v309241d50efe742d",
+  "version": "vd191c297edc03451",
   "cursor": "cursor-1",
   "title": "Tareas",
   "status": {
@@ -91,91 +91,11 @@
           "title": "Para ti",
           "trailing": {
             "kind": "text",
-            "text": "4"
+            "text": "1"
           },
           "depth": 0,
           "struck": false,
           "children": [
-            {
-              "id": "group:r-blurcamera",
-              "link": {
-                "kind": "view",
-                "key": "task:t-hf-share-hint"
-              },
-              "icon": "mission",
-              "title": "BlurCamera · weekly improvement",
-              "depth": 1,
-              "struck": false,
-              "children": [
-                {
-                  "id": "t-hf-registry",
-                  "link": {
-                    "kind": "view",
-                    "key": "task:t-hf-registry"
-                  },
-                  "icon": "notice",
-                  "title": "Link the website in app.json",
-                  "subtitle": "No arrancó",
-                  "badges": [
-                    {
-                      "text": "No arrancó",
-                      "tone": "warning"
-                    }
-                  ],
-                  "trailing": {
-                    "kind": "count",
-                    "value": 0
-                  },
-                  "depth": 2,
-                  "struck": false,
-                  "children": [
-                    {
-                      "id": "activity",
-                      "icon": "notice",
-                      "title": "Claude Code no confía en ~/Projects/indie-apps",
-                      "depth": 0,
-                      "struck": false
-                    }
-                  ]
-                },
-                {
-                  "id": "t-hf-share-hint",
-                  "link": {
-                    "kind": "view",
-                    "key": "task:t-hf-share-hint"
-                  },
-                  "icon": "notice",
-                  "title": "Photos extension hint after the first blur",
-                  "subtitle": "Sin actividad",
-                  "badges": [
-                    {
-                      "text": "Sin actividad",
-                      "tone": "warning"
-                    }
-                  ],
-                  "trailing": {
-                    "kind": "count",
-                    "value": 0
-                  },
-                  "depth": 2,
-                  "struck": false,
-                  "children": [
-                    {
-                      "id": "activity",
-                      "icon": "notice",
-                      "title": "Dijo: «Waiting for the snapshot run to finish.»",
-                      "trailing": {
-                        "kind": "time",
-                        "at": "2026-09-30T07:00:00.000Z",
-                        "format": "relative"
-                      },
-                      "depth": 0,
-                      "struck": false
-                    }
-                  ]
-                }
-              ]
-            },
             {
               "id": "t-651c38484cd2f34e74d5107ba05f7f15",
               "link": {
@@ -239,28 +159,6 @@
                   "folded": true
                 }
               ]
-            },
-            {
-              "id": "t-legacy-editor",
-              "link": {
-                "kind": "view",
-                "key": "task:t-legacy-editor"
-              },
-              "icon": "pull_request",
-              "title": "Review the schedule editor",
-              "subtitle": "Para revisar",
-              "badges": [
-                {
-                  "text": "Para revisar",
-                  "tone": "info"
-                }
-              ],
-              "trailing": {
-                "kind": "count",
-                "value": 0
-              },
-              "depth": 1,
-              "struck": false
             }
           ]
         },
@@ -271,7 +169,7 @@
           "title": "En marcha",
           "trailing": {
             "kind": "text",
-            "text": "3"
+            "text": "4"
           },
           "depth": 0,
           "struck": false,
@@ -332,6 +230,28 @@
               ]
             },
             {
+              "id": "t-legacy-editor",
+              "link": {
+                "kind": "view",
+                "key": "task:t-legacy-editor"
+              },
+              "icon": "pull_request",
+              "title": "Review the schedule editor",
+              "subtitle": "Entregada",
+              "badges": [
+                {
+                  "text": "Entregada",
+                  "tone": "info"
+                }
+              ],
+              "trailing": {
+                "kind": "count",
+                "value": 0
+              },
+              "depth": 1,
+              "struck": false
+            },
+            {
               "id": "t-scheduled-lumo",
               "link": {
                 "kind": "view",
@@ -386,11 +306,78 @@
           "title": "En espera",
           "trailing": {
             "kind": "text",
-            "text": "1"
+            "text": "3"
           },
           "depth": 0,
           "struck": false,
           "children": [
+            {
+              "id": "t-hf-share-hint",
+              "link": {
+                "kind": "view",
+                "key": "task:t-hf-share-hint"
+              },
+              "icon": "notice",
+              "title": "Photos extension hint after the first blur",
+              "subtitle": "Sin actividad",
+              "badges": [
+                {
+                  "text": "Sin actividad",
+                  "tone": "warning"
+                }
+              ],
+              "trailing": {
+                "kind": "count",
+                "value": 0
+              },
+              "depth": 1,
+              "struck": false,
+              "children": [
+                {
+                  "id": "activity",
+                  "icon": "notice",
+                  "title": "Dijo: «Waiting for the snapshot run to finish.» · BlurCamera · weekly improvement",
+                  "trailing": {
+                    "kind": "time",
+                    "at": "2026-09-30T07:00:00.000Z",
+                    "format": "relative"
+                  },
+                  "depth": 0,
+                  "struck": false
+                }
+              ]
+            },
+            {
+              "id": "t-hf-registry",
+              "link": {
+                "kind": "view",
+                "key": "task:t-hf-registry"
+              },
+              "icon": "notice",
+              "title": "Link the website in app.json",
+              "subtitle": "No arrancó",
+              "badges": [
+                {
+                  "text": "No arrancó",
+                  "tone": "warning"
+                }
+              ],
+              "trailing": {
+                "kind": "count",
+                "value": 0
+              },
+              "depth": 1,
+              "struck": false,
+              "children": [
+                {
+                  "id": "activity",
+                  "icon": "notice",
+                  "title": "Claude Code no confía en ~/Projects/indie-apps · BlurCamera · weekly improvement",
+                  "depth": 0,
+                  "struck": false
+                }
+              ]
+            },
             {
               "id": "t-legacy-notes",
               "link": {

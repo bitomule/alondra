@@ -224,7 +224,7 @@ fn the_tasks_list_is_three_blocks_with_the_chain_folded_and_names_a_new_request_
     dump("tasks (blocks)", &screen);
     let lines: Vec<&str> = screen.lines().collect();
     let at = |needle: &str| lines.iter().position(|line| line.contains(needle)).unwrap_or_else(|| panic!("{needle}: {screen}"));
-    assert!(at("FOR YOU 4") < at("IN PROGRESS 3") && at("IN PROGRESS 3") < at("WAITING 1"), "{screen}");
+    assert!(at("FOR YOU 1") < at("IN PROGRESS 4") && at("IN PROGRESS 4") < at("WAITING 3"), "{screen}");
     assert!(!screen.contains("ACTIVE"), "the blocks replace the Active title: {screen}");
     let head = at("Restore the native review experience");
     assert!(lines[head + 1..].iter().take(3).any(|line| line.contains("▸ +1 waiting for this")), "{screen}");
@@ -236,6 +236,26 @@ fn the_tasks_list_is_three_blocks_with_the_chain_folded_and_names_a_new_request_
     assert!(screen.contains("Import lists from Notes"), "{screen}");
     assert!(!screen.contains("Keep the order") && !screen.contains("Look at the schedule editor"), "{screen}");
     assert!(!screen.contains("Launch two more"), "a message to the orchestrator without tasks is not listed: {screen}");
+}
+
+/// 13 October: a task read as in review with no card left to review, after the release task's
+/// deliveries were accepted. The terminal never says it waits for you when no card does.
+#[test]
+fn a_task_in_review_without_a_card_is_not_for_you_in_tasks_nor_in_fleet() {
+    let (mut domain, mut live) = busy();
+    domain.tasks.get_mut(&"t-3".into()).unwrap().state = TaskState::ForYourReview;
+    domain.agents.get_mut(&"a-3".into()).unwrap().phase = alondra_core::domain::NodePhase::Delivered { in_turn: false };
+    live.nodes.iter_mut().for_each(|node| node.working = false);
+    assert!(domain.projection().inbox.iter().all(|item| !item.pending), "no card waits");
+    let mut tasks = app_on(Screen::Tasks, build(&domain, &live, "tasks"));
+    let screen = rendered(&mut tasks, 120, 30);
+    dump("tasks (in review, no card)", &screen);
+    assert!(!screen.contains("PARA TI") && !screen.contains("Para revisar"), "{screen}");
+    assert!(screen.contains(ODD_STATE) && screen.contains("Entregada"), "{screen}");
+    let mut fleet = app_on(Screen::Fleet, build(&domain, &live, "fleet"));
+    let screen = rendered(&mut fleet, 120, 30);
+    dump("fleet (in review, no card)", &screen);
+    assert!(!screen.contains("Espera tu revisión"), "{screen}");
 }
 
 #[test]

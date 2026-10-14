@@ -71,9 +71,6 @@ pub(super) fn node_state(agent: &AgentId, context: &RenderContext<'_>) -> super:
     let inbox = &context.projection.inbox;
     let waiting = |kinds: &[&str]| inbox.iter()
         .any(|item| item.pending && item.agent_id.as_ref() == Some(agent) && kinds.contains(&item.kind.as_str()));
-    let reviewing = inbox.iter().any(|item| {
-        item.pending && item.agent_id.as_ref() == Some(agent) && super::card::is_review_delivery(item, context.domain)
-    });
     let tasks: Vec<TaskState> = context.domain.tasks.values()
         .filter(|task| task.agent_id.as_ref() == Some(agent) && !task.archived)
         .map(|task| task.state)
@@ -93,10 +90,11 @@ pub(super) fn node_state(agent: &AgentId, context: &RenderContext<'_>) -> super:
         NodePhase::Working if key == Some("failed") => (t!(lang, "Failed", "Falló"), Tone::Critical),
         NodePhase::Working => (t!(lang, "Working", "Trabajando"), Tone::Info),
         NodePhase::WaitingUser { .. } if waiting(&["action_request"]) => (t!(lang, "Your turn", "Te toca"), Tone::YourTurn),
-        NodePhase::WaitingUser { .. } => (t!(lang, "Waiting for an answer", "Esperando respuesta"), Tone::Warning),
+        NodePhase::WaitingUser { .. } if waiting(&["question", "permission", "plan"]) => (t!(lang, "Waiting for an answer", "Esperando respuesta"), Tone::Warning),
+        NodePhase::WaitingUser { .. } => (t!(lang, "No activity", "Sin actividad"), Tone::Neutral),
         NodePhase::Paused(Pause { reason: PauseReason::ByUser, .. }) => (t!(lang, "Paused", "En pausa"), Tone::Neutral),
         NodePhase::Paused(_) => (t!(lang, "Waiting for the machine", "Esperando máquina"), Tone::Neutral),
-        NodePhase::Delivered { .. } if reviewing || tasks.contains(&TaskState::ForYourReview) =>
+        NodePhase::Delivered { .. } if waiting(&["delivery"]) =>
             (t!(lang, "Waiting for your review", "Espera tu revisión"), Tone::Accent),
         NodePhase::Delivered { .. } => (t!(lang, "Delivering results", "Entrega resultado"), Tone::Success),
         NodePhase::Stopped => match awaited_title(agent, context) {

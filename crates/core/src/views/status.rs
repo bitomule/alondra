@@ -70,7 +70,8 @@ pub(super) fn build(projection: &DomainProjection, context: &RenderContext<'_>) 
             Count {
                 id: "waiting".into(),
                 label: t!(context.lang, "waiting", "esperando").into(),
-                value: context.domain.agents.values().filter(|agent| matches!(agent.phase, crate::domain::NodePhase::WaitingUser { .. })).count() as u32,
+                value: context.domain.agents.values().filter(|agent| roots.iter()
+                    .any(|item| item.agent_id.as_ref() == Some(&agent.id) && item.kind != "information")).count() as u32,
             },
         ],
         gauges: context.live.gauges.clone(),

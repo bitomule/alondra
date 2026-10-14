@@ -699,6 +699,21 @@ impl World {
 
         let header = fleet.status.counts.iter().find(|count| count.id == "working").map(|count| count.value as usize);
         assert_eq!(header, Some(slots.len()), "the header counts the same nodes");
+
+        let projection = self.s.projection();
+        for task in for_you(&tasks) {
+            assert!(projection.waits_for_user(&TaskId(task.clone())), "«For you» lists {task} only with a card waiting for the user");
+            let detail = self.render(&format!("task:{task}"));
+            assert!(detail.sections.iter().any(|section| section.id == "waiting" && !section.items.is_empty()),
+                "the detail of {task} shows the card it waits on");
+        }
+        let asking: BTreeSet<String> = projection.inbox.iter().filter(|item| item.pending && item.kind != "information")
+            .filter_map(|item| item.agent_id.as_ref()).filter(|agent| self.s.agents.contains_key(*agent))
+            .map(|agent| agent.0.clone()).collect();
+        let claims = badged(&fleet, &["Waiting for your review", "Waiting for an answer", "Your turn"]);
+        assert!(claims.is_subset(&asking), "Fleet says {claims:?} wait for the user, only {asking:?} have a card");
+        let waiting = fleet.status.counts.iter().find(|count| count.id == "waiting").map(|count| count.value as usize);
+        assert_eq!(waiting, Some(asking.len()), "the header counts the nodes whose card waits");
     }
 }
 
@@ -741,6 +756,25 @@ fn rows(view: &View) -> Vec<String> {
         walk(&section.items, &mut out);
     }
     out.into_iter().map(|(id, _)| id).collect()
+}
+
+/// The tasks the Tasks list puts under «For you».
+fn for_you(view: &View) -> Vec<String> {
+    fn tasks(rows: &[crate::views::Row], out: &mut Vec<String>) {
+        for row in rows {
+            if row.link.is_some() && row.id.starts_with("t-") {
+                out.push(row.id.clone());
+            }
+            tasks(&row.children, out);
+        }
+    }
+    let mut out = vec![];
+    for item in view.sections.iter().flat_map(|section| &section.items) {
+        if let Item::Row(block) = item && block.id == "block:for-you" {
+            tasks(&block.children, &mut out);
+        }
+    }
+    out
 }
 
 fn badged(view: &View, states: &[&str]) -> BTreeSet<String> {
