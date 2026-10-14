@@ -472,15 +472,14 @@ final class TriageFeatureTests: XCTestCase {
 
     // MARK: Offline
 
+    /// Whether the Mac answers is the connection state's to say; a failed reload only keeps the queue.
     @MainActor
-    func testLosingTheConnectionKeepsTheQueueAndSaysSo() async throws {
+    func testAFailedReloadKeepsTheQueue() async throws {
         let store = store(try fullFeed())
         await store.send(.task)
         await store.skipReceivedActions()
-        XCTAssertFalse(store.state.isOffline)
 
         await store.send(.screen(.failed("offline")))
-        XCTAssertTrue(store.state.isOffline)
         XCTAssertEqual(store.state.orderedIDs, queue)
         XCTAssertNil(store.state.loadError, "a saved queue is shown, not an error page")
     }
@@ -490,7 +489,6 @@ final class TriageFeatureTests: XCTestCase {
         let store = store(FeedStub())
         await store.send(.screen(.failed("offline")))
         XCTAssertEqual(store.state.loadError, "offline")
-        XCTAssertFalse(store.state.isOffline)
     }
 
     // MARK: Answering

@@ -105,7 +105,7 @@ final class FleetSnapshotTests: XCTestCase {
 
     func test_fleet_showingSavedDataWhileOffline() throws {
         let view = try fleet(phase: .failed("Couldn’t load this from your Mac. Try again."))
-        assertScreenVariants { view }
+        assertScreenVariants { view.environment(\.connectionState, .unreachable(.macNotAnswering)) }
     }
 
     func test_node_withActivityAndTheComposer() throws {

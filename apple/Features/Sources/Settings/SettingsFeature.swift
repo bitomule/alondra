@@ -37,7 +37,16 @@ public struct MacChoice: Identifiable, Equatable, Sendable {
 /// How a paired Mac answers right now, as a fact next to it.
 public enum MacStatus: Equatable, Sendable {
     case route(ConnectionRoute)
+    case connecting
     case problem(ConnectionProblem)
+
+    public init(_ state: ConnectionState) {
+        switch state {
+        case .connected(let route): self = .route(route)
+        case .connecting: self = .connecting
+        case .unreachable(let problem): self = .problem(problem)
+        }
+    }
 }
 
 public struct SettingsClient: Sendable {

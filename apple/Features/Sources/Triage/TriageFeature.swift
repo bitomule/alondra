@@ -60,10 +60,6 @@ public struct TriageFeature: Sendable {
                 working: Int(status.counts.first { $0.id == "working" }?.value ?? 0)
             )
         }
-        public var isOffline: Bool {
-            if case .failed = screen.phase { return screen.document != nil }
-            return false
-        }
         public var loadError: String? {
             guard screen.document == nil else { return nil }
             switch screen.phase {

@@ -115,7 +115,7 @@ private final class MacServiceWindowContext {
         let viewActionSender = await services.viewActionSender
         guard !Task.isCancelled else { return }
         store = Store(initialState: MacAppFeature.State()) { MacAppFeature() } withDependencies: {
-            $0.viewsClient = ViewsClient.live(session: viewsFeed, sender: viewActionSender)
+            $0.viewsClient = ViewsClient.live(session: viewsFeed, sender: viewActionSender, monitor: services.monitor)
             $0.attachmentImport = Connection.attachmentImportClient()
             $0.attachmentUpload = AttachmentUploadClient(uploadWithProgress: { draft, progress in
                 try await services.uploadAttachment(draft.data, name: draft.name, transferID: draft.id, progress: progress)
@@ -135,8 +135,9 @@ private struct MacServiceWindow: View {
             if let store = context.store {
                 MacServiceWorkspace(store: store, accountContent: MacServiceSettingsScene(services: services, owner: account,
                                                                                          workspace: workspace, context: context.settings))
-                    .connectionLostOverlay(store: store, diagnose: { await services.diagnose() }, retry: retry,
+                    .connectionLostOverlay(store.connection, hasSavedData: store.macPresentation.sidebarDocument != nil, retry: retry,
                                            signIn: account.map { account in { account.store.send(.reauthenticate) } },
+                                           settings: { store.send(.settingsPresented(true)) },
                                            pairAgain: account.flatMap { account in
                                                account.pairAgainAction(for: services) {
                                                    context.settings.requestLinkMac(unopened: { account.pairAgain(macID: nil) })
@@ -144,6 +145,9 @@ private struct MacServiceWindow: View {
                                                }
                                            },
                                            localNetworkSettings: account.map { account in { account.openLocalNetworkSettings() } })
+                    .environment(\.connectionState, store.connection)
+                    .environment(\.connectionRecovery, ConnectionRecovery(retry: retry,
+                        localNetworkSettings: account.map { account in { account.openLocalNetworkSettings() } }))
                     .onChange(of: notices.openedCard, initial: true) { _, card in
                         guard let card else { return }
                         store.send(.macPresentation(.select(.viewKey("card:\(card)"))))

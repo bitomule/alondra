@@ -8,6 +8,7 @@ import SwiftUI
 /// under its count.
 public struct TasksView: View {
     @Bindable var store: StoreOf<TasksFeature>
+    @Environment(\.connectionState) private var connection
 
     public init(store: StoreOf<TasksFeature>) { self.store = store }
 
@@ -39,9 +40,10 @@ public struct TasksView: View {
                 .font(.display(.largeTitle, weight: .bold))
                 .foregroundStyle(Palette.ink)
             if let board = store.board {
-                TasksSummary(board: board)
-                    .font(.subheadline.weight(.medium))
-                    .foregroundStyle(.secondary)
+                ConnectionLine(ConnectionIndicators(connection, hasSavedData: true).line, alert: Palette.rose) {
+                    TasksSummary(board: board).foregroundStyle(.secondary)
+                }
+                .font(.subheadline.weight(.medium))
             }
         }
         .padding(.horizontal, 20)

@@ -17,6 +17,8 @@ public struct AppFeature: Sendable {
         public init() {}
         public enum Tab: Hashable, CaseIterable, Sendable { case inbox, tasks, fleet, newRequest }
         public var tab = Tab.inbox
+        /// Whether the Mac is answering: every connection indicator in the app derives from it.
+        public var connection = ConnectionState.connecting
         public var settingsPresented = false
         public var notice: WorkspaceNotice?
         public var closeRefusal: String?
@@ -50,13 +52,14 @@ public struct AppFeature: Sendable {
         case fleetPath(StackActionOf<DetailRoute>)
         case newRequestPath(StackActionOf<DetailRoute>)
         case viewsFeed(FeedEvent)
+        case connectionChanged(ConnectionState)
         case handOffAnswered(ActionRequest, ActionResponse)
         case handOffFailed(ActionRequest, SendFailure)
     }
 
     @Dependency(\.viewsClient) var viewsClient
     @Dependency(\.continuousClock) var clock
-    private enum CancelID { case feed, queue, notice }
+    private enum CancelID { case feed, queue, notice, connection }
 
     public var body: some ReducerOf<Self> {
         Scope(state: \.triage, action: \.triage) { TriageFeature() }
@@ -86,13 +89,20 @@ public struct AppFeature: Sendable {
                     for await event in await viewsClient.feed() { await send(.viewsFeed(event)) }
                 }.cancellable(id: CancelID.feed, cancelInFlight: true),
                 .run { [viewsClient] send in
+                    for await connection in await viewsClient.connection() { await send(.connectionChanged(connection)) }
+                }.cancellable(id: CancelID.connection, cancelInFlight: true),
+                .run { [viewsClient] send in
                     for try await fetch in viewsClient.observe(.home) {
                         if case .document(let document) = fetch { await send(.triage(.screen(.loaded(document)))) }
                     }
                 } catch: { _, _ in }.cancellable(id: CancelID.queue, cancelInFlight: true)
             )
         case .disappeared:
-            return .merge(.send(.triage(.disappeared)), .cancel(id: CancelID.feed), .cancel(id: CancelID.queue))
+            return .merge(.send(.triage(.disappeared)), .cancel(id: CancelID.feed), .cancel(id: CancelID.queue),
+                          .cancel(id: CancelID.connection))
+        case .connectionChanged(let connection):
+            state.connection = connection
+            return .none
         case .tabSelected(let tab):
             state.tab = tab
             return .none

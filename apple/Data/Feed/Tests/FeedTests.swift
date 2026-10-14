@@ -109,6 +109,43 @@ final class FeedTests: XCTestCase {
     }
 }
 
+extension FeedTests {
+    /// After a failed poll the Mac is asked to answer at once, so a Mac that is back is known to be
+    /// back without waiting out a 50-second long poll; then polls hold again.
+    func testAPollAfterAFailureAsksForAnAnswerAtOnce() async throws {
+        let transport = FlakyPollTransport()
+        let session = FeedSession(transport: transport, client: .ios, lang: "en", retryDelay: { _ in })
+        let stream = await session.snapshots()
+        let watcher = Task { for await _ in stream {} }
+        defer { watcher.cancel(); Task { await session.stop() } }
+        _ = try await session.open("home")
+        for _ in 0..<100 where await transport.waits.count < 3 { try await Task.sleep(for: .milliseconds(20)) }
+        let waits = await transport.waits
+        XCTAssertEqual(Array(waits.prefix(3)), [50, 0, 50])
+    }
+}
+
+private actor FlakyPollTransport: ViewTransport {
+    private(set) var waits: [UInt] = []
+
+    func fetchView(key: String, client: ViewClient, lang: String, known: String?) async throws -> ViewFetch {
+        let json = #"{"protocol":1,"view":"home","key":"home","client":"ios","version":"v1","cursor":"c1","data_epoch":"epoch","status":{"version":"s1","summary":"Ready","badge":0,"counts":[],"gauges":[],"orchestrator":{"text":"idle","tone":"neutral"}},"sections":[]}"#
+        return try ContractCodec.decode(ViewFetch.self, from: Data(json.utf8))
+    }
+
+    func fetchChanges(client: ViewClient, lang: String, wait: UInt, cursor: String?, views: [OpenViewVersion]) async throws -> ViewFeed {
+        waits.append(wait)
+        if waits.count == 1 { throw URLError(.networkConnectionLost) }
+        if waits.count > 2 { try await Task.sleep(for: .seconds(60)) }
+        let json = #"{"protocol":1,"cursor":"c1","data_epoch":"epoch","status":{"version":"s1","summary":"Ready","badge":0,"counts":[],"gauges":[],"orchestrator":{"text":"idle","tone":"neutral"}},"stale":[],"reset":false,"superseded":false}"#
+        return try ContractCodec.decode(ViewFeed.self, from: Data(json.utf8))
+    }
+
+    func submitAction(_ request: ActionRequest, body: Data) async throws -> ActionResponse {
+        throw FeedError.unknownCommand
+    }
+}
+
 private actor SnapshotCounter {
     private(set) var value = 0
     func add() { value += 1 }

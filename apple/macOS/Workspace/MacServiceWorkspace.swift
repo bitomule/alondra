@@ -12,6 +12,14 @@ public struct MacServiceWorkspace<AccountContent: View>: View {
     private var presentation: StoreOf<MacPresentationFeature> { store.scope(state: \.macPresentation, action: \.macPresentation) }
     @FocusState private var searchFocused: Bool
 
+    private var indicators: ConnectionIndicators {
+        ConnectionIndicators(store.connection, hasSavedData: presentation.sidebarDocument != nil)
+    }
+
+    private var subtitle: String {
+        indicators.subtitle(summary: presentation.sidebarDocument?.status.summary ?? String(localized: "Connecting to the fleet…"))
+    }
+
     /// The cards the sidebar lists as waiting; nil until it has loaded.
     private var waitingIDs: [String]? {
         presentation.sidebarDocument.map { document in
@@ -56,17 +64,14 @@ public struct MacServiceWorkspace<AccountContent: View>: View {
                     UsageExhaustedWindowBanner(usage: presentation.sidebarDocument?.status.usageExhausted)
                 }
             }
-            .overlay(alignment: .top) { DeliveryBanner(store: store) }
             .overlay(alignment: .bottom) { MacNoticeToast(store: store) }
         }
         .environment(\.searchActive, searchFocused)
         .navigationTitle("Alondra")
-        .navigationSubtitle(presentation.sidebarDocument != nil && presentation.viewError != nil
-            ? String(localized: "saved data · connection lost")
-            : presentation.sidebarDocument?.status.summary ?? String(localized: "Connecting to the fleet…"))
+        .navigationSubtitle(subtitle)
         .toolbar {
             if let status = presentation.sidebarDocument?.status {
-                ToolbarItem(placement: .status) { MacViewStatusGauges(gauges: status.gauges) }
+                ToolbarItem(placement: .status) { MacViewStatusGauges(gauges: status.gauges).opacity(indicators.figuresLive ? 1 : 0.45) }
                     .sharedBackgroundVisibility(.hidden)
             }
             ToolbarItemGroup(placement: .primaryAction) {
@@ -90,6 +95,7 @@ public struct MacServiceWorkspace<AccountContent: View>: View {
 
 public struct MacServiceSidebar: View {
     let presentation: StoreOf<MacPresentationFeature>
+    @Environment(\.connectionState) private var connection
     public init(presentation: StoreOf<MacPresentationFeature>) { self.presentation = presentation }
     public var body: some View {
         List(selection: Binding(get: { presentation.selection }, set: { presentation.send(.select($0)) })) {
@@ -116,7 +122,7 @@ public struct MacServiceSidebar: View {
                 if let summary = waitingSummary(document) {
                     MacSidebarSummary(summary: summary) { presentation.send(.select(.viewKey($0))) }
                 }
-            } else if let error = presentation.viewError {
+            } else if let error = presentation.viewError, connection.isConnected {
                 VStack(spacing: 10) {
                     ContentUnavailableView("Couldn’t load the sidebar", systemImage: "exclamationmark.triangle", description: Text(error))
                     Button("Retry") { presentation.send(.appeared) }
@@ -236,6 +242,8 @@ private func sectionTint(_ id: String) -> Color {
 public struct MacServiceDetail: View {
     let presentation: StoreOf<MacPresentationFeature>
     @Environment(\.openURL) private var openURL
+    @Environment(\.connectionState) private var connection
+    @Environment(\.connectionRecovery) private var recovery
     public init(presentation: StoreOf<MacPresentationFeature>) { self.presentation = presentation }
     public var body: some View {
         Group {
@@ -271,7 +279,7 @@ public struct MacServiceDetail: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 .overlay(alignment: .top) {
-                    if let error = presentation.viewError {
+                    if let error = presentation.viewError, connection.isConnected {
                         Text(error).font(.callout).foregroundStyle(.red).padding(10)
                             .background(.regularMaterial, in: .capsule).padding(.top, 10)
                     }
@@ -301,7 +309,10 @@ public struct MacServiceDetail: View {
                         .id(presentation.contentDigest)
                         .frame(minWidth: 620, minHeight: 420)
                 }
-            } else if let error = presentation.viewError {
+            } else if presentation.selectedViewKey != nil,
+                      case .lost(let problem) = ConnectionIndicators(connection, hasSavedData: false).cover {
+                ConnectionUnavailable(problem: problem) { recovery?.retry() }
+            } else if let error = presentation.viewError, connection.isConnected {
                 ContentUnavailableView("Couldn’t load this view", systemImage: "exclamationmark.triangle", description: Text(error))
             } else if presentation.selectedViewKey == nil {
                 ContentUnavailableView("Nothing selected", systemImage: "sidebar.left",

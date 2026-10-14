@@ -22,6 +22,11 @@ public struct ViewsClient: Sendable {
     }
     /// Yields each time the app retries the connection on purpose; never finishes on its own.
     public var reconnections: @Sendable () async -> AsyncStream<Void> = { AsyncStream { _ in } }
+    /// Whether the Mac is answering: the current state, then every change. The only source any
+    /// connection indicator reads.
+    public var connection: @Sendable () async -> AsyncStream<ConnectionState> = { AsyncStream { $0.finish() } }
+    /// What a request's error means for the person, in the same words the connection state uses.
+    public var problem: @Sendable (any Error) -> ConnectionProblem = { _ in .unexpected }
     public var prepare: @Sendable (ActionRequest) async throws -> ActionRequest = { $0 }
     /// Delivers an answer until the Mac answers it; throws only when it can never be delivered.
     public var perform: @Sendable (ActionRequest) async throws -> ActionOutcome
@@ -39,7 +44,7 @@ public struct ViewsClient: Sendable {
 
     /// Install one instance at the authenticated scene boundary. Its session and sender are
     /// bound to that identity; discard them when the identity changes or logs out.
-    public static func live(session: FeedSession, sender: ViewActionSender) -> Self {
+    public static func live(session: FeedSession, sender: ViewActionSender, monitor: ConnectionMonitor) -> Self {
         let openSet = ViewOpenSet(session: session)
         return Self(
             load: { key, known in
@@ -52,6 +57,8 @@ public struct ViewsClient: Sendable {
             feed: { await session.events() },
             observe: { key in ViewObservation.stream(session: session, key: key) },
             reconnections: { await session.reconnections() },
+            connection: { await monitor.states() },
+            problem: { error in monitor.problem(for: error) },
             prepare: { request in try await sender.prepare(request) },
             perform: { request in try await sender.deliver(request) },
             retryNow: { await sender.retryNow() },
@@ -121,6 +128,8 @@ private enum ViewsClientKey: DependencyKey {
         feed: { AsyncStream { $0.finish() } },
         observe: { _ in AsyncThrowingStream { $0.finish(throwing: ViewsClientError.notInstalled) } },
         reconnections: { AsyncStream { _ in } },
+        connection: { AsyncStream { $0.finish() } },
+        problem: { _ in .unexpected },
         prepare: { $0 },
         perform: { _ in throw ViewsClientError.notInstalled },
         retryNow: {},

@@ -18,6 +18,7 @@ final class TriageSnapshotTests: XCTestCase {
         let store: StoreOf<TriageFeature>
         var height: CGFloat = 852
         var tabBarHeight: CGFloat = 0
+        var connection = ConnectionState.connected(.relay)
         @Namespace private var zoom
 
         var body: some View {
@@ -26,6 +27,9 @@ final class TriageSnapshotTests: XCTestCase {
                     .safeAreaInset(edge: .bottom, spacing: 0) {
                         if tabBarHeight > 0 { Color.red.frame(height: tabBarHeight) }
                     }
+                    .connectionLostOverlay(connection, hasSavedData: store.screen.document != nil, retry: {},
+                                           signIn: nil, settings: {}, pairAgain: nil, localNetworkSettings: nil)
+                    .environment(\.connectionState, connection)
             }
         }
     }
@@ -49,7 +53,24 @@ final class TriageSnapshotTests: XCTestCase {
     func test_cannotReachTheMac() {
         var state = TriageFeature.State()
         state.screen.phase = .failed(TriageFeature.loadFailure)
-        assertVariants { Harness(store: ScreenStores.triage(state: state)) }
+        assertScreen([.light, .dark], inWindow: true, animatedPixels: true) {
+            Harness(store: ScreenStores.triage(state: state), connection: .unreachable(.macNotAnswering))
+        }
+    }
+
+    func test_cannotReachTheMac_es() {
+        var state = TriageFeature.State()
+        state.screen.phase = .failed(TriageFeature.loadFailure)
+        assertScreen([.light], language: .spanish, inWindow: true, animatedPixels: true) {
+            Harness(store: ScreenStores.triage(state: state), connection: .unreachable(.macNotAnswering))
+        }
+    }
+
+    /// The Mac answers but this one view would not load: the screen's own failure, nothing about the connection.
+    func test_theMacAnswersButThisViewWouldNotLoad() {
+        var state = TriageFeature.State()
+        state.screen.phase = .failed(TriageFeature.loadFailure)
+        assertScreen([.light]) { Harness(store: ScreenStores.triage(state: state)) }
     }
 
     func test_empty() throws {
@@ -66,7 +87,52 @@ final class TriageSnapshotTests: XCTestCase {
         let store = try single(try Fixtures.card(Fixtures.questionID)) {
             $0.screen.phase = .failed("offline")
         }
-        assertScreen(inWindow: true) { Harness(store: store) }
+        assertScreen(inWindow: true) { Harness(store: store, connection: .unreachable(.macNotAnswering)) }
+    }
+
+    // MARK: One connection state, every indicator
+
+    /// 14 Oct, 08:58, iPhone on 5G: a reload of the queue had failed, but the Mac answered this
+    /// iPhone 11 s before. The header and the dot say the same thing: the Mac is answering.
+    func test_aFailedReloadWhileTheMacAnswersShowsTheLiveQueue() throws {
+        let store = try single(try Fixtures.card(Fixtures.questionID)) { $0.screen.phase = .failed("offline") }
+        assertScreen([.light, .dark], inWindow: true) { Harness(store: store, height: 320) }
+    }
+
+    func test_aFailedReloadWhileTheMacAnswersShowsTheLiveQueue_es() throws {
+        let store = try single(try Fixtures.spanishCard(Fixtures.questionID), spanish: true) { $0.screen.phase = .failed("offline") }
+        assertScreen([.light], language: .spanish, inWindow: true) { Harness(store: store, height: 320) }
+    }
+
+    func test_connectingWithTheSavedQueue() throws {
+        let store = try single(try Fixtures.card(Fixtures.questionID))
+        assertScreen([.light, .dark], inWindow: true) { Harness(store: store, height: 320, connection: .connecting) }
+    }
+
+    func test_connectingWithTheSavedQueue_es() throws {
+        let store = try single(try Fixtures.spanishCard(Fixtures.questionID), spanish: true)
+        assertScreen([.light], language: .spanish, inWindow: true) { Harness(store: store, height: 320, connection: .connecting) }
+    }
+
+    func test_theMacNotAnsweringWithTheSavedQueue() throws {
+        let store = try single(try Fixtures.card(Fixtures.questionID))
+        assertScreen([.light, .dark], inWindow: true) {
+            Harness(store: store, height: 320, connection: .unreachable(.macNotAnswering))
+        }
+    }
+
+    func test_theMacNotAnsweringWithTheSavedQueue_es() throws {
+        let store = try single(try Fixtures.spanishCard(Fixtures.questionID), spanish: true)
+        assertScreen([.light], language: .spanish, inWindow: true) {
+            Harness(store: store, height: 320, connection: .unreachable(.macNotAnswering))
+        }
+    }
+
+    func test_noInternetWithTheSavedQueue_es() throws {
+        let store = try single(try Fixtures.spanishCard(Fixtures.questionID), spanish: true)
+        assertScreen([.light], language: .spanish, inWindow: true) {
+            Harness(store: store, height: 320, connection: .unreachable(.noInternet))
+        }
     }
 
     func test_answersSetAsideNameTheCardWaitingAgain() throws {
@@ -92,24 +158,21 @@ final class TriageSnapshotTests: XCTestCase {
 
     func test_offlineWithTheSavedQueueSaysWhy() throws {
         let store = try single(try Fixtures.card(Fixtures.questionID)) { $0.screen.phase = .failed("offline") }
-        assertScreen([.light, .dark], inWindow: true) { Harness(store: store, height: 320).environment(\.connectionRecovery, Self.localNetworkOff) }
+        assertScreen([.light, .dark], inWindow: true) {
+            Harness(store: store, height: 320, connection: .unreachable(.localNetworkDenied))
+                .environment(\.connectionRecovery, Self.recovery)
+        }
     }
 
     func test_offlineWithTheSavedQueueSaysWhy_es() throws {
         let store = try single(try Fixtures.spanishCard(Fixtures.questionID), spanish: true) { $0.screen.phase = .failed("offline") }
         assertScreen([.light], language: .spanish, inWindow: true) {
-            Harness(store: store, height: 320).environment(\.connectionRecovery, Self.localNetworkOff)
+            Harness(store: store, height: 320, connection: .unreachable(.localNetworkDenied))
+                .environment(\.connectionRecovery, Self.recovery)
         }
     }
 
-    private static let localNetworkOff = ConnectionRecovery(diagnose: { await TriageSnapshotTests.neverAnswered() }, retry: {}, localNetworkSettings: {},
-                                                          known: .localNetworkDenied)
-
-    /// A diagnosis still in flight, so the capture shows what was already known and nothing redraws under it.
-    private static func neverAnswered() async -> ConnectionProblem {
-        try? await Task.sleep(for: .seconds(3600))
-        return .localNetworkDenied
-    }
+    private static let recovery = ConnectionRecovery(retry: {}, localNetworkSettings: {})
 
     // MARK: One card of each kind
 

@@ -588,7 +588,10 @@ public actor FeedSession {
                 let openVersions = openKeys.sorted().map { OpenViewVersion(key: $0, version: versions[$0] ?? "") }
                     .filter { !$0.version.isEmpty }
                 let pollEpoch = epochGeneration
-                let reply = try await transport.fetchChanges(client: client, lang: lang, wait: 50, cursor: cursor, views: openVersions)
+                // After a failure the Mac answers at once, so the app knows it is back without
+                // waiting out a long poll; then the poll holds again until something changes.
+                let reply = try await transport.fetchChanges(client: client, lang: lang, wait: failures == 0 ? 50 : 0,
+                                                             cursor: cursor, views: openVersions)
                 guard !Task.isCancelled, generation == current else { return }
                 guard pollEpoch == epochGeneration else { continue }
                 if reply.superseded {

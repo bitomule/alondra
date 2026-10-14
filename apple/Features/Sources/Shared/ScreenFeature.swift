@@ -15,7 +15,10 @@ public struct ScreenFeature: Sendable {
     @ObservableState
     public struct State: Equatable {
         /// Failures in a row of the kind that clears by itself before the screen shows one.
-        public static let passingFailuresShown = 3
+        public static let passingFailuresShown = ConnectionMachine.passingFailuresShown
+        /// What a screen with nothing to show says while the Mac answers; why it does not answer
+        /// is the connection state's to say.
+        public static var failure: String { String(localized: "Couldn’t load this from your Mac. Try again.") }
 
         public enum Phase: Equatable, Sendable {
             case loading
@@ -39,7 +42,7 @@ public struct ScreenFeature: Sendable {
         case loaded(ViewDocument)
         case missing
         case failed(String)
-        case loadFailed(LoadFailure)
+        case loadFailed(ConnectionProblem)
         /// The observation ended on its own, without an error and without the screen stopping it.
         case ended
     }
@@ -66,7 +69,7 @@ public struct ScreenFeature: Sendable {
                     } catch is CancellationError where Task.isCancelled {
                         return
                     } catch {
-                        return await send(.loadFailed(LoadFailure(error)))
+                        return await send(.loadFailed(viewsClient.problem(error)))
                     }
                     guard !Task.isCancelled else { return }
                     await send(.ended)
@@ -74,7 +77,7 @@ public struct ScreenFeature: Sendable {
                 .cancellable(id: CancelID.observe(state.key.rawValue), cancelInFlight: true)
             case .ended:
                 guard state.document == nil else { return .none }
-                state.phase = .failed(String(localized: "Couldn’t load this from your Mac. Try again."))
+                state.phase = .failed(State.failure)
                 return .none
             case .stop:
                 return .merge(.cancel(id: CancelID.observe(state.key.rawValue)), .cancel(id: CancelID.retry(state.key.rawValue)))
@@ -92,25 +95,35 @@ public struct ScreenFeature: Sendable {
                 state.phase = .failed(message)
                 state.failures += 1
                 return retryLater(state)
-            case .loadFailed(let failure):
+            case .loadFailed(let problem):
                 state.failures += 1
-                if !failure.isPassing || state.failures >= State.passingFailuresShown {
-                    state.phase = .failed(failure.message)
+                if problem == .unexpected || !ConnectionMachine.isPassing(problem) || state.failures >= State.passingFailuresShown {
+                    state.phase = .failed(State.failure)
                 }
                 return retryLater(state)
             }
         }
     }
 
-    /// Waits out the backoff for this many failures, or less if the app retries the connection.
+    /// Waits out the backoff for this many failures, or less if the app retries the connection
+    /// or the Mac starts answering again.
     private func retryLater(_ state: State) -> Effect<Action> {
         let random = withRandomNumberGenerator { Double.random(in: 0...1, using: &$0) }
         let delay = ConnectionBackoff.standard.delay(attempt: state.failures - 1, random: random)
         return .run { [clock, viewsClient] send in
             let reconnections = await viewsClient.reconnections()
+            let connection = await viewsClient.connection()
             await withTaskGroup(of: Void.self) { group in
                 group.addTask { try? await clock.sleep(for: delay) }
                 group.addTask { for await _ in reconnections { return } }
+                group.addTask {
+                    var answering = true
+                    for await state in connection {
+                        if state.isConnected && !answering { return }
+                        answering = state.isConnected
+                    }
+                    try? await clock.sleep(for: delay)
+                }
                 await group.next()
                 group.cancelAll()
             }

@@ -28,6 +28,8 @@ enum DemoWorkspace {
                 }
             },
             reconnections: { AsyncStream { _ in } },
+            connection: { AsyncStream { $0.yield(.connected(.thisMac)); $0.finish() } },
+            problem: { _ in .unexpected },
             prepare: { $0 },
             perform: { _ in try response() },
             retryNow: {},

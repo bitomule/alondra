@@ -91,6 +91,8 @@ public struct MacPresentationFeature: Sendable {
         case rowExpanded(String, defaultExpanded: Bool, expanded: Bool)
         case sidebarSectionExpanded(String, Bool)
         case appeared
+        /// The Mac answers again: whatever failed to load is asked for now.
+        case reconnected
         case viewsStale([String])
         case viewsReset
         case viewLoaded(String, ViewFetch)
@@ -356,6 +358,13 @@ public struct MacPresentationFeature: Sendable {
                 state.sectionPages[id] = SectionPage(items: before + loaded.items, more: loaded.more)
             case .appeared:
                 return .merge(loadAndOpenView("sidebar", visibleKeys: visibleViewKeys(state)), watchUndelivered())
+            case .reconnected:
+                guard state.viewError != nil else { return .none }
+                guard state.sidebarDocument != nil else {
+                    return loadAndOpenView("sidebar", visibleKeys: visibleViewKeys(state))
+                }
+                return .merge(loadView("sidebar", known: state.sidebarDocument?.version),
+                              state.selectedViewKey.map { loadView($0, known: state.detailDocument?.version) } ?? .none)
             case .undeliveredChanged(let cards):
                 let optimistic = state.optimistic
                 let arrived = cards.subtracting(state.undelivered).filter { !optimistic.isSending($0) }

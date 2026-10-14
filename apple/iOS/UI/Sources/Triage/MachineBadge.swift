@@ -1,12 +1,15 @@
 import AlondraContract
 import AlondraDesign
+import AlondraFeatures
 import SwiftUI
 
 /// The pill shares the navigation bar with Settings. A toolbar item wider than its slot is folded,
 /// with Settings, into a "…" menu, so the pill gives up numbers before it outgrows the slot: first
 /// the machine figure, then every figure, keeping each reading's icon.
+/// The dot says whether the Mac is answering; its figures fade while they are not current.
 struct MachineBadge: View {
     let gauges: [AlondraContract.Gauge]
+    let light: ConnectionIndicators.Light
     let width: CGFloat
 
     static let reservedBarWidth: CGFloat = 120
@@ -18,14 +21,41 @@ struct MachineBadge: View {
             pill { _ in false }
         }
         .modifier(ProposedWidth(width: max(width - Self.reservedBarWidth, 0)))
+        .accessibilityValue(lightDescription)
+    }
+
+    private var lightDescription: Text {
+        switch light {
+        case .live: Text("Connected")
+        case .connecting: Text("Connecting…")
+        case .down: Text("Not connected")
+        }
+    }
+
+    private var lightColor: Color {
+        switch light {
+        case .live: Palette.sage
+        case .connecting: Palette.ink.opacity(0.4)
+        case .down: Palette.rose
+        }
     }
 
     private static let machineLoad = MachineCapacity.sources.union([MachineCapacity.id])
 
     private func pill(showsText: @escaping (String) -> Bool) -> some View {
         HStack(spacing: 6) {
-            Circle().fill(Palette.sage).frame(width: 8, height: 8)
-                .shadow(color: Palette.sage.opacity(0.8), radius: 4)
+            Circle().fill(lightColor).frame(width: 8, height: 8)
+                .shadow(color: lightColor.opacity(light == .live ? 0.8 : 0), radius: 4)
+                .accessibilityIdentifier("mac.light")
+            figures(showsText: showsText)
+                .opacity(light == .live ? 1 : 0.45)
+        }
+        .fixedSize()
+        .foregroundStyle(Palette.ink.opacity(0.65))
+    }
+
+    @ViewBuilder private func figures(showsText: @escaping (String) -> Bool) -> some View {
+        HStack(spacing: 6) {
             if let capacity = MachineCapacity(gauges: gauges) {
                 HStack(spacing: 3) {
                     ReadingIcon(symbols: ("desktopcomputer", "desktopcomputer"), value: capacity.value, tint: capacity.level.tint)
@@ -53,8 +83,6 @@ struct MachineBadge: View {
                 .accessibilityLabel("\(gauge.label) \(gauge.text)")
             }
         }
-        .fixedSize()
-        .foregroundStyle(Palette.ink.opacity(0.65))
     }
 }
 

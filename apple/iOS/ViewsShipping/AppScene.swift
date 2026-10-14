@@ -90,7 +90,7 @@ private struct DemoAccountView: View {
         let sender = await services.viewActionSender
         guard !Task.isCancelled else { return }
         store = Store(initialState: AppFeature.State()) { AppFeature() } withDependencies: {
-            $0.viewsClient = ViewsClient.live(session: viewsFeed, sender: sender)
+            $0.viewsClient = ViewsClient.live(session: viewsFeed, sender: sender, monitor: services.monitor)
             $0.attachmentImport = Connection.attachmentImportClient()
             $0.attachmentUpload = AttachmentUploadClient(uploadWithProgress: { draft, progress in
                 try await services.uploadAttachment(draft.data, name: draft.name, transferID: draft.id, progress: progress)
@@ -113,15 +113,17 @@ private struct ApprovedServiceScene: View {
                 RootView(store: store,
                     accountContent: SettingsScene(services: services, owner: owner,
                                                         notifications: notifications, context: context.settings))
-                    .connectionLostOverlay(store: store, diagnose: { await services.diagnose() }, retry: retry,
+                    .connectionLostOverlay(store.connection, hasSavedData: store.triage.screen.document != nil, retry: retry,
                                            signIn: { owner.store.send(.reauthenticate) },
+                                           settings: { store.send(.settingsPresented(true)) },
                                            pairAgain: owner.pairAgainAction(for: services) {
                                                context.settings.requestLinkMac(unopened: { owner.pairAgain(macID: nil) })
                                                store.send(.settingsPresented(true))
                                            },
                                            localNetworkSettings: { owner.openLocalNetworkSettings() })
-                    .environment(\.connectionRecovery, ConnectionRecovery(diagnose: { await services.diagnose() }, retry: retry,
+                    .environment(\.connectionRecovery, ConnectionRecovery(retry: retry,
                                                                           localNetworkSettings: { owner.openLocalNetworkSettings() }))
+                    .environment(\.connectionState, store.connection)
             } else { ProgressView("Opening workspace…") }
         }
         .retriesConnection(networkChanges: { NetworkReachability.shared.changes() },

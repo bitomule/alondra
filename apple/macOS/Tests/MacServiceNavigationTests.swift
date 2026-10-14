@@ -219,6 +219,47 @@ struct MacServiceNavigationTests {
         #expect(store.notice?.event == .actionCompleted("Ya aceptada"))
     }
 
+    /// The window used to keep «saved data · connection lost» until something was clicked. When the
+    /// Mac answers again, what failed is asked for at once.
+    @Test
+    func theMacAnsweringAgainReloadsWhatFailed() async throws {
+        let loaded = LockIsolated<[String]>([])
+        let store = try makeStore(waiting: ["a"], selected: "card:a") { key in
+            loaded.withValue { $0.append(key.rawValue) }
+            return .unchanged(cursor: "c2")
+        }
+        await store.send(.viewFailed("card:a", "offline"))
+        await store.send(.reconnected)
+        await store.skipReceivedActions()
+        #expect(Set(loaded.value) == ["sidebar", "card:a"])
+        #expect(store.state.viewError == nil)
+    }
+
+    @Test
+    func theMacAnsweringWithNothingFailedLoadsNothing() async throws {
+        let loaded = LockIsolated<[String]>([])
+        let store = try makeStore(waiting: ["a"], selected: "card:a") { key in
+            loaded.withValue { $0.append(key.rawValue) }
+            return .unchanged(cursor: "c2")
+        }
+        await store.send(.reconnected)
+        #expect(loaded.value.isEmpty)
+    }
+
+    @Test
+    func theWindowReloadsOnlyWhenTheMacStartsAnsweringAgain() {
+        let store = Store(initialState: MacAppFeature.State()) { MacAppFeature() } withDependencies: {
+            $0.continuousClock = TestClock()
+            $0.viewsClient.load = { key, _ in .document(try makeDocument(key: key.rawValue, version: "d1")) }
+            $0.viewsClient.openScreen = { _, _ in }
+        }
+        store.send(.macPresentation(.viewFailed("sidebar", "offline")))
+        store.send(.connectionChanged(.unreachable(.macNotAnswering)))
+        #expect(store.macPresentation.viewError == "offline")
+        store.send(.connectionChanged(.connected(.relay)))
+        #expect(store.connection == .connected(.relay))
+    }
+
     @Test
     func eachWindowKeepsItsOwnViewsSelection() {
         let first = Store(initialState: MacPresentationFeature.State()) { MacPresentationFeature() }

@@ -51,7 +51,7 @@ struct SettingsScene: View {
         state.selectedMacID = owner.selectedMacID
         store = Store(initialState: state) { SettingsFeature() } withDependencies: {
                 $0.serviceSettings = client
-                $0.viewsClient = ViewsClient.live(session: viewsFeed, sender: sender)
+                $0.viewsClient = ViewsClient.live(session: viewsFeed, sender: sender, monitor: services.monitor)
                 $0.cloudPairing = owner.additionalMacPairing
                 $0.findMac = owner.findMacClient
             }

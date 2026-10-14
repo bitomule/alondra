@@ -19,6 +19,8 @@ public actor Connection {
     public let api: AlondraAPIClient
     public let viewsFeed: FeedSession
     public let viewActionSender: ViewActionSender
+    /// Whether this Mac is answering, decided from every request to it.
+    public nonisolated let monitor: ConnectionMonitor
     private let operations: any FeedOperations
     private let macName: String?
     /// The paired Mac's ID; nil for the Mac this app runs on.
@@ -124,6 +126,7 @@ public actor Connection {
     /// The network changed or the app came back to the foreground.
     public func networkChanged() async {
         guard active else { return }
+        await monitor.handle(.retrying)
         await (operations as? RoutedSession)?.networkChanged()
         await viewActionSender.retryNow()
         await viewsFeed.reconnect()
@@ -140,7 +143,16 @@ public actor Connection {
         self.operations = operations
         self.macName = macName
         self.macID = macID
-        api = AlondraAPIClient(serviceURL: server, deviceID: deviceID, operations: operations)
+        let local = operations is LoopbackSession
+        let monitor = ConnectionMonitor { error in
+            ConnectionClassifier.problem(for: error, local: local, networkOffline: NetworkReachability.shared.isOffline,
+                                         macName: macName)
+        }
+        self.monitor = monitor
+        let monitored = MonitoredOperations(operations, monitor: monitor) {
+            local ? .thisMac : await (operations as? RoutedSession)?.route ?? .relay
+        }
+        api = AlondraAPIClient(serviceURL: server, deviceID: deviceID, operations: monitored)
         #if os(macOS)
         let client: ViewClient = .mac
         #else
@@ -154,10 +166,12 @@ public actor Connection {
                 await sender.reconcilePending(dataEpoch: epoch, isCurrent: isCurrent)
                 if await isCurrent() { await sender.resumeDeliveries(dataEpoch: epoch) }
             })
+        Task { await monitor.follow(network: NetworkReachability.shared.changes()) }
     }
 
     public func deactivate() async {
         active = false
+        await monitor.stop()
         await viewActionSender.stop()
         await viewsFeed.stop()
         await operations.deactivate()
@@ -176,14 +190,6 @@ public actor Connection {
         try checkActive()
         _ = try await api.send(.data(.get, path: ["capabilities"]))
         try checkActive()
-    }
-
-    /// Why this Mac cannot be loaded right now, from one signed round trip.
-    public func diagnose() async -> ConnectionProblem {
-        do {
-            try await checkSettingsConnection()
-            return .unexpected
-        } catch { return connectionProblem(for: error) }
     }
 
     public nonisolated func connectionProblem(for error: any Error) -> ConnectionProblem {

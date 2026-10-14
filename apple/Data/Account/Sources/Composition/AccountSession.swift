@@ -254,16 +254,15 @@ public final class AccountSession {
         registry.snapshot.entries.first { choiceIDs[$0.id] == id }?.session
     }
 
-    /// How every paired Mac answers now: one signed round trip each, all at once.
+    /// How every paired Mac answers now: one signed round trip each, all at once, read back from
+    /// that Mac's connection state so Settings says what every other screen says.
     public func macStatuses() async -> [UUID: MacStatus] {
         let entries = registry.snapshot.entries.compactMap { entry in choiceIDs[entry.id].map { ($0, entry.session) } }
         return await withTaskGroup(of: (UUID, MacStatus).self) { group in
             for (id, session) in entries {
                 group.addTask {
-                    do {
-                        try await session.checkSettingsConnection()
-                        return (id, await session.route().map(MacStatus.route) ?? .problem(.unexpected))
-                    } catch { return (id, .problem(session.connectionProblem(for: error))) }
+                    try? await session.checkSettingsConnection()
+                    return (id, MacStatus(await session.monitor.state))
                 }
             }
             var statuses: [UUID: MacStatus] = [:]

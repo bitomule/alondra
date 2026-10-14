@@ -15,6 +15,7 @@ final class MachineBadgeSnapshotTests: XCTestCase {
 
     private struct Harness: View {
         let store: StoreOf<TriageFeature>
+        var connection = ConnectionState.connected(.relay)
         @Namespace private var zoom
 
         var body: some View {
@@ -22,6 +23,7 @@ final class MachineBadgeSnapshotTests: XCTestCase {
                 TriageView(store: store, zoom: zoom)
                     .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Settings", systemImage: "gearshape") {} } }
             }
+            .environment(\.connectionState, connection)
         }
     }
 
@@ -30,7 +32,8 @@ final class MachineBadgeSnapshotTests: XCTestCase {
     private static let fullDiskStatus = status
         .replacingOccurrences(of: #""value":0.88,"text":"58 GB libres","level":"warm""#, with: #""value":0.96,"text":"16 GB libres","level":"hot""#)
 
-    private func navigationBar(width: CGFloat, status raw: String = status) throws -> UIImage {
+    private func navigationBar(width: CGFloat, status raw: String = status,
+                               connection: ConnectionState = .connected(.relay)) throws -> UIImage {
         let home = try Fixtures.document("home-ios") { object in
             object["status"] = try JSONSerialization.jsonObject(with: Data(raw.utf8))
             var sections = try XCTUnwrap(object["sections"] as? [[String: Any]])
@@ -42,7 +45,7 @@ final class MachineBadgeSnapshotTests: XCTestCase {
         let window = UIWindow(windowScene: scene)
         window.frame = CGRect(x: 0, y: 0, width: width, height: 874)
         window.overrideUserInterfaceStyle = .light
-        window.rootViewController = UIHostingController(rootView: Harness(store: store))
+        window.rootViewController = UIHostingController(rootView: Harness(store: store, connection: connection))
         window.makeKeyAndVisible()
         defer { window.isHidden = true }
         RunLoop.main.run(until: Date().addingTimeInterval(1))
@@ -66,6 +69,16 @@ final class MachineBadgeSnapshotTests: XCTestCase {
 
     func test_fullDisk_takesOverTheMachineReading() throws {
         assertAppSnapshot(of: try navigationBar(width: 440, status: Self.fullDiskStatus), as: Snapshotting<UIImage, UIImage>.image(precision: 0.99, perceptualPrecision: 0.97).asRecorded)
+    }
+
+    func test_connecting_dimsTheFiguresBehindAGreyDot() throws {
+        assertAppSnapshot(of: try navigationBar(width: 440, connection: .connecting),
+                          as: Snapshotting<UIImage, UIImage>.image(precision: 0.99, perceptualPrecision: 0.97).asRecorded)
+    }
+
+    func test_macNotAnswering_dimsTheFiguresBehindARedDot() throws {
+        assertAppSnapshot(of: try navigationBar(width: 440, connection: .unreachable(.macNotAnswering)),
+                          as: Snapshotting<UIImage, UIImage>.image(precision: 0.99, perceptualPrecision: 0.97).asRecorded)
     }
 
     func test_popover_breaksTheMachineDownIntoRamAndCpu() throws {

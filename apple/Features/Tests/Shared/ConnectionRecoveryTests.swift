@@ -92,6 +92,47 @@ final class ConnectionRecoveryTests: XCTestCase {
         await store.send(.stop)
         await world.end()
     }
+
+    /// The one connection state follows the Mac with the app open: answering, gone once the
+    /// changes poll keeps failing, and back as soon as the relay answers again.
+    func testTheConnectionStateFollowsTheMacWithTheAppOpen() async throws {
+        let world = try await World.make()
+        let store = world.screen()
+        await store.send(.task)
+        await store.receive(\.loaded) { $0.document = world.tasks; $0.phase = .loaded }
+        await world.connection(becomes: .connected(.localNetwork))
+
+        await world.mac.set(direct: .down)
+        await world.mac.set(relay: .down)
+        await world.connection(becomes: .unreachable(.macNotAnswering))
+
+        await world.mac.set(relay: .answers)
+        await world.connection(becomes: .connected(.relay))
+        await store.send(.stop)
+        await world.end()
+    }
+
+    /// A screen whose load failed asks again the moment the Mac answers anything, instead of
+    /// waiting out its backoff with saved data on screen.
+    func testAFailedScreenRetriesAtOnceWhenTheMacAnswersAgain() async throws {
+        let world = try await World.make()
+        await world.mac.set(direct: .down)
+        await world.mac.set(relay: .down)
+        await world.monitor.handle(.networkLost)
+        await world.monitor.handle(.networkBack)
+        let store = world.screen()
+
+        await store.send(.task)
+        await store.receive(\.loadFailed, timeout: .seconds(5)) { $0.failures = 1 }
+        await world.connection(becomes: .unreachable(.macNotAnswering))
+        await world.mac.set(relay: .answers)
+        let anotherRead = try APIRequest(endpoint: Endpoint<Data>.data(.get, path: ["capabilities"]), operationID: "other")
+        _ = try await world.monitored.perform(anotherRead)
+        await store.receive(\.retry, timeout: .seconds(5))
+        await store.receive(\.loaded, timeout: .seconds(5)) { $0.document = world.tasks; $0.phase = .loaded; $0.failures = 0 }
+        await store.send(.stop)
+        await world.end()
+    }
 }
 
 private enum Carrier: Equatable { case answers, slow, localNetworkDenied, down }
@@ -102,6 +143,8 @@ private struct World {
     let routed: RoutedSession
     let feed: FeedSession
     let sender: ViewActionSender
+    let monitor: ConnectionMonitor
+    let monitored: MonitoredOperations
     let clock = TestClock()
     let tasks: ViewDocument
 
@@ -116,7 +159,9 @@ private struct World {
             agreement: mac.deviceAgreement, macSigning: mac.macSigning.publicKey,
             macAgreement: mac.macAgreement.publicKey, router: router, http: http, pause: { _ in })
         let routed = RoutedSession(direct: direct, router: router, relay: SyntheticRelay(mac: mac))
-        let api = AlondraAPIClient(serviceURL: URL(string: "https://relay.test")!, deviceID: "phone-1", operations: routed)
+        let monitor = ConnectionMonitor { _ in .macNotAnswering }
+        let monitored = MonitoredOperations(routed, monitor: monitor) { await routed.route ?? .relay }
+        let api = AlondraAPIClient(serviceURL: URL(string: "https://relay.test")!, deviceID: "phone-1", operations: monitored)
         let probe = try APIRequest(endpoint: Endpoint<Data>.data(.get, path: ["capabilities"]), operationID: "probe")
         if provingDirect {
             for _ in 0..<500 where await routed.route != .localNetwork {
@@ -128,18 +173,27 @@ private struct World {
         }
         let feed = FeedSession(transport: api, client: .ios, lang: "en",
                                retryDelay: { _ in try await Task.sleep(for: .milliseconds(20)) })
-        return World(mac: mac, routed: routed, feed: feed, sender: ViewActionSender(transport: api), tasks: tasks)
+        return World(mac: mac, routed: routed, feed: feed, sender: ViewActionSender(transport: api), monitor: monitor,
+                     monitored: monitored, tasks: tasks)
     }
 
     func screen() -> TestStoreOf<ScreenFeature> {
         TestStore(initialState: ScreenFeature.State(key: .tasks)) { ScreenFeature() } withDependencies: {
-            $0.viewsClient = .live(session: feed, sender: sender)
+            $0.viewsClient = .live(session: feed, sender: sender, monitor: monitor)
             $0.continuousClock = clock
             $0.withRandomNumberGenerator = WithRandomNumberGenerator(TopOfRange())
         }
     }
 
+    /// Waits until the connection state is `expected`, failing after five seconds.
+    func connection(becomes expected: ConnectionState) async {
+        for _ in 0..<500 where await monitor.state != expected { try? await Task.sleep(for: .milliseconds(10)) }
+        let state = await monitor.state
+        XCTAssertEqual(state, expected)
+    }
+
     func end() async {
+        await monitor.stop()
         await feed.stop()
         await routed.deactivate()
     }
@@ -200,7 +254,8 @@ private actor SyntheticMac {
             return try XCTUnwrap(documents[key])
         }
         if path.hasPrefix("/changes?") {
-            while pending.isEmpty {
+            if path.contains("wait=0"), (viaDirect ? direct : relay) == .down { throw URLError(.networkConnectionLost) }
+            while pending.isEmpty, !path.contains("wait=0") {
                 if (viaDirect ? direct : relay) == .down { throw URLError(.networkConnectionLost) }
                 try await Task.sleep(for: .milliseconds(10))
             }

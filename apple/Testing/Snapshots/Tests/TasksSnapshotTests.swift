@@ -86,6 +86,31 @@ final class TasksSnapshotTests: XCTestCase {
         }
     }
 
+    func test_tasks_theMacNotAnsweringWithSavedTasks() throws {
+        let document = try SampleViews.document("tasks-empty")
+        assertScreen(lightAndDark) {
+            ScreenFrame(height: 500) { TasksView(store: tasks(document)) }
+                .environment(\.connectionState, .unreachable(.macNotAnswering))
+        }
+    }
+
+    func test_tasks_theMacNotAnsweringWithSavedTasks_spanish() throws {
+        let document = try SampleViews.document("tasks-empty-es")
+        assertScreen(language: .spanish) {
+            ScreenFrame(height: 500) { TasksView(store: tasks(document)) }
+                .environment(\.connectionState, .unreachable(.macNotAnswering))
+        }
+    }
+
+    func test_tasks_nothingSavedAndTheMacNotAnswering_spanish() {
+        assertScreen(language: .spanish) {
+            ScreenFrame(height: 400) {
+                TasksView(store: tasksUnavailable(.loading, observing: { _ in AsyncThrowingStream { _ in } }))
+            }
+            .environment(\.connectionState, .unreachable(.macNotAnswering))
+        }
+    }
+
     private func daemonsOwnTasks(_ document: ViewDocument, expanded: Set<String> = [], opened: [ViewDocument] = [],
                                  openChains: Set<String> = [], height: CGFloat) -> some View {
         ScreenFrame(height: height) {

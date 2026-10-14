@@ -236,6 +236,7 @@ final class ScreenFeatureTests: XCTestCase {
                     else { continuation.yield(.document(document)) }
                 }
             }
+            $0.viewsClient.problem = { _ in .serverUnreachable }
             $0.continuousClock = clock
             $0.withRandomNumberGenerator = WithRandomNumberGenerator(Ceiling())
         }
@@ -249,7 +250,7 @@ final class ScreenFeatureTests: XCTestCase {
         await store.receive(\.retry)
         await store.receive(\.loadFailed) {
             $0.failures = 3
-            $0.phase = .failed("The connection to the Alondra server dropped. Trying again…")
+            $0.phase = .failed("Couldn’t load this from your Mac. Try again.")
         }
         await clock.advance(by: .seconds(4))
         await store.receive(\.retry) { $0.phase = .loading }
@@ -274,6 +275,7 @@ final class ScreenFeatureTests: XCTestCase {
             ScreenFeature()
         } withDependencies: {
             $0.viewsClient.observe = { _ in streams.withValue { $0.removeFirst() } }
+            $0.viewsClient.problem = { _ in .macNotAnswering }
             $0.continuousClock = clock
             $0.withRandomNumberGenerator = WithRandomNumberGenerator(Ceiling())
         }
@@ -286,23 +288,6 @@ final class ScreenFeatureTests: XCTestCase {
         await store.receive(\.loaded) { $0.document = again; $0.failures = 0 }
         await store.send(.stop)
         await store.finish()
-    }
-
-    func testEachFailureSaysItsReason() {
-        XCTAssertEqual(LoadFailure(URLError(.timedOut)), .connectionDropped)
-        XCTAssertEqual(LoadFailure(URLError(.secureConnectionFailed)), .connectionDropped)
-        XCTAssertEqual(LoadFailure(RelayWireError.server(502)), .connectionDropped)
-        XCTAssertEqual(LoadFailure(RelayWireError.server(503)), .serverBusy)
-        XCTAssertEqual(LoadFailure(RelayWireError.server(429)), .serverBusy)
-        XCTAssertEqual(LoadFailure(RelayWireError.admissionFull), .serverBusy)
-        XCTAssertEqual(LoadFailure(OperationError.outcomeUnknown), .macSilent)
-        XCTAssertEqual(LoadFailure(DirectRouteError.unreachable), .macSilent)
-        XCTAssertEqual(LoadFailure(RelayWireError.unauthorized), .refused)
-        XCTAssertEqual(LoadFailure(URLError(.cancelled)), .refused)
-        XCTAssertEqual(LoadFailure(Boom()), .refused)
-        XCTAssertFalse(LoadFailure.refused.isPassing)
-        XCTAssertEqual(LoadFailure.macSilent.message, "Your Mac didn’t answer in time. Trying again…")
-        XCTAssertEqual(LoadFailure.serverBusy.message, "The Alondra server is busy. Trying again…")
     }
 }
 

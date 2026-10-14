@@ -9,6 +9,7 @@ import SwiftUI
 public struct FleetView: View {
     @Bindable var store: StoreOf<FleetFeature>
     @State private var opened: Set<String> = []
+    @Environment(\.connectionState) private var connection
 
     public init(store: StoreOf<FleetFeature>) { self.store = store }
 
@@ -36,9 +37,9 @@ public struct FleetView: View {
 
     private func list(_ overview: FleetOverview) -> some View {
         List {
-            if case .failed = store.screen.phase {
-                SavedDataLabel()
-                    .font(.footnote.weight(.medium)).foregroundStyle(.secondary)
+            if indicators.line != .summary {
+                ConnectionLine(indicators.line, alert: .secondary) { EmptyView() }
+                    .font(.footnote.weight(.medium))
                     .listRowBackground(Rectangle().fill(.thinMaterial))
                     .accessibilityIdentifier("fleet.savedDataConnectionLost")
             }
@@ -128,17 +129,25 @@ public struct FleetView: View {
         }
     }
 
+    private var indicators: ConnectionIndicators {
+        ConnectionIndicators(connection, hasSavedData: store.overview != nil)
+    }
+
     @ViewBuilder private var placeholder: some View {
-        switch store.screen.phase {
-        case .failed(let message):
+        switch (indicators.cover, store.screen.phase) {
+        case (.lost(let problem), _):
+            ConnectionUnavailable(problem: problem) { store.send(.screen(.retry)) }
+        case (.connecting, _):
+            ProgressView().tint(Palette.dawn).frame(maxWidth: .infinity, maxHeight: .infinity)
+        case (.none, .failed(let message)):
             ContentUnavailableView {
                 Label(message, systemImage: "exclamationmark.triangle")
             } actions: {
                 Button("Try Again") { store.send(.screen(.retry)) }
             }
-        case .missing:
+        case (.none, .missing):
             ContentUnavailableView("This screen is no longer available", systemImage: "questionmark.circle")
-        case .loading, .loaded:
+        case (.none, .loading), (.none, .loaded):
             ProgressView().tint(Palette.dawn).frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }

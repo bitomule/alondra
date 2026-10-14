@@ -148,14 +148,6 @@ struct ViewsScreenView: View {
                                 .padding(.top, 4)
                         }
                         ForEach(document.notices, id: \.text) { notice in NoticeView(notice: notice) }
-                        if store.key.rawValue == "fleet", store.document != nil, store.error != nil {
-                            SavedDataLabel()
-                                .font(.footnote.weight(.medium)).foregroundStyle(.secondary)
-                                .padding(.horizontal, 12).padding(.vertical, 8)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .background(.thinMaterial, in: .rect(cornerRadius: 12))
-                                .accessibilityIdentifier("fleet.savedDataConnectionLost")
-                        }
                         ForEach(displayedSections(in: document), id: \.id) { section in
                             sectionContent(section)
                         }

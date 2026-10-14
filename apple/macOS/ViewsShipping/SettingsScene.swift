@@ -54,7 +54,8 @@ struct MacServiceSettingsScene: View {
             var statuses = await account.macStatuses()
             let thisMac = await MainActor.run { (workspace.thisMacChoiceID, workspace.thisMac) }
             if let local = thisMac.1 {
-                statuses[thisMac.0] = (try? await local.checkSettingsConnection()) != nil ? .route(.thisMac) : .problem(.alondraNotRunning)
+                try? await local.checkSettingsConnection()
+                statuses[thisMac.0] = MacStatus(await local.monitor.state)
             }
             return statuses
         }
@@ -82,7 +83,7 @@ struct MacServiceSettingsScene: View {
         state.allowedRules = AllowedRulesFeature.State(client: .mac)
         store = Store(initialState: state) { SettingsFeature() } withDependencies: {
                 $0.serviceSettings = client
-                $0.viewsClient = ViewsClient.live(session: viewsFeed, sender: sender)
+                $0.viewsClient = ViewsClient.live(session: viewsFeed, sender: sender, monitor: services.monitor)
                 $0.cloudPairing = account.additionalMacPairing
                 $0.findMac = account.findMacClient
             }

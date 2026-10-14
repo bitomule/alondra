@@ -1,20 +1,14 @@
 import AlondraContract
 import SwiftUI
 
-/// What a screen showing saved data needs to say why it is not current and offer the way out.
+/// The way out a screen showing saved data offers: try again now, or open Local Network settings.
 public struct ConnectionRecovery {
-    public let diagnose: @Sendable () async -> ConnectionProblem
     public let retry: () -> Void
     public let localNetworkSettings: (() -> Void)?
-    /// What is already known to be wrong, shown until a fresh diagnosis comes back.
-    public let known: ConnectionProblem?
 
-    public init(diagnose: @escaping @Sendable () async -> ConnectionProblem, retry: @escaping () -> Void,
-                localNetworkSettings: (() -> Void)?, known: ConnectionProblem? = nil) {
-        self.diagnose = diagnose
+    public init(retry: @escaping () -> Void, localNetworkSettings: (() -> Void)?) {
         self.retry = retry
         self.localNetworkSettings = localNetworkSettings
-        self.known = known
     }
 }
 
@@ -22,22 +16,20 @@ public extension EnvironmentValues {
     @Entry var connectionRecovery: ConnectionRecovery?
 }
 
-/// «saved data · <why>» over a snapshot that could not be refreshed. Tapping it shows the whole
-/// problem and what to do; the screen keeps retrying on its own meanwhile.
+/// «saved data · <why>» over a snapshot the Mac is not refreshing. Tapping it shows the whole
+/// problem and what to do; the app keeps retrying on its own meanwhile.
 public struct SavedDataLabel: View {
+    let problem: ConnectionProblem
     @Environment(\.connectionRecovery) private var recovery
-    @State private var diagnosed: ConnectionProblem?
     @State private var showsProblem = false
 
-    public init() {}
-
-    private var problem: ConnectionProblem? { diagnosed ?? recovery?.known }
+    public init(problem: ConnectionProblem) { self.problem = problem }
 
     private var label: some View {
         Label {
-            Text("saved data · \(Text((problem ?? .unexpected).summary))")
+            Text("saved data · \(Text(problem.summary))")
         } icon: {
-            Image(systemName: problem?.systemImage ?? "wifi.slash")
+            Image(systemName: problem.systemImage)
         }
     }
 
@@ -51,7 +43,6 @@ public struct SavedDataLabel: View {
             }
         }
         .accessibilityIdentifier("connection.savedData")
-        .task { diagnosed = await recovery?.diagnose() }
         .sheet(isPresented: $showsProblem) {
             if let recovery {
                 ConnectionLostView(problem: problem, retry: {
@@ -60,6 +51,33 @@ public struct SavedDataLabel: View {
                 }, localNetworkSettings: recovery.localNetworkSettings)
                 .presentationDetents([.medium])
             }
+        }
+    }
+}
+
+/// The line under a screen's title: its own summary while the Mac answers, otherwise what the
+/// connection state says about the saved data on screen.
+public struct ConnectionLine<Summary: View>: View {
+    let line: ConnectionIndicators.Line
+    let alert: AnyShapeStyle
+    let summary: Summary
+
+    public init(_ line: ConnectionIndicators.Line, alert: some ShapeStyle = .orange, @ViewBuilder summary: () -> Summary) {
+        self.line = line
+        self.alert = AnyShapeStyle(alert)
+        self.summary = summary()
+    }
+
+    public var body: some View {
+        switch line {
+        case .summary:
+            summary
+        case .connecting:
+            Label("Connecting…", systemImage: "arrow.trianglehead.2.clockwise")
+                .foregroundStyle(.secondary)
+                .accessibilityIdentifier("connection.connecting")
+        case .savedData(let problem):
+            SavedDataLabel(problem: problem).foregroundStyle(alert)
         }
     }
 }

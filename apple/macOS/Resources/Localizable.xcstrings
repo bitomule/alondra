@@ -1,6 +1,8 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "Connecting…": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Conectando…"}}}},
+    "Couldn’t load this": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "No se pudo cargar"}}}},
     "Your answer to “%@” didn’t reach your Mac.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Tu respuesta a «%@» no ha llegado a tu Mac."}}}},
     "An answer didn’t reach your Mac.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Una respuesta no ha llegado a tu Mac."}}}},
     "Couldn’t send · Retrying…": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "No se pudo enviar · Reintentando…"}}}},
@@ -201,11 +203,7 @@
     "Couldn’t reach your Mac. Nothing was sent; try again.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "No se pudo contactar con tu Mac. No se envió nada; inténtalo de nuevo."}}}},
     "Your Mac didn’t answer. It may be off, or Alondra may not be running on it. Try again in a moment.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Tu Mac no respondió. Puede estar apagado o Alondra puede no estar en marcha. Vuelve a intentarlo en un momento."}}}},
     "Couldn’t reach Alondra. Check your connection and try again.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "No se pudo conectar con Alondra. Revisa tu conexión y vuelve a intentarlo."}}}},
-    "Your Mac didn’t answer in time. Trying again…": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Tu Mac no respondió a tiempo. Reintentando…"}}}},
-    "The connection to the Alondra server dropped. Trying again…": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Se cortó la conexión con el servidor de Alondra. Reintentando…"}}}},
-    "The Alondra server is busy. Trying again…": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "El servidor de Alondra está saturado. Reintentando…"}}}},
     "Couldn’t load this from your Mac. Try again.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "No se pudo cargar desde tu Mac. Vuelve a intentarlo."}}}},
-    "saved data · connection lost": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "datos guardados · sin conexión"}}}},
     "Add a note or line comment": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Añade una nota o un comentario en una línea"}}}},
     "Choose a valid time.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Elige una hora válida."}}}},
     "Could not verify the latest diff; review was not sent: %@": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "No se pudo comprobar el último diff; la revisión no se envió: %@"}}}},

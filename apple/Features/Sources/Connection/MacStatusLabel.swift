@@ -13,6 +13,10 @@ public struct MacStatusLabel: View {
             Label { Text(route.title) } icon: { Image(systemName: route.systemImage) }
                 .foregroundStyle(.secondary)
                 .accessibilityIdentifier("mac.route")
+        case .connecting:
+            Label("Connecting…", systemImage: "arrow.trianglehead.2.clockwise")
+                .foregroundStyle(.secondary)
+                .accessibilityIdentifier("mac.connecting")
         case .problem(let problem):
             Label { Text(problem.title) } icon: { Image(systemName: problem.systemImage) }
                 .foregroundStyle(.orange)

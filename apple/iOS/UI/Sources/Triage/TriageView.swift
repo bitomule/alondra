@@ -16,6 +16,7 @@ public struct TriageView: View {
     @State private var screenWidth: CGFloat = 0
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.dynamicTypeSize) private var typeSize
+    @Environment(\.connectionState) private var connection
 
     public init(store: StoreOf<TriageFeature>, zoom: Namespace.ID) {
         self.store = store
@@ -40,9 +41,9 @@ public struct TriageView: View {
                     .padding(.horizontal, 16).padding(.bottom, 10)
                     .transition(.move(edge: .top).combined(with: .opacity))
             }
-            if let error = store.loadError {
+            if let error = store.loadError, indicators.cover == .none {
                 ContentUnavailableView {
-                    Label("Could not connect to the fleet", systemImage: "exclamationmark.triangle")
+                    Label("Couldn’t load this", systemImage: "exclamationmark.triangle")
                 } description: {
                     Text(error)
                 } actions: {
@@ -68,13 +69,14 @@ public struct TriageView: View {
         .toolbar {
             ToolbarItem(placement: .topBarLeading) {
                 Button { store.send(.machinePresented(true)) } label: {
-                    MachineBadge(gauges: gauges, width: screenWidth)
+                    MachineBadge(gauges: gauges, light: indicators.light, width: screenWidth)
                 }
                 .popover(isPresented: Binding(get: { store.machinePresented }, set: { store.send(.machinePresented($0)) })) {
                     MachineDetail(gauges: gauges)
                         .presentationCompactAdaptation(.popover)
                 }
                 .accessibilityLabel("Mac Status")
+                .accessibilityIdentifier("mac.status.\(String(describing: indicators.light))")
             }
         }
         .task { await store.send(.task).finish() }
@@ -91,20 +93,20 @@ public struct TriageView: View {
         store.status?.gauges ?? []
     }
 
+    private var indicators: ConnectionIndicators {
+        ConnectionIndicators(connection, hasSavedData: store.screen.document != nil)
+    }
+
     private var header: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(store.queueTitle ?? String(localized: "Waiting for You"))
                 .font(.display(.largeTitle, weight: .bold)).foregroundStyle(Palette.ink)
                 .lineLimit(typeSize.isAccessibilitySize ? 1 : nil)
                 .minimumScaleFactor(0.5)
-            if store.isOffline {
-                SavedDataLabel()
-                    .font(.subheadline.weight(.medium)).foregroundStyle(Palette.rose).lineLimit(1)
-            } else {
-                summary
-                    .font(.subheadline.weight(.medium)).foregroundStyle(.secondary).lineLimit(1)
-                    .contentTransition(.numericText())
+            ConnectionLine(indicators.line, alert: Palette.rose) {
+                summary.foregroundStyle(.secondary).contentTransition(.numericText())
             }
+            .font(.subheadline.weight(.medium)).lineLimit(1)
             pageDots.padding(.top, 6)
                 .opacity(store.orderedIDs.count > 1 ? 1 : 0)
                 .accessibilityHidden(store.orderedIDs.count <= 1)

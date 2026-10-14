@@ -343,6 +343,39 @@ final class MacWorkspaceSnapshotTests: XCTestCase {
         assertWindow(size: CGSize(width: 900, height: 520)) { MacServiceDetail(presentation: store) }
     }
 
+    // MARK: One connection state, every indicator
+
+    /// A view picked in the saved sidebar that never loaded, while the Mac is not answering: the
+    /// same problem the window's subtitle names, not «Loading…» forever.
+    func test_detail_nothingSavedWhileTheMacIsNotAnswering() throws {
+        let store = try presentation { $0.selection = .viewKey("fleet"); $0.selectedViewKey = "fleet" }
+        for spanish in [false, true] {
+            assertWindow(size: CGSize(width: 900, height: 520), spanish: spanish, variants: spanish ? [.light] : Appearance.allCases) {
+                MacServiceDetail(presentation: store).environment(\.connectionState, .unreachable(.macNotAnswering))
+            }
+        }
+    }
+
+    /// A saved view whose reload failed: while the Mac does not answer, the subtitle says so and the
+    /// view stays clean, without a second, red «couldn’t load» over it.
+    func test_detail_savedWhileTheMacIsNotAnsweringHasNoSecondError() throws {
+        let store = try presentation(detail: "fleet-mac") { $0.viewError = "Couldn’t load this from your Mac. Try again." }
+        assertWindow(size: CGSize(width: 900, height: 520), variants: [.light]) {
+            MacServiceDetail(presentation: store).environment(\.connectionState, .unreachable(.macNotAnswering))
+        }
+    }
+
+    func test_window_nothingSavedWhileAlondraIsNotRunning() throws {
+        let store = Store(initialState: MacPresentationFeature.State()) { MacPresentationFeature() }
+        for spanish in [false, true] {
+            assertWindow(size: CGSize(width: 900, height: 600), spanish: spanish, variants: spanish ? [.light] : Appearance.allCases) {
+                MacServiceSidebar(presentation: store)
+                    .connectionLostOverlay(.unreachable(.alondraNotRunning), hasSavedData: false, retry: {},
+                                           signIn: nil, settings: {}, pairAgain: nil, localNetworkSettings: nil)
+            }
+        }
+    }
+
     func test_connectionLost_deviceStorage() {
         for spanish in [false, true] {
             assertWindow(size: CGSize(width: 900, height: 600), spanish: spanish, variants: spanish ? [.light] : Appearance.allCases) {
