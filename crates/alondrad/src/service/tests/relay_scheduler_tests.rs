@@ -1214,3 +1214,70 @@ async fn a_response_the_relay_refuses_is_not_resent() {
     assert_eq!(effects, 1);
     assert_eq!(uploads, 1);
 }
+
+/// An HTTP/2 relay front that, like a proxy which already forwarded the first copy, records the
+/// first work poll's nonce as used and then refuses its stream. A nonce it sees twice is a replay,
+/// refused with 401 exactly as the relay does.
+async fn refusing_relay_front() -> (std::net::SocketAddr, Arc<Mutex<Vec<(String, String)>>>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let seen = Arc::new(Mutex::new(Vec::<(String, String)>::new()));
+    let refused = Arc::new(AtomicBool::new(false));
+    let log = seen.clone();
+    tokio::spawn(async move {
+        while let Ok((socket, _)) = listener.accept().await {
+            let (log, refused) = (log.clone(), refused.clone());
+            tokio::spawn(async move {
+                let Ok(mut connection) = h2::server::handshake(socket).await else { return };
+                while let Some(Ok((request, mut respond))) = connection.accept().await {
+                    let path = request.uri().path().to_owned();
+                    let reply = |status: StatusCode| axum::http::Response::builder().status(status).body(()).unwrap();
+                    if path == "/v1/bootstrap" {
+                        let body = serde_json::to_vec(&json!({"epoch":URL_SAFE_NO_PAD.encode([7; 16])})).unwrap();
+                        let mut stream = respond.send_response(reply(StatusCode::OK), false).unwrap();
+                        stream.send_data(body.into(), true).unwrap();
+                        continue;
+                    }
+                    let nonce = request.headers().get("x-device-nonce")
+                        .and_then(|value| value.to_str().ok()).unwrap_or_default().to_owned();
+                    let replayed = {
+                        let mut log = log.lock().unwrap();
+                        let replayed = log.iter().any(|(_, used)| *used == nonce);
+                        log.push((path.clone(), nonce));
+                        replayed
+                    };
+                    if path == "/v1/work" && !refused.swap(true, Ordering::SeqCst) {
+                        respond.send_reset(h2::Reason::REFUSED_STREAM);
+                    } else if replayed {
+                        let _ = respond.send_response(reply(StatusCode::UNAUTHORIZED), true);
+                    } else if path == "/v1/work" {
+                        let _ = respond.send_response(reply(StatusCode::NO_CONTENT), true);
+                    } else {
+                        let _ = respond.send_response(reply(StatusCode::OK), true);
+                    }
+                }
+            });
+        }
+    });
+    (address, seen)
+}
+
+#[tokio::test]
+async fn a_refused_work_poll_is_signed_again_instead_of_replayed_into_a_401() {
+    let (_directory, mut service, _phone) = push_fixture();
+    let (relay, seen) = refusing_relay_front().await;
+    service.set_relay_url(Url::parse(&format!("http://{relay}/")).unwrap());
+    service.client = super::http_client().http2_prior_knowledge().build().unwrap();
+    let service = Arc::new(service);
+    let (mut epoch, mut revoked, mut tasks) = (None, HashSet::new(), tokio::task::JoinSet::new());
+    let refused = service.poll_work(&mut epoch, &mut revoked, &mut tasks).await;
+    let next = service.poll_work(&mut epoch, &mut revoked, &mut tasks).await;
+    let seen = seen.lock().unwrap().clone();
+    let polls: Vec<&String> = seen.iter().filter(|(path, _)| path == "/v1/work").map(|(_, nonce)| nonce).collect();
+    assert!(polls.windows(2).all(|pair| pair[0] != pair[1]),
+        "every work poll that reaches the relay carries a fresh nonce: {polls:?}");
+    let refusal = format!("{:#}", refused.expect_err("the refused stream fails this poll"));
+    assert!(!refusal.contains("401"), "the refused poll must not come back as a relay 401: {refusal}");
+    next.expect("the next poll, signed again, reaches the relay");
+    assert_eq!(polls.len(), 2, "one refused copy and one freshly signed poll: {seen:?}");
+}

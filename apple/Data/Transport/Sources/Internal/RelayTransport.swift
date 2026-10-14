@@ -226,7 +226,19 @@ actor RelayTransport: Transport {
         return try Self.decoder.decode(T.self, from: response.body)
     }
 
+    /// A relay restarted since the epoch was signed refused the request before reading it, so it
+    /// is signed again for the new epoch once.
     private func send(_ method: String, target: String, body: Data, signed: Bool) async throws -> HTTPReply {
+        let reply = try await sendOnce(method, target: target, body: body, signed: signed)
+        guard signed, Self.epochChanged(reply) else { return reply }
+        return try await sendOnce(method, target: target, body: body, signed: signed)
+    }
+
+    private static func epochChanged(_ reply: HTTPReply) -> Bool {
+        reply.status == 401 && (try? decoder.decode([String: String].self, from: reply.body))?["error"] == "relay_epoch_changed"
+    }
+
+    private func sendOnce(_ method: String, target: String, body: Data, signed: Bool) async throws -> HTTPReply {
         try Task.checkCancellation()
         guard target.hasPrefix("/"), !target.hasPrefix("//"), !target.contains("#"),
               let url = URL(string: target, relativeTo: base)?.absoluteURL,
@@ -285,7 +297,7 @@ actor RelayTransport: Transport {
             // A relay restart changes its epoch, and an epoch that already worked is the likely
             // cause: bootstrap again first. A 401 with a fresh epoch is about the access token,
             // never that the Mac revoked this device: renew it before the next request.
-            if epochProven { invalidateBootstrap() }
+            if epochProven || Self.epochChanged(reply) { invalidateBootstrap() }
             else {
                 await MutationScope.$current.withValue(nil) {
                     if let bearerRefusedForToken, let signedBearer { await bearerRefusedForToken(signedBearer) }

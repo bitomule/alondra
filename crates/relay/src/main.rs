@@ -3994,6 +3994,79 @@ mod http_tests {
         assert!(restarted.is_phone_registered("phone-after-rename"));
         handle.abort();
     }
+
+    fn signed_headers(epoch: &[u8; 16], key: &SigningKey, id: &str, path: &str, timestamp: u64, nonce: [u8; 16]) -> HeaderMap {
+        let signature = sign_http_challenge(key, id, "GET", path, epoch, &[], timestamp, &nonce).unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert("x-device-id", id.parse().unwrap());
+        headers.insert("x-relay-epoch", URL_SAFE_NO_PAD.encode(epoch).parse().unwrap());
+        headers.insert("x-device-timestamp-ms", timestamp.to_string().parse().unwrap());
+        headers.insert("x-device-nonce", URL_SAFE_NO_PAD.encode(nonce).parse().unwrap());
+        headers.insert("x-device-signature", signature.parse().unwrap());
+        headers.insert("cf-ray", "8c1f2e3d4c5b6a79-MAD".parse().unwrap());
+        headers
+    }
+
+    async fn mac_rejection(server: &Server, headers: &HeaderMap, path: &str, at_ms: u64) -> String {
+        server.auth.set_verification_time(at_ms);
+        let failure = server.auth.authenticate_mac(headers, &Method::GET, &path.parse().unwrap(), &[], at_ms).await
+            .expect_err("the relay must refuse this request");
+        let rejection = failure.downcast_ref::<auth::DeviceRejection>().expect("a refused request names its reason").to_string();
+        assert_eq!(authentication_error(failure).0, StatusCode::UNAUTHORIZED);
+        rejection
+    }
+
+    #[tokio::test]
+    async fn every_refused_mac_request_names_its_cause_without_secrets() {
+        let mac_key = SigningKey::from_slice(&[121; 32]).unwrap();
+        let (_url, server, serving) = test_server(&mac_key).await;
+        let epoch = server.auth.server_epoch();
+        let path = "/v1/work?wait_s=25";
+        let start = now_ms();
+
+        let first = signed_headers(&epoch, &mac_key, "mac-1", path, start, [1; 16]);
+        server.auth.set_verification_time(start);
+        server.auth.authenticate_mac(&first, &Method::GET, &path.parse().unwrap(), &[], start).await.unwrap();
+
+        let mut resent = first.clone();
+        resent.insert("cf-ray", "9d2a3b4c5d6e7f80-MAD".parse().unwrap());
+        let replay = mac_rejection(&server, &resent, path, start + 25_000).await;
+        assert!(replay.contains("reason=replay"), "{replay}");
+        assert!(replay.contains("first_accepted_ms_ago=25000"), "{replay}");
+        assert!(replay.contains("device=mac-1 GET /v1/work "), "the query is left out: {replay}");
+        assert!(replay.contains("cf_ray=9d2a3b4c5d6e7f80-MAD first_cf_ray=8c1f2e3d4c5b6a79-MAD"),
+            "a replay names who sent each copy: {replay}");
+        for secret in [first["x-device-signature"].to_str().unwrap(), first["x-device-nonce"].to_str().unwrap()] {
+            assert!(!replay.contains(secret), "the log line never carries signatures or nonces: {replay}");
+        }
+
+        let rollback = mac_rejection(&server, &signed_headers(&epoch, &mac_key, "mac-1", path, start + 24_995, [2; 16]),
+            path, start + 24_995).await;
+        assert!(rollback.contains("reason=clock_rollback") && rollback.contains("clock_back_ms=5"), "{rollback}");
+
+        let skewed = mac_rejection(&server, &signed_headers(&epoch, &mac_key, "mac-1", path, start - 96_001, [3; 16]),
+            path, start + 25_000).await;
+        assert!(skewed.contains("reason=clock_skew") && skewed.contains("skew_ms=-121001"), "{skewed}");
+
+        let stale = signed_headers(&[9; 16], &mac_key, "mac-1", path, start + 25_000, [4; 16]);
+        let stale_epoch = mac_rejection(&server, &stale, path, start + 25_000).await;
+        assert!(stale_epoch.contains("reason=epoch_mismatch"), "{stale_epoch}");
+        let failure = server.auth.authenticate_mac(&stale, &Method::GET, &path.parse().unwrap(), &[], start + 25_000).await.unwrap_err();
+        let (status, Json(body)) = authentication_error(failure);
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "old clients keep bootstrapping again on a 401");
+        assert_eq!(body, json!({"error":"relay_epoch_changed","epoch":URL_SAFE_NO_PAD.encode(epoch)}),
+            "a stale epoch is named with the current one so clients do not renew their credentials");
+
+        let other_key = SigningKey::from_slice(&[122; 32]).unwrap();
+        let forged = mac_rejection(&server, &signed_headers(&epoch, &other_key, "mac-1", path, start + 25_000, [5; 16]),
+            path, start + 25_000).await;
+        assert!(forged.contains("reason=bad_signature"), "{forged}");
+
+        let unknown = mac_rejection(&server, &signed_headers(&epoch, &mac_key, "mac-9", path, start + 25_000, [6; 16]),
+            path, start + 25_000).await;
+        assert!(unknown.contains("reason=unknown_device"), "{unknown}");
+        serving.abort();
+    }
 }
 
 fn enrollment_error(cause:anyhow::Error, conflict_code:&str)->(StatusCode,Json<Value>) {
@@ -4011,6 +4084,16 @@ fn authentication_error(error_value:anyhow::Error)->(StatusCode,Json<Value>) {
     match error_value.downcast_ref::<auth::AccountGateError>() {
         Some(auth::AccountGateError::Unavailable)=>error(StatusCode::SERVICE_UNAVAILABLE,"account_access_unavailable"),
         Some(auth::AccountGateError::Denied)=>error(StatusCode::FORBIDDEN,"account_access_denied"),
-        None=>unauthorized(),
+        None=>{
+            if let Some(rejection)=error_value.downcast_ref::<auth::DeviceRejection>() {
+                eprintln!("alondra-relay: {rejection}");
+                // Still a 401, which clients already answer by bootstrapping again; the body
+                // tells them it is the epoch and not their credentials.
+                if let Some(epoch)=&rejection.current_epoch {
+                    return (StatusCode::UNAUTHORIZED,Json(json!({"error":"relay_epoch_changed","epoch":epoch})));
+                }
+            }
+            unauthorized()
+        }
     }
 }

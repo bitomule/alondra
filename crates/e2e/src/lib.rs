@@ -441,8 +441,14 @@ pub struct HttpChallengeVerifier {
     server_epoch: [u8; 16],
     max_skew_ms: u64,
     max_entries: usize,
-    used: HashMap<(String, [u8; 16]), u64>,
+    used: HashMap<(String, [u8; 16]), UsedNonce>,
     high_water_ms: Option<u64>,
+}
+
+struct UsedNonce {
+    valid_through_ms: u64,
+    accepted_at_ms: u64,
+    label: Option<String>,
 }
 
 impl HttpChallengeVerifier {
@@ -466,6 +472,32 @@ impl HttpChallengeVerifier {
     /// Publish this value as base64url on the bootstrap endpoint. The Mac must sign it exactly.
     pub fn server_epoch(&self) -> [u8; 16] {
         self.server_epoch
+    }
+
+    /// When a still-remembered nonce was first accepted, to tell a resent request from a forgery.
+    pub fn accepted_at_ms(&self, device_id: &str, nonce: &[u8; 16]) -> Option<u64> {
+        self.used
+            .get(&(device_id.to_owned(), *nonce))
+            .map(|used| used.accepted_at_ms)
+    }
+
+    /// Attaches a caller's label (such as a proxy request id) to an accepted nonce, to tell later
+    /// who sent the first copy of a replayed request.
+    pub fn label(&mut self, device_id: &str, nonce: &[u8; 16], label: String) {
+        if let Some(used) = self.used.get_mut(&(device_id.to_owned(), *nonce)) {
+            used.label = Some(label);
+        }
+    }
+
+    pub fn accepted_label(&self, device_id: &str, nonce: &[u8; 16]) -> Option<&str> {
+        self.used
+            .get(&(device_id.to_owned(), *nonce))
+            .and_then(|used| used.label.as_deref())
+    }
+
+    /// The latest verification time seen, which a backward clock step falls behind.
+    pub fn high_water_ms(&self) -> Option<u64> {
+        self.high_water_ms
     }
 
     #[allow(clippy::too_many_arguments)] // Mirrors the HTTP authentication headers explicitly.
@@ -492,7 +524,7 @@ impl HttpChallengeVerifier {
         }
         self.high_water_ms = Some(now_ms);
         self.used
-            .retain(|_, valid_through| *valid_through >= now_ms);
+            .retain(|_, used| used.valid_through_ms >= now_ms);
         let nonce_key = (device_id.to_owned(), *nonce);
         if self.used.contains_key(&nonce_key) {
             return Err(Error::Replay);
@@ -511,8 +543,14 @@ impl HttpChallengeVerifier {
             timestamp_ms,
             nonce,
         )?;
-        self.used
-            .insert(nonce_key, timestamp_ms.saturating_add(self.max_skew_ms));
+        self.used.insert(
+            nonce_key,
+            UsedNonce {
+                valid_through_ms: timestamp_ms.saturating_add(self.max_skew_ms),
+                accepted_at_ms: now_ms,
+                label: None,
+            },
+        );
         Ok(())
     }
 }

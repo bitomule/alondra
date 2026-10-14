@@ -473,6 +473,25 @@ fn resolve(home: &Path, path: &Path) -> PathBuf {
     }
 }
 
+fn http_client() -> reqwest::ClientBuilder {
+    Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        // PR merge and GitHub issue refresh can take close to 90 seconds locally.
+        .timeout(Duration::from_secs(95))
+        .connect_timeout(Duration::from_secs(10))
+        .tcp_keepalive(Duration::from_secs(30))
+        .pool_idle_timeout(Duration::from_secs(60))
+        // A pooled relay connection the network dropped silently fails the next upload with
+        // a broken pipe; pings find it first.
+        .http2_keep_alive_interval(Duration::from_secs(20))
+        .http2_keep_alive_timeout(Duration::from_secs(10))
+        .http2_keep_alive_while_idle(true)
+        // reqwest resends a request refused by HTTP/2 (REFUSED_STREAM, GOAWAY) with the same
+        // headers. A proxy may already have forwarded the first copy, so a signed relay request
+        // would reach the relay twice with one nonce and come back 401. The relay loops sign again.
+        .retry(reqwest::retry::never())
+}
+
 impl Service {
     fn envelope_now(&self) -> u64 {
         #[cfg(test)]
@@ -807,19 +826,7 @@ impl Service {
         let agreement =
             SecretKey::from_slice(&private_key(&resolve(home, &config.agreement_key_path))?)?;
         let devices = load_devices(&config.mac_id, config.devices)?;
-        let client = Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            // PR merge and GitHub issue refresh can take close to 90 seconds locally.
-            .timeout(Duration::from_secs(95))
-            .connect_timeout(Duration::from_secs(10))
-            .tcp_keepalive(Duration::from_secs(30))
-            .pool_idle_timeout(Duration::from_secs(60))
-            // A pooled relay connection the network dropped silently fails the next upload with
-            // a broken pipe; pings find it first.
-            .http2_keep_alive_interval(Duration::from_secs(20))
-            .http2_keep_alive_timeout(Duration::from_secs(10))
-            .http2_keep_alive_while_idle(true)
-            .build()?;
+        let client = http_client().build()?;
         let journal_path = match config.journal_path {
             Some(path) => {
                 anyhow::ensure!(

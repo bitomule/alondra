@@ -923,7 +923,8 @@ impl Auth {
         now_ms: u64,
     ) -> Result<Identity> {
         self.ensure_registry_ready()?;
-        let id = header(headers, "x-device-id")?;
+        let rejected = |reason| anyhow::Error::new(DeviceRejection::new(reason, headers, method, uri, None, None, None));
+        let id = header(headers, "x-device-id").map_err(|_| rejected(Rejection::MalformedHeaders))?;
         let mac = self
             .devices
             .lock()
@@ -931,7 +932,7 @@ impl Auth {
             .macs
             .get(id)
             .cloned()
-            .context("unknown Mac")?;
+            .ok_or_else(|| rejected(Rejection::UnknownDevice))?;
         self.verify_device(
             headers,
             method,
@@ -1203,21 +1204,30 @@ impl Auth {
         public_key: &str,
     ) -> Result<()> {
         self.ensure_registry_ready()?;
-        if header(headers, "x-device-id")? != id {
-            bail!("device ID mismatch");
+        let reject = |reason, skew_ms, detail_ms, nonce: Option<&[u8; 16]>| {
+            anyhow::Error::new(DeviceRejection::new(reason, headers, method, uri, skew_ms, detail_ms, nonce))
+        };
+        let cf_ray = headers.get("cf-ray").and_then(|v| v.to_str().ok()).map(printable);
+        let parsed = || -> Option<(u64, [u8; 16], &str)> {
+            let timestamp_str = header(headers, "x-device-timestamp-ms").ok()?;
+            let timestamp: u64 = timestamp_str.parse().ok()?;
+            if timestamp.to_string() != timestamp_str {
+                return None;
+            }
+            let nonce = URL_SAFE_NO_PAD.decode(header(headers, "x-device-nonce").ok()?).ok()?.try_into().ok()?;
+            Some((timestamp, nonce, header(headers, "x-device-signature").ok()?))
+        };
+        if header(headers, "x-device-id").ok() != Some(id) {
+            return Err(reject(Rejection::DeviceMismatch, None, None, None));
         }
-        let timestamp_str = header(headers, "x-device-timestamp-ms")?;
-        let timestamp: u64 = timestamp_str.parse()?;
-        if timestamp.to_string() != timestamp_str {
-            bail!("stale device signature");
-        }
-        let nonce_vec = URL_SAFE_NO_PAD.decode(header(headers, "x-device-nonce")?)?;
-        let nonce: [u8; 16] = nonce_vec
-            .try_into()
-            .map_err(|_| anyhow::anyhow!("invalid nonce"))?;
-        let signature = header(headers, "x-device-signature")?;
-        if header(headers, "x-relay-epoch")? != URL_SAFE_NO_PAD.encode(self.server_epoch()) {
-            bail!("relay epoch mismatch");
+        let Some((timestamp, nonce, signature)) = parsed() else {
+            return Err(reject(Rejection::MalformedHeaders, None, None, None));
+        };
+        let current_epoch = URL_SAFE_NO_PAD.encode(self.server_epoch());
+        if header(headers, "x-relay-epoch").ok() != Some(current_epoch.as_str()) {
+            let mut rejection = DeviceRejection::new(Rejection::EpochMismatch, headers, method, uri, None, None, Some(&nonce));
+            rejection.current_epoch = Some(current_epoch);
+            return Err(anyhow::Error::new(rejection));
         }
         let path = uri.path_and_query().map_or(uri.path(), |p| p.as_str());
         let key = verifying_key(public_key)?;
@@ -1233,6 +1243,8 @@ impl Auth {
             .lock()
             .unwrap()
             .unwrap_or_else(crate::now_ms);
+        let skew_ms = Some(timestamp as i64 - now_ms as i64);
+        let high_water_ms = verifier.high_water_ms();
         verifier
             .verify(
                 &key,
@@ -1245,9 +1257,136 @@ impl Auth {
                 &nonce,
                 now_ms,
             )
-            .map_err(|_| anyhow::anyhow!("invalid or replayed device challenge"))?;
+            .map_err(|error| {
+                let (reason, detail_ms) = match error {
+                    alondra_e2e::Error::ClockSkew => (Rejection::ClockSkew, None),
+                    alondra_e2e::Error::ClockRollback => {
+                        (Rejection::ClockRollback, high_water_ms.map(|high| high.saturating_sub(now_ms)))
+                    }
+                    alondra_e2e::Error::Replay => (
+                        Rejection::Replay,
+                        verifier.accepted_at_ms(id, &nonce).map(|first| now_ms.saturating_sub(first)),
+                    ),
+                    alondra_e2e::Error::Capacity => (Rejection::Capacity, None),
+                    _ => (Rejection::BadSignature, None),
+                };
+                let mut rejection = DeviceRejection::new(reason, headers, method, uri, skew_ms, detail_ms, Some(&nonce));
+                if reason == Rejection::Replay {
+                    rejection.first_cf_ray = verifier.accepted_label(id, &nonce).map(str::to_owned);
+                }
+                anyhow::Error::new(rejection)
+            })?;
+        if let Some(ray) = cf_ray {
+            verifier.label(id, &nonce, ray);
+        }
         Ok(())
     }
+}
+
+/// Why a signed device request was refused. The response stays a plain 401; only the relay log
+/// carries the reason.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Rejection {
+    UnknownDevice,
+    DeviceMismatch,
+    MalformedHeaders,
+    EpochMismatch,
+    ClockSkew,
+    ClockRollback,
+    Replay,
+    Capacity,
+    BadSignature,
+}
+
+impl Rejection {
+    fn code(self) -> &'static str {
+        match self {
+            Self::UnknownDevice => "unknown_device",
+            Self::DeviceMismatch => "device_mismatch",
+            Self::MalformedHeaders => "malformed_headers",
+            Self::EpochMismatch => "epoch_mismatch",
+            Self::ClockSkew => "clock_skew",
+            Self::ClockRollback => "clock_rollback",
+            Self::Replay => "replay",
+            Self::Capacity => "nonce_capacity",
+            Self::BadSignature => "bad_signature",
+        }
+    }
+}
+
+/// A refused device request with only the facts needed to tell its cause: never the signature,
+/// token or nonce, only a short hash of the nonce so two copies of one request can be matched.
+#[derive(Debug)]
+pub struct DeviceRejection {
+    pub reason: Rejection,
+    device: String,
+    method: String,
+    path: String,
+    skew_ms: Option<i64>,
+    detail_ms: Option<u64>,
+    nonce_tag: Option<String>,
+    cf_ray: Option<String>,
+    first_cf_ray: Option<String>,
+    /// Set when the request signed an epoch from before the relay restarted.
+    pub current_epoch: Option<String>,
+}
+
+impl DeviceRejection {
+    fn new(
+        reason: Rejection,
+        headers: &HeaderMap,
+        method: &Method,
+        uri: &Uri,
+        skew_ms: Option<i64>,
+        detail_ms: Option<u64>,
+        nonce: Option<&[u8; 16]>,
+    ) -> Self {
+        Self {
+            reason,
+            device: header(headers, "x-device-id").map(printable).unwrap_or_default(),
+            method: method.as_str().to_owned(),
+            path: printable(uri.path()),
+            skew_ms,
+            detail_ms,
+            nonce_tag: nonce.map(|nonce| {
+                use sha2::Digest;
+                sha2::Sha256::digest(nonce)[..4].iter().map(|b| format!("{b:02x}")).collect()
+            }),
+            cf_ray: headers.get("cf-ray").and_then(|v| v.to_str().ok()).map(printable),
+            first_cf_ray: None,
+            current_epoch: None,
+        }
+    }
+}
+
+impl std::fmt::Display for DeviceRejection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "device request refused: reason={} device={} {} {}", self.reason.code(), self.device, self.method, self.path)?;
+        if let Some(skew) = self.skew_ms {
+            write!(f, " skew_ms={skew}")?;
+        }
+        match (self.reason, self.detail_ms) {
+            (Rejection::Replay, Some(age)) => write!(f, " first_accepted_ms_ago={age}")?,
+            (Rejection::ClockRollback, Some(back)) => write!(f, " clock_back_ms={back}")?,
+            _ => {}
+        }
+        if let Some(tag) = &self.nonce_tag {
+            write!(f, " nonce_tag={tag}")?;
+        }
+        if let Some(ray) = &self.cf_ray {
+            write!(f, " cf_ray={ray}")?;
+        }
+        if let Some(ray) = &self.first_cf_ray {
+            write!(f, " first_cf_ray={ray}")?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for DeviceRejection {}
+
+fn printable(value: &str) -> String {
+    value.chars().filter(|c| c.is_ascii_graphic()).take(24).collect()
 }
 
 fn parse_jwks(jwks: Jwks) -> Result<RsaJwks> {

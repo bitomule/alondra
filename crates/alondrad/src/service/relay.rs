@@ -269,6 +269,7 @@ impl Service {
         let mut work = tokio::task::JoinSet::new();
         let mut enrolled_epoch: Option<[u8; 16]> = None;
         let mut revoked_this_epoch = HashSet::new();
+        let mut failed_last_time = false;
         loop {
             while let Some(result) = work.try_join_next() {
                 match result {
@@ -280,10 +281,15 @@ impl Service {
             let result = self
                 .poll_work(&mut enrolled_epoch, &mut revoked_this_epoch, &mut work)
                 .await;
-            if let Err(e) = result {
+            if let Err(e) = &result {
                 log!("service connector: {e:#}");
-                tokio::time::sleep(Duration::from_secs(3)).await;
+                // A single refused or cut poll is signed again at once so a waiting phone is not
+                // held; only a failure in a row waits.
+                if failed_last_time {
+                    tokio::time::sleep(Duration::from_secs(3)).await;
+                }
             }
+            failed_last_time = result.is_err();
         }
     }
 
