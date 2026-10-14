@@ -44,13 +44,9 @@ public actor Connection {
         let scope = RelayOutboxScope(relay: server, macID: approved.macID,
             deviceID: approved.deviceID, credentialRevision: revision)
         let journal = try storageDirectory.map { try EnvelopeJournal(scope: scope, directory: $0.appending(path: "operations")) }
-        let intents: ViewActionIntentStore?
-        if let storageDirectory {
-            intents = try await ViewActionIntentStore(directory: storageDirectory.appending(path: "action-intents"),
-                keyMaterial: approved.agreementPrivateKey,
-                scope: ActionIntentScope(service: server.absoluteString + "/" + approved.macID,
-                    device: approved.deviceID, credentialRevision: revision))
-        } else { intents = nil }
+        let intents = await Self.openIntents(in: storageDirectory, keyMaterial: approved.agreementPrivateKey,
+            scope: ActionIntentScope(service: server.absoluteString + "/" + approved.macID,
+                device: approved.deviceID, credentialRevision: revision))
         let http = DirectHTTP(transport: AlondraAPIClient.makeHTTPTransport())
         let router = DirectRouter(pinned: approved.pinnedIdentity, saved: approved.routes ?? [], http: http,
                                   network: { NetworkReachability.shared.signature })
@@ -75,14 +71,17 @@ public actor Connection {
                              storageDirectory: URL? = nil) async throws -> Connection {
         let revision = try await identity.credentialRevision()
         let material = try await identity.bindingSecret()
-        let intents: ViewActionIntentStore?
-        if let storageDirectory {
-            intents = try await ViewActionIntentStore(directory: storageDirectory.appending(path: "action-intents"),
-                keyMaterial: material, scope: ActionIntentScope(service: session.base.absoluteString,
-                    device: "this-mac", credentialRevision: revision))
-        } else { intents = nil }
+        let intents = await openIntents(in: storageDirectory, keyMaterial: material,
+            scope: ActionIntentScope(service: session.base.absoluteString, device: "this-mac", credentialRevision: revision))
         return Connection(operations: session, server: session.base, deviceID: "mac", macName: nil,
                           macID: nil, intents: intents)
+    }
+
+    /// Saved answers are this device's own business: whatever their store does, the Mac is still reached.
+    private static func openIntents(in storageDirectory: URL?, keyMaterial: Data, scope: ActionIntentScope) async -> OpenedActionIntents? {
+        guard let storageDirectory else { return nil }
+        return await ViewActionIntentStore.openSettingAsideUnreadable(directory: storageDirectory.appending(path: "action-intents"),
+            keyMaterial: keyMaterial, scope: scope)
     }
 
     public nonisolated var isLocal: Bool { operations is LoopbackSession }
@@ -137,7 +136,7 @@ public actor Connection {
     }
 
     private init(operations: any FeedOperations, server: URL, deviceID: String, macName: String?, macID: String?,
-                 intents: ViewActionIntentStore?) {
+                 intents: OpenedActionIntents?) {
         self.operations = operations
         self.macName = macName
         self.macID = macID
@@ -148,7 +147,7 @@ public actor Connection {
         let client: ViewClient = .ios
         #endif
         let preferred = Locale.preferredLanguages.first?.split(separator: "-").first.map(String.init) ?? "en"
-        let sender = ViewActionSender(transport: api, intents: intents)
+        let sender = ViewActionSender(transport: api, intents: intents?.store, setAside: intents?.setAside ?? SetAsideNotice())
         viewActionSender = sender
         viewsFeed = FeedSession(transport: api, client: client, lang: preferred == "es" ? "es" : "en",
             reconcileActions: { epoch, isCurrent in

@@ -46,6 +46,30 @@ final class TriageFeatureTests: XCTestCase {
     }
 
     @MainActor
+    func testAnswersSetAsideSayHowManyOfTheirCardsWaitAgainUntilDismissed() async throws {
+        let dismissed = LockIsolated(false)
+        let store = TestStore(initialState: TriageFeature.State()) { TriageFeature() } withDependencies: {
+            let feed = try! fullFeed()
+            $0.continuousClock = TestClock()
+            $0.viewsClient.observe = feed.observe
+            $0.viewsClient.load = feed.load
+            $0.viewsClient.setAsideAnswers = { SetAsideAnswers(cards: [Fixtures.questionID, "answered-on-the-mac"], otherActions: 1, complete: true) }
+            $0.viewsClient.dismissSetAsideAnswers = { dismissed.setValue(true) }
+        }
+        store.exhaustivity = .off
+        await store.send(.task)
+        await store.skipReceivedActions()
+
+        XCTAssertEqual(store.state.setAsideCards, .waiting(1))
+        XCTAssertEqual(store.state.setAside?.othersMayBeMissing, true)
+        XCTAssertEqual(store.state.orderedIDs.first, ids.question, "the card whose answer was set aside is back in the queue")
+
+        await store.send(.setAsideDismissed).finish()
+        XCTAssertNil(store.state.setAside)
+        XCTAssertTrue(dismissed.value)
+    }
+
+    @MainActor
     func testTheIconBadgeIsUnknownUntilTheServerCountsTheQueue() async throws {
         let store = store(try fullFeed())
         XCTAssertNil(store.state.iconBadge, "a fresh launch must not clear the badge a push set")

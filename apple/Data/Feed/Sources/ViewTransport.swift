@@ -300,6 +300,7 @@ public actor ViewActionSender {
     private let retryPolicy: ActionRetryPolicy
     private let signal = RetrySignal()
     public nonisolated let undelivered = UndeliveredCards()
+    public nonisolated let setAside: SetAsideNotice
     private var pending: [String: Pending] { didSet { publishUndelivered() } }
     private var deliveries: [String: Task<ActionResponse, any Error>] = [:]
     private var activeEpoch: String?
@@ -311,8 +312,9 @@ public actor ViewActionSender {
     private var journalEpoch: String?
     private var journalDescriptor: ActionJournalState?
 
-    public init(transport: any ViewTransport, intents: ViewActionIntentStore? = nil, retryPolicy: ActionRetryPolicy = .live) {
-        self.transport = transport; self.intents = intents; self.retryPolicy = retryPolicy
+    public init(transport: any ViewTransport, intents: ViewActionIntentStore? = nil, setAside: SetAsideNotice = SetAsideNotice(),
+                retryPolicy: ActionRetryPolicy = .live) {
+        self.transport = transport; self.intents = intents; self.setAside = setAside; self.retryPolicy = retryPolicy
         pending = Dictionary(uniqueKeysWithValues: (intents?.restored ?? []).map {
             ($0.request.commandId, Pending(request: $0.restoredRequest, body: $0.body))
         })

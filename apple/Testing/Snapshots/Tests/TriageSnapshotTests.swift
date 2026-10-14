@@ -1,6 +1,7 @@
 import AlondraContract
 import AlondraDesign
 import AlondraFeatures
+import AlondraFeed
 import AlondraTransport
 import AlondraiOSUI
 import ComposableArchitecture
@@ -66,6 +67,27 @@ final class TriageSnapshotTests: XCTestCase {
             $0.screen.phase = .failed("offline")
         }
         assertScreen(inWindow: true) { Harness(store: store) }
+    }
+
+    func test_answersSetAsideNameTheCardWaitingAgain() throws {
+        let store = try single(try Fixtures.card(Fixtures.questionID)) {
+            $0.setAside = SetAsideAnswers(cards: [Fixtures.questionID], otherActions: 0, complete: true)
+        }
+        assertScreen([.light, .dark], inWindow: true) { Harness(store: store) }
+    }
+
+    func test_answersSetAsideNameTheCardWaitingAgain_es() throws {
+        let store = try single(try Fixtures.spanishCard(Fixtures.questionID), spanish: true) {
+            $0.setAside = SetAsideAnswers(cards: [Fixtures.questionID], otherActions: 0, complete: true)
+        }
+        assertScreen([.light], language: .spanish, inWindow: true) { Harness(store: store) }
+    }
+
+    func test_answersSetAsideFromAStoreThatShowedNothing() throws {
+        let store = try single(try Fixtures.card(Fixtures.questionID)) {
+            $0.setAside = SetAsideAnswers(cards: [], otherActions: 0, complete: false)
+        }
+        assertScreen([.light], inWindow: true) { Harness(store: store) }
     }
 
     func test_offlineWithTheSavedQueueSaysWhy() throws {

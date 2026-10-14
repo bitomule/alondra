@@ -1,12 +1,15 @@
 import AlondraTransport
 import AlondraContract
 import AlondraFeatures
+import AlondraFeed
 import Foundation
 
 /// The one place that turns a transport, relay or account error into what the person sees.
 public enum ConnectionClassifier {
     public static func problem(for error: any Error, local: Bool, networkOffline: Bool,
                                macName: String? = nil) -> ConnectionProblem {
+        // Checked before the network: a store on this device failing says nothing about the Mac.
+        if error is ViewActionIntentError { return .deviceStorage }
         let problem = local ? loopbackProblem(error) : remoteProblem(error, networkOffline: networkOffline, macName: macName)
         if problem == .accessNotConfirmed || problem == .sessionExpired {
             AccountDiagnostics.personSees(problem, after: label(error))

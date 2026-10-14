@@ -17,6 +17,7 @@ public extension ConnectionProblem {
         case .macNotOnNetwork, .macChangedIdentity: "Your Mac isn’t answering"
         case .localNetworkDenied: "Alondra can’t use your local network"
         case .signOutIncomplete: "Signing out didn’t finish"
+        case .deviceStorage: "Alondra can’t use this device’s storage"
         case .unexpected: "Can’t connect right now"
         }
     }
@@ -57,6 +58,7 @@ public extension ConnectionProblem {
         case .deviceRevoked: "no longer paired"
         case .localNetworkDenied: "Local Network is off"
         case .signOutIncomplete: "sign-out didn’t finish"
+        case .deviceStorage: "storage problem on this device"
         case .unexpected: "connection lost"
         }
     }
@@ -82,6 +84,7 @@ public extension ConnectionProblem {
         case .macNotOnNetwork: "It may be in sleep mode, or on another network. Alondra reconnects as soon as it answers; to reach it away from home, turn on Tailscale on both."
         case .signOutIncomplete: "Alondra couldn’t finish signing this device out. Finish signing out, then sign in again to reconnect."
         case .localNetworkDenied: Self.localNetworkHint
+        case .deviceStorage: "This isn’t a connection problem: your Mac and your pairing are fine. Free up some space on this device, then try again."
         case .unexpected: "Something unexpected went wrong. Alondra keeps trying."
         }
     }
@@ -99,6 +102,7 @@ public extension ConnectionProblem {
         case .macNotOnNetwork: "moon.zzz"
         case .localNetworkDenied: "network.slash"
         case .signOutIncomplete: "rectangle.portrait.and.arrow.right"
+        case .deviceStorage: "internaldrive"
         case .unexpected: "exclamationmark.triangle"
         }
     }

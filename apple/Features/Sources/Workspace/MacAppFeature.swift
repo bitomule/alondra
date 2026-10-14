@@ -15,11 +15,13 @@ public struct MacAppFeature: Sendable {
         public var settingsPresented = false
         public var notice: WorkspaceNotice?
         public var macError: WorkspaceNotice?
+        /// Answers set aside with a store this Mac could not read; shown until dismissed.
+        public var setAside: SetAsideAnswers?
         public var macPresentation = MacPresentationFeature.State()
     }
 
     public enum Action {
-        case appeared, disappeared
+        case appeared, disappeared, setAsideDismissed
         case settingsPresented(Bool)
         case dismissNotice(UUID), dismissMacError(UUID)
         case macPresentation(MacPresentationFeature.Action)
@@ -42,7 +44,11 @@ public struct MacAppFeature: Sendable {
                 guard state.macError?.id == id else { return .none }
                 state.macError = nil
                 return .cancel(id: CancelID.macError)
+            case .setAsideDismissed:
+                state.setAside = nil
+                return .run { [viewsClient] _ in viewsClient.dismissSetAsideAnswers() }
             case .appeared:
+                state.setAside = viewsClient.setAsideAnswers()
                 return .run { [viewsClient] send in
                     for await event in await viewsClient.feed() { await send(.viewsFeed(event)) }
                 }.cancellable(id: CancelID.feed, cancelInFlight: true)

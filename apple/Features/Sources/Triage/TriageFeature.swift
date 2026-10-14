@@ -1,4 +1,5 @@
 import AlondraContract
+import AlondraFeed
 import ComposableArchitecture
 import Foundation
 
@@ -29,6 +30,11 @@ public struct TriageFeature: Sendable {
         public var answered: Set<String> = []
         /// Cards answered on this device whose answer has not reached the Mac yet, also after a relaunch.
         public var undelivered: Set<String> = []
+        /// Answers set aside with a store this device could not read; shown until dismissed.
+        public var setAside: SetAsideAnswers?
+        public var setAsideCards: SetAsideCards? {
+            setAside?.cardsLine(queue: screen.document?.sections.first { $0.id == "queue" }?.cardIds)
+        }
 
         public var currentID: String? { orderedIDs.indices.contains(index) ? orderedIDs[index] : nil }
         public var currentCard: Card? { currentID.flatMap { cards[id: $0]?.card } }
@@ -114,6 +120,7 @@ public struct TriageFeature: Sendable {
         /// A screen's answer can never be delivered; the app says why, the card stays answered.
         case handOffUndelivered(ActionRequest, SendFailure)
         case undeliveredChanged(Set<String>)
+        case setAsideDismissed
         case answeredExpired(String)
         case delegate(Delegate)
 
@@ -149,6 +156,7 @@ public struct TriageFeature: Sendable {
         Reduce { state, action in
             switch action {
             case .task:
+                state.setAside = viewsClient.setAsideAnswers()
                 return .merge([.send(.screen(.task)), state.stampShowing ? stampTimer() : .none, watchUndelivered()] + state.cards.ids.map {
                     .send(.cards(.element(id: $0, action: .screen(.task))))
                 })
@@ -249,6 +257,9 @@ public struct TriageFeature: Sendable {
                 guard cards != state.undelivered else { return .none }
                 state.undelivered = cards
                 return state.stampShowing ? .none : showQueue(&state)
+            case .setAsideDismissed:
+                state.setAside = nil
+                return .run { [viewsClient] _ in viewsClient.dismissSetAsideAnswers() }
             case .answeredExpired(let id):
                 guard state.answered.remove(id) != nil else { return .none }
                 let queue = showQueue(&state)

@@ -31,6 +31,9 @@ public enum ConnectionProblem: Equatable, Sendable {
     case localNetworkDenied
     /// An earlier sign-out could not reach the server; it has to finish before signing in again.
     case signOutIncomplete
+    /// This device could not use its own storage. The network and the Mac may be fine, so it is
+    /// never shown as a connection that failed.
+    case deviceStorage
     case unexpected
 
     /// Problems only the person can fix. Automatic retries continue, but they cannot succeed.

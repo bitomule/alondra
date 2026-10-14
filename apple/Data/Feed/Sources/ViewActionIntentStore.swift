@@ -77,9 +77,10 @@ public actor ViewActionIntentStore {
         try await self.init(directory: directory, keyMaterial: keyMaterial, scope: scope,
             completedLimit: Self.maxCompleted, allowLegacyDispatch: allowLegacyDispatch)
     }
-    init(directory: URL, keyMaterial: Data, scope: ActionIntentScope, completedLimit: Int, allowLegacyDispatch: Bool = false) async throws {
+    init(directory: URL, keyMaterial: Data, scope: ActionIntentScope, completedLimit: Int, allowLegacyDispatch: Bool = false,
+         sequenceFloor: UInt64 = 1) async throws {
         let database = try ActionIntentDatabase(directory: directory, keyMaterial: keyMaterial,
-            scope: scope, legacyLimit: completedLimit)
+            scope: scope, legacyLimit: completedLimit, sequenceFloor: sequenceFloor)
         restored = try await database.perform { try database.pending($0) }
         self.database = database; self.allowLegacyDispatch = allowLegacyDispatch
     }

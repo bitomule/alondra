@@ -12,6 +12,15 @@ public struct MacServiceWorkspace<AccountContent: View>: View {
     private var presentation: StoreOf<MacPresentationFeature> { store.scope(state: \.macPresentation, action: \.macPresentation) }
     @FocusState private var searchFocused: Bool
 
+    /// The cards the sidebar lists as waiting; nil until it has loaded.
+    private var waitingIDs: [String]? {
+        presentation.sidebarDocument.map { document in
+            document.sections.filter { $0.id == "waiting" }.flatMap(\.items).compactMap { item -> String? in
+                if case let .row(row) = item { row.id } else { nil }
+            }
+        }
+    }
+
     public init(store: StoreOf<MacAppFeature>, accountContent: AccountContent, isActive: Bool = true) {
         self.store = store
         self.accountContent = accountContent
@@ -35,7 +44,17 @@ public struct MacServiceWorkspace<AccountContent: View>: View {
             }
             .animation(.smooth(duration: 0.22), value: presentation.selection)
             .safeAreaInset(edge: .top, spacing: 0) {
-                UsageExhaustedWindowBanner(usage: presentation.sidebarDocument?.status.usageExhausted)
+                VStack(spacing: 0) {
+                    if let setAside = store.setAside {
+                        let cards: SetAsideCards = setAside.cardsLine(queue: waitingIDs)
+                        SetAsideAnswersBanner(cards: cards, othersMayBeMissing: setAside.othersMayBeMissing) {
+                            store.send(.setAsideDismissed, animation: .snappy)
+                        }
+                        .frame(maxWidth: 640)
+                        .padding(.horizontal, 16).padding(.top, 10)
+                    }
+                    UsageExhaustedWindowBanner(usage: presentation.sidebarDocument?.status.usageExhausted)
+                }
             }
             .overlay(alignment: .top) { DeliveryBanner(store: store) }
             .overlay(alignment: .bottom) { MacNoticeToast(store: store) }

@@ -2,6 +2,7 @@ import AlondraTestSupport
 import AlondraAccount
 import AlondraContract
 import AlondraFeatures
+import AlondraFeed
 import AlondraPairing
 import Foundation
 import Synchronization
@@ -84,15 +85,66 @@ private func waitUntil(_ condition: @MainActor () -> Bool) async throws {
 struct AppUpdateTests {
     /// First launch of the new build: new process, new AuthSession and AccountSession, the
     /// Keychain items the previous build left.
-    private func firstLaunch(userInfoStatus: Int) throws -> (AccountSession, KeychainBytes, SavedPairings) {
+    private func firstLaunch(userInfoStatus: Int, storage: URL? = nil) throws -> (AccountSession, KeychainBytes, SavedPairings) {
         let credential = KeychainBytes(Build4.credential)
         let pairings = try SavedPairings(Build4.pairings)
         let auth = AuthSession(transport: Issuer(userInfoStatus: userInfoStatus), browser: NoBrowser(),
                                storage: credential, diagnostics: { _, _ in })
         let account = AccountSession(auth: auth, displayName: "iPhone",
-                                     storageDirectory: try TestFiles.directory(),
+                                     storageDirectory: try storage ?? TestFiles.directory(),
                                      pairingStore: pairings, browse: { AsyncStream { $0.finish() } })
         return (account, credential, pairings)
+    }
+
+    /// The storage folder as an iOS app sees it: its container is reached through /var, a link to
+    /// /private/var. Builds 45 and 46 never created their store there, so an update finds none.
+    private func containerBehindALink() throws -> URL {
+        let root = try TestFiles.directory()
+        let container = root.appending(path: "private-container", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: container, withIntermediateDirectories: true)
+        let link = root.appending(path: "container")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: container)
+        return link.appending(path: "CommandJournal", directoryHint: .isDirectory)
+    }
+
+    @Test func anUpdateOnAnIPhoneWhoseContainerIsBehindALinkConnects() async throws {
+        let storage = try containerBehindALink()
+        let (account, _, _) = try firstLaunch(userInfoStatus: 200, storage: storage)
+        account.store.send(.appeared)
+        try await waitUntil { account.store.phase == .approved || account.store.restoreProblem != nil }
+
+        #expect(account.store.restoreProblem == nil)
+        #expect(account.store.phase == .approved)
+        let services = try #require(account.services)
+        #expect(await services.viewActionSender.setAside.current == nil, "nothing was ever saved, so nothing was set aside")
+        let files = try FileManager.default.contentsOfDirectory(atPath: storage.appending(path: "action-intents").path)
+        #expect(files.contains { $0.hasSuffix(".sqlite") }, "the store opens where it lives: \(files)")
+    }
+
+    @Test func anUpdateWithAnUnreadableActionStoreConnectsAndSaysWhatItSetAside() async throws {
+        let storage = try TestFiles.directory()
+        let (first, _, _) = try firstLaunch(userInfoStatus: 200, storage: storage)
+        first.store.send(.appeared)
+        try await waitUntil { first.store.phase == .approved }
+        try #require(first.store.phase == .approved)
+        await first.services?.deactivate()
+        let intents = storage.appending(path: "action-intents")
+        let database = try #require(try FileManager.default.contentsOfDirectory(at: intents, includingPropertiesForKeys: nil)
+            .first { $0.pathExtension == "sqlite" })
+        var corrupt = try Data(contentsOf: database)
+        corrupt.replaceSubrange(0..<16, with: Data(repeating: 0, count: 16))
+        try corrupt.write(to: database)
+
+        let (account, _, _) = try firstLaunch(userInfoStatus: 200, storage: storage)
+        account.store.send(.appeared)
+        try await waitUntil { account.store.phase == .approved || account.store.restoreProblem != nil }
+
+        #expect(account.store.restoreProblem == nil)
+        #expect(account.store.phase == .approved)
+        let services = try #require(account.services)
+        #expect(await services.viewActionSender.setAside.current == SetAsideAnswers(cards: [], otherActions: 0, complete: false))
+        let setAside = try FileManager.default.contentsOfDirectory(atPath: intents.appending(path: "set-aside").path)
+        #expect(setAside.count == 1, "the unreadable store is kept for diagnosis")
     }
 
     @Test func anUpdateKeepsTheSessionAndThePairing() async throws {

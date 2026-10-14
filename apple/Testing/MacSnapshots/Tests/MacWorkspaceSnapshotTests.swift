@@ -205,6 +205,16 @@ final class MacWorkspaceSnapshotTests: XCTestCase {
         }
     }
 
+    func test_answersSetAsideSayWhatToAnswerAgain() {
+        for spanish in [false, true] {
+            assertWindow(size: CGSize(width: 680, height: 170), spanish: spanish, variants: spanish ? [.light] : Appearance.allCases) {
+                SetAsideAnswersBanner(cards: .waiting(2), othersMayBeMissing: true) {}
+                    .frame(maxWidth: 640).padding(16)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            }
+        }
+    }
+
     func test_theNoticeSaysWhatTheServerSaid() throws {
         for spanish in [false, true] {
             let reply = try ContractCodec.decode(ActionResponse.self, from: Data(try XCTUnwrap(Self.mergingReply[spanish]).utf8))
@@ -304,6 +314,14 @@ final class MacWorkspaceSnapshotTests: XCTestCase {
     func test_fleet_overview() throws {
         let store = try presentation(detail: "fleet-mac")
         assertWindow(size: CGSize(width: 900, height: 520)) { MacServiceDetail(presentation: store) }
+    }
+
+    func test_connectionLost_deviceStorage() {
+        for spanish in [false, true] {
+            assertWindow(size: CGSize(width: 900, height: 600), spanish: spanish, variants: spanish ? [.light] : Appearance.allCases) {
+                ConnectionLostView(problem: .deviceStorage, retry: {}, settings: {})
+            }
+        }
     }
 
     func test_connectionLost_signOutIncomplete() {

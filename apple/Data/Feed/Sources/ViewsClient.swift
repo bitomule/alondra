@@ -27,6 +27,9 @@ public struct ViewsClient: Sendable {
     public var perform: @Sendable (ActionRequest) async throws -> ActionOutcome
     /// The cards answered on this device whose answer the Mac has not confirmed yet.
     public var undeliveredCards: @Sendable () -> AsyncStream<Set<String>> = { AsyncStream { $0.finish() } }
+    /// Answers set aside with a store this device could not read, until the person dismisses them.
+    public var setAsideAnswers: @Sendable () -> SetAsideAnswers? = { nil }
+    public var dismissSetAsideAnswers: @Sendable () -> Void = {}
     public var fetchContent: @Sendable (ContentRef) async throws -> String
     public var fetchAttachment: @Sendable (Attachment) async throws -> Data
 
@@ -48,6 +51,8 @@ public struct ViewsClient: Sendable {
             prepare: { request in try await sender.prepare(request) },
             perform: { request in try await sender.deliver(request) },
             undeliveredCards: { sender.undelivered.stream() },
+            setAsideAnswers: { sender.setAside.current },
+            dismissSetAsideAnswers: { sender.setAside.dismiss() },
             fetchContent: { content in try await session.fetchContent(content) },
             fetchAttachment: { attachment in try await session.fetchAttachment(attachment) }
         )
@@ -113,6 +118,8 @@ private enum ViewsClientKey: DependencyKey {
         prepare: { $0 },
         perform: { _ in throw ViewsClientError.notInstalled },
         undeliveredCards: { AsyncStream { $0.finish() } },
+        setAsideAnswers: { nil },
+        dismissSetAsideAnswers: {},
         fetchContent: { _ in throw ViewsClientError.notInstalled },
         fetchAttachment: { _ in throw ViewsClientError.notInstalled }
     )

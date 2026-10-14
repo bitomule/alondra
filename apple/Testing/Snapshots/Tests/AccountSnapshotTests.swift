@@ -292,6 +292,14 @@ final class AccountSnapshotTests: XCTestCase {
 
 
 
+    func test_connectionLost_deviceStorage() {
+        assertScreen([.light, .dark], inWindow: true, animatedPixels: true) { lost(.deviceStorage) }
+    }
+
+    func test_connectionLost_deviceStorage_spanish() {
+        assertScreen([.light], language: .spanish, inWindow: true, animatedPixels: true) { lost(.deviceStorage) }
+    }
+
     func test_connectionLost_signOutIncomplete() {
         assertScreen([.light, .dark], inWindow: true) { lost(.signOutIncomplete) }
     }

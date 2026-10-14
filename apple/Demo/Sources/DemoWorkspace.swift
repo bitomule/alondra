@@ -31,6 +31,8 @@ enum DemoWorkspace {
             prepare: { $0 },
             perform: { _ in try response() },
             undeliveredCards: { AsyncStream { $0.finish() } },
+            setAsideAnswers: { nil },
+            dismissSetAsideAnswers: {},
             fetchContent: { reference in
                 if reference.kind == .diff {
                     return """

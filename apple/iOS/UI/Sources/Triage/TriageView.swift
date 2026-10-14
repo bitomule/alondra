@@ -28,6 +28,13 @@ public struct TriageView: View {
                 header.padding(.horizontal, 20)
                     .transition(.move(edge: .top).combined(with: .opacity))
             }
+            if let setAside = store.setAside, let cards = store.setAsideCards {
+                SetAsideAnswersBanner(cards: cards, othersMayBeMissing: setAside.othersMayBeMissing) {
+                    store.send(.setAsideDismissed, animation: .smooth)
+                }
+                .padding(.horizontal, 16).padding(.bottom, 10)
+                .transition(.move(edge: .top).combined(with: .opacity))
+            }
             if let usage = store.status?.usageExhausted {
                 UsageExhaustedBanner(usage)
                     .padding(.horizontal, 16).padding(.bottom, 10)

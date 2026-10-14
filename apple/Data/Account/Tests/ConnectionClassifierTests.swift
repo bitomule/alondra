@@ -3,6 +3,7 @@ import AlondraTransport
 import Testing
 import AlondraAccount
 import AlondraFeatures
+import AlondraFeed
 import Synchronization
 
 @Suite(.serialized)
@@ -33,6 +34,15 @@ struct ConnectionClassifierTests {
         let problem = ConnectionClassifier.problem(for: DirectRouteError.identityChanged, local: false, networkOffline: false)
         #expect(problem == .macChangedIdentity)
         #expect(!problem.needsAction)
+    }
+
+    @Test func aStoreOnThisDeviceFailingIsNeverAConnectionProblem() {
+        for error in [ViewActionIntentError.unreadableStore, .invalidRecord, .capacityExceeded, .invalidScope] {
+            for (local, offline) in [(false, false), (false, true), (true, false)] {
+                #expect(ConnectionClassifier.problem(for: error, local: local, networkOffline: offline) == .deviceStorage)
+            }
+        }
+        #expect(!ConnectionProblem.deviceStorage.needsAction)
     }
 
     @Test func aMacThatSimplyDoesNotAnswerStaysNotAnswering() {

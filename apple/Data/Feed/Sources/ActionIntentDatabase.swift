@@ -15,11 +15,15 @@ final class ActionIntentDatabase: Sendable {
         var activeEpoch: String
         var retired: [Interval]
         var acknowledged: [Interval]
-        init(generation: UInt64 = 0, next: UInt64 = 1, activeEpoch: String = "", retired: [Interval] = [], acknowledged: [Interval] = []) {
-            self.generation = generation; self.next = next; self.activeEpoch = activeEpoch
-            self.retired = retired; self.acknowledged = acknowledged
+        /// The first sequence of every generation. Above 1 only for a store that replaced one set
+        /// aside: the Mac may still hold that store's sequences, and a reused one never completes.
+        var floor: UInt64
+        init(generation: UInt64 = 0, next: UInt64? = nil, activeEpoch: String = "", retired: [Interval] = [],
+             acknowledged: [Interval] = [], floor: UInt64 = 1) {
+            self.generation = generation; self.next = next ?? floor; self.activeEpoch = activeEpoch
+            self.retired = retired; self.acknowledged = acknowledged; self.floor = floor
         }
-        private enum CodingKeys: String, CodingKey { case generation, next, activeEpoch, retired, acknowledged }
+        private enum CodingKeys: String, CodingKey { case generation, next, activeEpoch, retired, acknowledged, floor }
         init(from decoder: any Decoder) throws {
             let values = try decoder.container(keyedBy: CodingKeys.self)
             generation = try values.decode(UInt64.self, forKey: .generation)
@@ -27,6 +31,7 @@ final class ActionIntentDatabase: Sendable {
             activeEpoch = try values.decode(String.self, forKey: .activeEpoch)
             retired = try values.decode([Interval].self, forKey: .retired)
             acknowledged = try values.decodeIfPresent([Interval].self, forKey: .acknowledged) ?? []
+            floor = try values.decodeIfPresent(UInt64.self, forKey: .floor) ?? 1
         }
     }
     typealias Ticket = ActionOperationID
@@ -42,10 +47,15 @@ final class ActionIntentDatabase: Sendable {
     private let indexKey: SymmetricKey
     private let binding: Data
     private let legacyLimit: Int
+    private let sequenceFloor: UInt64
+    /// Every file of this identity's store starts with it, in both the SQLite and the legacy format.
+    let name: String
     private let queue = DispatchQueue(label: "alondra.action-intent-database")
     private static var transient: sqlite3_destructor_type { unsafeBitCast(-1, to: sqlite3_destructor_type.self) }
 
-    init(directory: URL, keyMaterial: Data, scope: ActionIntentScope, legacyLimit: Int) throws {
+    init(directory: URL, keyMaterial: Data, scope: ActionIntentScope, legacyLimit: Int, sequenceFloor: UInt64 = 1) throws {
+        guard (1...Self.maxCounter).contains(sequenceFloor) else { throw ViewActionIntentError.invalidScope }
+        self.sequenceFloor = sequenceFloor
         legacy = try LegacyIntentFiles(directory: directory, keyMaterial: keyMaterial, scope: scope, completedLimit: legacyLimit)
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
         binding = try encoder.encode(scope)
@@ -54,7 +64,7 @@ final class ActionIntentDatabase: Sendable {
         indexKey = HKDF<SHA256>.deriveKey(inputKeyMaterial: SymmetricKey(data: keyMaterial), salt: binding,
             info: Data("alondra-action-intent-index-v1".utf8), outputByteCount: 32)
         let name = SHA256.hash(data: binding).map { String(format: "%02x", $0) }.joined()
-        self.directory = directory; self.legacyLimit = legacyLimit
+        self.directory = directory; self.legacyLimit = legacyLimit; self.name = name
         file = directory.appending(path: name + ".sqlite")
         marker = directory.appending(path: name + ".sqlite-initialized")
     }
@@ -77,18 +87,29 @@ final class ActionIntentDatabase: Sendable {
             }
         }
     }
+    /// SQLite's NOFOLLOW refuses a symbolic link anywhere in the path, and every iOS app container is
+    /// reached through one (/var is /private/var). Only the database file itself must not be a link.
+    private func databasePath() throws -> String {
+        try resolvedDirectory().appending(path: file.lastPathComponent).path
+    }
+    private func resolvedDirectory() throws -> URL {
+        guard let resolved = realpath(directory.path, nil) else { throw ViewActionIntentError.unreadableStore }
+        defer { free(resolved) }
+        return URL(fileURLWithPath: String(cString: resolved), isDirectory: true)
+    }
     private func open() throws -> OpaquePointer {
+        let path = try databasePath()
         var info = stat()
-        let exists = lstat(file.path, &info) == 0
+        let exists = lstat(path, &info) == 0
         guard exists || errno == ENOENT, !exists || info.st_mode & S_IFMT == S_IFREG else { throw ViewActionIntentError.unreadableStore }
         let initialization = try legacy.read(marker, limit: 32)
         let initialized = initialization != nil
         guard !initialized || (exists && initialization == Data(SHA256.hash(data: binding))) else { throw ViewActionIntentError.unreadableStore }
         var pointer: OpaquePointer?
-        guard sqlite3_open_v2(file.path, &pointer, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX | SQLITE_OPEN_NOFOLLOW, nil) == SQLITE_OK,
+        guard sqlite3_open_v2(path, &pointer, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX | SQLITE_OPEN_NOFOLLOW, nil) == SQLITE_OK,
               let db = pointer else { if let pointer { sqlite3_close(pointer) }; throw ViewActionIntentError.unreadableStore }
         do {
-            guard chmod(file.path, 0o600) == 0 else { throw ViewActionIntentError.unreadableStore }
+            guard chmod(path, 0o600) == 0 else { throw ViewActionIntentError.unreadableStore }
             sqlite3_busy_timeout(db, 1_000)
             try Self.execute(db, "PRAGMA page_size=4096")
             try Self.execute(db, "PRAGMA max_page_count=4096")
@@ -102,7 +123,7 @@ final class ActionIntentDatabase: Sendable {
                     let snapshot = try legacy.existingSnapshot()
                     try Self.execute(db, "CREATE TABLE metadata(id INTEGER PRIMARY KEY CHECK(id=1), body BLOB NOT NULL)")
                     for table in ["pending", "legacy", "recent"] { try Self.execute(db, "CREATE TABLE \(table)(id BLOB PRIMARY KEY NOT NULL, body BLOB NOT NULL)") }
-                    try writeMetadata(db, Metadata())
+                    try writeMetadata(db, Metadata(floor: sequenceFloor))
                     if let snapshot {
                         for record in snapshot.pending { try put(db, table: "pending", id: record.request.commandId, value: record) }
                         for completed in snapshot.completed {
@@ -137,12 +158,67 @@ final class ActionIntentDatabase: Sendable {
         } catch { sqlite3_close(db); throw error }
     }
     private func syncDirectories() throws {
-        for path in [directory, directory.deletingLastPathComponent()] {
+        let resolved = try resolvedDirectory()
+        for path in [resolved, resolved.deletingLastPathComponent()] {
             let fd = Darwin.open(path.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
             guard fd >= 0 else { throw ViewActionIntentError.unreadableStore }
             defer { Darwin.close(fd) }
             guard fsync(fd) == 0 else { throw ViewActionIntentError.unreadableStore }
         }
+    }
+    /// Reads what it still can of the answers the store held, then moves every file of it into
+    /// `folder`. Nothing read here is ever sent: the store could not prove what the Mac has.
+    func setAside(into folder: URL) async throws -> SetAsideAnswers {
+        try await withCheckedThrowingContinuation { continuation in
+            queue.async {
+                do {
+                    let answers = try self.legacy.locked {
+                        let answers = self.salvage()
+                        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true,
+                                                                attributes: [.posixPermissions: 0o700])
+                        for entry in try FileManager.default.contentsOfDirectory(atPath: self.directory.path)
+                        where entry.hasPrefix(self.name) && !entry.hasSuffix(".lock") {
+                            try FileManager.default.moveItem(at: self.directory.appending(path: entry), to: folder.appending(path: entry))
+                        }
+                        try self.syncDirectories()
+                        return answers
+                    }
+                    continuation.resume(returning: answers)
+                } catch { continuation.resume(throwing: error) }
+            }
+        }
+    }
+    private func salvage() -> SetAsideAnswers {
+        if let path = try? databasePath(), FileManager.default.fileExists(atPath: path) {
+            var complete = true
+            let records = readablePending(at: path, complete: &complete)
+            return SetAsideAnswers(requests: records.map(\.restoredRequest), complete: complete)
+        }
+        if FileManager.default.fileExists(atPath: marker.path) { return SetAsideAnswers(requests: [], complete: false) }
+        do { return SetAsideAnswers(requests: (try legacy.existingSnapshot()?.pending ?? []).map(\.restoredRequest), complete: true) }
+        catch { return SetAsideAnswers(requests: [], complete: false) }
+    }
+    private func readablePending(at path: String, complete: inout Bool) -> [ViewActionIntentStore.Record] {
+        var pointer: OpaquePointer?
+        guard sqlite3_open_v2(path, &pointer, SQLITE_OPEN_READONLY | SQLITE_OPEN_NOFOLLOW, nil) == SQLITE_OK, let db = pointer,
+              let statement = try? Self.prepare(db, "SELECT body,id FROM pending ORDER BY rowid") else {
+            sqlite3_close(pointer); complete = false; return []
+        }
+        defer { sqlite3_finalize(statement); sqlite3_close(db) }
+        var records: [ViewActionIntentStore.Record] = []
+        while records.count < ViewActionIntentStore.maxPending {
+            switch sqlite3_step(statement) {
+            case SQLITE_DONE: return records
+            case SQLITE_ROW:
+                guard let digest = try? Self.bytes(statement, column: 1), let body = try? Self.bytes(statement),
+                      let record: ViewActionIntentStore.Record = try? decrypt(body, context: Data("pending".utf8) + digest),
+                      identifier(record.request.commandId) == digest else { complete = false; continue }
+                records.append(record)
+            default: complete = false; return records
+            }
+        }
+        complete = false
+        return records
     }
     func pending(_ db: OpaquePointer) throws -> [ViewActionIntentStore.Record] {
         let values: [ViewActionIntentStore.Record] = try all(db, table: "pending")
@@ -161,7 +237,7 @@ final class ActionIntentDatabase: Sendable {
             }
             let recent: [ViewActionIntentStore.Completed] = try all(db, table: "recent")
             for completed in recent where Ticket(rawValue: completed.commandID) != nil { try remove(db, table: "recent", id: completed.commandID) }
-            state = Metadata(generation: generation, activeEpoch: request.dataEpoch)
+            state = Metadata(generation: generation, activeEpoch: request.dataEpoch, floor: state.floor)
             try writeMetadata(db, state)
             entries = entries.filter { Ticket(rawValue: $0.request.commandId) == nil }
         }
@@ -353,7 +429,7 @@ final class ActionIntentDatabase: Sendable {
         let statement = try Self.prepare(db, "SELECT body FROM metadata WHERE id=1"); defer { sqlite3_finalize(statement) }
         guard sqlite3_step(statement) == SQLITE_ROW else { throw ViewActionIntentError.unreadableStore }
         let value: Metadata = try decrypt(Self.bytes(statement), context: Data("metadata".utf8))
-        guard value.next > 0, value.next <= Self.maxCounter + 1, value.generation <= Self.maxCounter,
+        guard value.floor > 0, value.floor <= value.next, value.next <= Self.maxCounter + 1, value.generation <= Self.maxCounter,
               (value.generation == 0 ? value.activeEpoch.isEmpty : !value.activeEpoch.isEmpty), value.retired.count <= ViewActionIntentStore.maxPending + 1,
               value.retired.allSatisfy({ $0.first > 0 && $0.first <= $0.last && $0.last < value.next }),
               zip(value.retired, value.retired.dropFirst()).allSatisfy({ pair in pair.0.last + 1 < pair.1.first }),
