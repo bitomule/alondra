@@ -729,7 +729,7 @@ final class TriageFeatureTests: XCTestCase {
     }
 
     @MainActor
-    func testAnAnswerWithoutAnAnswerYetStaysOutHoweverLongTheNetworkTakes() async throws {
+    func testAnAnswerTheMacNeverConfirmsLeavesAtOnceAndOnlyComesBackWithAToastAfterTheTimeout() async throws {
         let clock = TestClock<Duration>()
         let gate = Gate()
         let store = gated(try fullFeed(), clock: clock, gate: gate)
@@ -740,19 +740,101 @@ final class TriageFeatureTests: XCTestCase {
         await Task.megaYield()
         await clock.advance(by: TriageFeature.stampDuration)
         await store.receive(\.stampElapsed)
-        await clock.advance(by: .seconds(600))
-        await store.skipReceivedActions()
-        XCTAssertFalse(store.state.orderedIDs.contains(ids.question))
-        XCTAssertNil(store.state.cards[id: ids.question]?.actions.error, "no error while it is still going")
+        XCTAssertFalse(store.state.orderedIDs.contains(ids.question), "it leaves at once")
+        XCTAssertNil(store.state.cards[id: ids.question]?.actions.error, "nothing shows while it retries")
 
         await store.send(.screen(.loaded(try Fixtures.home(queue: queue, version: "vq-later"))))
         XCTAssertFalse(store.state.orderedIDs.contains(ids.question), "not even a newer queue brings it back while it travels")
 
+        await clock.advance(by: Optimistic.confirmationTimeout - TriageFeature.stampDuration - .milliseconds(1))
+        await store.skipReceivedActions(strict: false)
+        XCTAssertFalse(store.state.orderedIDs.contains(ids.question), "nothing until the timeout")
+
+        await clock.advance(by: .milliseconds(1))
+        await store.receive(\.answerOverdue, ids.question)
+        await store.receive(\.delegate.answerNotConfirmed)
+        XCTAssertEqual(store.state.currentID, ids.question, "the unconfirmed card waits again, in front")
+        XCTAssertNil(store.state.cards[id: ids.question]?.stamp, "and shows no stamp of an answer that never arrived")
+
         await gate.open()
         await store.receive(\.cards[id: ids.question].actions.settled)
         await store.skipReceivedActions()
-        XCTAssertFalse(store.state.orderedIDs.contains(ids.question))
+        XCTAssertFalse(store.state.orderedIDs.contains(ids.question), "the Mac confirmed it late: it leaves")
         XCTAssertTrue(store.state.answered.contains(ids.question))
+    }
+
+    @MainActor
+    func testTheToastSaysWhichAnswerDidNotReachTheMac() throws {
+        XCTAssertEqual(Optimistic.notConfirmed("Merge the PR?"), "Your answer to “Merge the PR?” didn’t reach your Mac.")
+        XCTAssertEqual(Optimistic.notConfirmed(nil), "An answer didn’t reach your Mac.")
+    }
+
+    @MainActor
+    func testAnAnswerTheMacConfirmsInTimeNeverComesBack() async throws {
+        let clock = TestClock<Duration>()
+        let gate = Gate()
+        let store = gated(try fullFeed(), clock: clock, gate: gate)
+        await store.send(.task)
+        await store.skipReceivedActions()
+
+        _ = try await answer(store, id: ids.question)
+        await Task.megaYield()
+        await clock.advance(by: .seconds(5))
+        await gate.open()
+        await store.receive(\.cards[id: ids.question].actions.settled)
+        await clock.advance(by: .seconds(120))
+        await store.skipReceivedActions()
+        XCTAssertFalse(store.state.orderedIDs.contains(ids.question))
+        XCTAssertFalse(store.state.optimistic.isOverdue(ids.question))
+    }
+
+    @MainActor
+    func testAnAnswerThatNeverLeavesThePhoneStillLeavesAtOnceAndComesBackAfterTheTimeout() async throws {
+        let clock = TestClock<Duration>()
+        let gate = Gate()
+        let feed = try fullFeed()
+        let store = gated(feed, clock: clock, gate: gate)
+        store.dependencies.viewsClient.prepare = { request in
+            await gate.wait()
+            return request
+        }
+        await store.send(.task)
+        await store.skipReceivedActions()
+
+        _ = try await answer(store, id: ids.question)
+        XCTAssertNil(store.state.cards[id: ids.question]?.stamp, "not prepared yet")
+        await Task.megaYield()
+        await clock.advance(by: TriageFeature.stampDuration)
+        await store.skipReceivedActions()
+        XCTAssertFalse(store.state.orderedIDs.contains(ids.question), "it leaves before it is even prepared")
+
+        await clock.advance(by: Optimistic.confirmationTimeout)
+        await store.receive(\.delegate.answerNotConfirmed)
+        XCTAssertEqual(store.state.currentID, ids.question)
+        XCTAssertTrue(feed.requests.isEmpty, "nothing reached the Mac")
+    }
+
+    @MainActor
+    func testAnAnswerFromItsOwnScreenTheMacNeverConfirmsComesBackWithAToastAfterTheTimeout() async throws {
+        let clock = TestClock<Duration>()
+        let store = store(try fullFeed(), clock: clock)
+        await store.send(.task)
+        await store.skipReceivedActions()
+        let request = ActionRequest(commandId: "c-1", dataEpoch: try XCTUnwrap(store.state.screen.document).dataEpoch, client: .ios, lang: "en", actionId: "accept:x@1")
+
+        await store.send(.handedOff(request, cardID: ids.delivery))
+        XCTAssertFalse(store.state.orderedIDs.contains(ids.delivery), "it leaves at once")
+        await clock.advance(by: Optimistic.confirmationTimeout - .milliseconds(1))
+        XCTAssertFalse(store.state.orderedIDs.contains(ids.delivery))
+
+        await clock.advance(by: .milliseconds(1))
+        await store.receive(\.answerOverdue, ids.delivery)
+        await store.receive(\.delegate.answerNotConfirmed)
+        XCTAssertEqual(store.state.currentID, ids.delivery)
+
+        await store.send(.handOffSettled(request, applied: true))
+        await store.skipReceivedActions()
+        XCTAssertFalse(store.state.orderedIDs.contains(ids.delivery), "confirmed late, it leaves")
     }
 
     @MainActor
@@ -777,8 +859,9 @@ final class TriageFeatureTests: XCTestCase {
     @MainActor
     func testCardsWhoseAnswerIsStillOnItsWayStayOutAfterARelaunch() async throws {
         let undelivered = AsyncStream<Set<String>>.makeStream()
+        let clock = TestClock<Duration>()
         let store = TestStore(initialState: TriageFeature.State()) { TriageFeature() } withDependencies: {
-            $0.continuousClock = TestClock()
+            $0.continuousClock = clock
             $0.viewsClient.observe = try! fullFeed().observe
             $0.viewsClient.undeliveredCards = { undelivered.stream }
         }
@@ -788,6 +871,11 @@ final class TriageFeatureTests: XCTestCase {
         await store.receive(\.undeliveredChanged)
         await store.skipReceivedActions()
         XCTAssertEqual(store.state.orderedIDs, [ids.information, ids.delivery, ids.pullRequest])
+
+        await clock.advance(by: Optimistic.confirmationTimeout)
+        await store.receive(\.answerOverdue, ids.question)
+        await store.receive(\.delegate.answerNotConfirmed)
+        XCTAssertEqual(store.state.currentID, ids.question, "still not delivered after the timeout: it waits again")
 
         undelivered.continuation.yield([])
         await store.receive(\.undeliveredChanged)
@@ -891,7 +979,7 @@ final class TriageFeatureTests: XCTestCase {
 
         let reply = ActionRequest(commandId: "c-reply", dataEpoch: try XCTUnwrap(store.state.screen.document).dataEpoch, client: .ios, lang: "es",
                                   actionId: "reply:\(ids.question)@1", input: ActionInput(text: "Ship the concise copy"), resolvesCard: true)
-        await store.send(.cards(.element(id: ids.question, action: .actions(.sent(reply)))))
+        await store.send(.cards(.element(id: ids.question, action: .actions(.sending(reply)))))
         await clock.advance(by: TriageFeature.stampDuration)
         await store.receive(\.stampElapsed)
         XCTAssertEqual(store.state.orderedIDs, [ids.information, ids.delivery, ids.pullRequest])

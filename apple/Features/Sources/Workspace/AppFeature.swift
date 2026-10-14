@@ -172,8 +172,9 @@ public struct AppFeature: Sendable {
         }
     }
 
-    /// A screen that left as it sent its action: the queue and the fleet show the result at once,
-    /// and the daemon's answer settles it here, where it outlives the screen.
+    /// A screen that left as it sent its action, before preparing it: the queue and the fleet show
+    /// the result at once, and the action is prepared, delivered and settled here, where it outlives
+    /// the screen.
     private func deliver(_ request: ActionRequest, from key: ViewKey?) -> Effect<Action> {
         let cardID = key.flatMap { key in
             ["card:", "pull_request:"].first { key.rawValue.hasPrefix($0) }.map { String(key.rawValue.dropFirst($0.count)) }
@@ -182,8 +183,11 @@ public struct AppFeature: Sendable {
             cardID.map { .send(.triage(.handedOff(request, cardID: $0))) } ?? .none,
             .send(.fleet(.handedOff(request))),
             .run { [viewsClient] send in
-                do { await send(.handOffAnswered(request, try await viewsClient.perform(request))) }
-                catch { await send(.handOffFailed(request, SendFailure(error))) }
+                let prepared: ActionRequest
+                do { prepared = try await viewsClient.prepare(request) }
+                catch { return await send(.handOffFailed(request, SendFailure(preparation: error))) }
+                do { await send(.handOffAnswered(prepared, try await viewsClient.perform(prepared))) }
+                catch { await send(.handOffFailed(prepared, SendFailure(error))) }
             }
         )
     }
@@ -218,6 +222,8 @@ public struct AppFeature: Sendable {
             return value.event
         case .triage(.delegate(.noLongerPending(let why))):
             return .actionCompleted(why ?? String(localized: "That’s no longer pending"))
+        case .triage(.delegate(.answerNotConfirmed(let message))):
+            return .failure(message)
         case .handOffAnswered(_, let reply):
             switch OutcomeStyle(reply) {
             case .success(let message): return .actionCompleted(message)

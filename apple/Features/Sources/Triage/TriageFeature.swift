@@ -122,6 +122,8 @@ public struct TriageFeature: Sendable {
         case undeliveredChanged(Set<String>)
         case setAsideDismissed
         case answeredExpired(String)
+        /// The Mac has not confirmed the answer to this card in time: it waits again, and the app says so.
+        case answerOverdue(String)
         case delegate(Delegate)
 
         @CasePathable
@@ -130,6 +132,8 @@ public struct TriageFeature: Sendable {
             /// A card opened from a notification, or shown in the queue, no longer waits: why, when
             /// the daemon said.
             case noLongerPending(String?)
+            /// An answer has not reached the Mac in time, so its card waits again: the sentence to show.
+            case answerNotConfirmed(String)
         }
     }
 
@@ -146,7 +150,7 @@ public struct TriageFeature: Sendable {
 
     @Dependency(\.continuousClock) var clock
     @Dependency(\.viewsClient) var viewsClient
-    private enum CancelID: Hashable { case stamp, swipe, loadDeadline, answered(String), undelivered }
+    private enum CancelID: Hashable { case stamp, swipe, loadDeadline, answered(String), undelivered, confirmation(String) }
     public static var loadFailure: String { String(localized: "Couldn’t load this from your Mac. Try again.") }
 
     public static func commits(translation: Double, predicted: Double) -> Bool {
@@ -242,10 +246,12 @@ public struct TriageFeature: Sendable {
             case .cards(.element(id: _, action: .delegate(.open(let key)))):
                 guard state.swipe == nil else { return .none }
                 return .send(.delegate(.open(key)))
-            case .cards(.element(id: let id, action: .actions(.sent(let request)))):
-                guard request.resolvesItsCard else { return stampTimer() }
+            case .cards(.element(id: let id, action: .actions(.sending(let request)))):
+                guard request.resolvesItsCard else { return .none }
                 state.optimistic.begin(id, request, dataEpoch: state.screen.document?.dataEpoch)
-                return stampTimer()
+                return .merge(stampTimer(), confirmationTimer(id))
+            case .cards(.element(id: _, action: .actions(.sent(let request)))):
+                return request.resolvesItsCard ? .none : stampTimer()
             case .cards(.element(id: _, action: .actions(.settled(let request, let applied)))),
                  .handOffSettled(let request, let applied):
                 return settle(request, applied: applied, &state)
@@ -257,8 +263,20 @@ public struct TriageFeature: Sendable {
                 return settle(request, applied: false, &state)
             case .undeliveredChanged(let cards):
                 guard cards != state.undelivered else { return .none }
+                let optimistic = state.optimistic
+                let arrived = cards.subtracting(state.undelivered).filter { !optimistic.isSending($0) }
+                let delivered = state.undelivered.subtracting(cards).filter { !optimistic.isSending($0) }
                 state.undelivered = cards
-                return state.stampShowing ? .none : showQueue(&state)
+                state.optimistic.forgetOverdue(keeping: cards)
+                let timers: [Effect<Action>] = arrived.map(confirmationTimer) + delivered.map { .cancel(id: CancelID.confirmation($0)) }
+                return .merge(timers + [state.stampShowing ? .none : showQueue(&state)])
+            case .answerOverdue(let id):
+                guard state.optimistic.expire(id, undelivered: state.undelivered) else { return .none }
+                state.cards[id: id]?.actions.stamp = nil
+                state.cards[id: id]?.actions.inFlight = false
+                let card = state.cards[id: id]?.card
+                return .merge(showQueue(&state, front: id),
+                              .send(.delegate(.answerNotConfirmed(Optimistic.notConfirmed(card?.need ?? card?.title)))))
             case .setAsideDismissed:
                 state.setAside = nil
                 return .run { [viewsClient] _ in viewsClient.dismissSetAsideAnswers() }
@@ -272,9 +290,9 @@ public struct TriageFeature: Sendable {
                 state.optimistic.begin(cardID, request, dataEpoch: state.screen.document?.dataEpoch)
                 guard !state.stampShowing else {
                     state.newerQueueWaiting = true
-                    return .none
+                    return confirmationTimer(cardID)
                 }
-                return showQueue(&state)
+                return .merge(showQueue(&state), confirmationTimer(cardID))
             case .stampElapsed:
                 state.newerQueueWaiting = false
                 let queue = showQueue(&state)
@@ -293,7 +311,7 @@ public struct TriageFeature: Sendable {
         guard let document = state.screen.document else { return .none }
         let previousID = front ?? state.currentID
         let ids = (document.sections.first { $0.id == "queue" }?.cardIds ?? []).filter {
-            !state.optimistic.hides($0) && !state.answered.contains($0) && !state.undelivered.contains($0)
+            !state.optimistic.hides($0, undelivered: state.undelivered) && !state.answered.contains($0)
         }
         state.orderedIDs = ids
         state.index = previousID.flatMap(ids.firstIndex(of:)) ?? min(state.index, max(ids.count - 1, 0))
@@ -325,13 +343,16 @@ public struct TriageFeature: Sendable {
     private func settle(_ request: ActionRequest, applied: Bool, _ state: inout State) -> Effect<Action> {
         let target = state.optimistic.target(of: request)
         let shown = state.screen.document?.version
-        if let returned = state.optimistic.settle(request, applied: applied, shown: shown) {
+        let wasOverdue = target.map(state.optimistic.isOverdue) ?? false
+        let returned = state.optimistic.settle(request, applied: applied, shown: shown)
+        let stopTimer: Effect<Action> = target.map { state.optimistic.isSending($0) ? .none : .cancel(id: CancelID.confirmation($0)) } ?? .none
+        if let returned {
             state.optimistic.hold(returned, shown: shown, dataEpoch: request.dataEpoch)
-            return .send(.screen(.retry))
+            return .merge(stopTimer, .send(.screen(.retry)))
         }
-        guard applied, let target else { return .none }
+        guard applied, let target else { return stopTimer }
         state.answered.insert(target)
-        return .merge(.send(.screen(.retry)), answeredTimer(target))
+        return .merge(stopTimer, .send(.screen(.retry)), answeredTimer(target), wasOverdue ? showQueue(&state) : .none)
     }
 
     private func watchUndelivered() -> Effect<Action> {
@@ -347,6 +368,16 @@ public struct TriageFeature: Sendable {
             await send(.answeredExpired(id))
         }
         .cancellable(id: CancelID.answered(id), cancelInFlight: true)
+    }
+
+    /// An answer the Mac has not confirmed in time brings its card back and says so; until then it
+    /// goes on being delivered without showing anything.
+    private func confirmationTimer(_ id: String) -> Effect<Action> {
+        .run { [clock] send in
+            try await clock.sleep(for: Optimistic.confirmationTimeout)
+            await send(.answerOverdue(id))
+        }
+        .cancellable(id: CancelID.confirmation(id), cancelInFlight: true)
     }
 
     private func stampTimer() -> Effect<Action> {

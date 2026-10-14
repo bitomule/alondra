@@ -344,6 +344,36 @@ final class TriageSnapshotTests: XCTestCase {
 
     // MARK: An answer that did not go through
 
+    /// An answer the Mac never confirmed: its card waits again, plain, with nothing about the
+    /// retry inside it, and the toast says which answer did not arrive.
+    func test_anUnconfirmedAnswerBringsItsCardBackAndTheToastSaysWhich() throws {
+        for spanish in [false, true] {
+            let document = spanish ? try Fixtures.spanishCard(Fixtures.questionID) : try Fixtures.card(Fixtures.questionID)
+            let store = try single(document, spanish: spanish) { state in
+                let request = ActionRequest(commandId: "00000000-0000-4000-8000-000000000001", dataEpoch: document.dataEpoch,
+                                            client: .ios, lang: spanish ? "es" : "en", actionId: "answer:\(Fixtures.questionID)@1", resolvesCard: true)
+                state.optimistic.begin(Fixtures.questionID, request)
+                state.optimistic.expire(Fixtures.questionID)
+            }
+            XCTAssertEqual(store.state.orderedIDs, [Fixtures.questionID])
+            let card = try XCTUnwrap(store.state.currentCard)
+            let title = card.need ?? card.title
+            let message = spanish ? "Tu respuesta a «\(title)» no ha llegado a tu Mac."
+                : Optimistic.notConfirmed(title)
+            let notices = Store(initialState: AppFeature.State()) { AppFeature() } withDependencies: {
+                $0.continuousClock = TestClock()
+            }
+            notices.send(.triage(.delegate(.answerNotConfirmed(message))))
+            XCTAssertEqual(notices.notice?.event, .failure(message))
+            assertScreen([.light], language: language(spanish), inWindow: true) {
+                ZStack(alignment: .bottom) {
+                    Harness(store: store)
+                    NoticeToast(store: notices)
+                }
+            }
+        }
+    }
+
     func test_aPullRequestBackSaysWhy() throws {
         let document = try Fixtures.card(Fixtures.pullRequestID)
         let store = try single(document) {

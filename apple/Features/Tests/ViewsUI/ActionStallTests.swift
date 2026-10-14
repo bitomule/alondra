@@ -65,6 +65,7 @@ final class ActionStallTests: XCTestCase {
         }
 
         await store.send(.submit) { $0.pending = draft; $0.inFlight = true; $0.sends = 1 }
+        await store.receive(\.sending, draft)
         await store.receive(\.stalled) { $0.stalled = true }
         XCTAssertEqual(store.state.stallNotice, "Couldn’t send · Retrying…")
         XCTAssertNil(store.state.stamp)
@@ -100,6 +101,7 @@ final class ActionStallTests: XCTestCase {
         }
 
         await store.send(.submit) { $0.pending = draft; $0.inFlight = true; $0.sends = 1 }
+        await store.receive(\.sending, draft)
         await store.receive(\.prepared) { $0.stamp = "Sent" }
         await store.receive(\.sent, draft)
         await store.receive(\.settled)

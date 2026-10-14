@@ -69,7 +69,7 @@ struct TriageCard: View {
         .overlay(alignment: room == nil ? .bottomLeading : .topLeading) {
             if let reply = store.replyAction { placedComposer(reply) }
         }
-        .disabled(store.actions.inFlight && store.actions.stamp == nil && !store.actions.stalled)
+        .disabled(store.actions.inFlight && store.actions.stamp == nil)
     }
 
     /// With no room in the picked layout the field stays over the bottom of the card while it has

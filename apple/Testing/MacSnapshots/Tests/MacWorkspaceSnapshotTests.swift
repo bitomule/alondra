@@ -89,6 +89,33 @@ final class MacWorkspaceSnapshotTests: XCTestCase {
         assertWindow(size: CGSize(width: 320, height: 880)) { MacServiceSidebar(presentation: store) }
     }
 
+    /// An answer the daemon never confirmed: its card is listed again, plain, and the notice says
+    /// which answer did not arrive.
+    func test_sidebar_anUnconfirmedAnswerBringsItsCardBackSayingWhich() throws {
+        for spanish in [false, true] {
+            let id = "a98d034b-249e-4487-a89b-57de38c26372"
+            let presentation = try presentation(edit: { state in
+                let request = ActionRequest(commandId: "c1", dataEpoch: "", client: .mac, lang: "en", actionId: "answer:\(id)@1", resolvesCard: true)
+                state.optimistic.begin(id, request)
+                state.optimistic.expire(id)
+            })
+            XCTAssertFalse(presentation.state.hides(id))
+            let title = try XCTUnwrap(presentation.state.sidebarDocument?.sections.flatMap(\.items).lazy.compactMap { item -> Row? in
+                if case let .row(row) = item, row.id == id { row } else { nil }
+            }.first?.title)
+            var state = MacAppFeature.State()
+            state.macPresentation = presentation.state
+            state.notice = WorkspaceNotice(event: .failure(spanish ? "Tu respuesta a «\(title)» no ha llegado a tu Mac."
+                : Optimistic.notConfirmed(title)))
+            let store = Store(initialState: state) { EmptyReducer<MacAppFeature.State, MacAppFeature.Action>() }
+            assertWindow(size: CGSize(width: 420, height: 880), spanish: spanish, variants: [.light]) {
+                MacServiceSidebar(presentation: store.scope(state: \.macPresentation, action: \.macPresentation))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .overlay(alignment: .bottom) { MacNoticeToast(store: store) }
+            }
+        }
+    }
+
     func test_card_questionWithItsAnswers() throws {
         let store = try presentation(detail: "card-question-mac")
         assertWindow(size: CGSize(width: 900, height: 620)) { MacServiceDetail(presentation: store) }

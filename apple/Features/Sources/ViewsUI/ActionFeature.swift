@@ -112,6 +112,8 @@ public struct ActionFeature: Sendable {
         case confirm
         case cancelConfirmation
         case sendChangedAction
+        /// The person sent `request`: a screen can show its result at once, before it is prepared.
+        case sending(ActionRequest)
         /// The request left: the screen shows its result now, without waiting for the daemon.
         case prepared(ActionRequest, ActionRequest)
         case sent(ActionRequest)
@@ -246,13 +248,8 @@ public struct ActionFeature: Sendable {
                       state.pending == draft else { return .none }
                 state.pending = request
                 state.stamp = action.stamp ?? String(localized: "Sent")
-                if state.handsOff {
-                    let stall = stopStall(&state)
-                    state.pending = nil; state.inFlight = false
-                    return .merge(stall, .send(.sent(request)))
-                }
                 return deliver(request)
-            case .sent, .settled:
+            case .sending, .sent, .settled:
                 return .none
             case let .answered(request, reply):
                 guard request.dataEpoch == state.dataEpoch else { return .none }
@@ -355,17 +352,22 @@ public struct ActionFeature: Sendable {
     }
 
     /// The stamp appears once the intent is prepared, before the daemon answers. Delivery runs on
-    /// even if the screen goes away. A screen that leaves on sending hands the request off instead,
-    /// to whoever outlives it.
+    /// even if the screen goes away. A screen that leaves on sending hands the request off
+    /// unprepared, to whoever outlives it.
     private func send(_ state: inout State) -> Effect<Action> {
         guard let action = state.action, let id = action.id else { return .none }
         let request = state.pending ?? makeRequest(state, actionID: id)
-        state.stamp = nil
         state.error = nil
+        if state.handsOff {
+            state.stamp = action.stamp ?? String(localized: "Sent")
+            state.pending = nil; state.inFlight = false
+            return .concatenate(.send(.sending(request)), .send(.sent(request)))
+        }
+        state.stamp = nil
         state.pending = request
         state.inFlight = true
         state.stalled = false
-        return .merge(stallTimer(request), .run { [viewsClient] send in
+        return .merge(.send(.sending(request)), stallTimer(request), .run { [viewsClient] send in
             do {
                 let prepared = try await viewsClient.prepare(request)
                 try Task.checkCancellation()

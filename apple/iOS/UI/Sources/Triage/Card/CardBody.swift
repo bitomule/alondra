@@ -33,7 +33,6 @@ struct CardBody: View {
             }
             Spacer(minLength: 0)
             if let error = store.actions.error { Text(error).font(.caption).foregroundStyle(Palette.rose) }
-            StallNoticeView(store: store.scope(state: \.actions, action: \.actions))
             CardButtons(store: store, cardID: card.id)
             if fit.reply, let reply = store.replyAction {
                 AttachmentStrip(store: store.scope(state: \.attachments, action: \.attachments))

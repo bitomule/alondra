@@ -53,7 +53,7 @@ public struct MacPresentationFeature: Sendable {
         /// Cards answered on this Mac whose answer has not reached the daemon yet, also after a relaunch.
         public var undelivered: Set<String> = []
         /// Whether the sidebar leaves a row out: answered here and not yet given back by the daemon.
-        public func hides(_ id: String) -> Bool { optimistic.hides(id) || undelivered.contains(id) }
+        public func hides(_ id: String) -> Bool { optimistic.hides(id, undelivered: undelivered) }
         public var activeForm: AlondraContract.Form?
         public var pickerFieldID: String?
         public var pickerDocument: ViewDocument?
@@ -116,10 +116,14 @@ public struct MacPresentationFeature: Sendable {
         case actionPresented(Bool)
         case action(ActionFeature.Action)
         case undeliveredChanged(Set<String>)
+        /// The daemon has not confirmed the answer to this card in time: it waits again.
+        case answerOverdue(String)
+        /// An answer has not reached the daemon in time, so its card waits again: the sentence to show.
+        case answerNotConfirmed(String)
     }
     @Dependency(\.continuousClock) var clock
     @Dependency(\.viewsClient) var viewsClient
-    private enum CancelID: Hashable { case search, picker, undelivered }
+    private enum CancelID: Hashable { case search, picker, undelivered, confirmation(String) }
     public var body: some ReducerOf<Self> {
         Reduce { state, action in
             switch action {
@@ -261,25 +265,39 @@ public struct MacPresentationFeature: Sendable {
             case .actionPresented(let value):
                 state.actionPresented = value
                 if !value {
-                    state.actionFeature.action = nil
+                    if !state.actionFeature.inFlight { state.actionFeature.action = nil }
                     state.activeForm = nil
                     state.actionTarget = nil
                 }
-            case .action(.sent(let request)):
-                guard request.dataEpoch == state.actionFeature.dataEpoch, let target = state.actionTarget else { return .none }
+            case .action(.sending(let request)):
+                guard request.dataEpoch == state.actionFeature.dataEpoch, request.resolvesItsCard,
+                      let target = state.actionTarget else { return .none }
                 state.actionTarget = nil
-                guard request.resolvesItsCard else { return .none }
                 state.optimistic.begin(target, request, dataEpoch: state.actionFeature.dataEpoch)
                 state.returnReasons[target] = nil
                 state.actionPresented = false
-                return leaveCard(target, &state)
+                return .merge(leaveCard(target, &state), confirmationTimer(target))
+            case .action(.sent(let request)):
+                guard request.dataEpoch == state.actionFeature.dataEpoch else { return .none }
+                state.actionTarget = nil
             case .action(.settled(let request, let applied)):
                 guard request.dataEpoch == state.actionFeature.dataEpoch else { return .none }
                 let shown = state.sidebarDocument?.version
-                guard let returned = state.optimistic.settle(request, applied: applied, shown: shown) else { return .none }
+                let target = state.optimistic.target(of: request)
+                let returned = state.optimistic.settle(request, applied: applied, shown: shown)
+                let stopTimer: Effect<Action> = target.map { state.optimistic.isSending($0) ? .none : .cancel(id: CancelID.confirmation($0)) } ?? .none
+                guard let returned else { return stopTimer }
                 state.optimistic.hold(returned, shown: shown, dataEpoch: request.dataEpoch)
                 state.returning[request.commandId] = returned
-                return loadView("sidebar", known: shown)
+                return .merge(stopTimer, loadView("sidebar", known: shown))
+            case .answerOverdue(let id):
+                guard state.optimistic.expire(id, undelivered: state.undelivered) else { return .none }
+                let row = state.sidebarDocument?.sections.flatMap(\.items).lazy.compactMap { item -> Row? in
+                    if case let .row(row) = item, row.id == id { row } else { nil }
+                }.first
+                return .send(.answerNotConfirmed(Optimistic.notConfirmed(row?.title)))
+            case .answerNotConfirmed:
+                return .none
             case .action(.undelivered(let request, let failure)):
                 guard request.dataEpoch == state.actionFeature.dataEpoch else { return .none }
                 state.unsure[request.actionId] = failure == .unsure ? request : nil
@@ -339,7 +357,12 @@ public struct MacPresentationFeature: Sendable {
             case .appeared:
                 return .merge(loadAndOpenView("sidebar", visibleKeys: visibleViewKeys(state)), watchUndelivered())
             case .undeliveredChanged(let cards):
+                let optimistic = state.optimistic
+                let arrived = cards.subtracting(state.undelivered).filter { !optimistic.isSending($0) }
+                let delivered = state.undelivered.subtracting(cards).filter { !optimistic.isSending($0) }
                 state.undelivered = cards
+                state.optimistic.forgetOverdue(keeping: cards)
+                return .merge(arrived.map(confirmationTimer) + delivered.map { .cancel(id: CancelID.confirmation($0)) })
             case .viewsStale(let keys):
                 let visible = Set(["sidebar", state.selectedViewKey].compactMap { $0 })
                 return .merge(keys.filter(visible.contains).map { key in
@@ -475,6 +498,16 @@ public struct MacPresentationFeature: Sendable {
         state.selectedViewKey = key
         state.detailDocument = nil
         return loadAndOpenView(key, visibleKeys: visibleViewKeys(state))
+    }
+
+    /// An answer the daemon has not confirmed in time brings its card back and says so; until then
+    /// it goes on being delivered without showing anything.
+    private func confirmationTimer(_ id: String) -> Effect<Action> {
+        .run { [clock] send in
+            try await clock.sleep(for: Optimistic.confirmationTimeout)
+            await send(.answerOverdue(id))
+        }
+        .cancellable(id: CancelID.confirmation(id), cancelInFlight: true)
     }
 
     private func watchUndelivered() -> Effect<Action> {

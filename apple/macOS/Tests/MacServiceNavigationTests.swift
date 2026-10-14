@@ -233,13 +233,74 @@ struct MacServiceNavigationTests {
 @MainActor
 struct MacAnsweringTests {
     @Test
+    func anAnswerTheDaemonNeverConfirmsLeavesAtOnceAndComesBackWithANoticeAfterTheTimeout() async throws {
+        let clock = TestClock<Duration>()
+        let hold = Hold()
+        let store = try makeStore(waiting: ["a", "b"], selected: "card:a", clock: clock, load: unchangedSidebar)
+        store.dependencies.viewsClient.perform = { _ in
+            await hold.wait()
+            return try response("applied")
+        }
+        await store.send(.beginViewAction(try answer()))
+        await store.send(.action(.textChanged("Ship it")))
+        await store.send(.action(.submit))
+        await store.receive(\.action.sending)
+        #expect(store.state.hides("a"), "it leaves at once")
+        #expect(!store.state.actionPresented)
+        #expect(store.state.selection == .viewKey("card:b"))
+
+        await clock.advance(by: Optimistic.confirmationTimeout - .milliseconds(1))
+        #expect(store.state.hides("a"), "nothing shows while it retries")
+
+        await clock.advance(by: .milliseconds(1))
+        await store.receive(\.answerOverdue, "a")
+        await store.receive(\.answerNotConfirmed, "Your answer to “Card a” didn’t reach your Mac.")
+        #expect(!store.state.hides("a"), "the unconfirmed card waits again")
+
+        await hold.release()
+        await store.receive(\.action.settled)
+        await store.skipReceivedActions(strict: false)
+        #expect(store.state.hides("a"), "confirmed late, it leaves")
+    }
+
+    @Test
+    func anAnswerTheDaemonConfirmsInTimeNeverComesBack() async throws {
+        let clock = TestClock<Duration>()
+        let hold = Hold()
+        let store = try makeStore(waiting: ["a", "b"], selected: "card:a", clock: clock, load: unchangedSidebar)
+        store.dependencies.viewsClient.perform = { _ in
+            await hold.wait()
+            return try response("applied")
+        }
+        await store.send(.beginViewAction(try answer()))
+        await store.send(.action(.textChanged("Ship it")))
+        await store.send(.action(.submit))
+        await clock.advance(by: .seconds(5))
+        await hold.release()
+        await store.receive(\.action.settled)
+        await clock.advance(by: .seconds(120))
+        await store.skipReceivedActions(strict: false)
+        #expect(store.state.hides("a"))
+        #expect(!store.state.optimistic.isOverdue("a"))
+    }
+
+    @Test
+    func anUnconfirmedAnswerSaysSoInTheWindowsNotice() {
+        let store = Store(initialState: MacAppFeature.State()) { MacAppFeature() } withDependencies: {
+            $0.continuousClock = TestClock()
+        }
+        store.send(.macPresentation(.answerNotConfirmed("Your answer to “Card a” didn’t reach your Mac.")))
+        #expect(store.notice?.event == WorkspaceNotice.Event.failure("Your answer to “Card a” didn’t reach your Mac."))
+    }
+
+    @Test
     func answeringTheOpenCardMovesToTheNextOneAtOnce() async throws {
         let store = try makeStore(waiting: ["a", "b", "c"], selected: "card:a")
         await store.send(.beginViewAction(try answer()))
         #expect(store.state.actionTarget == "a")
         #expect(store.state.actionPresented)
 
-        await store.send(.action(.sent(request("1"))))
+        await store.send(.action(.sending(request("1"))))
         await store.skipReceivedActions()
         #expect(store.state.optimistic.hides("a"))
         #expect(!store.state.actionPresented)
@@ -251,7 +312,7 @@ struct MacAnsweringTests {
     func theLastCardOfTheListFallsBackToThePreviousOne() async throws {
         let store = try makeStore(waiting: ["a", "b"], selected: "card:b")
         await store.send(.beginViewAction(try answer()))
-        await store.send(.action(.sent(request("1"))))
+        await store.send(.action(.sending(request("1"))))
         await store.skipReceivedActions()
         #expect(store.state.selection == .viewKey("card:a"))
     }
@@ -395,7 +456,7 @@ struct MacAnsweringTests {
     func aCardAnsweredFromTheSidebarKeepsTheOpenCardWhereItIs() async throws {
         let store = try makeStore(waiting: ["a", "b"], selected: "card:b")
         await store.send(.beginViewAction(try answer(), target: "a"))
-        await store.send(.action(.sent(request("1"))))
+        await store.send(.action(.sending(request("1"))))
         #expect(store.state.optimistic.hides("a"))
         #expect(store.state.selection == .viewKey("card:b"))
     }
@@ -404,7 +465,7 @@ struct MacAnsweringTests {
     func aRefusedActionKeepsTheCardOutUntilTheDaemonListsItAgain() async throws {
         let store = try makeStore(waiting: ["a", "b"], selected: "card:a", load: unchangedSidebar)
         await store.send(.beginViewAction(try answer()))
-        await store.send(.action(.sent(request("1"))))
+        await store.send(.action(.sending(request("1"))))
         await store.send(.action(.settled(request("1"), applied: false)))
         await store.skipReceivedActions(strict: false)
         #expect(store.state.optimistic.hides("a"), "never back as unanswered")
@@ -436,7 +497,7 @@ struct MacAnsweringTests {
     }
 
     @Test
-    func anAnswerStillOnItsWayKeepsTheCardOutHoweverLongItTakes() async throws {
+    func anAnswerStillOnItsWayKeepsTheCardOutUntilTheTimeoutAndLeavesOnceConfirmed() async throws {
         let clock = TestClock<Duration>()
         let hold = Hold()
         let daemon = Daemon { _ in
@@ -449,11 +510,15 @@ struct MacAnsweringTests {
         #expect(store.state.optimistic.hides("a"))
         #expect(store.state.selection == .viewKey("card:b"))
 
-        await clock.advance(by: .seconds(600))
+        await clock.advance(by: Optimistic.confirmationTimeout - .milliseconds(1))
         await store.skipReceivedActions(strict: false)
         #expect(store.state.optimistic.hides("a"))
         #expect(store.state.selection == .viewKey("card:b"))
         #expect(store.state.actionFeature.error == nil, "no error while it is still going")
+
+        await clock.advance(by: .seconds(600))
+        await store.skipReceivedActions(strict: false)
+        #expect(!store.state.hides("a"), "unconfirmed after the timeout, it waits again")
         #expect(daemon.requests.count == 1)
         await hold.release()
         await store.skipReceivedActions(strict: false)
@@ -541,7 +606,7 @@ struct MacAnsweringTests {
     func anAppliedActionStaysHiddenUntilANewerSidebarArrives() async throws {
         let store = try makeStore(waiting: ["a", "b"], selected: "card:a")
         await store.send(.beginViewAction(try answer()))
-        await store.send(.action(.sent(request("1"))))
+        await store.send(.action(.sending(request("1"))))
         await store.send(.action(.settled(request("1"), applied: true)))
         #expect(store.state.optimistic.hides("a"))
 
@@ -554,7 +619,7 @@ struct MacAnsweringTests {
     func aChangedItemAsksAgainInTheSheet() async throws {
         let store = try makeStore(waiting: ["a"], selected: "card:a")
         await store.send(.beginViewAction(try answer()))
-        await store.send(.action(.sent(request("1"))))
+        await store.send(.action(.sending(request("1"))))
         #expect(!store.state.actionPresented)
         await store.send(.action(.response(try response("changed"))))
         #expect(store.state.actionPresented)

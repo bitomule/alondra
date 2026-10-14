@@ -124,6 +124,7 @@ final class ActionPreparationTests: XCTestCase {
         await store.send(.submit) {
             $0.pending = draft; $0.inFlight = true; $0.sends = 1
         }
+        await store.receive(\.sending, draft)
         let started = await starts.next()
         XCTAssertEqual(started, draft)
         let beforeDispatch = await peer.requests
@@ -147,25 +148,19 @@ final class ActionPreparationTests: XCTestCase {
         XCTAssertEqual(dispatched, [canonical])
     }
 
-    func testAnAdoptedOldPendingIdentityIsHandedOffInsteadOfTheNewDraftUUID() async throws {
-        let gate = ActionPreparationGate()
-        var starts = gate.starts.makeAsyncIterator()
+    func testAScreenThatLeavesOnSendingHandsItsAnswerOffUnprepared() async throws {
         let draft = request(draftID)
-        let original = try canonical(originalNonce)
         let initial = try state(handsOff: true)
         let store = TestStore(initialState: initial) { ActionFeature() } withDependencies: {
             $0.uuid = .constant(UUID(uuidString: draftID)!)
-            $0.viewsClient.prepare = { try await gate.prepare($0) }
-            $0.viewsClient.perform = { _ in XCTFail("handoff preparation must not deliver the action itself"); throw CancellationError() }
+            $0.viewsClient.prepare = { _ in XCTFail("whoever outlives the screen prepares it"); throw CancellationError() }
+            $0.viewsClient.perform = { _ in XCTFail("handoff cannot deliver the action itself"); throw CancellationError() }
         }
-        await store.send(.submit) {
-            $0.pending = draft; $0.inFlight = true; $0.sends = 1
-        }
-        let started = await starts.next()
-        XCTAssertEqual(started, draft)
-        await gate.release(original)
-        await store.receive(\.prepared) { $0.pending = nil; $0.inFlight = false; $0.stamp = "Sent" }
-        await store.receive(\.sent, original)
+        await store.send(.submit) { $0.stamp = "Sent"; $0.sends = 1 }
+        await store.receive(\.sending, draft)
+        await store.receive(\.sent, draft)
+        XCTAssertNil(store.state.pending)
+        XCTAssertFalse(store.state.inFlight)
         XCTAssertEqual(store.state.text, draft.input.text)
         await store.finish()
     }
@@ -175,7 +170,7 @@ final class ActionPreparationTests: XCTestCase {
         var starts = gate.starts.makeAsyncIterator()
         let draft = request(draftID)
         let canonical = try canonical(draftID)
-        let initial = PreparationEpochHarness.State(action: try state(handsOff: true))
+        let initial = PreparationEpochHarness.State(action: try state())
         let store = TestStore(initialState: initial) {
             PreparationEpochHarness()
         } withDependencies: {
@@ -186,6 +181,7 @@ final class ActionPreparationTests: XCTestCase {
         await store.send(.action(.submit)) {
             $0.action.pending = draft; $0.action.inFlight = true; $0.action.sends = 1
         }
+        await store.receive(\.action.sending, draft)
         let started = await starts.next()
         XCTAssertEqual(started, draft)
         await store.send(.epochChanged("new-epoch")) { $0.action.dataEpoch = "new-epoch" }
@@ -202,7 +198,7 @@ final class ActionPreparationTests: XCTestCase {
         var starts = gate.starts.makeAsyncIterator()
         let draft = request(draftID)
         let canonical = try canonical(draftID)
-        let initial = try state(handsOff: true)
+        let initial = try state()
         let store = TestStore(initialState: initial) { ActionFeature() } withDependencies: {
             $0.uuid = .constant(UUID(uuidString: draftID)!)
             $0.viewsClient.prepare = { try await gate.prepare($0) }
@@ -211,6 +207,7 @@ final class ActionPreparationTests: XCTestCase {
         await store.send(.submit) {
             $0.pending = draft; $0.inFlight = true; $0.sends = 1
         }
+        await store.receive(\.sending, draft)
         let started = await starts.next()
         XCTAssertEqual(started, draft)
         await store.send(.dismiss) {
@@ -228,7 +225,7 @@ final class ActionPreparationTests: XCTestCase {
         var starts = gate.starts.makeAsyncIterator()
         var cancellations = gate.cancellations.makeAsyncIterator()
         let draft = request(draftID)
-        let initial = try state(handsOff: true)
+        let initial = try state()
         let store = TestStore(initialState: initial) { ActionFeature() } withDependencies: {
             $0.uuid = .constant(UUID(uuidString: draftID)!)
             $0.viewsClient.prepare = { try await gate.prepare($0) }
@@ -237,6 +234,7 @@ final class ActionPreparationTests: XCTestCase {
         let preparation = await store.send(.submit) {
             $0.pending = draft; $0.inFlight = true; $0.sends = 1
         }
+        await store.receive(\.sending, draft)
         let started = await starts.next()
         XCTAssertEqual(started, draft)
         let cancellation = Task { await preparation.cancel() }
@@ -263,6 +261,7 @@ final class ActionPreparationTests: XCTestCase {
             await store.send(.submit) {
                 $0.pending = draft; $0.inFlight = true; $0.sends = 1
             }
+            await store.receive(\.sending, draft)
             await store.receive(\.undelivered) {
                 $0.pending = nil; $0.inFlight = false; $0.stamp = nil
                 $0.error = message
@@ -295,13 +294,14 @@ final class ActionPreparationTests: XCTestCase {
             var starts = gate.starts.makeAsyncIterator()
             let draft = request(draftID)
             let canonical = try canonical(draftID)
-            let initial = try state(handsOff: true)
+            let initial = try state()
             let store = TestStore(initialState: initial) { ActionFeature() } withDependencies: {
                 $0.uuid = .constant(UUID(uuidString: draftID)!)
                 $0.viewsClient.prepare = { try await gate.prepare($0) }
-                $0.viewsClient.perform = { _ in XCTFail("handoff cannot dispatch in the child"); throw CancellationError() }
+                $0.viewsClient.perform = { _ in throw CancellationError() }
             }
             await store.send(.submit) { $0.pending = draft; $0.inFlight = true; $0.sends = 1 }
+            await store.receive(\.sending, draft)
             let started = await starts.next()
             XCTAssertEqual(started, draft)
             await store.send(presentation)
@@ -309,12 +309,11 @@ final class ActionPreparationTests: XCTestCase {
             XCTAssertEqual(store.state.pending, draft)
             XCTAssertTrue(store.state.inFlight)
             XCTAssertEqual(store.state.text, "Keep the written reply")
+            store.exhaustivity = .off
             await gate.release(canonical)
-            await store.receive(\.prepared) {
-                $0.pending = nil; $0.inFlight = false; $0.stamp = "Sent"
-            }
+            await store.receive(\.prepared)
             await store.receive(\.sent, canonical)
-            await store.finish()
+            await store.skipReceivedActions()
             let preparations = await gate.requests
             XCTAssertEqual(preparations, [draft], "replacement taps cannot allocate another intent before the first preparation finishes")
         }
@@ -347,7 +346,7 @@ final class ActionPreparationTests: XCTestCase {
         var starts = gate.starts.makeAsyncIterator()
         let draft = request(draftID)
         let canonical = try canonical(draftID)
-        let initial = try state(handsOff: true)
+        let initial = try state()
         let action = try XCTUnwrap(initial.action)
         let store = TestStore(initialState: initial) { ActionFeature() } withDependencies: {
             $0.uuid = .constant(UUID(uuidString: draftID)!)
@@ -355,6 +354,7 @@ final class ActionPreparationTests: XCTestCase {
             $0.viewsClient.perform = { _ in XCTFail("the dismissed preparation cannot dispatch"); throw CancellationError() }
         }
         await store.send(.submit) { $0.pending = draft; $0.inFlight = true; $0.sends = 1 }
+        await store.receive(\.sending, draft)
         let started = await starts.next()
         XCTAssertEqual(started, draft)
         await store.send(.dismiss) { $0.action = nil; $0.pending = nil; $0.inFlight = false }

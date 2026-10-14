@@ -1,6 +1,8 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "Your answer to “%@” didn’t reach your Mac.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Tu respuesta a «%@» no ha llegado a tu Mac."}}}},
+    "An answer didn’t reach your Mac.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Una respuesta no ha llegado a tu Mac."}}}},
     "Couldn’t send · Retrying…": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "No se pudo enviar · Reintentando…"}}}},
     "Your Mac hasn’t confirmed it yet · Retrying…": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Tu Mac aún no lo ha confirmado · Reintentando…"}}}},
     "Retry now": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Reintentar ahora"}}}},
