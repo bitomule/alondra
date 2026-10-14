@@ -341,3 +341,143 @@ async fn preupgrade_unclassified_reads_do_not_block_an_old_client_until_explicit
     assert_eq!(c.query_row("SELECT count(*) FROM operation_issuers",[],|row|row.get::<_,i64>(0)).unwrap(),0,
         "legacy validation must not silently opt the old client in");
 }
+
+impl Fixture {
+    async fn generation(&self) -> u64 {
+        let epoch = self.domain.state().unwrap().data_epoch.0.clone();
+        let descriptor = self.opened(&self.direct(
+            self.work("journal-descriptor", "GET", &format!("/operation-journal?data_epoch={epoch}"), None)).await);
+        descriptor["body"]["generation"].as_u64().unwrap()
+    }
+
+    /// A journaled action setting the node limit to `limit`, as operation `sequence`.
+    fn operation(&self, generation: u64, sequence: u64, limit: &str) -> (String, Envelope) {
+        let state = self.domain.state().unwrap();
+        let id = format!("op_{}_{generation}_{sequence}_5f0c2d9e-8d0b-4c71-9b0e-2b6f5d8f1a1{sequence}",
+            alondra_core::operation_id::epoch_tag(&state.data_epoch.0));
+        let action = ActionId::new(Verb::SetLimit, "limit", state.revision, Some(limit.into())).unwrap();
+        let envelope = self.work(&id, "POST", "/actions", Some(json!({"protocol":1, "command_id":id,
+            "data_epoch":state.data_epoch, "client":"ios", "lang":"en", "action_id":action.to_string(),
+            "option_id":limit, "input":{}})));
+        (id, envelope)
+    }
+
+    /// Holds the envelope whose receipt is about to enter `stage` until `release` is notified.
+    fn hold(&mut self, stage: ReceiptWrite, id: &str) -> (Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>) {
+        let (entered, release) = (Arc::new(tokio::sync::Notify::new()), Arc::new(tokio::sync::Notify::new()));
+        let (signal, gate, target) = (entered.clone(), release.clone(), id.to_owned());
+        self.service.journal.before_write = Some(Arc::new(move |observed, id| {
+            let (signal, gate, held) = (signal.clone(), gate.clone(), observed == stage && id == target);
+            Box::pin(async move {
+                if held {
+                    signal.notify_one();
+                    gate.notified().await;
+                }
+            })
+        }));
+        (entered, release)
+    }
+
+    /// The process dies while `envelope` executes: the receipt reached `executing` and nothing
+    /// else happened, exactly what a `kill -9` between those two steps leaves on disk.
+    async fn killed_while_executing(&mut self, envelope: Envelope) {
+        let (entered, _release) = self.hold(ReceiptWrite::ExecutingLocal, &envelope.request_id);
+        let id = envelope.request_id.clone();
+        {
+            let running = self.service.handle_direct(envelope);
+            tokio::pin!(running);
+            tokio::select! {
+                _ = &mut running => panic!("{id} finished instead of being cut"),
+                _ = entered.notified() => {}
+            }
+        }
+        self.service.journal.before_write = None;
+        let digest: Vec<u8> = self.service.journal.db().unwrap().query_row(
+            "SELECT digest FROM service_receipts WHERE request_id=?1", params![id], |row| row.get(0)).unwrap();
+        let digest: [u8; 32] = digest.try_into().unwrap();
+        self.service.journal.executing_local("phone-1", &id, &digest).unwrap();
+    }
+
+    fn restart(&mut self) {
+        let domain = Arc::new(crate::domain_runtime::DomainRuntime::open(&self.home).unwrap());
+        let client = crate::client_routes::Client::open(domain.clone(), &self.home, Default::default());
+        let mut restarted = Service::open(&self.home, 0, Arc::new(Auth::open(&self.home).unwrap())).unwrap().unwrap()
+            .with_domain(domain.clone()).with_client(client);
+        restarted.envelope_clock = Some(self.clock.clone());
+        restarted.recover_interrupted().unwrap();
+        self.service = restarted;
+        self.domain = domain;
+    }
+
+    fn receipt(&self, id: &str) -> Option<String> {
+        self.service.journal.db().unwrap().query_row("SELECT state FROM service_receipts WHERE request_id=?1",
+            params![id], |row| row.get(0)).optional().unwrap()
+    }
+
+    fn ack(&self, id: &str, generation: u64, ranges: Value) -> Envelope {
+        let epoch = self.domain.state().unwrap().data_epoch.0.clone();
+        self.work(id, "POST", "/operation-journal/ack", Some(json!({"data_epoch":epoch,"generation":generation,"ranges":ranges})))
+    }
+}
+
+#[tokio::test]
+async fn a_restart_in_the_middle_of_operations_resolves_them_so_acknowledgements_and_redelivery_finish() {
+    let mut f = Fixture::new();
+    let generation = f.generation().await;
+    let options = alondra_core::options::path_in(&f.home);
+    let (redelivered, redelivery) = f.operation(generation, 1, "4");
+    let (abandoned, abandonment) = f.operation(generation, 2, "6");
+    f.killed_while_executing(redelivery.clone()).await;
+    f.killed_while_executing(abandonment.clone()).await;
+    f.service.journal.accept_classified("phone-1", "read-cut", &[9; 32], None, true, None).unwrap();
+    f.service.journal.executing("phone-1", "read-cut", &[9; 32]).unwrap();
+
+    f.restart();
+    assert_eq!(f.receipt(&redelivered).as_deref(), Some("interrupted"));
+    assert_eq!(f.receipt(&abandoned).as_deref(), Some("interrupted"));
+    assert_eq!(f.receipt("read-cut"), None, "a cut read has no effect to keep");
+
+    let applied = f.opened(&f.direct(redelivery.clone()).await);
+    assert_eq!(applied["body"]["outcome"], "applied", "{applied}");
+    assert!(std::fs::read_to_string(&options).unwrap().contains("max_working_nodes = 4"));
+    assert_eq!(f.opened(&f.direct(redelivery).await), applied, "the recovered operation runs once");
+
+    // The client gave up on 2 and never sent 3: retiring both refuses them for good.
+    let ack = f.opened(&f.direct(f.ack("ack-after-restart", generation, json!([{"first":1,"last":3}]))).await);
+    assert_eq!(ack["status"], 200, "{ack}");
+    assert_eq!(ack["body"]["acknowledged"], true, "{ack}");
+    assert_eq!(ack["body"]["ranges"], json!([{"first":1,"last":3}]));
+    assert_eq!(f.receipt(&abandoned), None);
+    assert_eq!(f.opened(&f.direct(abandonment).await)["status"], 410);
+    assert!(!std::fs::read_to_string(&options).unwrap().contains("max_working_nodes = 6"));
+}
+
+#[tokio::test]
+async fn an_acknowledgement_with_unfinished_operations_is_answered_and_retires_the_rest() {
+    let mut f = Fixture::new();
+    let generation = f.generation().await;
+    let (finished, finishing) = f.operation(generation, 1, "4");
+    assert_eq!(f.opened(&f.direct(finishing).await)["body"]["outcome"], "applied");
+    let (dead, dying) = f.operation(generation, 2, "6");
+    f.killed_while_executing(dying).await;
+    let (live, running) = f.operation(generation, 3, "5");
+    f.killed_while_executing(running).await;
+    let owner = ("phone-1".to_owned(), live.clone());
+    f.service.inflight.lock().unwrap().insert(owner.clone(), ([0; 32], false));
+
+    let answer = f.opened(&f.direct(f.ack("ack-while-running", generation, json!([{"first":1,"last":4}]))).await);
+    assert_eq!(answer["status"], 200, "{answer}");
+    assert_eq!(answer["body"]["acknowledged"], false, "{answer}");
+    assert_eq!(answer["body"]["ranges"], json!([{"first":1,"last":2},{"first":4,"last":4}]));
+    assert_eq!(f.receipt(&finished), None);
+    assert_eq!(f.receipt(&dead), None, "an operation whose executor is gone is retired");
+    assert_eq!(f.receipt(&live).as_deref(), Some("executing"), "a running operation keeps its receipt");
+
+    f.service.inflight.lock().unwrap().remove(&owner);
+    let again = f.opened(&f.direct(f.ack("ack-after-running", generation, json!([{"first":1,"last":4}]))).await);
+    assert_eq!(again["body"]["acknowledged"], true, "{again}");
+    assert_eq!(again["body"]["ranges"], json!([{"first":1,"last":4}]));
+
+    let refused = f.opened(&f.direct(f.ack("ack-old-generation", generation + 1, json!([{"first":1,"last":1}]))).await);
+    assert_eq!(refused["status"], 409, "a refused acknowledgement is still answered: {refused}");
+}

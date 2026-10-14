@@ -37,6 +37,16 @@ fn actor(home: &Path, signed: &Signed) -> Result<String> {
 
 const JOURNAL_MARKER: &[u8] = b"alondra-local-action-results\n";
 
+/// Run once when the daemon starts: an action the previous process was executing died with it,
+/// and its outcome is unknown. It becomes `interrupted`, which a redelivery answers as unknown and
+/// an acknowledgement retires.
+pub(crate) fn recover_interrupted(home: &Path) -> Result<usize> {
+    if !home.join("action-results.schema").try_exists()? {
+        return Ok(0);
+    }
+    Ok(open(home)?.execute("UPDATE action_results SET state='interrupted' WHERE state='executing'", [])?)
+}
+
 fn open(home: &Path) -> Result<Connection> {
     use std::io::{Read, Write};
     let path = home.join("action-results.sqlite");
@@ -938,6 +948,7 @@ async fn control(
                 &scope,
                 &ack,
                 crate::operation_journal::Backend::Loopback,
+                &|_| true,
             )?,
             None => crate::operation_journal::descriptor(
                 &tx,

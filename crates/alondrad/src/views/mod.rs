@@ -1,6 +1,6 @@
 pub(crate) mod cache;
 pub(crate) mod actions;
-mod action_results;
+pub(crate) mod action_results;
 pub(crate) mod feed;
 pub(crate) mod live;
 pub(crate) mod reset_time;

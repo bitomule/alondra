@@ -464,7 +464,12 @@ async fn run_domain(config: &Config) -> Result<()> {
         )
     });
     if let Some(service) = &service {
+        service.recover_interrupted()?;
         state.attach_service(service.clone());
+    }
+    let actions = views::action_results::recover_interrupted(&config.home)?;
+    if actions > 0 {
+        log!("the previous daemon stopped in the middle of {actions} local action(s); they are marked interrupted");
     }
     let domain = state.domain();
     domain.live.sandbox.store(config.sandbox, std::sync::atomic::Ordering::Relaxed);

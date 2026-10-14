@@ -404,11 +404,34 @@ fn merge(mut ranges: Vec<Range>) -> Result<Vec<Range>> {
     );
     Ok(merged)
 }
+/// Cuts the given sequences out of sorted, merged ranges.
+fn without(ranges: &[Range], kept: &[u64]) -> Vec<Range> {
+    let mut result = Vec::new();
+    for range in ranges {
+        let mut first = range.first;
+        for &sequence in kept.iter().filter(|s| (range.first..=range.last).contains(*s)) {
+            if first < sequence {
+                result.push(Range { first, last: sequence - 1 });
+            }
+            first = sequence + 1;
+        }
+        if first <= range.last {
+            result.push(Range { first, last: range.last });
+        }
+    }
+    result
+}
+
+/// Retires what the client will never send again. Retiring only ever refuses an ID for good, so a
+/// sequence this Mac never saw, a finished one and one whose executor died are all retired; only an
+/// operation `live` says is still running keeps its row, and the answer then says the
+/// acknowledgement is not complete so the client asks again later.
 pub(crate) fn acknowledge(
     tx: &Transaction<'_>,
     scope: &Scope,
     ack: &Ack,
     backend: Backend,
+    live: &dyn Fn(&str) -> bool,
 ) -> Result<Value> {
     anyhow::ensure!(
         ack.data_epoch == scope.data_epoch
@@ -423,28 +446,24 @@ pub(crate) fn acknowledge(
     );
     let retired = ranges(tx, scope, descriptor.generation)?;
     let requested = merge(ack.ranges.clone())?;
+    let mut kept = Vec::new();
     for range in &requested {
-        let covered: u64 = retired
-            .iter()
-            .map(|old| {
-                let first = old.first.max(range.first);
-                let last = old.last.min(range.last);
-                if first <= last { last - first + 1 } else { 0 }
-            })
-            .sum();
-        let (complete,unfinished):(u64,u64) = tx.query_row(&format!("SELECT count(CASE WHEN state='completed' THEN 1 END),count(CASE WHEN state<>'completed' THEN 1 END) FROM {} WHERE journal_issuer=?1 AND journal_generation=?2 AND journal_sequence BETWEEN ?3 AND ?4",backend.table()),
-            params![scope.issuer,sql_counter(descriptor.generation)?,sql_counter(range.first)?,sql_counter(range.last)?],|row|Ok((counter_at(row,0)?,counter_at(row,1)?)))?;
-        anyhow::ensure!(
-            unfinished == 0 && covered + complete == range.last - range.first + 1,
-            "acknowledgement contains missing or unfinished operations"
-        );
+        let mut statement = tx.prepare(&format!("SELECT {},journal_sequence FROM {} WHERE journal_issuer=?1 AND journal_generation=?2 AND journal_sequence BETWEEN ?3 AND ?4 AND state NOT IN ('completed','interrupted')",backend.id(),backend.table()))?;
+        let unfinished = statement
+            .query_map(params![scope.issuer,sql_counter(descriptor.generation)?,sql_counter(range.first)?,sql_counter(range.last)?],
+                |row| Ok((row.get::<_, String>(0)?, counter_at(row, 1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        kept.extend(unfinished.into_iter().filter(|(id, _)| live(id)).map(|(_, sequence)| sequence));
     }
-    let merged = merge(
-        retired
-            .into_iter()
-            .chain(requested.iter().copied())
-            .collect(),
-    )?;
+    kept.sort_unstable();
+    let retiring = without(&requested, &kept);
+    let Ok(merged) = merge(retired.iter().copied().chain(retiring.iter().copied()).collect()) else {
+        let mut result = descriptor.value();
+        result["acknowledged"] = json!(false);
+        result["ranges"] = json!(retired);
+        return Ok(result);
+    };
+    let requested = retiring;
     tx.execute(
         "DELETE FROM operation_retired WHERE issuer=?1",
         params![scope.issuer],
@@ -477,7 +496,7 @@ pub(crate) fn acknowledge(
         params![scope.issuer, sql_counter(pending)?, retired_digest(&merged)],
     )?;
     let mut result = descriptor.value();
-    result["acknowledged"] = json!(true);
+    result["acknowledged"] = json!(kept.is_empty());
     result["ranges"] = json!(merged);
     Ok(result)
 }
@@ -567,7 +586,7 @@ mod tests {
             generation,
             ranges: vec![Range { first: 1, last: 1 }],
         };
-        let first = acknowledge(&tx, &scope, &ack, Backend::Encrypted).unwrap();
+        let first = acknowledge(&tx, &scope, &ack, Backend::Encrypted, &|_| true).unwrap();
         assert_eq!(first["acknowledged"], true);
         assert_eq!(
             tx.query_row("SELECT count(*) FROM service_receipts", [], |row| row
@@ -576,7 +595,7 @@ mod tests {
             0
         );
         assert_eq!(
-            acknowledge(&tx, &scope, &ack, Backend::Encrypted).unwrap(),
+            acknowledge(&tx, &scope, &ack, Backend::Encrypted, &|_| true).unwrap(),
             first
         );
         tx.commit().unwrap();
@@ -632,7 +651,7 @@ mod tests {
                 last: 1_000_000,
             }],
         };
-        let reply = acknowledge(&tx, &scope, &ack, Backend::Encrypted).unwrap();
+        let reply = acknowledge(&tx, &scope, &ack, Backend::Encrypted, &|_| true).unwrap();
         assert_eq!(reply["ranges"], json!([{ "first":2,"last":1_000_000 }]));
         assert_eq!(
             tx.query_row("SELECT count(*) FROM operation_retired", [], |row| row
@@ -646,18 +665,19 @@ mod tests {
                 .unwrap(),
             1
         );
-        assert!(
-            acknowledge(
-                &tx,
-                &scope,
-                &Ack {
-                    ranges: vec![Range { first: 1, last: 1 }],
-                    ..ack
-                },
-                Backend::Encrypted
-            )
-            .is_err()
-        );
+        let live = acknowledge(
+            &tx,
+            &scope,
+            &Ack {
+                ranges: vec![Range { first: 1, last: 1 }],
+                ..ack
+            },
+            Backend::Encrypted,
+            &|_| true,
+        )
+        .unwrap();
+        assert_eq!(live["acknowledged"], false);
+        assert_eq!(live["ranges"], json!([{ "first":2,"last":1_000_000 }]));
     }
     #[test]
     fn epoch_approval_and_new_issuer_share_one_monotonic_generation_counter() {
@@ -698,36 +718,62 @@ mod tests {
         );
     }
     #[test]
-    fn missing_or_unfinished_ranges_and_fragment_overflow_leave_existing_proofs_intact() {
+    fn unknown_dead_and_finished_operations_retire_but_a_live_one_keeps_its_row() {
         let mut f = Fixture::new();
         let scope = Fixture::scope();
         let tx = f.c.transaction().unwrap();
         let generation = descriptor(&tx, &scope, Backend::Encrypted)
             .unwrap()
             .generation;
+        let live_id = Fixture::id(generation, 2);
         insert(&tx, &scope, &Fixture::id(generation, 1), "completed").unwrap();
-        insert(&tx, &scope, &Fixture::id(generation, 2), "executing").unwrap();
-        for range in [Range { first: 1, last: 3 }, Range { first: 2, last: 2 }] {
-            assert!(
-                acknowledge(
-                    &tx,
-                    &scope,
-                    &Ack {
-                        data_epoch: "epoch".into(),
-                        generation,
-                        ranges: vec![range]
-                    },
-                    Backend::Encrypted
-                )
-                .is_err()
-            );
-        }
+        insert(&tx, &scope, &live_id, "executing").unwrap();
+        insert(&tx, &scope, &Fixture::id(generation, 4), "executing").unwrap();
+        insert(&tx, &scope, &Fixture::id(generation, 5), "interrupted").unwrap();
+        let reply = acknowledge(
+            &tx,
+            &scope,
+            &Ack {
+                data_epoch: "epoch".into(),
+                generation,
+                ranges: vec![Range { first: 1, last: 6 }],
+            },
+            Backend::Encrypted,
+            &|id| id == live_id,
+        )
+        .unwrap();
+        assert_eq!(reply["acknowledged"], false);
         assert_eq!(
-            tx.query_row("SELECT count(*) FROM service_receipts", [], |row| row
-                .get::<_, i64>(0))
-                .unwrap(),
-            2
+            reply["ranges"],
+            json!([{ "first":1,"last":1 }, { "first":3,"last":6 }])
         );
+        let rows: Vec<String> = tx
+            .prepare("SELECT request_id FROM service_receipts")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(rows, vec![live_id.clone()]);
+        descriptor(&tx, &scope, Backend::Encrypted).expect("retirement metadata stays consistent");
+        assert!(admit(&tx, &scope, &Fixture::id(generation, 3), Backend::Encrypted)
+            .unwrap_err()
+            .is::<Retired>());
+        tx.execute("UPDATE service_receipts SET state='completed'", []).unwrap();
+        let rest = acknowledge(
+            &tx,
+            &scope,
+            &Ack {
+                data_epoch: "epoch".into(),
+                generation,
+                ranges: vec![Range { first: 1, last: 6 }],
+            },
+            Backend::Encrypted,
+            &|id| id == live_id,
+        )
+        .unwrap();
+        assert_eq!(rest["acknowledged"], true);
+        assert_eq!(rest["ranges"], json!([{ "first":1,"last":6 }]));
         let fragmented: Vec<_> = (0..=MAX_RANGES)
             .map(|i| Range {
                 first: 2 * i as u64 + 1,
@@ -769,6 +815,7 @@ mod tests {
                         ranges: vec![Range { first: 1, last: 1 }],
                     },
                     Backend::Encrypted,
+                    &|_| true,
                 )
                 .unwrap();
                 tx.execute("DELETE FROM operation_retired", []).unwrap();

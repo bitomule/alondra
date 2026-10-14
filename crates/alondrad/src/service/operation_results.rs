@@ -185,6 +185,7 @@ impl Service {
             None
         };
         let home = self.home.clone();
+        let inflight = self.inflight.clone();
         let physical = self.journal.accept_jobs.clone().acquire_owned().await?;
         let result = self
             .journal
@@ -204,12 +205,27 @@ impl Service {
                 let mut c = journal.db()?;
                 let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
                 let result = match ack {
-                    Some(ack) => crate::operation_journal::acknowledge(
-                        &tx,
-                        &scope,
-                        &ack,
-                        crate::operation_journal::Backend::Encrypted,
-                    )?,
+                    Some(ack) => {
+                        let live = |id: &str| {
+                            inflight
+                                .lock()
+                                .expect("inflight lock poisoned")
+                                .contains_key(&(approved_sender.clone(), id.to_owned()))
+                        };
+                        match crate::operation_journal::acknowledge(
+                            &tx,
+                            &scope,
+                            &ack,
+                            crate::operation_journal::Backend::Encrypted,
+                            &live,
+                        ) {
+                            Ok(result) => result,
+                            Err(error) => {
+                                log!("operation acknowledgement refused: {error:#}");
+                                return Ok(None);
+                            }
+                        }
+                    }
                     None => crate::operation_journal::descriptor(
                         &tx,
                         &scope,
@@ -218,7 +234,7 @@ impl Service {
                     .value(),
                 };
                 tx.commit()?;
-                Ok(result)
+                Ok(Some(result))
             })
             .await?;
         approved.recheck()?;
@@ -236,7 +252,10 @@ impl Service {
             self.domain.as_ref().unwrap().state()?.data_epoch.0 == epoch,
             "operation journal epoch changed"
         );
-        Ok(json!({"status":200,"body":result}))
+        Ok(match result {
+            Some(result) => json!({"status":200,"body":result}),
+            None => json!({"status":409,"body":{"error":"outcome_unknown"}}),
+        })
     }
 
     pub(super) fn operation_scope(

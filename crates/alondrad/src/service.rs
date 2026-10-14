@@ -488,6 +488,16 @@ impl Service {
         self.domain = Some(domain);
         self
     }
+    /// Resolves the receipts whose executor died with the previous daemon process. Only the daemon
+    /// calls it, once, before it takes any work.
+    pub(crate) fn recover_interrupted(&self) -> Result<()> {
+        let (reads, operations) = self.journal.recover_interrupted()?;
+        if reads + operations > 0 {
+            log!("the previous daemon stopped in the middle of {operations} operation(s) and {reads} read(s); they are marked interrupted so devices can retire or recover them");
+        }
+        Ok(())
+    }
+
     pub(crate) fn with_client(mut self, client: Arc<crate::client_routes::Client>) -> Self {
         self.routes = Some(client);
         self
@@ -2728,6 +2738,9 @@ impl Journal {
         let previous: Option<(Vec<u8>, String, Option<Vec<u8>>, String)> = tx.query_row(
             "SELECT digest,state,response,execution_mode FROM service_receipts WHERE sender=?1 AND request_id=?2",
             params![sender,id], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional()?;
+        if previous.as_ref().is_some_and(|(prior, state, _, _)| prior == digest && state == "interrupted") {
+            tx.execute("UPDATE service_receipts SET state='executing' WHERE sender=?1 AND request_id=?2 AND state='interrupted'", params![sender,id])?;
+        }
         let state = match previous {
             Some((prior, _, _, _)) if prior != digest => {
                 return Err(ReusedRequestId.into());
@@ -2736,10 +2749,10 @@ impl Journal {
             Some((_, state, response, _)) if state == "completed" => {
                 Disposition::Completed(response.context("completed receipt missing response")?)
             }
-            Some((_, state, _, mode)) if state == "executing" && mode == "local" => {
+            Some((_, state, _, mode)) if (state == "executing" || state == "interrupted") && mode == "local" => {
                 Disposition::ExecutingLocal
             }
-            Some((_, state, _, _)) if state == "executing" => Disposition::Executing,
+            Some((_, state, _, _)) if state == "executing" || state == "interrupted" => Disposition::Executing,
             Some(_) => Disposition::Accepted,
             None => {
                 if identity.is_none() && !read_only && legacy_scope.map(|scope|crate::operation_journal::opted_in(&tx,scope)).transpose()?.unwrap_or(false) {
@@ -2759,6 +2772,18 @@ impl Journal {
         };
         tx.commit()?;
         Ok(state)
+    }
+    /// Run once when the daemon starts, before it takes work: no receipt can still have a live
+    /// executor, so whatever the previous process left running died with it. A read has no effect
+    /// and is forgotten; any other operation becomes `interrupted`, which a redelivery recovers
+    /// and an acknowledgement retires. Journal rows are never deleted here: their count is proof.
+    fn recover_interrupted(&self) -> Result<(usize, usize)> {
+        let mut c = self.db()?;
+        let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let reads = tx.execute("DELETE FROM service_receipts WHERE state IN ('accepted','executing') AND execution_mode='read' AND journal_issuer IS NULL", [])?;
+        let interrupted = tx.execute("UPDATE service_receipts SET state='interrupted' WHERE state='executing'", [])?;
+        tx.commit()?;
+        Ok((reads, interrupted))
     }
     fn executing(&self, sender: &str, id: &str, digest: &[u8; 32]) -> Result<()> {
         let c = self.db()?;
