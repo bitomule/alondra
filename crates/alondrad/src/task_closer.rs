@@ -46,6 +46,11 @@ impl Timing {
     pub(crate) fn new(wait: Option<Duration>) -> Self {
         Self { wait, retry: RETRY, tick: TICK, post_merge_ask: POST_MERGE_ASK, post_merge_answer: POST_MERGE_ANSWER }
     }
+
+    /// A sandbox with fast timing looks again every couple of seconds.
+    pub(crate) fn sandbox(wait: Option<Duration>) -> Self {
+        Self { wait, retry: Duration::from_secs(10), tick: Duration::from_secs(2), post_merge_ask: POST_MERGE_ASK, post_merge_answer: POST_MERGE_ANSWER }
+    }
 }
 
 pub(crate) async fn run(domain: Arc<DomainRuntime>, sessions: Arc<dyn Sessions>, timing: Timing) {

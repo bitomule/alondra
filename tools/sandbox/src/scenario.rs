@@ -83,9 +83,11 @@ pub fn run(sandbox: &Sandbox) -> Result<()> {
     println!("ok: a denied phone cannot ask again with the same keys");
 
     target.mac.revoke_device(&target.local, &direct_link.device_id)?;
-    let (status, _) = phone.send_direct(&target, &phone.seal(&target, &direct_link, &new_request_id()?, &probe())?)?;
-    ensure!(status == 401, "a revoked direct phone got {status}");
-    println!("ok: revoking the direct phone on the Mac cuts it off at once");
+    let (status, reply) = phone.send_direct(&target, &phone.seal(&target, &direct_link, &new_request_id()?, &probe())?)?;
+    ensure!(status == 200, "a revoked direct phone got {status} instead of its sealed answer");
+    let told = phone.open_direct(&target, &direct_link, &reply)?;
+    ensure!(told["status"] == 403 && told["error"] == "device_revoked", "a revoked direct phone was told {told}");
+    println!("ok: revoking the direct phone on the Mac cuts it off at once and tells it so, sealed");
 
     let link = relay_link;
     let request_id = new_request_id()?;
@@ -111,8 +113,10 @@ pub fn run(sandbox: &Sandbox) -> Result<()> {
             Submitted::Refused(status, reply) => bail!("revoked phone got {status}: {reply}"),
             Submitted::Accepted => bail!("revoked phone was accepted"),
         }
-        let (status, _) = phone.send_direct(&revoked, &phone.seal(&revoked, &link, &new_request_id()?, &probe())?)?;
-        ensure!(status == 401, "the revoked phone got {status} on the direct port");
+        let (status, reply) = phone.send_direct(&revoked, &phone.seal(&revoked, &link, &new_request_id()?, &probe())?)?;
+        ensure!(status == 200, "the revoked phone got {status} on the direct port instead of its sealed answer");
+        let told = phone.open_direct(&revoked, &link, &reply)?;
+        ensure!(told["error"] == "device_revoked", "the revoked phone was told {told} on the direct port");
         phone.request(&target, "GET", "/capabilities", None, None)?;
         println!("ok: revoked on Mac {count} through the relay and directly, still served by Mac 1");
     }

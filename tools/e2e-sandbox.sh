@@ -6,6 +6,9 @@
 # the LAN to try a real phone) and advertises itself on Bonjour as _alondra-sandbox._tcp.
 # Sandbox mode: test/ nodes allowed, wake off (SANDBOX_WAKE=1 turns it on, for a fake claude on PATH).
 # Stop everything with tools/e2e-sandbox-stop.sh.
+# FAKES=1 puts the sandbox's own claude and gh first on the daemons' PATH (tools/sandbox/src/fake):
+# no model and no GitHub, a throwaway repository with a bare remote, and wake on, so the
+# orchestrator and launches run for real against the fakes, with fast timing.
 # NEW_MAC=1 adds one more Mac that nothing has set up, for `alondra`'s setup wizard: its daemon
 # starts only when the wizard installs the service, through scripts that stand in for launchd
 # and the relay account.
@@ -16,6 +19,7 @@ cli=$2
 relay_bin=$3
 tool_bin=$4
 macs=${MACS:-1}
+fakes=${FAKES:-0}
 dir=${SANDBOX_DIR:-/tmp/alondra-sandbox}
 base=${SANDBOX_PORT:-47890}
 repo=$(cd "$(dirname "$0")/.." && pwd)
@@ -25,6 +29,7 @@ direct_listen=127.0.0.1
 [ "${SANDBOX_LAN:-0}" = 1 ] && direct_listen=0.0.0.0
 
 case $macs in '' | *[!0-9]* | 0) echo "MACS must be a number from 1." >&2; exit 1 ;; esac
+case $fakes in 0 | 1) ;; *) echo "FAKES is 0 or 1." >&2; exit 1 ;; esac
 
 if [ -e "$dir" ]; then
 	echo "$dir already exists; stop that sandbox with make e2e-sandbox-stop, remove it, or pick another SANDBOX_DIR." >&2
@@ -99,6 +104,31 @@ ALONDRA_RELAY_CONFIG="$dir/relay.json" nohup "$dir/bin/alondra-relay" >"$dir/rel
 echo $! >"$dir/relay.pid"
 wait_until "The relay" "curl -sf ${relay}v1/bootstrap" "$dir/relay.log"
 
+daemon_path=$PATH
+claude_home=
+wake=${SANDBOX_WAKE:-0}
+if [ "$fakes" = 1 ]; then
+	mkdir -p "$dir/fakes" "$dir/claude-home/plugins"
+	for pair in "claude:fake-claude" "gh:fake-gh"; do
+		printf '#!/bin/sh\nexec "%s" --sandbox "%s" %s -- "$@"\n' "$tool" "$dir" "${pair#*:}" >"$dir/fakes/${pair%%:*}"
+		chmod 755 "$dir/fakes/${pair%%:*}"
+	done
+	# The marketplace sits in the sandbox so the plugin's bin/alondra wrapper finds $dir/bin/alondra.
+	cp -RL "$repo/plugin" "$repo/plugin-orchestrator" "$dir/"
+	printf '{"alondra": {"installLocation": "%s"}}\n' "$dir" >"$dir/claude-home/plugins/known_marketplaces.json"
+	git init -q --bare -b main "$dir/remote.git"
+	git init -q -b main "$dir/repo"
+	printf '# Sandbox repository\n' >"$dir/repo/README.md"
+	git -C "$dir/repo" add README.md
+	git -C "$dir/repo" -c user.name="Alondra Sandbox" -c user.email=sandbox@alondra.invalid -c commit.gpgsign=false commit -q -m "Start the sandbox repository"
+	git -C "$dir/repo" remote add origin "$dir/remote.git"
+	git -C "$dir/repo" push -q -u origin main
+	printf '{"projects": {"%s": {"hasTrustDialogAccepted": true}}}\n' "$(cd "$dir/repo" && pwd -P)" >"$dir/claude-home/.claude.json"
+	daemon_path="$dir/fakes:$PATH"
+	claude_home="$dir/claude-home"
+	wake=1
+fi
+
 macs_json=
 i=1
 while [ "$i" -le "$macs" ]; do
@@ -110,8 +140,17 @@ while [ "$i" -le "$macs" ]; do
 	printf 'port = %s\n' "$port" >"$home/config.toml"
 	printf '{"enabledPlugins": {"alondra@alondra": false, "alondra-orchestrator@alondra": false}, "env": {"ALONDRA_LAUNCHED": "1"}}\n' >"$home/settings.json"
 	printf 'export ALONDRA_HOME="%s"\nexport ALONDRA_PORT="%s"\n' "$home" "$port" >"$home/env"
-	ALONDRA_HOME="$home" ALONDRA_PORT="$port" ALONDRA_SANDBOX=1 ALONDRA_WAKE="${SANDBOX_WAKE:-0}" ALONDRA_PLUGIN_SOURCE="$repo/plugin" \
-		nohup "$dir/bin/alondrad" >"$home/alondrad.log" 2>&1 &
+	# start runs this Mac's daemon with its environment; a journey restarts the daemon with it too.
+	{
+		printf '#!/bin/sh\n'
+		if [ "$fakes" = 1 ]; then
+			printf 'export PATH="%s" CLAUDE_HOME="%s" CLAUDE_CONFIG_DIR="%s" ALONDRA_SANDBOX_TIMING=fast\n' "$daemon_path" "$claude_home" "$claude_home"
+		fi
+		printf 'export ALONDRA_HOME="%s" ALONDRA_PORT="%s" ALONDRA_SANDBOX=1 ALONDRA_WAKE=%s ALONDRA_PLUGIN_SOURCE="%s"\n' "$home" "$port" "$wake" "$repo/plugin"
+		printf 'exec "%s"\n' "$dir/bin/alondrad"
+	} >"$home/start"
+	chmod 755 "$home/start"
+	nohup "$home/start" >>"$home/alondrad.log" 2>&1 &
 	echo $! >"$home/alondrad.pid"
 	wait_until "Mac $i's alondrad" "curl -sf http://127.0.0.1:$port/daemon" "$home/alondrad.log"
 	[ -n "$macs_json" ] && macs_json="$macs_json,"
@@ -163,6 +202,7 @@ cat >"$dir/sandbox.json" <<EOF
 {
   "relay": "$relay",
   "issuer": "$issuer",
+  "fakes": $( [ "$fakes" = 1 ] && echo true || echo false ),
   "macs": [$macs_json
   ]
 }
@@ -201,5 +241,15 @@ Synthetic phone (state in $dir/phones):
 A terminal paired directly (pairing requests: . <Mac home>/env && $dir/bin/alondra device list):
   ALONDRA_HOME=$dir/client ALONDRA_SANDBOX=1 $dir/bin/alondra mac connect --host 127.0.0.1:$(direct_port 1)
 
+EOF
+if [ "$fakes" = 1 ]; then
+	cat <<EOF
+Fakes: claude and gh are the sandbox's own (calls in $dir/fakes/calls.jsonl); nodes work in $dir/repo.
+  Scripted journeys:  $tool --sandbox $dir journey all
+  A node's next move: $tool --sandbox $dir fake node <task> work|ask|die|end
+
+EOF
+fi
+cat <<EOF
 Close probes with 'claude rm <id>' when done, then: make e2e-sandbox-stop
 EOF

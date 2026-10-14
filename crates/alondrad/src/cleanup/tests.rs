@@ -373,7 +373,7 @@ async fn cleanup_right_after_the_daemon_starts_closes_finished_sessions_whose_mo
     let mut rig = Rig::new();
     rig.session(Task::Done, true);
     rig.session(Task::Cancelled, true);
-    let starting = tokio::spawn(crate::node_revival::run(rig.domain.clone()));
+    let starting = tokio::spawn(crate::node_revival::run(rig.domain.clone(), &crate::node_revival::Timing::LIVE));
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     let report = rig.run(false).await;
     starting.abort();

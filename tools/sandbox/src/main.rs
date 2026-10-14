@@ -1,5 +1,7 @@
 //! Throwaway Macs, relay and phone for `make e2e-sandbox`. Never points at a real Alondra.
+mod fake;
 mod issuer;
+mod journey;
 mod mac;
 mod phone;
 mod relay;
@@ -69,6 +71,54 @@ enum Command {
     },
     /// Runs the automatic scenarios against every Mac of a running sandbox.
     Scenario,
+    /// The sandbox's `claude` (FAKES=1): what `fakes/claude` runs.
+    #[command(hide = true)]
+    FakeClaude {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// The sandbox's `gh` (FAKES=1): what `fakes/gh` runs.
+    #[command(hide = true)]
+    FakeGh {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// The process of one fake background session.
+    #[command(hide = true)]
+    FakeNode { short: String },
+    /// Runs scripted end-to-end journeys (FAKES=1): task-cycle, session, local, or all; `seed`
+    /// instead leaves a varied world for a person or the tester agent to explore.
+    Journey { names: Vec<String> },
+    /// Moves a fake node (FAKES=1): what its session does next.
+    Fake {
+        #[command(subcommand)]
+        action: FakeAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum FakeAction {
+    /// Lists the fake nodes with their task and state.
+    Nodes,
+    /// Makes the node of a task (or with a short id) do something, and prints what happened.
+    Node {
+        /// A task id, or a node's short id.
+        node: String,
+        /// work (commit, push, PR, final delivery), ask, deliver, cleanup, end (exits) or die (crashes).
+        verb: String,
+        /// One step as JSON instead of a verb, e.g. '{"do":"dirty","file":"x.txt"}'.
+        #[arg(long)]
+        step: Option<String>,
+    },
+}
+
+impl From<FakeAction> for fake::node::Order {
+    fn from(action: FakeAction) -> Self {
+        match action {
+            FakeAction::Nodes => fake::node::Order::List,
+            FakeAction::Node { node, verb, step } => fake::node::Order::Act { node, verb, step },
+        }
+    }
 }
 
 #[derive(Subcommand)]
@@ -134,5 +184,11 @@ fn main() -> Result<()> {
             }
         }
         Command::Scenario => scenario::run(&sandbox::Sandbox::open(&cli.sandbox)?),
+        Command::FakeClaude { args } => std::process::exit(fake::claude(&fake::Fakes::open(&cli.sandbox)?, &args)?),
+        Command::FakeGh { args } => std::process::exit(fake::gh(&fake::Fakes::open(&cli.sandbox)?, &args)?),
+        Command::FakeNode { short } => fake::node::run(&fake::Fakes::open(&cli.sandbox)?, &short),
+        Command::Journey { names } if names == ["seed"] => journey::seed::run(&sandbox::Sandbox::open(&cli.sandbox)?),
+        Command::Journey { names } => journey::run(&sandbox::Sandbox::open(&cli.sandbox)?, &names),
+        Command::Fake { action } => fake::node::command(&fake::Fakes::open(&cli.sandbox)?, action.into()),
     }
 }

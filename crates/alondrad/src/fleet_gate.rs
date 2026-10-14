@@ -136,6 +136,8 @@ struct Inner {
     asking: BTreeMap<Key, Waiting>,
     tuning: Tuning,
     told: Told,
+    /// A sandbox with fast timing: its fake nodes cost nothing, so the Mac never holds a start.
+    ignores_mac: bool,
 }
 
 /// What holds the queue, without the numbers that change on every sample (free memory, load,
@@ -252,9 +254,12 @@ impl FleetGate {
         }
     }
 
-    #[cfg(test)]
     pub(crate) fn tune(&self, tuning: Tuning) {
         self.lock().tuning = tuning;
+    }
+
+    pub(crate) fn ignore_mac(&self) {
+        self.lock().ignores_mac = true;
     }
 
     pub(crate) fn subscribe(&self) -> tokio::sync::watch::Receiver<u64> {
@@ -476,7 +481,8 @@ fn hold_of(inner: &Inner, head: &Waiting, snapshot: &Snapshot, now: Millis) -> R
     if snapshot.disk_low {
         return Err(Hold::Disk);
     }
-    decide(head, snapshot.working, snapshot.limit, &snapshot.mac, snapshot.in_flight, inner.saved.last_admission, inner.tuning.spacing, now)
+    let mac = if inner.ignores_mac { MacState::default() } else { snapshot.mac.clone() };
+    decide(head, snapshot.working, snapshot.limit, &mac, snapshot.in_flight, inner.saved.last_admission, inner.tuning.spacing, now)
 }
 
 fn reason_of(reason: &PauseReason) -> Reason {

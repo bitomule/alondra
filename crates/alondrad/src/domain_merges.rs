@@ -727,9 +727,8 @@ fn next_backoff(backoff: Duration) -> Duration {
     (backoff * 2).min(LAST_BACKOFF)
 }
 
-pub(crate) async fn run(domain: Arc<DomainRuntime>, github: Arc<impl PrMerger>) {
+pub(crate) async fn run(domain: Arc<DomainRuntime>, github: Arc<impl PrMerger>, mut merger: Merger) {
     let mut changed = domain.subscribe();
-    let mut merger = Merger::default();
     let mut backoff = FIRST_BACKOFF;
     loop {
         let pause = match merger.merge_due(&domain, &*github).await {

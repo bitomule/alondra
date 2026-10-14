@@ -127,6 +127,10 @@ pub struct Config {
     pub service_label: String,
     /// A throwaway instance for probes and end-to-end runs: only it takes reports and questions from `test/` nodes.
     pub sandbox: bool,
+    /// Only in a sandbox (`ALONDRA_SANDBOX_TIMING=fast`): node revival, pull request polling and the
+    /// spacing between node starts take seconds instead of minutes, and the Mac never holds a start,
+    /// so an end-to-end run sees them happen on a busy Mac.
+    pub fast_timing: bool,
     /// Restart a node whose process ended while it still had work. Only with `wake`.
     pub resume_dead_nodes: bool,
     /// How long Alondra waits for the node of a finished task to clean up before it closes the node
@@ -205,6 +209,7 @@ impl Config {
                 .unwrap_or(DEFAULT_RETENTION_HOURS),
             service_label: var("ALONDRA_SERVICE_LABEL").or_else(|| file.service_label.clone()).unwrap_or_else(|| DEFAULT_LABEL.into()),
             sandbox: var("ALONDRA_SANDBOX").is_some_and(flag),
+            fast_timing: var("ALONDRA_SANDBOX").is_some_and(flag) && var("ALONDRA_SANDBOX_TIMING").as_deref() == Some("fast"),
             resume_dead_nodes: var("ALONDRA_RESUME_DEAD_NODES").map(flag).or(file.resume_dead_nodes).unwrap_or(true),
             close_free_nodes_after: var("ALONDRA_CLOSE_FREE_NODES_AFTER")
                 .and_then(|v| parse_switchable_duration(&v).ok())
@@ -402,6 +407,14 @@ mod tests {
         assert!(!resolve(&FileConfig::default(), &[("ALONDRA_PORT", "47891")]).sandbox);
         assert!(resolve(&FileConfig::default(), &[("ALONDRA_SANDBOX", "1")]).sandbox);
         assert!(!resolve(&FileConfig::default(), &[("ALONDRA_SANDBOX", "0")]).sandbox);
+    }
+
+    #[test]
+    fn fast_timing_is_only_for_a_sandbox() {
+        assert!(!resolve(&FileConfig::default(), &[("ALONDRA_SANDBOX_TIMING", "fast")]).fast_timing);
+        assert!(!resolve(&FileConfig::default(), &[("ALONDRA_SANDBOX", "0"), ("ALONDRA_SANDBOX_TIMING", "fast")]).fast_timing);
+        assert!(!resolve(&FileConfig::default(), &[("ALONDRA_SANDBOX", "1")]).fast_timing);
+        assert!(resolve(&FileConfig::default(), &[("ALONDRA_SANDBOX", "1"), ("ALONDRA_SANDBOX_TIMING", "fast")]).fast_timing);
     }
 
     #[test]

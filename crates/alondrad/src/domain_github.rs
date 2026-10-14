@@ -276,7 +276,7 @@ fn apply(domain: &DomainRuntime, state: &DomainState, pr: &PullRequest, facts: &
     Ok(())
 }
 
-pub(crate) async fn run(domain: Arc<DomainRuntime>, observer: Arc<impl PrObserver>) -> Result<()> {
+pub(crate) async fn run(domain: Arc<DomainRuntime>, observer: Arc<impl PrObserver>, poll: Duration) -> Result<()> {
     let mut changed = domain.subscribe();
     let mut failures = ObservationFailures::default();
     loop {
@@ -293,7 +293,7 @@ pub(crate) async fn run(domain: Arc<DomainRuntime>, observer: Arc<impl PrObserve
         if open.is_empty() {
             continue;
         }
-        let mut interval = tokio::time::interval(Duration::from_secs(60));
+        let mut interval = tokio::time::interval(poll);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         interval.tick().await; // consume the immediate tick after the initial read
         loop {
@@ -521,7 +521,7 @@ mod tests {
         let (_fixture, domain) = open("wake");
         let domain = Arc::new(domain);
         let (tx, mut calls) = tokio::sync::mpsc::unbounded_channel();
-        let worker = tokio::spawn(run(domain.clone(), Arc::new(SignallingObserver(tx))));
+        let worker = tokio::spawn(run(domain.clone(), Arc::new(SignallingObserver(tx)), Duration::from_secs(60)));
         tokio::task::yield_now().await;
         assert!(calls.try_recv().is_err(), "an empty registry makes no GitHub call");
         presented(&domain, false);
@@ -560,7 +560,7 @@ mod tests {
             calls: calls_tx,
             first_release: std::sync::Mutex::new(Some(release_rx)),
         });
-        let worker = tokio::spawn(run(domain.clone(), observer));
+        let worker = tokio::spawn(run(domain.clone(), observer, Duration::from_secs(60)));
 
         assert_eq!(calls.recv().await, Some(7), "the initial PR observation is in flight");
         command(

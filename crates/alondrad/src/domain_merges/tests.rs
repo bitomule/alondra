@@ -742,7 +742,7 @@ fn a_failing_loop_backs_off_up_to_five_minutes() {
 #[tokio::test]
 async fn the_merge_loop_survives_a_storage_failure() {
     let (_home, domain, github) = presented("storage", false);
-    let worker = tokio::spawn(run(domain.clone(), Arc::new(github)));
+    let worker = tokio::spawn(run(domain.clone(), Arc::new(github), Merger::default()));
     domain.store.lock().unwrap().conn_for_test().execute_batch("DROP TABLE domain_meta").ok();
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert!(!worker.is_finished(), "a failed read is logged and retried, never the end of merging");

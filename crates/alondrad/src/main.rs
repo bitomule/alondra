@@ -541,13 +541,25 @@ async fn run_domain(config: &Config) -> Result<()> {
         None => log!("Alondra's node plugin was not found: run `alondra doctor --fix`"),
     }
     tokio::spawn(mods_check::run(plugins::node()));
-    tokio::spawn(node_revival::run(state_domain.clone()));
-    tokio::spawn(task_closer::run(state_domain.clone(), client.sessions(), task_closer::Timing::new(config.close_free_nodes_after)));
+    if config.fast_timing {
+        domain.live.gate.tune(fleet_gate::Tuning { spacing: 1_000, limit: Some(fleet_gate::Limit::Fixed(alondra_core::options::MAX_WORKING_NODES)) });
+        domain.live.gate.ignore_mac();
+    }
+    let revival = if config.fast_timing { &node_revival::Timing::SANDBOX } else { &node_revival::Timing::LIVE };
+    tokio::spawn(node_revival::run(state_domain.clone(), revival));
+    let closer = if config.fast_timing { task_closer::Timing::sandbox(config.close_free_nodes_after) } else { task_closer::Timing::new(config.close_free_nodes_after) };
+    tokio::spawn(task_closer::run(state_domain.clone(), client.sessions(), closer));
     let merges_domain = domain.clone();
-    tokio::spawn(domain_merges::run(merges_domain, Arc::new(domain_github::GhCli::new())));
+    let (merger, pr_poll) = if config.fast_timing {
+        (domain_merges::Merger::with(std::time::Duration::from_secs(2), std::time::Duration::from_secs(15 * 60)), std::time::Duration::from_secs(2))
+    } else {
+        (domain_merges::Merger::default(), std::time::Duration::from_secs(60))
+    };
+    tokio::spawn(domain_merges::run(merges_domain, Arc::new(domain_github::GhCli::new()), merger));
     let github = tokio::spawn(domain_github::run(
         domain,
         Arc::new(domain_github::GhCli::new()),
+        pr_poll,
     ));
     tokio::spawn(machine::run(gauges, state_domain.clone()));
     tokio::spawn(client.run(Arc::new(client_routes::GhView)));

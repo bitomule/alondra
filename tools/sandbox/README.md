@@ -8,6 +8,9 @@ make e2e-sandbox MACS=2            # N daemons in service mode + relay + token i
 make e2e-sandbox-logs MAC=2        # tail one daemon's log (MAC=relay for the relay)
 make e2e-sandbox-stop              # stop everything and delete SANDBOX_DIR (KEEP=1 keeps it)
 bazelisk test //tests/sandbox:scenarios   # opt-in: fresh two-Mac sandbox + automatic scenarios
+make e2e-sandbox FAKES=1           # the same, with the sandbox's own claude and gh (below)
+make e2e-journeys                  # opt-in: fresh sandbox with the fakes + scripted journeys
+make e2e-explore                   # the tester agent drives each Mac's TUI and writes a report
 make e2e-doc-review                # a document reviewed in the real TUI (tmux): the node gets the comments
 bazelisk test //tests/sandbox:doc_review  # the same, opt-in through Bazel
 ```
@@ -29,6 +32,78 @@ Mac apps browse it only when built with `--define=alondra_sandbox=1` and launche
 - `phones/<name>/mac-N.json`: the synthetic phone's identity toward each Mac through the relay;
   `mac-N-direct.json` the one it paired directly.
 - `sandbox.json`: Macs, ports and URLs, for the phone and later tools.
+- `mac-N/start`: runs that Mac's daemon with its environment; a journey restarts the daemon with it.
+- With `FAKES=1`: `fakes/` (the `claude` and `gh` wrappers, every call in `calls.jsonl`, the
+  scripts, the fake nodes, the fake GitHub's PRs in `github/prs.json`), `claude-home/` (the
+  daemons' `CLAUDE_HOME` and `CLAUDE_CONFIG_DIR`), `plugin/` and `plugin-orchestrator/` (the
+  marketplace), and `repo/` with its bare `remote.git`.
+
+## Fakes (`FAKES=1`)
+
+The daemons run with `$SANDBOX_DIR/fakes` first on their PATH, wake on and
+`ALONDRA_SANDBOX_TIMING=fast` (revivals, the task closer, PR polling and the spacing between node starts take seconds, and
+a busy Mac never holds the fake nodes' starts; only a
+sandbox daemon honours it). No model and no GitHub are involved, and nothing reads `~/.claude`.
+
+- **Orchestrator** (`claude -p`): creates and launches the tasks the run scripted for each request
+  its batch names, through the `alondra mcp-orchestrator` Alondra configured.
+- **Node** (`claude --bg`): a process with a worktree of `repo/`, its job file in `claude-home/jobs`,
+  the plugin's reports and connection (`alondra node event|connect|ack`), the classic hooks
+  (`alondra hook`) and the real `alondra mcp-node` with the settings file Alondra wrote. It cleans
+  up when asked and follows its task's script; `claude stop|respawn|rm|agents` act on it.
+- **GitHub** (`gh`): PRs whose head is their branch's tip in `remote.git`; checks, drafts and merge
+  failures are set per PR.
+
+Move a node by hand: `alondra-sandbox fake nodes`, then
+`alondra-sandbox fake node <task> work|ask|deliver|cleanup|end|die` (or `--step '<json>'`).
+
+## Journeys
+
+`make e2e-journeys` (`//tests/sandbox:journeys`) starts a two-Mac sandbox with the fakes, runs
+`scenario`, then `alondra-sandbox journey all`; `JOURNEY=task-cycle|session|local` runs one, and
+`alondra-sandbox journey <name>` runs against a sandbox already started with `FAKES=1`. A phone acts
+as the user through views and actions, the way the iPhone does.
+
+- `task-cycle` (through the relay):
+  - TC1: request → task → node → PR delivered → review card → merge → clean-up → `claude rm` → finished.
+  - TC2: a question answered on its card reaches the node.
+  - TC3: requested changes, a second delivery, the new head merged.
+  - TC4: cancelling removes the node and closes the PR.
+  - F1–F4: refusals Alondra owes. A final delivery with an uncommitted file (named), a draft PR,
+    failing checks handed back to the node, a second PR for one task.
+- `session`:
+  - S1: a crashed session is respawned and finishes.
+  - S2: a session the user stopped is not respawned and its task is freed.
+  - S3: a daemon restart keeps the card, the task and the node.
+  - S4: an ended session's bearer is refused.
+- `local` (last, since it stops the relay):
+  - L1: a whole task over the direct listener with the relay down.
+  - L2: each Mac shows only its own tasks, and a terminal pairs directly with both.
+  - L3: a revoked phone gets its sealed `device_revoked` and creates nothing.
+
+Evidence lands in `bazel-testlogs/tests/sandbox/journeys/test.outputs/` (`$SANDBOX_DIR/journeys`
+when run by hand):
+- `journeys.md` and `journeys.json`: each step with what it expected and saw;
+- `views/<case>/`: the views at each milestone;
+- `fakes/`: every `claude` and `gh` call, and each node's messages and steps;
+- `logs/`: the daemons' and relay's logs, kept when a case failed.
+
+## Tester agent
+
+`make e2e-explore` (`tools/e2e-explore.sh`) builds a fresh two-Mac sandbox with the fakes and seeds
+it (`alondra-sandbox journey seed`):
+- on Mac 1, a working task, a question, a PR in review, a finished task, a stopped node and a
+  pending pairing;
+- on Mac 2, a PR in review.
+
+It opens each Mac's TUI in tmux (160x45, Spanish) and runs a print-mode Claude (`MODEL`, default
+opus; `BUDGET` in USD, default 5) with `tools/e2e/explorer.md`. The agent drives the TUI with
+`tmux send-keys`/`capture-pane`, moves the fake nodes, reads the views, and writes `report.md`
+with the findings, captures and views in `/tmp/alondra-explore-<stamp>-report` (`REPORT_DIR`).
+
+Its Claude starts with a clean environment and the Alondra plugins off, so it never reaches the
+real Alondra. It may only run tmux, the sandbox's binaries and write in its report folder.
+`FOCUS="…"` adds instructions.
 
 ## Synthetic phone
 

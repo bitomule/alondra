@@ -14,7 +14,7 @@ BETA_GROUP := Internal Pilot,Private Pilot
 APPLE_VERSION = $(shell sed -n 's/^ *version = "\(.*\)".*/\1/p' tools/shared.bzl)
 APPLE_BUILD = $(shell sed -n 's/^ *build_number = "\(.*\)".*/\1/p' tools/shared.bzl)
 
-.PHONY: version-guard increment-version build-release snapshots-record snapshots-verify tui-shots mac-snapshots-record mac-snapshots-verify no-holds build test install run tui setup launchd unlaunchd restart status doctor cargo-test mac device device-console e2e-sandbox e2e-sandbox-stop e2e-wizard e2e-doc-review e2e-sandbox-logs e2e-relay-cards e2e-direct-cards e2e-allow-always e2e-cards-tui e2e-ios-cards e2e-ios-offline soak load-bench tasks-screen rehearse-cutover upgrade-rehearsal cutover-live clean-xcode-test-results
+.PHONY: version-guard increment-version build-release snapshots-record snapshots-verify tui-shots mac-snapshots-record mac-snapshots-verify no-holds build test install run tui setup launchd unlaunchd restart status doctor cargo-test mac device device-console e2e-sandbox e2e-sandbox-stop e2e-wizard e2e-doc-review e2e-sandbox-logs e2e-relay-cards e2e-direct-cards e2e-allow-always e2e-cards-tui e2e-ios-cards e2e-ios-offline soak load-bench tasks-screen rehearse-cutover upgrade-rehearsal cutover-live clean-xcode-test-results e2e-journeys e2e-explore
 
 build:
 	bazelisk build //crates/... //apple:AlondraMac
@@ -208,6 +208,19 @@ e2e-ios-offline:
 	export E2E_IOS_IPA=$$(bazelisk cquery --output=files $(E2E_IOS_APP) 2>/dev/null | grep '\.ipa$$'); \
 	python3 tools/e2e_ios_offline.py $(if $(E2E_CAPTURES),--captures $(E2E_CAPTURES)) \
 		$$(bazelisk cquery --output=files '//crates/alondrad + //crates/alondra + //crates/relay:alondra-relay + //tools/sandbox:alondra-sandbox' 2>/dev/null | grep -v '\.ok$$')
+
+# Scripted journeys on a fresh sandbox with the fake claude and gh (tools/sandbox/src/journey);
+# JOURNEY=task-cycle|session|local runs one. Evidence: bazel-testlogs/tests/sandbox/journeys/test.outputs.
+e2e-journeys:
+	bazelisk test //tests/sandbox:journeys --nocache_test_results --zip_undeclared_test_outputs=false \
+		--test_output=streamed $(if $(JOURNEY),--test_env=JOURNEY=$(JOURNEY))
+
+# The tester agent drives each Mac's TUI in tmux and writes a report (tools/e2e-explore.sh):
+# MODEL (opus), BUDGET (USD, 5), FOCUS (extra instructions). Prints where the report is.
+e2e-explore:
+	bazelisk build //crates/alondrad //crates/alondra //crates/relay:alondra-relay //tools/sandbox:alondra-sandbox
+	tools/e2e-explore.sh $$(bazelisk cquery --output=files //crates/alondrad 2>/dev/null) $$(bazelisk cquery --output=files //crates/alondra 2>/dev/null) \
+		$$(bazelisk cquery --output=files //crates/relay:alondra-relay 2>/dev/null) $$(bazelisk cquery --output=files //tools/sandbox:alondra-sandbox 2>/dev/null)
 
 # MAC=n for that daemon's log, MAC=relay for the relay's.
 e2e-sandbox-logs:

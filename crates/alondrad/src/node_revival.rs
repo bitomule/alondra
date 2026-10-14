@@ -41,6 +41,12 @@ impl Timing {
         settle: Duration::from_secs(90),
         pauses: [Duration::from_secs(60), Duration::from_secs(300)],
     };
+    /// A sandbox with fast timing, so an end-to-end run sees a revival within seconds.
+    pub(crate) const SANDBOX: Timing = Timing {
+        grace: Duration::from_secs(3),
+        settle: Duration::from_secs(20),
+        pauses: [Duration::from_secs(2), Duration::from_secs(5)],
+    };
 }
 
 /// The sessions that lost their connection, waiting for `run`.
@@ -66,7 +72,7 @@ impl Losses {
     }
 }
 
-pub(crate) async fn run(domain: Arc<DomainRuntime>) {
+pub(crate) async fn run(domain: Arc<DomainRuntime>, timing: &'static Timing) {
     let Some(mut lost) = domain.live.losses.take() else { return };
     if let Ok(state) = domain.state() {
         for agent in state.agents.keys() {
@@ -76,7 +82,7 @@ pub(crate) async fn run(domain: Arc<DomainRuntime>) {
     tokio::spawn(watch_stalls(domain.clone()));
     while let Some(session) = lost.recv().await {
         let domain = domain.clone();
-        tokio::spawn(async move { revive(&domain, &session, &crate::orchestrate::ClaudeCli, &Timing::LIVE).await });
+        tokio::spawn(async move { revive(&domain, &session, &crate::orchestrate::ClaudeCli, timing).await });
     }
 }
 

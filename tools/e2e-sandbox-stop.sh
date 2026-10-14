@@ -28,6 +28,16 @@ stop() {
 	rm -f "$1"
 }
 
+# Fake nodes (FAKES=1) run in their own process groups; each node.json holds the group's leader.
+for node in "$dir"/fakes/nodes/*/node.json; do
+	[ -f "$node" ] || continue
+	pid=$(sed -n 's/^ *"pid": *\([0-9][0-9]*\).*/\1/p' "$node")
+	[ -n "$pid" ] || continue
+	case $(ps -p "$pid" -o command= 2>/dev/null) in
+	*"$dir"*) kill -9 -- "-$pid" 2>/dev/null ;;
+	esac
+done
+
 for pidfile in "$dir"/mac-*/alondrad.pid; do
 	[ -f "$pidfile" ] && stop "$pidfile"
 done
