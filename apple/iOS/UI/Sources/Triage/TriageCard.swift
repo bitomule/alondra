@@ -77,15 +77,15 @@ struct TriageCard: View {
     /// keyboard shrinks the card and another layout is picked.
     private var content: some View {
         ViewThatFits(in: .vertical) {
-            layout(Fit())
-            layout(Fit(meta: false))
-            layout(Fit(why: false, meta: false))
-            layout(Fit(why: false, meta: false, chips: false))
-            layout(Fit(why: false, meta: false, chips: false, row: false))
-            layout(Fit(why: false, meta: false, chips: false, row: false, state: false))
-            layout(Fit.compact)
-            layout(Fit.compact).dynamicTypeSize(...DynamicTypeSize.accessibility2)
-            layout(Fit.compact).dynamicTypeSize(...DynamicTypeSize.xxxLarge)
+            Layout(card: self, fit: Fit())
+            Layout(card: self, fit: Fit(meta: false))
+            Layout(card: self, fit: Fit(why: false, meta: false))
+            Layout(card: self, fit: Fit(why: false, meta: false, chips: false))
+            Layout(card: self, fit: Fit(why: false, meta: false, chips: false, row: false))
+            Layout(card: self, fit: Fit(why: false, meta: false, chips: false, row: false, state: false))
+            Layout(card: self, fit: .compact)
+            Layout(card: self, fit: .compact).dynamicTypeSize(...DynamicTypeSize.accessibility2)
+            Layout(card: self, fit: .compact).dynamicTypeSize(...DynamicTypeSize.xxxLarge)
         }
         .coordinateSpace(.named(ComposerRoom.space))
         .overlay(alignment: room == nil ? .bottomLeading : .topLeading) {
@@ -128,6 +128,16 @@ struct TriageCard: View {
             .opacity(shown ? 1 : 0)
             .allowsHitTesting(shown)
             .accessibilityHidden(!shown)
+    }
+
+    /// One candidate of the card's ViewThatFits as a view of its own. Built inline, every candidate
+    /// is a value as large as the whole card and ViewThatFits holds all nine on the stack at once:
+    /// 1.1 MB, more than the iPhone's 1 MB main thread stack, so build 47 crashed on launch.
+    private struct Layout: View {
+        let card: TriageCard
+        let fit: Fit
+
+        var body: some View { card.layout(fit) }
     }
 
     private func layout(_ fit: Fit) -> some View {
