@@ -21,7 +21,8 @@ use alondra_core::options::NodeLimit;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use crate::runtime_mutex::RuntimeMutex as Mutex;
 use std::time::Duration;
 
 const FILE: &str = "fleet-gate.json";

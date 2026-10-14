@@ -151,28 +151,63 @@ const WRITE_WAIT: std::time::Duration = std::time::Duration::from_millis(300);
 
 /// The user chose «allow always»: each rule is remembered, and once Claude Code has had time to
 /// write them, each is active if the repo's settings file has it, or missing if not.
-pub(crate) async fn chosen(domain: &crate::domain_runtime::DomainRuntime, cwd: Option<&str>, rules: &[String], task_id: Option<&str>, interaction_id: &str) {
-    let Some(repo) = cwd.and_then(|cwd| std::fs::canonicalize(cwd).ok()).and_then(|cwd| repo_of(&cwd)) else { return };
-    let settings = repo.settings();
-    let now = alondra_core::now_millis();
-    let recorded: Vec<AllowedRule> = rules.iter().map(|rule| AllowedRule {
-        id: 0, repo: repo.root.to_string_lossy().into_owned(), settings: settings.to_string_lossy().into_owned(), rule: rule.clone(),
-        added_at: now, task_id: task_id.map(str::to_owned), interaction_id: interaction_id.to_owned(), machine: machine(), state: RuleState::Pending,
-    }).collect();
-    {
+pub(crate) async fn chosen(domain: &std::sync::Arc<crate::domain_runtime::DomainRuntime>, cwd: Option<&str>, rules: &[String], task_id: Option<&str>, interaction_id: &str) -> Result<()> {
+    let recording = domain.clone();
+    let cwd = cwd.map(str::to_owned);
+    let offered = rules.to_vec();
+    let task_id = task_id.map(str::to_owned);
+    let interaction_id = interaction_id.to_owned();
+    let settings = domain.hook_work.run(move || {
+        let Some(repo) = cwd.and_then(|cwd| std::fs::canonicalize(cwd).ok()).and_then(|cwd| repo_of(&cwd)) else { return None };
+        let settings = repo.settings();
+        let now = alondra_core::now_millis();
+        let recorded: Vec<AllowedRule> = offered.iter().map(|rule| AllowedRule {
+            id: 0, repo: repo.root.to_string_lossy().into_owned(), settings: settings.to_string_lossy().into_owned(), rule: rule.clone(),
+            added_at: now, task_id: task_id.clone(), interaction_id: interaction_id.clone(), machine: machine(), state: RuleState::Pending,
+        }).collect();
+        let domain = recording;
         let store = domain.store.lock().expect("domain store poisoned");
         for rule in &recorded {
             if let Err(error) = store.record_allowed_rule(rule) {
                 log!("allow always: could not remember {}: {error:#}", rule.rule);
             }
         }
-    }
-    let written = |present: &[String]| rules.iter().all(|rule| present.contains(&rules::settings_entry(rule)));
+        Some(settings)
+    }).await?;
+    let Some(settings) = settings else { return Ok(()) };
     let started = std::time::Instant::now();
-    while started.elapsed() < WRITE_WAIT && !written(&allowed(&settings).unwrap_or_default()) {
-        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    while started.elapsed() < WRITE_WAIT {
+        let settings = settings.clone();
+        let offered = rules.to_vec();
+        let written = domain.hook_work.run(move || {
+            let present = allowed(&settings).unwrap_or_default();
+            offered.iter().all(|rule| present.contains(&rules::settings_entry(rule)))
+        }).await?;
+        if written { break }
+        wait_for_write(domain).await;
     }
-    reconcile(domain);
+    let recording = domain.clone();
+    domain.hook_work.run(move || reconcile(&recording)).await?;
+    Ok(())
+}
+
+#[cfg(test)]
+pub(crate) struct ConfirmationWait {
+    pub entered: tokio::sync::oneshot::Sender<()>,
+    pub release: tokio::sync::oneshot::Receiver<()>,
+}
+
+async fn wait_for_write(_domain: &crate::domain_runtime::DomainRuntime) {
+    #[cfg(test)]
+    {
+        let confirmation = _domain.allow_always_wait.lock().unwrap().take();
+        if let Some(confirmation) = confirmation {
+            confirmation.entered.send(()).unwrap();
+            confirmation.release.await.unwrap();
+            return;
+        }
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
 }
 
 /// The rules Alondra added, each checked against its settings file: a pending rule the file has

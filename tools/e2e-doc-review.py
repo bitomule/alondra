@@ -202,7 +202,7 @@ def main():
     signal.signal(signal.SIGTERM, lambda signum, _frame: sys.exit(128 + signum))
     binaries = [os.path.abspath(p) for p in sys.argv[1:] if not p.endswith(".ok")]
     daemon, cli, relay, tool = binaries
-    scratch = tempfile.mkdtemp(prefix="alondra-review-")
+    scratch = os.path.realpath(tempfile.mkdtemp(prefix="alondra-review-"))
     sandbox = os.path.join(scratch, "sandbox")
     tui = node = None
     try:
@@ -228,7 +228,9 @@ def main():
         comment_two_blocks(tui)
         tui.send("s")
         tui.expect("Pedir cambios")
+        tui.capture("send-open")
         tui.send("Enter")
+        tui.capture("submitted")
         sent(tui, "sent")
         node.told(*comments)
         print("ok: comments sent from the TUI reach the node and the TUI says they were sent", file=sys.stderr, flush=True)

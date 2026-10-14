@@ -1393,3 +1393,59 @@ async fn views_and_changes_say_which_daemon_answered_and_an_unserved_protocol_ge
         assert_eq!((body["code"].as_str(), &body["service"]), (Some("incompatible_protocol"), &service), "{path}");
     }
 }
+
+struct HeldIssueSearch {
+    entered: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    release: Arc<tokio::sync::Semaphore>,
+}
+impl Github for HeldIssueSearch {
+    fn search_issues<'a>(&'a self, _: &'a [String]) -> close::Answer<'a, Result<Value, String>> {
+        Box::pin(async move {
+            if let Some(entered) = self.entered.lock().unwrap().take() { entered.send(()).unwrap(); }
+            self.release.acquire().await.unwrap().forget();
+            Ok(json!([]))
+        })
+    }
+    fn issue_view<'a>(&'a self, _: &'a str, _: u64) -> close::Answer<'a, Result<Value, String>> {
+        Box::pin(async { Err("unexpected issue detail".into()) })
+    }
+    fn close_pr<'a>(&'a self, _: &'a str, _: &'a str, _: u64) -> close::Answer<'a, Result<(), String>> {
+        Box::pin(async { Err("unexpected PR close".into()) })
+    }
+}
+struct ReleaseIssueSearch(Arc<tokio::sync::Semaphore>);
+impl Drop for ReleaseIssueSearch {
+    fn drop(&mut self) { self.0.add_permits(2); }
+}
+
+#[test]
+fn runtime_progress_slow_issue_refreshes_leave_the_view_read_lane_free() {
+    use std::future::Future;
+    let directory = crate::test_support::Directory::new();
+    std::fs::create_dir_all(&directory).unwrap();
+    std::fs::write(alondra_core::options::path_in(&directory), "[issues]\nowners = [\"fixture\"]\n").unwrap();
+    let domain = Arc::new(DomainRuntime::open(&directory).unwrap());
+    let client = Client::open(domain, &directory, Default::default());
+    let (entered, started) = tokio::sync::oneshot::channel();
+    let release = Arc::new(tokio::sync::Semaphore::new(0));
+    *client.github.lock().unwrap() = Arc::new(HeldIssueSearch {
+        entered: std::sync::Mutex::new(Some(entered)), release: release.clone(),
+    });
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    runtime.block_on(async {
+        let release = ReleaseIssueSearch(release);
+        let mut first = Box::pin(client.read("/issues?refresh=1"));
+        assert!(first.as_mut().poll(&mut std::task::Context::from_waker(std::task::Waker::noop())).is_pending());
+        started.await.unwrap();
+        let mut second = Box::pin(crate::views::routes::relay(&client, "phone", "/views/issue_picker?protocol=1&client=ios&lang=en&refresh=1"));
+        assert!(second.as_mut().poll(&mut std::task::Context::from_waker(std::task::Waker::noop())).is_pending());
+        assert_eq!(client.read_work.available(), 2, "two pending GitHub requests must not consume the read lane");
+        let home = crate::views::routes::relay(&client, "phone", "/views/home?protocol=1&client=ios&lang=en").await;
+        assert_eq!(home.status(), StatusCode::OK, "a real home view completes while GitHub is held");
+        drop(release);
+        let (first, second) = tokio::join!(first, second);
+        assert_eq!(first.unwrap().status(), StatusCode::OK);
+        assert_eq!(second.status(), StatusCode::OK);
+        println!("github_requests_held=2 home_view=ok physical_read_slots_free=2 requests_drained=true");
+    });
+}

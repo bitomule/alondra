@@ -331,6 +331,8 @@ pub(crate) struct DomainStore {
     conn: Connection,
     #[cfg(test)]
     live_read_trace: Option<live_read_trace::Sink>,
+    #[cfg(test)]
+    before_live_read: Option<Box<dyn Fn(&str) + Send>>,
     cached: Option<Cached>,
     #[cfg(test)]
     after_commit: Option<Box<dyn FnMut() + Send>>,
@@ -395,6 +397,10 @@ pub(crate) struct Commit {
 
 impl DomainStore {
     #[cfg(test)]
+    pub(crate) fn on_live_read(&mut self, hook: impl Fn(&str) + Send + 'static) {
+        self.before_live_read = Some(Box::new(hook));
+    }
+    #[cfg(test)]
     pub(crate) fn begin_live_read_trace(&mut self) {
         assert!(self.live_read_trace.is_none(), "live read trace already active");
         self.live_read_trace = Some(Default::default());
@@ -407,6 +413,7 @@ impl DomainStore {
     }
     #[cfg(test)]
     fn trace_live_read(&self, getter: &'static str) -> Option<live_read_trace::Read> {
+        if let Some(hook) = &self.before_live_read { hook(getter); }
         self.live_read_trace.as_ref().map(|sink| live_read_trace::Read::new(sink.clone(), getter))
     }
     /// Return only a command that already has a durable semantic receipt for this exact actor,
@@ -540,6 +547,8 @@ impl DomainStore {
             cached: None,
             #[cfg(test)]
             live_read_trace: None,
+            #[cfg(test)]
+            before_live_read: None,
             #[cfg(test)]
             after_commit: None,
         }

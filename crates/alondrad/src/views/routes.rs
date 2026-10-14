@@ -154,10 +154,12 @@ async fn respond(
     if key == "issue_picker?refresh=1" {
         client.feeds.wake();
     }
-    let mut view = match client
-        .views
-        .render(&key, &state, &live, client_kind, language, transport)
-    {
+    let rendering = client.shared();
+    let render_key = key.clone();
+    let rendered = client.read_work.run(move ||
+        rendering.views.render(&render_key, &state, &live, client_kind, language, transport)
+    ).await.expect("view render worker failed");
+    let mut view = match rendered {
         Ok(view) => view,
         Err(BuildError::NotFound) => return error_lang(language, "not_found", "view not found"),
         Err(BuildError::InvalidActionId) => {

@@ -1,5 +1,6 @@
 //! Serialization boundary for the SQL domain and its authenticated producers.
 use crate::domain_authority::{Authority, Capability, Principal};
+use crate::runtime_mutex::RuntimeMutex;
 use crate::domain_store::{DomainStore, StoreError, TransportIdentity};
 use alondra_core::domain::*;
 use anyhow::Result;
@@ -8,13 +9,21 @@ use std::sync::{Arc, Mutex, RwLock};
 use tokio::sync::watch;
 
 pub struct DomainRuntime {
+    pub(crate) read_work: crate::blocking_work::BlockingWork,
+    pub(crate) producer_work: crate::blocking_work::BlockingWork,
+    pub(crate) external_work: crate::blocking_work::BlockingWork,
+    pub(crate) command_work: crate::blocking_work::BlockingWork,
+    pub(crate) hook_work: crate::blocking_work::BlockingWork,
+    #[cfg(test)]
+    pub(crate) allow_always_wait: Mutex<Option<crate::allow_always::ConfirmationWait>>,
+    pub(crate) guard_work: crate::blocking_work::BlockingWork,
     home: PathBuf,
-    pub(crate) store: Mutex<DomainStore>,
+    pub(crate) store: RuntimeMutex<DomainStore>,
     /// The last committed state. Readers take it without the store, a transaction or a copy;
     /// only a commit replaces it, while it still holds the store.
     snapshot: RwLock<Arc<DomainState>>,
     approval_home: PathBuf,
-    authority: Mutex<Authority>,
+    authority: RuntimeMutex<Authority>,
     changed: watch::Sender<Revision>,
     schedule_changed: watch::Sender<Revision>,
     pub(crate) reads: crate::domain_reads::Cache,
@@ -49,11 +58,19 @@ impl DomainRuntime {
         let (schedule_changed, _) = watch::channel(state.revision);
         let authority = capabilities::load(home, state.data_epoch.0.clone())?;
         Ok(Self {
+            read_work: crate::blocking_work::BlockingWork::new(2),
+            producer_work: crate::blocking_work::BlockingWork::new(2),
+            external_work: crate::blocking_work::BlockingWork::new(2),
+            command_work: crate::blocking_work::BlockingWork::new(2),
+            hook_work: crate::blocking_work::BlockingWork::new(1),
+            #[cfg(test)]
+            allow_always_wait: Default::default(),
+            guard_work: crate::blocking_work::BlockingWork::new(2),
             home: home.to_path_buf(),
-            store: Mutex::new(store),
+            store: RuntimeMutex::new(store),
             snapshot: RwLock::new(state),
             approval_home: home.to_path_buf(),
-            authority: Mutex::new(authority),
+            authority: RuntimeMutex::new(authority),
             changed,
             schedule_changed,
             reads: Default::default(),

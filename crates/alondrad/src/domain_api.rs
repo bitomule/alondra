@@ -96,27 +96,34 @@ pub fn routes<H: DomainHost>() -> Router<Arc<H>> {
     router
 }
 
+async fn blocking_read<H: DomainHost>(host: Arc<H>, read: impl FnOnce(&H) -> Response + Send + 'static) -> Response {
+    let work = host.domain().read_work.clone();
+    work.run(move || read(&host)).await.unwrap_or_else(|_| storage_error())
+}
+
 /// Every sectioned read goes through the same grammar as the relay allowlist.
 async fn sectioned_read<H: DomainHost>(
     State(host): State<Arc<H>>,
     signed: Option<Extension<Signed>>,
     uri: axum::http::Uri,
 ) -> Response {
-    if !signed_read(&*host, &signed) {
-        return unsigned_read();
-    }
-    let path = match uri.query() {
-        Some(query) => format!("{}?{query}", uri.path()),
-        None => uri.path().to_owned(),
-    };
-    let response = match crate::domain_reads::parse(&path) {
-        Some(route) => crate::domain_reads::respond(host.domain(), &route),
-        None => domain_error(DomainError::new("invalid_input", "unsupported read query")),
-    };
-    if !signed_read(&*host, &signed) {
-        return unsigned_read();
-    }
-    response
+    blocking_read(host, move |host| {
+        if !signed_read(host, &signed) {
+            return unsigned_read();
+        }
+        let path = match uri.query() {
+            Some(query) => format!("{}?{query}", uri.path()),
+            None => uri.path().to_owned(),
+        };
+        let response = match crate::domain_reads::parse(&path) {
+            Some(route) => crate::domain_reads::respond(host.domain(), &route),
+            None => domain_error(DomainError::new("invalid_input", "unsupported read query")),
+        };
+        if !signed_read(host, &signed) {
+            return unsigned_read();
+        }
+        response
+    }).await
 }
 fn schedule_read<H: DomainHost>(host: &H, path: &str) -> Response {
     if !host.cutover_committed() {
@@ -125,16 +132,20 @@ fn schedule_read<H: DomainHost>(host: &H, path: &str) -> Response {
     crate::domain_schedule_api::response(crate::domain_schedule_api::read(host.domain(), path))
 }
 async fn schedule_list<H: DomainHost>(State(host): State<Arc<H>>, signed: Option<Extension<Signed>>) -> Response {
-    if !signed_read(&*host, &signed) { return unsigned_read(); }
-    let response = schedule_read(&*host, "/schedules");
-    if !signed_read(&*host, &signed) { return unsigned_read(); }
-    response
+    blocking_read(host, move |host| {
+        if !signed_read(host, &signed) { return unsigned_read(); }
+        let response = schedule_read(host, "/schedules");
+        if !signed_read(host, &signed) { return unsigned_read(); }
+        response
+    }).await
 }
 async fn schedule_detail<H: DomainHost>(State(host): State<Arc<H>>, signed: Option<Extension<Signed>>, Path(id): Path<String>) -> Response {
-    if !signed_read(&*host, &signed) { return unsigned_read(); }
-    let response = schedule_read(&*host, &format!("/schedules/{id}"));
-    if !signed_read(&*host, &signed) { return unsigned_read(); }
-    response
+    blocking_read(host, move |host| {
+        if !signed_read(host, &signed) { return unsigned_read(); }
+        let response = schedule_read(host, &format!("/schedules/{id}"));
+        if !signed_read(host, &signed) { return unsigned_read(); }
+        response
+    }).await
 }
 /// A paired device speaking over loopback is the user, exactly as it is over
 /// the relay. The device's approval is rechecked under the writer lock.
@@ -158,11 +169,14 @@ async fn schedule_mutation<H: DomainHost>(
         Err(_) if bodyless => None,
         Err(_) => return domain_error(DomainError::new("invalid_input", "invalid Schedule draft")),
     };
-    let home = host.home().to_owned();
-    crate::domain_schedule_api::response(crate::domain_schedule_api::mutation(
-        host.domain(), host.home(), method.as_str(), uri.path(), body.as_ref(), None,
-        || approved(&home, &device),
-    ))
+    let work = host.domain().command_work.clone();
+    work.run(move || {
+        let home = host.home().to_owned();
+        crate::domain_schedule_api::response(crate::domain_schedule_api::mutation(
+            host.domain(), host.home(), method.as_str(), uri.path(), body.as_ref(), None,
+            || approved(&home, &device),
+        ))
+    }).await.unwrap_or_else(|_| storage_error())
 }
 async fn document_content<H: DomainHost>(
     State(host): State<Arc<H>>,
@@ -536,19 +550,21 @@ async fn capabilities<H: DomainHost>(
     signed: Option<Extension<Signed>>,
     headers: HeaderMap,
 ) -> Response {
-    let bearer = headers.get("authorization").and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer "));
-    let producer_current = || bearer.is_some_and(|token| signed.is_none()
-        && is_local(&peer, &headers)
-        && host.domain().resolve_bearer(token).is_ok());
-    if !signed_read(&*host, &signed) && !producer_current() {
-        return domain_error(DomainError::new("forbidden", "signed device or local producer capability required"));
-    }
-    let response = capabilities_supported(host.domain(), host.cutover_committed());
-    if !signed_read(&*host, &signed) && !producer_current() {
-        return domain_error(DomainError::new("forbidden", "signed device or local producer capability required"));
-    }
-    response
+    blocking_read(host, move |host| {
+        let bearer = headers.get("authorization").and_then(|value| value.to_str().ok())
+            .and_then(|value| value.strip_prefix("Bearer "));
+        let producer_current = || bearer.is_some_and(|token| signed.is_none()
+            && is_local(&peer, &headers)
+            && host.domain().resolve_bearer(token).is_ok());
+        if !signed_read(host, &signed) && !producer_current() {
+            return domain_error(DomainError::new("forbidden", "signed device or local producer capability required"));
+        }
+        let response = capabilities_supported(host.domain(), host.cutover_committed());
+        if !signed_read(host, &signed) && !producer_current() {
+            return domain_error(DomainError::new("forbidden", "signed device or local producer capability required"));
+        }
+        response
+    }).await
 }
 
 fn capabilities_inner(domain: &DomainRuntime) -> Response {
@@ -625,14 +641,16 @@ async fn delivery_evidence<H: DomainHost>(
     signed: Option<Extension<Signed>>,
     RawQuery(query): RawQuery,
 ) -> Response {
-    if !signed_read(&*host, &signed) {
-        return unsigned_read();
-    }
-    let response = delivery_evidence_inner(host.domain(), query.as_deref().unwrap_or_default());
-    if !signed_read(&*host, &signed) {
-        return unsigned_read();
-    }
-    response
+    blocking_read(host, move |host| {
+        if !signed_read(host, &signed) {
+            return unsigned_read();
+        }
+        let response = delivery_evidence_inner(host.domain(), query.as_deref().unwrap_or_default());
+        if !signed_read(host, &signed) {
+            return unsigned_read();
+        }
+        response
+    }).await
 }
 
 pub(crate) fn delivery_evidence_inner(domain: &DomainRuntime, query: &str) -> Response {
@@ -775,14 +793,18 @@ async fn request_resource<H: DomainHost>(
             return domain_error(legacy_write_blocked());
         }
         let Some(device) = signed_device(&*host, &signed) else { return unsigned_read(); };
-        let Some(client) = host.new_work_client() else { return storage_error(); };
-        let user_id = format!("device:{}", device.device_id);
-        let home = host.home().to_owned();
-        return match client.write(&user_id, crate::client_routes::Write::NewRequest, &body, None,
-            &|| approved(&home, &device)).await {
-            Ok(reply) => reply.into_response(),
-            Err(_) => storage_error(),
-        };
+        let work = host.domain().external_work.clone();
+        let runtime = tokio::runtime::Handle::current();
+        return work.run(move || runtime.block_on(async move {
+            let Some(client) = host.new_work_client() else { return storage_error(); };
+            let user_id = format!("device:{}", device.device_id);
+            let home = host.home().to_owned();
+            match client.write(&user_id, crate::client_routes::Write::NewRequest, &body, None,
+                &|| approved(&home, &device)).await {
+                Ok(reply) => reply.into_response(),
+                Err(_) => storage_error(),
+            }
+        })).await.unwrap_or_else(|_| storage_error());
     }
     if signed_device(&*host, &signed).is_some() {
         return domain_error(DomainError::new("invalid_input", "a paired User must submit the Request launch form"));
@@ -975,9 +997,13 @@ async fn execute_command<H: DomainHost>(
         let Some(token) = header.to_str().ok().and_then(|value| value.strip_prefix("Bearer ")) else {
             return domain_error(DomainError::new("forbidden", "invalid domain capability"));
         };
-        let principal = match host.domain().resolve_bearer(token) {
-            Ok(principal) => principal,
-            Err(error) => return store_error(error),
+        let token = token.to_owned();
+        let resolving = host.clone();
+        let credential = token.clone();
+        let principal = match host.domain().producer_work.run(move || resolving.domain().resolve_bearer(&credential)).await {
+            Ok(Ok(principal)) => principal,
+            Ok(Err(error)) => return store_error(error),
+            Err(_) => return storage_error(),
         };
         if let Some(client) = host.new_work_client() {
             if let Err(error) = client.verify_presentation(&envelope.command).await {
@@ -1005,19 +1031,22 @@ async fn execute_command<H: DomainHost>(
         {
             return domain_error(refusal);
         }
-        if let Err(error) = check_launch_plan(host.domain(), host.home(), &envelope.command) {
-            return domain_error(error);
-        }
-        return match host.domain().execute_bearer(token, &envelope) {
-            Ok(outcome) => {
-                let mut answer = json!(outcome);
-                if let Some(notice) = auto_merge_notice(host.domain(), &envelope.command) {
-                    answer["notice"] = json!(notice);
-                }
-                Json(answer).into_response()
+        let work = host.domain().producer_work.clone();
+        return work.run(move || {
+            if let Err(error) = check_launch_plan(host.domain(), host.home(), &envelope.command) {
+                return domain_error(error);
             }
-            Err(error) => store_error(error),
-        };
+            match host.domain().execute_bearer(&token, &envelope) {
+                Ok(outcome) => {
+                    let mut answer = json!(outcome);
+                    if let Some(notice) = auto_merge_notice(host.domain(), &envelope.command) {
+                        answer["notice"] = json!(notice);
+                    }
+                    Json(answer).into_response()
+                }
+                Err(error) => store_error(error),
+            }
+        }).await.unwrap_or_else(|_| storage_error());
     }
     if headers.contains_key("x-alondra-session")
         || headers.contains_key("x-alondra-orchestrator-execution")
@@ -1034,18 +1063,21 @@ async fn execute_command<H: DomainHost>(
     if !host.cutover_committed() {
         return domain_error(legacy_write_blocked());
     }
-    let home = host.home().to_owned();
-    let result = host.domain().execute(
-        &Actor::User { user_id: format!("device:{}", device.device_id) },
-        &envelope,
-        None,
-        || approved(&home, &device)
-            .map_err(|_| DomainError::new("forbidden", "device approval was revoked").into()),
-    );
-    match result {
-        Ok(outcome) => Json(outcome).into_response(),
-        Err(error) => store_error(error),
-    }
+    let work = host.domain().command_work.clone();
+    work.run(move || {
+        let home = host.home().to_owned();
+        let result = host.domain().execute(
+            &Actor::User { user_id: format!("device:{}", device.device_id) },
+            &envelope,
+            None,
+            || approved(&home, &device)
+                .map_err(|_| DomainError::new("forbidden", "device approval was revoked").into()),
+        );
+        match result {
+            Ok(outcome) => Json(outcome).into_response(),
+            Err(error) => store_error(error),
+        }
+    }).await.unwrap_or_else(|_| storage_error())
 }
 
 /// The exact device the middleware verified, only while its approval persists.
@@ -1192,6 +1224,44 @@ mod tests {
     use p256::ecdsa::{Signature, SigningKey, signature::Signer};
     use sha2::{Digest as _, Sha256};
     use std::collections::BTreeSet;
+
+    #[test]
+    fn runtime_progress_producer_capability_resolution_and_commit_run_off_worker() {
+        let directory = crate::test_support::Directory::new();
+        std::fs::create_dir_all(&directory).unwrap();
+        drop(DomainRuntime::open(&directory).unwrap());
+        let host = crate::domain_bootstrap::DomainDaemon::open(&directory).unwrap();
+        let domain = host.domain();
+        let state = domain.state().unwrap();
+        domain.execute(&Actor::User { user_id: "fixture".into() }, &CommandEnvelope {
+            protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: "request".into(), expected_revision: state.revision,
+            command: Command::CreateRequest { request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false },
+        }, None, || Ok(())).unwrap();
+        let token = domain.issue(Principal::Orchestrator { generation: 0, execution_id: "fixture".into() }).unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert("authorization", format!("Bearer {}", token.expose_for_child_environment()).parse().unwrap());
+        let state = domain.state().unwrap();
+        let envelope = CommandEnvelope {
+            protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: "task".into(), expected_revision: state.revision,
+            command: Command::CreateTask { task_id: "task".into(), request_id: "request".into(), title: "Work".into(), agent_id: None,
+                review_prs: false, dependencies: Default::default(), stack: None, launch: Some(serde_json::from_value(json!({"name":"node", "cwd":directory.to_string_lossy(), "model":"sonnet", "reason":"fixture"})).unwrap()) },
+        };
+        let driver = std::thread::current().id();
+        let threads = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let running = threads.clone();
+        domain.producer_work.on_start(move || {
+            let thread = std::thread::current().id();
+            assert_ne!(thread, driver, "producer authority/store work occupies the async worker");
+            running.lock().unwrap().push(thread);
+        });
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        runtime.block_on(async {
+            let reply = execute_command(host, "127.0.0.1:12345".parse().unwrap(), None, headers, envelope).await;
+            assert_eq!(reply.status(), StatusCode::OK);
+        });
+        assert_eq!(threads.lock().unwrap().len(), 2, "both capability resolution and the actual command use the producer lane");
+        assert!(domain.state().unwrap().tasks.contains_key(&"task".into()));
+    }
 
     #[tokio::test]
     async fn committed_local_changes_accepts_only_views_queries() {

@@ -33,6 +33,8 @@ pub(crate) use pr_details::FakePrView;
 const DETAILS_INTERVAL: Duration = Duration::from_secs(60);
 
 pub(crate) struct Client {
+    shared: std::sync::Weak<Self>,
+    pub(crate) read_work: crate::blocking_work::BlockingWork,
     pub(crate) domain: Arc<DomainRuntime>,
     home: PathBuf,
     pub(crate) gauges: crate::machine::Gauges,
@@ -199,6 +201,10 @@ pub(crate) fn upload_step(path: &str) -> Option<&str> {
 }
 
 impl Client {
+    pub(crate) fn shared(&self) -> Arc<Self> {
+        self.shared.upgrade().expect("client still owned")
+    }
+
     pub(crate) fn remember_language(&self, device: &str, lang: alondra_core::views::Lang) {
         let mut languages = self.device_languages.lock().expect("device languages poisoned");
         if languages.get(device) == Some(&lang) {
@@ -241,7 +247,10 @@ impl Client {
                 Default::default()
             }
         };
-        let client = Arc::new(Self {
+        let read_work = domain.read_work.clone();
+        let client = Arc::new_cyclic(|shared| Self {
+            shared: shared.clone(),
+            read_work,
             domain,
             home: home.to_owned(),
             gauges,
@@ -328,6 +337,24 @@ impl Client {
     }
 
     pub(crate) async fn read(&self, path_and_query: &str) -> Option<Response> {
+        match parse_read(path_and_query)? {
+            Route::Issues { .. } | Route::FileChunk { .. } => return self.read_inner(path_and_query).await,
+            _ => {}
+        }
+        let client = self.shared();
+        let path = path_and_query.to_owned();
+        let runtime = tokio::runtime::Handle::current();
+        match self.read_work.run(move || runtime.block_on(client.read_inner(&path))).await {
+            Ok(response) => response,
+            Err(error) => {
+                log!("client read worker failed: {error}");
+                Some(storage())
+            }
+        }
+    }
+
+    /// Live gathering already owns the read lane; reacquiring it here would deadlock the lane.
+    pub(crate) async fn read_inner(&self, path_and_query: &str) -> Option<Response> {
         Some(match parse_read(path_and_query)? {
             Route::Runtime => self.runtime(),
             Route::Activity(id) => self.activity(&id),
@@ -497,14 +524,20 @@ async fn write(
     let Ok(Json(body)) = body else {
         return Reply::error(DomainError::new("invalid_input", "invalid request body")).into_response();
     };
-    let authorize = || {
-        crate::domain_bootstrap::signed_device(&home, &signed)
-            .map(|_| ())
-            .ok_or_else(|| anyhow::anyhow!("device approval was revoked"))
-    };
-    match client.write(&format!("device:{}", device.device_id), route, &body, None, &authorize).await {
-        Ok(reply) => reply.into_response(),
-        Err(_) => storage(),
+    let work = if matches!(&route, Write::Presence | Write::CancelReason(_)) {
+        client.domain.command_work.clone()
+    } else { client.domain.external_work.clone() };
+    let runtime = tokio::runtime::Handle::current();
+    match work.run(move || runtime.block_on(async move {
+        let authorize = || {
+            crate::domain_bootstrap::signed_device(&home, &signed)
+                .map(|_| ())
+                .ok_or_else(|| anyhow::anyhow!("device approval was revoked"))
+        };
+        client.write(&format!("device:{}", device.device_id), route, &body, None, &authorize).await
+    })).await {
+        Ok(Ok(reply)) => reply.into_response(),
+        _ => storage(),
     }
 }
 

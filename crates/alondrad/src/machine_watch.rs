@@ -194,6 +194,10 @@ fn own_disk() -> &'static Path {
 }
 
 pub(crate) struct MachineWatch {
+    #[cfg(test)]
+    pub(crate) sampled: tokio::sync::Notify,
+    #[cfg(test)]
+    pub(crate) sample_threads: Mutex<Vec<std::thread::ThreadId>>,
     record: Mutex<Record>,
     file: Option<PathBuf>,
     changed: tokio::sync::Notify,
@@ -201,7 +205,10 @@ pub(crate) struct MachineWatch {
 
 impl Default for MachineWatch {
     fn default() -> Self {
-        Self { record: Mutex::default(), file: None, changed: tokio::sync::Notify::new() }
+        Self { record: Mutex::default(), file: None, changed: tokio::sync::Notify::new(),
+            #[cfg(test)] sampled: tokio::sync::Notify::new(),
+            #[cfg(test)] sample_threads: Mutex::new(vec![]),
+        }
     }
 }
 
@@ -387,24 +394,28 @@ fn push_text(card: MachineCard) -> impl Fn(bool) -> String + Send + Sync {
 }
 
 /// Carries out one step's actions.
-async fn act(domain: &DomainRuntime, alerts: &impl Alerts, actions: Vec<Action>) {
+async fn act(domain: &std::sync::Arc<DomainRuntime>, alerts: &impl Alerts, actions: Vec<Action>) {
     for action in actions {
         match action {
             Action::Raise { id, card } => {
                 let (need, why) = card.text(Lang::En);
                 let option = alondra_core::domain::QuestionOption { id: MACHINE_FIXED_OPTION.into(), label: MACHINE_FIXED_LABEL.into(), description: None };
-                if let Err(error) = domain.raise_worded_problem(&id, MACHINE_CAUSE, need, why, card.to_body(), vec![option], None) {
+                let body = card.to_body();
+                let raising = domain.clone();
+                if let Err(error) = tokio::task::spawn_blocking(move || raising.raise_worded_problem(&id, MACHINE_CAUSE, need, why, body, vec![option], None)).await.expect("machine card worker failed") {
                     log!("could not put the machine's card in front of the user, pushing it instead: {error:?}");
                     alerts.tell(push_text(card), false).await;
                 }
             }
             Action::Withdraw(id) => {
-                let _ = domain.withdraw_problem(&alondra_core::domain::InteractionId(id));
+                let withdrawing = domain.clone();
+                let _ = tokio::task::spawn_blocking(move || withdrawing.withdraw_problem(&alondra_core::domain::InteractionId(id))).await;
             }
             Action::Push(card) => alerts.tell(push_text(card), false).await,
             Action::Release(sessions) => {
                 log!("the machine recovered: {} node(s) that waited come back through the fleet gate", sessions.len());
-                domain.live.machine_watch.forget(&sessions);
+                let releasing = domain.clone();
+                tokio::task::spawn_blocking(move || releasing.live.machine_watch.forget(&sessions)).await.expect("machine release worker failed");
             }
         }
     }
@@ -413,6 +424,8 @@ async fn act(domain: &DomainRuntime, alerts: &impl Alerts, actions: Vec<Action>)
 /// A new sample of the Mac: kept in the samples file, and when memory gains or loses room for one
 /// more node, one line in the log and a look of the gate.
 pub(crate) fn pace(domain: &DomainRuntime, machine: &Machine) {
+    #[cfg(test)]
+    domain.live.machine_watch.sample_threads.lock().unwrap().push(std::thread::current().id());
     let watch = &domain.live.machine_watch;
     let now = if machine.at == 0 { now_millis() } else { machine.at };
     let change = watch.sample(machine, now);
@@ -436,22 +449,30 @@ pub(crate) async fn run(domain: std::sync::Arc<DomainRuntime>, gauges: crate::ma
 }
 
 async fn watch(domain: std::sync::Arc<DomainRuntime>, sample: impl Fn() -> Option<Machine>, alerts: impl Alerts, tick: Duration) {
-    withdraw_strays(&domain);
+    let starting = domain.clone();
+    tokio::task::spawn_blocking(move || withdraw_strays(&starting)).await.expect("machine startup worker failed");
     let mut cards = domain.subscribe();
     loop {
         if let Some(machine) = sample() {
-            let watch = &domain.live.machine_watch;
-            pace(&domain, &machine);
-            let (machine, disk) = tightest(machine, &watch.volumes());
-            let previous = watch.incident();
-            let fixed = fixed(&domain, previous.as_ref());
-            let waiting = waiters(&domain);
-            let now = now_millis();
-            let (next, actions) = step_on(previous, &machine, disk.as_deref(), &waiting, fixed, now);
-            watch.set_incident(next);
-            if fixed {
-                domain.live.gate.release_declared(&domain);
-            }
+            let measuring = domain.clone();
+            let actions = tokio::task::spawn_blocking(move || {
+                let domain = measuring;
+                let watch = &domain.live.machine_watch;
+                pace(&domain, &machine);
+                let (machine, disk) = tightest(machine, &watch.volumes());
+                let previous = watch.incident();
+                let fixed = fixed(&domain, previous.as_ref());
+                let waiting = waiters(&domain);
+                let now = now_millis();
+                let (next, actions) = step_on(previous, &machine, disk.as_deref(), &waiting, fixed, now);
+                watch.set_incident(next);
+                if fixed {
+                    domain.live.gate.release_declared(&domain);
+                }
+                #[cfg(test)]
+                domain.live.machine_watch.sampled.notify_one();
+                actions
+            }).await.expect("machine watch worker failed");
             act(&domain, &alerts, actions).await;
         }
         tokio::select! {

@@ -45,7 +45,7 @@ pub(crate) async fn serve(listener: UnixListener, domain: Arc<DomainRuntime>) ->
     }
 }
 
-async fn handle(mut stream: UnixStream, domain: &DomainRuntime) -> Result<()> {
+async fn handle(mut stream: UnixStream, domain: &Arc<DomainRuntime>) -> Result<()> {
     let len = stream.read_u32().await.context("reading the frame")? as u64;
     if len > MAX_HOOK_BYTES {
         bail!("hook input exceeds {MAX_HOOK_BYTES} bytes");
@@ -71,14 +71,22 @@ async fn handle(mut stream: UnixStream, domain: &DomainRuntime) -> Result<()> {
     }
     let envelope: Envelope = serde_json::from_value(frame).context("invalid local hook envelope")?;
     let event = text(&envelope.payload, "hook_event_name").unwrap_or_else(|| "unnamed".into());
-    if let Some(reply) = answer_first(domain, &envelope.payload) {
+    let payload = Arc::new(envelope.payload);
+    let first = if event == "PreToolUse" {
+        let checking = domain.clone();
+        let input = payload.clone();
+        domain.guard_work.run(move || answer_first(&checking, &input)).await?
+    } else {
+        answer_first(domain, &payload)
+    };
+    if let Some(reply) = first {
         let written = write_reply(&mut stream, 200, &serde_json::to_vec(&reply)?).await;
-        let recorded = respond(domain, &envelope.payload);
+        let recorded = record(domain, payload.clone()).await;
         written.with_context(|| format!("{event} hook: writing its reply"))?;
         recorded.with_context(|| format!("{event} hook: recording it after its reply"))?;
         return Ok(());
     }
-    answer_after_recording(stream, domain, &envelope.payload).await.with_context(|| format!("{event} hook"))
+    answer_after_recording(stream, domain, &payload).await.with_context(|| format!("{event} hook"))
 }
 
 /// The reply as one write. The hook reads it as one JSON value and exits the moment it has it, so it
@@ -134,8 +142,18 @@ fn pre_tool_use_denied(reason: &str) -> Value {
     json!({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": reason}})
 }
 
-async fn answer_after_recording(mut stream: UnixStream, domain: &DomainRuntime, payload: &Value) -> Result<()> {
-    let reply = respond(domain, payload).context("recording it")?;
+async fn record(domain: &Arc<DomainRuntime>, payload: Arc<Value>) -> Result<Reply> {
+    let recording = domain.clone();
+    domain.hook_work.run(move || respond(&recording, &payload)).await?
+}
+
+async fn withdraw(domain: &Arc<DomainRuntime>, id: InteractionId) -> Result<()> {
+    let withdrawing = domain.clone();
+    domain.hook_work.run(move || crate::domain_holds::withdraw(&withdrawing, &id)).await?
+}
+
+async fn answer_after_recording(mut stream: UnixStream, domain: &Arc<DomainRuntime>, payload: &Arc<Value>) -> Result<()> {
+    let reply = record(domain, payload.clone()).await.context("recording it")?;
     let body = match reply {
         Reply::Plain(body) => body,
         Reply::Held(held) => {
@@ -143,7 +161,7 @@ async fn answer_after_recording(mut stream: UnixStream, domain: &DomainRuntime, 
                 answer = crate::domain_holds::wait(domain, &held.id) => answer,
                 gone = stream.read_u8() => {
                     log!("hook holding {} went away: {gone:?}", held.id);
-                    return crate::domain_holds::withdraw(domain, &held.id);
+                    return withdraw(domain, held.id).await;
                 }
             };
             answered(&held, answer?.and_then(|answers| answers.into_iter().next()))
@@ -165,28 +183,33 @@ async fn refuse(mut stream: UnixStream, reason: String) -> Result<()> {
 }
 
 /// One report of a node mod, as `alondra node event` hands it over.
-async fn node_event(mut stream: UnixStream, domain: &DomainRuntime, report: Value) -> Result<()> {
+async fn node_event(mut stream: UnixStream, domain: &Arc<DomainRuntime>, report: Value) -> Result<()> {
     let envelope: crate::node_reports::Envelope = match serde_json::from_value(report) {
         Ok(envelope) => envelope,
         Err(error) => return refuse(stream, format!("invalid node report: {error}")).await,
     };
-    match &envelope.report {
-        Report::SessionEnd | Report::TurnComplete { aborted: true, .. } => {
-            crate::domain_holds::release_session(domain, &envelope.session_id)?
+    let reporting = domain.clone();
+    domain.hook_work.run(move || {
+        let domain = reporting;
+        match &envelope.report {
+            Report::SessionEnd | Report::TurnComplete { aborted: true, .. } => {
+                crate::domain_holds::release_session(&domain, &envelope.session_id)?
+            }
+            Report::ToolEnd { tool_use_id: Some(call) } => crate::domain_holds::release_call(&domain, &envelope.session_id, call)?,
+            _ => {}
         }
-        Report::ToolEnd { tool_use_id: Some(call) } => crate::domain_holds::release_call(domain, &envelope.session_id, call)?,
-        _ => {}
-    }
-    let ended = matches!(envelope.report, Report::SessionEnd).then(|| envelope.session_id.clone());
-    let measured = matches!(envelope.report, Report::Measure { .. });
-    domain.report(envelope, alondra_core::now_millis());
-    if measured {
-        domain.live.note_measures();
-    }
-    if let Some(session) = ended {
-        record_node_cost(domain, &session);
-        domain.live.losses.report(&session);
-    }
+        let ended = matches!(envelope.report, Report::SessionEnd).then(|| envelope.session_id.clone());
+        let measured = matches!(envelope.report, Report::Measure { .. });
+        domain.report(envelope, alondra_core::now_millis());
+        if measured {
+            domain.live.note_measures();
+        }
+        if let Some(session) = ended {
+            record_node_cost(&domain, &session);
+            domain.live.losses.report(&session);
+        }
+        Ok::<_, anyhow::Error>(())
+    }).await??;
     write_reply(&mut stream, 200, b"{}").await.context("writing its reply")?;
     Ok(())
 }
@@ -194,20 +217,26 @@ async fn node_event(mut stream: UnixStream, domain: &DomainRuntime, report: Valu
 /// A card a node puts to the user, answered on the same connection. A mod helper that goes away
 /// leaves the card open: the mod's wait was cut, not the question, and its next post finds the card.
 /// A permission hook that goes away takes its card with it.
-async fn node_hold(mut stream: UnixStream, domain: &DomainRuntime, card: Value) -> Result<()> {
+async fn node_hold(mut stream: UnixStream, domain: &Arc<DomainRuntime>, card: Value) -> Result<()> {
     let card: crate::domain_holds::Card = match serde_json::from_value(card) {
         Ok(card) => card,
         Err(error) => return refuse(stream, format!("invalid hold: {error}")).await,
     };
+    let card = Arc::new(card);
+    let posting = domain.clone();
+    let request = card.clone();
+    let posted = domain.hook_work.run(move ||
+        crate::domain_holds::post(&posting, &request, posting.live.mods.is_node(&request.session_id))
+    ).await??;
     let mut written = None;
-    let reply = match crate::domain_holds::post(domain, &card, domain.live.mods.is_node(&card.session_id))? {
+    let reply = match posted {
         crate::domain_holds::Posted::NotHeld => json!({"held": false}),
         crate::domain_holds::Posted::Denied(reason) => crate::domain_holds::denied(card.kind, &reason),
         crate::domain_holds::Posted::Held(id) => {
             let answer = tokio::select! {
                 answer = crate::domain_holds::wait(domain, &id) => answer?,
                 _ = stream.read_u8() => {
-                    return if card.withdraw_when_gone { crate::domain_holds::withdraw(domain, &id) } else { Ok(()) };
+                    return if card.withdraw_when_gone { withdraw(domain, id).await } else { Ok(()) };
                 }
             };
             let state = domain.state()?;
@@ -236,7 +265,7 @@ async fn node_hold(mut stream: UnixStream, domain: &DomainRuntime, card: Value) 
     };
     write_reply(&mut stream, 200, &serde_json::to_vec(&reply)?).await.context("writing its reply")?;
     if let Some((rules, task, interaction)) = written {
-        crate::allow_always::chosen(domain, card.cwd.as_deref(), &rules, task.as_deref(), &interaction).await;
+        crate::allow_always::chosen(domain, card.cwd.as_deref(), &rules, task.as_deref(), &interaction).await?;
     }
     Ok(())
 }
@@ -245,21 +274,31 @@ async fn node_hold(mut stream: UnixStream, domain: &DomainRuntime, card: Value) 
 /// reachable and the moment it closes, from either side, it is not. Down it go the session's
 /// pending outbox messages, each once per connection and again on the next until acknowledged,
 /// the direct messages and the interrupts addressed to it.
-async fn node_connection(mut stream: UnixStream, domain: &DomainRuntime, hello: Value) -> Result<()> {
+async fn node_connection(mut stream: UnixStream, domain: &Arc<DomainRuntime>, hello: Value) -> Result<()> {
     let hello: crate::node_reports::Hello = match serde_json::from_value(hello) {
         Ok(hello) => hello,
         Err(error) => return refuse(stream, format!("invalid node connection: {error}")).await,
     };
     let session = hello.session_id.clone();
-    if domain.live.sandbox.load(std::sync::atomic::Ordering::Relaxed) {
-        register_probe(domain, &session)?;
-    }
-    let launch_key = hello.launch_key.clone();
-    let number = domain.connect_node(hello, alondra_core::now_millis());
-    if let Some(key) = launch_key
-        && let Err(error) = crate::domain_sessions::reissue(domain, &key, &AgentId(session.clone()))
-    {
-        log!("could not issue {session} a new capability: {error:#}");
+    let connecting = domain.clone();
+    let connecting_session = session.clone();
+    let number = domain.hook_work.run(move || {
+        let domain = connecting;
+        let session = connecting_session;
+        if domain.live.sandbox.load(std::sync::atomic::Ordering::Relaxed) {
+            register_probe(&domain, &session)?;
+        }
+        let launch_key = hello.launch_key.clone();
+        let number = domain.connect_node(hello, alondra_core::now_millis());
+        if let Some(key) = launch_key
+            && let Err(error) = crate::domain_sessions::reissue(&domain, &key, &AgentId(session.clone()))
+        {
+            log!("could not issue {session} a new capability: {error:#}");
+        }
+        Ok::<_, anyhow::Error>(number)
+    }).await??;
+    if domain.live.mods.session(&session).and_then(|reported| reported.connection) != Some(number) {
+        return Ok(());
     }
     if let Some(pid) = stream.peer_cred().ok().and_then(|credentials| credentials.pid()) {
         domain.live.mods.set_peer(&session, pid as u32);
@@ -271,7 +310,17 @@ async fn node_connection(mut stream: UnixStream, domain: &DomainRuntime, hello: 
         let mut sent = BTreeSet::new();
         let mut buffer = [0u8; 256];
         loop {
-            for line in pending_lines(domain, &session, &mut sent)? {
+            let reading = domain.clone();
+            let reading_session = session.clone();
+            let (pending, next_sent) = domain.hook_work.run(move || {
+                let pending = pending_lines(&reading, &reading_session, &mut sent)?;
+                Ok::<_, anyhow::Error>((pending, sent))
+            }).await??;
+            sent = next_sent;
+            if domain.live.mods.session(&session).and_then(|reported| reported.connection) != Some(number) {
+                return Ok(());
+            }
+            for line in pending {
                 stream.write_all(format!("{line}\n").as_bytes()).await?;
             }
             tokio::select! {
@@ -352,7 +401,7 @@ fn pending_lines(domain: &DomainRuntime, session: &str, sent: &mut BTreeSet<i64>
 }
 
 /// The mod took these messages: the outbox ones become handed, the direct ones stop being resent.
-async fn node_ack(mut stream: UnixStream, domain: &DomainRuntime, ack: Value) -> Result<()> {
+async fn node_ack(mut stream: UnixStream, domain: &Arc<DomainRuntime>, ack: Value) -> Result<()> {
     #[derive(Deserialize)]
     struct Ack {
         session_id: String,
@@ -362,8 +411,12 @@ async fn node_ack(mut stream: UnixStream, domain: &DomainRuntime, ack: Value) ->
         Ok(ack) => ack,
         Err(error) => return refuse(stream, format!("invalid node acknowledgement: {error}")).await,
     };
-    hand_over(domain, &ack.session_id, &ack.ids)?;
-    domain.live.pushes.acknowledged(&ack.session_id, &ack.ids);
+    let acknowledging = domain.clone();
+    domain.hook_work.run(move || {
+        hand_over(&acknowledging, &ack.session_id, &ack.ids)?;
+        acknowledging.live.pushes.acknowledged(&ack.session_id, &ack.ids);
+        Ok::<_, anyhow::Error>(())
+    }).await??;
     write_reply(&mut stream, 200, b"{}").await.context("writing its reply")?;
     Ok(())
 }
@@ -927,8 +980,8 @@ mod tests {
             std::fs::create_dir(&home).unwrap();
             Self(home)
         }
-        fn open(&self) -> DomainRuntime {
-            DomainRuntime::open(&self.0).unwrap()
+        fn open(&self) -> Arc<DomainRuntime> {
+            Arc::new(DomainRuntime::open(&self.0).unwrap())
         }
     }
     impl Drop for Fixture {
@@ -937,7 +990,7 @@ mod tests {
         }
     }
 
-    fn command(domain: &DomainRuntime, actor: Actor, id: &str, command: Command) {
+    fn command(domain: &Arc<DomainRuntime>, actor: Actor, id: &str, command: Command) {
         let state = domain.state().unwrap();
         domain.execute(&actor, &CommandEnvelope {
             protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(),
@@ -946,7 +999,7 @@ mod tests {
     }
 
     /// An Agent with a Task, a question and the User's answer queued for it.
-    fn answered_question(domain: &DomainRuntime, agent: &str) {
+    fn answered_question(domain: &Arc<DomainRuntime>, agent: &str) {
         domain.live.mods.loaded_in(agent);
         command(domain, Actor::System, &format!("register-{agent}"), Command::RegisterAgent {
             agent_id: agent.into(), name: agent.into(), at: 0
@@ -971,7 +1024,7 @@ mod tests {
         });
     }
 
-    fn agent_outbox(domain: &DomainRuntime, agent: &str) -> Vec<(i64, String)> {
+    fn agent_outbox(domain: &Arc<DomainRuntime>, agent: &str) -> Vec<(i64, String)> {
         domain.store.lock().unwrap().pending_messages().unwrap().into_iter()
             .filter(|m| m.agent_id.as_deref() == Some(agent))
             .map(|m| (m.id, m.state)).collect()
@@ -1118,21 +1171,21 @@ mod tests {
         assert_eq!(render(&state, &message), "New API. Keep the old response format");
     }
 
-    fn free_text_question(domain: &DomainRuntime, id: &str, actor: Actor, scope: Scope, recipient: Recipient, body: &str) {
+    fn free_text_question(domain: &Arc<DomainRuntime>, id: &str, actor: Actor, scope: Scope, recipient: Recipient, body: &str) {
         command(domain, actor, &format!("ask-{id}"), Command::AskQuestion {
             attachments: vec![], interaction_id: id.into(), scope, recipient,
             body: body.into(), blocking: false, options: vec![], card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Provide, "Answer the question"),
         });
     }
 
-    fn free_text_answer(domain: &DomainRuntime, actor: Actor, id: &str, text: &str) {
+    fn free_text_answer(domain: &Arc<DomainRuntime>, actor: Actor, id: &str, text: &str) {
         command(domain, actor, &format!("answer-{id}"), Command::AnswerQuestion {
             attachments: vec![], interaction_id: id.into(), option_id: String::new(),
             inputs: BTreeMap::from([("text".into(), InputValue::Text(text.into()))]),
         });
     }
 
-    fn outbox_message(domain: &DomainRuntime, id: &str, recipient_kind: &str) -> OutboxMessage {
+    fn outbox_message(domain: &Arc<DomainRuntime>, id: &str, recipient_kind: &str) -> OutboxMessage {
         domain.store.lock().unwrap().pending_messages().unwrap().into_iter()
             .find(|message| message.interaction_id.as_deref() == Some(id) && message.recipient_kind == recipient_kind)
             .unwrap()
@@ -1178,12 +1231,12 @@ mod tests {
         assert_eq!(question_label(&"á".repeat(81)), format!("{}…", "á".repeat(80)));
     }
 
-    fn rendered_for(domain: &DomainRuntime, id: &str, recipient_kind: &str) -> String {
+    fn rendered_for(domain: &Arc<DomainRuntime>, id: &str, recipient_kind: &str) -> String {
         let state = domain.state().unwrap();
         render(&state, &outbox_message(domain, id, recipient_kind))
     }
 
-    fn node_with_task(domain: &DomainRuntime) {
+    fn node_with_task(domain: &Arc<DomainRuntime>) {
         domain.live.mods.loaded_in("agent-a");
         command(domain, Actor::System, "register", Command::RegisterAgent {
             agent_id: "agent-a".into(), name: "Agent A".into(), at: 0
@@ -1255,12 +1308,186 @@ mod tests {
         assert!(!rendered.contains("user"));
     }
 
-    fn attempts(domain: &DomainRuntime) -> Vec<(i64, String, Option<String>)> {
+    fn attempts(domain: &Arc<DomainRuntime>) -> Vec<(i64, String, Option<String>)> {
         domain.store.lock().unwrap().delivery_evidence_page(0).unwrap().into_iter()
             .map(|item| (item.message_id, item.state, item.reason)).collect()
     }
 
-    async fn hook(domain: &DomainRuntime, payload: Value, ack: Option<u8>) -> (Value, Result<()>) {
+    #[test]
+    fn runtime_progress_view_and_feed_sql_and_render_run_outside_the_async_worker() {
+        let fixture = Fixture::new();
+        let domain = fixture.open();
+        working_agent(&domain, "isolation");
+        let client = crate::client_routes::Client::open(domain.clone(), &fixture.0, Default::default());
+        domain.store.lock().unwrap().begin_live_read_trace();
+        let driver = std::thread::current().id();
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        runtime.block_on(async {
+            let response = crate::views::routes::relay(&client, "phone", "/views/home?protocol=1&client=ios&lang=en").await;
+            assert_eq!(response.status(), axum::http::StatusCode::OK);
+            let bytes = axum::body::to_bytes(response.into_body(), 1 << 20).await.unwrap();
+            let view: Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(view["key"], "home");
+            let response = crate::views::routes::relay_feed(&client, "phone", "/changes?protocol=1&client=ios&lang=en&wait=0").await;
+            assert_eq!(response.status(), axum::http::StatusCode::OK);
+            let bytes = axum::body::to_bytes(response.into_body(), 1 << 20).await.unwrap();
+            let feed: Value = serde_json::from_slice(&bytes).unwrap();
+            assert!(feed["cursor"].as_str().unwrap().starts_with("c1."));
+            assert!(feed["status"].is_object());
+            let runtime = client.read("/runtime").await.expect("runtime route");
+            assert_eq!(runtime.status(), axum::http::StatusCode::OK);
+        });
+        let reads = domain.store.lock().unwrap().end_live_read_trace();
+        assert!(!reads.is_empty());
+        assert!(reads.iter().any(|read| read.rows > 0), "the real populated store was read");
+        assert!(reads.iter().all(|read| read.thread != format!("{driver:?}")), "SQLite ran on the async worker: {reads:?}");
+        let builds = client.views.build_threads.lock().unwrap();
+        assert!(!builds.is_empty(), "a cold projection was actually rendered");
+        assert!(builds.iter().all(|thread| *thread != driver), "render ran on the async worker: {builds:?}");
+    }
+
+    struct ReleaseRead(Option<std::sync::mpsc::Sender<()>>);
+    impl Drop for ReleaseRead {
+        fn drop(&mut self) {
+            if let Some(release) = self.0.take() { let _ = release.send(()); }
+        }
+    }
+
+    #[test]
+    fn runtime_progress_a_held_view_and_hook_recording_do_not_stop_guards_or_machine_samples() {
+        let fixture = Fixture::new();
+        let domain = fixture.open();
+        working_agent(&domain, "progress");
+        let client = crate::client_routes::Client::open(domain.clone(), &fixture.0, Default::default());
+        let driver = std::thread::current().id();
+        let (entered, started) = tokio::sync::oneshot::channel();
+        let (release, held) = std::sync::mpsc::channel();
+        let entered = std::sync::Mutex::new(Some(entered));
+        domain.store.lock().unwrap().on_live_read(move |_| {
+            // A wrong-thread regression fails before the controlled block, rather than hanging.
+            if let Some(entered) = entered.lock().unwrap().take() {
+                assert_ne!(std::thread::current().id(), driver, "view SQL occupies the async worker");
+                entered.send(()).unwrap();
+                held.recv().unwrap();
+            }
+        });
+        let (recording_entered, recording_started) = tokio::sync::oneshot::channel();
+        let recording_entered = std::sync::Mutex::new(Some(recording_entered));
+        domain.hook_work.on_start(move || {
+            if let Some(entered) = recording_entered.lock().unwrap().take() {
+                assert_ne!(std::thread::current().id(), driver, "hook recording occupies the async worker");
+                entered.send(()).unwrap();
+            }
+        });
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        runtime.block_on(async {
+            let release = ReleaseRead(Some(release));
+            let reading = tokio::spawn({
+                let client = client.clone();
+                async move { crate::views::routes::relay(&client, "phone", "/views/home?protocol=1&client=ios&lang=en").await }
+            });
+            started.await.expect("the real view must enter its controlled SQL read");
+            let (mut poster, server) = UnixStream::pair().unwrap();
+            let recording = tokio::spawn({
+                let domain = domain.clone();
+                async move { handle(server, &domain).await }
+            });
+            send_hook(&mut poster, json!({"session_id":"progress", "hook_event_name":"PostToolUse"})).await;
+            assert_eq!(reply(&mut poster).await, json!({}));
+            recording_started.await.expect("hook recording started while SQL was held");
+            let (mut guard, server) = UnixStream::pair().unwrap();
+            let guarding = tokio::spawn({
+                let domain = domain.clone();
+                async move { handle(server, &domain).await }
+            });
+            send_hook(&mut guard, json!({"session_id":"progress", "hook_event_name":"PreToolUse", "tool_name":"Bash", "tool_input":{"command":"alondra answer q --option yes"}})).await;
+            let denied = reply(&mut guard).await;
+            assert_eq!(denied["hookSpecificOutput"]["permissionDecision"], "deny");
+            let gauges = std::sync::Arc::new(std::sync::Mutex::new(Some((alondra_core::Machine {
+                at: 1_700_000_000_000, memory_total: 100, memory_available: 50, memory_free_percent: Some(50),
+                disk_total: 500_000_000_000, disk_available: 400_000_000_000, cpus: 8,
+                ..Default::default()
+            }, None))));
+            let watcher = tokio::spawn(crate::machine_watch::run(domain.clone(), gauges, Silent));
+            domain.live.machine_watch.sampled.notified().await;
+            let threads = domain.live.machine_watch.sample_threads.lock().unwrap().clone();
+            assert!(!threads.is_empty());
+            assert!(threads.iter().all(|thread| *thread != driver));
+            let samples = fixture.0.join(crate::machine_state::SAMPLES_DIR);
+            assert!(std::fs::read_dir(samples).unwrap().next().is_some(), "machine sample was persisted while view held SQL");
+            watcher.abort();
+            assert!(watcher.await.unwrap_err().is_cancelled());
+            drop(release);
+            assert_eq!(reading.await.unwrap().status(), axum::http::StatusCode::OK);
+            recording.await.unwrap().unwrap();
+            guarding.await.unwrap().unwrap();
+            println!("view_sql_held=true post_reply=ok pre_tool_use=deny machine_sample=persisted physical_jobs=drained");
+        });
+    }
+
+    #[test]
+    fn runtime_progress_hook_recording_and_guards_run_off_the_async_worker() {
+        let fixture = Fixture::new();
+        let domain = fixture.open();
+        working_agent(&domain, "hook-isolation");
+        let driver = std::thread::current().id();
+        let recorded = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let checked = recorded.clone();
+        domain.hook_work.on_start(move || {
+            assert_ne!(std::thread::current().id(), driver, "hook recording occupies the async worker");
+            checked.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        });
+        let guarded = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let checked = guarded.clone();
+        domain.guard_work.on_start(move || {
+            assert_ne!(std::thread::current().id(), driver, "PreToolUse guard occupies the async worker");
+            checked.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        });
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        runtime.block_on(async {
+            for event in ["PostToolUse", "PreToolUse"] {
+                let (body, result) = hook(&domain, json!({"session_id":"hook-isolation", "hook_event_name":event,
+                    "tool_name":"Bash", "tool_input":{"command":"alondra answer q --option yes"}}), None).await;
+                result.unwrap();
+                if event == "PreToolUse" {
+                    assert_eq!(body["hookSpecificOutput"]["permissionDecision"], "deny");
+                } else {
+                    assert_eq!(body, json!({}));
+                }
+            }
+        });
+        assert_eq!(recorded.load(std::sync::atomic::Ordering::Relaxed), 2);
+        assert_eq!(guarded.load(std::sync::atomic::Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn runtime_progress_machine_watch_persists_off_the_async_worker() {
+        let fixture = Fixture::new();
+        let domain = fixture.open();
+        let driver = std::thread::current().id();
+        let gauges = std::sync::Arc::new(std::sync::Mutex::new(Some((alondra_core::Machine {
+            at: 1_700_000_000_000, memory_total: 100, memory_available: 50, memory_free_percent: Some(50),
+            disk_total: 500_000_000_000, disk_available: 400_000_000_000, cpus: 8, ..Default::default()
+        }, None))));
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        runtime.block_on(async {
+            let watcher = tokio::spawn(crate::machine_watch::run(domain.clone(), gauges, Silent));
+            domain.live.machine_watch.sampled.notified().await;
+            let threads = domain.live.machine_watch.sample_threads.lock().unwrap().clone();
+            watcher.abort();
+            assert!(watcher.await.unwrap_err().is_cancelled());
+            assert!(!threads.is_empty());
+            assert!(threads.iter().all(|thread| *thread != driver), "machine file sampling occupied the async worker: {threads:?}");
+            assert!(std::fs::read_dir(fixture.0.join(crate::machine_state::SAMPLES_DIR)).unwrap().next().is_some());
+        });
+    }
+
+    struct Silent;
+    impl crate::usage_pause::Alerts for Silent {
+        async fn tell(&self, _: impl Fn(bool) -> String + Send + Sync, _: bool) {}
+    }
+
+    async fn hook(domain: &Arc<DomainRuntime>, payload: Value, ack: Option<u8>) -> (Value, Result<()>) {
         let (mut client, server) = UnixStream::pair().unwrap();
         let body = serde_json::to_vec(&json!({"launched": true, "payload": payload})).unwrap();
         client.write_u32(body.len() as u32).await.unwrap();
@@ -1290,7 +1517,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_hook_is_answered_while_the_store_is_busy_and_recorded_after() {
         let fixture = Fixture::new();
-        let domain = Arc::new(fixture.open());
+        let domain = fixture.open();
         command(&domain, Actor::System, "register", Command::RegisterAgent { agent_id: "session-a".into(), name: "A".into(), at: 0 });
         for (event, tool) in [("PostToolBatch", None), ("PreToolUse", Some("Bash"))] {
             lifecycle::node_event(&domain, &"session-a".into(), NodeEvent::TurnEnded).unwrap();
@@ -1502,7 +1729,7 @@ mod tests {
         assert_eq!(serde_json::from_slice::<Value>(&reply[2..]).unwrap(), json!({}));
     }
 
-    fn task_state(domain: &DomainRuntime) -> TaskState {
+    fn task_state(domain: &Arc<DomainRuntime>) -> TaskState {
         domain.state().unwrap().tasks[&TaskId::from("task")].state
     }
 
@@ -1564,7 +1791,7 @@ mod tests {
         assert!(!reason.contains("task-") && !reason.contains("agent-a"), "no internal ids: {reason}");
     }
 
-    fn problems(domain: &DomainRuntime) -> Vec<alondra_core::domain::Interaction> {
+    fn problems(domain: &Arc<DomainRuntime>) -> Vec<alondra_core::domain::Interaction> {
         domain.state().unwrap().interactions.values().cloned().filter(|card| card.card.kind == CardKind::Problem).collect()
     }
 
@@ -1685,11 +1912,11 @@ mod tests {
         assert_eq!(domain.store.lock().unwrap().stop_blocks(&"task".into()).unwrap(), None, "nothing counted");
     }
 
-    fn phase_of(domain: &DomainRuntime) -> NodePhase {
+    fn phase_of(domain: &Arc<DomainRuntime>) -> NodePhase {
         domain.state().unwrap().node_phase(&"agent-a".into()).cloned().unwrap()
     }
 
-    fn mod_report(domain: &DomainRuntime, report: Value, at: alondra_core::Millis) {
+    fn mod_report(domain: &Arc<DomainRuntime>, report: Value, at: alondra_core::Millis) {
         let mut report = report;
         report["session_id"] = json!("agent-a");
         domain.report(serde_json::from_value(report).unwrap(), at);
@@ -1699,7 +1926,7 @@ mod tests {
 
     /// The node of the release, connected, its release script started in the background
     /// `minutes_ago` and still alive, and its turn ended behind it.
-    async fn waiting_for_release(domain: &DomainRuntime, minutes_ago: i64) -> alondra_core::Millis {
+    async fn waiting_for_release(domain: &Arc<DomainRuntime>, minutes_ago: i64) -> alondra_core::Millis {
         let now = alondra_core::now_millis();
         let started = now - minutes_ago * 60_000;
         node_with_task(domain);
@@ -1772,7 +1999,7 @@ mod tests {
     }
 
     /// A subagent the node started in the background `minutes_ago`, with no shell call alive.
-    fn background_subagent(domain: &DomainRuntime, minutes_ago: i64) {
+    fn background_subagent(domain: &Arc<DomainRuntime>, minutes_ago: i64) {
         let at = alondra_core::now_millis() - minutes_ago * 60_000;
         domain.connect_node(serde_json::from_value(json!({"session_id": "agent-a", "version": "2.1.287"})).unwrap(), at);
         domain.report(serde_json::from_value(json!({"session_id": "agent-a", "event": "subagent.end", "id": "sub"})).unwrap(), at);
@@ -1857,14 +2084,14 @@ mod tests {
 
     /// What `wait_for_machine` records: the gate's declared pause, which the node machine holds,
     /// and the live view's signal.
-    fn waits_for_machine(domain: &DomainRuntime, now: alondra_core::Millis) {
+    fn waits_for_machine(domain: &Arc<DomainRuntime>, now: alondra_core::Millis) {
         let reason = "Memory: the Bazel tests are cut for lack of memory".to_owned();
         assert!(domain.live.gate.hold_back(domain, "agent-a", crate::fleet_pause::Reason::Declared { reason: reason.clone() }, now));
         domain.live.apply(&alondra_core::Event::WaitingMachine { session_id: "agent-a".into(), reason });
         assert!(matches!(domain.state().unwrap().node_phase(&"agent-a".into()), Some(NodePhase::Paused(_))));
     }
 
-    fn quiet_since(domain: &DomainRuntime, at: alondra_core::Millis) {
+    fn quiet_since(domain: &Arc<DomainRuntime>, at: alondra_core::Millis) {
         domain.connect_node(serde_json::from_value(json!({"session_id": "agent-a", "version": "2.1.291"})).unwrap(), at);
     }
 
@@ -2040,7 +2267,7 @@ mod tests {
         }
     }
 
-    async fn acknowledge(domain: &DomainRuntime, session: &str, ids: Value) -> Result<()> {
+    async fn acknowledge(domain: &Arc<DomainRuntime>, session: &str, ids: Value) -> Result<()> {
         let (mut client, server) = UnixStream::pair().unwrap();
         let body = serde_json::to_vec(&json!({"node_ack": {"session_id": session, "ids": ids}})).unwrap();
         client.write_u32(body.len() as u32).await.unwrap();
@@ -2053,7 +2280,7 @@ mod tests {
     #[tokio::test]
     async fn a_connected_node_is_written_its_message_the_moment_it_exists_and_the_ack_hands_it() {
         let fixture = Fixture::new();
-        let domain = Arc::new(fixture.open());
+        let domain = fixture.open();
         let mut node = connect(&domain, "session-a").await;
         assert!(node.nothing_arrives().await, "nothing is written while nothing is pending, and nothing polls");
 
@@ -2079,7 +2306,7 @@ mod tests {
     #[tokio::test]
     async fn an_unacknowledged_message_is_written_again_on_every_new_connection_until_it_is_acked() {
         let fixture = Fixture::new();
-        let domain = Arc::new(fixture.open());
+        let domain = fixture.open();
         answered_question(&domain, "session-a");
         let id = agent_outbox(&domain, "session-a")[0].0;
 
@@ -2101,7 +2328,7 @@ mod tests {
     #[tokio::test]
     async fn only_a_sandbox_daemon_registers_the_agent_of_a_connecting_probe() {
         let fixture = Fixture::new();
-        let domain = Arc::new(fixture.open());
+        let domain = fixture.open();
         connect(&domain, "8a73d968-0000").await.close().await;
         assert!(domain.state().unwrap().agents.is_empty(), "a real daemon never invents an Agent");
         domain.live.sandbox.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -2119,7 +2346,7 @@ mod tests {
     #[tokio::test]
     async fn a_message_for_another_agent_is_not_written_and_a_newer_connection_replaces_the_older() {
         let fixture = Fixture::new();
-        let domain = Arc::new(fixture.open());
+        let domain = fixture.open();
         answered_question(&domain, "session-b");
         let mut lost = domain.live.losses.take().unwrap();
         let mut older = connect(&domain, "session-a").await;
@@ -2134,12 +2361,12 @@ mod tests {
         assert_eq!(lost.recv().await.as_deref(), Some("session-a"), "the current connection closing is reported for revival");
     }
 
-    fn working_agent(domain: &DomainRuntime, agent: &str) {
+    fn working_agent(domain: &Arc<DomainRuntime>, agent: &str) {
         working_agent_without_mod(domain, agent);
         domain.live.mods.loaded_in(agent);
     }
 
-    fn working_agent_without_mod(domain: &DomainRuntime, agent: &str) {
+    fn working_agent_without_mod(domain: &Arc<DomainRuntime>, agent: &str) {
         let user = || Actor::User { user_id: "u".into() };
         command(domain, Actor::System, &format!("register-{agent}"), Command::RegisterAgent { agent_id: agent.into(), name: agent.into(), at: 0 });
         command(domain, user(), &format!("request-{agent}"),
@@ -2179,7 +2406,7 @@ mod tests {
             "requested_schema": {"type": "object", "properties": {"repo": {"type": "string", "title": "Repository"}}}})
     }
 
-    async fn open_hold(domain: &DomainRuntime) -> InteractionId {
+    async fn open_hold(domain: &Arc<DomainRuntime>) -> InteractionId {
         let mut changed = domain.subscribe();
         loop {
             let state = domain.state().unwrap();
@@ -2204,7 +2431,7 @@ mod tests {
         serde_json::from_slice(&bytes[2..]).unwrap()
     }
 
-    fn answer(domain: &DomainRuntime, id: &InteractionId, option: &str, note: Option<&str>) {
+    fn answer(domain: &Arc<DomainRuntime>, id: &InteractionId, option: &str, note: Option<&str>) {
         let inputs = note.map(|note| BTreeMap::from([(Hold::NOTE.to_owned(), InputValue::Text(note.into()))])).unwrap_or_default();
         command(domain, Actor::User { user_id: "u".into() }, &format!("answer-{id}"), Command::AnswerQuestion {
             attachments: vec![], interaction_id: id.clone(), option_id: option.into(), inputs,
@@ -2212,7 +2439,7 @@ mod tests {
     }
 
     /// A frame as Claude Code's hook or the node mod's helper sends it, answered by the user from a card while it waits.
-    async fn held(domain: &DomainRuntime, frame: Value, option: &str, note: Option<&str>) -> (Value, InteractionId) {
+    async fn held(domain: &Arc<DomainRuntime>, frame: Value, option: &str, note: Option<&str>) -> (Value, InteractionId) {
         let (mut client, server) = UnixStream::pair().unwrap();
         send(&mut client, &frame).await;
         let handler = handle(server, domain);
@@ -2227,7 +2454,7 @@ mod tests {
         (body, id)
     }
 
-    async fn held_card(domain: &DomainRuntime, card: Value, option: &str, note: Option<&str>) -> (Value, InteractionId) {
+    async fn held_card(domain: &Arc<DomainRuntime>, card: Value, option: &str, note: Option<&str>) -> (Value, InteractionId) {
         held(domain, json!({"node_hold": card}), option, note).await
     }
 
@@ -2275,9 +2502,59 @@ mod tests {
         json!({"type": "addRules", "rules": [{"toolName": "Bash", "ruleContent": content}], "behavior": "allow", "destination": destination})
     }
 
-    fn option_ids(domain: &DomainRuntime, id: &InteractionId) -> Vec<String> {
+    fn option_ids(domain: &Arc<DomainRuntime>, id: &InteractionId) -> Vec<String> {
         let InteractionPayload::Question { options, .. } = &domain.state().unwrap().interactions[id].payload else { panic!("question") };
         options.iter().map(|o| o.id.clone()).collect()
+    }
+
+    #[tokio::test]
+    async fn runtime_progress_allow_always_confirmation_does_not_hold_up_an_unrelated_node_ack() {
+        use std::future::Future;
+
+        let (_dir, root, worktree) = repo_with_worktree();
+        let fixture = Fixture::new();
+        let domain = fixture.open();
+        working_agent(&domain, "permission-agent");
+        answered_question(&domain, "ack-agent");
+        let message = agent_outbox(&domain, "ack-agent")[0].0;
+        let (entered, waiting) = tokio::sync::oneshot::channel();
+        let (release, confirmation) = tokio::sync::oneshot::channel();
+        *domain.allow_always_wait.lock().unwrap() = Some(crate::allow_always::ConfirmationWait { entered, release: confirmation });
+        let (mut client, server) = UnixStream::pair().unwrap();
+        let card = command_card("permission-agent", "make build", &worktree, Value::Null);
+        send(&mut client, &json!({"node_hold": card})).await;
+        let holding = tokio::spawn({
+            let domain = domain.clone();
+            async move { handle(server, &domain).await }
+        });
+        let id = open_hold(&domain).await;
+        answer(&domain, &id, Hold::ALWAYS, None);
+        waiting.await.expect("the pending rule reached settings confirmation");
+        let rows = domain.store.lock().unwrap().allowed_rules().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].state, crate::allow_always::RuleState::Pending);
+
+        let mut acknowledgement = Box::pin(acknowledge(&domain, "ack-agent", json!([format!("o-{message}")])));
+        let admitted = domain.hook_work.available() == 1;
+        // Poll the real transport first so an occupied lane queues this acknowledgement.
+        let initial = acknowledgement.as_mut().poll(&mut std::task::Context::from_waker(std::task::Waker::noop()));
+        let completed_before_release = match initial {
+            std::task::Poll::Ready(result) => { result.unwrap(); true }
+            std::task::Poll::Pending if admitted => { acknowledgement.as_mut().await.unwrap(); true }
+            std::task::Poll::Pending => false,
+        };
+        if completed_before_release {
+            assert!(agent_outbox(&domain, "ack-agent").is_empty(), "the real acknowledgement handed the message");
+        }
+        std::fs::write(root.join(crate::allow_always::SETTINGS), r#"{"permissions":{"allow":["Bash(make build *)"]}}"#).unwrap();
+        release.send(()).unwrap();
+        let body = reply(&mut client).await;
+        holding.await.unwrap().unwrap();
+        if !completed_before_release { acknowledgement.await.unwrap(); }
+        assert_eq!(body["allowed"], true);
+        assert_eq!(domain.store.lock().unwrap().allowed_rules().unwrap()[0].state, crate::allow_always::RuleState::Active);
+        assert!(completed_before_release, "the real unrelated node acknowledgement queued behind settings confirmation");
+        println!("settings_confirmation=held unrelated_node_ack=completed_before_release rule=active physical_jobs=drained");
     }
 
     #[tokio::test]
@@ -2498,7 +2775,7 @@ mod tests {
 
     const GROUP: [&str; 3] = ["hold-question-toolu-three-q1", "hold-question-toolu-three-q2", "hold-question-toolu-three-q3"];
 
-    async fn post_group(domain: &DomainRuntime) -> (UnixStream, std::pin::Pin<Box<impl std::future::Future<Output = Result<()>> + '_>>) {
+    async fn post_group(domain: &Arc<DomainRuntime>) -> (UnixStream, std::pin::Pin<Box<impl std::future::Future<Output = Result<()>> + '_>>) {
         let (mut client, server) = UnixStream::pair().unwrap();
         send(&mut client, &json!({"node_hold": three_questions("agent-a")})).await;
         let handler = Box::pin(handle(server, domain));
@@ -2596,7 +2873,7 @@ mod tests {
         assert_eq!(domain.state().unwrap().interactions.values().filter(|i| i.card.group.is_some()).count(), 3);
     }
 
-    async fn answered_without_a_card(domain: &DomainRuntime, card: Value) -> Value {
+    async fn answered_without_a_card(domain: &Arc<DomainRuntime>, card: Value) -> Value {
         let (mut client, server) = UnixStream::pair().unwrap();
         send(&mut client, &json!({"node_hold": card})).await;
         let (result, body) = tokio::join!(handle(server, domain), reply(&mut client));
@@ -2735,14 +3012,14 @@ mod tests {
         assert_eq!(again, first);
     }
 
-    async fn report(domain: &DomainRuntime, report: Value) {
+    async fn report(domain: &Arc<DomainRuntime>, report: Value) {
         let (mut client, server) = UnixStream::pair().unwrap();
         send(&mut client, &json!({"node_event": report})).await;
         let (result, _) = tokio::join!(handle(server, domain), reply(&mut client));
         result.unwrap();
     }
 
-    async fn withdrawn_by(domain: &DomainRuntime, card: Value, ended: Value) -> (Value, InteractionId) {
+    async fn withdrawn_by(domain: &Arc<DomainRuntime>, card: Value, ended: Value) -> (Value, InteractionId) {
         let (mut client, server) = UnixStream::pair().unwrap();
         send(&mut client, &json!({"node_hold": card})).await;
         let driver = async {

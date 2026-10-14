@@ -6,6 +6,8 @@ mod test_support;
 mod log;
 mod allow_always;
 mod approval_lease;
+mod blocking_work;
+mod runtime_mutex;
 mod operation_journal;
 mod api_failures;
 mod auth;

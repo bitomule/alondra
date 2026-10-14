@@ -118,7 +118,7 @@ async fn next_sample(
 
 async fn sample_live(
     client: &crate::client_routes::Client,
-    state: &alondra_core::domain::DomainState,
+    state: &Arc<alondra_core::domain::DomainState>,
     last: &mut Option<String>,
 ) -> bool {
     let keys = client.feeds.live_keys();
@@ -278,23 +278,22 @@ async fn current(
         cache_current(client, cache_key, &current);
         return Ok(current);
     }
-    let status_view = client
-        .views
-        .render(status_key, &state, &live, kind, lang, transport)
+    let rendering = client.shared();
+    let render_state = state.clone();
+    let versions = views.to_vec();
+    let (status_view, stale) = client.read_work.run(move || {
+        let status_view = rendering.views.render(status_key, &render_state, &live, kind, lang, transport)?;
+        let stale = versions.iter().filter_map(|(key, version)| {
+            let changed = if super::routes::valid_open_key(key) {
+                rendering.views.render(key, &render_state, &live, kind, lang, transport)
+                    .map_or(true, |view| &view.version != version)
+            } else { true };
+            changed.then(|| key.clone())
+        }).collect();
+        Ok::<_, alondra_core::views::BuildError>((status_view, stale))
+    }).await.expect("feed render worker failed")
         .map_err(|_| error("storage_unavailable", "view status unavailable",
             "estado de la vista no disponible", lang))?;
-    let mut stale = Vec::new();
-    for (key, version) in views {
-        let stale_view = if super::routes::valid_open_key(key) {
-            match client.views.render(key, &state, &live, kind, lang, transport) {
-                Ok(view) => &view.version != version,
-                Err(_) => true,
-            }
-        } else { true };
-        if stale_view {
-            stale.push(key.clone());
-        }
-    }
     let tuple = (
         clock.0.clone(),
         clock.1,
@@ -822,31 +821,34 @@ mod tests {
         });
     }
 
-    #[tokio::test]
-    async fn a_node_state_change_wakes_the_feed() {
+    #[test]
+    fn a_node_state_change_wakes_the_feed() {
         let fixture = FeedFixture::new();
-        fixture.register_agent("node-wake");
-        let agent = "agent-node-wake";
-        fixture.client.domain.live.observe(&serde_json::json!({
-            "session_id": agent, "hook_event_name": "PreToolUse", "tool_name": "Bash",
-            "tool_input": {"command": "echo first"}, "cwd": "/tmp/feed-project"
-        }));
-        let current = fixture.initial(&[(format!("node:{agent}"), "v0000000000000000".into())]).await;
-        let open = vec![(format!("node:{agent}"), "v0000000000000000".into())];
-        let _ = response_json(handle(&fixture.client, "device-node", &query(&current.cursor, 0, &open), Transport::Loopback).await).await;
-        assert!(!current.live_keys.is_empty(), "the open node view is registered for live sampling");
-        let mut last = None;
-        assert!(sample_live(&fixture.client, &fixture.client.domain.state().unwrap(), &mut last).await);
-        let first_wake = *fixture.client.feeds.clock.borrow();
-        assert!(!sample_live(&fixture.client, &fixture.client.domain.state().unwrap(), &mut last).await,
-            "an unchanged node projection does not wake the feed");
-        fixture.client.domain.live.observe(&serde_json::json!({
-            "session_id": agent, "hook_event_name": "PreToolUse", "tool_name": "Bash",
-            "tool_input": {"command": "echo second"}, "cwd": "/tmp/feed-project"
-        }));
-        assert!(sample_live(&fixture.client, &fixture.client.domain.state().unwrap(), &mut last).await,
-            "a changed node activity projection wakes the feed");
-        assert_eq!(*fixture.client.feeds.clock.borrow(), first_wake + 1);
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        runtime.block_on(async {
+            fixture.register_agent("node-wake");
+            let agent = "agent-node-wake";
+            fixture.client.domain.live.observe(&serde_json::json!({
+                "session_id": agent, "hook_event_name": "PreToolUse", "tool_name": "Bash",
+                "tool_input": {"command": "echo first"}, "cwd": "/tmp/feed-project"
+            }));
+            let current = fixture.initial(&[(format!("node:{agent}"), "v0000000000000000".into())]).await;
+            let open = vec![(format!("node:{agent}"), "v0000000000000000".into())];
+            let _ = response_json(handle(&fixture.client, "device-node", &query(&current.cursor, 0, &open), Transport::Loopback).await).await;
+            assert!(!current.live_keys.is_empty(), "the open node view is registered for live sampling");
+            let mut last = None;
+            assert!(sample_live(&fixture.client, &fixture.client.domain.state().unwrap(), &mut last).await);
+            let first_wake = *fixture.client.feeds.clock.borrow();
+            assert!(!sample_live(&fixture.client, &fixture.client.domain.state().unwrap(), &mut last).await,
+                "an unchanged node projection does not wake the feed");
+            fixture.client.domain.live.observe(&serde_json::json!({
+                "session_id": agent, "hook_event_name": "PreToolUse", "tool_name": "Bash",
+                "tool_input": {"command": "echo second"}, "cwd": "/tmp/feed-project"
+            }));
+            assert!(sample_live(&fixture.client, &fixture.client.domain.state().unwrap(), &mut last).await,
+                "a changed node activity projection wakes the feed");
+            assert_eq!(*fixture.client.feeds.clock.borrow(), first_wake + 1);
+        });
     }
 
     #[tokio::test]

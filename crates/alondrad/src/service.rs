@@ -609,94 +609,27 @@ impl Service {
         }
         approved_method(request)?;
         if let Some(domain) = &self.domain {
-            let result = if crate::views::actions::approved_path(&request.method, &request.path) {
-                let routes = self.routes.as_ref().context("client routes unavailable")?;
-                let body = request.body.as_ref().context("action body required")?;
-                crate::views::actions::relay(
-                    routes,
-                    &envelope.sender,
-                    body,
-                    (&envelope.sender, &envelope.request_id, digest),
-                    || self.require_device_approval(&envelope.sender, device, transport),
-                )
-                .await?
-            } else if crate::domain_api::is_resource_mutation_path(&request.method, &request.path) {
-                crate::domain_api::encrypted_resource_command_runtime(
-                    domain,
-                    self.routes.as_deref(),
-                    &envelope.sender,
-                    &request.method,
-                    &request.path,
-                    request.body.as_ref(),
-                    (&envelope.sender, &envelope.request_id, digest),
-                    || self.require_device_approval(&envelope.sender, device, transport),
-                )
-                .await?
-            } else if let Some(attempt_id) =
-                crate::domain_api::resolve_delivery_attempt_id(&request.path)
-            {
-                crate::domain_api::encrypted_resolve_delivery_runtime(
-                    domain,
-                    &self.home,
-                    &envelope.sender,
-                    attempt_id,
-                    request.body.as_ref(),
-                    (&envelope.sender, &envelope.request_id, digest),
-                    || self.require_device_approval(&envelope.sender, device, transport),
-                )?
-            } else if let Some(agent) = agent_message(&request.path) {
-                crate::domain_messages::relayed(
-                    domain,
-                    &self.home,
-                    &envelope.sender,
-                    agent,
-                    request.body.as_ref(),
-                )
-                .await
-            } else if let Some(decision) = crate::domain_orchestrator::decision_route(&request.path)
-            {
-                crate::domain_orchestrator::decide(
-                    &crate::domain_orchestrator::executor(domain.clone(), &self.home),
-                    decision,
-                    request.body.as_ref(),
-                )
-            } else if let Some(route) = crate::client_routes::parse_write(&request.path)
-                .filter(|_| crate::client_routes::atomic_write_path(&request.path))
-            {
-                let routes = self.routes.as_ref().context("client routes unavailable")?;
-                let body = request.body.as_ref().context("request body required")?;
-                let identity = (
-                    envelope.sender.as_str(),
-                    envelope.request_id.as_str(),
-                    digest,
+            let external = request.path == "/requests" || request.path == "/orchestrator/messages"
+                || agent_message(&request.path).is_some()
+                || request.path == "/actions" && request.body.as_ref().is_some_and(crate::views::actions::external_request);
+            let result = {
+                let (domain, routes, home, auth, journal, device, sender, request_id, request, digest) = (
+                    domain.clone(), self.routes.clone(), self.home.clone(), self.auth.clone(),
+                    self.journal.clone(), device.clone(), envelope.sender.clone(),
+                    envelope.request_id.clone(), request.clone(), *digest,
                 );
-                routes
-                    .write(
-                        &format!("device:{}", envelope.sender),
-                        route,
-                        body,
-                        Some(identity),
-                        &|| self.require_device_approval(&envelope.sender, device, transport),
-                    )
-                    .await?
-                    .into_value()
-            } else if crate::domain_schedule_api::approved_mutation_path(
-                &request.method,
-                &request.path,
-                request.body.is_some(),
-            ) {
-                crate::domain_schedule_api::encrypted_mutation(
-                    domain,
-                    &self.home,
-                    &envelope.sender,
-                    &request.method,
-                    &request.path,
-                    request.body.as_ref(),
-                    (&envelope.sender, &envelope.request_id, digest),
-                    || self.require_device_approval(&envelope.sender, device, transport),
-                )
-            } else {
-                bail!("domain service command path is not approved");
+                let work = if external { domain.external_work.clone() } else { domain.command_work.clone() };
+                let runtime = tokio::runtime::Handle::current();
+                let physical_receipt = receipt.clone();
+                work.run(move || {
+                    let _receipt = physical_receipt;
+                    let approval_home = home.clone();
+                    let approval_sender = sender.clone();
+                    runtime.block_on(Self::execute_domain_request(
+                        domain, routes, home, sender, request_id, request, digest,
+                        move || Self::require_approval(&auth, &approval_home, &journal, &approval_sender, &device, transport),
+                    ))
+                }).await??
             };
             let bytes = self.encode_response(envelope, device, &result, request)?;
             let bytes = self.journal
@@ -735,6 +668,111 @@ impl Service {
         let bytes = self.journal
             .complete_admitted(&envelope.sender, &envelope.request_id, bytes, receipt.clone()).await?;
         Ok(bytes)
+    }
+
+    async fn execute_domain_request(
+        domain: Arc<crate::domain_runtime::DomainRuntime>,
+        routes: Option<Arc<crate::client_routes::Client>>,
+        home: PathBuf,
+        sender: String,
+        request_id: String,
+        request: LocalRequest,
+        digest: [u8; 32],
+        authorize: impl Fn() -> Result<()> + Send + Sync,
+    ) -> Result<Value> {
+        if authorize().is_err() {
+            return Ok(json!({"status":403, "body":alondra_core::domain::DomainError::new("forbidden", "device approval was revoked")}));
+        }
+        let result = if crate::views::actions::approved_path(&request.method, &request.path) {
+            let routes = routes.as_ref().context("client routes unavailable")?;
+            let body = request.body.as_ref().context("action body required")?;
+            crate::views::actions::relay(
+                routes,
+                &sender,
+                body,
+                (&sender, &request_id, &digest),
+                &authorize,
+            )
+            .await?
+        } else if crate::domain_api::is_resource_mutation_path(&request.method, &request.path) {
+            crate::domain_api::encrypted_resource_command_runtime(
+                &domain,
+                routes.as_deref(),
+                &sender,
+                &request.method,
+                &request.path,
+                request.body.as_ref(),
+                (&sender, &request_id, &digest),
+                &authorize,
+            )
+            .await?
+        } else if let Some(attempt_id) =
+            crate::domain_api::resolve_delivery_attempt_id(&request.path)
+        {
+            crate::domain_api::encrypted_resolve_delivery_runtime(
+                &domain,
+                &home,
+                &sender,
+                attempt_id,
+                request.body.as_ref(),
+                (&sender, &request_id, &digest),
+                &authorize,
+            )?
+        } else if let Some(agent) = agent_message(&request.path) {
+            crate::domain_messages::relayed(
+                &domain,
+                &home,
+                &sender,
+                agent,
+                request.body.as_ref(),
+            )
+            .await
+        } else if let Some(decision) = crate::domain_orchestrator::decision_route(&request.path)
+        {
+            crate::domain_orchestrator::decide(
+                &crate::domain_orchestrator::executor(domain.clone(), &home),
+                decision,
+                request.body.as_ref(),
+            )
+        } else if let Some(route) = crate::client_routes::parse_write(&request.path)
+            .filter(|_| crate::client_routes::atomic_write_path(&request.path))
+        {
+            let routes = routes.as_ref().context("client routes unavailable")?;
+            let body = request.body.as_ref().context("request body required")?;
+            let identity = (
+                sender.as_str(),
+                request_id.as_str(),
+                &digest,
+            );
+            routes
+                .write(
+                    &format!("device:{}", sender),
+                    route,
+                    body,
+                    Some(identity),
+                    &authorize,
+                )
+                .await?
+                .into_value()
+        } else if crate::domain_schedule_api::approved_mutation_path(
+            &request.method,
+            &request.path,
+            request.body.is_some(),
+        ) {
+            crate::domain_schedule_api::encrypted_mutation(
+                &domain,
+                &home,
+                &sender,
+                &request.method,
+                &request.path,
+                request.body.as_ref(),
+                (&sender, &request_id, &digest),
+                &authorize,
+            )
+        } else {
+            bail!("domain service command path is not approved");
+        };
+        Ok(result)
     }
 
     pub fn open(home: &Path, local_port: u16, auth: Arc<Auth>) -> Result<Option<Self>> {
@@ -3525,6 +3563,75 @@ agreement_key = "{}"
             .unwrap()
             .unwrap();
         (home, service, phone_agreement)
+    }
+
+    #[test]
+    fn runtime_progress_encrypted_mutations_run_off_worker_and_recheck_queued_approval() {
+        use std::future::Future;
+        for revoke in ["none", "approval", "enrollment"] {
+            let (directory, service, phone) = push_fixture();
+            activate_push(&service);
+            let domain = Arc::new(crate::domain_runtime::DomainRuntime::open(&directory).unwrap());
+            let client = crate::client_routes::Client::open(domain.clone(), &directory, Default::default());
+            let service = service.with_domain(domain.clone()).with_client(client);
+            let work = changes_work(&service, "queued-write", json!({"method":"POST","path":"/requests", "body":{
+                "request_id":"isolated-write", "text":"Ship it", "options":{}, "attachments":[]
+            }}));
+            let prepared = service.prepare_work(&work, Transport::Relay).unwrap().unwrap();
+            service.journal.accept("phone-1", "queued-write", &prepared.digest).unwrap();
+            service.journal.executing_local("phone-1", "queued-write", &prepared.digest).unwrap();
+            let receipt = service.journal.reserve_receipt(prepared.guard.clone()).unwrap();
+            let device = service.devices.get("phone-1").unwrap();
+            let driver = std::thread::current().id();
+            let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+            runtime.block_on(async {
+                let mut holders = Vec::new();
+                let mut releases = Vec::new();
+                for _ in 0..2 {
+                    let lane = domain.external_work.clone();
+                    let (entered, started) = tokio::sync::oneshot::channel();
+                    let (release, held) = std::sync::mpsc::channel();
+                    holders.push(tokio::spawn(async move {
+                        lane.run(move || { entered.send(()).unwrap(); held.recv().unwrap(); }).await.unwrap()
+                    }));
+                    started.await.unwrap();
+                    releases.push(release);
+                }
+                let threads = Arc::new(Mutex::new(Vec::new()));
+                let running = threads.clone();
+                domain.external_work.on_start(move || {
+                    let thread = std::thread::current().id();
+                    assert_ne!(thread, driver, "encrypted mutation occupied the async worker");
+                    running.lock().unwrap().push(thread);
+                });
+                let mut pending = Box::pin(service.execute_atomic_local(
+                    &work.envelope, &device, &prepared.request, &prepared.digest, Transport::Relay, receipt,
+                ));
+                assert!(pending.as_mut().poll(&mut std::task::Context::from_waker(std::task::Waker::noop())).is_pending());
+                assert!(!domain.state().unwrap().requests.contains_key(&"isolated-write".into()));
+                match revoke {
+                    "approval" => { service.auth.revoke("phone-1").unwrap(); }
+                    "enrollment" => service.journal.revoke_enrollment("phone-1").unwrap(),
+                    _ => (),
+                }
+                for release in releases { release.send(()).unwrap(); }
+                let bytes = pending.await.unwrap();
+                for holder in holders { holder.await.unwrap(); }
+                let envelope: Envelope = serde_json::from_slice(&bytes).unwrap();
+                let answer: Value = serde_json::from_slice(&envelope.open(
+                    service.signing.verifying_key(), &phone, "mac-1", "phone-1", "mac-1", now_ms(),
+                ).unwrap()).unwrap();
+                assert!(!threads.lock().unwrap().is_empty(), "the real encrypted executor entered its worker");
+                if revoke == "none" {
+                    assert_eq!(answer["status"], 200, "{answer}");
+                    assert!(domain.state().unwrap().requests.contains_key(&"isolated-write".into()));
+                } else {
+                    assert_eq!(answer["status"], 403, "revocation must fence the queued mutation: {answer}");
+                    assert!(!domain.state().unwrap().requests.contains_key(&"isolated-write".into()));
+                }
+                println!("queued_encrypted_write revoke={revoke} status={} off_worker=true", answer["status"]);
+            });
+        }
     }
 
     #[tokio::test]

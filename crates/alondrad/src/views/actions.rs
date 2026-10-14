@@ -79,12 +79,23 @@ pub(crate) async fn local(
     };
     let Ok(request) = serde_json::from_slice::<ActionRequest>(&body) else { return error("invalid_input", "invalid action request"); };
     let domain = state.domain();
-    let client = state.client();
-    super::action_results::execute_recorded(&domain, &client, &home, &device, &body, request, || {
-        crate::domain_bootstrap::signed_device(&home, &signed)
-            .map(|_| ())
-            .ok_or_else(|| anyhow::anyhow!("device approval was revoked"))
-    }).await
+    let external = ActionId::parse(&request.action_id).is_ok_and(|action| is_external(action.verb));
+    let work = if external { domain.external_work.clone() } else { domain.command_work.clone() };
+    let runtime = tokio::runtime::Handle::current();
+    match work.run(move || runtime.block_on(async move {
+        let client = state.client();
+        super::action_results::execute_recorded(&domain, &client, &home, &device, &body, request, || {
+            crate::domain_bootstrap::signed_device(&home, &signed)
+                .map(|_| ())
+                .ok_or_else(|| anyhow::anyhow!("device approval was revoked"))
+        }).await
+    })).await {
+        Ok(response) => response,
+        Err(error) => {
+            log!("local action worker failed: {error}");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
 }
 
 pub(crate) async fn relay(
@@ -324,6 +335,11 @@ impl LocalActions {
         receipts.insert(key, receipt.clone());
         receipt
     }
+}
+
+pub(crate) fn external_request(body: &Value) -> bool {
+    body.get("action_id").and_then(Value::as_str).and_then(|id| ActionId::parse(id).ok())
+        .is_some_and(|action| is_external(action.verb))
 }
 
 fn is_external(verb: Verb) -> bool {
@@ -1889,6 +1905,112 @@ mod tests {
             option_id: Some(option.into()),
             input: ActionInput::default(),
         }
+    }
+
+    #[test]
+    fn runtime_progress_local_action_runs_off_worker_with_durable_replay() {
+        use base64::{Engine as _, engine::general_purpose::STANDARD};
+        let directory = crate::test_support::Directory::new();
+        std::fs::create_dir_all(&directory).unwrap();
+        drop(crate::domain_runtime::DomainRuntime::open(&directory).unwrap());
+        let daemon = crate::domain_bootstrap::DomainDaemon::open(&directory).unwrap();
+        let key = p256::ecdsa::SigningKey::from_slice(&[21u8; 32]).unwrap();
+        let public_key = STANDARD.encode(key.verifying_key().to_sec1_bytes());
+        let auth = daemon.auth();
+        let device = auth.pair(&auth.new_pairing_code(), "Fixture phone", &public_key).unwrap();
+        let signed = Some(Extension(crate::auth::Signed { device_id: device.id, name: device.name, public_key }));
+        let domain = daemon.domain();
+        let request = pacing_request(&domain.state().unwrap(), Verb::SetLimit, "limit", "4", "en");
+        let body: axum::body::Bytes = serde_json::to_vec(&request).unwrap().into();
+        let driver = std::thread::current().id();
+        let threads = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let running = threads.clone();
+        domain.external_work.on_start(move || {
+            let thread = std::thread::current().id();
+            assert_ne!(thread, driver, "local action occupied the async worker");
+            running.lock().unwrap().push(thread);
+        });
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        runtime.block_on(async {
+            let mut replies = Vec::new();
+            for _ in 0..2 {
+                let response = local(State(daemon.clone()), signed.clone(), body.clone()).await;
+                assert_eq!(response.status(), StatusCode::OK);
+                replies.push(axum::body::to_bytes(response.into_body(), 1 << 20).await.unwrap());
+            }
+            let reply: Value = serde_json::from_slice(&replies[0]).unwrap();
+            assert_eq!(reply["outcome"], "applied", "{reply}");
+            assert_eq!(replies[0], replies[1], "the exact action replays its durable result");
+        });
+        assert_eq!(threads.lock().unwrap().len(), 2);
+        assert!(std::fs::read_to_string(alondra_core::options::path_in(&directory)).unwrap().contains("max_working_nodes = 4"));
+    }
+
+    struct ReleaseJobs(Vec<std::sync::mpsc::Sender<()>>);
+    impl Drop for ReleaseJobs {
+        fn drop(&mut self) { for release in &self.0 { let _ = release.send(()); } }
+    }
+
+    #[test]
+    fn runtime_progress_slow_external_jobs_do_not_hold_a_fast_local_action() {
+        use base64::{Engine as _, engine::general_purpose::STANDARD};
+        use std::future::Future;
+        let directory = crate::test_support::Directory::new();
+        std::fs::create_dir_all(&directory).unwrap();
+        drop(crate::domain_runtime::DomainRuntime::open(&directory).unwrap());
+        let daemon = crate::domain_bootstrap::DomainDaemon::open(&directory).unwrap();
+        let domain = daemon.domain();
+        apply_seed_command(&domain, Actor::User { user_id: "fixture".into() }, "request", Command::CreateRequest {
+            request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false,
+        });
+        apply_seed_command(&domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask {
+            task_id: "task".into(), request_id: "request".into(), title: "Work".into(), agent_id: None,
+            review_prs: false, dependencies: Default::default(), stack: None, launch: Some(alondra_core::domain::LaunchPlan::new("node", directory.to_string_lossy().into_owned())),
+        });
+        let key = p256::ecdsa::SigningKey::from_slice(&[22u8; 32]).unwrap();
+        let public_key = STANDARD.encode(key.verifying_key().to_sec1_bytes());
+        let auth = daemon.auth();
+        let device = auth.pair(&auth.new_pairing_code(), "Fixture phone", &public_key).unwrap();
+        let signed = Some(Extension(crate::auth::Signed { device_id: device.id, name: device.name, public_key }));
+        let request = pacing_request(&domain.state().unwrap(), Verb::SetPriority, "task", "high", "en");
+        let body: axum::body::Bytes = serde_json::to_vec(&request).unwrap().into();
+        let (entered, started) = tokio::sync::oneshot::channel();
+        let (fast_release, fast_held) = std::sync::mpsc::channel();
+        let entered = std::sync::Mutex::new(Some(entered));
+        let fast_held = std::sync::Mutex::new(fast_held);
+        domain.command_work.on_start(move || {
+            entered.lock().unwrap().take().unwrap().send(()).unwrap();
+            fast_held.lock().unwrap().recv().unwrap();
+        });
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        runtime.block_on(async {
+            let fast_release = ReleaseJobs(vec![fast_release]);
+            let mut holders = Vec::new();
+            let mut releases = ReleaseJobs(Vec::new());
+            for _ in 0..2 {
+                let lane = domain.external_work.clone();
+                let (entered, started) = tokio::sync::oneshot::channel();
+                let (release, held) = std::sync::mpsc::channel();
+                holders.push(tokio::spawn(async move { lane.run(move || { entered.send(()).unwrap(); held.recv().unwrap(); }).await.unwrap() }));
+                started.await.unwrap();
+                releases.0.push(release);
+            }
+            let mut pending = Box::pin(local(State(daemon), signed, body));
+            assert!(pending.as_mut().poll(&mut std::task::Context::from_waker(std::task::Waker::noop())).is_pending());
+            assert_eq!(domain.command_work.available(), 1, "the action enters the fast lane even with both external jobs held");
+            started.await.unwrap();
+            drop(fast_release);
+            let reply = pending.await;
+            assert_eq!(reply.status(), StatusCode::OK);
+            let bytes = axum::body::to_bytes(reply.into_body(), 1 << 20).await.unwrap();
+            let reply: Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(reply["outcome"], "applied", "{reply}");
+            assert_eq!(domain.state().unwrap().tasks[&"task".into()].priority, alondra_core::domain::TaskPriority::High);
+            assert_eq!(domain.external_work.available(), 0, "both slow jobs are still physically held");
+            drop(releases);
+            for holder in holders { holder.await.unwrap(); }
+            println!("external_jobs_held=2 fast_action=applied physical_jobs_drained=true");
+        });
     }
 
     #[tokio::test]

@@ -26,29 +26,34 @@ async fn sample_loop(mut publish: impl FnMut(Machine)) {
     let mut pressure: Option<u32> = None;
     let mut round: u64 = 0;
     loop {
-        sys.refresh_memory();
-        sys.refresh_cpu_usage();
-        pressure = match forced_memory_free_percent().or_else(memorystatus_level) {
-            Some(level) => Some(level),
-            None if round.is_multiple_of(3) => tokio::task::spawn_blocking(memory_free_percent).await.ok().flatten(),
-            None => pressure,
-        };
-        let load = System::load_average();
-        let root = crate::disk::space(Path::new(BOOT_DATA)).or_else(|| crate::disk::space(Path::new("/")));
-        let machine = Machine {
-            at: now_millis(),
-            memory_total: sys.total_memory(),
-            memory_available: sys.available_memory(),
-            memory_free_percent: pressure,
-            memory_pressure: memorystatus_vm_pressure_level().and_then(MemoryPressure::from_kernel_level),
-            compressor: compressor(),
-            load: [load.one, load.five, load.fifteen],
-            cpus: sys.cpus().len(),
-            cpu_usage: sys.global_cpu_usage(),
-            disk_total: root.map_or(0, |space| space.total),
-            disk_available: root.map_or(0, |space| space.free),
-            unreliable: load.one > UNRELIABLE_LOAD,
-        };
+        let (next, measured, machine) = tokio::task::spawn_blocking(move || {
+            sys.refresh_memory();
+            sys.refresh_cpu_usage();
+            pressure = match forced_memory_free_percent().or_else(memorystatus_level) {
+                Some(level) => Some(level),
+                None if round.is_multiple_of(3) => memory_free_percent(),
+                None => pressure,
+            };
+            let load = System::load_average();
+            let root = crate::disk::space(Path::new(BOOT_DATA)).or_else(|| crate::disk::space(Path::new("/")));
+            let machine = Machine {
+                at: now_millis(),
+                memory_total: sys.total_memory(),
+                memory_available: sys.available_memory(),
+                memory_free_percent: pressure,
+                memory_pressure: memorystatus_vm_pressure_level().and_then(MemoryPressure::from_kernel_level),
+                compressor: compressor(),
+                load: [load.one, load.five, load.fifteen],
+                cpus: sys.cpus().len(),
+                cpu_usage: sys.global_cpu_usage(),
+                disk_total: root.map_or(0, |space| space.total),
+                disk_available: root.map_or(0, |space| space.free),
+                unreliable: load.one > UNRELIABLE_LOAD,
+            };
+            (sys, pressure, machine)
+        }).await.expect("machine sample worker failed");
+        sys = next;
+        pressure = measured;
         publish(machine);
         round += 1;
         tokio::time::sleep(Duration::from_secs(10)).await;

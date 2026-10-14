@@ -62,7 +62,7 @@ fn node_label(key: &str, lang: Lang) -> String {
 
 pub(crate) async fn gather(
     client: &crate::client_routes::Client,
-    state: &DomainState,
+    state: &std::sync::Arc<DomainState>,
     lang: Lang,
     keys: &[String],
     allow_issue_refresh: bool,
@@ -73,10 +73,40 @@ pub(crate) async fn gather(
 
 async fn gather_at(
     client: &crate::client_routes::Client,
-    state: &DomainState,
+    state: &std::sync::Arc<DomainState>,
     lang: Lang,
     keys: &[String],
     allow_issue_refresh: bool,
+    clock_only: bool,
+    now: Millis,
+) -> LiveSnapshot {
+    let issue_data = issue_data(client, keys, allow_issue_refresh).await;
+    let client = client.shared();
+    let state = state.clone();
+    let keys = keys.to_vec();
+    let runtime = tokio::runtime::Handle::current();
+    let work = client.read_work.clone();
+    work.run(move || runtime.block_on(gather_inner(&client, &state, lang, &keys, issue_data, clock_only, now)))
+        .await.expect("live read worker failed")
+}
+
+async fn issue_data(client: &crate::client_routes::Client, keys: &[String], refresh_allowed: bool) -> Option<Value> {
+    let keys: Vec<_> = keys.iter().filter(|key| key.as_str() == "issue_picker" || key.starts_with("issue_picker?")).collect();
+    if keys.is_empty() { return None; }
+    if refresh_allowed {
+        let path = if keys.iter().any(|key| key.contains("refresh=1")) { "/issues?refresh=1" } else { "/issues" };
+        read_json(client, path).await
+    } else {
+        client.cached_issues().await.map(|issues| serde_json::to_value(issues).expect("issue list serializes"))
+    }
+}
+
+async fn gather_inner(
+    client: &crate::client_routes::Client,
+    state: &DomainState,
+    lang: Lang,
+    keys: &[String],
+    issue_data: Option<Value>,
     clock_only: bool,
     now: Millis,
 ) -> LiveSnapshot {
@@ -405,25 +435,10 @@ async fn gather_at(
             }
         }
     }
-    let mut issues = Vec::new();
-    let mut issue_error = None;
-    let issue_keys: Vec<_> = keys
-        .iter()
-        .filter(|key| key.as_str() == "issue_picker" || key.starts_with("issue_picker?"))
-        .collect();
-    if !issue_keys.is_empty() {
-        if allow_issue_refresh {
-            let refresh = issue_keys.iter().any(|key| key.contains("refresh=1"));
-            let path = if refresh { "/issues?refresh=1" } else { "/issues" };
-            if let Some(data) = read_json(client, path).await {
-                issues = serde_json::from_value(data["issues"].clone()).unwrap_or_default();
-                issue_error = data["error"].as_str().map(str::to_owned);
-            }
-        } else if let Some(cached) = client.cached_issues().await {
-            issues = cached.issues;
-            issue_error = cached.error;
-        }
-    }
+    let (issues, issue_error) = match issue_data {
+        Some(data) => (serde_json::from_value(data["issues"].clone()).unwrap_or_default(), data["error"].as_str().map(str::to_owned)),
+        None => (Vec::new(), None),
+    };
     let mut activity = BTreeMap::new();
     for id in keys
         .iter()
@@ -580,7 +595,7 @@ fn stacked_below<'a>(pr: &PullRequest, state: &'a DomainState) -> Option<&'a Pul
 }
 
 async fn read_json(client: &crate::client_routes::Client, path: &str) -> Option<Value> {
-    let response = client.read(path).await?;
+    let response = client.read_inner(path).await?;
     if !response.status().is_success() {
         return None;
     }

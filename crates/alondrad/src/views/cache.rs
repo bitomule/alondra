@@ -13,6 +13,8 @@ pub(crate) struct Cache {
     entries: Mutex<Entries>,
     #[cfg(test)]
     builds: std::sync::atomic::AtomicUsize,
+    #[cfg(test)]
+    pub(crate) build_threads: Mutex<Vec<std::thread::ThreadId>>,
 }
 
 #[derive(Default)]
@@ -83,6 +85,8 @@ impl Cache {
         }
         #[cfg(test)]
         self.builds.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        #[cfg(test)]
+        self.build_threads.lock().unwrap().push(std::thread::current().id());
         let mut view = views::build(
             key,
             RenderContext {

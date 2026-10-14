@@ -262,7 +262,10 @@ async fn a_scheduled_session_commands_and_receives_its_answer_once_across_a_daem
     helper.wait().unwrap();
 
     // The session ends: its bearer stops working.
+    let mut recorded = daemon.domain.live.changed.subscribe();
     assert_eq!(hook(&home, json!({"session_id": session, "hook_event_name": "SessionEnd"})), json!({}));
+    recorded.changed().await.unwrap();
+    daemon.domain.hook_work.run(|| ()).await.unwrap();
     let replies = mcp(&home, daemon.port, ("ALONDRA_DOMAIN_CAPABILITY", &capability), vec![
         ("present_result", tool_args(&epoch, "info-3", 0, json!({"kind": "present_result", "task_id": task.id.0,
             "interaction_id": "info-3", "need": "Too late", "body": "Too late", "targets": [{"kind": "text", "text": "Too late"}], "is_final": false}))),
