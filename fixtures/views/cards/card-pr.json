@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:github.com/example/repo#12",
   "client": "ios",
-  "version": "vda46c93f694b471f",
+  "version": "vcdca791b0e141349",
   "cursor": "cursor-1",
   "title": "Add the compact schedule editor",
   "status": {
@@ -92,7 +92,7 @@
             "attachments": true,
             "enabled": true,
             "stamp": "Sent",
-            "resolves_card": false
+            "resolves_card": true
           },
           "more": [
             {

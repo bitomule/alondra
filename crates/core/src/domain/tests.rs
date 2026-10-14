@@ -3318,7 +3318,7 @@ fn waiting(s: &DomainState, id: &str) -> bool {
 
 #[test]
 fn a_delivery_sent_back_with_an_instruction_waits_on_its_agent_until_it_presents_again() {
-    for instruction in [Instruction::Changes, Instruction::Question, Instruction::Conflicts] {
+    for instruction in [Instruction::Changes, Instruction::Question, Instruction::Reply, Instruction::Conflicts] {
         let mut s = fixture();
         register(&mut s);
         present(&mut s, "d", pr_targets());
@@ -3339,18 +3339,43 @@ fn a_delivery_sent_back_with_an_instruction_waits_on_its_agent_until_it_presents
     }
 }
 
+fn pending_ids(s: &DomainState) -> Vec<String> {
+    s.inbox_projection().into_iter().filter(|item| item.pending)
+        .map(|item| item.id.trim_start_matches("interaction:").to_owned()).collect()
+}
+
+/// t-redraft-blurry-mode, 14 October: the user replied on result-3 twice and on result-4, the node
+/// got each reply, but the result kept waiting for the user until the node presented again.
 #[test]
-fn a_reply_reaches_the_agent_and_the_delivery_stays_acceptable() {
+fn a_reply_to_a_delivery_takes_it_out_of_the_queue_and_nothing_later_brings_it_back() {
     let mut s = fixture();
     register(&mut s);
     present(&mut s, "d", pr_targets());
+    assert_eq!(pending_ids(&s), ["d"]);
     let outcome = hand_back(&mut s, user(), Instruction::Reply).unwrap();
     assert!(matches!(&outcome.effects[..], [DomainEffect::NotifyAgent { message, .. }]
         if message == &Instruction::Reply.message("Back to you")));
-    assert!(waiting(&s, "d"), "the delivery is still in front of the user");
-    assert_eq!(s.task_handed_back(&"t".into()), None);
-    exec(&mut s, user(), Command::AcceptDelivery { presentation_id: "d".into(), targets: pr_targets() }).unwrap();
-    assert!(s.accepted(&s.interactions[&"d".into()]));
+    assert!(pending_ids(&s).is_empty(), "the user already answered: nothing waits for them");
+    assert_eq!((s.tasks[&"t".into()].state, s.task_handed_back(&"t".into())), (TaskState::Running, Some(Instruction::Reply)));
+    assert!(!matches!(s.attention(&s.tasks[&"t".into()]), Attention::Act(_)));
+
+    exec(&mut s, orchestrator(), Command::PublishInformation { attachments: vec![], interaction_id: "note".into(),
+        scope: Scope::Task { task_id: "t".into() }, recipient: Recipient::User, body: "It uses the new API".into(),
+        card: crate::domain::CardSpec::derived(crate::domain::CardKind::Know, "Read the update") }).unwrap();
+    exec(&mut s, user(), Command::MarkRead { interaction_id: "note".into() }).unwrap();
+    exec(&mut s, agent(), Command::PresentResult { checklist: Vec::new(), attachments: vec![], task_id: "t".into(),
+        interaction_id: "progress".into(), body: "Working on it".into(), targets: vec![DeliveryTarget::Text { text: "Halfway".into() }],
+        is_final: false, nothing_to_review: false, card: crate::domain::CardSpec::delivery("Read the progress", &[], false) }).unwrap();
+    let mut reloaded: DomainState = serde_json::from_value(serde_json::to_value(&s).unwrap()).unwrap();
+    reloaded.derive_states();
+    for (when, state) in [("after a read and a progress note", &s), ("after reloading the state", &reloaded)] {
+        assert!(!pending_ids(state).contains(&"d".to_owned()), "{when}: {:?}", pending_ids(state));
+        assert_eq!(state.tasks[&"t".into()].state, TaskState::Running, "{when}");
+    }
+
+    present(&mut s, "d2", pr_targets());
+    assert!(pending_ids(&s).contains(&"d2".to_owned()) && !pending_ids(&s).contains(&"d".to_owned()), "the next presentation is a new card");
+    assert_eq!((s.tasks[&"t".into()].state, s.task_handed_back(&"t".into())), (TaskState::ForYourReview, None));
 }
 
 #[test]

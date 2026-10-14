@@ -4526,6 +4526,7 @@ fn a_pr_sent_back_leaves_waiting_for_you_and_its_task_says_what_alondra_asked() 
         (Actor::System, Instruction::Conflicts, "Resolving conflicts", "Resolviendo conflictos"),
         (user.clone(), Instruction::Changes, "Making changes", "Corrigiendo"),
         (user.clone(), Instruction::Question, "Answering you", "Respondiéndote"),
+        (user.clone(), Instruction::Reply, "Answering you", "Respondiéndote"),
     ] {
         let mut state = presented.clone();
         execute(&mut state, actor, Command::SubmitFeedback {
@@ -4557,30 +4558,33 @@ fn pause_for_memory(state: &mut DomainState) {
     execute(state, crate::domain::Actor::System, crate::domain::Command::MoveNode { agent_id: "a".into(), event: crate::domain::NodeEvent::Paused { pause }, at: 2 });
 }
 
-/// The harness-tests result of 12 October: the user replied on the delivery of PR #909, its node was
-/// paused for memory seconds later and never presented again, and the result could not be accepted.
+/// t-redraft-blurry-mode, 14 October: replies on its results reached the node, but the result
+/// stayed in Waiting for You on the iPhone until the node presented again.
 #[test]
-fn a_reply_on_a_presented_pr_keeps_it_in_waiting_for_you_with_its_merge_while_the_node_is_paused() {
+fn a_reply_on_a_presented_pr_takes_it_out_of_waiting_for_you_on_every_client() {
     use crate::domain::{Actor, Command, DeliveryTarget, Instruction};
     let live = LiveSnapshot::default();
+    let waiting = |state: &DomainState, client| match client {
+        Client::Ios => render(state, &live, client, Lang::Es, "home", "").sections[0].card_ids == ["d"],
+        Client::Mac | Client::Tui => render(state, &live, client, Lang::Es, if client == Client::Mac { "sidebar" } else { "home" }, "")
+            .sections.iter().any(|section| section.id == "waiting" && !section.items.is_empty()),
+    };
     let mut state = presented_pr();
-    let presented = render(&state, &live, Client::Ios, Lang::Es, "card:d", "");
-    let presented = card_of(&presented);
-    let reply = presented.actions.iter().chain(&presented.more).chain(&presented.reply)
-        .find(|action| action.id.starts_with("reply:")).expect("the delivery offers a reply").clone();
-    assert!(!reply.resolves_card, "a reply leaves the delivery in front of the user");
+    for client in [Client::Ios, Client::Mac, Client::Tui] {
+        assert!(waiting(&state, client), "{client:?}: the presented result waits for the user");
+        let presented = render(&state, &live, client, Lang::Es, "card:d", "");
+        let presented = card_of(&presented);
+        let reply = presented.actions.iter().chain(&presented.more).chain(&presented.reply)
+            .find(|action| action.id.starts_with("reply:")).expect("the delivery offers a reply").clone();
+        assert!(reply.resolves_card, "{client:?}: the client hides the delivery the moment the reply is sent");
+    }
     execute(&mut state, Actor::User { user_id: "u".into() }, Command::SubmitFeedback {
-        attachments: vec![], presentation_id: "d".into(), body: "Pass the findings to the orchestrator".into(),
+        attachments: vec![], presentation_id: "d".into(), body: "te he pedido cambios pero este card no se va".into(),
         instruction: Instruction::Reply, targets: vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: "head1".into() }],
     });
-    execute(&mut state, Actor::System, Command::MoveNode { agent_id: "a".into(), event: crate::domain::NodeEvent::TurnStarted, at: 1 });
-    pause_for_memory(&mut state);
-    let home = render(&state, &live, Client::Ios, Lang::Es, "home", "");
-    assert_eq!(home.sections[0].card_ids, ["d"], "the result still waits for the user");
-    let card = render(&state, &live, Client::Ios, Lang::Es, "card:d", "");
-    assert_eq!(card.view, "card", "never a settled card with nothing to press");
-    let merge = card_of(&card).actions.clone().into_iter().find(|action| action.id.starts_with("merge:")).expect("the card offers the merge");
-    assert!(merge.enabled, "{merge:?}");
+    for client in [Client::Ios, Client::Mac, Client::Tui] {
+        assert!(!waiting(&state, client), "{client:?}: the user already answered");
+    }
 }
 
 #[test]
@@ -4590,6 +4594,7 @@ fn a_task_whose_node_is_paused_says_what_it_owes_the_user_never_no_connection() 
     for (instruction, english, spanish) in [
         (Instruction::Changes, "has your changes pending", "tiene pendientes tus cambios"),
         (Instruction::Question, "has your question pending", "tiene pendiente tu pregunta"),
+        (Instruction::Reply, "has your reply pending", "tiene pendiente tu respuesta"),
     ] {
         let mut state = presented_pr();
         execute(&mut state, Actor::User { user_id: "u".into() }, Command::SubmitFeedback {
@@ -6207,8 +6212,8 @@ fn every_card_action_says_whether_it_takes_its_card_out() {
     ]), "a notice leaves when read; a reply to it is a message to its node");
     assert_eq!(resolving(&state, "card:hf-weekly-2026-09-30"), owned(&[
         ("merge:hf-weekly-2026-09-30", true), ("changes:github.com/example/repo#12", true),
-        ("close_unmerged:hf-weekly-2026-09-30", true), ("", false), ("reply:hf-weekly-2026-09-30", false),
-    ]), "merging, asking for changes and closing settle the delivery; a reply reaches its node and the delivery stays; the link opens GitHub");
+        ("close_unmerged:hf-weekly-2026-09-30", true), ("", false), ("reply:hf-weekly-2026-09-30", true),
+    ]), "merging, asking for changes, closing and replying all settle the delivery; the link opens GitHub");
 
     let mut group = group_state(&[0]);
     assert_eq!(resolving(&group, "card:g-q2"), owned(&[

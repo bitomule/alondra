@@ -4,7 +4,7 @@
   "view": "pull_request",
   "key": "pull_request:github.com/example/repo#12",
   "client": "mac",
-  "version": "vec3a134e099ab284",
+  "version": "v36fb302fd2718e82",
   "cursor": "cursor-1",
   "title": "Add the compact schedule editor",
   "status": {
@@ -207,7 +207,7 @@
               "enabled": true,
               "stamp": "Sent",
               "key": "r",
-              "resolves_card": false
+              "resolves_card": true
             },
             {
               "id": "close_unmerged:hf-weekly-2026-09-30@1",
