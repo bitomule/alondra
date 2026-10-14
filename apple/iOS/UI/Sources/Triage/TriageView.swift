@@ -163,12 +163,15 @@ public struct TriageView: View {
         let ids = store.visibleIDs
         let cardHeight = max(0, height - Self.peek)
         let browsable = store.orderedIDs.count > 1
+        let drawnInFull = store.swipe == nil ? 1 : 2
         return ZStack(alignment: .top) {
             ForEach(ids.reversed(), id: \.self) { id in
                 let depth = ids.firstIndex(of: id) ?? 0
                 let dragged = id == store.swipe?.cardID
                 Group {
-                    if let cardStore = store.scope(state: \.cards[id: id], action: \.cards[id: id]) {
+                    if depth >= drawnInFull {
+                        StackedCardShape(tint: store.cards[id: id]?.card.map { Kind($0).tint })
+                    } else if let cardStore = store.scope(state: \.cards[id: id], action: \.cards[id: id]) {
                         if let card = cardStore.card {
                             TriageCard(
                                 store: cardStore, card: card, isFront: depth == 0, zoom: zoom,

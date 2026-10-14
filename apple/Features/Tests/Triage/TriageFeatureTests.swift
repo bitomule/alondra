@@ -138,6 +138,26 @@ final class TriageFeatureTests: XCTestCase {
         XCTAssertEqual(feed.requests, [], "browsing marks nothing")
     }
 
+    /// The view draws only the front card in full and the ones behind as bare shapes, so the card
+    /// that comes forward must already hold its content or it would arrive empty.
+    @MainActor
+    func testTheCardsBehindTheFrontOneAreLoadedBeforeTheyComeForward() async throws {
+        let store = store(try fullFeed())
+        await store.send(.task)
+        await store.skipReceivedActions()
+
+        XCTAssertEqual(TriageFeature.depth, 3)
+        XCTAssertEqual(store.state.visibleIDs, [ids.question, ids.information, ids.delivery])
+        for id in store.state.visibleIDs.dropFirst() {
+            XCTAssertNotNil(store.state.cards[id: id]?.card, "\(id) is behind the front card and already loaded")
+        }
+
+        await store.send(.next)
+        await store.skipReceivedActions()
+        XCTAssertEqual(store.state.currentID, ids.information)
+        XCTAssertNotNil(store.state.cards[id: ids.pullRequest]?.card, "the card that now peeks behind is loaded too")
+    }
+
     // MARK: Swiping
 
     @MainActor

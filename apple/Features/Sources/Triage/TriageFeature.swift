@@ -133,7 +133,9 @@ public struct TriageFeature: Sendable {
         }
     }
 
-    /// The front card and the two drawn behind it, so the next card already has its content.
+    /// The front card and the two behind it. All three are loaded so the next card already has its
+    /// content; only the front one is drawn in full (and the next one while the front one leaves),
+    /// the others are shapes peeking behind it.
     public static let depth = 3
     public static let leaveDuration = Duration.milliseconds(160)
     public static let stampDuration = Duration.milliseconds(900)
