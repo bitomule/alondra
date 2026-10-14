@@ -46,31 +46,96 @@ pub(crate) async fn serve(listener: UnixListener, domain: Arc<DomainRuntime>) ->
 }
 
 async fn handle(mut stream: UnixStream, domain: &DomainRuntime) -> Result<()> {
-    let len = stream.read_u32().await? as u64;
+    let len = stream.read_u32().await.context("reading the frame")? as u64;
     if len > MAX_HOOK_BYTES {
         bail!("hook input exceeds {MAX_HOOK_BYTES} bytes");
     }
     let mut input = vec![0; len as usize];
-    stream.read_exact(&mut input).await?;
+    stream.read_exact(&mut input).await.context("reading the frame")?;
     let mut frame: Value = serde_json::from_slice(&input).context("invalid local hook envelope")?;
     if frame.get("probe").is_some() {
-        stream.write_all(&crate::hook_socket::probe_ack()).await?;
+        stream.write_all(&crate::hook_socket::probe_ack()).await.context("probe: writing the ack")?;
         return Ok(());
     }
     if let Some(report) = frame.get_mut("node_event").map(Value::take) {
-        return node_event(stream, domain, report).await;
+        return node_event(stream, domain, report).await.context("node event");
     }
     if let Some(hello) = frame.get_mut("node_connect").map(Value::take) {
-        return node_connection(stream, domain, hello).await;
+        return node_connection(stream, domain, hello).await.context("node connection");
     }
     if let Some(ack) = frame.get_mut("node_ack").map(Value::take) {
-        return node_ack(stream, domain, ack).await;
+        return node_ack(stream, domain, ack).await.context("node ack");
     }
     if let Some(card) = frame.get_mut("node_hold").map(Value::take) {
-        return node_hold(stream, domain, card).await;
+        return node_hold(stream, domain, card).await.context("node hold");
     }
     let envelope: Envelope = serde_json::from_value(frame).context("invalid local hook envelope")?;
-    let reply = respond(domain, &envelope.payload)?;
+    let event = text(&envelope.payload, "hook_event_name").unwrap_or_else(|| "unnamed".into());
+    if let Some(reply) = answer_first(domain, &envelope.payload) {
+        let written = write_reply(&mut stream, 200, &serde_json::to_vec(&reply)?).await;
+        let recorded = respond(domain, &envelope.payload);
+        written.with_context(|| format!("{event} hook: writing its reply"))?;
+        recorded.with_context(|| format!("{event} hook: recording it after its reply"))?;
+        return Ok(());
+    }
+    answer_after_recording(stream, domain, &envelope.payload).await.with_context(|| format!("{event} hook"))
+}
+
+/// The reply as one write. The hook reads it as one JSON value and exits the moment it has it, so it
+/// may be gone before the shutdown: a reply delivered, not a failure.
+async fn write_reply(stream: &mut UnixStream, status: u16, body: &[u8]) -> std::io::Result<()> {
+    let mut frame = status.to_be_bytes().to_vec();
+    frame.extend_from_slice(body);
+    stream.write_all(&frame).await?;
+    match stream.shutdown().await {
+        Err(error) if error.kind() == std::io::ErrorKind::NotConnected => Ok(()),
+        other => other,
+    }
+}
+
+/// The reply of a hook that does not depend on what recording it changes. Claude Code gives these
+/// hooks five seconds and discards a later reply; a PreToolUse that times out runs its tool through
+/// the normal permission flow, with no pause or refusal of Alondra's. Recording waits on the domain
+/// store's writer lock, which is busy for seconds when several nodes work at once (13 October: 1,863
+/// replies written to hooks Claude Code had already killed), so the reply goes first and the
+/// recording after. The Stop hook's hold-back and an elicitation's card are what recording decides,
+/// so they wait for it.
+fn answer_first(domain: &DomainRuntime, payload: &Value) -> Option<Value> {
+    let event = text(payload, "hook_event_name").unwrap_or_default();
+    match event.as_str() {
+        "Stop" | "Elicitation" => None,
+        "PreToolUse" => {
+            let Some(session_id) = text(payload, "session_id") else { return Some(json!({})) };
+            let tool = text(payload, "tool_name");
+            if let Some(reply) = unrecorded_pre_tool_use(domain, &session_id, tool.as_deref()) {
+                return Some(reply);
+            }
+            let known = domain.state().ok()?.agents.contains_key(&AgentId(session_id));
+            Some(match forbidden_for_nodes(tool.as_deref(), payload.get("tool_input")).filter(|_| known) {
+                Some(reason) => pre_tool_use_denied(&reason),
+                None => json!({}),
+            })
+        }
+        _ => Some(json!({})),
+    }
+}
+
+/// A PreToolUse answered without recording the hook: a node the fleet holds, and Alondra's own tools.
+fn unrecorded_pre_tool_use(domain: &DomainRuntime, session_id: &str, tool: Option<&str>) -> Option<Value> {
+    if let Some(reason) = domain.live.gate.holding(domain, session_id) {
+        let why = if reason == crate::fleet_pause::Reason::ByUser { PAUSED_BY_USER } else { PAUSED_FOR_MEMORY };
+        return Some(pre_tool_use_denied(why));
+    }
+    tool.is_some_and(|t| t.starts_with("mcp__plugin_alondra")).then(|| json!({"hookSpecificOutput": {"hookEventName": "PreToolUse",
+        "permissionDecision": "allow", "permissionDecisionReason": "Alondra tool"}}))
+}
+
+fn pre_tool_use_denied(reason: &str) -> Value {
+    json!({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": reason}})
+}
+
+async fn answer_after_recording(mut stream: UnixStream, domain: &DomainRuntime, payload: &Value) -> Result<()> {
+    let reply = respond(domain, payload).context("recording it")?;
     let body = match reply {
         Reply::Plain(body) => body,
         Reply::Held(held) => {
@@ -88,10 +153,7 @@ async fn handle(mut stream: UnixStream, domain: &DomainRuntime) -> Result<()> {
             json!({"decision": "block", "reason": format!("{reason}{unregistered}")})
         }
     };
-    let bytes = serde_json::to_vec(&body)?;
-    stream.write_all(&200u16.to_be_bytes()).await?;
-    stream.write_all(&bytes).await?;
-    stream.shutdown().await?;
+    write_reply(&mut stream, 200, &serde_json::to_vec(&body)?).await.context("writing its reply")?;
     Ok(())
 }
 
@@ -125,9 +187,7 @@ async fn node_event(mut stream: UnixStream, domain: &DomainRuntime, report: Valu
         record_node_cost(domain, &session);
         domain.live.losses.report(&session);
     }
-    stream.write_all(&200u16.to_be_bytes()).await?;
-    stream.write_all(b"{}").await?;
-    stream.shutdown().await?;
+    write_reply(&mut stream, 200, b"{}").await.context("writing its reply")?;
     Ok(())
 }
 
@@ -174,9 +234,7 @@ async fn node_hold(mut stream: UnixStream, domain: &DomainRuntime, card: Value) 
             }
         }
     };
-    stream.write_all(&200u16.to_be_bytes()).await?;
-    stream.write_all(&serde_json::to_vec(&reply)?).await?;
-    stream.shutdown().await?;
+    write_reply(&mut stream, 200, &serde_json::to_vec(&reply)?).await.context("writing its reply")?;
     if let Some((rules, task, interaction)) = written {
         crate::allow_always::chosen(domain, card.cwd.as_deref(), &rules, task.as_deref(), &interaction).await;
     }
@@ -306,9 +364,7 @@ async fn node_ack(mut stream: UnixStream, domain: &DomainRuntime, ack: Value) ->
     };
     hand_over(domain, &ack.session_id, &ack.ids)?;
     domain.live.pushes.acknowledged(&ack.session_id, &ack.ids);
-    stream.write_all(&200u16.to_be_bytes()).await?;
-    stream.write_all(b"{}").await?;
-    stream.shutdown().await?;
+    write_reply(&mut stream, 200, b"{}").await.context("writing its reply")?;
     Ok(())
 }
 
@@ -387,14 +443,8 @@ fn respond(domain: &DomainRuntime, payload: &Value) -> Result<Reply> {
     };
     let event = text(payload, "hook_event_name").unwrap_or_default();
     let tool = text(payload, "tool_name");
-    if event == "PreToolUse" && let Some(reason) = domain.live.gate.holding(domain, &session_id) {
-        let why = if reason == crate::fleet_pause::Reason::ByUser { PAUSED_BY_USER } else { PAUSED_FOR_MEMORY };
-        return Ok(Reply::Plain(json!({"hookSpecificOutput": {"hookEventName": "PreToolUse",
-            "permissionDecision": "deny", "permissionDecisionReason": why}})));
-    }
-    if event == "PreToolUse" && tool.as_deref().is_some_and(|t| t.starts_with("mcp__plugin_alondra")) {
-        return Ok(Reply::Plain(json!({"hookSpecificOutput": {"hookEventName": "PreToolUse",
-            "permissionDecision": "allow", "permissionDecisionReason": "Alondra tool"}})));
+    if event == "PreToolUse" && let Some(reply) = unrecorded_pre_tool_use(domain, &session_id, tool.as_deref()) {
+        return Ok(Reply::Plain(reply));
     }
     let agent_id = AgentId(session_id.clone());
     if !domain.state()?.agents.contains_key(&agent_id) {
@@ -426,8 +476,7 @@ fn respond(domain: &DomainRuntime, payload: &Value) -> Result<Reply> {
         && let Some(reason) = forbidden_for_nodes(tool.as_deref(), payload.get("tool_input"))
     {
         log!("blocked {session_id} from acting as the user: {reason}");
-        return Ok(Reply::Plain(json!({"hookSpecificOutput": {"hookEventName": "PreToolUse",
-            "permissionDecision": "deny", "permissionDecisionReason": reason}})));
+        return Ok(Reply::Plain(pre_tool_use_denied(&reason)));
     }
     if let Some(held) = crate::domain_holds::hold_elicitation(domain, payload, domain.live.mods.is_node(&session_id))? {
         return Ok(Reply::Held(held));
@@ -1226,6 +1275,66 @@ mod tests {
         });
         assert_eq!(u16::from_be_bytes([bytes[0], bytes[1]]), 200);
         (serde_json::from_slice(&bytes[2..]).unwrap(), result)
+    }
+
+    async fn send_hook(client: &mut UnixStream, payload: Value) {
+        let body = serde_json::to_vec(&json!({"launched": true, "payload": payload})).unwrap();
+        client.write_u32(body.len() as u32).await.unwrap();
+        client.write_all(&body).await.unwrap();
+    }
+
+    /// 13 October: 1,863 replies went to hooks Claude Code had already killed at their five
+    /// seconds, because recording a hook waits on the store's writer lock and the reply waited for
+    /// the recording. A hook whose reply does not depend on that recording gets it while the lock
+    /// is held, and is still recorded once the lock is free.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_hook_is_answered_while_the_store_is_busy_and_recorded_after() {
+        let fixture = Fixture::new();
+        let domain = Arc::new(fixture.open());
+        command(&domain, Actor::System, "register", Command::RegisterAgent { agent_id: "session-a".into(), name: "A".into(), at: 0 });
+        for (event, tool) in [("PostToolBatch", None), ("PreToolUse", Some("Bash"))] {
+            lifecycle::node_event(&domain, &"session-a".into(), NodeEvent::TurnEnded).unwrap();
+            assert_ne!(domain.state().unwrap().node_phase(&"session-a".into()), Some(&NodePhase::Working));
+            let (taken, release) = std::sync::mpsc::channel();
+            let busy = {
+                let domain = domain.clone();
+                std::thread::spawn(move || {
+                    let _writer = domain.store.lock().unwrap();
+                    taken.send(()).unwrap();
+                    std::thread::sleep(Duration::from_secs(2));
+                })
+            };
+            release.recv().unwrap();
+            let (mut client, server) = UnixStream::pair().unwrap();
+            let handling = tokio::spawn({
+                let domain = domain.clone();
+                async move { handle(server, &domain).await }
+            });
+            send_hook(&mut client, json!({"session_id": "session-a", "hook_event_name": event, "tool_name": tool,
+                "tool_input": {"command": "ls"}})).await;
+            let mut reply = vec![];
+            let read = tokio::time::timeout(Duration::from_secs(1), client.read_to_end(&mut reply)).await;
+            assert!(read.is_ok(), "{event} waited for the store before its reply");
+            assert_eq!(&reply[..], b"\x00\xc8{}");
+            handling.await.unwrap().unwrap();
+            busy.join().unwrap();
+            assert_eq!(domain.state().unwrap().node_phase(&"session-a".into()), Some(&NodePhase::Working), "{event} recorded");
+        }
+    }
+
+    /// A hook Claude Code killed before its reply is still recorded, and the failure names the hook
+    /// and the step, so the log says which hooks miss their replies.
+    #[tokio::test]
+    async fn a_hook_gone_before_its_reply_is_recorded_and_named() {
+        let fixture = Fixture::new();
+        let domain = fixture.open();
+        command(&domain, Actor::System, "register", Command::RegisterAgent { agent_id: "session-a".into(), name: "A".into(), at: 0 });
+        let (mut client, server) = UnixStream::pair().unwrap();
+        send_hook(&mut client, json!({"session_id": "session-a", "hook_event_name": "PostToolUse"})).await;
+        drop(client);
+        let error = handle(server, &domain).await.unwrap_err();
+        assert!(format!("{error:#}").starts_with("PostToolUse hook: writing its reply: "), "{error:#}");
+        assert_eq!(domain.state().unwrap().node_phase(&"session-a".into()), Some(&NodePhase::Working));
     }
 
     #[tokio::test]
