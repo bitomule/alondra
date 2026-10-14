@@ -272,6 +272,25 @@ private actor DelayedPostTransport: RelayRequestTransport {
         #expect(try await first.entry(requestID: id)?.envelope == sealed)
     }
 
+    /// Every iOS container is reached through /var, a link to /private/var: SQLite's NOFOLLOW refused
+    /// the whole path, so the iPhone never prepared an answer and none reached the Mac.
+    @Test func aJournalReachedThroughALinkedFolderKeepsAndRetiresOperations() async throws {
+        let root = try TestFiles.directory()
+        let real = root.appending(path: "private", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: real, withIntermediateDirectories: true)
+        let linked = root.appending(path: "var")
+        try FileManager.default.createSymbolicLink(at: linked, withDestinationURL: real)
+        let transport = LostResponseTransport()
+        let journal = try EnvelopeJournal(scope: scope, directory: linked.appending(path: "operations"))
+
+        _ = try await RelayOutbox(scope: scope, transport: transport, journal: journal).submitNew(envelope("answer"))
+        try await journal.retire(ActionJournalAcknowledgment(dataEpoch: "epoch", generation: 1, ranges: []))
+
+        let reopened = try EnvelopeJournal(scope: scope, directory: real.appending(path: "operations"))
+        #expect(try await reopened.entry(requestID: "answer")?.envelope != nil)
+        #expect(await transport.postCount == 1)
+    }
+
     @Test func lostDatabaseIsRefusedBeforeAnyNewDispatch() async throws {
         let directory = try TestFiles.directory()
         let journal = try EnvelopeJournal(scope: scope, directory: directory)

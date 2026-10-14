@@ -307,6 +307,7 @@ public struct CardDetailView: View {
     private func actionBar(_ subject: CardDetailFeature.Subject) -> some View {
         GlassActionBar {
             if let error = store.actions.error { Text(error).font(.caption).foregroundStyle(Palette.rose) }
+            StallNoticeView(store: store.scope(state: \.actions, action: \.actions))
             if !subject.buttons.isEmpty || !subject.menu.isEmpty {
                 GlassBarRow {
                     if let main = subject.buttons.first { barButton(main) }

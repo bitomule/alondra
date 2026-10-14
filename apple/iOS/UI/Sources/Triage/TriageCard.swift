@@ -91,7 +91,7 @@ struct TriageCard: View {
         .overlay(alignment: room == nil ? .bottomLeading : .topLeading) {
             if let reply = store.replyAction { placedComposer(reply) }
         }
-        .disabled(store.actions.inFlight && store.actions.stamp == nil)
+        .disabled(store.actions.inFlight && store.actions.stamp == nil && !store.actions.stalled)
     }
 
     /// Where the picked layout keeps room for the reply field, and the text size it has there.
@@ -155,6 +155,7 @@ struct TriageCard: View {
             }
             Spacer(minLength: 0)
             if let error = store.actions.error { Text(error).font(.caption).foregroundStyle(Palette.rose) }
+            StallNoticeView(store: store.scope(state: \.actions, action: \.actions))
             buttons
             if fit.reply, let reply = store.replyAction {
                 AttachmentStrip(store: store.scope(state: \.attachments, action: \.attachments))

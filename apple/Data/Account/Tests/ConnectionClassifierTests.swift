@@ -49,6 +49,16 @@ struct ConnectionClassifierTests {
         #expect(ConnectionClassifier.problem(for: DirectRouteError.unreachable, local: false, networkOffline: false) == .macNotOnNetwork)
     }
 
+    /// A hung Mac stops taking its relay queue: the relay is up and answers that the queue is full,
+    /// or the read runs out of time. Neither is an unexpected failure.
+    @Test func aMacThatStopsTakingItsRelayQueueIsNotAnswering() {
+        let hung: [any Error] = [RelayWireError.server(429), RelayWireError.admissionFull, RelayWireError.outcomeUnknown,
+                                 RelaySessionError.outcomeUnknown, OperationError.outcomeUnknown]
+        for error in hung {
+            #expect(ConnectionClassifier.problem(for: error, local: false, networkOffline: false) == .macNotAnswering, "\(error)")
+        }
+    }
+
     @Test func aRefusedLocalNetworkAsksThePersonToTurnItOn() {
         let problem = ConnectionClassifier.problem(for: DirectRouteError.localNetworkDenied, local: false, networkOffline: false)
         #expect(problem == .localNetworkDenied)

@@ -87,15 +87,11 @@ final class ActionIntentDatabase: Sendable {
             }
         }
     }
-    /// SQLite's NOFOLLOW refuses a symbolic link anywhere in the path, and every iOS app container is
-    /// reached through one (/var is /private/var). Only the database file itself must not be a link.
     private func databasePath() throws -> String {
-        try resolvedDirectory().appending(path: file.lastPathComponent).path
+        do { return try SQLiteFile.path(file.lastPathComponent, in: directory) } catch { throw ViewActionIntentError.unreadableStore }
     }
     private func resolvedDirectory() throws -> URL {
-        guard let resolved = realpath(directory.path, nil) else { throw ViewActionIntentError.unreadableStore }
-        defer { free(resolved) }
-        return URL(fileURLWithPath: String(cString: resolved), isDirectory: true)
+        do { return try SQLiteFile.resolvedFolder(directory) } catch { throw ViewActionIntentError.unreadableStore }
     }
     private func open() throws -> OpaquePointer {
         let path = try databasePath()
@@ -105,9 +101,8 @@ final class ActionIntentDatabase: Sendable {
         let initialization = try legacy.read(marker, limit: 32)
         let initialized = initialization != nil
         guard !initialized || (exists && initialization == Data(SHA256.hash(data: binding))) else { throw ViewActionIntentError.unreadableStore }
-        var pointer: OpaquePointer?
-        guard sqlite3_open_v2(path, &pointer, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX | SQLITE_OPEN_NOFOLLOW, nil) == SQLITE_OK,
-              let db = pointer else { if let pointer { sqlite3_close(pointer) }; throw ViewActionIntentError.unreadableStore }
+        guard let db = SQLiteFile.open(path: path, flags: SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX)
+        else { throw ViewActionIntentError.unreadableStore }
         do {
             guard chmod(path, 0o600) == 0 else { throw ViewActionIntentError.unreadableStore }
             sqlite3_busy_timeout(db, 1_000)
@@ -199,10 +194,9 @@ final class ActionIntentDatabase: Sendable {
         catch { return SetAsideAnswers(requests: [], complete: false) }
     }
     private func readablePending(at path: String, complete: inout Bool) -> [ViewActionIntentStore.Record] {
-        var pointer: OpaquePointer?
-        guard sqlite3_open_v2(path, &pointer, SQLITE_OPEN_READONLY | SQLITE_OPEN_NOFOLLOW, nil) == SQLITE_OK, let db = pointer,
-              let statement = try? Self.prepare(db, "SELECT body,id FROM pending ORDER BY rowid") else {
-            sqlite3_close(pointer); complete = false; return []
+        guard let db = SQLiteFile.open(path: path, flags: SQLITE_OPEN_READONLY) else { complete = false; return [] }
+        guard let statement = try? Self.prepare(db, "SELECT body,id FROM pending ORDER BY rowid") else {
+            sqlite3_close(db); complete = false; return []
         }
         defer { sqlite3_finalize(statement); sqlite3_close(db) }
         var records: [ViewActionIntentStore.Record] = []

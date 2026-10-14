@@ -34,10 +34,12 @@ public struct ActionFeature: Sendable {
         public var pendingAttachmentSubmit = false
         public var requiresAttachments = false
         public var handsOff = false
+        /// The Mac has not answered for a while; the send goes on retrying on its own.
+        public var stalled = false
         public var dataEpoch: String {
             didSet {
                 guard dataEpoch != oldValue else { return }
-                pending = nil; inFlight = false; unsure = nil
+                pending = nil; inFlight = false; unsure = nil; stalled = false
                 stamp = nil; error = nil; confirmation = nil; changed = nil
                 pendingAttachmentSubmit = false
             }
@@ -58,6 +60,13 @@ public struct ActionFeature: Sendable {
         public var canSubmit: Bool {
             guard let action, action.enabled, action.id != nil, !inFlight else { return false }
             return missingInput == nil
+        }
+
+        /// What the card says while a send waits on a Mac that does not answer.
+        public var stallNotice: String? {
+            guard stalled, inFlight else { return nil }
+            return stamp == nil ? String(localized: "Couldn’t send · Retrying…")
+                : String(localized: "Your Mac hasn’t confirmed it yet · Retrying…")
         }
 
         /// What the person still has to give before the action can go, as submit words it.
@@ -118,6 +127,10 @@ public struct ActionFeature: Sendable {
         case dismiss
         /// The person closed the notice that something changed; what they were answering stays open.
         case dismissChanged
+        /// The send for this command got no answer in time: the card says so and keeps retrying.
+        case stalled(String)
+        /// The person asked to try again now instead of waiting for the next retry.
+        case retryNow
         case delegate(Delegate)
 
         /// What the screen showing this action reports upward; the app turns it into a toast.
@@ -137,6 +150,8 @@ public struct ActionFeature: Sendable {
         public init(commandID: String) { self.commandID = ActionRequest.deliveryNonce(commandID) }
     }
 
+    private struct StallID: Hashable { let nonce: String }
+
     public init() {}
 
     public var body: some ReducerOf<Self> {
@@ -150,7 +165,7 @@ public struct ActionFeature: Sendable {
                 state.selectedOptionID = value.optionId; state.text = ""; state.attachments = []
                 state.comments = []; state.fields = [:]; state.confirmation = nil
                 state.pending = nil; state.inFlight = false; state.stamp = nil
-                state.error = nil; state.changed = nil
+                state.error = nil; state.changed = nil; state.stalled = false
                 state.pendingAttachmentSubmit = false
                 state.attachmentPicker = AttachmentFeature.State()
                 return .none
@@ -160,7 +175,7 @@ public struct ActionFeature: Sendable {
                 state.selectedOptionID = nil; state.text = ""; state.attachments = []
                 state.comments = []; state.fields = fields; state.confirmation = nil
                 state.pending = nil; state.inFlight = false; state.stamp = nil
-                state.error = nil; state.changed = nil
+                state.error = nil; state.changed = nil; state.stalled = false
                 state.pendingAttachmentSubmit = false
                 state.requiresAttachments = value.attachments || requiresAttachments
                 state.attachmentPicker = AttachmentFeature.State()
@@ -189,6 +204,7 @@ public struct ActionFeature: Sendable {
             case let .commentsChanged(comments): state.comments = comments; return .none
             case let .fieldsChanged(fields): state.fields = fields; return .none
             case .submit:
+                if state.inFlight, state.stalled { return .send(.retryNow) }
                 guard let selected = state.action, selected.enabled, selected.id != nil, !state.inFlight else { return .none }
                 if let missing = state.missingInput {
                     state.error = missing
@@ -231,8 +247,9 @@ public struct ActionFeature: Sendable {
                 state.pending = request
                 state.stamp = action.stamp ?? String(localized: "Sent")
                 if state.handsOff {
+                    let stall = stopStall(&state)
                     state.pending = nil; state.inFlight = false
-                    return .send(.sent(request))
+                    return .merge(stall, .send(.sent(request)))
                 }
                 return deliver(request)
             case .sent, .settled:
@@ -248,24 +265,11 @@ public struct ActionFeature: Sendable {
                 }
                 return .send(.response(reply))
             case let .response(reply):
+                let stall = stopStall(&state)
                 state.inFlight = false
                 state.pending = nil
                 state.unsure = nil
-                switch OutcomeStyle(reply) {
-                case .success(let message):
-                    state.stamp = reply.stamp ?? state.stamp ?? state.action?.stamp
-                    state.error = nil
-                    return .send(.delegate(.completed(message)))
-                case .ask(let changed):
-                    state.stamp = nil
-                    state.changed = changed
-                    state.error = nil
-                    return .none
-                case .failure(let message):
-                    state.stamp = nil
-                    state.error = message
-                    return .send(.delegate(.failed(message)))
-                }
+                return .merge(stall, respond(reply, &state))
             case let .failed(message):
                 state.inFlight = false
                 state.stamp = nil
@@ -277,22 +281,31 @@ public struct ActionFeature: Sendable {
                 guard state.pending?.commandId == request.commandId else {
                     return .send(.delegate(.failed(failure.message)))
                 }
+                let stall = stopStall(&state)
                 state.inFlight = false
                 state.pending = nil
                 state.stamp = nil
                 state.error = failure.message
                 state.unsure = failure == .unsure ? request : nil
-                return .send(.delegate(.failed(failure.message)))
+                return .merge(stall, .send(.delegate(.failed(failure.message))))
+            case let .stalled(commandID):
+                guard state.inFlight, let pending = state.pending,
+                      ActionRequest.deliveryNonce(pending.commandId) == ActionRequest.deliveryNonce(commandID) else { return .none }
+                state.stalled = true
+                return .none
+            case .retryNow:
+                return .run { [viewsClient] _ in await viewsClient.retryNow() }
             case .delegate:
                 return .none
             case .dismissChanged:
                 state.changed = nil
                 return .none
             case .dismiss:
+                let stall = stopStall(&state)
                 state.action = nil; state.confirmation = nil; state.changed = nil
                 state.pending = nil; state.inFlight = false
                 state.error = nil; state.stamp = nil
-                return .none
+                return stall
             }
         }.onChange(of: \.attachmentPicker.instanceID) { oldID, _ in
             Reduce { _, _ in AttachmentFeature.cancelEffects(instanceID: oldID).map { .attachmentPicker($0) } }
@@ -307,6 +320,40 @@ public struct ActionFeature: Sendable {
         }
     }
 
+    private func respond(_ reply: ActionResponse, _ state: inout State) -> Effect<Action> {
+        switch OutcomeStyle(reply) {
+        case .success(let message):
+            state.stamp = reply.stamp ?? state.stamp ?? state.action?.stamp
+            state.error = nil
+            return .send(.delegate(.completed(message)))
+        case .ask(let changed):
+            state.stamp = nil
+            state.changed = changed
+            state.error = nil
+            return .none
+        case .failure(let message):
+            state.stamp = nil
+            state.error = message
+            return .send(.delegate(.failed(message)))
+        }
+    }
+
+    private func stopStall(_ state: inout State) -> Effect<Action> {
+        state.stalled = false
+        guard let pending = state.pending else { return .none }
+        return .cancel(id: StallID(nonce: ActionRequest.deliveryNonce(pending.commandId)))
+    }
+
+    /// A send the Mac has not answered after a while says so on the card, and goes on retrying.
+    private func stallTimer(_ request: ActionRequest) -> Effect<Action> {
+        .run { [viewsClient] send in
+            guard let delay = viewsClient.stallAfter() else { return }
+            try await Task.sleep(for: delay)
+            await send(.stalled(request.commandId))
+        }
+        .cancellable(id: StallID(nonce: ActionRequest.deliveryNonce(request.commandId)), cancelInFlight: true)
+    }
+
     /// The stamp appears once the intent is prepared, before the daemon answers. Delivery runs on
     /// even if the screen goes away. A screen that leaves on sending hands the request off instead,
     /// to whoever outlives it.
@@ -317,14 +364,15 @@ public struct ActionFeature: Sendable {
         state.error = nil
         state.pending = request
         state.inFlight = true
-        return .run { [viewsClient] send in
+        state.stalled = false
+        return .merge(stallTimer(request), .run { [viewsClient] send in
             do {
                 let prepared = try await viewsClient.prepare(request)
                 try Task.checkCancellation()
                 await send(.prepared(request, prepared))
             } catch { await send(.undelivered(request, SendFailure(preparation: error))) }
         }
-        .cancellable(id: DeliveryID(commandID: request.commandId))
+        .cancellable(id: DeliveryID(commandID: request.commandId)))
     }
 
     private func deliver(_ request: ActionRequest) -> Effect<Action> {

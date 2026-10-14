@@ -179,6 +179,8 @@ public final class EnvelopeJournal: Sendable {
         guard lstat(directory.path, &namespace) == 0, (namespace.st_mode & S_IFMT) == S_IFDIR else {
             throw EnvelopeJournalError.corrupt
         }
+        let directory: URL
+        do { directory = try SQLiteFile.resolvedFolder(self.directory) } catch { throw EnvelopeJournalError.unavailable }
         let file = directory.appendingPathComponent("operations.sqlite")
         let marker = directory.appendingPathComponent("initialized")
         var info = stat()
@@ -186,10 +188,7 @@ public final class EnvelopeJournal: Sendable {
         if !exists, errno != ENOENT { throw EnvelopeJournalError.unavailable }
         if exists, (info.st_mode & S_IFMT) != S_IFREG { throw EnvelopeJournalError.corrupt }
         if !exists, FileManager.default.fileExists(atPath: marker.path) { throw EnvelopeJournalError.corrupt }
-        var opened: OpaquePointer?
-        let flags = SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX | SQLITE_OPEN_NOFOLLOW
-        guard sqlite3_open_v2(file.path, &opened, flags, nil) == SQLITE_OK, let database = opened else {
-            if let opened { sqlite3_close(opened) }
+        guard let database = SQLiteFile.open(path: file.path, flags: SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX) else {
             throw EnvelopeJournalError.unavailable
         }
         do {

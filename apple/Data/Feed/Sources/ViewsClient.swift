@@ -25,6 +25,10 @@ public struct ViewsClient: Sendable {
     public var prepare: @Sendable (ActionRequest) async throws -> ActionRequest = { $0 }
     /// Delivers an answer until the Mac answers it; throws only when it can never be delivered.
     public var perform: @Sendable (ActionRequest) async throws -> ActionOutcome
+    /// Every answer waiting on the Mac goes again now instead of at its next retry.
+    public var retryNow: @Sendable () async -> Void = {}
+    /// How long a send waits on the Mac before its card says it could not send yet; nil never says it.
+    public var stallAfter: @Sendable () -> Duration? = { nil }
     /// The cards answered on this device whose answer the Mac has not confirmed yet.
     public var undeliveredCards: @Sendable () -> AsyncStream<Set<String>> = { AsyncStream { $0.finish() } }
     /// Answers set aside with a store this device could not read, until the person dismisses them.
@@ -50,6 +54,8 @@ public struct ViewsClient: Sendable {
             reconnections: { await session.reconnections() },
             prepare: { request in try await sender.prepare(request) },
             perform: { request in try await sender.deliver(request) },
+            retryNow: { await sender.retryNow() },
+            stallAfter: { .seconds(10) },
             undeliveredCards: { sender.undelivered.stream() },
             setAsideAnswers: { sender.setAside.current },
             dismissSetAsideAnswers: { sender.setAside.dismiss() },
@@ -117,6 +123,8 @@ private enum ViewsClientKey: DependencyKey {
         reconnections: { AsyncStream { _ in } },
         prepare: { $0 },
         perform: { _ in throw ViewsClientError.notInstalled },
+        retryNow: {},
+        stallAfter: { nil },
         undeliveredCards: { AsyncStream { $0.finish() } },
         setAsideAnswers: { nil },
         dismissSetAsideAnswers: {},

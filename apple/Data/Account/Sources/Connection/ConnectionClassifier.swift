@@ -52,6 +52,8 @@ public enum ConnectionClassifier {
             // Unsealed: only the Mac's sealed device_revoked answer proves a revocation.
             case .unauthorized, .server(403): return .accessNotConfirmed
             case .outcomeUnknown: return .macNotAnswering
+            // The relay is up and holding requests the Mac is not taking: its queue is full.
+            case .admissionFull, .server(429): return .macNotAnswering
             case .server(let status) where status >= 500: return .serverUnreachable
             default: return .unexpected
             }

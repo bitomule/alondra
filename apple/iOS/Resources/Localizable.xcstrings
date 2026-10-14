@@ -1,6 +1,9 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "Couldn’t send · Retrying…": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "No se pudo enviar · Reintentando…"}}}},
+    "Your Mac hasn’t confirmed it yet · Retrying…": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Tu Mac aún no lo ha confirmado · Reintentando…"}}}},
+    "Retry now": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Reintentar ahora"}}}},
     "Permissions allowed always": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Permisos permitidos siempre"}}}},
     "Nodes in each repo run these commands without asking. Remove one and the next call asks again.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Los nodos de cada repo ejecutan estos comandos sin preguntar. Si quitas uno, la siguiente llamada vuelve a preguntar."}}}},
     "Your Mac didn’t remove the permission. Try again.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Tu Mac no ha quitado el permiso. Inténtalo de nuevo."}}}},

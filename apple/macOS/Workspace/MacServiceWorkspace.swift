@@ -458,6 +458,7 @@ private struct MacClarifyForm: View {
                     .background(.quaternary.opacity(0.4), in: .rect(cornerRadius: 8))
             }
             if let error = store.error { Text(error).font(.callout).foregroundStyle(.red) }
+            StallNoticeView(store: store)
             HStack {
                 Spacer()
                 Button("Cancel") { store.send(.dismiss); onDismiss() }.keyboardShortcut(.cancelAction)

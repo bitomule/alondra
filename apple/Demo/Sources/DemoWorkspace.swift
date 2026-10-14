@@ -30,6 +30,8 @@ enum DemoWorkspace {
             reconnections: { AsyncStream { _ in } },
             prepare: { $0 },
             perform: { _ in try response() },
+            retryNow: {},
+            stallAfter: { nil },
             undeliveredCards: { AsyncStream { $0.finish() } },
             setAsideAnswers: { nil },
             dismissSetAsideAnswers: {},

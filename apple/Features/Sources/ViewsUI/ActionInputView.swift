@@ -58,6 +58,7 @@ public struct ActionInputView: View {
                     formFields(form.fields)
                 }
                 if let error = store.error { Text(error).font(.callout).foregroundStyle(.red) }
+                StallNoticeView(store: store)
                 if let stamp = store.stamp { Label(stamp, systemImage: "checkmark.circle.fill").foregroundStyle(.green) }
             }
         }
