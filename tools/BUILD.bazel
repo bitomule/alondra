@@ -22,3 +22,10 @@ sh_test(
     data = ["load_bench.py"],
     size = "small",
 )
+
+sh_test(
+    name = "connection_measurements_test",
+    srcs = ["tests/test_connection_measurements.py"],
+    data = ["connection_measurements.py"],
+    size = "small",
+)

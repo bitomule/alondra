@@ -10,6 +10,7 @@ public final class NetworkReachability: @unchecked Sendable {
     private let lock = NSLock()
     private var online = true
     private var network = ""
+    private var interface = "other"
     private var listeners: [UUID: AsyncStream<Bool>.Continuation] = [:]
     private var hintListeners: [UUID: AsyncStream<Void>.Continuation] = [:]
 
@@ -17,8 +18,9 @@ public final class NetworkReachability: @unchecked Sendable {
         monitor.pathUpdateHandler = { [weak self] path in
             guard let self else { return }
             let signature = Self.signature(of: path)
+            let kind = Self.interface(of: path)
             let moved = lock.withLock {
-                defer { network = signature }
+                defer { network = signature; interface = kind }
                 return online && path.status == .satisfied && !network.isEmpty && network != signature
             }
             update(path.status == .satisfied)
@@ -32,6 +34,17 @@ public final class NetworkReachability: @unchecked Sendable {
     /// Which network this is: its interfaces and gateways. Joining another Wi-Fi changes it, so
     /// an address learned on one network is proved again before it is believed on the next.
     public var signature: String { lock.withLock { network } }
+
+    /// The kind of network requests leave on now: `wifi`, `cellular`, `wired`, `other` or `offline`.
+    public var interfaceKind: String { lock.withLock { interface } }
+
+    private static func interface(of path: NWPath) -> String {
+        guard path.status == .satisfied else { return "offline" }
+        if path.usesInterfaceType(.wifi) { return "wifi" }
+        if path.usesInterfaceType(.cellular) { return "cellular" }
+        if path.usesInterfaceType(.wiredEthernet) { return "wired" }
+        return "other"
+    }
 
     private static func signature(of path: NWPath) -> String {
         let interfaces = path.availableInterfaces.map { "\($0.type)/\($0.name)" }

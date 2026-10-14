@@ -30,6 +30,7 @@ public actor Connection {
     /// A Mac paired on the local network talks only directly; one paired with an account also
     /// keeps the relay, and reaches it directly only once Local Network access is allowed.
     public init(approved: ApprovedServicePairing, auth: AuthSession, storageDirectory: URL? = nil,
+                measurements: ConnectionMeasurements? = nil,
                 localNetworkAllowed: @escaping @Sendable () -> Bool = { LocalNetworkAccess.allowed }) async throws {
         let signing = try P256.Signing.PrivateKey(rawRepresentation: approved.signingPrivateKey)
         let agreement = try P256.KeyAgreement.PrivateKey(rawRepresentation: approved.agreementPrivateKey)
@@ -66,17 +67,17 @@ public actor Connection {
         let directAllowed: @Sendable () -> Bool = { !hasRelay || localNetworkAllowed() }
         let routed = RoutedSession(direct: direct, router: router, relay: relay, directAllowed: directAllowed)
         self.init(operations: routed, server: server, deviceID: approved.deviceID, macName: approved.name,
-                  macID: approved.macID, intents: intents)
+                  macID: approved.macID, intents: intents, measurements: measurements)
     }
 
     public static func local(_ session: LoopbackSession, identity: LoopbackIdentityStore,
-                             storageDirectory: URL? = nil) async throws -> Connection {
+                             storageDirectory: URL? = nil, measurements: ConnectionMeasurements? = nil) async throws -> Connection {
         let revision = try await identity.credentialRevision()
         let material = try await identity.bindingSecret()
         let intents = await openIntents(in: storageDirectory, keyMaterial: material,
             scope: ActionIntentScope(service: session.base.absoluteString, device: "this-mac", credentialRevision: revision))
         return Connection(operations: session, server: session.base, deviceID: "mac", macName: nil,
-                          macID: nil, intents: intents)
+                          macID: nil, intents: intents, measurements: measurements)
     }
 
     /// Saved answers are this device's own business: whatever their store does, the Mac is still reached.
@@ -139,7 +140,7 @@ public actor Connection {
     }
 
     private init(operations: any FeedOperations, server: URL, deviceID: String, macName: String?, macID: String?,
-                 intents: OpenedActionIntents?) {
+                 intents: OpenedActionIntents?, measurements: ConnectionMeasurements?) {
         self.operations = operations
         self.macName = macName
         self.macID = macID
@@ -149,9 +150,14 @@ public actor Connection {
                                          macName: macName)
         }
         self.monitor = monitor
-        let monitored = MonitoredOperations(operations, monitor: monitor) {
+        let mac = ConnectionMeasurement.macReference(macID)
+        let monitored = MonitoredOperations(operations, monitor: monitor, route: {
             local ? .thisMac : await (operations as? RoutedSession)?.route ?? .relay
-        }
+        }, record: { observation in
+            let network = ConnectionMeasurement.NetworkSnapshot(interface: NetworkReachability.shared.interfaceKind,
+                                                                radio: RadioAccess.current)
+            await measurements?.record(ConnectionMeasurement(observation, at: Date(), mac: mac, network: network))
+        })
         api = AlondraAPIClient(serviceURL: server, deviceID: deviceID, operations: monitored)
         #if os(macOS)
         let client: ViewClient = .mac

@@ -1,4 +1,5 @@
 import AlondraFeatures
+import AlondraFeed
 import AlondraTransport
 import Foundation
 import Observation
@@ -29,7 +30,8 @@ public final class MacWorkspaceOwner {
                   isDaemonRunning: { await LoopbackSession.isDaemonRunning() },
                   openLocal: {
                       try await Connection.local(LoopbackSession(identity: identity, deviceName: deviceName),
-                                                       identity: identity, storageDirectory: storageDirectory)
+                                                       identity: identity, storageDirectory: storageDirectory,
+                                                       measurements: account.measurements)
                   },
                   startRemote: { account.store.send(.appeared) },
                   ownMacID: { await LoopbackSession.ownMacID() })

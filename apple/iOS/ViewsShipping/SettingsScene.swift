@@ -54,6 +54,7 @@ struct SettingsScene: View {
                 $0.viewsClient = ViewsClient.live(session: viewsFeed, sender: sender, monitor: services.monitor)
                 $0.cloudPairing = owner.additionalMacPairing
                 $0.findMac = owner.findMacClient
+                $0.connectionMeasurements = .live(owner.measurements)
             }
         if let unopened = pairingRequested {
             pairingRequested = nil

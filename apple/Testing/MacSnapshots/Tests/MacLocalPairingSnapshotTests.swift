@@ -1,5 +1,6 @@
 import AlondraContract
 import AlondraFeatures
+import AlondraFeed
 import AlondraMacWorkspace
 import AppKit
 import ComposableArchitecture
@@ -96,6 +97,28 @@ final class MacLocalPairingSnapshotTests: XCTestCase {
             relay: .init(on: false)))
         let store = Store(initialState: state) { EmptyReducer<MacSettingsFeature.State, MacSettingsFeature.Action>() }
         return NavigationStack { ThisMacSettingsView(store: store) }
+    }
+
+    private var connectionMeasurements: some View {
+        var state = ConnectionMeasurementsFeature.State()
+        state.summary = [
+            ConnectionMeasurementSummary(route: .thisMac, network: "wifi", waits: false, count: 512, failures: 0, medianMs: 4, p90Ms: 11),
+            ConnectionMeasurementSummary(route: .relay, network: "wired", waits: false, count: 37, failures: 2, medianMs: 121, p90Ms: 240),
+            ConnectionMeasurementSummary(route: .thisMac, network: "wifi", waits: true, count: 64, failures: 0, medianMs: 49_880, p90Ms: 50_004),
+        ]
+        state.file = URL(fileURLWithPath: "/tmp/connection-measurements.jsonl")
+        let store = Store(initialState: state) {
+            EmptyReducer<ConnectionMeasurementsFeature.State, ConnectionMeasurementsFeature.Action>()
+        }
+        return Form { ConnectionMeasurementsSection(store: store) }.formStyle(.grouped)
+    }
+
+    func test_connectionMeasurements() {
+        assertWindow(size: CGSize(width: 560, height: 380)) { connectionMeasurements }
+    }
+
+    func test_connectionMeasurements_spanish() {
+        assertWindow(size: CGSize(width: 560, height: 380), spanish: true, variants: light) { connectionMeasurements }
     }
 
     func test_thisMacSettings() {

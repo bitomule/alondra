@@ -35,6 +35,7 @@ swift_test(
     deps = [
         "//apple:AlondraMacWorkspace",
         "//apple/Contract:AlondraContract",
+        "//apple/Data/Feed:AlondraFeed",
         "//apple/Design:AlondraDesign",
         "//apple/Features:AlondraFeatures",
         "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",

@@ -3,6 +3,7 @@ import AlondraNetworkReachability
 import AlondraTransport
 import AlondraPairing
 import AlondraFeatures
+import AlondraFeed
 import ComposableArchitecture
 import Observation
 import Foundation
@@ -12,6 +13,8 @@ import Foundation
 @Observable
 public final class AccountSession {
     public let auth: AuthSession
+    /// Every request this app makes to its Macs, kept to compare connection paths.
+    public let measurements: ConnectionMeasurements
     private let displayName: String
     private let storageDirectory: URL
     private let prepareCamera: @Sendable () async -> Bool
@@ -28,8 +31,9 @@ public final class AccountSession {
     private func makeRegistry() -> ApprovedSessionRegistry<Connection> {
         let auth = auth
         let storageDirectory = storageDirectory
+        let measurements = measurements
         return ApprovedSessionRegistry<Connection>(
-            make: { try await Connection(approved: $0, auth: auth, storageDirectory: storageDirectory) },
+            make: { try await Connection(approved: $0, auth: auth, storageDirectory: storageDirectory, measurements: measurements) },
             stop: { await $0.deactivate() }, publish: { [weak self] snapshot in
                 guard let self else { throw CancellationError() }
                 return try await self.didReconcile(snapshot)
@@ -103,6 +107,7 @@ public final class AccountSession {
         #endif
         self.displayName = displayName
         self.storageDirectory = storageDirectory
+        measurements = ConnectionMeasurements(file: storageDirectory.appending(path: "connection-measurements.jsonl"))
         self.prepareCamera = prepareCamera
         self.didReconcile = didReconcile
         self.willDeactivate = willDeactivate

@@ -86,6 +86,7 @@ struct MacServiceSettingsScene: View {
                 $0.viewsClient = ViewsClient.live(session: viewsFeed, sender: sender, monitor: services.monitor)
                 $0.cloudPairing = account.additionalMacPairing
                 $0.findMac = account.findMacClient
+                $0.connectionMeasurements = .live(account.measurements)
             }
         if let unopened = pairingRequested {
             pairingRequested = nil

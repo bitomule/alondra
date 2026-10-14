@@ -129,6 +129,7 @@ public extension DependencyValues {
         public var confirmLogout = false
         public var nodeLimit = NodeLimitFeature.State()
         public var allowedRules = AllowedRulesFeature.State()
+        public var measurements = ConnectionMeasurementsFeature.State()
         public var generation: UInt64 = 0
         public let cancellation = UUID()
         public init(service: String, device: String, supportsNotifications: Bool, automaticallySavesQuietHours: Bool = false,
@@ -157,6 +158,7 @@ public extension DependencyValues {
         case logoutTapped, cancelLogout, confirmLogout
         case nodeLimit(NodeLimitFeature.Action)
         case allowedRules(AllowedRulesFeature.Action)
+        case measurements(ConnectionMeasurementsFeature.Action)
     }
     @Dependency(\.serviceSettings) var client
     @Dependency(\.cloudPairing) var pairingService
@@ -171,9 +173,10 @@ public extension DependencyValues {
     public var body: some ReducerOf<Self> {
         Scope(state: \.nodeLimit, action: \.nodeLimit) { NodeLimitFeature() }
         Scope(state: \.allowedRules, action: \.allowedRules) { AllowedRulesFeature() }
+        Scope(state: \.measurements, action: \.measurements) { ConnectionMeasurementsFeature() }
         Reduce { state, action in
             switch action {
-            case .nodeLimit, .allowedRules: return .none
+            case .nodeLimit, .allowedRules, .measurements: return .none
             case .appeared:
                 guard state.supportsNotifications else { return .none }
                 return .run { send in

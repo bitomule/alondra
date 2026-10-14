@@ -17,6 +17,7 @@ public struct SettingsView: View {
             NodeLimitSection(store: store.scope(state: \.nodeLimit, action: \.nodeLimit))
             AllowedRulesSection(store: store.scope(state: \.allowedRules, action: \.allowedRules))
             if store.supportsNotifications { notifications }
+            ConnectionMeasurementsSection(store: store.scope(state: \.measurements, action: \.measurements))
             about
         }
         .scrollContentBackground(.hidden)
