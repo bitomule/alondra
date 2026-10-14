@@ -43,8 +43,8 @@ fn templates() -> DomainState {
         agent_id: Some("question-agent".into()), review_prs: true, dependencies: BTreeSet::from(["delivery-task".into()]), stack: None,
         launch: Some(LaunchPlan::new("node", "/synthetic")),
     });
-    let options = vec![QuestionOption { id: "yes".into(), label: "Yes".into(), description: None, inputs: vec![] },
-        QuestionOption { id: "no".into(), label: "No".into(), description: None, inputs: vec![] }];
+    let options = vec![QuestionOption { id: "yes".into(), label: "Yes".into(), description: None },
+        QuestionOption { id: "no".into(), label: "No".into(), description: None }];
     let mut card = CardSpec::question("Choose a synthetic option", &options);
     card.blocks = vec![CardTarget::Delivery { interaction_id: "template-delivery".into() }];
     super::commit(&mut state, Actor::Agent { agent_id: "question-agent".into() }, Command::AskQuestion {

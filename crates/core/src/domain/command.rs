@@ -262,6 +262,7 @@ pub enum Command {
         attachments: Vec<AttachmentRef>,
         interaction_id: InteractionId,
         option_id: String,
+        #[serde(default)]
         inputs: BTreeMap<String, InputValue>,
     },
     CreateDocument {

@@ -597,8 +597,8 @@ async fn a_normal_end_or_a_wait_on_the_user_is_never_sent_back() {
         attachments: vec![], interaction_id: "q-t2".into(), scope: alondra_core::domain::Scope::Task { task_id: "t2".into() },
         recipient: alondra_core::domain::Recipient::User, body: "Which name?".into(), blocking: false,
         options: vec![
-            alondra_core::domain::QuestionOption { id: "a".into(), label: "Atlas".into(), description: None, inputs: vec![] },
-            alondra_core::domain::QuestionOption { id: "b".into(), label: "Borealis".into(), description: None, inputs: vec![] },
+            alondra_core::domain::QuestionOption { id: "a".into(), label: "Atlas".into(), description: None },
+            alondra_core::domain::QuestionOption { id: "b".into(), label: "Borealis".into(), description: None },
         ],
         card: alondra_core::domain::CardSpec::new(alondra_core::domain::CardKind::Decide, "Choose the release name").why("The name goes on the release"),
     });

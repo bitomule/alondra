@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:memory-pause-livelock-ask",
   "client": "mac",
-  "version": "vf59265730d54abb5",
+  "version": "v520c17bdc29b5535",
   "cursor": "cursor-1",
   "title": "Decide who fixes the memory pauses that cut the same build in a loop",
   "status": {
@@ -96,24 +96,6 @@
             "resolves_card": true
           },
           "more": [
-            {
-              "id": "ans:memory-pause-livelock-ask@1",
-              "label": "Write my own answer",
-              "style": "secondary",
-              "role": "neutral",
-              "presentation": "button",
-              "input": {
-                "kind": "text",
-                "placeholder": "Answer in your own words…",
-                "required": true,
-                "multiline": true
-              },
-              "attachments": true,
-              "enabled": true,
-              "stamp": "You answered",
-              "key": "3",
-              "resolves_card": true
-            },
             {
               "id": "clarify:memory-pause-livelock-ask@1",
               "label": "Request clarification",

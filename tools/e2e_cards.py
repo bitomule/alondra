@@ -40,6 +40,8 @@ CARDS = {
     "option": "Pick the release channel",
     "text": "Write the release note",
     "reply": "Name the new settings screen",
+    "action": "Rotate the signing key",
+    "action-note": "Renew the push certificate",
     "group-q1": "Which store region goes first?",
     "group-q2": "Which price tier for the launch?",
     "group-q3": "Who signs the build?",
@@ -66,8 +68,8 @@ class Sandbox:
         self.orchestrator_log = os.path.join(self.scratch, "orchestrator.jsonl")
         card = {"interaction_id": "orchestrator-decide", "scope": {"kind": "orchestrator", "request_id": None},
                 "recipient": {"kind": "user"}, "need": CARDS["orchestrator"], "why": "A node found a loop in the memory rule.",
-                "blocking": False, "options": [{"id": "mine", "label": "I'll do it", "description": "No task is created", "inputs": []},
-                                               {"id": "new_task", "label": "Create a task", "description": "A node fixes it", "inputs": []}]}
+                "blocking": False, "options": [{"id": "mine", "label": "I'll do it", "description": "No task is created"},
+                                               {"id": "new_task", "label": "Create a task", "description": "A node fixes it"}]}
         env = dict(os.environ, SANDBOX_DIR=self.dir, SANDBOX_PORT=str(port), MACS="1", PATH=f"{fake}:{os.environ['PATH']}", SANDBOX_WAKE="1",
                    E2E_ORCHESTRATOR_LOG=self.orchestrator_log, E2E_ORCHESTRATOR_CARD=json.dumps(card),
                    E2E_ALONDRA=os.path.join(self.dir, "bin/alondra"))
@@ -164,7 +166,26 @@ class Node:
     def ask(self, interaction, need, options):
         return ("ask", {"interaction_id": interaction, "scope": self.scope(), "recipient": {"kind": "user"}, "need": need,
                         "why": "The release waits for this.", "blocking": False,
-                        "options": [{"id": o, "label": o.capitalize(), "description": f"Go with {o}", "inputs": []} for o in options]})
+                        "options": [{"id": o, "label": o.capitalize(), "description": f"Go with {o}"} for o in options]})
+
+    def action(self, interaction, need):
+        """A request_action card with its default buttons, Done and I can't do it."""
+        return ("request_action", {"interaction_id": interaction, "scope": self.scope(), "recipient": {"kind": "user"}, "need": need,
+                                   "why": "The release waits for this.", "verify": "I check it myself", "blocking": False,
+                                   "steps": ["Open the developer console", "Do it"]})
+
+    def heard(self, text):
+        """The node got the user's words in the answer typed into its session."""
+        deadline, seen = time.time() + TIMEOUT, []
+        while time.time() < deadline:
+            try:
+                message = self.lines.get(timeout=1)
+            except queue.Empty:
+                continue
+            seen.append(message)
+            if text in json.dumps(message, ensure_ascii=False):
+                return
+        raise AssertionError(f"the node never got {text!r}: {seen}")
 
     def permission(self, command):
         """The real hook a session runs before a tool: it waits until the user answers."""
@@ -195,10 +216,12 @@ def seed(asker, deliverer):
         ("request_input", {"interaction_id": "text", "scope": asker.scope(), "recipient": {"kind": "user"}, "need": CARDS["text"],
                            "why": "The release notes need it.", "kind": "text", "blocking": False}),
         asker.ask("reply", CARDS["reply"], ["settings", "preferences"]),
+        asker.action("action", CARDS["action"]),
+        asker.action("action-note", CARDS["action-note"]),
         ("ask", {"interaction_id": "group", "scope": asker.scope(), "recipient": {"kind": "user"}, "why": "", "blocking": False,
                  "questions": [{"question": CARDS[f"group-q{n}"], "why": "The launch plan needs it.",
-                                "options": [{"id": "a", "label": "A", "description": "First choice", "inputs": []},
-                                            {"id": "b", "label": "B", "description": "Second choice", "inputs": []}]}
+                                "options": [{"id": "a", "label": "A", "description": "First choice"},
+                                            {"id": "b", "label": "B", "description": "Second choice"}]}
                                for n in range(1, 5)]}),
     )
     deliverer.call(
@@ -213,8 +236,8 @@ def seed_orchestrator(sandbox, node):
     """A node's question to the orchestrator wakes it, and it asks the user its Decide card."""
     node.call(("ask", {"interaction_id": "to-orchestrator", "scope": node.scope(), "recipient": {"kind": "orchestrator"},
                        "need": "Tell me who fixes the memory pauses", "why": "My build is cut in a loop.", "blocking": False,
-                       "options": [{"id": "wait", "label": "Wait", "description": "Keep waiting", "inputs": []},
-                                   {"id": "go", "label": "Go on", "description": "Go on without it", "inputs": []}]}))
+                       "options": [{"id": "wait", "label": "Wait", "description": "Keep waiting"},
+                                   {"id": "go", "label": "Go on", "description": "Go on without it"}]}))
     deadline = time.time() + TIMEOUT
     while not os.path.exists(sandbox.orchestrator_log + ".asked"):
         if time.time() > deadline:
@@ -243,6 +266,8 @@ ANSWERS = {
     "option": ("ans:", "stable", None),
     "text": ("reply:", None, "Faster sync and a new settings screen"),
     "reply": ("reply:", None, "Call it Preferences"),
+    "action": ("ans:", "done", None),
+    "action-note": ("ans:", "cannot", "No tengo acceso a Apple Developer"),
     "group-q1": ("ans:", "a", None),
     "group-q2": ("ans:", "b", None),
     "group-q3": ("reply:", None, "David signs it"),
@@ -398,8 +423,9 @@ def check_tui(sandbox, captures):
             need = CARDS[card]
             if card == "option":
                 tui.keys("m")
-                tui.until(lambda s: "Pedir aclaración" in s, "the More menu never offered a clarification")
-                tui.keys("2")
+                menu = tui.until(lambda s: "Pedir aclaración" in s, "the More menu never offered a clarification")
+                clarify = next(line.split("Pedir aclaración")[0].split()[-1] for line in menu.splitlines() if "Pedir aclaración" in line)
+                tui.keys(clarify)
                 tui.keys("1")
                 tui.type("Which release?")
                 tui.keys("Enter")
@@ -407,14 +433,22 @@ def check_tui(sandbox, captures):
                 assert listed(tui.screen(), need), f"asking to clarify hid {card}, which still waits:\n{tui.screen()}"
                 tui.capture("clarified-option-stays")
                 print("ok (tui): asking to clarify keeps the card in the list", file=sys.stderr, flush=True)
+            key = {"stable": "1", "a": "1", "b": "2", "allow": "1", "done": "1", "cannot": "2"}.get(option)
             if prefix == "reply:":
                 tui.keys("r")
                 tui.type(text)
                 tui.keys("Enter")
             elif prefix == "accept:":
                 tui.keys("1")
+            elif text:
+                tui.keys("r")
+                tui.type(text)
+                tui.keys("Escape")
+                tui.until(lambda s: "va con la opción que pulses" in s, f"{card}: the draft is not shown going with the option")
+                tui.capture(f"draft-{card}")
+                tui.keys(key)
             else:
-                tui.keys({"stable": "1", "a": "1", "b": "2", "allow": "1"}[option])
+                tui.keys(key)
             tui.until(lambda s: not listed(s, need), f"{card} was still listed right after it was answered", seconds=2)
             tui.capture(f"answered-{card}")
             print(f"ok (tui): {card} left the list at once", file=sys.stderr, flush=True)
@@ -463,6 +497,8 @@ def main():
                 time.sleep(3600)
         if args.client != "hold":
             check_orchestrator_answered(sandbox)
+            nodes[0].heard(ANSWERS["action-note"][2])
+            print(f"ok ({args.client}): the words written on the card reached the node with the option", file=sys.stderr, flush=True)
         print(f"e2e cards ({args.client}): every card left at once once answered and none came back.")
     except KeyboardInterrupt:
         pass

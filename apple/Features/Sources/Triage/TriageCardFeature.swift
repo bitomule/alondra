@@ -226,13 +226,18 @@ public struct TriageCardFeature: Sendable {
         }
         var effects: [Effect<Action>] = []
         if state.actions.action != action { effects.append(.send(.actions(.present(action)))) }
+        if let words = action.carrying(state.replyDraft) {
+            effects.append(.send(.actions(.textChanged(words))))
+        }
         if action.presentation == .button { effects.append(.send(.submit)) }
         return .concatenate(effects)
     }
 
     /// A button that opens the sheet: it asks which reason applies, or for words of the person's own.
+    /// An option never does: it answers when pressed, with what is written in the card's field.
     static func asksForWords(_ action: WireAction) -> Bool {
         if action.presentation == .options { return true }
+        if action.optionId != nil { return false }
         if case .text = action.input { return true }
         return false
     }

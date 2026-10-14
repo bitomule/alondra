@@ -183,7 +183,6 @@ fn questions_of(input: &Value) -> Vec<GroupQuestion> {
                 id: format!("o{index}"),
                 label: str_field(option, "label").filter(|label| !label.trim().is_empty())?,
                 description: str_field(option, "description").filter(|text| !text.trim().is_empty()),
-                inputs: vec![],
             }))
             .collect();
         let (options, recommended) = recommending(options);

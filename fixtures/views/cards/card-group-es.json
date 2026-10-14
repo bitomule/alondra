@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:g-q2",
   "client": "ios",
-  "version": "ve0dc78e4ea243acc",
+  "version": "v64de950d23a476ed",
   "cursor": "cursor-1",
   "title": "Ship it today?",
   "status": {
@@ -74,23 +74,6 @@
             "resolves_card": true
           },
           "more": [
-            {
-              "id": "ans:g-q2@1",
-              "label": "Escribir mi respuesta",
-              "style": "secondary",
-              "role": "neutral",
-              "presentation": "button",
-              "input": {
-                "kind": "text",
-                "placeholder": "Responde con tus palabras…",
-                "required": true,
-                "multiline": true
-              },
-              "attachments": true,
-              "enabled": true,
-              "stamp": "Respondiste",
-              "resolves_card": true
-            },
             {
               "id": "clarify:g-q2@1",
               "label": "Pedir aclaración",

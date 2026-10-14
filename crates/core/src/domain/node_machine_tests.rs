@@ -561,8 +561,8 @@ impl World {
                     attachments: vec![], interaction_id: format!("q-{}", self.s.revision).into(), scope: Scope::Task { task_id: task },
                     recipient: Recipient::User, body: "Which name?".into(), blocking: false,
                     options: vec![
-                        QuestionOption { id: "a".into(), label: "Atlas".into(), description: None, inputs: vec![] },
-                        QuestionOption { id: "b".into(), label: "Borealis".into(), description: None, inputs: vec![] },
+                        QuestionOption { id: "a".into(), label: "Atlas".into(), description: None },
+                        QuestionOption { id: "b".into(), label: "Borealis".into(), description: None },
                     ],
                     card: CardSpec::new(CardKind::Decide, "Choose the release name").why("The name goes on the release"),
                 });

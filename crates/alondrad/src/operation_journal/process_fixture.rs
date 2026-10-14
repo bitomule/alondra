@@ -210,7 +210,6 @@ async fn full_stack_fixture_server() {
                     id: "yes".into(),
                     label: "Yes".into(),
                     description: None,
-                    inputs: vec![],
                 }],
                 card: CardSpec::derived(CardKind::Provide, "Answer the question"),
             },
@@ -221,7 +220,7 @@ async fn full_stack_fixture_server() {
                     attachments: vec![], interaction_id: id.into(),
                     scope: Scope::Task { task_id: "fixture-task".into() }, recipient: Recipient::User,
                     body: format!("Independent detail {id}"), blocking: false,
-                    options: vec![QuestionOption { id: "yes".into(), label: "Yes".into(), description: None, inputs: vec![] }],
+                    options: vec![QuestionOption { id: "yes".into(), label: "Yes".into(), description: None }],
                     card: CardSpec::derived(CardKind::Provide, "Another question"),
                 });
         }

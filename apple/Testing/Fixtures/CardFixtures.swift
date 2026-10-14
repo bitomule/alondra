@@ -111,11 +111,7 @@ extension Fixtures {
                 button("ans:\(id)@1", index == 0 ? "★ \(name)" : name, role: index == 0 ? "advance" : "neutral",
                        optionID: name.lowercased())
             }
-            item["more"] = [
-                button("ans:\(id)@1", "Write my own answer", input: ["kind": "text", "placeholder": "Answer in your own words…",
-                                                                    "required": true, "multiline": true]),
-                clarify(id: id),
-            ]
+            item["more"] = [clarify(id: id)]
         }
     }
 

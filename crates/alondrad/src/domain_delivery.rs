@@ -462,7 +462,6 @@ mod tests {
                     id: "yes".into(),
                     label: "Yes".into(),
                     description: None,
-                    inputs: vec![],
                 }], card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Provide, "Answer the question"),
             },
         );
@@ -714,7 +713,6 @@ mod tests {
                     id: "yes".into(),
                     label: "Yes".into(),
                     description: None,
-                    inputs: vec![],
                 }], card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Provide, "Answer the question"),
             },
         );
@@ -932,27 +930,11 @@ mod tests {
                 id: "yes".into(),
                 label: "Yes".into(),
                 description: None,
-                inputs: vec![],
             },
             QuestionOption {
                 id: "changes".into(),
                 label: "Request changes".into(),
                 description: None,
-                inputs: vec![InputSpec {
-                    id: "why".into(),
-                    kind: InputKind::Text,
-                    required: true,
-                }],
-            },
-            QuestionOption {
-                id: "scale".into(),
-                label: "Scale".into(),
-                description: None,
-                inputs: vec![InputSpec {
-                    id: "count".into(),
-                    kind: InputKind::Integer,
-                    required: true,
-                }],
             },
         ];
         let delivery = |target| InteractionPayload::Delivery {
@@ -1064,7 +1046,7 @@ mod tests {
             .into_iter()
             .enumerate()
             .map(|(index, label)| QuestionOption {
-                id: format!("option-{index}"), label: label.into(), description: None, inputs: vec![],
+                id: format!("option-{index}"), label: label.into(), description: None,
             })
             .collect();
         state.interactions.insert(id.clone(), Interaction {
@@ -1174,7 +1156,7 @@ mod tests {
         apply_command(&domain, agent.clone(), "question", Command::AskQuestion {
             attachments: vec![], interaction_id: "question-a".into(), scope: Scope::Task { task_id: "task-a".into() },
             recipient: Recipient::User, body: "Choose".into(), blocking: true,
-            options: vec![QuestionOption { id: "yes".into(), label: "Yes".into(), description: None, inputs: vec![] }],
+            options: vec![QuestionOption { id: "yes".into(), label: "Yes".into(), description: None }],
             card: CardSpec::derived(CardKind::Provide, "Answer the question"),
         });
         apply_command(&domain, agent, "withdraw", Command::Withdraw { interaction_id: "question-a".into() });
@@ -1260,10 +1242,10 @@ mod tests {
         let plan = CardSpec::new(CardKind::Review, "Ship the parser").why("Two steps.");
         for (hold, card, level, expected) in [
             (Hold::Permission, permission, "time-sensitive",
-                json!([{"option": "allow", "label": "Allow"}, {"option": "deny", "label": "Deny", "text": true, "placeholder": "Write the reason"},
-                    {"label": "Reply", "text": true, "placeholder": "Reply to this node…"}])),
+                json!([{"option": "allow", "label": "Allow"}, {"option": "deny", "label": "Deny"},
+                    {"label": "Reply", "text": true, "placeholder": "Deny it with a reason…"}])),
             (Hold::Plan, plan, "active",
-                json!([{"label": "Approve"}, {"label": "Reply", "text": true, "placeholder": "Reply to this node…"}])),
+                json!([{"label": "Approve"}, {"label": "Reply", "text": true, "placeholder": "Write what to change…"}])),
         ] {
             let mut state = DomainState::new("epoch-1");
             let id = InteractionId::from("hold-1");

@@ -290,10 +290,6 @@ fn setup_base(store: &mut DomainStore, base: &Value) {
                     .unwrap()
                     .iter()
                     .map(|option| {
-                        assert!(
-                            field(option, "inputs").as_array().unwrap().is_empty(),
-                            "base input adapter needs extension"
-                        );
                         QuestionOption {
                             id: string(field(option, "option_id")).into(),
                             label: string(field(option, "label")).into(),
@@ -301,7 +297,6 @@ fn setup_base(store: &mut DomainStore, base: &Value) {
                                 .get("description")
                                 .and_then(|d| d.as_str())
                                 .map(String::from),
-                            inputs: vec![],
                         }
                     })
                     .collect();

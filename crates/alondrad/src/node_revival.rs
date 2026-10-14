@@ -426,12 +426,12 @@ async fn ask_to_retry(domain: &DomainRuntime, session: &str, error: &str, launch
     let name = domain.state().ok().and_then(|state| state.agents.get(&AgentId(session.to_owned())).map(|agent| agent.name.clone()))
         .unwrap_or_else(|| session.to_owned());
     let body = format!("{name} is not responding to Alondra while its task is open, and restarting its session with `claude respawn` failed: {error}");
-    let mut options = vec![QuestionOption { id: RETRY.into(), label: "Try again".into(), description: Some("Alondra restarts the same session once more".into()), inputs: vec![] }];
+    let mut options = vec![QuestionOption { id: RETRY.into(), label: "Try again".into(), description: Some("Alondra restarts the same session once more".into()) }];
     if !releasable_tasks(domain, session).is_empty() {
         options.insert(0, QuestionOption { id: RELAUNCH.into(), label: "Relaunch (Recommended)".into(),
-            description: Some("A new node takes over the task in the same folder, with its files and uncommitted work".into()), inputs: vec![] });
+            description: Some("A new node takes over the task in the same folder, with its files and uncommitted work".into()) });
     }
-    options.push(QuestionOption { id: CANCEL.into(), label: "Cancel its task".into(), description: Some("The task closes and Alondra closes the node".into()), inputs: vec![] });
+    options.push(QuestionOption { id: CANCEL.into(), label: "Cancel its task".into(), description: Some("The task closes and Alondra closes the node".into()) });
     let card = match crate::domain_holds::ask(domain, session, body, options) {
         Ok(Some(card)) => card,
         Ok(None) => return false,

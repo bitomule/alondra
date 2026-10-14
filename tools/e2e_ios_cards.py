@@ -142,9 +142,14 @@ def check(sandbox, answers, kind_of, captures):
                 simulator.mav("ui", "type", text)
                 simulator.tap_trailing_edge(f"triage.send.{card}")
             else:
+                if text:
+                    simulator.tap(f"triage.reply.{card}")
+                    simulator.mav("ui", "type", text)
+                    simulator.capture(captures, f"written-{card}")
                 button = next(i for i in simulator.ids() if i.startswith(f"triage.action.{card}.")
                               and (option is None or i.endswith(f".{option}")))
                 simulator.tap(button)
+                assert "card.composition" not in simulator.ids(), f"{card}: pressing {option} opened the sheet"
             simulator.until(lambda ids: f"triage.need.{card}" not in ids, f"{card} was still on screen right after it was answered", SHOWN)
             simulator.capture(captures, f"answered-{card}")
             answered.append(card)

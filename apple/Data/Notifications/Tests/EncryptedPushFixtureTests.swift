@@ -55,7 +55,7 @@ struct EncryptedPushFixtureTests {
         #expect(item.kind == .question)
         #expect(item.card == sent["card"] as? String)
         #expect(item.actions.map(\.label) == ["★ Yes", "Request changes", "Responder"])
-        #expect(item.actions.map(\.text) == [false, true, true])
+        #expect(item.actions.map(\.text) == [false, false, true], "options answer at once; only the reply takes text")
         #expect(NotificationPayload.Binding(userInfo: payload)?.value == (try binding))
         #expect((payload["aps"] as? [String: Any])?["sound"] == nil, "with_sound false strips the sound")
         let alert = NotificationAlert(aps: try #require(payload["aps"] as? [String: Any]))

@@ -767,9 +767,7 @@ fn reader_comments_follow_the_selected_views_text_option() {
     press(&mut app, KeyCode::Char('C'));
     typed(&mut app, "Tighter");
     press(&mut app, KeyCode::Enter);
-    assert!(!crate::tui::draw::footer_keys(&app).iter().any(|(key, _)| key == "2"), "an option without text is not offered");
-    press(&mut app, KeyCode::Char('2'));
-    assert!(posted(&app).is_empty() && app.composer.is_none());
+    assert!(crate::tui::draw::footer_keys(&app).iter().any(|(key, _)| key == "2"), "every option carries the comments");
     press(&mut app, KeyCode::Char('1'));
     assert!(
         matches!(app.composer.as_ref().map(|composer| &composer.target),
@@ -1606,8 +1604,7 @@ fn a_changed_modal_waits_for_the_composer_and_never_takes_its_enter() {
     let (tx, _rx) = std::sync::mpsc::sync_channel(8);
     let mut app = App::new(tx);
     open_question(&mut app);
-    press(&mut app, KeyCode::Char('m'));
-    press(&mut app, KeyCode::Char('1'));
+    press(&mut app, KeyCode::Char('r'));
     assert!(app.composer.is_some());
     let request = crate::client::Client::action_body("epoch", "changes:pr@1-old", None, serde_json::json!({}));
     let changed = view_action_result(serde_json::json!({
@@ -1649,13 +1646,12 @@ fn cancelling_a_composer_leaves_no_stale_stamp_for_the_next_action() {
     app.reconcile();
     app.sel = Some(Key(question_id()));
     let mut card = view_fixture("card-question.json");
-    card["sections"][0]["items"][0]["more"][0]["stamp"] = "Replying…".into();
+    card["sections"][0]["items"][0]["reply"]["stamp"] = "Replying…".into();
     app.on_msg(Msg::ViewCard {
         key: format!("card:{}", question_id()),
         result: Ok(serde_json::from_value(card).unwrap()),
     });
-    press(&mut app, KeyCode::Char('m'));
-    press(&mut app, KeyCode::Char('1'));
+    press(&mut app, KeyCode::Char('r'));
     assert!(app.composer.is_some());
     press(&mut app, KeyCode::Esc);
     let request = crate::client::Client::action_body("epoch", "changes:pr@1-old", None, serde_json::json!({}));
@@ -1673,18 +1669,17 @@ fn cancelling_a_composer_leaves_no_stale_stamp_for_the_next_action() {
 }
 
 #[test]
-fn write_my_own_answer_posts_the_questions_answer_action_with_the_text() {
+fn the_cards_field_posts_the_questions_reply_with_the_text() {
     let (tx, _rx) = std::sync::mpsc::sync_channel(8);
     let mut app = App::new(tx);
     open_question(&mut app);
-    press(&mut app, KeyCode::Char('m'));
-    press(&mut app, KeyCode::Char('1'));
+    press(&mut app, KeyCode::Char('r'));
     typed(&mut app, "Neither");
     app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL));
     let sent = posted(&app);
     assert_eq!(sent.len(), 1, "{sent:?}");
     assert_eq!(sent[0].0, "/actions");
-    assert!(sent[0].1["action_id"].as_str().unwrap().starts_with("ans:"), "{sent:?}");
+    assert!(sent[0].1["action_id"].as_str().unwrap().starts_with("reply:"), "{sent:?}");
     assert_eq!(sent[0].1["input"]["text"], "Neither");
 }
 
@@ -1796,8 +1791,7 @@ fn a_changed_modal_never_takes_the_enter_that_sends_the_composer() {
     let (tx, _rx) = std::sync::mpsc::sync_channel(8);
     let mut app = App::new(tx);
     open_question(&mut app);
-    press(&mut app, KeyCode::Char('m'));
-    press(&mut app, KeyCode::Char('1'));
+    press(&mut app, KeyCode::Char('r'));
     let request = crate::client::Client::action_body("epoch", "changes:pr@1-old", None, serde_json::json!({}));
     let changed = view_action_result(serde_json::json!({
         "outcome":"changed", "result":{"kind":"changed", "title":"New commits",
@@ -1946,7 +1940,7 @@ fn reader_comments_on_a_plan_go_to_request_changes_by_its_button_number() {
     press(&mut app, KeyCode::Enter);
 
     press(&mut app, KeyCode::Char('2'));
-    assert!(!flash(&app).contains("takes no text"), "{}", flash(&app));
+    assert!(!flash(&app).contains("sends no words"), "{}", flash(&app));
     assert!(
         matches!(app.composer.as_ref().map(|composer| &composer.target),
         Some(Target::ViewAction { action_id, option_id: None, .. }) if *action_id == changes),
@@ -1959,6 +1953,27 @@ fn reader_comments_on_a_plan_go_to_request_changes_by_its_button_number() {
     assert_eq!(sent[0].0, "/actions");
     assert_eq!(sent[0].1["action_id"], changes.as_str());
     assert!(sent[0].1["input"]["text"].as_str().unwrap().contains("Split step two"));
+}
+
+#[test]
+fn reader_comments_on_a_question_go_with_the_option_pressed_at_once() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
+    let mut app = App::new(tx);
+    app.view_navigation.push(format!("card:{}", question_id()));
+    app.card_view = Some(serde_json::from_value(view_fixture("card-question.json")).unwrap());
+    app.open_reader();
+    press(&mut app, KeyCode::Char('C'));
+    typed(&mut app, "Only on the onboarding screen");
+    press(&mut app, KeyCode::Enter);
+
+    press(&mut app, KeyCode::Char('2'));
+    assert!(app.composer.is_none(), "the option answers at once");
+    let sent = posted(&app);
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    assert!(sent[0].1["action_id"].as_str().unwrap().starts_with("ans:"), "{sent:?}");
+    assert_eq!(sent[0].1["option_id"], "warm");
+    assert!(sent[0].1["input"]["text"].as_str().unwrap().contains("Only on the onboarding screen"), "{sent:?}");
 }
 
 fn pull_request_detail(app: &mut App, options: serde_json::Value) -> String {

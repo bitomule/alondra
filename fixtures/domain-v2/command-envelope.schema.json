@@ -370,39 +370,11 @@
         },
         "description": {
           "type": "string"
-        },
-        "inputs": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "additionalProperties": false,
-            "properties": {
-              "id": {
-                "type": "string"
-              },
-              "kind": {
-                "enum": [
-                  "text",
-                  "boolean",
-                  "integer"
-                ]
-              },
-              "required": {
-                "type": "boolean"
-              }
-            },
-            "required": [
-              "id",
-              "kind",
-              "required"
-            ]
-          }
         }
       },
       "required": [
         "id",
-        "label",
-        "inputs"
+        "label"
       ]
     },
     "Command": {
@@ -985,8 +957,7 @@
           "required": [
             "kind",
             "interaction_id",
-            "option_id",
-            "inputs"
+            "option_id"
           ]
         },
         {

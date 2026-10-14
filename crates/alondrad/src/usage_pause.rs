@@ -297,7 +297,7 @@ pub(crate) fn next_local_midnight(now: Millis) -> Millis {
 }
 
 fn option(id: &str, label: &str) -> alondra_core::domain::QuestionOption {
-    alondra_core::domain::QuestionOption { id: id.into(), label: label.into(), description: None, inputs: vec![] }
+    alondra_core::domain::QuestionOption { id: id.into(), label: label.into(), description: None }
 }
 
 /// A launch going ahead over today's slice of the week puts a card in front of the user, once

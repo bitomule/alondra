@@ -66,7 +66,7 @@ pub fn card(title: &str, problem: &StartProblem, dependency: Option<&str>, lang:
 
 /// The ways out the card offers, each saying what choosing it does.
 pub fn options(problem: &StartProblem, lang: Lang) -> Vec<QuestionOption> {
-    let option = |id: &str, label: &str, description: &str| QuestionOption { id: id.into(), label: label.into(), description: Some(description.into()), inputs: vec![] };
+    let option = |id: &str, label: &str, description: &str| QuestionOption { id: id.into(), label: label.into(), description: Some(description.into()) };
     let cancel = option(START_CANCEL, t!(lang, "Cancel the task", "Cancelar la tarea"), t!(lang, "The task closes without starting", "La tarea se cierra sin arrancar"));
     match problem {
         StartProblem::LaunchFailed { .. } => vec![

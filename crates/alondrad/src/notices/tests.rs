@@ -53,7 +53,7 @@ impl Fixture {
         self.command(Actor::Agent { agent_id: "agent-a".into() }, card, Command::AskQuestion {
             attachments: vec![], interaction_id: card.into(), scope: Scope::Task { task_id: "task-a".into() },
             recipient: Recipient::User, body: "Choose".into(), blocking: true,
-            options: ["yes", "no"].map(|id| QuestionOption { id: id.into(), label: id.into(), description: None, inputs: vec![] }).into(),
+            options: ["yes", "no"].map(|id| QuestionOption { id: id.into(), label: id.into(), description: None }).into(),
             card: CardSpec::new(CardKind::Decide, "Pick the parser").why("The tests need one."),
         });
     }

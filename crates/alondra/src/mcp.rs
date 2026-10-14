@@ -108,12 +108,9 @@ fn interaction_fields() -> Value {
             {"type":"object","properties":{"kind":{"const":"agent"},"agent_id":{"type":"string"}},"required":["kind","agent_id"],"additionalProperties":false}
         ]},
         "body":{"type":"string"},"blocking":{"type":"boolean"},
-        "options":{"type":"array","items":{"type":"object","properties":{
-            "id":{"type":"string"},"label":{"type":"string"},"description":{"type":"string"},
-            "inputs":{"type":"array","items":{"type":"object","properties":{
-                "id":{"type":"string"},"kind":{"enum":["text","boolean","integer"]},"required":{"type":"boolean"}
-            },"required":["id","kind","required"],"additionalProperties":false}}
-        },"required":["id","label","inputs"],"additionalProperties":false}},
+        "options":{"type":"array","description":"Each option is a button: pressing it answers. The user can always write on the card too, alone or with the option; to ask for a value, use request_input.","items":{"type":"object","properties":{
+            "id":{"type":"string"},"label":{"type":"string"},"description":{"type":"string"}
+        },"required":["id","label"],"additionalProperties":false}},
         "attachments":{"type":"array","items":{"type":"object","properties":{"id":{"type":"string"},"name":{"type":"string"},"content_digest":{"type":"string","pattern":"^[0-9a-f]{64}$"},"content_reference":{"type":"string"},"bytes":{"type":"integer","minimum":0}},"required":["id","name","content_digest","content_reference","bytes"],"additionalProperties":false}}
     })
 }
@@ -210,14 +207,14 @@ fn card_tools(user: &str, interaction: &Value, node: bool) -> Vec<Value> {
     );
     add(
         "request_input",
-        format!("Ask {user} for something only they can provide (a Provide card): a file, a piece of text or a secret. Use ask instead when the answer is one of a few choices."),
+        format!("Ask {user} for something only they can provide (a Provide card): a file, a piece of text or a secret. {user} writes it or attaches it on the card, and it reaches you as their answer; the card's only button is «I can't provide it». Use ask instead when the answer is one of a few choices."),
         json!({"need":need_schema(),"why":why_schema(),"kind":{"enum":["file","text","secret"],"description":"What you need: a file, text, or a secret value"},"blocking":blocking,"blocks":blocks_schema(),"replaces":replaces_schema(),"content":content_schema(),"attachments":attachments}),
         &["need", "why", "kind", "blocking"],
     );
     if node {
         add(
             "request_test",
-            format!("Ask {user} to try something out and say whether it works (a Test card): the answers are fixed, Works or Doesn't work, plus text. Say where to look in where (build, version, screen) and what to look at in what."),
+            format!("Ask {user} to try something out and say whether it works (a Test card): the answers are fixed, Works or Doesn't work, with any text {user} writes on the card. Say where to look in where (build, version, screen) and what to look at in what."),
             json!({"need":need_schema(),"where":{"type":"string","description":"Where to test it: build, version, screen"},"what":{"type":"string","description":"What to look at"},"blocking":blocking,"blocks":blocks_schema(),"replaces":replaces_schema(),"attachments":attachments}),
             &["need", "where", "what"],
         );
@@ -313,9 +310,9 @@ fn node_domain_tools(user: &str) -> Vec<Value> {
         (
             "answer_question",
             "answer_question",
-            "Answer a question addressed to this node.",
+            "Answer a question addressed to this node: option_id is the option chosen (empty for an answer in your own words), and inputs.text your words, alone or with it.",
             json!({"interaction_id":{"type":"string"},"option_id":{"type":"string"},"inputs":input_value_schema(),"attachments":{"type":"array","items":attachment}}),
-            vec!["interaction_id", "option_id", "inputs"],
+            vec!["interaction_id", "option_id"],
         ),
         (
             "create_document",
@@ -482,9 +479,9 @@ fn orchestrator_domain_tools(user: &str) -> Vec<Value> {
         ),
         (
             "answer_question",
-            "Answer a question addressed to the orchestrator.",
+            "Answer a question addressed to the orchestrator: option_id is the option chosen (empty for an answer in your own words), and inputs.text your words, alone or with it (the note a suggestion's answer carries).",
             json!({"interaction_id":{"type":"string"},"option_id":{"type":"string"},"inputs":input_value_schema(),"attachments":interaction["attachments"]}),
-            vec!["interaction_id", "option_id", "inputs"],
+            vec!["interaction_id", "option_id"],
         ),
         (
             "link_task_document",
@@ -952,9 +949,8 @@ fn unplan_content(mut content: Value) -> Value {
     content
 }
 
-fn choice(id: &str, label: &str, note: bool) -> Value {
-    let inputs = if note { json!([{"id":"note","kind":"text","required":false}]) } else { json!([]) };
-    json!({"id":id,"label":label,"inputs":inputs})
+fn choice(id: &str, label: &str) -> Value {
+    json!({"id":id,"label":label})
 }
 
 fn take_text(command: &mut serde_json::Map<String, Value>, key: &str) -> String {
@@ -1068,20 +1064,13 @@ fn attach_card(name: &str, command: &mut serde_json::Map<String, Value>) -> Resu
                 let lines: Vec<String> = steps.iter().filter_map(Value::as_str).enumerate().map(|(i, step)| format!("{}. {step}", i + 1)).collect();
                 content = Some(json!({"kind":"steps","body":lines.join("\n")}));
             }
-            command.entry("options").or_insert_with(|| json!([choice("done", "Done", true), choice("cannot", "I can't do it", true)]));
+            command.entry("options").or_insert_with(|| json!([choice("done", "Done"), choice("cannot", "I can't do it")]));
         }
         "request_input" => {
-            let input = take_text(command, "kind");
-            let (label, required) = match input.as_str() {
-                "file" => ("Send the file", false),
-                "text" => ("Send the text", true),
-                "secret" => ("Send the secret", true),
-                _ => anyhow::bail!("invalid_input: kind must be file, text or secret"),
-            };
-            command.insert("options".into(), json!([
-                {"id":"provide","label":label,"inputs":[{"id":"value","kind":"text","required":required}]},
-                choice("skip", "I can't provide it", true),
-            ]));
+            if !matches!(take_text(command, "kind").as_str(), "file" | "text" | "secret") {
+                anyhow::bail!("invalid_input: kind must be file, text or secret");
+            }
+            command.insert("options".into(), json!([choice("skip", "I can't provide it")]));
         }
         "request_test" => {
             let (place, what) = (take_text(command, "where"), take_text(command, "what"));
@@ -1092,7 +1081,7 @@ fn attach_card(name: &str, command: &mut serde_json::Map<String, Value>) -> Resu
                 why = alondra_core::domain::clip(&format!("{place}: {what}"), alondra_core::domain::CardSpec::WHY_MAX);
             }
             content = content.or_else(|| Some(json!({"kind":"steps","body":format!("Where: {place}\nWhat to look at: {what}")})));
-            command.insert("options".into(), json!([choice("works", "Works", true), choice("fails", "Doesn't work", true)]));
+            command.insert("options".into(), json!([choice("works", "Works"), choice("fails", "Doesn't work")]));
             command.entry("blocking").or_insert(json!(false));
         }
         "publish_information" | "present_result" if content.is_none() => {
@@ -2346,12 +2335,15 @@ mod card_tool_tests {
         assert_eq!(test["blocking"], false);
         assert_eq!(test["card"]["content"]["body"], "Where: Build 41\nWhat to look at: Sign in");
         let input = built("request_input", with(json!({"need":"Send the key","why":"Needed","kind":"file","blocking":true})));
-        assert_eq!(ids(&input), ["provide", "skip"]);
-        assert_eq!(input["options"][0]["inputs"][0]["required"], false);
+        assert_eq!(ids(&input), ["skip"], "the value comes as the answer written on the card");
         let action = built("request_action", with(json!({"need":"Rotate","why":"Leaked","verify":"I call it","blocking":false,"steps":["Open the console","Rotate it"]})));
         assert_eq!(ids(&action), ["done", "cannot"]);
         assert_eq!(action["card"]["content"], json!({"kind":"steps","body":"1. Open the console\n2. Rotate it"}));
         assert_eq!(action["card"]["verify"], "I call it");
+        for card in [&test, &input, &action] {
+            assert!(card["options"].as_array().unwrap().iter().all(|option| option.get("inputs").is_none()),
+                "an option is a button that answers when pressed: {card}");
+        }
     }
 
     #[test]

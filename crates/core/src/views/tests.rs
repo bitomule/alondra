@@ -516,13 +516,11 @@ fn golden_fixture() -> DomainState {
                     id: "clear".into(),
                     label: "Ship the concise copy".into(),
                     description: Some("Use a short title and one explanatory sentence.".into()),
-                    inputs: vec![],
                 },
                 QuestionOption {
                     id: "warm".into(),
                     label: "Keep the warmer copy".into(),
                     description: Some("Preserve the more conversational explanation.".into()),
-                    inputs: vec![],
                 },
             ],
             answer: None,
@@ -623,8 +621,8 @@ fn golden_fixture() -> DomainState {
             let interaction = state.interactions.get_mut(&id.into()).unwrap();
             interaction.payload = InteractionPayload::Question {
                 options: vec![
-                    QuestionOption { id: "ship".into(), label: "Ship it".into(), description: None, inputs: vec![] },
-                    QuestionOption { id: "hold".into(), label: "Hold it back".into(), description: None, inputs: vec![] },
+                    QuestionOption { id: "ship".into(), label: "Ship it".into(), description: None },
+                    QuestionOption { id: "hold".into(), label: "Hold it back".into(), description: None },
                 ],
                 answer: None,
             };
@@ -1193,7 +1191,7 @@ fn plan_question_fixture() -> DomainState {
     let question = state.interactions.get_mut(&"i-1".into()).unwrap();
     question.payload = InteractionPayload::Question {
         options: vec![QuestionOption { id: "separate".into(), label: "Approve; node messaging in its own PR".into(),
-            description: None, inputs: vec![] }],
+            description: None }],
         answer: None,
     };
     question.subject = Some(InteractionSubject::DocumentReview { document_id: "plan".into(), revision_id: "plan-r1".into() });
@@ -1375,21 +1373,43 @@ fn pull_request_card_exposes_the_diff_and_read_actions_stay_primary() {
 }
 
 #[test]
-fn a_question_without_options_is_answered_in_text_and_one_with_options_offers_its_own_words_behind_more() {
+fn a_card_writes_only_in_its_own_field_and_every_option_is_a_button_that_answers_when_pressed() {
     let view = render(&fixture(), &LiveSnapshot::default(), Client::Ios, Lang::En, "card:i-1", "");
     let Item::Card(card) = &view.sections[0].items[0] else { panic!("question card") };
-    let answer = card.actions.iter().find(|action| action.id.starts_with("ans:")).expect("answer action");
-    assert_eq!((answer.presentation, answer.option_id.clone()), (Presentation::Button, None));
-    assert!(matches!(&answer.input, Input::Text { required: true, multiline: true, .. }));
-    assert!(answer.attachments);
+    assert!(card.actions.iter().chain(&card.more).all(|action| !action.id.starts_with("ans:")), "no button opens a text box");
+    let reply = card.reply.as_ref().expect("the card's own field answers it");
+    assert!(reply.id.starts_with("reply:i-1@"), "{}", reply.id);
+    assert!(matches!(&reply.input, Input::Text { multiline: true, .. }));
+    assert!(reply.attachments);
 
     let view = render(&golden_fixture(), &LiveSnapshot::default(), Client::Ios, Lang::En,
         "card:a98d034b-249e-4487-a89b-57de38c26372", "");
     let Item::Card(card) = &view.sections[0].items[0] else { panic!("decision card") };
     assert_eq!(card.kind, Some(crate::domain::CardKind::Decide));
     assert_eq!(card.actions.iter().map(|a| a.option_id.as_deref()).collect::<Vec<_>>(), [Some("clear"), Some("warm")]);
-    assert!(card.more.iter().any(|action| action.label == "Write my own answer"
-        && matches!(&action.input, Input::Text { required: true, .. })));
+    assert!(card.actions.iter().chain(&card.more).filter(|action| action.id.starts_with("ans:"))
+        .all(|action| action.input == Input::None && !action.attachments));
+    assert!(card.more.iter().all(|action| !action.id.starts_with("ans:")), "its own words go in the card's field, not behind More");
+    assert!(card.reply.as_ref().is_some_and(|reply| reply.id.starts_with("reply:")));
+}
+
+#[test]
+fn an_open_card_whose_options_asked_for_text_shows_them_as_buttons_that_answer_at_once() {
+    let mut state = fixture();
+    let legacy: Vec<QuestionOption> = serde_json::from_value(serde_json::json!([
+        {"id": "done", "label": "Done", "inputs": [{"id": "note", "kind": "text", "required": false}]},
+        {"id": "other", "label": "Other", "inputs": [{"id": "which", "kind": "text", "required": true}]},
+    ])).unwrap();
+    let question = state.interactions.get_mut(&"i-1".into()).unwrap();
+    question.card = spec(crate::domain::CardKind::Do, "Rotate the key", "The old one leaked.");
+    question.payload = InteractionPayload::ActionRequest { options: legacy, answer: None };
+    for client in [Client::Ios, Client::Mac, Client::Tui] {
+        let view = render(&state, &LiveSnapshot::default(), client, Lang::Es, "card:i-1", "");
+        let card = card_of(&view);
+        let buttons = answers(card);
+        assert_eq!(buttons.iter().map(|a| a.option_id.as_deref().unwrap()).collect::<Vec<_>>(), ["done", "other"], "{client:?}");
+        assert!(buttons.iter().all(|action| action.input == Input::None && !action.attachments), "{client:?}: {buttons:?}");
+    }
 }
 
 #[test]
@@ -2224,7 +2244,7 @@ fn orchestrator_decide_fixture() -> DomainState {
     use crate::domain::{CardKind, ContentKind as Content, QuestionOption};
     let mut state = golden_fixture();
     let option = |id: &str, label: &str, description: &str| QuestionOption {
-        id: id.into(), label: label.into(), description: Some(description.into()), inputs: vec![],
+        id: id.into(), label: label.into(), description: Some(description.into()),
     };
     state.interactions.insert("memory-pause-livelock-ask".into(), Interaction {
         attachments: vec![], id: "memory-pause-livelock-ask".into(), scope: Scope::Orchestrator { request_id: None },
@@ -2716,7 +2736,7 @@ fn a_machine_card_offers_its_fix_and_no_reply_to_the_orchestrator_on_any_client(
         author: Author::System, recipient: Recipient::User, body: disk.to_body(),
         blocking: false, subject: None,
         payload: InteractionPayload::Question {
-            options: vec![QuestionOption { id: MACHINE_FIXED_OPTION.into(), label: MACHINE_FIXED_LABEL.into(), description: None, inputs: vec![] }],
+            options: vec![QuestionOption { id: MACHINE_FIXED_OPTION.into(), label: MACHINE_FIXED_LABEL.into(), description: None }],
             answer: None,
         },
         revision: 1, order: 9, withdrawn: false,
@@ -2738,7 +2758,7 @@ fn a_machine_card_offers_its_fix_and_no_reply_to_the_orchestrator_on_any_client(
 fn an_orchestrator_problem_is_a_card_like_any_other_and_comes_first() {
     use crate::domain::{CardKind, ContentKind as Content};
     let mut state = fixture();
-    let option = |id: &str, label: &str| QuestionOption { id: id.into(), label: label.into(), description: None, inputs: vec![] };
+    let option = |id: &str, label: &str| QuestionOption { id: id.into(), label: label.into(), description: None };
     state.interactions.insert("problem-orchestrator-run-1".into(), Interaction {
         attachments: vec![], id: "problem-orchestrator-run-1".into(), scope: Scope::Orchestrator { request_id: None },
         author: Author::System, recipient: Recipient::User, body: "Claude exited without a successful terminal result".into(),
@@ -2787,7 +2807,7 @@ fn a_batch_that_stopped_halfway_reads_in_spanish_with_what_it_did_and_how_to_cho
         subjects: vec!["Make the editor readable".into()], error: "Claude exited without a successful terminal result".into(),
     };
     let (need, why) = problem.text(Lang::En);
-    let option = |id: &str, label: &str| QuestionOption { id: id.into(), label: label.into(), description: None, inputs: vec![] };
+    let option = |id: &str, label: &str| QuestionOption { id: id.into(), label: label.into(), description: None };
     let mut card = spec(CardKind::Problem, &need, &why);
     card.recommended = Some(BATCH_CONTINUE.into());
     state.interactions.insert("problem-orchestrator-run-1".into(), Interaction {
@@ -3333,7 +3353,9 @@ fn every_card_can_be_replied_to_in_text_with_attachments() {
         let view = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::En, &format!("card:{id}"), "2026-09-30T10:00:00Z");
         let Item::Card(card) = &view.sections[0].items[0] else { panic!("card") };
         let reply = card.reply.as_ref().unwrap_or_else(|| panic!("{id} has a reply"));
-        assert!(matches!(&reply.input, Input::Text { required: true, multiline: true, .. }), "{id}");
+        let file_alone = card.kind == Some(crate::domain::CardKind::Provide);
+        assert!(matches!(&reply.input, Input::Text { required, multiline: true, .. } if *required != file_alone),
+            "{id}: a Provide card is answered with a file alone too");
         assert!(reply.attachments, "{id}");
         assert!(reply.enabled, "{id}");
     }
@@ -3352,7 +3374,7 @@ fn every_card_can_be_replied_to_in_text_with_attachments() {
 fn words_under_an_orchestrator_decide_answer_it_on_every_client() {
     use crate::domain::{CardKind, QuestionOption};
     let mut state = fixture();
-    let option = |id: &str, label: &str| QuestionOption { id: id.into(), label: label.into(), description: None, inputs: vec![] };
+    let option = |id: &str, label: &str| QuestionOption { id: id.into(), label: label.into(), description: None };
     let decide = state.interactions.get_mut(&"i-4".into()).unwrap();
     decide.scope = Scope::Orchestrator { request_id: Some("r-1".into()) };
     decide.payload = InteractionPayload::Question { options: vec![option("mine", "I'll do it"), option("new_task", "Create a task")], answer: None };
@@ -3368,7 +3390,7 @@ fn words_under_an_orchestrator_decide_answer_it_on_every_client() {
     state.holds.insert("i-4".into(), crate::domain::Hold::Permission);
     let view = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::En, "card:i-4", "");
     let Item::Card(held) = &view.sections[0].items[0] else { panic!("card") };
-    assert!(held.reply.as_ref().unwrap().id.starts_with("msg:view@"), "a held question is not answered by a message");
+    assert!(held.reply.as_ref().unwrap().id.starts_with("reply:i-4@"), "words under a held question answer it too");
     state.holds.clear();
     let InteractionPayload::Question { answer, .. } = &mut state.interactions.get_mut(&"i-4".into()).unwrap().payload else { unreachable!() };
     *answer = Some(crate::domain::Answer { option_id: "mine".into(), inputs: Default::default(), attachments: vec![], responder: "u".into(), at_revision: Default::default() });
@@ -3960,7 +3982,7 @@ fn every_content_kind_has_a_one_line_row_and_the_card_has_no_body() {
         let mut state = fixture();
         let interaction = state.interactions.get_mut(&"i-1".into()).unwrap();
         interaction.payload = InteractionPayload::Question {
-            options: (0..options).map(|n| QuestionOption { id: format!("o{n}"), label: format!("Option {n}"), description: None, inputs: vec![] }).collect(),
+            options: (0..options).map(|n| QuestionOption { id: format!("o{n}"), label: format!("Option {n}"), description: None }).collect(),
             answer: None,
         };
         let mut card = spec(CardKind::Decide, "Pick one", "It matters.");
@@ -4135,13 +4157,15 @@ fn a_held_permission_card_shows_what_it_would_run_with_allow_and_deny() {
     let buttons = answers(card);
     assert_eq!(buttons.iter().map(|a| (a.option_id.as_deref().unwrap(), a.label.as_str(), a.key.as_deref(), a.role.unwrap())).collect::<Vec<_>>(),
         [("allow", "Permitir", Some("1"), Role::Risk), ("deny", "Denegar", Some("2"), Role::Neutral)]);
-    assert!(matches!(&buttons[1].input, Input::Text { placeholder, required: false, .. } if placeholder == "Escribe el motivo"));
+    assert!(buttons.iter().all(|action| action.input == Input::None), "Deny answers at once");
+    assert!(card.reply.as_ref().is_some_and(|reply| matches!(&reply.input, Input::Text { placeholder, .. } if placeholder == "Denegar con un motivo…")),
+        "a reason is written in the card's field: {:?}", card.reply);
     assert!(card.actions.iter().all(|action| !action.id.starts_with("ctx:")), "a held card is answered, not discussed");
     assert!(card.more.iter().all(|action| !action.id.starts_with("clarify:")), "Claude Code waits on it: no clarification");
     assert_eq!(view.status.summary.split(" · ").next(), Some("2 preguntas"));
     let pushed = push_actions(&state, "i-1", Lang::En).unwrap();
     assert_eq!(pushed.iter().map(|a| (a.option.as_deref(), a.label.as_str(), a.text, a.open)).collect::<Vec<_>>(),
-        [(Some("allow"), "Allow", false, false), (Some("deny"), "Deny", true, false), (None, "Reply", true, false)]);
+        [(Some("allow"), "Allow", false, false), (Some("deny"), "Deny", false, false), (None, "Reply", true, false)]);
     assert!(pushed[..2].iter().all(|action| action.id == buttons[0].id));
 }
 
@@ -4178,7 +4202,7 @@ fn fixed_options() -> Vec<(&'static str, Vec<(&'static str, &'static str)>)> {
 
 fn fixed_answers(options: &[(&str, &str)]) -> InteractionPayload {
     InteractionPayload::Question {
-        options: options.iter().map(|(id, label)| crate::domain::QuestionOption { id: (*id).into(), label: (*label).into(), description: None, inputs: vec![] }).collect(),
+        options: options.iter().map(|(id, label)| crate::domain::QuestionOption { id: (*id).into(), label: (*label).into(), description: None }).collect(),
         answer: None,
     }
 }
@@ -4260,7 +4284,7 @@ fn a_permission_card_that_can_stop_asking_offers_allow_always_saying_exactly_wha
     assert_eq!(answers(card_of(&view))[1].description.as_deref(), Some("Allows this now and stops asking in `alondra` for:\n\
         · `make mac-snapshots-record` with any arguments: runs what the repo's `Makefile` says, even if the node changes it\n\
         `tail` and `git status` already didn't ask. You can remove it in Settings › Permissions."));
-    let option = QuestionOption { id: Hold::ALWAYS.into(), label: "Allow always".into(), description: None, inputs: vec![] };
+    let option = QuestionOption { id: Hold::ALWAYS.into(), label: "Allow always".into(), description: None };
     assert_eq!(answer_label(&state, &state.interactions[&"i-1".into()], &option, Lang::Es),
         "Permitido siempre: `make mac-snapshots-record …` en `alondra`");
 }
@@ -4295,7 +4319,7 @@ fn a_question_card_never_shows_an_allow_always_a_node_slipped_into_it() {
     let mut state = held_fixture(Hold::Question, spec(CardKind::Decide, "Which database?", ""));
     let interaction = state.interactions.get_mut(&"i-1".into()).unwrap();
     interaction.payload = InteractionPayload::Question { options: vec![QuestionOption { id: Hold::ALWAYS.into(),
-        label: "Always".into(), description: None, inputs: vec![] }], answer: None };
+        label: "Always".into(), description: None }], answer: None };
     interaction.card.allow_always = Some(AllowAlways::Offered { repo: "app".into(), rules: vec!["make build *".into()], quiet: vec![] });
     let view = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::En, "card:i-1", "");
     assert!(!serde_json::to_string(&view).unwrap().contains("stops asking"));
@@ -4322,7 +4346,7 @@ fn a_held_ask_user_question_card_shows_the_question_and_its_options() {
     use crate::domain::{CardKind, Hold};
     let mut state = held_fixture(Hold::Question, spec(CardKind::Decide, "Which database?", "The migration depends on it."));
     let options = ["Postgres", "SQLite"].iter().enumerate().map(|(index, label)| QuestionOption {
-        id: format!("o{index}"), label: (*label).into(), description: None, inputs: vec![] }).collect();
+        id: format!("o{index}"), label: (*label).into(), description: None }).collect();
     state.interactions.get_mut(&"i-1".into()).unwrap().payload = InteractionPayload::Question { options, answer: None };
     let view = render(&state, &LiveSnapshot::default(), Client::Tui, Lang::Es, "card:i-1", "");
     let card = card_of(&view);
@@ -4349,10 +4373,12 @@ fn a_held_elicitation_card_accepts_with_the_form_values_or_declines() {
     let buttons = answers(card);
     assert_eq!(buttons.iter().map(|a| (a.option_id.as_deref().unwrap(), a.label.as_str(), a.key.as_deref())).collect::<Vec<_>>(),
         [("accept", "Aceptar", Some("1")), ("decline", "Rechazar", Some("2"))]);
-    assert!(matches!(&buttons[0].input, Input::Text { placeholder, .. } if placeholder == "Write the Repository"));
+    assert!(buttons.iter().all(|action| action.input == Input::None));
+    assert!(card.reply.as_ref().is_some_and(|reply| matches!(&reply.input, Input::Text { placeholder, .. } if placeholder == "Write the Repository")),
+        "the value is written in the card's field: {:?}", card.reply);
     let pushed = push_actions(&state, "i-1", Lang::En).unwrap();
     assert_eq!(pushed.iter().map(|a| (a.option.as_deref(), a.label.as_str(), a.text)).collect::<Vec<_>>(),
-        [(Some("accept"), "Accept", true), (Some("decline"), "Decline", false), (None, "Reply", true)]);
+        [(Some("accept"), "Accept", false), (Some("decline"), "Decline", false), (None, "Reply", true)]);
 }
 
 #[test]
@@ -4835,8 +4861,8 @@ fn group_state(answered: &[usize]) -> DomainState {
         card.group = Some(QuestionGroup { id: "g".into(), index: at as u8 + 1, total: 3 });
         one.card = card;
         let options = vec![
-            QuestionOption { id: "o0".into(), label: "First".into(), description: None, inputs: vec![] },
-            QuestionOption { id: "o1".into(), label: "Second".into(), description: None, inputs: vec![] },
+            QuestionOption { id: "o0".into(), label: "First".into(), description: None },
+            QuestionOption { id: "o1".into(), label: "Second".into(), description: None },
         ];
         let answer = answered.contains(&at).then(|| crate::domain::Answer {
             attachments: vec![], option_id: "o1".into(), inputs: BTreeMap::new(), responder: "u".into(), at_revision: 1,
@@ -5168,8 +5194,8 @@ fn a_finished_task_says_what_became_of_its_node() {
     }
 }
 
-fn opt(id: &str, inputs: Vec<crate::domain::InputSpec>) -> QuestionOption {
-    QuestionOption { id: id.into(), label: format!("Option {id}"), description: None, inputs }
+fn opt(id: &str) -> QuestionOption {
+    QuestionOption { id: id.into(), label: format!("Option {id}"), description: None }
 }
 
 fn answer_to(option_id: &str) -> crate::domain::Answer {
@@ -5190,9 +5216,8 @@ fn card_or_notice(view: &View) -> Result<&Card, &str> {
 
 #[test]
 fn every_open_card_with_options_or_input_can_be_answered_and_a_settled_one_is_never_shown_in_any_client() {
-    use crate::domain::{CardKind, Hold, InputKind, InputSpec};
-    let note = || vec![InputSpec { id: "note".into(), kind: InputKind::Text, required: false }];
-    let option_sets = [vec![], vec![opt("retry", vec![]), opt("later", vec![])], vec![opt("a", note()), opt("b", vec![]), opt("c", vec![])]];
+    use crate::domain::{CardKind, Hold};
+    let option_sets = [vec![], vec![opt("retry"), opt("later")], vec![opt("a"), opt("b"), opt("c")]];
     let kinds = [CardKind::Decide, CardKind::Problem, CardKind::Propose, CardKind::Do, CardKind::Provide, CardKind::Test];
     let holds = [None, Some(Hold::Question), Some(Hold::Permission), Some(Hold::Elicitation)];
     let task_states = [TaskState::NotStarted, TaskState::Running, TaskState::NeedsYou, TaskState::WaitingDependency, TaskState::Done];
@@ -5235,7 +5260,8 @@ fn every_open_card_with_options_or_input_can_be_answered_and_a_settled_one_is_ne
                                     match card_or_notice(&view) {
                                         Ok(card) => {
                                             assert!(pending, "a settled card is shown: {case}");
-                                            let answers = card.actions.iter().chain(&card.more).any(|action| action.id.starts_with("ans:"));
+                                            let answers = card.actions.iter().chain(&card.more).any(|action| action.id.starts_with("ans:"))
+                                                || card.reply.as_ref().is_some_and(|reply| reply.id.starts_with("reply:"));
                                             assert!(answers, "an open card has no answer: {case}");
                                             open += 1;
                                         }
@@ -5310,11 +5336,11 @@ fn a_settled_card_says_only_why_it_went_in_english_and_spanish() {
     state.tasks.get_mut(&"t-1".into()).unwrap().state = TaskState::Running;
     let question = state.interactions.get_mut(&"i-1".into()).unwrap();
     question.card = spec(CardKind::Decide, "Decide si repito el grabado de snapshots", "Sin ellos no puedo abrir la PR.");
-    question.payload = InteractionPayload::Question { options: vec![opt("retry", vec![]), opt("later", vec![])], answer: None };
+    question.payload = InteractionPayload::Question { options: vec![opt("retry"), opt("later")], answer: None };
     assert_eq!(notice(&state, "card:i-1", Lang::Es), None);
 
     let question = state.interactions.get_mut(&"i-1".into()).unwrap();
-    question.payload = InteractionPayload::Question { options: vec![opt("retry", vec![]), opt("later", vec![])], answer: Some(answer_to("retry")) };
+    question.payload = InteractionPayload::Question { options: vec![opt("retry"), opt("later")], answer: Some(answer_to("retry")) };
     assert_eq!(notice(&state, "card:i-1", Lang::Es).as_deref(), Some("Ya respondida"));
     assert_eq!(notice(&state, "card:i-1", Lang::En).as_deref(), Some("Already answered"));
 
@@ -5331,7 +5357,7 @@ fn a_settled_card_says_only_why_it_went_in_english_and_spanish() {
 
     let question = state.interactions.get_mut(&"i-1".into()).unwrap();
     question.card = spec(CardKind::Decide, "Decide si repito el grabado de snapshots", "Sin ellos no puedo abrir la PR.");
-    question.payload = InteractionPayload::Question { options: vec![opt("retry", vec![])], answer: None };
+    question.payload = InteractionPayload::Question { options: vec![opt("retry")], answer: None };
     state.tasks.get_mut(&"t-1".into()).unwrap().state = TaskState::Done;
     assert_eq!(notice(&state, "card:i-1", Lang::Es).as_deref(), Some("Su tarea ya terminó"));
     assert_eq!(notice(&state, "card:i-1", Lang::En).as_deref(), Some("Its task is over"));
@@ -6024,9 +6050,9 @@ fn every_card_action_says_whether_it_takes_its_card_out() {
     let state = golden_fixture();
     let question = "a98d034b-249e-4487-a89b-57de38c26372";
     assert_eq!(resolving(&state, &format!("card:{question}")), owned(&[
-        (&format!("ans:{question}"), true), (&format!("ans:{question}"), true), (&format!("ans:{question}"), true),
+        (&format!("ans:{question}"), true), (&format!("ans:{question}"), true),
         (&format!("clarify:{question}"), false), (&format!("reply:{question}"), true),
-    ]), "an option, a written answer and a reply all answer the question; asking to clarify keeps it");
+    ]), "an option and a written answer both answer the question; asking to clarify keeps it");
     let notice = "f12d034b-249e-4487-a89b-57de38c26372";
     assert_eq!(resolving(&state, &format!("card:{notice}")), owned(&[
         (&format!("read:{notice}"), true), (&format!("reply:{notice}"), false),
@@ -6038,12 +6064,12 @@ fn every_card_action_says_whether_it_takes_its_card_out() {
 
     let mut group = group_state(&[0]);
     assert_eq!(resolving(&group, "card:g-q2"), owned(&[
-        ("ans:g-q2", true), ("ans:g-q2", true), ("ans:g-q2", true),
+        ("ans:g-q2", true), ("ans:g-q2", true),
         ("clarify:g-q2", false), ("retake:g-q2", false), ("reply:g-q2", true),
     ]), "a question of a group is answered alone; reopening another one keeps this one");
     group.holds.insert("g-q2".into(), crate::domain::Hold::Question);
     let held = resolving(&group, "card:g-q2");
-    assert!(held.contains(&("reply:g-q2".to_owned(), false)), "a held question is answered in its session; a reply is a message: {held:?}");
+    assert!(held.contains(&("reply:g-q2".to_owned(), true)), "words written on a held question answer it in its session: {held:?}");
 }
 
 const DOCUMENT_QUESTION_CARD: &str = "a98d034b-249e-4487-a89b-57de38c26372";

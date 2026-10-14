@@ -214,8 +214,8 @@ fn a_question_that_holds_a_delivery_back_hides_its_card_until_it_is_answered() {
         attachments: vec![], interaction_id: "q".into(), scope: Scope::Task { task_id: "a".into() },
         recipient: Recipient::User, body: "Which name?".into(), blocking: false,
         options: vec![
-            QuestionOption { id: "x".into(), label: "X".into(), description: None, inputs: vec![] },
-            QuestionOption { id: "y".into(), label: "Y".into(), description: None, inputs: vec![] },
+            QuestionOption { id: "x".into(), label: "X".into(), description: None },
+            QuestionOption { id: "y".into(), label: "Y".into(), description: None },
         ],
         card,
     });
@@ -437,8 +437,8 @@ fn only_an_open_blocker_puts_a_task_in_awaiting_blocker_and_other_waits_show_the
         attachments: vec![], interaction_id: "q".into(), scope: Scope::Task { task_id: "a".into() },
         recipient: Recipient::User, body: "Which?".into(), blocking: false,
         options: vec![
-            QuestionOption { id: "x".into(), label: "X".into(), description: None, inputs: vec![] },
-            QuestionOption { id: "y".into(), label: "Y".into(), description: None, inputs: vec![] },
+            QuestionOption { id: "x".into(), label: "X".into(), description: None },
+            QuestionOption { id: "y".into(), label: "Y".into(), description: None },
         ],
         card,
     });
@@ -522,8 +522,8 @@ fn a_delivery_held_back_by_a_question_waits_in_its_waiting_state() {
         attachments: vec![], interaction_id: "q".into(), scope: Scope::Task { task_id: "a".into() },
         recipient: Recipient::User, body: "Which?".into(), blocking: false,
         options: vec![
-            QuestionOption { id: "x".into(), label: "X".into(), description: None, inputs: vec![] },
-            QuestionOption { id: "y".into(), label: "Y".into(), description: None, inputs: vec![] },
+            QuestionOption { id: "x".into(), label: "X".into(), description: None },
+            QuestionOption { id: "y".into(), label: "Y".into(), description: None },
         ],
         card,
     });

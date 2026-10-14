@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:a98d034b-249e-4487-a89b-57de38c26372",
   "client": "tui",
-  "version": "ve246eea03cc8b1f0",
+  "version": "v7c8fbdaf1fc0a6d7",
   "cursor": "cursor-1",
   "title": "Choose the welcome copy",
   "status": {
@@ -96,24 +96,6 @@
             "resolves_card": true
           },
           "more": [
-            {
-              "id": "ans:a98d034b-249e-4487-a89b-57de38c26372@1",
-              "label": "Escribir mi respuesta",
-              "style": "secondary",
-              "role": "neutral",
-              "presentation": "button",
-              "input": {
-                "kind": "text",
-                "placeholder": "Responde con tus palabras…",
-                "required": true,
-                "multiline": true
-              },
-              "attachments": true,
-              "enabled": true,
-              "stamp": "Respondiste",
-              "key": "4",
-              "resolves_card": true
-            },
             {
               "id": "clarify:a98d034b-249e-4487-a89b-57de38c26372@1",
               "label": "Pedir aclaración",

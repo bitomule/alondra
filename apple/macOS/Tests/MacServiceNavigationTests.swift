@@ -273,6 +273,46 @@ struct MacAnsweringTests {
         #expect(store.state.selection == .viewKey("card:b"))
     }
 
+    @Test(arguments: [
+        #"{"kind":"none"}"#,
+        #"{"kind":"text","placeholder":"Add a note","required":false,"multiline":true}"#,
+        #"{"kind":"text","placeholder":"Add a note","required":true,"multiline":true}"#,
+    ])
+    func pressingDoneAnswersAtOnceEvenWhenAnOlderDaemonMarkedItAsTakingANote(input: String) async throws {
+        let sent = LockIsolated<[ActionRequest]>([])
+        let store = try makeStore(waiting: ["a", "b"], selected: "card:a", load: unchangedSidebar)
+        store.dependencies.viewsClient.perform = { request in
+            sent.withValue { $0.append(request) }
+            return try response("applied")
+        }
+        let done = try decodeAction(#"{"id":"ans:x@1","label":"Done","style":"primary","role":"advance","option_id":"done","presentation":"button","input":"# + input + #","attachments":true,"enabled":true}"#)
+        await store.send(.beginViewAction(done))
+        #expect(!store.state.actionPresented, "Done never opens the sheet")
+        await store.skipReceivedActions()
+        #expect(sent.value.map(\.optionId) == ["done"])
+        #expect(sent.value.first?.input.text == nil)
+    }
+
+    @Test
+    func whatIsWrittenInTheCardsFieldGoesWithTheOptionPressed() async throws {
+        let sent = LockIsolated<[ActionRequest]>([])
+        let store = try makeStore(waiting: ["a", "b"], selected: "card:a", load: unchangedSidebar)
+        store.dependencies.viewsClient.perform = { request in
+            sent.withValue { $0.append(request) }
+            return try response("applied")
+        }
+        let option = try optionButton()
+        let words = try #require(option.carrying("  Only on the onboarding screen \n"))
+        #expect(option.carrying("   ") == nil, "nothing written: the option goes alone")
+        #expect(try answer().carrying("Hi") == nil, "only an option carries the field's words")
+        await store.send(.sendReply(option, text: words))
+        await store.skipReceivedActions()
+        #expect(sent.value.map(\.actionId) == ["ans:x@1"])
+        #expect(sent.value.map(\.optionId) == ["clear"])
+        #expect(sent.value.first?.input.text == "Only on the onboarding screen")
+        #expect(store.state.optimistic.hides("a"))
+    }
+
     @Test
     func aReplyGoesWithoutHidingTheCard() async throws {
         let sent = LockIsolated<[ActionRequest]>([])

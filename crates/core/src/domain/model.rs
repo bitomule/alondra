@@ -380,19 +380,6 @@ pub enum InteractionSubject {
         revision_id: DocumentRevisionId,
     },
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum InputKind {
-    Text,
-    Boolean,
-    Integer,
-}
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct InputSpec {
-    pub id: String,
-    pub kind: InputKind,
-    pub required: bool,
-}
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum InputValue {
@@ -400,13 +387,14 @@ pub enum InputValue {
     Boolean(bool),
     Integer(i64),
 }
+/// The one answer field a card has: the user's own words, alone or with the option they pressed.
+pub const ANSWER_TEXT: &str = "text";
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct QuestionOption {
     pub id: String,
     pub label: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    pub inputs: Vec<InputSpec>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AttachmentRef {
@@ -820,33 +808,28 @@ impl Hold {
     pub const REQUEST_CHANGES: &'static str = "request_changes";
     pub const ACCEPT: &'static str = "accept";
     pub const DECLINE: &'static str = "decline";
-    pub const NOTE: &'static str = "text";
+    pub const NOTE: &'static str = ANSWER_TEXT;
 
     /// The fixed yes/no options of a permission, plan or elicitation; a question brings its own.
-    /// A permission's or plan's no, and an elicitation's accept, take optional text.
+    /// Each is a button: what the user writes on the card travels with the one they press.
     pub fn options(self) -> Vec<QuestionOption> {
         self.options_offering(false)
     }
 
     /// `always` adds a permission's «allow always» between its yes and its no.
     pub fn options_offering(self, always: bool) -> Vec<QuestionOption> {
-        let note = || vec![InputSpec { id: Self::NOTE.into(), kind: InputKind::Text, required: false }];
-        let option = |id: &str, label: &str, description: Option<&str>, inputs: Vec<InputSpec>| QuestionOption {
-            id: id.into(), label: label.into(), description: description.map(Into::into), inputs,
-        };
+        let option = |id: &str, label: &str| QuestionOption { id: id.into(), label: label.into(), description: None };
         match self {
             Hold::Permission => {
-                let mut options = vec![option(Self::ALLOW, "Allow", None, vec![])];
+                let mut options = vec![option(Self::ALLOW, "Allow")];
                 if always {
-                    options.push(option(Self::ALWAYS, "Allow always", None, vec![]));
+                    options.push(option(Self::ALWAYS, "Allow always"));
                 }
-                options.push(option(Self::DENY, "Deny", Some("Write the reason"), note()));
+                options.push(option(Self::DENY, "Deny"));
                 options
             }
-            Hold::Plan => vec![option(Self::APPROVE, "Approve", None, vec![]),
-                option(Self::REQUEST_CHANGES, "Request changes", Some("Write what to change"), note())],
-            Hold::Elicitation => vec![option(Self::ACCEPT, "Accept", None, note()),
-                option(Self::DECLINE, "Decline", None, vec![])],
+            Hold::Plan => vec![option(Self::APPROVE, "Approve"), option(Self::REQUEST_CHANGES, "Request changes")],
+            Hold::Elicitation => vec![option(Self::ACCEPT, "Accept"), option(Self::DECLINE, "Decline")],
             Hold::Question => vec![],
         }
     }

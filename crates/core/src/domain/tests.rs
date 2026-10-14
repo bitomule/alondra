@@ -575,7 +575,6 @@ fn an_option_carries_an_optional_description() {
             id: "keep".into(),
             label: "Keep it".into(),
             description: description.map(String::from),
-            inputs: vec![],
         }], card: crate::domain::CardSpec::derived(crate::domain::CardKind::Provide, "Answer the question"),
     };
     let mut s = fixture();
@@ -585,11 +584,12 @@ fn an_option_carries_an_optional_description() {
     assert_eq!(options[0].description.as_deref(), Some("Nothing changes for the release"));
     let wire = serde_json::to_value(&options[0]).unwrap();
     assert_eq!(wire["description"], "Nothing changes for the release");
-    let bare = QuestionOption { id: "keep".into(), label: "Keep it".into(), description: None, inputs: vec![] };
-    assert_eq!(serde_json::to_value(&bare).unwrap(), serde_json::json!({"id": "keep", "label": "Keep it", "inputs": []}),
-        "an option without a description serializes as before");
-    let older: QuestionOption = serde_json::from_value(serde_json::json!({"id": "keep", "label": "Keep it", "inputs": []})).unwrap();
-    assert_eq!(older, bare);
+    let bare = QuestionOption { id: "keep".into(), label: "Keep it".into(), description: None };
+    assert_eq!(serde_json::to_value(&bare).unwrap(), serde_json::json!({"id": "keep", "label": "Keep it"}),
+        "an option is a button: it carries no fields of its own");
+    let older: QuestionOption = serde_json::from_value(serde_json::json!({"id": "keep", "label": "Keep it",
+        "inputs": [{"id": "why", "kind": "text", "required": true}]})).unwrap();
+    assert_eq!(older, bare, "a stored option that asked for text reads as a plain button");
 }
 #[test]
 fn typed_option_ids_and_open_question_guard() {
@@ -611,11 +611,6 @@ fn typed_option_ids_and_open_question_guard() {
                 id: "yes".into(),
                 label: "Sí".into(),
                 description: None,
-                inputs: vec![InputSpec {
-                    id: "why".into(),
-                    kind: InputKind::Text,
-                    required: true,
-                }],
             }], card: crate::domain::CardSpec::derived(crate::domain::CardKind::Provide, "Answer the question"),
         },
     )
@@ -649,7 +644,10 @@ fn typed_option_ids_and_open_question_guard() {
             attachments: vec![],
             interaction_id: "q".into(),
             option_id: "yes".into(),
-            inputs: BTreeMap::new(),
+            inputs: BTreeMap::from([
+                ("text".into(), InputValue::Text("Reason".into())),
+                ("count".into(), InputValue::Integer(3)),
+            ]),
         },
         "invalid_input",
     );
@@ -660,7 +658,7 @@ fn typed_option_ids_and_open_question_guard() {
             attachments: vec![],
             interaction_id: "q".into(),
             option_id: "yes".into(),
-            inputs: BTreeMap::from([("why".into(), InputValue::Text("Reason".into()))]),
+            inputs: BTreeMap::from([("text".into(), InputValue::Text("Reason".into()))]),
         },
     )
     .unwrap();
@@ -669,6 +667,30 @@ fn typed_option_ids_and_open_question_guard() {
     exec(&mut s, user(), Command::AcceptDelivery { presentation_id: "d2".into(), targets: text() }).unwrap();
     end_node(&mut s, "t");
     assert_eq!(s.tasks[&"t".into()].state, TaskState::Done, "answered, the node delivers again and the Task completes");
+}
+#[test]
+fn a_provide_card_is_answered_with_the_words_or_the_file_written_on_it() {
+    let ask = |id: &str| Command::AskQuestion {
+        attachments: vec![], interaction_id: id.into(), scope: Scope::Task { task_id: "t".into() },
+        recipient: Recipient::User, body: "Send the key".into(), blocking: false,
+        options: vec![QuestionOption { id: "skip".into(), label: "I can't provide it".into(), description: None }],
+        card: crate::domain::CardSpec::derived(crate::domain::CardKind::Provide, "Send the key"),
+    };
+    let answer = |id: &str, text: Option<&str>, attachments: Vec<AttachmentRef>| Command::AnswerQuestion {
+        attachments, interaction_id: id.into(), option_id: String::new(),
+        inputs: text.map(|text| BTreeMap::from([("text".into(), InputValue::Text(text.into()))])).unwrap_or_default(),
+    };
+    let file = AttachmentRef { id: "att-1".into(), name: "key.p8".into(), content_digest: "a".repeat(64), content_reference: "files/key.p8".into(), bytes: 1 };
+    let mut s = fixture();
+    exec(&mut s, agent(), ask("q")).unwrap();
+    reject_unchanged(&mut s, user(), answer("q", None, vec![]), "invalid_input");
+    reject_unchanged(&mut s, user(), answer("q", Some("  "), vec![]), "invalid_input");
+    exec(&mut s, user(), answer("q", None, vec![file.clone()])).unwrap();
+    exec(&mut s, agent(), ask("q2")).unwrap();
+    exec(&mut s, user(), answer("q2", Some("sk-123"), vec![])).unwrap();
+    exec(&mut s, agent(), ask("q3")).unwrap();
+    exec(&mut s, user(), Command::AnswerQuestion { attachments: vec![], interaction_id: "q3".into(), option_id: "skip".into(),
+        inputs: BTreeMap::from([("text".into(), InputValue::Text("I have no access to that account".into()))]) }).unwrap();
 }
 fn register(s: &mut DomainState) {
     exec(
@@ -1203,7 +1225,7 @@ fn a_manager_retitles_a_task_and_moves_its_revision() {
 #[test]
 fn only_its_author_withdraws_an_open_question_which_then_neither_blocks_nor_takes_an_answer() {
     let mut s = fixture();
-    let option = QuestionOption { id: "yes".into(), label: "Yes".into(), description: None, inputs: vec![] };
+    let option = QuestionOption { id: "yes".into(), label: "Yes".into(), description: None };
     exec(&mut s, agent(), Command::AskQuestion { attachments: vec![], interaction_id: "q".into(), scope: Scope::Task { task_id: "t".into() },
         recipient: Recipient::User, body: "Ship?".into(), blocking: true, options: vec![option.clone()], card: crate::domain::CardSpec::derived(crate::domain::CardKind::Provide, "Answer the question") }).unwrap();
     assert_eq!(s.tasks[&"t".into()].state, TaskState::NeedsYou);
@@ -1225,7 +1247,7 @@ fn only_its_author_withdraws_an_open_question_which_then_neither_blocks_nor_take
     reject_unchanged(&mut s, agent(), Command::Withdraw { interaction_id: "q2".into() }, "question_already_answered");
     exec(&mut s, orchestrator(), Command::AskQuestion { attachments: vec![], interaction_id: "oq".into(),
         scope: Scope::Orchestrator { request_id: Some("r".into()) }, recipient: Recipient::User, body: "Scope?".into(), blocking: false,
-        options: vec![QuestionOption { id: "a".into(), label: "A".into(), description: None, inputs: vec![] }], card: crate::domain::CardSpec::derived(crate::domain::CardKind::Provide, "Answer the question") }).unwrap();
+        options: vec![QuestionOption { id: "a".into(), label: "A".into(), description: None }], card: crate::domain::CardSpec::derived(crate::domain::CardKind::Provide, "Answer the question") }).unwrap();
     exec(&mut s, orchestrator(), Command::Withdraw { interaction_id: "oq".into() }).unwrap();
     assert!(s.interactions[&"oq".into()].withdrawn);
 }
@@ -1682,7 +1704,6 @@ fn question_explicitly_linked_to_pr_keeps_identity_and_answer() {
                 id: "ok".into(),
                 label: "Okay".into(),
                 description: None,
-                inputs: vec![],
             }], card: crate::domain::CardSpec::derived(crate::domain::CardKind::Provide, "Answer the question"),
         },
     )
@@ -1786,11 +1807,6 @@ fn projection_wire_roundtrip_and_optional_fixture_export() {
                 id: "proceed".into(),
                 label: "Continuar".into(),
                 description: None,
-                inputs: vec![InputSpec {
-                    id: "explanation".into(),
-                    kind: InputKind::Text,
-                    required: true,
-                }],
             }], card: crate::domain::CardSpec::derived(crate::domain::CardKind::Provide, "Answer the question"),
         },
     )
@@ -1803,7 +1819,7 @@ fn projection_wire_roundtrip_and_optional_fixture_export() {
             attachments: vec![],
             interaction_id: "q".into(),
             option_id: "proceed".into(),
-            inputs: BTreeMap::from([("explanation".into(), InputValue::Text("Reviewed".into()))]),
+            inputs: BTreeMap::from([("text".into(), InputValue::Text("Reviewed".into()))]),
         },
     )
     .unwrap();
@@ -1837,7 +1853,6 @@ fn projection_wire_roundtrip_and_optional_fixture_export() {
                 id: "proceed".into(),
                 label: "Proceed".into(),
                 description: Some("Merge once the checks pass".into()),
-                inputs: vec![],
             }], card: crate::domain::CardSpec::derived(crate::domain::CardKind::Provide, "Answer the question"),
         },
     )
@@ -1893,7 +1908,6 @@ fn recipient_scope_and_generation_preserve_logical_coordination() {
                 id: "ok".into(),
                 label: "Proceed".into(),
                 description: None,
-                inputs: vec![],
             }], card: crate::domain::CardSpec::derived(crate::domain::CardKind::Provide, "Answer the question"),
         },
     )
@@ -1948,7 +1962,6 @@ fn recipient_scope_and_generation_preserve_logical_coordination() {
                 id: "ok".into(),
                 label: "Okay".into(),
                 description: None,
-                inputs: vec![],
             }], card: crate::domain::CardSpec::derived(crate::domain::CardKind::Provide, "Answer the question"),
         },
     )
@@ -2172,7 +2185,6 @@ fn free_text_response_with_or_without_options_and_attachment_bounds() {
                 id: "yes".into(),
                 label: "Yes".into(),
                 description: None,
-                inputs: vec![],
             }], card: crate::domain::CardSpec::derived(crate::domain::CardKind::Provide, "Answer the question"),
         },
     )
@@ -2999,7 +3011,6 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
         id: "yes".into(),
         label: "Yes".into(),
         description: None,
-        inputs: vec![],
     };
     let list = vec![
         (Command::CreateSchedule { schedule }, true),
@@ -3172,7 +3183,7 @@ fn unknown_and_foreign_ids_are_typed_rejections_never_panics() {
         method: MergeMethod::Squash }).unwrap();
     exec(&mut s, b.clone(), Command::AskQuestion { attachments: vec![], interaction_id: "q2".into(),
         scope: Scope::Task { task_id: "t2".into() }, recipient: Recipient::User, body: "Q?".into(),
-        blocking: false, options: vec![QuestionOption { id: "yes".into(), label: "Yes".into(), description: None, inputs: vec![] }], card: crate::domain::CardSpec::derived(crate::domain::CardKind::Provide, "Answer the question") }).unwrap();
+        blocking: false, options: vec![QuestionOption { id: "yes".into(), label: "Yes".into(), description: None }], card: crate::domain::CardSpec::derived(crate::domain::CardKind::Provide, "Answer the question") }).unwrap();
     let foreign = Ids {
         task: "t2",
         agent: "b",
@@ -3588,7 +3599,7 @@ fn the_cleanup_request_is_sent_once_even_when_a_blocking_question_interrupts_it(
     let question = exec(&mut s, agent(), Command::AskQuestion {
         attachments: vec![], interaction_id: "q".into(), scope: Scope::Task { task_id: "t".into() },
         recipient: Recipient::User, body: "Delete the cache?".into(), blocking: true,
-        options: vec![QuestionOption { id: "yes".into(), label: "Yes".into(), description: None, inputs: vec![] }],
+        options: vec![QuestionOption { id: "yes".into(), label: "Yes".into(), description: None }],
         card: crate::domain::CardSpec::derived(crate::domain::CardKind::Provide, "Answer the question"),
     }).unwrap();
     assert_eq!(s.tasks[&"t".into()].state, TaskState::NeedsYou);
@@ -3786,8 +3797,8 @@ fn ask_aside(s: &mut DomainState, id: &str) -> CommandOutcome {
     exec(s, agent(), Command::AskQuestion {
         attachments: vec![], interaction_id: id.into(), scope: Scope::Task { task_id: "t".into() },
         recipient: Recipient::User, body: "Cover card numbers that fail Luhn too?".into(), blocking: false,
-        options: vec![QuestionOption { id: "keep".into(), label: "Keep it".into(), description: None, inputs: vec![] },
-            QuestionOption { id: "cover".into(), label: "Cover them".into(), description: None, inputs: vec![] }],
+        options: vec![QuestionOption { id: "keep".into(), label: "Keep it".into(), description: None },
+            QuestionOption { id: "cover".into(), label: "Cover them".into(), description: None }],
         card: crate::domain::CardSpec::derived(crate::domain::CardKind::Decide, "Decide whether to cover invalid card numbers"),
     }).unwrap()
 }

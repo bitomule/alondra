@@ -4,7 +4,7 @@
   "view": "home",
   "key": "home",
   "client": "tui",
-  "version": "v018dc0f861cc7ed9",
+  "version": "v54639b2a9e6ba16b",
   "cursor": "cursor-1",
   "status": {
     "version": "v8f627439edfdda19",
@@ -275,24 +275,6 @@
             "resolves_card": true
           },
           "more": [
-            {
-              "id": "ans:a98d034b-249e-4487-a89b-57de38c26372@1",
-              "label": "Write my own answer",
-              "style": "secondary",
-              "role": "neutral",
-              "presentation": "button",
-              "input": {
-                "kind": "text",
-                "placeholder": "Answer in your own words…",
-                "required": true,
-                "multiline": true
-              },
-              "attachments": true,
-              "enabled": true,
-              "stamp": "You answered",
-              "key": "3",
-              "resolves_card": true
-            },
             {
               "id": "clarify:a98d034b-249e-4487-a89b-57de38c26372@1",
               "label": "Request clarification",

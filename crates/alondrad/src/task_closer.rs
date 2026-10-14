@@ -393,8 +393,8 @@ a few hours.",
         held = elapsed(held),
     );
     let options = vec![
-        QuestionOption { id: "close".into(), label: "Close the node".into(), description: None, inputs: vec![] },
-        QuestionOption { id: "leave".into(), label: "Leave it".into(), description: None, inputs: vec![] },
+        QuestionOption { id: "close".into(), label: "Close the node".into(), description: None },
+        QuestionOption { id: "leave".into(), label: "Leave it".into(), description: None },
     ];
     match domain.raise_problem(&id, Some(&format!("post-merge:{}", task.id)), Scope::Task { task_id: task.id.clone() }, need, why, diagnosis, options) {
         Ok(_) => Some(id),

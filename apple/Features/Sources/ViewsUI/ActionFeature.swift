@@ -73,7 +73,7 @@ public struct ActionFeature: Sendable {
                 return String(localized: "Choose an option")
             }
             let input = selectedOptionID.flatMap { id in action.options.first { $0.id == id }?.input } ?? action.input
-            if case let .text(_, required, _) = input, required, comments.isEmpty, !typed {
+            if case let .text(_, required, _) = input, required, action.optionId == nil, comments.isEmpty, !typed {
                 return String(localized: "Enter a response")
             }
             return nil

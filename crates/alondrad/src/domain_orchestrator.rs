@@ -496,7 +496,7 @@ impl Executor {
         let id = format!("{STUCK_PROBLEM_PREFIX}{run_id}");
         let problem = StuckProblem { failures, error: error.to_owned() };
         let (need, why) = problem.text(alondra_core::views::Lang::En);
-        let option = QuestionOption { id: STUCK_RETRY.into(), label: STUCK_RETRY_LABEL.into(), description: None, inputs: vec![] };
+        let option = QuestionOption { id: STUCK_RETRY.into(), label: STUCK_RETRY_LABEL.into(), description: None };
         match self.domain.raise_worded_problem(&id, STUCK_CAUSE, need, why, problem.to_body(), vec![option], Some(STUCK_RETRY)) {
             Ok(_) => Some(id),
             Err(error) => {
@@ -509,7 +509,7 @@ impl Executor {
     /// A batch whose effects are unknown is the user's call: a Problem card with the ways out,
     /// which `apply_problem_answers` carries out.
     fn raise_batch_problem(&self, run_id: &str, mut problem: BatchProblem, error: &str) {
-        let option = |id: &str, label: &str| QuestionOption { id: id.into(), label: label.into(), description: None, inputs: vec![] };
+        let option = |id: &str, label: &str| QuestionOption { id: id.into(), label: label.into(), description: None };
         problem.error = error.to_owned();
         let (need, why) = problem.text(alondra_core::views::Lang::En);
         let raised = self.domain.raise_worded_problem(
@@ -784,7 +784,7 @@ exit 1"#;
         command(domain, Actor::Agent { agent_id: "a".into() }, &format!("question-{n}"), Command::AskQuestion {
             attachments: vec![], interaction_id: format!("q{n}").into(), scope: Scope::Task { task_id: "t".into() },
             recipient: Recipient::Orchestrator, body: format!("Where do I put change {n}?"), blocking: false,
-            options: vec![QuestionOption { id: "here".into(), label: "Here".into(), description: None, inputs: vec![] }], card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Provide, "Answer the question"),
+            options: vec![QuestionOption { id: "here".into(), label: "Here".into(), description: None }], card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Provide, "Answer the question"),
         });
     }
 

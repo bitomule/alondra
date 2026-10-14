@@ -91,13 +91,11 @@
         "options": [
           {
             "option_id": "yes",
-            "label": "Yes",
-            "inputs": []
+            "label": "Yes"
           },
           {
             "option_id": "no",
-            "label": "No",
-            "inputs": []
+            "label": "No"
           }
         ]
       }
@@ -1818,7 +1816,6 @@
             "options": [
               {
                 "label": "Yes",
-                "inputs": [],
                 "id": "yes"
               }
             ],

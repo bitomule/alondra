@@ -392,7 +392,7 @@ async fn act(domain: &DomainRuntime, alerts: &impl Alerts, actions: Vec<Action>)
         match action {
             Action::Raise { id, card } => {
                 let (need, why) = card.text(Lang::En);
-                let option = alondra_core::domain::QuestionOption { id: MACHINE_FIXED_OPTION.into(), label: MACHINE_FIXED_LABEL.into(), description: None, inputs: vec![] };
+                let option = alondra_core::domain::QuestionOption { id: MACHINE_FIXED_OPTION.into(), label: MACHINE_FIXED_LABEL.into(), description: None };
                 if let Err(error) = domain.raise_worded_problem(&id, MACHINE_CAUSE, need, why, card.to_body(), vec![option], None) {
                     log!("could not put the machine's card in front of the user, pushing it instead: {error:?}");
                     alerts.tell(push_text(card), false).await;
@@ -798,7 +798,7 @@ mod tests {
         domain.live.machine_watch.set_incident(Some(incident));
         // The card's id is taken already, so the domain refuses it as a full disk would.
         domain.raise_worded_problem("machine-0-2", MACHINE_CAUSE, "taken".into(), "taken".into(), "{}".into(), vec![
-            alondra_core::domain::QuestionOption { id: "x".into(), label: "x".into(), description: None, inputs: vec![] },
+            alondra_core::domain::QuestionOption { id: "x".into(), label: "x".into(), description: None },
         ], None).unwrap();
         let watcher = tokio::spawn(watch(domain.clone(), || Some(machine(0, 50)), told.clone(), Duration::from_millis(20)));
         until("the push", || !told.0.lock().unwrap().is_empty()).await;
@@ -870,7 +870,7 @@ mod tests {
         let domain = Arc::new(DomainRuntime::open(&home).unwrap());
         let body = r#"{"cause":"memory","disk_free":0,"memory_free_percent":38,"memory_pressure":true,"single_node":true}"#;
         domain.raise_worded_problem("machine-1000", MACHINE_CAUSE, "Free up memory: macOS reports memory pressure (38% free) with a single node working".into(), "something outside Alondra uses the memory".into(), body.into(), vec![
-            alondra_core::domain::QuestionOption { id: MACHINE_FIXED_OPTION.into(), label: MACHINE_FIXED_LABEL.into(), description: None, inputs: vec![] },
+            alondra_core::domain::QuestionOption { id: MACHINE_FIXED_OPTION.into(), label: MACHINE_FIXED_LABEL.into(), description: None },
         ], None).unwrap();
         assert_eq!(open_machine_cards(&domain).len(), 1);
         assert!(domain.live.machine_watch.incident().is_none(), "the memory incident is dropped on load");

@@ -14,9 +14,7 @@
             {
               "id": "ans:c92d0a11-7c47-4c47-b42b-36b8f22f5120@1",
               "label": "Request changes",
-              "option": "changes",
-              "placeholder": "Add a note",
-              "text": true
+              "option": "changes"
             },
             {
               "id": "reply:c92d0a11-7c47-4c47-b42b-36b8f22f5120@1",
@@ -58,9 +56,7 @@
             {
               "id": "ans:a019b231-43d1-4aa9-a0c3-5713a8ac2150@1",
               "label": "Request changes",
-              "option": "changes",
-              "placeholder": "Add a note",
-              "text": true
+              "option": "changes"
             },
             {
               "id": "reply:a019b231-43d1-4aa9-a0c3-5713a8ac2150@1",
@@ -201,14 +197,12 @@
             {
               "id": "ans:hold-permission-toolu_01JWScmn532U7ZW6ruo7BjpS@1",
               "label": "Deny",
-              "option": "deny",
-              "placeholder": "Write the reason",
-              "text": true
+              "option": "deny"
             },
             {
               "id": "reply:hold-permission-toolu_01JWScmn532U7ZW6ruo7BjpS@1",
               "label": "Reply",
-              "placeholder": "Reply to this node…",
+              "placeholder": "Deny it with a reason…",
               "text": true
             }
           ],

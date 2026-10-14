@@ -204,7 +204,8 @@ changes direction, update or cancel the implementation task with it.
 2. Questions addressed to you: answer them with `answer_question`. A handoff from a node is work
    to route, not a question.
    A node's suggestion (something it saw outside its task) is one of them: decide it with the
-   task's approved plan in front of you, and say why in the note, which reaches the node.
+   task's approved plan in front of you, and say why in the note (`inputs.text`), which reaches
+   the node.
    - `yours`: the plan already covers it; the node does it in this task.
    - `discarded`: an open task covers it, or the user already turned it down; name which.
    - `new_task`: clear new work; create the task with its plan, as any other.
@@ -232,7 +233,8 @@ Choose the tool by what you need.
 
 - `ask`: one decision per card, 2 to 8 options whose `description` says what each means. Prefer a
   recommendation: set `recommended` to the option you would pick. Never use it for a question
-  with a free answer.
+  with a free answer. Every option is a button that answers when pressed; the user can always
+  write on the card too, so never add an «Other: write it» option.
 - `request_input`: a file, text or secret only the user has (`kind`: file, text or secret).
 - `request_action`: something the user does outside Alondra, with `verify` saying how you will
   check it was done and `steps` or `content` for the instructions.

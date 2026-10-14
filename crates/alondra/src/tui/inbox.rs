@@ -396,9 +396,25 @@ impl App {
             stamp: action.stamp.clone(),
             hides: action.resolves_card,
         };
-        let answers_a_choice = option.is_none() && action.option_id.is_some();
+        if option.is_none() && action.option_id.is_some() {
+            let (text, chips, review) = self.take_card_words();
+            let mut input = serde_json::json!({});
+            if !text.trim().is_empty() {
+                input["text"] = serde_json::Value::String(text.trim().to_owned());
+            }
+            let attachments: Vec<String> = super::dropped::stored(&chips).into_iter().map(|attachment| attachment.id).collect();
+            if !attachments.is_empty() {
+                input["attachments"] = serde_json::json!(attachments);
+            }
+            let request = crate::client::Client::action_body(&epoch, &action.id, option_id.as_deref(), input);
+            if let (Some(key), Some(command)) = (review, request["command_id"].as_str()) {
+                self.review_sends.insert(command.to_owned(), key);
+            }
+            self.submit_view_request(request, Some(acting));
+            return Flow::Go;
+        }
         match input {
-            alondra_core::views::Input::Text { required, .. } if *required || !answers_a_choice => {
+            alondra_core::views::Input::Text { required, .. } => {
                 self.compose(
                     super::Target::ViewAction {
                         action_id: action.id.clone(),
@@ -413,21 +429,35 @@ impl App {
                     "",
                 );
             }
-            alondra_core::views::Input::None | alondra_core::views::Input::Text { .. } => {
-                let action_id = action.id.clone();
-                let data_epoch = epoch;
-                let option_id = option_id.clone();
-                let request = crate::client::Client::action_body(
-                    &data_epoch,
-                    &action_id,
-                    option_id.as_deref(),
-                    serde_json::json!({}),
-                );
+            alondra_core::views::Input::None => {
+                let request = crate::client::Client::action_body(&epoch, &action.id, option_id.as_deref(), serde_json::json!({}));
                 self.submit_view_request(request, Some(acting));
             }
         }
         Flow::Go
     }
+
+    /// What the user wrote on the open card, which goes with the option they press: the comments
+    /// left in the reader, or else the draft of the card's own field. Taken, so it is sent once.
+    fn take_card_words(&mut self) -> (String, Vec<super::Chip>, Option<Key>) {
+        let Some(view) = self.card_view.as_ref() else { return (String::new(), vec![], None) };
+        if let Some(key) = self.reader.as_ref().map(|reader| reader.key.clone()).filter(|key| key.0 == view.key)
+            && let Some(review) = self.reviews.get(&key).filter(|review| !review.is_empty())
+        {
+            return (review.feedback(), review.chips.clone(), Some(key));
+        }
+        let draft = super::view_render::card_reply(view).and_then(|reply| {
+            self.drafts.remove(&format!("view-action:{}:", reply.id))
+        });
+        draft.map_or((String::new(), vec![], None), |(text, chips)| (text, chips, None))
+    }
+}
+
+/// Whether what the user wrote can go with this key: every option carries it, and so does an
+/// action that takes text.
+pub(super) fn carries_words(action: &alondra_core::views::Action, option: Option<&alondra_core::views::ActionOption>) -> bool {
+    let text = |input: &alondra_core::views::Input| matches!(input, alondra_core::views::Input::Text { .. });
+    action.option_id.is_some() || text(&action.input) || option.is_some_and(|option| text(&option.input))
 }
 
 pub(super) fn safe_github_url(value: &str) -> bool {

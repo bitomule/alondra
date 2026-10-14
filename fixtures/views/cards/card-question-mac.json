@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:a98d034b-249e-4487-a89b-57de38c26372",
   "client": "mac",
-  "version": "vdd61a3fcdf555388",
+  "version": "ve674fe6fd8dde55e",
   "cursor": "cursor-1",
   "title": "Choose the welcome copy",
   "status": {
@@ -96,24 +96,6 @@
             "resolves_card": true
           },
           "more": [
-            {
-              "id": "ans:a98d034b-249e-4487-a89b-57de38c26372@1",
-              "label": "Write my own answer",
-              "style": "secondary",
-              "role": "neutral",
-              "presentation": "button",
-              "input": {
-                "kind": "text",
-                "placeholder": "Answer in your own words…",
-                "required": true,
-                "multiline": true
-              },
-              "attachments": true,
-              "enabled": true,
-              "stamp": "You answered",
-              "key": "3",
-              "resolves_card": true
-            },
             {
               "id": "clarify:a98d034b-249e-4487-a89b-57de38c26372@1",
               "label": "Request clarification",

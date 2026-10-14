@@ -179,6 +179,7 @@ public struct CompositionSheet: View {
         }
         .presentationDetents([.medium, .large])
         .presentationBackground(Palette.night)
+        .accessibilityIdentifier("card.composition")
     }
 
     private func reasonRow(_ option: ActionOption) -> some View {

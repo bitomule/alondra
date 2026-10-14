@@ -865,7 +865,7 @@ mod tests {
             attachments: vec![], interaction_id: format!("question-{agent}").into(),
             scope: Scope::Task { task_id: format!("task-{agent}").into() }, recipient: Recipient::User,
             body: "Choose".into(), blocking: true,
-            options: vec![QuestionOption { id: "yes".into(), label: "Yes".into(), description: None, inputs: vec![] }], card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Provide, "Answer the question"),
+            options: vec![QuestionOption { id: "yes".into(), label: "Yes".into(), description: None }], card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Provide, "Answer the question"),
         });
         command(domain, Actor::User { user_id: "u".into() }, &format!("answer-{agent}"), Command::AnswerQuestion {
             attachments: vec![], interaction_id: format!("question-{agent}").into(),
@@ -933,7 +933,7 @@ mod tests {
         command(&domain, Actor::Agent { agent_id: "agent-a".into() }, "question", Command::AskQuestion {
             attachments: vec![], interaction_id: "question-1".into(), scope: Scope::Task { task_id: "task".into() },
             recipient: Recipient::Orchestrator, body: "Which API should I use?".into(), blocking: true,
-            options: vec![QuestionOption { id: "new_api".into(), label: "New API".into(), description: None, inputs: vec![] }], card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Provide, "Answer the question"),
+            options: vec![QuestionOption { id: "new_api".into(), label: "New API".into(), description: None }], card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Provide, "Answer the question"),
         });
         let state = domain.state().unwrap();
         let message = domain.store.lock().unwrap().pending_messages().unwrap().into_iter()
@@ -965,7 +965,7 @@ mod tests {
             attachments: vec![], interaction_id: "another-question".into(),
             scope: Scope::Task { task_id: "task-agent-a".into() }, recipient: Recipient::User,
             body: "Second choice?".into(), blocking: true,
-            options: vec![QuestionOption { id: "yes".into(), label: "Yes".into(), description: None, inputs: vec![] }], card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Provide, "Answer the question"),
+            options: vec![QuestionOption { id: "yes".into(), label: "Yes".into(), description: None }], card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Provide, "Answer the question"),
         });
         let state = domain.state().unwrap();
         let message = domain.store.lock().unwrap().pending_messages().unwrap().into_iter()
@@ -976,7 +976,7 @@ mod tests {
             attachments: vec![], interaction_id: "orchestrator-question".into(),
             scope: Scope::Orchestrator { request_id: Some("request-agent-a".into()) },
             recipient: Recipient::User, body: "Ship this?".into(), blocking: true,
-            options: vec![QuestionOption { id: "yes".into(), label: "Yes".into(), description: None, inputs: vec![] }], card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Provide, "Answer the question"),
+            options: vec![QuestionOption { id: "yes".into(), label: "Yes".into(), description: None }], card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Provide, "Answer the question"),
         });
         command(&domain, Actor::User { user_id: "u".into() }, "orchestrator-answer", Command::AnswerQuestion {
             attachments: vec![], interaction_id: "orchestrator-question".into(),
@@ -1007,12 +1007,11 @@ mod tests {
         command(&domain, Actor::Agent { agent_id: "agent-a".into() }, "question", Command::AskQuestion {
             attachments: vec![], interaction_id: "question".into(), scope: Scope::Task { task_id: "task".into() },
             recipient: Recipient::User, body: "Which approach?".into(), blocking: true,
-            options: vec![QuestionOption { id: "new".into(), label: "New API".into(), description: None,
-                inputs: vec![InputSpec { id: "details".into(), kind: InputKind::Text, required: true }] }], card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Provide, "Answer the question"),
+            options: vec![QuestionOption { id: "new".into(), label: "New API".into(), description: None }], card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Provide, "Answer the question"),
         });
         command(&domain, Actor::User { user_id: "u".into() }, "answer", Command::AnswerQuestion {
             attachments: vec![], interaction_id: "question".into(), option_id: "new".into(),
-            inputs: BTreeMap::from([("details".into(), InputValue::Text("Keep the old response format".into()))]),
+            inputs: BTreeMap::from([("text".into(), InputValue::Text("Keep the old response format".into()))]),
         });
         let state = domain.state().unwrap();
         let message = domain.store.lock().unwrap().pending_messages().unwrap().into_iter()

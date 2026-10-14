@@ -529,8 +529,8 @@ fn decide_detail_shows_header_content_context_then_numbered_buttons() {
     assert!(at("Content") < at("Context"));
     assert!(at("Context") < at(" 1  ★ Ship the concise copy"));
     assert!(at(" 1  ★ Ship the concise copy") < at(" 2  Keep the warmer copy"));
-    assert!(at(" 2  Keep the warmer copy") < at(" m  More… (2)"));
-    assert!(at(" m  More… (2)") < at(" r  Reply"));
+    assert!(at(" 2  Keep the warmer copy") < at(" m  More… (1)"));
+    assert!(at(" m  More… (1)") < at(" r  Reply"));
     let footer = draw::footer_keys(&app);
     assert_eq!(
         footer
@@ -651,7 +651,7 @@ fn r_replies_to_the_node_with_a_text_box() {
 fn clarify_is_a_reason_picker_then_an_optional_text() {
     let mut app = english(fixture_view("card-question.json"));
     press(&mut app, KeyCode::Char('m'));
-    press(&mut app, KeyCode::Char('2'));
+    press(&mut app, KeyCode::Char('1'));
     let screen = rendered(&mut app, 120, 40);
     dump("detail: clarification reasons", &screen);
     assert!(screen.contains("REQUEST CLARIFICATION"), "{screen}");
@@ -679,7 +679,7 @@ fn clarify_is_a_reason_picker_then_an_optional_text() {
 fn clarify_without_text_is_sent_with_just_the_reason() {
     let mut app = english(fixture_view("card-question.json"));
     press(&mut app, KeyCode::Char('m'));
-    press(&mut app, KeyCode::Char('2'));
+    press(&mut app, KeyCode::Char('1'));
     press(&mut app, KeyCode::Char('1'));
     press(&mut app, KeyCode::Enter);
     let sent = app.posted.borrow().clone();
@@ -697,26 +697,53 @@ fn with_note_input(required: bool) -> views::View {
 }
 
 #[test]
-fn both_default_choices_with_an_optional_note_send_at_once_without_it() {
-    for key in ['1', '2'] {
-        let mut app = english(with_note_input(false));
-        press(&mut app, KeyCode::Char(key));
-        let sent = app.posted.borrow().clone();
-        assert!(app.composer.is_none(), "key {key} opened the text box");
-        assert_eq!(sent.len(), 1, "key {key}: {sent:?}");
-        assert_eq!(sent[0].1["input"], serde_json::json!({}));
+fn pressing_an_option_answers_at_once_even_on_a_card_that_asked_for_a_note() {
+    for required in [false, true] {
+        for key in ['1', '2'] {
+            let mut app = english(with_note_input(required));
+            press(&mut app, KeyCode::Char(key));
+            let sent = app.posted.borrow().clone();
+            assert!(app.composer.is_none(), "key {key} (note required: {required}) opened the text box");
+            assert_eq!(sent.len(), 1, "key {key}: {sent:?}");
+            assert!(sent[0].1["option_id"].is_string(), "{sent:?}");
+            assert_eq!(sent[0].1["input"], serde_json::json!({}));
+        }
     }
 }
 
 #[test]
-fn a_choice_with_a_required_note_opens_the_text_box_first() {
-    let mut app = english(with_note_input(true));
-    press(&mut app, KeyCode::Char('2'));
-    assert!(app.posted.borrow().is_empty());
-    assert!(matches!(
-        app.composer.as_ref().map(|composer| &composer.target),
-        Some(Target::ViewAction { required: true, option_id: Some(_), .. })
-    ));
+fn what_is_written_in_the_cards_field_goes_with_the_option_pressed() {
+    let mut app = english(fixture_view("card-question.json"));
+    press(&mut app, KeyCode::Char('r'));
+    typed(&mut app, "Rotated both keys");
+    press(&mut app, KeyCode::Esc);
+    assert!(app.composer.is_none() && app.posted.borrow().is_empty(), "Esc keeps the words as a draft");
+    assert!(app.flash.as_ref().is_some_and(|flash| flash.text.contains("press an option to send it with it")));
+    app.flash = None;
+    let screen = rendered(&mut app, 120, 60);
+    dump("detail: a draft waiting for an option", &screen);
+    assert!(screen.contains("«Rotated both keys» — goes with the option you press"), "{screen}");
+    press(&mut app, KeyCode::Char('1'));
+    let sent = app.posted.borrow().clone();
+    assert!(app.composer.is_none(), "the option answers at once");
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    assert!(sent[0].1["action_id"].as_str().unwrap().starts_with("ans:"), "{sent:?}");
+    assert!(sent[0].1["option_id"].is_string(), "{sent:?}");
+    assert_eq!(sent[0].1["input"]["text"], "Rotated both keys");
+    assert!(app.drafts.is_empty(), "the words were sent once");
+}
+
+#[test]
+fn the_cards_field_alone_still_answers_in_the_users_own_words() {
+    let mut app = english(fixture_view("card-question.json"));
+    press(&mut app, KeyCode::Char('r'));
+    typed(&mut app, "Neither: keep the old one");
+    press(&mut app, KeyCode::Enter);
+    let sent = app.posted.borrow().clone();
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    assert!(sent[0].1["action_id"].as_str().unwrap().starts_with("reply:"), "{sent:?}");
+    assert!(sent[0].1["option_id"].is_null(), "{sent:?}");
+    assert_eq!(sent[0].1["input"]["text"], "Neither: keep the old one");
 }
 
 #[test]
@@ -764,7 +791,7 @@ fn cards_read_in_spanish() {
     let mut app = card_screen(fixture_view("card-question.json"), crate::i18n::Lang::Es);
     let screen = rendered(&mut app, 120, 40);
     dump("detalle: Decidir", &screen);
-    assert!(screen.contains(" m  Más… (2)"), "{screen}");
+    assert!(screen.contains(" m  Más… (1)"), "{screen}");
     let footer = draw::footer_keys(&app);
     assert!(footer.iter().any(|(key, label)| key == "r" && label == "responder"), "{footer:?}");
     assert!(footer.iter().any(|(key, label)| key == "⏎/o" && label == "abrir"), "{footer:?}");

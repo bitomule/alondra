@@ -571,7 +571,6 @@ mod tests {
                             id: "yes".into(),
                             label: "Yes".into(),
                             description: None,
-                            inputs: vec![],
                         }], card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Provide, "Answer the question"),
                     },
                 },

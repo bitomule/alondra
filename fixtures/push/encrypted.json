@@ -2,16 +2,16 @@
   "apns": {
     "alondra": {
       "envelope": {
-        "ciphertext": "QPO5a9-r_rRsCbvO7Wx3nyNWuhPy2mrIig0M-973FO_DXX2r_d9FypNTiIQdm1bHkUDA1-31w1yYu1E8Rl27ADihLNlSlu-YI924GDLjaWemoV91SGvghEV1crTqRAscjHl6LJO35PQqkEfoAbAYAQv6Ln4xGGn3f28rpcFH2RBgfQz9sIvx-1WDzYuj1ZGKHK7iX9mEP2MPx-SkyGk92Ibste5xWeJ388WNyHnfvEp99ISBPDvqz2ctPEHT1brG1gAox8U-ylifwaDB_mjtT2y4WAjMfu_YkSuUjS6_8m-_N-PwDQZIGWi5GzA8gW8krmSk9jYP1503MsK8M8hoNEul7ioB_6Mt4R4T9LvBR4rTclukzEi85m3oGPo_2fCToQxqm1FyYrZPcAcBm9KfrHydxSpi1Ja3qkDWz0WTLZOTOw2Q2ftkTuZZhleXI0Io3sVxEPOyif8b-IDYU6eEfVYveaWNSIGUCYx0NEQGKnunjYwOkNoRgpMLz5e3rP-0Rc_IhnollNc3P_BmJtFqSc53lsGFt8VndAPA_HnkeX5zr7IR-Elw6IQJfqdENW2hl_nvdNSD8feBIjpwX5bTiAp-F-E64v8d2R3zEXDspz3ixH26YktUV2YCElWWkabYOox_xxl9KGzGGbjgXK6_vk_ka6wfCWg59N_h6iIwgh3ZG8oPpvV4d74eFdQw4-Pv8dWl-sV90WLYDfgavihRWuRzw3ZwoZshr_Z9oftASzZpBfhPTT0r_ov7hFjs-v68RJQIvDNRHgiaaiS3_WiY7Z4TYdqALzhLYqXDN4rmzC7CfrfNrbdD6SpBko7ogZv2iz5aCB7jA37DwyCxciDI8pbe9vkZKRt66HLPzUvQxPVGrunTZVF-IfbFHpzlR23AhNKSfPbPAH8kV4jM5-zaZ_YuRPy_SfwrVetzYsV9wQfVyyPQaQv668naZYVPEin0qZ8yn2n4aeScKQ3L69DGSTm6kp6G2qGFZjYEYfLr6pZzvbEJbXgHLIbEIeTHsHkedIuVNlOkan3rBreMzuSmt9go8OqQkek918hfn2ksMZdDaW3gUMfIncz3_Y11lIyqxr35Jh-U0iOj9w",
-        "ephemeral_key": "BB6A4aCs9fZA6CslCRNmH3whdVG7nwB5QCJ7ai_IaXIlf_6okUdozzlPkAhAcoofVrpaqwgzrmDaqT3CK4ECSKs",
-        "expires_at_ms": 1791114195545,
+        "ciphertext": "m7vG4YcY9LSHADrfpsZy0m9q3dzyvvFPLJGsBQIt2gu8QgLVuYctVcQ6Zi4Am6q_vvdvl--hZrplC9EHb8WFDhz8aPnpX06dnBi8Y9-GTj_P0gqd_gh6jIDt1sPkYXwc2HsKf2yjPsQboZ37SRzbB5nEBsJ6YhGT96W31UDkOJ_Q0OEpSEHOtNxWVv9jwNvsxbvbGzjm1AONapuQGlKLP8vpRLShFY_sQkEhD4aU3Qtoary8kxTS-thB4rqPIpaungjWf6ystrbu2B1-6RCgaBz0IRcZT3-mnY4Fe2MU1vSvj54XsmRrGUzYJzbAOHPV54976K9FNsJvW-tRMmI-1HLIMsK3l6fbJWiiKRPFJ_iauZWBv_0UkzmcuXGT71vNT1HEZlrbB-1jYFFYfnjS3fC1j0dEjVhtYHSSDStKCZGuUMzGSU-jnWeKgI6ZcY1CarSiV_kVt2RnMOh1dePXMwsUQlj221YLjAFY17UkEXT34qbtgHNB8AU-efBS1BANlnYJF1xbJBDMLrMeSdzTGDJIvQPonuEKSyIQ-XAuFwWFEfiyUFcOYFcB-ZpTvz89IbJGEJKlvegG7JIlMDXpwGmL8lsy7TejpjX5R__PiIgGDJ-xsa8kfbfHLpuZVtbqM7Vk--Oz9h6e-H8T__-Kk6q3hcy2l7NPZX9ZgfVopZov-S6R94XxmauVkPGG6VhXCSpem8VhkKKoQP692A3Eee0F75KTEI-BrMd9QDcDeLbzf7FWhRi6YfA-K_a1DSGdh1J0OxvlVuYuqUJUbg217OoQ_q5DfG9uUFNfkHi81T2EGiQPOpFIIIKZmlniAOHp2Vxg_CWw1rCcNP9RkXsSJxFUttZIvhact6Tm5B8KjaXWo4rrLxxaJG1Sy5LZb-bLHGx0qN6flqTCRqNgvh5G8AtXRFHvukRaKQp4V6wZWjXkEzvxdvrfyDawQIkj_sSelznPbe4OfJ8oCFL5IdR5v4r4RlHXxjt904nFk1f3PRsmJLBrfWNeEPOptJDY9DLju6gWE4YAnC8EtXAT2KQ",
+        "ephemeral_key": "BBv-yWEoattBisdDuQhftveVzk3MtzueyMsaAb9TD8UHVmhPQ0HXrRjWp9CT9cjmTQk37mHMUs_Cf9s9n3Ak0ig",
+        "expires_at_ms": 1791935861100,
         "kind": "push",
-        "nonce": "QEvMc5whv5P6bV-J",
+        "nonce": "Ufn5dkTNOxmaBby8",
         "recipient": "phone-fixture",
-        "request_id": "Log3VJ_CJom68VVi4hY_zA",
+        "request_id": "UC_dwNX0oFwOqF5MSugNcg",
         "route": "mac-fixture",
         "sender": "mac-fixture",
-        "signature": "t4ZR7fwUygvMBh1k5oIrzyuHmOrgOOVEEk3igUctsLvo4nyUAevXIiM52YAg_2ZLJqEbW6Tog64zD2T6nMhy-Q",
+        "signature": "lN9G97Fj8wXOVF6MEOkgFm-EhCMXUoD_axOlbruMYZnFpX1xEXEy0r26jTFwW3-w5mnPgAQjfbF0T-g5Af-LCQ",
         "v": 1
       },
       "push_binding": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc"
@@ -39,9 +39,7 @@
         {
           "id": "ans:c92d0a11-7c47-4c47-b42b-36b8f22f5120@1",
           "label": "Request changes",
-          "option": "changes",
-          "placeholder": "Añade una nota",
-          "text": true
+          "option": "changes"
         },
         {
           "id": "reply:c92d0a11-7c47-4c47-b42b-36b8f22f5120@1",

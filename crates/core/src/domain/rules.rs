@@ -74,7 +74,6 @@ pub fn suggestion_options() -> Vec<QuestionOption> {
         id: (*id).into(),
         label: (*label).into(),
         description: Some((*description).into()),
-        inputs: vec![InputSpec { id: "note".into(), kind: InputKind::Text, required: false }],
     }).collect()
 }
 /// The notice that a task ended with a card still waiting for the user: this prefix and the card's id.
@@ -2191,8 +2190,8 @@ impl DomainState {
                         &[],
                         InteractionPayload::Question {
                             options: vec![
-                                QuestionOption { id: LAUNCH_RETRY_OPTION.into(), label: "Try again".into(), description: Some("Launch this schedule once more".into()), inputs: vec![] },
-                                QuestionOption { id: "seen".into(), label: "Skip it".into(), description: Some("Its task is cancelled; the schedule runs again at its next time".into()), inputs: vec![] },
+                                QuestionOption { id: LAUNCH_RETRY_OPTION.into(), label: "Try again".into(), description: Some("Launch this schedule once more".into()) },
+                                QuestionOption { id: "seen".into(), label: "Skip it".into(), description: Some("Its task is cancelled; the schedule runs again at its next time".into()) },
                             ],
                             answer: None,
                         },
@@ -2948,7 +2947,7 @@ impl DomainState {
                 if i.withdrawn {
                     return fail("withdrawn", "Its author withdrew this question");
                 }
-                validate_answer(options, option_id, inputs)?;
+                validate_answer(options, option_id, inputs, attachments)?;
                 validate_attachments(attachments)?;
                 let a = Answer {
                     attachments: attachments.clone(),
@@ -4169,7 +4168,7 @@ impl DomainState {
                     validate_options(options)?;
                     if let Some(a) = answer {
                         validate_attachments(&a.attachments)?;
-                        validate_answer(options, &a.option_id, &a.inputs)?;
+                        validate_answer(options, &a.option_id, &a.inputs, &a.attachments)?;
                         id(&a.responder)?;
                         if a.at_revision > self.revision {
                             return fail("invalid_input", "Answer revision from future");
@@ -4303,65 +4302,34 @@ fn validate_options(options: &[QuestionOption]) -> Result<()> {
         if !ids.insert(&option.id) {
             return fail("invalid_input", "Duplicate option ID");
         };
-        if option.inputs.len() > 32 {
-            return fail("invalid_input", "Too many input fields");
-        };
-        let mut fields = BTreeSet::new();
-        for input in &option.inputs {
-            id(&input.id)?;
-            if !fields.insert(&input.id) {
-                return fail("invalid_input", "Duplicate input ID");
-            }
-        }
     }
     Ok(())
 }
+/// An option is a button: its answer carries at most the words the user wrote on the card. With no
+/// option, the answer is those words or the files the user attached.
 fn validate_answer(
     options: &[QuestionOption],
     option: &str,
     inputs: &BTreeMap<String, InputValue>,
+    attachments: &[AttachmentRef],
 ) -> Result<()> {
+    let text = match inputs.iter().collect::<Vec<_>>().as_slice() {
+        [] => None,
+        [(_, InputValue::Text(text))] if text.len() <= 1_048_576 => Some(text.as_str()),
+        _ => return fail("invalid_input", "An answer carries at most one text: the words written on the card"),
+    };
     if options.is_empty() || option.is_empty() {
-        if !option.is_empty()
-            || inputs.len() != 1
-            || !matches!(inputs.get("text"), Some(InputValue::Text(text)) if !text.trim().is_empty() && text.len() <= 1_048_576)
-        {
+        let written = text.is_some_and(|text| !text.trim().is_empty()) && inputs.contains_key(ANSWER_TEXT);
+        if !option.is_empty() || !(written || text.is_none() && !attachments.is_empty()) {
             return fail(
                 "invalid_input",
-                "Free response requires empty option_id and nonempty text input",
+                "Free response requires empty option_id and nonempty text input or attachments",
             );
         }
         return Ok(());
     }
-    let spec = options
-        .iter()
-        .find(|o| o.id == option)
-        .ok_or_else(|| DomainError::new("invalid_input", "Unknown option ID"))?;
-    for k in inputs.keys() {
-        if !spec.inputs.iter().any(|s| &s.id == k) {
-            return fail("invalid_input", "Unknown answer field");
-        }
-    }
-    for s in &spec.inputs {
-        match inputs.get(&s.id) {
-            None if s.required => return fail("invalid_input", "Required answer field missing"),
-            None => {}
-            Some(v) => {
-                let valid = match (s.kind, v) {
-                    (InputKind::Text, InputValue::Text(text)) => {
-                        text.len() <= 1_048_576 && (!s.required || !text.trim().is_empty())
-                    }
-                    (InputKind::Boolean, InputValue::Boolean(_)) => true,
-                    (InputKind::Integer, InputValue::Integer(n)) => {
-                        n.unsigned_abs() <= MAX_REVISION
-                    }
-                    _ => false,
-                };
-                if !valid {
-                    return fail("invalid_input", "Answer field type or value invalid");
-                }
-            }
-        }
+    if !options.iter().any(|o| o.id == option) {
+        return fail("invalid_input", "Unknown option ID");
     }
     Ok(())
 }

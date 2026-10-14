@@ -98,7 +98,7 @@ final class TriageCardFeatureTests: XCTestCase {
 
         XCTAssertEqual(store.state.buttons.map(\.label), ["★ Ship the concise copy", "Keep the warmer copy"])
         XCTAssertEqual(store.state.buttons.map(\.role), [.advance, .neutral])
-        XCTAssertEqual(store.state.menu.map(\.label), ["Write my own answer", "Request clarification"])
+        XCTAssertEqual(store.state.menu.map(\.label), ["Request clarification"])
         XCTAssertEqual(store.state.replyAction?.id, "reply:\(Fixtures.questionID)@1")
     }
 
@@ -109,9 +109,9 @@ final class TriageCardFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.buttons.count, 3)
         XCTAssertEqual(store.state.buttons.map(\.label), ["★ Stable", "Beta", "Nightly"])
         XCTAssertEqual(
-            store.state.menu.map(\.label), ["Preview", "Internal", "Write my own answer", "Request clarification"]
+            store.state.menu.map(\.label), ["Preview", "Internal", "Request clarification"]
         )
-        XCTAssertEqual(store.state.allActions.count, 8, "three buttons, four in More, and the reply field")
+        XCTAssertEqual(store.state.allActions.count, 7, "three buttons, three in More, and the reply field")
     }
 
     @MainActor
@@ -435,24 +435,63 @@ final class TriageCardFeatureTests: XCTestCase {
     }
 
     @MainActor
-    func testWritingMyOwnAnswerOpensTheSheetAndSendsTheWords() async throws {
+    func testTappingAnOptionAnswersAtOnceEvenWhenAnOlderDaemonMarkedItAsTakingANote() async throws {
+        for input: [String: Any] in [["kind": "none"], ["kind": "text", "placeholder": "Add a note", "required": false, "multiline": true],
+                                     ["kind": "text", "placeholder": "Add a note", "required": true, "multiline": true]] {
+            let feed = FeedStub()
+            let document = try Fixtures.card("card-question") { card in
+                var actions = try XCTUnwrap(card["actions"] as? [[String: Any]])
+                for index in actions.indices { actions[index]["input"] = input; actions[index]["attachments"] = input["kind"] as? String == "text" }
+                card["actions"] = actions
+            }
+            let store = try await store(Fixtures.questionID, feed: feed, loaded: document)
+            let done = try action(store, verb: "ans", label: "Keep the warmer copy")
+
+            await store.send(.actionTapped(done))
+            XCTAssertNil(store.state.composition, "\(input): an option never opens the sheet")
+            await store.skipReceivedActions()
+
+            let request = try XCTUnwrap(feed.requests.first, "\(input)")
+            XCTAssertEqual(request.actionId, done.id)
+            XCTAssertEqual(request.optionId, "warm")
+            XCTAssertNil(request.input.text, "\(input)")
+        }
+    }
+
+    @MainActor
+    func testWhatIsWrittenInTheCardsFieldGoesWithTheOptionTapped() async throws {
         let feed = FeedStub()
         let store = try await store(Fixtures.questionID, feed: feed, loaded: try Fixtures.card(Fixtures.questionID))
-        let own = try action(store, verb: "ans", label: "Write my own answer")
+        let warm = try action(store, verb: "ans", label: "Keep the warmer copy")
 
-        await store.send(.actionTapped(own))
-        XCTAssertEqual(store.state.composition?.action, own)
-        XCTAssertEqual(store.state.composition?.canSend, false, "the words are required")
-        XCTAssertEqual(feed.requests, [], "the sheet comes first")
-        await store.send(.noteChanged("Neither: keep the old copy"))
-        XCTAssertEqual(store.state.composition?.canSend, true)
-        await store.send(.compositionConfirmed)
+        await store.send(.replyChanged("Only for the onboarding screen"))
+        await store.send(.actionTapped(warm))
+        XCTAssertNil(store.state.composition)
         await store.skipReceivedActions()
 
         let request = try XCTUnwrap(feed.requests.first)
-        XCTAssertEqual(request.actionId, own.id)
+        XCTAssertEqual(request.actionId, warm.id)
+        XCTAssertEqual(request.optionId, "warm")
+        XCTAssertEqual(request.input.text, "Only for the onboarding screen")
+        XCTAssertEqual(store.state.replyDraft, "", "the words went with the answer")
+    }
+
+    @MainActor
+    func testTheCardsFieldAloneAnswersInThePersonsOwnWords() async throws {
+        let feed = FeedStub()
+        let store = try await store(Fixtures.questionID, feed: feed, loaded: try Fixtures.card(Fixtures.questionID))
+        let reply = try XCTUnwrap(store.state.replyAction)
+        XCTAssertTrue(reply.id?.hasPrefix("reply:\(Fixtures.questionID)@") == true, "\(String(describing: reply.id))")
+        XCTAssertFalse(store.state.allActions.contains { $0.label == "Write my own answer" }, "one field to write in, not two")
+
+        await store.send(.replyChanged("Neither: keep the old copy"))
+        await store.send(.replySent(reply))
+        await store.skipReceivedActions()
+
+        let request = try XCTUnwrap(feed.requests.first)
+        XCTAssertEqual(request.actionId, reply.id)
+        XCTAssertNil(request.optionId)
         XCTAssertEqual(request.input.text, "Neither: keep the old copy")
-        XCTAssertNil(store.state.composition)
     }
 
     // MARK: Request clarification

@@ -258,19 +258,18 @@ fn one_line(text: &str, limit: usize) -> Option<String> {
     Some(format!("{}…", cut.trim_end()))
 }
 
-/// Only answers that need no more than one line of text can be given from a notification.
+/// An option is a button, so any of them can be pressed from a notification.
 fn push_supported_option(domain: &DomainState, action: &Action) -> bool {
-    use crate::domain::{InputKind, InteractionId, InteractionPayload};
+    use crate::domain::{InteractionId, InteractionPayload};
     let Ok(id) = action_id::ActionId::parse(&action.id) else { return false };
     if id.verb != action_id::Verb::Ans { return true; }
     let Some(option_id) = action.option_id.as_deref() else { return false };
     let Some(interaction) = domain.interactions.get(&InteractionId(id.subject)) else { return false };
-    let options = match &interaction.payload {
-        InteractionPayload::Question { options, .. } | InteractionPayload::ActionRequest { options, .. } => options,
-        _ => return false,
-    };
-    let Some(source) = options.iter().find(|source| source.id == option_id) else { return false };
-    source.inputs.is_empty() || source.inputs.len() == 1 && source.inputs[0].kind == InputKind::Text
+    match &interaction.payload {
+        InteractionPayload::Question { options, .. } | InteractionPayload::ActionRequest { options, .. } =>
+            options.iter().any(|source| source.id == option_id),
+        _ => false,
+    }
 }
 
 fn push_text(input: &Input) -> (bool, Option<String>) {

@@ -50,7 +50,7 @@ impl CloseProblem {
     /// The options, the one to retry worded by what it does for this stop, and the recommended one.
     pub fn options(&self) -> (Vec<QuestionOption>, &'static str) {
         let retry = if self.stop == CloseStop::Working { CLOSE_NOW_LABEL } else { TRY_AGAIN_LABEL };
-        let option = |id: &str, label: &str| QuestionOption { id: id.into(), label: label.into(), description: None, inputs: vec![] };
+        let option = |id: &str, label: &str| QuestionOption { id: id.into(), label: label.into(), description: None };
         let recommended = if self.stop == CloseStop::Unsaved { LEAVE_OPEN } else { CLOSE_NOW };
         (vec![option(CLOSE_NOW, retry), option(LEAVE_OPEN, LEAVE_OPEN_LABEL)], recommended)
     }

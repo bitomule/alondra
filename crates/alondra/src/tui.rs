@@ -2598,11 +2598,22 @@ impl App {
         if let Some(k) = c.target.draft_key()
             && (!text.trim().is_empty() || !c.chips.is_empty())
         {
+            let goes_with_an_option = matches!(&c.target, Target::ViewAction { action_id, .. }
+                if self.card_view.as_ref().and_then(view_render::card_reply).is_some_and(|reply| &reply.id == action_id)
+                    && self.card_view.as_ref().and_then(view_render::typed_card)
+                        .is_some_and(|card| card.actions.iter().any(|action| action.option_id.is_some())));
             self.drafts.insert(k, (text, c.chips));
-            self.flash(tr!(
-                "Draft saved: open it again to pick up where you left off",
-                "Borrador guardado: vuelve a abrirlo y sigue donde lo dejaste"
-            ));
+            self.flash(if goes_with_an_option {
+                tr!(
+                    "Draft saved: press an option to send it with it, or r to keep writing",
+                    "Borrador guardado: pulsa una opción para enviarlo con ella, o r para seguir escribiendo"
+                )
+            } else {
+                tr!(
+                    "Draft saved: open it again to pick up where you left off",
+                    "Borrador guardado: vuelve a abrirlo y sigue donde lo dejaste"
+                )
+            });
         }
     }
 
@@ -3016,7 +3027,7 @@ impl App {
         }
     }
 
-    /// A digit in the reader answers with that option, and the comments go with it when it takes text.
+    /// A digit in the reader answers with that option, and the comments go with it.
     fn answer_with_comments(&mut self, k: KeyEvent) {
         let Some(key) = self.reader.as_ref().map(|r| r.key.clone()) else {
             return;
@@ -3026,19 +3037,14 @@ impl App {
             .get(&key)
             .is_some_and(|review| !review.is_empty());
         if has_review {
-            let takes_text = |input: &alondra_core::views::Input| {
-                matches!(input, alondra_core::views::Input::Text { .. })
-            };
             let accepts_text = self
                 .card_view
                 .as_ref()
                 .and_then(|view| inbox::view_key_choice(view, k))
-                .is_some_and(|(action, option)| {
-                    takes_text(&action.input) || option.is_some_and(|option| takes_text(&option.input))
-                });
+                .is_some_and(|(action, option)| inbox::carries_words(&action, option.as_ref()));
             if !accepts_text {
-                self.fail(tr!("That option takes no text: your comments stay here. Pick one that asks you to write.",
-                    "Esa opción no admite texto: tus comentarios se quedan aquí. Elige una que pida escribir."));
+                self.fail(tr!("That key sends no words: your comments stay here. Press an option to send them with it.",
+                    "Esa tecla no envía texto: tus comentarios se quedan aquí. Pulsa una opción para enviarlos con ella."));
                 return;
             }
         }

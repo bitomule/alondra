@@ -99,7 +99,7 @@ pub(crate) fn settle(domain: &DomainRuntime) {
             Step::Remind { id, text, .. } => domain.tell_orchestrator(id, text.clone()).map(drop),
             Step::Raise { request, id, problem } => {
                 let (need, why) = problem.text(alondra_core::views::Lang::En);
-                let option = |id: &str, label: &str| QuestionOption { id: id.into(), label: label.into(), description: None, inputs: vec![] };
+                let option = |id: &str, label: &str| QuestionOption { id: id.into(), label: label.into(), description: None };
                 domain.raise_worded_problem_in(
                     Scope::Orchestrator { request_id: Some(request.clone()) },
                     id, UNSPLIT_CAUSE, need, why, problem.to_body(),
@@ -188,8 +188,8 @@ mod tests {
             attachments: vec![], interaction_id: "q-1".into(), scope: Scope::Orchestrator { request_id: Some("asked".into()) },
             recipient: alondra_core::domain::Recipient::User, body: "Which app?".into(), blocking: true,
             options: vec![
-                QuestionOption { id: "a".into(), label: "A".into(), description: None, inputs: vec![] },
-                QuestionOption { id: "b".into(), label: "B".into(), description: None, inputs: vec![] },
+                QuestionOption { id: "a".into(), label: "A".into(), description: None },
+                QuestionOption { id: "b".into(), label: "B".into(), description: None },
             ],
             card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Decide, "Pick the app"),
         });

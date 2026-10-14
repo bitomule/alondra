@@ -606,11 +606,21 @@ private func viewRowIDs(_ items: [ViewItem]) -> [String] {
 }
 
 extension AlondraContract.Action {
-    /// A button that needs nothing more from the person: no text, no choice, no confirmation.
+    /// The words written in the card's own field that go with this button when it is pressed: an
+    /// option carries them, any other button leaves them where they are.
+    public func carrying(_ written: String) -> String? {
+        let words = written.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard optionId != nil, link == nil, !words.isEmpty else { return nil }
+        return words
+    }
+
+    /// A button that needs nothing more from the person: no text, no choice, no confirmation. An
+    /// option is always one: it answers when pressed.
     var sendsWithoutAsking: Bool {
-        guard enabled, id != nil, link == nil, confirm == nil, !attachments, comments == nil,
+        guard enabled, id != nil, link == nil, confirm == nil, comments == nil,
               presentation == .button, options.isEmpty else { return false }
-        if case .none = input { return true }
+        if optionId != nil { return true }
+        if case .none = input { return !attachments }
         return false
     }
 }

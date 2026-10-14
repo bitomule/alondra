@@ -68,7 +68,7 @@ fn scope(task: &str) -> Scope {
     Scope::Task { task_id: task.into() }
 }
 fn option(id: &str, label: &str) -> QuestionOption {
-    QuestionOption { id: id.into(), label: label.into(), description: None, inputs: vec![] }
+    QuestionOption { id: id.into(), label: label.into(), description: None }
 }
 fn two() -> Vec<QuestionOption> {
     vec![option("a", "Atlas"), option("b", "Borealis")]

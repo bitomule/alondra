@@ -349,15 +349,13 @@ impl App {
         }
     }
 
-    /// With comments written, an option is offered only when it takes text, so the comments go with it.
+    /// With comments written, a key is offered only when the comments can go with it: an option or a text action.
     fn takes_the_comments(&self, view: &View, key: KeyEvent) -> bool {
         let Some(reader) = self.reader.as_ref() else { return true };
         if self.reviews.get(&reader.key).is_none_or(|review| review.is_empty()) {
             return true;
         }
-        let text = |input: &alondra_core::views::Input| matches!(input, alondra_core::views::Input::Text { .. });
-        super::inbox::view_key_choice(view, key)
-            .is_some_and(|(action, option)| text(&action.input) || option.is_some_and(|option| text(&option.input)))
+        super::inbox::view_key_choice(view, key).is_some_and(|(action, option)| super::inbox::carries_words(&action, option.as_ref()))
     }
 
     fn schedule_bindings(&self, t: &mut Table) {

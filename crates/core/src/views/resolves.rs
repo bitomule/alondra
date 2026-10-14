@@ -22,17 +22,13 @@ pub fn always_resolves(verb: Verb) -> bool {
 }
 
 /// A reply to a delivery, a question about a presented PR or a request to resolve its conflicts
-/// is feedback on that delivery, and a reply to an open question answers it. With nothing to hand
-/// back the text only reaches the node.
+/// is feedback on that delivery, and a reply to an open question answers it, held by Claude Code
+/// or not. With nothing to hand back the text only reaches the node.
 pub fn handed_back(domain: &DomainState, action: &ActionId) -> bool {
     match action.verb {
         Verb::Reply => domain.interactions.get(&InteractionId(action.subject.clone()))
-            .is_some_and(|interaction| match &interaction.payload {
-                InteractionPayload::Delivery { .. } => true,
-                InteractionPayload::Question { answer: None, .. } | InteractionPayload::ActionRequest { answer: None, .. } =>
-                    !domain.holds.contains_key(&interaction.id),
-                _ => false,
-            }),
+            .is_some_and(|interaction| matches!(&interaction.payload, InteractionPayload::Delivery { .. }
+                | InteractionPayload::Question { answer: None, .. } | InteractionPayload::ActionRequest { answer: None, .. })),
         Verb::AskPr | Verb::Conflicts => domain.pull_requests.get(&PrId(action.subject.clone()))
             .is_some_and(|pr| pr_presentation(domain, pr).is_some()),
         _ => false,

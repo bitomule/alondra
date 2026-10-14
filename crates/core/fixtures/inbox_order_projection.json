@@ -287,13 +287,11 @@
         "options": [
           {
             "id": "a",
-            "label": "Atlas",
-            "inputs": []
+            "label": "Atlas"
           },
           {
             "id": "b",
-            "label": "Borealis",
-            "inputs": []
+            "label": "Borealis"
           }
         ],
         "answer": null
@@ -335,13 +333,11 @@
         "options": [
           {
             "id": "a",
-            "label": "Atlas",
-            "inputs": []
+            "label": "Atlas"
           },
           {
             "id": "b",
-            "label": "Borealis",
-            "inputs": []
+            "label": "Borealis"
           }
         ],
         "answer": null

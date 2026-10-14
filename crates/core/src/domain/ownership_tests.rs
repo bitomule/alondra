@@ -227,8 +227,8 @@ impl World {
                 if let Some(task) = self.pick(n, |t, f| t.agent_id.is_some() && f.node == NodeFact::Reviving) {
                     let agent = self.agent_of(&task).unwrap();
                     let options = vec![
-                        QuestionOption { id: "retry".into(), label: "Try again".into(), description: None, inputs: vec![] },
-                        QuestionOption { id: "cancel".into(), label: "Cancel its task".into(), description: None, inputs: vec![] },
+                        QuestionOption { id: "retry".into(), label: "Try again".into(), description: None },
+                        QuestionOption { id: "cancel".into(), label: "Cancel its task".into(), description: None },
                     ];
                     let id: InteractionId = format!("hold-{}", self.s.revision).into();
                     self.must(Actor::System, Command::HoldHook {
@@ -458,8 +458,8 @@ fn a_node_stopped_without_a_result_or_a_question_is_sent_back_then_put_to_the_us
         attachments: vec![], interaction_id: "ask-1".into(), scope: Scope::Task { task_id: task.clone() }, recipient: Recipient::User,
         body: "Deliver only the daemon fix?".into(), blocking: true,
         options: vec![
-            QuestionOption { id: "daemon".into(), label: "Only the daemon fix".into(), description: None, inputs: vec![] },
-            QuestionOption { id: "both".into(), label: "Both fixes".into(), description: None, inputs: vec![] },
+            QuestionOption { id: "daemon".into(), label: "Only the daemon fix".into(), description: None },
+            QuestionOption { id: "both".into(), label: "Both fixes".into(), description: None },
         ],
         card: CardSpec::derived(CardKind::Decide, "Choose what to deliver"),
     });

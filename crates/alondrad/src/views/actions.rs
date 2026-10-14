@@ -5,7 +5,7 @@
 //! the same command path as the resource API.
 
 use alondra_core::domain::{
-    Actor, AuthorizationId, Command, CommandEnvelope, CommandId, DataEpoch, DomainError, Hold, Instruction,
+    Actor, ANSWER_TEXT, AuthorizationId, Command, CommandEnvelope, CommandId, DataEpoch, DomainError, Hold, Instruction,
     InteractionId, InteractionPayload, MergeMethod, Refusal, Revision, Target, TaskId,
 };
 use alondra_core::views::{action_id::{ActionId, Verb}, Lang, Outcome, OutcomeKind, VIEWS_PROTOCOL, refusal_text};
@@ -387,7 +387,8 @@ async fn execute_inner(
     }
     if matches!(action.verb, Verb::Changes | Verb::AskPr | Verb::Reply)
         && request.input.text.as_deref().is_none_or(|text| text.trim().is_empty())
-        && request.input.comments.is_empty() {
+        && request.input.comments.is_empty()
+        && (action.verb != Verb::Reply || attachments.is_empty()) {
         return Ok(rejected_field(lang, "text", "This option needs text"));
     }
     if action.verb == Verb::Ans && request.option_id.as_deref().is_none_or(str::is_empty)
@@ -1213,12 +1214,11 @@ fn map_action(
                 let text = request.input.text.as_ref()?.trim();
                 if text.is_empty() { return None; }
                 inputs.insert("text".into(), alondra_core::domain::InputValue::Text(text.into()));
-            } else if let Some(text) = request.input.text.as_ref() {
-                let option = option?;
-                let input = option.inputs.iter().find(|input| input.kind == alondra_core::domain::InputKind::Text)?;
-                inputs.insert(input.id.clone(), alondra_core::domain::InputValue::Text(text.clone()));
-            } else if option.is_none() {
-                return None;
+            } else {
+                option?;
+                if let Some(text) = request.input.text.as_deref().map(str::trim).filter(|text| !text.is_empty()) {
+                    inputs.insert(ANSWER_TEXT.into(), alondra_core::domain::InputValue::Text(text.into()));
+                }
             }
             Some((Command::AnswerQuestion {
                 interaction_id: interaction.id.clone(), option_id,
@@ -1241,12 +1241,19 @@ fn map_action(
         Verb::Reply => {
             let interaction = state.interactions.get(&InteractionId(action.subject.clone()))?;
             if let InteractionPayload::Question { answer: None, .. } | InteractionPayload::ActionRequest { answer: None, .. } = &interaction.payload {
-                if state.holds.contains_key(&interaction.id) { return None; }
-                let text = request.input.text.as_deref()?.trim();
-                if text.is_empty() { return None; }
-                let inputs = std::collections::BTreeMap::from([("text".to_owned(), alondra_core::domain::InputValue::Text(text.into()))]);
-                return Some((Command::AnswerQuestion { interaction_id: interaction.id.clone(), option_id: String::new(),
-                    inputs, attachments: attachments.to_vec() }, answered_with(text)));
+                let option_id = match state.holds.get(&interaction.id) {
+                    Some(Hold::Permission) => Hold::DENY,
+                    Some(Hold::Plan) => Hold::REQUEST_CHANGES,
+                    Some(Hold::Elicitation) => Hold::ACCEPT,
+                    Some(Hold::Question) | None => "",
+                };
+                let text = request.input.text.as_deref().unwrap_or_default().trim();
+                if text.is_empty() && (attachments.is_empty() || !option_id.is_empty()) { return None; }
+                let inputs = if text.is_empty() { Default::default() } else {
+                    std::collections::BTreeMap::from([(ANSWER_TEXT.to_owned(), alondra_core::domain::InputValue::Text(text.into()))])
+                };
+                return Some((Command::AnswerQuestion { interaction_id: interaction.id.clone(), option_id: option_id.into(),
+                    inputs, attachments: attachments.to_vec() }, if text.is_empty() { stamp("You answered", "Respondiste") } else { answered_with(text) }));
             }
             let interaction = current_delivery(state, interaction);
             let InteractionPayload::Delivery { targets, .. } = &interaction.payload else { return None; };
@@ -2131,7 +2138,7 @@ mod tests {
             author: Author::System, recipient: Recipient::User, body: "Pick one or explain".into(),
             blocking: true, subject: None, payload: InteractionPayload::Question {
                 options: vec![QuestionOption {
-                    id: "yes".into(), label: "Yes".into(), description: None, inputs: vec![],
+                    id: "yes".into(), label: "Yes".into(), description: None,
                 }], answer: None,
             }, revision: 1, order: 1, withdrawn: false, card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Know, "Read the update"), clarification: None,
         });
@@ -2158,6 +2165,63 @@ mod tests {
     }
 
     #[test]
+    fn an_option_answers_at_once_and_carries_what_the_user_wrote_on_the_card() {
+        use alondra_core::domain::{Author, Interaction, InteractionPayload, Recipient, Scope, InputValue, QuestionOption};
+        let mut state = alondra_core::domain::DomainState::new("epoch");
+        let options = ["done", "cannot"].map(|id| QuestionOption { id: id.into(), label: id.into(), description: None }).to_vec();
+        state.interactions.insert("q-1".into(), Interaction {
+            attachments: vec![], id: "q-1".into(), scope: Scope::Task { task_id: "t-1".into() },
+            author: Author::Agent { agent_id: "a-1".into() }, recipient: Recipient::User, body: "Rotate the key".into(),
+            blocking: true, subject: None, payload: InteractionPayload::ActionRequest { options, answer: None },
+            revision: 1, order: 1, withdrawn: false, card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Do, "Rotate the key"), clarification: None,
+        });
+        let pressed = |text: Option<&str>| ActionRequest {
+            protocol: VIEWS_PROTOCOL, command_id: "5f0c2d9e-8d0b-4c71-9b0e-2b6f5d8f1a10".into(),
+            data_epoch: "epoch".into(), client: "ios".into(), lang: "en".into(),
+            action_id: String::new(), option_id: Some("done".into()),
+            input: ActionInput { text: text.map(Into::into), ..Default::default() },
+        };
+        let action = ActionId::new(Verb::Ans, "q-1", 1, None).unwrap();
+        for text in [None, Some(""), Some("   ")] {
+            let Some((Command::AnswerQuestion { option_id, inputs, .. }, _)) =
+                mapped(&state, &action, &pressed(text), &[], Lang::En) else { panic!("Done answers with {text:?}") };
+            assert_eq!(option_id, "done");
+            assert!(inputs.is_empty(), "{text:?}");
+        }
+        let Some((Command::AnswerQuestion { option_id, inputs, .. }, _)) =
+            mapped(&state, &action, &pressed(Some(" Rotated both keys ")), &[], Lang::En) else { panic!("Done answers with a note") };
+        assert_eq!(option_id, "done");
+        assert_eq!(inputs.get(ANSWER_TEXT), Some(&InputValue::Text("Rotated both keys".into())));
+    }
+
+    #[test]
+    fn words_alone_on_a_held_card_answer_it_as_claude_code_would() {
+        use alondra_core::domain::{Author, Interaction, InteractionPayload, Recipient, Scope, InputValue};
+        let request = ActionRequest {
+            protocol: VIEWS_PROTOCOL, command_id: "5f0c2d9e-8d0b-4c71-9b0e-2b6f5d8f1a10".into(),
+            data_epoch: "epoch".into(), client: "tui".into(), lang: "en".into(),
+            action_id: String::new(), option_id: None,
+            input: ActionInput { text: Some("Use the staging bucket".into()), ..Default::default() },
+        };
+        for (hold, expected) in [(Hold::Permission, Hold::DENY), (Hold::Plan, Hold::REQUEST_CHANGES),
+            (Hold::Elicitation, Hold::ACCEPT), (Hold::Question, "")] {
+            let mut state = alondra_core::domain::DomainState::new("epoch");
+            state.interactions.insert("hold-1".into(), Interaction {
+                attachments: vec![], id: "hold-1".into(), scope: Scope::Task { task_id: "t-1".into() },
+                author: Author::System, recipient: Recipient::User, body: "Run it?".into(), blocking: true, subject: None,
+                payload: InteractionPayload::Question { options: hold.options(), answer: None },
+                revision: 1, order: 1, withdrawn: false, card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Authorize, "Run it?"), clarification: None,
+            });
+            state.holds.insert("hold-1".into(), hold);
+            let reply = ActionId::new(Verb::Reply, "hold-1", 1, None).unwrap();
+            let Some((Command::AnswerQuestion { option_id, inputs, .. }, _)) =
+                mapped(&state, &reply, &request, &[], Lang::En) else { panic!("{hold:?} is answered by the words alone") };
+            assert_eq!(option_id, expected, "{hold:?}");
+            assert_eq!(inputs.get(ANSWER_TEXT), Some(&InputValue::Text("Use the staging bucket".into())), "{hold:?}");
+        }
+    }
+
+    #[test]
     fn requesting_changes_on_a_document_question_answers_it_with_the_block_comments() {
         use alondra_core::domain::{Author, InputValue, Interaction, InteractionSubject, QuestionOption, Recipient, Scope};
         let mut state = alondra_core::domain::DomainState::new("epoch");
@@ -2167,7 +2231,7 @@ mod tests {
             blocking: true, subject: Some(InteractionSubject::DocumentReview {
                 document_id: "plan".into(), revision_id: "plan-r1".into() }),
             payload: InteractionPayload::Question {
-                options: vec![QuestionOption { id: "approve".into(), label: "Approve".into(), description: None, inputs: vec![] }],
+                options: vec![QuestionOption { id: "approve".into(), label: "Approve".into(), description: None }],
                 answer: None,
             }, revision: 1, order: 1, withdrawn: false, card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Know, "Read the update"), clarification: None,
         });
@@ -2779,7 +2843,7 @@ mod tests {
         apply_seed_command(&domain, Actor::Agent { agent_id: "agent-a".into() }, "ask", Command::AskQuestion {
             attachments: vec![], interaction_id: "question".into(), scope: Scope::Task { task_id: "task".into() },
             recipient: Recipient::User, body: "Ship it?".into(), blocking: true,
-            options: vec![QuestionOption { id: "yes".into(), label: "Yes".into(), description: None, inputs: vec![] }], card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Provide, "Answer the question"),
+            options: vec![QuestionOption { id: "yes".into(), label: "Yes".into(), description: None }], card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Provide, "Answer the question"),
         });
         let state = domain.state().unwrap();
         let revision = state.interactions[&"question".into()].revision;
@@ -2874,7 +2938,7 @@ mod tests {
         apply_seed_command(&domain, Actor::Agent { agent_id: "agent-a".into() }, "ask", Command::AskQuestion {
             attachments: vec![], interaction_id: "question".into(), scope: Scope::Task { task_id: "task".into() },
             recipient: Recipient::User, body: "Which API?".into(), blocking: true,
-            options: vec![QuestionOption { id: "new".into(), label: "New".into(), description: None, inputs: vec![] }], card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Provide, "Answer the question"),
+            options: vec![QuestionOption { id: "new".into(), label: "New".into(), description: None }], card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Provide, "Answer the question"),
         });
         let revision = domain.state().unwrap().interactions[&"question".into()].revision;
         let action = ActionId::new(Verb::Ctx, "question", revision, None).unwrap().to_string();
@@ -3128,7 +3192,7 @@ mod tests {
         apply_seed_command(&domain, Actor::Agent { agent_id: "agent-a".into() }, "ask", Command::AskQuestion {
             attachments: vec![], interaction_id: "question".into(), scope: Scope::Task { task_id: "task".into() },
             recipient: Recipient::User, body: "Which API?".into(), blocking: true,
-            options: vec![QuestionOption { id: "new".into(), label: "New".into(), description: None, inputs: vec![] }],
+            options: vec![QuestionOption { id: "new".into(), label: "New".into(), description: None }],
             card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Provide, "Answer the question"),
         });
         let revision = domain.state().unwrap().interactions[&"question".into()].revision;
@@ -3148,7 +3212,7 @@ mod tests {
     #[tokio::test]
     async fn words_under_a_decide_card_answer_it_and_reach_whoever_asked_with_its_id() {
         use alondra_core::domain::{CardKind, CardSpec, Recipient, Scope, QuestionOption};
-        let option = |id: &str| QuestionOption { id: id.into(), label: id.into(), description: None, inputs: vec![] };
+        let option = |id: &str| QuestionOption { id: id.into(), label: id.into(), description: None };
         for (asker, scope, recipient_kind) in [
             (Actor::Orchestrator { generation: 0 }, Scope::Orchestrator { request_id: None }, "orchestrator"),
             (Actor::Agent { agent_id: "agent-a".into() }, Scope::Task { task_id: "task".into() }, "agent"),
@@ -3295,7 +3359,7 @@ mod tests {
     #[test]
     fn the_stamp_of_an_answer_names_the_option_by_its_translated_label_never_its_id() {
         use alondra_core::domain::{Author, Hold, Interaction, QuestionOption, Recipient, Scope};
-        let option = |id: &str, label: &str| QuestionOption { id: id.into(), label: label.into(), description: None, inputs: vec![] };
+        let option = |id: &str, label: &str| QuestionOption { id: id.into(), label: label.into(), description: None };
         let mut state = alondra_core::domain::DomainState::new("epoch");
         let mut ask = |id: &str, options: Vec<QuestionOption>, hold: Option<Hold>| {
             state.interactions.insert(id.into(), Interaction {

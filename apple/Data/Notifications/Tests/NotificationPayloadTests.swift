@@ -129,7 +129,7 @@ final class NotificationPayloadTests: XCTestCase {
         XCTAssertEqual(item.actions.map(\.label), ["Allow", "Deny", "Reply"])
         XCTAssertEqual(item.actions.map(\.option), ["allow", "deny", nil])
         XCTAssertEqual(Set(item.actions.map(\.id)), ["ans:hold-permission-toolu_01JWScmn532U7ZW6ruo7BjpS@1", "reply:hold-permission-toolu_01JWScmn532U7ZW6ruo7BjpS@1"])
-        XCTAssertEqual(item.actions.map(\.text), [false, true, true], "Allow answers at once; Deny and the reply take a line of text")
+        XCTAssertEqual(item.actions.map(\.text), [false, false, true], "Allow and Deny answer at once; the reply takes a line of text")
         XCTAssertFalse(item.actions.contains { $0.opens })
     }
 

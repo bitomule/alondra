@@ -1,10 +1,9 @@
 //! The one-shot commands that act on the domain or on a session: each resolves what the user
 //! named against the daemon's projection and sends the same command or request the TUI sends.
 
-use std::collections::BTreeMap;
 use std::time::Duration;
 
-use alondra_core::domain::{Command, DomainProjection, InboxItem, InputKind, InputValue, Interaction, InteractionId, InteractionPayload, QuestionOption, Revision, TaskId};
+use alondra_core::domain::{Command, InteractionId, InteractionPayload, QuestionOption, TaskId};
 use alondra_core::views::{Action, Item, Link, View};
 use anyhow::{Context, Result, anyhow, bail};
 use serde_json::Value;
@@ -59,119 +58,44 @@ fn submit(client: &Client, view: &View, action: &Action, option: Option<&str>, i
     client.action(&view.data_epoch, &action.id, option, input)
 }
 
-fn inbox_item<'a>(d: &'a DomainProjection, id: &InteractionId) -> Option<&'a InboxItem> {
-    d.inbox.iter().find(|i| matches!(&i.subject, alondra_core::domain::InboxSubject::Interaction { interaction_id } if interaction_id == id))
-}
-
-fn options_text(options: &[QuestionOption]) -> String {
-    options.iter().enumerate().map(|(i, o)| {
-        let writes = if o.inputs.iter().any(|s| s.kind == InputKind::Text) { tr!(" (takes text)", " (admite texto)") } else { "" };
-        format!("  {} {} [{}]{writes}", i + 1, o.label, o.id)
-    }).collect::<Vec<_>>().join("\n")
-}
-
-/// The `answer_question` command for what the user typed: the option by number or id, and the
-/// text as that option's text input. Without an option, the only one that takes text.
-pub fn answer(d: &DomainProjection, found: &Interaction, option: Option<&str>, text: &str) -> Result<(Revision, Command)> {
-    let id = found.id.clone();
-    let (InteractionPayload::Question { options, answer } | InteractionPayload::ActionRequest { options, answer }) = &found.payload else {
-        bail!(trf!("{id} is not a question", "{id} no es una pregunta"));
-    };
-    if answer.is_some() {
-        bail!(trf!("{id} is already answered", "{id} ya está contestada"));
-    }
-    let writes = |o: &&QuestionOption| o.inputs.iter().any(|s| s.kind == InputKind::Text);
-    let chosen = match option {
-        Some(o) => o.parse::<usize>().ok().and_then(|n| n.checked_sub(1)).and_then(|n| options.get(n)).or_else(|| options.iter().find(|x| x.id == o)),
-        None if !text.is_empty() => match options.iter().filter(writes).collect::<Vec<_>>().as_slice() {
-            [one] => Some(*one),
-            _ => None,
-        },
-        None => None,
-    };
-    let Some(chosen) = chosen else {
-        let list = options_text(options);
-        bail!(trf!("Choose an option with --option:\n{list}", "Elige una opción con --option:\n{list}"));
-    };
-    let mut inputs = BTreeMap::new();
-    let label = &chosen.label;
-    match chosen.inputs.iter().find(|s| s.kind == InputKind::Text) {
-        Some(input) if !text.is_empty() => {
-            inputs.insert(input.id.clone(), InputValue::Text(text.to_string()));
-        }
-        Some(input) if input.required => bail!(trf!("Option {label} needs your text", "La opción {label} necesita tu texto")),
-        None if !text.is_empty() => bail!(trf!("Option {label} takes no text", "La opción {label} no admite texto")),
-        _ => {}
-    }
-    let revision = inbox_item(d, &id).and_then(|i| i.available_actions.iter().find(|a| a.kind == "answer_question")).map_or(d.revision, |a| a.expected_revision);
-    Ok((revision, Command::AnswerQuestion { attachments: vec![], interaction_id: id, option_id: chosen.id.clone(), inputs }))
-}
-
 fn user() -> Client {
     Client::for_user(Duration::from_secs(15))
 }
 
-#[derive(Clone)]
-struct Choice {
-    id: Option<String>,
-    label: String,
-    input: alondra_core::views::Input,
-}
-
-/// Every way a card can be answered: an action's own `options`, a button per option
-/// (`option_id`), or the free-text answer with no option.
-fn answer_choices(view: &View) -> Vec<(Action, Choice)> {
-    fn actions(items: &[Item]) -> Vec<Action> {
-        items.iter().flat_map(|item| match item {
-            Item::Card(card) => card.actions.iter().chain(&card.more).cloned().map(Action::from).collect(),
-            Item::Actions(bar) => bar.actions.clone(),
-            Item::Row(row) => row.actions.clone(),
-            _ => vec![],
-        }).collect()
-    }
-    view.sections.iter().flat_map(|section| actions(&section.items)).filter(|a| a.enabled && a.id.starts_with("ans:")).flat_map(|action| {
-        if action.options.is_empty() {
-            let choice = Choice { id: action.option_id.clone(), label: action.label.clone(), input: action.input.clone() };
-            vec![(action, choice)]
-        } else {
-            action.options.iter().map(|o| (action.clone(), Choice { id: Some(o.id.clone()), label: o.label.clone(), input: o.input.clone() })).collect()
-        }
-    }).collect()
-}
-
-/// The answer action and choice for what the user typed; `None` when the card has no answer.
-fn answer_choice(view: &View, option: Option<&str>, text: &str) -> Option<Result<(Action, Choice)>> {
-    let choices = answer_choices(view);
-    if choices.is_empty() {
+/// The action that answers what the user typed: the option by number or id, the text going with
+/// it as its note; with no option, the card's own field, where the text is the user's answer.
+fn answer_choice(view: &View, option: Option<&str>, text: &str) -> Option<Result<(Action, Option<String>)>> {
+    let cards = || view.sections.iter().flat_map(|section| &section.items).filter_map(|item| match item {
+        Item::Card(card) => Some(card),
+        _ => None,
+    });
+    let buttons: Vec<(Action, String)> = cards().flat_map(|card| card.actions.iter().chain(&card.more).cloned().map(Action::from))
+        .filter(|action| action.enabled && action.id.starts_with("ans:"))
+        .filter_map(|action| action.option_id.clone().map(|id| (action, id)))
+        .collect();
+    let reply = cards().find_map(|card| card.reply.clone()).map(Action::from).filter(|action| action.enabled);
+    if buttons.is_empty() && reply.is_none() {
         return None;
     }
-    let with_option: Vec<&(Action, Choice)> = choices.iter().filter(|(_, c)| c.id.is_some()).collect();
-    let writes = |(_, c): &&(Action, Choice)| matches!(c.input, alondra_core::views::Input::Text { .. });
-    let selected = match option {
-        Some(value) => value.parse::<usize>().ok().and_then(|n| n.checked_sub(1)).and_then(|n| with_option.get(n).copied())
-            .or_else(|| with_option.iter().copied().find(|(_, c)| c.id.as_deref() == Some(value))),
-        None if !text.is_empty() => choices.iter().filter(|(_, c)| c.id.is_some()).find(writes).or_else(|| choices.iter().find(writes)),
+    let chosen = match option {
+        Some(value) => value.parse::<usize>().ok().and_then(|n| n.checked_sub(1)).and_then(|n| buttons.get(n))
+            .or_else(|| buttons.iter().find(|(_, id)| id == value))
+            .map(|(action, id)| (action.clone(), Some(id.clone()))),
+        None if !text.trim().is_empty() => reply.map(|action| (action, None)),
         None => None,
     };
-    let Some((action, choice)) = selected else {
-        let labels = with_option.iter().enumerate().map(|(i, (_, c))| format!("  {} {} [{}]", i + 1, c.label, c.id.as_deref().unwrap_or_default())).collect::<Vec<_>>().join("\n");
-        return Some(Err(anyhow!(trf!("Choose an option with --option:\n{labels}", "Elige una opción con --option:\n{labels}"))));
-    };
-    let label = &choice.label;
-    match choice.input {
-        alondra_core::views::Input::Text { required: true, .. } if text.is_empty() => return Some(Err(anyhow!(trf!("Option {label} needs your text", "La opción {label} necesita tu texto")))),
-        alondra_core::views::Input::None if !text.is_empty() => return Some(Err(anyhow!(trf!("Option {label} takes no text", "La opción {label} no admite texto")))),
-        _ => {}
-    }
-    Some(Ok((action.clone(), choice.clone())))
+    Some(chosen.ok_or_else(|| {
+        let labels = buttons.iter().enumerate().map(|(i, (action, id))| format!("  {} {} [{id}]", i + 1, action.label)).collect::<Vec<_>>().join("\n");
+        anyhow!(trf!("Choose an option with --option, or write your answer:\n{labels}", "Elige una opción con --option, o escribe tu respuesta:\n{labels}"))
+    }))
 }
 
 pub fn answer_cmd(interaction: &str, option: Option<&str>, text: &str) -> Result<()> {
     let client = user();
     let id = interaction.strip_prefix("interaction:").unwrap_or(interaction);
     let view = client.views(&format!("card:{id}"), None).with_context(|| trf!("No question {id}", "No hay ninguna pregunta {id}"))?;
-    let (action, choice) = answer_choice(&view, option, text).with_context(|| trf!("{id} is not an unanswered question", "{id} no es una pregunta sin responder"))??;
-    submit(&client, &view, &action, choice.id.as_deref(), if text.is_empty() { serde_json::json!({}) } else { serde_json::json!({"text":text}) })?;
+    let (action, option) = answer_choice(&view, option, text).with_context(|| trf!("{id} is not an unanswered question", "{id} no es una pregunta sin responder"))??;
+    submit(&client, &view, &action, option.as_deref(), if text.is_empty() { serde_json::json!({}) } else { serde_json::json!({"text":text}) })?;
     println!("{}", trf!("Answered {interaction}", "Contestada {interaction}"));
     Ok(())
 }
@@ -378,31 +302,11 @@ mod tests {
         run(Actor::System, Command::RegisterAgent { agent_id: "agent-ab".into(), name: "Instance AB".into(), at: 0 });
         run(Actor::Orchestrator { generation: 0 }, Command::CreateTask { task_id: "t".into(), request_id: "r".into(), title: "Build".into(), agent_id: Some("agent-a".into()), review_prs: false, dependencies: Default::default(), stack: None, launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")) });
         let options = vec![
-            QuestionOption { id: "yes".into(), label: "Yes".into(), description: None, inputs: vec![] },
-            QuestionOption { id: "other".into(), label: "Other".into(), description: None, inputs: vec![InputSpec { id: "why".into(), kind: InputKind::Text, required: true }] },
+            QuestionOption { id: "yes".into(), label: "Yes".into(), description: None },
+            QuestionOption { id: "other".into(), label: "Other".into(), description: None },
         ];
         run(Actor::Agent { agent_id: "agent-a".into() }, Command::AskQuestion { attachments: vec![], interaction_id: "q".into(), scope: Scope::Task { task_id: "t".into() }, recipient: Recipient::User, body: "Name?".into(), blocking: true, options, card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Provide, "Answer the question") });
         s
-    }
-
-    #[test]
-    fn answer_takes_the_option_by_number_or_id_and_text_goes_to_its_input() {
-        crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
-        let mut s = world();
-        let d = s.projection();
-        let q = s.interactions[&InteractionId::from("q")].clone();
-        let (_, by_number) = answer(&d, &q, Some("1"), "").unwrap();
-        assert!(matches!(&by_number, Command::AnswerQuestion { option_id, inputs, .. } if option_id == "yes" && inputs.is_empty()));
-        let (_, by_text) = answer(&d, &q, None, "Lark").unwrap();
-        assert!(matches!(&by_text, Command::AnswerQuestion { option_id, inputs, .. } if option_id == "other" && inputs.get("why") == Some(&InputValue::Text("Lark".into()))));
-        let refused = answer(&d, &q, None, "").unwrap_err().to_string();
-        assert!(refused.contains("--option") && refused.contains("2 Other [other] (takes text)"), "{refused}");
-        assert!(answer(&d, &q, Some("yes"), "why not").unwrap_err().to_string().contains("takes no text"));
-        let (revision, command) = answer(&d, &q, Some("other"), "Lark").unwrap();
-        let envelope = CommandEnvelope { protocol_version: PROTOCOL_VERSION, data_epoch: d.data_epoch.clone(), command_id: "cli".into(), expected_revision: revision, command };
-        s.execute(&Actor::User { user_id: "u".into() }, &envelope).unwrap();
-        let answered = s.interactions[&InteractionId::from("q")].clone();
-        assert!(answer(&s.projection(), &answered, Some("1"), "").unwrap_err().to_string().contains("already answered"));
     }
 
     #[test]
@@ -416,13 +320,18 @@ mod tests {
         let live = alondra_core::views::LiveSnapshot::default();
         let context = alondra_core::views::RenderContext { domain: &s, projection: &d, live: &live, client: alondra_core::views::Client::Ios, lang: alondra_core::views::Lang::En, transport: alondra_core::views::Transport::Loopback, cursor: "c", rendered_at: "" };
         let view = alondra_core::views::build("card:q", context).unwrap();
-        let (action, choice) = answer_choice(&view, Some("yes"), "").unwrap().unwrap();
+        let (action, option) = answer_choice(&view, Some("yes"), "").unwrap().unwrap();
         assert!(action.id.starts_with("ans:q@"));
-        assert_eq!(choice.id.as_deref(), Some("yes"));
-        let (_, by_number) = answer_choice(&view, Some("2"), "Lark").unwrap().unwrap();
-        assert_eq!(by_number.id.as_deref(), Some("other"));
-        let refused = answer_choice(&view, Some("nope"), "").unwrap().err().unwrap().to_string();
-        assert!(refused.contains("1 Yes [yes]") && refused.contains("2 Other [other]"), "{refused}");
+        assert_eq!(option.as_deref(), Some("yes"));
+        let (by_number, option) = answer_choice(&view, Some("2"), "Lark").unwrap().unwrap();
+        assert!(by_number.id.starts_with("ans:q@"), "the text goes with the option: {}", by_number.id);
+        assert_eq!(option.as_deref(), Some("other"));
+        let (own, option) = answer_choice(&view, None, "Lark").unwrap().unwrap();
+        assert!(own.id.starts_with("reply:q@") && option.is_none(), "the text alone is the user's answer: {}", own.id);
+        for (option, text) in [(Some("nope"), ""), (None, ""), (None, "  ")] {
+            let refused = answer_choice(&view, option, text).unwrap().err().unwrap().to_string();
+            assert!(refused.contains("1 Yes [yes]") && refused.contains("2 Other [other]"), "{refused}");
+        }
     }
 
     #[test]

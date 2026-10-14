@@ -724,33 +724,19 @@ fn mark_read(
     vec![with_availability(action, available, lang)]
 }
 
-/// What an option reads and does in the user's language; Claude Code's own prompts keep their
-/// fixed answers.
-fn held_option(hold: Hold, option: &QuestionOption, lang: Lang) -> (String, Input) {
-    let yes = hold.approves(&option.id);
-    let (label, placeholder): (&str, &str) = match (hold, yes) {
-        (Hold::Permission, true) => (t!(lang, "Allow", "Permitir"), ""),
-        (Hold::Permission, false) if option.id == Hold::ALWAYS => (t!(lang, "Allow always", "Permitir siempre"), ""),
-        (Hold::Permission, false) => (t!(lang, "Deny", "Denegar"), t!(lang, "Write the reason", "Escribe el motivo")),
-        (Hold::Plan, true) => (t!(lang, "Approve", "Aprobar"), ""),
-        (Hold::Plan, false) => (t!(lang, "Request changes", "Pedir cambios"), t!(lang, "Write what to change", "Escribe qué cambiar")),
-        (Hold::Elicitation, true) => (
-            t!(lang, "Accept", "Aceptar"),
-            option.description.as_deref().unwrap_or(t!(lang, "Write your answer", "Escribe tu respuesta")),
-        ),
-        (Hold::Elicitation, false) => (t!(lang, "Decline", "Rechazar"), ""),
-        (Hold::Question, _) => (option.label.as_str(), t!(lang, "Add a note", "Añade una nota")),
+/// What an option reads in the user's language; Claude Code's own prompts keep their fixed answers.
+fn held_option(hold: Hold, option: &QuestionOption, lang: Lang) -> String {
+    let label = match (hold, hold.approves(&option.id)) {
+        (Hold::Permission, true) => t!(lang, "Allow", "Permitir"),
+        (Hold::Permission, false) if option.id == Hold::ALWAYS => t!(lang, "Allow always", "Permitir siempre"),
+        (Hold::Permission, false) => t!(lang, "Deny", "Denegar"),
+        (Hold::Plan, true) => t!(lang, "Approve", "Aprobar"),
+        (Hold::Plan, false) => t!(lang, "Request changes", "Pedir cambios"),
+        (Hold::Elicitation, true) => t!(lang, "Accept", "Aceptar"),
+        (Hold::Elicitation, false) => t!(lang, "Decline", "Rechazar"),
+        (Hold::Question, _) => option.label.as_str(),
     };
-    let input = if option.inputs.is_empty() {
-        Input::None
-    } else {
-        Input::Text {
-            placeholder: placeholder.into(),
-            required: option.inputs.iter().any(|input| input.required),
-            multiline: true,
-        }
-    };
-    (label.to_owned(), input)
+    label.to_owned()
 }
 
 /// What the user chose, as the card showed it: the translated words of a held prompt or of an
@@ -759,8 +745,8 @@ pub fn answer_label(state: &DomainState, interaction: &Interaction, option: &Que
     match state.holds.get(&interaction.id).copied().filter(|hold| *hold != Hold::Question) {
         Some(Hold::Permission) if option.id == Hold::ALWAYS => interaction.card.allow_always.as_ref()
             .and_then(|offer| super::allow_always::chosen(offer, lang))
-            .unwrap_or_else(|| held_option(Hold::Permission, option, lang).0),
-        Some(hold) => held_option(hold, option, lang).0,
+            .unwrap_or_else(|| held_option(Hold::Permission, option, lang)),
+        Some(hold) => held_option(hold, option, lang),
         None => fixed_option_text(interaction, option, lang).0,
     }
 }
@@ -908,75 +894,43 @@ fn answer_actions(
         return (plan_actions(interaction, available, context), vec![]);
     }
     let mut buttons: Vec<Action> = vec![];
-    let mut more: Vec<Action> = vec![];
-    if options.is_empty() {
-        if let Some(id) = action_id(Verb::Ans, &interaction.id.0, revision, None) {
-            let mut action = button(id.to_string(), t!(lang, "Send my answer", "Enviar mi respuesta"), Role::Advance);
-            action.input = text_input(t!(lang, "Your answer", "Tu respuesta"), true);
-            action.attachments = true;
-            action.stamp = Some(t!(lang, "You answered", "Respondiste").into());
-            buttons.push(with_availability(action, available, lang));
+    let mut ordered: Vec<&QuestionOption> = options.iter().collect();
+    if let Some(recommended) = interaction.card.recommended.as_deref() {
+        if let Some(at) = ordered.iter().position(|option| option.id == recommended) {
+            let first = ordered.remove(at);
+            ordered.insert(0, first);
         }
-    } else {
-        let mut ordered: Vec<&QuestionOption> = options.iter().collect();
-        if let Some(recommended) = interaction.card.recommended.as_deref() {
-            if let Some(at) = ordered.iter().position(|option| option.id == recommended) {
-                let first = ordered.remove(at);
-                ordered.insert(0, first);
-            }
-        }
-        for (index, option) in ordered.into_iter().enumerate() {
-            let Some(id) = action_id(Verb::Ans, &interaction.id.0, revision, None) else { continue };
-            let recommended = interaction.card.recommended.as_deref() == Some(option.id.as_str());
-            let (fixed_label, fixed_description) = fixed_option_text(interaction, option, lang);
-            let (label, input) = match hold.filter(|hold| *hold != Hold::Question) {
-                Some(hold) => held_option(hold, option, lang),
-                None => (
-                    if recommended { format!("★ {fixed_label}") } else { fixed_label },
-                    if option.inputs.is_empty() {
-                        Input::None
-                    } else {
-                        Input::Text {
-                            placeholder: t!(lang, "Add a note", "Añade una nota").into(),
-                            required: option.inputs.iter().any(|input| input.required),
-                            multiline: true,
-                        }
-                    },
-                ),
-            };
-            let role = match hold {
-                Some(hold) if hold.approves(&option.id) => if kind == CardKind::Authorize { Role::Risk } else { Role::Advance },
-                Some(Hold::Question) | None if kind == CardKind::Decide => if recommended { Role::Advance } else { Role::Neutral },
-                Some(Hold::Question) | None => if index == 0 { Role::Advance } else { Role::Neutral },
-                Some(_) => Role::Neutral,
-            };
-            let mut action = button(id.to_string(), &label, role);
-            action.option_id = Some(option.id.clone());
-            action.description = match hold {
-                None | Some(Hold::Question) => fixed_description,
-                Some(Hold::Permission) if option.id == Hold::ALWAYS => interaction.card.allow_always.as_ref()
-                    .and_then(|offer| super::allow_always::description(offer, lang)),
-                Some(_) => None,
-            };
-            action.input = input;
-            action.attachments = option.inputs.iter().any(|input| input.kind == crate::domain::InputKind::Text);
-            action.stamp = Some(t!(lang, "Answered", "Respondida").into());
-            buttons.push(with_availability(action, available, lang));
-        }
-        if kind == CardKind::Decide && hold.is_none() {
-            if let Some(id) = action_id(Verb::Ans, &interaction.id.0, revision, None) {
-                let mut action = button(id.to_string(), t!(lang, "Write my own answer", "Escribir mi respuesta"), Role::Neutral);
-                action.input = text_input(t!(lang, "Answer in your own words…", "Responde con tus palabras…"), true);
-                action.attachments = true;
-                action.stamp = Some(t!(lang, "You answered", "Respondiste").into());
-                more.push(with_availability(action, available, lang));
-            }
-        }
+    }
+    for (index, option) in ordered.into_iter().enumerate() {
+        let Some(id) = action_id(Verb::Ans, &interaction.id.0, revision, None) else { continue };
+        let recommended = interaction.card.recommended.as_deref() == Some(option.id.as_str());
+        let (fixed_label, fixed_description) = fixed_option_text(interaction, option, lang);
+        let label = match hold.filter(|hold| *hold != Hold::Question) {
+            Some(hold) => held_option(hold, option, lang),
+            None if recommended => format!("★ {fixed_label}"),
+            None => fixed_label,
+        };
+        let role = match hold {
+            Some(hold) if hold.approves(&option.id) => if kind == CardKind::Authorize { Role::Risk } else { Role::Advance },
+            Some(Hold::Question) | None if kind == CardKind::Decide => if recommended { Role::Advance } else { Role::Neutral },
+            Some(Hold::Question) | None => if index == 0 { Role::Advance } else { Role::Neutral },
+            Some(_) => Role::Neutral,
+        };
+        let mut action = button(id.to_string(), &label, role);
+        action.option_id = Some(option.id.clone());
+        action.description = match hold {
+            None | Some(Hold::Question) => fixed_description,
+            Some(Hold::Permission) if option.id == Hold::ALWAYS => interaction.card.allow_always.as_ref()
+                .and_then(|offer| super::allow_always::description(offer, lang)),
+            Some(_) => None,
+        };
+        action.stamp = Some(t!(lang, "Answered", "Respondida").into());
+        buttons.push(with_availability(action, available, lang));
     }
     if matches!(interaction.subject, Some(InteractionSubject::DocumentReview { .. })) {
         buttons.extend(request_changes(Verb::Changes, &interaction.id.0, revision, None, true, available, context));
     }
-    (buttons, more)
+    (buttons, vec![])
 }
 
 fn request_changes(
@@ -1254,13 +1208,32 @@ fn local_action(label: &str, key: &str, local: LocalLink) -> Action {
 fn reply_action(item: &InboxItem, interaction: Option<&Interaction>, context: &RenderContext<'_>) -> Option<Action> {
     let lang = context.lang;
     let interaction = interaction.filter(|interaction| start_problem_of(interaction).is_none() && !is_machine_card(interaction))?;
-    let answers = answered_by_reply(interaction, context.domain);
-    let (id, placeholder) = if matches!(interaction.scope, Scope::Task { .. }) {
+    let answers = answered_by_reply(interaction)
+        && (interaction.author != Author::System || matches!(interaction.scope, Scope::Task { .. }));
+    let held_placeholder = match answers.then(|| context.domain.holds.get(&interaction.id).copied()).flatten() {
+        Some(Hold::Permission) => Some(t!(lang, "Deny it with a reason…", "Denegar con un motivo…").to_owned()),
+        Some(Hold::Plan) => Some(t!(lang, "Write what to change…", "Escribe qué cambiar…").to_owned()),
+        Some(Hold::Elicitation) => Some(match &interaction.payload {
+            InteractionPayload::Question { options, .. } => options.iter().find(|option| Hold::Elicitation.approves(&option.id))
+                .and_then(|option| option.description.clone())
+                .unwrap_or_else(|| t!(lang, "Write your answer…", "Escribe tu respuesta…").to_owned()),
+            _ => t!(lang, "Write your answer…", "Escribe tu respuesta…").to_owned(),
+        }),
+        Some(Hold::Question) | None => None,
+    };
+    let (id, placeholder) = if let Some(placeholder) = held_placeholder {
+        (action_id(Verb::Reply, &interaction.id.0, interaction.revision, None)?, placeholder)
+    } else if answers && item.card.kind == CardKind::Provide {
+        (
+            action_id(Verb::Reply, &interaction.id.0, interaction.revision, None)?,
+            t!(lang, "Write it here or attach the file…", "Escríbelo aquí o adjunta el archivo…").into(),
+        )
+    } else if matches!(interaction.scope, Scope::Task { .. }) {
         (
             action_id(Verb::Reply, &interaction.id.0, interaction.revision, None)?,
             tf!(lang, "Reply to {node}…", "Responder a {node}…", node = node_name(item, context)),
         )
-    } else if answers && matches!(interaction.author, Author::Orchestrator { .. }) {
+    } else if answers {
         (action_id(Verb::Reply, &interaction.id.0, interaction.revision, None)?, t!(lang, "Reply…", "Responder…").into())
     } else {
         (
@@ -1269,7 +1242,7 @@ fn reply_action(item: &InboxItem, interaction: Option<&Interaction>, context: &R
         )
     };
     let mut action = button(id.to_string(), t!(lang, "Reply", "Responder"), Role::Neutral);
-    action.input = text_input(&placeholder, true);
+    action.input = text_input(&placeholder, item.card.kind != CardKind::Provide);
     action.attachments = true;
     action.stamp = Some(if answers { t!(lang, "You answered", "Respondiste") } else { t!(lang, "Sent", "Enviado") }.into());
     action.key = (context.client != Client::Ios).then(|| "r".into());
@@ -1277,11 +1250,11 @@ fn reply_action(item: &InboxItem, interaction: Option<&Interaction>, context: &R
     Some(action)
 }
 
-/// Words written under an open question to the user are its answer, whoever asked it.
-fn answered_by_reply(interaction: &Interaction, domain: &DomainState) -> bool {
+/// Words written under an open question to the user are its answer, whoever asked it, held by
+/// Claude Code or not.
+fn answered_by_reply(interaction: &Interaction) -> bool {
     matches!(interaction.recipient, Recipient::User)
         && matches!(interaction.payload, InteractionPayload::Question { answer: None, .. } | InteractionPayload::ActionRequest { answer: None, .. })
-        && !domain.holds.contains_key(&interaction.id)
 }
 
 // ---------------------------------------------------------------------------------------------

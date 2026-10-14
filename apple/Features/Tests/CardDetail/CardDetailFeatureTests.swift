@@ -92,7 +92,7 @@ final class CardDetailFeatureTests: XCTestCase {
         XCTAssertEqual(subject.card?.kind, .decide)
         XCTAssertEqual(subject.sections.map(\.id), ["content", "context"])
         XCTAssertEqual(labels(store), ["★ Ship the concise copy", "Keep the warmer copy"])
-        XCTAssertEqual(subject.menu.map(\.label), ["Write my own answer", "Request clarification"])
+        XCTAssertEqual(subject.menu.map(\.label), ["Request clarification"])
         XCTAssertEqual(subject.replyAction?.id, "reply:\(Fixtures.questionID)@1")
     }
 

@@ -102,7 +102,7 @@ struct MacCardView: View {
             }
             if let row = card.contentRow { contentRow(row) }
             if !card.blocks.isEmpty || !card.blockedBy.isEmpty { chips }
-            MacActionColumn(buttons: buttons, moreOpen: $moreOpen, onAction: onAction)
+            MacActionColumn(buttons: buttons, moreOpen: $moreOpen, onAction: press)
             if let returnReason {
                 Text(returnReason).font(.callout).foregroundStyle(MacCardPalette.risk).fixedSize(horizontal: false, vertical: true)
             }
@@ -114,7 +114,7 @@ struct MacCardView: View {
         .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).strokeBorder(MacCardPalette.hairline))
         .background {
             if card.detail == .included {
-                MacShortcuts(buttons: buttons, moreOpen: $moreOpen, onAction: onAction, reply: card.reply != nil ? { replyFocused = true } : nil)
+                MacShortcuts(buttons: buttons, moreOpen: $moreOpen, onAction: press, reply: card.reply != nil ? { replyFocused = true } : nil)
                     .disabled(replyFocused)
             }
         }
@@ -203,6 +203,13 @@ struct MacCardView: View {
         .background(MacCardPalette.inset, in: .rect(cornerRadius: 10, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
             .strokeBorder(replyFocused ? MacCardPalette.kind(card.kind).opacity(0.7) : MacCardPalette.hairline))
+    }
+
+    /// An option answers at once; what the person already wrote in the card's field goes with it.
+    private func press(_ action: AlondraContract.Action) {
+        guard let words = action.carrying(reply) else { return onAction(action) }
+        reply = ""
+        onReply(action, words)
     }
 
     private func send(_ action: AlondraContract.Action) {

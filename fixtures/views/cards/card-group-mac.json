@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:g-q2",
   "client": "mac",
-  "version": "vee71b86e011749d1",
+  "version": "v52a0c66a5e865626",
   "cursor": "cursor-1",
   "title": "Ship it today?",
   "status": {
@@ -75,24 +75,6 @@
             "resolves_card": true
           },
           "more": [
-            {
-              "id": "ans:g-q2@1",
-              "label": "Write my own answer",
-              "style": "secondary",
-              "role": "neutral",
-              "presentation": "button",
-              "input": {
-                "kind": "text",
-                "placeholder": "Answer in your own words…",
-                "required": true,
-                "multiline": true
-              },
-              "attachments": true,
-              "enabled": true,
-              "stamp": "You answered",
-              "key": "3",
-              "resolves_card": true
-            },
             {
               "id": "clarify:g-q2@1",
               "label": "Request clarification",

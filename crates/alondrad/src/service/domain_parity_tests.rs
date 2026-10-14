@@ -203,7 +203,6 @@ async fn signed_loopback_and_sealed_service_share_reads_errors_and_command_recei
                     id: id.into(),
                     label: id.into(),
                     description: None,
-                    inputs: vec![],
                 })
                 .collect(),
             attachments: vec![], card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Provide, "Answer the question"),

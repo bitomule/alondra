@@ -25,7 +25,7 @@ final class MacCardTests: XCTestCase {
         let buttons = MacCardButtons(question)
         XCTAssertEqual(buttons.visible.map(\.optionId), ["clear", "warm"])
         XCTAssertEqual(buttons.visible.map(\.resolvedRole), [.advance, .neutral])
-        XCTAssertEqual(buttons.more.map(\.label), ["Write my own answer", "Request clarification"])
+        XCTAssertEqual(buttons.more.map(\.label), ["Request clarification"])
         XCTAssertTrue(buttons.more.contains(where: \.asksForClarification), "clarification lives behind More…")
     }
 
