@@ -66,8 +66,6 @@ pub(super) fn in_fleet(agent: &crate::domain::Agent, context: &RenderContext<'_>
 
 pub(super) fn node_state(agent: &AgentId, context: &RenderContext<'_>) -> super::Label {
     let lang = context.lang;
-    let live = context.live.nodes.iter().find(|node| node.agent_id == agent.0);
-    let key = live.and_then(|node| node.state_key.as_deref());
     let inbox = &context.projection.inbox;
     let waiting = |kinds: &[&str]| inbox.iter()
         .any(|item| item.pending && item.agent_id.as_ref() == Some(agent) && kinds.contains(&item.kind.as_str()));
@@ -81,14 +79,16 @@ pub(super) fn node_state(agent: &AgentId, context: &RenderContext<'_>) -> super:
             && context.domain.pull_requests.get(&authorization.pr_id).is_some_and(|pr| pr.state == PrState::Open)
     });
     let phase = context.domain.node_phase(agent).cloned().unwrap_or(NodePhase::Closed);
+    if !merging && let Some(halted) = common::halted(agent, context) {
+        return halted;
+    }
     let (text, tone) = match phase {
         NodePhase::Starting { reviving: true } => (t!(lang, "Reconnecting", "Reconectando"), Tone::Info),
         NodePhase::Lost => (t!(lang, "Waiting for the machine", "Esperando máquina"), Tone::Neutral),
         NodePhase::Starting { reviving: false } => (t!(lang, "Starting", "Arrancando"), Tone::Neutral),
         NodePhase::Working if merging => (t!(lang, "Merging", "Fusionando"), Tone::Info),
-        NodePhase::Working if key == Some("stalled") => (t!(lang, "Stalled", "Parado"), Tone::Critical),
-        NodePhase::Working if key == Some("failed") => (t!(lang, "Failed", "Falló"), Tone::Critical),
         NodePhase::Working => (t!(lang, "Working", "Trabajando"), Tone::Info),
+        NodePhase::WaitingBackground(work) => (common::background_label(&work, lang), Tone::Info),
         NodePhase::WaitingUser { .. } if waiting(&["action_request"]) => (t!(lang, "Your turn", "Te toca"), Tone::YourTurn),
         NodePhase::WaitingUser { .. } if waiting(&["question", "permission", "plan"]) => (t!(lang, "Waiting for an answer", "Esperando respuesta"), Tone::Warning),
         NodePhase::WaitingUser { .. } => (t!(lang, "No activity", "Sin actividad"), Tone::Neutral),
@@ -461,6 +461,10 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
         if let Some(tool) = &node.tool {
             readings.push(Fact { label: t!(lang, "Running", "Ejecutando").into(), value: tool.clone(), tone: None, link: None });
         }
+        if let NodePhase::WaitingBackground(work) = &agent.phase {
+            readings.push(Fact { label: common::background_label(work, lang).into(),
+                value: common::background_fact(work, node.background_since.as_deref(), lang), tone: Some(Tone::Info), link: None });
+        }
         if let Some(text) = &node.background_badge {
             readings.push(Fact { label: t!(lang, "In the background", "En segundo plano").into(), value: text.clone(),
                 tone: node.background_suspect.then_some(Tone::Warning), link: None });
@@ -611,7 +615,7 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
         .live
         .activity
         .get(id)
-        .filter(|items| !items.is_empty())
+        .filter(|items| !items.is_empty() && agent.phase.in_turn())
     {
         let rows = activity
             .iter()

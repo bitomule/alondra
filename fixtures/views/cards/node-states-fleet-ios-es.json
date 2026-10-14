@@ -1,0 +1,359 @@
+{
+  "protocol": 1,
+  "data_epoch": "test-epoch",
+  "view": "fleet",
+  "key": "fleet",
+  "client": "ios",
+  "version": "v3513af4f7d84d3b0",
+  "cursor": "cursor-1",
+  "title": "Flota",
+  "status": {
+    "version": "v542a086c414e7f8b",
+    "summary": "2 preguntas · 3 por leer · 3 nodos trabajando",
+    "badge": 5,
+    "counts": [
+      {
+        "id": "inbox",
+        "label": "Bandeja",
+        "value": 5
+      },
+      {
+        "id": "tasks",
+        "label": "Tareas",
+        "value": 6
+      },
+      {
+        "id": "agents",
+        "label": "Flota",
+        "value": 6
+      },
+      {
+        "id": "working",
+        "label": "trabajando",
+        "value": 3
+      },
+      {
+        "id": "waiting",
+        "label": "esperando",
+        "value": 1
+      }
+    ],
+    "gauges": [
+      {
+        "id": "memory",
+        "label": "Memory",
+        "value": 0.38,
+        "text": "6.1 GB of 16 GB",
+        "level": "calm"
+      },
+      {
+        "id": "disk",
+        "label": "Disk available",
+        "value": 0.72,
+        "text": "120 GB",
+        "level": "calm"
+      }
+    ],
+    "orchestrator": {
+      "text": "inactivo",
+      "tone": "neutral"
+    }
+  },
+  "sections": [
+    {
+      "id": "project:Demo Garden",
+      "title": "Demo Garden",
+      "count": 2,
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "d887a34b-249e-4487-a89b-57de38c26372",
+          "link": {
+            "kind": "view",
+            "key": "node:d887a34b-249e-4487-a89b-57de38c26372"
+          },
+          "icon": "node",
+          "title": "Restore the native review experience",
+          "badges": [
+            {
+              "text": "Esperando respuesta",
+              "tone": "warning"
+            }
+          ],
+          "depth": 0,
+          "struck": false,
+          "actions": [
+            {
+              "id": "close:d887a34b-249e-4487-a89b-57de38c26372@6",
+              "label": "Cerrar nodo",
+              "style": "destructive",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "confirm": {
+                "title": "Cerrar nodo",
+                "message": "¿Cerrar este nodo?",
+                "button": "Cerrar nodo"
+              },
+              "enabled": true,
+              "resolves_card": false
+            }
+          ]
+        },
+        {
+          "type": "row",
+          "id": "queued",
+          "link": {
+            "kind": "view",
+            "key": "node:queued"
+          },
+          "icon": "node",
+          "title": "Wire the badge after the review",
+          "badges": [
+            {
+              "text": "Esperando a Restore the native review experience",
+              "tone": "neutral"
+            }
+          ],
+          "depth": 0,
+          "struck": false,
+          "actions": [
+            {
+              "id": "close:queued@6",
+              "label": "Cerrar nodo",
+              "style": "destructive",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "confirm": {
+                "title": "Cerrar nodo",
+                "message": "¿Cerrar este nodo?",
+                "button": "Cerrar nodo"
+              },
+              "enabled": true,
+              "resolves_card": false
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "project:Zeta",
+      "title": "Zeta",
+      "count": 3,
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "release-runner",
+          "link": {
+            "kind": "view",
+            "key": "node:release-runner"
+          },
+          "icon": "node",
+          "title": "Release the daemon",
+          "badges": [
+            {
+              "text": "Esperando su comando",
+              "tone": "info"
+            }
+          ],
+          "depth": 0,
+          "struck": false,
+          "actions": [
+            {
+              "id": "close:release-runner@6",
+              "label": "Cerrar nodo",
+              "style": "destructive",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "confirm": {
+                "title": "Cerrar nodo",
+                "message": "¿Cerrar este nodo?",
+                "button": "Cerrar nodo"
+              },
+              "enabled": true,
+              "resolves_card": false
+            }
+          ]
+        },
+        {
+          "type": "row",
+          "id": "zeta-worker",
+          "link": {
+            "kind": "view",
+            "key": "node:zeta-worker"
+          },
+          "icon": "node",
+          "title": "Build the importer",
+          "badges": [
+            {
+              "text": "Trabajando",
+              "tone": "info"
+            }
+          ],
+          "depth": 0,
+          "struck": false,
+          "actions": [
+            {
+              "id": "interrupt:zeta-worker@6",
+              "label": "Interrumpir",
+              "style": "secondary",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "confirm": {
+                "title": "Interrumpir",
+                "message": "¿Detener lo que hace ahora este nodo? Conserva su tarea y te espera.",
+                "button": "Interrumpir"
+              },
+              "enabled": true,
+              "resolves_card": false
+            },
+            {
+              "id": "pause:zeta-worker@6",
+              "label": "Pausar",
+              "style": "secondary",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "confirm": {
+                "title": "¿Pausar este nodo?",
+                "message": "Deja lo que está ejecutando ahora y conserva su tarea. Alondra no lo reanuda solo: solo tú.",
+                "button": "Pausar"
+              },
+              "enabled": true,
+              "stamp": "En pausa",
+              "resolves_card": false
+            },
+            {
+              "id": "close:zeta-worker@6",
+              "label": "Cerrar nodo",
+              "style": "destructive",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "confirm": {
+                "title": "Cerrar nodo",
+                "message": "¿Cerrar este nodo?",
+                "button": "Cerrar nodo"
+              },
+              "enabled": true,
+              "resolves_card": false
+            }
+          ]
+        },
+        {
+          "type": "row",
+          "id": "paused-builder",
+          "link": {
+            "kind": "view",
+            "key": "node:paused-builder"
+          },
+          "icon": "node",
+          "title": "Fix the vanished session",
+          "badges": [
+            {
+              "text": "Esperando máquina",
+              "tone": "neutral"
+            }
+          ],
+          "depth": 0,
+          "struck": false,
+          "actions": [
+            {
+              "id": "resume:paused-builder@6",
+              "label": "Reanudar",
+              "style": "primary",
+              "description": "Ahora, aunque se pase del límite",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "stamp": "Reanudando…",
+              "resolves_card": false
+            },
+            {
+              "id": "close:paused-builder@6",
+              "label": "Cerrar nodo",
+              "style": "destructive",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "confirm": {
+                "title": "Cerrar nodo",
+                "message": "¿Cerrar este nodo?",
+                "button": "Cerrar nodo"
+              },
+              "enabled": true,
+              "resolves_card": false
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "project:Alpha",
+      "title": "Alpha",
+      "count": 1,
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "alpha-waiting",
+          "link": {
+            "kind": "view",
+            "key": "node:alpha-waiting"
+          },
+          "icon": "node",
+          "title": "Plan the migration",
+          "badges": [
+            {
+              "text": "Arrancando",
+              "tone": "neutral"
+            }
+          ],
+          "depth": 0,
+          "struck": false,
+          "actions": [
+            {
+              "id": "close:alpha-waiting@6",
+              "label": "Cerrar nodo",
+              "style": "destructive",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "confirm": {
+                "title": "Cerrar nodo",
+                "message": "¿Cerrar este nodo?",
+                "button": "Cerrar nodo"
+              },
+              "enabled": true,
+              "resolves_card": false
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

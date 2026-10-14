@@ -1,6 +1,6 @@
 use super::*;
 use crate::domain::{
-    NodePhase,
+    Background, NodePhase, Pause, PauseCleanup, PauseReason,
     Agent, Author, Document, DocumentRevision, DomainProjection, DomainState, Interaction, InteractionPayload,
     InteractionSubject, MergeAttemptState, MergeAuthorization, MergeMethod, PrState, PullRequest, QuestionOption, Recipient, Request, Scope, Task,
     TaskState, ModelChooser, TaskModel,
@@ -1561,7 +1561,7 @@ fn a_running_task_whose_node_does_nothing_says_no_activity_instead_of_working() 
 }
 
 #[test]
-fn a_running_task_whose_node_lost_its_connection_says_so_instead_of_working() {
+fn a_running_task_whose_node_session_closed_says_it_stopped_never_working_nor_no_connection() {
     let mut state = fixture();
     state.interactions.clear();
     let task = state.tasks.get_mut(&"t-1".into()).unwrap();
@@ -1569,8 +1569,10 @@ fn a_running_task_whose_node_lost_its_connection_says_so_instead_of_working() {
     task.agent_id = Some("a-1".into());
     let mut live = LiveSnapshot::default();
     live.nodes.push(LiveNode { agent_id: "a-1".into(), name: "Node One".into(), quiet: true, disconnected: true, ..LiveNode::default() });
-    assert_eq!(task_state_text(&state, &live, Lang::Es), "Sin conexión");
-    assert_eq!(task_state_text(&state, &live, Lang::En), "No connection");
+    assert_eq!(task_state_text(&state, &live, Lang::Es), "Detenida");
+    assert_eq!(task_state_text(&state, &live, Lang::En), "Stopped");
+    let (block, row) = active_row(&state, &live, Client::Mac, Lang::Es, "t-1");
+    assert_eq!((block.as_str(), row.subtitle.as_deref()), ("block:for-you", Some("Su sesión se cerró sin que entregara")));
     live.nodes[0].disconnected = false;
     live.nodes[0].quiet = false;
     let mut reviving = state.clone();
@@ -1608,6 +1610,91 @@ fn a_running_task_whose_node_waits_at_the_gate_to_come_back_says_it_is_queued_no
     assert_eq!(task_state_text(&state, &admitted, Lang::Es), "Reconectando");
     let node = serde_json::to_string(&render(&state, &admitted, Client::Tui, Lang::Es, "node:a-1", "")).unwrap();
     assert!(node.contains("Reconectando") && !node.contains("Esperando máquina"), "{node}");
+}
+
+fn node_in(state: &mut DomainState, phase: NodePhase) {
+    state.interactions.clear();
+    let task = state.tasks.get_mut(&"t-1".into()).unwrap();
+    task.state = TaskState::Running;
+    task.agent_id = Some("a-1".into());
+    state.agents.insert("a-1".into(), Agent { id: "a-1".into(), name: "Node One".into(), phase, since: 0 });
+}
+
+fn every_screen(state: &DomainState, live: &LiveSnapshot) -> Vec<(String, String)> {
+    let mut out = vec![];
+    for client in [Client::Ios, Client::Mac, Client::Tui] {
+        for key in ["tasks", "fleet", "sidebar", "task:t-1", "node:a-1"] {
+            if key == "sidebar" && client != Client::Mac {
+                continue;
+            }
+            out.push((format!("{client:?} {key}"), serde_json::to_string(&render(state, live, client, Lang::Es, key, "")).unwrap()));
+        }
+    }
+    out
+}
+
+/// 13 October, the release of 0.2.67: the node ran the release script in the background and ended
+/// its turn to wait for it. Its task and Fleet say it waits for its command, with the command and
+/// since when, never «Sin conexión», «Sin actividad» or «Detenido».
+#[test]
+fn a_task_whose_node_waits_for_its_own_command_says_so_with_the_command_on_every_screen() {
+    let mut state = fixture();
+    let work = Background { work: crate::model::BackgroundKind::Shell, label: "./deploy/brew/release.sh 0.2.67".into(), since: 0, others: 0 };
+    node_in(&mut state, NodePhase::WaitingBackground(work));
+    let mut live = LiveSnapshot::default();
+    live.nodes.push(LiveNode { agent_id: "a-1".into(), name: "Node One".into(), background_since: Some("14:36".into()), ..LiveNode::default() });
+    assert_eq!(task_state_text(&state, &live, Lang::Es), "Esperando su comando");
+    assert_eq!(task_state_text(&state, &live, Lang::En), "Waiting for its command");
+    let (block, row) = active_row(&state, &live, Client::Mac, Lang::Es, "t-1");
+    assert_eq!((block.as_str(), row.subtitle.as_deref()), ("block:in-progress", Some("«./deploy/brew/release.sh 0.2.67» · desde las 14:36")));
+    for (screen, text) in every_screen(&state, &live) {
+        assert!(text.contains("Esperando su comando"), "{screen}: {text}");
+        for wrong in ["Sin conexión", "Sin actividad", "Detenido", "Trabajando"] {
+            assert!(!text.contains(wrong), "{screen} says {wrong}: {text}");
+        }
+    }
+    live.activity.insert("a-1".into(), vec![LiveActivity { agent_id: None, agent_type: None, task: Some("t-1".into()), tool: None, summary: None,
+        since: "2026-10-13T14:36:28Z".into() }]);
+    let node = serde_json::to_string(&render(&state, &live, Client::Ios, Lang::Es, "node:a-1", "")).unwrap();
+    assert!(node.contains("«./deploy/brew/release.sh 0.2.67» · desde las 14:36"), "{node}");
+    assert!(!node.contains("Trabajando") && !node.contains("Ahora mismo"), "what a turn does right now is no state of a node out of its turn: {node}");
+}
+
+/// 13 October: the node of «Sesión desaparecida con nodo “conectado”» sat paused for memory from
+/// 12:02 to 14:53 while its task said it was working. A task whose node the machine paused says it
+/// is paused and why on every screen, with the gate's word or without it.
+#[test]
+fn a_task_whose_node_the_machine_paused_never_says_it_works_on_any_screen() {
+    let mut state = fixture();
+    let pause = Pause { reason: PauseReason::Memory, since: 0, cut: None, turn_since: None, cleanup: PauseCleanup::Done, released: false };
+    node_in(&mut state, NodePhase::Paused(pause));
+    let gate = LivePaused { task_id: "t-1".into(), session: Some("a-1".into()), at: "12:02".into(), reason: LivePauseReason::Memory,
+        fine_minutes: None, next: false, waits_for: None, retry: None };
+    for (live, fact) in [
+        (pacing_live(vec![], vec![gate], None), "Por memoria desde las 12:02 · se reanuda sola"),
+        (LiveSnapshot::default(), "Por memoria · se reanuda sola"),
+    ] {
+        assert_eq!(task_state_text(&state, &live, Lang::Es), "Pausada");
+        let (block, row) = active_row(&state, &live, Client::Mac, Lang::Es, "t-1");
+        assert_eq!((block.as_str(), row.subtitle.as_deref()), ("block:waiting", Some(fact)));
+        for (screen, text) in every_screen(&state, &live) {
+            assert!(!text.contains("Trabajando"), "{screen} says the task works: {text}");
+        }
+        let sidebar = serde_json::to_string(&render(&state, &live, Client::Mac, Lang::Es, "sidebar", "")).unwrap();
+        assert!(sidebar.contains("Pausada"), "{sidebar}");
+    }
+}
+
+/// A node whose turn stopped processing shows «Parado» in Fleet; its task says the same.
+#[test]
+fn a_task_whose_node_stalled_says_so_like_fleet() {
+    let mut state = fixture();
+    node_in(&mut state, NodePhase::Working);
+    let mut live = LiveSnapshot::default();
+    live.nodes.push(LiveNode { agent_id: "a-1".into(), name: "Node One".into(), state_key: Some("stalled".into()), ..LiveNode::default() });
+    assert_eq!(task_state_text(&state, &live, Lang::Es), "Parado");
+    let fleet = serde_json::to_string(&render(&state, &live, Client::Tui, Lang::Es, "fleet", "")).unwrap();
+    assert!(fleet.contains("Parado") && !fleet.contains("Trabajando"), "{fleet}");
 }
 
 #[test]
@@ -4058,7 +4145,11 @@ fn a_command_is_a_code_block_in_the_detail_that_survives_backticks() {
 
 #[test]
 fn node_detail_names_its_folder_and_what_it_is_doing_right_now() {
-    let view = render(&golden_fixture(), &golden_live(), Client::Ios, Lang::En,
+    let mut in_turn = golden_fixture();
+    in_turn.agents.get_mut(&"d887a34b-249e-4487-a89b-57de38c26372".into()).unwrap().phase = NodePhase::WaitingUser { in_turn: true };
+    let stopped = render(&golden_fixture(), &golden_live(), Client::Ios, Lang::En, "node:d887a34b-249e-4487-a89b-57de38c26372", "");
+    assert!(stopped.sections.iter().all(|section| section.id != "now"), "a node out of its turn does nothing right now");
+    let view = render(&in_turn, &golden_live(), Client::Ios, Lang::En,
         "node:d887a34b-249e-4487-a89b-57de38c26372", "");
     assert!(header_facts(&view).iter().any(|fact| fact.label == "Folder" && fact.value == "/demo/Demo Garden/ios"));
     let now = view.sections.iter().find(|section| section.id == "now").expect("right now section");
@@ -5005,6 +5096,62 @@ fn fleet_fixture() -> (DomainState, LiveSnapshot) {
     (state, live)
 }
 
+/// The Fleet fixture with one node waiting for its own command and one the machine paused.
+fn node_states_fixture() -> (DomainState, LiveSnapshot) {
+    let (mut state, mut live) = fleet_fixture();
+    let template = state.tasks[&"t-zeta-worker".into()].clone();
+    let declared = Pause { reason: PauseReason::Declared { reason: "The build queue is full".into() }, since: 0, cut: None,
+        turn_since: None, cleanup: PauseCleanup::Done, released: false };
+    let release = Background { work: crate::model::BackgroundKind::Shell, label: "./deploy/brew/release.sh 0.2.67".into(), since: 0, others: 0 };
+    for (agent, title, phase) in [
+        ("release-runner", "Release the daemon", NodePhase::WaitingBackground(release)),
+        ("paused-builder", "Fix the vanished session", NodePhase::Paused(declared)),
+    ] {
+        state.agents.insert(agent.into(), Agent { id: agent.into(), name: agent.into(), phase, since: 0 });
+        let mut task = template.clone();
+        (task.id, task.agent_id, task.title) = (format!("t-{agent}").into(), Some(agent.into()), title.into());
+        state.tasks.insert(task.id.clone(), task);
+        live.nodes.push(LiveNode { agent_id: agent.into(), name: agent.into(), project: Some("Zeta".into()),
+            background_since: (agent == "release-runner").then(|| "09:36".into()), ..LiveNode::default() });
+    }
+    live.pacing = Some(LivePacing { working: 2, limit: 6, fixed: None, auto: 6, memory_free: Some(40), tight: false, queued: vec![],
+        paused: vec![LivePaused { task_id: "t-paused-builder".into(), session: Some("paused-builder".into()), at: "09:40".into(),
+            reason: LivePauseReason::Machine, fine_minutes: None, next: false, waits_for: Some("The build queue is full".into()), retry: None }] });
+    (state, live)
+}
+
+const NODE_STATE_GOLDENS: [(&str, &str, Client, Lang); 8] = [
+    ("node-states-fleet-ios.json", "fleet", Client::Ios, Lang::En),
+    ("node-states-fleet-ios-es.json", "fleet", Client::Ios, Lang::Es),
+    ("node-states-fleet-mac.json", "fleet", Client::Mac, Lang::En),
+    ("node-states-fleet-tui.json", "fleet", Client::Tui, Lang::Es),
+    ("node-states-tasks-ios.json", "tasks", Client::Ios, Lang::En),
+    ("node-states-tasks-ios-es.json", "tasks", Client::Ios, Lang::Es),
+    ("node-states-tasks-mac.json", "tasks", Client::Mac, Lang::En),
+    ("node-states-tasks-tui.json", "tasks", Client::Tui, Lang::Es),
+];
+
+/// Fleet and Tasks in every client for a node waiting for its own command and one the machine
+/// paused: the files the TUI and the apps' tests draw.
+#[test]
+fn node_state_views_match_goldens() {
+    let (state, live) = node_states_fixture();
+    for (filename, key, client, lang) in NODE_STATE_GOLDENS {
+        let view = render(&state, &live, client, lang, key, "2026-09-30T10:00:00Z");
+        let expected = match filename {
+            "node-states-fleet-ios.json" => include_str!("../../../../fixtures/views/cards/node-states-fleet-ios.json"),
+            "node-states-fleet-ios-es.json" => include_str!("../../../../fixtures/views/cards/node-states-fleet-ios-es.json"),
+            "node-states-fleet-mac.json" => include_str!("../../../../fixtures/views/cards/node-states-fleet-mac.json"),
+            "node-states-fleet-tui.json" => include_str!("../../../../fixtures/views/cards/node-states-fleet-tui.json"),
+            "node-states-tasks-ios.json" => include_str!("../../../../fixtures/views/cards/node-states-tasks-ios.json"),
+            "node-states-tasks-ios-es.json" => include_str!("../../../../fixtures/views/cards/node-states-tasks-ios-es.json"),
+            "node-states-tasks-mac.json" => include_str!("../../../../fixtures/views/cards/node-states-tasks-mac.json"),
+            _ => include_str!("../../../../fixtures/views/cards/node-states-tasks-tui.json"),
+        };
+        assert_golden(filename, &view, expected);
+    }
+}
+
 fn section_ids(view: &View) -> Vec<&str> {
     view.sections.iter().map(|section| section.id.as_str()).collect()
 }
@@ -5910,7 +6057,8 @@ fn a_request_has_a_header_only_when_it_is_not_a_message_to_the_orchestrator() {
     }
     state.requests.get_mut(&"r-1".into()).unwrap().title = Some("Resume the queue and two new bugs".into());
     state.requests.get_mut(&"r-1".into()).unwrap().message = true;
-    let ids = |state: &DomainState| rows_of(state, Client::Ios, Lang::En).into_iter().map(|row| row.id).collect::<Vec<_>>();
+    let ids = |state: &DomainState| rows_of(state, Client::Ios, Lang::En).into_iter().map(|row| row.id)
+        .filter(|id| id != "activity").collect::<Vec<_>>();
     assert_eq!(ids(&state), ["t-a", "t-b"], "a message to the orchestrator joins unrelated tasks: they stand loose");
     state.requests.get_mut(&"r-1".into()).unwrap().message = false;
     assert_eq!(ids(&state), ["group:r-1", "t-a", "t-b"], "a request with a real title and several tasks keeps its header");

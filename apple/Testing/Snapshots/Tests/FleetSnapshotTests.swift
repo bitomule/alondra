@@ -34,6 +34,12 @@ final class FleetSnapshotTests: XCTestCase {
         assertScreenVariants { view }
     }
 
+    /// A node waiting for its own background command and one the machine paused, as the daemon says them.
+    func test_fleet_aNodeWaitingForItsCommandAndOnePausedByTheMachine_spanish() throws {
+        let view = try fleet(document: "node-states-fleet-ios-es")
+        assertScreen([.light, .dark], language: .spanish, inWindow: true) { ScreenFrame(height: 1300, growsWithText: false) { view } }
+    }
+
     func test_fleet_closedNodesAreNotListed() throws {
         let view = try fleet()
         assertScreen(inWindow: true) { ScreenFrame(height: 1150, growsWithText: false) { view } }

@@ -1,0 +1,396 @@
+{
+  "protocol": 1,
+  "data_epoch": "test-epoch",
+  "view": "tasks",
+  "key": "tasks",
+  "client": "ios",
+  "version": "v5b488d916840dd42",
+  "cursor": "cursor-1",
+  "title": "Tareas",
+  "status": {
+    "version": "v542a086c414e7f8b",
+    "summary": "2 preguntas · 3 por leer · 3 nodos trabajando",
+    "badge": 5,
+    "counts": [
+      {
+        "id": "inbox",
+        "label": "Bandeja",
+        "value": 5
+      },
+      {
+        "id": "tasks",
+        "label": "Tareas",
+        "value": 6
+      },
+      {
+        "id": "agents",
+        "label": "Flota",
+        "value": 6
+      },
+      {
+        "id": "working",
+        "label": "trabajando",
+        "value": 3
+      },
+      {
+        "id": "waiting",
+        "label": "esperando",
+        "value": 1
+      }
+    ],
+    "gauges": [
+      {
+        "id": "memory",
+        "label": "Memory",
+        "value": 0.38,
+        "text": "6.1 GB of 16 GB",
+        "level": "calm"
+      },
+      {
+        "id": "disk",
+        "label": "Disk available",
+        "value": 0.72,
+        "text": "120 GB",
+        "level": "calm"
+      }
+    ],
+    "orchestrator": {
+      "text": "inactivo",
+      "tone": "neutral"
+    }
+  },
+  "sections": [
+    {
+      "id": "scheduled",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "schedules",
+          "link": {
+            "kind": "view",
+            "key": "schedules"
+          },
+          "icon": "schedule",
+          "title": "Tareas programadas",
+          "depth": 0,
+          "struck": false
+        }
+      ]
+    },
+    {
+      "id": "active",
+      "title": "Activas",
+      "count": 6,
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "block:for-you",
+          "icon": "task",
+          "title": "Para ti",
+          "trailing": {
+            "kind": "text",
+            "text": "1"
+          },
+          "depth": 0,
+          "struck": false,
+          "children": [
+            {
+              "id": "t-651c38484cd2f34e74d5107ba05f7f15",
+              "link": {
+                "kind": "view",
+                "key": "task:t-651c38484cd2f34e74d5107ba05f7f15"
+              },
+              "icon": "action",
+              "title": "Restore the native review experience",
+              "subtitle": "Te necesita",
+              "badges": [
+                {
+                  "text": "Te necesita",
+                  "tone": "warning"
+                },
+                {
+                  "text": "Demo Garden",
+                  "tone": "neutral"
+                }
+              ],
+              "trailing": {
+                "kind": "count",
+                "value": 5
+              },
+              "depth": 1,
+              "struck": false,
+              "children": [
+                {
+                  "id": "activity",
+                  "icon": "notice",
+                  "title": "5 preguntas abiertas",
+                  "trailing": {
+                    "kind": "time",
+                    "at": "2026-09-30T09:30:00Z",
+                    "format": "relative"
+                  },
+                  "depth": 0,
+                  "struck": false
+                },
+                {
+                  "id": "chain:t-651c38484cd2f34e74d5107ba05f7f15",
+                  "icon": "branch",
+                  "title": "+1 esperando a esta",
+                  "depth": 2,
+                  "struck": false,
+                  "children": [
+                    {
+                      "id": "t-queued",
+                      "link": {
+                        "kind": "view",
+                        "key": "task:t-queued"
+                      },
+                      "icon": "branch",
+                      "title": "Wire the badge after the review",
+                      "subtitle": "espera a Restore the native review experience",
+                      "badges": [
+                        {
+                          "text": "Esperando",
+                          "tone": "info"
+                        }
+                      ],
+                      "depth": 3,
+                      "struck": false
+                    }
+                  ],
+                  "folded": true
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "row",
+          "id": "block:in-progress",
+          "icon": "task",
+          "title": "En marcha",
+          "trailing": {
+            "kind": "text",
+            "text": "3"
+          },
+          "depth": 0,
+          "struck": false,
+          "children": [
+            {
+              "id": "t-alpha-waiting",
+              "link": {
+                "kind": "view",
+                "key": "task:t-alpha-waiting"
+              },
+              "icon": "task",
+              "title": "Plan the migration",
+              "subtitle": "Arrancando",
+              "badges": [
+                {
+                  "text": "Arrancando",
+                  "tone": "accent"
+                },
+                {
+                  "text": "Alpha",
+                  "tone": "neutral"
+                }
+              ],
+              "trailing": {
+                "kind": "count",
+                "value": 0
+              },
+              "depth": 1,
+              "struck": false,
+              "children": [
+                {
+                  "id": "activity",
+                  "icon": "notice",
+                  "title": "Abriendo su sesión",
+                  "depth": 0,
+                  "struck": false
+                }
+              ]
+            },
+            {
+              "id": "t-release-runner",
+              "link": {
+                "kind": "view",
+                "key": "task:t-release-runner"
+              },
+              "icon": "mission",
+              "title": "Release the daemon",
+              "subtitle": "Esperando su comando",
+              "badges": [
+                {
+                  "text": "Esperando su comando",
+                  "tone": "accent"
+                }
+              ],
+              "trailing": {
+                "kind": "count",
+                "value": 0
+              },
+              "depth": 1,
+              "struck": false,
+              "children": [
+                {
+                  "id": "activity",
+                  "icon": "notice",
+                  "title": "«./deploy/brew/release.sh 0.2.67» · desde las 09:36",
+                  "depth": 0,
+                  "struck": false
+                }
+              ]
+            },
+            {
+              "id": "t-zeta-worker",
+              "link": {
+                "kind": "view",
+                "key": "task:t-zeta-worker"
+              },
+              "icon": "mission",
+              "title": "Build the importer",
+              "subtitle": "Trabajando",
+              "badges": [
+                {
+                  "text": "Trabajando",
+                  "tone": "accent"
+                }
+              ],
+              "trailing": {
+                "kind": "count",
+                "value": 0
+              },
+              "depth": 1,
+              "struck": false,
+              "actions": [
+                {
+                  "id": "pause:zeta-worker@6",
+                  "label": "Pausar",
+                  "style": "secondary",
+                  "presentation": "button",
+                  "input": {
+                    "kind": "none"
+                  },
+                  "attachments": false,
+                  "confirm": {
+                    "title": "¿Pausar este nodo?",
+                    "message": "Deja lo que está ejecutando ahora y conserva su tarea. Alondra no lo reanuda solo: solo tú.",
+                    "button": "Pausar"
+                  },
+                  "enabled": true,
+                  "stamp": "En pausa",
+                  "resolves_card": false
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "row",
+          "id": "block:waiting",
+          "icon": "task",
+          "title": "En espera",
+          "trailing": {
+            "kind": "text",
+            "text": "1"
+          },
+          "depth": 0,
+          "struck": false,
+          "children": [
+            {
+              "id": "t-paused-builder",
+              "link": {
+                "kind": "view",
+                "key": "task:t-paused-builder"
+              },
+              "icon": "mission",
+              "title": "Fix the vanished session",
+              "subtitle": "Pausada",
+              "badges": [
+                {
+                  "text": "Pausada",
+                  "tone": "neutral"
+                }
+              ],
+              "trailing": {
+                "kind": "count",
+                "value": 0
+              },
+              "depth": 1,
+              "struck": false,
+              "children": [
+                {
+                  "id": "activity",
+                  "icon": "notice",
+                  "title": "The build queue is full · desde las 09:40",
+                  "depth": 0,
+                  "struck": false
+                }
+              ],
+              "actions": [
+                {
+                  "id": "resume:paused-builder@6",
+                  "label": "Reanudar",
+                  "style": "primary",
+                  "description": "Ahora, aunque se pase del límite",
+                  "presentation": "button",
+                  "input": {
+                    "kind": "none"
+                  },
+                  "attachments": false,
+                  "enabled": true,
+                  "stamp": "Reanudando…",
+                  "resolves_card": false
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "finished",
+      "title": "Terminadas",
+      "count": 1,
+      "collapsed": true,
+      "items": [],
+      "more": {
+        "key": "tasks?section=finished&after=0",
+        "remaining": 1
+      }
+    },
+    {
+      "id": "archived",
+      "title": "Archivadas",
+      "count": 0,
+      "collapsed": true,
+      "items": []
+    },
+    {
+      "id": "actions",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "actions",
+          "actions": [
+            {
+              "id": "archive_done:view@6",
+              "label": "Archivar terminadas",
+              "style": "secondary",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "resolves_card": false
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

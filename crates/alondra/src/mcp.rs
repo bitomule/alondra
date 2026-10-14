@@ -1236,6 +1236,9 @@ fn requests_summary(o: &Value, all: bool) -> (Vec<Value>, usize) {
             .filter(|t| t.get("request").and_then(Value::as_str) == id)
             .map(|t| {
                 let mut row = pick(t, &["id", "title", "state"]);
+                if let Some(activity) = t.get("activity").filter(|a| !a.is_null()) {
+                    row["activity"] = activity.clone();
+                }
                 if let Some(d) = t.get("depends_on").filter(|d| d.as_array().is_some_and(|a| !a.is_empty())) {
                     row["depends_on"] = d.clone();
                 }

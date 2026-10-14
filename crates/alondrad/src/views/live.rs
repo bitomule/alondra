@@ -51,6 +51,10 @@ fn node_label(key: &str, lang: Lang) -> String {
         ("busy", Lang::Es) => "trabajando",
         ("waiting_machine", Lang::En) => "waiting for the machine",
         ("waiting_machine", Lang::Es) => "esperando máquina",
+        ("waiting_background", Lang::En) => "waiting for its command",
+        ("waiting_background", Lang::Es) => "esperando su comando",
+        ("paused", Lang::En) => "paused",
+        ("paused", Lang::Es) => "en pausa",
         (_, Lang::En) => "idle",
         (_, Lang::Es) => "inactivo",
     }.to_owned()
@@ -131,12 +135,14 @@ async fn gather_at(
                 Activity::Stalled if crate::domain_holds::waits_on_user(state, &session_id) => Activity::Working,
                 activity => activity,
             };
-            let state_key = match activity {
-                Activity::Stalled => "stalled",
-                Activity::Failed => "failed",
-                Activity::Working => "busy",
-                Activity::Idle if node.status == alondra_core::NodeStatus::WaitingMachine => "waiting_machine",
-                Activity::Idle => "free",
+            let state_key = match (&agent.phase, activity) {
+                (NodePhase::Working | NodePhase::Starting { .. }, Activity::Stalled) => "stalled",
+                (NodePhase::Working | NodePhase::Starting { .. }, Activity::Failed) => "failed",
+                (NodePhase::Working | NodePhase::Starting { .. } | NodePhase::Delivered { in_turn: true }, _) => "busy",
+                (NodePhase::WaitingBackground(_), _) => "waiting_background",
+                (NodePhase::Paused(alondra_core::domain::Pause { reason: alondra_core::domain::PauseReason::ByUser, .. }), _) => "paused",
+                (NodePhase::Paused(_) | NodePhase::Lost, _) => "waiting_machine",
+                _ => "free",
             };
             let state_label = node_label(state_key, lang);
             let tool = reported.tool.as_ref().map(|tool| match &tool.summary {
@@ -234,6 +240,10 @@ async fn gather_at(
                     && state_since.is_some_and(|since| now.saturating_sub(since.max(answer.map_or(0, |answer| answer.at)))
                         >= alondra_core::states::NODE_QUIET_MS),
                 state_since: state_since.map(timestamp),
+                background_since: match &agent.phase {
+                    NodePhase::WaitingBackground(work) => Some(crate::usage_pause::clock_text(work.since, now, lang == Lang::Es)),
+                    _ => None,
+                },
                 last_message: answer.map(|answer| answer.text.clone()),
                 last_message_at: answer.map(|answer| timestamp(answer.at)),
                 last_turn_aborted: answer.is_some_and(|answer| answer.aborted),
@@ -818,7 +828,7 @@ mod cache_tests {
         assert_ne!(stalled_view.cursor, working_view.cursor);
         report(&domain, serde_json::json!({"session_id": "reported", "event": "turn.complete", "answer": "Done", "aborted": true}), limit + 2);
         let answer = gather_at(&client, &state, Lang::En, &[], false, false, limit + 2).await;
-        assert_eq!(answer.nodes[0].state_key.as_deref(), Some("free"));
+        assert_eq!(answer.nodes[0].state_key.as_deref(), Some("busy"), "its state is the node machine's, which still has it starting");
         assert_eq!(answer.nodes[0].last_message.as_deref(), Some("Done"));
         assert_eq!(answer.nodes[0].last_message_at, Some(timestamp(limit + 2)));
         assert!(answer.nodes[0].last_turn_aborted);

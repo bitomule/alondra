@@ -5,7 +5,7 @@ use super::{
     Icon, LiveHold, LivePauseReason, RenderContext, Tone, common,
     text::{t, tf},
 };
-use crate::domain::{Attention, Instruction, NodePhase, PauseReason, PrState, Task, TaskPriority, TaskState, WaitReason};
+use crate::domain::{Attention, Instruction, PauseReason, PrState, Task, TaskActivity, TaskPriority, TaskState, WaitReason};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum Block {
@@ -133,30 +133,38 @@ fn open_questions(task: &Task, context: &RenderContext<'_>) -> Option<String> {
 
 fn running(task: &Task, context: &RenderContext<'_>) -> Presentation {
     let lang = context.lang;
-    let phase = task.agent_id.as_ref().and_then(|id| context.domain.node_phase(id)).cloned().unwrap_or(NodePhase::Closed);
+    let activity = context.domain.task_activity(task).unwrap_or(TaskActivity::NodeClosed);
     let node = task.agent_id.as_ref().and_then(|id| context.live.nodes.iter().find(|node| node.agent_id == id.0));
-    let doing = node.and_then(|node| super::fleet::doing(node, phase == NodePhase::Working, lang));
+    let doing = node.and_then(|node| super::fleet::doing(node, activity == TaskActivity::Working, lang));
     let (fact, said_at) = doing.map_or((None, None), |(fact, at)| (Some(fact), at));
     let active_at = said_at.or_else(|| node.and_then(|node| node.state_since.clone()))
         .or_else(|| context.live.task_since.get(&task.id.0).cloned());
-    if !matches!(phase, NodePhase::Working | NodePhase::Starting { .. } | NodePhase::Lost | NodePhase::Paused(_))
+    if !matches!(activity, TaskActivity::Working | TaskActivity::Starting | TaskActivity::Reconnecting | TaskActivity::ComingBack | TaskActivity::Paused(_))
         && context.projection.waits_for_user(&task.id) {
         return for_you(task, context);
     }
     let warn = |state: &str| Presentation { since: active_at.clone(), ..Presentation::new(state, Tone::Warning, Block::Waiting, fact.clone()) };
-    let state = match (&phase, context.domain.task_handed_back(&task.id)) {
-        (NodePhase::Lost, _) => return match common::coming_back_queued(task, context) {
+    if let Some(halted) = task.agent_id.as_ref().and_then(|agent| common::halted(agent, context)) {
+        return Presentation { active_at, ..Presentation::new(halted.text, Tone::Warning, Block::InProgress, fact) };
+    }
+    let state = match (&activity, context.domain.task_handed_back(&task.id)) {
+        (TaskActivity::ComingBack, _) => return match common::coming_back_queued(task, context) {
             Some(queued) => in_queue(task, queued, lang),
             None => Presentation::new(t!(lang, "Waiting for the machine", "Esperando máquina"), Tone::Neutral, Block::Waiting, None),
         },
-        (NodePhase::Starting { reviving: true }, _) => t!(lang, "Reconnecting", "Reconectando"),
-        (NodePhase::Working | NodePhase::Starting { .. }, Some(Instruction::Changes)) => t!(lang, "Making changes", "Corrigiendo"),
-        (NodePhase::Working | NodePhase::Starting { .. }, Some(Instruction::Conflicts)) => t!(lang, "Resolving conflicts", "Resolviendo conflictos"),
-        (NodePhase::Working | NodePhase::Starting { .. }, Some(Instruction::Question | Instruction::Reply)) => t!(lang, "Answering you", "Respondiéndote"),
-        (NodePhase::Working | NodePhase::Starting { .. }, _) => t!(lang, "Working", "Trabajando"),
-        (NodePhase::WaitingUser { .. } | NodePhase::Stopped, _) => return warn(t!(lang, "No activity", "Sin actividad")),
-        (NodePhase::Delivered { .. }, _) => return Presentation::new(t!(lang, "Delivered", "Entregada"), Tone::Info, Block::InProgress, fact),
-        (NodePhase::Paused(pause), _) => {
+        (TaskActivity::Reconnecting, _) => t!(lang, "Reconnecting", "Reconectando"),
+        (TaskActivity::Working | TaskActivity::Starting, Some(Instruction::Changes)) => t!(lang, "Making changes", "Corrigiendo"),
+        (TaskActivity::Working | TaskActivity::Starting, Some(Instruction::Conflicts)) => t!(lang, "Resolving conflicts", "Resolviendo conflictos"),
+        (TaskActivity::Working | TaskActivity::Starting, Some(Instruction::Question | Instruction::Reply)) => t!(lang, "Answering you", "Respondiéndote"),
+        (TaskActivity::Working | TaskActivity::Starting, _) => t!(lang, "Working", "Trabajando"),
+        (TaskActivity::WaitingBackground(work), _) => {
+            let since = node.and_then(|node| node.background_since.as_deref());
+            return Presentation { active_at, ..Presentation::new(common::background_label(work, lang), Tone::Accent, Block::InProgress,
+                Some(common::background_fact(work, since, lang))) };
+        }
+        (TaskActivity::WaitingUser | TaskActivity::Stopped, _) => return warn(t!(lang, "No activity", "Sin actividad")),
+        (TaskActivity::Delivered, _) => return Presentation::new(t!(lang, "Delivered", "Entregada"), Tone::Info, Block::InProgress, fact),
+        (TaskActivity::Paused(pause), _) => {
             let fact = match &pause.reason {
                 PauseReason::Memory => t!(lang, "For memory · resumes by itself", "Por memoria · se reanuda sola").to_owned(),
                 PauseReason::ByUser => t!(lang, "You paused it", "La pausaste").to_owned(),
@@ -169,7 +177,9 @@ fn running(task: &Task, context: &RenderContext<'_>) -> Presentation {
             };
             return Presentation::new(t!(lang, "Paused", "Pausada"), Tone::Neutral, Block::Waiting, Some(with_pending(fact, task, context)));
         }
-        (NodePhase::Closing | NodePhase::Closed, _) => return warn(t!(lang, "No connection", "Sin conexión")),
+        (TaskActivity::NodeClosed, _) => return Presentation { since: active_at,
+            ..Presentation::new(common::node_closed_label(lang), Tone::Warning, Block::ForYou,
+                Some(t!(lang, "Its session closed before it delivered", "Su sesión se cerró sin que entregara").into())) },
     };
     let step = node.and_then(|node| super::fleet::step(node, lang));
     Presentation { active_at, ..Presentation::new(state, Tone::Accent, Block::InProgress, step) }

@@ -2,7 +2,7 @@
 //! sessions the daemon observes next to the domain's Requests, Tasks, questions, results and
 //! undelivered messages. Each answer has the shape the MCP's summaries already read.
 use crate::domain_runtime::DomainRuntime;
-use alondra_core::domain::{AgentId, Author, DomainError, DomainState, Interaction, InteractionPayload, Recipient, TaskId};
+use alondra_core::domain::{AgentId, Author, DomainError, DomainState, Interaction, InteractionPayload, NodePhase, PauseReason, Recipient, TaskId};
 use alondra_core::Node;
 use serde_json::{Value, json};
 
@@ -28,8 +28,41 @@ fn model_of(domain: &DomainRuntime, session_id: &str) -> Value {
     json!(domain.live.mods.session(session_id).and_then(|reported| reported.model))
 }
 
+/// A node's state as the node machine holds it, the one every screen reads: its phase and why.
+fn phase_fields(row: &mut Value, phase: &NodePhase) {
+    let since = |at: alondra_core::Millis| crate::log::local_iso(at.div_euclid(1000) as libc::time_t, at.rem_euclid(1000) as u32);
+    row["state"] = json!(match phase {
+        NodePhase::Closing | NodePhase::Closed => "done",
+        phase => phase.key(),
+    });
+    row["alive"] = json!(phase.live() && *phase != NodePhase::Lost);
+    row["evidence"] = json!(match phase {
+        NodePhase::Starting { reviving: false } => "admitted by the gate; no turn yet".to_owned(),
+        NodePhase::Starting { reviving: true } => "its lost session is being restarted".to_owned(),
+        NodePhase::Lost => "its session is gone; it waits for the gate to be restarted".to_owned(),
+        NodePhase::Working => "a turn is running".to_owned(),
+        NodePhase::WaitingBackground(work) => format!("its turn ended behind its own background work (`{}`, since {}{}); it wakes when that ends",
+            work.label, since(work.since), if work.others > 0 { format!(", {} more", work.others) } else { String::new() }),
+        NodePhase::WaitingUser { .. } => "a card of its task waits for the user".to_owned(),
+        NodePhase::Paused(pause) => format!("paused ({}) since {}", match &pause.reason {
+            PauseReason::Memory => "memory".to_owned(),
+            PauseReason::Declared { reason } => format!("it waits for the machine: {reason}"),
+            PauseReason::Usage => "the usage limit".to_owned(),
+            PauseReason::ByUser => "by the user".to_owned(),
+            PauseReason::ApiError(retry) => format!("a Claude API error, {}", retry.error),
+        }, since(pause.since)),
+        NodePhase::Delivered { .. } => "its result waits for the user's review".to_owned(),
+        NodePhase::Stopped => "its turn ended with nothing for anyone".to_owned(),
+        NodePhase::Closing => "its task is over; it cleans up".to_owned(),
+        NodePhase::Closed => "its session is closed".to_owned(),
+    });
+}
+
 fn node_row(node: &Node, state: &DomainState, domain: &DomainRuntime) -> Value {
     let mut row = wire(node);
+    if let Some(phase) = state.node_phase(&AgentId(node.session_id.clone())) {
+        phase_fields(&mut row, phase);
+    }
     row["model"] = model_of(domain, &node.session_id);
     if node.name.is_none() {
         row["name"] = json!(state.agents.get(&AgentId(node.session_id.clone())).map(|a| a.name.clone()));
@@ -81,7 +114,7 @@ fn report(i: &Interaction, state: &DomainState) -> Option<Value> {
 
 fn tasks(state: &DomainState) -> Vec<Value> {
     state.tasks.values().filter(|t| !t.archived).map(|t| json!({
-        "id": t.id, "title": t.title, "state": wire(&t.state), "request": t.request_id,
+        "id": t.id, "title": t.title, "state": wire(&t.state), "activity": state.task_activity(t).map(|activity| activity.key()), "request": t.request_id,
         "depends_on": t.dependencies, "assignee": t.agent_id.as_ref().map(|a| json!({"session_id": a})),
         "delivered_dependencies": t.delivered_dependencies, "blocks": t.blocks,
         "blocked_by": state.open_blockers(&t.id), "verdict": t.verdict, "review_rounds": t.review_rounds,

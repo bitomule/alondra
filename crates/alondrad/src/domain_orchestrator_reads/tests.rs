@@ -113,3 +113,27 @@ fn a_node_is_found_by_name_or_id_with_its_questions_results_and_undelivered_mess
     assert_eq!((offline["node"]["alive"].as_bool(), offline["node"]["name"].as_str()), (Some(false), Some("Instance B")));
     assert_eq!(node(&f.1, "nobody").unwrap_err().code, "not_found");
 }
+
+/// 13 October: the orchestrator read the release node as `unclear`, "idle with nothing to show",
+/// while it waited for its own release script. Its reads say what the node machine says: the node
+/// waits for its command, named, and a task whose node the machine paused is paused, not working.
+#[test]
+fn the_orchestrator_reads_the_node_machine_s_state_never_an_older_guess() {
+    let f = world();
+    let work = alondra_core::domain::Background { work: alondra_core::BackgroundKind::Shell, label: "./deploy/brew/release.sh 0.2.67".into(), since: 1, others: 0 };
+    run(&f.1, Actor::System, Command::MoveNode { agent_id: "agent-a".into(), event: alondra_core::domain::NodeEvent::TurnEndedBehind { work }, at: 2 });
+    let waiting = fleet(&f.1, json!({}), json!(null)).unwrap();
+    let node = &waiting["nodes"][0];
+    assert_eq!(node["state"], "waiting_background");
+    assert!(node["evidence"].as_str().unwrap().contains("`./deploy/brew/release.sh 0.2.67`"), "{node}");
+    let t1 = waiting["tasks"].as_array().unwrap().iter().find(|t| t["id"] == "t1").unwrap().clone();
+    assert_eq!(t1["activity"], "waiting_background", "beside its own state, what its node does for it");
+
+    let pause = alondra_core::domain::Pause { reason: alondra_core::domain::PauseReason::Declared { reason: "The build queue is full".into() },
+        since: 3, cut: None, turn_since: None, cleanup: Default::default(), released: false };
+    run(&f.1, Actor::System, Command::MoveNode { agent_id: "agent-a".into(), event: alondra_core::domain::NodeEvent::Paused { pause }, at: 3 });
+    let paused = fleet(&f.1, json!({}), json!(null)).unwrap();
+    assert_eq!(paused["nodes"][0]["state"], "paused");
+    let t1 = paused["tasks"].as_array().unwrap().iter().find(|t| t["id"] == "t1").unwrap().clone();
+    assert_eq!(t1["activity"], "paused_by_machine");
+}

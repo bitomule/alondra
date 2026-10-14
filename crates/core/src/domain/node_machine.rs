@@ -23,6 +23,10 @@ pub enum NodePhase {
     Lost,
     /// A turn is running.
     Working,
+    /// Its turn ended behind work of its own that runs in the background (a command, a subagent):
+    /// Claude Code wakes it with the result when that work ends. Its work uses the machine and it
+    /// goes on without passing the gate, so it keeps its slot.
+    WaitingBackground(Background),
     /// A card of its task waits for the user, whether its turn still runs or ended. Whatever it
     /// does meanwhile, the user moves it, so it holds no slot.
     WaitingUser { in_turn: bool },
@@ -47,7 +51,7 @@ impl NodePhase {
     /// restarted after its session was lost, or one in a turn, delivered or not. A lost node waiting
     /// for the gate takes none.
     pub fn holds_slot(&self) -> bool {
-        matches!(self, Self::Starting { .. } | Self::Working | Self::Delivered { in_turn: true })
+        matches!(self, Self::Starting { .. } | Self::Working | Self::WaitingBackground(_) | Self::Delivered { in_turn: true })
     }
     /// Its session is gone and Alondra brings it back: lost and waiting for the gate, or being
     /// restarted. Its task keeps it, yet it is no connected node.
@@ -57,12 +61,17 @@ impl NodePhase {
     pub fn live(&self) -> bool {
         !matches!(self, Self::Closed)
     }
+    /// A turn of its own runs, whatever it waits for inside it.
+    pub fn in_turn(&self) -> bool {
+        matches!(self, Self::Starting { .. } | Self::Working | Self::WaitingUser { in_turn: true } | Self::Delivered { in_turn: true })
+    }
     pub fn key(&self) -> &'static str {
         match self {
             Self::Starting { reviving: false } => "starting",
             Self::Starting { reviving: true } => "reviving",
             Self::Lost => "lost",
             Self::Working => "working",
+            Self::WaitingBackground(_) => "waiting_background",
             Self::WaitingUser { .. } => "waiting_user",
             Self::Paused(_) => "paused",
             Self::Delivered { .. } => "delivered",
@@ -71,6 +80,18 @@ impl NodePhase {
             Self::Closed => "closed",
         }
     }
+}
+
+/// The work a node left running in the background when its turn ended: the oldest of it, and how
+/// many more.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Background {
+    pub work: crate::model::BackgroundKind,
+    /// The command, or what the subagent does, as Claude Code lists it.
+    pub label: String,
+    pub since: Millis,
+    #[serde(default)]
+    pub others: u32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -134,6 +155,10 @@ pub enum Listed {
 pub enum NodeEvent {
     TurnStarted,
     TurnEnded,
+    /// Its turn ended behind work of its own still running in the background.
+    TurnEndedBehind { work: Background },
+    /// The work it waited for ended, died or hung and no turn came to take its result.
+    BackgroundEnded,
     /// A Claude API error ended its turn and Alondra does not send it back by itself.
     TurnFailed,
     /// The session ended or crashed while its task still needs it.
@@ -157,6 +182,8 @@ impl NodeEvent {
         match self {
             Self::TurnStarted => "turn_started",
             Self::TurnEnded => "turn_ended",
+            Self::TurnEndedBehind { .. } => "turn_ended_behind",
+            Self::BackgroundEnded => "background_ended",
             Self::TurnFailed => "turn_failed",
             Self::SessionLost => "session_lost",
             Self::SessionClosed => "session_closed",
@@ -172,7 +199,7 @@ impl NodeEvent {
     }
     /// Reports that carry the reporter's clock: one older than the node's phase is refused.
     fn timed(&self) -> bool {
-        matches!(self, Self::TurnStarted | Self::TurnEnded | Self::TurnFailed | Self::SessionLost)
+        matches!(self, Self::TurnStarted | Self::TurnEnded | Self::TurnEndedBehind { .. } | Self::TurnFailed | Self::SessionLost)
     }
 }
 
@@ -225,6 +252,7 @@ pub fn settle(phase: NodePhase, f: &TaskFacts) -> NodePhase {
         NodePhase::Closing if f.open && !f.closing => rest(f),
         NodePhase::Closing => NodePhase::Closing,
         _ if f.closing => NodePhase::Closing,
+        NodePhase::WaitingBackground(_) if f.held || f.card || f.delivered => rest(f),
         NodePhase::Working | NodePhase::Starting { reviving: false } if f.held || f.card => NodePhase::WaitingUser { in_turn: true },
         NodePhase::Working | NodePhase::Starting { reviving: false } if f.delivered => NodePhase::Delivered { in_turn: true },
         NodePhase::WaitingUser { in_turn: true } if !f.held && !f.card => if f.delivered { NodePhase::Delivered { in_turn: true } } else { NodePhase::Working },
@@ -253,10 +281,13 @@ pub fn next(phase: &NodePhase, since: Millis, event: &NodeEvent, f: &TaskFacts, 
             return refuse("paused_for_memory", "Alondra brings back a node it paused for memory once the Mac has room"),
         (P::Paused(Pause { reason: PauseReason::Declared { .. }, .. }), NodeEvent::TurnStarted) =>
             return refuse("waits_for_machine", "A node that said it waits for the machine comes back when the gate resumes it"),
-        (P::Closing, NodeEvent::TurnStarted | NodeEvent::TurnEnded | NodeEvent::TurnFailed) => P::Closing,
+        (P::Closing, NodeEvent::TurnStarted | NodeEvent::TurnEnded | NodeEvent::TurnEndedBehind { .. } | NodeEvent::TurnFailed) => P::Closing,
         (_, NodeEvent::TurnStarted) => P::Working,
-        (P::Paused(_), NodeEvent::TurnEnded | NodeEvent::TurnFailed) => phase.clone(),
+        (P::Paused(_), NodeEvent::TurnEnded | NodeEvent::TurnEndedBehind { .. } | NodeEvent::TurnFailed) => phase.clone(),
         (_, NodeEvent::TurnEnded | NodeEvent::TurnFailed) => rest(f),
+        (_, NodeEvent::TurnEndedBehind { work }) => P::WaitingBackground(work.clone()),
+        (P::WaitingBackground(_), NodeEvent::BackgroundEnded) => rest(f),
+        (_, NodeEvent::BackgroundEnded) => return refuse("not_waiting_background", "The node waits for no work of its own"),
         (P::Paused(_), NodeEvent::SessionLost) => phase.clone(),
         (P::Closing, NodeEvent::SessionLost) => P::Closed,
         (_, NodeEvent::SessionLost) => lost(),
@@ -265,7 +296,7 @@ pub fn next(phase: &NodePhase, since: Millis, event: &NodeEvent, f: &TaskFacts, 
         (_, NodeEvent::StartFailed | NodeEvent::RevivalFailed) => return refuse("not_starting", "The node is not starting"),
         (P::Lost, NodeEvent::RevivalAdmitted) => P::Starting { reviving: true },
         (_, NodeEvent::RevivalAdmitted) => return refuse("not_lost", "Only a node whose session was lost is let back"),
-        (P::Starting { .. } | P::Working | P::Delivered { in_turn: true } | P::Stopped, NodeEvent::Paused { pause }) => P::Paused(pause.clone()),
+        (P::Starting { .. } | P::Working | P::WaitingBackground(_) | P::Delivered { in_turn: true } | P::Stopped, NodeEvent::Paused { pause }) => P::Paused(pause.clone()),
         (P::Paused(_), NodeEvent::Paused { .. }) => return refuse("already_paused", "The node is already paused"),
         (_, NodeEvent::Paused { .. }) => return refuse("not_working", "Only a node at work, or one whose turn ended with nothing pending, can be paused"),
         (P::Paused(pause), NodeEvent::PauseCleanup { cleanup }) => P::Paused(Pause { cleanup: *cleanup, ..pause.clone() }),
@@ -293,13 +324,72 @@ fn observe(phase: &NodePhase, since: Millis, listed: Listed, f: &TaskFacts, at: 
         (_, Listed::Absent) => if f.open && !f.closing { P::Lost } else { P::Closed },
         (_, Listed::Done) if !f.open || f.closing => P::Closed,
         (P::WaitingUser { .. } | P::Delivered { in_turn: false } | P::Stopped, Listed::Idle | Listed::Blocked | Listed::Done) => phase.clone(),
+        (P::WaitingBackground(_), _) => phase.clone(),
         (_, Listed::Idle | Listed::Blocked | Listed::Done) => rest(f),
         (P::WaitingUser { .. } | P::Delivered { .. }, Listed::Working) => phase.clone(),
         (_, Listed::Working) => P::Working,
     }
 }
 
+/// What an open task's node does for it, read from the node's one phase: what every reader says of
+/// the task beside its lifecycle state, so none says it works while its node is paused or waits.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum TaskActivity {
+    Starting,
+    /// Its session was lost and it waits for the gate to be restarted.
+    ComingBack,
+    Reconnecting,
+    Working,
+    WaitingBackground(Background),
+    WaitingUser,
+    Paused(Pause),
+    Delivered,
+    Stopped,
+    /// Its node's session is closed while the task is still open.
+    NodeClosed,
+}
+
+impl TaskActivity {
+    pub fn key(&self) -> &'static str {
+        match self {
+            Self::Starting => "starting",
+            Self::ComingBack => "coming_back",
+            Self::Reconnecting => "reconnecting",
+            Self::Working => "working",
+            Self::WaitingBackground(_) => "waiting_background",
+            Self::WaitingUser => "waiting_user",
+            Self::Paused(Pause { reason: PauseReason::ByUser, .. }) => "paused_by_user",
+            Self::Paused(_) => "paused_by_machine",
+            Self::Delivered => "delivered",
+            Self::Stopped => "stopped",
+            Self::NodeClosed => "node_closed",
+        }
+    }
+}
+
 impl DomainState {
+    /// What the node of an open task does for it; `None` for a task that ended, is closing, or has
+    /// no node.
+    pub fn task_activity(&self, task: &Task) -> Option<TaskActivity> {
+        if task.state.terminal() || task.state == TaskState::Closing || task.archived {
+            return None;
+        }
+        let agent = task.agent_id.as_ref()?;
+        Some(match self.node_phase(agent) {
+            None | Some(NodePhase::Closing | NodePhase::Closed) => TaskActivity::NodeClosed,
+            Some(NodePhase::Starting { reviving: true }) => TaskActivity::Reconnecting,
+            Some(NodePhase::Starting { reviving: false }) => TaskActivity::Starting,
+            Some(NodePhase::Lost) => TaskActivity::ComingBack,
+            Some(NodePhase::Working) => TaskActivity::Working,
+            Some(NodePhase::WaitingBackground(work)) => TaskActivity::WaitingBackground(work.clone()),
+            Some(NodePhase::WaitingUser { .. }) => TaskActivity::WaitingUser,
+            Some(NodePhase::Paused(pause)) => TaskActivity::Paused(pause.clone()),
+            Some(NodePhase::Delivered { .. }) => TaskActivity::Delivered,
+            Some(NodePhase::Stopped) => TaskActivity::Stopped,
+        })
+    }
+
     /// The task a node works on: its open one, else the last it had.
     pub fn node_task(&self, agent: &AgentId) -> Option<&Task> {
         let mine = || self.tasks.values().filter(move |t| t.agent_id.as_ref() == Some(agent));

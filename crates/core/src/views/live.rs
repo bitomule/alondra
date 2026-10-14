@@ -221,6 +221,9 @@ pub struct LiveNode {
     pub quiet: bool,
     #[serde(default)]
     pub state_since: Option<String>,
+    /// The local time its turn ended behind work of its own that it now waits for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub background_since: Option<String>,
     pub last_message: Option<String>,
     pub last_message_at: Option<String>,
     /// The rest is what the node mod reports.

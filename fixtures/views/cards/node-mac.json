@@ -4,7 +4,7 @@
   "view": "node",
   "key": "node:d887a34b-249e-4487-a89b-57de38c26372",
   "client": "mac",
-  "version": "v40494f0aa75d9caa",
+  "version": "vfc6b731a2339210a",
   "cursor": "cursor-1",
   "title": "Alondra · iOS",
   "status": {
@@ -224,27 +224,6 @@
           "text": "The simulator pass completed successfully.",
           "truncated": false,
           "commentable": false
-        }
-      ]
-    },
-    {
-      "id": "now",
-      "title": "Right now",
-      "collapsed": false,
-      "items": [
-        {
-          "type": "row",
-          "id": "2026-09-30T09:55:00Z",
-          "icon": "history",
-          "title": "Reading the localization catalog",
-          "subtitle": "Task Check the Spanish strings",
-          "trailing": {
-            "kind": "time",
-            "at": "2026-09-30T09:55:00Z",
-            "format": "relative"
-          },
-          "depth": 0,
-          "struck": false
         }
       ]
     },

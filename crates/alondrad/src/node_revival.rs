@@ -96,6 +96,11 @@ async fn watch_stalls(domain: Arc<DomainRuntime>) {
             let domain = domain.clone();
             tokio::spawn(async move { revive_stalled(&domain, &session, &crate::orchestrate::ClaudeCli, &Timing::LIVE).await });
         }
+        for agent in crate::domain_transport::background_over(&domain, now) {
+            if let Err(error) = crate::domain_agent_lifecycle::node_event(&domain, &agent, alondra_core::domain::NodeEvent::BackgroundEnded) {
+                log!("could not record that the background work of {agent} is over: {error}");
+            }
+        }
         for (session, text) in crate::domain_transport::behind_hung_work(&domain, now, &mut reminded) {
             if domain.live.pushes.message(&session, crate::node_push::ALONDRA, &text, false).is_err() {
                 log!("could not send {session} back to its task: its connection is gone");

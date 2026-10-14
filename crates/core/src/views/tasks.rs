@@ -6,11 +6,6 @@ use super::{
 use crate::domain::{DomainState, ModelChooser, NodeEnd, Request, RequestId, Task, TaskId, TaskState};
 use std::collections::{BTreeMap, BTreeSet};
 
-/// The task's state as a short line, the same the Tasks list shows.
-fn state(task: &Task, context: &RenderContext<'_>) -> String {
-    task_state::present(task, context).state
-}
-
 /// A task's own screen says its state with the fact that explains it, unless what it does now has its own lines.
 fn detail_state(task: &Task, context: &RenderContext<'_>) -> String {
     let presentation = task_state::present(task, context);
@@ -273,11 +268,12 @@ fn request_row(request: &Request, forest: &Forest<'_>, context: &RenderContext<'
     if context.client != super::Client::Ios && !split {
         match tasks {
             [task] => {
-                let (icon, tone) = common::task_presentation(task.state);
+                let (icon, _) = common::task_presentation(task.state);
+                let presented = task_state::present(task, context);
                 row.icon = icon;
                 row.struck = task.state == TaskState::Cancelled;
                 row.subtitle = None;
-                row.badges.insert(0, super::Label { text: state(task, context).into(), tone });
+                row.badges.insert(0, super::Label { text: presented.state, tone: presented.tone });
                 row.badges.extend(common::scheduled_mark(task, context.domain, context.lang));
                 row.actions.extend(relaunch_action(task, context));
                 row.actions.extend(super::pacing::task_actions(task, context));
@@ -953,7 +949,7 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
     let mut facts = vec![Fact {
         label: t!(context.lang, "State", "Estado").into(),
         value: detail_state(task, context),
-        tone: Some(common::task_presentation(task.state).1),
+        tone: Some(task_state::present(task, context).tone),
         link: None,
     }];
     if let Some(agent_id) = &task.agent_id {

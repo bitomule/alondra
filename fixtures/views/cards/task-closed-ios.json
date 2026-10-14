@@ -4,7 +4,7 @@
   "view": "task",
   "key": "task:t-651c38484cd2f34e74d5107ba05f7f15",
   "client": "ios",
-  "version": "v82b06afc093a270c",
+  "version": "v1934a25638ca29c1",
   "cursor": "cursor-1",
   "title": "Restore the native review experience",
   "status": {
@@ -70,7 +70,7 @@
             {
               "label": "State",
               "value": "Stopped · You closed its session before it delivered",
-              "tone": "neutral"
+              "tone": "warning"
             },
             {
               "label": "Request",

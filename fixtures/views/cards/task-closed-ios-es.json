@@ -4,7 +4,7 @@
   "view": "task",
   "key": "task:t-651c38484cd2f34e74d5107ba05f7f15",
   "client": "ios",
-  "version": "v0e7cb54a20315132",
+  "version": "ve19443095a7f2088",
   "cursor": "cursor-1",
   "title": "Restore the native review experience",
   "status": {
@@ -70,7 +70,7 @@
             {
               "label": "Estado",
               "value": "Detenida · Cerraste su sesión sin que entregara",
-              "tone": "neutral"
+              "tone": "warning"
             },
             {
               "label": "Solicitud",

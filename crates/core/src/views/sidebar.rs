@@ -11,11 +11,8 @@ fn task_subtitle(task: &Task, context: &RenderContext<'_>, group: Option<&str>) 
     let queued = common::paused(task, context).map(|paused| common::paused_label(paused, context.lang))
         .or_else(|| common::queued(task, context).or_else(|| common::coming_back_queued(task, context))
             .map(|queued| common::queued_label(queued, context.lang)));
-    let state = common::instruction_label(task, context.domain, context.lang)
-        .or_else(|| common::failed_launch(task, context.domain).map(|_| common::launch_failed_label(context.lang)))
-        .or_else(|| common::node_closed(task, context).then(|| common::node_closed_label(context.lang)))
-        .unwrap_or_else(|| task_state_label(shown_state(task, context), context.lang));
-    let state = queued.as_deref().unwrap_or(state);
+    let presented = super::task_state::present(task, context).state;
+    let state = queued.as_deref().unwrap_or(&presented);
     let project = project.filter(|project| !project.is_empty() && *project != "others");
     let state = (group != Some(state)).then_some(state);
     match (project, state) {
@@ -35,27 +32,13 @@ fn shown_state(task: &Task, context: &RenderContext<'_>) -> TaskState {
     }
 }
 
-fn task_state_label(state: TaskState, lang: super::Lang) -> &'static str {
-    match state {
-        TaskState::NotStarted => t!(lang, "Not started", "Sin empezar"),
-        TaskState::Running => t!(lang, "Working", "Trabajando"),
-        TaskState::NeedsYou => t!(lang, "Needs you", "Te necesita"),
-        TaskState::ForYourReview => t!(lang, "In review", "En revisión"),
-        TaskState::AwaitingBlocker => t!(lang, "Waiting", "Esperando"),
-        TaskState::WaitingDependency => t!(lang, "Waiting", "Esperando"),
-        TaskState::Closing => t!(lang, "Closing", "Cerrando"),
-        TaskState::Done => t!(lang, "Finished", "Terminado"),
-        TaskState::Cancelled => t!(lang, "Cancelled", "Cancelado"),
-    }
-}
-
 fn task_groups(context: &RenderContext<'_>) -> super::Section {
     let states = [
         (TaskState::NeedsYou, "needs_you", t!(context.lang, "Needs you", "Te necesita")),
         (TaskState::ForYourReview, "in_review", t!(context.lang, "In review", "En revisión")),
         (TaskState::AwaitingBlocker, "awaiting_blocker", t!(context.lang, "Waiting", "Esperando")),
         (TaskState::Closing, "closing", t!(context.lang, "Closing", "Cerrando")),
-        (TaskState::Running, "running", t!(context.lang, "Working", "Trabajando")),
+        (TaskState::Running, "running", t!(context.lang, "In progress", "En marcha")),
         (TaskState::WaitingDependency, "waiting_dependency", t!(context.lang, "Waiting", "Esperando")),
         (TaskState::NotStarted, "not_started", t!(context.lang, "Not started", "Sin empezar")),
         (TaskState::Done, "done", t!(context.lang, "Finished", "Terminado")),
@@ -66,11 +49,12 @@ fn task_groups(context: &RenderContext<'_>) -> super::Section {
         let children: Vec<_> = context.domain.tasks.values()
             .filter(|task| !task.archived && shown_state(task, context) == state)
             .map(|task| {
-                let (icon, tone) = common::task_presentation(state);
+                let (icon, _) = common::task_presentation(state);
+                let presented = super::task_state::present(task, context);
                 let mut row = common::row(&task.id.0, &format!("task:{}", task.id),
-                    icon, task.title.clone(), task_subtitle(task, context, Some(title)));
+                    icon, task.title.clone(), task_subtitle(task, context, Some(&presented.state)));
                 row.struck = state == TaskState::Cancelled;
-                row.badges.push(Label { text: title.into(), tone });
+                row.badges.push(Label { text: presented.state, tone: presented.tone });
                 row.badges.extend(common::scheduled_mark(task, context.domain, context.lang));
                 row.depth = 1;
                 row
@@ -157,12 +141,12 @@ fn project_sections(context: &RenderContext<'_>) -> Vec<super::Section> {
         row.trailing = Some(Trailing::Count { value: pending as u32 });
         row.children = common::current_task(context.domain, &agent.id).into_iter()
             .map(|task| {
-                let (icon, tone) = common::task_presentation(task.state);
+                let (icon, _) = common::task_presentation(task.state);
+                let presented = super::task_state::present(task, context);
                 let mut child = common::row(&task.id.0, &format!("task:{}", task.id), icon,
-                    task.title.clone(), task_subtitle(task, context, None));
+                    task.title.clone(), task_subtitle(task, context, Some(&presented.state)));
                 child.depth = 1;
-                child.badges.push(Label { text: common::instruction_label(task, context.domain, context.lang)
-                    .unwrap_or_else(|| task_state_label(task.state, context.lang)).into(), tone });
+                child.badges.push(Label { text: presented.state, tone: presented.tone });
                 child
             }).collect();
         projects.entry(project.into()).or_default().push(row);

@@ -24,12 +24,17 @@ fn declared() -> PauseReason {
     PauseReason::Declared { reason: "The build queue is full".into() }
 }
 
+fn background() -> Background {
+    Background { work: crate::model::BackgroundKind::Shell, label: "./deploy/brew/release.sh 0.2.67".into(), since: SINCE, others: 0 }
+}
+
 fn phases() -> Vec<NodePhase> {
     vec![
         NodePhase::Starting { reviving: false },
         NodePhase::Starting { reviving: true },
         NodePhase::Lost,
         NodePhase::Working,
+        NodePhase::WaitingBackground(background()),
         NodePhase::WaitingUser { in_turn: true },
         NodePhase::WaitingUser { in_turn: false },
         NodePhase::Paused(pause(PauseReason::Memory)),
@@ -46,7 +51,7 @@ fn phases() -> Vec<NodePhase> {
 
 fn events() -> Vec<NodeEvent> {
     let mut all = vec![
-        NodeEvent::TurnStarted, NodeEvent::TurnEnded, NodeEvent::TurnFailed, NodeEvent::SessionLost, NodeEvent::SessionClosed,
+        NodeEvent::TurnStarted, NodeEvent::TurnEnded, NodeEvent::TurnEndedBehind { work: background() }, NodeEvent::BackgroundEnded, NodeEvent::TurnFailed, NodeEvent::SessionLost, NodeEvent::SessionClosed,
         NodeEvent::StartFailed, NodeEvent::RevivalFailed, NodeEvent::RevivalAdmitted, NodeEvent::Paused { pause: pause(PauseReason::Usage) },
         NodeEvent::PauseCleanup { cleanup: PauseCleanup::Done }, NodeEvent::PauseReleased, NodeEvent::Resumed,
     ];
@@ -69,9 +74,11 @@ fn forbidden(phase: &NodePhase, event: &NodeEvent) -> Option<&'static str> {
         (P::Lost, E::RevivalAdmitted) => None,
         (_, E::RevivalAdmitted) => Some("not_lost"),
         (P::Paused(_), E::Paused { .. }) => Some("already_paused"),
-        (P::Starting { .. } | P::Working | P::Delivered { in_turn: true } | P::Stopped, E::Paused { .. }) => None,
+        (P::Starting { .. } | P::Working | P::WaitingBackground(_) | P::Delivered { in_turn: true } | P::Stopped, E::Paused { .. }) => None,
         (_, E::Paused { .. }) => Some("not_working"),
         (_, E::PauseCleanup { .. } | E::PauseReleased | E::Resumed) if !paused => Some("not_paused"),
+        (P::WaitingBackground(_), E::BackgroundEnded) => None,
+        (_, E::BackgroundEnded) => Some("not_waiting_background"),
         _ => None,
     }
 }
@@ -179,6 +186,15 @@ forbid! {
     closing_refuses_a_pause_cleanup: NodePhase::Closing, NodeEvent::PauseCleanup { cleanup: PauseCleanup::Done } => "not_paused";
     closing_refuses_a_pause_release: NodePhase::Closing, NodeEvent::PauseReleased => "not_paused";
     closing_refuses_a_resume: NodePhase::Closing, NodeEvent::Resumed => "not_paused";
+
+    waiting_background_refuses_a_failed_start: NodePhase::WaitingBackground(background()), NodeEvent::StartFailed => "not_starting";
+    waiting_background_refuses_a_revival: NodePhase::WaitingBackground(background()), NodeEvent::RevivalAdmitted => "not_lost";
+    waiting_background_refuses_a_pause_cleanup: NodePhase::WaitingBackground(background()), NodeEvent::PauseCleanup { cleanup: PauseCleanup::Done } => "not_paused";
+    waiting_background_refuses_a_resume: NodePhase::WaitingBackground(background()), NodeEvent::Resumed => "not_paused";
+    working_refuses_an_end_of_background_work: NodePhase::Working, NodeEvent::BackgroundEnded => "not_waiting_background";
+    stopped_refuses_an_end_of_background_work: NodePhase::Stopped, NodeEvent::BackgroundEnded => "not_waiting_background";
+    paused_refuses_an_end_of_background_work: NodePhase::Paused(pause(PauseReason::ByUser)), NodeEvent::BackgroundEnded => "not_waiting_background";
+    closed_refuses_an_end_of_background_work: NodePhase::Closed, NodeEvent::BackgroundEnded => "node_closed";
 }
 
 macro_rules! stale {
@@ -196,6 +212,7 @@ stale! {
     a_late_turn_start_never_moves_a_delivered_node: NodePhase::Delivered { in_turn: false }, NodeEvent::TurnStarted;
     a_late_turn_start_never_moves_a_stopped_node: NodePhase::Stopped, NodeEvent::TurnStarted;
     a_late_turn_end_never_moves_a_working_node: NodePhase::Working, NodeEvent::TurnEnded;
+    a_late_turn_end_behind_background_work_never_moves_a_working_node: NodePhase::Working, NodeEvent::TurnEndedBehind { work: background() };
     a_late_failed_turn_never_moves_a_working_node: NodePhase::Working, NodeEvent::TurnFailed;
     a_late_lost_session_never_moves_a_working_node: NodePhase::Working, NodeEvent::SessionLost;
     a_late_lost_session_never_moves_a_revived_node: NodePhase::Starting { reviving: false }, NodeEvent::SessionLost;
@@ -392,10 +409,51 @@ fn a_session_missing_from_the_listing_frees_its_slot_once_its_start_had_time() {
         "a node without an open task whose session is gone is closed");
 }
 
+/// 13 October, the release of 0.2.67: the node ran the release script in the background and ended
+/// its turn to wait for it; Claude Code woke it with the result twelve minutes later. It waits for
+/// its own command the whole time, holding its slot, whatever the listing of sessions says.
+#[test]
+fn a_node_waiting_for_its_own_command_keeps_its_slot_until_the_command_wakes_it() {
+    let behind = NodeEvent::TurnEndedBehind { work: background() };
+    let waiting = next(&NodePhase::Working, SINCE, &behind, &OPEN, AT).unwrap();
+    assert_eq!(waiting, NodePhase::WaitingBackground(background()));
+    assert!(waiting.holds_slot(), "its command uses the Mac and it goes on without the gate");
+    for listed in [Listed::Idle, Listed::Blocked, Listed::Done, Listed::Working] {
+        assert_eq!(next(&waiting, SINCE, &NodeEvent::Listed { listed }, &OPEN, SINCE + 12 * 60_000).unwrap(), waiting,
+            "a listing has no turns: {listed:?} leaves it waiting");
+    }
+    assert_eq!(next(&waiting, SINCE, &NodeEvent::TurnStarted, &OPEN, AT).unwrap(), NodePhase::Working, "the command's end wakes it");
+}
+
+#[test]
+fn a_node_whose_command_ended_without_waking_it_rests_and_frees_its_slot() {
+    let waiting = NodePhase::WaitingBackground(background());
+    let rested = next(&waiting, SINCE, &NodeEvent::BackgroundEnded, &OPEN, AT).unwrap();
+    assert_eq!(rested, NodePhase::Stopped, "the guardian takes it from there");
+    assert!(!rested.holds_slot());
+    assert_eq!(next(&waiting, SINCE, &NodeEvent::Listed { listed: Listed::Absent }, &OPEN, AT).unwrap(), NodePhase::Lost,
+        "a session that is gone is lost, command or not");
+    assert_eq!(next(&waiting, SINCE, &NodeEvent::SessionLost, &OPEN, AT).unwrap(), NodePhase::Lost);
+}
+
+#[test]
+fn a_node_waiting_for_its_command_yields_to_its_card_its_result_and_its_task_s_end() {
+    let waiting = NodePhase::WaitingBackground(background());
+    assert_eq!(settle(waiting.clone(), &TaskFacts { card: true, ..OPEN }), NodePhase::WaitingUser { in_turn: false });
+    assert_eq!(settle(waiting.clone(), &TaskFacts { delivered: true, ..OPEN }), NodePhase::Delivered { in_turn: false });
+    assert_eq!(settle(waiting.clone(), &TaskFacts { closing: true, ..OPEN }), NodePhase::Closing);
+    assert_eq!(settle(waiting.clone(), &OPEN), waiting);
+    let paused = next(&waiting, SINCE, &NodeEvent::Paused { pause: pause(PauseReason::ByUser) }, &OPEN, AT).unwrap();
+    assert!(matches!(paused, NodePhase::Paused(_)) && !paused.holds_slot(), "the user may pause it");
+    assert_eq!(next(&paused, SINCE, &NodeEvent::TurnEndedBehind { work: background() }, &OPEN, AT).unwrap(), paused,
+        "a turn the pause cut ends behind its work and stays paused");
+}
+
 #[derive(Clone, Debug)]
 enum Step {
     Launch,
     Turn { pick: usize, start: bool, late: bool },
+    Background { pick: usize, ended: bool },
     ApiFailure { pick: usize, retried: bool },
     Ask(usize),
     Answer(usize),
@@ -418,6 +476,7 @@ fn step() -> impl Strategy<Value = Step> {
     prop_oneof![
         3 => Just(Step::Launch),
         6 => (0usize..8, any::<bool>(), prop::bool::weighted(0.25)).prop_map(|(pick, start, late)| Step::Turn { pick, start, late }),
+        3 => (0usize..8, any::<bool>()).prop_map(|(pick, ended)| Step::Background { pick, ended }),
         2 => (0usize..8, any::<bool>()).prop_map(|(pick, retried)| Step::ApiFailure { pick, retried }),
         2 => (0usize..8).prop_map(Step::Ask),
         2 => (0usize..8).prop_map(Step::Answer),
@@ -542,6 +601,17 @@ impl World {
                 if accepted && !late && self.real.contains_key(&agent) {
                     self.real.insert(agent, if start { Listed::Working } else { Listed::Idle });
                 }
+            }
+            Step::Background { pick, ended: false } => {
+                let Some(agent) = self.pick(pick, |a, _| a.phase.live()) else { return };
+                let work = Background { work: crate::model::BackgroundKind::Shell, label: "make test".into(), since: self.now, others: 0 };
+                if self.event(&agent, NodeEvent::TurnEndedBehind { work }, self.now) && self.real.contains_key(&agent) {
+                    self.real.insert(agent, Listed::Idle);
+                }
+            }
+            Step::Background { pick, ended: true } => {
+                let Some(agent) = self.pick(pick, |a, _| matches!(a.phase, NodePhase::WaitingBackground(_))) else { return };
+                assert!(self.event(&agent, NodeEvent::BackgroundEnded, self.now));
             }
             Step::ApiFailure { pick, retried } => {
                 let Some(agent) = self.pick(pick, |a, _| a.phase.live()) else { return };
@@ -676,7 +746,8 @@ impl World {
         assert!(self.s.paused_nodes().keys().all(|id| !slots.contains(&id.0)), "a paused node holds a slot");
 
         let fleet = self.render("fleet");
-        let at_work = ["Working", "Starting", "Reconnecting", "Merging", "Stalled", "Failed", "Waiting for your review", "Delivering results"];
+        let at_work = ["Working", "Starting", "Reconnecting", "Merging", "Stalled", "Failed", "Waiting for your review", "Delivering results",
+            "Waiting for its command"];
         let delivered: BTreeSet<String> = self.s.agents.values().filter(|a| a.phase == NodePhase::Delivered { in_turn: false })
             .map(|a| a.id.0.clone()).collect();
         let in_fleet: BTreeSet<String> = badged(&fleet, &at_work).difference(&delivered).cloned().collect();
@@ -690,12 +761,17 @@ impl World {
 
         let tasks = self.render("tasks");
         let task_slots: BTreeSet<String> = self.s.slots().iter()
-            .filter_map(|a| self.s.node_task(&a.id).filter(|t| !t.state.terminal()).map(|t| t.id.0.clone())).collect();
-        let task_slots: BTreeSet<String> = self.s.slots().iter()
             .filter(|a| !matches!(a.phase, NodePhase::Delivered { .. }) && !(a.phase.coming_back() && self.s.task_facts(&a.id).delivered))
             .filter_map(|a| self.s.node_task(&a.id).filter(|t| !t.state.terminal()).map(|t| t.id.0.clone())).collect();
-        let listed = badged(&tasks, &["Working", "Reconnecting", "Making changes", "Resolving conflicts", "Answering you"]);
+        let at_work = ["Working", "Reconnecting", "Making changes", "Resolving conflicts", "Answering you", "Waiting for its command"];
+        let listed = badged(&tasks, &at_work);
         assert_eq!(listed, task_slots, "the Tasks list says at work of the tasks whose node holds a slot");
+        let paused: BTreeSet<String> = self.s.paused_nodes().keys()
+            .filter_map(|agent| self.s.node_task(agent).filter(|t| !t.state.terminal()).map(|t| t.id.0.clone())).collect();
+        for view in [&tasks, &self.render("sidebar"), &fleet] {
+            let working = badged(view, &at_work);
+            assert!(working.is_disjoint(&paused), "{} says a task whose node is paused is at work: {:?}", view.view, working.intersection(&paused));
+        }
 
         let header = fleet.status.counts.iter().find(|count| count.id == "working").map(|count| count.value as usize);
         assert_eq!(header, Some(slots.len()), "the header counts the same nodes");
