@@ -318,6 +318,7 @@ pub struct Service {
     iroh_key: iroh::SecretKey,
     /// The iroh relay the Alondra relay announces in its bootstrap.
     iroh_relay: tokio::sync::watch::Sender<Option<String>>,
+    iroh_terminals: crate::iroh_terminals::IrohTerminals,
     /// Writers from either transport share their turn; scheduled relay reads bypass it.
     lane: Arc<tokio::sync::Mutex<()>>,
     #[cfg(test)]
@@ -883,6 +884,7 @@ impl Service {
             iroh: config.iroh,
             iroh_key,
             iroh_relay: tokio::sync::watch::Sender::new(None),
+            iroh_terminals: crate::iroh_terminals::IrohTerminals::open(home),
             lane: Arc::new(tokio::sync::Mutex::new(())),
             #[cfg(test)]
             envelope_clock: None,
@@ -940,6 +942,43 @@ impl Service {
     /// This Mac's iroh endpoint ID when its endpoint runs, as devices dial it.
     pub(crate) fn iroh_endpoint(&self) -> Option<String> {
         self.iroh.enabled.then(|| self.iroh_key.public().to_string())
+    }
+
+    /// A device proved itself from `node` in an iroh hello: remember it, and bind it at the relay
+    /// on this device's behalf when it changed.
+    pub(crate) fn remember_iroh_hello(&self, device_id: &str, node: &str, signature: &str) {
+        let approved = self
+            .devices
+            .get(device_id)
+            .is_some_and(|device| self.require_device_approval(device_id, &device, Transport::Direct).is_ok());
+        if !approved {
+            return;
+        }
+        let hello = crate::iroh_terminals::Hello { node: node.into(), signature: signature.into() };
+        match self.iroh_terminals.record(device_id, hello) {
+            Ok(true) => {
+                if let Some(relay) = &self.relay {
+                    relay.bind_devices_soon();
+                }
+            }
+            Ok(false) => {}
+            Err(error) => log!("iroh endpoint of {device_id} not remembered: {error:#}"),
+        }
+    }
+
+    /// The last iroh hello of every device still approved here.
+    pub(crate) fn iroh_hellos(&self) -> std::collections::BTreeMap<String, crate::iroh_terminals::Hello> {
+        self.iroh_terminals.hellos(|id| {
+            self.devices.get(id).is_some_and(|device| self.require_device_approval(id, &device, Transport::Direct).is_ok())
+        })
+    }
+
+    pub(crate) fn iroh_dial(&self) -> crate::iroh_terminals::Dial {
+        self.iroh_terminals.dial()
+    }
+
+    pub(crate) fn set_iroh_dial(&self, change: impl FnOnce(&mut crate::iroh_terminals::Dial)) {
+        self.iroh_terminals.set_dial(change);
     }
 
     pub(crate) fn iroh_relay_announced(&self) -> tokio::sync::watch::Receiver<Option<String>> {
@@ -1584,7 +1623,10 @@ impl Service {
             }
             let mut routes = json!(crate::direct::routes::current(self.direct.port, self.direct.listen).await);
             if let Some(endpoint) = self.iroh_endpoint() {
+                let dial = self.iroh_dial();
                 routes["iroh_endpoint"] = endpoint.into();
+                routes["iroh_addrs"] = dial.addresses.into();
+                routes["iroh_relay"] = dial.relay.into();
             }
             self.require_device_approval(sender, &device, transport)?;
             return Ok(json!({"status":200,"body":routes}));
@@ -6270,6 +6312,7 @@ agreement_key = "{}"
             iroh: crate::iroh_endpoint::IrohConfig::default(),
             iroh_key: iroh::SecretKey::from_bytes(&[8u8; 32]),
             iroh_relay: tokio::sync::watch::Sender::new(None),
+            iroh_terminals: crate::iroh_terminals::IrohTerminals::empty(),
             lane: Arc::new(tokio::sync::Mutex::new(())),
             #[cfg(test)]
             envelope_clock: None,
@@ -6370,6 +6413,7 @@ agreement_key = "{}"
             iroh: crate::iroh_endpoint::IrohConfig::default(),
             iroh_key: iroh::SecretKey::from_bytes(&[8u8; 32]),
             iroh_relay: tokio::sync::watch::Sender::new(None),
+            iroh_terminals: crate::iroh_terminals::IrohTerminals::empty(),
             lane: Arc::new(tokio::sync::Mutex::new(())),
             #[cfg(test)]
             envelope_clock: None,
@@ -6750,6 +6794,7 @@ agreement_key = "{}"
                     iroh: crate::iroh_endpoint::IrohConfig::default(),
                     iroh_key: iroh::SecretKey::from_bytes(&[8u8; 32]),
                     iroh_relay: tokio::sync::watch::Sender::new(None),
+                    iroh_terminals: crate::iroh_terminals::IrohTerminals::empty(),
                     lane: Arc::new(tokio::sync::Mutex::new(())),
                     #[cfg(test)]
                     envelope_clock: None,
@@ -6898,6 +6943,7 @@ agreement_key = "{}"
             iroh: crate::iroh_endpoint::IrohConfig::default(),
             iroh_key: iroh::SecretKey::from_bytes(&[8u8; 32]),
             iroh_relay: tokio::sync::watch::Sender::new(None),
+            iroh_terminals: crate::iroh_terminals::IrohTerminals::empty(),
             lane: Arc::new(tokio::sync::Mutex::new(())),
             #[cfg(test)]
             envelope_clock: None,
@@ -7066,6 +7112,7 @@ agreement_key = "{}"
             iroh: crate::iroh_endpoint::IrohConfig::default(),
             iroh_key: iroh::SecretKey::from_bytes(&[8u8; 32]),
             iroh_relay: tokio::sync::watch::Sender::new(None),
+            iroh_terminals: crate::iroh_terminals::IrohTerminals::empty(),
             lane: Arc::new(tokio::sync::Mutex::new(())),
             #[cfg(test)]
             envelope_clock: None,
@@ -7108,6 +7155,7 @@ agreement_key = "{}"
             iroh: crate::iroh_endpoint::IrohConfig::default(),
             iroh_key: iroh::SecretKey::from_bytes(&[8u8; 32]),
             iroh_relay: tokio::sync::watch::Sender::new(None),
+            iroh_terminals: crate::iroh_terminals::IrohTerminals::empty(),
             lane: Arc::new(tokio::sync::Mutex::new(())),
             #[cfg(test)]
             envelope_clock: None,
@@ -7315,6 +7363,7 @@ agreement_key = "{}"
             iroh: crate::iroh_endpoint::IrohConfig::default(),
             iroh_key: iroh::SecretKey::from_bytes(&[8u8; 32]),
             iroh_relay: tokio::sync::watch::Sender::new(None),
+            iroh_terminals: crate::iroh_terminals::IrohTerminals::empty(),
             lane: Arc::new(tokio::sync::Mutex::new(())),
             #[cfg(test)]
             envelope_clock: None,

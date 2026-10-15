@@ -84,7 +84,7 @@ fn stop_relay(sandbox: &Sandbox) -> Result<()> {
 }
 
 /// `alondra mac connect --host` in the sandbox's client HOME, approved on the Mac once the codes match.
-fn pair_terminal(sandbox: &Sandbox, target: &Target) -> Result<()> {
+pub(crate) fn pair_terminal(sandbox: &Sandbox, target: &Target) -> Result<()> {
     let mut connect = Command::new(sandbox.dir.join("bin/alondra"))
         .args(["mac", "connect", "--host", &target.direct])
         .env("ALONDRA_HOME", sandbox.dir.join("client"))

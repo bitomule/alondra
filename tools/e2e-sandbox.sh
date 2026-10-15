@@ -14,6 +14,8 @@
 # NEW_MAC=1 adds one more Mac that nothing has set up, for `alondra`'s setup wizard: its daemon
 # starts only when the wizard installs the service, through scripts that stand in for launchd
 # and the relay account.
+# SANDBOX_IROH_RELAY=<url> with SANDBOX_IROH_TOKEN makes the relay announce that iroh relay and
+# answer its access check with that bearer, and the Macs follow it (tools/e2e-iroh-cli.sh).
 set -eu
 
 daemon=$1
@@ -103,6 +105,10 @@ echo $! >"$dir/issuer.pid"
 wait_until "The token issuer" "curl -sf $issuer/jwks.json" "$dir/issuer.log"
 
 "$tool" relay-config --listen "127.0.0.1:$relay_port" --issuer "$issuer" --registry "$dir/relay-devices.json" "$dir/relay.json"
+if [ -n "${SANDBOX_IROH_RELAY:-}" ]; then
+	(umask 077 && printf '%s' "${SANDBOX_IROH_TOKEN:?SANDBOX_IROH_RELAY needs SANDBOX_IROH_TOKEN}" >"$dir/iroh-access-token")
+	export ALONDRA_IROH_RELAY_URL="$SANDBOX_IROH_RELAY" ALONDRA_IROH_ACCESS_TOKEN_FILE="$dir/iroh-access-token"
+fi
 ALONDRA_RELAY_CONFIG="$dir/relay.json" nohup "$dir/bin/alondra-relay" >"$dir/relay.log" 2>&1 &
 echo $! >"$dir/relay.pid"
 wait_until "The relay" "curl -sf ${relay}v1/bootstrap" "$dir/relay.log"
@@ -140,6 +146,7 @@ while [ "$i" -le "$macs" ]; do
 	mkdir -p "$home"
 	mac_id=$("$tool" provision-mac "$home" --relay "$relay" --direct-port "$(direct_port "$i")" --direct-listen "$direct_listen" --iroh-port "$(iroh_port "$i")")
 	"$tool" enroll-mac "$home" --relay "$relay" --issuer "$issuer" --key "$dir/issuer/key.der"
+	[ -z "${SANDBOX_IROH_RELAY:-}" ] || sed -i '' 's/^relay = "off"$/relay = "auto"/' "$home/service.toml"
 	printf 'port = %s\n' "$port" >"$home/config.toml"
 	[ -z "${SANDBOX_NAME:-}" ] || printf 'name = "%s %s"\n' "$SANDBOX_NAME" "$i" >>"$home/config.toml"
 	printf '{"enabledPlugins": {"alondra@alondra": false, "alondra-orchestrator@alondra": false}, "env": {"ALONDRA_LAUNCHED": "1"}}\n' >"$home/settings.json"

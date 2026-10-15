@@ -10,6 +10,7 @@ mod cli;
 mod commands;
 mod client;
 mod direct_client;
+mod iroh_client;
 mod claude_auth;
 mod cleanup;
 mod doctor;
@@ -252,6 +253,15 @@ enum MacCmd {
     #[command(about = tr!("Take a Mac off this terminal's list", "Quita un Mac de la lista de este terminal"))]
     Forget { mac: String },
     #[command(about = tr!(
+        "Time round trips to a Mac this terminal is connected to, and say which way they went",
+        "Mide la ida y vuelta con un Mac al que está conectado este terminal, y dice por qué camino va"
+    ))]
+    Ping {
+        mac: Option<String>,
+        #[arg(long, default_value_t = 20, value_parser = clap::value_parser!(u32).range(1..=1000), help = tr!("How many reads", "Cuántas lecturas"))]
+        count: u32,
+    },
+    #[command(about = tr!(
         "Give this Mac's service a new identity; every device pairs again. Asks you to type the Mac's name",
         "Da una identidad nueva al servicio de este Mac; todos los dispositivos se vuelven a emparejar. Pide escribir el nombre del Mac"
     ))]
@@ -347,7 +357,7 @@ fn takes_json(command: Option<&Cmd>) -> bool {
         Cmd::Doctor { .. } | Cmd::Models { .. } | Cmd::Cleanup { .. }
         | Cmd::Config { command: ConfigCmd::List | ConfigCmd::Get { .. } }
         | Cmd::Device { command: DeviceCmd::List }
-        | Cmd::Mac { command: MacCmd::List }
+        | Cmd::Mac { command: MacCmd::List | MacCmd::Ping { .. } }
         | Cmd::Account { command: AccountCmd::Status }
         | Cmd::Relay { command: RelayCmd::Status }
     ))
@@ -388,6 +398,7 @@ fn run(command: Option<Cmd>, json: bool, no_input: bool) -> Result<()> {
             MacCmd::List => commands::mac_list(json),
             MacCmd::Connect { mac, host, repair } => commands::mac_connect(mac.as_deref(), host.as_deref(), repair),
             MacCmd::Forget { mac } => commands::mac_forget(&mac),
+            MacCmd::Ping { mac, count } => crate::direct_client::ping(mac.as_deref(), count, json),
             MacCmd::ResetIdentity => commands::mac_reset_identity(no_input),
         },
         Some(Cmd::Account { command }) => match command {

@@ -1,6 +1,7 @@
 //! Throwaway Macs, relay and phone for `make e2e-sandbox`. Never points at a real Alondra.
 mod fake;
 mod iroh_check;
+mod iroh_cli;
 mod issuer;
 mod journey;
 mod mac;
@@ -77,6 +78,8 @@ enum Command {
     Scenario,
     /// Checks Mac 1's iroh endpoint against its direct listener and measures both.
     Iroh,
+    /// The real alondra reads Mac 1 over iroh, directly and through the iroh relay only.
+    IrohCli,
     /// The sandbox's `claude` (FAKES=1): what `fakes/claude` runs.
     #[command(hide = true)]
     FakeClaude {
@@ -191,6 +194,7 @@ fn main() -> Result<()> {
         }
         Command::Scenario => scenario::run(&sandbox::Sandbox::open(&cli.sandbox)?),
         Command::Iroh => iroh_check::run(&sandbox::Sandbox::open(&cli.sandbox)?),
+        Command::IrohCli => iroh_cli::run(&sandbox::Sandbox::open(&cli.sandbox)?),
         Command::FakeClaude { args } => std::process::exit(fake::claude(&fake::Fakes::open(&cli.sandbox)?, &args)?),
         Command::FakeGh { args } => std::process::exit(fake::gh(&fake::Fakes::open(&cli.sandbox)?, &args)?),
         Command::FakeNode { short } => fake::node::run(&fake::Fakes::open(&cli.sandbox)?, &short),

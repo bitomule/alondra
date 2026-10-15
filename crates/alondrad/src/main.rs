@@ -48,6 +48,7 @@ mod home_renames;
 mod http;
 mod hub;
 mod iroh_endpoint;
+mod iroh_terminals;
 mod issues;
 mod job_state;
 mod keeper;

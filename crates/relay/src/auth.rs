@@ -134,6 +134,14 @@ pub struct IrohNodeBinding {
     pub proof: String,
 }
 
+/// The iroh endpoint a Mac saw one of its devices say hello from, with that hello's signature.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DeviceIrohNodeBinding {
+    pub iroh_node_id: String,
+    pub hello_signature: String,
+}
+
 /// Who an iroh endpoint ID speaks for, so the account gate can be checked before relaying.
 #[derive(Debug, PartialEq, Eq)]
 pub struct IrohNodeHolder {
@@ -917,6 +925,52 @@ impl Auth {
             match previous {
                 Some(node) => registry.iroh_nodes.insert(who.device_id.clone(), node),
                 None => registry.iroh_nodes.remove(&who.device_id),
+            };
+            return Err(err);
+        }
+        Ok(())
+    }
+
+    /// A Mac binds the iroh endpoint of one of its own devices, one that has no account to bind
+    /// it with (a terminal paired directly). `hello_signature` is the device's own iroh hello to
+    /// this Mac from that endpoint, so the device itself vouches for it. Revoking the device, or
+    /// the Mac, ends the binding as for any other device.
+    pub fn bind_device_iroh_node(&self, mac: &Identity, device_id: &str, binding: DeviceIrohNodeBinding) -> Result<()> {
+        self.ensure_registry_ready()?;
+        let node = iroh_node_key(&binding.iroh_node_id).ok_or(EnrollmentError::InvalidRegistration)?;
+        let mut registry = self.devices.lock().unwrap();
+        let device = registry
+            .devices
+            .get(device_id)
+            .filter(|device| device.owner_sub == mac.owner_sub)
+            .filter(|_| registry.phone_macs.get(device_id) == Some(&mac.device_id))
+            .context("unknown device")?;
+        let mac_node = registry
+            .iroh_nodes
+            .get(&mac.device_id)
+            .and_then(|node| iroh_node_key(node))
+            .ok_or(EnrollmentError::InvalidRegistration)?;
+        alondra_e2e::verify_iroh_hello(
+            &verifying_key(&device.signing_key)?,
+            &binding.hello_signature,
+            &mac.device_id,
+            device_id,
+            &node,
+            &mac_node,
+        )
+        .map_err(|_| EnrollmentError::InvalidRegistration)?;
+        if registry
+            .iroh_nodes
+            .iter()
+            .any(|(id, bound)| *bound == binding.iroh_node_id && id != device_id)
+        {
+            bail!(EnrollmentError::Conflict);
+        }
+        let previous = registry.iroh_nodes.insert(device_id.to_owned(), binding.iroh_node_id);
+        if let Err(err) = self.persist_registry(&registry) {
+            match previous {
+                Some(node) => registry.iroh_nodes.insert(device_id.to_owned(), node),
+                None => registry.iroh_nodes.remove(device_id),
             };
             return Err(err);
         }

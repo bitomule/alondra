@@ -9,9 +9,21 @@ to `alondrad`'s iroh endpoint. The daemon side is `crates/alondrad/src/iroh_endp
   from the pairing QR (`mac_iroh_endpoint`, phones only), from `GET /direct/hello`
   (`iroh_endpoint`) and from the encrypted `GET /routes` (`body.iroh_endpoint`). `/routes` is
   authenticated end to end, so a client paired before iroh existed learns it through the relay.
+- **Where to dial it**: the encrypted `/routes` also gives `iroh_addrs` (the endpoint's direct
+  addresses, `ip:port`) and `iroh_relay` (the iroh relay it uses, or `null`). The CLI keeps them in
+  `direct-iroh.json` beside its pairings and learns them again when they stop working.
 - **Relay**: the Alondra relay's `GET /v1/bootstrap` names it in `iroh_relay` when it has one.
   The Mac binds its endpoint there (`PUT /v1/iroh-node`); the iroh relay admits only bound
-  endpoints, so the client binds its own endpoint the same way before using the relay.
+  endpoints. A phone with an account binds its own endpoint the same way.
+- **A device without an account** (a terminal paired directly) cannot bind its endpoint itself.
+  The Mac does it for the device: once the device's hello succeeds, the Mac sends
+  `PUT /v1/devices/{device_id}/iroh-node` with `{"iroh_node_id", "hello_signature"}`, signed as the
+  Mac, after binding its own endpoint, once per relay epoch and whenever the endpoint changes. The
+  relay checks that the device is enrolled for that Mac and account and that the signature is the
+  device's own hello from that endpoint to this Mac's bound endpoint, so the Mac cannot bind an
+  endpoint the device never used. Revoking the device, the Mac or the account ends the binding.
+  The device therefore reaches the iroh relay only after one hello over the LAN or Tailscale, which
+  pairing already does.
 - **ALPN**: `alondra/1`.
 
 ## Hello

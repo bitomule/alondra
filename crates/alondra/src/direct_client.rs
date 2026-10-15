@@ -16,7 +16,8 @@ use std::fs;
 use std::io::Write as _;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 pub const DEFAULT_PORT: u16 = 47810;
@@ -24,6 +25,8 @@ const STORE: &str = "direct-macs.json";
 const LOCK: &str = "direct-macs.lock";
 const HELLO_TIMEOUT: Duration = Duration::from_millis(1500);
 const PAIRING_WAIT: Duration = Duration::from_secs(130);
+/// After an iroh connection failed, requests go over HTTP this long before iroh is tried again.
+const IROH_RETRY: Duration = Duration::from_secs(60);
 
 /// One Mac this terminal paired with directly.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -59,6 +62,10 @@ pub struct Hello {
 pub enum RouteKind {
     Lan,
     Tailscale,
+    /// iroh, straight to the Mac's public address.
+    Direct,
+    /// iroh, through the iroh relay.
+    Relay,
 }
 
 pub fn route_kind(route: &str) -> RouteKind {
@@ -69,6 +76,24 @@ pub fn route_kind(route: &str) -> RouteKind {
         Err(_) => host.ends_with(".ts.net"),
     };
     if tailnet { RouteKind::Tailscale } else { RouteKind::Lan }
+}
+
+/// The kind of an iroh path: an address on this network or the tailnet keeps its name.
+pub fn iroh_route_kind(path: crate::iroh_client::PathKind) -> RouteKind {
+    match path {
+        crate::iroh_client::PathKind::Relay => RouteKind::Relay,
+        crate::iroh_client::PathKind::Direct(addr) => {
+            let local = match addr.ip() {
+                std::net::IpAddr::V4(v4) => v4.is_private() || v4.is_loopback() || v4.is_link_local(),
+                std::net::IpAddr::V6(v6) => v6.is_loopback() || v6.is_unique_local() || v6.is_unicast_link_local(),
+            };
+            match route_kind(&addr.to_string()) {
+                RouteKind::Tailscale => RouteKind::Tailscale,
+                _ if local => RouteKind::Lan,
+                _ => RouteKind::Direct,
+            }
+        }
+    }
 }
 
 fn now_ms() -> u64 {
@@ -165,17 +190,31 @@ pub fn forget(home: &Path, name: &str) -> Result<Vec<String>> {
         .partition(|mac| mac.mac_id == name || mac.name.eq_ignore_ascii_case(name));
     if !gone.is_empty() {
         save_to(home, kept)?;
+        for mac in &gone {
+            crate::iroh_client::save_dial(home, &mac.mac_id, None)?;
+        }
     }
     Ok(gone.into_iter().map(|mac| mac.mac_id).collect())
 }
 
-fn forget_routes_of_others(home: &Path, mac_id: &str, routes: &[String]) -> Result<()> {
+fn forget_routes_of_others(home: &Path, mac_id: &str, routes: &[String], dial: Option<crate::iroh_client::Dial>) -> Result<()> {
     let _lock = StoreLock::acquire(home)?;
     let mut macs = load_from(home)?;
     for mac in macs.iter_mut().filter(|mac| mac.mac_id == mac_id) {
         mac.routes = routes.to_vec();
     }
-    save_to(home, macs)
+    save_to(home, macs)?;
+    crate::iroh_client::save_dial(home, mac_id, dial)
+}
+
+fn not_accepted(name: &str) -> anyhow::Error {
+    anyhow::Error::new(Answered {
+        status: 401,
+        message: trf!(
+            "{name} no longer accepts this terminal; pair again with: alondra mac connect",
+            "{name} ya no acepta este terminal; vuelve a emparejar con: alondra mac connect"
+        ),
+    })
 }
 
 pub fn hello(route: &str) -> Result<Hello> {
@@ -211,15 +250,44 @@ fn key_changed(name: &str) -> anyhow::Error {
     ))
 }
 
-/// A live connection to one paired Mac; it remembers which route last worked.
+/// The iroh connection to one Mac, when there is one.
+enum IrohLink {
+    Untried,
+    Open(Arc<crate::iroh_client::Session>),
+    Down(Instant),
+}
+
+/// What became of a request sent over iroh.
+enum OverIroh {
+    Answered(Result<(u16, Value)>),
+    NotSent,
+    /// The connection broke after the envelope left: the Mac may have it.
+    Lost,
+}
+
+/// A live connection to one paired Mac: over iroh when it can, else the HTTP route that last
+/// worked.
 pub struct Connection {
     mac: DirectMac,
+    home: PathBuf,
     current: Mutex<Option<String>>,
+    iroh: Mutex<IrohLink>,
+    learned: AtomicBool,
 }
 
 impl Connection {
     pub fn new(mac: DirectMac) -> Self {
-        Self { mac, current: Mutex::new(None) }
+        Self::at(&crate::client::config().home, mac)
+    }
+
+    pub fn at(home: &Path, mac: DirectMac) -> Self {
+        Self {
+            mac,
+            home: home.to_path_buf(),
+            current: Mutex::new(None),
+            iroh: Mutex::new(IrohLink::Untried),
+            learned: AtomicBool::new(false),
+        }
     }
 
     pub fn mac(&self) -> &DirectMac {
@@ -228,9 +296,89 @@ impl Connection {
 
     /// The route in use and how it reaches the Mac, once one answered.
     pub fn route(&self) -> Option<(String, RouteKind)> {
+        if let IrohLink::Open(session) = &*self.iroh.lock().expect("iroh lock poisoned")
+            && let Some(path) = session.path()
+        {
+            let shown = match path {
+                crate::iroh_client::PathKind::Direct(addr) => format!("iroh {addr}"),
+                crate::iroh_client::PathKind::Relay => "iroh relay".to_owned(),
+            };
+            return Some((shown, iroh_route_kind(path)));
+        }
         let current = self.current.lock().expect("route lock poisoned").clone()?;
         let kind = route_kind(&current);
         Some((current, kind))
+    }
+
+    fn iroh_session(&self) -> Option<Arc<crate::iroh_client::Session>> {
+        let mut link = self.iroh.lock().expect("iroh lock poisoned");
+        match &*link {
+            IrohLink::Open(session) if !session.is_closed() => return Some(session.clone()),
+            IrohLink::Down(since) if since.elapsed() < IROH_RETRY => return None,
+            _ => {}
+        }
+        let dial = crate::iroh_client::load_dial(&self.home, &self.mac.mac_id)?;
+        let signing = SigningKey::from_slice(&B64.decode(&self.mac.signing_key).ok()?).ok()?;
+        let identity = crate::iroh_client::Identity { mac_id: &self.mac.mac_id, device_id: &self.mac.device_id, signing: &signing };
+        match crate::iroh_client::connect(&self.home, &dial, &identity) {
+            Ok(session) => {
+                let session = Arc::new(session);
+                *link = IrohLink::Open(session.clone());
+                Some(session)
+            }
+            Err(_) => {
+                *link = IrohLink::Down(Instant::now());
+                None
+            }
+        }
+    }
+
+    /// Opens the iroh connection now, so the Mac knows this terminal's endpoint and can vouch
+    /// for it at the relay. False when the Mac cannot be reached over iroh.
+    pub fn greet_over_iroh(&self) -> bool {
+        self.iroh_session().is_some()
+    }
+
+    fn iroh_down(&self) {
+        *self.iroh.lock().expect("iroh lock poisoned") = IrohLink::Down(Instant::now());
+    }
+
+    fn over_iroh(&self, bytes: &[u8], request_id: &str, timeout: Duration) -> OverIroh {
+        use crate::iroh_client::Reply;
+        let Some(session) = self.iroh_session() else { return OverIroh::NotSent };
+        let name = &self.mac.name;
+        match session.send(bytes, timeout + Duration::from_secs(5)) {
+            Ok(Reply::Sealed(sealed)) => OverIroh::Answered(self.open(&sealed, request_id)),
+            Ok(Reply::Refused { error, detail }) => match error.as_str() {
+                "unauthorized" => OverIroh::Answered(Err(not_accepted(name))),
+                "idempotency_conflict" => OverIroh::Answered(Ok((409, json!({"error": "idempotency_conflict"})))),
+                "wrong_mac" => {
+                    self.iroh_down();
+                    OverIroh::NotSent
+                }
+                _ => OverIroh::Answered(Err(anyhow::Error::new(Answered {
+                    status: 400,
+                    message: detail.unwrap_or(error),
+                }))),
+            },
+            Err(failed) => {
+                *self.iroh.lock().expect("iroh lock poisoned") = IrohLink::Untried;
+                if failed.sent { OverIroh::Lost } else { OverIroh::NotSent }
+            }
+        }
+    }
+
+    /// Learns, once per connection, how to dial the Mac over iroh when that is not known or no
+    /// longer works.
+    fn learn_dial_once(&self) {
+        let known = crate::iroh_client::load_dial(&self.home, &self.mac.mac_id).is_some();
+        let working = matches!(*self.iroh.lock().expect("iroh lock poisoned"), IrohLink::Open(_));
+        if (known && working) || self.learned.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        if self.learn_routes(&self.home).is_ok() {
+            *self.iroh.lock().expect("iroh lock poisoned") = IrohLink::Untried;
+        }
     }
 
     fn candidates(&self) -> Vec<String> {
@@ -293,13 +441,26 @@ impl Connection {
         Ok((status, result.get("body").cloned().unwrap_or(result)))
     }
 
-    /// Sends one request and returns the Mac's answer. If a route fails mid-way, the same sealed
-    /// bytes go to the next route: the Mac runs a request ID once and replays its answer.
+    /// Sends one request and returns the Mac's answer, over iroh first. If a path fails mid-way,
+    /// the same sealed bytes go to the next one: the Mac runs a request ID once and replays its
+    /// answer.
     pub fn request(&self, method: &str, path: &str, body: Option<&Value>, timeout: Duration) -> Result<(u16, Value)> {
         let (request_id, bytes) = self.seal(method, path, body, timeout)?;
+        let sent = match self.over_iroh(&bytes, &request_id, timeout) {
+            OverIroh::Answered(answer) => return answer,
+            OverIroh::NotSent => false,
+            OverIroh::Lost => true,
+        };
+        let answer = self.over_http(&request_id, &bytes, timeout, sent);
+        if answer.is_ok() {
+            self.learn_dial_once();
+        }
+        answer
+    }
+
+    fn over_http(&self, request_id: &str, bytes: &[u8], timeout: Duration, mut sent: bool) -> Result<(u16, Value)> {
         let deadline = Instant::now() + timeout;
         let name = &self.mac.name;
-        let mut sent = false;
         for route in self.candidates() {
             let known = self.current.lock().expect("route lock poisoned").as_deref() == Some(route.as_str());
             if !known && !self.validate(&route)? {
@@ -322,14 +483,8 @@ impl Connection {
             let status = response.status().as_u16();
             let text = response.body_mut().with_config().limit(2 * 1024 * 1024).read_to_vec()?;
             return match status {
-                200 => self.open(&text, &request_id),
-                401 => Err(anyhow::Error::new(Answered {
-                    status,
-                    message: trf!(
-                        "{name} no longer accepts this terminal; pair again with: alondra mac connect",
-                        "{name} ya no acepta este terminal; vuelve a emparejar con: alondra mac connect"
-                    ),
-                })),
+                200 => self.open(&text, request_id),
+                401 => Err(not_accepted(name)),
                 409 => Ok((409, json!({"error": "idempotency_conflict"}))),
                 421 => {
                     *self.current.lock().expect("route lock poisoned") = None;
@@ -350,14 +505,16 @@ impl Connection {
         Err(anyhow::Error::new(Unsent(trf!("{name} is not on this network", "{name} no está en esta red"))))
     }
 
-    /// Asks the Mac where else it can be reached, and keeps those routes for next time.
+    /// Asks the Mac where else it can be reached, and keeps those routes, and how to dial its
+    /// iroh endpoint, for next time.
     pub fn learn_routes(&self, home: &Path) -> Result<Vec<String>> {
+        self.learned.store(true, Ordering::SeqCst);
         let (status, body) = self.request("GET", "/routes", None, Duration::from_secs(10))?;
         if status != 200 {
             bail!("routes unavailable (HTTP {status})");
         }
         let routes = ordered_routes(&body, &self.mac.routes);
-        forget_routes_of_others(home, &self.mac.mac_id, &routes)?;
+        forget_routes_of_others(home, &self.mac.mac_id, &routes, crate::iroh_client::Dial::from_routes(&body))?;
         Ok(routes)
     }
 }
@@ -623,9 +780,77 @@ pub fn connect(host: Option<&str>, repair: bool) -> Result<()> {
     if let Err(error) = connection.learn_routes(&home) {
         eprintln!("{}", trf!("Paired, but could not learn other routes yet: {error}", "Emparejado, pero aún no he podido aprender otras rutas: {error}"));
     }
+    connection.greet_over_iroh();
     println!("{}", trf!("Paired with {name}.", "Emparejado con {name}."));
     Ok(())
 }
+
+fn route_name(kind: Option<RouteKind>) -> &'static str {
+    match kind {
+        Some(RouteKind::Lan) => tr!("the local network", "la red local"),
+        Some(RouteKind::Tailscale) => "Tailscale",
+        Some(RouteKind::Direct) => tr!("a direct connection", "conexión directa"),
+        Some(RouteKind::Relay) => tr!("the relay", "el relay"),
+        None => tr!("no route", "ninguna ruta"),
+    }
+}
+
+/// `alondra mac ping`: how long opening the connection and each read of a paired Mac take, and
+/// which way they go.
+pub fn ping(name: Option<&str>, count: u32, json_output: bool) -> Result<()> {
+    let home = crate::client::config().home.clone();
+    let macs = load_from(&home)?;
+    let mac = match name {
+        Some(name) => macs.into_iter().find(|mac| mac.mac_id == name || mac.name.eq_ignore_ascii_case(name)),
+        None if macs.len() == 1 => macs.into_iter().next(),
+        None => bail!(tr!(
+            "Say which Mac: alondra mac ping <name>; see them with alondra mac list",
+            "Di qué Mac: alondra mac ping <nombre>; míralos con alondra mac list"
+        )),
+    }
+    .with_context(|| tr!("This terminal is not connected to that Mac; see them with alondra mac list", "Este terminal no está conectado a ese Mac; míralos con alondra mac list"))?;
+    let connection = Connection::at(&home, mac);
+    let started = Instant::now();
+    let over_iroh = connection.greet_over_iroh();
+    let connect_ms = started.elapsed().as_secs_f64() * 1000.0;
+    let mut reads = Vec::new();
+    for _ in 0..count {
+        let started = Instant::now();
+        let (status, _) = connection.request("GET", "/capabilities", None, Duration::from_secs(15))?;
+        if status != 200 {
+            bail!("{} answered {status}", connection.mac.name);
+        }
+        reads.push(started.elapsed().as_secs_f64() * 1000.0);
+    }
+    reads.sort_by(f64::total_cmp);
+    let median = reads[reads.len() / 2];
+    let p95 = reads[(reads.len() * 95).div_ceil(100) - 1];
+    let route = connection.route();
+    let kind = route.as_ref().map(|(_, kind)| *kind);
+    if json_output {
+        let kind = kind.map(|kind| format!("{kind:?}").to_lowercase());
+        println!("{}", json!({"mac": connection.mac.name, "iroh": over_iroh, "connect_ms": connect_ms, "route": kind,
+            "via": route.map(|(via, _)| via), "reads": count, "median_ms": median, "p95_ms": p95}));
+        return Ok(());
+    }
+    let (name, way) = (&connection.mac.name, route_name(kind));
+    let (median, p95) = (format!("{median:.1}"), format!("{p95:.1}"));
+    println!("{}", trf!(
+        "{count} reads of {name} through {way}: median {median} ms, p95 {p95} ms",
+        "{count} lecturas de {name} por {way}: mediana {median} ms, p95 {p95} ms"
+    ));
+    if over_iroh {
+        let connect = format!("{connect_ms:.0}");
+        println!("{}", trf!("Opening the iroh connection took {connect} ms", "Abrir la conexión iroh tardó {connect} ms"));
+    } else {
+        println!("{}", tr!("No iroh connection: the reads went over the HTTP route", "Sin conexión iroh: las lecturas fueron por la ruta HTTP"));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+#[path = "direct_client_iroh_tests.rs"]
+mod iroh_tests;
 
 #[cfg(test)]
 mod tests {

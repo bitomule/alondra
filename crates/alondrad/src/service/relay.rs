@@ -59,8 +59,17 @@ pub(crate) struct RelayConnector {
     resync: AtomicBool,
     /// The relay epoch the iroh endpoint was last bound in, and when a failed attempt was.
     iroh_bound: std::sync::Mutex<Option<([u8; 16], Option<std::time::Instant>)>>,
+    /// The device endpoints bound on this Mac's behalf in that epoch, and when one last failed.
+    devices_bound: std::sync::Mutex<DevicesBound>,
     wake: tokio::sync::Notify,
     deliveries: Arc<tokio::sync::Semaphore>,
+}
+
+#[derive(Default)]
+struct DevicesBound {
+    epoch: Option<[u8; 16]>,
+    nodes: std::collections::BTreeMap<String, String>,
+    failed: Option<std::time::Instant>,
 }
 
 pub(super) struct RelayDelivery {
@@ -102,7 +111,8 @@ pub(super) fn checked_origin(url: &str) -> Result<Url> {
 impl RelayConnector {
     pub(super) fn new(url: Url, owner_sub: String) -> Self {
         Self {
-            url, owner_sub, resync: AtomicBool::new(false), iroh_bound: std::sync::Mutex::new(None), wake: tokio::sync::Notify::new(),
+            url, owner_sub, resync: AtomicBool::new(false), iroh_bound: std::sync::Mutex::new(None),
+            devices_bound: std::sync::Mutex::default(), wake: tokio::sync::Notify::new(),
             deliveries: Arc::new(tokio::sync::Semaphore::new(MAX_ORDINARY_DELIVERIES)),
         }
     }
@@ -110,6 +120,12 @@ impl RelayConnector {
     /// The device list changed: re-enroll and re-sync revocations on the next iteration.
     pub(super) fn resync(&self) {
         self.resync.store(true, Ordering::SeqCst);
+        self.wake.notify_one();
+    }
+
+    /// A device said hello from a new iroh endpoint: bind it at the relay on the next iteration.
+    pub(super) fn bind_devices_soon(&self) {
+        self.devices_bound.lock().expect("device binding lock poisoned").failed = None;
         self.wake.notify_one();
     }
 
@@ -283,6 +299,50 @@ impl Service {
         Ok(())
     }
 
+    /// Binds, at the relay, the iroh endpoint each device last said hello from, once per relay
+    /// epoch and whenever one changes. A device with no account (a terminal paired directly)
+    /// reaches the iroh relay only this way. Needs this Mac's own endpoint bound first.
+    pub(super) async fn keep_device_iroh_nodes_bound(&self, epoch: &[u8; 16]) {
+        let Ok(relay) = self.relay() else { return };
+        let mac_bound = matches!(*relay.iroh_bound.lock().expect("iroh binding lock poisoned"), Some((bound, None)) if bound == *epoch);
+        if !self.iroh_config().enabled || !mac_bound {
+            return;
+        }
+        let pending: Vec<_> = {
+            let mut bound = relay.devices_bound.lock().expect("device binding lock poisoned");
+            if bound.epoch != Some(*epoch) {
+                *bound = DevicesBound { epoch: Some(*epoch), ..DevicesBound::default() };
+            }
+            if bound.failed.is_some_and(|failed| failed.elapsed() < IROH_BIND_RETRY) {
+                return;
+            }
+            self.iroh_hellos()
+                .into_iter()
+                .filter(|(id, hello)| bound.nodes.get(id) != Some(&hello.node))
+                .collect()
+        };
+        for (id, hello) in pending {
+            let result = async {
+                let body = serde_json::to_vec(&json!({"iroh_node_id": hello.node, "hello_signature": hello.signature}))?;
+                let path = format!("/v1/devices/{id}/iroh-node");
+                self.signed(Method::PUT, &path, body, epoch).await?.error_for_status()?;
+                anyhow::Ok(())
+            }
+            .await;
+            let mut bound = relay.devices_bound.lock().expect("device binding lock poisoned");
+            match result {
+                Ok(()) => {
+                    log!("iroh endpoint of {id} bound at the relay");
+                    bound.nodes.insert(id, hello.node);
+                }
+                Err(error) => {
+                    log!("iroh endpoint of {id} not bound at the relay: {error:#}");
+                    bound.failed = Some(std::time::Instant::now());
+                }
+            }
+        }
+    }
+
     pub(super) async fn sync_revocations(
         &self,
         epoch: &[u8; 16],
@@ -370,6 +430,7 @@ impl Service {
                     *enrolled_epoch = Some(epoch);
                 }
                 self.keep_iroh_endpoint_bound(&epoch).await;
+                self.keep_device_iroh_nodes_bound(&epoch).await;
                 let path = "/v1/work?wait_s=25";
                 let response = tokio::select! {
                     response = tokio::time::timeout(WORK_POLL_TIMEOUT, self.signed(Method::GET, path, Vec::new(), &epoch)) => response

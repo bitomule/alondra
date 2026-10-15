@@ -13,6 +13,7 @@ use std::{path::PathBuf, time::Duration};
 use anyhow::{Result, bail};
 
 use crate::{fake::Fakes, sandbox::Sandbox};
+pub(crate) use local::pair_terminal;
 pub use report::Report;
 pub use user::User;
 

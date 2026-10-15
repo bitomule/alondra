@@ -861,6 +861,8 @@ fn a_direct_mac_tab_says_whether_it_answers() {
     use crate::direct_client::RouteKind;
     assert_eq!(MacStatus::direct(false, true, Some(RouteKind::Lan)), MacStatus::Lan);
     assert_eq!(MacStatus::direct(false, true, Some(RouteKind::Tailscale)), MacStatus::Tailscale);
+    assert_eq!(MacStatus::direct(false, true, Some(RouteKind::Direct)), MacStatus::Direct);
+    assert_eq!(MacStatus::direct(false, true, Some(RouteKind::Relay)), MacStatus::Relay);
     assert_eq!(MacStatus::direct(true, false, Some(RouteKind::Lan)), MacStatus::Offline);
 }
 

@@ -369,3 +369,93 @@ fn the_endpoint_id_is_the_ed25519_public_key_of_the_stored_seed() {
     assert_eq!(iroh::SecretKey::from_bytes(&seed).public().to_string(), from_ring);
     assert_eq!(from_ring, "ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c");
 }
+
+#[tokio::test]
+async fn a_proven_hello_is_remembered_with_its_endpoint_and_a_stranger_or_revoked_device_is_not() {
+    let f = Fixture::new().await;
+    let (client, _connection) = f.paired(&f.phone, 70).await;
+    let hellos = f.service.iroh_hellos();
+    let hello = &hellos["phone-1"];
+    assert_eq!(hello.node, client.id().to_string());
+    alondra_e2e::verify_iroh_hello(
+        f.phone.signing.verifying_key(),
+        &hello.signature,
+        "mac-1",
+        "phone-1",
+        client.id().as_bytes(),
+        f.service.iroh_key().public().as_bytes(),
+    )
+    .expect("the remembered signature is the device's own hello from that endpoint");
+
+    let (stranger, connection) = f.connect(71).await;
+    let forged = f.hello_signature(&SigningKey::from_slice(&[99u8; 32]).unwrap(), "phone-2", &stranger);
+    assert_eq!(exchange(&connection, &json!({"device_id": "phone-2", "signature": forged})).await, json!({"error": "unauthorized"}));
+    assert!(!f.service.iroh_hellos().contains_key("phone-2"));
+
+    assert!(Auth::open(&f.home).unwrap().revoke("phone-1").unwrap());
+    f.service.remember_revoked("phone-1");
+    let _revoked = f.paired(&f.phone, 72).await;
+    assert!(f.service.iroh_hellos().is_empty(), "a revoked device's endpoint is neither kept nor learned");
+}
+
+#[tokio::test]
+async fn routes_tell_a_device_where_to_dial_the_endpoint() {
+    let f = Fixture::new().await;
+    f.service.set_iroh_dial(|dial| {
+        dial.addresses = vec!["192.168.1.20:51000".into()];
+        dial.relay = Some("https://iroh.example.com/".into());
+    });
+    let (_client, connection) = f.paired(&f.phone, 73).await;
+    let envelope = f.phone.work(&f.service, "op-dial", "GET", crate::direct::routes::PATH, None);
+    let answer = f.phone.opened(&exchange(&connection, &envelope).await["response"]);
+    assert_eq!(answer["body"]["iroh_addrs"], json!(["192.168.1.20:51000"]), "{answer}");
+    assert_eq!(answer["body"]["iroh_relay"], "https://iroh.example.com/");
+}
+
+#[tokio::test]
+async fn the_mac_binds_its_devices_endpoints_at_the_relay_after_its_own_and_again_when_one_changes() {
+    use axum::Json;
+    use axum::extract::{Path as RelayPath, State as RelayState};
+    use axum::routing::put;
+    #[derive(Clone, Default)]
+    struct Seen {
+        devices: Arc<Mutex<Vec<(String, Value)>>>,
+    }
+    let seen = Seen::default();
+    let router = Router::new()
+        .route("/v1/bootstrap", get(|| async { Json(json!({"epoch": URL_SAFE_NO_PAD.encode([1u8; 16])})) }))
+        .route("/v1/iroh-node", put(|| async { axum::http::StatusCode::NO_CONTENT }))
+        .route("/v1/devices/{id}/iroh-node", put(|RelayState(seen): RelayState<Seen>, RelayPath(id): RelayPath<String>, Json(body): Json<Value>| async move {
+            seen.devices.lock().unwrap().push((id, body));
+            axum::http::StatusCode::NO_CONTENT
+        }))
+        .with_state(seen.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let (directory, mut service, _) = push_fixture();
+    service.set_relay_url(Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap());
+    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let bound = || seen.devices.lock().unwrap().clone();
+
+    service.remember_iroh_hello("phone-1", "node-a", "signature-a");
+    let epoch = service.bootstrap().await.unwrap();
+    service.keep_device_iroh_nodes_bound(&epoch).await;
+    assert!(bound().is_empty(), "nothing is bound for a device before this Mac's own endpoint");
+
+    service.keep_iroh_endpoint_bound(&epoch).await;
+    service.keep_device_iroh_nodes_bound(&epoch).await;
+    service.keep_device_iroh_nodes_bound(&epoch).await;
+    assert_eq!(bound(), [("phone-1".to_owned(), json!({"iroh_node_id": "node-a", "hello_signature": "signature-a"}))]);
+
+    service.remember_iroh_hello("phone-1", "node-b", "signature-b");
+    service.keep_device_iroh_nodes_bound(&epoch).await;
+    assert_eq!(bound().len(), 2, "a new endpoint is bound again at once");
+    assert_eq!(bound()[1].1["iroh_node_id"], "node-b");
+
+    service.remember_iroh_hello("phone-9", "node-c", "signature-c");
+    assert!(Auth::open(&directory).unwrap().revoke("phone-1").unwrap());
+    let next = [2u8; 16];
+    service.keep_iroh_endpoint_bound(&next).await;
+    service.keep_device_iroh_nodes_bound(&next).await;
+    assert_eq!(bound().len(), 2, "a revoked device, or one never paired here, is not bound");
+    server.abort();
+}

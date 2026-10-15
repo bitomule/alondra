@@ -74,6 +74,7 @@ fn router(server: Arc<Server>) -> Router {
         .route("/v1/macs/{id}", axum::routing::delete(revoke_mac))
         .route("/v1/devices", post(enroll))
         .route("/v1/devices/{id}", axum::routing::delete(revoke))
+        .route("/v1/devices/{id}/iroh-node", put(bind_device_iroh_node))
         .route("/v1/iroh-node", put(bind_iroh_node).delete(unbind_iroh_node))
         .route("/v1/iroh/access", post(iroh_access))
         .route("/v1/push/register", post(register_push))
@@ -419,6 +420,41 @@ async fn bind_iroh_node(
         .auth
         .bind_iroh_node(&who, binding)
         .map_err(|cause| enrollment_error(cause, "iroh_node_conflict"))?;
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+async fn bind_device_iroh_node(
+    State(server): State<Arc<Server>>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    method: Method,
+    uri: Uri,
+    body: Bytes,
+) -> ApiResult {
+    if body.len() > 1024 {
+        return Err(error(StatusCode::PAYLOAD_TOO_LARGE, "body_too_large"));
+    }
+    let _gate = server.device_gate.write().await;
+    let mac = server
+        .auth
+        .authenticate_mac(&headers, &method, &uri, &body, now_ms())
+        .await
+        .map_err(authentication_error)?;
+    server
+        .auth
+        .require_live_route(&mac.owner_sub, &mac.device_id, Some(&id))
+        .await
+        .map_err(authentication_error)?;
+    let binding: auth::DeviceIrohNodeBinding = serde_json::from_slice(&body)
+        .map_err(|_| error(StatusCode::BAD_REQUEST, "invalid_registration"))?;
+    server
+        .auth
+        .bind_device_iroh_node(&mac, &id, binding)
+        .map_err(|cause| match cause.downcast_ref::<auth::EnrollmentError>() {
+            Some(_) => enrollment_error(cause, "iroh_node_conflict"),
+            None if cause.is::<auth::RegistryUnavailable>() => error(StatusCode::SERVICE_UNAVAILABLE, "registry_unavailable"),
+            None => error(StatusCode::NOT_FOUND, "unknown_device"),
+        })?;
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
@@ -1096,7 +1132,11 @@ async fn main() -> anyhow::Result<()> {
     let iroh_relay = match std::env::var("ALONDRA_IROH_RELAY_URL") {
         Ok(url) => {
             let parsed = reqwest::Url::parse(&url)?;
-            anyhow::ensure!(parsed.scheme() == "https" && parsed.host_str().is_some(), "ALONDRA_IROH_RELAY_URL must be an https URL");
+            let loopback = parsed.scheme() == "http" && matches!(parsed.host_str(), Some("127.0.0.1" | "localhost"));
+            anyhow::ensure!(
+                (parsed.scheme() == "https" && parsed.host_str().is_some()) || loopback,
+                "ALONDRA_IROH_RELAY_URL must be an https URL (loopback HTTP allowed for tests)"
+            );
             Some(url)
         }
         Err(_) => None,
@@ -4350,6 +4390,58 @@ mod http_tests {
             let response = f.http.put(format!("{}/v1/iroh-node", f.url)).bearer_auth(jwt("owner", now_ms()))
                 .header("x-device-id", "phone-1").body(unsigned).send().await.unwrap();
             assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+            f.task.abort();
+        }
+
+        impl IrohKey {
+            fn bytes(&self) -> [u8; 32] {
+                self.0.public_key().as_ref().try_into().unwrap()
+            }
+        }
+
+        fn vouched(device_key: &SigningKey, device_id: &str, node: &IrohKey, mac_node: &IrohKey) -> Vec<u8> {
+            let signature = alondra_e2e::sign_iroh_hello(device_key, "mac-1", device_id, &node.bytes(), &mac_node.bytes()).unwrap();
+            serde_json::to_vec(&json!({"iroh_node_id": node.id(), "hello_signature": signature})).unwrap()
+        }
+
+        #[tokio::test]
+        async fn the_mac_binds_a_device_endpoint_with_that_devices_hello_and_revoking_it_ends_access() {
+            let f = Fixture::new().await;
+            let (mac_node, terminal) = (IrohKey::new(30), IrohKey::new(31));
+            f.as_mac("PUT", "/v1/iroh-node", mac_node.binding_for("mac-1")).await;
+            let path = "/v1/devices/phone-1/iroh-node";
+            assert_eq!(f.as_mac("PUT", path, vouched(&f.phone_key, "phone-1", &terminal, &mac_node)).await,
+                StatusCode::NO_CONTENT);
+            assert_eq!(f.access(&terminal).await, allowed());
+            assert_eq!(f.as_mac("DELETE", "/v1/devices/phone-1", vec![]).await, StatusCode::NO_CONTENT);
+            assert_eq!(f.access(&terminal).await, denied());
+            assert_eq!(f.as_mac("PUT", path, vouched(&f.phone_key, "phone-1", &terminal, &mac_node)).await,
+                StatusCode::NOT_FOUND);
+            f.assert_reloads();
+            f.task.abort();
+        }
+
+        #[tokio::test]
+        async fn the_mac_cannot_bind_an_endpoint_the_device_never_said_hello_from() {
+            let f = Fixture::new().await;
+            let (mac_node, terminal, other) = (IrohKey::new(32), IrohKey::new(33), IrohKey::new(34));
+            let path = "/v1/devices/phone-1/iroh-node";
+            assert_eq!(f.as_mac("PUT", path, vouched(&f.phone_key, "phone-1", &terminal, &mac_node)).await,
+                StatusCode::BAD_REQUEST, "without the Mac's own endpoint bound there is nothing to check the hello against");
+            f.as_mac("PUT", "/v1/iroh-node", mac_node.binding_for("mac-1")).await;
+            let mut for_other: Value = serde_json::from_slice(&vouched(&f.phone_key, "phone-1", &terminal, &mac_node)).unwrap();
+            for_other["iroh_node_id"] = json!(other.id());
+            assert_eq!(f.as_mac("PUT", path, serde_json::to_vec(&for_other).unwrap()).await, StatusCode::BAD_REQUEST);
+            let stranger_key = SigningKey::from_slice(&[113u8; 32]).unwrap();
+            assert_eq!(f.as_mac("PUT", path, vouched(&stranger_key, "phone-1", &terminal, &mac_node)).await,
+                StatusCode::BAD_REQUEST);
+            assert_eq!(f.as_mac("PUT", path, vouched(&f.phone_key, "phone-1", &mac_node, &mac_node)).await,
+                StatusCode::CONFLICT);
+            assert_eq!(f.as_mac("PUT", "/v1/devices/phone-9/iroh-node", vouched(&f.phone_key, "phone-9", &terminal, &mac_node)).await,
+                StatusCode::NOT_FOUND);
+            assert_eq!(f.as_phone("PUT", path, vouched(&f.phone_key, "phone-1", &terminal, &mac_node)).await,
+                StatusCode::UNAUTHORIZED);
+            assert_eq!(f.access(&terminal).await, denied());
             f.task.abort();
         }
 

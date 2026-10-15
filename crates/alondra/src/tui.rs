@@ -232,6 +232,8 @@ pub enum MacStatus {
     Here,
     Lan,
     Tailscale,
+    Direct,
+    Relay,
     Connecting,
     Offline,
 }
@@ -242,6 +244,8 @@ impl MacStatus {
             MacStatus::Here => None,
             MacStatus::Lan => Some(tr!("On the local network", "En la red local")),
             MacStatus::Tailscale => Some(tr!("Through Tailscale", "Por Tailscale")),
+            MacStatus::Direct => Some(tr!("Direct connection", "Conexión directa")),
+            MacStatus::Relay => Some(tr!("Through the relay", "Por el relay")),
             MacStatus::Connecting => Some(tr!("Connecting…", "Conectando…")),
             MacStatus::Offline => Some(tr!("Offline", "Sin conexión")),
         }
@@ -253,6 +257,8 @@ impl MacStatus {
             (true, _, _) => MacStatus::Offline,
             (false, true, Some(RouteKind::Lan)) => MacStatus::Lan,
             (false, true, Some(RouteKind::Tailscale)) => MacStatus::Tailscale,
+            (false, true, Some(RouteKind::Direct)) => MacStatus::Direct,
+            (false, true, Some(RouteKind::Relay)) => MacStatus::Relay,
             _ => MacStatus::Connecting,
         }
     }

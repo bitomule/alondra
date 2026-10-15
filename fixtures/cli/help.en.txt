@@ -17,7 +17,7 @@ Daily
 
 Devices and Macs
   device       Devices that use a Mac  (list · approve · deny · remove · invite)
-  mac          The Macs this terminal uses  (list · connect · forget · reset-identity)
+  mac          The Macs this terminal uses  (list · connect · forget · ping · reset-identity)
   account      Your Alondra account  (status · login · logout)
   relay        Notifications and access away from home  (status · on · off)
 

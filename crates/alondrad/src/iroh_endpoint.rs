@@ -165,6 +165,7 @@ pub(crate) async fn run(service: Arc<Service>) {
     update(|status| status.endpoint = Some(endpoint.id().to_string()));
     tokio::spawn(follow_relay(endpoint.clone(), service.clone(), config));
     tokio::spawn(report_relay(endpoint.clone()));
+    tokio::spawn(publish_addresses(endpoint.clone(), service.clone()));
     serve(endpoint, service).await;
 }
 
@@ -214,6 +215,9 @@ async fn hello(service: &Service, connection: &Connection) -> Option<String> {
     let proven = hello.filter(|hello| {
         service.iroh_hello_proven(&hello.device_id, &hello.signature, connection.remote_id().as_bytes())
     });
+    if let Some(hello) = &proven {
+        service.remember_iroh_hello(&hello.device_id, &connection.remote_id().to_string(), &hello.signature);
+    }
     let reply = if proven.is_some() { json!({"ok": true}) } else { json!({"error": "unauthorized"}) };
     if send.write_all(reply.to_string().as_bytes()).await.is_ok() {
         let _ = send.finish();
@@ -275,7 +279,7 @@ async fn follow_relay(endpoint: Endpoint, service: Arc<Service>, config: IrohCon
         return;
     }
     if let Some(url) = fixed {
-        return use_relay(&endpoint, None, url).await;
+        return use_relay(&endpoint, &service, None, url).await;
     }
     let mut announced = service.iroh_relay_announced();
     let mut current: Option<RelayUrl> = None;
@@ -283,7 +287,7 @@ async fn follow_relay(endpoint: Endpoint, service: Arc<Service>, config: IrohCon
         let next = announced.borrow_and_update().clone();
         match next.as_deref().map(relay_url) {
             Some(Ok(url)) if current.as_ref() != Some(&url) => {
-                use_relay(&endpoint, current.take(), url.clone()).await;
+                use_relay(&endpoint, &service, current.take(), url.clone()).await;
                 current = Some(url);
             }
             Some(Err(error)) => log!("announced iroh relay not used: {error:#}"),
@@ -295,13 +299,26 @@ async fn follow_relay(endpoint: Endpoint, service: Arc<Service>, config: IrohCon
     }
 }
 
-async fn use_relay(endpoint: &Endpoint, previous: Option<RelayUrl>, url: RelayUrl) {
+async fn use_relay(endpoint: &Endpoint, service: &Service, previous: Option<RelayUrl>, url: RelayUrl) {
     if let Some(previous) = previous {
         endpoint.remove_relay(&previous).await;
     }
     log!("iroh endpoint uses relay {url}");
     update(|status| status.relay = Some(url.to_string()));
+    service.set_iroh_dial(|dial| dial.relay = Some(url.to_string()));
     endpoint.insert_relay(url.clone(), Arc::new(RelayConfig::from(url))).await;
+}
+
+/// Keeps the direct addresses devices are told to dial this endpoint at up to date.
+async fn publish_addresses(endpoint: Endpoint, service: Arc<Service>) {
+    let mut watcher = endpoint.watch_addr();
+    loop {
+        let addresses = watcher.get().ip_addrs().map(ToString::to_string).collect();
+        service.set_iroh_dial(|dial| dial.addresses = addresses);
+        if watcher.updated().await.is_err() {
+            return;
+        }
+    }
 }
 
 /// Logs when the relay connection comes up, drops, or refuses this Mac (not yet bound).

@@ -25,6 +25,10 @@ impl Relay {
         Self { origin: url.trim_end_matches('/').into() }
     }
 
+    pub fn origin(&self) -> &str {
+        &self.origin
+    }
+
     pub fn epoch(&self) -> Result<[u8; 16]> {
         let mut response = http().get(format!("{}/v1/bootstrap", self.origin)).call()?;
         if response.status().as_u16() != 200 {
