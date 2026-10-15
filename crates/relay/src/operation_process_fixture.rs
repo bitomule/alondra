@@ -147,6 +147,7 @@ async fn full_stack_fixture_relay() {
         device_gate: Arc::new(RwLock::new(())),
         waitlist: management::waitlist::Limiter::new(None),
         epoch,
+        iroh_access_token: None,
         test_directory: Some(directory),
     });
     let (dispatched, dispatches) = tokio::sync::mpsc::unbounded_channel();

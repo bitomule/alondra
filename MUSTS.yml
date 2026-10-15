@@ -47,6 +47,7 @@ checks:
       - "tools/plugin-mod-test.sh"
       - "deploy/brew/**"
       - "deploy/apple/**"
+      - "deploy/pi/iroh-relay/**"
       - "tools/shared.bzl"
     with:
       targets:
@@ -62,6 +63,7 @@ checks:
         - //deploy/apple:prepare_test
         - //deploy/apple:increment_version_test
         - //deploy/apple:version_guard_test
+        - //deploy/pi/iroh-relay:relay_access_test
 
   apple-tests:
     uses: bazel/test

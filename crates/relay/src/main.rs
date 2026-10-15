@@ -13,7 +13,7 @@ mod web_session;
 mod web_assets;
 
 use alondra_e2e::Envelope;
-use auth::{Auth, Config, MacRegistration, PhoneDevice, PushRegistration};
+use auth::{Auth, Config, IrohNodeBinding, MacRegistration, PhoneDevice, PushRegistration};
 use axum::{
     Json, Router,
     body::{Body, Bytes},
@@ -21,7 +21,7 @@ use axum::{
     http::{HeaderMap, Method, Request, StatusCode, Uri, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
-    routing::{get, post},
+    routing::{get, post, put},
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -50,6 +50,8 @@ struct Server {
     device_gate: Arc<RwLock<()>>,
     waitlist: management::waitlist::Limiter,
     epoch: String,
+    /// Bearer the iroh relay presents to `/v1/iroh/access`; the route is absent without it.
+    iroh_access_token: Option<String>,
     #[cfg(test)]
     test_directory: Option<crate::test_support::Directory>,
 }
@@ -70,6 +72,8 @@ fn router(server: Arc<Server>) -> Router {
         .route("/v1/macs/{id}", axum::routing::delete(revoke_mac))
         .route("/v1/devices", post(enroll))
         .route("/v1/devices/{id}", axum::routing::delete(revoke))
+        .route("/v1/iroh-node", put(bind_iroh_node).delete(unbind_iroh_node))
+        .route("/v1/iroh/access", post(iroh_access))
         .route("/v1/push/register", post(register_push))
         .route("/v1/push/unregister", post(unregister_push))
         .route("/v1/mac/push", post(send_push))
@@ -360,6 +364,109 @@ async fn revoke(
         .map_err(|_| error(StatusCode::SERVICE_UNAVAILABLE, "revocation_failed"))?;
     server.queue.purge_phone(&id);
     Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+/// The Mac or phone signs for itself; a phone also needs its account token.
+async fn iroh_node_owner(
+    server: &Server,
+    headers: &HeaderMap,
+    method: &Method,
+    uri: &Uri,
+    body: &[u8],
+) -> Result<auth::Identity, (StatusCode, Json<Value>)> {
+    let id = headers.get("x-device-id").and_then(|v| v.to_str().ok()).unwrap_or_default();
+    if server.auth.is_mac(id) {
+        let mac = server
+            .auth
+            .authenticate_mac(headers, method, uri, body, now_ms())
+            .await
+            .map_err(authentication_error)?;
+        server
+            .auth
+            .require_live_route(&mac.owner_sub, &mac.device_id, None)
+            .await
+            .map_err(authentication_error)?;
+        Ok(mac)
+    } else {
+        server
+            .auth
+            .authenticate_phone(headers, method, uri, body, now_ms())
+            .await
+            .map_err(authentication_error)
+    }
+}
+
+async fn bind_iroh_node(
+    State(server): State<Arc<Server>>,
+    headers: HeaderMap,
+    method: Method,
+    uri: Uri,
+    body: Bytes,
+) -> ApiResult {
+    if body.len() > 1024 {
+        return Err(error(StatusCode::PAYLOAD_TOO_LARGE, "body_too_large"));
+    }
+    let _gate = server.device_gate.write().await;
+    let who = iroh_node_owner(&server, &headers, &method, &uri, &body).await?;
+    let binding: IrohNodeBinding = serde_json::from_slice(&body)
+        .map_err(|_| error(StatusCode::BAD_REQUEST, "invalid_registration"))?;
+    server
+        .auth
+        .bind_iroh_node(&who, binding)
+        .map_err(|cause| enrollment_error(cause, "iroh_node_conflict"))?;
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+async fn unbind_iroh_node(
+    State(server): State<Arc<Server>>,
+    headers: HeaderMap,
+    method: Method,
+    uri: Uri,
+) -> ApiResult {
+    let _gate = server.device_gate.write().await;
+    let who = iroh_node_owner(&server, &headers, &method, &uri, &[]).await?;
+    server
+        .auth
+        .unbind_iroh_node(&who)
+        .map_err(|_| error(StatusCode::SERVICE_UNAVAILABLE, "registry_unavailable"))?;
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+/// iroh-relay's `access.http` check: it relays an endpoint only on `200` with body `true`.
+async fn iroh_access(State(server): State<Arc<Server>>, headers: HeaderMap) -> Response {
+    use subtle::ConstantTimeEq;
+    let Some(expected) = &server.iroh_access_token else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let presented = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .unwrap_or_default();
+    if !bool::from(presented.as_bytes().ct_eq(expected.as_bytes())) {
+        return (StatusCode::UNAUTHORIZED, "false").into_response();
+    }
+    let denied = (StatusCode::FORBIDDEN, "false").into_response();
+    let Some(node) = headers.get("x-iroh-nodeid").and_then(|v| v.to_str().ok()) else {
+        return denied;
+    };
+    let _gate = server.device_gate.read().await;
+    let holder = match server.auth.iroh_node_holder(node) {
+        Ok(Some(holder)) => holder,
+        Ok(None) => return denied,
+        Err(_) => return (StatusCode::SERVICE_UNAVAILABLE, "false").into_response(),
+    };
+    match server
+        .auth
+        .require_live_route(&holder.owner_sub, &holder.mac_id, holder.client_id.as_deref())
+        .await
+    {
+        Ok(()) => (StatusCode::OK, "true").into_response(),
+        Err(cause) if matches!(cause.downcast_ref(), Some(auth::AccountGateError::Denied)) => {
+            denied
+        }
+        Err(_) => (StatusCode::SERVICE_UNAVAILABLE, "false").into_response(),
+    }
 }
 
 async fn register_push(
@@ -973,6 +1080,14 @@ async fn main() -> anyhow::Result<()> {
     } else {None};
     let web_session = web_session::WebSession::from_env(&auth)?;
     let web_assets = web_assets::WebAssets::from_env(web_session.is_some())?;
+    let iroh_access_token = match std::env::var("ALONDRA_IROH_ACCESS_TOKEN_FILE") {
+        Ok(path) => {
+            let token = std::fs::read_to_string(path)?.trim().to_owned();
+            anyhow::ensure!(token.len() >= 32, "iroh access token must have at least 32 characters");
+            Some(token)
+        }
+        Err(_) => None,
+    };
     let server = Arc::new(Server {
         #[cfg(any(test, feature = "lab-waiter-metrics"))]
         lab_waiters: Arc::default(),
@@ -990,6 +1105,7 @@ async fn main() -> anyhow::Result<()> {
         device_gate: Arc::new(RwLock::new(())),
         waitlist: management::waitlist::Limiter::from_env()?,
         epoch,
+        iroh_access_token,
         #[cfg(test)]
         test_directory: None,
     });
@@ -1141,6 +1257,12 @@ mod http_tests {
     }
 
     async fn test_server_with_management(mac_key:&SigningKey,apns_endpoint:Option<String>,management:Option<management::Management>)->(String,Arc<Server>,tokio::task::JoinHandle<()>) {
+        test_server_with_iroh_access(mac_key,apns_endpoint,management,Some(TEST_IROH_ACCESS_TOKEN.into())).await
+    }
+
+    const TEST_IROH_ACCESS_TOKEN: &str = "test-iroh-access-token-0123456789abcdef";
+
+    async fn test_server_with_iroh_access(mac_key:&SigningKey,apns_endpoint:Option<String>,management:Option<management::Management>,iroh_access_token:Option<String>)->(String,Arc<Server>,tokio::task::JoinHandle<()>) {
         let directory = crate::test_support::Directory::new();
         let registry = directory.parent().unwrap().join(format!(
             "alondra-relay-test-registry-{}-{}-{}.json",
@@ -1180,6 +1302,7 @@ mod http_tests {
             device_gate: Arc::new(RwLock::new(())),
             waitlist: management::waitlist::Limiter::new(None),
             epoch,
+            iroh_access_token,
             #[cfg(test)]
             test_directory: Some(directory),
         });
@@ -3993,6 +4116,234 @@ mod http_tests {
         assert!(restarted.jwks_ready());
         assert!(restarted.is_phone_registered("phone-after-rename"));
         handle.abort();
+    }
+
+    mod iroh_access {
+        use super::*;
+        use ring::signature::{Ed25519KeyPair, KeyPair};
+
+        struct IrohKey(Ed25519KeyPair);
+
+        impl IrohKey {
+            fn new(seed: u8) -> Self {
+                Self(Ed25519KeyPair::from_seed_unchecked(&[seed; 32]).unwrap())
+            }
+            fn id(&self) -> String {
+                self.0.public_key().as_ref().iter().map(|b| format!("{b:02x}")).collect()
+            }
+            fn binding_for(&self, device_id: &str) -> Vec<u8> {
+                let proof = self.0.sign(&[b"alondra-iroh-node-v1\0", device_id.as_bytes()].concat());
+                serde_json::to_vec(&json!({"iroh_node_id": self.id(),
+                    "proof": URL_SAFE_NO_PAD.encode(proof.as_ref())})).unwrap()
+            }
+        }
+
+        struct Fixture {
+            url: String,
+            server: Arc<Server>,
+            task: tokio::task::JoinHandle<()>,
+            mac_key: SigningKey,
+            phone_key: SigningKey,
+            http: reqwest::Client,
+            nonce: std::sync::atomic::AtomicU8,
+        }
+
+        impl Fixture {
+            async fn new() -> Self {
+                Self::with_token(Some(TEST_IROH_ACCESS_TOKEN.into())).await
+            }
+
+            async fn with_token(token: Option<String>) -> Self {
+                let mac_key = SigningKey::from_slice(&[111u8; 32]).unwrap();
+                let phone_key = SigningKey::from_slice(&[112u8; 32]).unwrap();
+                let (url, server, task) = test_server_with_iroh_access(&mac_key, None, None, token).await;
+                let fixture = Self { url, server, task, mac_key, phone_key,
+                    http: reqwest::Client::new(), nonce: Default::default() };
+                let body = serde_json::to_vec(&PhoneDevice { device_id: "phone-1".into(),
+                    owner_sub: "owner".into(), signing_key: key_bytes(&fixture.phone_key) }).unwrap();
+                assert_eq!(fixture.as_mac("POST", "/v1/devices", body).await, StatusCode::CREATED);
+                fixture
+            }
+
+            async fn signed(&self, key: &SigningKey, id: &str, owner: Option<&str>, method: &str,
+                path: &str, body: Vec<u8>) -> StatusCode {
+                let nonce = self.nonce.fetch_add(1, Ordering::Relaxed) + 1;
+                let mut builder = self.http.request(reqwest::Method::from_bytes(method.as_bytes()).unwrap(),
+                    format!("{}{path}", self.url));
+                if let Some(owner) = owner { builder = builder.bearer_auth(jwt(owner, now_ms())); }
+                sign(&self.server.auth.server_epoch(), builder.body(body.clone()), key, id, method,
+                    path, &body, nonce).send().await.unwrap().status()
+            }
+
+            async fn as_mac(&self, method: &str, path: &str, body: Vec<u8>) -> StatusCode {
+                self.signed(&self.mac_key, "mac-1", None, method, path, body).await
+            }
+
+            async fn as_phone(&self, method: &str, path: &str, body: Vec<u8>) -> StatusCode {
+                self.signed(&self.phone_key, "phone-1", Some("owner"), method, path, body).await
+            }
+
+            async fn access_with(&self, token: Option<&str>, node: &str) -> (StatusCode, String) {
+                let mut builder = self.http.post(format!("{}/v1/iroh/access", self.url))
+                    .header("X-Iroh-NodeId", node);
+                if let Some(token) = token { builder = builder.bearer_auth(token); }
+                let response = builder.send().await.unwrap();
+                (response.status(), response.text().await.unwrap())
+            }
+
+            fn assert_reloads(&self) {
+                let restarted = Auth::test(self.server.auth.config.clone(), include_bytes!("../tests/fixtures/jwks.json"));
+                assert!(restarted.is_ok(), "revoked bindings must not survive on disk: {:?}", restarted.err());
+            }
+
+            async fn access(&self, node: &IrohKey) -> (StatusCode, String) {
+                self.access_with(Some(TEST_IROH_ACCESS_TOKEN), &node.id()).await
+            }
+        }
+
+        fn allowed() -> (StatusCode, String) { (StatusCode::OK, "true".into()) }
+        fn denied() -> (StatusCode, String) { (StatusCode::FORBIDDEN, "false".into()) }
+
+        #[tokio::test]
+        async fn bound_mac_and_phone_endpoints_are_relayed_and_unknown_ones_are_not() {
+            let f = Fixture::new().await;
+            let (mac_node, phone_node, stranger) = (IrohKey::new(1), IrohKey::new(2), IrohKey::new(3));
+            assert_eq!(f.access(&mac_node).await, denied());
+            assert_eq!(f.as_mac("PUT", "/v1/iroh-node", mac_node.binding_for("mac-1")).await, StatusCode::NO_CONTENT);
+            assert_eq!(f.as_phone("PUT", "/v1/iroh-node", phone_node.binding_for("phone-1")).await, StatusCode::NO_CONTENT);
+            assert_eq!(f.access(&mac_node).await, allowed());
+            assert_eq!(f.access(&phone_node).await, allowed());
+            assert_eq!(f.access(&stranger).await, denied());
+            assert_eq!(f.access_with(Some(TEST_IROH_ACCESS_TOKEN), "not-an-endpoint-id").await, denied());
+            f.task.abort();
+        }
+
+        #[tokio::test]
+        async fn the_relay_must_present_the_access_token() {
+            let f = Fixture::new().await;
+            let node = IrohKey::new(4);
+            assert_eq!(f.as_mac("PUT", "/v1/iroh-node", node.binding_for("mac-1")).await, StatusCode::NO_CONTENT);
+            assert_eq!(f.access_with(None, &node.id()).await, (StatusCode::UNAUTHORIZED, "false".into()));
+            assert_eq!(f.access_with(Some("test-iroh-access-token-0123456789abcdeX"), &node.id()).await,
+                (StatusCode::UNAUTHORIZED, "false".into()));
+            assert_eq!(f.access(&node).await, allowed());
+            f.task.abort();
+        }
+
+        #[tokio::test]
+        async fn without_a_configured_token_the_access_route_does_not_exist() {
+            let f = Fixture::with_token(None).await;
+            let node = IrohKey::new(5);
+            assert_eq!(f.as_mac("PUT", "/v1/iroh-node", node.binding_for("mac-1")).await, StatusCode::NO_CONTENT);
+            assert_eq!(f.access(&node).await.0, StatusCode::NOT_FOUND);
+            f.task.abort();
+        }
+
+        #[tokio::test]
+        async fn revoking_the_phone_ends_its_relay_access() {
+            let f = Fixture::new().await;
+            let (mac_node, phone_node) = (IrohKey::new(6), IrohKey::new(7));
+            f.as_mac("PUT", "/v1/iroh-node", mac_node.binding_for("mac-1")).await;
+            f.as_phone("PUT", "/v1/iroh-node", phone_node.binding_for("phone-1")).await;
+            assert_eq!(f.as_mac("DELETE", "/v1/devices/phone-1", vec![]).await, StatusCode::NO_CONTENT);
+            assert_eq!(f.access(&phone_node).await, denied());
+            assert_eq!(f.access(&mac_node).await, allowed());
+            f.assert_reloads();
+            f.task.abort();
+        }
+
+        #[tokio::test]
+        async fn revoking_the_mac_ends_relay_access_for_it_and_its_phones() {
+            let f = Fixture::new().await;
+            let (mac_node, phone_node) = (IrohKey::new(8), IrohKey::new(9));
+            f.as_mac("PUT", "/v1/iroh-node", mac_node.binding_for("mac-1")).await;
+            f.as_phone("PUT", "/v1/iroh-node", phone_node.binding_for("phone-1")).await;
+            assert_eq!(f.as_mac("DELETE", "/v1/macs/mac-1", vec![]).await, StatusCode::NO_CONTENT);
+            assert_eq!(f.access(&mac_node).await, denied());
+            assert_eq!(f.access(&phone_node).await, denied());
+            f.assert_reloads();
+            f.task.abort();
+        }
+
+        #[tokio::test]
+        async fn revocations_from_the_account_end_relay_access() {
+            let f = Fixture::new().await;
+            let (mac_node, phone_node) = (IrohKey::new(10), IrohKey::new(11));
+            f.as_mac("PUT", "/v1/iroh-node", mac_node.binding_for("mac-1")).await;
+            f.as_phone("PUT", "/v1/iroh-node", phone_node.binding_for("phone-1")).await;
+            f.server.auth.reconcile_device_revocation("owner", "client", "phone-1", "mac-1").unwrap();
+            assert_eq!(f.access(&phone_node).await, denied());
+            assert_eq!(f.access(&mac_node).await, allowed());
+            f.server.auth.revoke_owner("owner").unwrap();
+            assert_eq!(f.access(&mac_node).await, denied());
+            f.assert_reloads();
+            f.task.abort();
+        }
+
+        #[tokio::test]
+        async fn revoking_a_mac_from_the_account_ends_relay_access() {
+            let f = Fixture::new().await;
+            let (mac_node, phone_node) = (IrohKey::new(12), IrohKey::new(13));
+            f.as_mac("PUT", "/v1/iroh-node", mac_node.binding_for("mac-1")).await;
+            f.as_phone("PUT", "/v1/iroh-node", phone_node.binding_for("phone-1")).await;
+            f.server.auth.reconcile_device_revocation("owner", "mac", "mac-1", "mac-1").unwrap();
+            assert_eq!(f.access(&mac_node).await, denied());
+            assert_eq!(f.access(&phone_node).await, denied());
+            f.assert_reloads();
+            f.task.abort();
+        }
+
+        #[tokio::test]
+        async fn a_new_endpoint_replaces_the_old_one_and_unbinding_removes_it() {
+            let f = Fixture::new().await;
+            let (old, new) = (IrohKey::new(14), IrohKey::new(15));
+            f.as_phone("PUT", "/v1/iroh-node", old.binding_for("phone-1")).await;
+            assert_eq!(f.as_phone("PUT", "/v1/iroh-node", new.binding_for("phone-1")).await, StatusCode::NO_CONTENT);
+            assert_eq!(f.access(&old).await, denied());
+            assert_eq!(f.access(&new).await, allowed());
+            assert_eq!(f.as_phone("DELETE", "/v1/iroh-node", vec![]).await, StatusCode::NO_CONTENT);
+            assert_eq!(f.access(&new).await, denied());
+            f.task.abort();
+        }
+
+        #[tokio::test]
+        async fn binding_needs_the_endpoint_key_and_cannot_take_another_devices_endpoint() {
+            let f = Fixture::new().await;
+            let node = IrohKey::new(16);
+            let proof_for_other_device = node.binding_for("mac-1");
+            assert_eq!(f.as_phone("PUT", "/v1/iroh-node", proof_for_other_device).await, StatusCode::BAD_REQUEST);
+            let mut forged: Value = serde_json::from_slice(&IrohKey::new(17).binding_for("phone-1")).unwrap();
+            forged["iroh_node_id"] = json!(node.id());
+            assert_eq!(f.as_phone("PUT", "/v1/iroh-node", serde_json::to_vec(&forged).unwrap()).await,
+                StatusCode::BAD_REQUEST);
+            assert_eq!(f.access(&node).await, denied());
+            assert_eq!(f.as_mac("PUT", "/v1/iroh-node", node.binding_for("mac-1")).await, StatusCode::NO_CONTENT);
+            assert_eq!(f.as_phone("PUT", "/v1/iroh-node", node.binding_for("phone-1")).await, StatusCode::CONFLICT);
+            let unsigned = node.binding_for("phone-1");
+            let response = f.http.put(format!("{}/v1/iroh-node", f.url)).bearer_auth(jwt("owner", now_ms()))
+                .header("x-device-id", "phone-1").body(unsigned).send().await.unwrap();
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+            f.task.abort();
+        }
+
+        #[tokio::test]
+        async fn bindings_survive_a_restart_and_older_registries_still_load() {
+            let f = Fixture::new().await;
+            let node = IrohKey::new(18);
+            f.as_phone("PUT", "/v1/iroh-node", node.binding_for("phone-1")).await;
+            let config = f.server.auth.config.clone();
+            f.task.abort();
+            let jwks = include_bytes!("../tests/fixtures/jwks.json");
+            let restarted = Auth::test(config.clone(), jwks).unwrap();
+            assert_eq!(restarted.iroh_node_holder(&node.id()).unwrap(), Some(auth::IrohNodeHolder {
+                owner_sub: "owner".into(), mac_id: "mac-1".into(), client_id: Some("phone-1".into()) }));
+            let mut stored: Value = serde_json::from_slice(&std::fs::read(&config.device_registry_path).unwrap()).unwrap();
+            stored.as_object_mut().unwrap().remove("iroh_nodes");
+            std::fs::write(&config.device_registry_path, serde_json::to_vec(&stored).unwrap()).unwrap();
+            let older = Auth::test(config, jwks).unwrap();
+            assert_eq!(older.iroh_node_holder(&node.id()).unwrap(), None);
+            assert!(older.is_phone_registered("phone-1"));
+        }
     }
 
     fn signed_headers(epoch: &[u8; 16], key: &SigningKey, id: &str, path: &str, timestamp: u64, nonce: [u8; 16]) -> HeaderMap {

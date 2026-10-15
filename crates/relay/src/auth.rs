@@ -24,6 +24,7 @@ const JWKS_MAX_AGE: Duration = Duration::from_secs(60 * 60);
 const UNKNOWN_KID_RETRY: Duration = Duration::from_secs(30);
 const REGISTRY_SCHEMA_VERSION: u32 = 2;
 const REGISTRY_GUARD: &[u8] = b"alondra-relay-device-registry-v2\n";
+const IROH_NODE_PROOF_DOMAIN: &[u8] = b"alondra-iroh-node-v1\0";
 
 #[cfg(test)]
 pub(crate) static FAIL_AFTER_RENAME_PATH: Mutex<Option<PathBuf>> = Mutex::new(None);
@@ -98,6 +99,8 @@ struct DeviceRegistry {
     push_ended: HashSet<String>,
     macs: HashMap<String, MacDevice>,
     revoked_mac_ids: HashSet<String>,
+    /// Device or Mac ID → its iroh endpoint ID (hex Ed25519 public key).
+    iroh_nodes: HashMap<String, String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -118,6 +121,25 @@ struct StoredDeviceRegistry {
     macs: Vec<MacDevice>,
     #[serde(default)]
     revoked_mac_ids: Vec<String>,
+    #[serde(default)]
+    iroh_nodes: HashMap<String, String>,
+}
+
+/// A device or Mac names the iroh endpoint that may use the iroh relay on its behalf. `proof` is
+/// the endpoint key's Ed25519 signature over the proof domain and the device ID.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IrohNodeBinding {
+    pub iroh_node_id: String,
+    pub proof: String,
+}
+
+/// Who an iroh endpoint ID speaks for, so the account gate can be checked before relaying.
+#[derive(Debug, PartialEq, Eq)]
+pub struct IrohNodeHolder {
+    pub owner_sub: String,
+    pub mac_id: String,
+    pub client_id: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -236,6 +258,7 @@ impl Auth {
                 push_ended,
                 macs,
                 revoked_mac_ids,
+                iroh_nodes,
             ) = match serde_json::from_slice(&raw)? {
                 RegistryOnDisk::Current(StoredDeviceRegistry {
                     schema_version,
@@ -247,6 +270,7 @@ impl Auth {
                     push_ended,
                     macs,
                     revoked_mac_ids,
+                    iroh_nodes,
                 }) => (
                     schema_version,
                     devices,
@@ -257,6 +281,7 @@ impl Auth {
                     push_ended,
                     macs,
                     revoked_mac_ids,
+                    iroh_nodes,
                 ),
                 RegistryOnDisk::Legacy(devices) => (
                     None,
@@ -268,6 +293,7 @@ impl Auth {
                     Vec::new(),
                     Vec::new(),
                     Vec::new(),
+                    HashMap::new(),
                 ),
             };
             if guarded && schema_version != Some(REGISTRY_SCHEMA_VERSION) {
@@ -332,6 +358,18 @@ impl Auth {
                     verifying_key(&mac.agreement_key)?;
                 }
             }
+            if iroh_nodes
+                .keys()
+                .any(|id| !devices.contains_key(id) && !macs.contains_key(id))
+            {
+                bail!("iroh node binding references inactive device");
+            }
+            let distinct: HashSet<_> = iroh_nodes.values().collect();
+            if distinct.len() != iroh_nodes.len()
+                || iroh_nodes.values().any(|node| iroh_node_key(node).is_none())
+            {
+                bail!("invalid or duplicate iroh node binding");
+            }
             DeviceRegistry {
                 devices,
                 phone_macs,
@@ -341,6 +379,7 @@ impl Auth {
                 push_ended: push_ended.into_iter().collect(),
                 macs,
                 revoked_mac_ids,
+                iroh_nodes,
             }
         } else {
             DeviceRegistry::default()
@@ -479,6 +518,7 @@ impl Auth {
         let previous = registry.devices.remove(device_id);
         let previous_mac = registry.phone_macs.remove(device_id);
         let previous_push = registry.push.remove(device_id);
+        let previous_iroh = registry.iroh_nodes.remove(device_id);
         registry.revoked_ids.insert(device_id.to_owned());
         let newly_ended = registry.push_ended.insert(device_id.to_owned());
         if let Err(e) = self.persist_registry(&registry) {
@@ -494,6 +534,9 @@ impl Auth {
             }
             if let Some(previous) = previous_push {
                 registry.push.insert(device_id.to_owned(), previous);
+            }
+            if let Some(previous) = previous_iroh {
+                registry.iroh_nodes.insert(device_id.to_owned(), previous);
             }
             return Err(e);
         }
@@ -788,6 +831,7 @@ impl Auth {
         }
         if kind=="mac" {registry.macs.remove(id);registry.revoked_mac_ids.insert(id.to_owned());}
         for client in clients {registry.devices.remove(&client);registry.phone_macs.remove(&client);registry.push.remove(&client);registry.push_ended.insert(client.clone());registry.revoked_ids.insert(client);}
+        forget_orphan_iroh_nodes(&mut registry);
         if let Err(error)=self.persist_registry(&registry) {*registry=before;return Err(error)}
         Ok(())
     }
@@ -803,6 +847,7 @@ impl Auth {
             registry.devices.remove(&id);registry.phone_macs.remove(&id);registry.push.remove(&id);registry.push_ended.insert(id.clone());registry.revoked_ids.insert(id);
         }
         for id in macs {registry.macs.remove(&id);registry.revoked_mac_ids.insert(id);}
+        forget_orphan_iroh_nodes(&mut registry);
         if let Err(error)=self.persist_registry(&registry) {*registry=before;return Err(error)}
         Ok(())
     }
@@ -831,12 +876,102 @@ impl Auth {
                 registry.push_ended.insert(phone);
             }
         }
+        forget_orphan_iroh_nodes(&mut registry);
         if let Err(err) = self.persist_registry(&registry) {
             *registry = before;
             registry.macs.insert(who.device_id.clone(), existing);
             return Err(err);
         }
         Ok(())
+    }
+
+    /// Calling again with another endpoint replaces the old one, which loses relay access.
+    pub fn bind_iroh_node(&self, who: &Identity, binding: IrohNodeBinding) -> Result<()> {
+        self.ensure_registry_ready()?;
+        let key = iroh_node_key(&binding.iroh_node_id)
+            .ok_or(EnrollmentError::InvalidRegistration)?;
+        let proof = URL_SAFE_NO_PAD
+            .decode(&binding.proof)
+            .map_err(|_| EnrollmentError::InvalidRegistration)?;
+        let message = [IROH_NODE_PROOF_DOMAIN, who.device_id.as_bytes()].concat();
+        ring::signature::UnparsedPublicKey::new(&ring::signature::ED25519, key)
+            .verify(&message, &proof)
+            .map_err(|_| EnrollmentError::InvalidRegistration)?;
+        let mut registry = self.devices.lock().unwrap();
+        if !registry.devices.contains_key(&who.device_id)
+            && !registry.macs.contains_key(&who.device_id)
+        {
+            bail!("unknown device");
+        }
+        if registry
+            .iroh_nodes
+            .iter()
+            .any(|(id, node)| *node == binding.iroh_node_id && *id != who.device_id)
+        {
+            bail!(EnrollmentError::Conflict);
+        }
+        let previous = registry
+            .iroh_nodes
+            .insert(who.device_id.clone(), binding.iroh_node_id);
+        if let Err(err) = self.persist_registry(&registry) {
+            match previous {
+                Some(node) => registry.iroh_nodes.insert(who.device_id.clone(), node),
+                None => registry.iroh_nodes.remove(&who.device_id),
+            };
+            return Err(err);
+        }
+        Ok(())
+    }
+
+    pub fn unbind_iroh_node(&self, who: &Identity) -> Result<()> {
+        self.ensure_registry_ready()?;
+        let mut registry = self.devices.lock().unwrap();
+        let Some(previous) = registry.iroh_nodes.remove(&who.device_id) else {
+            return Ok(());
+        };
+        if let Err(err) = self.persist_registry(&registry) {
+            registry.iroh_nodes.insert(who.device_id.clone(), previous);
+            return Err(err);
+        }
+        Ok(())
+    }
+
+    /// Only an endpoint bound to an enrolled Mac, or to a phone whose Mac is still enrolled,
+    /// has a holder. The caller still checks the account gate for that route.
+    pub fn iroh_node_holder(&self, iroh_node_id: &str) -> Result<Option<IrohNodeHolder>> {
+        self.ensure_registry_ready()?;
+        let registry = self.devices.lock().unwrap();
+        let Some(id) = registry
+            .iroh_nodes
+            .iter()
+            .find(|(_, node)| node.as_str() == iroh_node_id)
+            .map(|(id, _)| id)
+        else {
+            return Ok(None);
+        };
+        if let Some(mac) = registry.macs.get(id) {
+            return Ok(Some(IrohNodeHolder {
+                owner_sub: mac.owner_sub.clone(),
+                mac_id: mac.mac_id.clone(),
+                client_id: None,
+            }));
+        }
+        let (Some(phone), Some(mac_id)) = (registry.devices.get(id), registry.phone_macs.get(id))
+        else {
+            return Ok(None);
+        };
+        match registry.macs.get(mac_id) {
+            Some(mac) if mac.owner_sub == phone.owner_sub => Ok(Some(IrohNodeHolder {
+                owner_sub: phone.owner_sub.clone(),
+                mac_id: mac_id.clone(),
+                client_id: Some(id.clone()),
+            })),
+            _ => Ok(None),
+        }
+    }
+
+    pub fn is_mac(&self, device_id: &str) -> bool {
+        self.devices.lock().unwrap().macs.contains_key(device_id)
     }
 
     /// Account metadata only: knowing a Mac ID grants no device or content access.
@@ -1482,6 +1617,23 @@ fn valid_session_part(value: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
 }
 
+/// An iroh endpoint ID is its Ed25519 public key in lowercase hex, as the iroh relay sends it.
+fn iroh_node_key(node: &str) -> Option<[u8; 32]> {
+    if node.len() != 64 || !node.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
+        return None;
+    }
+    let mut key = [0u8; 32];
+    for (byte, pair) in key.iter_mut().zip(node.as_bytes().chunks(2)) {
+        *byte = u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok()?;
+    }
+    Some(key)
+}
+
+fn forget_orphan_iroh_nodes(registry: &mut DeviceRegistry) {
+    let DeviceRegistry { iroh_nodes, devices, macs, .. } = registry;
+    iroh_nodes.retain(|id, _| devices.contains_key(id) || macs.contains_key(id));
+}
+
 fn persist_registry_at(path: &Path, registry: &DeviceRegistry) -> Result<()> {
     let mut devices: Vec<_> = registry.devices.values().cloned().collect();
     devices.sort_by(|a, b| a.device_id.cmp(&b.device_id));
@@ -1511,6 +1663,7 @@ fn persist_registry_at(path: &Path, registry: &DeviceRegistry) -> Result<()> {
             push_ended,
             macs,
             revoked_mac_ids,
+            iroh_nodes: registry.iroh_nodes.clone(),
         })?,
     )
 }

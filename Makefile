@@ -14,7 +14,7 @@ BETA_GROUP := Internal Pilot,Private Pilot
 APPLE_VERSION = $(shell sed -n 's/^ *version = "\(.*\)".*/\1/p' tools/shared.bzl)
 APPLE_BUILD = $(shell sed -n 's/^ *build_number = "\(.*\)".*/\1/p' tools/shared.bzl)
 
-.PHONY: connection-measurements version-guard increment-version build-release snapshots-record snapshots-verify tui-shots mac-snapshots-record mac-snapshots-verify no-holds build test install run tui setup launchd unlaunchd restart status doctor cargo-test mac device device-console e2e-sandbox e2e-sandbox-stop e2e-wizard e2e-doc-review e2e-sandbox-logs e2e-relay-cards e2e-direct-cards e2e-allow-always e2e-cards-tui e2e-tui-optimistic e2e-ios-cards e2e-ios-offline soak load-bench tasks-screen rehearse-cutover upgrade-rehearsal cutover-live clean-xcode-test-results e2e-journeys e2e-explore pi-relay-deploy
+.PHONY: connection-measurements version-guard increment-version build-release snapshots-record snapshots-verify tui-shots mac-snapshots-record mac-snapshots-verify no-holds build test install run tui setup launchd unlaunchd restart status doctor cargo-test mac device device-console e2e-sandbox e2e-sandbox-stop e2e-wizard e2e-doc-review e2e-sandbox-logs e2e-relay-cards e2e-direct-cards e2e-allow-always e2e-cards-tui e2e-tui-optimistic e2e-ios-cards e2e-ios-offline soak load-bench tasks-screen rehearse-cutover upgrade-rehearsal cutover-live clean-xcode-test-results e2e-journeys e2e-explore pi-relay-deploy pi-iroh-relay-deploy
 
 build:
 	bazelisk build //crates/... //apple:AlondraMac
@@ -168,6 +168,11 @@ e2e-sandbox-stop:
 # does not turn healthy is rolled back (deploy/pi/deploy-relay.sh, deploy/pi/README.md).
 pi-relay-deploy:
 	deploy/pi/deploy-relay.sh
+
+# The iroh relay from HEAD's deploy/pi/iroh-relay, after pi-relay-deploy has the iroh routes
+# (deploy/pi/deploy-iroh-relay.sh, deploy/pi/README.md).
+pi-iroh-relay-deploy:
+	deploy/pi/deploy-iroh-relay.sh
 
 # alondra's setup wizard on a new Mac in its own throwaway sandbox (tools/e2e-wizard.py).
 e2e-wizard:

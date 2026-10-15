@@ -735,6 +735,7 @@ mod tests {
             device_gate: Arc::new(tokio::sync::RwLock::new(())),
             waitlist: crate::management::waitlist::Limiter::new(None),
             epoch: "synthetic".into(),
+            iroh_access_token: None,
             test_directory: Some(scratch_directory),
             lab_waiters: Arc::default(),
         });
