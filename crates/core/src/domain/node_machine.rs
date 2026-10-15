@@ -169,7 +169,9 @@ pub enum PauseCleanup {
 /// saying it cannot go on). It is never work: every wait inside a turn that Alondra can answer (a
 /// permission, a plan, a question) is a held card that already moves the node to `WaitingUser`, so
 /// a blocked session without one waits on something only its terminal shows: its turn is over,
-/// even behind work of its own in the background, and its last words go to the user in a card.
+/// and its last words go to the user in a card. A node waiting for work of its own is the
+/// exception: Claude Code's model guesses `blocked` from the last words («Esperando el resto.»)
+/// while that work runs, so only the work ending, dying or never waking it ends that wait.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Listed {
@@ -398,7 +400,6 @@ fn observe(phase: &NodePhase, since: Millis, listed: Listed, f: &TaskFacts, at: 
         (_, Listed::Absent) => Settled::At(if f.open && !f.closing { P::Lost } else { P::Closed }),
         (_, Listed::Done) if !f.open || f.closing => Settled::At(P::Closed),
         (P::WaitingUser { .. } | P::Delivered { in_turn: false } | P::WaitingDependency | P::NoTask, Listed::Idle | Listed::Blocked | Listed::Done) => keep(),
-        (P::WaitingBackground(_), Listed::Blocked) => rest(f),
         (P::WaitingBackground(_), _) => keep(),
         (P::Resuming { idle_since: None }, Listed::Idle | Listed::Blocked | Listed::Done) => Settled::At(P::Resuming { idle_since: Some(at) }),
         (P::Resuming { idle_since: Some(first) }, Listed::Idle | Listed::Blocked | Listed::Done) if at - first < RESUME_GRACE => keep(),

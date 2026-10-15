@@ -275,18 +275,24 @@ impl Reported {
     pub(crate) fn background_at(&self, now: Millis) -> Vec<BackgroundItem> {
         let idle = self.working_since.is_none() && self.tool.is_none();
         self.background.iter()
-            .map(|(_, item)| BackgroundItem { suspect: idle && !self.shell_running() && now - item.started_at > alondra_core::states::BACKGROUND_SUSPECT_MS, ..item.clone() })
+            .map(|(_, item)| BackgroundItem { suspect: idle && self.may_have_hung(item, now), ..item.clone() })
             .collect()
     }
 
     /// Everything the node has in the background may never end, so it is no reason to wait for
-    /// the node: a subagent past `SUBAGENT_CALL_LIMIT_MS`, anything else past
-    /// `BACKGROUND_SUSPECT_MS` with no shell call alive.
+    /// the node.
     pub(crate) fn background_hung(&self, now: Millis) -> bool {
-        !self.background.is_empty() && self.background.iter().all(|(_, item)| match item.kind {
-            BackgroundKind::Agent => now - item.started_at > alondra_core::states::SUBAGENT_CALL_LIMIT_MS,
-            _ => !self.shell_running() && now - item.started_at > alondra_core::states::BACKGROUND_SUSPECT_MS,
-        })
+        !self.background.is_empty() && self.background.iter().all(|(_, item)| self.may_have_hung(item, now))
+    }
+
+    /// A shell past `BACKGROUND_SUSPECT_MS` with no shell call alive; anything else (a subagent, a
+    /// monitor, a workflow, a teammate, a cloud session, an MCP task) has no shell to watch and runs
+    /// as long as a subagent may, `SUBAGENT_CALL_LIMIT_MS`.
+    fn may_have_hung(&self, item: &BackgroundItem, now: Millis) -> bool {
+        match item.kind {
+            BackgroundKind::Shell => !self.shell_running() && now - item.started_at > alondra_core::states::BACKGROUND_SUSPECT_MS,
+            BackgroundKind::Agent | BackgroundKind::Other => now - item.started_at > alondra_core::states::SUBAGENT_CALL_LIMIT_MS,
+        }
     }
 
     /// The mod loaded and its session has not ended, yet its connection is closed: what brings

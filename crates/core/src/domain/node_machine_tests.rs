@@ -475,16 +475,43 @@ fn a_node_waiting_for_its_command_yields_to_its_card_its_result_and_its_task_s_e
         "a turn the pause cut ends behind its work and stays paused");
 }
 
-/// 14 October, 21:04: t-holepunch-iroh-prototype ended its turn writing to David behind a listener
-/// of its own that never ends. Claude Code listed it blocked: it waits on the user, not on its
-/// command, and its last words go to the user.
+/// 15 October, 06:21: t-fastconn-6-reachable-mac ended its turn with «Esperando el resto.» behind
+/// its ablation script and a Monitor on its results, and Claude Code's model listed it blocked
+/// «waiting for complete user instructions». A node waiting for its own work is at work whatever
+/// Claude Code guesses: it keeps its slot and no card goes to the user; a card of its own still
+/// takes it out of the wait.
 #[test]
-fn a_node_behind_its_own_command_that_claude_code_lists_blocked_waits_on_the_user() {
+fn a_node_behind_its_own_work_that_claude_code_lists_blocked_keeps_waiting_for_it() {
     let waiting = NodePhase::WaitingBackground(background());
-    assert!(unheard(&waiting, &NodeEvent::Listed { listed: Listed::Blocked }, &OPEN, AT));
+    for listed in [Listed::Blocked, Listed::Idle, Listed::Done, Listed::Working] {
+        assert_eq!(next(&waiting, SINCE, &NodeEvent::Listed { listed }, &OPEN, SINCE + START_GRACE).unwrap(), Settled::At(waiting.clone()), "{listed:?}");
+    }
+    assert!(waiting.holds_slot());
     let card = TaskFacts { card: true, ..OPEN };
     assert_eq!(next_phase(&waiting, SINCE, &NodeEvent::Listed { listed: Listed::Blocked }, &card, AT).unwrap(), NodePhase::WaitingUser { in_turn: false },
         "with a card of its own it waits on that one");
+}
+
+/// David's rule, 15 October: a node waiting for work of its own never rests on the card with its
+/// last words. Only that work ending with no turn to take it (`BackgroundEnded`) or a turn of its
+/// own that ends (`TurnEnded`, `TurnFailed`) may put it there; no listing, pause, loss, revival or
+/// change of its task's facts does, at any time.
+#[test]
+fn a_node_waiting_for_its_own_work_rests_on_its_last_words_only_once_that_work_or_a_turn_ends() {
+    let waiting = NodePhase::WaitingBackground(background());
+    let may_end_the_wait = |event: &NodeEvent| matches!(event, NodeEvent::BackgroundEnded | NodeEvent::TurnEnded | NodeEvent::TurnFailed);
+    for bits in 0u8..64 {
+        let bit = |n: u8| bits & (1 << n) != 0;
+        let f = TaskFacts { open: bit(0), closing: bit(1), held: bit(2), card: bit(3), delivered: bit(4), awaits: bit(5) };
+        for event in events().iter().filter(|event| !may_end_the_wait(event)) {
+            for at in [AT, SINCE + START_GRACE, SINCE + RESUME_GRACE * 10] {
+                if let Ok(moved) = next(&waiting, SINCE, event, &f, at) {
+                    assert_ne!(moved, Settled::Unheard, "{event:?} with {f:?} at {at}");
+                }
+            }
+        }
+    }
+    assert!(unheard(&waiting, &NodeEvent::BackgroundEnded, &OPEN, AT), "its work over with nothing for the user, its last words go to them");
 }
 
 /// The user answers a node's card while it rests: the answer is on its way and the node works
@@ -652,7 +679,10 @@ impl World {
             _ => None,
         };
         let phase_before = ending.as_ref().and_then(|agent| self.s.node_phase(agent).cloned());
+        let behind: Vec<AgentId> = self.s.agents.values().filter(|a| matches!(a.phase, NodePhase::WaitingBackground(_))).map(|a| a.id.clone()).collect();
+        let heard_before = self.unheard_cards();
         self.apply_step(step);
+        self.no_card_while_behind_own_work(step, &behind, &heard_before);
         if let Some(agent) = ending
             && self.s.node_phase(&agent).cloned() != phase_before
         {
@@ -843,6 +873,23 @@ impl World {
             domain: &self.s, projection: &projection, live: &LiveSnapshot::default(), client: Client::Mac, lang: Lang::En,
             transport: Transport::Loopback, cursor: "", rendered_at: "",
         }).unwrap()
+    }
+
+    fn unheard_cards(&self) -> BTreeSet<(AgentId, InteractionId)> {
+        self.s.interactions.values().filter(|card| card.id.0.starts_with(UNHEARD_PREFIX) && self.s.open(card))
+            .filter_map(|card| match &card.author { Author::Agent { agent_id } => Some((agent_id.clone(), card.id.clone())), _ => None })
+            .collect()
+    }
+
+    /// David's rule, 15 October: a node waiting for work of its own is at work. No step opens the
+    /// card with its last words unless that work ended with no turn to take it, or a turn of its own
+    /// ended.
+    fn no_card_while_behind_own_work(&self, step: &Step, behind: &[AgentId], before: &BTreeSet<(AgentId, InteractionId)>) {
+        for (agent, card) in self.unheard_cards().difference(before) {
+            let ended_its_wait = self.last.as_ref().is_some_and(|(moved, event, _)| moved == agent
+                && matches!(event, NodeEvent::BackgroundEnded | NodeEvent::TurnEnded | NodeEvent::TurnFailed));
+            assert!(!behind.contains(agent) || ended_its_wait, "{step:?} opened {card:?} while {agent:?} waited for its own work");
+        }
     }
 
     /// David's rule, 14 October: a node whose task is open is at work, or waits on a card in front

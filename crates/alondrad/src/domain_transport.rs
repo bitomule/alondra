@@ -490,6 +490,16 @@ pub(crate) fn record_node_cost(domain: &DomainRuntime, session: &str) {
     }
 }
 
+/// Hooks Claude Code fires only while a turn runs: a prompt, a tool call, a wait inside one, a
+/// subagent it starts. Every other hook may come between turns: `Notification` (`idle_prompt` a
+/// minute after each turn end), `MessageDisplay`, a background subagent's `SubagentStop`,
+/// `FileChanged`, a compaction, a model switch. Taking one of those for a turn moved a node waiting
+/// for its own work out of that wait, and Claude Code's listing then rested it on a card.
+fn proves_a_turn(event: &str) -> bool {
+    matches!(event, "UserPromptSubmit" | "UserPromptExpansion" | "PreToolUse" | "PostToolUse" | "PostToolUseFailure"
+        | "PostToolBatch" | "PermissionRequest" | "PermissionDenied" | "Elicitation" | "SubagentStart")
+}
+
 fn respond(domain: &DomainRuntime, payload: &Value) -> Result<Reply> {
     let Some(session_id) = text(payload, "session_id") else {
         return Ok(Reply::Plain(json!({})));
@@ -507,9 +517,10 @@ fn respond(domain: &DomainRuntime, payload: &Value) -> Result<Reply> {
     if crate::api_failures::proves_an_answer(&event) {
         domain.live.api_watch.answered(&session_id, alondra_core::now_millis());
     }
-    // Any hook but these runs inside a turn, so it proves the turn under way.
     match event.as_str() {
-        "SessionStart" | "Stop" => {}
+        event if proves_a_turn(event) => {
+            lifecycle::node_event(domain, &agent_id, NodeEvent::TurnStarted)?;
+        }
         "StopFailure" => {
             crate::api_failures::turn_failed(domain, &agent_id, payload, alondra_core::now_millis())?;
             return Ok(Reply::Plain(json!({})));
@@ -518,9 +529,7 @@ fn respond(domain: &DomainRuntime, payload: &Value) -> Result<Reply> {
             lifecycle::node_event(domain, &agent_id, NodeEvent::SessionLost)?;
             session_ended(domain, &agent_id)?;
         }
-        _ => {
-            lifecycle::node_event(domain, &agent_id, NodeEvent::TurnStarted)?;
-        }
+        _ => {}
     }
     if !matches!(event.as_str(), "SessionStart" | "SessionEnd") {
         start_assigned(domain, &agent_id)?;
@@ -669,10 +678,15 @@ fn background_work(domain: &DomainRuntime, agent_id: &AgentId, payload: &Value) 
 /// Alondra stops waiting for the turn that work would start.
 pub(crate) const BACKGROUND_WAKE_GRACE: alondra_core::Millis = 2 * 60 * 1000;
 
+/// How long a node may wait for work of its own that never wakes it with a turn: a listener that
+/// never ends, behind which the node wrote to the user in its terminal (t-holepunch, 14 October).
+pub(crate) const OWN_WORK_UNWOKEN: alondra_core::Millis = 2 * 60 * 60 * 1000;
+
 /// Nodes waiting for work of their own that has ended, died or hung with no turn to take its
-/// result: nothing in the background any more, all of it hung, or its shells gone, and the node's
-/// mod silent for `BACKGROUND_WAKE_GRACE`. The node machine rests them, and from there Alondra sends
-/// them back like any node that stopped without delivering.
+/// result (nothing in the background any more, all of it hung, or its shells gone), or that has
+/// not woken them for `OWN_WORK_UNWOKEN`, and the node's mod silent for `BACKGROUND_WAKE_GRACE`.
+/// Only this ends such a wait without a turn: the node machine rests them, and their last words
+/// reach the user.
 pub(crate) fn background_over(domain: &DomainRuntime, now: alondra_core::Millis) -> Vec<AgentId> {
     let Ok(state) = domain.state() else { return vec![] };
     state.agents.values()
@@ -682,7 +696,8 @@ pub(crate) fn background_over(domain: &DomainRuntime, now: alondra_core::Millis)
                 && reported.background.iter().all(|(_, item)| item.kind == alondra_core::BackgroundKind::Shell);
             reported.connection.is_some() && reported.working_since.is_none() && reported.tool.is_none()
                 && reported.last_event_at.is_none_or(|at| now - at >= BACKGROUND_WAKE_GRACE)
-                && (reported.background.is_empty() || reported.background_hung(now) || shells_gone)
+                && (reported.background.is_empty() || reported.background_hung(now) || shells_gone
+                    || now - agent.since >= OWN_WORK_UNWOKEN)
         }))
         .map(|agent| agent.id.clone())
         .collect()
@@ -1975,6 +1990,104 @@ mod tests {
         mod_report(&domain, json!({"event": "background", "tasks": []}), now);
         let mut reminded = std::collections::HashMap::new();
         assert!(behind_hung_work(&domain, now + HUNG_REMINDER_GAP, &mut reminded).is_empty(), "it waits on that card");
+    }
+
+    const ABLATE: &str = "python3 ablate.py > ablation.txt";
+
+    /// A turn end behind the ablation script and a Monitor on its results, with the node's words.
+    async fn ends_behind_its_ablation(domain: &Arc<DomainRuntime>, said: &str, at: alondra_core::Millis) {
+        let tasks = json!([{"id": "b1", "type": "shell", "command": ABLATE}, {"id": "m1", "type": "monitor", "description": "ablation results"}]);
+        let stop = json!({"session_id": "agent-a", "hook_event_name": "Stop", "last_assistant_message": said, "background_tasks": tasks});
+        assert_eq!(hook(domain, stop, Some(6)).await.0, json!({}), "its own work will wake it: no hold-back");
+        mod_report(domain, json!({"event": "turn.complete", "turn_id": "t", "answer": said}), at);
+        mod_report(domain, json!({"event": "background", "tasks": tasks}), at);
+    }
+
+    async fn between_turns(domain: &Arc<DomainRuntime>, event: &str, extra: Value) {
+        let mut payload = json!({"session_id": "agent-a", "hook_event_name": event});
+        payload.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        hook(domain, payload, Some(6)).await.1.unwrap();
+    }
+
+    /// 15 October, 06:12–06:27: t-fastconn-6-reachable-mac ran its ablation in the background,
+    /// watched its results with a Monitor and ended each turn saying it waited («Esperando el
+    /// resto.»). Claude Code's `idle_prompt` a minute after each turn end and its other notices
+    /// read as turns, and its model listed the session blocked: cards 7701, 7703 and 7713 with the
+    /// node's words came and went. Waiting for its own work, it works: no card until that work
+    /// stops waking it.
+    #[tokio::test]
+    async fn a_node_waiting_for_its_ablation_and_monitor_works_through_claude_code_s_notices_and_listings() {
+        let fixture = Fixture::new();
+        let domain = fixture.open();
+        let now = alondra_core::now_millis();
+        node_with_task(&domain);
+        domain.connect_node(serde_json::from_value(json!({"session_id": "agent-a", "version": "2.1.287"})).unwrap(), now);
+        hook(&domain, json!({"session_id": "agent-a", "hook_event_name": "PreToolUse", "tool_name": "Bash",
+            "tool_input": {"command": ABLATE, "run_in_background": true}}), Some(6)).await;
+        mod_report(&domain, json!({"event": "shell.start", "id": "b1", "command": ABLATE}), now);
+        domain.live.mods.set_shell_alive("agent-a", Some(true));
+        hook(&domain, json!({"session_id": "agent-a", "hook_event_name": "PreToolUse", "tool_name": "Monitor",
+            "tool_input": {"description": "ablation results", "command": "tail -f ablation.txt"}}), Some(6)).await;
+
+        let waits = |domain: &Arc<DomainRuntime>, when: &str| {
+            assert!(matches!(phase_of(domain), NodePhase::WaitingBackground(_)), "{when}: {:?}", phase_of(domain));
+            assert!(unheard(domain).is_empty(), "{when}: a card with its words");
+            assert_eq!(domain.state().unwrap().slots().len(), 1, "{when}: it works, holding its slot");
+        };
+        let listed_blocked = |domain: &Arc<DomainRuntime>| lifecycle::reconcile(domain, [("agent-a".into(), Listed::Blocked)].into()).unwrap();
+
+        ends_behind_its_ablation(&domain, "Esperando resultados de la ablación.", now).await;
+        waits(&domain, "06:12:28 turn end");
+        between_turns(&domain, "Notification", json!({"notification_type": "idle_prompt", "message": "Claude is waiting for your input"})).await;
+        waits(&domain, "06:13:28 idle prompt");
+
+        for (event, said) in ["Sigue la ablación.", "Esperando el resto.", "Esperando el resto."].into_iter().enumerate() {
+            let at = alondra_core::now_millis();
+            mod_report(&domain, json!({"event": "turn.start", "turn_id": format!("monitor-{event}")}), at);
+            assert_eq!(phase_of(&domain), NodePhase::Working, "the Monitor's event starts a turn");
+            ends_behind_its_ablation(&domain, said, at).await;
+            waits(&domain, said);
+            between_turns(&domain, "Notification", json!({"notification_type": "agent_needs_input"})).await;
+            between_turns(&domain, "MessageDisplay", json!({"turn_id": "t", "final": true, "delta": said})).await;
+            listed_blocked(&domain);
+            waits(&domain, "listed blocked");
+            between_turns(&domain, "Notification", json!({"notification_type": "idle_prompt"})).await;
+            listed_blocked(&domain);
+            waits(&domain, "listed blocked after the idle prompt");
+        }
+        for event in ["SubagentStop", "TaskCompleted", "TeammateIdle", "FileChanged", "ConfigChange", "CwdChanged", "InstructionsLoaded",
+            "PreCompact", "PostCompact", "PostModelSwitch"] {
+            between_turns(&domain, event, json!({})).await;
+            waits(&domain, event);
+        }
+
+        let since = domain.state().unwrap().agents[&AgentId::from("agent-a")].since;
+        assert!(background_over(&domain, since + OWN_WORK_UNWOKEN - 1).is_empty(), "its own work may take its time");
+        assert_eq!(background_over(&domain, since + OWN_WORK_UNWOKEN), ["agent-a".into()], "work that never wakes it stops counting");
+        lifecycle::node_event(&domain, &"agent-a".into(), NodeEvent::BackgroundEnded).unwrap();
+        let cards = unheard(&domain);
+        assert_eq!(cards.len(), 1);
+        assert_eq!(cards[0].body, "Esperando el resto.", "then its last words reach the user");
+    }
+
+    /// A workflow, a monitor or any other work with no shell to watch runs as long as a subagent
+    /// may: forty minutes in, its node still waits for it.
+    #[tokio::test]
+    async fn a_node_waiting_for_a_long_workflow_keeps_waiting_for_it() {
+        let fixture = Fixture::new();
+        let domain = fixture.open();
+        let now = alondra_core::now_millis();
+        node_with_task(&domain);
+        domain.connect_node(serde_json::from_value(json!({"session_id": "agent-a", "version": "2.1.287"})).unwrap(), now);
+        hook(&domain, json!({"session_id": "agent-a", "hook_event_name": "PreToolUse", "tool_name": "Workflow"}), Some(6)).await;
+        let tasks = json!([{"id": "w1", "type": "workflow", "name": "review-changes", "description": "Review the branch"}]);
+        hook(&domain, json!({"session_id": "agent-a", "hook_event_name": "Stop", "background_tasks": tasks}), Some(6)).await;
+        mod_report(&domain, json!({"event": "background", "tasks": tasks}), now);
+        domain.live.mods.set_shell_alive("agent-a", Some(false));
+        assert!(matches!(phase_of(&domain), NodePhase::WaitingBackground(_)));
+        assert!(background_over(&domain, now + 40 * 60_000).is_empty(), "forty minutes in, the workflow still runs");
+        assert!(!domain.live.mods.session("agent-a").unwrap().background_hung(now + 40 * 60_000));
+        assert!(domain.live.mods.session("agent-a").unwrap().background_hung(now + alondra_core::states::SUBAGENT_CALL_LIMIT_MS + 1));
     }
 
     #[tokio::test]
