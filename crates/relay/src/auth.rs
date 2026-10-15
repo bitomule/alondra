@@ -1415,6 +1415,8 @@ impl Auth {
         let current_epoch = URL_SAFE_NO_PAD.encode(self.server_epoch());
         if header(headers, "x-relay-epoch").ok() != Some(current_epoch.as_str()) {
             let mut rejection = DeviceRejection::new(Rejection::EpochMismatch, headers, method, uri, None, None, Some(&nonce));
+            let signed = headers.get("x-relay-epoch").map_or(&[][..], |value| value.as_bytes());
+            rejection.epoch_tags = Some((short_tag(signed), short_tag(current_epoch.as_bytes())));
             rejection.current_epoch = Some(current_epoch);
             return Err(anyhow::Error::new(rejection));
         }
@@ -1518,6 +1520,9 @@ pub struct DeviceRejection {
     first_cf_ray: Option<String>,
     /// Set when the request signed an epoch from before the relay restarted.
     pub current_epoch: Option<String>,
+    /// Short tags of the epoch the request signed and the current one, so a request signed for
+    /// an older relay can be told from a copy of one request, without logging either epoch.
+    epoch_tags: Option<(String, String)>,
 }
 
 impl DeviceRejection {
@@ -1537,13 +1542,11 @@ impl DeviceRejection {
             path: printable(uri.path()),
             skew_ms,
             detail_ms,
-            nonce_tag: nonce.map(|nonce| {
-                use sha2::Digest;
-                sha2::Sha256::digest(nonce)[..4].iter().map(|b| format!("{b:02x}")).collect()
-            }),
+            nonce_tag: nonce.map(|nonce| short_tag(nonce)),
             cf_ray: headers.get("cf-ray").and_then(|v| v.to_str().ok()).map(printable),
             first_cf_ray: None,
             current_epoch: None,
+            epoch_tags: None,
         }
     }
 }
@@ -1562,6 +1565,9 @@ impl std::fmt::Display for DeviceRejection {
         if let Some(tag) = &self.nonce_tag {
             write!(f, " nonce_tag={tag}")?;
         }
+        if let Some((signed, current)) = &self.epoch_tags {
+            write!(f, " signed_epoch_tag={signed} current_epoch_tag={current}")?;
+        }
         if let Some(ray) = &self.cf_ray {
             write!(f, " cf_ray={ray}")?;
         }
@@ -1573,6 +1579,11 @@ impl std::fmt::Display for DeviceRejection {
 }
 
 impl std::error::Error for DeviceRejection {}
+
+fn short_tag(bytes: &[u8]) -> String {
+    use sha2::Digest;
+    sha2::Sha256::digest(bytes)[..4].iter().map(|b| format!("{b:02x}")).collect()
+}
 
 fn printable(value: &str) -> String {
     value.chars().filter(|c| c.is_ascii_graphic()).take(24).collect()

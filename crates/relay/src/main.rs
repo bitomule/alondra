@@ -4521,6 +4521,15 @@ mod http_tests {
         let stale = signed_headers(&[9; 16], &mac_key, "mac-1", path, start + 25_000, [4; 16]);
         let stale_epoch = mac_rejection(&server, &stale, path, start + 25_000).await;
         assert!(stale_epoch.contains("reason=epoch_mismatch"), "{stale_epoch}");
+        let tag = |epoch: &[u8; 16]| -> String {
+            use sha2::Digest;
+            sha2::Sha256::digest(URL_SAFE_NO_PAD.encode(epoch))[..4].iter().map(|b| format!("{b:02x}")).collect()
+        };
+        assert!(stale_epoch.contains(&format!("signed_epoch_tag={} current_epoch_tag={}", tag(&[9; 16]), tag(&epoch))),
+            "a refusal tells an older relay's epoch from a copy of one request: {stale_epoch}");
+        for value in [URL_SAFE_NO_PAD.encode([9; 16]), URL_SAFE_NO_PAD.encode(epoch)] {
+            assert!(!stale_epoch.contains(&value), "the log line never carries an epoch: {stale_epoch}");
+        }
         let failure = server.auth.authenticate_mac(&stale, &Method::GET, &path.parse().unwrap(), &[], start + 25_000).await.unwrap_err();
         let (status, Json(body)) = authentication_error(failure);
         assert_eq!(status, StatusCode::UNAUTHORIZED, "old clients keep bootstrapping again on a 401");

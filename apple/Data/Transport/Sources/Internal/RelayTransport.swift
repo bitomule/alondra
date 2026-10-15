@@ -287,6 +287,9 @@ actor RelayTransport: Transport {
         try MutationScope.check()
         if method == "POST", target == "/v1/requests" { try MutationScope.possibleDispatch() }
         let reply = try await transport.send(request)
+        // The relay named its epoch dead whoever signed, so no request is signed with it again,
+        // even when this one was cancelled or its token has been renewed since.
+        if signed, signedEpoch == epoch, Self.epochChanged(reply) { invalidateBootstrap() }
         if Task.isCancelled || MutationScope.current?.interruption != nil { return reply }
         guard signed, signedEpoch == epoch, signedBearer == latestBearer else { return reply }
         let refusal = try? JSONDecoder().decode([String: String].self, from: reply.body)
@@ -297,7 +300,7 @@ actor RelayTransport: Transport {
             // A relay restart changes its epoch, and an epoch that already worked is the likely
             // cause: bootstrap again first. A 401 with a fresh epoch is about the access token,
             // never that the Mac revoked this device: renew it before the next request.
-            if epochProven || Self.epochChanged(reply) { invalidateBootstrap() }
+            if epochProven { invalidateBootstrap() }
             else {
                 await MutationScope.$current.withValue(nil) {
                     if let bearerRefusedForToken, let signedBearer { await bearerRefusedForToken(signedBearer) }
