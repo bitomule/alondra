@@ -235,8 +235,8 @@ fn card_tools(user: &str, interaction: &Value, node: bool) -> Vec<Value> {
         ]}});
         tools.push(domain_tool(
             "present_result",
-            &format!("Present a result to {user}. With is_final true it is a Review card: {user} accepts it, and for a PR Alondra then merges it and tells you (with auto-merge, once its checks pass); a PR merged on GitHub also completes the Task. With is_final false it is a progress notice. need says what to review and content carries the report, diff or document (a final result needs content): both describe the change itself, never the merge or an approval to give. A final result is refused while your worktree holds uncommitted or unpushed work, or work outside the default branch and your registered PR. Final results are refused while one of your cards still blocks the Task. need and content say what the result means for {user} in plain words, never script names, task ids or internal steps. When the work found nothing for {user} to look at, deliver with nothing_to_review true: no card is created and the task closes. When the result needs {user} to choose anything, ask it with ask before delivering; never leave choices only in the content, because accepting the result does not answer them. When {user} approved a plan for the Task, the final result marks every point of its checklist done in checklist, each with its evidence, or it is refused with the points still open; a result that is not final, or a Task with no approved plan, carries no checklist. {rule}"),
-            json!({"task_id":{"type":"string"},"interaction_id":interaction["interaction_id"],"need":need_schema(),"why":why_schema(),"content":content_schema(),"targets":target,"is_final":{"type":"boolean"},"nothing_to_review":{"type":"boolean","description":"With is_final true and only text targets: the work found nothing for the user to look at (a scheduled check with nothing open, nothing changed). The task closes in silence, without a card"},"checklist":checklist_schema(),"body":interaction["body"],"attachments":attachments}),
+            &format!("Present a result to {user}. With is_final true it is a Review card: {user} accepts it, and for a PR Alondra then merges it and tells you (with auto-merge, once its checks pass); a PR merged on GitHub also completes the Task. With is_final false it is a progress notice. need says what to review and content carries the report, diff or document (a final result needs content): both describe the change itself, never the merge or an approval to give. A final result is refused while your worktree holds uncommitted or unpushed work, or work outside the default branch and your registered PR. Final results are refused while one of your cards still blocks the Task. need and content say what the result means for {user} in plain words, never script names, task ids or internal steps. When the work found nothing for {user} to look at, deliver with nothing_to_review true: no card is created and the task closes. When the result needs {user} to choose anything, ask it with ask before delivering; never leave choices only in the content, because accepting the result does not answer them. When {user} approved a plan for the Task, the final result marks every point of its checklist done in checklist, each with its evidence, or it is refused with the points still open; a result that is not final, or a Task with no approved plan, carries no checklist. A report that proposes work to build sends that work as plan, so {user} can approve it to start its implementation or only archive it. The whole result is kept in Alondra's files folder and every Markdown file it cites is shown on its card, so never leave a report only in a temporary folder. {rule}"),
+            json!({"task_id":{"type":"string"},"interaction_id":interaction["interaction_id"],"need":need_schema(),"why":why_schema(),"content":content_schema(),"targets":target,"is_final":{"type":"boolean"},"nothing_to_review":{"type":"boolean","description":"With is_final true and only text targets: the work found nothing for the user to look at (a scheduled check with nothing open, nothing changed). The task closes in silence, without a card"},"checklist":checklist_schema(),"plan":{"type":"string","description":"Only on a final result without a pull request whose report proposes work to build (a research or investigation that ends in a plan): that plan, in Markdown, with one checklist line (- [ ] ...) per thing the implementation will deliver. The card then offers Approve and start implementing, which creates a new task that implements exactly this plan, or Only archive. Never put such a plan only inside the report; a plan the user asked you for in your own task goes through ExitPlanMode instead"},"body":interaction["body"],"attachments":attachments}),
             &["task_id", "interaction_id", "need", "targets", "is_final"],
         ));
     }
@@ -965,6 +965,10 @@ fn with_cited_files(need: &str, why: &str, content: Option<Value>, cwd: Option<&
     Ok(Some(content))
 }
 
+fn delivers_pr(command: &serde_json::Map<String, Value>) -> bool {
+    command.get("targets").and_then(Value::as_array).is_some_and(|targets| targets.iter().any(|t| t["kind"] == "pull_request"))
+}
+
 fn choice(id: &str, label: &str) -> Value {
     json!({"id":id,"label":label})
 }
@@ -1107,8 +1111,16 @@ fn attach_card(name: &str, command: &mut serde_json::Map<String, Value>) -> Resu
         }
         _ => {}
     }
-    if name == "ask" {
-        content = with_cited_files(&need, &why, content, std::env::current_dir().ok().as_deref())?;
+    let cwd = std::env::current_dir().ok();
+    if name == "ask" || (name == "present_result" && !delivers_pr(command)) {
+        content = with_cited_files(&need, &why, content, cwd.as_deref())?;
+    }
+    if name == "present_result"
+        && let Some(plan) = command.remove("plan").and_then(|v| v.as_str().map(str::trim).map(str::to_owned)).filter(|plan| !plan.is_empty())
+    {
+        let whole = alondra_core::domain::include_cited_files(&plan, |path| alondra_core::cited_file::read_cited_file(cwd.as_deref(), path))
+            .map_err(|fix| anyhow::anyhow!("invalid_input: plan: {fix}"))?;
+        card.insert("plan".into(), json!(whole));
     }
     card.insert("kind".into(), json!(kind));
     card.insert("need".into(), json!(need));

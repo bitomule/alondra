@@ -664,6 +664,7 @@ fn ensure_nothing_removed(before: &DomainState, after: &DomainState) -> Result<(
     kept("task checklist", &before.checklists, &after.checklists)?;
     kept("delivery checklist", &before.checklist_marks, &after.checklist_marks)?;
     kept("node's last words", &before.last_words, &after.last_words)?;
+    kept("approved plan request", &before.request_plans, &after.request_plans)?;
     kept("schedule", &before.schedule.schedules, &after.schedule.schedules)?;
     kept("schedule run", &before.schedule.runs, &after.schedule.runs)?;
     for (id, task) in &before.tasks {
@@ -808,6 +809,10 @@ pub(super) fn save_changes(c: &Connection, before: &DomainState, after: &DomainS
     for (id, marks) in after.checklist_marks.iter().filter(|(id, m)| before.checklist_marks.get(*id) != Some(*m)) {
         let row = object(&json!({"interaction_id": id, "marks": marks}))?;
         upsert(c, "delivery_checklists", &["interaction_id"], row)?;
+    }
+    for (request_id, approved) in after.request_plans.iter().filter(|(id, a)| before.request_plans.get(*id) != Some(*a)) {
+        let row = object(&json!({"request_id": request_id, "task_id": approved.task_id, "presentation_id": approved.presentation_id}))?;
+        upsert(c, "request_plans", &["request_id"], row)?;
     }
     for (agent_id, text) in after.last_words.iter().filter(|(id, text)| before.last_words.get(*id) != Some(*text)) {
         upsert(c, "node_last_words", &["agent_id"], object(&json!({"agent_id": agent_id, "text": text}))?)?;
@@ -1135,6 +1140,10 @@ pub(super) fn load(c: &Connection) -> Result<DomainState> {
     }
     for row in rows(c, "delivery_checklists", &[], &["marks"])? {
         state.checklist_marks.insert(InteractionId::from(s(&row["interaction_id"])?), decode(row["marks"].clone())?);
+    }
+    for row in rows(c, "request_plans", &[], &[])? {
+        let approved = ApprovedPlan { task_id: TaskId::from(s(&row["task_id"])?), presentation_id: InteractionId::from(s(&row["presentation_id"])?) };
+        state.request_plans.insert(RequestId::from(s(&row["request_id"])?), approved);
     }
     for row in rows(c, "node_last_words", &[], &[])? {
         state.last_words.insert(AgentId::from(s(&row["agent_id"])?), s(&row["text"])?.to_owned());

@@ -1063,6 +1063,26 @@ fn delivery_actions(
     };
     let mut visible = vec![];
     let mut more = vec![];
+    if pr.is_none() && interaction.card.plan.is_some() && item.card.kind != CardKind::Know {
+        if !accepted {
+            let choices = [
+                (super::action_id::IMPLEMENT_PLAN, t!(lang, "Approve and start implementing", "Aprobar y empezar a implementar"), Role::Advance,
+                    t!(lang, "Implementation requested", "Implementación pedida"), "implement_plan"),
+                (super::action_id::ARCHIVE_PLAN, t!(lang, "Only archive", "Solo archivar"), Role::Neutral, t!(lang, "Archived", "Archivada"), "archive_plan"),
+            ];
+            for (extra, label, role, done, kind) in choices {
+                if let Some(id) = action_id(Verb::Accept, &interaction.id.0, interaction.revision, Some(extra.to_owned())) {
+                    let mut action = button(id.to_string(), label, role);
+                    action.stamp = Some(done.into());
+                    visible.push(with_availability(action, find(kind), lang));
+                }
+            }
+        }
+        visible.extend(request_changes(
+            Verb::Changes, &interaction.id.0, interaction.revision, None, document, find("submit_feedback"), context,
+        ));
+        return (visible, more);
+    }
     let Some(pr) = pr else {
         let role = if item.card.kind == CardKind::Know { Role::Neutral } else { Role::Advance };
         visible.extend(accept(role, accept_label));
@@ -1353,6 +1373,8 @@ fn content_items(item: &InboxItem, context: &RenderContext<'_>) -> Vec<Item> {
             fetch: format!("/document-revisions/{revision_id}/content"),
             commentable: true,
         }));
+        out.extend(proposed_plan(interaction, lang));
+        out.extend(kept_at(interaction, lang));
         return out;
     }
     if interaction.author == Author::System
@@ -1395,6 +1417,8 @@ fn content_items(item: &InboxItem, context: &RenderContext<'_>) -> Vec<Item> {
             _ => content.body.clone(),
         }));
     }
+    out.extend(proposed_plan(interaction, lang));
+    out.extend(kept_at(interaction, lang));
     if domain.holds.get(&interaction.id) == Some(&Hold::Permission) {
         if let Some(line) = interaction.card.allow_always.as_ref().and_then(|offer| super::allow_always::refusal(offer, lang)) {
             out.push(markdown(line));
@@ -1405,6 +1429,26 @@ fn content_items(item: &InboxItem, context: &RenderContext<'_>) -> Vec<Item> {
         }
     }
     out
+}
+
+/// The plan a final result proposes, under its own heading after the report.
+fn proposed_plan(interaction: &Interaction, lang: Lang) -> Option<Item> {
+    let plan = interaction.card.plan.as_deref().map(str::trim).filter(|plan| !plan.is_empty())?;
+    let under_heading: Vec<String> = plan.lines().map(|line| {
+        let level = line.bytes().take_while(|b| *b == b'#').count();
+        if (1..=6).contains(&level) && line[level..].starts_with(' ') {
+            format!("{}{}", "#".repeat((level + 2).min(6)), &line[level..])
+        } else {
+            line.to_owned()
+        }
+    }).collect();
+    Some(markdown(format!("---\n\n## {}\n\n{}", t!(lang, "Proposed plan", "Plan propuesto"), under_heading.join("\n"))))
+}
+
+/// Where Alondra keeps the whole result, which outlives the node's session.
+fn kept_at(interaction: &Interaction, lang: Lang) -> Option<Item> {
+    let path = interaction.card.kept_at.as_deref()?;
+    Some(markdown(format!("{} `{path}`", t!(lang, "Kept in", "Guardado en"))))
 }
 
 fn live_pr<'a>(pr: &PullRequest, context: &'a RenderContext<'_>) -> Option<&'a super::LivePullRequest> {

@@ -135,6 +135,12 @@ Pick the tool by what you need:
   issues, a check where nothing changed), deliver with `nothing_to_review: true` and only `text`
   targets: Alondra creates no card and closes the task in silence. Never send a review card that
   only says there was nothing to do.
+  A report that ends in work to build (a research that proposes how to do it) sends that work as
+  `plan`, Markdown with one checklist line (`- [ ] …`) per thing to deliver, never only inside the
+  report. Its card offers "Approve and start implementing", which creates a new task that
+  implements exactly that plan, and "Only archive". Alondra keeps every final report (and its
+  plan) in its files folder and shows on the card each Markdown file it cites: write the report
+  in `content` and never leave it only in a temporary folder.
   When the user approved a plan for the task, send `checklist` with the final result: every point
   of that plan's checklist, by its number from 1, each with at least one piece of evidence
   (`commit` sha in your branch, `test` or `command` you ran, `screenshot` attachment id, `pr`,
@@ -175,6 +181,11 @@ Pick the tool by what you need:
 - `create_document` / `revise_document`: a file the user reviews. Copy it into Alondra's files
   folder (`$ALONDRA_HOME/files/`) and pass that path with its
   SHA256; each revision is reviewed as it is. Creating it shows the user nothing by itself.
+- Tell understanding from planning. "Help me understand X", "how do others do it", "is it
+  viable" asks for a report: deliver it with `present_result`. "Give me a plan for X", "a detailed
+  plan to implement it" asks for a plan, also when it comes as an answer to a report you
+  delivered: it goes through plan mode, never as a new version of the report, and approving it
+  starts the implementation in this task.
 - A plan (the user asks you to plan, or the work needs a plan approved first): enter plan mode
   with `EnterPlanMode`, plan, and present it with `ExitPlanMode`. Alondra holds it as a plan card:
   the user reads the whole plan, comments on any block, and approves or requests changes; the

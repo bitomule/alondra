@@ -291,6 +291,11 @@ final class MacWorkspaceSnapshotTests: XCTestCase {
         assertWindow(size: CGSize(width: 900, height: 820), spanish: true, alignTop: true) { MacServiceDetail(presentation: store) }
     }
 
+    func test_card_deliveryThatProposesAPlan_spanish() throws {
+        let store = try presentation(detail: "card-delivery-plan-es-mac", spanish: true)
+        assertWindow(size: CGSize(width: 900, height: 900), spanish: true, alignTop: true) { MacServiceDetail(presentation: store) }
+    }
+
     /// The plan card the e2e sandbox's daemon served (`make e2e-plan-card CLIENT=mac`): the file the
     /// plan cites is shown at its end.
     func test_card_planWithTheFileItCites_es() throws {

@@ -246,3 +246,16 @@ pub fn clarification_reason(name: &str) -> Option<crate::domain::ClarificationRe
         _ => None,
     }
 }
+
+/// The `extra` of an accept action on a result that proposes a plan.
+pub const IMPLEMENT_PLAN: &str = "implement";
+pub const ARCHIVE_PLAN: &str = "archive";
+
+/// What an accept action's `extra` chooses for a result's proposed plan.
+pub fn plan_choice(extra: &str) -> Option<crate::domain::PlanChoice> {
+    match extra {
+        IMPLEMENT_PLAN => Some(crate::domain::PlanChoice::Implement),
+        ARCHIVE_PLAN => Some(crate::domain::PlanChoice::Archive),
+        _ => None,
+    }
+}

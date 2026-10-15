@@ -104,6 +104,11 @@ const TASK_CHECKLISTS: &str = "CREATE TABLE IF NOT EXISTS task_checklists(\
  CREATE TABLE IF NOT EXISTS delivery_checklists(\
  interaction_id TEXT PRIMARY KEY REFERENCES interactions(id),\
  marks TEXT NOT NULL CHECK(json_valid(marks)));";
+/// The Requests made by approving the plan a final result proposed, and where each came from.
+const REQUEST_PLANS: &str = "CREATE TABLE IF NOT EXISTS request_plans(\
+ request_id TEXT PRIMARY KEY REFERENCES requests(id),\
+ task_id TEXT NOT NULL REFERENCES tasks(id),\
+ presentation_id TEXT NOT NULL REFERENCES interactions(id));";
 /// Launches waiting at the gate for a free slot (not domain state): what to launch, who asked and
 /// since when. See docs/fleet-pacing.md.
 const LAUNCH_QUEUE: &str = "CREATE TABLE IF NOT EXISTS launch_queue(\
@@ -517,6 +522,7 @@ impl DomainStore {
         tx.execute_batch(TASK_POST_MERGE_WORK)?;
         tx.execute_batch(TASK_PRIORITIES)?;
         tx.execute_batch(TASK_CHECKLISTS)?;
+        tx.execute_batch(REQUEST_PLANS)?;
         tx.execute_batch(LAUNCH_QUEUE)?;
         tx.execute_batch(TASK_CLOSINGS)?;
         tx.execute_batch(POST_MERGE_CHECKS)?;
@@ -863,7 +869,13 @@ impl DomainStore {
                         match request_id {
                             Some(request) if next.requests.get(request).is_some_and(|r| r.maintenance) => format!(
                                 "Maintenance message {request} (sent with alondra send): act on it, then close it with close_request; it gets no card for the user."),
-                            Some(request) => format!("The user created Request {request}: turn it into Tasks, or answer it and close it."),
+                            Some(request) => match next.request_plans.get(request) {
+                                Some(approved) => {
+                                    let source = next.tasks.get(&approved.task_id).map_or("", |task| task.title.as_str());
+                                    format!("The user approved the plan that Task “{source}” ({}) proposed in its final result. Request {request} holds that plan: name it with title_request, then create one implementation Task under it, in the same project folder as that Task, with dependencies on {} and role implementation. It starts with that plan approved as its checklist and the whole plan in its mission: never ask its node for a new plan.", approved.task_id, approved.task_id)
+                                }
+                                None => format!("The user created Request {request}: turn it into Tasks, or answer it and close it."),
+                            },
                             None => "The domain has something for you.".to_owned(),
                         },
                     ),

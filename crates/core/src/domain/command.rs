@@ -342,6 +342,12 @@ pub enum Command {
         presentation_id: InteractionId,
         targets: Vec<DeliveryTarget>,
     },
+    /// Accepts a final result that proposes a plan, saying whether its plan is implemented.
+    DecideProposedPlan {
+        presentation_id: InteractionId,
+        targets: Vec<DeliveryTarget>,
+        choice: PlanChoice,
+    },
     AuthorizeMerge {
         authorization_id: AuthorizationId,
         presentation_id: InteractionId,

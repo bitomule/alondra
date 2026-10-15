@@ -281,8 +281,17 @@ impl DomainState {
                 ..
             } => {
                 let current = task.is_some_and(|t| t.final_presentation.as_ref() == Some(&i.id));
-                let mut actions = vec![
-                    self.action(
+                let accepting = if i.card.plan.is_some() {
+                    [("implement_plan", PlanChoice::Implement), ("archive_plan", PlanChoice::Archive)].into_iter()
+                        .map(|(kind, choice)| self.action(
+                            kind,
+                            Command::DecideProposedPlan { presentation_id: i.id.clone(), targets: targets.clone(), choice },
+                            Some(i.id.clone()),
+                            None,
+                        ))
+                        .collect()
+                } else {
+                    vec![self.action(
                         "accept_delivery",
                         Command::AcceptDelivery {
                             presentation_id: i.id.clone(),
@@ -290,7 +299,10 @@ impl DomainState {
                         },
                         Some(i.id.clone()),
                         None,
-                    ),
+                    )]
+                };
+                let mut actions = accepting;
+                actions.extend([
                     self.action(
                         "submit_feedback",
                         Command::SubmitFeedback {
@@ -303,7 +315,7 @@ impl DomainState {
                         Some(i.id.clone()),
                         None,
                     ),
-                ];
+                ]);
                 for target in targets {
                     if let DeliveryTarget::PullRequest { pr_id, head } = target {
                         if let Some(pr) = self.pull_requests.get(pr_id) {

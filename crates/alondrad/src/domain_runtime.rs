@@ -474,6 +474,9 @@ fn command_task(state: &DomainState, command: &Command) -> Option<TaskId> {
         | Command::AcceptDelivery {
             presentation_id, ..
         }
+        | Command::DecideProposedPlan {
+            presentation_id, ..
+        }
         | Command::AuthorizeMerge {
             presentation_id, ..
         } => interaction_task(state, presentation_id),

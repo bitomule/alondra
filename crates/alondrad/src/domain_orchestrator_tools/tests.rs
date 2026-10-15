@@ -1338,3 +1338,31 @@ async fn an_ended_session_leaves_no_inherited_worktree_or_aborted_replace_behind
     assert_eq!(f.domain.inherited_worktree("agent-b").unwrap(), None);
     assert_eq!(f.domain.live.take_aborted_replace("agent-b"), None);
 }
+
+#[tokio::test]
+async fn a_launch_of_the_task_that_implements_an_approved_plan_carries_the_whole_plan_and_says_not_to_plan_again() {
+    let f = world();
+    let actor = the_orchestrator(&f.domain);
+    let author = Actor::Agent { agent_id: "agent-b".into() };
+    give(&f, "t", "agent-b");
+    let plan = "# Index the library\n\n- [ ] Store feature prints in Core Data\n- [ ] Follow changes in the background\n";
+    let targets = || vec![alondra_core::domain::DeliveryTarget::Text { text: "Report".into() }];
+    command(&f.domain, author, Command::PresentResult { checklist: Vec::new(), attachments: vec![], task_id: "t".into(), interaction_id: "report".into(),
+        body: "Viable: index once".into(), targets: targets(), is_final: true, nothing_to_review: false,
+        card: alondra_core::domain::CardSpec::delivery("Read the report", &targets(), true).plan(plan) });
+    command(&f.domain, user(), Command::DecideProposedPlan { presentation_id: "report".into(), targets: targets(),
+        choice: alondra_core::domain::PlanChoice::Implement });
+    let orchestrator = Actor::Orchestrator { generation: 0 };
+    command(&f.domain, orchestrator.clone(), Command::TitleRequest { request_id: "implement-report".into(), title: "Index the library".into() });
+    command(&f.domain, orchestrator, Command::CreateTask { task_id: "build".into(), request_id: "implement-report".into(), title: "Index the library".into(),
+        agent_id: None, review_prs: false, dependencies: ["t".into()].into(), stack: None,
+        launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")), });
+
+    let claude = FakeClaude::loading(&f.domain);
+    launch(&f.domain, &f.home, &actor, launch_body(&f, json!({"task": "build", "model": "sonnet"})), |_| None, &claude).await.unwrap();
+    let calls = claude.calls.lock().unwrap();
+    let prompt = calls[0].1.last().unwrap();
+    assert!(prompt.contains("## The plan the user approved") && prompt.contains("do not plan again"), "{prompt}");
+    assert!(prompt.contains("- [ ] Store feature prints in Core Data\n- [ ] Follow changes in the background"), "the whole plan: {prompt}");
+    assert_eq!(prompt.matches("Store feature prints in Core Data").count(), 1, "the plan once, not again as the request: {prompt}");
+}

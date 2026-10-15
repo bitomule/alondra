@@ -6568,3 +6568,51 @@ fn every_card_button_leaves_the_server_ready_to_paint() {
     assert!(checked >= 30, "only {checked} cards checked");
     assert!(captions > 0, "«Allow always» lost its words");
 }
+
+fn proposed_plan_fixture() -> DomainState {
+    use crate::domain::{Actor, CardKind, CardSpec, Command, CommandEnvelope, ContentKind as Content, DeliveryTarget, LaunchPlan};
+    let mut state = DomainState::new("epoch");
+    let mut run = |state: &mut DomainState, actor: Actor, command: Command| {
+        let envelope = CommandEnvelope { protocol_version: 2, data_epoch: state.data_epoch.clone(),
+            command_id: format!("c-{}", state.revision).into(), expected_revision: state.revision, command };
+        state.execute(&actor, &envelope).unwrap();
+    };
+    run(&mut state, Actor::System, Command::RegisterAgent { agent_id: "a-1".into(), name: "redraft/library-index".into(), at: 0 });
+    run(&mut state, Actor::User { user_id: "u".into() }, Command::CreateRequest { request_id: "r-1".into(),
+        body: "How do other apps analyse the whole library at once?".into(), auto_merge: false, maintenance: false, message: false });
+    run(&mut state, Actor::Orchestrator { generation: 0 }, Command::CreateTask { task_id: "t-1".into(), request_id: "r-1".into(),
+        title: "Redraft: analyse the whole library at once".into(), agent_id: Some("a-1".into()), review_prs: false,
+        dependencies: Default::default(), stack: None, launch: Some(LaunchPlan::new("redraft/library-index", "/tmp/redraft")) });
+    let targets = vec![DeliveryTarget::Text { text: "Report".into() }];
+    let mut card = CardSpec::new(CardKind::Review, "Read the report on indexing Redraft's whole library")
+        .why("It ends in a plan: approve it to start building it, or only archive the report.")
+        .content(Content::Report, "## Summary\n\n- **Viable.** Every photo of an optimised library keeps a 360 px copy on the iPhone.\n- Other apps index once and then follow the library's changes.")
+        .plan("# Index the whole library\n\n- [ ] Store each photo's feature print in Core Data, next to what users have today\n- [ ] Index changes in the background with the library's change history\n- [ ] Show indexing progress on the home screen");
+    card.kept_at = Some("/Users/me/.alondra/files/results/t-1/result-1.md".into());
+    run(&mut state, Actor::Agent { agent_id: "a-1".into() }, Command::PresentResult { checklist: vec![], attachments: vec![],
+        task_id: "t-1".into(), interaction_id: "result-1".into(), body: "Read the report".into(), targets, is_final: true,
+        nothing_to_review: false, card });
+    state
+}
+
+#[test]
+fn a_result_that_proposes_a_plan_shows_it_and_offers_to_build_it_or_only_archive_it() {
+    let state = proposed_plan_fixture();
+    let live = LiveSnapshot::default();
+    for (client, lang, filename, expected) in [
+        (Client::Ios, Lang::En, "card-delivery-plan.json", include_str!("../../../../fixtures/views/cards/card-delivery-plan.json")),
+        (Client::Ios, Lang::Es, "card-delivery-plan-es.json", include_str!("../../../../fixtures/views/cards/card-delivery-plan-es.json")),
+        (Client::Mac, Lang::Es, "card-delivery-plan-es-mac.json", include_str!("../../../../fixtures/views/cards/card-delivery-plan-es-mac.json")),
+    ] {
+        let actual = render(&state, &live, client, lang, "card:result-1", "2026-10-15T10:00:00Z");
+        assert_golden(filename, &actual, expected);
+    }
+    let view = render(&state, &live, Client::Tui, Lang::Es, "card:result-1", "");
+    let card = card_of(&view);
+    let labels: Vec<&str> = card.actions.iter().map(|action| action.label.as_str()).collect();
+    assert_eq!(labels, ["Aprobar y empezar a implementar", "Solo archivar", "Pedir cambios"]);
+    assert!(card.actions[0].id.ends_with("~implement") || card.actions[0].id.contains("implement"), "{}", card.actions[0].id);
+    let text = serde_json::to_string(&view).unwrap();
+    assert!(text.contains("## Plan propuesto") && text.contains("Show indexing progress on the home screen"), "{text}");
+    assert!(text.contains("Guardado en `/Users/me/.alondra/files/results/t-1/result-1.md`"), "{text}");
+}

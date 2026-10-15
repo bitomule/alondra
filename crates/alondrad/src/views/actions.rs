@@ -1325,6 +1325,14 @@ fn map_action(
                     inputs: Default::default(), attachments: vec![] }, stamp("Approved", "Aprobado")));
             }
             let InteractionPayload::Delivery { targets, acceptance: None, .. } = &interaction.payload else { return None; };
+            if interaction.card.plan.is_some() {
+                let choice = alondra_core::views::action_id::plan_choice(action.extra.as_deref()?)?;
+                let done = match choice {
+                    alondra_core::domain::PlanChoice::Implement => stamp("Implementation requested", "Implementación pedida"),
+                    alondra_core::domain::PlanChoice::Archive => stamp("Archived", "Archivada"),
+                };
+                return Some((Command::DecideProposedPlan { presentation_id: interaction.id.clone(), targets: targets.clone(), choice }, done));
+            }
             Some((Command::AcceptDelivery { presentation_id: interaction.id.clone(), targets: targets.clone() }, stamp("Accepted", "Aceptada")))
         }
         Verb::Changes => {
@@ -1549,6 +1557,8 @@ enum Accepted {
     Plan,
     Document,
     Result,
+    ImplementPlan,
+    ArchivePlan,
 }
 
 impl Accepted {
@@ -1556,6 +1566,12 @@ impl Accepted {
         let Some(interaction) = state.interactions.get(&InteractionId(action.subject.clone())) else { return Self::Result; };
         if held_plan(state, interaction) {
             return Self::Plan;
+        }
+        if interaction.card.plan.is_some() {
+            return match action.extra.as_deref().and_then(alondra_core::views::action_id::plan_choice) {
+                Some(alondra_core::domain::PlanChoice::Implement) => Self::ImplementPlan,
+                _ => Self::ArchivePlan,
+            };
         }
         match &interaction.payload {
             InteractionPayload::Delivery { targets, .. } if !targets.is_empty()
@@ -1580,6 +1596,8 @@ fn applied_outcome(verb: Verb, lang: Lang, stamp: &str, accepted: Accepted) -> O
             Accepted::Plan => say("Plan approved.", "Plan aprobado."),
             Accepted::Document => say("Document accepted.", "Documento aceptado."),
             Accepted::Result => say("Result accepted.", "Resultado aceptado."),
+            Accepted::ImplementPlan => say("Plan approved: a task to implement it is on its way.", "Plan aprobado: llega una tarea para implementarlo."),
+            Accepted::ArchivePlan => say("Result archived. Its plan is not implemented.", "Resultado archivado. Su plan no se implementa."),
         }),
         Verb::Changes if accepted == Accepted::Document => Outcome::done(say("Changes sent to its node. The document comes back with its next version.", "Cambios enviados a su nodo. El documento volverá con su próxima versión.")),
         Verb::Changes => Outcome::done(say("Changes sent. The card comes back when it is presented again.", "Cambios enviados. La tarjeta volverá cuando se presente de nuevo.")),
@@ -3175,6 +3193,49 @@ mod tests {
             targets: vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: "0123456789abcdef".into() }],
             is_final: true, nothing_to_review: false, card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
         });
+    }
+
+    fn presented_plan(domain: &crate::domain_runtime::DomainRuntime) {
+        use alondra_core::domain::DeliveryTarget;
+        apply_seed_command(domain, Actor::System, "register-agent", Command::RegisterAgent { agent_id: "agent-a".into(), name: "Agent A".into(), at: 0 });
+        apply_seed_command(domain, Actor::User { user_id: "user".into() }, "create-request", Command::CreateRequest {
+            request_id: "request".into(), body: "How do others index the library?".into(), auto_merge: false, maintenance: false, message: false,
+        });
+        apply_seed_command(domain, Actor::Orchestrator { generation: 0 }, "create-task", Command::CreateTask {
+            task_id: "task".into(), request_id: "request".into(), title: "Library index research".into(),
+            agent_id: Some("agent-a".into()), review_prs: false, dependencies: Default::default(), stack: None,
+            launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),
+        });
+        let targets = vec![DeliveryTarget::Text { text: "Report".into() }];
+        apply_seed_command(domain, Actor::Agent { agent_id: "agent-a".into() }, "present", Command::PresentResult {
+            checklist: Vec::new(), attachments: vec![], task_id: "task".into(), interaction_id: "result".into(), body: "Viable".into(),
+            card: alondra_core::domain::CardSpec::delivery("Read the report", &targets, true).plan("- [ ] Index the library\n"),
+            targets, is_final: true, nothing_to_review: false,
+        });
+    }
+
+    #[tokio::test]
+    async fn approve_and_start_implementing_hands_the_plan_on_and_only_archive_does_not() {
+        for (extra, request) in [(Some("implement"), true), (Some("archive"), false)] {
+            let (home, domain, client) = action_home();
+            presented_plan(&domain);
+            let id = ActionId::new(Verb::Accept, "result", domain.state().unwrap().revision, extra.map(str::to_owned)).unwrap();
+            let reply = act(&home, &domain, &client, FIRST, id, None, None).await;
+            assert_eq!(reply["outcome"], "applied", "{reply}");
+            let state = domain.state().unwrap();
+            assert!(matches!(&state.interactions[&"result".into()].payload, InteractionPayload::Delivery { acceptance: Some(a), .. } if a.valid));
+            assert_eq!(state.requests.contains_key(&"implement-result".into()), request, "{extra:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_plain_accept_never_archives_a_result_that_proposes_a_plan() {
+        let (home, domain, client) = action_home();
+        presented_plan(&domain);
+        let id = ActionId::new(Verb::Accept, "result", domain.state().unwrap().revision, None).unwrap();
+        let reply = act(&home, &domain, &client, FIRST, id, None, None).await;
+        assert_ne!(reply["outcome"], "applied", "{reply}");
+        assert!(matches!(&domain.state().unwrap().interactions[&"result".into()].payload, InteractionPayload::Delivery { acceptance: None, .. }));
     }
 
     #[tokio::test]

@@ -1829,6 +1829,10 @@ impl DomainState {
                 presentation_id: interaction_id,
                 ..
             }
+            | Command::DecideProposedPlan {
+                presentation_id: interaction_id,
+                ..
+            }
             | Command::AuthorizeMerge {
                 presentation_id: interaction_id,
                 ..
@@ -2377,6 +2381,15 @@ impl DomainState {
                     },
                 );
                 self.dependency_graph()?;
+                if let Some(approved) = self.request_plans.get(request_id) {
+                    if self.checklists.values().any(|c| c.plan == approved.presentation_id) {
+                        return refuse("approved_plan_has_task", "request_id",
+                            "the plan the user approved is implemented by one task, which this request already has: put more work in that task, or create a new request for it");
+                    }
+                    let plan = &self.interactions[&approved.presentation_id];
+                    let checklist = Checklist { plan: approved.presentation_id.clone(), items: checklist_items(plan.card.plan.as_deref().unwrap_or_default()) };
+                    self.checklists.insert(task_id.clone(), checklist);
+                }
                 created.push(task_id.0.clone());
             }
             Command::AssignTask { task_id, agent_id, model } => {
@@ -3330,6 +3343,13 @@ impl DomainState {
                         "Your PR #{} is open: present it in the final delivery with its head {} so it is merged when the user accepts", pr.number, pr.head));
                 }
                 self.checklist_marks_cover_the_plan(task_id, *is_final, checklist, attachments)?;
+                if let Some(plan) = &card.plan {
+                    if !*is_final || *nothing_to_review || targets.iter().any(|t| matches!(t, DeliveryTarget::PullRequest { .. })) {
+                        return refuse("invalid_input", "plan",
+                            "a plan goes only on a final result without a pull request: the user approves it to start a new task that implements it, or only archives the result");
+                    }
+                    plan_checklist(plan)?;
+                }
                 let mut card = card.clone();
                 if targets.iter().any(|t| matches!(t, DeliveryTarget::PullRequest { pr_id, .. }
                     if self.pull_requests.get(pr_id).is_some_and(|p| p.state != PrState::Open)))
@@ -3432,6 +3452,10 @@ impl DomainState {
                 if current != targets {
                     return fail("acceptance_stale", "Delivery targets changed");
                 };
+                if self.interactions[presentation_id].card.plan.is_some() {
+                    return refuse("plan_choice_required", "choice",
+                        "this result proposes a plan: decide it with DecideProposedPlan, implement or archive, so accepting it never leaves the plan unbuilt by accident");
+                }
                 self.unblocked(presentation_id)?;
                 for target in targets {
                     if let DeliveryTarget::PullRequest { pr_id, head } = target {
@@ -3456,6 +3480,33 @@ impl DomainState {
                     }
                 }
                 self.accept(presentation_id, &u)?;
+            }
+            Command::DecideProposedPlan { presentation_id, targets, choice } => {
+                let u = user(actor)?;
+                let (_, task, current) = self.presentation(presentation_id)?;
+                if current != targets {
+                    return fail("acceptance_stale", "Delivery targets changed");
+                };
+                let source = task.clone();
+                let Some(plan) = self.interactions[presentation_id].card.plan.clone() else {
+                    return refuse("invalid_input", "choice", "this result proposes no plan: accept it with AcceptDelivery");
+                };
+                if matches!(&self.interactions[presentation_id].payload, InteractionPayload::Delivery { acceptance: Some(a), .. } if a.valid) {
+                    return refuse("invalid_input", "presentation_id", "this result is already accepted");
+                }
+                self.unblocked(presentation_id)?;
+                self.accept(presentation_id, &u)?;
+                if *choice == PlanChoice::Implement {
+                    let request_id = RequestId(format!("implement-{}", presentation_id.0));
+                    if self.requests.contains_key(&request_id) {
+                        return fail("invalid_input", "Request already exists");
+                    }
+                    let auto_merge = self.requests.get(&source.request_id).is_some_and(|r| r.auto_merge);
+                    self.requests.insert(request_id.clone(), Request { auto_merge, ..Request::new(request_id.clone(), plan) });
+                    self.request_plans.insert(request_id.clone(), ApprovedPlan { task_id: source.id.clone(), presentation_id: presentation_id.clone() });
+                    created.push(request_id.0.clone());
+                    effects.push(DomainEffect::NotifyOrchestrator { interaction_id: None, request_id: Some(request_id) });
+                }
             }
             Command::AuthorizeMerge {
                 authorization_id,
@@ -4276,10 +4327,20 @@ impl DomainState {
             }
         }
         for (task_id, checklist) in &self.checklists {
-            if !self.tasks.contains_key(task_id) || self.holds.get(&checklist.plan) != Some(&Hold::Plan)
-                || !self.interactions.get(&checklist.plan).is_some_and(|i| i.scope == (Scope::Task { task_id: task_id.clone() }))
-            {
+            let Some(task) = self.tasks.get(task_id) else { return fail("invalid_input", "Invalid checklist relation") };
+            let held_here = self.holds.get(&checklist.plan) == Some(&Hold::Plan)
+                && self.interactions.get(&checklist.plan).is_some_and(|i| i.scope == (Scope::Task { task_id: task_id.clone() }));
+            let approved_for_its_request = self.request_plans.get(&task.request_id).is_some_and(|a| a.presentation_id == checklist.plan);
+            if !held_here && !approved_for_its_request {
                 return fail("invalid_input", "Invalid checklist relation");
+            }
+        }
+        for (request_id, approved) in &self.request_plans {
+            let proposed = self.interactions.get(&approved.presentation_id).is_some_and(|i| i.card.plan.is_some()
+                && i.scope == (Scope::Task { task_id: approved.task_id.clone() })
+                && matches!(&i.payload, InteractionPayload::Delivery { is_final: true, .. }));
+            if !self.requests.contains_key(request_id) || !proposed {
+                return fail("invalid_input", "Invalid approved plan relation");
             }
         }
         for id in self.checklist_marks.keys() {

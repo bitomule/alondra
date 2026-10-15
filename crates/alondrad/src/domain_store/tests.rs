@@ -1854,3 +1854,35 @@ fn an_approved_plan_s_checklist_and_the_final_delivery_s_marks_survive_a_restart
     assert_eq!(state.checklists[&TaskId::from("task-1")].items.len(), 2);
     assert_eq!(state.checklist_marks[&InteractionId::from("delivery-1")], marks);
 }
+
+#[test]
+fn an_approved_proposed_plan_its_request_and_the_new_task_s_scope_survive_a_restart() {
+    let fixture = Fixture::new();
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    seeded(&mut store);
+    let plan = "# Index the library\n\n- [ ] Store feature prints\n- [ ] Follow changes\n";
+    let targets = vec![DeliveryTarget::Text { text: "Report".into() }];
+    let mut card = CardSpec::delivery("Read the report", &targets, true).plan(plan);
+    card.kept_at = Some("/home/files/results/task-1/report.md".into());
+    execute(&mut store, &agent(), "present", Command::PresentResult {
+        checklist: vec![], attachments: vec![], task_id: "task-1".into(), interaction_id: "report".into(),
+        body: "Read the report".into(), card, targets: targets.clone(), is_final: true, nothing_to_review: false,
+    });
+    execute(&mut store, &user(), "implement", Command::DecideProposedPlan { presentation_id: "report".into(), targets, choice: PlanChoice::Implement });
+    let message: String = store.conn.query_row("SELECT message FROM domain_messages WHERE recipient_kind='orchestrator' ORDER BY id DESC LIMIT 1", [], |row| row.get(0)).unwrap();
+    assert!(message.contains("approved the plan") && message.contains("implement-report") && message.contains("dependencies on task-1"), "{message}");
+    let orchestrator = Actor::Orchestrator { generation: 0 };
+    execute(&mut store, &orchestrator, "title", Command::TitleRequest { request_id: "implement-report".into(), title: "Index the library".into() });
+    execute(&mut store, &orchestrator, "build", Command::CreateTask {
+        task_id: "build".into(), request_id: "implement-report".into(), title: "Index the library".into(), agent_id: None,
+        review_prs: false, dependencies: Default::default(), stack: None, launch: Some(LaunchPlan::new("build", "/tmp/repo")),
+    });
+    drop(store);
+    let mut restarted = DomainStore::open(&fixture.path()).unwrap();
+    let state = restarted.load().unwrap();
+    assert_eq!(state.request_plans[&RequestId::from("implement-report")], ApprovedPlan { task_id: "task-1".into(), presentation_id: "report".into() });
+    assert_eq!(state.requests[&RequestId::from("implement-report")].body, plan);
+    assert_eq!(state.checklists[&TaskId::from("build")].plan, InteractionId::from("report"));
+    let card = &state.interactions[&InteractionId::from("report")].card;
+    assert_eq!((card.plan.as_deref(), card.kept_at.as_deref()), (Some(plan), Some("/home/files/results/task-1/report.md")));
+}

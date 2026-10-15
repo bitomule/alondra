@@ -1032,11 +1032,20 @@ async fn execute_command<H: DomainHost>(
             return domain_error(refusal);
         }
         let work = host.domain().producer_work.clone();
+        let mut envelope = envelope;
         return work.run(move || {
             if let Err(error) = check_launch_plan(host.domain(), host.home(), &envelope.command) {
                 return domain_error(error);
             }
-            match host.domain().execute_bearer(&token, &envelope) {
+            let kept = match crate::result_files::keep(host.home(), &mut envelope.command) {
+                Ok(kept) => kept,
+                Err(error) => return domain_error(error),
+            };
+            let executed = host.domain().execute_bearer(&token, &envelope);
+            if executed.is_err() && let Some(file) = kept {
+                let _ = std::fs::remove_file(file);
+            }
+            match executed {
                 Ok(outcome) => {
                     let mut answer = json!(outcome);
                     if let Some(notice) = auto_merge_notice(host.domain(), &envelope.command) {

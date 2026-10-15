@@ -162,6 +162,18 @@ final class CardDetailSnapshotTests: XCTestCase {
         assertDetail(store, language: .spanish)
     }
 
+    // MARK: A report that proposes a plan: build it or only archive it
+
+    func test_deliveryThatProposesAPlan() throws {
+        let store = ScreenStores.cardDetail(try Fixtures.unblocked(try Fixtures.document("card-delivery-plan")))
+        assertDetail(store)
+    }
+
+    func test_deliveryThatProposesAPlan_es() throws {
+        let store = ScreenStores.cardDetail(try Fixtures.spanish(try Fixtures.unblocked(try Fixtures.document("card-delivery-plan-es"))))
+        assertDetail(store, language: .spanish)
+    }
+
     // MARK: A plan to comment on
 
     func test_plan() throws {

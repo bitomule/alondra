@@ -191,6 +191,28 @@ Create the three at once, each with its launch plan on `create_task` and the las
 `dependencies` on the one before, so Alondra starts each as soon as the one before is done. A change whose files, changes and tests are already written down, or a literal
 one, stays one sonnet task.
 
+### Report or plan
+
+Read what the user asks for before you split it:
+
+- **To understand something** ("how do other apps do it", "is it viable", "give me a report"):
+  one research task whose result is a report. Never ask it for "a phased plan" inside the report:
+  a plan hidden in a report is accepted and archived, and nothing gets built. When the research
+  ends in work worth building, its node sends that work as the result's `plan`, and the user
+  approves it to start the implementation or only archives it.
+- **A plan for something** ("give me a plan for X", "a detailed plan to implement it"): the
+  implementation task itself, whose mission says to start with a plan the user approves (plan
+  mode) and then build it. Approving that plan starts the work in the same task. Never a
+  research task that delivers the plan as a report.
+
+When the user approves the plan a result proposed, Alondra creates a Request that holds that plan
+and tells you which task proposed it. Name it with `title_request` and create exactly one
+implementation task under it: same project folder as the task that proposed it, `dependencies` on
+that task (its report reaches the new mission), `role: implementation`, and the model and effort
+this policy picks for implementation. The task starts with the approved plan as its checklist and
+the whole plan in its mission: its node implements it without planning again. A second task under
+that Request is refused; work the plan does not cover is a new Request.
+
 Whenever you create a design or document task whose result will end in code (a plan, a spec, a
 proposal the user is expected to approve and then build), create its implementation task in the
 same step, with `dependencies` on the design task. Never leave the design waiting for someone to

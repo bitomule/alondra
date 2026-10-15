@@ -371,7 +371,8 @@ async fn launch_guarded(domain: &DomainRuntime, home: &Path, actor: &Actor, body
         }
     }
     let mission = body.prompt.clone().unwrap_or_else(|| {
-        let mut text = format!("{}\n\n{}", task.title, request.map(|r| r.body.as_str()).unwrap_or_default());
+        let body = request.filter(|r| !current.request_plans.contains_key(&r.id)).map(|r| r.body.as_str()).unwrap_or_default();
+        let mut text = format!("{}\n\n{body}", task.title);
         if let Some(choices) = &choices {
             if let Some(issue) = choices.issue_text.as_deref() {
                 text.push_str(&format!("\n\n{issue}"));
@@ -382,7 +383,7 @@ async fn launch_guarded(domain: &DomainRuntime, home: &Path, actor: &Actor, body
         }
         text
     });
-    let mission = format!("{mission}{}{}", prefixed("\n\n", follow_up_context(&current, task)), prefixed("\n\n", asked_changes(&current, task)));
+    let mission = format!("{mission}{}{}{}", prefixed("\n\n", approved_plan(&current, task)), prefixed("\n\n", follow_up_context(&current, task)), prefixed("\n\n", asked_changes(&current, task)));
     let mission = match (&workplace, &replaced) {
         (Workplace::Made(dir), _) => format!("{mission}\n\n{}", made_for(dir).await),
         (Workplace::Reused(_), _) | (_, Some(_)) => format!("{mission}\n\n{}", continuing_in(Path::new(&cwd)).await),
@@ -639,6 +640,21 @@ fn follow_up_context(state: &DomainState, task: &alondra_core::domain::Task) -> 
         return String::new();
     }
     clipped(&format!("## Earlier work this task builds on\n\n{}", entries.join("\n\n")), FOLLOW_UP_LIMIT, "")
+}
+
+/// The plan the user approved on another task's final result, which this task implements: whole,
+/// since its checklist is what the final result of this task must mark done.
+fn approved_plan(state: &DomainState, task: &alondra_core::domain::Task) -> String {
+    let Some(approved) = state.request_plans.get(&task.request_id) else { return String::new() };
+    if state.checklists.get(&task.id).is_none_or(|checklist| checklist.plan != approved.presentation_id) {
+        return String::new();
+    }
+    let Some(plan) = state.interactions.get(&approved.presentation_id).and_then(|result| result.card.plan.as_deref()) else { return String::new() };
+    format!("## The plan the user approved
+
+The user approved this plan to be implemented: it is already this task's approved plan, so do not plan again or send it for approval. Implement it, and mark every point done with its evidence in your final result. If a point turns out wrong or impossible, send a revised plan with ExitPlanMode.
+
+{}", plan.trim())
 }
 
 /// The changes the user asked for on a result the task's earlier node delivered: they go to the

@@ -2994,9 +2994,10 @@ fn variant_index(c: &Command) -> usize {
         Command::BindOrchestratorSession { .. } => 58,
         Command::RaiseStartProblem { .. } => 59,
         Command::RecordLastWords { .. } => 60,
+        Command::DecideProposedPlan { .. } => 61,
     }
 }
-const COMMAND_KINDS: usize = 61;
+const COMMAND_KINDS: usize = 62;
 /// Every command kind naming the given ids. The flag marks commands that only
 /// create a fresh entity and therefore may succeed with an unknown id.
 fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
@@ -3077,6 +3078,7 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
         (Command::SubmitFeedback { attachments: vec![], presentation_id: ids.interaction.into(),
             targets: text(), body: "Change".into(), instruction: Instruction::Changes }, false),
         (Command::AcceptDelivery { presentation_id: ids.interaction.into(), targets: text() }, false),
+        (Command::DecideProposedPlan { presentation_id: ids.interaction.into(), targets: text(), choice: PlanChoice::Implement }, false),
         (Command::AuthorizeMerge { authorization_id: "fresh-auth".into(),
             presentation_id: ids.interaction.into(), pr_id: ids.pr.into(),
             expected_head: "head1".into(), method: MergeMethod::Squash }, false),

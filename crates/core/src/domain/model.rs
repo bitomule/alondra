@@ -455,6 +455,22 @@ pub enum InteractionPayload {
         feedback: Vec<Feedback>,
     },
 }
+/// The plan of a final result the user approved for implementation: the Task that delivered it
+/// and the delivery that carries it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ApprovedPlan {
+    pub task_id: TaskId,
+    pub presentation_id: InteractionId,
+}
+/// What the user does with a final result that proposes a plan.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlanChoice {
+    /// Accept the result and start implementing its plan.
+    Implement,
+    /// Accept the result and leave its plan unbuilt.
+    Archive,
+}
 /// What the card asks of the user: the kind comes from what the user contributes, not from the
 /// object behind it (a PR or a plan is what the card carries).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -547,6 +563,14 @@ pub struct CardSpec {
     /// the daemon sets it, and only a held permission shows it or acts on it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub allow_always: Option<crate::allow_always::AllowAlways>,
+    /// The work a final result proposes, as a plan with checklist lines: the user approves it,
+    /// which starts its implementation as a new Task, or only archives the result.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan: Option<String>,
+    /// Where Alondra keeps the whole report or plan of a final result, so it outlives the node's
+    /// session. Only the daemon sets it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kept_at: Option<String>,
 }
 /// A place that holds one open card at a time: a new card in it replaces the open one.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -633,7 +657,13 @@ impl CardSpec {
             group: None,
             cause: None,
             allow_always: None,
+            plan: None,
+            kept_at: None,
         }
+    }
+    pub fn plan(mut self, plan: impl Into<String>) -> Self {
+        self.plan = Some(plan.into());
+        self
     }
     pub fn cause(mut self, cause: impl Into<String>) -> Self {
         self.cause = Some(cause.into());
@@ -879,6 +909,9 @@ pub struct DomainState {
     /// with nothing for them.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub last_words: BTreeMap<AgentId, String>,
+    /// The Requests created by approving the plan a final result proposed, with where it came from.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub request_plans: BTreeMap<RequestId, ApprovedPlan>,
 }
 impl DomainState {
     pub fn new(epoch: impl Into<DataEpoch>) -> Self {
@@ -902,6 +935,7 @@ impl DomainState {
             checklists: BTreeMap::new(),
             checklist_marks: BTreeMap::new(),
             last_words: BTreeMap::new(),
+            request_plans: BTreeMap::new(),
         }
     }
     /// The orchestrator has neither defined it into Tasks nor closed it.
