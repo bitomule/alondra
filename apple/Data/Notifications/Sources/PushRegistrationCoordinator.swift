@@ -15,8 +15,13 @@ public final class PushRegistrationCoordinator {
     private var registered: [NotificationPayload.Binding: String] = [:]
     private var generation = 0
     private var task: Task<Void, Never>?
+    private let pause: @Sendable (Duration) async throws -> Void
 
-    public init(preferences: PushPreferencesLedger) { self.preferences = preferences }
+    public init(preferences: PushPreferencesLedger,
+                pause: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }) {
+        self.preferences = preferences
+        self.pause = pause
+    }
 
     public func update(clients next: [NotificationClient], token: String?, environment: String,
                        quietStart: String?, quietEnd: String?) throws {
@@ -34,34 +39,41 @@ public final class PushRegistrationCoordinator {
             await previous?.value
             guard current == generation, !Task.isCancelled else { return }
             setState(.sending)
-            var failures: [String] = []
-            for client in next {
-                guard current == generation, !Task.isCancelled else { return }
-                let fingerprint = "\(client.identity)|\(client.binding.value)|\(token)|\(environment)|\(quietStart ?? "off")|\(quietEnd ?? "off")"
-                if registered[client.binding] == fingerprint { continue }
-                do {
-                    let revision = try await preferences.reserve(identity: client.identity, binding: client.binding.value,
-                        quietStart: quietStart, quietEnd: quietEnd)
-                    try Task.checkCancellation()
-                    do { try await client.register(token, environment, quietStart, quietEnd, revision) }
-                    catch PushPreferencesError.stale(let minimum) {
-                        try Task.checkCancellation()
-                        let newer = try await preferences.reserve(identity: client.identity, binding: client.binding.value,
-                            quietStart: quietStart, quietEnd: quietEnd, newerThan: minimum)
-                        try Task.checkCancellation()
-                        try await client.register(token, environment, quietStart, quietEnd, newer)
-                    }
-                    guard current == generation, !Task.isCancelled,
-                          clients[client.binding]?.identity == client.identity else { return }
-                    registered[client.binding] = fingerprint
-                } catch {
+            var attempt = 0
+            while true {
+                var problems: [Problem] = []
+                for client in next {
                     guard current == generation, !Task.isCancelled else { return }
-                    let message = Self.failureMessage(error)
-                    if !failures.contains(message) { failures.append(message) }
+                    let fingerprint = "\(client.identity)|\(client.binding.value)|\(token)|\(environment)|\(quietStart ?? "off")|\(quietEnd ?? "off")"
+                    if registered[client.binding] == fingerprint { continue }
+                    do {
+                        let revision = try await preferences.reserve(identity: client.identity, binding: client.binding.value,
+                            quietStart: quietStart, quietEnd: quietEnd)
+                        try Task.checkCancellation()
+                        do { try await client.register(token, environment, quietStart, quietEnd, revision) }
+                        catch PushPreferencesError.stale(let minimum) {
+                            try Task.checkCancellation()
+                            let newer = try await preferences.reserve(identity: client.identity, binding: client.binding.value,
+                                quietStart: quietStart, quietEnd: quietEnd, newerThan: minimum)
+                            try Task.checkCancellation()
+                            try await client.register(token, environment, quietStart, quietEnd, newer)
+                        }
+                        guard current == generation, !Task.isCancelled,
+                              clients[client.binding]?.identity == client.identity else { return }
+                        registered[client.binding] = fingerprint
+                    } catch {
+                        guard current == generation, !Task.isCancelled else { return }
+                        let problem = Self.problem(error)
+                        if !problems.contains(problem) { problems.append(problem) }
+                    }
                 }
+                guard current == generation, !Task.isCancelled else { return }
+                if problems.isEmpty { setState(.registered); return }
+                setState(.failed(problems.map(\.message).joined(separator: "\n")))
+                guard problems.contains(where: \.retries) else { return }
+                do { try await pause(Self.retryDelay(attempt: attempt)) } catch { return }
+                attempt += 1
             }
-            guard current == generation, !Task.isCancelled else { return }
-            setState(failures.isEmpty ? .registered : .failed(failures.joined(separator: "\n")))
         }
     }
 
@@ -77,15 +89,53 @@ public final class PushRegistrationCoordinator {
     }
 
     func waitForPendingRegistration() async { await task?.value }
-    private func setState(_ state: State) { self.state = state; onChange?(state) }
-    /// What the Settings row says about a Mac that did not take this device's alerts.
-    nonisolated static func failureMessage(_ error: any Error) -> String {
-        switch error {
-        case is URLError, RelayWireError.outcomeUnknown, RelaySessionError.outcomeUnknown:
-            String(localized: "Your Mac couldn’t be reached to turn on alerts. Alondra tries again when you reopen the app.")
-        default:
-            String(localized: "Your Mac didn’t accept this device’s alerts. Alondra tries again when you reopen the app.")
+    private func setState(_ state: State) {
+        guard state != self.state else { return }
+        self.state = state
+        onChange?(state)
+    }
+
+    /// Network and relay trouble clears on its own, so it is retried in the background;
+    /// a refusal from the Mac or a fault on this device waits for the app to open again.
+    enum Problem: Equatable, Sendable {
+        case unreachable, relay, rejected, local
+
+        var retries: Bool { self == .unreachable || self == .relay }
+
+        var message: String {
+            switch self {
+            case .unreachable: String(localized: "Can’t reach your Mac. Retrying…")
+            case .relay: String(localized: "Alondra’s relay isn’t responding. Retrying…")
+            case .rejected:
+                String(localized: "Your Mac didn’t accept this device’s alerts. Alondra tries again when you reopen the app.")
+            case .local:
+                String(localized: "Alerts couldn’t be set up on this device. Alondra tries again when you reopen the app.")
+            }
         }
+    }
+
+    nonisolated static func problem(_ error: any Error) -> Problem {
+        switch error {
+        case is URLError, RelayWireError.outcomeUnknown, RelaySessionError.outcomeUnknown, OperationError.outcomeUnknown:
+            return .unreachable
+        case is RelayWireError, RelaySessionError.invalidResponse:
+            return .relay
+        case let error as APIError:
+            switch error {
+            case .unavailable: return .unreachable
+            case .unexpected(let status) where status >= 500: return .unreachable
+            case .server(let status, _, _, _) where status >= 500: return .unreachable
+            case .unauthorized, .forbidden, .conflict, .server, .unexpected: return .rejected
+            }
+        case is PushPreferencesError:
+            return .rejected
+        default:
+            return .local
+        }
+    }
+
+    nonisolated static func retryDelay(attempt: Int) -> Duration {
+        .seconds(min(5 * (1 << min(attempt, 6)), 300))
     }
 
     enum Failure: LocalizedError, Equatable {

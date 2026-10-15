@@ -261,6 +261,28 @@ final class AccountSnapshotTests: XCTestCase {
         assertScreen([.light], language: .spanish, inWindow: true) { ScreenFrame(height: 1000) { SettingsView(store: store) } }
     }
 
+    func test_settings_alertsMacUnreachable_spanish() {
+        alertsFailure("No se puede contactar con tu Mac. Reintentando…")
+    }
+
+    func test_settings_alertsRelayDown_spanish() {
+        alertsFailure("El relay de Alondra no responde. Reintentando…")
+    }
+
+    func test_settings_alertsRefusedByTheMac_spanish() {
+        alertsFailure("Tu Mac no aceptó los avisos de este dispositivo. Alondra lo vuelve a intentar cuando abras la app de nuevo.")
+    }
+
+    private func alertsFailure(_ message: String, file: StaticString = #filePath, testName: String = #function, line: UInt = #line) {
+        let store = settings {
+            $0.notifications = NotificationSettings(permission: .authorized, delivery: .failed(message),
+                quietHours: QuietHours(enabled: true, start: 23 * 60, end: 7 * 60))
+        }
+        assertScreen([.light], language: .spanish, inWindow: true, file: file, testName: testName, line: line) {
+            ScreenFrame(height: 1000) { SettingsView(store: store) }
+        }
+    }
+
     func test_settings_accessibilitySize() {
         let store = settings()
         assertScreen([.ax3], inWindow: true) { ScreenFrame(height: 1000) { SettingsView(store: store) } }

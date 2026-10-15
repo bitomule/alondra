@@ -207,7 +207,7 @@ public struct SettingsView: View {
         case .idle: Text("Waiting for token").foregroundStyle(.secondary)
         case .registering: ProgressView()
         case .registered: Text("\(Image(systemName: "checkmark.circle.fill")) Registered").foregroundStyle(Palette.sage)
-        case .failed(let message): Text(verbatim: message).foregroundStyle(Palette.rose).lineLimit(2)
+        case .failed(let message): Text(verbatim: message).foregroundStyle(Palette.rose)
         }
     }
 
