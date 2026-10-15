@@ -23,6 +23,9 @@ def check_report(doc, prefix, explicit_profile=None):
     install = service['install']
     if install.get('program') != f'{prefix}/bin/alondrad':
         raise RuntimeError('Doctor did not discover the daemon through the installed opt path')
+    shipped = (pathlib.Path(prefix) / 'bin/alondrad-launcher').exists()
+    if shipped and not str(install.get('launcher') or '').endswith('/bin/alondrad-launcher'):
+        raise RuntimeError('Doctor would not run the daemon through the launcher at its fixed path')
     if install.get('marketplace') != f'{prefix}/libexec/alondra':
         raise RuntimeError('Doctor did not discover packaged marketplace assets through opt')
     if not service.get('fixable'):

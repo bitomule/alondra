@@ -47,6 +47,24 @@ final class MacSettingsFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.settings?.relay.on, false)
     }
 
+    func testTheOpenScreenReadsTheSettingsAgainSoTheMacsDiagnosisStaysCurrent() async {
+        let denied = DirectConnection(verdict: .relayOnly, reasons: [.localNetworkDenied])
+        let allowed = DirectConnection(verdict: .reachable)
+        let reads = LockIsolated(0)
+        let client = MacSettingsClient(load: {
+            let read = reads.withValue { $0 += 1; return $0 }
+            return MacSettings(projectsRoot: "/p", candidates: [], relay: .init(on: true), directConnection: read == 1 ? denied : allowed)
+        }, save: { _ in throw CancellationError() }, folders: { _ in throw CancellationError() }, refresh: .milliseconds(10))
+        let store = TestStore(initialState: MacSettingsFeature.State(id: UUID(), macName: "Mac", client: client)) { MacSettingsFeature() }
+        store.exhaustivity = .off
+        let task = await store.send(.task)
+        await store.receive(\.loaded)
+        XCTAssertEqual(store.state.settings?.directConnection, denied)
+        await store.receive(\.loaded)
+        XCTAssertEqual(store.state.settings?.directConnection, allowed)
+        await task.cancel()
+    }
+
     func testAMacThatDoesNotAnswerShowsWhy() async {
         let client = MacSettingsClient(load: { throw URLError(.timedOut) }, save: { _ in throw CancellationError() },
                                        folders: { _ in throw CancellationError() }, problem: { _ in .macNotAnswering })

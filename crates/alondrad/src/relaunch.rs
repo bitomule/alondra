@@ -42,6 +42,18 @@ pub fn launch_path() -> Option<PathBuf> {
         .or_else(|| std::env::current_exe().ok())
 }
 
+/// Keeps the launcher at its fixed path in step with the one this release ships beside `daemon`,
+/// so the next start under launchd runs it. Copied only when its version changed.
+pub fn keep_launcher(daemon: &Path, alondra_home: &Path) {
+    use alondra_core::launcher::{Installed, bundled_path, install, installed_path};
+    let installed = installed_path(alondra_home);
+    match install(&bundled_path(daemon), &installed) {
+        Ok(Installed::Copied) => log!("launcher updated at {}", installed.display()),
+        Ok(Installed::Current | Installed::NotBundled) => {}
+        Err(error) => log!("could not update the launcher at {}: {error}", installed.display()),
+    }
+}
+
 #[derive(Clone, Debug, Serialize, PartialEq)]
 pub struct Rejection {
     pub path: String,

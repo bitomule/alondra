@@ -15,8 +15,9 @@ from urllib.parse import urlencode
 REPO = 'bitomule/homebrew-tap'
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 TARGETS = ('aarch64-apple-darwin',)
+BINARIES = {'alondra', 'alondrad', 'alondrad-launcher'}
 PUBLIC_FILES = {
-    'alondra', 'alondrad', '.claude-plugin/marketplace.json',
+    'alondra', 'alondrad', 'alondrad-launcher', '.claude-plugin/marketplace.json',
     'plugin/bin/alondra', 'plugin/.mcp.json', 'plugin/hooks/hooks.json',
     'plugin/hooks/register.ts', 'plugin/tests/register.test.ts', 'plugin/tests/holds.test.ts',
     'plugin/.claude-plugin/plugin.json', 'plugin/skills/alondra/SKILL.md',
@@ -42,7 +43,7 @@ def stage_assets(root, destination):
     alias = root / 'plugin-orchestrator/bin'
     if not alias.is_symlink() or alias.readlink() != pathlib.Path('../plugin/bin'):
         raise ValueError('Unexpected orchestrator bin alias; review the packaging mapping')
-    for name in sorted(PUBLIC_FILES - {'alondra', 'alondrad'}):
+    for name in sorted(PUBLIC_FILES - BINARIES):
         source_name = 'plugin/bin/alondra' if name == 'plugin-orchestrator/bin/alondra' else name
         source = root / source_name
         if not source.is_file() or source.resolve() != source:

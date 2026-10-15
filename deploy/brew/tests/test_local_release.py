@@ -296,7 +296,7 @@ class LocalReleaseTests(unittest.TestCase):
                     target = args[args.index('--target') + 1]
                     directory = target_dir / target / 'release'
                     directory.mkdir(parents=True)
-                    for name in ('alondra', 'alondrad'): (directory / name).touch()
+                    for name in l.SIGNED: (directory / name).touch()
             elif args[0] == 'security': return f'1) {l.IDENTITY} "local identity"'
             elif rehearsal_call(args): rehearsed(output)
             elif args[0] == 'bash': archives(output)
@@ -351,7 +351,7 @@ class LocalReleaseTests(unittest.TestCase):
                     arch = args[args.index('--target') + 1]
                     directory = cache / arch / 'release'
                     directory.mkdir(parents=True)
-                    for name in ('alondra', 'alondrad'):
+                    for name in l.SIGNED:
                         (directory / name).write_bytes(f'{arch}:{name}'.encode())
             elif rehearsal_call(args):
                 self.assertFalse((output / 'manifest.json').exists(), 'the rehearsal runs before the manifest exists')
@@ -370,7 +370,7 @@ class LocalReleaseTests(unittest.TestCase):
                 with tarfile.open(path, 'w:gz') as archive:
                     for name in sorted(l.release.PUBLIC_FILES):
                         payload = pathlib.Path(args[4]).parent / name
-                        data = payload.read_bytes() if name in ('alondra', 'alondrad') else name.encode()
+                        data = payload.read_bytes() if name in l.SIGNED else name.encode()
                         item = tarfile.TarInfo(name)
                         item.size = len(data)
                         archive.addfile(item, io.BytesIO(data))
@@ -385,7 +385,7 @@ class LocalReleaseTests(unittest.TestCase):
                 self.assertEqual((output / name).read_bytes(), data)
             archive_bytes[archive.name] = archive.read_bytes()
             with tarfile.open(archive) as package:
-                for name in ('alondra', 'alondrad'):
+                for name in l.SIGNED:
                     self.assertTrue(package.extractfile(name).read().endswith(b':signed'))
             if failure == 'smoke':
                 raise RuntimeError('smoke failed')

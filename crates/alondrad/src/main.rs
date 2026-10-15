@@ -53,6 +53,7 @@ mod issues;
 mod job_state;
 mod keeper;
 mod local_network;
+mod local_network_card;
 mod reachability;
 mod machine;
 mod machine_state;
@@ -209,6 +210,9 @@ async fn run(diagnostic: Option<String>) -> Result<()> {
     }
     let _home_lock = alondra_core::home_lock::HomeLock::shared(&config.home)?;
     alondra_core::home_lock::ensure_ready(&config.home)?;
+    if relaunch::supervised(&config.service_label, |key| std::env::var(key).ok()) && let Some(daemon) = relaunch::launch_path() {
+        relaunch::keep_launcher(&daemon, &config.home);
+    }
     ensure_domain_protocol(&config.home)?;
     let _domain = domain_runtime::DomainRuntime::open(&config.home)?;
     if let Some(device) = diagnostic {
@@ -500,7 +504,8 @@ async fn run_domain(config: &Config) -> Result<()> {
     }
     if let Some(service) = service.clone().filter(|service| service.iroh_config().enabled) {
         tokio::spawn(iroh_endpoint::run(service));
-        tokio::task::spawn_blocking(local_network::check);
+        tokio::spawn(local_network::watch());
+        tokio::spawn(local_network_card::run(domain.clone()));
     }
     tokio::spawn(device_expiry::run(state.clone(), config.home.clone(), config.device_expiry_days));
     let app = domain_bootstrap::router(state)

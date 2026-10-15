@@ -29,7 +29,7 @@ class PublicPayloadTests(unittest.TestCase):
             stage = pathlib.Path(temp)
             r.stage_assets(r.ROOT, stage)
             files = {str(p.relative_to(stage)) for p in stage.rglob('*') if p.is_file()}
-            self.assertEqual(files, r.PUBLIC_FILES - {'alondra', 'alondrad'})
+            self.assertEqual(files, r.PUBLIC_FILES - r.BINARIES)
             self.assertFalse(any(p.is_symlink() for p in stage.rglob('*')))
             wrapper = stage / 'plugin-orchestrator/bin/alondra'
             self.assertEqual(wrapper.read_bytes(), (r.ROOT / 'plugin/bin/alondra').read_bytes())
@@ -38,6 +38,7 @@ class PublicPayloadTests(unittest.TestCase):
             # than only generated fixture names that missed the original link.
             (stage / 'alondra').write_bytes(b'fake binary')
             (stage / 'alondrad').write_bytes(b'fake daemon')
+            (stage / 'alondrad-launcher').write_bytes(b'fake launcher')
             package = stage / 'package.tar.gz'
             with tarfile.open(package, 'w:gz') as output:
                 for name in sorted(r.PUBLIC_FILES):

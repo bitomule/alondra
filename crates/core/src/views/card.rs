@@ -840,6 +840,9 @@ fn pace_text(interaction: &Interaction, domain: &DomainState, lang: Lang) -> Opt
     if interaction.id.0.starts_with(crate::machine_incident::MACHINE_PREFIX) {
         return crate::machine_incident::MachineCard::from_body(&interaction.body).map(|card| card.text(lang));
     }
+    if interaction.id.0.starts_with(crate::local_network_card::LOCAL_NETWORK_PREFIX) {
+        return crate::local_network_card::LocalNetworkCard::from_body(&interaction.body).map(|card| card.text(lang));
+    }
     if interaction.id.0.starts_with(crate::orchestrator_batch::BATCH_PROBLEM_PREFIX) {
         return crate::orchestrator_batch::BatchProblem::from_body(&interaction.body).map(|card| card.text(lang));
     }
@@ -877,6 +880,12 @@ fn fixed_option_text(interaction: &Interaction, option: &QuestionOption, lang: L
         && let Some(own) = crate::start_problem::options(&problem, lang).into_iter().find(|own| own.id == option.id)
     {
         return (own.label, own.description);
+    }
+    if interaction.author == Author::System
+        && interaction.id.0.starts_with(crate::local_network_card::LOCAL_NETWORK_PREFIX)
+        && let Some((label, description)) = crate::local_network_card::option_text(&option.id, &option.label, lang)
+    {
+        return (label.into(), Some(description.into()));
     }
     if let Some((label, description)) = crate::close_problem::option_text(&option.id, &option.label, lang) {
         return (label.into(), Some(description.into()));

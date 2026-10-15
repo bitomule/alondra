@@ -2,15 +2,16 @@
 # Package signed CLI, TUI, daemon and Claude assets for the public Homebrew formula.
 set -euo pipefail
 
-if [[ $# -ne 5 ]]; then
-  echo 'usage: package-cli.sh VERSION TARGET ALONDRA_CLI ALONDRAD OUTPUT_DIR' >&2
+if [[ $# -ne 6 ]]; then
+  echo 'usage: package-cli.sh VERSION TARGET ALONDRA_CLI ALONDRAD LAUNCHER OUTPUT_DIR' >&2
   exit 2
 fi
 version=$1
 target=$2
 cli=$3
 daemon=$4
-output_dir=$5
+launcher=$5
+output_dir=$6
 if [[ ! $version =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
   echo 'version must be numeric, e.g. 0.1' >&2
   exit 2
@@ -20,7 +21,7 @@ if [[ $target != aarch64-apple-darwin ]]; then
   exit 2
 fi
 repo_root=$(cd "$(dirname "$0")/../.." && pwd -P)
-for path in "$cli" "$daemon"; do
+for path in "$cli" "$daemon" "$launcher"; do
   [[ -f $path && -x $path ]] || { echo "missing executable: $path" >&2; exit 2; }
   codesign --verify --strict "$path"
   signature=$(codesign --display --verbose=4 "$path" 2>&1)
@@ -40,7 +41,8 @@ stage=$(mktemp -d "$output_dir/.alondra-package.XXXXXXXX")
 trap 'rm -rf "$stage"' EXIT
 ditto "$cli" "$stage/alondra"
 ditto "$daemon" "$stage/alondrad"
+ditto "$launcher" "$stage/alondrad-launcher"
 python3 "$repo_root/deploy/brew/release.py" stage-assets "$version" "$stage"
-COPYFILE_DISABLE=1 tar -C "$stage" -czf "$archive" alondra alondrad .claude-plugin plugin plugin-orchestrator
+COPYFILE_DISABLE=1 tar -C "$stage" -czf "$archive" alondra alondrad alondrad-launcher .claude-plugin plugin plugin-orchestrator
 shasum -a 256 "$archive"
 python3 "$repo_root/deploy/brew/release.py" validate "$version" "$archive"

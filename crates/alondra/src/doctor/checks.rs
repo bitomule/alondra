@@ -342,7 +342,7 @@ pub fn relay_check(on: bool) -> Outcome {
 
 fn direct_reason(code: &str) -> Option<&'static str> {
     Some(match code {
-        "local_network_denied" => tr!("macOS doesn't let alondrad use the local network", "macOS no deja a alondrad usar la red local"),
+        "local_network_denied" => tr!("macOS doesn't let Alondra (alondrad) use the local network", "macOS no deja a Alondra (alondrad) usar la red local"),
         "relay_off" => tr!("the relay is off", "el relay está desactivado"),
         "relay_disconnected" => tr!("not connected to the relay", "sin conexión con el relay"),
         "captive_portal" => tr!("this network wants a sign-in page first", "esta red pide antes una página de inicio de sesión"),
@@ -367,8 +367,8 @@ pub fn direct_check(health: &Value) -> Option<Outcome> {
     let codes: Vec<&str> = found["reasons"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
     let why = codes.iter().filter_map(|code| direct_reason(code)).collect::<Vec<_>>().join("; ");
     let denied = codes.contains(&"local_network_denied");
-    let local_network = manual(tr!("allow Local Network for alondrad in System Settings, Privacy & Security",
-        "permite Red local para alondrad en Ajustes del Sistema, Privacidad y seguridad"));
+    let local_network = manual(tr!("turn on Alondra (alondrad) in System Settings → Privacy & Security → Local Network",
+        "activa Alondra (alondrad) en Ajustes del Sistema → Privacidad y seguridad → Red local"));
     let check = |status, detail: String, fix| Some(outcome("direct", "direct connection", Group::Devices, status, detail, fix));
     match found["verdict"].as_str()? {
         "reachable" if denied => check(Status::Warn, why, local_network),

@@ -38,3 +38,11 @@ objc2-foundation = { version = "0.3.2", default-features = false, features = ["N
 [dev-dependencies]
 h2 = "0.4.19"
 tempfile.workspace = true
+
+[[bin]]
+name = "alondrad"
+path = "src/main.rs"
+
+[[bin]]
+name = "alondrad-launcher"
+path = "launcher/main.rs"

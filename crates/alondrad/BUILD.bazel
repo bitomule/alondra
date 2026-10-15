@@ -19,6 +19,30 @@ rust_binary(
     deps = all_crate_deps(normal = True) + ["//crates/core:alondra_core", "//crates/e2e:alondra_e2e"],
 )
 
+# launchd runs this at a fixed path so macOS keeps alondrad's Local Network permission across
+# updates; it carries the same Info.plist because the permission prompt shows its reason.
+rust_binary(
+    name = "alondrad-launcher",
+    srcs = ["launcher/main.rs"],
+    compile_data = ["Info.plist"],
+    crate_root = "launcher/main.rs",
+    edition = "2024",
+    rustc_flags = ["-Clink-arg=-Wl,-sectcreate,__TEXT,__info_plist,$(execpath Info.plist)"],
+    version = "0.1.0",
+    visibility = ["//visibility:public"],
+)
+
+rust_test(
+    name = "launcher_test",
+    srcs = ["tests/launcher.rs", "//crates:test_support.rs"],
+    crate_root = "tests/launcher.rs",
+    data = [":alondrad-launcher"],
+    edition = "2024",
+    rustc_env = {"CARGO_BIN_EXE_alondrad-launcher": "$(rootpath :alondrad-launcher)"},
+    version = "0.1.0",
+    deps = all_crate_deps(normal_dev = True),
+)
+
 rust_test(
     name = "alondrad_test",
     visibility = ["//apple/Data/Feed:__pkg__"],

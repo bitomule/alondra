@@ -9,7 +9,7 @@ What gets installed:
 
 | Piece | Where |
 |---|---|
-| `alondrad`, the daemon (24/7 HTTP server, SQLite) | `~/.local/bin/alondrad`, run by launchd |
+| `alondrad`, the daemon (24/7 HTTP server, SQLite) | `~/.local/bin/alondrad`, run by launchd through `~/.alondra/bin/alondrad-launcher` |
 | `alondra`, the CLI/TUI and the nodes' MCP server | `~/.local/bin/alondra` |
 | Settings, database, logs, APNs key | `~/.alondra/` |
 | Claude Code plugin `alondra` | this repo, registered as the marketplace `alondra`; alondrad loads it only into the sessions it launches, never into every session |
@@ -284,8 +284,11 @@ command that fixes it. It exits with 1 when any check is ✗.
 
 ### Upgrades restart the daemon by themselves
 
-When launchd runs the daemon, it checks every minute whether the file at the path launchd
-started (for Homebrew, `/opt/homebrew/opt/alondra/bin/alondrad`) was replaced. The new binary
+When launchd runs the daemon, it checks every minute whether the file at the path the launcher
+started (for Homebrew, `/opt/homebrew/opt/alondra/bin/alondrad`) was replaced. launchd runs the
+launcher at a fixed path so macOS keeps the Local Network permission across updates
+([direct.md](direct.md#macos-local-network-permission)); it passes the daemon's exit on, so
+launchd restarting the job restarts the daemon. The new binary
 first runs `alondrad --preflight`, which loads the configuration and replays the stored state
 on a private copy of `~/.alondra`, changing nothing. Only if that passes does the daemon release
 the hooks it holds and exit, and launchd starts the new version. A binary that fails preflight

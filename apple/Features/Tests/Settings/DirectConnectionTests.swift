@@ -60,6 +60,17 @@ final class DirectConnectionTests: XCTestCase {
         XCTAssertTrue(DirectConnection(verdict: .checking).guide.isEmpty)
     }
 
+    func testADeniedLocalNetworkAsksForThePermissionInsteadOfTheRouter() {
+        for verdict in [DirectConnection.Verdict.relayOnly, .reachable] {
+            let denied = DirectConnection(verdict: verdict, reasons: [.localNetworkDenied, .routerOffersNoMapping], port: 47811, lanIp: "192.168.1.20")
+            XCTAssertEqual(denied.guide.map { String(localized: $0) }, [
+                "Open System Settings › Privacy & Security › Local Network.",
+                "Turn on Alondra (alondrad).",
+                "This section updates by itself in a few seconds.",
+            ])
+        }
+    }
+
     func testARouterThatRefusedTheMappingIsAskedToAllowThisMacInstead() {
         let refused = DirectConnection(verdict: .relayOnly, reasons: [.noPortMapping], portMapping: .init(upnp: true, natPmp: true, pcp: true))
         XCTAssertEqual(String(localized: refused.guide[1]),

@@ -62,14 +62,18 @@ public struct MacSettingsClient: Sendable {
     /// macOS's own folder panel, only when the settings are this Mac's.
     public var pickLocalFolder: (@Sendable () async -> String?)?
     public var problem: @Sendable (any Error) -> ConnectionProblem
+    /// How often the open screen reads the settings again, so what the Mac diagnoses by itself
+    /// (its direct connection, macOS's Local Network permission) stays current.
+    public var refresh: Duration?
 
     public init(load: @escaping @Sendable () async throws -> MacSettings,
                 save: @escaping @Sendable (String) async throws -> MacSettings,
                 folders: @escaping @Sendable (String?) async throws -> FolderListing,
                 pickLocalFolder: (@Sendable () async -> String?)? = nil,
-                problem: @escaping @Sendable (any Error) -> ConnectionProblem = { _ in .unexpected }) {
+                problem: @escaping @Sendable (any Error) -> ConnectionProblem = { _ in .unexpected },
+                refresh: Duration? = nil) {
         self.load = load; self.save = save; self.folders = folders
-        self.pickLocalFolder = pickLocalFolder; self.problem = problem
+        self.pickLocalFolder = pickLocalFolder; self.problem = problem; self.refresh = refresh
     }
 
     /// The daemon's translated reason for refusing a folder, or a generic one.

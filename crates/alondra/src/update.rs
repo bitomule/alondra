@@ -45,6 +45,7 @@ pub fn run(check: bool) -> Result<()> {
     } else {
         println!("{}", trf!("Installed {installed}", "Instalada {installed}"));
     }
+    apply_service(&prefix);
     let client = Client::new(Duration::from_secs(3));
     let outcome = wait_for_daemon(&installed, || daemon_info(&client), Instant::now, std::thread::sleep, WAIT, || restart_old_daemon(&daemon));
     println!("{}", describe(&outcome, &installed));
@@ -78,6 +79,24 @@ fn latest_release() -> Option<String> {
 fn installed_version(daemon: &Path) -> Option<String> {
     let out = Command::new(daemon).arg("--version").output().ok().filter(|o| o.status.success())?;
     String::from_utf8_lossy(&out.stdout).split_whitespace().last().map(str::to_string)
+}
+
+/// The service's own repair, run by the CLI that was just installed: the release may launch the
+/// daemon differently (through the launcher that keeps the Local Network permission), and only
+/// the new CLI knows how.
+fn service_repair(prefix: &Path) -> (std::path::PathBuf, [&'static str; 5]) {
+    (prefix.join("opt/alondra/bin/alondra"), ["doctor", "--fix", "--yes", "--only", "service"])
+}
+
+fn apply_service(prefix: &Path) {
+    let (cli, args) = service_repair(prefix);
+    match Command::new(&cli).args(args).status() {
+        Ok(status) if status.success() => {}
+        Ok(status) => println!("{}", trf!("The service could not be brought up to date ({status}); run alondra doctor --fix",
+            "No se pudo poner al día el servicio ({status}); ejecuta alondra doctor --fix")),
+        Err(error) => println!("{}", trf!("The service could not be brought up to date ({error}); run alondra doctor --fix",
+            "No se pudo poner al día el servicio ({error}); ejecuta alondra doctor --fix")),
+    }
 }
 
 fn daemon_info(client: &Client) -> Option<Value> {
@@ -158,6 +177,13 @@ mod tests {
     use super::*;
     use serde_json::json;
     use std::cell::{Cell, RefCell};
+
+    #[test]
+    fn the_service_is_repaired_by_the_cli_just_installed_and_nothing_else() {
+        let (cli, args) = service_repair(Path::new("/opt/homebrew"));
+        assert_eq!(cli, Path::new("/opt/homebrew/opt/alondra/bin/alondra"));
+        assert_eq!(args, ["doctor", "--fix", "--yes", "--only", "service"]);
+    }
 
     struct Clock(Cell<Duration>, Instant);
     impl Clock {

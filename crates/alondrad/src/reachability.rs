@@ -339,7 +339,7 @@ pub(crate) fn current() -> Option<Reachability> {
     Some(diagnose(&Inputs {
         relay_configured: relay.is_some(),
         relay_connected,
-        local_network: crate::local_network::status(),
+        local_network: crate::local_network::current(),
         ..inputs
     }))
 }

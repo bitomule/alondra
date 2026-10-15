@@ -57,6 +57,11 @@ import Foundation
                 return .run { [client = state.client] send in
                     do { await send(.loaded(try await client.load())) }
                     catch { await send(.loadFailed(client.problem(error))) }
+                    guard let every = client.refresh else { return }
+                    while true {
+                        try await Task.sleep(for: every)
+                        if let settings = try? await client.load() { await send(.loaded(settings)) }
+                    }
                 }
             case .loaded(let settings):
                 state.settings = settings

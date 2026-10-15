@@ -113,6 +113,7 @@ install: brew-guard build
 	mkdir -p $(BIN) $(PLUGIN)/bin $(HOME)/.alondra
 	install -m 755 $(call exe,//crates/alondrad) $(BIN)/alondrad
 	install -m 755 $(call exe,//crates/alondra) $(BIN)/alondra
+	install -m 755 $(call exe,//crates/alondrad:alondrad-launcher) $(BIN)/alondrad-launcher
 	@echo "Installed in $(BIN). Plugin: $(PLUGIN)"
 
 run: brew-guard install

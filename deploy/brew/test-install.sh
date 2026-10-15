@@ -25,7 +25,7 @@ trap 'brew uninstall --force alondra/release-test/alondra >/dev/null 2>&1 || tru
 HOMEBREW_NO_INSTALL_CLEANUP=1 brew install --skip-link alondra/release-test/alondra
 brew test --force alondra/release-test/alondra
 prefix=$(brew --prefix alondra/release-test/alondra)
-for binary in alondra alondrad; do
+for binary in alondra alondrad alondrad-launcher; do
   codesign --verify --strict "$prefix/bin/$binary"
   details=$(codesign --display --verbose=4 "$prefix/bin/$binary" 2>&1)
   [[ $details == *'Authority=Developer ID Application:'* && $details == *'TeamIdentifier=658YBSK6MG'* ]]

@@ -123,7 +123,7 @@ fn update(change: impl FnOnce(&mut Status)) {
 pub(crate) fn status() -> serde_json::Value {
     let reachability = crate::reachability::current();
     let guard = STATUS.lock().expect("iroh status poisoned");
-    let local_network = crate::local_network::status();
+    let local_network = crate::local_network::current();
     match &*guard {
         None => json!({"endpoint": null, "local_network": local_network, "reachability": reachability}),
         Some(status) => json!({

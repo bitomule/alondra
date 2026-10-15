@@ -6,7 +6,7 @@
     <string>@LABEL@</string>
     <key>ProgramArguments</key>
     <array>
-        <string>@BIN@/alondrad</string>
+        @LAUNCHER@<string>@BIN@/alondrad</string>
     </array>
     <key>EnvironmentVariables</key>
     <dict>

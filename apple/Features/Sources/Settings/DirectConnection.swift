@@ -131,7 +131,7 @@ extension DirectConnection {
     public static func explanation(_ reason: Reason) -> LocalizedStringResource {
         switch reason {
         case .localNetworkDenied:
-            "macOS doesn’t let Alondra use the local network. Allow it in System Settings, Privacy & Security, Local Network."
+            "macOS doesn’t let Alondra use this Mac’s local network, so devices on the same Wi-Fi go through the relay."
         case .relayOff: "The relay is off, so this Mac can’t see how it looks from outside."
         case .relayDisconnected: "This Mac isn’t connected to the relay right now."
         case .captivePortal: "This network wants a sign-in page first."
@@ -146,8 +146,16 @@ extension DirectConnection {
         }
     }
 
-    /// The router steps that would give this Mac a way in, with its own port and address.
+    /// The steps that would give this Mac a way in: the Local Network permission first, when macOS
+    /// denies it, and otherwise the router's, with this Mac's own port and address.
     public var guide: [LocalizedStringResource] {
+        if reasons.contains(.localNetworkDenied) {
+            return [
+                "Open System Settings › Privacy & Security › Local Network.",
+                "Turn on Alondra (alondrad).",
+                "This section updates by itself in a few seconds.",
+            ]
+        }
         guard verdict == .relayOnly else { return [] }
         var steps: [LocalizedStringResource] = [
             "Open your router’s settings: its app, or its address in a browser.",

@@ -56,6 +56,14 @@ impl Paths {
     fn plist(&self, label: &str) -> PathBuf {
         self.home.join("Library/LaunchAgents").join(format!("{label}.plist"))
     }
+    fn daemon(&self) -> PathBuf {
+        self.bin.join("alondrad")
+    }
+    /// What launchd runs before alondrad: the launcher at its fixed path, when this build ships
+    /// one. macOS keeps the Local Network permission for that path across updates.
+    fn launcher(&self) -> Option<PathBuf> {
+        alondra_core::launcher::bundled_path(&self.daemon()).is_file().then(|| alondra_core::launcher::installed_path(&self.alondra_home))
+    }
 }
 
 #[derive(Default, Clone)]
@@ -75,6 +83,8 @@ pub struct Observed {
     pub enabled_globally: Vec<(String, String)>,
     pub tuicr: bool,
     pub brew: bool,
+    /// The release ships a launcher that its fixed path does not hold yet.
+    pub launcher_outdated: bool,
 }
 
 #[derive(Debug, PartialEq)]
@@ -82,6 +92,8 @@ pub enum Step {
     Write { path: PathBuf, contents: String, private: bool },
     Unchanged { path: PathBuf },
     Run { program: String, args: Vec<String> },
+    /// Copies the launcher a release ships to the fixed path launchd runs it from.
+    Launcher { bundled: PathBuf, installed: PathBuf },
     Warn(String),
 }
 
@@ -138,7 +150,9 @@ fn render_plist_with_context(label: &str, paths: &Paths, context: &crate::claude
     if let Some(profile) = &context.config_dir {
         config.push_str(&format!("<key>CLAUDE_CONFIG_DIR</key><string>{0}</string><key>CLAUDE_HOME</key><string>{0}</string><key>ALONDRA_CLAUDE_PROFILE_MODE</key><string>explicit</string>", xml_escape(profile)));
     }
+    let launcher = paths.launcher().map(|launcher| format!("<string>{}</string>\n        ", xml_escape(&launcher.display().to_string()))).unwrap_or_default();
     Ok(TEMPLATE
+        .replace("@LAUNCHER@", &launcher)
         .replace("@CLAUDE_CONFIG_ENV@", &config)
         .replace("@PATH@", &xml_escape(&context.path))
         .replace("@LABEL@", label)
@@ -248,6 +262,9 @@ fn plan_with_context(wanted: &FileConfig, apns: Option<&Apns>, args: &Args, path
                 "{bin}/alondrad is missing, so the service is not started: run `make install` in the repo and then setup again.",
                 "Falta {bin}/alondrad, así que no arranco el servicio: ejecuta `make install` en el repo y después setup otra vez."
             )));
+        }
+        if seen.binaries && seen.launcher_outdated && let Some(installed) = paths.launcher() {
+            steps.push(Step::Launcher { bundled: alondra_core::launcher::bundled_path(&paths.daemon()), installed });
         }
         let plist_changed = seen.plist.as_deref() != Some(plist.as_str());
         if plist_changed {
@@ -594,7 +611,14 @@ fn observe(paths: &Paths, label: &str, apns: Option<&Apns>, args: &Args, context
         enabled_globally: plugins.as_ref().map(enabled_globally).unwrap_or_default(),
         tuicr: command_ok("tuicr", &["--version"]).is_some(),
         brew: command_ok("brew", &["--version"]).is_some(),
+        launcher_outdated: launcher_outdated(paths),
     }
+}
+
+fn launcher_outdated(paths: &Paths) -> bool {
+    let Some(installed) = paths.launcher() else { return false };
+    let bundled = alondra_core::launcher::version(&alondra_core::launcher::bundled_path(&paths.daemon()));
+    bundled.is_some() && bundled != alondra_core::launcher::version(&installed)
 }
 
 const BREW_PREFIXES: [&str; 2] = ["/opt/homebrew/opt/alondra", "/usr/local/opt/alondra"];
@@ -636,6 +660,9 @@ fn execute(step: &Step, context: &crate::claude_auth::ContextEnv) -> Result<()> 
                     std::thread::sleep(Duration::from_millis(100));
                 }
             }
+        }
+        Step::Launcher { bundled, installed } => {
+            alondra_core::launcher::install(bundled, installed).with_context(|| installed.display().to_string())?;
         }
         Step::Unchanged { .. } | Step::Warn(_) => {}
     }
@@ -696,7 +723,8 @@ impl Installation {
     pub(crate) fn target(&self) -> Value {
         let profile = self.context.config_dir.clone();
         serde_json::json!({
-            "program": self.paths.bin.join("alondrad"),
+            "program": self.paths.daemon(),
+            "launcher": self.paths.launcher(),
             "marketplace": self.paths.repo,
             "claude_profile": profile,
             "profile_mode": if profile.is_some() { "explicit" } else { "implicit" },
@@ -707,6 +735,7 @@ impl Installation {
         match step {
             Step::Write { path, .. } => *path == self.paths.config() || *path == self.paths.plist(&self.label),
             Step::Run { program, .. } => program == "launchctl",
+            Step::Launcher { .. } => true,
             _ => false,
         }
     }
@@ -1092,6 +1121,39 @@ esac
         assert!(plist.contains("<string>/Users/ana/.local/bin/alondrad</string>"));
         assert!(plist.contains("<string>/Users/ana/.alondra/alondrad.log</string>"));
         assert!(!plist.contains('@'));
+        assert!(!plist.contains("alondrad-launcher"), "a build without a launcher runs alondrad directly");
+    }
+
+    fn shipped_launcher(root: &Path) -> Paths {
+        let bin = root.join("opt/alondra/bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(bin.join("alondrad"), "").unwrap();
+        std::fs::write(bin.join("alondra"), "").unwrap();
+        std::fs::write(bin.join(alondra_core::launcher::NAME), "").unwrap();
+        Paths { bin, alondra_home: root.join("home/.alondra"), ..paths() }
+    }
+
+    #[test]
+    fn launchd_runs_the_launcher_at_its_fixed_path_with_alondrad_through_the_stable_link() {
+        let root = crate::test_support::Directory::new();
+        let paths = shipped_launcher(&root);
+        let plist = render_plist("com.example.alondra", &paths).unwrap();
+        let launcher = alondra_core::launcher::installed_path(&paths.alondra_home);
+        let arguments = format!("<array>\n        <string>{}</string>\n        <string>{}</string>\n    </array>", launcher.display(), paths.bin.join("alondrad").display());
+        assert!(plist.contains(&arguments), "{plist}");
+        assert!(!plist.contains('@'));
+    }
+
+    #[test]
+    fn an_outdated_launcher_is_copied_before_launchd_loads_the_service() {
+        let root = crate::test_support::Directory::new();
+        let paths = shipped_launcher(&root);
+        let p = plan(&named("Ana"), None, &Args::default(), &paths, &Observed { launcher_outdated: true, ..fresh() });
+        let copy = p.steps.iter().position(|s| matches!(s, Step::Launcher { installed, .. } if *installed == alondra_core::launcher::installed_path(&paths.alondra_home)));
+        let bootstrap = p.steps.iter().position(|s| matches!(s, Step::Run { args, .. } if args.first().map(String::as_str) == Some("bootstrap")));
+        assert!(copy.is_some() && copy < bootstrap, "{:?}", p.steps);
+        let current = plan(&named("Ana"), None, &Args::default(), &paths, &fresh());
+        assert!(!current.steps.iter().any(|s| matches!(s, Step::Launcher { .. })));
     }
 
     #[test]
@@ -1154,14 +1216,17 @@ esac
 }
 
 
+/// Whether `launchctl print` shows the job that runs this HOME's alondrad, directly or through the
+/// launcher.
 fn recovery_job_matches(text: &str, home: &Path, daemon: &Path) -> bool {
     fn values<'a>(text: &'a str, key: &str) -> Vec<&'a str> {
         text.lines().filter_map(|line| line.trim().strip_prefix(key)).map(str::trim).collect()
     }
     let homes = values(text, "ALONDRA_HOME => ");
     let programs = values(text, "program = ");
+    let launcher = alondra_core::launcher::installed_path(home);
     homes.len() == 1 && programs.len() == 1
-        && Path::new(homes[0]) == home && Path::new(programs[0]) == daemon
+        && Path::new(homes[0]) == home && (Path::new(programs[0]) == daemon || Path::new(programs[0]) == launcher)
 }
 
 fn stop_for_recovery(paths: &Paths, label: &str) -> Result<()> {
@@ -1187,6 +1252,11 @@ fn stop_for_recovery(paths: &Paths, label: &str) -> Result<()> {
         assert!(!recovery_job_matches(text,Path::new("/other/home"),Path::new("/example/bin/alondrad")));
         assert!(!recovery_job_matches(text,Path::new("/example/home"),Path::new("/other/bin/alondrad")));
         assert!(!recovery_job_matches(&(text.to_owned()+"\n ALONDRA_HOME => /other/home"),Path::new("/example/home"),Path::new("/example/bin/alondrad")));
+    }
+    #[test] fn the_launcher_of_the_same_home_is_owned_too() {
+        let text="program = /example/home/bin/alondrad-launcher\n environment = {\n ALONDRA_HOME => /example/home\n }";
+        assert!(recovery_job_matches(text,Path::new("/example/home"),Path::new("/example/bin/alondrad")));
+        assert!(!recovery_job_matches(text,Path::new("/other/home"),Path::new("/example/bin/alondrad")));
     }
 }
 

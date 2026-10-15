@@ -9,13 +9,13 @@ class Alondra < Formula
   depends_on "tuicr"
 
   # Signed bytes must survive Homebrew cleaning unchanged.
-  skip_clean "bin/alondra", "bin/alondrad"
+  skip_clean "bin/alondra", "bin/alondrad", "bin/alondrad-launcher"
 
   url "https://github.com/bitomule/homebrew-tap/releases/download/alondra-v#{version}/alondra-#{version}-aarch64-apple-darwin.tar.gz"
   sha256 "@ARM_SHA256@"
 
   def install
-    bin.install "alondra", "alondrad"
+    bin.install "alondra", "alondrad", "alondrad-launcher"
     (libexec/"alondra").install ".claude-plugin", "plugin", "plugin-orchestrator"
   end
 

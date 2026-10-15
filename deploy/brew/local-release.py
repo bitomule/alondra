@@ -127,7 +127,7 @@ def smoke(ver, target, archive):
         assets = keg / 'libexec/alondra'
         binaries.mkdir(parents=True)
         assets.mkdir(parents=True)
-        for name in ('alondra', 'alondrad'):
+        for name in SIGNED:
             shutil.move(unpack / name, binaries / name)
         for name in ('.claude-plugin', 'plugin', 'plugin-orchestrator'):
             shutil.move(unpack / name, assets / name)
@@ -137,18 +137,21 @@ def smoke(ver, target, archive):
         if target != 'aarch64-apple-darwin':
             raise RuntimeError(f'Unsupported release target: {target}; Alondra ships Apple Silicon only')
         arch = 'arm64'
-        for name in ('alondra', 'alondrad'):
+        for name in SIGNED:
             binary = binaries / name
             if run('lipo', '-archs', binary, capture=True).strip() != arch:
                 raise RuntimeError(f'Wrong architecture for {name}: expected {arch}')
             run('codesign', '--verify', '--strict', binary)
-            run('/usr/bin/arch', f'-{arch}', binary, '--help')
+            run('/usr/bin/arch', f'-{arch}', binary, '--version' if name == 'alondrad-launcher' else '--help')
         run(sys.executable, ROOT / 'deploy/brew/smoke-setup.py', opt)
 
 
 # alondrad is a launchd agent: macOS shows its Local Network reason only from the Info.plist its
 # build embeds and binds into the signature (crates/alondrad/build.rs, TN3179).
 WITH_INFO_PLIST = {'com.bitomule.alondrad'}
+# The launcher launchd runs carries alondrad's identity: macOS keeps the Local Network permission
+# for that identity at the launcher's fixed path, and the privacy settings keep naming alondrad.
+SIGNED = {'alondra': 'com.bitomule.alondra', 'alondrad': 'com.bitomule.alondrad', 'alondrad-launcher': 'com.bitomule.alondrad'}
 
 
 def check_signature(details, identifier):
@@ -244,10 +247,11 @@ def prepare(ver, source, output, target_dir, *, ephemeral_build_cache=False):
                 '-p', 'alondra', '-p', 'alondrad', env=env)
             with tempfile.TemporaryDirectory(prefix='alondra-local-sign-') as temp:
                 payload = pathlib.Path(temp)
-                for name in ('alondra', 'alondrad'):
+                for name, identifier in SIGNED.items():
                     shutil.copy2(build_target / target / 'release' / name, payload / name)
-                    sign(payload / name, f'com.bitomule.{name}')
-                run('bash', 'deploy/brew/package-cli.sh', ver, target, payload / 'alondra', payload / 'alondrad', output)
+                    sign(payload / name, identifier)
+                run('bash', 'deploy/brew/package-cli.sh', ver, target, payload / 'alondra', payload / 'alondrad',
+                    payload / 'alondrad-launcher', output)
             smoke(ver, target, output / f'alondra-{ver}-{target}.tar.gz')
     rehearse_upgrade(ver, output)
     (output / 'manifest.json').write_text(json.dumps(manifest(ver, source, output), indent=2) + '\n')

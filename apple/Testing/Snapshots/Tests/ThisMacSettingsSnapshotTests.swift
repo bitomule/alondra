@@ -83,6 +83,14 @@ final class ThisMacSettingsSnapshotTests: XCTestCase {
         assertScreen([.light, .dark], inWindow: true) { ScreenFrame(height: 852) { direct(reachable) } }
     }
 
+    private let localNetworkDenied = DirectConnection(
+        verdict: .relayOnly, reasons: [.localNetworkDenied], portMapping: .init(), publicIpv4: "81.40.12.7",
+        nat: .easy, port: 47811, lanIp: "192.168.1.20", sessions: .init(lan: 0, internet: 0, relay: 4))
+
+    func test_directConnection_localNetworkDenied() {
+        assertScreen([.light, .dark], inWindow: true) { ScreenFrame(height: 1240) { direct(localNetworkDenied) } }
+    }
+
     func test_directConnection_checking() {
         assertScreen([.light], inWindow: true, animatedPixels: true) {
             ScreenFrame(height: 852) { direct(DirectConnection(verdict: .checking, port: 47811)) }

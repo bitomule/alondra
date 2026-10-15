@@ -16,6 +16,8 @@ pub mod config;
 pub mod event;
 pub mod issues;
 pub mod keeper;
+pub mod launcher;
+pub mod local_network_card;
 pub mod close_problem;
 pub mod machine_incident;
 pub mod model;

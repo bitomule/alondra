@@ -34,6 +34,7 @@ extension Connection {
                           save: { try await self.setProjectsRoot($0) },
                           folders: { try await self.folders(at: $0) },
                           pickLocalFolder: pickLocalFolder,
-                          problem: { self.connectionProblem(for: $0) })
+                          problem: { self.connectionProblem(for: $0) },
+                          refresh: .seconds(10))
     }
 }

@@ -47,8 +47,9 @@ fn report(advertisement: &Advertisement, logged: &mut Option<i32>) {
             set_status("advertising");
         }
         Some(POLICY_DENIED) => {
-            log!("Bonjour advertisement withheld: allow Local Network for alondrad, or add this Mac by address");
+            log!("Bonjour advertisement withheld: allow Local Network for Alondra (alondrad), or add this Mac by address");
             set_status("unavailable");
+            crate::local_network::current();
         }
         Some(error) => {
             log!("Bonjour advertisement failed ({error}); add this Mac by address");

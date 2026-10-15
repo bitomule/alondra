@@ -91,7 +91,8 @@ portmapper = true  # ask the router for a port mapping (UPnP, NAT-PMP, PCP)
 
 The key is `iroh.key` beside the service signing key (`~/.alondra/service-keys/`), created by
 the daemon on its first start. `/daemon` reports the endpoint, its relay, and whether macOS lets
-the daemon send to the local network (`local_network`).
+the daemon send to the local network (`local_network`), checked again on each read older than two
+seconds (see [direct.md](direct.md#macos-local-network-permission)).
 
 ## Reachability
 
