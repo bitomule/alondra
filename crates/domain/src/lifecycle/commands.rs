@@ -49,7 +49,7 @@ impl TaskLifecycle {
                 let execution = Execution {
                     stamp,
                     cursor: 0,
-                    process: ProcessEvidence::Reserved,
+                    resource: ResourceEvidence::Reserved,
                     activity: Activity::Launching(input),
                     callbacks: vec![],
                     effects: BTreeSet::new(),
@@ -273,7 +273,7 @@ impl TaskLifecycle {
                             pending.push_back(input);
                         }
                         Session::Present(execution) => {
-                            if execution.process != ProcessEvidence::Running {
+                            if execution.resource != ResourceEvidence::Available {
                                 return Err(Refusal::InvalidState);
                             }
                             if decisions
@@ -311,7 +311,7 @@ impl TaskLifecycle {
                 }
                 if let Some(execution) = finishing.session.execution_mut() {
                     match &obligation {
-                        DrainObligation::Process(_) => execution.process = ProcessEvidence::Exited,
+                        DrainObligation::Execution(_) => execution.resource = ResourceEvidence::Released,
                         DrainObligation::Work(ended) => {
                             execution.activity = match &execution.activity {
                                 Activity::Turn {
@@ -366,7 +366,7 @@ impl TaskLifecycle {
                     finishing.remaining = NonEmpty::new(remaining)?;
                 }
             }
-            Event::RetireExitedExecution {
+            Event::RetireReleasedExecution {
                 problem_card,
                 input,
             } => {
@@ -397,7 +397,7 @@ impl TaskLifecycle {
                     return Err(Refusal::CorrelationMismatch);
                 }
                 let execution = session.execution().ok_or(Refusal::InvalidState)?;
-                if execution.process != ProcessEvidence::Exited
+                if execution.resource != ResourceEvidence::Released
                     || execution.activity.owns_work()
                     || !execution.callbacks.is_empty()
                     || !execution.effects.is_empty()
@@ -550,7 +550,7 @@ impl TaskLifecycle {
         }
         if let Some(callback) = &card.callback {
             let execution = session.execution_mut().ok_or(Refusal::InvalidState)?;
-            if execution.process != ProcessEvidence::Running {
+            if execution.resource != ResourceEvidence::Available {
                 return Err(Refusal::InvalidState);
             }
             let state = execution
@@ -562,7 +562,7 @@ impl TaskLifecycle {
             add_callback_wake(&mut execution.activity, callback.clone())?;
         } else if let Some(execution) = session.execution_mut() {
             if cards.values().any(|card| card.reason == WaitReason::Pause)
-                || execution.process != ProcessEvidence::Running
+                || execution.resource != ResourceEvidence::Available
             {
                 return Err(Refusal::InvalidState);
             }
@@ -646,8 +646,8 @@ impl TaskLifecycle {
             remaining.insert(DrainObligation::PostMerge(operation));
         }
         if let Some(execution) = session.execution() {
-            if execution.process != ProcessEvidence::Exited {
-                remaining.insert(DrainObligation::Process(execution.stamp.instance().clone()));
+            if execution.resource != ResourceEvidence::Released {
+                remaining.insert(DrainObligation::Execution(execution.stamp.instance().clone()));
             }
             remaining.extend(
                 execution

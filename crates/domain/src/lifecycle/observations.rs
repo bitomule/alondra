@@ -23,7 +23,7 @@ impl TaskLifecycle {
         let mut aborted_callback = None;
         let mut requested_card = None;
         let mut resting_card = None;
-        if execution.process != ProcessEvidence::Running
+        if execution.resource != ResourceEvidence::Available
             && matches!(
                 fact,
                 RuntimeFact::Ask { .. }
@@ -59,18 +59,18 @@ impl TaskLifecycle {
                     callback: Some(callback),
                 });
             }
-            RuntimeFact::Initialized => {
-                if execution.process != ProcessEvidence::Reserved {
+            RuntimeFact::ResourceAvailable => {
+                if execution.resource != ResourceEvidence::Reserved {
                     return Err(Refusal::InvalidState);
                 }
                 let Activity::Launching(input) = &execution.activity else {
                     return Err(Refusal::InvalidState);
                 };
                 execution.activity = Activity::InputPending(input.clone());
-                execution.process = ProcessEvidence::Running;
+                execution.resource = ResourceEvidence::Available;
             }
             RuntimeFact::InputConsumed { input } => {
-                if execution.process != ProcessEvidence::Running
+                if execution.resource != ResourceEvidence::Available
                     || !matches!(execution.activity, Activity::Turn { .. })
                 {
                     return Err(Refusal::InvalidState);
@@ -81,7 +81,7 @@ impl TaskLifecycle {
                 execution.inbox.pop_front();
             }
             RuntimeFact::TurnStarted { turn, trigger } => {
-                if execution.process != ProcessEvidence::Running {
+                if execution.resource != ResourceEvidence::Available {
                     return Err(Refusal::InvalidState);
                 }
                 let (work, continuations) = match (&execution.activity, trigger) {
@@ -218,19 +218,19 @@ impl TaskLifecycle {
             }
             RuntimeFact::ConnectionLost { problem_card } => {
                 valid_id(&problem_card.0)?;
-                if execution.process == ProcessEvidence::Exited {
+                if execution.resource == ResourceEvidence::Released {
                     return Err(Refusal::InvalidState);
                 }
-                execution.process = ProcessEvidence::ObservationPending;
+                execution.resource = ResourceEvidence::ObservationPending;
                 forced_card = Some(Card {
                     id: problem_card,
                     reason: WaitReason::Recovery,
                     callback: None,
                 });
             }
-            RuntimeFact::ProcessExited { problem_card } => {
+            RuntimeFact::ResourceReleased { problem_card } => {
                 valid_id(&problem_card.0)?;
-                execution.process = ProcessEvidence::Exited;
+                execution.resource = ResourceEvidence::Released;
                 forced_card = Some(Card {
                     id: problem_card,
                     reason: WaitReason::Recovery,
@@ -305,7 +305,7 @@ impl TaskLifecycle {
                 aborted_callback = Some((callback, unheard_card));
             }
             RuntimeFact::EffectAccepted { operation } => {
-                if execution.process != ProcessEvidence::Running {
+                if execution.resource != ResourceEvidence::Available {
                     return Err(Refusal::InvalidState);
                 }
                 if !execution.effects.insert(operation) {
@@ -325,7 +325,7 @@ impl TaskLifecycle {
             .any(|(_, reason)| *reason == WaitReason::Pause)
             || matches!(self.state, State::InProgress(Progress::Dependency { .. }));
         if matches!(execution.activity, Activity::Resting)
-            && execution.process == ProcessEvidence::Running
+            && execution.resource == ResourceEvidence::Available
             && !held
         {
             if let Some(input) = execution.inbox.pop_front() {

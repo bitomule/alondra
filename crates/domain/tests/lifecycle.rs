@@ -45,7 +45,7 @@ fn fact(task: &mut TaskLifecycle, fact: RuntimeFact) {
 fn running() -> TaskLifecycle {
     let mut task = TaskLifecycle::planned(TaskId::from("task"), input("initial")).unwrap();
     admit(&mut task, "instance");
-    fact(&mut task, RuntimeFact::Initialized);
+    fact(&mut task, RuntimeFact::ResourceAvailable);
     fact(
         &mut task,
         RuntimeFact::TurnStarted {
@@ -259,7 +259,7 @@ fn cancellation_is_not_terminal_until_process_children_callbacks_and_cleanup_are
     apply(
         &mut task,
         Event::DrainObserved {
-            obligation: DrainObligation::Process(InstanceId::new("instance").unwrap()),
+            obligation: DrainObligation::Execution(InstanceId::new("instance").unwrap()),
         },
     );
     assert!(task.holds_slot());
@@ -298,13 +298,13 @@ fn connection_loss_does_not_prove_exit_or_allow_a_replacement() {
             problem_card: "recovery".into(),
         },
     );
-    assert_eq!(task.process(), Some(ProcessEvidence::ObservationPending));
+    assert_eq!(task.resource(), Some(ResourceEvidence::ObservationPending));
     assert!(task.holds_slot());
     let before = format!("{task:?}");
     assert_eq!(
         task.apply(
             task.revision(),
-            Event::RetireExitedExecution {
+            Event::RetireReleasedExecution {
                 problem_card: "recovery".into(),
                 input: input("retry")
             }
@@ -314,7 +314,7 @@ fn connection_loss_does_not_prove_exit_or_allow_a_replacement() {
     assert_eq!(format!("{task:?}"), before);
     fact(
         &mut task,
-        RuntimeFact::ProcessExited {
+        RuntimeFact::ResourceReleased {
             problem_card: "recovery".into(),
         },
     );
@@ -322,7 +322,7 @@ fn connection_loss_does_not_prove_exit_or_allow_a_replacement() {
     let old = task.execution().unwrap().clone();
     apply(
         &mut task,
-        Event::RetireExitedExecution {
+        Event::RetireReleasedExecution {
             problem_card: "recovery".into(),
             input: input("retry"),
         },
@@ -360,7 +360,7 @@ fn an_already_exited_process_is_not_relaunched_to_finish_its_task() {
     );
     fact(
         &mut task,
-        RuntimeFact::ProcessExited {
+        RuntimeFact::ResourceReleased {
             problem_card: "recovery".into(),
         },
     );
@@ -605,7 +605,7 @@ fn process_exit_preserves_permissions_and_adds_an_actionable_recovery_obligation
     );
     fact(
         &mut task,
-        RuntimeFact::ProcessExited {
+        RuntimeFact::ResourceReleased {
             problem_card: "recovery".into(),
         },
     );
@@ -613,7 +613,7 @@ fn process_exit_preserves_permissions_and_adds_an_actionable_recovery_obligation
     assert_eq!(
         task.apply(
             task.revision(),
-            Event::RetireExitedExecution {
+            Event::RetireReleasedExecution {
                 problem_card: "recovery".into(),
                 input: input("retry")
             }
@@ -633,7 +633,7 @@ fn process_exit_preserves_permissions_and_adds_an_actionable_recovery_obligation
     );
     apply(
         &mut task,
-        Event::RetireExitedExecution {
+        Event::RetireReleasedExecution {
             problem_card: "recovery".into(),
             input: input("retry"),
         },
@@ -681,20 +681,20 @@ fn implementation_and_changes_requested_stages_survive_queueing_and_recovery() {
     assert_eq!(task.stage(), Some(WorkStage::Implement));
     fact(
         &mut task,
-        RuntimeFact::ProcessExited {
+        RuntimeFact::ResourceReleased {
             problem_card: "recovery".into(),
         },
     );
     apply(
         &mut task,
-        Event::RetireExitedExecution {
+        Event::RetireReleasedExecution {
             problem_card: "recovery".into(),
             input: input("retry"),
         },
     );
     admit(&mut task, "second");
     assert_eq!(task.stage(), Some(WorkStage::Implement));
-    fact(&mut task, RuntimeFact::Initialized);
+    fact(&mut task, RuntimeFact::ResourceAvailable);
     fact(
         &mut task,
         RuntimeFact::TurnStarted {
@@ -781,7 +781,7 @@ proptest! {
             let runtime = |fact| task.execution().cloned().map(|stamp| Event::Runtime { stamp, cursor: task.cursor().unwrap() + 1, fact });
             let event = match action {
                 0 => Some(Event::Admit { node: "node".into(), conversation: ConversationId::new("conversation").unwrap(), instance: InstanceId::new("instance").unwrap(), host: HostId::new("host").unwrap() }),
-                1 => runtime(RuntimeFact::Initialized),
+                1 => runtime(RuntimeFact::ResourceAvailable),
                 2 => runtime(RuntimeFact::TurnStarted { turn: turn("root"), trigger: Trigger::Input(input("initial")) }),
                 3 => runtime(RuntimeFact::WorkStarted { turn: turn("root"), work: work("child") }),
                 4 => runtime(RuntimeFact::WorkEnded { work: work("child"), continuation: continuation("wake") }),
@@ -793,7 +793,7 @@ proptest! {
                 10 => Some(Event::Finish { intent: FinishIntent::Cancel, cleanup: operation("cleanup"), post_merge: None }),
                 11 => task.drain().next().cloned().map(|obligation| Event::DrainObserved { obligation }),
                 12 => Some(Event::Reopen { input: input("initial") }),
-                13 => runtime(RuntimeFact::ProcessExited { problem_card: "recovery".into() }),
+                13 => runtime(RuntimeFact::ResourceReleased { problem_card: "recovery".into() }),
                 14 => runtime(RuntimeFact::ConnectionLost { problem_card: "recovery".into() }),
                 15 => runtime(RuntimeFact::Ask { card: "second".into(), callback: CallbackId::new("second").unwrap(), reason: WaitReason::Permission }),
                 16 => runtime(RuntimeFact::CallbackAborted { callback: CallbackId::new("first").unwrap(), unheard_card: "unheard".into() }),
@@ -804,7 +804,7 @@ proptest! {
                 21 => Some(Event::Pause { card: "pause".into() }),
                 22 => Some(Event::Resume { card: "pause".into(), input: input("resume") }),
                 23 => runtime(RuntimeFact::Notification),
-                24 => Some(Event::RetireExitedExecution { problem_card: "recovery".into(), input: input("retry") }),
+                24 => Some(Event::RetireReleasedExecution { problem_card: "recovery".into(), input: input("retry") }),
                 _ => Some(Event::HandBack { delivery: "result".into(), input: input("changes") }),
             };
             let Some(event) = event else { continue };
@@ -937,19 +937,19 @@ fn a_permission_from_an_old_execution_cannot_attach_to_its_replacement() {
     let old = task.execution().unwrap().clone();
     fact(
         &mut task,
-        RuntimeFact::ProcessExited {
+        RuntimeFact::ResourceReleased {
             problem_card: "recovery".into(),
         },
     );
     apply(
         &mut task,
-        Event::RetireExitedExecution {
+        Event::RetireReleasedExecution {
             problem_card: "recovery".into(),
             input: input("retry"),
         },
     );
     admit(&mut task, "replacement");
-    fact(&mut task, RuntimeFact::Initialized);
+    fact(&mut task, RuntimeFact::ResourceAvailable);
     fact(
         &mut task,
         RuntimeFact::TurnStarted {
@@ -996,7 +996,7 @@ fn dependency_wait_survives_permission_exit_and_replacement_retirement() {
     );
     fact(
         &mut task,
-        RuntimeFact::ProcessExited {
+        RuntimeFact::ResourceReleased {
             problem_card: "recovery".into(),
         },
     );
@@ -1010,7 +1010,7 @@ fn dependency_wait_survives_permission_exit_and_replacement_retirement() {
     );
     apply(
         &mut task,
-        Event::RetireExitedExecution {
+        Event::RetireReleasedExecution {
             problem_card: "recovery".into(),
             input: input("retry"),
         },
@@ -1092,14 +1092,14 @@ fn exit_does_not_resolve_an_accepted_external_effect_or_allow_replay() {
     );
     fact(
         &mut task,
-        RuntimeFact::ProcessExited {
+        RuntimeFact::ResourceReleased {
             problem_card: "recovery".into(),
         },
     );
     assert_eq!(
         task.apply(
             task.revision(),
-            Event::RetireExitedExecution {
+            Event::RetireReleasedExecution {
                 problem_card: "recovery".into(),
                 input: input("retry")
             }
@@ -1145,13 +1145,13 @@ fn distinct_connection_and_exit_cards_are_retired_together_without_stranding_rec
     );
     fact(
         &mut task,
-        RuntimeFact::ProcessExited {
+        RuntimeFact::ResourceReleased {
             problem_card: "exit".into(),
         },
     );
     apply(
         &mut task,
-        Event::RetireExitedExecution {
+        Event::RetireReleasedExecution {
             problem_card: "exit".into(),
             input: input("retry"),
         },
@@ -1257,7 +1257,7 @@ fn answering_two_prelaunch_questions_preserves_initial_input_and_both_answers() 
         vec![&input("initial"), &input("answer-a"), &input("answer-b")]
     );
     admit(&mut task, "instance");
-    fact(&mut task, RuntimeFact::Initialized);
+    fact(&mut task, RuntimeFact::ResourceAvailable);
     fact(
         &mut task,
         RuntimeFact::TurnStarted {
@@ -1328,11 +1328,11 @@ fn drain_evidence_updates_process_activity_and_slot_projections_together() {
     apply(
         &mut task,
         Event::DrainObserved {
-            obligation: DrainObligation::Process(InstanceId::new("instance").unwrap()),
+            obligation: DrainObligation::Execution(InstanceId::new("instance").unwrap()),
         },
     );
     assert_eq!(task.phase(), TaskPhase::Finishing);
-    assert_eq!(task.process(), Some(ProcessEvidence::Exited));
+    assert_eq!(task.resource(), Some(ResourceEvidence::Released));
     assert_eq!(task.activity(), ActivityView::Resting);
     assert!(!task.holds_slot());
 }
@@ -1348,13 +1348,13 @@ fn retirement_preserves_its_input_behind_a_dependency_until_later_consumption() 
     );
     fact(
         &mut task,
-        RuntimeFact::ProcessExited {
+        RuntimeFact::ResourceReleased {
             problem_card: "recovery".into(),
         },
     );
     apply(
         &mut task,
-        Event::RetireExitedExecution {
+        Event::RetireReleasedExecution {
             problem_card: "recovery".into(),
             input: input("retry"),
         },
@@ -1371,7 +1371,7 @@ fn retirement_preserves_its_input_behind_a_dependency_until_later_consumption() 
         vec![&input("retry"), &input("resolved")]
     );
     admit(&mut task, "replacement");
-    fact(&mut task, RuntimeFact::Initialized);
+    fact(&mut task, RuntimeFact::ResourceAvailable);
     fact(
         &mut task,
         RuntimeFact::TurnStarted {
@@ -1399,13 +1399,13 @@ fn a_delivery_survives_exit_retirement_and_hand_back_without_losing_input() {
     );
     fact(
         &mut task,
-        RuntimeFact::ProcessExited {
+        RuntimeFact::ResourceReleased {
             problem_card: "recovery".into(),
         },
     );
     apply(
         &mut task,
-        Event::RetireExitedExecution {
+        Event::RetireReleasedExecution {
             problem_card: "recovery".into(),
             input: input("retry"),
         },
@@ -1489,10 +1489,10 @@ fn callback_abort_promotes_a_waiting_business_input_instead_of_inventing_unheard
 fn admission_reserves_a_slot_without_claiming_a_running_process() {
     let mut task = TaskLifecycle::planned("task".into(), input("initial")).unwrap();
     admit(&mut task, "instance");
-    assert_eq!(task.process(), Some(ProcessEvidence::Reserved));
+    assert_eq!(task.resource(), Some(ResourceEvidence::Reserved));
     assert!(task.holds_slot());
-    fact(&mut task, RuntimeFact::Initialized);
-    assert_eq!(task.process(), Some(ProcessEvidence::Running));
+    fact(&mut task, RuntimeFact::ResourceAvailable);
+    assert_eq!(task.resource(), Some(ResourceEvidence::Available));
 }
 
 #[test]
@@ -1512,13 +1512,13 @@ fn a_delivered_question_can_be_answered_and_consumed_after_exit_recovery() {
     );
     fact(
         &mut task,
-        RuntimeFact::ProcessExited {
+        RuntimeFact::ResourceReleased {
             problem_card: "recovery".into(),
         },
     );
     apply(
         &mut task,
-        Event::RetireExitedExecution {
+        Event::RetireReleasedExecution {
             problem_card: "recovery".into(),
             input: input("retry"),
         },
@@ -1536,7 +1536,7 @@ fn a_delivered_question_can_be_answered_and_consumed_after_exit_recovery() {
         vec![&input("retry"), &input("answer")]
     );
     admit(&mut task, "replacement");
-    fact(&mut task, RuntimeFact::Initialized);
+    fact(&mut task, RuntimeFact::ResourceAvailable);
     fact(
         &mut task,
         RuntimeFact::TurnStarted {
@@ -1564,7 +1564,7 @@ fn an_actual_dependency_is_a_continuation_after_an_empty_turn() {
             dependencies: vec!["upstream".into()],
         },
     );
-    fact(&mut task, RuntimeFact::Initialized);
+    fact(&mut task, RuntimeFact::ResourceAvailable);
     fact(
         &mut task,
         RuntimeFact::TurnStarted {
@@ -1583,7 +1583,7 @@ fn an_actual_dependency_is_a_continuation_after_an_empty_turn() {
     assert_eq!(task.dependencies(), vec![&TaskId::from("upstream")]);
     assert!(!task.holds_slot());
     assert!(task.cards().is_empty());
-    assert_eq!(task.process(), Some(ProcessEvidence::Running));
+    assert_eq!(task.resource(), Some(ResourceEvidence::Available));
     apply(
         &mut task,
         Event::DependenciesResolved {
@@ -1600,11 +1600,11 @@ fn exit_before_input_consumption_cannot_discard_the_initial_input_on_retirement(
         let mut task = TaskLifecycle::planned("task".into(), input("initial")).unwrap();
         admit(&mut task, "instance");
         if initialized {
-            fact(&mut task, RuntimeFact::Initialized);
+            fact(&mut task, RuntimeFact::ResourceAvailable);
         }
         fact(
             &mut task,
-            RuntimeFact::ProcessExited {
+            RuntimeFact::ResourceReleased {
                 problem_card: "recovery".into(),
             },
         );
@@ -1612,7 +1612,7 @@ fn exit_before_input_consumption_cannot_discard_the_initial_input_on_retirement(
         assert_eq!(
             task.apply(
                 task.revision(),
-                Event::RetireExitedExecution {
+                Event::RetireReleasedExecution {
                     problem_card: "recovery".into(),
                     input: input("retry")
                 }

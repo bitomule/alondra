@@ -86,11 +86,11 @@ pub enum ActivityView {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ProcessEvidence {
+pub enum ResourceEvidence {
     Reserved,
-    Running,
+    Available,
     ObservationPending,
-    Exited,
+    Released,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -127,7 +127,7 @@ pub enum Trigger {
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum DrainObligation {
-    Process(InstanceId),
+    Execution(InstanceId),
     Work(WorkId),
     Callback(CallbackId),
     Merge(OperationId),
@@ -200,7 +200,7 @@ pub enum Event {
     DrainObserved {
         obligation: DrainObligation,
     },
-    RetireExitedExecution {
+    RetireReleasedExecution {
         problem_card: InteractionId,
         input: InputId,
     },
@@ -216,7 +216,7 @@ pub enum RuntimeFact {
         callback: CallbackId,
         reason: WaitReason,
     },
-    Initialized,
+    ResourceAvailable,
     TurnStarted {
         turn: TurnId,
         trigger: Trigger,
@@ -242,7 +242,7 @@ pub enum RuntimeFact {
     ConnectionLost {
         problem_card: InteractionId,
     },
-    ProcessExited {
+    ResourceReleased {
         problem_card: InteractionId,
     },
     CallbackSettled {
@@ -356,7 +356,7 @@ impl Activity {
 struct Execution {
     stamp: ExecutionStamp,
     cursor: u64,
-    process: ProcessEvidence,
+    resource: ResourceEvidence,
     activity: Activity,
     callbacks: Vec<CallbackState>,
     effects: BTreeSet<OperationId>,
@@ -365,10 +365,10 @@ struct Execution {
 impl Execution {
     fn holds_slot(&self) -> bool {
         matches!(
-            self.process,
-            ProcessEvidence::Reserved | ProcessEvidence::ObservationPending
+            self.resource,
+            ResourceEvidence::Reserved | ResourceEvidence::ObservationPending
         ) || self.activity.owns_work()
-            || (self.process == ProcessEvidence::Running
+            || (self.resource == ResourceEvidence::Available
                 && !matches!(self.activity, Activity::Resting))
     }
 }
@@ -378,10 +378,10 @@ impl Execution {
 struct ActiveExecution(Execution);
 impl ActiveExecution {
     fn new(execution: Execution) -> Result<Self, Refusal> {
-        let reserved = execution.process == ProcessEvidence::Reserved
+        let reserved = execution.resource == ResourceEvidence::Reserved
             && matches!(execution.activity, Activity::Launching(_));
         if !reserved
-            && (execution.process != ProcessEvidence::Running
+            && (execution.resource != ResourceEvidence::Available
                 || matches!(execution.activity, Activity::Resting))
         {
             return Err(Refusal::InvalidState);
@@ -532,7 +532,7 @@ impl TaskLifecycle {
     }
     pub fn activity(&self) -> ActivityView {
         self.session().map_or(ActivityView::None, |execution| {
-            if execution.process == ProcessEvidence::Exited {
+            if execution.resource == ResourceEvidence::Released {
                 if execution.activity.owns_work() {
                     ActivityView::OwnWork
                 } else {
@@ -546,15 +546,15 @@ impl TaskLifecycle {
     pub fn cursor(&self) -> Option<u64> {
         self.session().map(|execution| execution.cursor)
     }
-    pub fn process(&self) -> Option<ProcessEvidence> {
-        self.session().map(|execution| execution.process)
+    pub fn resource(&self) -> Option<ResourceEvidence> {
+        self.session().map(|execution| execution.resource)
     }
     pub fn holds_slot(&self) -> bool {
         if let State::Finishing(finishing) = &self.state {
             return finishing.remaining.iter().any(|obligation| {
                 matches!(
                     obligation,
-                    DrainObligation::Process(_)
+                    DrainObligation::Execution(_)
                         | DrainObligation::Work(_)
                         | DrainObligation::PostMerge(_)
                 )
@@ -682,7 +682,7 @@ fn progress_with_input(
             }))
         }
         Session::Present(execution) => {
-            if execution.process != ProcessEvidence::Running {
+            if execution.resource != ResourceEvidence::Available {
                 return Err(Refusal::InvalidState);
             }
             queue_input(execution, input)?;

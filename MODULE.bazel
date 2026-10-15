@@ -50,6 +50,11 @@ crate.from_cargo(
         "//crates/foundation:Cargo.toml",
         "//crates/domain:Cargo.toml",
         "//crates/agent-protocol:Cargo.toml",
+        "//crates/store:Cargo.toml",
+        "//crates/provider-contract:Cargo.toml",
+        "//crates/agent-application:Cargo.toml",
+        "//crates/agent-runtime:Cargo.toml",
+        "//crates/provider-claude:Cargo.toml",
         "//crates/alondrad:Cargo.toml",
         "//crates/e2e:Cargo.toml",
         "//crates/alondra:Cargo.toml",
@@ -90,3 +95,37 @@ http_file(
     sha256 = "681abdbd903ad86848571dbfbbf5540733da541584edae6592e0cabef3c3b856",
     url = "https://raw.githubusercontent.com/n0-computer/iroh-ffi/v1.1.0/IrohLib/Sources/IrohLib/IrohLib.swift",
 )
+
+# The SDK host is isolated from Rust targets and never uses a user's JS installation.
+bazel_dep(name = "aspect_rules_js", version = "3.5.1")
+bazel_dep(name = "aspect_rules_ts", version = "3.10.1")
+bazel_dep(name = "rules_nodejs", version = "6.7.6")
+
+node = use_extension("@rules_nodejs//nodejs:extensions.bzl", "node")
+node.toolchain(node_version = "24.19.0")
+use_repo(node, "nodejs_toolchains")
+register_toolchains("@nodejs_toolchains//:all")
+
+host_pnpm = use_extension("@aspect_rules_js//npm:extensions.bzl", "pnpm")
+host_pnpm.pnpm(
+    name = "host_pnpm",
+    pnpm_version = "11.25.0",
+    pnpm_version_integrity = "sha512-XN6SW08HX3Jetx+64YpC/+eEUkeJ8ZthxzHLhyHsKKruFg4BqNWvT+2ypCzb8wDv4j2zVrDUoXtNY+EfirfJVg==",
+)
+use_repo(host_pnpm, "host_pnpm")
+
+host_npm = use_extension("@aspect_rules_js//npm:extensions.bzl", "npm")
+host_npm.npm_translate_lock(
+    name = "host_npm",
+    pnpm_lock = "//agent-host:pnpm-lock.yaml",
+    no_optional = True,
+    run_lifecycle_hooks = False,
+    update_pnpm_lock = False,
+    use_home_npmrc = False,
+    use_pnpm = "@host_pnpm//:package/bin/pnpm.cjs",
+)
+use_repo(host_npm, "host_npm")
+
+typescript = use_extension("@aspect_rules_ts//ts:extensions.bzl", "typescript")
+typescript.deps(version = "5.9.3", integrity = "sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw==")
+use_repo(typescript, "npm_typescript")

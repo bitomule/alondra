@@ -1,0 +1,20 @@
+[package]
+name = "alondra-agent-runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+alondra-store.workspace = true
+libc.workspace = true
+rustix = { version = "1.1.5", features = ["process", "event", "net"] }
+sha2.workspace = true
+
+[dev-dependencies]
+alondra-domain.workspace = true
+alondra-foundation.workspace = true
+alondra-provider-contract.workspace = true
+rusqlite.workspace = true
+tempfile.workspace = true
+rustix = { version = "1.1.5", features = ["fs"] }

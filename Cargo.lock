@@ -92,13 +92,42 @@ dependencies = [
 ]
 
 [[package]]
+name = "alondra-agent-application"
+version = "0.2.85"
+dependencies = [
+ "alondra-domain",
+ "alondra-foundation",
+ "alondra-provider-contract",
+ "alondra-store",
+ "rusqlite",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "alondra-agent-protocol"
 version = "0.2.85"
 dependencies = [
  "alondra-foundation",
+ "hmac 0.12.1",
  "serde",
  "serde_json",
  "sha2 0.10.9",
+]
+
+[[package]]
+name = "alondra-agent-runtime"
+version = "0.2.85"
+dependencies = [
+ "alondra-domain",
+ "alondra-foundation",
+ "alondra-provider-contract",
+ "alondra-store",
+ "libc",
+ "rusqlite",
+ "rustix 1.1.5",
+ "sha2 0.10.9",
+ "tempfile",
 ]
 
 [[package]]
@@ -146,6 +175,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "alondra-provider-claude"
+version = "0.2.85"
+dependencies = [
+ "alondra-agent-application",
+ "alondra-agent-protocol",
+ "alondra-agent-runtime",
+ "alondra-domain",
+ "alondra-foundation",
+ "alondra-provider-contract",
+ "alondra-store",
+ "getrandom 0.4.3",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+]
+
+[[package]]
+name = "alondra-provider-contract"
+version = "0.2.85"
+dependencies = [
+ "alondra-foundation",
+]
+
+[[package]]
 name = "alondra-relay"
 version = "0.2.85"
 dependencies = [
@@ -172,11 +227,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "alondra-store"
+version = "0.2.85"
+dependencies = [
+ "alondra-domain",
+ "alondra-foundation",
+ "alondra-provider-contract",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+]
+
+[[package]]
 name = "alondrad"
 version = "0.2.85"
 dependencies = [
  "alondra-core",
+ "alondra-domain",
  "alondra-e2e",
+ "alondra-foundation",
+ "alondra-provider-contract",
+ "alondra-store",
  "anyhow",
  "axum",
  "base64 0.23.1",

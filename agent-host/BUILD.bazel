@@ -1,0 +1,150 @@
+load(":toolchain.bzl", "pinned_node")
+load("@host_npm//:defs.bzl", "npm_link_all_packages")
+load("@aspect_rules_ts//ts:defs.bzl", "ts_project")
+load("@aspect_rules_js//js:defs.bzl", "js_binary", "js_test", "js_run_binary")
+
+package(default_visibility = ["//visibility:public"])
+npm_link_all_packages(name = "node_modules")
+exports_files(["pnpm-lock.yaml", "package.json"])
+
+ts_project(
+    name = "host_lib",
+    srcs = ["session.ts", "main.ts", "frame.ts", "bootstrap.ts", "channel.ts", "diagnostics.ts", "journal.ts", "ownership.ts", "persistent.ts", "persistent-main.ts", "persistent-fixture-main.ts"],
+    tsconfig = "tsconfig.json",
+    declaration = True,
+    transpiler = "tsc",
+    deps = [
+        ":node_modules/@anthropic-ai/claude-agent-sdk",
+        ":node_modules/@anthropic-ai/sdk",
+        ":node_modules/@modelcontextprotocol/sdk",
+        ":node_modules/@types/node",
+        ":node_modules/zod",
+    ],
+)
+
+js_test(
+    name = "sdk_test",
+    no_copy_to_bin = ["//crates/agent-protocol:wire_fixtures"],
+    entry_point = "session.test.mjs",
+    data = [":host_lib", "fake-claude.mjs", "//crates/agent-protocol:fixtures/start.json", ":node_modules/@anthropic-ai/claude-agent-sdk", ":node_modules/@modelcontextprotocol/sdk", ":node_modules/zod"],
+)
+
+js_binary(
+    name = "bundle_tool",
+    entry_point = "bundle.mjs",
+    data = [":node_modules/esbuild", ":node_modules/@esbuild/darwin-arm64"],
+)
+js_run_binary(
+    name = "bundle",
+    tool = ":bundle_tool",
+    srcs = [":host_lib", "main.ts", "session.ts", ":node_modules/@anthropic-ai/claude-agent-sdk", ":node_modules/@modelcontextprotocol/sdk", ":node_modules/zod"],
+    outs = ["host.cjs", "host.meta.json"],
+    args = ["$(location main.ts)", "$(location host.cjs)", "$(location host.meta.json)"],
+)
+js_binary(
+    name = "sea_tool",
+    entry_point = "sea.mjs",
+    data = [":node_modules/postject"],
+)
+js_run_binary(
+    name = "sea",
+    tool = ":sea_tool",
+    srcs = ["host.cjs"],
+    outs = ["host", "host.manifest.json"],
+    args = ["$(location host.cjs)", "$(location host)", "$(location host.manifest.json)"],
+)
+js_test(
+    name = "sea_test",
+    entry_point = "sea.test.mjs",
+    data = [":sea", ":bundle", "fake-claude.py"],
+)
+
+js_test(
+    name = "frame_test",
+    no_copy_to_bin = ["//crates/agent-protocol:wire_fixtures"],
+    entry_point = "frame.test.mjs",
+    data = [
+        ":host_lib",
+        ":node_modules/zod",
+        "//crates/agent-protocol:fixtures/decision.json",
+        "//crates/agent-protocol:fixtures/event.json",
+        "//crates/agent-protocol:fixtures/hello.json",
+        "//crates/agent-protocol:fixtures/integer-tokens.json",
+        "//crates/agent-protocol:fixtures/nesting-depth.json",
+        "//crates/agent-protocol:fixtures/opaque-objects.json",
+        "//crates/agent-protocol:fixtures/receipt.json",
+        "//crates/agent-protocol:fixtures/sdk-errors.json",
+        "//crates/agent-protocol:fixtures/start.json",
+    ],
+)
+
+# Future real Rust controller tests consume these executable artifacts, not main.ts's JSONline probe.
+js_run_binary(
+    name = "persistent_bundle",
+    tool = ":bundle_tool",
+    srcs = [":host_lib", "persistent-main.ts"],
+    outs = ["persistent.cjs", "persistent.meta.json"],
+    args = ["$(location persistent-main.ts)", "$(location persistent.cjs)", "$(location persistent.meta.json)"],
+)
+js_run_binary(
+    name = "persistent_fixture_bundle",
+    tool = ":bundle_tool",
+    srcs = [":host_lib", "persistent-fixture-main.ts"],
+    outs = ["persistent-fixture.cjs", "persistent-fixture.meta.json"],
+    args = ["$(location persistent-fixture-main.ts)", "$(location persistent-fixture.cjs)", "$(location persistent-fixture.meta.json)"],
+)
+exports_files(["persistent-fake-claude.py"])
+js_test(
+    name = "ownership_test",
+    no_copy_to_bin = ["//crates/agent-protocol:wire_fixtures"],
+    entry_point = "ownership.test.mjs",
+    data = [":host_lib", "//crates/agent-protocol:fixtures/owner-proof.json", "//crates/agent-protocol:fixtures/attach.json", "//crates/agent-protocol:fixtures/host-proof.json", "//crates/agent-protocol:fixtures/attached.json"],
+)
+js_test(
+    name = "journal_test",
+    no_copy_to_bin = ["//crates/agent-protocol:wire_fixtures"],
+    entry_point = "journal.test.mjs",
+    data = [":host_lib", "//crates/agent-protocol:fixtures/start.json", "//crates/agent-protocol:fixtures/event.json"],
+)
+js_test(
+    name = "channel_test",
+    no_copy_to_bin = ["//crates/agent-protocol:wire_fixtures"],
+    entry_point = "channel.test.mjs",
+    data = [":host_lib", "//crates/agent-protocol:fixtures/hello.json"],
+)
+
+js_test(
+    name = "sdk_cleanup_test",
+    entry_point = "session-cleanup.test.mjs",
+    data = [":host_lib", "fake-claude.mjs", ":node_modules/@anthropic-ai/claude-agent-sdk", ":node_modules/@modelcontextprotocol/sdk", ":node_modules/zod"],
+)
+js_test(
+    name = "host_stop_test",
+    no_copy_to_bin = ["//crates/agent-protocol:wire_fixtures"],
+    entry_point = "host-stop.test.mjs",
+    data = [":host_lib", "host-stop-fixture.mjs", "persistent-fake-claude.py", "//crates/agent-protocol:fixtures/start.json", ":node_modules/@anthropic-ai/claude-agent-sdk", ":node_modules/@modelcontextprotocol/sdk", ":node_modules/zod"],
+)
+
+pinned_node(
+    name = "pinned_node",
+    visibility = ["//crates:__subpackages__", "//tests:__subpackages__"],
+)
+
+js_test(
+    name = "sdk_descendant_test",
+    entry_point = "session-descendant.test.mjs",
+    data = [":host_lib", "descendant-fake-claude.py", ":node_modules/@anthropic-ai/claude-agent-sdk", ":node_modules/@modelcontextprotocol/sdk", ":node_modules/zod"],
+)
+
+js_test(
+    name = "host_flush_test",
+    no_copy_to_bin = ["//crates/agent-protocol:wire_fixtures"],
+    entry_point = "flush.test.mjs",
+    data = [":host_lib", "flush-fixture.mjs", "//crates/agent-protocol:fixtures/start.json", ":node_modules/@anthropic-ai/claude-agent-sdk", ":node_modules/@modelcontextprotocol/sdk", ":node_modules/zod"],
+)
+
+js_test(
+    name = "sdk_retry_test",
+    entry_point = "session-retry.test.mjs",
+    data = [":host_lib", "fake-claude.mjs", ":node_modules/@anthropic-ai/claude-agent-sdk", ":node_modules/@modelcontextprotocol/sdk", ":node_modules/zod"],
+)

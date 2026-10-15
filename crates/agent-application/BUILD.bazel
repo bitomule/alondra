@@ -1,0 +1,22 @@
+load("@crates//:defs.bzl", "all_crate_deps")
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+rust_library(
+    name = "agent_application",
+    srcs = ["src/lib.rs"],
+    crate_name = "alondra_agent_application",
+    edition = "2024",
+    version = "0.1.0",
+    visibility = ["//crates:__subpackages__"],
+    deps = ["//crates/domain:domain", "//crates/foundation:foundation", "//crates/provider-contract:provider_contract", "//crates/store:store"] + all_crate_deps(normal = True),
+)
+
+rust_test(
+    name = "remote_worker_test",
+    crate_root = "tests/remote_worker.rs",
+    srcs = ["tests/remote_worker.rs", "//crates:test_support.rs"],
+    compile_data = ["//crates/alondrad:src/domain_store/schema.sql"],
+    edition = "2024",
+    env = {"HOME": "."},
+    deps = [":agent_application", "//crates/domain:domain", "//crates/foundation:foundation", "//crates/provider-contract:provider_contract", "//crates/store:store"] + all_crate_deps(normal = True, normal_dev = True),
+)

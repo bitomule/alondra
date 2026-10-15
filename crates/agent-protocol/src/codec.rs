@@ -106,6 +106,28 @@ impl Write for CappedBuffer {
     }
 }
 
+/// One bounded payload and its validated decoding from the same transport read.
+/// This is correlation evidence, never execution or ownership authority.
+pub struct ReceivedFrame {
+    frame: Frame,
+    payload: Vec<u8>,
+    digest: String,
+}
+impl ReceivedFrame {
+    pub fn frame(&self) -> &Frame {
+        &self.frame
+    }
+    pub fn payload(&self) -> &[u8] {
+        &self.payload
+    }
+    pub fn digest(&self) -> &str {
+        &self.digest
+    }
+    pub fn into_parts(self) -> (Frame, Vec<u8>, String) {
+        (self.frame, self.payload, self.digest)
+    }
+}
+
 pub struct FramedReader<R> {
     reader: R,
     failed: bool,
@@ -118,11 +140,14 @@ impl<R: Read> FramedReader<R> {
         }
     }
     pub fn read(&mut self) -> Result<Option<Frame>, Error> {
-        self.read_with_digest()
-            .map(|frame| frame.map(|(frame, _)| frame))
+        self.read_received().map(|frame| frame.map(|frame| frame.frame))
     }
     /// The digest covers the received bytes, preserving sender key order and spacing.
     pub fn read_with_digest(&mut self) -> Result<Option<(Frame, String)>, Error> {
+        self.read_received()
+            .map(|frame| frame.map(|frame| (frame.frame, frame.digest)))
+    }
+    pub fn read_received(&mut self) -> Result<Option<ReceivedFrame>, Error> {
         if self.failed {
             return Err(Error::Poisoned);
         }
@@ -132,7 +157,7 @@ impl<R: Read> FramedReader<R> {
         }
         result
     }
-    fn read_inner(&mut self) -> Result<Option<(Frame, String)>, Error> {
+    fn read_inner(&mut self) -> Result<Option<ReceivedFrame>, Error> {
         let mut header = [0; 4];
         loop {
             match self.reader.read(&mut header[..1]) {
@@ -166,7 +191,12 @@ impl<R: Read> FramedReader<R> {
         })?;
         let frame: Frame = serde_json::from_slice(&bytes).map_err(Error::Json)?;
         frame.validate()?;
-        Ok(Some((frame, fingerprint(&bytes))))
+        let digest = fingerprint(&bytes);
+        Ok(Some(ReceivedFrame {
+            frame,
+            payload: bytes,
+            digest,
+        }))
     }
 }
 

@@ -22,3 +22,9 @@ rust_test(
 )
 
 exports_files(glob(["fixtures/*.json"]))
+
+filegroup(
+    name = "wire_fixtures",
+    srcs = glob(["fixtures/*.json"]),
+    visibility = ["//agent-host:__pkg__"],
+)

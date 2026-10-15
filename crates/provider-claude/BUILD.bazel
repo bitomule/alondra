@@ -1,0 +1,53 @@
+load("@crates//:defs.bzl", "all_crate_deps")
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+rust_library(
+    name = "provider_claude",
+    srcs = glob(["src/*.rs"]) + ["//crates:test_support.rs"],
+    compile_data = ["//crates/alondrad:src/domain_store/schema.sql"],
+    crate_name = "alondra_provider_claude",
+    edition = "2024",
+    version = "0.1.0",
+    visibility = ["//crates:__subpackages__"],
+    deps = [
+        "//crates/agent-protocol:agent_protocol",
+        "//crates/agent-runtime:agent_runtime",
+        "//crates/agent-application:agent_application",
+        "//crates/provider-contract:provider_contract",
+        "//crates/foundation:foundation",
+        "//crates/domain:domain",
+        "//crates/store:store",
+    ] + all_crate_deps(normal = True),
+)
+
+rust_test(
+    name = "provider_claude_test",
+    crate = ":provider_claude",
+    compile_data = ["//crates/agent-protocol:fixtures/hello.json", "//crates/alondrad:src/domain_store/schema.sql"],
+    deps = all_crate_deps(normal_dev = True),
+    edition = "2024",
+    env = {"HOME": "."},
+)
+
+rust_test(
+    name = "sdk_worker_test",
+    crate = ":provider_claude",
+    crate_features = ["sdk_fixture"],
+    edition = "2024",
+    deps = all_crate_deps(normal_dev = True),
+    compile_data = [
+        "//crates/alondrad:src/domain_store/schema.sql",
+        "//crates/agent-protocol:fixtures/hello.json",
+    ],
+    data = [
+        "//agent-host:pinned_node",
+        "//agent-host:persistent.cjs",
+        "//agent-host:persistent-fake-claude.py",
+    ],
+    env = {
+        "HOME": ".",
+        "FIXTURE_NODE": "$(rootpath //agent-host:pinned_node)",
+        "FIXTURE_HOST": "$(rootpath //agent-host:persistent.cjs)",
+        "FIXTURE_NATIVE": "$(rootpath //agent-host:persistent-fake-claude.py)",
+    },
+)

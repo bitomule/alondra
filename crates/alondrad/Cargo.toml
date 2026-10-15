@@ -36,6 +36,10 @@ objc2 = "0.6.4"
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["NSDate", "NSTimeZone", "NSNotification", "NSString", "NSOperation", "block2"] }
 
 [dev-dependencies]
+alondra-domain.workspace = true
+alondra-foundation.workspace = true
+alondra-provider-contract.workspace = true
+alondra-store.workspace = true
 h2 = "0.4.19"
 tempfile.workspace = true
 

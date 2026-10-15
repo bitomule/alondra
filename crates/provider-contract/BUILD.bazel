@@ -1,0 +1,11 @@
+load("@rules_rust//rust:defs.bzl", "rust_library")
+
+rust_library(
+    name = "provider_contract",
+    srcs = ["src/lib.rs"],
+    crate_name = "alondra_provider_contract",
+    edition = "2024",
+    version = "0.1.0",
+    visibility = ["//crates:__subpackages__"],
+    deps = ["//crates/foundation:foundation"],
+)

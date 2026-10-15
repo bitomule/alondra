@@ -918,3 +918,421 @@ fn outgoing_depth_is_bounded_before_transport_or_correlation_mutation() {
         "unbounded outgoing depth: {mismatches:?}"
     );
 }
+
+const CHALLENGE: &[u8] = include_bytes!("../fixtures/challenge.json");
+const ATTACH: &[u8] = include_bytes!("../fixtures/attach.json");
+const ATTACHED: &[u8] = include_bytes!("../fixtures/attached.json");
+const ACKNOWLEDGE: &[u8] = include_bytes!("../fixtures/acknowledge.json");
+const OWNER_PROOF: &str = include_str!("../fixtures/owner-proof.json");
+
+fn attach() -> Attach {
+    match frame(ATTACH).body {
+        Body::Attach(attach) => attach,
+        _ => panic!("fixture attach"),
+    }
+}
+
+#[test]
+fn ownership_wire_golden_frames_roundtrip_without_changing_commands() {
+    for bytes in [CHALLENGE, ATTACH, ATTACHED, ACKNOWLEDGE] {
+        let expected = frame(bytes);
+        expected.validate().unwrap();
+        let encoded = encode(&expected).unwrap();
+        assert_eq!(&encoded[4..], bytes, "ownership fixture bytes changed");
+        assert_eq!(
+            FramedReader::new(Cursor::new(encoded)).read().unwrap(),
+            Some(expected)
+        );
+    }
+    assert_eq!(
+        command_digest(&command()).unwrap(),
+        "4cb067672d9a45e3f61fbdd00612a2b8cb400441f7ea6482c028513ce8a45a2b"
+    );
+}
+
+#[test]
+fn ownership_proof_matches_independent_unicode_golden_and_rejects_wrong_secret() {
+    let fixture: Value = serde_json::from_str(OWNER_PROOF).unwrap();
+    let secret = std::array::from_fn(|index| index as u8);
+    let claim = attach();
+    assert_eq!(
+        fixture["fixture_secret_hex"],
+        "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+    );
+    assert_eq!(claim.fence.profile_id, "perfil-東京");
+    assert_eq!(claim.fence.account_id, "account/é");
+    assert_eq!(owner_proof(&secret, &claim).unwrap(), fixture["proof"]);
+    verify_owner_proof(&secret, &claim).unwrap();
+    assert!(matches!(
+        verify_owner_proof(&[0; 32], &claim),
+        Err(Error::Invalid("owner proof"))
+    ));
+    let mut template = claim;
+    template.proof.clear();
+    assert_eq!(owner_proof(&secret, &template).unwrap(), fixture["proof"]);
+    assert!(verify_owner_proof(&secret, &template).is_err());
+}
+
+#[test]
+fn ownership_proof_authenticates_every_claim_segment_and_tag() {
+    let secret = std::array::from_fn(|index| index as u8);
+    let original: Value = serde_json::from_slice(ATTACH).unwrap();
+    for pointer in [
+        "/body/nonce",
+        "/body/host_instance_id",
+        "/body/owner_generation",
+        "/body/fence/profile_id",
+        "/body/fence/account_id",
+        "/body/fence/data_epoch",
+        "/body/fence/host_id",
+        "/body/execution/task_id",
+        "/body/execution/agent_id",
+        "/body/execution/conversation_id",
+        "/body/execution/process_instance_id",
+        "/body/execution/generation",
+        "/body/host_release",
+        "/body/host_sha256",
+        "/body/executable_sha256",
+        "/body/sdk_version",
+        "/body/proof",
+    ] {
+        let mut value = original.clone();
+        let field = value.pointer_mut(pointer).unwrap();
+        *field = if let Some(number) = field.as_u64() {
+            json!(number + 1)
+        } else if pointer.ends_with("sha256")
+            || pointer.ends_with("nonce")
+            || pointer.ends_with("proof")
+        {
+            json!("a".repeat(64))
+        } else {
+            json!(format!("{}x", field.as_str().unwrap()))
+        };
+        let candidate: Frame = serde_json::from_value(value).unwrap();
+        candidate.validate().unwrap();
+        let Body::Attach(claim) = candidate.body else {
+            panic!("attach");
+        };
+        assert!(
+            matches!(
+                verify_owner_proof(&secret, &claim),
+                Err(Error::Invalid("owner proof"))
+            ),
+            "unauthenticated segment: {pointer}"
+        );
+    }
+    let mut first = attach();
+    first.fence.profile_id = "ab".into();
+    first.fence.account_id = "c".into();
+    let mut second = first.clone();
+    second.fence.profile_id = "a".into();
+    second.fence.account_id = "bc".into();
+    assert_ne!(
+        owner_proof(&secret, &first).unwrap(),
+        owner_proof(&secret, &second).unwrap(),
+        "segment boundaries were lost"
+    );
+}
+
+fn assert_rejected_ownership_value(value: Value) {
+    let payload = serde_json::to_vec(&value).unwrap();
+    let mut reader = FramedReader::new(Cursor::new(raw_frame(&payload)));
+    assert!(reader.read().is_err(), "ownership shape accepted: {value}");
+    assert!(matches!(reader.read(), Err(Error::Poisoned)));
+}
+
+#[test]
+fn ownership_envelopes_reject_unknown_missing_and_unbounded_claims() {
+    for bytes in [CHALLENGE, ATTACH, ATTACHED, ACKNOWLEDGE] {
+        let original: Value = serde_json::from_slice(bytes).unwrap();
+        for key in original["body"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .filter(|key| *key != "type")
+        {
+            let mut missing = original.clone();
+            missing["body"].as_object_mut().unwrap().remove(key);
+            assert_rejected_ownership_value(missing);
+        }
+        let mut extra = original.clone();
+        extra["body"]["unexpected"] = json!(true);
+        assert_rejected_ownership_value(extra);
+        for invalid in [
+            json!(""),
+            json!("a".repeat(257)),
+            json!("bad\0identity"),
+            Value::Null,
+        ] {
+            let mut candidate = original.clone();
+            candidate["body"]["host_instance_id"] = invalid;
+            assert_rejected_ownership_value(candidate);
+        }
+        for key in ["nonce", "host_sha256", "executable_sha256", "proof"] {
+            if original["body"].get(key).is_none() {
+                continue;
+            }
+            for invalid in [
+                json!("a".repeat(63)),
+                json!("A".repeat(64)),
+                json!("g".repeat(64)),
+                Value::Null,
+            ] {
+                let mut candidate = original.clone();
+                candidate["body"][key] = invalid;
+                assert_rejected_ownership_value(candidate);
+            }
+        }
+        for key in ["owner_generation", "cursor"] {
+            if original["body"].get(key).is_none() {
+                continue;
+            }
+            for invalid in [
+                json!(0),
+                json!(MAX_SAFE_INTEGER + 1),
+                json!(-1),
+                Value::Null,
+            ] {
+                let mut candidate = original.clone();
+                candidate["body"][key] = invalid;
+                assert_rejected_ownership_value(candidate);
+            }
+            let mut boundary = original.clone();
+            boundary["body"][key] = json!(MAX_SAFE_INTEGER);
+            let bytes = serde_json::to_vec(&boundary).unwrap();
+            FramedReader::new(Cursor::new(raw_frame(&bytes)))
+                .read()
+                .unwrap()
+                .unwrap();
+        }
+    }
+}
+
+#[test]
+fn ownership_integer_lexemes_and_duplicate_fields_fail_closed() {
+    for (bytes, field, number) in [
+        (ATTACH, "owner_generation", "2"),
+        (ATTACHED, "owner_generation", "2"),
+        (ACKNOWLEDGE, "owner_generation", "2"),
+        (ACKNOWLEDGE, "cursor", "1"),
+    ] {
+        let original = std::str::from_utf8(bytes).unwrap();
+        let token = format!("\"{field}\":{number}");
+        assert!(original.contains(&token));
+        for invalid in [
+            format!("{number}.0"),
+            format!("{number}e0"),
+            "9007199254740991.1".into(),
+            "-0".into(),
+        ] {
+            let payload = original.replace(&token, &format!("\"{field}\":{invalid}"));
+            let mut reader = FramedReader::new(Cursor::new(raw_frame(payload.as_bytes())));
+            assert!(
+                matches!(reader.read(), Err(Error::Json(_))),
+                "noncanonical {field}: {invalid}"
+            );
+            assert!(matches!(reader.read(), Err(Error::Poisoned)));
+        }
+        let payload = original.replace(&token, &format!("{token},{token}"));
+        let mut reader = FramedReader::new(Cursor::new(raw_frame(payload.as_bytes())));
+        let Err(Error::Json(error)) = reader.read() else {
+            panic!("duplicate {field}");
+        };
+        assert!(error.to_string().contains("duplicate field"));
+        assert!(matches!(reader.read(), Err(Error::Poisoned)));
+    }
+}
+#[test]
+fn owner_proof_rejects_invalid_claim_fields_before_authentication() {
+    let secret = std::array::from_fn(|index| index as u8);
+    let original: Value = serde_json::from_slice(ATTACH).unwrap();
+    for (pointer, invalid) in [
+        ("/body/fence/profile_id", json!("")),
+        ("/body/execution/generation", json!(0)),
+        ("/body/host_instance_id", json!("")),
+        ("/body/nonce", json!("A".repeat(64))),
+        ("/body/owner_generation", json!(0)),
+        ("/body/host_release", json!("x".repeat(257))),
+        ("/body/host_sha256", json!("x".repeat(64))),
+        ("/body/executable_sha256", json!("x".repeat(64))),
+        ("/body/sdk_version", json!("x".repeat(65))),
+    ] {
+        let mut value = original.clone();
+        *value.pointer_mut(pointer).unwrap() = invalid;
+        let candidate: Frame = serde_json::from_value(value).unwrap();
+        let Body::Attach(claim) = candidate.body else {
+            panic!("attach");
+        };
+        assert!(
+            owner_proof(&secret, &claim).is_err(),
+            "invalid proof claim: {pointer}"
+        );
+        assert!(verify_owner_proof(&secret, &claim).is_err());
+    }
+}
+const HOST_PROOF: &str = include_str!("../fixtures/host-proof.json");
+
+fn attached() -> Attached {
+    match frame(ATTACHED).body {
+        Body::Attached(attached) => attached,
+        _ => panic!("fixture attached"),
+    }
+}
+
+#[test]
+fn host_response_matches_independent_golden_and_rejects_reflection() {
+    let secret = std::array::from_fn(|index| index as u8);
+    let pending = attach();
+    let expected = attached();
+    let fixture: Value = serde_json::from_str(HOST_PROOF).unwrap();
+    assert_eq!(host_proof(&secret, &pending).unwrap(), fixture["proof"]);
+    assert_eq!(expected.proof, fixture["proof"]);
+    verify_host_proof(&secret, &pending, &expected).unwrap();
+    let mut reflection = expected.clone();
+    reflection.proof = pending.proof.clone();
+    assert!(matches!(
+        verify_host_proof(&secret, &pending, &reflection),
+        Err(Error::Invalid("host proof"))
+    ));
+    assert!(verify_host_proof(&[0; 32], &pending, &expected).is_err());
+    let mut invalid_request = pending;
+    invalid_request.proof = "a".repeat(64);
+    assert!(matches!(
+        host_proof(&secret, &invalid_request),
+        Err(Error::Invalid("owner proof"))
+    ));
+    assert!(matches!(
+        verify_host_proof(&secret, &invalid_request, &expected),
+        Err(Error::Invalid("owner proof"))
+    ));
+}
+
+#[test]
+fn host_response_rejects_replay_against_changed_pending_claim() {
+    let secret = std::array::from_fn(|index| index as u8);
+    let original: Value = serde_json::from_slice(ATTACH).unwrap();
+    for pointer in [
+        "/body/nonce",
+        "/body/host_instance_id",
+        "/body/owner_generation",
+        "/body/fence/profile_id",
+        "/body/fence/account_id",
+        "/body/fence/data_epoch",
+        "/body/fence/host_id",
+        "/body/execution/task_id",
+        "/body/execution/agent_id",
+        "/body/execution/conversation_id",
+        "/body/execution/process_instance_id",
+        "/body/execution/generation",
+        "/body/host_release",
+        "/body/host_sha256",
+        "/body/executable_sha256",
+        "/body/sdk_version",
+    ] {
+        let mut value = original.clone();
+        let field = value.pointer_mut(pointer).unwrap();
+        *field = if let Some(number) = field.as_u64() {
+            json!(number + 1)
+        } else if pointer.ends_with("sha256") || pointer.ends_with("nonce") {
+            json!("a".repeat(64))
+        } else {
+            json!(format!("{}x", field.as_str().unwrap()))
+        };
+        let candidate: Frame = serde_json::from_value(value).unwrap();
+        let Body::Attach(mut pending) = candidate.body else {
+            panic!("attach");
+        };
+        pending.proof = owner_proof(&secret, &pending).unwrap();
+        verify_owner_proof(&secret, &pending).unwrap();
+        // Match public response identity so only its obsolete MAC can reject it.
+        let mut replay = attached();
+        replay.fence = pending.fence.clone();
+        replay.execution = pending.execution.clone();
+        replay.host_instance_id = pending.host_instance_id.clone();
+        replay.owner_generation = pending.owner_generation;
+        replay.validate().unwrap();
+        assert!(
+            matches!(
+                verify_host_proof(&secret, &pending, &replay),
+                Err(Error::Invalid("host proof"))
+            ),
+            "replayed pending segment: {pointer}"
+        );
+    }
+}
+
+#[test]
+fn host_response_compares_complete_received_identity_to_own_pending_request() {
+    let secret = std::array::from_fn(|index| index as u8);
+    let pending = attach();
+    let original: Value = serde_json::from_slice(ATTACHED).unwrap();
+    for pointer in [
+        "/body/fence/profile_id",
+        "/body/fence/account_id",
+        "/body/fence/data_epoch",
+        "/body/fence/host_id",
+        "/body/execution/task_id",
+        "/body/execution/agent_id",
+        "/body/execution/conversation_id",
+        "/body/execution/process_instance_id",
+        "/body/execution/generation",
+        "/body/host_instance_id",
+        "/body/owner_generation",
+    ] {
+        let mut value = original.clone();
+        let field = value.pointer_mut(pointer).unwrap();
+        *field = if let Some(number) = field.as_u64() {
+            json!(number + 1)
+        } else {
+            json!(format!("{}x", field.as_str().unwrap()))
+        };
+        let candidate: Frame = serde_json::from_value(value).unwrap();
+        candidate.validate().unwrap();
+        let Body::Attached(received) = candidate.body else {
+            panic!("attached");
+        };
+        let result = verify_host_proof(&secret, &pending, &received);
+        if pointer.contains("/fence/") {
+            assert!(matches!(result, Err(Error::FenceMismatch)), "{pointer}");
+        } else if pointer.contains("/execution/") {
+            assert!(matches!(result, Err(Error::ExecutionMismatch)), "{pointer}");
+        } else {
+            assert!(matches!(result, Err(Error::HostMismatch)), "{pointer}");
+        }
+    }
+}
+
+#[test]
+fn received_frame_captures_exact_sender_payload_and_digest_from_one_read() {
+    use sha2::{Digest, Sha256};
+    let mut value: Value = serde_json::from_slice(START).unwrap();
+    value["body"]["action"]["prompt"] = json!("café 東京 / quoted \"text\"");
+    let expected: Frame = serde_json::from_value(value.clone()).unwrap();
+    let pretty = serde_json::to_string_pretty(&value).unwrap();
+    let escaped = pretty.replace('é', "\\u00e9").replace('/', "\\/");
+    let payload = format!(" \n{escaped}\t").into_bytes();
+    let mut wire = raw_frame(&payload);
+    wire.extend(raw_frame(HELLO));
+    let mut reader = FramedReader::new(Cursor::new(wire));
+    let received = reader.read_received().unwrap().unwrap();
+    assert_eq!(received.frame(), &expected);
+    assert_eq!(received.payload(), payload);
+    assert_eq!(received.digest(), format!("{:x}", Sha256::digest(&payload)));
+    let encoded = encode(&expected).unwrap();
+    assert_ne!(received.payload(), &encoded[4..]);
+    assert_ne!(
+        received.digest(),
+        format!("{:x}", Sha256::digest(&encoded[4..]))
+    );
+    let (decoded, original_bytes, original_digest) = received.into_parts();
+    assert_eq!(decoded, expected);
+    assert_eq!(original_bytes, payload);
+    assert_eq!(
+        original_digest,
+        format!("{:x}", Sha256::digest(&original_bytes))
+    );
+    let (following, following_digest) = reader.read_with_digest().unwrap().unwrap();
+    assert_eq!(following, frame(HELLO));
+    assert_eq!(following_digest, format!("{:x}", Sha256::digest(HELLO)));
+    assert!(reader.read_received().unwrap().is_none());
+}

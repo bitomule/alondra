@@ -17,6 +17,10 @@ pub enum Body {
     Command(Command),
     Receipt(Receipt),
     Event(Event),
+    Challenge(Challenge),
+    Attach(Attach),
+    Attached(Attached),
+    Acknowledge(Acknowledge),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -47,6 +51,52 @@ pub struct Hello {
     pub host_release: String,
     pub host_sha256: String,
     pub sdk_version: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Challenge {
+    pub fence: Fence,
+    pub execution: Execution,
+    pub host_instance_id: String,
+    pub nonce: String,
+    pub executable_sha256: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Attach {
+    pub fence: Fence,
+    pub execution: Execution,
+    pub host_instance_id: String,
+    pub nonce: String,
+    pub owner_generation: u64,
+    pub host_release: String,
+    pub host_sha256: String,
+    pub executable_sha256: String,
+    pub sdk_version: String,
+    pub proof: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Attached {
+    pub fence: Fence,
+    pub execution: Execution,
+    pub host_instance_id: String,
+    pub owner_generation: u64,
+    pub proof: String,
+}
+
+/// Technical journal acknowledgement, never an SDK input-consumption fact.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Acknowledge {
+    pub fence: Fence,
+    pub execution: Execution,
+    pub host_instance_id: String,
+    pub owner_generation: u64,
+    pub cursor: u64,
 }
 
 /// Expectations come from the owned host manifest, never from the peer's hello.
@@ -396,7 +446,57 @@ impl Frame {
             Body::Command(command) => command.validate(),
             Body::Receipt(receipt) => receipt.validate(),
             Body::Event(event) => event.validate(),
+            Body::Challenge(challenge) => challenge.validate(),
+            Body::Attach(attach) => attach.validate(),
+            Body::Attached(attached) => attached.validate(),
+            Body::Acknowledge(acknowledge) => acknowledge.validate(),
         }
+    }
+}
+
+impl Challenge {
+    pub fn validate(&self) -> Result<(), Error> {
+        self.fence.validate()?;
+        self.execution.validate()?;
+        text(&self.host_instance_id, 256)?;
+        digest(&self.nonce)?;
+        digest(&self.executable_sha256)
+    }
+}
+impl Attach {
+    pub fn validate(&self) -> Result<(), Error> {
+        self.validate_claim()?;
+        digest(&self.proof)
+    }
+
+    pub(crate) fn validate_claim(&self) -> Result<(), Error> {
+        self.fence.validate()?;
+        self.execution.validate()?;
+        text(&self.host_instance_id, 256)?;
+        digest(&self.nonce)?;
+        positive(self.owner_generation)?;
+        text(&self.host_release, 256)?;
+        digest(&self.host_sha256)?;
+        digest(&self.executable_sha256)?;
+        text(&self.sdk_version, 64)
+    }
+}
+impl Attached {
+    pub fn validate(&self) -> Result<(), Error> {
+        self.fence.validate()?;
+        self.execution.validate()?;
+        text(&self.host_instance_id, 256)?;
+        positive(self.owner_generation)?;
+        digest(&self.proof)
+    }
+}
+impl Acknowledge {
+    pub fn validate(&self) -> Result<(), Error> {
+        self.fence.validate()?;
+        self.execution.validate()?;
+        text(&self.host_instance_id, 256)?;
+        positive(self.owner_generation)?;
+        positive(self.cursor)
     }
 }
 

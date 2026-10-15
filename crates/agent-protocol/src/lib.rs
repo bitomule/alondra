@@ -3,11 +3,13 @@
 mod codec;
 mod correlation;
 mod json;
+mod ownership;
 mod schema;
 
-pub use codec::{FramedReader, FramedWriter, command_digest, encode};
+pub use codec::{FramedReader, FramedWriter, ReceivedFrame, command_digest, encode};
 pub use correlation::{CommandRegistry, CommandStatus, EventSequence, SequenceStatus};
 pub use schema::*;
+pub use ownership::{host_proof, owner_proof, verify_host_proof, verify_owner_proof};
 
 pub const PROTOCOL_VERSION: u16 = 1;
 pub const SDK_VERSION: &str = "0.3.300";

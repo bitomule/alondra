@@ -118,3 +118,26 @@ impl AsRef<std::ffi::OsStr> for Directory {
         self.path.as_os_str()
     }
 }
+
+#[cfg(unix)]
+impl Directory {
+    /// Keeps macOS socket names within sockaddr_un limits while retaining fixture cleanup.
+    pub fn for_unix_socket() -> Self {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::fs::canonicalize("/tmp").expect("resolve short fixture root");
+        let owner = tempfile::Builder::new()
+            .prefix("as-")
+            .permissions(std::fs::Permissions::from_mode(0o700))
+            .tempdir_in(root)
+            .expect("create private socket fixture");
+        let path = owner
+            .path()
+            .canonicalize()
+            .expect("resolve socket fixture")
+            .join("work");
+        Self {
+            path,
+            owner: Some(owner),
+        }
+    }
+}

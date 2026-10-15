@@ -1,5 +1,7 @@
 version: 1
 satisfied:
+- {check: "agent-host/sdk-host", scope_hash: "5ee3ec00c3b7e9ecf0bc156d66514bcdffbb57b5182c8aa4da9a03c388f3acfe"}
+- {check: "agent-host/sdk-host", scope_hash: "658d0ca7a6edc03d866a68fcd3d2fff6124974427ee4cf60ed9ae07f02a5e83f"}
 - {check: "root/apple-tests", scope_hash: "00e183e4c5b5256ad30bdb339127481f4f7c22d50f41ecca4cb7f6c3e2c6cebb"}
 - {check: "root/apple-tests", scope_hash: "01efcd7c383b8d51368ce701cd5b62549130e39f4764b18b52153bfb606d0f02"}
 - {check: "root/apple-tests", scope_hash: "0335ad65eca952ac0d014a2af27c2a479b822dec8a6717bde0cfc5625da76d5f"}
@@ -160,6 +162,7 @@ satisfied:
 - {check: "root/apple-tests", scope_hash: "72ac8c3f9b5a5c1dea1e35596e3ad2ea9a2bc8f95d22ac2c6356e50d75c8ab7a"}
 - {check: "root/apple-tests", scope_hash: "73af7a6e4aee3ffc1561db57a5d05bf117f62f92b15fb416194d3d5dc732a0db"}
 - {check: "root/apple-tests", scope_hash: "73bbcb99875d7c206f670c19eddc5a4c9bac6dc0874b80f7bb1b247a72cf7bec"}
+- {check: "root/apple-tests", scope_hash: "7433cf1871edee714add09fe93a460939aa47186a04702c04f4922dae11bb3a5"}
 - {check: "root/apple-tests", scope_hash: "755501035114bef416ec2a7a7d5604de4faab720679af9a110bc94609f6e80e4"}
 - {check: "root/apple-tests", scope_hash: "75bd7abd131fd38135822d01f26d5c92b5a87486961029650e2ac0c1237d19f2"}
 - {check: "root/apple-tests", scope_hash: "75bfa36c59e383ea2cda4e0a1cf6c27dd4c9e7a42938b63acb5f8024fe0ee9f7"}
@@ -1016,6 +1019,7 @@ satisfied:
 - {check: "root/bazel-build", scope_hash: "b2ed567a8f03c6995a2c821da023b1b845649c3d3546a32c701b8feb31e0f4e6"}
 - {check: "root/bazel-build", scope_hash: "b366079eddbf58b383dd9e1a3ddd6dec5774ec6064881fcdf5ce79b2a7b6a97d"}
 - {check: "root/bazel-build", scope_hash: "b396dcefc47b5cf6be116e21490357b54d2ed7b56602d4ac77a335de2166acc6"}
+- {check: "root/bazel-build", scope_hash: "b3f7cd77db007f1e0cdc49434ddb84816f534ca4bab68538cdfe956148266e30"}
 - {check: "root/bazel-build", scope_hash: "b40df7cc1631afb603daa34a52abfd6a9e4b469bb4564dadc6afb579067b8af9"}
 - {check: "root/bazel-build", scope_hash: "b46f895e3573456d9545aebd54d56790c37b35a66419f7965968454080bb4a2e"}
 - {check: "root/bazel-build", scope_hash: "b483435074cff5f9d51b3094d849c33d509a15d985d85d42207592797881c599"}
@@ -1673,6 +1677,7 @@ satisfied:
 - {check: "root/bazel-test", scope_hash: "6f49a691939a4be4e05ad74ba3dea4ddde9c2c0f9f2d91a1b59cabb7c7d4e3b9"}
 - {check: "root/bazel-test", scope_hash: "6f4ade68beed1978ca4be0f152705ab0137a4638c251c1c42c0e62c6d2c5e6b9"}
 - {check: "root/bazel-test", scope_hash: "701abbfe7d7ae2db584e4f73173f1d9a66cd4e28eba1af85b022b327d806b346"}
+- {check: "root/bazel-test", scope_hash: "70742bce70d86d7b12f5c6f246543332e0a8faab0daa636b52ad5dd3d12678cd"}
 - {check: "root/bazel-test", scope_hash: "70aa5e3c00d8b66eb88ba36bc1544f9bf31bb9287b04d11c97bf2dd46ded6592"}
 - {check: "root/bazel-test", scope_hash: "71b63213412389914aa605faf4a83c75ff6d39468ef4d12f2115c5020bcb20b5"}
 - {check: "root/bazel-test", scope_hash: "71c070efe227c1a3fbe773fac42d1e550a86f9660ba8f71b4c4ab89e486b28d4"}
@@ -2094,3 +2099,4 @@ satisfied:
 - {check: "root/load-bench-oracles", scope_hash: "88ecb70ba94ec9b6c51f41cc07c3f1a94a13a00962dc68929243612a7ef675cf"}
 - {check: "root/load-bench-oracles", scope_hash: "94b00702c4b24f782104f45ea7418016a2dffbd66399aca6cb89283306b12d59"}
 - {check: "root/load-bench-oracles", scope_hash: "d0f6ee1b374e07c20c109d944e4c2a83bf72612ebd918c7a9ac0b6e05277d416"}
+- {check: "root/load-bench-oracles", scope_hash: "d202bb79571e5a7a5f0102b55fae21ac5ec9443624bc0f2e28ca000979532da6"}
