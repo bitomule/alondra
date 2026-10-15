@@ -506,3 +506,27 @@ async fn the_mac_binds_its_devices_endpoints_at_the_relay_after_its_own_and_agai
     assert_eq!(bound().len(), 2, "a revoked device, or one never paired here, is not bound");
     server.abort();
 }
+
+/// 15 Oct, iPhone on the home Wi-Fi: every read over iroh queued behind the one before it, so a
+/// card took 4 to 17 s. Reads run side by side, as they do from the relay; writers keep their turn.
+#[tokio::test]
+async fn a_read_never_waits_for_a_writer_but_a_write_does() {
+    let f = Fixture::new().await;
+    let (_client, connection) = f.paired(&f.phone, 61).await;
+    let writer = f.service.lane.clone().lock_owned().await;
+
+    let read = f.phone.work(&f.service, "op-read", "GET", crate::direct::routes::PATH, None);
+    let answered = tokio::time::timeout(Duration::from_secs(5), exchange(&connection, &read)).await;
+    assert_eq!(f.phone.opened(&answered.expect("a read answers while a writer holds the lane")["response"])["status"], 200);
+
+    let action = f.action(&f.phone, "op-limit", "4", "5f0c2d9e-8d0b-4c71-9b0e-2b6f5d8f1a10");
+    let write = tokio::spawn({
+        let connection = connection.clone();
+        async move { exchange(&connection, &action).await }
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(!write.is_finished(), "a write waits for the writer before it");
+    drop(writer);
+    let written = tokio::time::timeout(Duration::from_secs(5), write).await.unwrap().unwrap();
+    assert_eq!(f.phone.opened(&written["response"])["body"]["outcome"], "applied");
+}

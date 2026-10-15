@@ -1346,7 +1346,7 @@ impl Service {
             }
         };
         let work = Work { request_id: envelope.request_id.clone(), envelope };
-        let prepared = loop {
+        let mut prepared = loop {
             let finished = self.inflight.done.notified();
             tokio::pin!(finished);
             finished.as_mut().enable();
@@ -1355,6 +1355,10 @@ impl Service {
                 None => finished.await,
             }
         };
+        // Reads run side by side, as they do from the relay: only writers take turns.
+        if Self::ordinary_read(&prepared.request) {
+            prepared.execution = ExecutionLane::Read;
+        }
         let (response, device, _guard) = self
             .execute(&work.envelope, prepared, Transport::Direct, || async { Ok(()) })
             .await
