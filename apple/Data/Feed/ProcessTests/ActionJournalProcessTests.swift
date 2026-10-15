@@ -895,6 +895,9 @@ private struct RelayServerEvent: Decodable, Sendable {
 
         try client.send(ProcessClientCommand(command: "network", network: .init(cutAnswers: 1, lostReplies: 1, lostStatus: 2)))
         #expect(try await client.next(ProcessClientEvent.self).event == "network_set")
+        try client.send(ProcessClientCommand(command: "hold_retirement"))
+        #expect(try await client.next(ProcessClientEvent.self).event == "retirement_held",
+                "the phone keeps the sealed answer until the duplicate below has gone out")
         try client.send(ProcessClientCommand(command: "deliver"))
         let delivered = try await client.next(ProcessClientEvent.self)
 
@@ -914,6 +917,8 @@ private struct RelayServerEvent: Decodable, Sendable {
         let relayStats = try await stack.relay.next(RelayServerEvent.self)
         #expect(try #require(relayStats.actionPosts) >= 2, "the relay received the same answer more than once")
         #expect(try await stats(stack.daemon).effects == 1, "and the Mac ran it once")
+        try client.send(ProcessClientCommand(command: "release_retirement"))
+        #expect(try await client.next(ProcessClientEvent.self).event == "retirement_drained")
 
         try client.send(ProcessClientCommand(command: "deliver", request: prepared))
         let again = try await client.next(ProcessClientEvent.self)

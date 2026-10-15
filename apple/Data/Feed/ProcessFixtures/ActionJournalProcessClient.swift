@@ -282,6 +282,15 @@ private final class ClientInput: Sendable {
                 case "await_answer_attempt":
                     while await (setup.mapping?.counts().0 ?? 1) == 0 { try await Task.sleep(for: .milliseconds(20)) }
                     try emit(.init(event: "answer_attempted"))
+                case "hold_retirement":
+                    guard let mapping = setup.mapping else { throw ProcessClientError.invalidCommand }
+                    await mapping.holdRetirement()
+                    try emit(.init(event: "retirement_held"))
+                case "release_retirement":
+                    guard let mapping = setup.mapping else { throw ProcessClientError.invalidCommand }
+                    await mapping.releaseRetirement()
+                    await sender.drainRetirement()
+                    try emit(.init(event: "retirement_drained"))
                 case "drain":
                     await sender.drainRetirement()
                     try emit(.init(event: "retirement_drained"))
@@ -309,6 +318,7 @@ private final class ClientInput: Sendable {
                     await setup.mapping?.releaseTransferChunk()
                     for task in coldReads { task.cancel(); _ = await task.result }
                     await setup.mapping?.releaseUnauthorized()
+                    await setup.mapping?.releaseRetirement()
                     if let staleTask { _ = await staleTask.result }
                     if let actionTask { _ = await actionTask.result }
                     if let detailTask { _ = await detailTask.result }
@@ -570,6 +580,14 @@ private actor FixtureRelayHTTP: HTTPTransport {
         await withCheckedContinuation { arrival = $0 }
     }
     func releaseUnauthorized() { refusal?.resume(); refusal = nil }
+    private var holdJournalAcknowledgments = false
+    private var journalAcknowledgmentReleases: [CheckedContinuation<Void, Never>] = []
+    func holdRetirement() { holdJournalAcknowledgments = true }
+    func releaseRetirement() {
+        holdJournalAcknowledgments = false
+        for waiter in journalAcknowledgmentReleases { waiter.resume() }
+        journalAcknowledgmentReleases.removeAll()
+    }
     private var faults = ProcessNetworkFaults()
     func impose(_ faults: ProcessNetworkFaults) { self.faults = faults }
     init(destination: URL, phoneSigning: P256.Signing.PublicKey, macAgreement: P256.KeyAgreement.PrivateKey, macID: String, deviceID: String) {
@@ -617,6 +635,9 @@ private actor FixtureRelayHTTP: HTTPTransport {
                 transferChunkHeld = true
                 transferChunkArrival?.resume(returning: ()); transferChunkArrival = nil
             }
+        }
+        if submitted?.path == "/operation-journal/ack", holdJournalAcknowledgments {
+            await withCheckedContinuation { journalAcknowledgmentReleases.append($0) }
         }
         let reply = try await network.send(actual)
         if let submitted {
