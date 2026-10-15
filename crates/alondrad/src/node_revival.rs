@@ -752,7 +752,7 @@ mod tests {
         command(&domain, Actor::System, "listed", Command::ReconcileNodes {
             listed: [(SESSION.into(), alondra_core::domain::Listed::Blocked)].into(), at: alondra_core::now_millis(),
         });
-        assert_eq!(domain.state().unwrap().node_phase(&SESSION.into()), Some(&NodePhase::Stopped));
+        assert_eq!(domain.state().unwrap().node_phase(&SESSION.into()), Some(&NodePhase::WaitingUser { in_turn: false }));
         assert!(stalled_sessions(&domain, alondra_core::now_millis()).is_empty(), "blocked on the user, not stalled");
     }
 

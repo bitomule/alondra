@@ -1312,7 +1312,7 @@ async fn a_node_whose_turn_ended_with_no_task_is_not_in_fleet_and_never_reads_di
 
     let fleet = view_json(&fixture, "fleet", "es").await;
     assert!(!fleet_lists(&fleet, "ghost"), "a node with no open task is not in Fleet");
-    assert_eq!(node_shown(&fixture, "ghost", "es").await[0], ("Detenido".into(), "warning".into()), "its turn ended with nothing for anyone");
+    assert_eq!(node_shown(&fixture, "ghost", "es").await[0], ("Sin tarea".into(), "neutral".into()), "its turn ended with no task to work on");
 }
 
 #[tokio::test]

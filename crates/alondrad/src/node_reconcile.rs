@@ -330,12 +330,12 @@ mod tests {
 
     fn paused_for_usage(domain: &DomainRuntime, node: &str) {
         let now = alondra_core::now_millis();
-        run(domain, Actor::System, &format!("turn-end-{node}"), Command::MoveNode { agent_id: node.into(), event: NodeEvent::TurnEnded, at: now });
         let usage = alondra_core::domain::Pause {
             reason: alondra_core::domain::PauseReason::Usage, since: now, cut: None, turn_since: None,
             cleanup: alondra_core::domain::PauseCleanup::Done, released: false,
         };
         run(domain, Actor::System, &format!("pause-{node}"), Command::MoveNode { agent_id: node.into(), event: NodeEvent::Paused { pause: usage }, at: now });
+        run(domain, Actor::System, &format!("turn-end-{node}"), Command::MoveNode { agent_id: node.into(), event: NodeEvent::TurnEnded, at: now });
     }
 
     /// A node of `launch` connected from `worktree`, with uncommitted work in it, and the hello its
@@ -400,10 +400,11 @@ mod tests {
         assert_eq!(std::fs::read_to_string(worktree.join("staged.rs")).unwrap(), "uncommitted work");
     }
 
-    /// The same without a pause: a node whose turn ended with its task still open loses its session
-    /// to Claude Code, and once resumed it is told to carry on rather than left idle.
+    /// The same without a pause: a node whose turn ended with its task still open and nothing for
+    /// the user waits on the card with its last words; it loses its session to Claude Code, and once
+    /// resumed nothing is typed into it: the user's answer is what it waits for.
     #[tokio::test]
-    async fn a_resumed_session_whose_task_still_needs_it_is_told_to_carry_on() {
+    async fn a_resumed_session_waiting_on_the_card_with_its_words_is_left_to_the_user() {
         const NODE: &str = "c0ffee01-81db-4cdb-8e95-6a2aaab612d3";
         let home = crate::test_support::Directory::new();
         std::fs::create_dir_all(&home).unwrap();
@@ -415,7 +416,9 @@ mod tests {
         let claude_code = Respawn { domain: domain.clone(), hello, asked: Mutex::new(vec![]), link: Mutex::new(None) };
         crate::node_revival::revive(&domain, NODE, &claude_code, &QUICK).await;
         assert_eq!(*claude_code.asked.lock().unwrap(), ["c0ffee01"]);
-        assert!(told(&claude_code).contains("continue your task"));
+        assert!(claude_code.link.lock().unwrap().as_mut().unwrap().try_recv().is_err(), "nothing is typed into it");
+        let state = domain.state().unwrap();
+        assert!(state.open_user_card(&format!("t-{NODE}").into()).is_some_and(|card| card.id.0.starts_with(alondra_core::domain::UNHEARD_PREFIX)));
     }
 
     /// A row Claude Code keeps after the process stopped, other than `done`, is no session: a
@@ -427,7 +430,7 @@ mod tests {
         let domain = open(&home);
         launch(&domain, "ghost");
         run(&domain, Actor::System, "turn-end", Command::MoveNode { agent_id: "ghost".into(), event: NodeEvent::TurnEnded, at: alondra_core::now_millis() });
-        assert_eq!(phase(&domain, "ghost"), NodePhase::Stopped);
+        assert_eq!(phase(&domain, "ghost"), NodePhase::WaitingUser { in_turn: false });
         let claude = Claude(Mutex::new(r#"[{"id":"ghost","sessionId":"ghost","state":"blocked"},{"id":"alive","sessionId":"alive","state":"working","pid":44234}]"#.into()));
         assert!(once(&domain, &claude).await);
         assert_eq!(phase(&domain, "ghost"), NodePhase::Lost);

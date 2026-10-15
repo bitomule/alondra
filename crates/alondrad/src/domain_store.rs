@@ -47,6 +47,12 @@ const API_FAILURES: &str = "CREATE TABLE IF NOT EXISTS api_failures(agent_id TEX
 /// and rule, and whether the file still has them. Kept outside the domain state: the file is the
 /// truth, this only remembers which of its rules came from Alondra and from which card.
 const ALLOWED_RULES: &str = "CREATE TABLE IF NOT EXISTS allowed_rules(id INTEGER PRIMARY KEY, repo TEXT NOT NULL, settings TEXT NOT NULL, rule TEXT NOT NULL, added_at INTEGER NOT NULL, task_id TEXT, interaction_id TEXT NOT NULL, machine TEXT NOT NULL, state TEXT NOT NULL CHECK(state IN('pending','active','missing','removed')), UNIQUE(settings, rule));";
+/// What each node said last as a turn of it ended; created on every open like task_models.
+const NODE_LAST_WORDS: &str = "CREATE TABLE IF NOT EXISTS node_last_words(agent_id TEXT PRIMARY KEY REFERENCES agents(id), text TEXT NOT NULL);";
+/// Domains written before no node could rest unheard kept such nodes `stopped`: what moved them
+/// last is taken to be on its way to them, and two idle listings later their last words reach
+/// the user in a card.
+const STOPPED_NODES: &str = "UPDATE agents SET phase='{\"kind\":\"resuming\"}' WHERE json_extract(phase,'$.kind')='stopped';";
 const STOP_BLOCKS: &str = "CREATE TABLE IF NOT EXISTS stop_blocks(task_id TEXT PRIMARY KEY, blocks INTEGER NOT NULL CHECK(blocks>=0), marker INTEGER NOT NULL);";
 /// What became of a task's node, kept beside the task; created on every open like task_models.
 const TASK_WRAP_UPS: &str = "CREATE TABLE IF NOT EXISTS task_wrap_ups(\
@@ -490,6 +496,8 @@ impl DomainStore {
             tx.execute_batch(AGENT_PHASES)?;
         }
         tx.execute_batch(TASK_MODELS)?;
+        tx.execute_batch(NODE_LAST_WORDS)?;
+        tx.execute_batch(STOPPED_NODES)?;
         tx.execute_batch(MODEL_METRICS)?;
         tx.execute_batch(STOP_BLOCKS)?;
         tx.execute_batch(API_FAILURES)?;

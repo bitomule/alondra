@@ -87,20 +87,19 @@ pub(super) fn node_state(agent: &AgentId, context: &RenderContext<'_>) -> super:
         NodePhase::Lost => (t!(lang, "Waiting for the machine", "Esperando máquina"), Tone::Neutral),
         NodePhase::Starting { reviving: false } => (t!(lang, "Starting", "Arrancando"), Tone::Neutral),
         NodePhase::Working if merging => (t!(lang, "Merging", "Fusionando"), Tone::Info),
-        NodePhase::Working => (t!(lang, "Working", "Trabajando"), Tone::Info),
-        NodePhase::WaitingBackground(work) => (common::background_label(&work, lang), Tone::Info),
+        NodePhase::Working | NodePhase::WaitingBackground(_) | NodePhase::Resuming { .. } => (t!(lang, "Working", "Trabajando"), Tone::Info),
         NodePhase::WaitingUser { .. } if waiting(&["action_request"]) => (t!(lang, "Your turn", "Te toca"), Tone::YourTurn),
-        NodePhase::WaitingUser { .. } if waiting(&["question", "permission", "plan"]) => (t!(lang, "Waiting for an answer", "Esperando respuesta"), Tone::Warning),
-        NodePhase::WaitingUser { .. } => (t!(lang, "No activity", "Sin actividad"), Tone::Neutral),
+        NodePhase::WaitingUser { .. } => (t!(lang, "Waiting for an answer", "Esperando respuesta"), Tone::Warning),
         NodePhase::Paused(Pause { reason: PauseReason::ByUser, .. }) => (t!(lang, "Paused", "En pausa"), Tone::Neutral),
         NodePhase::Paused(_) => (t!(lang, "Waiting for the machine", "Esperando máquina"), Tone::Neutral),
         NodePhase::Delivered { .. } if waiting(&["delivery"]) =>
             (t!(lang, "Waiting for your review", "Espera tu revisión"), Tone::Accent),
         NodePhase::Delivered { .. } => (t!(lang, "Delivering results", "Entrega resultado"), Tone::Success),
-        NodePhase::Stopped => match awaited_title(agent, context) {
+        NodePhase::WaitingDependency => match awaited_title(agent, context) {
             Some(title) => return super::Label { text: tf!(lang, "Waiting for {title}", "Esperando a {title}", title = title), tone: Tone::Neutral },
-            None => (t!(lang, "Stopped", "Detenido"), Tone::Warning),
+            None => (t!(lang, "Waiting for another task", "Esperando otra tarea"), Tone::Neutral),
         },
+        NodePhase::NoTask => (t!(lang, "No task", "Sin tarea"), Tone::Neutral),
         NodePhase::Closing => match post_merge_work(agent, context) {
             Some(reason) => return super::Label {
                 text: tf!(lang, "Finishing after the merge: {reason}", "Terminando tras fusionar: {reason}", reason = reason),
@@ -460,10 +459,6 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
         }
         if let Some(tool) = &node.tool {
             readings.push(Fact { label: t!(lang, "Running", "Ejecutando").into(), value: tool.clone(), tone: None, link: None });
-        }
-        if let NodePhase::WaitingBackground(work) = &agent.phase {
-            readings.push(Fact { label: common::background_label(work, lang).into(),
-                value: common::background_fact(work, node.background_since.as_deref(), lang), tone: Some(Tone::Info), link: None });
         }
         if let Some(text) = &node.background_badge {
             readings.push(Fact { label: t!(lang, "In the background", "En segundo plano").into(), value: text.clone(),

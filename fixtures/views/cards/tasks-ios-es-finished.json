@@ -4,7 +4,7 @@
   "view": "tasks",
   "key": "tasks?section=finished&after=0",
   "client": "ios",
-  "version": "v0fcb0caff535db22",
+  "version": "vb3d379f79f9859d8",
   "cursor": "cursor-1",
   "title": "Tareas",
   "status": {
@@ -314,42 +314,6 @@
           "struck": false,
           "children": [
             {
-              "id": "t-hf-share-hint",
-              "link": {
-                "kind": "view",
-                "key": "task:t-hf-share-hint"
-              },
-              "icon": "notice",
-              "title": "Photos extension hint after the first blur",
-              "subtitle": "Sin actividad",
-              "badges": [
-                {
-                  "text": "Sin actividad",
-                  "tone": "warning"
-                }
-              ],
-              "trailing": {
-                "kind": "count",
-                "value": 0
-              },
-              "depth": 1,
-              "struck": false,
-              "children": [
-                {
-                  "id": "activity",
-                  "icon": "notice",
-                  "title": "Dijo: «Waiting for the snapshot run to finish.» · BlurCamera · weekly improvement",
-                  "trailing": {
-                    "kind": "time",
-                    "at": "2026-09-30T07:00:00.000Z",
-                    "format": "relative"
-                  },
-                  "depth": 0,
-                  "struck": false
-                }
-              ]
-            },
-            {
               "id": "t-hf-registry",
               "link": {
                 "kind": "view",
@@ -375,6 +339,37 @@
                   "id": "activity",
                   "icon": "notice",
                   "title": "Claude Code no confía en ~/Projects/indie-apps · BlurCamera · weekly improvement",
+                  "depth": 0,
+                  "struck": false
+                }
+              ]
+            },
+            {
+              "id": "t-hf-share-hint",
+              "link": {
+                "kind": "view",
+                "key": "task:t-hf-share-hint"
+              },
+              "icon": "mission",
+              "title": "Photos extension hint after the first blur",
+              "subtitle": "Pausada",
+              "badges": [
+                {
+                  "text": "Pausada",
+                  "tone": "neutral"
+                }
+              ],
+              "trailing": {
+                "kind": "count",
+                "value": 0
+              },
+              "depth": 1,
+              "struck": false,
+              "children": [
+                {
+                  "id": "activity",
+                  "icon": "notice",
+                  "title": "La pausaste · BlurCamera · weekly improvement",
                   "depth": 0,
                   "struck": false
                 }

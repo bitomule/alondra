@@ -106,6 +106,17 @@ pub(crate) fn node_event_at(domain: &DomainRuntime, agent_id: &AgentId, happened
     submit_on_current(domain, "agent-move", &id, &state, Command::MoveNode { agent_id: agent_id.clone(), event: happened, at })
 }
 
+/// Keeps what a node said as a turn of it ended: what the user reads if that turn ends with
+/// nothing for them.
+pub(crate) fn record_last_words(domain: &DomainRuntime, agent_id: &AgentId, text: &str) -> Result<bool, StoreError> {
+    let state = domain.state().map_err(StoreError::Storage)?;
+    if text.trim().is_empty() || state.last_words.get(agent_id).is_some_and(|kept| kept == text.trim()) {
+        return Ok(false);
+    }
+    let id = format!("last-words-{}-{}", agent_id.0, crate::auth::random_hex(8));
+    submit_on_current(domain, "agent-last-words", &id, &state, Command::RecordLastWords { agent_id: agent_id.clone(), text: text.to_owned() })
+}
+
 /// Hands the node machine the listing of real sessions, when it moves any node.
 pub(crate) fn reconcile(domain: &DomainRuntime, listed: BTreeMap<AgentId, Listed>) -> Result<bool, StoreError> {
     let state = domain.state().map_err(StoreError::Storage)?;

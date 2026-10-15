@@ -4,7 +4,7 @@
   "view": "fleet",
   "key": "fleet",
   "client": "ios",
-  "version": "v74263ab70273fdc8",
+  "version": "vca96060cbba4aa0a",
   "cursor": "cursor-1",
   "title": "Flota",
   "status": {
@@ -161,7 +161,7 @@
           "title": "Release the daemon",
           "badges": [
             {
-              "text": "Esperando su comando",
+              "text": "Trabajando",
               "tone": "info"
             }
           ],

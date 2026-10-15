@@ -503,6 +503,7 @@ fn command_task(state: &DomainState, command: &Command) -> Option<TaskId> {
         | Command::InterruptScheduleRunsOnRestart { .. }
         | Command::RegisterAgent { .. }
         | Command::MoveNode { .. }
+        | Command::RecordLastWords { .. }
         | Command::ReconcileNodes { .. }
         | Command::AdvanceOrchestratorGeneration { .. }
         | Command::BindOrchestratorSession { .. }

@@ -538,6 +538,9 @@ fn respond(domain: &DomainRuntime, payload: &Value) -> Result<Reply> {
         "SessionStart" | "SessionEnd" => Ok(Reply::Plain(json!({}))),
         "Stop" if domain.live.gate.paused_by_user(domain, &session_id) => Ok(Reply::Plain(json!({}))),
         "Stop" => {
+            if let Some(said) = text(payload, "last_assistant_message") {
+                lifecycle::record_last_words(domain, &agent_id, &said)?;
+            }
             let held = crate::domain_messages::take_held(domain, &agent_id);
             if !held.is_empty() {
                 return Ok(Reply::Plain(json!({"hookSpecificOutput": {"hookEventName": "Stop", "additionalContext": held.join("\n\n")}})));
@@ -620,13 +623,14 @@ fn start_assigned(domain: &DomainRuntime, agent_id: &AgentId) -> Result<()> {
     Ok(())
 }
 
-/// Turn ends Alondra holds back in a row for one Task before it stops trying and tells the user.
+/// Turn ends Alondra holds back in a row for one Task before it lets the turn end, and the node
+/// machine puts the node's last words in a card for the user.
 pub(crate) const STOP_BLOCKS: u32 = 3;
 
 /// A turn of a node Alondra launched may not end while its Task is open with neither a result
 /// for the user nor a question from it: Claude Code goes on with the reason. A turn the block
 /// itself continued (`stop_hook_active`) counts too, so the cap, not the flag, ends the loop:
-/// after `STOP_BLOCKS` turn ends in a row the user gets a Problem card and the node may stop. A
+/// after `STOP_BLOCKS` turn ends in a row the node may stop, and its last words reach the user. A
 /// delivery or a question starts the count again; the count is kept in the domain store, so a
 /// restart does not reset it. A session the user drives (not a background node, or one whose
 /// terminal they attached to), work running in the background and a node the machine paused are
@@ -711,7 +715,7 @@ const HUNG_REMINDER_GAP: alondra_core::Millis = 10 * 60 * 1000;
 /// only work that has hung), their Task open and neither a result nor a question, and quiet for
 /// `HUNG_REMINDER_GAP`: no turn end will come to hold them back (their work hung, or the Stop hook
 /// never reached Alondra), so the reminder the Stop hook gives goes to them as a message from
-/// Alondra, counted the same way, and at the cap the user gets the same Problem card.
+/// Alondra, counted the same way; past the cap it is left alone.
 /// `reminded` keeps when each node was last sent one.
 pub(crate) fn behind_hung_work(domain: &DomainRuntime, now: alondra_core::Millis,
     reminded: &mut std::collections::HashMap<String, alondra_core::Millis>) -> Vec<(String, String)> {
@@ -741,7 +745,7 @@ pub(crate) fn behind_hung_work(domain: &DomainRuntime, now: alondra_core::Millis
 
 /// The node of an open Task ended its turn with nothing running that will wake it, neither a
 /// result nor a question: whether Alondra still sends it back (`Some(true)`) or its cap was
-/// reached and the user told (`Some(false)`). A node the user drives, one the node machine
+/// reached (`Some(false)`). A node the user drives, one the node machine
 /// paused, one waiting on a card, one whose session stopped mid-turn (restarted by
 /// `node_revival`) and one that is not connected are not stopped this way. One Claude Code shows
 /// blocked waits on the user in a terminal nobody reads, whatever turn its mod last reported: it
@@ -799,35 +803,15 @@ fn hold_back(domain: &DomainRuntime, agent_id: &AgentId) -> Result<Option<String
         }
         None => 0,
     };
-    let user = crate::domain_messages::user_name();
     if blocks >= STOP_BLOCKS {
-        if blocks == STOP_BLOCKS {
-            let name = state.agents.get(agent_id).map_or(agent_id.0.as_str(), |agent| agent.name.as_str());
-            if let Err(error) = raise_undelivered(domain, &task.id, marker, name, &task.title) {
-                log!("could not tell {user} that {name} cannot deliver {}: {error:?}", task.id);
-            }
-            domain.store.lock().expect("domain store poisoned").set_stop_blocks(&task.id, blocks + 1, marker)?;
-        }
         return Ok(None);
     }
     domain.store.lock().expect("domain store poisoned").set_stop_blocks(&task.id, blocks + 1, marker)?;
-    Ok(Some(block_text(&user, &task.title)))
+    Ok(Some(block_text(&crate::domain_messages::user_name(), &task.title)))
 }
 
 fn undelivered_problem_id(task: &TaskId, marker: i64) -> String {
     format!("problem-undelivered-{task}-{marker}")
-}
-
-fn raise_undelivered(domain: &DomainRuntime, task: &TaskId, marker: i64, name: &str, title: &str) -> Result<(), crate::domain_store::StoreError> {
-    let need = alondra_core::domain::clip(&format!("{name} cannot manage to deliver “{title}”"), alondra_core::domain::CardSpec::NEED_MAX);
-    let why = alondra_core::domain::clip(&format!(
-        "It ended its turn {STOP_BLOCKS} times in a row without a result or a question, and Alondra sent it back each time; now it has stopped."
-    ), alondra_core::domain::CardSpec::WHY_MAX);
-    let diagnosis = format!(
-        "The node working on “{title}” tried to stop {STOP_BLOCKS} times in a row without presenting a result or asking anything. \
-         Alondra sent it back to work each time and now lets it stop. Open the node to see where it is stuck, send it a message, or cancel the task."
-    );
-    domain.raise_problem(&undelivered_problem_id(task, marker), Some(&format!("undelivered:{task}")), Scope::Task { task_id: task.clone() }, need, why, diagnosis, vec![]).map(|_| ())
 }
 
 pub(crate) fn block_text(user: &str, title: &str) -> String {
@@ -1795,10 +1779,18 @@ mod tests {
         domain.state().unwrap().interactions.values().cloned().filter(|card| card.card.kind == CardKind::Problem).collect()
     }
 
-    /// Three held-back turn ends in a row, kept across a daemon restart; the fourth tells the
-    /// user and lets the node stop, and a question from the node starts the count again.
+    /// The open cards that hold the node's last words for the user.
+    fn unheard(domain: &Arc<DomainRuntime>) -> Vec<alondra_core::domain::Interaction> {
+        let state = domain.state().unwrap();
+        state.interactions.values().filter(|card| card.id.0.starts_with(alondra_core::domain::UNHEARD_PREFIX) && state.open(card))
+            .cloned().collect()
+    }
+
+    /// Three held-back turn ends in a row, kept across a daemon restart; the fourth is let through
+    /// and the node's last words reach the user in a card, never a Problem; a question from the
+    /// node starts the count again.
     #[tokio::test]
-    async fn after_three_held_back_turn_ends_the_user_is_told_and_a_question_starts_over() {
+    async fn after_three_held_back_turn_ends_the_node_s_last_words_reach_the_user_and_a_question_starts_over() {
         let fixture = Fixture::new();
         let stop = json!({"session_id": "agent-a", "hook_event_name": "Stop"});
         {
@@ -1811,26 +1803,29 @@ mod tests {
         let domain = fixture.open();
         domain.live.mods.loaded_in("agent-a");
         assert!(reminder_only(&hook(&domain, stop.clone(), Some(6)).await.0), "the count survives a restart");
-        assert!(problems(&domain).is_empty());
-        assert_eq!(hook(&domain, stop.clone(), Some(6)).await.0, json!({}), "the fourth turn end is let through");
-        let raised = problems(&domain);
-        assert_eq!(raised.len(), 1);
-        assert_eq!(raised[0].card.need, "Agent A cannot manage to deliver “Task”");
-        assert_eq!(raised[0].scope, task_scope());
-        assert_eq!(hook(&domain, stop.clone(), Some(6)).await.0, json!({}));
-        assert_eq!(problems(&domain).len(), 1, "one card, however often it stops");
+        assert!(unheard(&domain).is_empty());
+        let said = json!({"session_id": "agent-a", "hook_event_name": "Stop", "last_assistant_message": "I cannot reach the relay."});
+        assert_eq!(hook(&domain, said, Some(6)).await.0, json!({}), "the fourth turn end is let through");
+        let cards = unheard(&domain);
+        assert_eq!(cards.len(), 1);
+        assert_eq!((cards[0].body.as_str(), &cards[0].scope), ("I cannot reach the relay.", &task_scope()));
+        assert_eq!(phase_of(&domain), NodePhase::WaitingUser { in_turn: false });
+        assert!(problems(&domain).is_empty(), "its words are the card, not a Problem");
+        assert_eq!(hook(&domain, stop.clone(), Some(6)).await.0, json!({}), "a node waiting on that card may stop");
+        assert_eq!(unheard(&domain).len(), 1, "one card, however often it stops");
 
+        hook(&domain, json!({"session_id": "agent-a", "hook_event_name": "UserPromptSubmit", "prompt": "go on"}), Some(6)).await.1.unwrap();
+        assert!(unheard(&domain).is_empty(), "a turn of its own makes its last words moot");
         free_text_question(&domain, "q", agent_actor(), task_scope(), Recipient::User, "Which name?");
         assert_eq!(hook(&domain, stop.clone(), Some(6)).await.0, json!({}), "a node waiting on its question may stop");
         free_text_answer(&domain, user_actor(), "q", "Atlas");
         assert!(reminder_only(&hook(&domain, stop.clone(), Some(6)).await.0), "asking started the count again");
-        assert!(problems(&domain).iter().all(|card| card.withdrawn), "the card went once the node asked");
     }
 
     /// What Claude Code sends: the Stop after a block carries `stop_hook_active`, and those turn
     /// ends count until the cap lets the node stop.
     #[tokio::test]
-    async fn turns_a_block_continued_are_held_until_the_cap_then_the_user_is_told() {
+    async fn turns_a_block_continued_are_held_until_the_cap_then_the_node_s_words_reach_the_user() {
         let fixture = Fixture::new();
         let domain = fixture.open();
         node_with_task(&domain);
@@ -1839,9 +1834,10 @@ mod tests {
         assert!(reminder_only(&hook(&domain, first, Some(6)).await.0));
         assert!(reminder_only(&hook(&domain, continued.clone(), Some(6)).await.0));
         assert!(reminder_only(&hook(&domain, continued.clone(), Some(6)).await.0));
-        assert!(problems(&domain).is_empty());
+        assert!(unheard(&domain).is_empty());
         assert_eq!(hook(&domain, continued, Some(6)).await.0, json!({}), "the cap lets it stop");
-        assert_eq!(problems(&domain).len(), 1);
+        assert_eq!(unheard(&domain).len(), 1);
+        assert!(problems(&domain).is_empty());
     }
 
     /// Whatever starts a turn of a node the user paused (a background command ending, a queued
@@ -1962,10 +1958,9 @@ mod tests {
     }
 
     /// The command died with no turn to take its result, or hung: once the turn its end would
-    /// start had its time, the node rests, frees its slot, and Alondra sends it back as it sends
-    /// any node that stopped without delivering.
+    /// start had its time, the node rests, frees its slot, and its last words reach the user.
     #[tokio::test]
-    async fn a_node_whose_command_died_without_waking_it_rests_and_is_sent_back_as_before() {
+    async fn a_node_whose_command_died_without_waking_it_rests_on_a_card_with_its_last_words() {
         let fixture = Fixture::new();
         let domain = fixture.open();
         let now = waiting_for_release(&domain, 1).await;
@@ -1973,14 +1968,13 @@ mod tests {
         assert!(background_over(&domain, now + BACKGROUND_WAKE_GRACE - 1).is_empty(), "the turn its end starts gets its time");
         assert_eq!(background_over(&domain, now + BACKGROUND_WAKE_GRACE), ["agent-a".into()]);
         crate::domain_agent_lifecycle::node_event(&domain, &"agent-a".into(), NodeEvent::BackgroundEnded).unwrap();
-        assert_eq!(phase_of(&domain), NodePhase::Stopped);
+        assert_eq!(phase_of(&domain), NodePhase::WaitingUser { in_turn: false });
+        assert_eq!(unheard(&domain).len(), 1, "with nothing for the user, its last words go to them");
         assert!(domain.state().unwrap().slots().is_empty(), "a dead command holds no slot");
 
         mod_report(&domain, json!({"event": "background", "tasks": []}), now);
         let mut reminded = std::collections::HashMap::new();
-        let sent = behind_hung_work(&domain, now + HUNG_REMINDER_GAP, &mut reminded);
-        assert_eq!(sent.len(), 1, "the guardian sends it back as it did");
-        assert!(sent[0].1.starts_with("[Alondra] Do not end your turn yet"), "{}", sent[0].1);
+        assert!(behind_hung_work(&domain, now + HUNG_REMINDER_GAP, &mut reminded).is_empty(), "it waits on that card");
     }
 
     #[tokio::test]
@@ -2029,17 +2023,17 @@ mod tests {
         for _ in 0..STOP_BLOCKS {
             assert!(reminder_only(&hook(&domain, stop.clone(), Some(6)).await.0), "an answered question is no open question");
         }
-        assert!(problems(&domain).is_empty());
+        assert!(unheard(&domain).is_empty());
         assert_eq!(hook(&domain, stop, Some(6)).await.0, json!({}), "the cap lets it stop");
-        assert_eq!(problems(&domain).iter().map(|card| card.card.need.as_str()).collect::<Vec<_>>(),
-            ["Agent A cannot manage to deliver “Task”"]);
+        assert_eq!(unheard(&domain).len(), 1, "its last words reach the user");
+        assert!(problems(&domain).is_empty());
     }
 
     /// A node already stopped when its background work hangs ends no more turns: Alondra sends it
-    /// back itself, at most once per gap, counting each like a held-back turn end, and tells the
-    /// user at the cap.
+    /// back itself, at most once per gap, counting each like a held-back turn end; past the cap the
+    /// listing that finds it idle puts its last words in front of the user.
     #[tokio::test]
-    async fn a_node_idle_behind_hung_background_work_is_sent_back_and_the_user_told_at_the_cap() {
+    async fn a_node_idle_behind_hung_background_work_is_sent_back_until_the_cap_then_its_words_reach_the_user() {
         let fixture = Fixture::new();
         let domain = fixture.open();
         node_with_task(&domain);
@@ -2059,7 +2053,9 @@ mod tests {
             now += HUNG_REMINDER_GAP;
         }
         assert!(behind_hung_work(&domain, now, &mut reminded).is_empty(), "the cap: no more reminders");
-        assert_eq!(problems(&domain).len(), 1, "the user is told instead");
+        assert!(problems(&domain).is_empty());
+        lifecycle::reconcile(&domain, [("agent-a".into(), Listed::Idle)].into()).unwrap();
+        assert_eq!(unheard(&domain).len(), 1, "its last words reach the user");
 
         free_text_question(&domain, "q", agent_actor(), task_scope(), Recipient::User, "Which name?");
         assert!(behind_hung_work(&domain, now + HUNG_REMINDER_GAP, &mut reminded).is_empty(), "a node waiting on its question is left alone");
@@ -2116,9 +2112,10 @@ mod tests {
     /// 15:55, and at 15:59 it ended its turn saying its budget was spent. Alondra's own resume left
     /// the live view saying it waited for the machine, so the Stop hook let it stop and nothing
     /// sent it back for two days. Claude Code listed it blocked, its session alive and idle. Only
-    /// the node machine's pause excuses a node: this one is sent back, and the user told at the cap.
+    /// the node machine's pause excuses a node: this one is held back, and once its turn ends its
+    /// words are a card in front of the user.
     #[tokio::test]
-    async fn a_node_resumed_after_waiting_for_the_machine_that_stops_on_a_spent_budget_is_sent_back() {
+    async fn a_node_resumed_after_waiting_for_the_machine_that_stops_on_a_spent_budget_reaches_the_user() {
         let fixture = Fixture::new();
         let domain = fixture.open();
         node_with_task(&domain);
@@ -2138,26 +2135,23 @@ mod tests {
 
         lifecycle::node_event(&domain, &"agent-a".into(), NodeEvent::TurnEnded).unwrap();
         lifecycle::reconcile(&domain, [("agent-a".into(), Listed::Blocked)].into()).unwrap();
-        assert_eq!(domain.state().unwrap().node_phase(&"agent-a".into()), Some(&NodePhase::Stopped), "blocked waits on the user: no work");
+        assert_eq!(phase_of(&domain), NodePhase::WaitingUser { in_turn: false }, "blocked waits on the user: no work");
+        let cards = unheard(&domain);
+        assert_eq!(cards.len(), 1);
+        assert!(cards[0].body.starts_with("The fix is not finished"), "{}", cards[0].body);
         quiet_since(&domain, now - HUNG_REMINDER_GAP);
-        for round in 1..STOP_BLOCKS {
-            let sent = behind_hung_work(&domain, now, &mut reminded);
-            assert_eq!(sent.len(), 1, "round {round}");
-            assert!(sent[0].1.starts_with("[Alondra] Do not end your turn yet"), "{}", sent[0].1);
-            now += HUNG_REMINDER_GAP;
-        }
+        assert!(behind_hung_work(&domain, now, &mut reminded).is_empty(), "it waits on the card with its words");
+        now += HUNG_REMINDER_GAP;
+        assert!(behind_hung_work(&domain, now, &mut reminded).is_empty());
         assert!(problems(&domain).is_empty());
-        assert!(behind_hung_work(&domain, now, &mut reminded).is_empty(), "the cap: the user is told instead");
-        assert_eq!(problems(&domain).iter().map(|card| card.card.need.as_str()).collect::<Vec<_>>(),
-            ["Agent A cannot manage to deliver “Task”"]);
     }
 
     /// 13 October: 1d6d53c5 ended its turn asking for a repro in its own terminal; neither its turn
     /// end nor its mod's reached Alondra, so the mod still said "in a turn" and nothing sent it back
-    /// for 8.5 hours. Claude Code's job says blocked: it is no work, and it is sent back to ask
-    /// through a card.
+    /// for 8.5 hours. Claude Code lists it blocked: it is no work, and what it said reaches the user
+    /// in a card.
     #[tokio::test]
-    async fn a_node_claude_code_shows_blocked_is_sent_back_to_ask_through_a_card() {
+    async fn a_node_claude_code_shows_blocked_puts_its_words_in_front_of_the_user() {
         let fixture = Fixture::new();
         let domain = fixture.open();
         node_with_task(&domain);
@@ -2167,15 +2161,16 @@ mod tests {
         quiet_since(&domain, now - HUNG_REMINDER_GAP);
         domain.report(serde_json::from_value(json!({"session_id": "agent-a", "event": "turn.start", "turn_id": "t"})).unwrap(), now - HUNG_REMINDER_GAP);
         lifecycle::reconcile(&domain, [("agent-a".into(), Listed::Blocked)].into()).unwrap();
-        assert_eq!(domain.state().unwrap().node_phase(&"agent-a".into()), Some(&NodePhase::Stopped), "blocked is no work");
-        assert!(behind_hung_work(&domain, now, &mut reminded).is_empty(), "without Claude Code's word, its mod's turn is left alone");
+        assert_eq!(phase_of(&domain), NodePhase::WaitingUser { in_turn: false }, "blocked is no work");
+        let cards = unheard(&domain);
+        assert_eq!(cards.len(), 1, "its words reach the user");
+        assert_eq!(cards[0].card.need, "“Task” stopped without a word", "no Stop came with its words");
+        assert!(cards[0].card.content.is_none());
 
         domain.live.mods.set_job("agent-a", Some(crate::job_state::Job {
             phase: crate::job_state::Phase::Blocked, detail: "needs user repro".into(), tasks: 0, updated_at: now, settings: None, worktree: None,
         }), None);
-        let sent = behind_hung_work(&domain, now, &mut reminded);
-        assert_eq!(sent.len(), 1);
-        assert!(sent[0].1.starts_with("[Alondra] Do not end your turn yet"), "{}", sent[0].1);
+        assert!(behind_hung_work(&domain, now, &mut reminded).is_empty(), "it waits on that card");
     }
 
     #[tokio::test]

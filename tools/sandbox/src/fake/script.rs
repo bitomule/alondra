@@ -58,6 +58,16 @@ pub enum Step {
         is_final: bool,
     },
     Ask { id: String, need: String, options: Vec<String> },
+    /// A turn that ends with `said` in the terminal and no card, behind a command of its own when
+    /// `behind` names one. Claude Code then lists the session as `listed` says: blocked, waiting on
+    /// the user, unless told otherwise.
+    Speak {
+        said: String,
+        #[serde(default)]
+        behind: Option<String>,
+        #[serde(default)]
+        listed: Option<String>,
+    },
     Cleanup,
     /// The session ends as when the user exits it: `session.end`, then the process goes.
     End,

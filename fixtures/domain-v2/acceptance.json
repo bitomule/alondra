@@ -1784,7 +1784,7 @@
         {
           "path": "agents.agent-a.phase",
           "op": "eq",
-          "value": "stopped"
+          "value": "resuming"
         }
       ],
       "execution_status": "store_runner"

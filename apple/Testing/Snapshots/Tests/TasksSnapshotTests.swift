@@ -129,8 +129,8 @@ final class TasksSnapshotTests: XCTestCase {
         assertScreen(lightAndDark, language: .spanish, inWindow: true) { daemonsOwnTasks(document, height: 1750) }
     }
 
-    /// A task whose node waits for its own command says so with the command; one whose node the machine paused says
-    /// it is paused and why, never that it works.
+    /// A task whose node waits for its own command is working, with no command shown; one whose node the machine
+    /// paused says it is paused and why, never that it works.
     func test_tasks_waitingForItsCommandAndPausedByTheMachine_spanish() throws {
         let document = try ScreenFixtures.document("node-states-tasks-ios-es")
         assertScreen(lightAndDark, language: .spanish, inWindow: true) { daemonsOwnTasks(document, height: 1750) }

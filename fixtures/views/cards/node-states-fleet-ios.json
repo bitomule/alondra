@@ -4,7 +4,7 @@
   "view": "fleet",
   "key": "fleet",
   "client": "ios",
-  "version": "v0cfeceb4eb4f7d23",
+  "version": "ve94c2f39d6c69e80",
   "cursor": "cursor-1",
   "title": "Fleet",
   "status": {
@@ -161,7 +161,7 @@
           "title": "Release the daemon",
           "badges": [
             {
-              "text": "Waiting for its command",
+              "text": "Working",
               "tone": "info"
             }
           ],

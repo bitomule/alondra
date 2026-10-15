@@ -4,7 +4,7 @@
   "view": "fleet",
   "key": "fleet",
   "client": "mac",
-  "version": "v54bc891c4dedb402",
+  "version": "v3997d155f088c5c7",
   "cursor": "cursor-1",
   "title": "Fleet",
   "status": {
@@ -121,7 +121,7 @@
           "title": "Release the daemon",
           "badges": [
             {
-              "text": "Waiting for its command",
+              "text": "Working",
               "tone": "info"
             }
           ],

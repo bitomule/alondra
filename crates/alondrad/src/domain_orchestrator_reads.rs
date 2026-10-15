@@ -52,7 +52,9 @@ fn phase_fields(row: &mut Value, phase: &NodePhase) {
             PauseReason::ApiError(retry) => format!("a Claude API error, {}", retry.error),
         }, since(pause.since)),
         NodePhase::Delivered { .. } => "its result waits for the user's review".to_owned(),
-        NodePhase::Stopped => "its turn ended with nothing for anyone".to_owned(),
+        NodePhase::Resuming { .. } => "the user's answer is on its way to it and starts its next turn".to_owned(),
+        NodePhase::WaitingDependency => "its task waits for another task to be done".to_owned(),
+        NodePhase::NoTask => "its turn ended and it has no open task".to_owned(),
         NodePhase::Closing => "its task is over; it cleans up".to_owned(),
         NodePhase::Closed => "its session is closed".to_owned(),
     });

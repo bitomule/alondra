@@ -5,7 +5,7 @@ use super::{
     Icon, LiveHold, LivePauseReason, RenderContext, Tone, common,
     text::{t, tf},
 };
-use crate::domain::{Attention, Instruction, PauseReason, PrState, Task, TaskActivity, TaskPriority, TaskState, WaitReason};
+use crate::domain::{Attention, Instruction, InteractionId, PauseReason, PrState, Task, TaskActivity, TaskPriority, TaskState, WaitReason};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum Block {
@@ -120,6 +120,13 @@ fn open_questions(task: &Task, context: &RenderContext<'_>) -> Option<String> {
     match pending.as_slice() {
         [] => None,
         [one] if !one.card.need.trim().is_empty() && one.card.need.trim() != task.title.trim() => {
+            let interaction = one.id.strip_prefix("interaction:").and_then(|id| context.domain.interactions.get(&InteractionId(id.into())));
+            if let Some(said) = interaction.and_then(super::card::node_words) {
+                return Some(tf!(lang, "“{said}”", "«{said}»"));
+            }
+            if let Some((need, _)) = interaction.and_then(|interaction| super::card::own_text(interaction, context.domain, lang)) {
+                return Some(need);
+            }
             let need = one.card.need.trim();
             Some(tf!(lang, "“{need}”", "«{need}»"))
         }
@@ -135,11 +142,12 @@ fn running(task: &Task, context: &RenderContext<'_>) -> Presentation {
     let lang = context.lang;
     let activity = context.domain.task_activity(task).unwrap_or(TaskActivity::NodeClosed);
     let node = task.agent_id.as_ref().and_then(|id| context.live.nodes.iter().find(|node| node.agent_id == id.0));
-    let doing = node.and_then(|node| super::fleet::doing(node, activity == TaskActivity::Working, lang));
+    let doing = node.and_then(|node| super::fleet::doing(node, matches!(activity, TaskActivity::Working | TaskActivity::WaitingBackground(_)), lang));
     let (fact, said_at) = doing.map_or((None, None), |(fact, at)| (Some(fact), at));
     let active_at = said_at.or_else(|| node.and_then(|node| node.state_since.clone()))
         .or_else(|| context.live.task_since.get(&task.id.0).cloned());
-    if !matches!(activity, TaskActivity::Working | TaskActivity::Starting | TaskActivity::Reconnecting | TaskActivity::ComingBack | TaskActivity::Paused(_))
+    if !matches!(activity, TaskActivity::Working | TaskActivity::WaitingBackground(_) | TaskActivity::Starting | TaskActivity::Reconnecting
+        | TaskActivity::ComingBack | TaskActivity::Paused(_))
         && context.projection.waits_for_user(&task.id) {
         return for_you(task, context);
     }
@@ -153,16 +161,12 @@ fn running(task: &Task, context: &RenderContext<'_>) -> Presentation {
             None => Presentation::new(t!(lang, "Waiting for the machine", "Esperando máquina"), Tone::Neutral, Block::Waiting, None),
         },
         (TaskActivity::Reconnecting, _) => t!(lang, "Reconnecting", "Reconectando"),
-        (TaskActivity::Working | TaskActivity::Starting, Some(Instruction::Changes)) => t!(lang, "Making changes", "Corrigiendo"),
-        (TaskActivity::Working | TaskActivity::Starting, Some(Instruction::Conflicts)) => t!(lang, "Resolving conflicts", "Resolviendo conflictos"),
-        (TaskActivity::Working | TaskActivity::Starting, Some(Instruction::Question | Instruction::Reply)) => t!(lang, "Answering you", "Respondiéndote"),
-        (TaskActivity::Working | TaskActivity::Starting, _) => t!(lang, "Working", "Trabajando"),
-        (TaskActivity::WaitingBackground(work), _) => {
-            let since = node.and_then(|node| node.background_since.as_deref());
-            return Presentation { active_at, ..Presentation::new(common::background_label(work, lang), Tone::Accent, Block::InProgress,
-                Some(common::background_fact(work, since, lang))) };
-        }
-        (TaskActivity::WaitingUser | TaskActivity::Stopped, _) => return warn(t!(lang, "No activity", "Sin actividad")),
+        (TaskActivity::Working | TaskActivity::WaitingBackground(_) | TaskActivity::Starting, Some(Instruction::Changes)) => t!(lang, "Making changes", "Corrigiendo"),
+        (TaskActivity::Working | TaskActivity::WaitingBackground(_) | TaskActivity::Starting, Some(Instruction::Conflicts)) => t!(lang, "Resolving conflicts", "Resolviendo conflictos"),
+        (TaskActivity::Working | TaskActivity::WaitingBackground(_) | TaskActivity::Starting, Some(Instruction::Question | Instruction::Reply)) => t!(lang, "Answering you", "Respondiéndote"),
+        (TaskActivity::Working | TaskActivity::WaitingBackground(_) | TaskActivity::Starting, _) => t!(lang, "Working", "Trabajando"),
+        (TaskActivity::WaitingUser, _) => return warn(t!(lang, "Waiting for an answer", "Esperando respuesta")),
+        (TaskActivity::WaitingDependency, _) => return waiting_dependency(task, context),
         (TaskActivity::Delivered, _) => return Presentation::new(t!(lang, "Delivered", "Entregada"), Tone::Info, Block::InProgress, fact),
         (TaskActivity::Paused(pause), _) => {
             let fact = match &pause.reason {

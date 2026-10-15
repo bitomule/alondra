@@ -4,7 +4,7 @@
   "view": "tasks",
   "key": "tasks",
   "client": "tui",
-  "version": "v88f09d1d6da8e46d",
+  "version": "v508ddcba0c45ad50",
   "cursor": "cursor-1",
   "title": "Tasks",
   "status": {
@@ -284,29 +284,6 @@
           "struck": false,
           "children": [
             {
-              "id": "t-hf-share-hint",
-              "link": {
-                "kind": "view",
-                "key": "task:t-hf-share-hint"
-              },
-              "icon": "notice",
-              "title": "Photos extension hint after the first blur",
-              "subtitle": "Said: “Waiting for the snapshot run to finish.” · BlurCamera · weekly improvement",
-              "badges": [
-                {
-                  "text": "No activity",
-                  "tone": "warning"
-                }
-              ],
-              "trailing": {
-                "kind": "time",
-                "at": "2026-09-30T07:00:00.000Z",
-                "format": "relative"
-              },
-              "depth": 1,
-              "struck": false
-            },
-            {
               "id": "t-hf-registry",
               "link": {
                 "kind": "view",
@@ -319,6 +296,24 @@
                 {
                   "text": "Didn't start",
                   "tone": "warning"
+                }
+              ],
+              "depth": 1,
+              "struck": false
+            },
+            {
+              "id": "t-hf-share-hint",
+              "link": {
+                "kind": "view",
+                "key": "task:t-hf-share-hint"
+              },
+              "icon": "mission",
+              "title": "Photos extension hint after the first blur",
+              "subtitle": "You paused it · BlurCamera · weekly improvement",
+              "badges": [
+                {
+                  "text": "Paused",
+                  "tone": "neutral"
                 }
               ],
               "depth": 1,

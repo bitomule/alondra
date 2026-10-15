@@ -51,8 +51,6 @@ fn node_label(key: &str, lang: Lang) -> String {
         ("busy", Lang::Es) => "trabajando",
         ("waiting_machine", Lang::En) => "waiting for the machine",
         ("waiting_machine", Lang::Es) => "esperando máquina",
-        ("waiting_background", Lang::En) => "waiting for its command",
-        ("waiting_background", Lang::Es) => "esperando su comando",
         ("paused", Lang::En) => "paused",
         ("paused", Lang::Es) => "en pausa",
         (_, Lang::En) => "idle",
@@ -168,8 +166,8 @@ async fn gather_inner(
             let state_key = match (&agent.phase, activity) {
                 (NodePhase::Working | NodePhase::Starting { .. }, Activity::Stalled) => "stalled",
                 (NodePhase::Working | NodePhase::Starting { .. }, Activity::Failed) => "failed",
-                (NodePhase::Working | NodePhase::Starting { .. } | NodePhase::Delivered { in_turn: true }, _) => "busy",
-                (NodePhase::WaitingBackground(_), _) => "waiting_background",
+                (NodePhase::Working | NodePhase::Starting { .. } | NodePhase::Delivered { in_turn: true }
+                    | NodePhase::WaitingBackground(_) | NodePhase::Resuming { .. }, _) => "busy",
                 (NodePhase::Paused(alondra_core::domain::Pause { reason: alondra_core::domain::PauseReason::ByUser, .. }), _) => "paused",
                 (NodePhase::Paused(_) | NodePhase::Lost, _) => "waiting_machine",
                 _ => "free",
@@ -266,14 +264,7 @@ async fn gather_inner(
                 background_suspect,
                 working: agent.phase == NodePhase::Working,
                 waiting: matches!(agent.phase, NodePhase::WaitingUser { .. } | NodePhase::Paused(_)),
-                quiet: agent.phase == NodePhase::Stopped
-                    && state_since.is_some_and(|since| now.saturating_sub(since.max(answer.map_or(0, |answer| answer.at)))
-                        >= alondra_core::states::NODE_QUIET_MS),
                 state_since: state_since.map(timestamp),
-                background_since: match &agent.phase {
-                    NodePhase::WaitingBackground(work) => Some(crate::usage_pause::clock_text(work.since, now, lang == Lang::Es)),
-                    _ => None,
-                },
                 last_message: answer.map(|answer| answer.text.clone()),
                 last_message_at: answer.map(|answer| timestamp(answer.at)),
                 last_turn_aborted: answer.is_some_and(|answer| answer.aborted),
@@ -780,21 +771,20 @@ mod cache_tests {
         report(&domain, serde_json::json!({"session_id": "reported", "event": "session.start", "version": "test"}), 1_000);
         let state = domain.state().unwrap();
         let first = gather_at(&client, &state, Lang::En, &[], false, false, 2_000).await;
-        let later = gather_at(&client, &state, Lang::En, &[], false, false, 2_000 + alondra_core::states::NODE_QUIET_MS).await;
+        let later = gather_at(&client, &state, Lang::En, &[], false, false, 2_000 + 30 * 60_000).await;
         let first_view = client.views.render("fleet", &state, &first, Client::Mac, Lang::En, Transport::Loopback).unwrap();
         let later_view = client.views.render("fleet", &state, &later, Client::Mac, Lang::En, Transport::Loopback).unwrap();
         assert_eq!(client.views.build_count(), 1, "reading an unobserved node again must reuse the view");
         assert_eq!(first.nodes.iter().map(|node| node.agent_id.as_str()).collect::<Vec<_>>(), ["assigned", "connected", "reported"]);
         for node in &first.nodes {
             assert_eq!(node.state_since, None, "a session or task is not an observed node transition");
-            assert!(!node.quiet, "the time of the last node transition is unknown");
         }
         assert_eq!(serde_json::to_value(&later).unwrap(), serde_json::to_value(&first).unwrap());
         assert_eq!(later_view, first_view);
     }
 
     #[tokio::test]
-    async fn observed_nodes_keep_transition_times_and_quiet_boundaries() {
+    async fn observed_nodes_keep_transition_times() {
         use alondra_core::views::{Client, Transport};
         let home = crate::test_support::Directory::new();
         fs::create_dir_all(&home).unwrap();
@@ -805,19 +795,15 @@ mod cache_tests {
         execute(&domain, Actor::System, "stop", Command::MoveNode { agent_id: "known".into(), event: alondra_core::domain::NodeEvent::TurnEnded, at: 0 });
         let since = domain.live.node("known").unwrap().state_since;
         let state = domain.state().unwrap();
-        let before = gather_at(&client, &state, Lang::En, &[], false, false, since + alondra_core::states::NODE_QUIET_MS - 1).await;
-        let quiet = gather_at(&client, &state, Lang::En, &[], false, false, since + alondra_core::states::NODE_QUIET_MS).await;
+        let before = gather_at(&client, &state, Lang::En, &[], false, false, since + 1).await;
+        let later = gather_at(&client, &state, Lang::En, &[], false, false, since + 30 * 60_000).await;
         assert_eq!(before.nodes[0].state_since, Some(timestamp(since)));
-        assert_eq!(quiet.nodes[0].state_since, before.nodes[0].state_since);
-        assert!(!before.nodes[0].quiet);
-        assert!(quiet.nodes[0].quiet);
+        assert_eq!(later.nodes[0].state_since, before.nodes[0].state_since);
         let before_view = client.views.render("fleet", &state, &before, Client::Mac, Lang::En, Transport::Loopback).unwrap();
-        let quiet_view = client.views.render("fleet", &state, &quiet, Client::Mac, Lang::En, Transport::Loopback).unwrap();
-        assert_ne!(quiet_view.cursor, before_view.cursor);
-        assert_eq!(client.views.build_count(), 2);
+        let later_view = client.views.render("fleet", &state, &later, Client::Mac, Lang::En, Transport::Loopback).unwrap();
+        assert_eq!(later_view, before_view, "time alone changes nothing a node shows");
         report(&domain, serde_json::json!({"session_id": "known", "event": "turn.complete", "answer": "New answer"}), since + 1_000);
-        let recent_answer = gather_at(&client, &state, Lang::En, &[], false, false, since + alondra_core::states::NODE_QUIET_MS).await;
-        assert!(!recent_answer.nodes[0].quiet, "a recent answer postpones quiet");
+        let recent_answer = gather_at(&client, &state, Lang::En, &[], false, false, since + 30 * 60_000).await;
         assert_eq!(recent_answer.nodes[0].last_message.as_deref(), Some("New answer"));
         assert_eq!(recent_answer.nodes[0].state_since, Some(timestamp(since)));
     }
@@ -847,7 +833,6 @@ mod cache_tests {
         assert_eq!(answer.nodes[0].last_message.as_deref(), Some("Done"));
         assert_eq!(answer.nodes[0].last_message_at, Some(timestamp(limit + 2)));
         assert!(answer.nodes[0].last_turn_aborted);
-        assert!(!answer.nodes[0].quiet);
         assert_eq!(answer.nodes[0].state_since, None);
         let answer_view = client.views.render("fleet", &state, &answer, Client::Mac, Lang::En, Transport::Loopback).unwrap();
         assert_ne!(answer_view.cursor, stalled_view.cursor);

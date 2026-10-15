@@ -1,0 +1,214 @@
+{
+  "protocol": 1,
+  "data_epoch": "test-epoch",
+  "view": "card",
+  "key": "card:unheard-t-651c38484cd2f34e74d5107ba05f7f15-90",
+  "client": "mac",
+  "version": "v085ef4d3ca52575f",
+  "cursor": "cursor-1",
+  "title": "«Restore the native review experience» se ha parado y te escribe",
+  "status": {
+    "version": "v202b578d49a36f2f",
+    "summary": "1 pregunta · 0 nodos trabajando",
+    "badge": 1,
+    "counts": [
+      {
+        "id": "inbox",
+        "label": "Bandeja",
+        "value": 1
+      },
+      {
+        "id": "tasks",
+        "label": "Tareas",
+        "value": 1
+      },
+      {
+        "id": "agents",
+        "label": "Flota",
+        "value": 1
+      },
+      {
+        "id": "working",
+        "label": "trabajando",
+        "value": 0
+      },
+      {
+        "id": "waiting",
+        "label": "esperando",
+        "value": 1
+      }
+    ],
+    "gauges": [
+      {
+        "id": "memory",
+        "label": "Memory",
+        "value": 0.38,
+        "text": "6.1 GB of 16 GB",
+        "level": "calm"
+      },
+      {
+        "id": "disk",
+        "label": "Disk available",
+        "value": 0.72,
+        "text": "120 GB",
+        "level": "calm"
+      }
+    ],
+    "orchestrator": {
+      "text": "inactivo",
+      "tone": "neutral"
+    }
+  },
+  "sections": [
+    {
+      "id": "card",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "card",
+          "id": "unheard-t-651c38484cd2f34e74d5107ba05f7f15-90",
+          "kind": "decide",
+          "need": "«Restore the native review experience» se ha parado y te escribe",
+          "why": "Han llegado las dos tandas, pero no sirven: el fallo estaba en mi montaje, no en tu red. Repite la tanda en móvil.",
+          "meta": "Alondra · iOS · Demo Garden",
+          "reply": {
+            "id": "reply:unheard-t-651c38484cd2f34e74d5107ba05f7f15-90@1",
+            "label": "Responder",
+            "style": "secondary",
+            "role": "neutral",
+            "presentation": "button",
+            "input": {
+              "kind": "text",
+              "placeholder": "Responder a Alondra · iOS…",
+              "required": true,
+              "multiline": true
+            },
+            "attachments": true,
+            "enabled": true,
+            "stamp": "Respondiste",
+            "key": "r",
+            "resolves_card": true
+          },
+          "more": [
+            {
+              "id": "clarify:unheard-t-651c38484cd2f34e74d5107ba05f7f15-90@1",
+              "label": "Pedir aclaración",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "options",
+              "options": [
+                {
+                  "id": "unclear",
+                  "label": "No se entiende",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                },
+                {
+                  "id": "contradicts",
+                  "label": "Se contradice",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                },
+                {
+                  "id": "missing_context",
+                  "label": "Le falta contexto",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                }
+              ],
+              "input": {
+                "kind": "text",
+                "placeholder": "¿Qué debe aclarar?",
+                "required": false,
+                "multiline": true
+              },
+              "attachments": false,
+              "enabled": true,
+              "stamp": "Aclaración solicitada",
+              "key": "c",
+              "resolves_card": false
+            }
+          ],
+          "link": {
+            "kind": "view",
+            "key": "card:unheard-t-651c38484cd2f34e74d5107ba05f7f15-90"
+          },
+          "icon": "question",
+          "eyebrow": {
+            "text": "Decidir",
+            "tone": "accent"
+          },
+          "title": "«Restore the native review experience» se ha parado y te escribe",
+          "subtitle": "Han llegado las dos tandas, pero no sirven: el fallo estaba en mi montaje, no en tu red. Repite la tanda en móvil.",
+          "context": [
+            {
+              "icon": "node",
+              "text": "Alondra · iOS",
+              "link": {
+                "kind": "view",
+                "key": "node:d887a34b-249e-4487-a89b-57de38c26372"
+              },
+              "chip": {
+                "text": "Demo Garden",
+                "tone": "neutral"
+              },
+              "state": {
+                "text": "Esperando respuesta",
+                "tone": "warning"
+              }
+            }
+          ],
+          "state": {
+            "text": "No bloquea",
+            "tone": "neutral"
+          },
+          "detail": "included",
+          "actions": [
+            {
+              "id": "ans:unheard-t-651c38484cd2f34e74d5107ba05f7f15-90@1",
+              "label": "Que siga",
+              "style": "secondary",
+              "role": "neutral",
+              "option_id": "carry_on",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "stamp": "Respondida",
+              "key": "1",
+              "resolves_card": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "context",
+      "title": "Contexto",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "facts",
+          "items": [
+            {
+              "label": "Tarea",
+              "value": "Restore the native review experience · Alondra · iOS",
+              "link": {
+                "kind": "view",
+                "key": "task:t-651c38484cd2f34e74d5107ba05f7f15"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

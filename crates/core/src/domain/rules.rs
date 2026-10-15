@@ -718,7 +718,7 @@ impl DomainState {
             }
         }
     }
-    fn retire(&mut self, id: &InteractionId) {
+    pub(super) fn retire(&mut self, id: &InteractionId) {
         if let Some(i) = self.interactions.get_mut(id) {
             i.withdrawn = true;
             i.revision = self.revision + 1;
@@ -2278,6 +2278,13 @@ impl DomainState {
             Command::MoveNode { agent_id, event, at } => {
                 system(actor)?;
                 self.move_node(agent_id, event, *at)?;
+            }
+            Command::RecordLastWords { agent_id, text } => {
+                system(actor)?;
+                if !self.agents.contains_key(agent_id) {
+                    return fail("not_found", "Agent missing");
+                }
+                self.last_words.insert(agent_id.clone(), clip(text.trim(), LAST_WORDS_MAX));
             }
             Command::ReconcileNodes { listed, at } => {
                 system(actor)?;

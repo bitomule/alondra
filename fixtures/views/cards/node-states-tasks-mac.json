@@ -4,7 +4,7 @@
   "view": "tasks",
   "key": "tasks",
   "client": "mac",
-  "version": "v99b7af1c5762aaee",
+  "version": "v046251beb9340424",
   "cursor": "cursor-1",
   "title": "Tasks",
   "status": {
@@ -196,10 +196,9 @@
               },
               "icon": "mission",
               "title": "Release the daemon",
-              "subtitle": "“./deploy/brew/release.sh 0.2.67” · since 09:36",
               "badges": [
                 {
-                  "text": "Waiting for its command",
+                  "text": "Working",
                   "tone": "accent"
                 }
               ],

@@ -461,7 +461,7 @@ pub(super) fn from_item(item: &InboxItem, context: &RenderContext<'_>, included:
         .map(|at| vec![Stamp { role: "created".into(), at: at.into(), format: TimeFormat::Relative }])
         .unwrap_or_default();
     let (blocks, blocked_by) = chips(item, context);
-    let (need, why) = match interaction.and_then(|i| start_problem_text(i, domain, lang).or_else(|| pace_text(i, domain, lang))) {
+    let (need, why) = match interaction.and_then(|i| own_text(i, domain, lang)) {
         Some((need, why)) => (need, Some(why)),
         None => (
             humanize_task_ids(&spec.need, domain),
@@ -791,6 +791,37 @@ fn start_problem_text(interaction: &Interaction, domain: &DomainState, lang: Lan
     start_problem_card(interaction, domain, lang).map(|card| (card.need, card.why))
 }
 
+/// What one of Alondra's own cards asks and why, in the viewer's language; `None` for a card
+/// someone worded.
+pub(super) fn own_text(interaction: &Interaction, domain: &DomainState, lang: Lang) -> Option<(String, String)> {
+    start_problem_text(interaction, domain, lang).or_else(|| pace_text(interaction, domain, lang)).or_else(|| unheard_text(interaction, domain, lang))
+}
+
+/// What a node said last, when the card holds its words: the task's row shows them.
+pub(super) fn node_words(interaction: &Interaction) -> Option<&str> {
+    (interaction.id.0.starts_with(crate::domain::UNHEARD_PREFIX) && interaction.body.trim() != interaction.card.need.trim())
+        .then_some(interaction.card.why.trim())
+}
+
+/// The card with the last words of a node whose turn ended with nothing for the user, in the
+/// viewer's language.
+fn unheard_text(interaction: &Interaction, domain: &DomainState, lang: Lang) -> Option<(String, String)> {
+    if !interaction.id.0.starts_with(crate::domain::UNHEARD_PREFIX) {
+        return None;
+    }
+    let Scope::Task { task_id } = &interaction.scope else { return None };
+    let title = domain.tasks.get(task_id)?.title.as_str();
+    let silent = interaction.body.trim() == interaction.card.need.trim();
+    if !silent {
+        let need = tf!(lang, "“{title}” stopped and wrote to you", "«{title}» se ha parado y te escribe");
+        return Some((clip(&need, CardSpec::NEED_MAX), interaction.card.why.clone()));
+    }
+    let need = tf!(lang, "“{title}” stopped without a word", "«{title}» se ha parado sin decir nada");
+    Some((clip(&need, CardSpec::NEED_MAX), t!(lang,
+        "Its turn ended without a result or a question for you. Answer it, or write to it, and it goes on.",
+        "Terminó su turno sin un resultado ni una pregunta para ti. Respóndele o escríbele y sigue.").into()))
+}
+
 /// What Alondra's own cards about the pace of the week's usage, about the machine and about a task
 /// that ended with a card unanswered say, in the viewer's language.
 fn pace_text(interaction: &Interaction, domain: &DomainState, lang: Lang) -> Option<(String, String)> {
@@ -859,6 +890,11 @@ fn fixed_option_text(interaction: &Interaction, option: &QuestionOption, lang: L
             Some(t!(lang, "Nothing starts and nodes wait until midnight, then carry on", "No arranca nada y los nodos esperan hasta medianoche; luego continúan")),
         ),
         ("keep_going", "Keep going") => (t!(lang, "Keep going", "Seguir"), None),
+        (crate::domain::CARRY_ON, crate::domain::CARRY_ON_LABEL) => (
+            t!(lang, "Carry on", "Que siga"),
+            Some(t!(lang, "It goes on with its task and asks you through a card when it needs you",
+                "Sigue con su tarea y te pregunta con una tarjeta cuando te necesite")),
+        ),
         ("fixed", "I've fixed it") => (
             t!(lang, "I've fixed it", "Ya lo he arreglado"),
             Some(t!(lang, "Alondra measures again now and wakes the nodes if the Mac is fine", "Alondra vuelve a medir ahora y despierta a los nodos si el Mac está bien")),

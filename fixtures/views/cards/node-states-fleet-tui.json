@@ -4,7 +4,7 @@
   "view": "fleet",
   "key": "fleet",
   "client": "tui",
-  "version": "v9491fe284b84ef67",
+  "version": "v53f2b76905edd3a8",
   "cursor": "cursor-1",
   "title": "Flota",
   "status": {
@@ -163,7 +163,7 @@
           "title": "Release the daemon",
           "badges": [
             {
-              "text": "Esperando su comando",
+              "text": "Trabajando",
               "tone": "info"
             }
           ],

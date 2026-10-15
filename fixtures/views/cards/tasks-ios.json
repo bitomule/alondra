@@ -4,7 +4,7 @@
   "view": "tasks",
   "key": "tasks",
   "client": "ios",
-  "version": "veb213e3570fe72c6",
+  "version": "v34db278c3c562f60",
   "cursor": "cursor-1",
   "title": "Tasks",
   "status": {
@@ -314,42 +314,6 @@
           "struck": false,
           "children": [
             {
-              "id": "t-hf-share-hint",
-              "link": {
-                "kind": "view",
-                "key": "task:t-hf-share-hint"
-              },
-              "icon": "notice",
-              "title": "Photos extension hint after the first blur",
-              "subtitle": "No activity",
-              "badges": [
-                {
-                  "text": "No activity",
-                  "tone": "warning"
-                }
-              ],
-              "trailing": {
-                "kind": "count",
-                "value": 0
-              },
-              "depth": 1,
-              "struck": false,
-              "children": [
-                {
-                  "id": "activity",
-                  "icon": "notice",
-                  "title": "Said: “Waiting for the snapshot run to finish.” · BlurCamera · weekly improvement",
-                  "trailing": {
-                    "kind": "time",
-                    "at": "2026-09-30T07:00:00.000Z",
-                    "format": "relative"
-                  },
-                  "depth": 0,
-                  "struck": false
-                }
-              ]
-            },
-            {
               "id": "t-hf-registry",
               "link": {
                 "kind": "view",
@@ -375,6 +339,37 @@
                   "id": "activity",
                   "icon": "notice",
                   "title": "Claude Code doesn't trust ~/Projects/indie-apps · BlurCamera · weekly improvement",
+                  "depth": 0,
+                  "struck": false
+                }
+              ]
+            },
+            {
+              "id": "t-hf-share-hint",
+              "link": {
+                "kind": "view",
+                "key": "task:t-hf-share-hint"
+              },
+              "icon": "mission",
+              "title": "Photos extension hint after the first blur",
+              "subtitle": "Paused",
+              "badges": [
+                {
+                  "text": "Paused",
+                  "tone": "neutral"
+                }
+              ],
+              "trailing": {
+                "kind": "count",
+                "value": 0
+              },
+              "depth": 1,
+              "struck": false,
+              "children": [
+                {
+                  "id": "activity",
+                  "icon": "notice",
+                  "title": "You paused it · BlurCamera · weekly improvement",
                   "depth": 0,
                   "struck": false
                 }

@@ -350,6 +350,18 @@ final class MacWorkspaceSnapshotTests: XCTestCase {
         assertWindow(size: CGSize(width: 900, height: 520)) { MacServiceDetail(presentation: store) }
     }
 
+    /// A node whose turn ended with nothing for the user: what it wrote in its terminal is a card.
+    func test_card_aNodesLastWords_spanish() throws {
+        let store = try presentation(detail: "card-unheard-es-mac", spanish: true)
+        assertWindow(size: CGSize(width: 900, height: 620), spanish: true) { MacServiceDetail(presentation: store) }
+    }
+
+    /// A node that waits for its own command is working, and the command is not shown.
+    func test_fleet_aNodeWaitingForItsCommandIsWorking() throws {
+        let store = try presentation(detail: "node-states-fleet-mac")
+        assertWindow(size: CGSize(width: 900, height: 520)) { MacServiceDetail(presentation: store) }
+    }
+
     // MARK: One connection state, every indicator
 
     /// A view picked in the saved sidebar that never loaded, while the Mac is not answering: the

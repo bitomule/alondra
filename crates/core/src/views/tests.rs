@@ -169,8 +169,6 @@ fn render<'a>(
         let Some(agent) = domain.agents.get_mut(&node.agent_id.as_str().into()).filter(|agent| agent.phase.live()) else { continue };
         if node.disconnected {
             agent.phase = NodePhase::Closed;
-        } else if node.quiet && !node.working {
-            agent.phase = NodePhase::Stopped;
         }
     }
     domain.settle_nodes();
@@ -505,7 +503,7 @@ fn golden_fixture() -> DomainState {
     if let Some(mut agent) = state.agents.remove(&"a-1".into()) {
         agent.id = agent_id.into();
         agent.name = "Alondra · iOS".into();
-        agent.phase = NodePhase::Stopped;
+        agent.phase = NodePhase::WaitingUser { in_turn: false };
         state.agents.insert(agent.id.clone(), agent);
     }
     if let Some(interaction) = state.interactions.get_mut(&"i-1".into()) {
@@ -686,14 +684,15 @@ fn tasks_fixture() -> (DomainState, LiveSnapshot) {
     add_task(&mut state, "t-hf-registry", "r-blurcamera", "Link the website in app.json", TaskState::NotStarted, &[]);
     add_task(&mut state, "t-hf-paywall", "r-blurcamera", "Lifetime offer when the paywall closes", TaskState::Done, &[]);
     add_task(&mut state, "t-hf-post", "r-blurcamera", "Post: blur faces in a video on iPhone", TaskState::Done, &[]);
-    state.agents.insert("a-hf".into(), Agent { id: "a-hf".into(), name: "BlurCamera hint".into(), phase: NodePhase::Working, since: 0 });
+    let paused = Pause { reason: PauseReason::ByUser, since: 0, cut: None, turn_since: None, cleanup: PauseCleanup::Done, released: false };
+    state.agents.insert("a-hf".into(), Agent { id: "a-hf".into(), name: "BlurCamera hint".into(), phase: NodePhase::Paused(paused), since: 0 });
     for (task, agent) in [("t-badge-count", "a-badge"), ("t-scheduled-lumo", "a-lumo")] {
         state.agents.insert(agent.into(), Agent { id: agent.into(), name: agent.into(), phase: NodePhase::Working, since: 0 });
         state.tasks.get_mut(&task.into()).unwrap().agent_id = Some(agent.into());
     }
     state.tasks.get_mut(&"t-hf-share-hint".into()).unwrap().agent_id = Some("a-hf".into());
     live.nodes.push(LiveNode {
-        agent_id: "a-hf".into(), name: "BlurCamera hint".into(), quiet: true,
+        agent_id: "a-hf".into(), name: "BlurCamera hint".into(),
         state_since: Some("2026-09-30T07:00:00.000Z".into()),
         last_message: Some("Waiting for the snapshot run to finish.".into()),
         last_message_at: Some("2026-09-30T07:00:00.000Z".into()),
@@ -1544,20 +1543,25 @@ fn a_task_that_has_not_started_says_what_refused_its_launch() {
     assert!(!task_line(&state, &live, Lang::Es).contains("Sin empezar"));
 }
 
+/// 14 October: t-holepunch-iroh-prototype ended its turn with no card and said «Sin actividad» on
+/// every screen. A running task's node works or waits on a card in front of the user: no phase of
+/// it reads as doing nothing, and one at rest is in «For you» with the card that holds its words.
 #[test]
-fn a_running_task_whose_node_does_nothing_says_no_activity_instead_of_working() {
-    let mut state = fixture();
-    state.interactions.clear();
-    let task = state.tasks.get_mut(&"t-1".into()).unwrap();
-    task.state = TaskState::Running;
-    task.agent_id = Some("a-1".into());
-    let mut live = LiveSnapshot::default();
-    live.nodes.push(LiveNode { agent_id: "a-1".into(), name: "Node One".into(), ..LiveNode::default() });
-    assert_eq!(task_state_text(&state, &live, Lang::Es), "Trabajando");
-    live.nodes[0].quiet = true;
-    assert_eq!(task_state_text(&state, &live, Lang::Es), "Sin actividad");
-    assert_eq!(task_state_text(&state, &live, Lang::En), "No activity");
-    assert_eq!(active_row(&state, &live, Client::Mac, Lang::En, "t-1").0, "block:waiting", "a node doing nothing has no card, so it never says it waits for the user");
+fn a_running_task_never_says_no_activity_whatever_its_node_does() {
+    let work = Background { work: crate::model::BackgroundKind::Shell, label: "./listen-at-home.sh".into(), since: 0, others: 0 };
+    for phase in [NodePhase::Working, NodePhase::WaitingBackground(work), NodePhase::Resuming { idle_since: None },
+        NodePhase::Resuming { idle_since: Some(0) }, NodePhase::WaitingUser { in_turn: false }, NodePhase::WaitingUser { in_turn: true }]
+    {
+        let mut state = fixture();
+        node_in(&mut state, phase.clone());
+        let mut live = LiveSnapshot::default();
+        live.nodes.push(LiveNode { agent_id: "a-1".into(), name: "Node One".into(), ..LiveNode::default() });
+        for (screen, text) in every_screen(&state, &live) {
+            for wrong in ["Sin actividad", "No activity", "Detenido"] {
+                assert!(!text.contains(wrong), "{phase:?} on {screen} says {wrong}: {text}");
+            }
+        }
+    }
 }
 
 #[test]
@@ -1568,13 +1572,12 @@ fn a_running_task_whose_node_session_closed_says_it_stopped_never_working_nor_no
     task.state = TaskState::Running;
     task.agent_id = Some("a-1".into());
     let mut live = LiveSnapshot::default();
-    live.nodes.push(LiveNode { agent_id: "a-1".into(), name: "Node One".into(), quiet: true, disconnected: true, ..LiveNode::default() });
+    live.nodes.push(LiveNode { agent_id: "a-1".into(), name: "Node One".into(), disconnected: true, ..LiveNode::default() });
     assert_eq!(task_state_text(&state, &live, Lang::Es), "Detenida");
     assert_eq!(task_state_text(&state, &live, Lang::En), "Stopped");
     let (block, row) = active_row(&state, &live, Client::Mac, Lang::Es, "t-1");
     assert_eq!((block.as_str(), row.subtitle.as_deref()), ("block:for-you", Some("Su sesión se cerró sin que entregara")));
     live.nodes[0].disconnected = false;
-    live.nodes[0].quiet = false;
     let mut reviving = state.clone();
     reviving.agents.insert("a-1".into(), Agent { id: "a-1".into(), name: "Node One".into(), phase: NodePhase::Starting { reviving: true }, since: 0 });
     assert_eq!(task_state_text(&reviving, &live, Lang::Es), "Reconectando");
@@ -1634,30 +1637,25 @@ fn every_screen(state: &DomainState, live: &LiveSnapshot) -> Vec<(String, String
 }
 
 /// 13 October, the release of 0.2.67: the node ran the release script in the background and ended
-/// its turn to wait for it. Its task and Fleet say it waits for its command, with the command and
-/// since when, never «Sin conexión», «Sin actividad» or «Detenido».
+/// its turn to wait for it. A node that waits for its own command is working: its task and Fleet
+/// say «Trabajando» on every screen, and no screen shows the command.
 #[test]
-fn a_task_whose_node_waits_for_its_own_command_says_so_with_the_command_on_every_screen() {
+fn a_task_whose_node_waits_for_its_own_command_says_working_without_the_command_on_every_screen() {
     let mut state = fixture();
     let work = Background { work: crate::model::BackgroundKind::Shell, label: "./deploy/brew/release.sh 0.2.67".into(), since: 0, others: 0 };
     node_in(&mut state, NodePhase::WaitingBackground(work));
     let mut live = LiveSnapshot::default();
-    live.nodes.push(LiveNode { agent_id: "a-1".into(), name: "Node One".into(), background_since: Some("14:36".into()), ..LiveNode::default() });
-    assert_eq!(task_state_text(&state, &live, Lang::Es), "Esperando su comando");
-    assert_eq!(task_state_text(&state, &live, Lang::En), "Waiting for its command");
-    let (block, row) = active_row(&state, &live, Client::Mac, Lang::Es, "t-1");
-    assert_eq!((block.as_str(), row.subtitle.as_deref()), ("block:in-progress", Some("«./deploy/brew/release.sh 0.2.67» · desde las 14:36")));
+    live.nodes.push(LiveNode { agent_id: "a-1".into(), name: "Node One".into(), ..LiveNode::default() });
+    assert_eq!(task_state_text(&state, &live, Lang::Es), "Trabajando");
+    assert_eq!(task_state_text(&state, &live, Lang::En), "Working");
+    let (block, _) = active_row(&state, &live, Client::Mac, Lang::Es, "t-1");
+    assert_eq!(block, "block:in-progress");
     for (screen, text) in every_screen(&state, &live) {
-        assert!(text.contains("Esperando su comando"), "{screen}: {text}");
-        for wrong in ["Sin conexión", "Sin actividad", "Detenido", "Trabajando"] {
+        assert!(text.contains("Trabajando"), "{screen}: {text}");
+        for wrong in ["release.sh", "Esperando su comando", "Sin conexión", "Sin actividad", "Detenido"] {
             assert!(!text.contains(wrong), "{screen} says {wrong}: {text}");
         }
     }
-    live.activity.insert("a-1".into(), vec![LiveActivity { agent_id: None, agent_type: None, task: Some("t-1".into()), tool: None, summary: None,
-        since: "2026-10-13T14:36:28Z".into() }]);
-    let node = serde_json::to_string(&render(&state, &live, Client::Ios, Lang::Es, "node:a-1", "")).unwrap();
-    assert!(node.contains("«./deploy/brew/release.sh 0.2.67» · desde las 14:36"), "{node}");
-    assert!(!node.contains("Trabajando") && !node.contains("Ahora mismo"), "what a turn does right now is no state of a node out of its turn: {node}");
 }
 
 /// 13 October: the node of «Sesión desaparecida con nodo “conectado”» sat paused for memory from
@@ -1883,7 +1881,7 @@ fn each_fleet_node_shows_its_one_phase_and_a_closed_one_leaves() {
         ("home-zero", NodePhase::Working, "t-home-counters-zero", TaskState::Done),
         ("claude-mods", NodePhase::Working, "t-claude-mods-analysis", TaskState::Done),
         ("busy", NodePhase::Working, "t-busy", TaskState::Running),
-        ("idle", NodePhase::Stopped, "t-idle", TaskState::Running),
+        ("idle", NodePhase::Resuming { idle_since: None }, "t-idle", TaskState::Running),
     ] {
         state.agents.insert(agent.into(), Agent { id: agent.into(), name: agent.into(), phase, since: 0 });
         let mut row = template.clone();
@@ -1911,7 +1909,7 @@ fn each_fleet_node_shows_its_one_phase_and_a_closed_one_leaves() {
     for (agent, text, tone) in [
         ("one-task", "Entrega resultado", Tone::Success),
         ("busy", "Trabajando", Tone::Info),
-        ("idle", "Detenido", Tone::Warning),
+        ("idle", "Trabajando", Tone::Info),
     ] {
         let row = found(agent).unwrap();
         assert_eq!(row.title, "Build a feature", "{agent}");
@@ -2521,6 +2519,47 @@ fn mac_views_match_goldens() {
         ("node-mac.json", "node:d887a34b-249e-4487-a89b-57de38c26372", include_str!("../../../../fixtures/views/cards/node-mac.json")),
     ] {
         let actual = render(&state, &live, Client::Mac, Lang::En, key, "2026-09-30T10:00:00Z");
+        assert_golden(filename, &actual, expected);
+    }
+}
+
+/// The golden fixture with the node of its task stopped after writing to the user in its
+/// terminal: its last words wait for the user in a card.
+fn unheard_fixture() -> (DomainState, LiveSnapshot, String) {
+    let mut state = golden_fixture();
+    let task = crate::domain::TaskId::from("t-651c38484cd2f34e74d5107ba05f7f15");
+    let agent = crate::domain::AgentId::from("d887a34b-249e-4487-a89b-57de38c26372");
+    state.tasks.get_mut(&task).unwrap().agent_id = Some(agent.clone());
+    let said = "Han llegado las dos tandas, pero no sirven: el fallo estaba en mi montaje, no en tu red. Repite la tanda en móvil.";
+    let mut card = state.interactions.values().find(|i| matches!(i.payload, InteractionPayload::Question { answer: None, .. })
+        && i.recipient == Recipient::User && !i.withdrawn).expect("the fixture asks the user something").clone();
+    let id = format!("{}{task}-90", crate::domain::UNHEARD_PREFIX);
+    (card.id, card.scope, card.author, card.body) = (id.as_str().into(), Scope::Task { task_id: task.clone() }, Author::Agent { agent_id: agent.clone() }, said.into());
+    card.payload = InteractionPayload::Question {
+        options: vec![QuestionOption { id: crate::domain::CARRY_ON.into(), label: crate::domain::CARRY_ON_LABEL.into(), description: None }],
+        answer: None,
+    };
+    card.card = crate::domain::CardSpec::new(crate::domain::CardKind::Decide, "stopped and wrote to you").why(said);
+    (card.subject, card.blocking) = (None, false);
+    state.interactions.retain(|_, i| !(i.recipient == Recipient::User && matches!(i.scope, Scope::Task { ref task_id } if *task_id == task)));
+    state.interactions.insert(card.id.clone(), card);
+    state.agents.get_mut(&agent).unwrap().phase = NodePhase::WaitingUser { in_turn: false };
+    (state, golden_live(), id)
+}
+
+const UNHEARD_GOLDENS: [(&str, Client, &str); 2] = [
+    ("card-unheard-ios-es.json", Client::Ios, include_str!("../../../../fixtures/views/cards/card-unheard-ios-es.json")),
+    ("card-unheard-es-mac.json", Client::Mac, include_str!("../../../../fixtures/views/cards/card-unheard-es-mac.json")),
+];
+
+/// The card with a node's last words, in Spanish, as the iPhone and the Mac draw it.
+#[test]
+fn unheard_card_views_match_goldens() {
+    let (state, live, id) = unheard_fixture();
+    for (filename, client, expected) in UNHEARD_GOLDENS {
+        let actual = render(&state, &live, client, Lang::Es, &format!("card:{id}"), "2026-09-30T10:00:00Z");
+        let shown = serde_json::to_string(&actual).unwrap();
+        assert!(shown.contains("se ha parado y te escribe") && shown.contains("Que siga"), "{filename}: {shown}");
         assert_golden(filename, &actual, expected);
     }
 }
@@ -3288,7 +3327,7 @@ fn an_ios_fleet_item_is_the_node_and_its_one_task_without_readings() {
     assert!(interrupt.confirm.is_some());
 
     live.nodes[0].working = false;
-    state.agents.get_mut(&"a-1".into()).unwrap().phase = NodePhase::Stopped;
+    state.agents.get_mut(&"a-1".into()).unwrap().phase = NodePhase::WaitingUser { in_turn: false };
     state.agents.get_mut(&"a-1".into()).unwrap().name = "alondra-ios".into();
     let resting = item(&state, &live);
     assert!(resting.subtitle.is_none() && resting.children.is_empty(), "what it said last is on the node's screen");
@@ -3424,7 +3463,7 @@ fn node_detail_names_its_state_and_since_when() {
 #[test]
 fn node_detail_without_live_data_names_its_state_not_its_connection() {
     let mut state = fixture();
-    state.agents.get_mut(&"a-1".into()).unwrap().phase = NodePhase::Stopped;
+    state.agents.get_mut(&"a-1".into()).unwrap().phase = NodePhase::WaitingUser { in_turn: false };
     let view = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::En, "node:a-1", "2026-09-30T10:00:00Z");
     let Item::Facts(facts) = &view.sections.iter().find(|section| section.id == "header").unwrap().items[0] else {
         panic!("header facts")
@@ -5074,7 +5113,7 @@ fn fleet_fixture() -> (DomainState, LiveSnapshot) {
     let template = golden_task.clone();
     let golden_request = template.request_id.0.clone();
     for (agent, request, title, task_state, phase) in [
-        ("queued", golden_request.as_str(), "Wire the badge after the review", TaskState::WaitingDependency, NodePhase::Stopped),
+        ("queued", golden_request.as_str(), "Wire the badge after the review", TaskState::WaitingDependency, NodePhase::WaitingDependency),
         ("zeta-worker", "r-zeta", "Build the importer", TaskState::Running, NodePhase::Working),
         ("alpha-waiting", "r-alpha", "Plan the migration", TaskState::NotStarted, NodePhase::Starting { reviving: false }),
         ("finished-yesterday", golden_request.as_str(), "Ship the compact editor", TaskState::Done, NodePhase::Closed),
@@ -5127,8 +5166,7 @@ fn node_states_fixture() -> (DomainState, LiveSnapshot) {
         let mut task = template.clone();
         (task.id, task.agent_id, task.title) = (format!("t-{agent}").into(), Some(agent.into()), title.into());
         state.tasks.insert(task.id.clone(), task);
-        live.nodes.push(LiveNode { agent_id: agent.into(), name: agent.into(), project: Some("Zeta".into()),
-            background_since: (agent == "release-runner").then(|| "09:36".into()), ..LiveNode::default() });
+        live.nodes.push(LiveNode { agent_id: agent.into(), name: agent.into(), project: Some("Zeta".into()), ..LiveNode::default() });
     }
     live.pacing = Some(LivePacing { working: 2, limit: 6, fixed: None, auto: 6, memory_free: Some(40), tight: false, queued: vec![],
         paused: vec![LivePaused { task_id: "t-paused-builder".into(), session: Some("paused-builder".into()), at: "09:40".into(),
@@ -5190,12 +5228,18 @@ fn a_node_with_no_project_anywhere_is_in_other_after_the_named_projects() {
     let (mut state, live) = fleet_fixture();
     let mut task = state.tasks[&"t-queued".into()].clone();
     state.requests.insert("r-orphan".into(), Request::new("r-orphan".into(), "Orphan".into()));
-    state.agents.insert("orphan".into(), Agent { id: "orphan".into(), name: "orphan".into(), phase: NodePhase::Stopped, since: 0 });
+    state.agents.insert("orphan".into(), Agent { id: "orphan".into(), name: "orphan".into(), phase: NodePhase::WaitingUser { in_turn: false }, since: 0 });
     task.id = "t-orphan".into();
     task.request_id = "r-orphan".into();
     task.agent_id = Some("orphan".into());
     task.state = TaskState::NeedsYou;
     state.tasks.insert(task.id.clone(), task);
+    let mut question = state.interactions.values().find(|i| matches!(i.payload, InteractionPayload::Question { answer: None, .. })
+        && i.recipient == Recipient::User && !i.withdrawn).expect("the fixture asks the user something").clone();
+    (question.id, question.scope, question.author) = ("orphan-asks".into(), Scope::Task { task_id: "t-orphan".into() },
+        Author::Agent { agent_id: "orphan".into() });
+    question.card.group = None;
+    state.interactions.insert(question.id.clone(), question);
     let view = render(&state, &live, Client::Ios, Lang::En, "fleet", "");
     let ids = section_ids(&view);
     assert_eq!(&ids[0..3], ["project:Demo Garden", "project:Other", "project:Zeta"],
@@ -6155,7 +6199,7 @@ fn an_untrusted_folder_card_speaks_the_users_language_and_offers_no_reply() {
     use crate::domain::{Actor, Command, CommandEnvelope, StartProblem};
     let mut state = failed_launch_fixture("Workspace not trusted.\n");
     let raise = |state: &mut DomainState, problem: StartProblem| {
-        state.execute(&Actor::System, &CommandEnvelope {
+        state.execute(&crate::domain::Actor::System, &crate::domain::CommandEnvelope {
             protocol_version: 2, data_epoch: state.data_epoch.clone(), command_id: format!("c-{}", state.revision).into(),
             expected_revision: state.revision, command: Command::RaiseStartProblem { task_id: "t-1".into(), problem },
         }).unwrap();

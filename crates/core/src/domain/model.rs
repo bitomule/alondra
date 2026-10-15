@@ -895,6 +895,10 @@ pub struct DomainState {
     /// The points each final delivery marked done, with their evidence.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub checklist_marks: BTreeMap<InteractionId, Vec<ChecklistMark>>,
+    /// What each node said last when a turn of it ended: what the user reads if that turn ended
+    /// with nothing for them.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub last_words: BTreeMap<AgentId, String>,
 }
 impl DomainState {
     pub fn new(epoch: impl Into<DataEpoch>) -> Self {
@@ -917,6 +921,7 @@ impl DomainState {
             holds: BTreeMap::new(),
             checklists: BTreeMap::new(),
             checklist_marks: BTreeMap::new(),
+            last_words: BTreeMap::new(),
         }
     }
     /// The orchestrator has neither defined it into Tasks nor closed it.

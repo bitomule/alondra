@@ -458,32 +458,6 @@ pub(super) fn orchestrator_state(context: &RenderContext<'_>) -> OrchestratorSta
 }
 
 
-/// What a node waits for when its turn ended behind work of its own: "Waiting for its command".
-pub(super) fn background_label(work: &crate::domain::Background, lang: super::Lang) -> &'static str {
-    match work.work {
-        crate::model::BackgroundKind::Shell => t!(lang, "Waiting for its command", "Esperando su comando"),
-        crate::model::BackgroundKind::Agent => t!(lang, "Waiting for its subagent", "Esperando su subagente"),
-        crate::model::BackgroundKind::Other => t!(lang, "Waiting for its background work", "Esperando su trabajo en segundo plano"),
-    }
-}
-
-/// "“make test” · since 14:36 · 1 more": the work a node waits for, from when, and what else runs.
-pub(super) fn background_fact(work: &crate::domain::Background, since: Option<&str>, lang: super::Lang) -> String {
-    use super::text::tf;
-    let label = &work.label;
-    let mut fact = tf!(lang, "“{label}”", "«{label}»");
-    if let Some(at) = since {
-        fact.push_str(" · ");
-        fact.push_str(&tf!(lang, "since {at}", "desde las {at}"));
-    }
-    match work.others {
-        0 => {}
-        1 => fact.push_str(t!(lang, " · 1 more", " · 1 más")),
-        others => fact.push_str(&tf!(lang, " · {others} more", " · {others} más")),
-    }
-    fact
-}
-
 /// A node whose turn is under way yet stopped processing, or whose session Claude Code says
 /// failed: Fleet and the node's task say it alike.
 pub(super) fn halted(agent: &crate::domain::AgentId, context: &RenderContext<'_>) -> Option<super::Label> {

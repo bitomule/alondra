@@ -48,8 +48,6 @@ pub const BACKGROUND_SUSPECT_MS: Millis = 30 * MINUTE;
 /// A declared wait for the machine lapses when nothing happens for this long and the machine
 /// is fine.
 pub const MACHINE_WAIT_QUIET_MS: Millis = 20 * MINUTE;
-/// A node of a running task that has done nothing for this long says so instead of "Working".
-pub const NODE_QUIET_MS: Millis = 30 * MINUTE;
 /// After David types into a node's terminal, he counts as watching it for this long.
 pub const WATCH_WINDOW_MS: Millis = 10 * MINUTE;
 /// A usage limit (StopFailure) keeps the node waiting for this long at most.

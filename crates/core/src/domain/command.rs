@@ -105,6 +105,11 @@ pub enum Command {
         event: NodeEvent,
         at: Millis,
     },
+    /// What a node said last as a turn of it ended.
+    RecordLastWords {
+        agent_id: AgentId,
+        text: String,
+    },
     /// What the listing of real sessions says of each node Alondra launched, absent included.
     ReconcileNodes {
         listed: BTreeMap<AgentId, Listed>,

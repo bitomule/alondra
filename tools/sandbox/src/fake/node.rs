@@ -533,7 +533,7 @@ fn tool_of(step: &Step) -> Option<(String, Value)> {
         Step::Deliver { .. } => mcp("present_result"),
         Step::Ask { .. } => mcp("ask"),
         Step::Cleanup => mcp("cleanup_done"),
-        Step::End | Step::Die => None,
+        Step::Speak { .. } | Step::End | Step::Die => None,
     }
 }
 
@@ -599,6 +599,23 @@ fn perform(fakes: &Fakes, node: &Node, step: &Step) -> Result<mcp::Reply> {
             }))
         }
         Step::Cleanup => tool(fakes, node, "cleanup_done", json!({"task_id": task()?})),
+        Step::Speak { said, behind, listed } => {
+            let turn = format!("speak-{}", hex(&random::<3>()?));
+            write_job(node, "working")?;
+            hook(fakes, node, "UserPromptSubmit", json!({"prompt": "go on"}))?;
+            event(fakes, node, json!({"event": "turn.start", "turn_id": turn}))?;
+            let mut stop = json!({"stop_hook_active": false, "last_assistant_message": said});
+            if let Some(command) = behind {
+                stop["background_tasks"] = json!([{"id": format!("bg-{turn}"), "type": "shell", "command": command, "status": "running"}]);
+            }
+            if hook(fakes, node, "Stop", stop.clone())?["decision"] == "block" {
+                stop["stop_hook_active"] = json!(true);
+                hook(fakes, node, "Stop", stop)?;
+            }
+            write_job(node, listed.as_deref().unwrap_or("blocked"))?;
+            event(fakes, node, json!({"event": "turn.complete", "turn_id": turn, "answer": said}))?;
+            Ok(done("said"))
+        }
         Step::End => {
             end(fakes, &node.short, State::Stopped)?;
             Ok(done("ended"))
@@ -723,7 +740,7 @@ pub fn command(fakes: &Fakes, order: Order) -> Result<()> {
                 Some(json) => vec![serde_json::from_str(&json).context("--step is one step as JSON")?],
                 None => steps_for(fakes, &node, &verb)?,
             };
-            let ends = steps.iter().any(|step| matches!(step, Step::End | Step::Die));
+            let ends = steps.iter().any(|step| matches!(step, Step::Speak { .. } | Step::End | Step::Die));
             for step in steps {
                 let outcome = act(fakes, &node, &step)?;
                 println!("{} {}: {}", if outcome.ok { "ok" } else { "refused" }, serde_json::to_string(&step)?, outcome.text);

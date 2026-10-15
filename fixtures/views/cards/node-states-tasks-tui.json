@@ -4,7 +4,7 @@
   "view": "tasks",
   "key": "tasks",
   "client": "tui",
-  "version": "vadb7808ed01bf239",
+  "version": "vd32a71e36f5d880f",
   "cursor": "cursor-1",
   "title": "Tareas",
   "status": {
@@ -191,10 +191,9 @@
               },
               "icon": "mission",
               "title": "Release the daemon",
-              "subtitle": "«./deploy/brew/release.sh 0.2.67» · desde las 09:36",
               "badges": [
                 {
-                  "text": "Esperando su comando",
+                  "text": "Trabajando",
                   "tone": "accent"
                 }
               ],

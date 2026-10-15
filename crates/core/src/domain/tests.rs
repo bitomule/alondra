@@ -2993,9 +2993,10 @@ fn variant_index(c: &Command) -> usize {
         Command::DeclarePostMergeWork { .. } => 57,
         Command::BindOrchestratorSession { .. } => 58,
         Command::RaiseStartProblem { .. } => 59,
+        Command::RecordLastWords { .. } => 60,
     }
 }
-const COMMAND_KINDS: usize = 60;
+const COMMAND_KINDS: usize = 61;
 /// Every command kind naming the given ids. The flag marks commands that only
 /// create a fresh entity and therefore may succeed with an unknown id.
 fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
@@ -3031,6 +3032,7 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
         (Command::CloseRequest { request_id: ids.request.into(), answer: None, withdrawn: false, title: None }, false),
         (Command::RegisterAgent { agent_id: ids.agent.into(), name: "Ghost".into(), at: 0 }, true),
         (Command::MoveNode { agent_id: ids.agent.into(), event: NodeEvent::TurnStarted, at: 0 }, false),
+        (Command::RecordLastWords { agent_id: ids.agent.into(), text: "Done for now".into() }, false),
         (Command::AdvanceOrchestratorGeneration { generation: 1 }, true),
         (Command::BindOrchestratorSession { session_id: ids.agent.into() }, true),
         (Command::CreateTask { task_id: "fresh-task".into(), request_id: ids.request.into(),

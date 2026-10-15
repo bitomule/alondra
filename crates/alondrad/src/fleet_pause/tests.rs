@@ -174,9 +174,9 @@ impl Fleet {
 
     /// The node holds a pause for memory an older daemon made, as the upgrade finds it.
     fn paused_for_memory_before(&self, task: &str, now: Millis) {
-        self.end_turn(task, now);
         let pause = Pause { reason: PauseReason::Memory, since: now, cut: Some("bazel build //...".into()), turn_since: Some(now), cleanup: alondra_core::domain::PauseCleanup::Done, released: false };
-        crate::domain_agent_lifecycle::node_event_at(&self.domain, &AgentId(format!("agent-{task}")), alondra_core::domain::NodeEvent::Paused { pause }, now).unwrap();
+        assert!(crate::domain_agent_lifecycle::node_event_at(&self.domain, &AgentId(format!("agent-{task}")), alondra_core::domain::NodeEvent::Paused { pause }, now).unwrap());
+        self.end_turn(task, now);
     }
 }
 
@@ -352,8 +352,8 @@ async fn the_usage_limit_reset_brings_nodes_back_one_at_a_time() {
     let base = alondra_core::now_millis();
     let mut fleet = Fleet::new(&[("t1", Normal), ("t2", Normal), ("t3", Normal)], Limit::Fixed(6), base - 10 * MIN);
     for task in ["t1", "t2", "t3"] {
-        fleet.end_turn(task, base);
         fleet.domain.live.gate.hold_back(&fleet.domain, &format!("agent-{task}"), Reason::Usage, base);
+        fleet.end_turn(task, base);
     }
     fleet.hold(50, base, 10 * MIN).await;
     let resumes = fleet.events("resume");
