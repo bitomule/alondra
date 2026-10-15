@@ -949,6 +949,22 @@ fn unplan_content(mut content: Value) -> Value {
     content
 }
 
+/// The steps of an action card always reach its detail: alone they are its content, and beside
+/// content the node wrote they follow it, with a command or diff kept fenced above them.
+fn with_steps(content: Option<Value>, steps: &str) -> Value {
+    let Some(content) = content else { return json!({"kind":"steps","body":steps}) };
+    let body = content["body"].as_str().unwrap_or_default().trim_end();
+    let (kind, body) = match content["kind"].as_str() {
+        Some(kind @ ("command" | "diff")) => {
+            let fence = "`".repeat((body.split(|c| c != '`').map(str::len).max().unwrap_or(0) + 1).max(3));
+            ("report", format!("{fence}{}\n{body}\n{fence}", if kind == "diff" { "diff" } else { "" }))
+        }
+        kind => (kind.unwrap_or("report"), body.to_owned()),
+    };
+    let body = if body.is_empty() { steps.to_owned() } else { format!("{body}\n\n{steps}") };
+    json!({"kind":kind,"body":body})
+}
+
 /// A decision carries every Markdown file its words cite, read from where the agent works, at the
 /// end of its content: the user cannot open a file from the app.
 fn with_cited_files(need: &str, why: &str, content: Option<Value>, cwd: Option<&std::path::Path>) -> Result<Option<Value>> {
@@ -1080,9 +1096,10 @@ fn attach_card(name: &str, command: &mut serde_json::Map<String, Value>) -> Resu
     let steps = command.remove("steps");
     match name {
         "request_action" => {
-            if let (None, Some(steps)) = (&content, steps.as_ref().and_then(Value::as_array)) {
-                let lines: Vec<String> = steps.iter().filter_map(Value::as_str).enumerate().map(|(i, step)| format!("{}. {step}", i + 1)).collect();
-                content = Some(json!({"kind":"steps","body":lines.join("\n")}));
+            let lines: Vec<String> = steps.as_ref().and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str)
+                .enumerate().map(|(i, step)| format!("{}. {step}", i + 1)).collect();
+            if !lines.is_empty() {
+                content = Some(with_steps(content, &lines.join("\n")));
             }
             command.entry("options").or_insert_with(|| json!([choice("done", "Done"), choice("cannot", "I can't do it")]));
         }
@@ -2376,6 +2393,16 @@ mod card_tool_tests {
         let action = built("request_action", with(json!({"need":"Rotate","why":"Leaked","verify":"I call it","blocking":false,"steps":["Open the console","Rotate it"]})));
         assert_eq!(ids(&action), ["done", "cannot"]);
         assert_eq!(action["card"]["content"], json!({"kind":"steps","body":"1. Open the console\n2. Rotate it"}));
+        let alone = built("request_action", with(json!({"need":"Rotate","why":"Leaked","blocking":false,"content":{"kind":"report","body":"The key leaked in the log."}})));
+        assert_eq!(alone["card"]["content"], json!({"kind":"report","body":"The key leaked in the log."}));
+        let both = built("request_action", with(json!({"need":"Open the ports","why":"Holepunch test","blocking":false,
+            "content":{"kind":"report","body":"Relay at 203.0.113.7\n"},"steps":["Open UDP 4433","Open UDP 4434"]})));
+        assert_eq!(both["card"]["content"], json!({"kind":"report","body":"Relay at 203.0.113.7\n\n1. Open UDP 4433\n2. Open UDP 4434"}),
+            "steps sent beside content are never dropped");
+        let command = built("request_action", with(json!({"need":"Run it","why":"Probe","blocking":false,
+            "content":{"kind":"command","body":"nc -u 203.0.113.7 4433"},"steps":["Run it on the Mac"]})));
+        assert_eq!(command["card"]["content"], json!({"kind":"report","body":"```\nnc -u 203.0.113.7 4433\n```\n\n1. Run it on the Mac"}),
+            "a command keeps its fence when steps follow it");
         assert_eq!(action["card"]["verify"], "I call it");
         for card in [&test, &input, &action] {
             assert!(card["options"].as_array().unwrap().iter().all(|option| option.get("inputs").is_none()),
