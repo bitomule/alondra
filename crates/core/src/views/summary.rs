@@ -93,7 +93,7 @@ pub(super) fn of_content(lang: Lang, content: &CardContent) -> Option<String> {
     if let Some(summary) = content.summary.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         return Some(clip(summary, 60));
     }
-    let body = content.body.as_str();
+    let body = crate::domain::without_included_files(&content.body);
     let counted = body.lines().filter(|line| list_marker(line)).count();
     match content.kind {
         ContentKind::Plan => Some(match (counted, headings(body)) {
@@ -171,6 +171,9 @@ mod tests {
         assert_eq!(summary_of(ContentKind::Plan, "just words", Lang::En).as_deref(), Some("Plan"));
         assert_eq!(summary_of(ContentKind::Steps, "1. Open\n2. Press\n3. Wait\n4. Done", Lang::En).as_deref(), Some("4 steps"));
         assert_eq!(summary_of(ContentKind::Steps, "Open it", Lang::En).as_deref(), Some("1 step"));
+        let cited = crate::domain::include_cited_files("# Ship it\n\nSee docs/plan.md\n\n- [ ] Split the lexer",
+            |_| Some("- [ ] Measure\n- [ ] Relay\n- [ ] Daemon".into())).unwrap();
+        assert_eq!(summary_of(ContentKind::Plan, &cited, Lang::En).as_deref(), Some("1 step"), "a file the plan cites adds no steps");
     }
 
     #[test]

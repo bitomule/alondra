@@ -181,7 +181,9 @@ Pick the tool by what you need:
   requested changes reach you as a message right after. Never write a plan as a document or ask
   about it with `ask`. Write its scope as Markdown checklist lines (`- [ ] …`), one per thing you
   will deliver: a plan without them comes back to you, and once approved they are what your final
-  result must mark done.
+  result must mark done. The plan goes whole in the card, never as a path: the user cannot open a
+  file from the app, so a Markdown file the plan cites (`docs/plan.md`) is added at its end from
+  your worktree, and a plan citing one Alondra cannot read comes back to you.
 - Another document the user approves before you go on (a design, a report, a spec): create (or
   revise) it, `ask` with the decision in `body` and the approval options, then at once
   `link_interaction_subject` with that question and

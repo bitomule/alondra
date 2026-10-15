@@ -134,6 +134,10 @@ fn validate_card(card: &CardSpec, options: &[QuestionOption], source: Source, bl
     }
     if card.kind == CardKind::Decide && source != Source::Hold {
         decide_options(options)?;
+        let body = card.content.as_ref().map_or("", |content| content.body.as_str());
+        if let Some((code, fix)) = cited_files_problem(&format!("{}\n{}\n{body}", card.need, card.why)) {
+            return refuse(code, "card.content.body", &fix);
+        }
     }
     if blocking && card.kind.never_blocks() {
         return refuse("invalid_input", "blocking", &format!("A {kind} card never blocks: send it with blocking false"));
@@ -4280,7 +4284,7 @@ impl DomainState {
 }
 /// A plan states its scope as Markdown checklist lines, so its final delivery can be held to it.
 fn plan_checklist(plan: &str) -> Result<()> {
-    match plan_checklist_problem(plan) {
+    match plan_checklist_problem(plan).or_else(|| cited_files_problem(plan)) {
         Some((code, fix)) => refuse(code, "plan", &fix),
         None => Ok(()),
     }

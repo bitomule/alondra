@@ -1,6 +1,6 @@
 import { expect, mock, test } from 'claude-code/testing'
 
-type Card = { session_id: string; id: string; kind: string; tool?: string; input: Record<string, unknown> }
+type Card = { session_id: string; id: string; kind: string; tool?: string; cwd?: string; input: Record<string, unknown> }
 type Held = { cards: Card[]; runs: () => number }
 type Reply = Record<string, unknown> | 'timeout' | 'failure'
 
@@ -73,6 +73,7 @@ test('a plan the user sends back is denied with their words, an approved one is 
   const checked = await $.tool.check({ tool: 'ExitPlanMode', tool_use_id: 'toolu-ok', input: { plan: 'p' } } as never)
   expect(checked.decision).toBe('allow')
   expect(held.cards.map((card) => card.kind)).toEqual(['plan', 'plan'])
+  expect(held.cards.map((card) => card.cwd)).toEqual(['/work', '/work'])
   expect(held.runs()).toBe(2)
 })
 

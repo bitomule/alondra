@@ -4,6 +4,7 @@
 # and Mac service keys, plus a loopback relay and token issuer they and the synthetic phone use.
 # Each Mac also listens for direct connections on PORT+20+n (loopback; SANDBOX_LAN=1 opens it to
 # the LAN to try a real phone) and advertises itself on Bonjour as _alondra-sandbox._tcp.
+# SANDBOX_NAME names its Macs "<name> n" on Bonjour, so a test app picks its own sandbox.
 # Sandbox mode: test/ nodes allowed, wake off (SANDBOX_WAKE=1 turns it on, for a fake claude on PATH).
 # Stop everything with tools/e2e-sandbox-stop.sh.
 # FAKES=1 puts the sandbox's own claude and gh first on the daemons' PATH (tools/sandbox/src/fake):
@@ -138,6 +139,7 @@ while [ "$i" -le "$macs" ]; do
 	mac_id=$("$tool" provision-mac "$home" --relay "$relay" --direct-port "$(direct_port "$i")" --direct-listen "$direct_listen")
 	"$tool" enroll-mac "$home" --relay "$relay" --issuer "$issuer" --key "$dir/issuer/key.der"
 	printf 'port = %s\n' "$port" >"$home/config.toml"
+	[ -z "${SANDBOX_NAME:-}" ] || printf 'name = "%s %s"\n' "$SANDBOX_NAME" "$i" >>"$home/config.toml"
 	printf '{"enabledPlugins": {"alondra@alondra": false, "alondra-orchestrator@alondra": false}, "env": {"ALONDRA_LAUNCHED": "1"}}\n' >"$home/settings.json"
 	printf 'export ALONDRA_HOME="%s"\nexport ALONDRA_PORT="%s"\n' "$home" "$port" >"$home/env"
 	# start runs this Mac's daemon with its environment; a journey restarts the daemon with it too.

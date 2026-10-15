@@ -9,6 +9,7 @@ pub mod delivery;
 pub mod activity;
 pub mod operation_id;
 pub mod allow_always;
+pub mod cited_file;
 pub mod artifact;
 pub mod automerge;
 pub mod config;

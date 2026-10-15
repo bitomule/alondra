@@ -12,12 +12,14 @@ use crate::http::{elicitation_card, elicitation_content, permission_detail, perm
 use alondra_core::domain::{
     clip, without_recommended_suffix, Actor, AgentId, Answer, Author, CardKind, CardSpec, Command, CommandEnvelope,
     ContentKind, DomainState, GroupQuestion, Hold, InputValue, InteractionId, InteractionPayload, QuestionGroup,
-    QuestionOption, TaskState, PROTOCOL_VERSION, plan_checklist_problem,
+    QuestionOption, TaskState, PROTOCOL_VERSION, plan_checklist_problem, include_cited_files,
 };
 use alondra_core::allow_always::AllowAlways;
 use anyhow::Result;
 use serde::Deserialize;
 use serde_json::{Value, json};
+use alondra_core::cited_file::read_cited_file;
+use std::path::Path;
 
 pub(crate) struct Held {
     pub id: InteractionId,
@@ -112,14 +114,20 @@ pub(crate) fn post(domain: &DomainRuntime, card: &Card, background: bool) -> Res
     {
         return Ok(Posted::Denied(reason));
     }
-    if hold == Hold::Plan
-        && let Some((_, fix)) = plan_checklist_problem(&str_field(&card.input, "plan").unwrap_or_default())
-    {
-        return Ok(Posted::Denied(capitalized(&fix)));
+    let mut input = card.input.clone();
+    if hold == Hold::Plan {
+        let plan = str_field(&card.input, "plan").unwrap_or_default();
+        if let Some((_, fix)) = plan_checklist_problem(&plan) {
+            return Ok(Posted::Denied(capitalized(&fix)));
+        }
+        match include_cited_files(&plan, |path| read_cited_file(card.cwd.as_deref().map(Path::new), path)) {
+            Ok(whole) => input["plan"] = json!(whole),
+            Err(fix) => return Ok(Posted::Denied(capitalized(&fix))),
+        }
     }
     let allow = (hold == Hold::Permission).then(|| crate::allow_always::assess(card.tool.as_deref(), &card.input,
         card.cwd.as_deref(), card.permission_mode.as_deref(), &card.suggestions, domain.home())).flatten();
-    Ok(match open(domain, &card.session_id, id, hold, card.tool.clone(), card.input.clone(), allow, None)? {
+    Ok(match open(domain, &card.session_id, id, hold, card.tool.clone(), input, allow, None)? {
         Some(held) => Posted::Held(held.id),
         None if hold == Hold::Plan => Posted::Denied(NO_TASK_FOR_PLAN.into()),
         None => Posted::NotHeld,

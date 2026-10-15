@@ -11,7 +11,7 @@ const HOLD_RUN_MS = 600_000
 
 type Session = { id: string; alondra: string; version: string; cwd: string; launchKey?: string }
 
-type Card = { id: string; kind: 'question' | 'plan'; input: Record<string, unknown> }
+type Card = { id: string; kind: 'question' | 'plan'; input: Record<string, unknown>; cwd?: string }
 type Answer = {
   held: boolean
   answers?: Record<string, string>
@@ -419,7 +419,7 @@ export const register: Register = (on) => {
 
   on('tool.call', { tool: 'ExitPlanMode' }, async ($, e, next) => {
     if (e.agentId !== undefined) return next(e)
-    const reply = await hold($, next, { id: e.tool_use_id, kind: 'plan', input: { plan: e.plan } })
+    const reply = await hold($, next, { id: e.tool_use_id, kind: 'plan', cwd: session?.cwd, input: { plan: e.plan } })
     if (!reply.held) return next(e)
     if (!reply.approved) return { deny: reply.feedback ?? 'The user requests changes to the plan' }
     approvedPlans.add(e.tool_use_id)

@@ -1,0 +1,226 @@
+{
+  "client": "mac",
+  "cursor": "c1.WyJlYmNlN2Q2ZmU2MGNkYTJiYmI0MzhkODFiODJhN2QyYzEzMDYxMWU1NTlhY2MxNzcyMjRjNDFjNzgyZjMwZWMyIiw2LCIyNTI5YTI2NDYzYWQzMTlhIiwidjk0MzliNTAwYmEwYjZiZmUiXQ",
+  "data_epoch": "ebce7d6fe60cda2bbb438d81b82a7d2c130611e559acc177224c41c782f30ec2",
+  "key": "card:hold-plan-toolu-plan",
+  "protocol": 1,
+  "sections": [
+    {
+      "collapsed": false,
+      "id": "card",
+      "items": [
+        {
+          "actions": [
+            {
+              "attachments": false,
+              "enabled": true,
+              "id": "accept:hold-plan-toolu-plan@5",
+              "input": {
+                "kind": "none"
+              },
+              "key": "1",
+              "label": "Aprobar",
+              "presentation": "button",
+              "resolves_card": true,
+              "role": "advance",
+              "stamp": "Aprobado",
+              "style": "primary"
+            },
+            {
+              "attachments": true,
+              "comments": {
+                "kind": "blocks"
+              },
+              "enabled": true,
+              "id": "changes:hold-plan-toolu-plan@5",
+              "input": {
+                "kind": "text",
+                "multiline": true,
+                "placeholder": "Describe los cambios",
+                "required": true
+              },
+              "key": "2",
+              "label": "Pedir cambios",
+              "presentation": "button",
+              "resolves_card": true,
+              "role": "neutral",
+              "stamp": "Cambios solicitados",
+              "style": "secondary"
+            }
+          ],
+          "content_row": {
+            "icon": "document",
+            "kind": "plan",
+            "label": "Plan",
+            "summary": "2 pasos"
+          },
+          "context": [
+            {
+              "chip": {
+                "text": "others",
+                "tone": "neutral"
+              },
+              "icon": "node",
+              "link": {
+                "key": "node:8916e615-1fa8-4f9b-b858-e57af46a3213",
+                "kind": "view"
+              },
+              "state": {
+                "text": "Esperando respuesta",
+                "tone": "warning"
+              },
+              "text": "test/8916e615"
+            }
+          ],
+          "detail": "included",
+          "eyebrow": {
+            "text": "Revisar",
+            "tone": "accent"
+          },
+          "icon": "document",
+          "id": "hold-plan-toolu-plan",
+          "kind": "review",
+          "link": {
+            "key": "card:hold-plan-toolu-plan",
+            "kind": "view"
+          },
+          "meta": "test/8916e615 · others",
+          "need": "Paso 1: relay de iroh de producción",
+          "reply": {
+            "attachments": true,
+            "enabled": true,
+            "id": "reply:hold-plan-toolu-plan@5",
+            "input": {
+              "kind": "text",
+              "multiline": true,
+              "placeholder": "Escribe qué cambiar…",
+              "required": true
+            },
+            "key": "r",
+            "label": "Responder",
+            "presentation": "button",
+            "resolves_card": true,
+            "role": "neutral",
+            "stamp": "Respondiste",
+            "style": "secondary"
+          },
+          "state": {
+            "text": "Bloquea a test/8916e615",
+            "tone": "warning"
+          },
+          "timestamps": [
+            {
+              "at": "2026-10-15T02:03:24.215+02:00",
+              "format": "relative",
+              "role": "created"
+            }
+          ],
+          "title": "Paso 1: relay de iroh de producción",
+          "type": "card"
+        }
+      ]
+    },
+    {
+      "collapsed": false,
+      "id": "content",
+      "items": [
+        {
+          "commentable": true,
+          "text": "# Paso 1: relay de iroh de producción\n\n## Contexto\n\nPaso 1 del plan de conexión rápida, en docs/fast-connection-plan.md.\n\n## Checklist\n\n- [ ] 1. Relay de iroh con comprobación de acceso\n- [ ] 2. Registro de los identificadores de dispositivos y Macs\n\n---\n\n## docs/fast-connection-plan.md\n\n### Plan de conexión rápida\n\n#### Decisión\n\niroh con relay propio: una ida y vuelta por petición, y conexión directa cuando la red lo permite.\n\n#### Pasos\n\n- ☐ 0. Medir el estado actual en la app\n- ☐ 1. Relay de iroh de producción con control de acceso\n- ☐ 2. Daemon con conexión iroh\n\n#### Medidas\n\n| Ruta | Tiempo |\n| --- | --- |\n| Buzón actual | 375 ms |\n| Relay propio | 63–94 ms |\n| Directa | 55 ms |",
+          "truncated": false,
+          "type": "markdown"
+        }
+      ],
+      "title": "Contenido"
+    },
+    {
+      "collapsed": false,
+      "id": "context",
+      "items": [
+        {
+          "items": [
+            {
+              "label": "Tarea",
+              "link": {
+                "key": "task:sandbox-probe-8916e615-1fa8-4f9b-b858-e57af46a3213",
+                "kind": "view"
+              },
+              "value": "Probe 8916e615 · test/8916e615"
+            }
+          ],
+          "type": "facts"
+        }
+      ],
+      "title": "Contexto"
+    }
+  ],
+  "service": {
+    "version": "0.1.0",
+    "views_protocol": {
+      "max": 1,
+      "min": 1
+    }
+  },
+  "status": {
+    "badge": 2,
+    "counts": [
+      {
+        "id": "inbox",
+        "label": "Bandeja",
+        "value": 2
+      },
+      {
+        "id": "tasks",
+        "label": "Tareas",
+        "value": 1
+      },
+      {
+        "id": "agents",
+        "label": "Flota",
+        "value": 1
+      },
+      {
+        "id": "working",
+        "label": "trabajando",
+        "value": 0
+      },
+      {
+        "id": "waiting",
+        "label": "esperando",
+        "value": 1
+      }
+    ],
+    "gauges": [
+      {
+        "id": "memory",
+        "label": "RAM",
+        "level": "calm",
+        "text": "55%",
+        "value": 0.55
+      },
+      {
+        "id": "cpu",
+        "label": "CPU",
+        "level": "calm",
+        "text": "45%",
+        "value": 0.44700424194335936
+      },
+      {
+        "id": "disk",
+        "label": "Disco",
+        "level": "warm",
+        "text": "29 GB libres",
+        "value": 0.9409814009382068
+      }
+    ],
+    "orchestrator": {
+      "text": "inactivo",
+      "tone": "neutral"
+    },
+    "summary": "2 preguntas · 0 nodos trabajando",
+    "version": "v9439b500ba0b6bfe"
+  },
+  "title": "Paso 1: relay de iroh de producción",
+  "version": "v748278f2fe73732c",
+  "view": "card"
+}

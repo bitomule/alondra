@@ -2667,6 +2667,33 @@ mod tests {
         assert!(state.holds.is_empty());
     }
 
+    #[test]
+    fn a_plan_carries_the_markdown_files_it_cites_or_goes_back_to_its_node() {
+        let fixture = Fixture::new();
+        let domain = fixture.open();
+        working_agent(&domain, "agent-a");
+        let worktree = tempfile::tempdir().unwrap();
+        std::fs::create_dir(worktree.path().join("docs")).unwrap();
+        std::fs::write(worktree.path().join("docs/plan.md"), "# Fast connection\n\n- [ ] Measure\n- [ ] Relay").unwrap();
+        let cwd = worktree.path().to_str().unwrap();
+        let post = |id: &str, plan: &str| crate::domain_holds::post(&domain, &serde_json::from_value(json!({"session_id": "agent-a", "id": id,
+            "kind": "plan", "cwd": cwd, "input": {"plan": plan}})).unwrap(), true).unwrap();
+        let pointer = "# Step 1\n\nThe whole plan is in docs/fast-connection.md.\n\n- [ ] Ship the relay";
+        match post("toolu-pointer", pointer) {
+            crate::domain_holds::Posted::Denied(reason) => assert!(reason.contains("cannot open docs/fast-connection.md"), "{reason}"),
+            _ => panic!("a plan that points at a file its node cannot show is put to the user"),
+        }
+        assert!(domain.state().unwrap().holds.is_empty());
+        let id = match post("toolu-plan", "# Step 1\n\nContext in docs/plan.md.\n\n- [ ] Ship the relay") {
+            crate::domain_holds::Posted::Held(id) => id,
+            _ => panic!("a plan whose cited file can be read is put to the user"),
+        };
+        let state = domain.state().unwrap();
+        let body = &state.interactions[&id].body;
+        assert!(body.ends_with("## docs/plan.md\n\n### Fast connection\n\n- ☐ Measure\n- ☐ Relay"), "{body}");
+        assert_eq!(alondra_core::domain::checklist_items(body).len(), 1, "the file's checkboxes are not points of the plan");
+    }
+
     #[tokio::test]
     async fn a_plan_waiting_when_its_task_is_cancelled_is_turned_down() {
         let fixture = Fixture::new();

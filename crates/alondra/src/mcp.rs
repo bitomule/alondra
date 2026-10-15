@@ -14,7 +14,7 @@ pub enum Role {
 }
 
 fn self_contained_card(user: &str) -> String {
-    format!("Every card is decided without reading your chat: {user} sees only the card. It says what is decided and the minimum context, and carries in content the whole thing being decided (the proposed text and the current one, the design or screenshot, the command, the list, the numbers), never a summary or \"what I showed you\". Each option says what happens if it is chosen, and the recommended one why. Never refer to the chat (\"as I said\", \"the earlier one\", \"the plan\"): repeat what is needed. Before sending, ask yourself whether someone who sees only this card can decide, and add what is missing: \"Approve the new promotional text for Quill's App Store listing\" goes with the proposed text and the current one in content.")
+    format!("Every card is decided without reading your chat: {user} sees only the card. It says what is decided and the minimum context, and carries in content the whole thing being decided (the proposed text and the current one, the design or screenshot, the command, the list, the numbers), never a summary or \"what I showed you\". Each option says what happens if it is chosen, and the recommended one why. Never refer to the chat (\"as I said\", \"the earlier one\", \"the plan\"): repeat what is needed. Before sending, ask yourself whether someone who sees only this card can decide, and add what is missing: \"Approve the new promotional text for Quill's App Store listing\" goes with the proposed text and the current one in content. {user} cannot open a file from the app: a plan or decision that cites a Markdown file (`docs/plan.md`) carries its content, and Alondra adds it from where you work or refuses the card when it cannot read it; never point at a file instead of writing the plan in the card.")
 }
 
 fn instructions(role: Role, user: &str) -> String {
@@ -949,6 +949,22 @@ fn unplan_content(mut content: Value) -> Value {
     content
 }
 
+/// A decision carries every Markdown file its words cite, read from where the agent works, at the
+/// end of its content: the user cannot open a file from the app.
+fn with_cited_files(need: &str, why: &str, content: Option<Value>, cwd: Option<&std::path::Path>) -> Result<Option<Value>> {
+    let body = content.as_ref().and_then(|c| c["body"].as_str()).unwrap_or_default().to_owned();
+    let said = format!("{need}\n{why}\n{body}");
+    let whole = alondra_core::domain::include_cited_files(&said, |path| alondra_core::cited_file::read_cited_file(cwd, path))
+        .map_err(|fix| anyhow::anyhow!("invalid_input: card.content.body: {fix}"))?;
+    if whole == said {
+        return Ok(content);
+    }
+    let included = &whole[said.trim_end().len()..];
+    let mut content = content.unwrap_or_else(|| json!({"kind": "document"}));
+    content["body"] = json!(format!("{}{included}", body.trim_end()).trim_start().to_owned());
+    Ok(Some(content))
+}
+
 fn choice(id: &str, label: &str) -> Value {
     json!({"id":id,"label":label})
 }
@@ -1090,6 +1106,9 @@ fn attach_card(name: &str, command: &mut serde_json::Map<String, Value>) -> Resu
                 .map(|body| json!({"kind":"report","body":body}));
         }
         _ => {}
+    }
+    if name == "ask" {
+        content = with_cited_files(&need, &why, content, std::env::current_dir().ok().as_deref())?;
     }
     card.insert("kind".into(), json!(kind));
     card.insert("need".into(), json!(need));
@@ -1568,6 +1587,9 @@ mod tests {
         assert!(instructions(Role::Node, "Ana").contains("deliver with present_result and is_final true"));
         assert!(instructions(Role::Node, "Ana").contains("never install, restart or replace the Alondra daemon or CLI"));
         assert!(instructions(Role::Node, "Ana").contains("A plan goes through plan mode: EnterPlanMode, then ExitPlanMode"));
+        for role in [Role::Node, Role::Orchestrator] {
+            assert!(instructions(role, "Ana").contains("Ana cannot open a file from the app"));
+        }
         assert!(instructions(Role::Node, "Ana").contains("create_document, then ask, then link_interaction_subject"));
     }
 
@@ -2347,6 +2369,25 @@ mod card_tool_tests {
             assert!(card["options"].as_array().unwrap().iter().all(|option| option.get("inputs").is_none()),
                 "an option is a button that answers when pressed: {card}");
         }
+    }
+
+    #[test]
+    fn a_decision_carries_the_markdown_files_it_cites_or_is_refused_before_it_is_sent() {
+        let pointer = "Plan completo: docs/fast-connection-plan.md (PR #975, sin fusionar).\n\nPASOS:\n0. Medir.";
+        let refused = domain_envelope("ask", &with(json!({"need":"Aprueba el plan de conexión rápida","why":"Son 8 tareas","options":options(),"blocking":false,
+            "content":{"kind":"document","body":pointer}})), "epoch", "id").unwrap_err().to_string();
+        assert!(refused.starts_with("invalid_input: card.content.body: the user cannot open docs/fast-connection-plan.md"), "{refused}");
+        let worktree = tempfile::tempdir().unwrap();
+        std::fs::create_dir(worktree.path().join("docs")).unwrap();
+        std::fs::write(worktree.path().join("docs/fast-connection-plan.md"), "# Plan\n\n- [ ] Medir").unwrap();
+        std::fs::write(worktree.path().join("notes.md"), "Notas").unwrap();
+        let content = Some(json!({"kind":"document","body":pointer}));
+        let whole = with_cited_files("Aprueba el plan", "Ver notes.md", content, Some(worktree.path())).unwrap().unwrap();
+        assert_eq!(whole["body"], format!("{pointer}\n\n---\n\n## notes.md\n\nNotas\n\n---\n\n## docs/fast-connection-plan.md\n\n### Plan\n\n- ☐ Medir"));
+        let created = with_cited_files("Revisa notes.md", "", None, Some(worktree.path())).unwrap().unwrap();
+        assert_eq!(created, json!({"kind":"document","body":"---\n\n## notes.md\n\nNotas"}));
+        let plain = Some(json!({"kind":"report","body":"Nada que incluir"}));
+        assert_eq!(with_cited_files("Elige", "", plain.clone(), Some(worktree.path())).unwrap(), plain);
     }
 
     #[test]

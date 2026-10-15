@@ -115,7 +115,7 @@ pub fn checklist_items(markdown: &str) -> Vec<ChecklistItem> {
     items
 }
 
-fn task_text(line: &str) -> Option<&str> {
+pub(super) fn task_text(line: &str) -> Option<&str> {
     let rest = match line.as_bytes().first()? {
         b'-' | b'*' | b'+' => &line[1..],
         b'0'..=b'9' => {
