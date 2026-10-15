@@ -5,6 +5,7 @@ import importlib.util
 import json
 import os
 import pathlib
+import shutil
 import socket
 import sqlite3
 import subprocess
@@ -19,6 +20,7 @@ SCRIPT = pathlib.Path(__file__).resolve().parents[1] / 'upgrade-rehearsal.py'
 SPEC = importlib.util.spec_from_file_location('upgrade_rehearsal', SCRIPT)
 u = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(u)
+REAL_POPEN = subprocess.Popen
 
 FAKE_DAEMON = '''#!{python} -I
 import http.server, json, os, sys, threading, time
@@ -49,6 +51,19 @@ while True:
         os._exit(75)
     status["preflight_rejected"] = {{"reason": "synthetic: bootstrap failed integrity audit"}}
 '''
+
+
+def fake_launcher(path, version, padding=''):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"#!/bin/sh\necho '{u.LAUNCHER} {version}'\n# {padding}\n")
+    path.chmod(0o755)
+    return path
+
+
+def printed_version(launcher):
+    if not launcher.is_file():
+        return None
+    return REAL_POPEN([launcher, '--version'], stdout=subprocess.PIPE, text=True).communicate()[0].strip()
 
 
 def fake_daemon(path, version, mode):
@@ -95,15 +110,17 @@ class UpgradeMachine:
     def popen(self, argv, **kwargs):
         import ast
         from types import SimpleNamespace
+        if argv[-1] == '--version':
+            return REAL_POPEN(argv, **kwargs)
         launch = pathlib.Path(argv[-1])
         assignment = next(node for node in ast.parse(launch.read_text()).body
                           if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Tuple))
         version, mode = ast.literal_eval(assignment.value)
         bundled = launch.with_name(u.LAUNCHER)
-        if self.installs_launcher and bundled.exists():
-            installed = pathlib.Path(kwargs['env']['ALONDRA_HOME']) / 'bin' / u.LAUNCHER
+        installed = pathlib.Path(kwargs['env']['ALONDRA_HOME']) / 'bin' / u.LAUNCHER
+        if self.installs_launcher and bundled.exists() and printed_version(bundled) != printed_version(installed):
             installed.parent.mkdir(exist_ok=True)
-            installed.write_bytes(bundled.read_bytes())
+            shutil.copy(bundled, installed)
         process = SimpleNamespace(launch=launch, version=version, mode=mode,
                                   inode=launch.stat().st_ino, port=int(kwargs['env']['ALONDRA_PORT']),
                                   ready=self.now + self.readiness_delay, returncode=None)
@@ -395,9 +412,17 @@ class LauncherMigrationTests(Fixture):
     def old_without_and_new_with_launcher(self):
         (self.root / 'old').mkdir()
         (self.root / 'new').mkdir()
-        (self.root / 'new' / u.LAUNCHER).write_text('launcher 1.0.1')
+        fake_launcher(self.root / 'new' / u.LAUNCHER, '1', padding='signed for 1.0.1')
         return ({'version': '1.0.0', 'binary': fake_daemon(self.root / 'old/alondrad', '1.0.0', 'relaunch')},
                 {'version': '1.0.1', 'binary': fake_daemon(self.root / 'new/alondrad', '1.0.1', 'serve')})
+
+    def home_with_launcher(self, version, padding):
+        home = self.work / 'home'
+        fake_launcher(home / 'bin' / u.LAUNCHER, version, padding)
+        return home
+
+    def bundled(self):
+        return (self.work / 'case/Cellar/alondra/1.0.1/bin' / u.LAUNCHER).read_bytes()
 
     def test_the_new_daemon_puts_its_launcher_at_the_fixed_path(self):
         old, new = self.old_without_and_new_with_launcher()
@@ -406,16 +431,44 @@ class LauncherMigrationTests(Fixture):
         with UpgradeMachine().boundaries(), patch.object(u, 'STAY_UP', 1):
             u.upgrade(self.rehearsal, 'case', home, old, new)
         self.assertFalse((self.work / 'case/Cellar/alondra/1.0.0/bin' / u.LAUNCHER).exists())
-        self.assertEqual((self.work / 'case/Cellar/alondra/1.0.1/bin' / u.LAUNCHER).read_text(), 'launcher 1.0.1')
-        self.assertEqual((home / 'bin' / u.LAUNCHER).read_text(), 'launcher 1.0.1')
+        self.assertEqual((home / 'bin' / u.LAUNCHER).read_bytes(), self.bundled())
+
+    def test_a_launcher_of_the_same_version_signed_by_another_build_is_kept(self):
+        old, new = self.old_without_and_new_with_launcher()
+        home = self.home_with_launcher('1', padding='signed for 1.0.0')
+        before = (home / 'bin' / u.LAUNCHER).read_bytes()
+        with UpgradeMachine().boundaries(), patch.object(u, 'STAY_UP', 1):
+            u.upgrade(self.rehearsal, 'case', home, old, new)
+        self.assertEqual((home / 'bin' / u.LAUNCHER).read_bytes(), before)
+        self.assertNotEqual(before, self.bundled())
+
+    def test_an_outdated_launcher_is_replaced_by_the_one_the_release_ships(self):
+        old, new = self.old_without_and_new_with_launcher()
+        home = self.home_with_launcher('0', padding='an older launcher')
+        with UpgradeMachine().boundaries(), patch.object(u, 'STAY_UP', 1):
+            u.upgrade(self.rehearsal, 'case', home, old, new)
+        self.assertEqual((home / 'bin' / u.LAUNCHER).read_bytes(), self.bundled())
+
+    def test_an_upgrade_that_keeps_an_outdated_launcher_fails(self):
+        old, new = self.old_without_and_new_with_launcher()
+        home = self.home_with_launcher('0', padding='an older launcher')
+        with UpgradeMachine(installs_launcher=False).boundaries(), patch.object(u, 'STAY_UP', 1), \
+             self.assertRaisesRegex(u.Failed, f'1.0.1 left {u.LAUNCHER} 0 at .*; it ships {u.LAUNCHER} 1'):
+            u.upgrade(self.rehearsal, 'case', home, old, new)
 
     def test_an_upgrade_that_leaves_no_launcher_fails(self):
         old, new = self.old_without_and_new_with_launcher()
         home = self.work / 'home'
         home.mkdir()
         with UpgradeMachine(installs_launcher=False).boundaries(), patch.object(u, 'STAY_UP', 1), \
-             self.assertRaisesRegex(u.Failed, '1.0.1 did not put its launcher at'):
+             self.assertRaisesRegex(u.Failed, f'1.0.1 left no launcher at .*; it ships {u.LAUNCHER} 1'):
             u.upgrade(self.rehearsal, 'case', home, old, new)
+
+    def test_the_outdated_launcher_case_leaves_a_launcher_older_than_any_release(self):
+        home = self.work / 'home'
+        home.mkdir()
+        u.outdated_launcher(home)
+        self.assertEqual(printed_version(home / 'bin' / u.LAUNCHER), f'{u.LAUNCHER} 0')
 
 
 class PlistTests(unittest.TestCase):

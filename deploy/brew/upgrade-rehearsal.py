@@ -44,7 +44,7 @@ EXIT_WITHIN = 120
 HEALTH_WITHIN = 1.0
 STAY_UP = 10
 PREFLIGHT_TIMEOUT = 300
-CASES = ('live', 'empty-legacy-stores', 'tableless-legacy-store', 'fresh-previous')
+CASES = ('live', 'empty-legacy-stores', 'tableless-legacy-store', 'outdated-launcher', 'fresh-previous')
 
 
 class Failed(RuntimeError):
@@ -225,7 +225,16 @@ def tableless_legacy_store(home):
     os.chmod(home / 'alondra.db', 0o600)
 
 
-MUTATIONS = {'empty-legacy-stores': empty_legacy_stores, 'tableless-legacy-store': tableless_legacy_store}
+def outdated_launcher(home):
+    launcher = home / 'bin' / LAUNCHER
+    launcher.parent.mkdir(exist_ok=True)
+    launcher.unlink(missing_ok=True)
+    launcher.write_text(f"#!/bin/sh\necho '{LAUNCHER} 0'\n")
+    launcher.chmod(0o755)
+
+
+MUTATIONS = {'empty-legacy-stores': empty_legacy_stores, 'tableless-legacy-store': tableless_legacy_store,
+             'outdated-launcher': outdated_launcher}
 
 
 def free_port():
@@ -332,6 +341,38 @@ def last_line(text):
     return lines[-1] if lines else 'no output'
 
 
+def launcher_version(rehearsal, home, launcher):
+    """What the daemon compares: the line `--version` prints, or None for a missing or broken launcher."""
+    if not launcher.is_file():
+        return None
+    try:
+        result = rehearsal.run([launcher, '--version'], rehearsal.env(home), 10)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    text = result.stdout.strip()
+    return text if not result.returncode and text.startswith(LAUNCHER) else None
+
+
+def launcher_state(rehearsal, home, launcher):
+    return launcher_version(rehearsal, home, launcher), launcher.read_bytes() if launcher.is_file() else None
+
+
+def check_launcher(rehearsal, home, ver, bundled, installed, before):
+    """The daemon's rule: the fixed path ends up with the version the release ships, and its file is
+    only replaced when that version changes, since the Local Network permission is tied to it."""
+    wanted = launcher_version(rehearsal, home, bundled)
+    if wanted is None:
+        raise Failed(f'the launcher {ver} ships does not answer --version: {bundled}')
+    found = launcher_version(rehearsal, home, installed)
+    if found != wanted:
+        raise Failed(f'{ver} left {found or "no launcher"} at {installed}; it ships {wanted}')
+    if before[0] == wanted:
+        if installed.read_bytes() != before[1]:
+            raise Failed(f'{ver} replaced {installed} although it already held {wanted}')
+    elif not filecmp.cmp(bundled, installed, shallow=False):
+        raise Failed(f'{ver} put a launcher at {installed} that is not the one it ships')
+
+
 def link(path, target):
     staged = path.with_name(path.name + '.next')
     staged.unlink(missing_ok=True)
@@ -374,6 +415,9 @@ def upgrade(rehearsal, case, home, old, new, while_running=None):
         exited_ms = round((time.monotonic() - swapped) * 1000)
     finally:
         daemon.stop()
+    bundled = kegs[new['version']] / 'bin' / LAUNCHER
+    installed = home / 'bin' / LAUNCHER
+    before = launcher_state(rehearsal, home, installed)
     relaunched = Daemon(rehearsal, launch_path, home, log, port=daemon.port)
     try:
         started = time.monotonic()
@@ -386,10 +430,8 @@ def upgrade(rehearsal, case, home, old, new, while_running=None):
             time.sleep(0.5)
     finally:
         relaunched.stop()
-    bundled = kegs[new['version']] / 'bin' / LAUNCHER
-    installed = home / 'bin' / LAUNCHER
-    if bundled.exists() and not (installed.exists() and filecmp.cmp(bundled, installed, shallow=False)):
-        raise Failed(f'{new["version"]} did not put its launcher at {installed}: {last_line(log.read_text())}')
+    if bundled.exists():
+        check_launcher(rehearsal, home, new['version'], bundled, installed, before)
     return {'exited_after_swap_ms': exited_ms, 'answered_ms': answered_ms}
 
 
