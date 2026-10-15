@@ -1009,16 +1009,16 @@ impl DomainState {
             .filter(|delivery| self.open(delivery) && matches!(delivery.payload, InteractionPayload::Delivery { .. }))
         else { return vec![] };
         let mut by: Vec<&Interaction> = self.interactions.values()
-            .filter(|i| i.id != delivery.id
-                && i.card.blocks.iter().any(|target| Self::card_target_matches_delivery(target, delivery))
+            .filter(|i| i.card.blocks.iter().any(|target| Self::card_target_matches_delivery(target, delivery))
+                && i.id != delivery.id
                 && self.open(i))
             .collect();
         by.sort_by_key(|i| i.order);
         by.into_iter().map(|i| i.id.clone()).collect()
     }
-    fn unblocked(&self, delivery: &InteractionId) -> Result<()> {
+    fn unblocked(&self, delivery: &InteractionId, holds: &dyn Holds) -> Result<()> {
         if let Some(Scope::Task { task_id }) = self.interactions.get(delivery).map(|i| &i.scope)
-            && let Some(blocker) = self.open_blockers(task_id).first()
+            && let Some(blocker) = &holds.first_blocker(task_id)
         {
             let title = self.tasks.get(blocker).map_or_else(|| blocker.0.clone(), |task| task.title.clone());
             return refuse(
@@ -1028,7 +1028,7 @@ impl DomainState {
             )
             .map_err(|error| error.because(Refusal::BlockedByTask { title }));
         }
-        match self.blocked_by(delivery).first() {
+        match &holds.first_card(delivery) {
             Some(x) => {
                 let need = self.interactions.get(x).map_or_else(String::new, |blocker| blocker.card.need.clone());
                 refuse(
@@ -1877,6 +1877,8 @@ impl DomainState {
     pub fn execute(&mut self, actor: &Actor, envelope: &CommandEnvelope) -> Result<CommandOutcome> {
         let (next, outcome) = self.prepare_transition(actor, envelope)?;
         *self = next;
+        #[cfg(test)]
+        super::read_index::assert_index_matches(self);
         Ok(outcome)
     }
 
@@ -3417,7 +3419,7 @@ impl DomainState {
                 presentation_id,
                 targets,
             } => {
-                let u = self.accept_delivery_guard(actor, presentation_id, targets)?;
+                let u = self.accept_delivery_guard(actor, presentation_id, targets, self)?;
                 for (pr_id, head, method) in self.accepted_merges(presentation_id, targets)? {
                     let authorization = self.acceptance_authorization(pr_id);
                     self.authorize_merge(&authorization, presentation_id, pr_id, head, method, &u, true)?;
@@ -3426,7 +3428,7 @@ impl DomainState {
                 self.accept(presentation_id, &u)?;
             }
             Command::DecideProposedPlan { presentation_id, targets, choice } => {
-                let (u, plan) = self.decide_plan_guard(actor, presentation_id, targets, *choice)?;
+                let (u, plan) = self.decide_plan_guard(actor, presentation_id, targets, *choice, self)?;
                 let source = self.presentation(presentation_id)?.1.clone();
                 self.accept(presentation_id, &u)?;
                 if *choice == PlanChoice::Implement {
@@ -3445,7 +3447,7 @@ impl DomainState {
                 expected_head,
                 method,
             } => {
-                match self.merge_guard(actor, authorization_id, presentation_id, pr_id, expected_head, *method)? {
+                match self.merge_guard(actor, authorization_id, presentation_id, pr_id, expected_head, *method, self)? {
                     None => {
                         self.authorize_merge(authorization_id, presentation_id, pr_id, expected_head, *method, Feedback::ALONDRA, false)?;
                     }
@@ -3811,7 +3813,7 @@ impl DomainState {
         u: &str,
         consent: bool,
     ) -> Result<TaskId> {
-        let task = self.authorize_merge_guard(authorization_id, presentation_id, pr_id, expected_head, method)?;
+        let task = self.authorize_merge_guard(authorization_id, presentation_id, pr_id, expected_head, method, self)?;
         for a in self.merge_authorizations.values_mut().filter(|a| a.pr_id == *pr_id) {
             a.valid = false;
         }

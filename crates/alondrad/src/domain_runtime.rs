@@ -19,9 +19,9 @@ pub struct DomainRuntime {
     pub(crate) guard_work: crate::blocking_work::BlockingWork,
     home: PathBuf,
     pub(crate) store: RuntimeMutex<DomainStore>,
-    /// The last committed state. Readers take it without the store, a transaction or a copy;
-    /// only a commit replaces it, while it still holds the store.
-    snapshot: RwLock<Arc<DomainState>>,
+    /// The last committed state and the read index built from it. Readers take them without the
+    /// store, a transaction or a copy; only a commit replaces them, while it still holds the store.
+    snapshot: RwLock<Arc<ReadSnapshot>>,
     approval_home: PathBuf,
     authority: RuntimeMutex<Authority>,
     changed: watch::Sender<Revision>,
@@ -68,7 +68,7 @@ impl DomainRuntime {
             guard_work: crate::blocking_work::BlockingWork::new(2),
             home: home.to_path_buf(),
             store: RuntimeMutex::new(store),
-            snapshot: RwLock::new(state),
+            snapshot: RwLock::new(Arc::new(ReadSnapshot::build(state))),
             approval_home: home.to_path_buf(),
             authority: RuntimeMutex::new(authority),
             changed,
@@ -85,10 +85,19 @@ impl DomainRuntime {
         &self.home
     }
     pub fn state(&self) -> Result<Arc<DomainState>> {
-        Ok(Arc::clone(&self.snapshot.read().expect("domain snapshot poisoned")))
+        Ok(Arc::clone(self.read().state()))
     }
+    /// The last committed state with its read index: both of the same revision.
+    pub fn read(&self) -> Arc<ReadSnapshot> {
+        Arc::clone(&self.snapshot.read().expect("domain snapshot poisoned"))
+    }
+    /// Builds the index of a new commit; a replayed command hands back the state already read.
     fn publish(&self, state: &Arc<DomainState>) {
-        *self.snapshot.write().expect("domain snapshot poisoned") = Arc::clone(state);
+        if Arc::ptr_eq(self.read().state(), state) {
+            return;
+        }
+        let snapshot = Arc::new(ReadSnapshot::build(Arc::clone(state)));
+        *self.snapshot.write().expect("domain snapshot poisoned") = snapshot;
     }
     /// After a test writes domain rows straight to SQL, or through another runtime on the
     /// same file: the daemon itself only changes the domain by committing commands.
@@ -659,6 +668,35 @@ mod snapshot_tests {
         assert_eq!(after.revision, before.revision + 1);
         assert!(after.agents.contains_key(&AgentId::from("agent-a")));
         assert!(before.agents.is_empty(), "a reader's snapshot never changes under it");
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn every_commit_publishes_its_state_with_the_index_of_that_revision() {
+        let scratch_directory = crate::test_support::Directory::new();
+        let home = scratch_directory.parent().unwrap().join(format!("alondra-domain-read-index-{}", crate::auth::random_hex(8)));
+        std::fs::create_dir_all(&home).unwrap();
+        let runtime = DomainRuntime::open(&home).unwrap();
+        let opened = runtime.read();
+        assert!(opened.index().describes(opened.state()), "the index of the state the daemon opened");
+        let envelope = CommandEnvelope {
+            protocol_version: PROTOCOL_VERSION,
+            data_epoch: opened.state().data_epoch.clone(),
+            command_id: "agent".into(),
+            expected_revision: opened.state().revision,
+            command: Command::RegisterAgent { agent_id: "agent-a".into(), name: "A".into(), at: 0 },
+        };
+        runtime.execute(&Actor::System, &envelope, None, || Ok(())).unwrap();
+        let committed = runtime.read();
+        assert_eq!(committed.state().revision, opened.state().revision + 1);
+        assert!(committed.index().describes(committed.state()), "the index of the committed revision");
+        assert!(committed.index().node(&AgentId::from("agent-a")).is_some(), "the index reads the new node");
+        assert!(Arc::ptr_eq(committed.state(), &runtime.state().unwrap()), "state() is the state of the snapshot");
+        runtime.execute(&Actor::System, &envelope, None, || Ok(())).unwrap();
+        assert!(Arc::ptr_eq(&committed, &runtime.read()), "a replayed command builds no index");
+        let error = ReadSnapshot::pair(Arc::clone(committed.state()), Arc::clone(opened.index())).unwrap_err();
+        assert_eq!(error.code, "stale_revision", "an index of another revision is refused");
+        drop(runtime);
         std::fs::remove_dir_all(home).unwrap();
     }
 }

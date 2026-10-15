@@ -1,6 +1,7 @@
 use alondra_core::domain::*;
 use std::{alloc::{GlobalAlloc, Layout, System}, collections::BTreeSet, sync::atomic::{AtomicBool, AtomicUsize, Ordering}, time::Instant};
 mod inbox_graphs;
+mod read_index;
 
 struct Allocations;
 static COUNTING: AtomicBool = AtomicBool::new(false);
@@ -51,6 +52,7 @@ fn cpu_seconds() -> f64 {
         + (usage.ru_utime.tv_usec + usage.ru_stime.tv_usec) as f64 / 1_000_000.0
 }
 fn main() {
+    if std::env::args().any(|argument| argument == "--read-index") { read_index::profile(); return; }
     if std::env::args().any(|argument| argument == "--inbox-graphs") { profile_inbox_graphs(); return; }
     if std::env::args().any(|argument| argument == "--full-inbox") { profile_full_inbox(); return; }
     if std::env::args().any(|argument| argument == "--inbox-orders") { profile_inbox_orders(); return; }

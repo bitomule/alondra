@@ -13,7 +13,7 @@ fn delivery_task(index: usize) -> TaskId { format!("task-delivery-{index:05}").i
 fn question_task(index: usize) -> TaskId { format!("task-question-{index:05}").into() }
 fn pr(index: usize) -> PrId { format!("pr-{index:05}").into() }
 
-fn templates() -> DomainState {
+pub(super) fn templates() -> DomainState {
     let mut state = DomainState::new("synthetic-inbox-graph-epoch");
     for id in ["delivery-agent", "question-agent"] {
         super::commit(&mut state, Actor::System, Command::RegisterAgent { agent_id: id.into(), name: id.into(), at: 0 });

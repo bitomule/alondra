@@ -56,6 +56,36 @@ async fn measure_real_domain_views() {
     println!("projection: {:.1} ms", ms(at));
 
     let at = Instant::now();
+    for task in state.tasks.values() {
+        std::hint::black_box((state.attention(task), state.open_blockers(&task.id), projection.waits_for_user(&task.id)));
+    }
+    println!("attention, blockers and waits of every task on demand: {:.1} ms", ms(at));
+    let mut builds: Vec<f64> = (0..20).map(|_| {
+        let at = Instant::now();
+        std::hint::black_box(alondra_core::domain::ReadIndex::build(&state));
+        ms(at)
+    }).collect();
+    builds.sort_by(f64::total_cmp);
+    let index = alondra_core::domain::ReadIndex::build(&state);
+    println!("ReadIndex::build: median {:.1} ms, max {:.1} ms ({} queued, {} waiting)",
+        builds[builds.len() / 2], builds[builds.len() - 1], index.queue().len(), index.waiting().len());
+    let at = Instant::now();
+    let read = client.domain.read();
+    std::hint::black_box((read.index().waiting(), read.index().counts(), read.index().acting()));
+    println!("Waiting for You, counts and acting cards from the committed index: {:.3} ms", ms(at));
+    let envelope = alondra_core::domain::CommandEnvelope {
+        protocol_version: alondra_core::domain::PROTOCOL_VERSION,
+        data_epoch: state.data_epoch.clone(),
+        command_id: "measure-commit".into(),
+        expected_revision: state.revision,
+        command: alondra_core::domain::Command::RegisterAgent { agent_id: "measure-agent".into(), name: "Measure".into(), at: 0 },
+    };
+    let at = Instant::now();
+    client.domain.execute(&alondra_core::domain::Actor::System, &envelope, None, || Ok(())).unwrap();
+    println!("commit one command, index included: {:.1} ms", ms(at));
+    let state = client.domain.state().unwrap();
+
+    let at = Instant::now();
     let live = super::live::gather(&client, &state, Lang::Es, &["home".to_owned()], true, false).await;
     println!("live gather (home): {:.1} ms", ms(at));
     let at = Instant::now();

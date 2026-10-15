@@ -40,7 +40,7 @@ impl DomainProjection {
             && self.waiting_cards(task).filter(|item| item.kind != "information").all(|item| item.kind == "delivery")
     }
 }
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InboxCounts {
     pub roots: u64,
     pub pending: u64,
@@ -87,13 +87,13 @@ pub struct AvailableAction {
     pub presentation_id: Option<InteractionId>,
     pub expected_head: Option<String>,
 }
-struct InboxOrderFacts<'a> {
-    id: &'a str,
-    interaction_id: &'a InteractionId,
-    order: Revision,
-    kind: CardKind,
-    blocking: bool,
-    blocked_by: &'a [InteractionId],
+pub(super) struct InboxOrderFacts<'a> {
+    pub(super) id: &'a str,
+    pub(super) interaction_id: &'a InteractionId,
+    pub(super) order: Revision,
+    pub(super) kind: CardKind,
+    pub(super) blocking: bool,
+    pub(super) blocked_by: &'a [InteractionId],
 }
 
 impl DomainState {
@@ -109,6 +109,7 @@ impl DomainState {
                 },
                 None,
                 None,
+                self,
             ),
             self.action(
                 "reopen_task",
@@ -117,6 +118,7 @@ impl DomainState {
                 },
                 None,
                 None,
+                self,
             ),
             self.action(
                 if archive {
@@ -130,6 +132,7 @@ impl DomainState {
                 },
                 None,
                 None,
+                self,
             ),
         ])
     }
@@ -139,6 +142,7 @@ impl DomainState {
         command: Command,
         presentation: Option<InteractionId>,
         head: Option<String>,
+        holds: &dyn Holds,
     ) -> AvailableAction {
         let actor = Actor::User { user_id: "projection-user".into() };
         let envelope = CommandEnvelope {
@@ -148,7 +152,7 @@ impl DomainState {
             expected_revision: self.revision,
             command,
         };
-        let error = self.guard(&actor, &envelope).err();
+        let error = self.guard_given(&actor, &envelope, holds).err();
         #[cfg(test)]
         assert_guard_matches_execution(self, &actor, &envelope, error.as_ref());
         AvailableAction {
@@ -207,11 +211,52 @@ impl DomainState {
         self.handed_back(self.interactions.get(task.final_presentation.as_ref()?)?)
     }
     pub(crate) fn item(&self, i: &Interaction) -> InboxItem {
+        let pending = self.inbox_pending(i, |t| self.attention(t));
+        self.item_given(i, pending, self.inbox_blockers(i), self.blocked_deliveries(i), self)
+    }
+    fn inbox_task(&self, i: &Interaction) -> Option<&Task> {
+        match &i.scope {
+            Scope::Task { task_id } => self.tasks.get(task_id),
+            _ => None,
+        }
+    }
+    fn inbox_active(task: Option<&Task>) -> bool {
+        task.is_none_or(|t| !t.state.terminal() || Self::winding_down(t))
+    }
+    /// Whether the card waits for the user now, which is what lists it in Waiting for You; a
+    /// delivery only while its task's attention is that card.
+    pub(super) fn inbox_pending(&self, i: &Interaction, attention: impl FnOnce(&Task) -> Attention) -> bool {
+        let task = self.inbox_task(i);
+        let active = Self::inbox_active(task);
+        match &i.payload {
+            InteractionPayload::Information { read_by } => read_by.is_empty() && !i.withdrawn,
+            InteractionPayload::Question { answer, .. } | InteractionPayload::ActionRequest { answer, .. } => {
+                answer.is_none() && !i.withdrawn && active
+            }
+            InteractionPayload::Delivery { acceptance, .. } => {
+                task.is_some_and(|t| t.final_presentation.as_ref() == Some(&i.id))
+                    && active
+                    && !acceptance.as_ref().is_some_and(|a| a.valid)
+                    && self.handed_back(i).is_none()
+                    && task.is_some_and(|t| matches!(attention(t), Attention::Act(card) if card.interaction == i.id))
+            }
+        }
+    }
+    /// The card with its buttons, given whether it waits for the user and what it holds back or
+    /// is held back by.
+    pub(super) fn item_given(
+        &self,
+        i: &Interaction,
+        pending: bool,
+        blocked_by: Vec<InteractionId>,
+        blocks: Vec<InteractionId>,
+        holds: &dyn Holds,
+    ) -> InboxItem {
         let task_id = match &i.scope {
             Scope::Task { task_id } => Some(task_id.clone()),
             _ => None,
         };
-        let task = task_id.as_ref().and_then(|id| self.tasks.get(id));
+        let task = self.inbox_task(i);
         let request_id = task
             .map(|t| t.request_id.clone())
             .or_else(|| match &i.scope {
@@ -222,11 +267,10 @@ impl DomainState {
             Author::Agent { agent_id } => Some(agent_id.clone()),
             _ => None,
         };
-        let active = task.is_none_or(|t| !t.state.terminal() || Self::winding_down(t));
-        let (kind, pending, mut actions) = match &i.payload {
+        let active = Self::inbox_active(task);
+        let (kind, mut actions) = match &i.payload {
             InteractionPayload::Information { read_by } => (
                 "information",
-                read_by.is_empty() && !i.withdrawn,
                 vec![AvailableAction {
                     kind: "mark_read".into(),
                     enabled: read_by.is_empty(),
@@ -260,7 +304,6 @@ impl DomainState {
                         None if matches!(i.payload, InteractionPayload::Question { .. }) => "question",
                         None => "action_request",
                     },
-                    answer.is_none() && !i.withdrawn && active,
                     vec![AvailableAction {
                         kind: "answer_question".into(),
                         enabled,
@@ -272,12 +315,7 @@ impl DomainState {
                     }],
                 )
             }
-            InteractionPayload::Delivery {
-                targets,
-                acceptance,
-                ..
-            } => {
-                let current = task.is_some_and(|t| t.final_presentation.as_ref() == Some(&i.id));
+            InteractionPayload::Delivery { targets, .. } => {
                 let accepting = if i.card.plan.is_some() {
                     [("implement_plan", PlanChoice::Implement), ("archive_plan", PlanChoice::Archive)].into_iter()
                         .map(|(kind, choice)| self.action(
@@ -285,6 +323,7 @@ impl DomainState {
                             Command::DecideProposedPlan { presentation_id: i.id.clone(), targets: targets.clone(), choice },
                             Some(i.id.clone()),
                             None,
+                            holds,
                         ))
                         .collect()
                 } else {
@@ -296,6 +335,7 @@ impl DomainState {
                         },
                         Some(i.id.clone()),
                         None,
+                        holds,
                     )]
                 };
                 let mut actions = accepting;
@@ -311,6 +351,7 @@ impl DomainState {
                         },
                         Some(i.id.clone()),
                         None,
+                        holds,
                     ),
                 ]);
                 for target in targets {
@@ -335,26 +376,18 @@ impl DomainState {
                                     },
                                     Some(i.id.clone()),
                                     Some(head.clone()),
+                                    holds,
                                 ));
                             }
                         }
                     }
                 }
-                (
-                    "delivery",
-                    current
-                        && active
-                        && !acceptance.as_ref().is_some_and(|a| a.valid)
-                        && self.handed_back(i).is_none()
-                        && task.is_some_and(|t| matches!(self.attention(t), Attention::Act(card) if card.interaction == i.id)),
-                    actions,
-                )
+                ("delivery", actions)
             }
         };
         if let Some(action) = self.clarification_action(i) {
             actions.push(action);
         }
-        let blocked_by = self.inbox_blockers(i);
         InboxItem {
             id: format!("interaction:{}", i.id),
             kind: kind.into(),
@@ -373,7 +406,7 @@ impl DomainState {
             pending,
             available_actions: actions,
             card: i.card.clone(),
-            blocks: self.blocked_deliveries(i),
+            blocks,
             blocked_by,
         }
     }
@@ -430,7 +463,7 @@ impl DomainState {
             CardKind::Know => 5,
         }
     }
-    fn inbox_sequence(facts: &[InboxOrderFacts<'_>]) -> Vec<usize> {
+    pub(super) fn inbox_sequence(facts: &[InboxOrderFacts<'_>]) -> Vec<usize> {
         let mut sorted: Vec<(u8, usize)> = facts
             .iter()
             .enumerate()
@@ -508,7 +541,7 @@ impl DomainState {
             _ => vec![],
         }
     }
-    fn select_inbox<'a, T>(&'a self, mut project: impl FnMut(&'a Interaction) -> T) -> Vec<T> {
+    pub(super) fn select_inbox<'a, T>(&'a self, mut project: impl FnMut(&'a Interaction) -> T) -> Vec<T> {
         let mut items = vec![];
         for i in self.interactions.values() {
             if i.recipient != Recipient::User {

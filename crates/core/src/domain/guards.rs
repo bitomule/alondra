@@ -8,19 +8,24 @@ impl DomainState {
     /// the envelope's checks, then the command's own rules. Only the commands a screen offers as
     /// buttons have them; any other command is judged only when it is applied.
     pub fn guard(&self, actor: &Actor, envelope: &CommandEnvelope) -> Result<()> {
+        self.guard_given(actor, envelope, self)
+    }
+
+    /// The same rules, reading what holds a delivery back from `holds`.
+    pub(in crate::domain) fn guard_given(&self, actor: &Actor, envelope: &CommandEnvelope, holds: &dyn Holds) -> Result<()> {
         self.admit(actor, envelope)?;
         match &envelope.command {
             Command::SubmitFeedback { attachments, presentation_id, targets, body, instruction } => {
                 self.feedback_guard(actor, presentation_id, targets, body, attachments, *instruction).map(drop)
             }
             Command::AcceptDelivery { presentation_id, targets } => {
-                self.accept_delivery_guard(actor, presentation_id, targets).map(drop)
+                self.accept_delivery_guard(actor, presentation_id, targets, holds).map(drop)
             }
             Command::DecideProposedPlan { presentation_id, targets, choice } => {
-                self.decide_plan_guard(actor, presentation_id, targets, *choice).map(drop)
+                self.decide_plan_guard(actor, presentation_id, targets, *choice, holds).map(drop)
             }
             Command::AuthorizeMerge { authorization_id, presentation_id, pr_id, expected_head, method } => {
-                self.merge_guard(actor, authorization_id, presentation_id, pr_id, expected_head, *method).map(drop)
+                self.merge_guard(actor, authorization_id, presentation_id, pr_id, expected_head, *method, holds).map(drop)
             }
             Command::CancelTask { task_id } => self.cancel_guard(actor, task_id),
             Command::ReopenTask { task_id } => self.reopen_guard(actor, task_id),
@@ -89,6 +94,7 @@ impl DomainState {
         actor: &Actor,
         presentation_id: &InteractionId,
         targets: &[DeliveryTarget],
+        holds: &dyn Holds,
     ) -> Result<String> {
         let u = user(actor)?;
         let (_, _, current) = self.presentation(presentation_id)?;
@@ -99,10 +105,10 @@ impl DomainState {
             return refuse("plan_choice_required", "choice",
                 "this result proposes a plan: decide it with DecideProposedPlan, implement or archive, so accepting it never leaves the plan unbuilt by accident");
         }
-        self.unblocked(presentation_id)?;
+        self.unblocked(presentation_id, holds)?;
         for (pr_id, head, method) in self.accepted_merges(presentation_id, targets)? {
             let authorization = self.acceptance_authorization(pr_id);
-            self.authorize_merge_guard(&authorization, presentation_id, pr_id, head, method)?;
+            self.authorize_merge_guard(&authorization, presentation_id, pr_id, head, method, holds)?;
         }
         self.acceptance_guard(presentation_id)?;
         Ok(u)
@@ -158,6 +164,7 @@ impl DomainState {
         presentation_id: &InteractionId,
         targets: &[DeliveryTarget],
         choice: PlanChoice,
+        holds: &dyn Holds,
     ) -> Result<(String, String)> {
         let u = user(actor)?;
         let (_, _, current) = self.presentation(presentation_id)?;
@@ -170,7 +177,7 @@ impl DomainState {
         if matches!(&self.interactions[presentation_id].payload, InteractionPayload::Delivery { acceptance: Some(a), .. } if a.valid) {
             return refuse("invalid_input", "presentation_id", "this result is already accepted");
         }
-        self.unblocked(presentation_id)?;
+        self.unblocked(presentation_id, holds)?;
         self.acceptance_guard(presentation_id)?;
         if choice == PlanChoice::Implement && self.requests.contains_key(&implementation_request(presentation_id)) {
             return fail("invalid_input", "Request already exists");
@@ -188,6 +195,7 @@ impl DomainState {
         pr_id: &PrId,
         expected_head: &str,
         method: MergeMethod,
+        holds: &dyn Holds,
     ) -> Result<Option<String>> {
         id(&authorization_id.0)?;
         let u = if matches!(actor, Actor::System) {
@@ -196,12 +204,12 @@ impl DomainState {
             if !self.requests.get(&t.request_id).is_some_and(|r| r.auto_merge) || !untouched {
                 return fail("forbidden", "Alondra merges on its own only an untouched delivery of an auto-merge Request");
             }
-            self.unblocked(presentation_id)?;
+            self.unblocked(presentation_id, holds)?;
             None
         } else {
             Some(user(actor)?)
         };
-        self.authorize_merge_guard(authorization_id, presentation_id, pr_id, expected_head, method)?;
+        self.authorize_merge_guard(authorization_id, presentation_id, pr_id, expected_head, method, holds)?;
         Ok(u)
     }
 
@@ -215,9 +223,10 @@ impl DomainState {
         pr_id: &PrId,
         expected_head: &str,
         method: MergeMethod,
+        holds: &dyn Holds,
     ) -> Result<TaskId> {
         let (_, t, targets) = self.presentation(presentation_id)?;
-        self.unblocked(presentation_id)?;
+        self.unblocked(presentation_id, holds)?;
         let number = self.pull_requests[pr_id].number;
         if !targets.contains(&DeliveryTarget::PullRequest {
             pr_id: pr_id.clone(),

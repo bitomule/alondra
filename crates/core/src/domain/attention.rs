@@ -39,6 +39,25 @@ pub enum Attention {
     Idle,
 }
 
+/// What holds a task or its delivery back: the one part of the attention and of the buttons'
+/// guards that reads the whole domain. The state finds it by scanning; a `ReadIndex` reads it from
+/// what it found once for every card.
+pub(super) trait Holds {
+    /// The first open task that holds `task` back.
+    fn first_blocker(&self, task: &TaskId) -> Option<TaskId>;
+    /// The oldest open card in front of `delivery`.
+    fn first_card(&self, delivery: &InteractionId) -> Option<InteractionId>;
+}
+
+impl Holds for DomainState {
+    fn first_blocker(&self, task: &TaskId) -> Option<TaskId> {
+        self.open_blockers(task).into_iter().next()
+    }
+    fn first_card(&self, delivery: &InteractionId) -> Option<InteractionId> {
+        self.blocked_by(delivery).into_iter().next()
+    }
+}
+
 impl DomainState {
     /// The tasks that hold `task` back, while they are open.
     pub fn open_blockers(&self, task: &TaskId) -> Vec<TaskId> {
@@ -58,10 +77,13 @@ impl DomainState {
         t.blocks.iter().any(|a| self.tasks.get(a).is_some_and(|a| !a.state.terminal() && !self.finished(a)))
     }
     /// A blocking task keeps holding back until its own delivery is settled.
-    fn holds_back(&self, blocker: &Task) -> bool {
+    pub(super) fn holds_back(&self, blocker: &Task) -> bool {
         !blocker.state.terminal() && !self.finished(blocker)
     }
     pub fn attention(&self, t: &Task) -> Attention {
+        self.attention_given(t, self)
+    }
+    pub(super) fn attention_given(&self, t: &Task, holds: &dyn Holds) -> Attention {
         if t.state.terminal() {
             return Attention::Idle;
         }
@@ -95,10 +117,10 @@ impl DomainState {
         if !t.blocks.is_empty() || !self.open(p) {
             return Attention::Idle;
         }
-        if let Some(blocker) = self.open_blockers(&t.id).into_iter().next() {
+        if let Some(blocker) = holds.first_blocker(&t.id) {
             return Attention::Wait(WaitReason::BlockedBy { task: blocker });
         }
-        if let Some(card) = self.blocked_by(&p.id).first().and_then(|id| self.interactions.get(id)) {
+        if let Some(card) = holds.first_card(&p.id).and_then(|id| self.interactions.get(&id)) {
             return Attention::Wait(WaitReason::Answer { need: card.card.need.clone() });
         }
         if let Some(stack) = &t.stack

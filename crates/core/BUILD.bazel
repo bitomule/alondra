@@ -25,7 +25,7 @@ rust_test(
 rust_binary(
     name = "projection_cost",
     testonly = True,
-    srcs = ["benches/projection_cost.rs", "benches/inbox_graphs.rs"],
+    srcs = ["benches/projection_cost.rs", "benches/inbox_graphs.rs", "benches/read_index.rs"],
     edition = "2024",
     deps = [":alondra_core"] + all_crate_deps(normal = True),
 )
@@ -34,7 +34,7 @@ rust_binary(
 rust_test(
     name = "projection_cost_test",
     crate_root = "benches/projection_cost.rs",
-    srcs = ["benches/projection_cost.rs", "benches/inbox_graphs.rs"],
+    srcs = ["benches/projection_cost.rs", "benches/inbox_graphs.rs", "benches/read_index.rs"],
     edition = "2024",
     deps = [":alondra_core"] + all_crate_deps(normal = True),
 )

@@ -14,7 +14,7 @@ BETA_GROUP := Internal Pilot,Private Pilot
 APPLE_VERSION = $(shell sed -n 's/^ *version = "\(.*\)".*/\1/p' tools/shared.bzl)
 APPLE_BUILD = $(shell sed -n 's/^ *build_number = "\(.*\)".*/\1/p' tools/shared.bzl)
 
-.PHONY: connection-measurements version-guard increment-version build-release snapshots-record snapshots-verify tui-shots mac-snapshots-record mac-snapshots-verify no-holds build test install run tui setup launchd unlaunchd restart status doctor cargo-test mac device device-console e2e-sandbox e2e-sandbox-stop e2e-iroh e2e-iroh-cli e2e-wizard e2e-doc-review e2e-sandbox-logs e2e-relay-cards e2e-direct-cards e2e-allow-always e2e-cards-tui e2e-tui-optimistic e2e-ios-cards e2e-plan-card e2e-plan-result e2e-ios-offline soak load-bench views-measure tasks-screen rehearse-cutover upgrade-rehearsal cutover-live clean-xcode-test-results e2e-journeys e2e-explore pi-relay-deploy pi-iroh-relay-deploy
+.PHONY: connection-measurements version-guard increment-version build-release snapshots-record snapshots-verify tui-shots mac-snapshots-record mac-snapshots-verify no-holds build test install run tui setup launchd unlaunchd restart status doctor cargo-test mac device device-console e2e-sandbox e2e-sandbox-stop e2e-iroh e2e-iroh-cli e2e-wizard e2e-doc-review e2e-sandbox-logs e2e-relay-cards e2e-direct-cards e2e-allow-always e2e-cards-tui e2e-tui-optimistic e2e-ios-cards e2e-plan-card e2e-plan-result e2e-ios-offline soak load-bench views-measure read-index-bench tasks-screen rehearse-cutover upgrade-rehearsal cutover-live clean-xcode-test-results e2e-journeys e2e-explore pi-relay-deploy pi-iroh-relay-deploy
 
 build:
 	bazelisk build //crates/... //apple:AlondraMac
@@ -308,6 +308,10 @@ views-measure:
 	bazelisk build //crates/alondrad:alondrad_test
 	home=$$(mktemp -d) && trap 'rm -rf "$$home"' EXIT && HOME="$$home" ALONDRA_VIEWS_MEASURE_DB="$(abspath $(DB))" \
 		$(call exe,//crates/alondrad:alondrad_test) --ignored --exact views::measure_tests::measure_real_domain_views --nocapture
+
+# Building the read index of a domain the size of the real one; fails over 10 ms.
+read-index-bench:
+	bazelisk run -c opt //crates/core:projection_cost -- --read-index --check-cost
 
 # Latency of /v1/health, views and hooks plus alondrad's CPU under N simulated nodes (tools/load_bench.py).
 load-bench:
