@@ -1,0 +1,217 @@
+{
+  "protocol": 1,
+  "data_epoch": "test-epoch",
+  "view": "new_request",
+  "key": "new_request",
+  "client": "mac",
+  "version": "v5307569752f98a89",
+  "cursor": "cursor-1",
+  "title": "Pide algo nuevo",
+  "status": {
+    "version": "ve1fd29addaecad00",
+    "summary": "2 preguntas · 3 por leer · 0 nodos trabajando",
+    "badge": 5,
+    "counts": [
+      {
+        "id": "inbox",
+        "label": "Bandeja",
+        "value": 5
+      },
+      {
+        "id": "tasks",
+        "label": "Tareas",
+        "value": 1
+      },
+      {
+        "id": "agents",
+        "label": "Flota",
+        "value": 0
+      },
+      {
+        "id": "working",
+        "label": "trabajando",
+        "value": 0
+      },
+      {
+        "id": "waiting",
+        "label": "esperando",
+        "value": 1
+      }
+    ],
+    "gauges": [
+      {
+        "id": "memory",
+        "label": "Memory",
+        "value": 0.38,
+        "text": "6.1 GB of 16 GB",
+        "level": "calm"
+      },
+      {
+        "id": "disk",
+        "label": "Disk available",
+        "value": 0.72,
+        "text": "120 GB",
+        "level": "calm"
+      }
+    ],
+    "orchestrator": {
+      "text": "inactivo",
+      "tone": "neutral"
+    }
+  },
+  "sections": [
+    {
+      "id": "form",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "form",
+          "id": "new_request",
+          "fields": [
+            {
+              "id": "text",
+              "label": "¿Qué quieres que se haga?",
+              "kind": {
+                "kind": "multiline",
+                "placeholder": null
+              },
+              "value": "",
+              "required": true,
+              "reload_on_change": false
+            },
+            {
+              "id": "attachments",
+              "label": "Adjuntos",
+              "kind": {
+                "kind": "attachments"
+              },
+              "value": [],
+              "required": false,
+              "reload_on_change": false
+            },
+            {
+              "id": "project",
+              "label": "Proyecto",
+              "kind": {
+                "kind": "choice",
+                "items": [
+                  {
+                    "id": "",
+                    "label": "Alondra elige el proyecto"
+                  },
+                  {
+                    "id": "Demo Garden",
+                    "label": "Demo Garden"
+                  }
+                ]
+              },
+              "value": "",
+              "required": false,
+              "reload_on_change": true
+            },
+            {
+              "id": "pr",
+              "label": "PRs",
+              "kind": {
+                "kind": "choice",
+                "items": [
+                  {
+                    "id": "review",
+                    "label": "Revisar cada una",
+                    "description": "Cada PR que abre el nodo es una tarjeta para ti; Alondra la fusiona cuando la aceptas"
+                  },
+                  {
+                    "id": "auto_merge",
+                    "label": "Merge automático",
+                    "description": "Alondra fusiona la PR cuando pasan sus comprobaciones"
+                  }
+                ]
+              },
+              "value": "review",
+              "required": false,
+              "reload_on_change": false
+            },
+            {
+              "id": "effort",
+              "label": "Esfuerzo",
+              "kind": {
+                "kind": "choice",
+                "items": [
+                  {
+                    "id": "auto",
+                    "label": "Automático",
+                    "description": "Alondra elige el modelo y el esfuerzo según la tarea"
+                  },
+                  {
+                    "id": "light",
+                    "label": "Ligero",
+                    "description": "Un modelo rápido y más barato para trabajo pequeño y claro"
+                  },
+                  {
+                    "id": "normal",
+                    "label": "Normal",
+                    "description": "El modelo y el esfuerzo por defecto de Claude"
+                  },
+                  {
+                    "id": "hard",
+                    "label": "A fondo",
+                    "description": "El modelo más potente y el máximo esfuerzo"
+                  }
+                ]
+              },
+              "value": "auto",
+              "required": false,
+              "reload_on_change": false
+            },
+            {
+              "id": "issue",
+              "label": "Incidencia",
+              "kind": {
+                "kind": "picker",
+                "source": "issue_picker"
+              },
+              "value": "",
+              "required": false,
+              "help": "Elige una incidencia abierta o pega su enlace de GitHub",
+              "reload_on_change": false
+            }
+          ],
+          "submit": {
+            "id": "new_request:view@6",
+            "label": "Enviar solicitud",
+            "style": "primary",
+            "role": "advance",
+            "presentation": "button",
+            "input": {
+              "kind": "none"
+            },
+            "attachments": true,
+            "enabled": true,
+            "resolves_card": false
+          }
+        }
+      ]
+    },
+    {
+      "id": "sent",
+      "title": "Solicitudes pendientes",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "r-4b7e2c1d9a0f4e3b8c6d5a4f3e2b1c0d",
+          "icon": "request",
+          "title": "Importar las listas de Notas",
+          "badges": [
+            {
+              "text": "En cola",
+              "tone": "neutral"
+            }
+          ],
+          "depth": 0,
+          "struck": false
+        }
+      ]
+    }
+  ]
+}

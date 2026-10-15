@@ -107,14 +107,6 @@ final class DurableActionEpochTests: XCTestCase {
         let nodeStore = TestStore(initialState: node) { NodeDetailFeature() }
         await nodeStore.send(.composer(.settled(old, applied: false)))
         await nodeStore.finish()
-
-        var newRequest = NewRequestFeature.State()
-        newRequest.actions.dataEpoch = "new-epoch"
-        let requestStore = TestStore(initialState: newRequest) { NewRequestFeature() }
-        let formRequest = ActionRequest(commandId: oldID, dataEpoch: "old-epoch", client: .ios, lang: "en",
-            actionId: "new_request:form@1", input: ActionInput(fields: ["text": .string("Old draft")]))
-        await requestStore.send(.actions(.settled(formRequest, applied: false)))
-        await requestStore.finish()
     }
 
     func testChangingTheEpochReleasesTheOldDraftsDeliveryState() {

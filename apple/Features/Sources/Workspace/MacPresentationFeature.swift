@@ -69,6 +69,7 @@ public struct MacPresentationFeature: Sendable {
         public var contentImageData: Data?
         public var contentDigest: String?
         public var diffComments: [String: ActionComment] = [:]
+        public var newRequest = NewRequestFeature.State(client: .mac)
 
         private var terms: [Substring] { query.lowercased().split(separator: " ") }
         public func projectExpanded(_ name: String) -> Bool { !query.isEmpty || !collapsedProjects.contains(name) }
@@ -122,6 +123,7 @@ public struct MacPresentationFeature: Sendable {
         case answerOverdue(String)
         /// An answer has not reached the daemon in time, so its card waits again: the sentence to show.
         case answerNotConfirmed(String)
+        case newRequest(NewRequestFeature.Action)
     }
     @Dependency(\.continuousClock) var clock
     @Dependency(\.viewsClient) var viewsClient
@@ -440,7 +442,7 @@ public struct MacPresentationFeature: Sendable {
                     }
                 } else { state.viewError = nil }
             case let .viewFailed(_, message): state.viewError = message
-            case .settled: break
+            case .settled, .newRequest: break
             case .queryChanged(let query):
                 state.query = query
                 state.smartMatches = nil
@@ -495,6 +497,7 @@ public struct MacPresentationFeature: Sendable {
             return .none
         }
         Scope(state: \.actionFeature, action: \.action) { ActionFeature() }
+        Scope(state: \.newRequest, action: \.newRequest) { NewRequestFeature() }
     }
 
     /// The daemon asks about an answer again: its card is shown, unless the person is already

@@ -51,7 +51,7 @@ private struct DemoScene: View {
         _store = State(initialValue: Store(initialState: AppFeature.State()) {
             AppFeature()
         } withDependencies: {
-            $0.viewsClient = ViewsClient.demo()
+            $0.viewsClient = ViewsClient.demoInDeviceLanguage()
         })
     }
 

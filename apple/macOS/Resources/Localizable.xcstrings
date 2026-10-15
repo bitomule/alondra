@@ -1,6 +1,20 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "Waiting to send": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Esperando para enviar"}}}},
+    "Uploading attachments…": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Subiendo adjuntos…"}}}},
+    "Sending…": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Enviando…"}}}},
+    "Not confirmed yet · Retrying…": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Sin confirmar · Reintentando…"}}}},
+    "Not sent": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "No enviada"}}}},
+    "Queued": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "En cola"}}}},
+    "Loading options…": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Cargando opciones…"}}}},
+    "Discard": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Descartar"}}}},
+    "Changes the options for this request": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Cambia las opciones de esta solicitud"}}}},
+    "Pending Requests": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Solicitudes pendientes"}}}},
+    "Ask for Something New": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Pide algo nuevo"}}}},
+    "Send (⌘↩)": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Enviar (⌘↩)"}}}},
+    "What do you want done? Describe it as you would to someone on the team.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "¿Qué quieres que se haga? Descríbelo como se lo contarías a alguien del equipo."}}}},
+    "Alondra picks the project": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Alondra elige el proyecto"}}}},
     "Connection measurements": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Medidas de conexión"}}}},
     "No requests measured yet.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Aún no hay peticiones medidas."}}}},
     "Share measurements": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Compartir medidas"}}}},
@@ -2084,7 +2098,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Issue"
+            "value": "Incidencia"
           }
         }
       }

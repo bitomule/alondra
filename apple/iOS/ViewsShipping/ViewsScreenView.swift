@@ -15,8 +15,7 @@ struct ViewsScreenView: View {
     @State private var nodeMessageDraft = ""
 
     private var isTasksScreen: Bool { store.key.rawValue == "tasks" || store.key.rawValue.hasPrefix("tasks?") }
-    private var isNewRequestScreen: Bool { store.key.rawValue == "new_request" || store.key.rawValue.hasPrefix("new_request?") }
-    private var isInlineForm: Bool { isNewRequestScreen || store.key.rawValue.hasPrefix("schedule:") }
+    private var isInlineForm: Bool { store.key.rawValue.hasPrefix("schedule:") }
     private var pickerRows: [AlondraContract.Row] {
         store.pickerDocument?.sections.flatMap(\.items).compactMap { item in
             if case let .row(row) = item { row } else { nil }
@@ -24,7 +23,6 @@ struct ViewsScreenView: View {
     }
     private var screenGlow: Color {
         if store.key.rawValue == "fleet" || store.key.rawValue.hasPrefix("node:") { Palette.sky }
-        else if isNewRequestScreen { Palette.ember }
         else { Palette.dawn }
     }
 
@@ -85,7 +83,7 @@ struct ViewsScreenView: View {
 
     private var pickerContent: some View {
         actionSheetContent
-        .sheet(isPresented: Binding(get: { store.pickerFieldID != nil && !isNewRequestScreen },
+        .sheet(isPresented: Binding(get: { store.pickerFieldID != nil },
                                     set: { if !$0 { store.send(.pickerClosed) } })) { issuePickerPanel }
     }
 
@@ -139,7 +137,7 @@ struct ViewsScreenView: View {
     private func documentScreen(_ document: ViewDocument) -> some View {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 16) {
-                        if isTasksScreen || isNewRequestScreen {
+                        if isTasksScreen {
                             Text(document.title ?? document.status.summary)
                                 .font(.display(.largeTitle, weight: .bold))
                                 .foregroundStyle(Palette.ink)
@@ -181,8 +179,8 @@ struct ViewsScreenView: View {
                     .padding(16)
                 }
                 .background(DawnBackground(glow: screenGlow))
-                .navigationTitle(isTasksScreen || isNewRequestScreen ? "" : (document.title ?? document.status.summary))
-                .navigationBarTitleDisplayMode(isTasksScreen || isNewRequestScreen ? .inline : .automatic)
+                .navigationTitle(isTasksScreen ? "" : (document.title ?? document.status.summary))
+                .navigationBarTitleDisplayMode(isTasksScreen ? .inline : .automatic)
                 .refreshable { await store.send(.refresh).finish() }
                 .modifier(BottomBarModifier(enabled: hasBottomBar(document)) { documentBottomBar(document) })
                 .toolbar(hidesTabBar ? .hidden : .automatic, for: .tabBar)
@@ -234,22 +232,10 @@ struct ViewsScreenView: View {
                         }
                         .padding(.horizontal, 16).padding(.vertical, 8)
                     } else if isInlineForm, let form = store.form {
-                        if isNewRequestScreen {
-                            Button { store.send(.action(.submit)) } label: {
-                                Label(store.action.inFlight ? String(localized: "Sending…") : String(localized: "Send"),
-                                      systemImage: "paperplane.fill")
-                                    .font(.headline).frame(maxWidth: .infinity)
-                            }
-                            .buttonStyle(.glassProminent).buttonBorderShape(.capsule)
-                            .controlSize(.large).tint(Palette.ember)
+                        Button(form.submit.label) { store.send(.action(.submit)) }
+                            .buttonStyle(.borderedProminent).tint(Palette.dawn)
                             .disabled(store.action.inFlight || !form.submit.enabled)
-                            .padding(.horizontal, 20).padding(.vertical, 8)
-                        } else {
-                            Button(form.submit.label) { store.send(.action(.submit)) }
-                                .buttonStyle(.borderedProminent).tint(Palette.dawn)
-                                .disabled(store.action.inFlight || !form.submit.enabled)
-                                .frame(maxWidth: .infinity).padding(.horizontal, 20).padding(.vertical, 8)
-                        }
+                            .frame(maxWidth: .infinity).padding(.horizontal, 20).padding(.vertical, 8)
                     }
     }
 
@@ -280,10 +266,7 @@ struct ViewsScreenView: View {
         if isInlineForm, section.id == "form", let form = store.form {
             ActionInputView(store: store.scope(state: \.action, action: \.action), form: form,
                             onReload: { field, value in store.send(.reloadForm(field.id, value)) },
-                            onPicker: { field, source in store.send(.pickerOpened(field.id, source)) },
-                            pickerPresented: Binding(get: { store.pickerFieldID != nil },
-                                                     set: { if !$0 { store.send(.pickerClosed) } }),
-                            pickerSheet: { AnyView(issuePickerPanel) })
+                            onPicker: { field, source in store.send(.pickerOpened(field.id, source)) })
                 .padding(4)
         } else if store.key.rawValue.hasPrefix("task:"), section.id == "header" {
             taskHeader(section)

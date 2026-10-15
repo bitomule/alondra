@@ -24,6 +24,21 @@ import Testing
         store.send(.disappeared)
     }
 
+    @Test func aSpanishDeviceReadsTheNewRequestScreenInSpanish() async throws {
+        guard case let .document(spanish) = try await ViewsClient.demo(spanish: true).load(.newRequest(), nil),
+              case let .document(english) = try await ViewsClient.demo().load(.newRequest(), nil) else {
+            Issue.record("The demo New screen must load")
+            return
+        }
+        let queue = { (document: ViewDocument) in document.sections.first { $0.id == "sent" } }
+        #expect(queue(spanish)?.title == "Solicitudes pendientes")
+        #expect(queue(english)?.title == "Pending Requests")
+        let badges = queue(spanish)?.items.compactMap { item -> [String]? in
+            if case let .row(row) = item { row.badges.map(\.text) } else { nil }
+        }.flatMap { $0 }
+        #expect(badges == ["En cola"])
+    }
+
     @Test func homeCardsAndLinkedScreensUseViewsDocuments() async throws {
         let client = ViewsClient.demo()
         guard case let .document(home) = try await client.load(.home, nil) else {

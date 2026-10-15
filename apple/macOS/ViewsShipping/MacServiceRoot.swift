@@ -79,7 +79,7 @@ private struct MacViewsDemoScene: View {
     @State private var store = Store(initialState: MacAppFeature.State()) {
         MacAppFeature()
     } withDependencies: {
-        $0.viewsClient = ViewsClient.demo()
+        $0.viewsClient = ViewsClient.demoInDeviceLanguage()
     }
 
     var body: some View {

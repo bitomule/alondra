@@ -164,6 +164,7 @@ swift_library(
     visibility = ["//apple:__subpackages__"],
     deps = [
         "//apple/Design:AlondraDesign",
+        "//apple/Data/Attachments:AlondraAttachments",
         "//apple/Contract:AlondraContract",
         "//apple/Features:AlondraFeatures",
         "//apple/Data/Feed:AlondraFeed",

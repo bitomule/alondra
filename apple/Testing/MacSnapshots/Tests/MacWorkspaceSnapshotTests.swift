@@ -450,4 +450,58 @@ final class MacWorkspaceSnapshotTests: XCTestCase {
             ConnectionLostView(problem: .macChangedIdentity, retry: {}, settings: {}, pairAgain: {})
         }
     }
+
+    private func newRequest(spanish: Bool = false, edit: (inout NewRequestFeature.State) -> Void) throws -> StoreOf<MacPresentationFeature> {
+        var screen = ScreenFeature.State(key: .newRequest())
+        screen.document = try document(spanish ? "new-request-mac-es" : "new-request-mac")
+        screen.phase = .loaded
+        return try presentation { state in
+            state.selection = .viewKey("new_request")
+            state.selectedViewKey = "new_request"
+            state.newRequest.screen = screen
+            for field in state.newRequest.form?.fields ?? [] { state.newRequest.values[field.id] = field.value }
+            edit(&state.newRequest)
+        }
+    }
+
+    func test_newRequest_queue() throws {
+        let store = try newRequest { state in
+            state.values["text"] = .string("Make the queue rows say who asked")
+            state.pending.add("r-failed", text: "Rename the Garden project to Demo Garden",
+                              phase: .failed("Alondra can’t take requests right now. Try again in a moment."))
+            state.pending.add("r-unconfirmed", text: "Add a widget with the queue", phase: .unconfirmed)
+            state.pending.add("r-sending", text: "Polish the Alondra beta before Friday: fix the onboarding copy and the empty states.", phase: .sending)
+        }
+        assertWindow(size: CGSize(width: 900, height: 900)) { MacServiceDetail(presentation: store) }
+    }
+
+    func test_newRequest_queue_spanish() throws {
+        let store = try newRequest(spanish: true) { state in
+            state.pending.add("r-failed", text: "Cambia el nombre del proyecto Garden a Demo Garden",
+                              phase: .failed("Alondra no puede aceptar solicitudes ahora. Vuelve a intentarlo en un momento."))
+            state.pending.add("r-sending", text: "Pule la beta de Alondra antes del viernes.", phase: .sending)
+        }
+        assertWindow(size: CGSize(width: 900, height: 900), spanish: true, variants: [.light]) { MacServiceDetail(presentation: store) }
+    }
+
+    func test_newRequest_beforeTheOptionsArrive() throws {
+        let store = try presentation { state in
+            state.selection = .viewKey("new_request")
+            state.selectedViewKey = "new_request"
+            state.newRequest.values["text"] = .string("Polish the Alondra beta before Friday.")
+            state.newRequest.pending.add("r-waiting", text: "Add a widget with the queue", phase: .waiting(.options))
+        }
+        assertWindow(size: CGSize(width: 900, height: 700), variants: [.light]) { MacServiceDetail(presentation: store) }
+    }
+
+    func test_newRequest_optionsSheet() throws {
+        let form = try XCTUnwrap(try document("new-request-mac").sections.flatMap(\.items).compactMap { item -> AlondraContract.Form? in
+            if case let .form(form) = item { form } else { nil }
+        }.first)
+        let fields = form.fields.filter { $0.id != "text" && $0.id != "attachments" }
+        let store = Store(initialState: RequestOptionsFeature.State(fields: fields, values: Dictionary(uniqueKeysWithValues: fields.map { ($0.id, $0.value) }))) {
+            RequestOptionsFeature()
+        }
+        assertWindow(size: CGSize(width: 480, height: 420)) { MacRequestOptionsSheet(store: store) }
+    }
 }

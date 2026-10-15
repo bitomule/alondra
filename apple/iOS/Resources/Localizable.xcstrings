@@ -1,6 +1,12 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "Waiting to send": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Esperando para enviar"}}}},
+    "Uploading attachments…": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Subiendo adjuntos…"}}}},
+    "Not confirmed yet · Retrying…": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Sin confirmar · Reintentando…"}}}},
+    "Not sent": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "No enviada"}}}},
+    "Loading options…": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Cargando opciones…"}}}},
+    "Discard": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Descartar"}}}},
     "Connection measurements": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Medidas de conexión"}}}},
     "No requests measured yet.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Aún no hay peticiones medidas."}}}},
     "Share measurements": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Compartir medidas"}}}},
@@ -2641,7 +2647,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Lo elige el orquestador"
+            "value": "Lo elige Alondra"
           }
         }
       }
@@ -2671,7 +2677,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Issue"
+            "value": "Incidencia"
           }
         }
       }

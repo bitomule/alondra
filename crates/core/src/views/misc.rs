@@ -130,7 +130,7 @@ pub(super) fn new_request(key: &str, context: &RenderContext<'_>) -> Result<View
             submit,
         })],
     ));
-    if context.client == Client::Ios {
+    if matches!(context.client, Client::Ios | Client::Mac) {
         let mut requests: Vec<_> = context.domain.requests.values().filter(|request| context.domain.is_defining(request)).collect();
         requests.sort_by(|left, right| {
             context.live.request_times.get(&right.id.0).cmp(&context.live.request_times.get(&left.id.0))
@@ -191,7 +191,7 @@ pub(super) fn option_field(spec: &Spec, lang: super::Lang, client: Client) -> Fi
                 Some(value) => common::effort_label(value, lang).unwrap_or(fallback).into(),
             };
         }
-        if client != Client::Ios { return fallback.into(); }
+        if client == Client::Tui { return fallback.into(); }
         match (id, value, lang) {
             ("pr", None, _) => "PRs",
             ("pr", Some("review"), super::Lang::En) => "Review each one",

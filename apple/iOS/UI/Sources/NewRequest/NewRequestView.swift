@@ -5,35 +5,32 @@ import AlondraFeatures
 import ComposableArchitecture
 import SwiftUI
 
-/// The New tab: describe what you want done, attach what helps, choose how to launch it, and see
-/// what you already sent.
+/// The New tab: describe what you want done and attach what helps, here and at once; choose how
+/// to launch it from the options Alondra offers; and see the requests on their way.
 public struct NewRequestView: View {
     @Bindable var store: StoreOf<NewRequestFeature>
     @FocusState private var focused: Bool
+    @State private var viewport: CGFloat = 0
 
     public init(store: StoreOf<NewRequestFeature>) { self.store = store }
 
     public var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("New")
-                        .font(.display(.largeTitle, weight: .bold))
-                        .foregroundStyle(Palette.ink)
-                        .accessibilityAddTraits(.isHeader)
-                }
-                if store.form != nil {
-                    editor
-                    optionsRow
-                    recentRequests
-                } else {
-                    ScreenPhaseView(phase: store.screen.phase, missing: "This screen is no longer available") { store.send(.task) }
-                }
+                Text("New")
+                    .font(.display(.largeTitle, weight: .bold))
+                    .foregroundStyle(Palette.ink)
+                    .accessibilityAddTraits(.isHeader)
+                editor
+                optionsRow
+                queue
             }
             .padding(20)
+            .frame(maxWidth: .infinity, minHeight: viewport, alignment: .topLeading)
             .contentShape(Rectangle())
             .onTapGesture { focused = false }
         }
+        .onScrollGeometryChange(for: CGFloat.self) { $0.containerSize.height } action: { _, height in viewport = height }
         .scrollDismissesKeyboard(.interactively)
         .background(DawnBackground(glow: Palette.ember))
         .navigationBarTitleDisplayMode(.inline)
@@ -43,7 +40,6 @@ public struct NewRequestView: View {
                 .presentationDetents([.medium, .large])
         }
         .task { await store.send(.task).finish() }
-        .actionDialogs(store.scope(state: \.actions, action: \.actions))
     }
 
     private var editor: some View {
@@ -77,50 +73,86 @@ public struct NewRequestView: View {
     }
 
     private var attachments: StoreOf<AttachmentFeature> {
-        store.scope(state: \.actions.attachmentPicker, action: \.actions.attachmentPicker)
+        store.scope(state: \.attachments, action: \.attachments)
     }
 
     @ViewBuilder private var optionsRow: some View {
-        if !store.optionFields.isEmpty {
-            Button { store.send(.optionsTapped) } label: {
-                HStack(spacing: 12) {
-                    Image(systemName: "slider.horizontal.3")
-                        .foregroundStyle(Palette.ember)
-                    VStack(alignment: .leading, spacing: 2) {
-                        if let project = store.project {
-                            Text(verbatim: project).font(.subheadline.weight(.semibold))
-                        } else {
-                            Text("Alondra picks the project").font(.subheadline.weight(.semibold))
+        if store.form != nil {
+            if !store.optionFields.isEmpty {
+                Button { store.send(.optionsTapped) } label: {
+                    optionsLabel {
+                        VStack(alignment: .leading, spacing: 2) {
+                            if let project = store.project {
+                                Text(verbatim: project).font(.subheadline.weight(.semibold))
+                            } else {
+                                Text("Alondra picks the project").font(.subheadline.weight(.semibold))
+                            }
+                            Text(verbatim: store.optionsSummary.joined(separator: " · "))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(2)
+                                .multilineTextAlignment(.leading)
                         }
-                        Text(verbatim: store.optionsSummary.joined(separator: " · "))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(2)
-                            .multilineTextAlignment(.leading)
+                        .foregroundStyle(Palette.ink)
+                    } trailing: {
+                        Image(systemName: "chevron.right")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.tertiary)
                     }
-                    .foregroundStyle(Palette.ink)
-                    Spacer(minLength: 0)
-                    Image(systemName: "chevron.right")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.tertiary)
                 }
-                .padding(14)
-                .background(Palette.card.opacity(0.8), in: .rect(cornerRadius: 18, style: .continuous))
+                .buttonStyle(.plain)
+                .accessibilityHint(Text("Changes the options for this request"))
+            }
+        } else if case .loading = store.screen.phase {
+            optionsLabel {
+                Text("Loading options…").font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
+            } trailing: {
+                Image(systemName: "hourglass").foregroundStyle(.tertiary)
+            }
+        } else {
+            Button { store.send(.screen(.retry)) } label: {
+                optionsLabel {
+                    Text(verbatim: ScreenFeature.State.failure)
+                        .font(.subheadline)
+                        .foregroundStyle(Palette.ink)
+                        .multilineTextAlignment(.leading)
+                } trailing: {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(Palette.ember)
+                }
             }
             .buttonStyle(.plain)
-            .accessibilityHint(Text("Changes the options for this request"))
         }
     }
 
-    @ViewBuilder private var recentRequests: some View {
-        if !store.recent.isEmpty {
+    private func optionsLabel(@ViewBuilder _ content: () -> some View, @ViewBuilder trailing: () -> some View) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: "slider.horizontal.3")
+                .foregroundStyle(Palette.ember)
+            content()
+            Spacer(minLength: 0)
+            trailing()
+        }
+        .padding(14)
+        .background(Palette.card.opacity(0.8), in: .rect(cornerRadius: 18, style: .continuous))
+    }
+
+    @ViewBuilder private var queue: some View {
+        if !store.unshown.isEmpty || !store.recent.isEmpty {
             VStack(alignment: .leading, spacing: 10) {
-                recentHeading
+                queueHeading
                     .font(.footnote.weight(.bold))
                     .textCase(.uppercase)
                     .kerning(0.6)
                     .foregroundStyle(.secondary)
                     .accessibilityAddTraits(.isHeader)
+                ForEach(store.unshown) { entry in
+                    PendingRequestRow(entry: entry,
+                                      retry: { store.send(.retry(entry.id)) },
+                                      discard: { store.send(.discard(entry.id)) })
+                        .transition(.move(edge: .top).combined(with: .opacity))
+                }
                 ForEach(store.recent, id: \.id) { row in
                     VStack(alignment: .leading, spacing: 8) {
                         Text(verbatim: row.title)
@@ -142,17 +174,18 @@ public struct NewRequestView: View {
                     .background(Palette.card.opacity(0.8), in: .rect(cornerRadius: 18, style: .continuous))
                 }
             }
+            .animation(.smooth(duration: 0.3), value: store.unshown)
         }
     }
 
-    @ViewBuilder private var recentHeading: some View {
+    @ViewBuilder private var queueHeading: some View {
         if let title = store.recentTitle { Text(verbatim: title) } else { Text("Pending Requests") }
     }
 
     private var sendBar: some View {
         Button {
             focused = false
-            store.send(.send)
+            store.send(.send, animation: .smooth(duration: 0.3))
         } label: {
             Label {
                 Text("Send")

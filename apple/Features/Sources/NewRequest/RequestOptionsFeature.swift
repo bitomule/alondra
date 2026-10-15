@@ -32,6 +32,11 @@ public struct RequestOptionsFeature: Sendable {
             return value
         }
 
+        public func isOn(_ id: String) -> Bool {
+            guard case .bool(let value)? = values[id] ?? field(id)?.value else { return false }
+            return value
+        }
+
         public var issue: String { selected("issue") }
 
         public var projectLabel: String? {
@@ -47,6 +52,7 @@ public struct RequestOptionsFeature: Sendable {
     public enum Action: BindableAction {
         case binding(BindingAction<State>)
         case choose(String, String)
+        case toggle(String, Bool)
         case issueTapped
         case removeIssue
         case issuePicker(PresentationAction<IssuePickerFeature.Action>)
@@ -66,6 +72,9 @@ public struct RequestOptionsFeature: Sendable {
             case .choose(let id, let value):
                 state.values[id] = .string(value)
                 return .send(.delegate(.set(id, .string(value))))
+            case .toggle(let id, let enabled):
+                state.values[id] = .bool(enabled)
+                return .send(.delegate(.set(id, .bool(enabled))))
             case .issueTapped:
                 state.issuePicker = IssuePickerFeature.State(selected: state.issue)
                 return .none

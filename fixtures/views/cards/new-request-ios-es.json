@@ -4,37 +4,37 @@
   "view": "new_request",
   "key": "new_request",
   "client": "ios",
-  "version": "vddb955c6ea4c54e2",
+  "version": "v7a8b24f9873465f0",
   "cursor": "cursor-1",
   "title": "Pide algo nuevo",
   "status": {
-    "version": "v47edd097e99cb5fc",
-    "summary": "1 question · 3 to read · 0 nodes working",
-    "badge": 4,
+    "version": "ve1fd29addaecad00",
+    "summary": "2 preguntas · 3 por leer · 0 nodos trabajando",
+    "badge": 5,
     "counts": [
       {
         "id": "inbox",
-        "label": "Inbox",
-        "value": 4
+        "label": "Bandeja",
+        "value": 5
       },
       {
         "id": "tasks",
-        "label": "Tasks",
+        "label": "Tareas",
         "value": 1
       },
       {
         "id": "agents",
-        "label": "Fleet",
-        "value": 1
+        "label": "Flota",
+        "value": 0
       },
       {
         "id": "working",
-        "label": "working",
+        "label": "trabajando",
         "value": 0
       },
       {
         "id": "waiting",
-        "label": "waiting",
+        "label": "esperando",
         "value": 1
       }
     ],
@@ -55,7 +55,7 @@
       }
     ],
     "orchestrator": {
-      "text": "idle",
+      "text": "inactivo",
       "tone": "neutral"
     }
   },
@@ -122,8 +122,8 @@
                   },
                   {
                     "id": "auto_merge",
-                    "label": "Fusión automática",
-                    "description": "El nodo fusiona su propio PR cuando pasan las comprobaciones"
+                    "label": "Merge automático",
+                    "description": "Alondra fusiona la PR cuando pasan sus comprobaciones"
                   }
                 ]
               },
@@ -139,7 +139,7 @@
                 "items": [
                   {
                     "id": "auto",
-                    "label": "Auto",
+                    "label": "Automático",
                     "description": "Alondra elige el modelo y el esfuerzo según la tarea"
                   },
                   {
@@ -154,8 +154,8 @@
                   },
                   {
                     "id": "hard",
-                    "label": "Difícil",
-                    "description": "El modelo más potente y el mayor esfuerzo"
+                    "label": "A fondo",
+                    "description": "El modelo más potente y el máximo esfuerzo"
                   }
                 ]
               },
@@ -177,29 +177,31 @@
             }
           ],
           "submit": {
-            "id": "new_request:view@0",
+            "id": "new_request:view@6",
             "label": "Enviar solicitud",
             "style": "primary",
+            "role": "advance",
             "presentation": "button",
             "input": {
               "kind": "none"
             },
             "attachments": true,
-            "enabled": true
+            "enabled": true,
+            "resolves_card": false
           }
         }
       ]
     },
     {
       "id": "sent",
-      "title": "Solicitudes recientes",
+      "title": "Solicitudes pendientes",
       "collapsed": false,
       "items": [
         {
           "type": "row",
-          "id": "r-9f2156b5a8894e53901f0af576dff6a2",
+          "id": "r-4b7e2c1d9a0f4e3b8c6d5a4f3e2b1c0d",
           "icon": "request",
-          "title": "Pulir la beta de Alondra",
+          "title": "Importar las listas de Notas",
           "badges": [
             {
               "text": "En cola",

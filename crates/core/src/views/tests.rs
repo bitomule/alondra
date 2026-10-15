@@ -2618,6 +2618,9 @@ fn generate_goldens() {
         ("card-delivery-es.json", "card:hf-weekly-2026-09-30", Client::Ios, Lang::Es),
         ("card-pr-es-mac.json", "card:github.com/example/repo#12", Client::Mac, Lang::Es),
         ("new-request-ios.json", "new_request", Client::Ios, Lang::En),
+        ("new-request-mac.json", "new_request", Client::Mac, Lang::En),
+        ("new-request-ios-es.json", "new_request", Client::Ios, Lang::Es),
+        ("new-request-mac-es.json", "new_request", Client::Mac, Lang::Es),
         ("node-ios.json", "node:d887a34b-249e-4487-a89b-57de38c26372", Client::Ios, Lang::En),
         ("task-ios.json", "task:t-651c38484cd2f34e74d5107ba05f7f15", Client::Ios, Lang::En),
         ("request-ios.json", "request:r-9f2156b5a8894e53901f0af576dff6a2", Client::Ios, Lang::En),
@@ -2635,6 +2638,9 @@ fn generate_goldens() {
     let mut with_pending = state.clone();
     let pending = Request::new("r-4b7e2c1d9a0f4e3b8c6d5a4f3e2b1c0d".into(), "Import lists from Notes".into());
     with_pending.requests.insert(pending.id.clone(), pending);
+    let mut with_pending_es = state.clone();
+    let pendiente = Request::new("r-4b7e2c1d9a0f4e3b8c6d5a4f3e2b1c0d".into(), "Importar las listas de Notas".into());
+    with_pending_es.requests.insert(pendiente.id.clone(), pendiente);
     let (tasks_state, tasks_live) = tasks_fixture();
     for (filename, client, lang) in TASKS_GOLDENS {
         let view = render(&tasks_state, &tasks_live, client, lang, "tasks", "2026-09-30T10:00:00Z");
@@ -2663,7 +2669,11 @@ fn generate_goldens() {
         .unwrap();
     }
     for (filename, key, client, lang) in cases {
-        let state = if key == "new_request" { &with_pending } else { &state };
+        let state = match (key, lang) {
+            ("new_request", Lang::Es) => &with_pending_es,
+            ("new_request", _) => &with_pending,
+            _ => &state,
+        };
         let view = render(state, &live, client, lang, key, "2026-09-30T10:00:00Z");
         std::fs::write(
             format!("{dir}/{filename}"),
@@ -3616,6 +3626,35 @@ fn the_sent_history_strips_the_prefix() {
     }).collect();
     assert!(titles.contains(&"Fix the login bug"), "{titles:?}");
     assert!(!titles.iter().any(|title| title.contains("[Alondra]")));
+}
+
+#[test]
+fn the_mac_gets_the_pending_requests_by_the_id_it_sent_them_with_and_the_terminal_does_not() {
+    let mut state = fixture();
+    state.requests.insert("r-from-the-mac".into(), Request::new("r-from-the-mac".into(), "Polish the beta".into()));
+    let sent = |client| {
+        render(&state, &LiveSnapshot::default(), client, Lang::En, "new_request", "")
+            .sections.into_iter().find(|section| section.id == "sent")
+    };
+    let mac = sent(Client::Mac).expect("the Mac shows the queue under the composer");
+    assert!(mac.items.iter().any(|item| matches!(item, Item::Row(row) if row.id == "r-from-the-mac")));
+    assert!(sent(Client::Tui).is_none());
+}
+
+#[test]
+fn the_mac_new_request_reads_in_spanish_like_the_iphone() {
+    let mut state = golden_fixture();
+    state.requests.insert("r-es".into(), Request::new("r-es".into(), "Pule la beta".into()));
+    let mac = render(&state, &golden_live(), Client::Mac, Lang::Es, "new_request", "");
+    let form = new_request_form(&mac);
+    let pr = form.fields.iter().find(|field| field.id == "pr").expect("the PR option");
+    assert_eq!(pr.label, "PRs");
+    let FieldKind::Choice { items } = &pr.kind else { panic!("a choice") };
+    let labels: Vec<&str> = items.iter().map(|item| item.label.as_str()).collect();
+    assert_eq!(labels, ["Revisar cada una", "Merge automático"]);
+    let sent = mac.sections.iter().find(|section| section.id == "sent").expect("the queue");
+    assert_eq!(sent.title.as_deref(), Some("Solicitudes pendientes"));
+    assert!(sent.items.iter().all(|item| matches!(item, Item::Row(row) if row.badges.iter().all(|badge| badge.text == "En cola"))));
 }
 
 #[test]

@@ -247,7 +247,9 @@ public struct MacServiceDetail: View {
     public init(presentation: StoreOf<MacPresentationFeature>) { self.presentation = presentation }
     public var body: some View {
         Group {
-            if let document = presentation.detailDocument {
+            if presentation.selectedViewKey?.hasPrefix("new_request") == true {
+                MacNewRequestView(store: presentation.scope(state: \.newRequest, action: \.newRequest))
+            } else if let document = presentation.detailDocument {
                 ScrollViewReader { proxy in
                     ScrollView {
                         VStack(alignment: .leading, spacing: 18) {

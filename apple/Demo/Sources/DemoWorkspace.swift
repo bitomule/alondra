@@ -5,12 +5,12 @@ import Foundation
 /// Bundled, network-free Views documents for Demo. The fixture documents use the same
 /// protocol DTOs as the real relay so the shipping Views UI runs unchanged.
 enum DemoWorkspace {
-    static func client() -> ViewsClient {
+    static func client(spanish: Bool = false) -> ViewsClient {
         let load: @Sendable (ViewKey, String?) async throws -> ViewFetch = { key, known in
             guard let fixture = fixtureName(for: key.rawValue) else {
                 throw ViewsClientError.missingView
             }
-            return try loadFixture(fixture, key: key.rawValue, known: known)
+            return try loadFixture(fixture, key: key.rawValue, known: known, spanish: spanish)
         }
         return ViewsClient(
             load: load,
@@ -75,8 +75,9 @@ enum DemoWorkspace {
         return "card-question"
     }
 
-    private static func loadFixture(_ name: String, key: String, known: String?) throws -> ViewLoad {
-        let fixture = try fixtureData(name)
+    /// The daemon's Spanish rendering of a screen when there is one, so a Spanish device reads it in Spanish.
+    private static func loadFixture(_ name: String, key: String, known: String?, spanish: Bool) throws -> ViewLoad {
+        let fixture = try (spanish ? try? fixtureData("\(name)-es") : nil) ?? fixtureData(name)
         var object = try JSONSerialization.jsonObject(with: fixture)
         if key.hasPrefix("card:") { object = replacingCardID(in: object, with: String(key.dropFirst("card:".count))) }
         guard var document = object as? [String: Any] else { throw ViewsClientError.missingView }

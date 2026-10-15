@@ -6,8 +6,9 @@ import ComposableArchitecture
 import SwiftUI
 import XCTest
 
-/// The New tab: an empty composer, a drafted request with its options, the options sheet, and the
-/// issue picker with a pasted link offered as a row.
+/// The New tab: an empty composer, a drafted request with its options, the queue with requests on
+/// their way and one that was not sent, the composer before the options arrive, the options sheet,
+/// and the issue picker with a pasted link offered as a row.
 @MainActor
 final class NewRequestSnapshotTests: XCTestCase {
     override func setUp() async throws { ScreenStores.pinTime() }
@@ -44,7 +45,7 @@ final class NewRequestSnapshotTests: XCTestCase {
     }
 
     func test_empty_spanish() throws {
-        let store = try composer("new-request-es")
+        let store = try composer("new-request-ios-es")
         assertScreen([.light], language: .spanish, inWindow: true) { ScreenFrame(height: 852) { NewRequestView(store: store) } }
     }
 
@@ -58,13 +59,51 @@ final class NewRequestSnapshotTests: XCTestCase {
         assertScreen([.light, .dark], inWindow: true) { ScreenFrame(height: 852) { NewRequestView(store: store) } }
     }
 
+    private func queued(_ texts: (sending: String, unconfirmed: String, failed: String, reason: String)) -> (inout NewRequestFeature.State) -> Void {
+        { state in
+            state.pending.add("r-failed", text: texts.failed, phase: .failed(texts.reason))
+            state.pending.add("r-unconfirmed", text: texts.unconfirmed, phase: .unconfirmed)
+            state.pending.add("r-sending", text: texts.sending, phase: .sending)
+        }
+    }
+
+    func test_queue() throws {
+        let store = try composer(edit: queued((
+            sending: "Polish the Alondra beta before Friday: fix the onboarding copy and the empty states.",
+            unconfirmed: "Add a widget with the queue",
+            failed: "Rename the Garden project to Demo Garden",
+            reason: "Alondra can’t take requests right now. Try again in a moment."
+        )))
+        assertScreen([.light, .dark], inWindow: true) { ScreenFrame(height: 1100) { NewRequestView(store: store) } }
+    }
+
+    func test_queue_spanish() throws {
+        let store = try composer("new-request-ios-es", edit: queued((
+            sending: "Pule la beta de Alondra antes del viernes: el texto de bienvenida y las pantallas vacías.",
+            unconfirmed: "Añade un widget con la cola",
+            failed: "Cambia el nombre del proyecto Garden a Demo Garden",
+            reason: "Alondra no puede aceptar solicitudes ahora. Vuelve a intentarlo en un momento."
+        )))
+        assertScreen([.light], language: .spanish, inWindow: true) { ScreenFrame(height: 1100) { NewRequestView(store: store) } }
+    }
+
+    func test_beforeTheOptionsArrive() throws {
+        var state = NewRequestFeature.State()
+        state.values["text"] = .string("Polish the Alondra beta before Friday.")
+        state.pending.add("r-waiting", text: "Add a widget with the queue", phase: .waiting(.options))
+        let store = Store(initialState: state) { NewRequestFeature() } withDependencies: {
+            $0.viewsClient.observe = { _ in AsyncThrowingStream { _ in } }
+        }
+        assertScreen([.light], inWindow: true) { ScreenFrame(height: 852) { NewRequestView(store: store) } }
+    }
+
     func test_optionsSheet() throws {
         let store = try options(edit: drafted)
         assertScreen([.light, .dark], inWindow: true) { ScreenFrame(height: 700) { RequestOptionsSheet(store: store) } }
     }
 
     func test_optionsSheet_spanish() throws {
-        let store = try options("new-request-es")
+        let store = try options("new-request-ios-es")
         assertScreen([.light], language: .spanish, inWindow: true) { ScreenFrame(height: 700) { RequestOptionsSheet(store: store) } }
     }
 
