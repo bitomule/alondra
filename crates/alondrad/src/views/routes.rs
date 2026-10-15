@@ -68,7 +68,7 @@ pub(crate) async fn relay_feed(
     super::feed::handle(client, device, query, Transport::Relay).await
 }
 
-async fn respond(
+pub(super) async fn respond(
     client: &client_routes::Client,
     path_key: &str,
     query: &str,

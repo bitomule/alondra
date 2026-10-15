@@ -2373,6 +2373,13 @@ fn checklist_delivery_fixture() -> DomainState {
     let task_id = state.interactions[&delivery].scope.clone();
     let Scope::Task { task_id } = task_id else { unreachable!() };
     let point = |id: &str, text: &str| ChecklistItem { id: id.into(), text: text.into() };
+    let plan = InteractionId::from("hold-plan-1");
+    let mut held = state.interactions[&delivery].clone();
+    held.id = plan.clone();
+    held.recipient = crate::domain::Recipient::Orchestrator;
+    held.payload = crate::domain::InteractionPayload::Question { options: vec![], answer: None };
+    state.interactions.insert(plan.clone(), held);
+    state.holds.insert(plan, crate::domain::Hold::Plan);
     state.checklists.insert(task_id, Checklist { plan: "hold-plan-1".into(), items: vec![
         point("1", "Restore the native review layouts"),
         point("2", "Verify the ARM simulator build"),
@@ -2387,6 +2394,7 @@ fn checklist_delivery_fixture() -> DomainState {
             evidence(EvidenceKind::Link, "https://github.com/example/repo/pull/12#snapshots", None),
         ] },
     ]);
+    state.validate().expect("the fixture is a state the domain could reach");
     state
 }
 

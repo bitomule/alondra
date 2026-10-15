@@ -62,3 +62,5 @@ fn note_client(version: &str) {
 pub(crate) fn this_service() -> alondra_core::views::Service {
     alondra_core::views::Service::serving(env!("CARGO_PKG_VERSION"))
 }
+#[cfg(test)]
+mod measure_tests;

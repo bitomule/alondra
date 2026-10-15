@@ -140,20 +140,17 @@ impl DomainState {
         presentation: Option<InteractionId>,
         head: Option<String>,
     ) -> AvailableAction {
-        let error = self
-            .preview(
-                &Actor::User {
-                    user_id: "projection-user".into(),
-                },
-                &CommandEnvelope {
-                    protocol_version: PROTOCOL_VERSION,
-                    data_epoch: self.data_epoch.clone(),
-                    command_id: "projection-validation".into(),
-                    expected_revision: self.revision,
-                    command,
-                },
-            )
-            .err();
+        let actor = Actor::User { user_id: "projection-user".into() };
+        let envelope = CommandEnvelope {
+            protocol_version: PROTOCOL_VERSION,
+            data_epoch: self.data_epoch.clone(),
+            command_id: "projection-validation".into(),
+            expected_revision: self.revision,
+            command,
+        };
+        let error = self.guard(&actor, &envelope).err();
+        #[cfg(test)]
+        assert_guard_matches_execution(self, &actor, &envelope, error.as_ref());
         AvailableAction {
             kind: kind.into(),
             enabled: error.is_none(),
@@ -741,4 +738,26 @@ mod inbox_order_tests {
 
 fn last_hand_back(feedback: &[Feedback]) -> Option<&Feedback> {
     feedback.iter().rev().find(|f| f.instruction != Instruction::Reply)
+}
+
+/// Every button any test projects on a valid state is also judged by running its command on a
+/// copy: the guard must refuse exactly what the command refuses, with the same reason. A state
+/// built by hand that breaks the domain's invariants refuses every command, so it says nothing.
+#[cfg(test)]
+pub(super) fn assert_guard_matches_execution(
+    state: &DomainState,
+    actor: &Actor,
+    envelope: &CommandEnvelope,
+    guarded: Option<&DomainError>,
+) {
+    if state.validate().is_err() || state.validate_nodes().is_err() {
+        return;
+    }
+    let executed = state.preview(actor, envelope).err();
+    assert_eq!(
+        guarded,
+        executed.as_ref(),
+        "the guard and the command disagree on {:?}",
+        envelope.command
+    );
 }

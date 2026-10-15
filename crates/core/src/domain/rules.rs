@@ -1,5 +1,7 @@
 use super::*;
 use std::collections::{BTreeMap, BTreeSet};
+#[path = "guards.rs"]
+mod guards;
 type Result<T> = std::result::Result<T, DomainError>;
 fn fail<T>(code: &str, msg: &str) -> Result<T> {
     Err(DomainError::new(code, msg))
@@ -1878,33 +1880,13 @@ impl DomainState {
         Ok(outcome)
     }
 
+    #[cfg(test)]
     pub(super) fn preview(&self, actor: &Actor, envelope: &CommandEnvelope) -> Result<CommandOutcome> {
         self.prepare_transition(actor, envelope).map(|(_, outcome)| outcome)
     }
 
     fn prepare_transition(&self, actor: &Actor, envelope: &CommandEnvelope) -> Result<(Self, CommandOutcome)> {
-        if envelope.protocol_version != PROTOCOL_VERSION {
-            return fail("incompatible_protocol", "Protocol version 2 is required");
-        };
-        if envelope.data_epoch != self.data_epoch {
-            return fail("stale_epoch", "Business data epoch changed");
-        };
-        id(&envelope.command_id.0)?;
-        self.fence(actor)?;
-        // §5: staleness is judged against the subject being decided. A client
-        // may act on a snapshot that predates unrelated changes, never on one
-        // that predates the last change to this subject or the future.
-        let floor = self
-            .subject_revision(&envelope.command)
-            .unwrap_or(self.revision);
-        if envelope.expected_revision < floor || envelope.expected_revision > self.revision {
-            let mut e = DomainError::new("stale_revision", "Refresh before applying this decision");
-            e.current_revision = Some(self.revision);
-            return Err(e);
-        };
-        if self.revision >= MAX_REVISION {
-            return fail("invalid_input", "Revision limit reached");
-        };
+        self.admit(actor, envelope)?;
         let mut next = self.clone();
         let mut effects = vec![];
         let mut created = vec![];
@@ -3416,19 +3398,7 @@ impl DomainState {
                 body,
                 instruction,
             } => {
-                let u = match (actor, instruction) {
-                    (Actor::System, Instruction::Conflicts) => Feedback::ALONDRA.to_owned(),
-                    _ => user(actor)?,
-                };
-                content(body, attachments)?;
-                let (_, t, current) = self.presentation(presentation_id)?;
-                if current != targets {
-                    return fail("acceptance_stale", "Feedback targets changed");
-                };
-                let task = t.id.clone();
-                if matches!(actor, Actor::User { .. }) && self.in_cleanup(t) && self.merged_delivery(self.presentation(presentation_id)?.0) {
-                    return fail("task_closing", "This task's pull request is already merged and the task is closing, so it takes no more changes: ask for more work as a new request.");
-                }
+                let (u, task) = self.feedback_guard(actor, presentation_id, targets, body, attachments, *instruction)?;
                 self.invalidate(&task);
                 let p = self.interactions.get_mut(presentation_id).unwrap();
                 if let InteractionPayload::Delivery { feedback, .. } = &mut p.payload {
@@ -3447,60 +3417,20 @@ impl DomainState {
                 presentation_id,
                 targets,
             } => {
-                let u = user(actor)?;
-                let (_, _, current) = self.presentation(presentation_id)?;
-                if current != targets {
-                    return fail("acceptance_stale", "Delivery targets changed");
-                };
-                if self.interactions[presentation_id].card.plan.is_some() {
-                    return refuse("plan_choice_required", "choice",
-                        "this result proposes a plan: decide it with DecideProposedPlan, implement or archive, so accepting it never leaves the plan unbuilt by accident");
-                }
-                self.unblocked(presentation_id)?;
-                for target in targets {
-                    if let DeliveryTarget::PullRequest { pr_id, head } = target {
-                        let pr = &self.pull_requests[pr_id];
-                        let already_merged =
-                            pr.state == PrState::Merged && pr.merged_head.as_ref() == Some(head);
-                        let locally_authorized = self.merge_authorizations.values().any(|a| {
-                            a.valid
-                                && a.presentation_id == *presentation_id
-                                && a.pr_id == *pr_id
-                                && a.head == *head
-                        });
-                        if already_merged || locally_authorized {
-                            continue;
-                        }
-                        let Some(method) = pr.allowed_methods.first().copied() else {
-                            return fail("invalid_input", "Merge methods required");
-                        };
-                        let authorization = AuthorizationId(format!("accept-{}-{}", self.revision + 1, pr_id.0));
-                        self.authorize_merge(&authorization, presentation_id, pr_id, head, method, &u, true)?;
-                        created.push(authorization.0);
-                    }
+                let u = self.accept_delivery_guard(actor, presentation_id, targets)?;
+                for (pr_id, head, method) in self.accepted_merges(presentation_id, targets)? {
+                    let authorization = self.acceptance_authorization(pr_id);
+                    self.authorize_merge(&authorization, presentation_id, pr_id, head, method, &u, true)?;
+                    created.push(authorization.0);
                 }
                 self.accept(presentation_id, &u)?;
             }
             Command::DecideProposedPlan { presentation_id, targets, choice } => {
-                let u = user(actor)?;
-                let (_, task, current) = self.presentation(presentation_id)?;
-                if current != targets {
-                    return fail("acceptance_stale", "Delivery targets changed");
-                };
-                let source = task.clone();
-                let Some(plan) = self.interactions[presentation_id].card.plan.clone() else {
-                    return refuse("invalid_input", "choice", "this result proposes no plan: accept it with AcceptDelivery");
-                };
-                if matches!(&self.interactions[presentation_id].payload, InteractionPayload::Delivery { acceptance: Some(a), .. } if a.valid) {
-                    return refuse("invalid_input", "presentation_id", "this result is already accepted");
-                }
-                self.unblocked(presentation_id)?;
+                let (u, plan) = self.decide_plan_guard(actor, presentation_id, targets, *choice)?;
+                let source = self.presentation(presentation_id)?.1.clone();
                 self.accept(presentation_id, &u)?;
                 if *choice == PlanChoice::Implement {
-                    let request_id = RequestId(format!("implement-{}", presentation_id.0));
-                    if self.requests.contains_key(&request_id) {
-                        return fail("invalid_input", "Request already exists");
-                    }
+                    let request_id = guards::implementation_request(presentation_id);
                     let auto_merge = self.requests.get(&source.request_id).is_some_and(|r| r.auto_merge);
                     self.requests.insert(request_id.clone(), Request { auto_merge, ..Request::new(request_id.clone(), plan) });
                     self.request_plans.insert(request_id.clone(), ApprovedPlan { task_id: source.id.clone(), presentation_id: presentation_id.clone() });
@@ -3515,19 +3445,14 @@ impl DomainState {
                 expected_head,
                 method,
             } => {
-                id(&authorization_id.0)?;
-                if matches!(actor, Actor::System) {
-                    let (p, t, _) = self.presentation(presentation_id)?;
-                    let untouched = matches!(&p.payload, InteractionPayload::Delivery { acceptance: None, feedback, .. } if feedback.is_empty());
-                    if !self.requests.get(&t.request_id).is_some_and(|r| r.auto_merge) || !untouched {
-                        return fail("forbidden", "Alondra merges on its own only an untouched delivery of an auto-merge Request");
+                match self.merge_guard(actor, authorization_id, presentation_id, pr_id, expected_head, *method)? {
+                    None => {
+                        self.authorize_merge(authorization_id, presentation_id, pr_id, expected_head, *method, Feedback::ALONDRA, false)?;
                     }
-                    self.unblocked(presentation_id)?;
-                    self.authorize_merge(authorization_id, presentation_id, pr_id, expected_head, *method, Feedback::ALONDRA, false)?;
-                } else {
-                    let u = user(actor)?;
-                    self.authorize_merge(authorization_id, presentation_id, pr_id, expected_head, *method, &u, true)?;
-                    self.settle(presentation_id, &u);
+                    Some(u) => {
+                        self.authorize_merge(authorization_id, presentation_id, pr_id, expected_head, *method, &u, true)?;
+                        self.settle(presentation_id, &u);
+                    }
                 }
                 created.push(authorization_id.0.clone());
             }
@@ -3745,35 +3670,12 @@ impl DomainState {
                 }
             }
             Command::CancelTask { task_id } => {
-                let unstarted = self.tasks.get(task_id).is_some_and(|task| {
-                    matches!(task.state, TaskState::NotStarted | TaskState::WaitingDependency) && !task.started && task.agent_id.is_none()
-                });
-                if !(matches!(actor, Actor::System) && unstarted) {
-                    self.manager(actor)?;
-                }
-                self.active(task_id)?;
+                self.cancel_guard(actor, task_id)?;
                 self.cancel(task_id, effects);
             }
             Command::ReopenTask { task_id } => {
-                self.manager(actor)?;
-                let task = self.task(task_id)?;
-                if !task.state.terminal() {
-                    return fail("task_not_active", "Only terminal Tasks can be reopened");
-                };
-                if !self
-                    .requests
-                    .get(&task.request_id)
-                    .is_some_and(|r| !r.closed)
-                {
-                    return fail("not_found", "Open Request required to reopen Task");
-                }
-                if !task.blocks.is_empty() && !self.reviewing_open(task) {
-                    return refuse(
-                        "invalid_input",
-                        "task_id",
-                        "The task this one reviewed is already over, so there is nothing left to review: create a new task if you want another review",
-                    );
-                }
+                self.reopen_guard(actor, task_id)?;
+                let task = &self.tasks[task_id];
                 let released = task.agent_id.as_ref().is_some_and(|a| self.busy_with(a, task_id).is_some());
                 self.invalidate(task_id);
                 let t = self.tasks.get_mut(task_id).unwrap();
@@ -3842,11 +3744,7 @@ impl DomainState {
                 t.started = false;
             }
             Command::ArchiveTask { task_id, archived } => {
-                user(actor)?;
-                let task = self.task(task_id)?;
-                if *archived && !task.state.terminal() {
-                    return fail("task_not_active", "Only terminal Tasks can be archived");
-                };
+                self.archive_guard(actor, task_id, *archived)?;
                 self.tasks.get_mut(task_id).unwrap().archived = *archived;
             }
         }
@@ -3902,9 +3800,7 @@ impl DomainState {
         });
         Ok(())
     }
-    /// The user's go-ahead to merge one presented PR head, which Alondra then merges. An
-    /// attempt at an older head cannot be in flight while the PR is open at a newer one, so
-    /// only an attempt at the current head holds a new authorization back.
+    /// The user's go-ahead to merge one presented PR head, which Alondra then merges.
     fn authorize_merge(
         &mut self,
         authorization_id: &AuthorizationId,
@@ -3915,35 +3811,7 @@ impl DomainState {
         u: &str,
         consent: bool,
     ) -> Result<TaskId> {
-        let (_, t, targets) = self.presentation(presentation_id)?;
-        self.unblocked(presentation_id)?;
-        let number = self.pull_requests[pr_id].number;
-        if !targets.contains(&DeliveryTarget::PullRequest {
-            pr_id: pr_id.clone(),
-            head: expected_head.to_owned(),
-        }) {
-            return fail("stale_head", "PR/head not in current delivery").map_err(|e| e.because(Refusal::StaleHead { number }));
-        };
-        let task = t.id.clone();
-        let pr = &self.pull_requests[pr_id];
-        if pr.state != PrState::Open {
-            return fail("invalid_action_for_kind", "Only an open PR can be authorized").map_err(|e| e.because(Refusal::PrClosed { number }));
-        };
-        if !pr.allowed_methods.contains(&method) {
-            return fail("invalid_input", "Merge method not allowed")
-                .map_err(|e| e.because(Refusal::MethodNotAllowed { method, allowed: pr.allowed_methods.clone() }));
-        };
-        if self.merge_authorizations.contains_key(authorization_id) {
-            return fail("invalid_input", "Authorization ID already exists");
-        };
-        if self.merge_authorizations.values().any(|a| {
-            a.pr_id == *pr_id
-                && a.head == pr.head
-                && matches!(a.attempt, MergeAttemptState::Claimed | MergeAttemptState::Uncertain)
-        }) {
-            return fail("delivery_uncertain", "Reconcile existing merge attempt before authorizing again")
-                .map_err(|e| e.because(Refusal::MergeInProgress { number }));
-        };
+        let task = self.authorize_merge_guard(authorization_id, presentation_id, pr_id, expected_head, method)?;
         for a in self.merge_authorizations.values_mut().filter(|a| a.pr_id == *pr_id) {
             a.valid = false;
         }
@@ -3976,6 +3844,7 @@ impl DomainState {
         Ok(task)
     }
     fn accept(&mut self, presentation: &InteractionId, u: &str) -> Result<()> {
+        self.acceptance_guard(presentation)?;
         let (_, t, targets) = self.presentation(presentation)?;
         let task = t.id.clone();
         let targets = targets.clone();

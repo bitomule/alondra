@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:hf-weekly-2026-09-30",
   "client": "ios",
-  "version": "v2c475fdb4fc50efb",
+  "version": "vf393ff9ba0b5e3e5",
   "cursor": "cursor-1",
   "title": "Add the compact schedule editor",
   "status": {
@@ -143,17 +143,71 @@
           },
           "title": "Add the compact schedule editor",
           "subtitle": "All required checks passed and the branch is up to date with main.",
-          "context": [
-            {
-              "icon": "warning",
-              "text": "This is no longer available."
-            }
-          ],
           "state": {
             "text": "+120 −30 · ✓",
             "tone": "success"
           },
-          "detail": "included"
+          "detail": "included",
+          "actions": [
+            {
+              "id": "merge:hf-weekly-2026-09-30@1~abcdef12-hf-weekly-2026-09-30",
+              "label": "Merge",
+              "style": "primary",
+              "role": "advance",
+              "presentation": "menu",
+              "options": [
+                {
+                  "id": "squash",
+                  "label": "Squash and merge",
+                  "description": "One commit on main",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                },
+                {
+                  "id": "merge",
+                  "label": "Merge commit",
+                  "description": "Keeps every commit",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                }
+              ],
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "stamp": "Merging…",
+              "resolves_card": true
+            },
+            {
+              "id": "changes:github.com/example/repo#12@6~abcdef12",
+              "label": "Request changes",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "text",
+                "placeholder": "Describe the changes",
+                "required": true,
+                "multiline": true
+              },
+              "attachments": true,
+              "comments": {
+                "kind": "diff_lines"
+              },
+              "enabled": true,
+              "stamp": "Changes requested",
+              "link": {
+                "kind": "view",
+                "key": "pull_request:github.com/example/repo#12"
+              },
+              "resolves_card": true
+            }
+          ]
         }
       ]
     },

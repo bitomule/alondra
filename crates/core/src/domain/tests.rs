@@ -4193,6 +4193,73 @@ fn preview_matches_execution_without_changing_the_input() {
     }
 }
 
+/// A button's guard refuses exactly what running its command refuses, with the same reason, for
+/// every actor and envelope, in each state a PR delivery goes through.
+#[test]
+fn guards_refuse_what_the_commands_refuse() {
+    let mut presented = fixture();
+    register(&mut presented);
+    present(&mut presented, "d", pr_targets());
+    let mut authorized = presented.clone();
+    authorize(&mut authorized);
+    let mut merged = presented.clone();
+    merged_by_someone_else(&mut merged);
+    let mut cancelled = presented.clone();
+    exec(&mut cancelled, user(), Command::CancelTask { task_id: "t".into() }).unwrap();
+    let feedback = |body: &str, instruction| Command::SubmitFeedback {
+        attachments: vec![], presentation_id: "d".into(), targets: pr_targets(), body: body.into(), instruction,
+    };
+    let merge = |authorization: &str, head: &str, method| Command::AuthorizeMerge {
+        authorization_id: authorization.into(), presentation_id: "d".into(), pr_id: "pr".into(),
+        expected_head: head.into(), method,
+    };
+    let commands = [
+        Command::AcceptDelivery { presentation_id: "d".into(), targets: pr_targets() },
+        Command::AcceptDelivery { presentation_id: "d".into(), targets: text() },
+        Command::AcceptDelivery { presentation_id: "missing".into(), targets: pr_targets() },
+        Command::DecideProposedPlan { presentation_id: "d".into(), targets: pr_targets(), choice: PlanChoice::Implement },
+        Command::DecideProposedPlan { presentation_id: "d".into(), targets: pr_targets(), choice: PlanChoice::Archive },
+        feedback("Fix the parser", Instruction::Changes),
+        feedback("", Instruction::Changes),
+        feedback("Conflicts with main", Instruction::Conflicts),
+        merge("auth-2", "head1", MergeMethod::Squash),
+        merge("auth-2", "head1", MergeMethod::Merge),
+        merge("auth-2", "other", MergeMethod::Squash),
+        merge("auth", "head1", MergeMethod::Squash),
+        Command::CancelTask { task_id: "t".into() },
+        Command::CancelTask { task_id: "missing".into() },
+        Command::ReopenTask { task_id: "t".into() },
+        Command::ArchiveTask { task_id: "t".into(), archived: true },
+        Command::ArchiveTask { task_id: "t".into(), archived: false },
+    ];
+    let (mut allowed, mut refusals) = (0, BTreeSet::new());
+    for state in [&presented, &authorized, &merged, &cancelled] {
+        for actor in [user(), agent(), Actor::System, Actor::Orchestrator { generation: 0 }, Actor::Orchestrator { generation: 9 }] {
+            for command in &commands {
+                for (protocol, epoch, revision) in [(PROTOCOL_VERSION, state.data_epoch.clone(), state.revision),
+                    (0, state.data_epoch.clone(), state.revision),
+                    (PROTOCOL_VERSION, "other-epoch".into(), state.revision),
+                    (PROTOCOL_VERSION, state.data_epoch.clone(), 0),
+                    (PROTOCOL_VERSION, state.data_epoch.clone(), state.revision + 1)] {
+                    let envelope = CommandEnvelope { protocol_version: protocol, data_epoch: epoch,
+                        command_id: "guard-check".into(), expected_revision: revision, command: command.clone() };
+                    let guarded = state.guard(&actor, &envelope);
+                    assert_eq!(guarded, state.preview(&actor, &envelope).map(drop), "{command:?} by {actor:?}");
+                    match guarded {
+                        Ok(()) => allowed += 1,
+                        Err(error) => { refusals.insert(error.code); }
+                    }
+                }
+            }
+        }
+    }
+    assert!(allowed > 0, "some buttons are allowed");
+    for code in ["incompatible_protocol", "stale_epoch", "stale_revision", "stale_generation", "forbidden", "not_found",
+        "invalid_input", "invalid_action_for_kind", "acceptance_stale", "stale_head", "task_not_active"] {
+        assert!(refusals.contains(code), "no button was refused with {code}: {refusals:?}");
+    }
+}
+
 /// 97 messages to the orchestrator stayed open after their tasks ended: `close_request` waits for
 /// the tasks and nobody came back once they had.
 #[test]
