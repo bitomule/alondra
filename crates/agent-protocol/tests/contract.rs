@@ -1,0 +1,920 @@
+use alondra_agent_protocol::*;
+use alondra_foundation::{CommandId, MessageUuid};
+use serde_json::{Value, json};
+use std::io::{self, Cursor, Read, Write};
+
+const START: &[u8] = include_bytes!("../fixtures/start.json");
+const DECISION: &[u8] = include_bytes!("../fixtures/decision.json");
+const CATALOG: &str = include_str!("../fixtures/sdk-errors.json");
+const HELLO: &[u8] = include_bytes!("../fixtures/hello.json");
+const RECEIPT: &[u8] = include_bytes!("../fixtures/receipt.json");
+const EVENT: &[u8] = include_bytes!("../fixtures/event.json");
+
+fn frame(bytes: &[u8]) -> Frame {
+    serde_json::from_slice(bytes).unwrap()
+}
+fn command() -> Command {
+    match frame(START).body {
+        Body::Command(c) => c,
+        _ => panic!("fixture command"),
+    }
+}
+fn event() -> Event {
+    match frame(EVENT).body {
+        Body::Event(e) => e,
+        _ => panic!("fixture event"),
+    }
+}
+fn receipt() -> Receipt {
+    match frame(RECEIPT).body {
+        Body::Receipt(r) => r,
+        _ => panic!("fixture receipt"),
+    }
+}
+fn raw_frame(bytes: &[u8]) -> Vec<u8> {
+    let mut result = (bytes.len() as u32).to_be_bytes().to_vec();
+    result.extend_from_slice(bytes);
+    result
+}
+
+#[test]
+fn shared_wire_fixtures_roundtrip_and_exact_command_digest() {
+    for bytes in [START, DECISION, HELLO, RECEIPT, EVENT] {
+        let expected = frame(bytes);
+        let encoded = encode(&expected).unwrap();
+        assert_eq!(&encoded[4..], bytes, "shared fixture bytes changed");
+        assert_eq!(
+            FramedReader::new(Cursor::new(encoded)).read().unwrap(),
+            Some(expected)
+        );
+    }
+    assert_eq!(
+        command_digest(&command()).unwrap(),
+        receipt().command_sha256
+    );
+    assert_eq!(
+        receipt().command_sha256,
+        "4cb067672d9a45e3f61fbdd00612a2b8cb400441f7ea6482c028513ce8a45a2b"
+    );
+}
+
+#[test]
+fn digest_covers_original_bytes_not_a_receivers_json_serialization() {
+    let expected = frame(DECISION);
+    let mut outgoing = FramedReader::new(Cursor::new(raw_frame(DECISION)));
+    let (decoded, original_digest) = outgoing.read_with_digest().unwrap().unwrap();
+    assert_eq!(decoded, expected);
+    if let Body::Command(command) = decoded.body {
+        assert_eq!(command_digest(&command).unwrap(), original_digest);
+    } else {
+        panic!("decision fixture");
+    }
+    // Reordered keys and whitespace are valid JSON, but are different wire payloads.
+    let reordered =
+        serde_json::to_vec_pretty(&serde_json::from_slice::<Value>(DECISION).unwrap()).unwrap();
+    let (decoded, reordered_digest) = FramedReader::new(Cursor::new(raw_frame(&reordered)))
+        .read_with_digest()
+        .unwrap()
+        .unwrap();
+    assert_eq!(decoded, expected);
+    assert_ne!(reordered_digest, original_digest);
+    assert_eq!(
+        original_digest,
+        "13006b5591b8e74e08b1203f5bcfc93497f678701ee837b392e4ea25ac8a0039"
+    );
+}
+
+#[test]
+fn inspected_sdk_error_catalog_matches_independent_baseline_fixture() {
+    let catalog: Value = serde_json::from_str(CATALOG).unwrap();
+    for (surface, name) in [
+        (FailureSurface::Assistant, "SDKAssistantMessageError"),
+        (FailureSurface::Startup, "SDKStartupFailureReason"),
+        (FailureSurface::Terminal, "TerminalReason"),
+        (FailureSurface::Exit, "ExitReason"),
+        (FailureSurface::Hook, "SDKHookResponseOutcome"),
+        (FailureSurface::RateLimit, "SDKRateLimitStatus"),
+    ] {
+        assert_eq!(
+            serde_json::to_value(known_codes(surface)).unwrap(),
+            catalog[name]
+        );
+    }
+    let mut result = catalog["SDKResultErrorSubtype"].as_array().unwrap().clone();
+    result.push(json!("success_is_error"));
+    assert_eq!(
+        serde_json::to_value(known_codes(FailureSurface::Result)).unwrap(),
+        Value::Array(result)
+    );
+}
+
+struct Chunks {
+    bytes: Cursor<Vec<u8>>,
+    max: usize,
+    interrupted: bool,
+}
+impl Read for Chunks {
+    fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+        if self.interrupted {
+            self.interrupted = false;
+            return Err(io::ErrorKind::Interrupted.into());
+        }
+        let size = output.len().min(self.max);
+        self.bytes.read(&mut output[..size])
+    }
+}
+
+#[test]
+fn fragmented_coalesced_and_interrupted_reads_keep_frame_boundaries() {
+    let mut bytes = raw_frame(HELLO);
+    bytes.extend(raw_frame(START));
+    bytes.extend(raw_frame(EVENT));
+    for size in 1..17 {
+        let mut reader = FramedReader::new(Chunks {
+            bytes: Cursor::new(bytes.clone()),
+            max: size,
+            interrupted: true,
+        });
+        for expected in [HELLO, START, EVENT] {
+            assert_eq!(reader.read().unwrap(), Some(frame(expected)));
+        }
+        assert!(reader.read().unwrap().is_none());
+    }
+}
+
+#[test]
+fn every_truncated_frame_fails_closed_and_poisons_reader() {
+    let bytes = raw_frame(START);
+    assert!(
+        FramedReader::new(Cursor::new(Vec::<u8>::new()))
+            .read()
+            .unwrap()
+            .is_none()
+    );
+    for end in 1..bytes.len() {
+        let mut reader = FramedReader::new(Cursor::new(&bytes[..end]));
+        if end < 4 {
+            assert!(matches!(reader.read(), Err(Error::TruncatedHeader)));
+        } else {
+            assert!(matches!(reader.read(), Err(Error::TruncatedPayload)));
+        }
+        assert!(matches!(reader.read(), Err(Error::Poisoned)));
+    }
+}
+
+struct HeaderOnly {
+    header: Cursor<[u8; 4]>,
+}
+impl Read for HeaderOnly {
+    fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+        assert!(
+            (self.header.position() as usize) < 4,
+            "oversized body was read"
+        );
+        self.header.read(output)
+    }
+}
+
+#[test]
+fn oversized_prefix_is_rejected_before_body_read_or_allocation() {
+    for length in [(MAX_FRAME_BYTES + 1) as u32, u32::MAX] {
+        let mut reader = FramedReader::new(HeaderOnly {
+            header: Cursor::new(length.to_be_bytes()),
+        });
+        assert!(matches!(reader.read(), Err(Error::FrameTooLarge)));
+        assert!(matches!(reader.read(), Err(Error::Poisoned)));
+    }
+}
+
+#[test]
+fn unknown_wire_types_versions_fields_and_malformed_json_fail_closed() {
+    let mut unknown_version = serde_json::from_slice::<Value>(START).unwrap();
+    unknown_version["protocol_version"] = json!(2);
+    let mut unknown_type = serde_json::from_slice::<Value>(START).unwrap();
+    unknown_type["body"]["type"] = json!("approve_everything");
+    let mut unknown_action = serde_json::from_slice::<Value>(START).unwrap();
+    unknown_action["body"]["action"]["type"] = json!("resume_unowned");
+    let mut unknown_field = serde_json::from_slice::<Value>(START).unwrap();
+    unknown_field["body"]["action"]["allow_bypass"] = json!(true);
+    let cases = [
+        serde_json::to_vec(&unknown_version).unwrap(),
+        serde_json::to_vec(&unknown_type).unwrap(),
+        serde_json::to_vec(&unknown_action).unwrap(),
+        serde_json::to_vec(&unknown_field).unwrap(),
+        b"{oops".to_vec(),
+        b"{\"protocol_version\":1,\"protocol_version\":1}".to_vec(),
+        vec![0xff],
+        Vec::new(),
+    ];
+    for case in cases {
+        let mut reader = FramedReader::new(Cursor::new(raw_frame(&case)));
+        assert!(reader.read().is_err());
+        assert!(matches!(reader.read(), Err(Error::Poisoned)));
+    }
+}
+
+#[test]
+fn outgoing_payload_is_bounded_before_writing_any_bytes() {
+    let mut large = command();
+    large.action = Action::Offer {
+        input_id: MessageUuid::new("00000000-0000-4000-8000-000000000002").unwrap(),
+        prompt: "x".repeat(MAX_FRAME_BYTES),
+    };
+    let mut bytes = Vec::new();
+    assert!(matches!(
+        FramedWriter::new(&mut bytes).write(&Frame::new(Body::Command(large))),
+        Err(Error::FrameTooLarge)
+    ));
+    assert!(bytes.is_empty());
+    let mut sdk = event();
+    if let Observation::Sdk { payload, .. } = &mut sdk.observation {
+        *payload = json!({"nested": "x".repeat(MAX_FRAME_BYTES * 2)});
+    }
+    assert!(matches!(
+        encode(&Frame::new(Body::Event(sdk))),
+        Err(Error::FrameTooLarge)
+    ));
+}
+
+struct FailingWriter {
+    calls: usize,
+    written: usize,
+    fail_flush: bool,
+}
+impl Write for FailingWriter {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.calls += 1;
+        if self.written != 0 {
+            return Err(io::ErrorKind::BrokenPipe.into());
+        }
+        let size = if self.fail_flush { bytes.len() } else { 3 };
+        self.written += size;
+        Ok(size)
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        if self.fail_flush {
+            Err(io::ErrorKind::BrokenPipe.into())
+        } else {
+            Ok(())
+        }
+    }
+}
+
+#[test]
+fn partial_write_and_flush_failure_poison_writer_without_retry() {
+    for fail_flush in [false, true] {
+        let mut target = FailingWriter {
+            calls: 0,
+            written: 0,
+            fail_flush,
+        };
+        {
+            let mut writer = FramedWriter::new(&mut target);
+            assert!(matches!(writer.write(&frame(START)), Err(Error::Io(_))));
+            assert!(matches!(writer.write(&frame(START)), Err(Error::Poisoned)));
+        }
+        assert_eq!(target.calls, if fail_flush { 1 } else { 2 });
+    }
+}
+
+#[test]
+fn handshake_requires_owned_host_sdk_version_and_every_capability() {
+    let hello = match frame(HELLO).body {
+        Body::Hello(h) => h,
+        _ => panic!(),
+    };
+    let expected_fence = hello.fence.clone();
+    let required = ["streaming_input", "permission_decisions"];
+    let expected = HostExpectation {
+        fence: &expected_fence,
+        host_release: "fixture-release",
+        host_sha256: &"a".repeat(64),
+        required_capabilities: &required,
+    };
+    assert_eq!(hello.negotiate(&expected).unwrap(), PROTOCOL_VERSION);
+    let mut wrong = hello.clone();
+    wrong.protocol_versions = vec![2];
+    assert!(matches!(
+        wrong.negotiate(&expected),
+        Err(Error::UnsupportedVersion)
+    ));
+    let mut wrong = hello.clone();
+    wrong.capabilities.pop();
+    assert!(matches!(
+        wrong.negotiate(&expected),
+        Err(Error::MissingCapability)
+    ));
+    let mut wrong = hello.clone();
+    wrong.fence.account_id = "other-account".into();
+    assert!(matches!(
+        wrong.negotiate(&expected),
+        Err(Error::FenceMismatch)
+    ));
+    for field in ["release", "hash", "sdk"] {
+        let mut wrong = hello.clone();
+        match field {
+            "release" => wrong.host_release = "other".into(),
+            "hash" => wrong.host_sha256 = "b".repeat(64),
+            _ => wrong.sdk_version = "0.3.301".into(),
+        }
+        assert!(matches!(
+            wrong.negotiate(&expected),
+            Err(Error::HostMismatch)
+        ));
+    }
+}
+
+fn mutated_commands() -> Vec<Command> {
+    let mut cases = Vec::new();
+    macro_rules! change {
+        ($field:ident, $value:expr) => {{
+            let mut c = command();
+            c.fence.$field = $value;
+            cases.push(c);
+        }};
+    }
+    change!(profile_id, "other".into());
+    change!(account_id, "other".into());
+    change!(data_epoch, "other".into());
+    change!(host_id, "other".into());
+    macro_rules! change {
+        ($field:ident, $value:expr) => {{
+            let mut c = command();
+            c.execution.$field = $value;
+            cases.push(c);
+        }};
+    }
+    change!(task_id, "other".into());
+    change!(agent_id, "other".into());
+    change!(conversation_id, "other".into());
+    change!(process_instance_id, "other".into());
+    change!(generation, 8);
+    cases
+}
+
+#[test]
+fn all_authority_fences_reject_commands_receipts_and_events_atomically() {
+    let original = command();
+    for changed in mutated_commands() {
+        let mut registry =
+            CommandRegistry::new(original.fence.clone(), original.execution.clone()).unwrap();
+        assert!(registry.record(&changed).is_err());
+        assert!(registry.is_empty());
+        registry.record(&original).unwrap();
+        let mut stale = receipt();
+        stale.fence = changed.fence.clone();
+        stale.execution = changed.execution.clone();
+        assert!(registry.receipt(&stale).is_err());
+        assert_eq!(registry.receipt(&receipt()).unwrap(), CommandStatus::New);
+        let mut sequence =
+            EventSequence::new(original.fence.clone(), original.execution.clone()).unwrap();
+        let mut stale = event();
+        stale.fence = changed.fence;
+        stale.execution = changed.execution;
+        assert!(sequence.commit(&stale).is_err());
+        assert_eq!(sequence.cursor(), 0);
+        assert_eq!(sequence.commit(&event()).unwrap(), SequenceStatus::Next);
+    }
+}
+
+#[test]
+fn duplicate_command_conflict_capacity_and_receipt_phases_are_explicit() {
+    let original = command();
+    let mut registry =
+        CommandRegistry::new(original.fence.clone(), original.execution.clone()).unwrap();
+    assert_eq!(registry.record(&original).unwrap(), CommandStatus::New);
+    assert_eq!(
+        registry.record(&original).unwrap(),
+        CommandStatus::Duplicate
+    );
+    let mut conflict = original.clone();
+    conflict.action = Action::Close;
+    assert!(matches!(
+        registry.record(&conflict),
+        Err(Error::CommandConflict)
+    ));
+    let mut received = receipt();
+    assert_eq!(registry.receipt(&received).unwrap(), CommandStatus::New);
+    assert_eq!(
+        registry.receipt(&received).unwrap(),
+        CommandStatus::Duplicate
+    );
+    received.outcome = ReceiptOutcome::Accepted {
+        phase: ReceiptPhase::Admitted,
+    };
+    assert!(matches!(
+        registry.receipt(&received),
+        Err(Error::ReceiptConflict)
+    ));
+    received.outcome = ReceiptOutcome::Accepted {
+        phase: ReceiptPhase::Applied,
+    };
+    assert_eq!(registry.receipt(&received).unwrap(), CommandStatus::New);
+    received.outcome = ReceiptOutcome::Rejected {
+        code: "late".into(),
+        message: "late".into(),
+    };
+    assert!(matches!(
+        registry.receipt(&received),
+        Err(Error::ReceiptConflict)
+    ));
+    let mut unknown = receipt();
+    unknown.command_id = "unknown".into();
+    assert!(matches!(
+        registry.receipt(&unknown),
+        Err(Error::UnknownCommand)
+    ));
+    let mut wrong_hash = receipt();
+    wrong_hash.command_sha256 = "b".repeat(64);
+    assert!(matches!(
+        registry.receipt(&wrong_hash),
+        Err(Error::CommandConflict)
+    ));
+    for index in 1..MAX_TRACKED_COMMANDS {
+        let mut next = original.clone();
+        next.command_id = CommandId(format!("command-{index}"));
+        registry.record(&next).unwrap();
+    }
+    assert_eq!(registry.len(), MAX_TRACKED_COMMANDS);
+    let mut next = original.clone();
+    next.command_id = "one-too-many".into();
+    assert!(matches!(
+        registry.record(&next),
+        Err(Error::CommandCapacity)
+    ));
+    assert_eq!(
+        registry.record(&original).unwrap(),
+        CommandStatus::Duplicate
+    );
+}
+
+#[test]
+fn cursor_gaps_duplicates_conflicts_and_stale_events_preserve_last_commit() {
+    let first = event();
+    let mut sequence = EventSequence::new(first.fence.clone(), first.execution.clone()).unwrap();
+    let mut future = first.clone();
+    future.cursor = 2;
+    assert!(matches!(sequence.commit(&future), Err(Error::CursorGap)));
+    assert_eq!(sequence.cursor(), 0);
+    assert_eq!(sequence.check(&first).unwrap(), SequenceStatus::Next);
+    assert_eq!(sequence.cursor(), 0, "checking is not persistence");
+    assert_eq!(sequence.commit(&first).unwrap(), SequenceStatus::Next);
+    assert_eq!(sequence.commit(&first).unwrap(), SequenceStatus::Duplicate);
+    let mut conflict = first.clone();
+    conflict.observation = Observation::ProcessExited {
+        exit_code: None,
+        signal: Some("SIGKILL".into()),
+    };
+    assert!(matches!(
+        sequence.commit(&conflict),
+        Err(Error::CursorConflict)
+    ));
+    assert_eq!(sequence.cursor(), 1);
+    assert_eq!(sequence.commit(&future).unwrap(), SequenceStatus::Next);
+    assert!(matches!(sequence.commit(&first), Err(Error::StaleCursor)));
+    assert_eq!(sequence.cursor(), 2);
+}
+
+#[test]
+fn unknown_sdk_evidence_survives_roundtrip_but_cannot_authorize_application() {
+    let mut evidence = event();
+    if let Observation::Sdk {
+        kind,
+        failures,
+        payload,
+        ..
+    } = &mut evidence.observation
+    {
+        *kind = SdkEventKind::Unsupported;
+        *payload =
+            json!({"type":"future_event", "subtype":"future_subtype", "native_field":{"keep":42}});
+        failures.clear();
+    }
+    let encoded = encode(&Frame::new(Body::Event(evidence.clone()))).unwrap();
+    assert_eq!(
+        FramedReader::new(Cursor::new(encoded))
+            .read()
+            .unwrap()
+            .unwrap()
+            .body,
+        Body::Event(evidence.clone())
+    );
+    assert!(matches!(
+        evidence.validate_for_application(),
+        Err(Error::UnsupportedSdk)
+    ));
+    if let Observation::Sdk { kind, failures, .. } = &mut evidence.observation {
+        *kind = SdkEventKind::Diagnostic;
+        failures.push(SdkFailure {
+            surface: FailureSurface::Assistant,
+            code: "new_provider_error".into(),
+            details: json!({"keep":"entire error"}),
+        });
+    }
+    assert!(matches!(
+        evidence.validate_for_application(),
+        Err(Error::UnsupportedSdk)
+    ));
+}
+
+#[test]
+fn every_inspected_sdk_error_code_and_opaque_details_are_preserved() {
+    let surfaces = [
+        FailureSurface::Assistant,
+        FailureSurface::Startup,
+        FailureSurface::Result,
+        FailureSurface::Terminal,
+        FailureSurface::Exit,
+        FailureSurface::Hook,
+        FailureSurface::RateLimit,
+        FailureSurface::Settings,
+        FailureSurface::Mirror,
+        FailureSurface::Auth,
+        FailureSurface::Control,
+        FailureSurface::Iterator,
+        FailureSurface::Transport,
+    ];
+    let expected_counts = [13, 19, 5, 19, 5, 3, 3, 2, 1, 1, 3, 2, 2];
+    for (surface, expected_count) in surfaces.into_iter().zip(expected_counts) {
+        assert_eq!(known_codes(surface).len(), expected_count);
+        for code in known_codes(surface) {
+            let failure = SdkFailure {
+                surface,
+                code: (*code).into(),
+                details: json!({"nested":{"cause":["original",42]},"is_error":true}),
+            };
+            assert!(failure.is_known());
+            let mut evidence = event();
+            if let Observation::Sdk { failures, .. } = &mut evidence.observation {
+                *failures = vec![failure.clone()];
+            }
+            let encoded = encode(&Frame::new(Body::Event(evidence.clone()))).unwrap();
+            let decoded = FramedReader::new(Cursor::new(encoded))
+                .read()
+                .unwrap()
+                .unwrap();
+            assert_eq!(decoded.body, Body::Event(evidence.clone()));
+            evidence.validate_for_application().unwrap();
+        }
+    }
+    if let Observation::Sdk {
+        payload, failures, ..
+    } = event().observation
+    {
+        assert_eq!(payload["subtype"], "success");
+        assert_eq!(payload["is_error"], true);
+        assert_eq!(payload["usage"]["cost_usd"], json!(0.125));
+        assert_eq!(failures[0].code, "success_is_error");
+        assert_eq!(failures[1].code, "api_error");
+    } else {
+        panic!("fixture must retain error-bearing success");
+    }
+}
+
+#[test]
+fn empty_ids_unsafe_numbers_and_nonobject_decisions_are_rejected() {
+    let mut empty = command();
+    empty.execution.agent_id.0.clear();
+    assert!(encode(&Frame::new(Body::Command(empty))).is_err());
+    let mut unsafe_number = command();
+    unsafe_number.execution.generation = MAX_SAFE_INTEGER + 1;
+    assert!(encode(&Frame::new(Body::Command(unsafe_number))).is_err());
+    let mut zero = event();
+    zero.cursor = 0;
+    assert!(encode(&Frame::new(Body::Event(zero))).is_err());
+    let mut invalid = serde_json::from_slice::<Value>(START).unwrap();
+    invalid["body"]["action"] = json!({"type":"respond","request_id":"request","decision":{"behavior":"allow","updated_input":[]}});
+    assert!(
+        FramedReader::new(Cursor::new(raw_frame(
+            &serde_json::to_vec(&invalid).unwrap()
+        )))
+        .read()
+        .is_err()
+    );
+}
+
+#[test]
+fn sdk_input_identifiers_match_native_uuid_contract() {
+    let original = command();
+    original.validate().unwrap();
+    for input_id in [
+        "input-test",
+        "",
+        "00000000-0000-4000-8000-00000000000g",
+        "00000000000040008000000000000002",
+    ] {
+        let mut invalid: Value = serde_json::from_slice(START).unwrap();
+        invalid["body"]["action"]["input_id"] = json!(input_id);
+        assert!(matches!(
+            FramedReader::new(Cursor::new(raw_frame(
+                &serde_json::to_vec(&invalid).unwrap()
+            )))
+            .read(),
+            Err(Error::Json(_))
+        ));
+        invalid["body"]["action"] = json!({"type":"offer", "input_id": input_id, "prompt":"next"});
+        assert!(matches!(
+            FramedReader::new(Cursor::new(raw_frame(
+                &serde_json::to_vec(&invalid).unwrap()
+            )))
+            .read(),
+            Err(Error::Json(_))
+        ));
+    }
+    let mut uppercase: Value = serde_json::from_slice(START).unwrap();
+    uppercase["body"]["action"]["input_id"] = json!("ABCDEF00-0000-4000-8000-000000000002");
+    let frame: Frame = serde_json::from_value(uppercase).unwrap();
+    if let Body::Command(Command {
+        action: Action::Start { input_id, .. },
+        ..
+    }) = frame.body
+    {
+        assert_eq!(input_id.as_str(), "abcdef00-0000-4000-8000-000000000002");
+    } else {
+        panic!("start command required");
+    }
+}
+
+#[test]
+fn duplicate_field_in_otherwise_valid_frame_is_rejected_specifically() {
+    let complete: Frame = serde_json::from_slice(START).unwrap();
+    complete.validate().unwrap();
+    let valid = std::str::from_utf8(START).unwrap();
+    let duplicated = valid.replacen("{", "{\"protocol_version\":1,", 1);
+    let mut reader = FramedReader::new(Cursor::new(raw_frame(duplicated.as_bytes())));
+    match reader.read() {
+        Err(Error::Json(error)) => assert!(
+            error
+                .to_string()
+                .contains("duplicate field `protocol_version`")
+        ),
+        other => panic!("expected duplicate-field rejection, got {other:?}"),
+    }
+    assert!(matches!(reader.read(), Err(Error::Poisoned)));
+}
+
+#[test]
+fn process_exit_requires_both_nullable_evidence_fields() {
+    let mut valid: Value = serde_json::from_slice(EVENT).unwrap();
+    valid["body"]["observation"] =
+        json!({"type":"process_exited", "exit_code":null, "signal":null});
+    let bytes = serde_json::to_vec(&valid).unwrap();
+    assert!(
+        FramedReader::new(Cursor::new(raw_frame(&bytes)))
+            .read()
+            .unwrap()
+            .is_some()
+    );
+    for missing in ["exit_code", "signal"] {
+        let mut invalid = valid.clone();
+        invalid["body"]["observation"]
+            .as_object_mut()
+            .unwrap()
+            .remove(missing);
+        let mut reader = FramedReader::new(Cursor::new(raw_frame(
+            &serde_json::to_vec(&invalid).unwrap(),
+        )));
+        assert!(
+            matches!(reader.read(), Err(Error::Json(_))),
+            "missing {missing} must be rejected"
+        );
+        assert!(matches!(reader.read(), Err(Error::Poisoned)));
+    }
+}
+
+#[test]
+fn native_correlations_allow_absence_but_reject_explicit_null() {
+    let mut valid: Value = serde_json::from_slice(EVENT).unwrap();
+    valid["body"]["observation"]["native"] = json!({});
+    assert!(
+        FramedReader::new(Cursor::new(raw_frame(&serde_json::to_vec(&valid).unwrap())))
+            .read()
+            .unwrap()
+            .is_some()
+    );
+    for key in [
+        "message_id",
+        "turn_id",
+        "tool_use_id",
+        "parent_tool_use_id",
+        "task_id",
+        "run_id",
+    ] {
+        let mut invalid = valid.clone();
+        invalid["body"]["observation"]["native"][key] = Value::Null;
+        let mut reader = FramedReader::new(Cursor::new(raw_frame(
+            &serde_json::to_vec(&invalid).unwrap(),
+        )));
+        assert!(
+            matches!(reader.read(), Err(Error::Json(_))),
+            "explicit null {key} must be rejected"
+        );
+        assert!(matches!(reader.read(), Err(Error::Poisoned)));
+    }
+}
+
+#[test]
+fn typed_integer_tokens_match_shared_host_corpus_without_restricting_sdk_payloads() {
+    let cases: Vec<Value> =
+        serde_json::from_str(include_str!("../fixtures/integer-tokens.json")).unwrap();
+    for case in cases {
+        let raw = case["json"].as_str().unwrap();
+        let accepted = FramedReader::new(Cursor::new(raw_frame(raw.as_bytes())))
+            .read()
+            .is_ok();
+        assert_eq!(
+            accepted,
+            case["accepted"].as_bool().unwrap(),
+            "integer token case {}",
+            case["name"]
+        );
+    }
+}
+
+#[test]
+fn opaque_objects_reject_duplicate_keys_in_every_json_surface() {
+    let cases: Vec<Value> =
+        serde_json::from_str(include_str!("../fixtures/opaque-objects.json")).unwrap();
+    let mut mismatches = Vec::new();
+    for case in &cases {
+        let raw = case["json"].as_str().unwrap();
+        let decoded = FramedReader::new(Cursor::new(raw_frame(raw.as_bytes()))).read();
+        if decoded.is_ok() != case["accepted"].as_bool().unwrap() {
+            mismatches.push(case["name"].as_str().unwrap());
+        }
+        if case["accepted"].as_bool().unwrap() {
+            let expected: Value = serde_json::from_str(raw).unwrap();
+            let decoded = decoded.unwrap().unwrap();
+            assert_eq!(
+                serde_json::to_value(&decoded).unwrap(),
+                expected,
+                "{}",
+                case["name"]
+            );
+            let encoded = encode(&decoded).unwrap();
+            let roundtrip = FramedReader::new(Cursor::new(encoded))
+                .read()
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                serde_json::to_value(roundtrip).unwrap(),
+                expected,
+                "{}",
+                case["name"]
+            );
+        }
+    }
+    assert!(
+        mismatches.is_empty(),
+        "opaque object acceptance mismatches: {mismatches:?}"
+    );
+}
+
+#[test]
+fn proven_preoffer_rejection_after_admission_is_terminal_but_not_after_handoff() {
+    let command = command();
+    let mut registry =
+        CommandRegistry::new(command.fence.clone(), command.execution.clone()).unwrap();
+    registry.record(&command).unwrap();
+    let mut response = receipt();
+    response.outcome = ReceiptOutcome::Accepted {
+        phase: ReceiptPhase::Admitted,
+    };
+    assert_eq!(registry.receipt(&response).unwrap(), CommandStatus::New);
+    response.outcome = ReceiptOutcome::Rejected {
+        code: "config_refused".into(),
+        message: "Configuration refused before offering input".into(),
+    };
+    assert_eq!(registry.receipt(&response).unwrap(), CommandStatus::New);
+    assert_eq!(
+        registry.receipt(&response).unwrap(),
+        CommandStatus::Duplicate
+    );
+    for phase in [
+        ReceiptPhase::Admitted,
+        ReceiptPhase::Offered,
+        ReceiptPhase::Applied,
+    ] {
+        response.outcome = ReceiptOutcome::Accepted { phase };
+        assert!(matches!(
+            registry.receipt(&response),
+            Err(Error::ReceiptConflict)
+        ));
+    }
+    for phase in [ReceiptPhase::Offered, ReceiptPhase::Applied] {
+        let mut registry =
+            CommandRegistry::new(command.fence.clone(), command.execution.clone()).unwrap();
+        registry.record(&command).unwrap();
+        response.outcome = ReceiptOutcome::Accepted { phase };
+        registry.receipt(&response).unwrap();
+        response.outcome = ReceiptOutcome::Rejected {
+            code: "too_late".into(),
+            message: "Offer may already have effects".into(),
+        };
+        assert!(matches!(
+            registry.receipt(&response),
+            Err(Error::ReceiptConflict)
+        ));
+    }
+}
+
+#[test]
+fn nesting_limit_matches_shared_full_frame_boundary_and_ignores_string_syntax() {
+    let cases: Vec<Value> =
+        serde_json::from_str(include_str!("../fixtures/nesting-depth.json")).unwrap();
+    for case in cases {
+        let raw = case["json"].as_str().unwrap();
+        let mut reader = FramedReader::new(Cursor::new(raw_frame(raw.as_bytes())));
+        let decoded = reader.read();
+        assert_eq!(
+            decoded.is_ok(),
+            case["accepted"].as_bool().unwrap(),
+            "{}",
+            case["name"]
+        );
+        if case["accepted"].as_bool().unwrap() {
+            let encoded = encode(&decoded.unwrap().unwrap()).unwrap();
+            assert!(FramedReader::new(Cursor::new(encoded)).read().is_ok());
+        } else {
+            assert!(matches!(reader.read(), Err(Error::Poisoned)));
+        }
+    }
+    assert_eq!(MAX_FRAME_DEPTH, 127);
+}
+
+#[test]
+fn outgoing_depth_is_bounded_before_transport_or_correlation_mutation() {
+    let mut nested = Value::Null;
+    for _ in 0..200 {
+        nested = Value::Array(vec![nested]);
+    }
+    let mut sdk = event();
+    if let Observation::Sdk { payload, .. } = &mut sdk.observation {
+        *payload = json!({"nested": nested.clone()});
+    }
+    let mut details = event();
+    if let Observation::Sdk { failures, .. } = &mut details.observation {
+        failures[0].details = nested.clone();
+    }
+    let mut decision = event();
+    decision.observation = Observation::DecisionRequested {
+        request_id: "request-depth".into(),
+        tool_use_id: "tool-depth".into(),
+        kind: DecisionKind::Permission,
+        payload: json!({"nested": nested.clone()}),
+    };
+    let mut tool = command();
+    tool.action = Action::Respond {
+        request_id: "request-depth".into(),
+        decision: Decision::Allow {
+            updated_input: json!({"nested": nested}).as_object().unwrap().clone(),
+        },
+    };
+    let candidates = [
+        ("sdk payload", Frame::new(Body::Event(sdk))),
+        ("failure details", Frame::new(Body::Event(details))),
+        ("decision payload", Frame::new(Body::Event(decision))),
+        ("updated input", Frame::new(Body::Command(tool))),
+    ];
+    let mut mismatches = Vec::new();
+    for (name, candidate) in candidates {
+        if !matches!(encode(&candidate), Err(Error::FrameTooDeep)) {
+            mismatches.push(format!("{name}: encode"));
+        }
+        let mut bytes = Vec::new();
+        if !matches!(
+            FramedWriter::new(&mut bytes).write(&candidate),
+            Err(Error::FrameTooDeep)
+        ) {
+            mismatches.push(format!("{name}: writer"));
+        }
+        if !bytes.is_empty() {
+            mismatches.push(format!("{name}: external bytes"));
+        }
+        match &candidate.body {
+            Body::Command(command) => {
+                let mut registry =
+                    CommandRegistry::new(command.fence.clone(), command.execution.clone()).unwrap();
+                if !matches!(registry.record(command), Err(Error::FrameTooDeep)) {
+                    mismatches.push(format!("{name}: command digest"));
+                }
+                if !registry.is_empty() {
+                    mismatches.push(format!("{name}: registry mutation"));
+                }
+            }
+            Body::Event(event) => {
+                let sequence =
+                    EventSequence::new(event.fence.clone(), event.execution.clone()).unwrap();
+                if !matches!(sequence.check(event), Err(Error::FrameTooDeep)) {
+                    mismatches.push(format!("{name}: event digest"));
+                }
+                assert_eq!(sequence.cursor(), 0);
+            }
+            _ => unreachable!(),
+        }
+    }
+    assert!(
+        mismatches.is_empty(),
+        "unbounded outgoing depth: {mismatches:?}"
+    );
+}

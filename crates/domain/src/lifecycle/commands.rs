@@ -38,14 +38,14 @@ impl TaskLifecycle {
                     .generation
                     .checked_add(1)
                     .ok_or(Refusal::GenerationExhausted)?;
-                let stamp = ExecutionStamp {
-                    task: self.task.clone(),
+                let stamp = ExecutionStamp::new(
+                    self.task.clone(),
                     node,
                     conversation,
                     instance,
                     host,
-                    generation: self.generation,
-                };
+                    self.generation,
+                )?;
                 let execution = Execution {
                     stamp,
                     cursor: 0,
@@ -647,7 +647,7 @@ impl TaskLifecycle {
         }
         if let Some(execution) = session.execution() {
             if execution.process != ProcessEvidence::Exited {
-                remaining.insert(DrainObligation::Process(execution.stamp.instance.clone()));
+                remaining.insert(DrainObligation::Process(execution.stamp.instance().clone()));
             }
             remaining.extend(
                 execution

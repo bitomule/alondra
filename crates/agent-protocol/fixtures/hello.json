@@ -1,0 +1,1 @@
+{"protocol_version":1,"body":{"type":"hello","protocol_versions":[1],"capabilities":["streaming_input","permission_decisions"],"fence":{"profile_id":"default","account_id":"account-test","data_epoch":"epoch-test","host_id":"host-test"},"host_release":"fixture-release","host_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","sdk_version":"0.3.300"}}

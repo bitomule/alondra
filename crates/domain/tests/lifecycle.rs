@@ -460,7 +460,7 @@ fn reopen_requires_a_terminal_task_and_uses_a_new_execution_generation() {
 
 #[test]
 fn empty_or_self_dependencies_and_empty_identities_are_rejected() {
-    assert_eq!(InputId::new("  "), Err(Refusal::EmptyIdentity));
+    assert_eq!(InputId::new("  "), Err(IdentityError::EmptyIdentity));
     assert_eq!(
         TaskLifecycle::planned(TaskId::from(""), input("initial")),
         Err(Refusal::EmptyIdentity)

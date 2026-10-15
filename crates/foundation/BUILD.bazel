@@ -3,7 +3,7 @@ load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 
 rust_library(
     name = "foundation",
-    srcs = ["src/lib.rs"],
+    srcs = ["src/lib.rs", "src/execution.rs"],
     crate_name = "alondra_foundation",
     edition = "2024",
     version = "0.1.0",
@@ -17,5 +17,21 @@ rust_test(
     srcs = ["tests/wire.rs"],
     edition = "2024",
     version = "0.1.0",
+    deps = [":foundation"] + all_crate_deps(normal_dev = True),
+)
+
+rust_test(
+    name = "execution_identity_test",
+    crate_root = "tests/execution.rs",
+    srcs = ["tests/execution.rs"],
+    edition = "2024",
+    deps = [":foundation"],
+)
+
+rust_test(
+    name = "message_uuid_test",
+    crate_root = "tests/message_uuid.rs",
+    srcs = ["tests/message_uuid.rs"],
+    edition = "2024",
     deps = [":foundation"] + all_crate_deps(normal_dev = True),
 )

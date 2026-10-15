@@ -2,33 +2,11 @@ mod commands;
 mod observations;
 
 use alondra_foundation::{AgentId, InteractionId, MAX_REVISION, Revision, TaskId};
+pub use alondra_foundation::{
+    CallbackId, ContinuationId, ConversationId, ExecutionStamp, HostId, IdentityError, InputId,
+    InstanceId, OperationId, TurnId, WorkId,
+};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-
-macro_rules! identities {
-    ($($name:ident),+ $(,)?) => {$ (
-        #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-        pub struct $name(String);
-        impl $name {
-            pub fn new(value: impl Into<String>) -> Result<Self, Refusal> {
-                let value = value.into();
-                valid_id(&value)?;
-                Ok(Self(value))
-            }
-            pub fn as_str(&self) -> &str { &self.0 }
-        }
-    )+};
-}
-identities!(
-    ConversationId,
-    InstanceId,
-    HostId,
-    InputId,
-    TurnId,
-    WorkId,
-    ContinuationId,
-    CallbackId,
-    OperationId
-);
 
 fn valid_id(value: &str) -> Result<(), Refusal> {
     if value.trim().is_empty() {
@@ -62,37 +40,6 @@ impl<T: Ord> NonEmpty<T> {
 impl<T: Ord + Clone> NonEmpty<T> {
     fn values(&self) -> BTreeSet<T> {
         self.iter().cloned().collect()
-    }
-}
-
-/// A correlation value, never a permission to launch or dispatch an input.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ExecutionStamp {
-    task: TaskId,
-    node: AgentId,
-    conversation: ConversationId,
-    instance: InstanceId,
-    host: HostId,
-    generation: u64,
-}
-impl ExecutionStamp {
-    pub fn task(&self) -> &TaskId {
-        &self.task
-    }
-    pub fn node(&self) -> &AgentId {
-        &self.node
-    }
-    pub fn conversation(&self) -> &ConversationId {
-        &self.conversation
-    }
-    pub fn instance(&self) -> &InstanceId {
-        &self.instance
-    }
-    pub fn host(&self) -> &HostId {
-        &self.host
-    }
-    pub fn generation(&self) -> u64 {
-        self.generation
     }
 }
 
@@ -161,6 +108,15 @@ pub enum Refusal {
     DuplicateObligation,
     UnknownObligation,
     SelfDependency,
+}
+
+impl From<IdentityError> for Refusal {
+    fn from(error: IdentityError) -> Self {
+        match error {
+            IdentityError::EmptyIdentity => Self::EmptyIdentity,
+            IdentityError::InvalidGeneration => Self::InvalidState,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -1,0 +1,24 @@
+load("@crates//:defs.bzl", "all_crate_deps")
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+rust_library(
+    name = "agent_protocol",
+    srcs = glob(["src/*.rs"]),
+    crate_name = "alondra_agent_protocol",
+    edition = "2024",
+    version = "0.1.0",
+    visibility = ["//crates:__subpackages__", "//tests:__subpackages__"],
+    deps = all_crate_deps(normal = True) + ["//crates/foundation:foundation"],
+)
+
+rust_test(
+    name = "agent_protocol_test",
+    crate_root = "tests/contract.rs",
+    srcs = ["tests/contract.rs"],
+    compile_data = glob(["fixtures/*.json"]),
+    edition = "2024",
+    version = "0.1.0",
+    deps = [":agent_protocol", "//crates/foundation:foundation"] + all_crate_deps(normal = True),
+)
+
+exports_files(glob(["fixtures/*.json"]))

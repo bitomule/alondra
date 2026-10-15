@@ -5,7 +5,10 @@
 #[path = "../../test_support.rs"]
 mod test_support;
 
-use std::net::TcpListener;
+#[cfg(target_os = "macos")]
+use std::io::ErrorKind;
+#[cfg(target_os = "macos")]
+use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::process::{Command, Output};
 
 struct Mac {
@@ -17,8 +20,8 @@ impl Mac {
     fn new() -> Self {
         let root = test_support::Directory::new();
         std::fs::create_dir_all(root.join("home")).unwrap();
-        let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
-        Self { root, port }
+        // Darwin rejects destination port zero before any request can reach a daemon.
+        Self { root, port: 0 }
     }
 
     fn run(&self, args: &[&str]) -> Output {
@@ -100,4 +103,21 @@ fn help_more_lists_the_advanced_commands() {
     for command in ["cleanup", "models", "state", "delivery", "orchestrator"] {
         assert!(text.contains(&format!("  {command}")), "{command}: {text}");
     }
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn stopped_daemon_fixture_uses_an_unclaimable_endpoint() {
+    let mac = Mac::new();
+    let address = SocketAddr::from(([127, 0, 0, 1], mac.port));
+    let competitor = TcpListener::bind(address).unwrap();
+    assert_ne!(
+        competitor.local_addr().unwrap(), address,
+        "daemon-absent endpoint was claimed by another listener"
+    );
+    let connection = TcpStream::connect(address);
+    assert!(
+        matches!(&connection, Err(error) if error.kind() == ErrorKind::AddrNotAvailable),
+        "offline destination must be rejected locally: {connection:?}"
+    );
 }

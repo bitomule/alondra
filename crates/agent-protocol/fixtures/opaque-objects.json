@@ -1,0 +1,67 @@
+[
+  {
+    "name": "unique_sdk_object",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"event\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"cursor\":1,\"observation\":{\"type\":\"sdk\",\"kind\":\"result\",\"native\":{\"message_id\":\"native-result\",\"turn_id\":\"native-turn\"},\"payload\":{\"type\":\"fixture\",\"items\":[{\"x\":1,\"y\":2}]},\"failures\":[{\"surface\":\"result\",\"code\":\"success_is_error\",\"details\":{\"errors\":[\"provider detail preserved\"],\"is_error\":true}},{\"surface\":\"terminal\",\"code\":\"api_error\",\"details\":{\"terminal_reason\":\"api_error\"}}]}}}",
+    "accepted": true
+  },
+  {
+    "name": "sdk_duplicate",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"event\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"cursor\":1,\"observation\":{\"type\":\"sdk\",\"kind\":\"result\",\"native\":{\"message_id\":\"native-result\",\"turn_id\":\"native-turn\"},\"payload\":{\"type\":\"first\",\"type\":\"second\"},\"failures\":[{\"surface\":\"result\",\"code\":\"success_is_error\",\"details\":{\"errors\":[\"provider detail preserved\"],\"is_error\":true}},{\"surface\":\"terminal\",\"code\":\"api_error\",\"details\":{\"terminal_reason\":\"api_error\"}}]}}}",
+    "accepted": false
+  },
+  {
+    "name": "sdk_escaped_alias",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"event\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"cursor\":1,\"observation\":{\"type\":\"sdk\",\"kind\":\"result\",\"native\":{\"message_id\":\"native-result\",\"turn_id\":\"native-turn\"},\"payload\":{\"x\":1,\"\\u0078\":2},\"failures\":[{\"surface\":\"result\",\"code\":\"success_is_error\",\"details\":{\"errors\":[\"provider detail preserved\"],\"is_error\":true}},{\"surface\":\"terminal\",\"code\":\"api_error\",\"details\":{\"terminal_reason\":\"api_error\"}}]}}}",
+    "accepted": false
+  },
+  {
+    "name": "sdk_array_duplicate",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"event\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"cursor\":1,\"observation\":{\"type\":\"sdk\",\"kind\":\"result\",\"native\":{\"message_id\":\"native-result\",\"turn_id\":\"native-turn\"},\"payload\":{\"items\":[{\"x\":1,\"x\":2}]},\"failures\":[{\"surface\":\"result\",\"code\":\"success_is_error\",\"details\":{\"errors\":[\"provider detail preserved\"],\"is_error\":true}},{\"surface\":\"terminal\",\"code\":\"api_error\",\"details\":{\"terminal_reason\":\"api_error\"}}]}}}",
+    "accepted": false
+  },
+  {
+    "name": "failure_details_duplicate",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"event\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"cursor\":1,\"observation\":{\"type\":\"sdk\",\"kind\":\"result\",\"native\":{\"message_id\":\"native-result\",\"turn_id\":\"native-turn\"},\"payload\":{\"errors\":[\"provider detail preserved\"],\"is_error\":true,\"session_id\":\"conversation-test\",\"subtype\":\"success\",\"terminal_reason\":\"api_error\",\"type\":\"result\",\"usage\":{\"cost_usd\":0.125,\"input_tokens\":42},\"uuid\":\"native-result\"},\"failures\":[{\"surface\":\"result\",\"code\":\"success_is_error\",\"details\":{\"cause\":{\"x\":1,\"x\":2}}},{\"surface\":\"terminal\",\"code\":\"api_error\",\"details\":{\"terminal_reason\":\"api_error\"}}]}}}",
+    "accepted": false
+  },
+  {
+    "name": "tool_input_duplicate",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"command\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"command_id\":\"decision-test\",\"deadline_ms\":123456789,\"action\":{\"type\":\"respond\",\"request_id\":\"request-test\",\"decision\":{\"behavior\":\"allow\",\"updated_input\":{\"path\":\"safe\",\"path\":\"other\"}}}}}",
+    "accepted": false
+  },
+  {
+    "name": "decision_payload_unique",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"event\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"cursor\":1,\"observation\":{\"type\":\"decision_requested\",\"request_id\":\"request-test\",\"tool_use_id\":\"tool-test\",\"kind\":\"permission\",\"payload\":{\"input\":{\"x\":1,\"y\":2}}}}}",
+    "accepted": true
+  },
+  {
+    "name": "decision_payload_duplicate",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"event\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"cursor\":1,\"observation\":{\"type\":\"decision_requested\",\"request_id\":\"request-test\",\"tool_use_id\":\"tool-test\",\"kind\":\"permission\",\"payload\":{\"input\":{\"x\":1,\"x\":2}}}}}",
+    "accepted": false
+  },
+  {
+    "name": "sdk_special_keys_preserved",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"event\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"cursor\":1,\"observation\":{\"type\":\"sdk\",\"kind\":\"result\",\"native\":{\"message_id\":\"native-result\",\"turn_id\":\"native-turn\"},\"payload\":{\"type\":\"fixture\",\"__proto__\":{\"retained\":true},\"constructor\":{\"prototype\":\"ordinary data\"},\"prototype\":null,\"toJSON\":{\"retained\":true}},\"failures\":[{\"surface\":\"result\",\"code\":\"success_is_error\",\"details\":{\"errors\":[\"provider detail preserved\"],\"is_error\":true}},{\"surface\":\"terminal\",\"code\":\"api_error\",\"details\":{\"terminal_reason\":\"api_error\"}}]}}}",
+    "accepted": true
+  },
+  {
+    "name": "sdk_array_special_keys_preserved",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"event\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"cursor\":1,\"observation\":{\"type\":\"sdk\",\"kind\":\"result\",\"native\":{\"message_id\":\"native-result\",\"turn_id\":\"native-turn\"},\"payload\":{\"items\":[{\"__proto__\":{\"retained\":true},\"constructor\":{\"prototype\":\"ordinary data\"},\"prototype\":null,\"toJSON\":{\"retained\":true}}]},\"failures\":[{\"surface\":\"result\",\"code\":\"success_is_error\",\"details\":{\"errors\":[\"provider detail preserved\"],\"is_error\":true}},{\"surface\":\"terminal\",\"code\":\"api_error\",\"details\":{\"terminal_reason\":\"api_error\"}}]}}}",
+    "accepted": true
+  },
+  {
+    "name": "failure_special_keys_preserved",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"event\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"cursor\":1,\"observation\":{\"type\":\"sdk\",\"kind\":\"result\",\"native\":{\"message_id\":\"native-result\",\"turn_id\":\"native-turn\"},\"payload\":{\"errors\":[\"provider detail preserved\"],\"is_error\":true,\"session_id\":\"conversation-test\",\"subtype\":\"success\",\"terminal_reason\":\"api_error\",\"type\":\"result\",\"usage\":{\"cost_usd\":0.125,\"input_tokens\":42},\"uuid\":\"native-result\"},\"failures\":[{\"surface\":\"result\",\"code\":\"success_is_error\",\"details\":{\"__proto__\":{\"retained\":true},\"constructor\":{\"prototype\":\"ordinary data\"},\"prototype\":null,\"toJSON\":{\"retained\":true}}},{\"surface\":\"terminal\",\"code\":\"api_error\",\"details\":{\"terminal_reason\":\"api_error\"}}]}}}",
+    "accepted": true
+  },
+  {
+    "name": "tool_input_special_keys_preserved",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"command\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"command_id\":\"decision-test\",\"deadline_ms\":123456789,\"action\":{\"type\":\"respond\",\"request_id\":\"request-test\",\"decision\":{\"behavior\":\"allow\",\"updated_input\":{\"__proto__\":{\"retained\":true},\"constructor\":{\"prototype\":\"ordinary data\"},\"prototype\":null,\"toJSON\":{\"retained\":true}}}}}}",
+    "accepted": true
+  },
+  {
+    "name": "decision_special_keys_preserved",
+    "json": "{\"protocol_version\":1,\"body\":{\"type\":\"event\",\"fence\":{\"profile_id\":\"default\",\"account_id\":\"account-test\",\"data_epoch\":\"epoch-test\",\"host_id\":\"host-test\"},\"execution\":{\"task_id\":\"task-test\",\"agent_id\":\"agent-test\",\"conversation_id\":\"conversation-test\",\"process_instance_id\":\"process-test\",\"generation\":7},\"cursor\":1,\"observation\":{\"type\":\"decision_requested\",\"request_id\":\"request-test\",\"tool_use_id\":\"tool-test\",\"kind\":\"permission\",\"payload\":{\"input\":{\"__proto__\":{\"retained\":true},\"constructor\":{\"prototype\":\"ordinary data\"},\"prototype\":null,\"toJSON\":{\"retained\":true}}}}}}",
+    "accepted": true
+  }
+]

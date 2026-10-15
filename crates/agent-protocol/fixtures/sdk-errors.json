@@ -1,0 +1,82 @@
+{
+  "SDKAssistantMessageError": [
+    "authentication_failed",
+    "oauth_org_not_allowed",
+    "account_on_hold",
+    "verification_required",
+    "billing_error",
+    "rate_limit",
+    "overloaded",
+    "invalid_request",
+    "model_not_found",
+    "server_error",
+    "unknown",
+    "max_output_tokens",
+    "cloud_credential_error"
+  ],
+  "SDKStartupFailureReason": [
+    "org_pin_api_key_conflict",
+    "provider_not_allowed",
+    "org_verify_failed",
+    "org_pin_mismatch",
+    "managed_settings_invalid",
+    "remote_settings_required_unavailable",
+    "gateway_signin_required",
+    "gateway_access_denied",
+    "proxy_invalid",
+    "temp_dir_unusable",
+    "cwd_unavailable",
+    "shell_tool_missing",
+    "session_held_by_background",
+    "worktree_resume_refused",
+    "worktree_unverified",
+    "cli_version_too_old",
+    "bypass_root",
+    "org_config_required_unavailable",
+    "org_config_refused"
+  ],
+  "SDKResultErrorSubtype": [
+    "error_during_execution",
+    "error_max_turns",
+    "error_max_budget_usd",
+    "error_max_structured_output_retries"
+  ],
+  "TerminalReason": [
+    "blocking_limit",
+    "rapid_refill_breaker",
+    "prompt_too_long",
+    "image_error",
+    "model_error",
+    "api_error",
+    "malformed_tool_use_exhausted",
+    "aborted_streaming",
+    "aborted_tools",
+    "stop_hook_prevented",
+    "hook_stopped",
+    "tool_deferred",
+    "max_turns",
+    "background_requested",
+    "completed",
+    "budget_exhausted",
+    "structured_output_retry_exhausted",
+    "tool_deferred_unavailable",
+    "turn_setup_failed"
+  ],
+  "ExitReason": [
+    "clear",
+    "resume",
+    "logout",
+    "prompt_input_exit",
+    "other"
+  ],
+  "SDKHookResponseOutcome": [
+    "success",
+    "error",
+    "cancelled"
+  ],
+  "SDKRateLimitStatus": [
+    "allowed",
+    "allowed_warning",
+    "rejected"
+  ]
+}

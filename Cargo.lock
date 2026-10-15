@@ -92,6 +92,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "alondra-agent-protocol"
+version = "0.2.83"
+dependencies = [
+ "alondra-foundation",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+]
+
+[[package]]
 name = "alondra-core"
 version = "0.2.83"
 dependencies = [
