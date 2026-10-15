@@ -25,6 +25,7 @@ PUBLIC_FILES = {
     'plugin-orchestrator/skills/alondra-orchestrator/SKILL.md',
     'plugin-orchestrator/bin/alondra',
 }
+PRE_LAUNCHER_FILES = PUBLIC_FILES - {'alondrad-launcher'}
 
 
 def version(value):
@@ -53,19 +54,21 @@ def stage_assets(root, destination):
         shutil.copy2(source, output)
 
 
-def validate_archive(path):
-    """Exact allowlist: no source trees, links, app bundles, credentials or extras."""
+def validate_archive(path, allowed=(PUBLIC_FILES,)):
+    """Exact allowlist: no source trees, links, app bundles, credentials or extras. `allowed` holds
+    the exact file sets accepted; only a release already published may match an older one."""
+    known = set().union(*allowed)
     with tarfile.open(path, 'r:gz') as archive:
         files = set()
         for member in archive.getmembers():
             name = member.name.removeprefix('./').rstrip('/')
-            if member.isdir() and any(p.startswith(name + '/') for p in PUBLIC_FILES):
+            if member.isdir() and any(p.startswith(name + '/') for p in known):
                 continue
-            if not member.isfile() or name not in PUBLIC_FILES or name in files:
+            if not member.isfile() or name not in known or name in files:
                 raise ValueError(f'Unexpected public archive entry: {member.name}')
             files.add(name)
-        if files != PUBLIC_FILES:
-            raise ValueError(f'Missing public files: {sorted(PUBLIC_FILES - files)}')
+        if files not in allowed:
+            raise ValueError(f'Missing public files: {sorted(allowed[0] - files)}')
 
 
 def render(ver, directory):

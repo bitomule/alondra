@@ -9,6 +9,7 @@ runs with its own label, port, HOME and TMPDIR and a PATH whose tools only recor
 """
 import argparse
 import base64
+import filecmp
 import json
 import os
 import pathlib
@@ -36,6 +37,7 @@ STUBBED_COMMANDS = ('claude', 'gh', 'git', 'tmux', 'brew', 'launchctl', 'osascri
                     'terminal-notifier', 'ssh')
 SQLITE_HEADER = b'SQLite format 3\0'
 SIDECARS = ('-wal', '-shm', '-journal')
+LAUNCHER = 'alondrad-launcher'
 RELAUNCH = 75
 SERVE_WITHIN = 60
 EXIT_WITHIN = 120
@@ -125,19 +127,24 @@ def fetch_previous(ver, into):
     return archive
 
 
-def unpack(archive, into, signed=True):
-    release.validate_archive(archive)
+def unpack(archive, into, signed=True, published=False):
+    """A release already published may predate the launcher; the one about to ship may not."""
+    allowed = (release.PUBLIC_FILES, release.PRE_LAUNCHER_FILES) if published else (release.PUBLIC_FILES,)
+    release.validate_archive(archive, allowed)
     into.mkdir(parents=True)
     with tarfile.open(archive) as tar:
-        tar.extract('alondrad', into, filter='data')
-    binary = into / 'alondrad'
+        names = [name for name in ('alondrad', LAUNCHER) if name in tar.getnames()]
+        for name in names:
+            (into / name).write_bytes(tar.extractfile(name).read())
+            (into / name).chmod(tar.getmember(name).mode & 0o755)
     if signed:
-        subprocess.run(['codesign', '--verify', '--strict', binary], check=True)
-        details = subprocess.run(['codesign', '--display', '--verbose=4', binary],
-                                 check=True, text=True, capture_output=True).stderr
-        if f'TeamIdentifier={TEAM}' not in details:
-            raise Failed(f'{archive.name} is not signed by the release team')
-    return binary
+        for name in names:
+            subprocess.run(['codesign', '--verify', '--strict', into / name], check=True)
+            details = subprocess.run(['codesign', '--display', '--verbose=4', into / name],
+                                     check=True, text=True, capture_output=True).stderr
+            if f'TeamIdentifier={TEAM}' not in details:
+                raise Failed(f'{name} in {archive.name} is not signed by the release team')
+    return into / 'alondrad'
 
 
 def binary_version(binary):
@@ -341,6 +348,8 @@ def upgrade(rehearsal, case, home, old, new, while_running=None):
         keg = root / 'Cellar/alondra' / ver
         (keg / 'bin').mkdir(parents=True)
         shutil.copy2(binary, keg / 'bin/alondrad')
+        if binary.with_name(LAUNCHER).exists():
+            shutil.copy2(binary.with_name(LAUNCHER), keg / 'bin' / LAUNCHER)
         kegs[ver] = keg
     opt = root / 'opt/alondra'
     opt.parent.mkdir(parents=True)
@@ -377,6 +386,10 @@ def upgrade(rehearsal, case, home, old, new, while_running=None):
             time.sleep(0.5)
     finally:
         relaunched.stop()
+    bundled = kegs[new['version']] / 'bin' / LAUNCHER
+    installed = home / 'bin' / LAUNCHER
+    if bundled.exists() and not (installed.exists() and filecmp.cmp(bundled, installed, shallow=False)):
+        raise Failed(f'{new["version"]} did not put its launcher at {installed}: {last_line(log.read_text())}')
     return {'exited_after_swap_ms': exited_ms, 'answered_ms': answered_ms}
 
 
@@ -394,7 +407,7 @@ def rehearse(new_binary, previous_archive, live_home, work, old_version):
     if not inside(live_home, protected):
         raise Failed(f'The live HOME {live_home} must be inside {protected}, which the sandbox keeps read-only')
     rehearsal = Rehearsal(work, protected, live_home)
-    old_binary = unpack(previous_archive, work / 'previous')
+    old_binary = unpack(previous_archive, work / 'previous', published=True)
     old = {'version': old_version, 'binary': old_binary}
     if binary_version(old_binary) != old_version:
         raise Failed(f'{previous_archive.name} does not contain alondrad {old_version}')

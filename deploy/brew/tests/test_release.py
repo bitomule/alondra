@@ -45,6 +45,21 @@ class PublicPayloadTests(unittest.TestCase):
                     output.add(stage / name, arcname=name)
             r.validate_archive(package)
 
+    def test_a_release_without_the_launcher_passes_only_when_an_older_set_is_allowed(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = pathlib.Path(temp) / 'test.tar.gz'
+            with tarfile.open(path, 'w:gz') as output:
+                for name in sorted(r.PRE_LAUNCHER_FILES):
+                    item = tarfile.TarInfo(name)
+                    item.size = len(name)
+                    output.addfile(item, io.BytesIO(name.encode()))
+            with self.assertRaisesRegex(ValueError, 'alondrad-launcher'):
+                r.validate_archive(path)
+            r.validate_archive(path, (r.PUBLIC_FILES, r.PRE_LAUNCHER_FILES))
+            archive(path, tarfile.TarInfo('notes.txt'))
+            with self.assertRaises(ValueError):
+                r.validate_archive(path, (r.PUBLIC_FILES, r.PRE_LAUNCHER_FILES))
+
     def test_rejects_private_source_and_links_even_under_allowed_names(self):
         with tempfile.TemporaryDirectory() as temp:
             path = pathlib.Path(temp) / 'test.tar.gz'

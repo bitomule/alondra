@@ -9,6 +9,7 @@ import socket
 import sqlite3
 import subprocess
 import sys
+import tarfile
 import tempfile
 import time
 import unittest
@@ -84,9 +85,10 @@ class DaemonFixtureTests(unittest.TestCase):
 
 
 class UpgradeMachine:
-    def __init__(self, readiness_delay=0.2):
+    def __init__(self, readiness_delay=0.2, installs_launcher=True):
         self.now = 0.0
         self.readiness_delay = readiness_delay
+        self.installs_launcher = installs_launcher
         self.processes = []
         self.waits = []
 
@@ -97,6 +99,11 @@ class UpgradeMachine:
         assignment = next(node for node in ast.parse(launch.read_text()).body
                           if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Tuple))
         version, mode = ast.literal_eval(assignment.value)
+        bundled = launch.with_name(u.LAUNCHER)
+        if self.installs_launcher and bundled.exists():
+            installed = pathlib.Path(kwargs['env']['ALONDRA_HOME']) / 'bin' / u.LAUNCHER
+            installed.parent.mkdir(exist_ok=True)
+            installed.write_bytes(bundled.read_bytes())
         process = SimpleNamespace(launch=launch, version=version, mode=mode,
                                   inode=launch.stat().st_ino, port=int(kwargs['env']['ALONDRA_PORT']),
                                   ready=self.now + self.readiness_delay, returncode=None)
@@ -359,6 +366,56 @@ class UpgradeTests(Fixture):
                 break
             time.sleep(0.05)
         self.assertEqual(leftover.returncode, 1, leftover.stdout)
+
+
+class LauncherMigrationTests(Fixture):
+    def archive(self, files):
+        path = self.root / 'release.tar.gz'
+        with tarfile.open(path, 'w:gz') as output:
+            for name in sorted(files):
+                source = self.root / 'payload' / name
+                source.parent.mkdir(parents=True, exist_ok=True)
+                source.write_text(name)
+                output.add(source, arcname=name)
+        return path
+
+    def test_the_published_release_may_predate_the_launcher(self):
+        archive = self.archive(u.release.PRE_LAUNCHER_FILES)
+        binary = u.unpack(archive, self.work / 'previous', signed=False, published=True)
+        self.assertEqual(binary.read_text(), 'alondrad')
+        self.assertFalse(binary.with_name(u.LAUNCHER).exists())
+
+    def test_the_release_about_to_ship_must_carry_the_launcher(self):
+        archive = self.archive(u.release.PRE_LAUNCHER_FILES)
+        with self.assertRaisesRegex(ValueError, r"Missing public files: \['alondrad-launcher'\]"):
+            u.unpack(archive, self.work / 'new', signed=False)
+        binary = u.unpack(self.archive(u.release.PUBLIC_FILES), self.work / 'new', signed=False)
+        self.assertEqual(binary.with_name(u.LAUNCHER).read_text(), u.LAUNCHER)
+
+    def old_without_and_new_with_launcher(self):
+        (self.root / 'old').mkdir()
+        (self.root / 'new').mkdir()
+        (self.root / 'new' / u.LAUNCHER).write_text('launcher 1.0.1')
+        return ({'version': '1.0.0', 'binary': fake_daemon(self.root / 'old/alondrad', '1.0.0', 'relaunch')},
+                {'version': '1.0.1', 'binary': fake_daemon(self.root / 'new/alondrad', '1.0.1', 'serve')})
+
+    def test_the_new_daemon_puts_its_launcher_at_the_fixed_path(self):
+        old, new = self.old_without_and_new_with_launcher()
+        home = self.work / 'home'
+        home.mkdir()
+        with UpgradeMachine().boundaries(), patch.object(u, 'STAY_UP', 1):
+            u.upgrade(self.rehearsal, 'case', home, old, new)
+        self.assertFalse((self.work / 'case/Cellar/alondra/1.0.0/bin' / u.LAUNCHER).exists())
+        self.assertEqual((self.work / 'case/Cellar/alondra/1.0.1/bin' / u.LAUNCHER).read_text(), 'launcher 1.0.1')
+        self.assertEqual((home / 'bin' / u.LAUNCHER).read_text(), 'launcher 1.0.1')
+
+    def test_an_upgrade_that_leaves_no_launcher_fails(self):
+        old, new = self.old_without_and_new_with_launcher()
+        home = self.work / 'home'
+        home.mkdir()
+        with UpgradeMachine(installs_launcher=False).boundaries(), patch.object(u, 'STAY_UP', 1), \
+             self.assertRaisesRegex(u.Failed, '1.0.1 did not put its launcher at'):
+            u.upgrade(self.rehearsal, 'case', home, old, new)
 
 
 class PlistTests(unittest.TestCase):
