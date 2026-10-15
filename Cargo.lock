@@ -106,6 +106,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "alondra-domain"
+version = "0.2.82"
+dependencies = [
+ "alondra-foundation",
+ "proptest",
+]
+
+[[package]]
 name = "alondra-e2e"
 version = "0.2.82"
 dependencies = [

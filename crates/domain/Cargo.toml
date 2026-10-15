@@ -1,0 +1,12 @@
+[package]
+name = "alondra-domain"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+alondra-foundation.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
