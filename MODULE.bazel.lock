@@ -677,8 +677,8 @@
         "bzlTransitiveDigest": "UvQf9r2bSvJv7U+jRyqYj19oBr1RA6pb7W74NQs9Qeg=",
         "usagesDigest": "2g6pxya9RYC7UntLz/yBloEuUrj+sd69Obb6fEWlBHA=",
         "recordedFileInputs": {
-          "@@//Cargo.lock": "36248ec6baf914e377de4fd6fdbce657e229c1054b630ae15d02e69766253891",
-          "@@//Cargo.toml": "d75626493a320614e6293629993c2e824b25884930642573d726fccca5e0ad2f",
+          "@@//Cargo.lock": "d141ef971656be79020f77527c0a269702915f8f5ec1a1e91d36e75824f4232b",
+          "@@//Cargo.toml": "6ac7e756d50b3e967d9d75ce64afd5df415beca3ea7aea7e6b6384629c32ee23",
           "@@//crates/alondra/Cargo.toml": "87782961564c2fb62315160436f80ac88bc05c6f2ce2d4b24e8dbe4990c6d3de",
           "@@//crates/alondrad/Cargo.toml": "07580e83ee3322844962bf22a71e4d0ec8ae335ff8ac3849674f6d62a2811f34",
           "@@//crates/core/Cargo.toml": "013861e638dc0a52d626ec296d7fec942cf225546eb32015abbddef071dfbf67",
