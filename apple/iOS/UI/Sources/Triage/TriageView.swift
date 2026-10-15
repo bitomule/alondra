@@ -4,9 +4,9 @@ import AlondraContract
 import ComposableArchitecture
 import SwiftUI
 
-/// Waiting for You: a stack of cards in the order the server sends them. Swiping right answers with
-/// a card's first button and swiping left with its last; a card whose button needs words or a
-/// choice goes to the back of the stack instead. Tapping opens the card.
+/// Waiting for You: a stack of cards in the order the server sends them. Swiping either way sends
+/// the front card to the back and answers nothing; only a tap on one of its buttons answers it.
+/// Tapping elsewhere on it opens the card.
 public struct TriageView: View {
     @Bindable var store: StoreOf<TriageFeature>
     let zoom: Namespace.ID
@@ -202,7 +202,9 @@ public struct TriageView: View {
             }
         }
         .padding(.top, Self.peek)
-        .simultaneousGesture(swipe)
+        // Above the card's buttons, not beside them: a swipe that starts on a button would also
+        // press it when the finger lifts, and answer the card the person only meant to move.
+        .highPriorityGesture(swipe)
         .onChange(of: dragging) { _, now in
             guard !now else { return }
             Task { @MainActor in

@@ -93,6 +93,7 @@ checks:
         - //apple/Testing:IssueReportingIntegrationTests
         - //apple/Testing/Quality:AlondraQualityTests
         - //apple/Testing/Snapshots:AlondraSnapshotTests
+        - //apple/Testing/TriageTouch:TriageTouchUITests
         - //apple/Testing/MacSnapshots:AlondraMacSnapshotTests
         - //apple:AlondraMacServiceNavigationTests
         - //apple:AlondraMacWorkspaceOwnerTests

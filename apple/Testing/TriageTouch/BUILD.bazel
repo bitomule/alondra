@@ -1,0 +1,74 @@
+load("@build_bazel_rules_apple//apple:ios.bzl", "ios_application", "ios_ui_test")
+load("@build_bazel_rules_apple//apple/testing/default_runner:ios_xctestrun_runner.bzl", "ios_xctestrun_runner")
+load("@build_bazel_rules_swift//swift:swift.bzl", "swift_library")
+load("//apple:swift.bzl", "STRICT_SWIFT_CONCURRENCY_COPTS")
+
+# rules_apple's runner, not simpool's: with Xcode 27 the XCTRunner.app a UI test needs ships a
+# binary Info.plist, which simpool edits with sed and leaves without a bundle ID, so the runner
+# never installs. This one converts it first, and matches the runtime by its full version. It creates its own simulator and deletes it after.
+# `-collect-test-diagnostics never` skips a diagnose that never ends, and DerivedData goes to the
+# test's temporary directory instead of a `temporary-*` folder nothing deletes.
+ios_xctestrun_runner(
+    name = "iphone_17_pro_runner",
+    create_xcresult_bundle = True,
+    device_type = "iPhone 17 Pro",
+    os_version = "26.3.1",
+    reuse_simulator = False,
+    xcodebuild_args = [
+        "-collect-test-diagnostics",
+        "never",
+        "-IDECustomDerivedDataLocation=\"$TEST_TMPDIR/DerivedData\"",
+    ],
+)
+
+# Waiting for You with two «Do» cards and the production reducers; it lists every answer it sends.
+swift_library(
+    name = "TriageTouchHostLib",
+    testonly = True,
+    srcs = glob(["Host/*.swift"]),
+    copts = STRICT_SWIFT_CONCURRENCY_COPTS,
+    module_name = "TriageTouchHost",
+    deps = [
+        "//apple/Contract:AlondraContract",
+        "//apple/Data/Feed:AlondraFeed",
+        "//apple/Features:AlondraFeatures",
+        "//apple/iOS/UI:AlondraiOSUI",
+        "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
+    ],
+)
+
+ios_application(
+    name = "TriageTouchHost",
+    testonly = True,
+    bundle_id = "com.bitomule.alondra.triagetouchhost",
+    families = ["iphone"],
+    infoplists = ["Host/Info.plist"],
+    minimum_os_version = "26.0",
+    resources = [
+        "//apple:iOS/Resources/Localizable.xcstrings",
+        "//fixtures/views:all",
+        "//fixtures/views:cards_ios",
+    ],
+    deps = [":TriageTouchHostLib"],
+)
+
+swift_library(
+    name = "TriageTouchUITestsLib",
+    testonly = True,
+    srcs = glob(["Tests/*.swift"]),
+    copts = STRICT_SWIFT_CONCURRENCY_COPTS,
+    module_name = "TriageTouchUITestsLib",
+)
+
+# Real touches through XCUITest: taps, swipes and short drags on the front card and on the cards
+# peeking behind it, each checked against the answers the host recorded.
+ios_ui_test(
+    name = "TriageTouchUITests",
+    timeout = "long",
+    bundle_id = "com.bitomule.alondra.triagetouchuitests",
+    env = {"KEEP_XCRESULT_ON_SUCCESS": "0"},
+    minimum_os_version = "26.0",
+    runner = ":iphone_17_pro_runner",
+    test_host = ":TriageTouchHost",
+    deps = [":TriageTouchUITestsLib"],
+)
