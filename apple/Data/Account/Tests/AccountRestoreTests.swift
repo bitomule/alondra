@@ -80,17 +80,19 @@ private func pairing(_ mac: String, relay: Bool) -> ApprovedServicePairing {
 
 @MainActor
 private func account(credential: RefreshCredential?, pairings: [ApprovedServicePairing],
-                     advertised: [DiscoveredMac] = [],
+                     advertised: [DiscoveredMac] = [], localNetwork: LocalNetworkAccess = MemoryLocalNetworkAccess().access,
                      browse: (@Sendable () -> AsyncStream<MacBrowser.Update>)? = nil) throws -> AccountSession {
     let auth = AuthSession(transport: Offline(), browser: NoBrowser(), storage: MemoryCredential(credential))
-    return AccountSession(auth: auth, displayName: "iPhone",
-                          storageDirectory: try TestFiles.directory(),
-                          pairingStore: try MemoryPairings(pairings), browse: browse ?? {
-                              AsyncStream { continuation in
-                                  continuation.yield(.found(advertised))
-                                  continuation.finish()
-                              }
-                          })
+    let owner = AccountSession(auth: auth, displayName: "iPhone",
+                               storageDirectory: try TestFiles.directory(),
+                               pairingStore: try MemoryPairings(pairings), localNetwork: localNetwork, browse: browse ?? {
+                                   AsyncStream { continuation in
+                                       continuation.yield(.found(advertised))
+                                       continuation.finish()
+                                   }
+                               })
+    try TestFiles.beforeRemoval { try await owner.stop() }
+    return owner
 }
 
 private func advertised(_ name: String, macID: String) -> DiscoveredMac {
@@ -130,7 +132,8 @@ struct AccountRestoreTests {
                 }
                 return { commit() }
             }, pairingStore: try MemoryPairings([pairing("local-fixture", relay: false)]),
-            browse: { AsyncStream { $0.finish() } })
+            localNetwork: MemoryLocalNetworkAccess().access, browse: { AsyncStream { $0.finish() } })
+        try TestFiles.beforeRemoval { try await owner.stop() }
         var entered = permission.entered.makeAsyncIterator()
         let restoration = Task { try await owner.prepareNotificationSession() }
         _ = await entered.next()
@@ -210,13 +213,12 @@ struct AccountRestoreTests {
     }
 }
 
-/// Both write the one saved permission state, so they never run at the same time.
 @MainActor
-@Suite(.serialized, .temporaryFiles)
+@Suite(.temporaryFiles)
 struct LocalNetworkAccessTests {
     @Test func aRefusalWhileTheSystemAlertIsUpIsNotTheAnswer() async throws {
-        let browsed = Shared(0)
-        let owner = try account(credential: nil, pairings: [], browse: {
+        let browsed = Shared(0), saved = MemoryLocalNetworkAccess(.unknown).access
+        let owner = try account(credential: nil, pairings: [], localNetwork: saved, browse: {
             browsed.set(browsed.current + 1)
             return AsyncStream { continuation in
                 continuation.yield(.denied)
@@ -225,8 +227,6 @@ struct LocalNetworkAccessTests {
         })
         let active = Shared(false)
         owner.isActive = { active.current }
-        LocalNetworkAccess.record(.unknown)
-        defer { LocalNetworkAccess.record(.unknown) }
         let updates = Task { @MainActor in
             var seen: [FindMacUpdate] = []
             for await update in owner.findMacClient.browse() { seen.append(update) }
@@ -234,27 +234,26 @@ struct LocalNetworkAccessTests {
         }
         try await waitUntil { browsed.current == 1 }
         try await Task.sleep(for: .milliseconds(100))
-        #expect(LocalNetworkAccess.state == .unknown)
+        #expect(saved.state == .unknown)
         #expect(browsed.current == 1)
         active.set(true)
         let seen = await updates.value
         #expect(seen == [.denied])
         #expect(browsed.current == 2)
-        #expect(LocalNetworkAccess.state == .denied)
+        #expect(saved.state == .denied)
     }
 
     @Test func allowingAccessAfterARefusalIsRemembered() async throws {
-        let owner = try account(credential: nil, pairings: [], browse: {
+        let saved = MemoryLocalNetworkAccess(.denied).access
+        let owner = try account(credential: nil, pairings: [], localNetwork: saved, browse: {
             AsyncStream { continuation in
                 continuation.yield(.allowed)
                 continuation.finish()
             }
         })
-        LocalNetworkAccess.record(.denied)
-        defer { LocalNetworkAccess.record(.unknown) }
         var seen: [FindMacUpdate] = []
         for await update in owner.findMacClient.browse() { seen.append(update) }
         #expect(seen == [.allowed])
-        #expect(LocalNetworkAccess.state == .allowed)
+        #expect(saved.state == .allowed)
     }
 }

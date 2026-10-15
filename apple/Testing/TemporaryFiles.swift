@@ -1,14 +1,35 @@
 import Foundation
+import Synchronization
 import Testing
 
 public enum TestFiles {
-    @TaskLocal static var root: URL?
+    @TaskLocal static var scope: Scope?
 
     public static func directory() throws -> URL {
-        guard let root else { throw MissingScope() }
-        let directory = root.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        guard let scope else { throw MissingScope() }
+        let directory = scope.root.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         return directory
+    }
+
+    /// Stops something that writes to these files: it runs when the test ends, thrown or not,
+    /// and is awaited before the files are removed. The last one added runs first.
+    public static func beforeRemoval(_ stop: @escaping @Sendable () async throws -> Void) throws {
+        guard let scope else { throw MissingScope() }
+        scope.stops.withLock { $0.append(stop) }
+    }
+
+    final class Scope: Sendable {
+        let root: URL
+        let stops = Mutex<[@Sendable () async throws -> Void]>([])
+        init(root: URL) { self.root = root }
+
+        func stopAll() async {
+            for stop in stops.withLock({ $0 }).reversed() {
+                do { try await stop() }
+                catch { Issue.record(error, "Failed to stop a writer before removing test files at \(root.path)") }
+            }
+        }
     }
 
     private struct MissingScope: Error {}
@@ -33,7 +54,14 @@ public struct TemporaryFiles: TestTrait, SuiteTrait, TestScoping {
             do { try FileManager.default.removeItem(at: directory) }
             catch { Issue.record(error, "Failed to remove test files at \(directory.path)") }
         }
-        try await TestFiles.$root.withValue(directory, operation: operation)
+        let scope = TestFiles.Scope(root: directory)
+        do {
+            try await TestFiles.$scope.withValue(scope) { try await operation() }
+        } catch {
+            await scope.stopAll()
+            throw error
+        }
+        await scope.stopAll()
     }
 }
 

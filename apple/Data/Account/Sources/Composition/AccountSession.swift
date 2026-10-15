@@ -33,10 +33,12 @@ public final class AccountSession {
         let storageDirectory = storageDirectory
         let measurements = measurements
         let irohDialer = irohDialer
+        let localNetwork = localNetwork
         return ApprovedSessionRegistry<Connection>(
             make: { [weak self] approved in
                 let connection = try await Connection(approved: approved, auth: auth, storageDirectory: storageDirectory,
-                                                      measurements: measurements, irohDialer: irohDialer)
+                                                      measurements: measurements,
+                                                      localNetworkAllowed: { localNetwork.allowed }, irohDialer: irohDialer)
                 if await MainActor.run(body: { self?.isLive == true }) { await connection.goLive() }
                 return connection
             },
@@ -54,8 +56,10 @@ public final class AccountSession {
     @ObservationIgnored private var directAttempt: UUID?
     @ObservationIgnored private var discovery: Task<Void, Never>?
     @ObservationIgnored private var keepingRoutes: Task<Void, Never>?
+    @ObservationIgnored private var routeLearning: [UUID: Task<Void, Never>] = [:]
     @ObservationIgnored private var accountCheck: Task<Void, Never>?
     @ObservationIgnored private let browse: @Sendable () -> AsyncStream<MacBrowser.Update>
+    private nonisolated let localNetwork: LocalNetworkAccess
     /// This Mac's own ID in the Mac app, so Find a Mac never offers the Mac it runs on.
     @ObservationIgnored public var ownMacID: String?
     /// The Mac the person chose to pair again: it is offered as pairable even though it is saved,
@@ -104,18 +108,20 @@ public final class AccountSession {
                 willDeactivate: @escaping @MainActor () async throws -> Void = {},
                 pushBinding: @escaping @MainActor (ApprovedServicePairing) -> String? = { _ in nil },
                 pairingStore: any ApprovedPairingStore = KeychainApprovedPairingStore(),
-                browse: @escaping @Sendable () -> AsyncStream<MacBrowser.Update> = { MacBrowser.browse() },
+                localNetwork: LocalNetworkAccess = .standard,
+                browse: (@Sendable () -> AsyncStream<MacBrowser.Update>)? = nil,
                 irohDialer: (@Sendable (IrohIdentity) -> any IrohDialer)? = nil, startsLive: Bool = false) {
         self.auth = auth
         isLive = startsLive
         self.irohDialer = irohDialer
         self.pushBinding = pushBinding
-        self.browse = browse
+        self.localNetwork = localNetwork
+        self.browse = browse ?? { MacBrowser.browse(access: localNetwork) }
         pairing = PairingClient(store: pairingStore)
         #if os(macOS)
-        directPairing = DirectPairingClient(store: pairingStore, devicePrefix: "client")
+        directPairing = DirectPairingClient(store: pairingStore, devicePrefix: "client", localNetwork: localNetwork)
         #else
-        directPairing = DirectPairingClient(store: pairingStore, devicePrefix: "phone")
+        directPairing = DirectPairingClient(store: pairingStore, devicePrefix: "phone", localNetwork: localNetwork)
         #endif
         self.displayName = displayName
         self.storageDirectory = storageDirectory
@@ -161,8 +167,8 @@ public final class AccountSession {
 
     /// Pairing with a Mac on this network, for the first screen and for Settings' Add a Mac.
     public nonisolated var findMacClient: FindMacClient {
-        FindMacClient(permission: {
-            switch LocalNetworkAccess.state {
+        FindMacClient(permission: { [localNetwork] in
+            switch localNetwork.state {
             case .unknown: .unknown
             case .allowed: .allowed
             case .denied: .denied
@@ -198,10 +204,10 @@ public final class AccountSession {
                 switch update {
                 case .found(let macs): continuation.yield(.macs(found(macs)))
                 case .allowed:
-                    LocalNetworkAccess.record(.allowed)
+                    localNetwork.record(.allowed)
                     continuation.yield(.allowed)
                 case .denied where isActive():
-                    LocalNetworkAccess.record(.denied)
+                    localNetwork.record(.denied)
                     continuation.yield(.denied)
                 case .denied:
                     askedWhileAway = true
@@ -292,8 +298,11 @@ public final class AccountSession {
     /// A relay pairing gains the direct path this way, without pairing again.
     private func learnRoutes(generation current: Int) {
         for entry in registry.snapshot.entries {
-            let session = entry.session
-            Task { try? await session.learnRoutes() }
+            let session = entry.session, id = UUID()
+            routeLearning[id] = Task { [weak self] in
+                try? await session.learnRoutes()
+                self?.routeLearning[id] = nil
+            }
         }
         startDiscovery()
         guard keepingRoutes == nil, !registry.snapshot.entries.isEmpty else { return }
@@ -308,7 +317,7 @@ public final class AccountSession {
     /// Bonjour runs only for someone who paired a Mac on this network and has not turned Local
     /// Network access off; an account-only device never touches the local network on its own.
     private func startDiscovery() {
-        guard discovery == nil, LocalNetworkAccess.state != .denied,
+        guard discovery == nil, localNetwork.state != .denied,
               registry.snapshot.entries.contains(where: { !$0.approved.hasRelay }) else { return }
         let browse = browse
         discovery = Task { [weak self] in
@@ -600,9 +609,22 @@ public final class AccountSession {
         discovery?.cancel(); discovery = nil; offeredServices = []
         keepingRoutes?.cancel(); keepingRoutes = nil
         accountCheck?.cancel(); accountCheck = nil
+        routeLearning.values.forEach { $0.cancel() }; routeLearning = [:]
         await cancelDirect()
         await pairing.discardAllAttempts()
         try await registry.clear()
+    }
+
+    /// Ends this session for good: every Mac disconnects and every task it started has
+    /// finished, so nothing it runs writes to its storage directory afterwards.
+    public func stop() async throws {
+        let started = [discovery, keepingRoutes, accountCheck].compactMap { $0 } + routeLearning.values
+        let restoring = restoreTask
+        var failure: (any Error)?
+        do { try await deactivate() } catch { failure = error }
+        for task in started { await task.value }
+        _ = try? await restoring?.value
+        if let failure { throw failure }
     }
     private func logout() async throws {
         // Attempt every revocation even when notification/keychain cleanup fails.

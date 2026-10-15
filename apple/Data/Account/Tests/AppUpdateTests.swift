@@ -92,7 +92,9 @@ struct AppUpdateTests {
                                storage: credential, diagnostics: { _, _ in })
         let account = AccountSession(auth: auth, displayName: "iPhone",
                                      storageDirectory: try storage ?? TestFiles.directory(),
-                                     pairingStore: pairings, browse: { AsyncStream { $0.finish() } })
+                                     pairingStore: pairings, localNetwork: MemoryLocalNetworkAccess().access,
+                                     browse: { AsyncStream { $0.finish() } })
+        try TestFiles.beforeRemoval { try await account.stop() }
         return (account, credential, pairings)
     }
 

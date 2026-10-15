@@ -35,3 +35,25 @@ struct TemporaryFilesScopeTests {
         #expect(FileManager.default.fileExists(atPath: second.path))
     }
 }
+
+@Test(arguments: [false, true])
+func writersStopNewestFirstBeforeTheFilesAreRemoved(throwsFromBody: Bool) async throws {
+    let stopped = Mutex<[String]>([])
+    let test = try #require(Test.current)
+    do {
+        try await TemporaryFiles().provideScope(for: test, testCase: nil) {
+            let directory = try TestFiles.directory()
+            for writer in ["first", "second"] {
+                try TestFiles.beforeRemoval {
+                    let filesRemain = FileManager.default.fileExists(atPath: directory.path)
+                    stopped.withLock { $0.append("\(writer) \(filesRemain)") }
+                }
+            }
+            if throwsFromBody { throw FailedBody() }
+        }
+        #expect(!throwsFromBody)
+    } catch is FailedBody {
+        #expect(throwsFromBody)
+    }
+    #expect(stopped.withLock { $0 } == ["second true", "first true"])
+}

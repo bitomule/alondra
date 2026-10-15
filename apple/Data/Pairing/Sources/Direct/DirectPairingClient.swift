@@ -42,6 +42,7 @@ public actor DirectPairingClient {
     private let http: DirectHTTP
     private let store: any ApprovedPairingStore
     private let devicePrefix: String
+    private let localNetwork: LocalNetworkAccess
     private let now: @Sendable () -> UInt64
     private let pause: @Sendable () async throws -> Void
     private var attempts: [UUID: Attempt] = [:]
@@ -49,11 +50,13 @@ public actor DirectPairingClient {
     public init(transport: (any HTTPTransport)? = nil,
                 store: any ApprovedPairingStore = KeychainApprovedPairingStore(),
                 devicePrefix: String,
+                localNetwork: LocalNetworkAccess = .standard,
                 now: @escaping @Sendable () -> UInt64 = { UInt64(max(0, Date().timeIntervalSince1970 * 1000)) },
                 pause: @escaping @Sendable () async throws -> Void = { try await Task.sleep(for: .seconds(1)) }) {
         http = DirectHTTP(transport: transport ?? AlondraAPIClient.makeHTTPTransport())
         self.store = store
         self.devicePrefix = devicePrefix
+        self.localNetwork = localNetwork
         self.now = now
         self.pause = pause
     }
@@ -137,7 +140,7 @@ public actor DirectPairingClient {
                 } else {
                     try store.save(approved)
                 }
-                LocalNetworkAccess.record(.allowed)
+                localNetwork.record(.allowed)
                 return approved
             case "denied": throw PairingError.denied
             case "expired": throw PairingError.requestExpired

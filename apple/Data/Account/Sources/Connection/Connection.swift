@@ -34,7 +34,7 @@ public actor Connection {
     /// `irohDialer`, a Mac paired with an account is reached first over its iroh endpoint.
     public init(approved: ApprovedServicePairing, auth: AuthSession, storageDirectory: URL? = nil,
                 measurements: ConnectionMeasurements? = nil,
-                localNetworkAllowed: @escaping @Sendable () -> Bool = { LocalNetworkAccess.allowed },
+                localNetworkAllowed: @escaping @Sendable () -> Bool = { LocalNetworkAccess.standard.allowed },
                 irohDialer: (@Sendable (IrohIdentity) -> any IrohDialer)? = nil) async throws {
         let signing = try P256.Signing.PrivateKey(rawRepresentation: approved.signingPrivateKey)
         let agreement = try P256.KeyAgreement.PrivateKey(rawRepresentation: approved.agreementPrivateKey)

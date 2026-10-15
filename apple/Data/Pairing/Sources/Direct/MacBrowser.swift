@@ -36,7 +36,7 @@ public enum MacBrowser {
         case allowed
     }
 
-    public static func browse(type: String = serviceType) -> AsyncStream<Update> {
+    public static func browse(type: String = serviceType, access: LocalNetworkAccess = .standard) -> AsyncStream<Update> {
         AsyncStream { continuation in
             let browser = NWBrowser(for: .bonjourWithTXTRecord(type: type, domain: nil), using: .tcp)
             browser.browseResultsChangedHandler = { results, _ in
@@ -47,7 +47,7 @@ public enum MacBrowser {
                     return DiscoveredMac(id: service, name: txt["name"].flatMap { $0.isEmpty ? nil : $0 } ?? service,
                                          macID: txt["mac_id"], endpoint: result.endpoint)
                 }
-                if !macs.isEmpty { LocalNetworkAccess.record(.allowed) }
+                if !macs.isEmpty { access.record(.allowed) }
                 continuation.yield(.found(macs.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }))
             }
             let refused = OSAllocatedUnfairLock(initialState: false)
@@ -62,12 +62,12 @@ public enum MacBrowser {
                     }
                     if case .failed = state { continuation.finish() }
                 case .ready:
-                    guard leavesDenied(refusedDuringBrowse: refused.withLock({ $0 }), saved: LocalNetworkAccess.state)
+                    guard leavesDenied(refusedDuringBrowse: refused.withLock({ $0 }), saved: access.state)
                     else { return }
                     Task {
                         guard await confirmsAllowed(denialCount: { denials.withLock { $0 } }) else { return }
                         refused.withLock { $0 = false }
-                        LocalNetworkAccess.record(.allowed)
+                        access.record(.allowed)
                         continuation.yield(.allowed)
                     }
                 default: break
