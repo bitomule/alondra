@@ -129,6 +129,21 @@ final class MacLocalPairingSnapshotTests: XCTestCase {
         assertWindow(size: CGSize(width: 480, height: 460), spanish: true, variants: light) { thisMacSettings }
     }
 
+    private var directConnection: some View {
+        let direct = DirectConnection(
+            verdict: .relayOnly, reasons: [.relayOnSameNetwork, .routerOffersNoMapping, .noIpv6], portMapping: .init(),
+            nat: .unknown, port: 47811, lanIp: "192.168.1.20", sessions: .init(lan: 6, internet: 0, relay: 2))
+        return Form { DirectConnectionSection(direct: direct) }.formStyle(.grouped)
+    }
+
+    func test_directConnection_relayOnlyWithTheRouterGuide() {
+        assertWindow(size: CGSize(width: 560, height: 760)) { directConnection }
+    }
+
+    func test_directConnection_relayOnlyWithTheRouterGuide_spanish() {
+        assertWindow(size: CGSize(width: 560, height: 760), spanish: true, variants: light) { directConnection }
+    }
+
     func test_localDaemonMissing_installWithHomebrew() {
         assertWindow(size: CGSize(width: 640, height: 480)) { MacLocalDaemonMissingView(connectToAnotherMac: {}, exploreDemo: {}) }
     }

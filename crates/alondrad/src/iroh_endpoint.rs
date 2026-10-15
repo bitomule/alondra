@@ -20,6 +20,8 @@ use std::time::Duration;
 
 pub(crate) const ALPN: &[u8] = b"alondra/1";
 pub(crate) const KEY_FILE: &str = "iroh.key";
+/// The UDP port tried first, so a port forwarded on the router keeps working after a restart.
+pub(crate) const DEFAULT_PORT: u16 = 47811;
 #[cfg(not(test))]
 const HELLO_TIMEOUT: Duration = Duration::from_secs(10);
 #[cfg(test)]
@@ -44,7 +46,7 @@ pub(crate) struct IrohConfig {
     pub(crate) enabled: bool,
     /// `auto`: the iroh relay the Alondra relay announces; `off`: none; or that relay's URL.
     pub(crate) relay: String,
-    /// The UDP port, or 0 for any free one.
+    /// The UDP port, or 0 for any free one. The default falls back to a free one when taken.
     pub(crate) port: u16,
     /// Binds only this address instead of every interface.
     pub(crate) listen: Option<IpAddr>,
@@ -54,7 +56,7 @@ pub(crate) struct IrohConfig {
 
 impl Default for IrohConfig {
     fn default() -> Self {
-        Self { enabled: true, relay: "auto".into(), port: 0, listen: None, portmapper: true }
+        Self { enabled: true, relay: "auto".into(), port: DEFAULT_PORT, listen: None, portmapper: true }
     }
 }
 
@@ -119,14 +121,24 @@ fn update(change: impl FnOnce(&mut Status)) {
 
 /// What `/daemon` reports about the endpoint and macOS's Local Network permission.
 pub(crate) fn status() -> serde_json::Value {
+    let reachability = crate::reachability::current();
     let guard = STATUS.lock().expect("iroh status poisoned");
     let local_network = crate::local_network::status();
     match &*guard {
-        None => json!({"endpoint": null, "local_network": local_network}),
+        None => json!({"endpoint": null, "local_network": local_network, "reachability": reachability}),
         Some(status) => json!({
             "endpoint": status.endpoint, "relay": status.relay, "relay_connected": status.relay_connected,
             "relay_refusal": status.relay_refusal, "local_network": local_network,
+            "reachability": reachability,
         }),
+    }
+}
+
+/// The iroh relay in use and whether this Mac is connected to it.
+pub(crate) fn relay_state() -> (Option<String>, bool) {
+    match &*STATUS.lock().expect("iroh status poisoned") {
+        Some(status) => (status.relay.clone(), status.relay_connected),
+        None => (None, false),
     }
 }
 
@@ -154,19 +166,41 @@ pub(crate) async fn bind(key: SecretKey, config: &IrohConfig) -> Result<Endpoint
 /// Serves the endpoint for as long as the daemon runs, binding again after a failure.
 pub(crate) async fn run(service: Arc<Service>) {
     let config = service.iroh_config().clone();
-    let endpoint = loop {
-        match bind(service.iroh_key().clone(), &config).await {
-            Ok(endpoint) => break endpoint,
-            Err(error) => log!("iroh endpoint cannot bind: {error:#}"),
+    let (endpoint, port_fixed) = loop {
+        if let Some(bound) = bind_preferring_port(service.iroh_key(), &config).await {
+            break bound;
         }
         tokio::time::sleep(RETRY).await;
     };
     log!("iroh endpoint {} on {:?}", endpoint.id(), endpoint.bound_sockets());
     update(|status| status.endpoint = Some(endpoint.id().to_string()));
+    let portmapper = if config.portmapper { PortmapperConfig::default() } else { PortmapperConfig::Disabled };
     tokio::spawn(follow_relay(endpoint.clone(), service.clone(), config));
     tokio::spawn(report_relay(endpoint.clone()));
     tokio::spawn(publish_addresses(endpoint.clone(), service.clone()));
+    let watched = endpoint.clone();
+    tokio::spawn(async move { crate::reachability::watch(watched, port_fixed, &portmapper).await });
     serve(endpoint, service).await;
+}
+
+/// Binds the configured port; when the default one is taken, any free one. The flag says whether
+/// the port is the same on every start.
+pub(crate) async fn bind_preferring_port(key: &SecretKey, config: &IrohConfig) -> Option<(Endpoint, bool)> {
+    match bind(key.clone(), config).await {
+        Ok(endpoint) => return Some((endpoint, config.port != 0)),
+        Err(error) if config.port == DEFAULT_PORT => log!("iroh port {DEFAULT_PORT} not free, using any: {error:#}"),
+        Err(error) => {
+            log!("iroh endpoint cannot bind: {error:#}");
+            return None;
+        }
+    }
+    match bind(key.clone(), &IrohConfig { port: 0, ..config.clone() }).await {
+        Ok(endpoint) => Some((endpoint, false)),
+        Err(error) => {
+            log!("iroh endpoint cannot bind: {error:#}");
+            None
+        }
+    }
 }
 
 /// Accepts connections until the endpoint closes.
@@ -201,9 +235,15 @@ async fn serve_connection(service: &Arc<Service>, connection: Connection) {
         Ok(None) => return connection.close(VarInt::from_u32(close::UNAUTHORIZED), b"unauthorized"),
         Err(_) => return connection.close(VarInt::from_u32(close::HELLO_TIMEOUT), b"no hello"),
     };
+    let opened = std::time::Instant::now();
+    let path = tokio::spawn(crate::reachability::best_path(connection.clone()));
     while let Ok((send, recv)) = connection.accept_bi().await {
         let (service, device_id) = (service.clone(), device_id.clone());
         tokio::spawn(async move { serve_stream(&service, &device_id, send, recv).await });
+    }
+    if let Ok(Some(kind)) = path.await {
+        crate::reachability::record_session(kind);
+        log!("iroh connection from {device_id} closed after {:?}, path {kind:?}", opened.elapsed());
     }
 }
 

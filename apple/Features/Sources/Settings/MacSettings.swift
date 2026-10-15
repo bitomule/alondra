@@ -19,9 +19,12 @@ public struct MacSettings: Equatable, Sendable, Decodable {
     public let projectsRoot: String
     public let candidates: [Candidate]
     public let relay: Relay
+    /// Absent from a daemon older than the diagnosis or one whose iroh endpoint is off.
+    public let directConnection: DirectConnection?
 
-    public init(projectsRoot: String, candidates: [Candidate], relay: Relay) {
+    public init(projectsRoot: String, candidates: [Candidate], relay: Relay, directConnection: DirectConnection? = nil) {
         self.projectsRoot = projectsRoot; self.candidates = candidates; self.relay = relay
+        self.directConnection = directConnection
     }
 }
 

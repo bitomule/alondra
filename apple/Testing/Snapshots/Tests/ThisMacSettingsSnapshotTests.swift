@@ -53,6 +53,42 @@ final class ThisMacSettingsSnapshotTests: XCTestCase {
         assertScreen([.light], language: .spanish, inWindow: true) { ScreenFrame(height: 852) { screen(store) } }
     }
 
+    private func direct(_ direct: DirectConnection) -> some View {
+        NavigationStack {
+            Form { DirectConnectionSection(direct: direct) }
+                .scrollContentBackground(.hidden)
+                .background(DawnBackground())
+                .navigationTitle(Text(verbatim: "MacBook Pro de David"))
+                .navigationBarTitleDisplayMode(.inline)
+        }
+    }
+
+    private let relayOnly = DirectConnection(
+        verdict: .relayOnly, reasons: [.routerOffersNoMapping, .noIpv6], portMapping: .init(), publicIpv4: "81.40.12.7",
+        nat: .easy, port: 47811, lanIp: "192.168.1.20", sessions: .init(lan: 3, internet: 0, relay: 5))
+
+    func test_directConnection_relayOnlyWithTheRouterGuide() {
+        assertScreen([.light, .dark], inWindow: true) { ScreenFrame(height: 1240) { direct(relayOnly) } }
+    }
+
+    func test_directConnection_relayOnlyWithTheRouterGuide_spanish() {
+        assertScreen([.light], language: .spanish, inWindow: true) { ScreenFrame(height: 1240) { direct(relayOnly) } }
+    }
+
+    func test_directConnection_reachable() {
+        let reachable = DirectConnection(
+            verdict: .reachable, confirmed: true, portMapping: .init(upnp: true, mapped: "81.40.12.7:61022"),
+            publicIpv4: "81.40.12.7", publicIpv6: "2a0c:5a80::7", nat: .easy, port: 47811, lanIp: "192.168.1.20",
+            sessions: .init(lan: 2, internet: 4, relay: 1))
+        assertScreen([.light, .dark], inWindow: true) { ScreenFrame(height: 852) { direct(reachable) } }
+    }
+
+    func test_directConnection_checking() {
+        assertScreen([.light], inWindow: true, animatedPixels: true) {
+            ScreenFrame(height: 852) { direct(DirectConnection(verdict: .checking, port: 47811)) }
+        }
+    }
+
     private func browser() -> StoreOf<FolderBrowserFeature> {
         let listing = FolderListing(path: "/Users/david/Work", parent: "/Users/david", folders: [
             .init(name: "alondra", path: "/Users/david/Work/alondra", repo: true, repos: 0),

@@ -84,7 +84,7 @@ connections per Mac; another connection is closed with code 3.
 [iroh]
 enabled = true     # default
 relay = "auto"     # the iroh relay /v1/bootstrap names; "off", or an https URL
-port = 0           # UDP port; 0 picks a free one
+port = 47811       # UDP port, falling back to a free one when taken; 0 picks a free one
 # listen = "127.0.0.1"  # bind one address instead of every interface
 portmapper = true  # ask the router for a port mapping (UPnP, NAT-PMP, PCP)
 ```
@@ -92,3 +92,26 @@ portmapper = true  # ask the router for a port mapping (UPnP, NAT-PMP, PCP)
 The key is `iroh.key` beside the service signing key (`~/.alondra/service-keys/`), created by
 the daemon on its first start. `/daemon` reports the endpoint, its relay, and whether macOS lets
 the daemon send to the local network (`local_network`).
+
+## Reachability
+
+A phone on a mobile network usually sits behind a symmetric NAT, so a direct path opens only
+when the Mac has a way in: a port the router maps, a forwarded port, a public IPv6 address, or no
+NAT. The daemon diagnoses that from iroh's net report, a probe of the router's port mapping
+protocols and its own addresses, and counts each closed device connection by the path it used.
+It serves the result as `iroh.reachability` on `/daemon` and `direct_connection` on
+`GET /settings`:
+
+```json
+{"verdict": "relay_only", "confirmed": false, "reasons": ["no_port_mapping", "no_ipv6"],
+ "port_mapping": {"upnp": true, "nat_pmp": true, "pcp": true, "mapped": null},
+ "public_ipv4": "203.0.113.7", "public_ipv6": null, "nat": "unknown",
+ "port": 47811, "port_fixed": true, "lan_ip": "192.0.2.35",
+ "sessions": {"lan": 0, "internet": 0, "relay": 0}}
+```
+
+`verdict` is `reachable`, `relay_only`, `checking` or `unknown`; `confirmed` says a device away
+from home already connected directly. Reasons: `local_network_denied`, `relay_off`,
+`relay_disconnected`, `captive_portal`, `relay_on_same_network`, `no_udp`, `symmetric_nat`,
+`router_offers_no_mapping`, `no_port_mapping`, `no_ipv6`, `port_not_fixed`. Clients word them and
+read an unknown code as nothing.

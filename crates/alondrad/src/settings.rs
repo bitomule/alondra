@@ -55,6 +55,7 @@ pub(crate) fn read(home: &Path, user_home: &Path, relay_on: bool) -> Reply {
             "projects_root": root,
             "candidates": projects_folder::candidates(&root, user_home),
             "relay": {"on": relay_on},
+            "direct_connection": crate::reachability::current(),
             "error": loaded.error,
         }),
     }

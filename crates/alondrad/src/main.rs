@@ -53,6 +53,7 @@ mod issues;
 mod job_state;
 mod keeper;
 mod local_network;
+mod reachability;
 mod machine;
 mod machine_state;
 mod machine_watch;

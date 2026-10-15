@@ -11,7 +11,9 @@ alondra-e2e = { path = "../e2e" }
 anyhow.workspace = true
 axum.workspace = true
 base64 = "0.23.1"
-iroh = "1.3.0"
+iroh = { version = "1.3.0", features = ["unstable-net-report"] }
+n0-future = "0.3.2"
+portmapper = "0.19.3"
 netwatch = "0.19.3"
 libc.workspace = true
 notify.workspace = true

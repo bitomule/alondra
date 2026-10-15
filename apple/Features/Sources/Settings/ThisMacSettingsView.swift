@@ -13,6 +13,9 @@ public struct ThisMacSettingsView: View {
             if let settings = store.settings {
                 projects
                 relay(settings.relay)
+                if let direct = settings.directConnection {
+                    DirectConnectionSection(direct: direct)
+                }
             } else if let problem = store.problem {
                 Section {
                     Label { Text(problem.title) } icon: { Image(systemName: problem.systemImage) }

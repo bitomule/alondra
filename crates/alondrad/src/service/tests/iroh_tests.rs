@@ -99,6 +99,7 @@ impl Fixture {
         let config = IrohConfig {
             relay: "off".into(),
             listen: Some(Ipv4Addr::LOCALHOST.into()),
+            port: 0,
             portmapper: false,
             ..IrohConfig::default()
         };
@@ -303,6 +304,7 @@ fn the_iroh_table_defaults_to_on_with_the_announced_relay_and_rejects_plain_http
     let config: IrohConfig = toml::from_str("").unwrap();
     assert_eq!(config, IrohConfig::default());
     assert!(config.enabled && config.portmapper && config.relay == "auto" && config.listen.is_none());
+    assert_eq!(config.port, iroh_endpoint::DEFAULT_PORT);
     assert_eq!(config.fixed_relay().unwrap(), None);
     let fixed: IrohConfig = toml::from_str("relay = \"https://relay.example.com\"").unwrap();
     assert_eq!(fixed.fixed_relay().unwrap().unwrap().to_string(), "https://relay.example.com/");
@@ -368,6 +370,51 @@ fn the_endpoint_id_is_the_ed25519_public_key_of_the_stored_seed() {
     let from_ring: String = ring::signature::KeyPair::public_key(&pair).as_ref().iter().map(|b| format!("{b:02x}")).collect();
     assert_eq!(iroh::SecretKey::from_bytes(&seed).public().to_string(), from_ring);
     assert_eq!(from_ring, "ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c");
+}
+
+#[tokio::test]
+async fn a_connection_is_counted_by_the_path_it_used_once_it_closes() {
+    let f = Fixture::new().await;
+    let before = crate::reachability::recorded(crate::reachability::PathKind::Lan);
+    let (_client, connection) = f.paired(&f.phone, 51).await;
+    let followed = tokio::spawn(crate::reachability::best_path(connection.clone()));
+    let envelope = f.phone.work(&f.service, "op-path", "GET", crate::direct::routes::PATH, None);
+    exchange(&connection, &envelope).await;
+    connection.close(VarInt::from_u32(0), b"done");
+    let kind = tokio::time::timeout(Duration::from_secs(5), followed).await.expect("ends with the connection").unwrap();
+    assert_eq!(kind, Some(crate::reachability::PathKind::Lan), "loopback is this Mac's own network");
+    let counted = async {
+        while crate::reachability::recorded(crate::reachability::PathKind::Lan) == before {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(5), counted).await.expect("the Mac counted the closed connection");
+}
+
+#[test]
+fn the_daemon_status_carries_the_direct_connection_diagnosis() {
+    crate::reachability::record_session(crate::reachability::PathKind::Internet);
+    let status = iroh_endpoint::status();
+    assert_eq!(status["reachability"]["verdict"], "reachable", "a direct session from outside confirms it: {status}");
+    assert_eq!(status["reachability"]["confirmed"], true);
+}
+
+#[tokio::test]
+async fn the_default_port_falls_back_to_a_free_one_and_says_it_is_not_fixed() {
+    let key = iroh::SecretKey::from_bytes(&[61; 32]);
+    let loopback = IrohConfig { relay: "off".into(), listen: Some(Ipv4Addr::LOCALHOST.into()), portmapper: false, ..IrohConfig::default() };
+    let _taken = std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, iroh_endpoint::DEFAULT_PORT));
+    let (endpoint, fixed) = iroh_endpoint::bind_preferring_port(&key, &loopback).await.expect("binds a free port");
+    assert!(!fixed);
+    assert_ne!(endpoint.bound_sockets()[0].port(), iroh_endpoint::DEFAULT_PORT);
+
+    let held = std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+    let chosen = IrohConfig { port: held.local_addr().unwrap().port(), ..loopback.clone() };
+    assert!(iroh_endpoint::bind_preferring_port(&key, &chosen).await.is_none(), "a port set in service.toml is not swapped");
+    drop(held);
+    let (endpoint, fixed) = iroh_endpoint::bind_preferring_port(&key, &chosen).await.expect("binds the chosen port");
+    assert!(fixed);
+    assert_eq!(endpoint.bound_sockets()[0].port(), chosen.port);
 }
 
 #[tokio::test]

@@ -1157,3 +1157,41 @@ fn after_a_minute_without_requests_the_network_hint_shows_and_five_minutes_end_t
     assert_eq!(hints.len(), 1, "{:?}", ui.lines);
     assert_eq!(*clock.now.borrow(), devices_wait::LIMIT);
 }
+
+#[test]
+fn a_mac_devices_reach_only_through_the_relay_warns_with_the_reason_and_the_router_step() {
+    english();
+    let health = |reachability: Value| json!({"version": "0.2.79", "iroh": {"endpoint": "abc", "reachability": reachability}});
+    assert!(direct_check(&json!({"version": "0.2.78"})).is_none(), "an older daemon says nothing");
+    assert!(direct_check(&health(Value::Null)).is_none(), "nor one whose endpoint is not up");
+
+    let relay_only = direct_check(&health(json!({"verdict": "relay_only", "confirmed": false,
+        "reasons": ["router_offers_no_mapping", "no_ipv6", "a_code_from_later"], "port": 47811, "lan_ip": "192.168.1.20"}))).unwrap();
+    assert_eq!(relay_only.status, Status::Warn);
+    assert_eq!(relay_only.detail,
+        "away from home, devices go through the relay: the router doesn't open ports by itself (UPnP, NAT-PMP or PCP); no IPv6");
+    assert_eq!(relay_only.fix,
+        Some(Fix::Manual("turn on UPnP or NAT-PMP in your router's settings, or forward UDP port 47811 to 192.168.1.20".into())));
+
+    let refused = direct_check(&health(json!({"verdict": "relay_only", "reasons": ["no_port_mapping"], "port": 47811, "lan_ip": "192.0.2.35"}))).unwrap();
+    assert_eq!(refused.fix, Some(Fix::Manual(
+        "check in your router's settings that UPnP or NAT-PMP is fully on for this Mac, or forward UDP port 47811 to 192.0.2.35".into())));
+
+    let reachable = direct_check(&health(json!({"verdict": "reachable", "confirmed": true, "reasons": []}))).unwrap();
+    assert_eq!((reachable.status, reachable.detail.as_str()), (Status::Pass, "devices away from home connect directly"));
+
+    let denied = direct_check(&health(json!({"verdict": "reachable", "reasons": ["local_network_denied"]}))).unwrap();
+    assert_eq!(denied.status, Status::Warn);
+    assert!(matches!(&denied.fix, Some(Fix::Manual(step)) if step.contains("Local Network")), "{:?}", denied.fix);
+
+    let unknown = direct_check(&health(json!({"verdict": "unknown", "reasons": ["relay_off"]}))).unwrap();
+    assert_eq!((unknown.status, unknown.detail.as_str()), (Status::Pass, "not checked: the relay is off"));
+}
+
+#[test]
+fn the_direct_connection_check_speaks_spanish() {
+    crate::i18n::set_for_this_thread(Lang::Es);
+    let found = direct_check(&json!({"iroh": {"reachability": {"verdict": "relay_only", "reasons": ["symmetric_nat"], "port": 47811}}})).unwrap();
+    assert_eq!(found.detail, "fuera de casa, los dispositivos van por el relay: el router cambia el puerto para cada destino");
+    assert_eq!(found.fix, Some(Fix::Manual("activa UPnP o NAT-PMP en los ajustes del router".into())));
+}

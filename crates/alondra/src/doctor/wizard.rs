@@ -40,6 +40,7 @@ pub fn steps() -> Vec<Step> {
             show: Show::Always,
         },
         Step { name: tr!("Devices", "Dispositivos"), checks: &["devices", "notifications"], show: Show::Fix },
+        Step { name: tr!("Direct connection", "Conexión directa"), checks: &["direct"], show: Show::Problems },
         Step { name: tr!("Tools", "Herramientas"), checks: &["tmux", "tuicr"], show: Show::Problems },
     ]
 }
@@ -70,6 +71,7 @@ fn summary(env: &Env, step: &Step, outcomes: &[&Outcome], touched: bool) -> Stri
         "plugin" if touched => tr!("installed, loads only in Alondra's sessions", "instalado, solo se carga en las sesiones de Alondra").into(),
         "plugin" => already,
         "relay" => tr!("on", "activadas").into(),
+        "direct" => detail("direct"),
         "devices" => {
             let n = env.sys.devices().map(|d| d.len()).unwrap_or(0);
             let away = if env.sys.relay() { tr!("on", "sí") } else { tr!("off", "no") };

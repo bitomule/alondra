@@ -340,6 +340,61 @@ pub fn relay_check(on: bool) -> Outcome {
     }))
 }
 
+fn direct_reason(code: &str) -> Option<&'static str> {
+    Some(match code {
+        "local_network_denied" => tr!("macOS doesn't let alondrad use the local network", "macOS no deja a alondrad usar la red local"),
+        "relay_off" => tr!("the relay is off", "el relay está desactivado"),
+        "relay_disconnected" => tr!("not connected to the relay", "sin conexión con el relay"),
+        "captive_portal" => tr!("this network wants a sign-in page first", "esta red pide antes una página de inicio de sesión"),
+        "relay_on_same_network" => tr!("the relay is on this same network, so this Mac can't see its public address",
+            "el relay está en esta misma red, así que este Mac no ve su dirección pública"),
+        "no_udp" => tr!("this network doesn't let UDP out", "esta red no deja salir UDP"),
+        "symmetric_nat" => tr!("the router changes the port for every destination", "el router cambia el puerto para cada destino"),
+        "router_offers_no_mapping" => tr!("the router doesn't open ports by itself (UPnP, NAT-PMP or PCP)",
+            "el router no abre puertos por sí solo (UPnP, NAT-PMP o PCP)"),
+        "no_port_mapping" => tr!("the router can open ports but didn't open one", "el router puede abrir puertos pero no ha abierto uno"),
+        "no_ipv6" => tr!("no IPv6", "sin IPv6"),
+        "port_not_fixed" => tr!("another app uses the usual port, so this one changes on restart",
+            "otra app usa el puerto habitual, así que este cambia al reiniciar"),
+        _ => return None,
+    })
+}
+
+/// Whether devices away from home reach this Mac directly, as the daemon diagnoses its iroh
+/// endpoint. Going through the relay still works, so this only warns.
+pub fn direct_check(health: &Value) -> Option<Outcome> {
+    let found = health.get("iroh")?.get("reachability").filter(|v| v.is_object())?;
+    let codes: Vec<&str> = found["reasons"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+    let why = codes.iter().filter_map(|code| direct_reason(code)).collect::<Vec<_>>().join("; ");
+    let denied = codes.contains(&"local_network_denied");
+    let local_network = manual(tr!("allow Local Network for alondrad in System Settings, Privacy & Security",
+        "permite Red local para alondrad en Ajustes del Sistema, Privacidad y seguridad"));
+    let check = |status, detail: String, fix| Some(outcome("direct", "direct connection", Group::Devices, status, detail, fix));
+    match found["verdict"].as_str()? {
+        "reachable" if denied => check(Status::Warn, why, local_network),
+        "reachable" if found["confirmed"] == true => check(Status::Pass,
+            tr!("devices away from home connect directly", "los dispositivos fuera de casa conectan directo").into(), None),
+        "reachable" => check(Status::Pass, tr!("devices away from home can connect directly", "los dispositivos fuera de casa pueden conectar directo").into(), None),
+        "relay_only" => {
+            let forward = match (found["port"].as_u64(), found["lan_ip"].as_str()) {
+                (Some(port), Some(ip)) => trf!(", or forward UDP port {port} to {ip}", ", o reenvía el puerto UDP {port} a {ip}"),
+                _ => String::new(),
+            };
+            check(Status::Warn, trf!("away from home, devices go through the relay: {why}", "fuera de casa, los dispositivos van por el relay: {why}"),
+                if denied { local_network } else if codes.contains(&"no_port_mapping") {
+                    manual(trf!("check in your router's settings that UPnP or NAT-PMP is fully on for this Mac{forward}",
+                        "comprueba en los ajustes del router que UPnP o NAT-PMP está activado del todo para este Mac{forward}"))
+                } else {
+                    manual(trf!("turn on UPnP or NAT-PMP in your router's settings{forward}",
+                        "activa UPnP o NAT-PMP en los ajustes del router{forward}"))
+                })
+        }
+        "checking" => check(Status::Pass, tr!("checking", "comprobando").into(), None),
+        _ if why.is_empty() => check(Status::Pass, tr!("not checked", "sin comprobar").into(), None),
+        _ => check(Status::Pass, trf!("not checked: {why}", "sin comprobar: {why}"), None),
+    }
+}
+
 pub fn devices_check(devices: &[Value]) -> Outcome {
     let n = devices.len();
     if n > 0 {
@@ -497,6 +552,10 @@ fn run_relay(env: &Env) -> Option<Outcome> {
     env.first_run.then(|| relay_check(env.sys.relay()))
 }
 
+fn run_direct(env: &Env) -> Option<Outcome> {
+    env.sys.health().ok().and_then(|h| direct_check(&h))
+}
+
 fn run_identity(env: &Env) -> Option<Outcome> {
     Some(identity_check(env.sys.service_config()))
 }
@@ -617,6 +676,7 @@ pub const CHECKS: &[Check] = &[
     Check { id: "plugin", run: run_plugin },
     Check { id: "mods", run: run_mods },
     Check { id: "relay", run: run_relay },
+    Check { id: "direct", run: run_direct },
     Check { id: "devices", run: run_devices },
     Check { id: "notifications", run: run_notifications },
     Check { id: "tmux", run: run_tmux },
