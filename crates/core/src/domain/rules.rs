@@ -1554,6 +1554,10 @@ impl DomainState {
     pub fn wraps_up(&self, t: &Task) -> bool {
         t.agent_id.is_some() && t.wrap_up.node.is_none()
     }
+    /// The session of the task's node is over: nothing it declared can still be running.
+    pub fn node_session_closed(&self, t: &Task) -> bool {
+        t.agent_id.as_ref().and_then(|agent| self.node_phase(agent)) == Some(&NodePhase::Closed)
+    }
     /// The task waits for its node to clean up and be closed.
     pub fn in_cleanup(&self, t: &Task) -> bool {
         !t.state.terminal() && t.wrap_up.asked_at.is_some()
@@ -1650,7 +1654,7 @@ impl DomainState {
                     } else if self.settled(t, p) {
                         if !self.wraps_up(t) {
                             TaskState::Done
-                        } else if t.wrap_up.post_merge_work.is_some() {
+                        } else if t.wrap_up.post_merge_work.is_some() && !self.node_session_closed(t) {
                             TaskState::Running
                         } else {
                             TaskState::Closing

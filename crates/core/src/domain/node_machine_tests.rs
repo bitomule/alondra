@@ -82,6 +82,7 @@ fn forbidden(phase: &NodePhase, event: &NodeEvent) -> Option<&'static str> {
     use NodePhase as P;
     let paused = matches!(phase, P::Paused(_));
     match (phase, event) {
+        (P::Closed, E::SessionLost | E::SessionClosed | E::Listed { listed: Listed::Absent | Listed::Done }) => None,
         (P::Closed, _) => Some("node_closed"),
         (P::Paused(Pause { reason: PauseReason::ByUser, .. }), E::TurnStarted) => Some("paused_by_user"),
         (P::Paused(Pause { reason: PauseReason::Memory, .. }), E::TurnStarted) => Some("paused_for_memory"),
@@ -116,12 +117,21 @@ macro_rules! forbid {
     )*};
 }
 
+/// David's rule, 15 October: closing a node whose session is already over is the outcome sought,
+/// not an error, whoever saw it first.
+#[test]
+fn closing_a_closed_node_again_keeps_it_closed() {
+    for event in [NodeEvent::SessionLost, NodeEvent::SessionClosed, NodeEvent::Listed { listed: Listed::Absent }, NodeEvent::Listed { listed: Listed::Done }] {
+        for facts in [OPEN, TaskFacts::default(), TaskFacts { closing: true, ..OPEN }] {
+            assert_eq!(next_phase(&NodePhase::Closed, SINCE, &event, &facts, AT).unwrap(), NodePhase::Closed, "{event:?}");
+        }
+    }
+}
+
 forbid! {
     closed_refuses_a_turn_start: NodePhase::Closed, NodeEvent::TurnStarted => "node_closed";
     closed_refuses_a_turn_end: NodePhase::Closed, NodeEvent::TurnEnded => "node_closed";
     closed_refuses_a_failed_turn: NodePhase::Closed, NodeEvent::TurnFailed => "node_closed";
-    closed_refuses_a_lost_session: NodePhase::Closed, NodeEvent::SessionLost => "node_closed";
-    closed_refuses_closing_again: NodePhase::Closed, NodeEvent::SessionClosed => "node_closed";
     closed_refuses_a_failed_start: NodePhase::Closed, NodeEvent::StartFailed => "node_closed";
     closed_refuses_a_failed_revival: NodePhase::Closed, NodeEvent::RevivalFailed => "node_closed";
     closed_refuses_a_revival: NodePhase::Closed, NodeEvent::RevivalAdmitted => "node_closed";
@@ -132,7 +142,6 @@ forbid! {
     closed_refuses_a_listed_working_session: NodePhase::Closed, NodeEvent::Listed { listed: Listed::Working } => "node_closed";
     closed_refuses_a_listed_idle_session: NodePhase::Closed, NodeEvent::Listed { listed: Listed::Idle } => "node_closed";
     closed_refuses_a_listed_blocked_session: NodePhase::Closed, NodeEvent::Listed { listed: Listed::Blocked } => "node_closed";
-    closed_refuses_an_absent_session: NodePhase::Closed, NodeEvent::Listed { listed: Listed::Absent } => "node_closed";
 
     paused_by_the_user_refuses_a_turn: NodePhase::Paused(pause(PauseReason::ByUser)), NodeEvent::TurnStarted => "paused_by_user";
     paused_for_memory_refuses_a_turn_it_starts_by_itself: NodePhase::Paused(pause(PauseReason::Memory)), NodeEvent::TurnStarted => "paused_for_memory";

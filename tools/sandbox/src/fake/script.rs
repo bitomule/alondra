@@ -58,6 +58,11 @@ pub enum Step {
         is_final: bool,
     },
     Ask { id: String, need: String, options: Vec<String> },
+    /// `post_merge_work`: work that still runs after the merge, or none when `reason` is absent.
+    PostMergeWork {
+        #[serde(default)]
+        reason: Option<String>,
+    },
     /// A turn that ends with `said` in the terminal and no card, behind a command of its own when
     /// `behind` names one. Claude Code then lists the session as `listed` says: blocked, waiting on
     /// the user, unless told otherwise.

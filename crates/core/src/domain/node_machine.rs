@@ -341,7 +341,10 @@ pub fn settle(phase: NodePhase, f: &TaskFacts) -> NodePhase {
 pub fn next(phase: &NodePhase, since: Millis, event: &NodeEvent, f: &TaskFacts, at: Millis) -> Result<Settled> {
     use NodePhase as P;
     if *phase == P::Closed {
-        return refuse("node_closed", "The node's session is closed");
+        return match event {
+            NodeEvent::SessionClosed | NodeEvent::SessionLost | NodeEvent::Listed { listed: Listed::Absent | Listed::Done } => Ok(Settled::At(P::Closed)),
+            _ => refuse("node_closed", "The node's session is closed"),
+        };
     }
     if event.timed() && at < since {
         return refuse("stale", "The report is older than the node's state");
@@ -437,6 +440,8 @@ pub enum TaskActivity {
     WaitingDependency,
     Paused(Pause),
     Delivered,
+    /// Its PR merged and its node finishes the work it said comes after the merge.
+    AfterMerge { reason: String },
     /// Its node's session is closed while the task is still open.
     NodeClosed,
 }
@@ -454,6 +459,7 @@ impl TaskActivity {
             Self::Paused(Pause { reason: PauseReason::ByUser, .. }) => "paused_by_user",
             Self::Paused(_) => "paused_by_machine",
             Self::Delivered => "delivered",
+            Self::AfterMerge { .. } => "after_merge",
             Self::NodeClosed => "node_closed",
         }
     }
@@ -467,6 +473,9 @@ impl DomainState {
             return None;
         }
         let agent = task.agent_id.as_ref()?;
+        if self.node_phase(agent) == Some(&NodePhase::Closing) && let Some(work) = &task.wrap_up.post_merge_work {
+            return Some(TaskActivity::AfterMerge { reason: work.reason.clone() });
+        }
         Some(match self.node_phase(agent) {
             None | Some(NodePhase::Closing | NodePhase::Closed | NodePhase::NoTask) => TaskActivity::NodeClosed,
             Some(NodePhase::Starting { reviving: true, .. }) => TaskActivity::Reconnecting,

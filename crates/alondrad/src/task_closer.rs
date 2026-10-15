@@ -109,10 +109,13 @@ pub(crate) async fn pass(domain: &DomainRuntime, sessions: &dyn Sessions, timing
         forget_post_merge_check(domain, &row.task_id)?;
         domain.store.lock().expect("domain store poisoned").forget_task_closing(&row.task_id)?;
     }
+    let mut failed = Vec::new();
     for (task_id, kind) in due_tasks {
-        close_one(domain, sessions, timing, now, &task_id, kind).await?;
+        if let Err(error) = close_one(domain, sessions, timing, now, &task_id, kind).await {
+            failed.push(format!("{task_id}: {error:#}"));
+        }
     }
-    Ok(())
+    if failed.is_empty() { Ok(()) } else { Err(anyhow::anyhow!(failed.join("; "))) }
 }
 
 /// What the user answered on the card raised after the third failure.
@@ -192,9 +195,10 @@ async fn close_one(domain: &DomainRuntime, sessions: &dyn Sessions, timing: &Tim
             Card::Unanswered => return Ok(()),
         }
     }
-    let mut close_now = false;
+    let session_over = state.node_session_closed(task);
+    let mut close_now = session_over;
     match (&kind, &task.wrap_up.post_merge_work) {
-        (Due::Cleanup, Some(work)) => match watch_post_merge_work(domain, &state, timing, now, task, &agent, work)? {
+        (Due::Cleanup, Some(work)) if !session_over => match watch_post_merge_work(domain, &state, timing, now, task, &agent, work)? {
             Watch::Hold => return hold_while_working_after_merge(domain, now, row),
             Watch::CloseNow => close_now = true,
         },

@@ -27,6 +27,8 @@ mod tests;
 mod ownership_tests;
 #[cfg(test)]
 mod node_machine_tests;
+#[cfg(test)]
+mod merged_close_tests;
 pub use attention::*;
 pub use checklist::*;
 pub use cited_files::*;

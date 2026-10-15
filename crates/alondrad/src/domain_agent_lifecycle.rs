@@ -191,6 +191,25 @@ mod tests {
         }
     }
 
+    /// The race of 15 October: the SessionEnd hook read the node still closing, the listing of
+    /// sessions closed it, and the hook's event then reached a closed node. Closing it again is
+    /// what was sought, so it goes through.
+    #[test]
+    fn an_end_that_reaches_a_node_already_closed_by_another_path_is_not_an_error() {
+        let fixture = Fixture::new();
+        let domain = fixture.open();
+        let agent = AgentId("session-a".into());
+        submit_on_current(&domain, "agent-register", "a", &domain.state().unwrap(), Command::RegisterAgent { agent_id: agent.clone(), name: "A".into(), at: 0 }).unwrap();
+        assert!(node_event(&domain, &agent, NodeEvent::SessionClosed).unwrap());
+        let seen_before = domain.state().unwrap();
+        for (n, event) in [NodeEvent::SessionLost, NodeEvent::SessionClosed].into_iter().enumerate() {
+            let moved = submit_on_current(&domain, "agent-move", &format!("late-{n}"), &seen_before,
+                Command::MoveNode { agent_id: agent.clone(), event, at: alondra_core::now_millis() });
+            assert_eq!(moved.map_err(|error| error.to_string()), Ok(false), "closing a closed node again changes nothing and is no error");
+        }
+        assert_eq!(domain.state().unwrap().agents[&agent].phase, NodePhase::Closed);
+    }
+
     #[test]
     fn registration_and_status_survive_restart_and_replay_once() {
         let fixture = Fixture::new();

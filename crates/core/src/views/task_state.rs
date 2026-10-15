@@ -168,6 +168,8 @@ fn running(task: &Task, context: &RenderContext<'_>) -> Presentation {
         (TaskActivity::WaitingUser, _) => return warn(t!(lang, "Waiting for an answer", "Esperando respuesta")),
         (TaskActivity::WaitingDependency, _) => return waiting_dependency(task, context),
         (TaskActivity::Delivered, _) => return Presentation::new(t!(lang, "Delivered", "Entregada"), Tone::Info, Block::InProgress, fact),
+        (TaskActivity::AfterMerge { reason }, _) => return Presentation { since: active_at,
+            ..Presentation::new(t!(lang, "Finishing after the merge", "Terminando tras fusionar"), Tone::Info, Block::InProgress, Some(reason.clone())) },
         (TaskActivity::Paused(pause), _) => {
             let fact = match &pause.reason {
                 PauseReason::Memory => t!(lang, "For memory · resumes by itself", "Por memoria · se reanuda sola").to_owned(),

@@ -47,6 +47,19 @@ pub fn run(sandbox: &Sandbox) -> Result<()> {
         let finished = launched(report, &fakes, "t-done")?;
         deliver_merge_close(report, &fakes, &user, &finished, "t-done", 42)?;
 
+        let mut after_merge = task_script("req-after-merge", "t-after-merge", "Publish the release once it is merged");
+        after_merge.tasks[0].cleans_up = false;
+        request(report, &fakes, &user, &after_merge, "Publish the release once it is merged")?;
+        let publishing = launched(report, &fakes, "t-after-merge")?;
+        state(report, &user, "t-after-merge", WORKING)?;
+        let declare = Step::PostMergeWork { reason: Some("release.sh publishes 0.3.0".into()) };
+        act(report, &fakes, &publishing, "the node says it publishes the release after the merge", &[declare])?;
+        act(report, &fakes, &publishing, "the node delivers PR #44", &Step::work(44, "release.txt"))?;
+        let (_, view) = review_card(report, &user, &publishing)?;
+        let head = head(&publishing)?;
+        press(report, &user, &view, "merge:", None, None, "the user merges PR #44 from the card")?;
+        merged(report, &fakes, 44, &head)?;
+
         request(report, &fakes, &user, &task_script("req-stopped", "t-stopped", "Migrate the settings file"), "Migrate the settings file")?;
         let stopped = launched(report, &fakes, "t-stopped")?;
         state(report, &user, "t-stopped", WORKING)?;
@@ -69,6 +82,6 @@ pub fn run(sandbox: &Sandbox) -> Result<()> {
     if summary.contains("❌") {
         bail!("seeding failed:\n{summary}");
     }
-    println!("Seeded: working, question, review, finished and stopped tasks on Mac 1, a review on Mac 2, a pairing request on Mac 1.");
+    println!("Seeded: working, question, review, finished, after-merge and stopped tasks on Mac 1, a review on Mac 2, a pairing request on Mac 1.");
     Ok(())
 }

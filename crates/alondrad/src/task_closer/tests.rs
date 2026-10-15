@@ -114,6 +114,12 @@ impl Rig {
     }
 
     fn without_a_launch(wait: Option<Duration>) -> Self {
+        let rig = Self::undelivered(wait);
+        rig.deliver_and_accept();
+        rig
+    }
+
+    fn undelivered(wait: Option<Duration>) -> Self {
         let home = crate::test_support::Directory::new();
         std::fs::create_dir(&home).unwrap();
         let domain = Arc::new(DomainRuntime::open(&home).unwrap());
@@ -131,9 +137,7 @@ impl Rig {
         domain.live.observe(&hook("Stop"));
         let node = Node::connect(&domain, SESSION);
         let sessions = FakeSessions::listing(&[SHORT]);
-        let rig = Self { _home: Home(home), domain, sessions, node, timing: Timing::new(wait) };
-        rig.deliver_and_accept();
-        rig
+        Self { _home: Home(home), domain, sessions, node, timing: Timing::new(wait) }
     }
 
     fn deliver_and_accept(&self) {
@@ -743,4 +747,79 @@ async fn a_worktree_with_work_not_saved_keeps_the_task_closing_until_it_can_go()
     rig.pass(T0 + 5 * MINUTE).await;
     assert!(!dir.exists(), "the next attempt deletes it although the session is already gone");
     assert_eq!(rig.task().state, TaskState::Done);
+}
+
+fn pr() -> Vec<DeliveryTarget> {
+    vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: "head1".into() }]
+}
+
+impl Rig {
+    /// A node Alondra launched whose PR was delivered, accepted and merged, after it said it has
+    /// `work` left for after the merge, if any.
+    fn merged(work: Option<&str>) -> Self {
+        let rig = Self::undelivered(thirty_minutes());
+        rig.domain.record_model_decision(&Decision {
+            task_id: "t".into(), request_id: "r".into(), agent_id: Some(SESSION.into()), at: T0, kind: DecisionKind::Launch,
+            model: None, effort: None, approach: None, chosen_by: ModelChooser::User, reason: None, title: "Result".into(),
+        }).unwrap();
+        command(&rig.domain, agent(), "register-pr", Command::RegisterPr {
+            task_id: "t".into(), pr_id: "pr".into(), host: "github.com".into(), repository: "owner/repo".into(), number: 1,
+            head: "head1".into(), base: "main".into(), allowed_methods: vec![alondra_core::domain::MergeMethod::Squash],
+        });
+        if work.is_some() {
+            rig.declare_post_merge_work(work);
+        }
+        command(&rig.domain, agent(), "present-pr", Command::PresentResult {
+            checklist: Vec::new(), attachments: vec![], task_id: "t".into(), interaction_id: "final".into(), body: "Done".into(),
+            targets: pr(), is_final: true, nothing_to_review: false, card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
+        });
+        command(&rig.domain, user(), "accept-pr", Command::AcceptDelivery { presentation_id: "final".into(), targets: pr() });
+        command(&rig.domain, Actor::System, "merged", Command::ObservePrState {
+            pr_id: "pr".into(), head: "head1".into(), base: "main".into(), state: alondra_core::domain::PrState::Merged,
+            merged_head: Some("head1".into()),
+        });
+        rig
+    }
+
+    /// The node's session ends on its own, as Claude Code's SessionEnd hook reports it.
+    fn session_ends(&self) {
+        self.sessions.listed.lock().unwrap().clear();
+        self.domain.live.observe(&hook("SessionEnd"));
+        let agent = alondra_core::domain::AgentId(SESSION.into());
+        crate::domain_agent_lifecycle::node_event(&self.domain, &agent, alondra_core::domain::NodeEvent::SessionLost).unwrap();
+        crate::domain_transport::session_ended(&self.domain, &agent).unwrap();
+    }
+
+    fn with_worktree(&self) -> (crate::test_support::Directory, std::path::PathBuf) {
+        let root = crate::test_support::Directory::new();
+        let dir = crate::worktree::testing::task_worktree(&root, "t");
+        self.domain.set_task_worktree(&"t".into(), dir.to_str().unwrap()).unwrap();
+        (root, dir)
+    }
+}
+
+#[tokio::test]
+async fn a_node_whose_session_ends_after_its_pr_merged_is_closed_at_once_and_its_task_is_done() {
+    let rig = Rig::merged(None);
+    let (_root, dir) = rig.with_worktree();
+    assert_eq!(rig.task().state, TaskState::Closing);
+    rig.session_ends();
+    rig.pass(T0).await;
+    assert!(!dir.exists(), "the task's worktree is gone with its session");
+    rig.assert_done(NodeEnd::Gone);
+    assert!(rig.closing().is_none());
+}
+
+#[tokio::test]
+async fn a_node_whose_session_ends_during_its_work_after_the_merge_is_closed_and_its_task_is_done() {
+    let rig = Rig::merged(Some("publish the release"));
+    let (_root, dir) = rig.with_worktree();
+    assert_eq!(rig.task().state, TaskState::Running, "the task stays in progress while its work after the merge runs");
+    rig.pass(T0).await;
+    assert_eq!(rig.sessions.removals(), 0);
+    rig.session_ends();
+    rig.pass(T0 + MINUTE).await;
+    assert!(!dir.exists(), "the task's worktree is gone with its session");
+    rig.assert_done(NodeEnd::Gone);
+    assert!(rig.post_merge_cards().is_empty(), "nobody is asked about work that cannot run any more");
 }

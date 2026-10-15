@@ -533,6 +533,7 @@ fn tool_of(step: &Step) -> Option<(String, Value)> {
         Step::Deliver { .. } => mcp("present_result"),
         Step::Ask { .. } => mcp("ask"),
         Step::Cleanup => mcp("cleanup_done"),
+        Step::PostMergeWork { .. } => mcp("post_merge_work"),
         Step::Speak { .. } | Step::End | Step::Die => None,
     }
 }
@@ -599,6 +600,7 @@ fn perform(fakes: &Fakes, node: &Node, step: &Step) -> Result<mcp::Reply> {
             }))
         }
         Step::Cleanup => tool(fakes, node, "cleanup_done", json!({"task_id": task()?})),
+        Step::PostMergeWork { reason } => tool(fakes, node, "post_merge_work", json!({"task_id": task()?, "reason": reason})),
         Step::Speak { said, behind, listed } => {
             let turn = format!("speak-{}", hex(&random::<3>()?));
             write_job(node, "working")?;
