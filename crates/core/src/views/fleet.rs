@@ -83,9 +83,9 @@ pub(super) fn node_state(agent: &AgentId, context: &RenderContext<'_>) -> super:
         return halted;
     }
     let (text, tone) = match phase {
-        NodePhase::Starting { reviving: true } => (t!(lang, "Reconnecting", "Reconectando"), Tone::Info),
+        NodePhase::Starting { reviving: true, .. } => (t!(lang, "Reconnecting", "Reconectando"), Tone::Info),
         NodePhase::Lost => (t!(lang, "Waiting for the machine", "Esperando máquina"), Tone::Neutral),
-        NodePhase::Starting { reviving: false } => (t!(lang, "Starting", "Arrancando"), Tone::Neutral),
+        NodePhase::Starting { reviving: false, .. } => (t!(lang, "Starting", "Arrancando"), Tone::Neutral),
         NodePhase::Working if merging => (t!(lang, "Merging", "Fusionando"), Tone::Info),
         NodePhase::Working | NodePhase::WaitingBackground(_) | NodePhase::Resuming { .. } => (t!(lang, "Working", "Trabajando"), Tone::Info),
         NodePhase::WaitingUser { .. } if waiting(&["action_request"]) => (t!(lang, "Your turn", "Te toca"), Tone::YourTurn),
@@ -453,7 +453,7 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
     let mut readings = vec![];
     if let Some(node) = live {
         let lang = context.lang;
-        if context.domain.node_phase(&AgentId(node.agent_id.clone())) == Some(&NodePhase::Starting { reviving: true }) {
+        if matches!(context.domain.node_phase(&AgentId(node.agent_id.clone())), Some(NodePhase::Starting { reviving: true, .. })) {
             readings.push(Fact { label: t!(lang, "Connection", "Conexión").into(), value: t!(lang, "Reconnecting", "Reconectando").into(),
                 tone: Some(Tone::Info), link: None });
         }

@@ -1185,7 +1185,7 @@ async fn a_lost_node_the_gate_holds_for_memory_waits_for_the_machine_and_reconne
         if claude.asked.load(std::sync::atomic::Ordering::SeqCst) > 0 { break; }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
-    assert_eq!(phase(), NodePhase::Starting { reviving: true }, "the gate let it back, and its slot counts");
+    assert_eq!(phase(), NodePhase::Starting { reviving: true, idle_since: None }, "the gate let it back, and its slot counts");
     assert_eq!(node_shown(&fixture, "agent-a", "es").await[0].0, "Reconectando");
     let admitted = view_json(&fixture, "tasks", "es").await.to_string();
     assert!(admitted.contains("Reconectando") && !admitted.contains("En cola"), "{admitted}");
@@ -1280,7 +1280,7 @@ async fn a_node_shows_the_subagents_workflows_and_task_list_its_mod_reports_and_
 }
 
 #[tokio::test]
-async fn a_background_shell_running_for_long_in_an_idle_node_is_flagged_and_stops_counting_as_work() {
+async fn a_background_shell_whose_process_is_gone_is_flagged_and_stops_counting_as_work() {
     let fixture = Fixture::start().await;
     seed_work(&fixture);
     let mods = &fixture.domain;
@@ -1288,10 +1288,14 @@ async fn a_background_shell_running_for_long_in_an_idle_node_is_flagged_and_stop
     let hello: crate::node_reports::Hello = serde_json::from_value(json!({"session_id": "agent-b", "version": "2.1.287"})).unwrap();
     mods.connect_node(hello, now);
     mods.report(serde_json::from_value(json!({"session_id": "agent-b", "event": "shell.start", "id": "u1", "command": "sleep 99999"})).unwrap(),
-        now - 31 * 60 * 1000);
+        now - 3 * 60 * 60 * 1000);
+    mods.live.mods.set_shell_alive("agent-b", Some(true), now);
+    let shown = node_shown(&fixture, "agent-b", "en").await;
+    assert!(shown.iter().all(|(label, _)| !label.contains("hung?")), "three hours on a live shell is work: {shown:?}");
+    mods.live.mods.set_shell_alive("agent-b", Some(false), now);
     let shown = node_shown(&fixture, "agent-b", "en").await;
     assert!(shown.contains(&("1 shells · hung?".into(), "warning".into())), "{shown:?}");
-    assert_ne!(shown[0].0, "Working", "a shell that has run this long with nothing else going on is not work");
+    assert_ne!(shown[0].0, "Working", "a shell whose process is gone is not work");
 }
 
 #[tokio::test]

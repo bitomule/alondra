@@ -96,7 +96,7 @@ async fn watch_stalls(domain: Arc<DomainRuntime>) {
             let domain = domain.clone();
             tokio::spawn(async move { revive_stalled(&domain, &session, &crate::orchestrate::ClaudeCli, &Timing::LIVE).await });
         }
-        for agent in crate::domain_transport::background_over(&domain, now) {
+        for agent in crate::domain_transport::background_over(&domain) {
             if let Err(error) = crate::domain_agent_lifecycle::node_event(&domain, &agent, alondra_core::domain::NodeEvent::BackgroundEnded) {
                 log!("could not record that the background work of {agent} is over: {error}");
             }
@@ -116,7 +116,7 @@ fn look_at_shells(domain: &DomainRuntime) {
     for agent in state.agents.keys() {
         look_at_job(domain, &agent.0);
         let Some(pid) = domain.live.mods.session(&agent.0).and_then(|reported| reported.peer_pid) else { continue };
-        domain.live.mods.set_shell_alive(&agent.0, crate::process_watch::shell_running(&table, pid));
+        domain.live.mods.set_shell_alive(&agent.0, crate::process_watch::shell_running(&table, pid), alondra_core::now_millis());
         if let Some(cpu) = crate::process_watch::session_cpu(&table, pid) {
             domain.live.mods.sample_cpu(&agent.0, cpu, alondra_core::now_millis());
         }
@@ -625,7 +625,7 @@ mod tests {
         revive(&domain, SESSION, &claude, &FAST).await;
         assert_eq!(*claude.calls.lock().unwrap(), ["ab1234cd"], "`claude respawn` takes the short id");
         assert!(domain.live.mods.connected(SESSION), "the restarted session's mod connected back");
-        assert_eq!(phase(&domain), NodePhase::Starting { reviving: true }, "the gate let it back: it restarts until its first turn");
+        assert_eq!(phase(&domain), NodePhase::Starting { reviving: true, idle_since: None }, "the gate let it back: it restarts until its first turn");
         assert!(domain.state().unwrap().interactions.is_empty(), "a restart that works asks the user nothing");
     }
 

@@ -11,6 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 const OPEN: TaskFacts = TaskFacts { open: true, closing: false, held: false, card: false, delivered: false, awaits: false };
 const SINCE: Millis = 1_000_000;
 const AT: Millis = SINCE + 1;
+const HOUR: Millis = 60 * 60_000;
 
 /// Where a move leaves the node once the domain did its part: a turn that ended with nothing for
 /// the user rests on the card that carries its last words.
@@ -38,13 +39,13 @@ fn declared() -> PauseReason {
 }
 
 fn background() -> Background {
-    Background { work: crate::model::BackgroundKind::Shell, label: "./deploy/brew/release.sh 0.2.67".into(), since: SINCE, others: 0 }
+    Background { work: crate::model::BackgroundKind::Shell, label: "./deploy/brew/release.sh 0.2.67".into(), since: SINCE, others: 0, gone: None }
 }
 
 fn phases() -> Vec<NodePhase> {
     vec![
-        NodePhase::Starting { reviving: false },
-        NodePhase::Starting { reviving: true },
+        NodePhase::Starting { reviving: false, idle_since: None },
+        NodePhase::Starting { reviving: true, idle_since: None },
         NodePhase::Lost,
         NodePhase::Working,
         NodePhase::WaitingBackground(background()),
@@ -156,8 +157,8 @@ forbid! {
     lost_refuses_a_failed_start: NodePhase::Lost, NodeEvent::StartFailed => "not_starting";
     lost_refuses_a_failed_revival: NodePhase::Lost, NodeEvent::RevivalFailed => "not_starting";
 
-    starting_refuses_a_revival: NodePhase::Starting { reviving: false }, NodeEvent::RevivalAdmitted => "not_lost";
-    reviving_refuses_a_second_revival: NodePhase::Starting { reviving: true }, NodeEvent::RevivalAdmitted => "not_lost";
+    starting_refuses_a_revival: NodePhase::Starting { reviving: false, idle_since: None }, NodeEvent::RevivalAdmitted => "not_lost";
+    reviving_refuses_a_second_revival: NodePhase::Starting { reviving: true, idle_since: None }, NodeEvent::RevivalAdmitted => "not_lost";
     working_refuses_a_revival: NodePhase::Working, NodeEvent::RevivalAdmitted => "not_lost";
     waiting_refuses_a_revival: NodePhase::WaitingUser { in_turn: false }, NodeEvent::RevivalAdmitted => "not_lost";
     paused_refuses_a_revival: NodePhase::Paused(pause(PauseReason::Memory)), NodeEvent::RevivalAdmitted => "not_lost";
@@ -177,12 +178,12 @@ forbid! {
     closing_refuses_a_pause: NodePhase::Closing, NodeEvent::Paused { pause: pause(PauseReason::Memory) } => "not_working";
     lost_refuses_a_pause: NodePhase::Lost, NodeEvent::Paused { pause: pause(PauseReason::Memory) } => "not_working";
 
-    starting_refuses_a_pause_cleanup: NodePhase::Starting { reviving: false }, NodeEvent::PauseCleanup { cleanup: PauseCleanup::Done } => "not_paused";
-    starting_refuses_a_pause_release: NodePhase::Starting { reviving: false }, NodeEvent::PauseReleased => "not_paused";
-    starting_refuses_a_resume: NodePhase::Starting { reviving: false }, NodeEvent::Resumed => "not_paused";
-    reviving_refuses_a_pause_cleanup: NodePhase::Starting { reviving: true }, NodeEvent::PauseCleanup { cleanup: PauseCleanup::Done } => "not_paused";
-    reviving_refuses_a_pause_release: NodePhase::Starting { reviving: true }, NodeEvent::PauseReleased => "not_paused";
-    reviving_refuses_a_resume: NodePhase::Starting { reviving: true }, NodeEvent::Resumed => "not_paused";
+    starting_refuses_a_pause_cleanup: NodePhase::Starting { reviving: false, idle_since: None }, NodeEvent::PauseCleanup { cleanup: PauseCleanup::Done } => "not_paused";
+    starting_refuses_a_pause_release: NodePhase::Starting { reviving: false, idle_since: None }, NodeEvent::PauseReleased => "not_paused";
+    starting_refuses_a_resume: NodePhase::Starting { reviving: false, idle_since: None }, NodeEvent::Resumed => "not_paused";
+    reviving_refuses_a_pause_cleanup: NodePhase::Starting { reviving: true, idle_since: None }, NodeEvent::PauseCleanup { cleanup: PauseCleanup::Done } => "not_paused";
+    reviving_refuses_a_pause_release: NodePhase::Starting { reviving: true, idle_since: None }, NodeEvent::PauseReleased => "not_paused";
+    reviving_refuses_a_resume: NodePhase::Starting { reviving: true, idle_since: None }, NodeEvent::Resumed => "not_paused";
     lost_refuses_a_pause_cleanup: NodePhase::Lost, NodeEvent::PauseCleanup { cleanup: PauseCleanup::Done } => "not_paused";
     lost_refuses_a_pause_release: NodePhase::Lost, NodeEvent::PauseReleased => "not_paused";
     lost_refuses_a_resume: NodePhase::Lost, NodeEvent::Resumed => "not_paused";
@@ -233,7 +234,7 @@ stale! {
     a_late_turn_end_behind_background_work_never_moves_a_working_node: NodePhase::Working, NodeEvent::TurnEndedBehind { work: background() };
     a_late_failed_turn_never_moves_a_working_node: NodePhase::Working, NodeEvent::TurnFailed;
     a_late_lost_session_never_moves_a_working_node: NodePhase::Working, NodeEvent::SessionLost;
-    a_late_lost_session_never_moves_a_revived_node: NodePhase::Starting { reviving: false }, NodeEvent::SessionLost;
+    a_late_lost_session_never_moves_a_revived_node: NodePhase::Starting { reviving: false, idle_since: None }, NodeEvent::SessionLost;
 }
 
 /// The refusal table covers every pair: what it does not forbid, the machine accepts.
@@ -263,7 +264,7 @@ fn a_node_waiting_for_the_machine_holds_no_slot_and_only_the_gate_brings_it_back
     assert_eq!(next_phase(&paused, SINCE, &NodeEvent::TurnStarted, &OPEN, AT).unwrap_err().code, "waits_for_machine",
         "a hook of its own turn is no resume");
     let resumed = next_phase(&paused, SINCE, &NodeEvent::Resumed, &OPEN, AT).unwrap();
-    assert_eq!(resumed, NodePhase::Starting { reviving: false });
+    assert_eq!(resumed, NodePhase::Starting { reviving: false, idle_since: None });
     assert_eq!(next_phase(&resumed, SINCE, &NodeEvent::TurnStarted, &OPEN, AT).unwrap(), NodePhase::Working);
 }
 
@@ -276,7 +277,7 @@ fn a_turn_an_api_error_ended_waits_without_a_slot_and_its_resume_brings_it_back_
     assert_eq!(next_phase(&paused, SINCE, &NodeEvent::Listed { listed: Listed::Blocked }, &OPEN, AT).unwrap(), paused,
         "Claude Code lists the failed session as blocked: that never undoes the pause");
     let resumed = next_phase(&paused, SINCE, &NodeEvent::Resumed, &OPEN, AT).unwrap();
-    assert_eq!(resumed, NodePhase::Starting { reviving: false });
+    assert_eq!(resumed, NodePhase::Starting { reviving: false, idle_since: None });
     assert_eq!(next_phase(&resumed, SINCE, &NodeEvent::TurnStarted, &OPEN, AT).unwrap(), NodePhase::Working);
 }
 
@@ -362,17 +363,18 @@ fn a_turn_that_ends_with_nothing_for_the_user_rests_on_a_card_with_its_last_word
 #[test]
 fn a_node_listed_blocked_is_never_at_work() {
     let blocked = NodeEvent::Listed { listed: Listed::Blocked };
-    let late = SINCE + START_GRACE;
-    for phase in [NodePhase::Working, NodePhase::Starting { reviving: true }, NodePhase::Starting { reviving: false }, NodePhase::Lost] {
-        assert!(unheard(&phase, &blocked, &OPEN, late), "{phase:?}");
+    for phase in [NodePhase::Working, NodePhase::Starting { reviving: true, idle_since: None }, NodePhase::Starting { reviving: false, idle_since: Some(AT) }, NodePhase::Lost] {
+        assert!(unheard(&phase, &blocked, &OPEN, AT + 1), "{phase:?}");
     }
     let card = TaskFacts { card: true, ..OPEN };
     assert_eq!(next_phase(&NodePhase::WaitingUser { in_turn: true }, SINCE, &blocked, &card, AT).unwrap(), NodePhase::WaitingUser { in_turn: true },
         "a held permission or question already waits on its card");
     let delivered = TaskFacts { delivered: true, ..OPEN };
     assert_eq!(next_phase(&NodePhase::Delivered { in_turn: true }, SINCE, &blocked, &delivered, AT).unwrap(), NodePhase::Delivered { in_turn: false });
-    let starting = NodePhase::Starting { reviving: false };
-    assert_eq!(next_phase(&starting, SINCE, &blocked, &OPEN, AT).unwrap(), starting, "a resumed start is listed as it was a moment more");
+    let starting = NodePhase::Starting { reviving: false, idle_since: None };
+    let seen = NodePhase::Starting { reviving: false, idle_since: Some(AT) };
+    assert_eq!(next_phase(&starting, SINCE, &blocked, &OPEN, AT).unwrap(), seen, "a resumed start is listed as it was a moment more");
+    assert_eq!(next_phase(&seen, SINCE, &blocked, &OPEN, AT).unwrap(), seen, "the same listing again moves nothing");
 }
 
 /// 13 October: t-gate-count-mismatch delivered and Claude Code listed its session done, which read
@@ -382,7 +384,7 @@ fn a_node_listed_blocked_is_never_at_work() {
 fn a_session_listed_done_rests_while_its_task_needs_it_and_closes_once_it_does_not() {
     let done = NodeEvent::Listed { listed: Listed::Done };
     let delivered = TaskFacts { delivered: true, ..OPEN };
-    assert!(unheard(&NodePhase::Working, &done, &OPEN, SINCE + START_GRACE));
+    assert!(unheard(&NodePhase::Working, &done, &OPEN, AT));
     let awaits = TaskFacts { awaits: true, ..OPEN };
     assert_eq!(next_phase(&NodePhase::WaitingDependency, SINCE, &done, &awaits, AT).unwrap(), NodePhase::WaitingDependency);
     assert_eq!(next_phase(&NodePhase::Delivered { in_turn: true }, SINCE, &done, &delivered, AT).unwrap(), NodePhase::Delivered { in_turn: false });
@@ -400,7 +402,7 @@ fn a_lost_session_waits_for_the_gate_and_is_restarted_only_once_admitted() {
     assert_eq!(lost, NodePhase::Lost);
     assert!(!lost.holds_slot() && lost.coming_back());
     let admitted = next_phase(&lost, SINCE, &NodeEvent::RevivalAdmitted, &OPEN, AT).unwrap();
-    assert_eq!(admitted, NodePhase::Starting { reviving: true });
+    assert_eq!(admitted, NodePhase::Starting { reviving: true, idle_since: None });
     assert!(admitted.holds_slot() && admitted.coming_back(), "the gate counted its start");
     assert_eq!(next_phase(&admitted, SINCE, &NodeEvent::SessionLost, &OPEN, AT).unwrap(), NodePhase::Lost,
         "a restart that did not connect back leaves it lost, waiting for the gate again");
@@ -412,24 +414,29 @@ fn a_lost_session_waits_for_the_gate_and_is_restarted_only_once_admitted() {
         "with no open task nothing brings it back");
 }
 
-/// A node the previous daemon saved as being restarted, whose session is still absent once a
-/// start has had its time, is lost: it waits for the gate again instead of holding a slot.
+/// A node being restarted whose session two listings in a row find absent is lost: it waits for
+/// the gate again instead of holding a slot. The first may predate the restart.
 #[test]
-fn a_restart_absent_past_the_start_grace_is_lost_again() {
-    let reviving = NodePhase::Starting { reviving: true };
+fn a_restart_two_listings_find_absent_is_lost_again() {
+    let reviving = NodePhase::Starting { reviving: true, idle_since: None };
     let absent = NodeEvent::Listed { listed: Listed::Absent };
-    assert_eq!(next_phase(&reviving, SINCE, &absent, &OPEN, SINCE + 1).unwrap(), reviving, "a restart in progress is not listed yet");
-    assert_eq!(next_phase(&reviving, SINCE, &absent, &OPEN, SINCE + START_GRACE).unwrap(), NodePhase::Lost);
-    assert_eq!(next_phase(&reviving, SINCE, &absent, &TaskFacts { open: false, closing: true, ..OPEN }, SINCE + START_GRACE).unwrap(), NodePhase::Closed,
+    let seen = next_phase(&reviving, SINCE, &absent, &OPEN, AT).unwrap();
+    assert_eq!(seen, NodePhase::Starting { reviving: true, idle_since: Some(AT) }, "a restart in progress is not listed yet");
+    assert_eq!(next_phase(&seen, SINCE, &absent, &OPEN, AT).unwrap(), seen, "the same listing again moves nothing");
+    assert_eq!(next_phase(&seen, SINCE, &absent, &OPEN, AT + 1).unwrap(), NodePhase::Lost);
+    assert_eq!(next_phase(&seen, SINCE, &absent, &TaskFacts { open: false, closing: true, ..OPEN }, AT + 1).unwrap(), NodePhase::Closed,
         "with its task over, a session that is gone has finished");
+    assert_eq!(next_phase(&reviving, SINCE, &absent, &OPEN, SINCE - 1).unwrap(), reviving, "a listing asked for before the restart says nothing of it");
 }
 
 #[test]
-fn a_session_missing_from_the_listing_frees_its_slot_once_its_start_had_time() {
-    let starting = NodePhase::Starting { reviving: false };
+fn a_session_two_listings_miss_frees_its_slot() {
+    let starting = NodePhase::Starting { reviving: false, idle_since: None };
     let absent = NodeEvent::Listed { listed: Listed::Absent };
-    assert_eq!(next_phase(&starting, SINCE, &absent, &OPEN, SINCE + 1).unwrap(), starting, "a start in progress is not listed yet");
-    let lost = next_phase(&starting, SINCE, &absent, &OPEN, SINCE + START_GRACE).unwrap();
+    let seen = next_phase(&starting, SINCE, &absent, &OPEN, AT).unwrap();
+    assert_eq!(seen, NodePhase::Starting { reviving: false, idle_since: Some(AT) }, "a start in progress is not listed yet");
+    assert!(seen.holds_slot());
+    let lost = next_phase(&seen, SINCE, &absent, &OPEN, AT + 1).unwrap();
     assert_eq!(lost, NodePhase::Lost);
     assert!(!lost.holds_slot());
     assert_eq!(next_phase(&lost, SINCE, &absent, &OPEN, SINCE + 24 * 60 * 60_000).unwrap(), lost, "a lost node waits for the gate");
@@ -456,7 +463,9 @@ fn a_node_waiting_for_its_own_command_keeps_its_slot_until_the_command_wakes_it(
 #[test]
 fn a_node_whose_command_ended_without_waking_it_rests_and_frees_its_slot() {
     let waiting = NodePhase::WaitingBackground(background());
-    assert!(unheard(&waiting, &NodeEvent::BackgroundEnded, &OPEN, AT), "with nothing for the user its last words go to them");
+    let gone = next_phase(&waiting, SINCE, &NodeEvent::BackgroundEnded, &OPEN, AT).unwrap();
+    assert!(gone.holds_slot(), "its command's notification may still wake it");
+    assert!(unheard(&gone, &NodeEvent::Listed { listed: Listed::Idle }, &OPEN, AT + 1), "nothing woke it: with nothing for the user its last words go to them");
     assert_eq!(next_phase(&waiting, SINCE, &NodeEvent::Listed { listed: Listed::Absent }, &OPEN, AT).unwrap(), NodePhase::Lost,
         "a session that is gone is lost, command or not");
     assert_eq!(next_phase(&waiting, SINCE, &NodeEvent::SessionLost, &OPEN, AT).unwrap(), NodePhase::Lost);
@@ -484,7 +493,7 @@ fn a_node_waiting_for_its_command_yields_to_its_card_its_result_and_its_task_s_e
 fn a_node_behind_its_own_work_that_claude_code_lists_blocked_keeps_waiting_for_it() {
     let waiting = NodePhase::WaitingBackground(background());
     for listed in [Listed::Blocked, Listed::Idle, Listed::Done, Listed::Working] {
-        assert_eq!(next(&waiting, SINCE, &NodeEvent::Listed { listed }, &OPEN, SINCE + START_GRACE).unwrap(), Settled::At(waiting.clone()), "{listed:?}");
+        assert_eq!(next(&waiting, SINCE, &NodeEvent::Listed { listed }, &OPEN, SINCE + 3 * HOUR).unwrap(), Settled::At(waiting.clone()), "{listed:?}");
     }
     assert!(waiting.holds_slot());
     let card = TaskFacts { card: true, ..OPEN };
@@ -493,30 +502,36 @@ fn a_node_behind_its_own_work_that_claude_code_lists_blocked_keeps_waiting_for_i
 }
 
 /// David's rule, 15 October: a node waiting for work of its own never rests on the card with its
-/// last words. Only that work ending with no turn to take it (`BackgroundEnded`) or a turn of its
-/// own that ends (`TurnEnded`, `TurnFailed`) may put it there; no listing, pause, loss, revival or
-/// change of its task's facts does, at any time.
+/// last words. Only a turn of its own that ends (`TurnEnded`, `TurnFailed`), or that work seen gone
+/// (`BackgroundEnded`) and then a later listing that finds the node without work, may put it there;
+/// no listing, pause, loss, revival or change of its task's facts does, at any time.
 #[test]
 fn a_node_waiting_for_its_own_work_rests_on_its_last_words_only_once_that_work_or_a_turn_ends() {
     let waiting = NodePhase::WaitingBackground(background());
-    let may_end_the_wait = |event: &NodeEvent| matches!(event, NodeEvent::BackgroundEnded | NodeEvent::TurnEnded | NodeEvent::TurnFailed);
+    let may_end_the_wait = |event: &NodeEvent| matches!(event, NodeEvent::TurnEnded | NodeEvent::TurnFailed);
     for bits in 0u8..64 {
         let bit = |n: u8| bits & (1 << n) != 0;
         let f = TaskFacts { open: bit(0), closing: bit(1), held: bit(2), card: bit(3), delivered: bit(4), awaits: bit(5) };
         for event in events().iter().filter(|event| !may_end_the_wait(event)) {
-            for at in [AT, SINCE + START_GRACE, SINCE + RESUME_GRACE * 10] {
+            for at in [AT, SINCE + 2 * HOUR, SINCE + 30 * HOUR] {
                 if let Ok(moved) = next(&waiting, SINCE, event, &f, at) {
                     assert_ne!(moved, Settled::Unheard, "{event:?} with {f:?} at {at}");
                 }
             }
         }
     }
-    assert!(unheard(&waiting, &NodeEvent::BackgroundEnded, &OPEN, AT), "its work over with nothing for the user, its last words go to them");
+    let gone = next_phase(&waiting, SINCE, &NodeEvent::BackgroundEnded, &OPEN, AT).unwrap();
+    assert_eq!(gone, NodePhase::WaitingBackground(Background { gone: Some(AT), ..background() }), "its work's notification is on its way");
+    assert_eq!(next_phase(&gone, SINCE, &NodeEvent::BackgroundEnded, &OPEN, AT + 1).unwrap(), gone, "seen gone again moves nothing");
+    let idle = NodeEvent::Listed { listed: Listed::Idle };
+    assert_eq!(next_phase(&gone, SINCE, &idle, &OPEN, AT).unwrap(), gone, "a listing asked for before it was gone says nothing of it");
+    assert_eq!(next_phase(&gone, SINCE, &NodeEvent::TurnStarted, &OPEN, AT + 1).unwrap(), NodePhase::Working, "the notification woke it");
+    assert!(unheard(&gone, &idle, &OPEN, AT + 1), "its work over and nothing woke it: its last words go to the user");
 }
 
 /// The user answers a node's card while it rests: the answer is on its way and the node works
-/// again, holding its slot. A listing that still finds it idle past `RESUME_GRACE` after the first
-/// that did ends the wait as a turn end; the same listing twice moves nothing.
+/// again, holding its slot. A later listing that still finds it idle after the first that did ends
+/// the wait as a turn end; the same listing twice moves nothing.
 #[test]
 fn an_answered_node_works_until_its_answer_starts_a_turn_or_two_listings_find_it_idle() {
     let resuming = settle(NodePhase::WaitingUser { in_turn: false }, &OPEN);
@@ -527,8 +542,7 @@ fn an_answered_node_works_until_its_answer_starts_a_turn_or_two_listings_find_it
     let seen = next_phase(&resuming, SINCE, &idle, &OPEN, AT).unwrap();
     assert_eq!(seen, NodePhase::Resuming { idle_since: Some(AT) }, "the first idle listing may come before the answer reached it");
     assert_eq!(next_phase(&seen, SINCE, &idle, &OPEN, AT).unwrap(), seen, "the same listing again moves nothing");
-    assert_eq!(next_phase(&seen, SINCE, &idle, &OPEN, AT + RESUME_GRACE - 1).unwrap(), seen);
-    assert!(unheard(&seen, &idle, &OPEN, AT + RESUME_GRACE));
+    assert!(unheard(&seen, &idle, &OPEN, AT + 1));
     assert_eq!(next_phase(&seen, SINCE, &NodeEvent::TurnStarted, &OPEN, AT).unwrap(), NodePhase::Working);
     assert_eq!(settle(resuming.clone(), &TaskFacts { card: true, ..OPEN }), NodePhase::WaitingUser { in_turn: false });
     assert_eq!(settle(resuming, &TaskFacts { awaits: true, ..OPEN }), NodePhase::WaitingDependency);
@@ -598,11 +612,18 @@ struct World {
     real: BTreeMap<AgentId, Listed>,
     nodes: usize,
     last: Option<(AgentId, NodeEvent, Millis)>,
+    /// How far the clock moves at each step, in turn; empty, it moves as the step says.
+    gaps: Vec<Millis>,
+    moves: usize,
 }
 
 impl World {
     fn new() -> World {
-        let mut w = World { s: DomainState::new("epoch"), now: SINCE, real: BTreeMap::new(), nodes: 0, last: None };
+        World::timed(vec![])
+    }
+
+    fn timed(gaps: Vec<Millis>) -> World {
+        let mut w = World { s: DomainState::new("epoch"), now: SINCE, real: BTreeMap::new(), nodes: 0, last: None, gaps, moves: 0 };
         w.must(user(), Command::CreateRequest { request_id: "r".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
         w.must(Actor::Orchestrator { generation: 0 }, Command::TitleRequest { request_id: "r".into(), title: "Work".into() });
         w
@@ -652,10 +673,9 @@ impl World {
             if self.real.contains_key(id) {
                 continue;
             }
-            let young = self.now - agent.since < START_GRACE;
             assert!(match agent.phase {
                 NodePhase::Closed | NodePhase::Paused(_) | NodePhase::Lost => true,
-                NodePhase::Starting { .. } => young,
+                NodePhase::Starting { idle_since, .. } => idle_since == Some(self.now),
                 _ => false,
             }, "{id:?} has no session yet is {:?}", agent.phase);
         }
@@ -667,8 +687,23 @@ impl World {
         self.open_task(agent).and_then(|task| self.s.task_handed_back(&task)) == Some(Instruction::Reply)
     }
 
+    fn advance(&mut self, by: Millis) {
+        self.now += if self.gaps.is_empty() { by } else { self.gaps[self.moves % self.gaps.len()] };
+        self.moves += 1;
+    }
+
+    /// What every node is and what waits on the user, without a single time in it.
+    fn shape(&self) -> (Vec<(AgentId, &'static str, bool)>, BTreeSet<(AgentId, InteractionId)>) {
+        let seen = |phase: &NodePhase| match phase {
+            NodePhase::Starting { idle_since, .. } | NodePhase::Resuming { idle_since } => idle_since.is_some(),
+            NodePhase::WaitingBackground(work) => work.gone.is_some(),
+            _ => false,
+        };
+        (self.s.agents.values().map(|a| (a.id.clone(), a.phase.key(), seen(&a.phase))).collect(), self.unheard_cards())
+    }
+
     fn apply(&mut self, step: &Step) {
-        self.now += 1_000;
+        self.advance(1_000);
         if !matches!(step, Step::Replay) {
             self.last = None;
         }
@@ -679,7 +714,7 @@ impl World {
             _ => None,
         };
         let phase_before = ending.as_ref().and_then(|agent| self.s.node_phase(agent).cloned());
-        let behind: Vec<AgentId> = self.s.agents.values().filter(|a| matches!(a.phase, NodePhase::WaitingBackground(_))).map(|a| a.id.clone()).collect();
+        let behind: Vec<AgentId> = self.s.agents.values().filter(|a| matches!(a.phase, NodePhase::WaitingBackground(Background { gone: None, .. }))).map(|a| a.id.clone()).collect();
         let heard_before = self.unheard_cards();
         self.apply_step(step);
         self.no_card_while_behind_own_work(step, &behind, &heard_before);
@@ -700,7 +735,7 @@ impl World {
                     dependencies: BTreeSet::new(), stack: None, launch: Some(LaunchPlan::new("node", "/tmp")),
                 });
                 self.must(Actor::System, Command::RegisterAgent { agent_id: agent.clone(), name: format!("node {}", self.nodes), at: self.now });
-                assert_eq!(self.s.node_phase(&agent), Some(&NodePhase::Starting { reviving: false }));
+                assert_eq!(self.s.node_phase(&agent), Some(&NodePhase::Starting { reviving: false, idle_since: None }));
                 self.must(Actor::System, Command::AssignTask { task_id: task.clone(), agent_id: agent.clone(), model: None });
                 self.must(Actor::Agent { agent_id: agent.clone() }, Command::StartTask { task_id: task });
                 self.real.insert(agent, Listed::Idle);
@@ -720,7 +755,7 @@ impl World {
             }
             Step::Background { pick, ended: false } => {
                 let Some(agent) = self.pick(pick, |a, _| a.phase.live()) else { return };
-                let work = Background { work: crate::model::BackgroundKind::Shell, label: "make test".into(), since: self.now, others: 0 };
+                let work = Background { work: crate::model::BackgroundKind::Shell, label: "make test".into(), since: self.now, others: 0, gone: None };
                 if self.event(&agent, NodeEvent::TurnEndedBehind { work }, self.now) && self.real.contains_key(&agent) {
                     self.real.insert(agent, Listed::Idle);
                 }
@@ -831,7 +866,7 @@ impl World {
             Step::Revive { pick, back } => {
                 let Some(agent) = self.pick(pick, |a, _| a.phase == NodePhase::Lost) else { return };
                 assert!(self.event(&agent, NodeEvent::RevivalAdmitted, self.now), "the gate always lets a lost node back");
-                assert_eq!(self.s.node_phase(&agent), Some(&NodePhase::Starting { reviving: true }));
+                assert_eq!(self.s.node_phase(&agent), Some(&NodePhase::Starting { reviving: true, idle_since: None }));
                 if back {
                     self.real.insert(agent, Listed::Idle);
                 } else {
@@ -851,7 +886,7 @@ impl World {
                 let task = self.open_task(&agent).unwrap();
                 self.must(user(), Command::CancelTask { task_id: task });
             }
-            Step::Tick(by) => self.now += by,
+            Step::Tick(by) => self.advance(by),
             Step::Reconcile => self.reconcile(),
             Step::Restart => {
                 let saved = serde_json::to_string(&self.s).unwrap();
@@ -882,12 +917,11 @@ impl World {
     }
 
     /// David's rule, 15 October: a node waiting for work of its own is at work. No step opens the
-    /// card with its last words unless that work ended with no turn to take it, or a turn of its own
-    /// ended.
+    /// card with its last words while that work is not seen gone, unless a turn of its own ended.
     fn no_card_while_behind_own_work(&self, step: &Step, behind: &[AgentId], before: &BTreeSet<(AgentId, InteractionId)>) {
         for (agent, card) in self.unheard_cards().difference(before) {
             let ended_its_wait = self.last.as_ref().is_some_and(|(moved, event, _)| moved == agent
-                && matches!(event, NodeEvent::BackgroundEnded | NodeEvent::TurnEnded | NodeEvent::TurnFailed));
+                && matches!(event, NodeEvent::TurnEnded | NodeEvent::TurnFailed));
             assert!(!behind.contains(agent) || ended_its_wait, "{step:?} opened {card:?} while {agent:?} waited for its own work");
         }
     }
@@ -1067,13 +1101,13 @@ fn the_14_october_incident_ends_with_the_node_s_words_on_a_card_for_the_user() {
     assert!(w.event(&agent, NodeEvent::TurnStarted, w.now));
     let said = "Both runs arrived but are no good: the fault was in my setup. Repeat the one on mobile data.";
     w.must(Actor::System, Command::RecordLastWords { agent_id: agent.clone(), text: said.into() });
-    let listener = Background { work: crate::model::BackgroundKind::Shell, label: "listen-at-home.sh".into(), since: w.now, others: 0 };
+    let listener = Background { work: crate::model::BackgroundKind::Shell, label: "listen-at-home.sh".into(), since: w.now, others: 0, gone: None };
     assert!(w.event(&agent, NodeEvent::TurnEndedBehind { work: listener }, w.now));
     assert!(matches!(w.s.node_phase(&agent), Some(NodePhase::WaitingBackground(_))));
     w.now += 60_000;
     assert!(w.event(&agent, NodeEvent::TurnStarted, w.now), "its mod says a turn started");
     w.real.insert(agent.clone(), Listed::Blocked);
-    w.now += START_GRACE;
+    w.now += 60_000;
     w.reconcile();
     assert_eq!(w.s.node_phase(&agent), Some(&NodePhase::WaitingUser { in_turn: false }));
     let card = w.s.open_user_card(&task).expect("its words wait for the user").clone();
@@ -1116,6 +1150,28 @@ fn long_last_words_keep_their_start_on_the_card_and_the_whole_in_its_detail() {
     let card = w.s.open_user_card(&"t-1".into()).expect("its words wait for the user").clone();
     assert!(card.card.why.chars().count() <= CardSpec::WHY_MAX && said.starts_with(card.card.why.trim_end_matches('…')), "{}", card.card.why);
     assert_eq!(card.card.content.map(|content| content.body), Some(said.trim().to_owned()));
+}
+
+/// David's rule, 15 October: a node's state moves only on facts, never on how long it has been.
+/// The same history of facts on a clock that moves a millisecond a step and on one that moves up
+/// to two days leaves every node in the same state, step by step, with the same cards.
+#[test]
+fn the_same_facts_on_any_clock_move_every_node_alike() {
+    let mut runner = TestRunner::new_with_rng(Config { cases: 256, failure_persistence: None, ..Config::default() },
+        TestRng::deterministic_rng(RngAlgorithm::ChaCha));
+    let history = (prop::collection::vec(step(), 1..60), prop::collection::vec(1 as Millis..48 * HOUR, 1..16));
+    let result = runner.run(&history, |(steps, gaps)| {
+        let (mut fast, mut slow) = (World::timed(vec![1]), World::timed(gaps));
+        for step in &steps {
+            fast.apply(step);
+            slow.apply(step);
+            prop_assert_eq!(fast.shape(), slow.shape(), "after {:?}", step);
+        }
+        Ok(())
+    });
+    if let Err(TestError::Fail(reason, history)) = result {
+        panic!("{reason}\nhistory: {history:#?}");
+    }
 }
 
 #[test]

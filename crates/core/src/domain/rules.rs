@@ -2269,7 +2269,7 @@ impl DomainState {
                     Agent {
                         id: agent_id.clone(),
                         name: name.clone(),
-                        phase: NodePhase::Starting { reviving: false },
+                        phase: NodePhase::Starting { reviving: false, idle_since: None },
                         since: *at,
                     },
                 );

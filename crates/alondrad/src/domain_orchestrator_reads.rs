@@ -37,8 +37,8 @@ fn phase_fields(row: &mut Value, phase: &NodePhase) {
     });
     row["alive"] = json!(phase.live() && *phase != NodePhase::Lost);
     row["evidence"] = json!(match phase {
-        NodePhase::Starting { reviving: false } => "admitted by the gate; no turn yet".to_owned(),
-        NodePhase::Starting { reviving: true } => "its lost session is being restarted".to_owned(),
+        NodePhase::Starting { reviving: false, .. } => "admitted by the gate; no turn yet".to_owned(),
+        NodePhase::Starting { reviving: true, .. } => "its lost session is being restarted".to_owned(),
         NodePhase::Lost => "its session is gone; it waits for the gate to be restarted".to_owned(),
         NodePhase::Working => "a turn is running".to_owned(),
         NodePhase::WaitingBackground(work) => format!("its turn ended behind its own background work (`{}`, since {}{}); it wakes when that ends",

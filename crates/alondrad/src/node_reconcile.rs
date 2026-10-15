@@ -42,6 +42,7 @@ pub(crate) fn parse(listing: &str) -> Option<BTreeMap<String, Listed>> {
 /// task, so it closes without ever being brought back. False when the listing could not be read:
 /// nothing is moved then.
 pub(crate) async fn once(domain: &DomainRuntime, sessions: &dyn Sessions) -> bool {
+    let asked = alondra_core::now_millis();
     let listing = match sessions.claude(vec!["agents".into(), "--json".into(), "--all".into()]).await {
         Ok(listing) => listing,
         Err(error) => {
@@ -61,7 +62,7 @@ pub(crate) async fn once(domain: &DomainRuntime, sessions: &dyn Sessions) -> boo
         .filter(|(agent, listed)| domain.launched_by_alondra(&agent.id).unwrap_or(false) || (matches!(listed, Listed::Absent | Listed::Done) && !open_task(&agent.id)))
         .map(|(agent, listed)| (agent.id.clone(), listed))
         .collect();
-    match crate::domain_agent_lifecycle::reconcile(domain, listed) {
+    match crate::domain_agent_lifecycle::reconcile_at(domain, listed, asked) {
         Ok(moved) => {
             if moved {
                 domain.live.gate.poke();

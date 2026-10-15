@@ -185,7 +185,7 @@ async fn gather_inner(
                 .or_else(|| answer.map(|answer| answer.text.clone()))
                 .map(|summary| summary.lines().next().unwrap_or("").chars().take(141).collect());
             let background: Vec<(&str, alondra_core::BackgroundItem)> = reported.background.iter()
-                .map(|(id, _)| id.as_str()).zip(reported.background_at(now)).collect();
+                .map(|(id, _)| id.as_str()).zip(reported.background_items()).collect();
             let suspect = |id: &str| background.iter().any(|(known, item)| *known == id && item.suspect);
             let shown_as_run = |id: &str| reported.work.agents.iter().any(|agent| agent.id == id && agent.finished_at.is_none())
                 || reported.work.workflows.iter().any(|workflow| workflow.id == id && workflow.finished_at.is_none());

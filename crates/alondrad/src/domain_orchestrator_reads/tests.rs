@@ -120,7 +120,7 @@ fn a_node_is_found_by_name_or_id_with_its_questions_results_and_undelivered_mess
 #[test]
 fn the_orchestrator_reads_the_node_machine_s_state_never_an_older_guess() {
     let f = world();
-    let work = alondra_core::domain::Background { work: alondra_core::BackgroundKind::Shell, label: "./deploy/brew/release.sh 0.2.67".into(), since: 1, others: 0 };
+    let work = alondra_core::domain::Background { work: alondra_core::BackgroundKind::Shell, label: "./deploy/brew/release.sh 0.2.67".into(), since: 1, others: 0, gone: None };
     run(&f.1, Actor::System, Command::MoveNode { agent_id: "agent-a".into(), event: alondra_core::domain::NodeEvent::TurnEndedBehind { work }, at: 2 });
     let waiting = fleet(&f.1, json!({}), json!(null)).unwrap();
     let node = &waiting["nodes"][0];

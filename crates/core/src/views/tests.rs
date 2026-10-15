@@ -1548,7 +1548,7 @@ fn a_task_that_has_not_started_says_what_refused_its_launch() {
 /// it reads as doing nothing, and one at rest is in «For you» with the card that holds its words.
 #[test]
 fn a_running_task_never_says_no_activity_whatever_its_node_does() {
-    let work = Background { work: crate::model::BackgroundKind::Shell, label: "./listen-at-home.sh".into(), since: 0, others: 0 };
+    let work = Background { work: crate::model::BackgroundKind::Shell, label: "./listen-at-home.sh".into(), since: 0, others: 0, gone: None };
     for phase in [NodePhase::Working, NodePhase::WaitingBackground(work), NodePhase::Resuming { idle_since: None },
         NodePhase::Resuming { idle_since: Some(0) }, NodePhase::WaitingUser { in_turn: false }, NodePhase::WaitingUser { in_turn: true }]
     {
@@ -1579,7 +1579,7 @@ fn a_running_task_whose_node_session_closed_says_it_stopped_never_working_nor_no
     assert_eq!((block.as_str(), row.subtitle.as_deref()), ("block:for-you", Some("Su sesión se cerró sin que entregara")));
     live.nodes[0].disconnected = false;
     let mut reviving = state.clone();
-    reviving.agents.insert("a-1".into(), Agent { id: "a-1".into(), name: "Node One".into(), phase: NodePhase::Starting { reviving: true }, since: 0 });
+    reviving.agents.insert("a-1".into(), Agent { id: "a-1".into(), name: "Node One".into(), phase: NodePhase::Starting { reviving: true, idle_since: None }, since: 0 });
     assert_eq!(task_state_text(&reviving, &live, Lang::Es), "Reconectando");
     live.nodes[0].disconnected = true;
     let fleet = format!("{:?}", render(&state, &live, Client::Mac, Lang::Es, "fleet", ""));
@@ -1608,7 +1608,7 @@ fn a_running_task_whose_node_waits_at_the_gate_to_come_back_says_it_is_queued_no
     assert!(!fleet.contains("Node One"), "a lost node has no session to show in Fleet: {fleet}");
     assert_eq!(task_state_text(&state, &LiveSnapshot::default(), Lang::Es), "Esperando máquina", "before it reaches the gate");
 
-    state.agents.get_mut(&"a-1".into()).unwrap().phase = NodePhase::Starting { reviving: true };
+    state.agents.get_mut(&"a-1".into()).unwrap().phase = NodePhase::Starting { reviving: true, idle_since: None };
     let admitted = pacing_live(vec![], vec![], None);
     assert_eq!(task_state_text(&state, &admitted, Lang::Es), "Reconectando");
     let node = serde_json::to_string(&render(&state, &admitted, Client::Tui, Lang::Es, "node:a-1", "")).unwrap();
@@ -1642,7 +1642,7 @@ fn every_screen(state: &DomainState, live: &LiveSnapshot) -> Vec<(String, String
 #[test]
 fn a_task_whose_node_waits_for_its_own_command_says_working_without_the_command_on_every_screen() {
     let mut state = fixture();
-    let work = Background { work: crate::model::BackgroundKind::Shell, label: "./deploy/brew/release.sh 0.2.67".into(), since: 0, others: 0 };
+    let work = Background { work: crate::model::BackgroundKind::Shell, label: "./deploy/brew/release.sh 0.2.67".into(), since: 0, others: 0, gone: None };
     node_in(&mut state, NodePhase::WaitingBackground(work));
     let mut live = LiveSnapshot::default();
     live.nodes.push(LiveNode { agent_id: "a-1".into(), name: "Node One".into(), ..LiveNode::default() });
@@ -5115,7 +5115,7 @@ fn fleet_fixture() -> (DomainState, LiveSnapshot) {
     for (agent, request, title, task_state, phase) in [
         ("queued", golden_request.as_str(), "Wire the badge after the review", TaskState::WaitingDependency, NodePhase::WaitingDependency),
         ("zeta-worker", "r-zeta", "Build the importer", TaskState::Running, NodePhase::Working),
-        ("alpha-waiting", "r-alpha", "Plan the migration", TaskState::NotStarted, NodePhase::Starting { reviving: false }),
+        ("alpha-waiting", "r-alpha", "Plan the migration", TaskState::NotStarted, NodePhase::Starting { reviving: false, idle_since: None }),
         ("finished-yesterday", golden_request.as_str(), "Ship the compact editor", TaskState::Done, NodePhase::Closed),
         ("finished-today", golden_request.as_str(), "Trim the push payload", TaskState::Done, NodePhase::Closed),
     ] {
@@ -5157,7 +5157,7 @@ fn node_states_fixture() -> (DomainState, LiveSnapshot) {
     let template = state.tasks[&"t-zeta-worker".into()].clone();
     let declared = Pause { reason: PauseReason::Declared { reason: "The build queue is full".into() }, since: 0, cut: None,
         turn_since: None, cleanup: PauseCleanup::Done, released: false };
-    let release = Background { work: crate::model::BackgroundKind::Shell, label: "./deploy/brew/release.sh 0.2.67".into(), since: 0, others: 0 };
+    let release = Background { work: crate::model::BackgroundKind::Shell, label: "./deploy/brew/release.sh 0.2.67".into(), since: 0, others: 0, gone: None };
     for (agent, title, phase) in [
         ("release-runner", "Release the daemon", NodePhase::WaitingBackground(release)),
         ("paused-builder", "Fix the vanished session", NodePhase::Paused(declared)),
@@ -5275,7 +5275,7 @@ fn fleet_lists_only_nodes_with_a_session_on_an_open_task() {
     let (mut state, mut live) = fleet_fixture();
     let template = state.tasks[&"t-zeta-worker".into()].clone();
     for (agent, task_state, phase) in [
-        ("reviving", TaskState::Running, NodePhase::Starting { reviving: true }),
+        ("reviving", TaskState::Running, NodePhase::Starting { reviving: true, idle_since: None }),
         ("lost", TaskState::Running, NodePhase::Lost),
         ("lingering", TaskState::Done, NodePhase::Working),
         ("cancelled-paused", TaskState::Cancelled, NodePhase::Paused(crate::domain::Pause { reason: crate::domain::PauseReason::ByUser, since: 0, cut: None, turn_since: None, cleanup: Default::default(), released: false })),

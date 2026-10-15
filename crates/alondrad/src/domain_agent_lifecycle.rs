@@ -118,9 +118,15 @@ pub(crate) fn record_last_words(domain: &DomainRuntime, agent_id: &AgentId, text
 }
 
 /// Hands the node machine the listing of real sessions, when it moves any node.
+#[cfg(test)]
 pub(crate) fn reconcile(domain: &DomainRuntime, listed: BTreeMap<AgentId, Listed>) -> Result<bool, StoreError> {
+    reconcile_at(domain, listed, alondra_core::now_millis())
+}
+
+/// `reconcile` with the listing stamped `at`, when it was asked for: it says nothing of what
+/// happened after.
+pub(crate) fn reconcile_at(domain: &DomainRuntime, listed: BTreeMap<AgentId, Listed>, at: alondra_core::Millis) -> Result<bool, StoreError> {
     let state = domain.state().map_err(StoreError::Storage)?;
-    let at = alondra_core::now_millis();
     if !state.reconciling_moves(&listed, at) {
         return Ok(false);
     }
@@ -196,7 +202,7 @@ mod tests {
         let registered = register_instance(&domain, &identity, "Builder", &register).unwrap();
         assert!(registered.changed);
         assert_eq!(registered.created_ids, vec![id.0.clone()]);
-        assert_eq!(domain.state().unwrap().agents[&id].phase, NodePhase::Starting { reviving: false });
+        assert_eq!(domain.state().unwrap().agents[&id].phase, NodePhase::Starting { reviving: false, idle_since: None });
         let replay = register_instance(&domain, &identity, "Builder", &register).unwrap();
         assert_eq!(replay.revision, registered.revision);
         let spawn = prepare_event(&domain, "launch-one-turn").unwrap();

@@ -643,22 +643,20 @@ pub(crate) const STOP_BLOCKS: u32 = 3;
 /// delivery or a question starts the count again; the count is kept in the domain store, so a
 /// restart does not reset it. A session the user drives (not a background node, or one whose
 /// terminal they attached to), work running in the background and a node the machine paused are
-/// never held; background work that has hung (`Reported::background_hung`) is no such work.
+/// never held.
 /// The turn ended behind background work of its own that will wake it: the node waits for it.
 fn works_in_background(domain: &DomainRuntime, agent_id: &AgentId, payload: &Value) -> bool {
     background_work(domain, agent_id, payload).is_some()
 }
 
 /// The oldest work the turn left running in the background (`classic.Stop`'s `background_tasks`),
-/// when it has not hung, with when it started as the node's mod saw it.
+/// with when it started as the node's mod saw it. However long it has run, Claude Code says it is
+/// in flight, and its end wakes the node.
 fn background_work(domain: &DomainRuntime, agent_id: &AgentId, payload: &Value) -> Option<alondra_core::domain::Background> {
     use alondra_core::BackgroundKind;
     let tasks = payload.get("background_tasks").and_then(Value::as_array).filter(|tasks| !tasks.is_empty())?;
     let now = alondra_core::now_millis();
     let reported = domain.live.mods.session(&agent_id.0);
-    if reported.as_ref().is_some_and(|reported| reported.background_hung(now)) {
-        return None;
-    }
     let field = |task: &Value, key: &str| task.get(key).and_then(Value::as_str).filter(|text| !text.trim().is_empty()).map(str::to_owned);
     let started = |task: &Value| field(task, "id")
         .and_then(|id| reported.as_ref()?.background.iter().find(|(known, _)| *known == id).map(|(_, item)| item.started_at))
@@ -671,34 +669,19 @@ fn background_work(domain: &DomainRuntime, agent_id: &AgentId, payload: &Value) 
     };
     let label = field(oldest, "command").or_else(|| field(oldest, "description")).or_else(|| field(oldest, "name"))
         .map_or_else(|| "background work".to_owned(), |label| crate::node_reports::short_label(&label));
-    Some(alondra_core::domain::Background { work, label, since: started(oldest), others: tasks.len() as u32 - 1 })
+    Some(alondra_core::domain::Background { work, label, since: started(oldest), others: tasks.len() as u32 - 1, gone: None })
 }
 
-/// How long a node waiting for its own work may show nothing at all once that work is over before
-/// Alondra stops waiting for the turn that work would start.
-pub(crate) const BACKGROUND_WAKE_GRACE: alondra_core::Millis = 2 * 60 * 1000;
-
-/// How long a node may wait for work of its own that never wakes it with a turn: a listener that
-/// never ends, behind which the node wrote to the user in its terminal (t-holepunch, 14 October).
-pub(crate) const OWN_WORK_UNWOKEN: alondra_core::Millis = 2 * 60 * 60 * 1000;
-
-/// Nodes waiting for work of their own that has ended, died or hung with no turn to take its
-/// result (nothing in the background any more, all of it hung, or its shells gone), or that has
-/// not woken them for `OWN_WORK_UNWOKEN`, and the node's mod silent for `BACKGROUND_WAKE_GRACE`.
-/// Only this ends such a wait without a turn: the node machine rests them, and their last words
-/// reach the user.
-pub(crate) fn background_over(domain: &DomainRuntime, now: alondra_core::Millis) -> Vec<AgentId> {
+/// Nodes waiting for work of their own that Alondra now sees gone, with no turn to take its result
+/// yet: Claude Code's whole list of it is empty, or holds only commands whose shells exited. The
+/// node machine marks the wait, and only a later listing that finds the node without work rests
+/// it, as Claude Code wakes it with its work's notification. Work that never ends keeps it waiting,
+/// named, however long it takes.
+pub(crate) fn background_over(domain: &DomainRuntime) -> Vec<AgentId> {
     let Ok(state) = domain.state() else { return vec![] };
     state.agents.values()
-        .filter(|agent| matches!(agent.phase, alondra_core::domain::NodePhase::WaitingBackground(_)))
-        .filter(|agent| domain.live.mods.session(&agent.id.0).is_some_and(|reported| {
-            let shells_gone = reported.shell_alive == Some(false)
-                && reported.background.iter().all(|(_, item)| item.kind == alondra_core::BackgroundKind::Shell);
-            reported.connection.is_some() && reported.working_since.is_none() && reported.tool.is_none()
-                && reported.last_event_at.is_none_or(|at| now - at >= BACKGROUND_WAKE_GRACE)
-                && (reported.background.is_empty() || reported.background_hung(now) || shells_gone
-                    || now - agent.since >= OWN_WORK_UNWOKEN)
-        }))
+        .filter(|agent| matches!(agent.phase, alondra_core::domain::NodePhase::WaitingBackground(alondra_core::domain::Background { gone: None, .. })))
+        .filter(|agent| domain.live.mods.session(&agent.id.0).is_some_and(|reported| reported.work_gone()))
         .map(|agent| agent.id.clone())
         .collect()
 }
@@ -722,12 +705,18 @@ fn paused(state: &DomainState, agent_id: &AgentId) -> bool {
     matches!(state.node_phase(agent_id), Some(alondra_core::domain::NodePhase::Paused(_)))
 }
 
+/// The node machine has the node waiting for work of its own that Alondra has not seen end.
+fn waits_on_own_work(state: &DomainState, agent_id: &AgentId) -> bool {
+    matches!(state.node_phase(agent_id),
+        Some(alondra_core::domain::NodePhase::WaitingBackground(alondra_core::domain::Background { gone: None, .. })))
+}
+
 /// How long a node that ended its turn behind hung background work is left before Alondra sends
 /// it back again, when the last reminder changed nothing.
 const HUNG_REMINDER_GAP: alondra_core::Millis = 10 * 60 * 1000;
 
 /// Nodes that ended their turn with nothing running that will wake them (no background work, or
-/// only work that has hung), their Task open and neither a result nor a question, and quiet for
+/// only commands whose shells are gone), their Task open and neither a result nor a question, and quiet for
 /// `HUNG_REMINDER_GAP`: no turn end will come to hold them back (their work hung, or the Stop hook
 /// never reached Alondra), so the reminder the Stop hook gives goes to them as a message from
 /// Alondra, counted the same way; past the cap it is left alone.
@@ -770,10 +759,10 @@ pub(crate) fn stopped_without_delivering(domain: &DomainRuntime, state: &DomainS
     now: alondra_core::Millis, stop_blocks: impl Fn(&TaskId) -> Option<(u32, i64)>) -> Option<bool> {
     let session = agent_id.0.as_str();
     let idle = domain.live.mods.session(session).is_some_and(|reported| reported.connection.is_some()
-        && reported.tool.is_none() && (reported.background.is_empty() || reported.background_hung(now))
+        && reported.tool.is_none() && (reported.background.is_empty() || reported.work_gone())
         && (reported.job.as_ref().is_some_and(|job| job.phase == crate::job_state::Phase::Blocked)
             || reported.working_since.is_none() && !reported.silent(now)));
-    if !idle || driven_by_user(domain, agent_id) || paused(state, agent_id)
+    if !idle || driven_by_user(domain, agent_id) || paused(state, agent_id) || waits_on_own_work(state, agent_id)
         || domain.live.is_closed(session) || domain.live.gate.paused(domain, session).is_some()
         || crate::domain_holds::waits_on_user(state, session)
     {
@@ -1665,7 +1654,7 @@ mod tests {
             agent_id: "session-a".into(), name: "A".into(), at: 0
         });
         let phase = || domain.state().unwrap().agents[&"session-a".into()].phase.clone();
-        assert_eq!(phase(), alondra_core::domain::NodePhase::Starting { reviving: false });
+        assert_eq!(phase(), alondra_core::domain::NodePhase::Starting { reviving: false, idle_since: None });
         hook(&domain, json!({"session_id": "session-a", "hook_event_name": "UserPromptSubmit"}), Some(6)).await.1.unwrap();
         assert_eq!(phase(), alondra_core::domain::NodePhase::Working);
         let revision = domain.state().unwrap().revision;
@@ -1944,7 +1933,7 @@ mod tests {
         domain.connect_node(serde_json::from_value(json!({"session_id": "agent-a", "version": "2.1.287"})).unwrap(), started);
         hook(domain, json!({"session_id": "agent-a", "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": RELEASE}}), Some(6)).await;
         mod_report(domain, json!({"event": "shell.start", "id": "b1", "command": RELEASE}), started);
-        domain.live.mods.set_shell_alive("agent-a", Some(true));
+        domain.live.mods.set_shell_alive("agent-a", Some(true), started + 1);
         let stop = json!({"session_id": "agent-a", "hook_event_name": "Stop",
             "background_tasks": [{"id": "b1", "type": "shell", "command": RELEASE}]});
         assert_eq!(hook(domain, stop, Some(6)).await.0, json!({}), "its command will wake it: no hold-back");
@@ -1966,23 +1955,30 @@ mod tests {
         assert!(now - work.since >= 60_000, "since the script started, as the node's mod saw it");
         assert_eq!(domain.state().unwrap().slots().len(), 1, "its command uses the Mac: it keeps its slot");
         assert_eq!(domain.store.lock().unwrap().stop_blocks(&"task".into()).unwrap(), None, "nothing counted against it");
-        assert!(background_over(&domain, now + 12 * 60_000).is_empty(), "twelve minutes later its command still runs");
+        assert!(background_over(&domain).is_empty(), "its command still runs");
 
         hook(&domain, json!({"session_id": "agent-a", "hook_event_name": "UserPromptSubmit", "prompt": "<task-notification>"}), Some(6)).await;
         assert_eq!(phase_of(&domain), NodePhase::Working, "the command ended and woke it");
     }
 
-    /// The command died with no turn to take its result, or hung: once the turn its end would
-    /// start had its time, the node rests, frees its slot, and its last words reach the user.
+    /// The command's shell is gone and no turn took its result: the node goes on waiting for the
+    /// notification that would wake it, and once a later listing finds it without work it rests,
+    /// frees its slot, and its last words reach the user.
     #[tokio::test]
     async fn a_node_whose_command_died_without_waking_it_rests_on_a_card_with_its_last_words() {
         let fixture = Fixture::new();
         let domain = fixture.open();
         let now = waiting_for_release(&domain, 1).await;
-        domain.live.mods.set_shell_alive("agent-a", Some(false));
-        assert!(background_over(&domain, now + BACKGROUND_WAKE_GRACE - 1).is_empty(), "the turn its end starts gets its time");
-        assert_eq!(background_over(&domain, now + BACKGROUND_WAKE_GRACE), ["agent-a".into()]);
-        crate::domain_agent_lifecycle::node_event(&domain, &"agent-a".into(), NodeEvent::BackgroundEnded).unwrap();
+        domain.live.mods.set_shell_alive("agent-a", Some(false), now);
+        assert_eq!(background_over(&domain), ["agent-a".into()], "a look found its shell gone");
+        let gone = alondra_core::now_millis() + 1;
+        crate::domain_agent_lifecycle::node_event_at(&domain, &"agent-a".into(), NodeEvent::BackgroundEnded, gone).unwrap();
+        assert!(background_over(&domain).is_empty(), "seen gone once");
+        assert!(matches!(phase_of(&domain), NodePhase::WaitingBackground(Background { gone: Some(_), .. })));
+        assert_eq!(domain.state().unwrap().slots().len(), 1, "its command's notification may still wake it");
+        lifecycle::reconcile_at(&domain, [("agent-a".into(), Listed::Idle)].into(), gone).unwrap();
+        assert!(unheard(&domain).is_empty(), "a listing asked for before its work was seen gone says nothing of it");
+        lifecycle::reconcile_at(&domain, [("agent-a".into(), Listed::Idle)].into(), gone + 1).unwrap();
         assert_eq!(phase_of(&domain), NodePhase::WaitingUser { in_turn: false });
         assert_eq!(unheard(&domain).len(), 1, "with nothing for the user, its last words go to them");
         assert!(domain.state().unwrap().slots().is_empty(), "a dead command holds no slot");
@@ -2013,8 +2009,8 @@ mod tests {
     /// watched its results with a Monitor and ended each turn saying it waited («Esperando el
     /// resto.»). Claude Code's `idle_prompt` a minute after each turn end and its other notices
     /// read as turns, and its model listed the session blocked: cards 7701, 7703 and 7713 with the
-    /// node's words came and went. Waiting for its own work, it works: no card until that work
-    /// stops waking it.
+    /// node's words came and went. Waiting for its own work, it works: no card while that work
+    /// runs, however long, and its end wakes it.
     #[tokio::test]
     async fn a_node_waiting_for_its_ablation_and_monitor_works_through_claude_code_s_notices_and_listings() {
         let fixture = Fixture::new();
@@ -2025,7 +2021,7 @@ mod tests {
         hook(&domain, json!({"session_id": "agent-a", "hook_event_name": "PreToolUse", "tool_name": "Bash",
             "tool_input": {"command": ABLATE, "run_in_background": true}}), Some(6)).await;
         mod_report(&domain, json!({"event": "shell.start", "id": "b1", "command": ABLATE}), now);
-        domain.live.mods.set_shell_alive("agent-a", Some(true));
+        domain.live.mods.set_shell_alive("agent-a", Some(true), now + 1);
         hook(&domain, json!({"session_id": "agent-a", "hook_event_name": "PreToolUse", "tool_name": "Monitor",
             "tool_input": {"description": "ablation results", "command": "tail -f ablation.txt"}}), Some(6)).await;
 
@@ -2061,17 +2057,17 @@ mod tests {
             waits(&domain, event);
         }
 
-        let since = domain.state().unwrap().agents[&AgentId::from("agent-a")].since;
-        assert!(background_over(&domain, since + OWN_WORK_UNWOKEN - 1).is_empty(), "its own work may take its time");
-        assert_eq!(background_over(&domain, since + OWN_WORK_UNWOKEN), ["agent-a".into()], "work that never wakes it stops counting");
-        lifecycle::node_event(&domain, &"agent-a".into(), NodeEvent::BackgroundEnded).unwrap();
-        let cards = unheard(&domain);
-        assert_eq!(cards.len(), 1);
-        assert_eq!(cards[0].body, "Esperando el resto.", "then its last words reach the user");
+        let later = alondra_core::now_millis() + 30 * 60 * 60_000;
+        domain.live.mods.set_shell_alive("agent-a", Some(false), later);
+        assert!(background_over(&domain).is_empty(), "its ablation is over, yet its Monitor still runs");
+        lifecycle::reconcile_at(&domain, [("agent-a".into(), Listed::Idle)].into(), later + 1).unwrap();
+        waits(&domain, "thirty hours on, its Monitor still runs");
+        hook(&domain, json!({"session_id": "agent-a", "hook_event_name": "UserPromptSubmit", "prompt": "<task-notification>"}), Some(6)).await;
+        assert_eq!(phase_of(&domain), NodePhase::Working, "the Monitor's end wakes it");
     }
 
-    /// A workflow, a monitor or any other work with no shell to watch runs as long as a subagent
-    /// may: forty minutes in, its node still waits for it.
+    /// A workflow, a monitor or any other work with no shell to watch ends when Claude Code says it
+    /// did: forty minutes or three hours in, its node still waits for it, with no card.
     #[tokio::test]
     async fn a_node_waiting_for_a_long_workflow_keeps_waiting_for_it() {
         let fixture = Fixture::new();
@@ -2083,26 +2079,33 @@ mod tests {
         let tasks = json!([{"id": "w1", "type": "workflow", "name": "review-changes", "description": "Review the branch"}]);
         hook(&domain, json!({"session_id": "agent-a", "hook_event_name": "Stop", "background_tasks": tasks}), Some(6)).await;
         mod_report(&domain, json!({"event": "background", "tasks": tasks}), now);
-        domain.live.mods.set_shell_alive("agent-a", Some(false));
-        assert!(matches!(phase_of(&domain), NodePhase::WaitingBackground(_)));
-        assert!(background_over(&domain, now + 40 * 60_000).is_empty(), "forty minutes in, the workflow still runs");
-        assert!(!domain.live.mods.session("agent-a").unwrap().background_hung(now + 40 * 60_000));
-        assert!(domain.live.mods.session("agent-a").unwrap().background_hung(now + alondra_core::states::SUBAGENT_CALL_LIMIT_MS + 1));
+        for minutes in [40, 180] {
+            let at = now + minutes * 60_000;
+            domain.live.mods.set_shell_alive("agent-a", Some(false), at);
+            assert!(background_over(&domain).is_empty(), "{minutes} minutes in, the workflow still runs");
+            lifecycle::reconcile_at(&domain, [("agent-a".into(), Listed::Idle)].into(), at + 1).unwrap();
+            assert!(matches!(phase_of(&domain), NodePhase::WaitingBackground(Background { gone: None, .. })), "{minutes} minutes in");
+            assert!(unheard(&domain).is_empty());
+        }
     }
 
+    /// A subagent runs until its end is reported, however long; then the node waits for the turn
+    /// its end starts.
     #[tokio::test]
-    async fn a_node_whose_background_work_hung_stops_waiting_for_it() {
+    async fn a_node_waits_for_its_subagent_until_its_end_is_reported() {
         let fixture = Fixture::new();
         let domain = fixture.open();
         node_with_task(&domain);
-        background_subagent(&domain, 5);
-        let stop = json!({"session_id": "agent-a", "hook_event_name": "Stop",
-            "background_tasks": [{"id": "sub", "type": "agent", "description": "musts run"}]});
+        background_subagent(&domain, 150);
+        let tasks = json!([{"id": "sub", "type": "subagent", "description": "musts run"}]);
+        let stop = json!({"session_id": "agent-a", "hook_event_name": "Stop", "background_tasks": tasks});
         assert_eq!(hook(&domain, stop, Some(6)).await.0, json!({}));
-        assert!(matches!(phase_of(&domain), NodePhase::WaitingBackground(Background { work: alondra_core::BackgroundKind::Agent, .. })));
-        let now = alondra_core::now_millis();
-        assert!(background_over(&domain, now + BACKGROUND_WAKE_GRACE).is_empty(), "a subagent at work is no shell: it still runs");
-        assert_eq!(background_over(&domain, now + alondra_core::states::SUBAGENT_CALL_LIMIT_MS), ["agent-a".into()], "past its limit it hung");
+        mod_report(&domain, json!({"event": "background", "tasks": tasks}), alondra_core::now_millis());
+        assert!(matches!(phase_of(&domain), NodePhase::WaitingBackground(Background { work: alondra_core::BackgroundKind::Agent, .. })),
+            "two and a half hours in, Claude Code still lists it");
+        assert!(background_over(&domain).is_empty(), "a subagent at work is no shell: it still runs");
+        mod_report(&domain, json!({"event": "subagent.end", "id": "sub"}), alondra_core::now_millis());
+        assert_eq!(background_over(&domain), ["agent-a".into()], "its end was reported");
     }
 
     /// A subagent the node started in the background `minutes_ago`, with no shell call alive.
@@ -2111,15 +2114,15 @@ mod tests {
         domain.connect_node(serde_json::from_value(json!({"session_id": "agent-a", "version": "2.1.287"})).unwrap(), at);
         domain.report(serde_json::from_value(json!({"session_id": "agent-a", "event": "subagent.end", "id": "sub"})).unwrap(), at);
         domain.report(serde_json::from_value(json!({"session_id": "agent-a", "event": "subagent.start", "id": "sub"})).unwrap(), at);
-        domain.live.mods.set_shell_alive("agent-a", Some(false));
+        domain.live.mods.set_shell_alive("agent-a", Some(false), at + 1);
     }
 
     /// The node of the flaky snapshots task: its one question answered, it ended its turn saying
     /// it waits. While its background work runs it may stop, as that work wakes it; once that
-    /// work has hung it is held back like any turn end without a result, and the user is told at
+    /// work is over it is held back like any turn end without a result, and the user is told at
     /// the cap.
     #[tokio::test]
-    async fn an_answered_question_and_hung_background_work_never_let_a_node_stop_without_delivering() {
+    async fn an_answered_question_and_finished_background_work_never_let_a_node_stop_without_delivering() {
         let fixture = Fixture::new();
         let domain = fixture.open();
         node_with_task(&domain);
@@ -2132,7 +2135,8 @@ mod tests {
         assert_eq!(hook(&domain, stop.clone(), Some(6)).await.0, json!({}), "its work runs and will wake it");
         assert_eq!(domain.store.lock().unwrap().stop_blocks(&"task".into()).unwrap(), None, "nothing counted");
 
-        background_subagent(&domain, 150);
+        mod_report(&domain, json!({"event": "subagent.end", "id": "sub"}), alondra_core::now_millis());
+        let stop = json!({"session_id": "agent-a", "hook_event_name": "Stop", "background_tasks": []});
         for _ in 0..STOP_BLOCKS {
             assert!(reminder_only(&hook(&domain, stop.clone(), Some(6)).await.0), "an answered question is no open question");
         }
@@ -2142,21 +2146,21 @@ mod tests {
         assert!(problems(&domain).is_empty());
     }
 
-    /// A node already stopped when its background work hangs ends no more turns: Alondra sends it
-    /// back itself, at most once per gap, counting each like a held-back turn end; past the cap the
-    /// listing that finds it idle puts its last words in front of the user.
+    /// A node already stopped whose background work ended without waking it ends no more turns:
+    /// Alondra sends it back itself, at most once per gap, counting each like a held-back turn end;
+    /// past the cap the listing that finds it idle puts its last words in front of the user.
     #[tokio::test]
-    async fn a_node_idle_behind_hung_background_work_is_sent_back_until_the_cap_then_its_words_reach_the_user() {
+    async fn a_node_idle_behind_finished_background_work_is_sent_back_until_the_cap_then_its_words_reach_the_user() {
         let fixture = Fixture::new();
         let domain = fixture.open();
         node_with_task(&domain);
         let mut reminded = std::collections::HashMap::new();
         let mut now = alondra_core::now_millis();
 
-        background_subagent(&domain, 60);
-        assert!(behind_hung_work(&domain, now, &mut reminded).is_empty(), "its work still runs");
-
         background_subagent(&domain, 150);
+        assert!(behind_hung_work(&domain, now, &mut reminded).is_empty(), "its work still runs, however long");
+
+        mod_report(&domain, json!({"event": "subagent.end", "id": "sub"}), now - HUNG_REMINDER_GAP);
         for round in 0..STOP_BLOCKS {
             let sent = behind_hung_work(&domain, now, &mut reminded);
             assert_eq!(sent.len(), 1, "round {round}");
@@ -2167,8 +2171,10 @@ mod tests {
         }
         assert!(behind_hung_work(&domain, now, &mut reminded).is_empty(), "the cap: no more reminders");
         assert!(problems(&domain).is_empty());
-        lifecycle::reconcile(&domain, [("agent-a".into(), Listed::Idle)].into()).unwrap();
-        assert_eq!(unheard(&domain).len(), 1, "its last words reach the user");
+        let listed = alondra_core::now_millis();
+        lifecycle::reconcile_at(&domain, [("agent-a".into(), Listed::Idle)].into(), listed).unwrap();
+        lifecycle::reconcile_at(&domain, [("agent-a".into(), Listed::Idle)].into(), listed + 1).unwrap();
+        assert_eq!(unheard(&domain).len(), 1, "the second listing that finds it idle puts its last words in front of the user");
 
         free_text_question(&domain, "q", agent_actor(), task_scope(), Recipient::User, "Which name?");
         assert!(behind_hung_work(&domain, now + HUNG_REMINDER_GAP, &mut reminded).is_empty(), "a node waiting on its question is left alone");
