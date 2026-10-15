@@ -736,6 +736,7 @@ mod tests {
             waitlist: crate::management::waitlist::Limiter::new(None),
             epoch: "synthetic".into(),
             iroh_access_token: None,
+            iroh_relay: None,
             test_directory: Some(scratch_directory),
             lab_waiters: Arc::default(),
         });

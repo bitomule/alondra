@@ -52,6 +52,8 @@ struct Server {
     epoch: String,
     /// Bearer the iroh relay presents to `/v1/iroh/access`; the route is absent without it.
     iroh_access_token: Option<String>,
+    /// The iroh relay this relay admits endpoints to, announced to Macs and phones in bootstrap.
+    iroh_relay: Option<String>,
     #[cfg(test)]
     test_directory: Option<crate::test_support::Directory>,
 }
@@ -110,7 +112,10 @@ async fn ready(State(server): State<Arc<Server>>) -> impl IntoResponse {
 async fn bootstrap(State(server): State<Arc<Server>>) -> impl IntoResponse {
     (
         StatusCode::OK,
-        Json(json!({"protocol":1,"epoch":server.epoch,"request_wait":true,"result_ack":true})),
+        Json(match &server.iroh_relay {
+            Some(iroh_relay) => json!({"protocol":1,"epoch":server.epoch,"request_wait":true,"result_ack":true,"iroh_relay":iroh_relay}),
+            None => json!({"protocol":1,"epoch":server.epoch,"request_wait":true,"result_ack":true}),
+        }),
     )
 }
 
@@ -1088,6 +1093,14 @@ async fn main() -> anyhow::Result<()> {
         }
         Err(_) => None,
     };
+    let iroh_relay = match std::env::var("ALONDRA_IROH_RELAY_URL") {
+        Ok(url) => {
+            let parsed = reqwest::Url::parse(&url)?;
+            anyhow::ensure!(parsed.scheme() == "https" && parsed.host_str().is_some(), "ALONDRA_IROH_RELAY_URL must be an https URL");
+            Some(url)
+        }
+        Err(_) => None,
+    };
     let server = Arc::new(Server {
         #[cfg(any(test, feature = "lab-waiter-metrics"))]
         lab_waiters: Arc::default(),
@@ -1106,6 +1119,7 @@ async fn main() -> anyhow::Result<()> {
         waitlist: management::waitlist::Limiter::from_env()?,
         epoch,
         iroh_access_token,
+        iroh_relay,
         #[cfg(test)]
         test_directory: None,
     });
@@ -1261,6 +1275,7 @@ mod http_tests {
     }
 
     const TEST_IROH_ACCESS_TOKEN: &str = "test-iroh-access-token-0123456789abcdef";
+    const TEST_IROH_RELAY: &str = "https://iroh.example.com";
 
     async fn test_server_with_iroh_access(mac_key:&SigningKey,apns_endpoint:Option<String>,management:Option<management::Management>,iroh_access_token:Option<String>)->(String,Arc<Server>,tokio::task::JoinHandle<()>) {
         let directory = crate::test_support::Directory::new();
@@ -1302,6 +1317,7 @@ mod http_tests {
             device_gate: Arc::new(RwLock::new(())),
             waitlist: management::waitlist::Limiter::new(None),
             epoch,
+            iroh_relay: iroh_access_token.as_ref().map(|_| TEST_IROH_RELAY.to_owned()),
             iroh_access_token,
             #[cfg(test)]
             test_directory: Some(directory),
@@ -4228,6 +4244,17 @@ mod http_tests {
                 (StatusCode::UNAUTHORIZED, "false".into()));
             assert_eq!(f.access(&node).await, allowed());
             f.task.abort();
+        }
+
+        #[tokio::test]
+        async fn bootstrap_announces_the_iroh_relay_only_when_one_is_configured() {
+            for (token, announced) in [(Some(TEST_IROH_ACCESS_TOKEN.to_owned()), Some(TEST_IROH_RELAY)), (None, None)] {
+                let f = Fixture::with_token(token).await;
+                let boot: Value = f.http.get(format!("{}/v1/bootstrap", f.url)).send().await.unwrap().json().await.unwrap();
+                assert_eq!(boot["iroh_relay"].as_str(), announced, "{boot}");
+                assert!(boot["epoch"].is_string());
+                f.task.abort();
+            }
         }
 
         #[tokio::test]

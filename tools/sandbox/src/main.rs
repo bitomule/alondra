@@ -1,5 +1,6 @@
 //! Throwaway Macs, relay and phone for `make e2e-sandbox`. Never points at a real Alondra.
 mod fake;
+mod iroh_check;
 mod issuer;
 mod journey;
 mod mac;
@@ -48,6 +49,9 @@ enum Command {
         /// Where the direct listener binds: loopback, or 0.0.0.0 to reach it from a real phone.
         #[arg(long, default_value = "127.0.0.1")]
         direct_listen: String,
+        /// The UDP port of the Mac's iroh endpoint, bound where the direct listener is.
+        #[arg(long, default_value_t = 0)]
+        iroh_port: u16,
     },
     /// Registers a provisioned Mac with the relay under the sandbox owner.
     EnrollMac {
@@ -71,6 +75,8 @@ enum Command {
     },
     /// Runs the automatic scenarios against every Mac of a running sandbox.
     Scenario,
+    /// Checks Mac 1's iroh endpoint against its direct listener and measures both.
+    Iroh,
     /// The sandbox's `claude` (FAKES=1): what `fakes/claude` runs.
     #[command(hide = true)]
     FakeClaude {
@@ -154,8 +160,8 @@ fn main() -> Result<()> {
         Command::RelayConfig { listen, issuer, registry, out } => {
             relay::write_config(&listen, &issuer, &registry, &out)
         }
-        Command::ProvisionMac { home, relay, direct_port, direct_listen } => {
-            println!("{}", mac::provision(&home, &relay, direct_port, &direct_listen)?);
+        Command::ProvisionMac { home, relay, direct_port, direct_listen, iroh_port } => {
+            println!("{}", mac::provision(&home, &relay, direct_port, &direct_listen, iroh_port)?);
             Ok(())
         }
         Command::EnrollMac { home, relay, issuer, key } => {
@@ -184,6 +190,7 @@ fn main() -> Result<()> {
             }
         }
         Command::Scenario => scenario::run(&sandbox::Sandbox::open(&cli.sandbox)?),
+        Command::Iroh => iroh_check::run(&sandbox::Sandbox::open(&cli.sandbox)?),
         Command::FakeClaude { args } => std::process::exit(fake::claude(&fake::Fakes::open(&cli.sandbox)?, &args)?),
         Command::FakeGh { args } => std::process::exit(fake::gh(&fake::Fakes::open(&cli.sandbox)?, &args)?),
         Command::FakeNode { short } => fake::node::run(&fake::Fakes::open(&cli.sandbox)?, &short),

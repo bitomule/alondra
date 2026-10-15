@@ -53,6 +53,14 @@ fn post_json(url: &str, body: &[u8]) -> Result<(u16, Vec<u8>)> {
     Ok((response.status().as_u16(), response.body_mut().read_to_vec()?))
 }
 
+/// What the Mac's direct listener says about itself, checked to be that Mac.
+pub(super) fn hello(target: &Target) -> Result<Value> {
+    let (status, hello) = get_json(&format!("http://{}/direct/hello", target.direct))?;
+    ensure!(status == 200, "Mac {} has no direct listener ({status})", target.number);
+    ensure!(hello["mac_id"] == target.mac.id.as_str(), "the direct port answers as another Mac");
+    Ok(hello)
+}
+
 fn get_json(url: &str) -> Result<(u16, Value)> {
     let mut response = http().get(url).call()?;
     let status = response.status().as_u16();
@@ -86,9 +94,7 @@ impl Phone<'_> {
 
     /// Sends this phone's fresh keys and commitment, then reveals its nonce.
     pub fn start_direct(&self, target: &Target) -> Result<Attempt> {
-        let (status, hello) = get_json(&format!("http://{}/direct/hello", target.direct))?;
-        ensure!(status == 200, "Mac {} has no direct listener ({status})", target.number);
-        ensure!(hello["mac_id"] == target.mac.id.as_str(), "the direct port answers as another Mac");
+        let hello = hello(target)?;
         let link = Link {
             device_id: format!("phone-{}-direct-{}", self.name, hex(&random::<6>()?)),
             signing: SigningKey::from_slice(&new_key()?)?,

@@ -1,0 +1,371 @@
+use super::*;
+use crate::iroh_endpoint::{self, ALPN, IrohConfig, close};
+use alondra_core::views::action_id::{ActionId, Verb};
+use iroh::endpoint::{Connection, ConnectionError, PortmapperConfig, VarInt, presets};
+use iroh::{Endpoint, EndpointAddr, RelayMode};
+use std::net::Ipv4Addr;
+
+const MAC_SIGNING: [u8; 32] = [1u8; 32];
+
+struct Phone {
+    id: &'static str,
+    signing: SigningKey,
+    agreement: SecretKey,
+}
+
+impl Phone {
+    fn new(id: &'static str, seed: u8) -> Self {
+        Self {
+            id,
+            signing: SigningKey::from_slice(&[seed; 32]).unwrap(),
+            agreement: SecretKey::from_slice(&[seed + 1; 32]).unwrap(),
+        }
+    }
+
+    fn work(&self, service: &Service, id: &str, method: &str, path: &str, body: Option<Value>) -> Envelope {
+        let mut value = json!({"method": method, "path": path});
+        if let Some(body) = body {
+            value["body"] = body;
+        }
+        Envelope::seal_random(
+            EnvelopeContext {
+                route: "mac-1",
+                sender: self.id,
+                recipient: "mac-1",
+                request_id: id,
+                kind: "request",
+                expires_at_ms: now_ms() + 60_000,
+            },
+            &serde_json::to_vec(&value).unwrap(),
+            &self.signing,
+            &service.agreement.public_key(),
+        )
+        .unwrap()
+    }
+
+    fn opened(&self, sealed: &Value) -> Value {
+        let envelope: Envelope = serde_json::from_value(sealed.clone()).unwrap();
+        let mac = SigningKey::from_slice(&MAC_SIGNING).unwrap();
+        let body = envelope
+            .open(mac.verifying_key(), &self.agreement, "mac-1", self.id, "mac-1", now_ms())
+            .unwrap();
+        serde_json::from_slice(&body).unwrap()
+    }
+}
+
+struct Fixture {
+    service: Arc<Service>,
+    domain: Arc<crate::domain_runtime::DomainRuntime>,
+    mac: EndpointAddr,
+    phone: Phone,
+    other: Phone,
+    home: crate::test_support::Directory,
+    _endpoint: Endpoint,
+}
+
+impl Fixture {
+    async fn new() -> Self {
+        let (phone, other) = (Phone::new("phone-1", 33), Phone::new("phone-2", 43));
+        let home = crate::test_support::Directory::new();
+        std::fs::create_dir_all(&home).unwrap();
+        for (name, bytes) in [("signing.key", MAC_SIGNING), ("agreement.key", [2u8; 32])] {
+            let path = home.join(name);
+            std::fs::write(&path, URL_SAFE_NO_PAD.encode(bytes)).unwrap();
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        let approved: Vec<_> = [&phone, &other]
+            .iter()
+            .map(|p| json!({"id": p.id, "name": "iPhone", "created_at": 0, "last_seen": null,
+                "public_key": STANDARD.encode(p.signing.verifying_key().to_sec1_bytes())}))
+            .collect();
+        std::fs::write(home.join("devices.json"), serde_json::to_vec(&approved).unwrap()).unwrap();
+        let mut config = String::from(
+            "mac_id = \"mac-1\"\nsigning_key_path = \"signing.key\"\nagreement_key_path = \"agreement.key\"\n",
+        );
+        for p in [&phone, &other] {
+            config.push_str(&format!(
+                "[[devices]]\ndevice_id = \"{}\"\nsigning_key = \"{}\"\nagreement_key = \"{}\"\n",
+                p.id,
+                URL_SAFE_NO_PAD.encode(p.signing.verifying_key().to_sec1_bytes()),
+                URL_SAFE_NO_PAD.encode(p.agreement.public_key().to_sec1_bytes())
+            ));
+        }
+        std::fs::write(home.join("service.toml"), config).unwrap();
+        let service = Service::open(&home, 0, Arc::new(Auth::open(&home).unwrap())).unwrap().unwrap();
+        let domain = Arc::new(crate::domain_runtime::DomainRuntime::open(&home).unwrap());
+        let client = crate::client_routes::Client::open(domain.clone(), &home, Default::default());
+        let service = Arc::new(service.with_domain(domain.clone()).with_client(client));
+        let config = IrohConfig {
+            relay: "off".into(),
+            listen: Some(Ipv4Addr::LOCALHOST.into()),
+            portmapper: false,
+            ..IrohConfig::default()
+        };
+        let endpoint = iroh_endpoint::bind(service.iroh_key().clone(), &config).await.unwrap();
+        let mac = EndpointAddr::new(endpoint.id()).with_ip_addr(endpoint.bound_sockets()[0]);
+        tokio::spawn(iroh_endpoint::serve(endpoint.clone(), service.clone()));
+        Self { service, domain, mac, phone, other, home, _endpoint: endpoint }
+    }
+
+    async fn connect(&self, seed: u8) -> (Endpoint, Connection) {
+        let client = Endpoint::builder(presets::Minimal)
+            .secret_key(iroh::SecretKey::from_bytes(&[seed; 32]))
+            .relay_mode(RelayMode::Disabled)
+            .portmapper_config(PortmapperConfig::Disabled)
+            .clear_ip_transports()
+            .bind_addr((Ipv4Addr::LOCALHOST, 0))
+            .unwrap()
+            .bind()
+            .await
+            .unwrap();
+        let connection = client.connect(self.mac.clone(), ALPN).await.unwrap();
+        (client, connection)
+    }
+
+    fn hello_signature(&self, signer: &SigningKey, device_id: &str, client: &Endpoint) -> String {
+        alondra_e2e::sign_iroh_hello(
+            signer,
+            "mac-1",
+            device_id,
+            client.id().as_bytes(),
+            self.service.iroh_key().public().as_bytes(),
+        )
+        .unwrap()
+    }
+
+    /// A connection whose hello `phone` signed and the Mac accepted.
+    async fn paired(&self, phone: &Phone, seed: u8) -> (Endpoint, Connection) {
+        let (client, connection) = self.connect(seed).await;
+        let signature = self.hello_signature(&phone.signing, phone.id, &client);
+        let reply = exchange(&connection, &json!({"device_id": phone.id, "signature": signature})).await;
+        assert_eq!(reply, json!({"ok": true}));
+        (client, connection)
+    }
+
+    fn action(&self, phone: &Phone, request_id: &str, limit: &str, command_id: &str) -> Envelope {
+        let state = self.domain.state().unwrap();
+        let action = ActionId::new(Verb::SetLimit, "limit", state.revision, Some(limit.into())).unwrap();
+        phone.work(&self.service, request_id, "POST", "/actions", Some(json!({"protocol": 1,
+            "command_id": command_id, "data_epoch": state.data_epoch, "client": "ios", "lang": "en",
+            "action_id": action.to_string(), "option_id": limit, "input": {}})))
+    }
+
+    fn limit(&self) -> String {
+        std::fs::read_to_string(alondra_core::options::path_in(&self.home)).unwrap_or_default()
+    }
+}
+
+async fn send(connection: &Connection, body: &[u8]) -> Result<Vec<u8>> {
+    let (mut send, mut recv) = connection.open_bi().await?;
+    send.write_all(body).await?;
+    send.finish()?;
+    Ok(recv.read_to_end(4 * 1024 * 1024).await?)
+}
+
+async fn exchange(connection: &Connection, body: &impl serde::Serialize) -> Value {
+    serde_json::from_slice(&send(connection, &serde_json::to_vec(body).unwrap()).await.unwrap()).unwrap()
+}
+
+async fn close_code(connection: &Connection) -> Option<VarInt> {
+    match tokio::time::timeout(Duration::from_secs(5), connection.closed()).await.expect("connection closed") {
+        ConnectionError::ApplicationClosed(close) => Some(close.error_code),
+        _ => None,
+    }
+}
+
+#[tokio::test]
+async fn a_paired_device_gets_a_whole_request_answered_on_one_stream() {
+    let f = Fixture::new().await;
+    let (_client, connection) = f.paired(&f.phone, 50).await;
+    let envelope = f.phone.work(&f.service, "op-routes", "GET", crate::direct::routes::PATH, None);
+    let reply = exchange(&connection, &envelope).await;
+    let answer = f.phone.opened(&reply["response"]);
+    assert_eq!(answer["status"], 200, "{answer}");
+    assert_eq!(answer["body"]["iroh_endpoint"], f.service.iroh_key().public().to_string());
+
+    let (direct, lease) = f.service.handle_direct(envelope).await.unwrap();
+    drop(lease);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&direct).unwrap(),
+        reply["response"],
+        "the direct listener replays the very answer iroh got: one journal behind both"
+    );
+}
+
+#[tokio::test]
+async fn a_device_not_paired_here_is_refused_before_any_request() {
+    let f = Fixture::new().await;
+    let stranger = Phone::new("phone-9", 70);
+
+    let (client, connection) = f.connect(51).await;
+    let signature = f.hello_signature(&stranger.signing, stranger.id, &client);
+    let reply = exchange(&connection, &json!({"device_id": stranger.id, "signature": signature})).await;
+    assert_eq!(reply, json!({"error": "unauthorized"}));
+    assert_eq!(close_code(&connection).await, Some(VarInt::from_u32(close::UNAUTHORIZED)));
+
+    let (client, connection) = f.connect(52).await;
+    let forged = f.hello_signature(&stranger.signing, f.phone.id, &client);
+    let reply = exchange(&connection, &json!({"device_id": f.phone.id, "signature": forged})).await;
+    assert_eq!(reply, json!({"error": "unauthorized"}), "a paired ID signed by another key proves nothing");
+    assert_eq!(close_code(&connection).await, Some(VarInt::from_u32(close::UNAUTHORIZED)));
+
+    let (elsewhere, _) = f.connect(53).await;
+    let replayed = f.hello_signature(&f.phone.signing, f.phone.id, &elsewhere);
+    let (_client, connection) = f.connect(54).await;
+    let reply = exchange(&connection, &json!({"device_id": f.phone.id, "signature": replayed})).await;
+    assert_eq!(reply, json!({"error": "unauthorized"}), "a hello signed for another endpoint cannot be replayed");
+    assert_eq!(close_code(&connection).await, Some(VarInt::from_u32(close::UNAUTHORIZED)));
+    assert!(send(&connection, b"{}").await.is_err(), "nothing is served after a refused hello");
+}
+
+#[tokio::test]
+async fn a_connection_that_never_says_hello_is_closed() {
+    let f = Fixture::new().await;
+    let (_client, connection) = f.connect(55).await;
+    assert_eq!(close_code(&connection).await, Some(VarInt::from_u32(close::HELLO_TIMEOUT)));
+}
+
+#[tokio::test]
+async fn a_stream_from_another_device_than_the_hello_is_refused() {
+    let f = Fixture::new().await;
+    let (_client, connection) = f.paired(&f.phone, 56).await;
+    let theirs = f.other.work(&f.service, "op-other", "GET", crate::direct::routes::PATH, None);
+    assert_eq!(exchange(&connection, &theirs).await, json!({"error": "wrong_sender"}));
+    let mine = f.phone.work(&f.service, "op-mine", "GET", crate::direct::routes::PATH, None);
+    assert_eq!(f.phone.opened(&exchange(&connection, &mine).await["response"])["status"], 200);
+}
+
+#[tokio::test]
+async fn a_revoked_device_loses_the_open_connection_and_is_told_so_sealed() {
+    let f = Fixture::new().await;
+    let (_client, connection) = f.paired(&f.phone, 57).await;
+    assert!(Auth::open(&f.home).unwrap().revoke("phone-1").unwrap());
+    let after = f.phone.work(&f.service, "op-after", "GET", crate::direct::routes::PATH, None);
+    assert_eq!(
+        exchange(&connection, &after).await,
+        json!({"error": "unauthorized"}),
+        "a revocation on this Mac cuts the open connection at its next request"
+    );
+
+    f.service.remember_revoked("phone-1");
+    let (_client, connection) = f.paired(&f.phone, 58).await;
+    let request = f.phone.work(&f.service, "op-told", "GET", crate::direct::routes::PATH, None);
+    let answer = f.phone.opened(&exchange(&connection, &request).await["revoked"]);
+    assert_eq!((answer["status"].as_u64(), answer["error"].as_str()), (Some(403), Some("device_revoked")));
+}
+
+#[tokio::test]
+async fn a_repeated_mutation_runs_once_over_iroh_and_directly() {
+    let f = Fixture::new().await;
+    let (_client, connection) = f.paired(&f.phone, 59).await;
+    let action = f.action(&f.phone, "op-limit", "4", "5f0c2d9e-8d0b-4c71-9b0e-2b6f5d8f1a10");
+    let first = exchange(&connection, &action).await;
+    assert_eq!(f.phone.opened(&first["response"])["body"]["outcome"], "applied");
+    assert!(f.limit().contains("max_working_nodes = 4"));
+
+    std::fs::write(alondra_core::options::path_in(&f.home), f.limit().replace("max_working_nodes = 4", "max_working_nodes = 6")).unwrap();
+    let again = exchange(&connection, &action).await;
+    assert_eq!(again, first, "a retry over iroh gets the stored answer");
+    let (direct, lease) = f.service.handle_direct(action.clone()).await.unwrap();
+    drop(lease);
+    assert_eq!(serde_json::from_slice::<Value>(&direct).unwrap(), first["response"], "and so does one sent directly");
+    assert!(f.limit().contains("max_working_nodes = 6"), "the retries never applied the action again");
+
+    let reused = f.action(&f.phone, "op-limit", "5", "5f0c2d9e-8d0b-4c71-9b0e-2b6f5d8f1a10");
+    assert_eq!(exchange(&connection, &reused).await, json!({"error": "idempotency_conflict"}));
+}
+
+#[tokio::test]
+async fn a_body_over_the_limit_or_not_an_envelope_is_refused_and_the_connection_stays() {
+    let f = Fixture::new().await;
+    let (_client, connection) = f.paired(&f.phone, 60).await;
+    let huge = vec![b' '; iroh_endpoint::MAX_REQUEST + 1];
+    let reply: Value = serde_json::from_slice(&send(&connection, &huge).await.unwrap()).unwrap();
+    assert_eq!(reply, json!({"error": "too_large"}));
+    assert_eq!(serde_json::from_slice::<Value>(&send(&connection, b"[]").await.unwrap()).unwrap(), json!({"error": "invalid_envelope"}));
+    let request = f.phone.work(&f.service, "op-still", "GET", crate::direct::routes::PATH, None);
+    assert_eq!(f.phone.opened(&exchange(&connection, &request).await["response"])["status"], 200);
+}
+
+#[tokio::test]
+async fn the_iroh_key_is_created_once_and_kept_across_restarts() {
+    let f = Fixture::new().await;
+    let path = f.home.join(iroh_endpoint::KEY_FILE);
+    use std::os::unix::fs::PermissionsExt;
+    assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+    let again = Service::open(&f.home, 0, Arc::new(Auth::open(&f.home).unwrap())).unwrap().unwrap();
+    assert_eq!(again.iroh_key().public(), f.service.iroh_key().public());
+}
+
+#[test]
+fn the_iroh_table_defaults_to_on_with_the_announced_relay_and_rejects_plain_http() {
+    let config: IrohConfig = toml::from_str("").unwrap();
+    assert_eq!(config, IrohConfig::default());
+    assert!(config.enabled && config.portmapper && config.relay == "auto" && config.listen.is_none());
+    assert_eq!(config.fixed_relay().unwrap(), None);
+    let fixed: IrohConfig = toml::from_str("relay = \"https://relay.example.com\"").unwrap();
+    assert_eq!(fixed.fixed_relay().unwrap().unwrap().to_string(), "https://relay.example.com/");
+    let plain: IrohConfig = toml::from_str("relay = \"http://relay.example.com\"").unwrap();
+    assert!(plain.fixed_relay().is_err());
+    assert!(toml::from_str::<IrohConfig>("relays = \"off\"").is_err());
+}
+
+#[tokio::test]
+async fn the_mac_binds_its_endpoint_at_the_relay_once_per_epoch_and_follows_the_announced_relay() {
+    use axum::Json;
+    use axum::extract::State as RelayState;
+    use axum::routing::put;
+    #[derive(Clone, Default)]
+    struct Seen {
+        bindings: Arc<Mutex<Vec<(HeaderMap, Value)>>>,
+        status: Arc<AtomicUsize>,
+    }
+    let seen = Seen { status: Arc::new(AtomicUsize::new(404)), ..Seen::default() };
+    let router = Router::new()
+        .route("/v1/bootstrap", get(|| async {
+            Json(json!({"epoch": URL_SAFE_NO_PAD.encode([1u8; 16]), "iroh_relay": "https://iroh.example.com"}))
+        }))
+        .route("/v1/iroh-node", put(|RelayState(seen): RelayState<Seen>, headers: HeaderMap, Json(body): Json<Value>| async move {
+            seen.bindings.lock().unwrap().push((headers, body));
+            axum::http::StatusCode::from_u16(seen.status.load(Ordering::SeqCst) as u16).unwrap()
+        }))
+        .with_state(seen.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let (_directory, mut service, _) = push_fixture();
+    service.set_relay_url(Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap());
+    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+
+    let announced = service.iroh_relay_announced();
+    let epoch = service.bootstrap().await.unwrap();
+    assert_eq!(announced.borrow().as_deref(), Some("https://iroh.example.com"));
+
+    service.keep_iroh_endpoint_bound(&epoch).await;
+    service.keep_iroh_endpoint_bound(&epoch).await;
+    assert_eq!(seen.bindings.lock().unwrap().len(), 1, "a relay without the route is not asked again at once");
+
+    seen.status.store(204, Ordering::SeqCst);
+    let next = [2u8; 16];
+    service.keep_iroh_endpoint_bound(&next).await;
+    service.keep_iroh_endpoint_bound(&next).await;
+    let bindings = seen.bindings.lock().unwrap().clone();
+    assert_eq!(bindings.len(), 2, "a new epoch binds again, once");
+    let (headers, body) = &bindings[1];
+    assert_eq!(headers["x-device-id"], "mac-1", "signed as this Mac");
+    let endpoint = service.iroh_key().public();
+    assert_eq!(body["iroh_node_id"], endpoint.to_string());
+    let proof = URL_SAFE_NO_PAD.decode(body["proof"].as_str().unwrap()).unwrap();
+    ring::signature::UnparsedPublicKey::new(&ring::signature::ED25519, endpoint.as_bytes())
+        .verify(b"alondra-iroh-node-v1\0mac-1", &proof)
+        .expect("the proof is the endpoint key's signature over the domain and the Mac ID");
+    server.abort();
+}
+
+#[test]
+fn the_endpoint_id_is_the_ed25519_public_key_of_the_stored_seed() {
+    let seed = [7u8; 32];
+    let pair = ring::signature::Ed25519KeyPair::from_seed_unchecked(&seed).unwrap();
+    let from_ring: String = ring::signature::KeyPair::public_key(&pair).as_ref().iter().map(|b| format!("{b:02x}")).collect();
+    assert_eq!(iroh::SecretKey::from_bytes(&seed).public().to_string(), from_ring);
+    assert_eq!(from_ring, "ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c");
+}

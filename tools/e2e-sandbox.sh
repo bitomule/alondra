@@ -2,8 +2,9 @@
 # Usage: tools/e2e-sandbox.sh <alondrad> <alondra> <alondra-relay> <alondra-sandbox>
 # Starts MACS throwaway alondrad daemons in the background, each with its own HOME, local port
 # and Mac service keys, plus a loopback relay and token issuer they and the synthetic phone use.
-# Each Mac also listens for direct connections on PORT+20+n (loopback; SANDBOX_LAN=1 opens it to
-# the LAN to try a real phone) and advertises itself on Bonjour as _alondra-sandbox._tcp.
+# Each Mac also listens for direct connections on PORT+20+n and for iroh on UDP PORT+40+n, without
+# a relay or port mapping (loopback; SANDBOX_LAN=1 opens both to the LAN to try a real phone), and
+# advertises itself on Bonjour as _alondra-sandbox._tcp.
 # SANDBOX_NAME names its Macs "<name> n" on Bonjour, so a test app picks its own sandbox.
 # Sandbox mode: test/ nodes allowed, wake off (SANDBOX_WAKE=1 turns it on, for a fake claude on PATH).
 # Stop everything with tools/e2e-sandbox-stop.sh.
@@ -56,6 +57,7 @@ port_free() {
 
 local_port() { echo $((base + $1)); }
 direct_port() { echo $((base + 20 + $1)); }
+iroh_port() { echo $((base + 40 + $1)); }
 
 for port in "$issuer_port" "$relay_port"; do port_free "$port"; done
 all=$macs
@@ -136,7 +138,7 @@ while [ "$i" -le "$macs" ]; do
 	home="$dir/mac-$i"
 	port=$(local_port "$i")
 	mkdir -p "$home"
-	mac_id=$("$tool" provision-mac "$home" --relay "$relay" --direct-port "$(direct_port "$i")" --direct-listen "$direct_listen")
+	mac_id=$("$tool" provision-mac "$home" --relay "$relay" --direct-port "$(direct_port "$i")" --direct-listen "$direct_listen" --iroh-port "$(iroh_port "$i")")
 	"$tool" enroll-mac "$home" --relay "$relay" --issuer "$issuer" --key "$dir/issuer/key.der"
 	printf 'port = %s\n' "$port" >"$home/config.toml"
 	[ -z "${SANDBOX_NAME:-}" ] || printf 'name = "%s %s"\n' "$SANDBOX_NAME" "$i" >>"$home/config.toml"
@@ -157,7 +159,7 @@ while [ "$i" -le "$macs" ]; do
 	wait_until "Mac $i's alondrad" "curl -sf http://127.0.0.1:$port/daemon" "$home/alondrad.log"
 	[ -n "$macs_json" ] && macs_json="$macs_json,"
 	macs_json="$macs_json
-    {\"number\": $i, \"mac_id\": \"$mac_id\", \"home\": \"$home\", \"port\": $port, \"direct_port\": $(direct_port "$i")}"
+    {\"number\": $i, \"mac_id\": \"$mac_id\", \"home\": \"$home\", \"port\": $port, \"direct_port\": $(direct_port "$i"), \"iroh_port\": $(iroh_port "$i")}"
 	i=$((i + 1))
 done
 
@@ -173,6 +175,9 @@ set -eu
 [ -f "$home/config.toml" ] || printf 'port = $port\n' >"$home/config.toml"
 if [ -f "$home/service.toml" ] && ! grep -q '^\[direct\]' "$home/service.toml"; then
 	printf '\n[direct]\nport = $(direct_port "$all")\nlisten = "$direct_listen"\n' >>"$home/service.toml"
+fi
+if [ -f "$home/service.toml" ] && ! grep -q '^\[iroh\]' "$home/service.toml"; then
+	printf '\n[iroh]\nrelay = "off"\nport = $(iroh_port "$all")\nlisten = "$direct_listen"\nportmapper = false\n' >>"$home/service.toml"
 fi
 if [ -f "$home/alondrad.pid" ]; then
 	pid=\$(cat "$home/alondrad.pid")
@@ -196,7 +201,7 @@ SCRIPT
 		"$home" "$port" "$home/bin/service" "$home/bin/enroll" "$repo/plugin" >"$home/env"
 	[ -n "$macs_json" ] && macs_json="$macs_json,"
 	macs_json="$macs_json
-    {\"number\": $all, \"mac_id\": \"\", \"home\": \"$home\", \"port\": $port, \"direct_port\": $(direct_port "$all")}"
+    {\"number\": $all, \"mac_id\": \"\", \"home\": \"$home\", \"port\": $port, \"direct_port\": $(direct_port "$all"), \"iroh_port\": $(iroh_port "$all")}"
 fi
 
 trap - EXIT
@@ -218,7 +223,7 @@ i=1
 while [ "$i" -le "$macs" ]; do
 	home="$dir/mac-$i"
 	cat <<EOF
-Mac $i on http://127.0.0.1:$(local_port "$i"), direct listener on $direct_listen:$(direct_port "$i") (log: make e2e-sandbox-logs MAC=$i)
+Mac $i on http://127.0.0.1:$(local_port "$i"), direct listener on $direct_listen:$(direct_port "$i"), iroh on UDP $direct_listen:$(iroh_port "$i") (log: make e2e-sandbox-logs MAC=$i)
   Probe node:  claude --bg --name test/<probe> --plugin-dir $home/plugin --settings $home/settings.json -- "<prompt>"
   Its CLI:     . $home/env && $dir/bin/alondra
 

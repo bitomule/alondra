@@ -148,6 +148,7 @@ async fn full_stack_fixture_relay() {
         waitlist: management::waitlist::Limiter::new(None),
         epoch,
         iroh_access_token: None,
+        iroh_relay: None,
         test_directory: Some(directory),
     });
     let (dispatched, dispatches) = tokio::sync::mpsc::unbounded_channel();

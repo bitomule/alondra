@@ -191,6 +191,8 @@ struct Config {
     devices: Vec<DeviceConfig>,
     #[serde(default)]
     direct: DirectConfig,
+    #[serde(default)]
+    iroh: crate::iroh_endpoint::IrohConfig,
 }
 
 /// The local-network listener in `service.toml`'s `[direct]` table.
@@ -312,6 +314,10 @@ pub struct Service {
     domain: Option<Arc<crate::domain_runtime::DomainRuntime>>,
     routes: Option<Arc<crate::client_routes::Client>>,
     direct: DirectConfig,
+    iroh: crate::iroh_endpoint::IrohConfig,
+    iroh_key: iroh::SecretKey,
+    /// The iroh relay the Alondra relay announces in its bootstrap.
+    iroh_relay: tokio::sync::watch::Sender<Option<String>>,
     /// Writers from either transport share their turn; scheduled relay reads bypass it.
     lane: Arc<tokio::sync::Mutex<()>>,
     #[cfg(test)]
@@ -452,7 +458,7 @@ fn decoded(s: &str) -> Result<Vec<u8>> {
     Ok(URL_SAFE_NO_PAD.decode(s.trim())?)
 }
 
-fn private_key(path: &Path) -> Result<[u8; 32]> {
+pub(crate) fn private_key(path: &Path) -> Result<[u8; 32]> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -821,8 +827,14 @@ impl Service {
             }
             _ => bail!("relay_url and owner_sub go together"),
         };
-        let signing =
-            SigningKey::from_slice(&private_key(&resolve(home, &config.signing_key_path))?)?;
+        let signing_path = resolve(home, &config.signing_key_path);
+        let signing = SigningKey::from_slice(&private_key(&signing_path)?)?;
+        if let Some(relay) = config.iroh.fixed_relay()? {
+            log!("iroh relay fixed in service.toml: {relay}");
+        }
+        let iroh_key = crate::iroh_endpoint::load_or_create_key(
+            signing_path.parent().context("service signing key has no directory")?,
+        )?;
         let agreement =
             SecretKey::from_slice(&private_key(&resolve(home, &config.agreement_key_path))?)?;
         let devices = load_devices(&config.mac_id, config.devices)?;
@@ -868,6 +880,9 @@ impl Service {
             domain: None,
             routes: None,
             direct: config.direct,
+            iroh: config.iroh,
+            iroh_key,
+            iroh_relay: tokio::sync::watch::Sender::new(None),
             lane: Arc::new(tokio::sync::Mutex::new(())),
             #[cfg(test)]
             envelope_clock: None,
@@ -912,6 +927,54 @@ impl Service {
 
     pub(crate) fn mac_id(&self) -> &str {
         &self.mac_id
+    }
+
+    pub(crate) fn iroh_config(&self) -> &crate::iroh_endpoint::IrohConfig {
+        &self.iroh
+    }
+
+    pub(crate) fn iroh_key(&self) -> &iroh::SecretKey {
+        &self.iroh_key
+    }
+
+    /// This Mac's iroh endpoint ID when its endpoint runs, as devices dial it.
+    pub(crate) fn iroh_endpoint(&self) -> Option<String> {
+        self.iroh.enabled.then(|| self.iroh_key.public().to_string())
+    }
+
+    pub(crate) fn iroh_relay_announced(&self) -> tokio::sync::watch::Receiver<Option<String>> {
+        self.iroh_relay.subscribe()
+    }
+
+    pub(super) fn announce_iroh_relay(&self, url: Option<String>) {
+        self.iroh_relay.send_if_modified(|current| {
+            let changed = *current != url;
+            *current = url;
+            changed
+        });
+    }
+
+    /// Whether `device_id` signed this iroh connection's hello with the key paired here. A
+    /// revoked device that proves itself is let in too: its first request is then told, sealed,
+    /// that it was revoked, as on the direct listener.
+    pub(crate) fn iroh_hello_proven(&self, device_id: &str, signature: &str, device_endpoint: &[u8; 32]) -> bool {
+        let approved = self
+            .devices
+            .get(device_id)
+            .filter(|device| self.require_device_approval(device_id, device, Transport::Direct).is_ok())
+            .map(|device| device.signing);
+        let Some(key) = approved.or_else(|| self.revoked.signing_key(device_id)) else {
+            return false;
+        };
+        alondra_e2e::verify_iroh_hello(
+            &key,
+            signature,
+            &self.mac_id,
+            device_id,
+            device_endpoint,
+            self.iroh_key.public().as_bytes(),
+        )
+        .is_ok()
     }
 
     pub(crate) fn signing_key(&self) -> &SigningKey {
@@ -1519,7 +1582,10 @@ impl Service {
             if !self.direct.enabled {
                 return Ok(json!({"status":404,"body":{"error":"direct_off"}}));
             }
-            let routes = crate::direct::routes::current(self.direct.port, self.direct.listen).await;
+            let mut routes = json!(crate::direct::routes::current(self.direct.port, self.direct.listen).await);
+            if let Some(endpoint) = self.iroh_endpoint() {
+                routes["iroh_endpoint"] = endpoint.into();
+            }
             self.require_device_approval(sender, &device, transport)?;
             return Ok(json!({"status":200,"body":routes}));
         }
@@ -2846,6 +2912,7 @@ mod tests {
     mod push_commit_tests;
     mod operation_result_tests;
     mod approval_lease_deadlock_tests;
+    mod iroh_tests;
     use super::*;
     use reqwest::{StatusCode, Url};
     use std::collections::HashSet;
@@ -6200,6 +6267,9 @@ agreement_key = "{}"
         let service = Service {
             relay: Some(relay::RelayConnector::new(Url::parse("http://127.0.0.1:1/").unwrap(), "owner".into())),
             direct: DirectConfig::default(),
+            iroh: crate::iroh_endpoint::IrohConfig::default(),
+            iroh_key: iroh::SecretKey::from_bytes(&[8u8; 32]),
+            iroh_relay: tokio::sync::watch::Sender::new(None),
             lane: Arc::new(tokio::sync::Mutex::new(())),
             #[cfg(test)]
             envelope_clock: None,
@@ -6297,6 +6367,9 @@ agreement_key = "{}"
         let service = Service {
             relay: Some(relay::RelayConnector::new(Url::parse("http://127.0.0.1:1/").unwrap(), "owner".into())),
             direct: DirectConfig::default(),
+            iroh: crate::iroh_endpoint::IrohConfig::default(),
+            iroh_key: iroh::SecretKey::from_bytes(&[8u8; 32]),
+            iroh_relay: tokio::sync::watch::Sender::new(None),
             lane: Arc::new(tokio::sync::Mutex::new(())),
             #[cfg(test)]
             envelope_clock: None,
@@ -6674,6 +6747,9 @@ agreement_key = "{}"
                 let service = Service {
                     relay: Some(relay::RelayConnector::new(Url::parse(&format!("http://127.0.0.1:{port}/")).unwrap(), "owner".into())),
                     direct: DirectConfig::default(),
+                    iroh: crate::iroh_endpoint::IrohConfig::default(),
+                    iroh_key: iroh::SecretKey::from_bytes(&[8u8; 32]),
+                    iroh_relay: tokio::sync::watch::Sender::new(None),
                     lane: Arc::new(tokio::sync::Mutex::new(())),
                     #[cfg(test)]
                     envelope_clock: None,
@@ -6819,6 +6895,9 @@ agreement_key = "{}"
         let service = Service {
             relay: Some(relay::RelayConnector::new(Url::parse(&format!("http://127.0.0.1:{port}/")).unwrap(), "owner".into())),
             direct: DirectConfig::default(),
+            iroh: crate::iroh_endpoint::IrohConfig::default(),
+            iroh_key: iroh::SecretKey::from_bytes(&[8u8; 32]),
+            iroh_relay: tokio::sync::watch::Sender::new(None),
             lane: Arc::new(tokio::sync::Mutex::new(())),
             #[cfg(test)]
             envelope_clock: None,
@@ -6984,6 +7063,9 @@ agreement_key = "{}"
         let service = Service {
             relay: Some(relay::RelayConnector::new(Url::parse(&format!("http://127.0.0.1:{relay_port}/")).unwrap(), "owner".into())),
             direct: DirectConfig::default(),
+            iroh: crate::iroh_endpoint::IrohConfig::default(),
+            iroh_key: iroh::SecretKey::from_bytes(&[8u8; 32]),
+            iroh_relay: tokio::sync::watch::Sender::new(None),
             lane: Arc::new(tokio::sync::Mutex::new(())),
             #[cfg(test)]
             envelope_clock: None,
@@ -7023,6 +7105,9 @@ agreement_key = "{}"
         let restarted = Service {
             relay: Some(relay::RelayConnector::new(service.relay_url(), "owner".into())),
             direct: DirectConfig::default(),
+            iroh: crate::iroh_endpoint::IrohConfig::default(),
+            iroh_key: iroh::SecretKey::from_bytes(&[8u8; 32]),
+            iroh_relay: tokio::sync::watch::Sender::new(None),
             lane: Arc::new(tokio::sync::Mutex::new(())),
             #[cfg(test)]
             envelope_clock: None,
@@ -7227,6 +7312,9 @@ agreement_key = "{}"
         let removed_from_config = Service {
             relay: Some(relay::RelayConnector::new(service.relay_url(), "owner".into())),
             direct: DirectConfig::default(),
+            iroh: crate::iroh_endpoint::IrohConfig::default(),
+            iroh_key: iroh::SecretKey::from_bytes(&[8u8; 32]),
+            iroh_relay: tokio::sync::watch::Sender::new(None),
             lane: Arc::new(tokio::sync::Mutex::new(())),
             #[cfg(test)]
             envelope_clock: None,

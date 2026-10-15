@@ -146,15 +146,28 @@ def smoke(ver, target, archive):
         run(sys.executable, ROOT / 'deploy/brew/smoke-setup.py', opt)
 
 
+# alondrad is a launchd agent: macOS shows its Local Network reason only from the Info.plist its
+# build embeds and binds into the signature (crates/alondrad/build.rs, TN3179).
+WITH_INFO_PLIST = {'com.bitomule.alondrad'}
+
+
+def check_signature(details, identifier):
+    if not all(value in details for value in (f'TeamIdentifier={TEAM}',
+                'Authority=Developer ID Application:', 'Timestamp=')):
+        raise RuntimeError('Unexpected signing identity/team or missing secure timestamp')
+    if f'Identifier={identifier}\n' not in details + '\n':
+        raise RuntimeError(f'Signed with another identifier than {identifier}')
+    if identifier in WITH_INFO_PLIST and 'Info.plist entries=' not in details:
+        raise RuntimeError(f'{identifier} lost its embedded Info.plist: macOS would not show why it needs Local Network')
+
+
 def sign(binary, identifier):
     run('codesign', '--force', '--options', 'runtime', '--timestamp', '--sign', IDENTITY,
         '--identifier', identifier, binary)
     run('codesign', '--verify', '--strict', binary)
     details = subprocess.run(['codesign', '--display', '--verbose=4', str(binary)],
                              check=True, text=True, capture_output=True).stderr
-    if not all(value in details for value in (f'TeamIdentifier={TEAM}',
-                'Authority=Developer ID Application:', 'Timestamp=')):
-        raise RuntimeError('Unexpected signing identity/team or missing secure timestamp')
+    check_signature(details, identifier)
 
 
 

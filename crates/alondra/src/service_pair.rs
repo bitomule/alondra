@@ -63,6 +63,9 @@ struct Qr<'a> {
     session_id: &'a str,
     secret: &'a str,
     expires_at_ms: u64,
+    /// The Mac's iroh endpoint ID, for phones; terminals before iroh reject unknown fields.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mac_iroh_endpoint: Option<&'a str>,
 }
 #[derive(Serialize)]
 struct Session<'a> {
@@ -153,6 +156,13 @@ fn private_key(home: &Path, wire: &str) -> Result<[u8; 32]> {
     bytes
         .try_into()
         .map_err(|_| anyhow!("invalid service key length"))
+}
+/// The iroh endpoint ID of the key the daemon keeps beside the signing key, once it made one.
+fn iroh_endpoint(home: &Path, signing_key_path: &str) -> Option<String> {
+    let path = Path::new(signing_key_path).parent()?.join("iroh.key");
+    let seed = private_key(home, path.to_str()?).ok()?;
+    let pair = ring::signature::Ed25519KeyPair::from_seed_unchecked(&seed).ok()?;
+    Some(ring::signature::KeyPair::public_key(&pair).as_ref().iter().map(|b| format!("{b:02x}")).collect())
 }
 fn http() -> ureq::Agent {
     ureq::Agent::config_builder()
@@ -686,7 +696,8 @@ pub fn run(home: &Path) -> Result<()> {
     if status != 201 {
         bail!(trf!("pairing session refused ({status})", "sesión de emparejamiento rechazada ({status})"));
     }
-    let qr = serde_json::to_string(&Qr {
+    let iroh_endpoint = iroh_endpoint(home, &config.signing_key_path);
+    let invitation = Qr {
         version: 1,
         url: config.relay_url.trim_end_matches('/'),
         mac_id: &public.mac_id,
@@ -695,8 +706,11 @@ pub fn run(home: &Path) -> Result<()> {
         session_id: &session_id,
         secret: &secret,
         expires_at_ms: expires,
-    })?;
-    let art = qrcode::QrCode::new(qr.as_bytes())?
+        mac_iroh_endpoint: iroh_endpoint.as_deref(),
+    };
+    let phone_qr = serde_json::to_string(&invitation)?;
+    let qr = serde_json::to_string(&Qr { mac_iroh_endpoint: None, ..invitation })?;
+    let art = qrcode::QrCode::new(phone_qr.as_bytes())?
         .render::<qrcode::render::unicode::Dense1x2>()
         .quiet_zone(true)
         .build();
@@ -742,6 +756,22 @@ pub fn run(home: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_phone_qr_names_the_iroh_endpoint_the_daemon_keeps_beside_the_signing_key() {
+        let home = crate::test_support::Directory::new();
+        assert_eq!(iroh_endpoint(&home, "service-keys/signing.key"), None, "no key before the daemon made one");
+        fs::create_dir_all(home.join("service-keys")).unwrap();
+        let path = home.join("service-keys/iroh.key");
+        fs::write(&path, URL_SAFE_NO_PAD.encode([7u8; 32])).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(
+            iroh_endpoint(&home, "service-keys/signing.key").as_deref(),
+            Some("ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c")
+        );
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+        assert_eq!(iroh_endpoint(&home, "service-keys/signing.key"), None, "a key others can read is not used");
+    }
 
     #[test]
     fn substituted_candidate_cannot_persist_approval_with_original_client_code() {

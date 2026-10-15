@@ -176,6 +176,7 @@ async fn hello(State(direct): State<Arc<Direct>>) -> Response {
         "name": direct.name,
         "signing_key": direct.signing_key,
         "agreement_key": direct.agreement_key,
+        "iroh_endpoint": direct.service.iroh_endpoint(),
     }))
     .into_response()
 }

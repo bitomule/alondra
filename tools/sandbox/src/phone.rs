@@ -1,5 +1,6 @@
 //! A synthetic phone: its own keys per Mac, the same envelopes and relay calls as the iPhone.
 mod direct;
+mod iroh_session;
 
 use std::{fs, os::unix::fs::OpenOptionsExt, path::PathBuf, time::Duration};
 

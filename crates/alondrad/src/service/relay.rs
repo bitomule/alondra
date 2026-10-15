@@ -57,6 +57,8 @@ pub(crate) struct RelayConnector {
     url: Url,
     owner_sub: String,
     resync: AtomicBool,
+    /// The relay epoch the iroh endpoint was last bound in, and when a failed attempt was.
+    iroh_bound: std::sync::Mutex<Option<([u8; 16], Option<std::time::Instant>)>>,
     wake: tokio::sync::Notify,
     deliveries: Arc<tokio::sync::Semaphore>,
 }
@@ -71,7 +73,15 @@ pub(super) struct RelayDelivery {
 #[derive(Deserialize)]
 struct Bootstrap {
     epoch: String,
+    #[serde(default)]
+    iroh_relay: Option<String>,
 }
+
+/// The iroh relay admits this Mac's endpoint only once the Alondra relay holds the binding,
+/// proven by the endpoint key over this domain and the Mac ID.
+const IROH_NODE_PROOF_DOMAIN: &[u8] = b"alondra-iroh-node-v1\0";
+/// A refused or failed binding is tried again after this long within the same relay epoch.
+const IROH_BIND_RETRY: Duration = Duration::from_secs(300);
 
 pub(super) fn checked_origin(url: &str) -> Result<Url> {
     let relay = Url::parse(url)?;
@@ -92,7 +102,7 @@ pub(super) fn checked_origin(url: &str) -> Result<Url> {
 impl RelayConnector {
     pub(super) fn new(url: Url, owner_sub: String) -> Self {
         Self {
-            url, owner_sub, resync: AtomicBool::new(false), wake: tokio::sync::Notify::new(),
+            url, owner_sub, resync: AtomicBool::new(false), iroh_bound: std::sync::Mutex::new(None), wake: tokio::sync::Notify::new(),
             deliveries: Arc::new(tokio::sync::Semaphore::new(MAX_ORDINARY_DELIVERIES)),
         }
     }
@@ -144,6 +154,7 @@ impl Service {
             .await?
             .error_for_status()?;
         let boot: Bootstrap = response.json().await?;
+        self.announce_iroh_relay(boot.iroh_relay);
         decoded(&boot.epoch)?
             .try_into()
             .map_err(|_| anyhow!("invalid relay epoch"))
@@ -233,6 +244,45 @@ impl Service {
         Ok(())
     }
 
+    /// Binds this Mac's iroh endpoint at the relay once per relay epoch, so the iroh relay lets
+    /// it in. A relay without iroh support refuses it; work goes on and it is tried again later.
+    pub(super) async fn keep_iroh_endpoint_bound(&self, epoch: &[u8; 16]) {
+        let Ok(relay) = self.relay() else { return };
+        if !self.iroh_config().enabled {
+            return;
+        }
+        let due = match *relay.iroh_bound.lock().expect("iroh binding lock poisoned") {
+            Some((bound, None)) => bound != *epoch,
+            Some((bound, Some(failed))) => bound != *epoch || failed.elapsed() >= IROH_BIND_RETRY,
+            None => true,
+        };
+        if !due {
+            return;
+        }
+        let failed = match self.bind_iroh_endpoint(epoch).await {
+            Ok(()) => {
+                log!("iroh endpoint {} bound at the relay", self.iroh_key().public());
+                None
+            }
+            Err(error) => {
+                log!("iroh endpoint not bound at the relay: {error:#}");
+                Some(std::time::Instant::now())
+            }
+        };
+        *relay.iroh_bound.lock().expect("iroh binding lock poisoned") = Some((*epoch, failed));
+    }
+
+    async fn bind_iroh_endpoint(&self, epoch: &[u8; 16]) -> Result<()> {
+        let key = self.iroh_key();
+        let proof = key.sign(&[IROH_NODE_PROOF_DOMAIN, self.mac_id.as_bytes()].concat());
+        let body = serde_json::to_vec(&json!({
+            "iroh_node_id": key.public().to_string(),
+            "proof": URL_SAFE_NO_PAD.encode(proof.to_bytes()),
+        }))?;
+        self.signed(Method::PUT, "/v1/iroh-node", body, epoch).await?.error_for_status()?;
+        Ok(())
+    }
+
     pub(super) async fn sync_revocations(
         &self,
         epoch: &[u8; 16],
@@ -319,6 +369,7 @@ impl Service {
                     self.enroll(&epoch).await?;
                     *enrolled_epoch = Some(epoch);
                 }
+                self.keep_iroh_endpoint_bound(&epoch).await;
                 let path = "/v1/work?wait_s=25";
                 let response = tokio::select! {
                     response = tokio::time::timeout(WORK_POLL_TIMEOUT, self.signed(Method::GET, path, Vec::new(), &epoch)) => response

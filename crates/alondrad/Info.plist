@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
     <key>CFBundleIdentifier</key>
-    <string>dev.alondra.alondrad</string>
+    <string>com.bitomule.alondrad</string>
     <key>CFBundleName</key>
     <string>alondrad</string>
     <key>CFBundleDisplayName</key>

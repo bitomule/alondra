@@ -47,9 +47,11 @@ mod hook_socket;
 mod home_renames;
 mod http;
 mod hub;
+mod iroh_endpoint;
 mod issues;
 mod job_state;
 mod keeper;
+mod local_network;
 mod machine;
 mod machine_state;
 mod machine_watch;
@@ -493,6 +495,10 @@ async fn run_domain(config: &Config) -> Result<()> {
         ));
         state.attach_direct(direct.clone());
         tokio::spawn(direct::run(direct, config.sandbox));
+    }
+    if let Some(service) = service.clone().filter(|service| service.iroh_config().enabled) {
+        tokio::spawn(iroh_endpoint::run(service));
+        tokio::task::spawn_blocking(local_network::check);
     }
     tokio::spawn(device_expiry::run(state.clone(), config.home.clone(), config.device_expiry_days));
     let app = domain_bootstrap::router(state)

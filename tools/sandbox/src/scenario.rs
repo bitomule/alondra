@@ -66,6 +66,8 @@ pub fn run(sandbox: &Sandbox) -> Result<()> {
     }
     println!("ok: direct repeats replay, conflicts are refused, the loopback API is not on the direct port");
 
+    crate::iroh_check::check(&phone, &target, &direct_link)?;
+
     if count >= 2 {
         let other_mac = sandbox.mac(2)?;
         let misdirected = phone.seal(&target, &direct_link, &new_request_id()?, &probe())?;

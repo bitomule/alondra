@@ -85,6 +85,12 @@ impl RevokedDevices {
         Some(agreement)
     }
 
+    /// The remembered signing key of a revoked device.
+    pub(crate) fn signing_key(&self, device_id: &str) -> Option<VerifyingKey> {
+        let kept = self.kept.lock().expect("revoked devices lock poisoned");
+        kept.iter().find(|tombstone| tombstone.device_id == device_id)?.keys().map(|(signing, _)| signing)
+    }
+
     #[cfg(test)]
     pub(crate) fn empty() -> Self {
         Self { path: PathBuf::from("/nonexistent/revoked-devices.json"), kept: Mutex::new(Vec::new()) }

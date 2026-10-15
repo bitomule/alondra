@@ -39,6 +39,27 @@ def rehearsal_call(args):
 
 
 class LocalReleaseTests(unittest.TestCase):
+    def test_the_daemon_signature_must_bind_its_info_plist(self):
+        def details(identifier, plist):
+            lines = [f'Identifier={identifier}', 'Format=Mach-O thin (arm64)',
+                     'Authority=Developer ID Application: Someone (TEAM)', 'Timestamp=15 Oct 2026',
+                     'Info.plist entries=6' if plist else 'Info.plist=not bound', f'TeamIdentifier={l.TEAM}']
+            return '\n'.join(lines) + '\n'
+        l.check_signature(details('com.bitomule.alondrad', True), 'com.bitomule.alondrad')
+        l.check_signature(details('com.bitomule.alondra', False), 'com.bitomule.alondra')
+        with self.assertRaisesRegex(RuntimeError, 'Local Network'):
+            l.check_signature(details('com.bitomule.alondrad', False), 'com.bitomule.alondrad')
+        with self.assertRaisesRegex(RuntimeError, 'another identifier'):
+            l.check_signature(details('dev.alondra.alondrad', True), 'com.bitomule.alondrad')
+        with self.assertRaisesRegex(RuntimeError, 'identity'):
+            l.check_signature(details('com.bitomule.alondrad', True).replace('Timestamp=', 'Signed='), 'com.bitomule.alondrad')
+
+    def test_the_daemon_info_plist_names_the_identifier_it_is_signed_with(self):
+        import plistlib
+        plist = plistlib.loads((REPO_ROOT / 'crates/alondrad/Info.plist').read_bytes())
+        self.assertIn(plist['CFBundleIdentifier'], l.WITH_INFO_PLIST)
+        self.assertTrue(plist['NSLocalNetworkUsageDescription'])
+
     def test_workspace_crate_versions_match_lockfile(self):
         workspace = tomllib.loads((REPO_ROOT / 'Cargo.toml').read_text())['workspace']
         expected_version = workspace['package']['version']

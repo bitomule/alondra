@@ -381,7 +381,8 @@ async fn daemon(
         "preflight_rejected": crate::relaunch::rejected(), "machine": machine, "usage": usage,
         "mods": crate::mods_check::status(),
         "direct": state.service.get().filter(|_| state.direct.get().is_some()).map(|service| json!({
-            "port": service.direct_config().port, "bonjour": crate::direct::bonjour::status()}))}),
+            "port": service.direct_config().port, "bonjour": crate::direct::bonjour::status()})),
+        "iroh": state.service.get().filter(|service| service.iroh_config().enabled).map(|_| crate::iroh_endpoint::status())}),
     )
     .into_response()
 }

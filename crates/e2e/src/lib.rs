@@ -59,6 +59,7 @@ use std::collections::HashMap;
 const ENVELOPE_DOMAIN: &[u8] = b"alondra-e2e-envelope-v1";
 const KEY_DOMAIN: &[u8] = b"alondra-e2e-key-v1";
 const HTTP_DOMAIN: &[u8] = b"alondra-http-auth-v1";
+const IROH_HELLO_DOMAIN: &[u8] = b"alondra-iroh-hello-v1";
 const MAX_CIPHERTEXT: usize = 20 * 1024 * 1024 + 16;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -427,6 +428,57 @@ fn verify_http_signature(
             timestamp_ms,
             nonce,
         )?,
+        &signature,
+    )
+    .map_err(|_| Error::InvalidSignature)
+}
+
+/// What a paired device signs to open an iroh connection to a Mac: both iroh endpoint IDs bind
+/// the signature to this one connection, so it cannot be replayed from another endpoint.
+pub fn iroh_hello_bytes(
+    mac_id: &str,
+    device_id: &str,
+    device_endpoint: &[u8; 32],
+    mac_endpoint: &[u8; 32],
+) -> Result<Vec<u8>, Error> {
+    validate_text(mac_id)?;
+    validate_text(device_id)?;
+    let mut bytes = IROH_HELLO_DOMAIN.to_vec();
+    for value in [
+        mac_id.as_bytes(),
+        device_id.as_bytes(),
+        device_endpoint.as_slice(),
+        mac_endpoint.as_slice(),
+    ] {
+        field(&mut bytes, value);
+    }
+    Ok(bytes)
+}
+
+pub fn sign_iroh_hello(
+    secret: &SigningKey,
+    mac_id: &str,
+    device_id: &str,
+    device_endpoint: &[u8; 32],
+    mac_endpoint: &[u8; 32],
+) -> Result<String, Error> {
+    let signature: Signature =
+        secret.sign(&iroh_hello_bytes(mac_id, device_id, device_endpoint, mac_endpoint)?);
+    Ok(URL_SAFE_NO_PAD.encode(signature.to_bytes()))
+}
+
+pub fn verify_iroh_hello(
+    key: &VerifyingKey,
+    signature: &str,
+    mac_id: &str,
+    device_id: &str,
+    device_endpoint: &[u8; 32],
+    mac_endpoint: &[u8; 32],
+) -> Result<(), Error> {
+    let signature =
+        Signature::from_slice(&decode(signature)?).map_err(|_| Error::InvalidSignature)?;
+    key.verify(
+        &iroh_hello_bytes(mac_id, device_id, device_endpoint, mac_endpoint)?,
         &signature,
     )
     .map_err(|_| Error::InvalidSignature)
@@ -1012,6 +1064,52 @@ mod tests {
                 )
                 .unwrap(),
             b"hello"
+        );
+    }
+
+    #[test]
+    fn iroh_hello_binds_mac_device_and_both_endpoints() {
+        let (sender, _, _) = keys();
+        let (device, mac) = ([5u8; 32], [6u8; 32]);
+        let signature = sign_iroh_hello(&sender, "mac-1", "phone-1", &device, &mac).unwrap();
+        let key = sender.verifying_key();
+        assert!(verify_iroh_hello(key, &signature, "mac-1", "phone-1", &device, &mac).is_ok());
+        for (mac_id, device_id, device_endpoint, mac_endpoint) in [
+            ("mac-2", "phone-1", device, mac),
+            ("mac-1", "phone-2", device, mac),
+            ("mac-1", "phone-1", [7u8; 32], mac),
+            ("mac-1", "phone-1", device, [7u8; 32]),
+            ("mac-1", "phone-1", mac, device),
+        ] {
+            assert_eq!(
+                verify_iroh_hello(key, &signature, mac_id, device_id, &device_endpoint, &mac_endpoint),
+                Err(Error::InvalidSignature)
+            );
+        }
+        let stranger = SigningKey::from_slice(&[9u8; 32]).unwrap();
+        assert_eq!(
+            verify_iroh_hello(stranger.verifying_key(), &signature, "mac-1", "phone-1", &device, &mac),
+            Err(Error::InvalidSignature)
+        );
+        assert_eq!(
+            sign_iroh_hello(&sender, "", "phone-1", &device, &mac),
+            Err(Error::InvalidField)
+        );
+    }
+
+    /// Clients in other languages rebuild these exact bytes and verify this signature.
+    #[test]
+    fn iroh_hello_fixed_vector() {
+        let (sender, _, _) = keys();
+        let bytes = iroh_hello_bytes("mac-1", "phone-1", &[5u8; 32], &[6u8; 32]).unwrap();
+        assert_eq!(
+            URL_SAFE_NO_PAD.encode(Sha256::digest(&bytes)),
+            "al6j5gmdVhTnWzDB4NVfDbpi1I5A6L2W_fgFBAE8HxY"
+        );
+        let signature = "HJ7leQPGMUQ8QITi_fWBSPfFikEOmuP_AwKnid9yc-Ey0chPvqBHOA9Lwz0-kEwRyHCW8LYnzK9PmQ_lo5ttLQ";
+        assert!(
+            verify_iroh_hello(sender.verifying_key(), signature, "mac-1", "phone-1", &[5u8; 32], &[6u8; 32])
+                .is_ok()
         );
     }
 

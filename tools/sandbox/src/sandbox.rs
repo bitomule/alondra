@@ -22,6 +22,8 @@ struct ManifestMac {
     home: PathBuf,
     port: u16,
     direct_port: u16,
+    #[serde(default)]
+    iroh_port: u16,
 }
 
 pub struct Sandbox {
@@ -37,6 +39,8 @@ pub struct Target {
     pub local: String,
     /// `host:port` of the Mac's direct listener.
     pub direct: String,
+    /// The UDP address of the Mac's iroh endpoint.
+    pub iroh: std::net::SocketAddr,
 }
 
 impl Sandbox {
@@ -68,6 +72,7 @@ impl Sandbox {
             mac: Mac::open(&entry.home)?,
             local: format!("http://127.0.0.1:{}", entry.port),
             direct: format!("127.0.0.1:{}", entry.direct_port),
+            iroh: std::net::SocketAddr::from(([127, 0, 0, 1], entry.iroh_port)),
         })
     }
 
