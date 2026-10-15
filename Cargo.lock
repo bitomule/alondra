@@ -95,6 +95,7 @@ dependencies = [
 name = "alondra-core"
 version = "0.2.82"
 dependencies = [
+ "alondra-foundation",
  "libc",
  "proptest",
  "serde",
@@ -116,6 +117,14 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "tempfile",
+]
+
+[[package]]
+name = "alondra-foundation"
+version = "0.2.82"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

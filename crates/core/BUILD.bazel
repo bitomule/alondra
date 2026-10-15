@@ -8,7 +8,7 @@ rust_library(
     edition = "2024",
     version = "0.1.0",
     visibility = ["//visibility:public"],
-    deps = all_crate_deps(normal = True),
+    deps = all_crate_deps(normal = True) + ["//crates/foundation:foundation"],
 )
 
 exports_files(glob(["fixtures/*.jsonl"]) + ["src/domain/tests.rs"])
@@ -37,4 +37,17 @@ rust_test(
     srcs = ["benches/projection_cost.rs", "benches/inbox_graphs.rs"],
     edition = "2024",
     deps = [":alondra_core"] + all_crate_deps(normal = True),
+)
+
+rust_test(
+    name = "foundation_contract_test",
+    crate_root = "tests/foundation.rs",
+    srcs = ["tests/foundation.rs"],
+    edition = "2024",
+    version = "0.1.0",
+    deps = [
+        ":alondra_core",
+        "//crates/foundation:foundation",
+        "@crates//:serde_json",
+    ],
 )

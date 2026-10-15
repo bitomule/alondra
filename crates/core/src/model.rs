@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-pub type Millis = i64;
+pub use alondra_foundation::Millis;
 
 pub const ORCHESTRATOR_PROJECT: &str = "orchestrator";
 pub const OTHERS_PROJECT: &str = "others";

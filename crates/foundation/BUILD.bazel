@@ -1,0 +1,21 @@
+load("@crates//:defs.bzl", "all_crate_deps")
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+rust_library(
+    name = "foundation",
+    srcs = ["src/lib.rs"],
+    crate_name = "alondra_foundation",
+    edition = "2024",
+    version = "0.1.0",
+    visibility = ["//crates:__subpackages__", "//tests:__subpackages__"],
+    deps = all_crate_deps(normal = True),
+)
+
+rust_test(
+    name = "foundation_test",
+    crate_root = "tests/wire.rs",
+    srcs = ["tests/wire.rs"],
+    edition = "2024",
+    version = "0.1.0",
+    deps = [":foundation"] + all_crate_deps(normal_dev = True),
+)

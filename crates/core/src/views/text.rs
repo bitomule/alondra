@@ -1,10 +1,4 @@
-use serde::{Deserialize, Serialize};
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Lang {
-    En,
-    Es,
-}
+pub use alondra_foundation::Lang;
 macro_rules! t {
     ($lang:expr, $en:literal, $es:literal) => {
         match $lang {
