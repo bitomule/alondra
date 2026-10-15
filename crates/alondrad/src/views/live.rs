@@ -10,6 +10,7 @@ use crate::node_reports::Activity;
 use serde_json::Value;
 use sha2::Digest;
 use std::{collections::{BTreeMap, HashMap}, sync::Mutex};
+use tokio::sync::watch;
 
 #[derive(Default)]
 pub(crate) struct LiveReadCache(Mutex<HashMap<String, (u64, String, Value)>>);
@@ -26,6 +27,107 @@ impl LiveReadCache {
         if cache.len() >= 128 && !cache.contains_key(&path) { cache.clear(); }
         cache.insert(path, (domain_revision, source_revision.to_owned(), value));
     }
+}
+
+/// Live snapshots by language and view keys, each kept until a fact it was read from changes. The
+/// part every key shares is kept once per language, so a key seen for the first time only adds
+/// its own data.
+#[derive(Default)]
+pub(crate) struct LiveSnapshots {
+    entries: Mutex<HashMap<String, (Facts, LiveSnapshot)>>,
+    #[cfg(test)]
+    gathered: std::sync::atomic::AtomicUsize,
+    #[cfg(test)]
+    keyed: std::sync::atomic::AtomicUsize,
+}
+
+/// What a snapshot was read from: the domain revision, every row written to the store, hooks,
+/// node reports, the usage pause, the fleet gate, pull request details, and what only the live
+/// sampler sees by looking (clocks, files, gauges), which it announces on the feeds' clock.
+#[derive(Clone)]
+struct Facts {
+    epoch: String,
+    revision: alondra_core::domain::Revision,
+    store_rows: u64,
+    pull_requests: u64,
+    domain: watch::Receiver<alondra_core::domain::Revision>,
+    hooks: watch::Receiver<()>,
+    reports: watch::Receiver<()>,
+    usage: watch::Receiver<Option<crate::usage_pause::Exhausted>>,
+    gate: watch::Receiver<u64>,
+    sampled: watch::Receiver<u64>,
+}
+
+impl Facts {
+    /// None when the store already holds a newer revision than `state`: a snapshot read now
+    /// would mix the two.
+    fn observe(client: &crate::client_routes::Client, state: &DomainState) -> Option<Self> {
+        let live = &client.domain.live;
+        let domain = client.domain.subscribe();
+        let hooks = live.changed.subscribe();
+        let reports = live.mods.changed.subscribe();
+        let usage = live.usage_pause.subscribe();
+        let gate = live.gate.subscribe();
+        let sampled = client.feeds.subscribe();
+        let pull_requests = client.details.version();
+        let (store_rows, newest) = client.domain.store.lock().expect("domain store poisoned").write_mark().ok()?;
+        (newest <= state.revision && *domain.borrow() == state.revision).then(|| Self {
+            epoch: state.data_epoch.0.clone(), revision: state.revision, store_rows, pull_requests,
+            domain, hooks, reports, usage, gate, sampled,
+        })
+    }
+
+    fn reads(&self, state: &DomainState) -> bool {
+        self.epoch == state.data_epoch.0 && self.revision == state.revision
+    }
+
+    fn unchanged(&self, now: &Marks) -> bool {
+        [self.domain.has_changed(), self.hooks.has_changed(), self.reports.has_changed(),
+            self.usage.has_changed(), self.gate.has_changed(), self.sampled.has_changed()]
+            .into_iter().all(|changed| matches!(changed, Ok(false)))
+            && now.store_rows == Some(self.store_rows) && now.pull_requests == self.pull_requests
+    }
+}
+
+/// The counted facts as they are now, read once per lookup.
+struct Marks {
+    store_rows: Option<u64>,
+    pull_requests: u64,
+}
+
+impl Marks {
+    fn now(client: &crate::client_routes::Client) -> Self {
+        Self {
+            store_rows: client.domain.store.lock().expect("domain store poisoned").write_mark().ok().map(|(rows, _)| rows),
+            pull_requests: client.details.version(),
+        }
+    }
+}
+
+impl LiveSnapshots {
+    fn get(&self, client: &crate::client_routes::Client, key: &str, state: &DomainState) -> Option<LiveSnapshot> {
+        let marks = Marks::now(client);
+        let entries = self.entries.lock().expect("live snapshots poisoned");
+        let (facts, live) = entries.get(key)?;
+        (facts.reads(state) && facts.unchanged(&marks)).then(|| live.clone())
+    }
+
+    fn insert(&self, client: &crate::client_routes::Client, key: String, facts: Facts, live: LiveSnapshot) {
+        let marks = Marks::now(client);
+        if !facts.unchanged(&marks) { return; }
+        let mut entries = self.entries.lock().expect("live snapshots poisoned");
+        if entries.len() >= 64 && !entries.contains_key(&key) {
+            entries.retain(|_, (facts, _)| facts.unchanged(&marks));
+            if entries.len() >= 64 { entries.clear(); }
+        }
+        entries.insert(key, (facts, live));
+    }
+}
+
+/// Keys whose live data also comes from files or GitHub, which no fact announces.
+fn reads_unwatched_sources(key: &str) -> bool {
+    ["machine", "new_request", "issue_picker"].iter()
+        .any(|unwatched| key == *unwatched || key.strip_prefix(unwatched).is_some_and(|rest| rest.starts_with('?')))
 }
 
 /// The project a node was launched for, which a restart cannot lose: its task's request, or the
@@ -66,7 +168,61 @@ pub(crate) async fn gather(
     allow_issue_refresh: bool,
     clock_only: bool,
 ) -> LiveSnapshot {
-    gather_at(client, state, lang, keys, allow_issue_refresh, clock_only, alondra_core::now_millis()).await
+    let now = alondra_core::now_millis();
+    // The live sampler reads clock-only snapshots to notice what no fact announces; it must
+    // always look afresh.
+    if clock_only {
+        #[cfg(test)]
+        client.live_snapshots.gathered.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        return gather_at(client, state, lang, keys, allow_issue_refresh, true, now).await;
+    }
+    let snapshots = &client.live_snapshots;
+    let key = format!("{lang:?}|{}", keys.join("\n"));
+    let watched = !keys.iter().any(|key| reads_unwatched_sources(key));
+    if watched && let Some(live) = snapshots.get(client, &key, state) {
+        return live;
+    }
+    // GitHub is awaited before the read lane is taken, so a slow issue search never holds it.
+    let issue_data = issue_data(client, keys, allow_issue_refresh).await;
+    let facts = Facts::observe(client, state);
+    let shared = format!("{lang:?}|");
+    let mut live = match snapshots.get(client, &shared, state) {
+        Some(live) => live,
+        None => {
+            #[cfg(test)]
+            snapshots.gathered.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let live = gather_at(client, state, lang, &[], false, false, now).await;
+            if let Some(facts) = &facts {
+                snapshots.insert(client, shared, facts.clone(), live.clone());
+            }
+            live
+        }
+    };
+    if keys.is_empty() {
+        return live;
+    }
+    keyed_at(client, state, keys, issue_data).await.apply(&mut live);
+    if watched && let Some(facts) = facts {
+        snapshots.insert(client, key, facts, live.clone());
+    }
+    live
+}
+
+async fn keyed_at(
+    client: &crate::client_routes::Client,
+    state: &std::sync::Arc<DomainState>,
+    keys: &[String],
+    issue_data: Option<Value>,
+) -> Keyed {
+    #[cfg(test)]
+    client.live_snapshots.keyed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let client = client.shared();
+    let state = state.clone();
+    let keys = keys.to_vec();
+    let runtime = tokio::runtime::Handle::current();
+    let work = client.read_work.clone();
+    work.run(move || runtime.block_on(gather_keyed(&client, &state, &keys, issue_data)))
+        .await.expect("live read worker failed")
 }
 
 async fn gather_at(
@@ -395,6 +551,77 @@ async fn gather_inner(
         let (project, effort) = launches.get(&task.request_id).cloned().unwrap_or_default();
         (task.id.0.clone(), alondra_core::views::live::LiveTaskOptions { project, effort })
     }).collect();
+    let keyed = gather_keyed(client, state, keys, issue_data).await;
+    LiveSnapshot {
+        closed_nodes: client.domain.live.closed_sessions(),
+        closed_tasks: client.domain.live.closed_task_ids(),
+        nodes,
+        pull_requests,
+        orchestrator,
+        update,
+        gauges,
+        inbox_times,
+        request_times,
+        projects: keyed.projects,
+        options: keyed.options,
+        project_options: keyed.project_options,
+        issues: keyed.issues,
+        issue_error: keyed.issue_error,
+        activity: keyed.activity,
+        task_history: keyed.task_history,
+        task_options,
+        task_since,
+        cancel_reasons,
+        search_matches: keyed.search_matches,
+        usage_exhausted: exhausted.map(|exhausted| alondra_core::views::LiveUsageExhausted {
+            since: timestamp(exhausted.since),
+            until: timestamp(exhausted.until),
+            paused_by_user: exhausted.by_user,
+        }),
+        launch_refusals,
+        start_waits,
+        pacing: client.domain.live.gate.live(&client.domain, now),
+        allowed_rules: keyed.allowed_rules,
+        allow_always_missing: keyed.allow_always_missing,
+    }
+}
+
+/// The live data only some view keys show; the rest of a snapshot is the same for every key.
+#[derive(Default)]
+struct Keyed {
+    projects: Vec<alondra_core::options::ProjectEntry>,
+    options: Vec<alondra_core::options::Spec>,
+    project_options: BTreeMap<String, Vec<alondra_core::options::Spec>>,
+    issues: Vec<alondra_core::issues::Issue>,
+    issue_error: Option<String>,
+    activity: BTreeMap<String, Vec<LiveActivity>>,
+    task_history: BTreeMap<String, Vec<LiveHistoryStep>>,
+    search_matches: Option<Vec<String>>,
+    allowed_rules: Vec<alondra_core::views::LiveAllowedRule>,
+    allow_always_missing: Vec<String>,
+}
+
+impl Keyed {
+    fn apply(self, live: &mut LiveSnapshot) {
+        live.projects = self.projects;
+        live.options = self.options;
+        live.project_options = self.project_options;
+        live.issues = self.issues;
+        live.issue_error = self.issue_error;
+        live.activity = self.activity;
+        live.task_history = self.task_history;
+        live.search_matches = self.search_matches;
+        live.allowed_rules = self.allowed_rules;
+        live.allow_always_missing = self.allow_always_missing;
+    }
+}
+
+async fn gather_keyed(
+    client: &crate::client_routes::Client,
+    state: &DomainState,
+    keys: &[String],
+    issue_data: Option<Value>,
+) -> Keyed {
     let wants_new = keys
         .iter()
         .any(|key| key.as_str() == "new_request" || key.starts_with("new_request?"));
@@ -493,38 +720,7 @@ async fn gather_inner(
         }
     }
     let (allowed_rules, allow_always_missing) = allowed_rules(client, keys);
-    LiveSnapshot {
-        closed_nodes: client.domain.live.closed_sessions(),
-        closed_tasks: client.domain.live.closed_task_ids(),
-        nodes,
-        pull_requests,
-        orchestrator,
-        update,
-        gauges,
-        inbox_times,
-        request_times,
-        projects,
-        options,
-        project_options,
-        issues,
-        issue_error,
-        activity,
-        task_history,
-        task_options,
-        task_since,
-        cancel_reasons,
-        search_matches,
-        usage_exhausted: exhausted.map(|exhausted| alondra_core::views::LiveUsageExhausted {
-            since: timestamp(exhausted.since),
-            until: timestamp(exhausted.until),
-            paused_by_user: exhausted.by_user,
-        }),
-        launch_refusals,
-        start_waits,
-        pacing: client.domain.live.gate.live(&client.domain, now),
-        allowed_rules,
-        allow_always_missing,
-    }
+    Keyed { projects, options, project_options, issues, issue_error, activity, task_history, search_matches, allowed_rules, allow_always_missing }
 }
 
 /// This Mac's rules «allow always», checked against their files only when its settings are on
@@ -681,7 +877,10 @@ mod cache_tests {
         let home = crate::test_support::Directory::new();
         fs::create_dir_all(&home).unwrap();
         let domain = Arc::new(crate::domain_runtime::DomainRuntime::open(&home).unwrap());
-        let client = crate::client_routes::Client::open(domain.clone(), &home, Arc::new(Mutex::new(None)));
+        // Opened off the runtime so the live sampler does not start: these tests gather by hand
+        // and play the sampler with `feeds.wake()`.
+        let client = std::thread::scope(|scope| scope.spawn(||
+            crate::client_routes::Client::open(domain.clone(), &home, Arc::new(Mutex::new(None)))).join().unwrap());
         execute(&domain, Actor::Orchestrator { generation: 0 }, "request", Command::CreateRequest {
             request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false,
         });
@@ -694,6 +893,112 @@ mod cache_tests {
             });
         }
         (home, domain, client)
+    }
+
+    fn gathered(client: &crate::client_routes::Client) -> usize {
+        client.live_snapshots.gathered.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    fn keyed(client: &crate::client_routes::Client) -> usize {
+        client.live_snapshots.keyed.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    #[tokio::test]
+    async fn a_live_snapshot_is_gathered_once_until_a_fact_it_reads_changes() {
+        let (_home, domain, client) = wait_fixture();
+        let home = ["home".to_owned()];
+        let state = domain.state().unwrap();
+        let first = gather(&client, &state, Lang::En, &home, true, false).await;
+        assert_eq!(gather(&client, &state, Lang::En, &home, true, false).await, first);
+        assert_eq!(gathered(&client), 1, "nothing changed, so the second view reuses the snapshot");
+        let mut reused = std::time::Duration::MAX;
+        for _ in 0..3 {
+            let at = std::time::Instant::now();
+            gather(&client, &state, Lang::En, &home, true, false).await;
+            reused = reused.min(at.elapsed());
+        }
+        assert!(reused < std::time::Duration::from_millis(2), "reusing a snapshot took {reused:?}");
+        gather(&client, &state, Lang::Es, &home, true, false).await;
+        assert_eq!(gathered(&client), 2, "each language has its own snapshot");
+        let task = ["task:room".to_owned()];
+        let history = gather(&client, &state, Lang::En, &task, true, false).await;
+        assert_eq!((gathered(&client), keyed(&client)), (2, 3), "a new view key reads only its own data");
+        assert!(history.task_history.contains_key("room"));
+        assert_eq!(gather(&client, &state, Lang::En, &task, true, false).await, history);
+        assert_eq!(keyed(&client), 3, "and reuses it while nothing changes");
+
+        let changes: [(&str, Box<dyn Fn() + '_>); 6] = [
+            ("a store write outside commands", Box::new(|| domain.store.lock().unwrap().set_start_retry(&"retry".into(), Some((1, 2_000_000_000_000))).unwrap())),
+            ("a hook", Box::new(|| domain.live.observe(&serde_json::json!({"session_id": "node", "hook_event_name": "Stop", "last_assistant_message": "Done"})))),
+            ("a node report", Box::new(|| report(&domain, serde_json::json!({"session_id": "node", "event": "turn.complete", "answer": "Done"}), 1_000))),
+            ("a closed node's task", Box::new(|| domain.live.remember_closed_task("closed", crate::client_routes::ClosedNode { name: "Closed".into(), cwd: None }))),
+            ("pull request details", Box::new(|| client.details.record("pr", Default::default()))),
+            ("the live sampler", Box::new(|| client.feeds.wake())),
+        ];
+        for (fact, change) in changes {
+            let before = gathered(&client);
+            change();
+            gather(&client, &state, Lang::En, &home, true, false).await;
+            assert_eq!(gathered(&client), before + 1, "{fact} gathers again");
+            gather(&client, &state, Lang::En, &home, true, false).await;
+            assert_eq!(gathered(&client), before + 1, "after {fact} the new snapshot is reused");
+        }
+        let retried = gather(&client, &state, Lang::En, &home, true, false).await;
+        assert!(matches!(retried.start_waits["retry"], alondra_core::views::LiveStartWait::Retry { .. }));
+
+        let before = gathered(&client);
+        execute(&domain, Actor::Orchestrator { generation: 0 }, "retitle", Command::TitleRequest { request_id: "request".into(), title: "Work again".into() });
+        gather(&client, &state, Lang::En, &home, true, false).await;
+        gather(&client, &state, Lang::En, &home, true, false).await;
+        assert_eq!(gathered(&client), before + 2, "an older revision than the store's is never kept");
+        let state = domain.state().unwrap();
+        gather(&client, &state, Lang::En, &home, true, false).await;
+        gather(&client, &state, Lang::En, &home, true, false).await;
+        assert_eq!(gathered(&client), before + 3, "the new revision is gathered once");
+
+        let (before, keyed_before) = (gathered(&client), keyed(&client));
+        for key in ["machine", "new_request?project=app", "issue_picker"] {
+            gather(&client, &state, Lang::En, &[key.to_owned()], false, false).await;
+            gather(&client, &state, Lang::En, &[key.to_owned()], false, false).await;
+        }
+        assert_eq!((gathered(&client), keyed(&client)), (before, keyed_before + 6), "data from files and GitHub is always read afresh");
+        gather(&client, &state, Lang::En, &home, false, true).await;
+        gather(&client, &state, Lang::En, &home, false, true).await;
+        assert_eq!(gathered(&client), before + 2, "so are the live sampler's own reads");
+    }
+
+    #[tokio::test]
+    async fn a_live_snapshot_read_while_a_fact_changes_is_not_kept() {
+        let (_home, domain, client) = wait_fixture();
+        let home = ["home".to_owned()];
+        let state = domain.state().unwrap();
+        let fired = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (weak, once) = (Arc::downgrade(&client), fired.clone());
+        domain.store.lock().unwrap().on_live_read(move |getter| {
+            if getter == "task_state_times" && !once.swap(true, std::sync::atomic::Ordering::SeqCst)
+                && let Some(client) = weak.upgrade() { client.feeds.wake(); }
+        });
+        gather(&client, &state, Lang::En, &home, true, false).await;
+        assert!(fired.load(std::sync::atomic::Ordering::SeqCst));
+        gather(&client, &state, Lang::En, &home, true, false).await;
+        assert_eq!(gathered(&client), 2, "the snapshot read across the change is gathered again");
+        gather(&client, &state, Lang::En, &home, true, false).await;
+        assert_eq!(gathered(&client), 2, "the one read after it is kept");
+    }
+
+    #[tokio::test]
+    async fn live_gather_takes_a_few_milliseconds_on_a_long_task_history() {
+        let (_home, domain, client) = wait_fixture();
+        domain.store.lock().unwrap().add_task_history(314, 20);
+        let state = domain.state().unwrap();
+        let home = ["home".to_owned()];
+        let mut fastest = std::time::Duration::MAX;
+        for _ in 0..3 {
+            let at = std::time::Instant::now();
+            gather_at(&client, &state, Lang::En, &home, true, false, alondra_core::now_millis()).await;
+            fastest = fastest.min(at.elapsed());
+        }
+        assert!(fastest < std::time::Duration::from_millis(5), "gathering live data over 6,400 history rows of 320 Tasks took {fastest:?}");
     }
 
     #[tokio::test]

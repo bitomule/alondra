@@ -38,6 +38,11 @@ impl Feeds {
         self.clock.send_replace(next);
     }
 
+    /// Changes when the live sampler, or a route, sees displayed live data change.
+    pub(crate) fn subscribe(&self) -> watch::Receiver<u64> {
+        self.clock.subscribe()
+    }
+
     fn live_keys(&self) -> Vec<String> {
         self.live_keys_at(Instant::now())
     }

@@ -108,6 +108,7 @@ pub(crate) struct PrDetails {
 #[derive(Default)]
 struct Observations {
     next: u64,
+    changes: u64,
     entries: BTreeMap<String, Observation>,
 }
 
@@ -122,6 +123,11 @@ impl PrDetails {
         #[cfg(test)]
         if let Some(clock) = self.clock.lock().expect("pull request clock poisoned").clone() { return clock(); }
         alondra_core::now_millis()
+    }
+
+    /// Grows whenever the details any pull request shows change.
+    pub(crate) fn version(&self) -> u64 {
+        self.cache.lock().expect("pull request details poisoned").changes
     }
 
     pub(crate) fn get(&self, pr_id: &str) -> Option<Details> {
@@ -143,6 +149,7 @@ impl PrDetails {
         entry.accepted = request;
         details.observed_at = Some(self.now());
         entry.details = Some(details);
+        cache.changes += 1;
         true
     }
 
@@ -152,8 +159,10 @@ impl PrDetails {
     }
 
     fn keep_only(&self, state: &DomainState) {
-        self.cache.lock().expect("pull request details poisoned").entries
-            .retain(|id, _| state.pull_requests.keys().any(|pr| &pr.0 == id));
+        let mut cache = self.cache.lock().expect("pull request details poisoned");
+        let before = cache.entries.len();
+        cache.entries.retain(|id, _| state.pull_requests.keys().any(|pr| &pr.0 == id));
+        if cache.entries.len() != before { cache.changes += 1; }
     }
 
     pub(crate) async fn refresh(&self, state: &DomainState, source: &dyn PrView) {

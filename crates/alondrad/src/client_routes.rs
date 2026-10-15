@@ -48,6 +48,7 @@ pub(crate) struct Client {
     options: std::sync::Mutex<Option<alondra_core::options::OptionsFile>>,
     issue_cache: tokio::sync::Mutex<Option<crate::issues::IssueList>>,
     pub(crate) live_reads: crate::views::live::LiveReadCache,
+    pub(crate) live_snapshots: crate::views::live::LiveSnapshots,
     device_languages: std::sync::Mutex<std::collections::HashMap<String, alondra_core::views::Lang>>,
     device_languages_path: PathBuf,
 }
@@ -264,6 +265,7 @@ impl Client {
             options: Default::default(),
             issue_cache: Default::default(),
             live_reads: Default::default(),
+            live_snapshots: Default::default(),
             device_languages: std::sync::Mutex::new(device_languages),
             device_languages_path,
         });

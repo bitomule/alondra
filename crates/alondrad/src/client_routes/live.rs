@@ -85,6 +85,8 @@ impl Live {
         if let Some(file) = &self.closed_file {
             save(file, &*closed);
         }
+        drop(closed);
+        self.changed.publish();
     }
 
     /// The task the user's closed node worked on waits for a relaunch, which needs this.
@@ -94,6 +96,8 @@ impl Live {
         if let Some(file) = &self.closed_tasks_file {
             save(file, &*tasks);
         }
+        drop(tasks);
+        self.changed.publish();
     }
 
     /// The orchestrator's replacement of this session's node stopped short because the node could
@@ -121,11 +125,12 @@ impl Live {
 
     pub(crate) fn forget_closed_task(&self, task_id: &str) {
         let mut tasks = self.closed_tasks.lock().expect("revivals poisoned");
-        if tasks.remove(task_id).is_some()
-            && let Some(file) = &self.closed_tasks_file
-        {
+        if tasks.remove(task_id).is_none() { return; }
+        if let Some(file) = &self.closed_tasks_file {
             save(file, &*tasks);
         }
+        drop(tasks);
+        self.changed.publish();
     }
 
     pub(crate) fn closed_task_ids(&self) -> Vec<String> {

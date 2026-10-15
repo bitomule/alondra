@@ -411,6 +411,35 @@ impl DomainStore {
     pub(crate) fn on_live_read(&mut self, hook: impl Fn(&str) + Send + 'static) {
         self.before_live_read = Some(Box::new(hook));
     }
+    /// Adds `tasks` finished Tasks and `steps` state changes to every Task after the newest
+    /// revision: the history a long-lived domain carries.
+    #[cfg(test)]
+    pub(crate) fn add_task_history(&mut self, tasks: usize, steps: usize) {
+        let tx = self.conn.transaction().unwrap();
+        let request: String = tx.query_row("SELECT id FROM requests LIMIT 1", [], |row| row.get(0)).unwrap();
+        for task in 0..tasks {
+            tx.execute("INSERT INTO tasks(id,request_id,title,state,revision,started,review_prs,archived) VALUES(?1,?2,?1,'done',0,1,1,1)",
+                params![format!("finished-{task}"), request]).unwrap();
+        }
+        let tasks = tx.prepare("SELECT id FROM tasks").unwrap()
+            .query_map([], |row| row.get::<_, String>(0)).unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>().unwrap();
+        let (epoch, mut revision): (String, i64) = tx.query_row(
+            "SELECT data_epoch,revision FROM command_audit ORDER BY revision DESC LIMIT 1", [], |row| Ok((row.get(0)?, row.get(1)?))).unwrap();
+        for _ in 0..steps {
+            for task in &tasks {
+                revision += 1;
+                let command = format!("history-{revision}");
+                tx.execute("INSERT INTO semantic_receipts(actor,command_id,data_epoch,digest,result) VALUES('system',?1,?2,zeroblob(32),'{}')",
+                    params![command, epoch]).unwrap();
+                tx.execute("INSERT INTO command_audit(revision,actor,command_id,data_epoch,command,at) VALUES(?1,'system',?2,?3,'{}',?1)",
+                    params![revision, command, epoch]).unwrap();
+                tx.execute("INSERT INTO task_history(revision,task_id,state,summary) VALUES(?1,?2,'done','')",
+                    params![revision, task]).unwrap();
+            }
+        }
+        tx.commit().unwrap();
+    }
     #[cfg(test)]
     pub(crate) fn begin_live_read_trace(&mut self) {
         assert!(self.live_read_trace.is_none(), "live read trace already active");
@@ -974,12 +1003,20 @@ pub(crate) struct HistoryStep {
 }
 
 impl DomainStore {
+    /// Rows this connection has written, commits and side tables alike, and the newest committed
+    /// revision: whatever is read from the store stays the same while both do.
+    pub(crate) fn write_mark(&self) -> Result<(u64, Revision)> {
+        let newest: i64 = self.conn.query_row("SELECT coalesce(max(revision),0) FROM command_audit", [], |row| row.get(0))?;
+        Ok((self.conn.total_changes(), newest as Revision))
+    }
     /// When each Task last entered its state.
     pub(crate) fn task_state_times(&self) -> Result<std::collections::BTreeMap<TaskId, i64>> {
         #[cfg(test)]
         let mut trace = self.trace_live_read("task_state_times");
-        let mut query = self.conn.prepare("SELECT h.task_id,a.at FROM task_history h JOIN command_audit a ON a.revision=h.revision
-            WHERE h.revision=(SELECT max(revision) FROM task_history WHERE task_id=h.task_id)")?;
+        // task_history's key starts with revision, so a per-task max(revision) subquery scans
+        // the whole history once per row; one grouped pass stays linear.
+        let mut query = self.conn.prepare("SELECT h.task_id,a.at FROM (SELECT task_id,max(revision) AS revision FROM task_history GROUP BY task_id) h
+            JOIN command_audit a ON a.revision=h.revision")?;
         #[cfg(test)]
         if let Some(trace) = &mut trace { trace.statement(); }
         let rows = query.query_map([], |row| { #[cfg(test)] if let Some(trace) = &mut trace { trace.row(); } Ok((TaskId(row.get(0)?), row.get(1)?)) })?;

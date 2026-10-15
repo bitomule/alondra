@@ -534,17 +534,29 @@ impl Reports {
     }
 
     pub(crate) fn set_job(&self, session_id: &str, job: Option<crate::job_state::Job>, dir: Option<PathBuf>) {
-        if let Some(session) = self.sessions.lock().expect("node reports poisoned").get_mut(session_id) {
-            session.job = job;
-            session.job_dir = dir;
-        }
+        let changed = match self.sessions.lock().expect("node reports poisoned").get_mut(session_id) {
+            Some(session) => {
+                let changed = session.job != job;
+                session.job = job;
+                session.job_dir = dir;
+                changed
+            }
+            None => false,
+        };
+        if changed { self.changed.publish(); }
     }
 
     pub(crate) fn set_shell_alive(&self, session_id: &str, alive: Option<bool>, now: Millis) {
-        if let Some(session) = self.sessions.lock().expect("node reports poisoned").get_mut(session_id) {
-            session.shell_alive = alive;
-            session.shell_looked_at = Some(now);
-        }
+        let changed = match self.sessions.lock().expect("node reports poisoned").get_mut(session_id) {
+            Some(session) => {
+                let changed = session.shell_alive != alive;
+                session.shell_alive = alive;
+                session.shell_looked_at = Some(now);
+                changed
+            }
+            None => false,
+        };
+        if changed { self.changed.publish(); }
     }
 
     pub(crate) fn connected(&self, session_id: &str) -> bool {
