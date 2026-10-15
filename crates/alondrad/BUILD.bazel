@@ -45,7 +45,7 @@ rust_test(
 
 rust_test(
     name = "alondrad_test",
-    visibility = ["//apple/Data/Feed:__pkg__"],
+    visibility = ["//apple/Data/Feed:__pkg__", "//apple/Data/Iroh:__pkg__"],
     compile_data = [
         "//crates/core:fixtures/ctrl_trivial_2.jsonl",
         "//crates/core:fixtures/quill.jsonl",

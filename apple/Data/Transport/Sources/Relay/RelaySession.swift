@@ -127,6 +127,18 @@ public actor RelaySession: OperationAPI, PushRegistrationAPI {
         return try await resume(requestID: requestID)
     }
 
+    /// The iroh relay this relay admits endpoints to, nil while it has none.
+    public func irohRelay() async throws -> URL? {
+        guard active else { throw CancellationError() }
+        return try await client.bootstrapIfNeeded().irohRelay
+    }
+
+    /// Lets this device's iroh endpoint for this pairing through the iroh relay.
+    public func bindIrohNode(_ identity: IrohIdentity) async throws {
+        guard active else { throw CancellationError() }
+        try await client.bindIrohNode(identity.nodeBinding(deviceID: scope.deviceID))
+    }
+
     public func registerServicePush(token: String, environment: String, binding: String) async throws {
         guard active else { throw CancellationError() }
         let registration = try RelayPushRegistration(token: token, environment: environment, pushBinding: binding)

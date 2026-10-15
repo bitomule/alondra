@@ -60,3 +60,32 @@ use_repo(crate, "crates")
 alondra_signing = use_repo_rule("//signing:repo.bzl", "alondra_signing")
 
 alondra_signing(name = "alondra_signing")
+
+http_archive = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
+
+http_file = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_file")
+
+# IrohLib: iroh's Swift bindings. The xcframework and the generated Swift file come from the
+# same iroh-ffi release; bump both together and test the apps on a device.
+http_archive(
+    name = "iroh_xcframework",
+    build_file_content = """
+load("@build_bazel_rules_apple//apple:apple.bzl", "apple_static_xcframework_import")
+
+apple_static_xcframework_import(
+    name = "Iroh",
+    xcframework_imports = glob(["Iroh.xcframework/**"]),
+    sdk_frameworks = ["SystemConfiguration", "Network"],
+    visibility = ["//visibility:public"],
+)
+""",
+    sha256 = "ad46dadf09f9224157512992923562931ed60f252414230d50893a4d515c5776",
+    url = "https://github.com/n0-computer/iroh-ffi/releases/download/v1.1.0/IrohLib.xcframework.zip",
+)
+
+http_file(
+    name = "irohlib_swift",
+    downloaded_file_path = "IrohLib.swift",
+    sha256 = "681abdbd903ad86848571dbfbbf5540733da541584edae6592e0cabef3c3b856",
+    url = "https://raw.githubusercontent.com/n0-computer/iroh-ffi/v1.1.0/IrohLib/Sources/IrohLib/IrohLib.swift",
+)

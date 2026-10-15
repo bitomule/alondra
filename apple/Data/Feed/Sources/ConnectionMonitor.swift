@@ -160,3 +160,11 @@ public struct MonitoredOperations: OperationAPI {
         }
     }
 }
+
+/// Push registration goes to the relay, not the Mac: it passes through as it is.
+extension MonitoredOperations: PushRegistrationAPI {
+    public func registerServicePush(token: String, environment: String, binding: String) async throws {
+        guard let push = inner as? any PushRegistrationAPI else { throw OperationError.invalidConfiguration }
+        try await push.registerServicePush(token: token, environment: environment, binding: binding)
+    }
+}

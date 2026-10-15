@@ -73,6 +73,15 @@ public struct ApprovedPairingCollection: Codable, Sendable {
         return true
     }
 
+    /// Keeps the Mac's iroh endpoint ID. Keys and identity never change here.
+    public mutating func updateIrohEndpoint(_ id: ApprovedPairingID, endpoint: String) -> Bool {
+        guard IrohIdentity.validEndpointID(endpoint),
+              let index = pairings.firstIndex(where: { ApprovedPairingID($0) == id }),
+              pairings[index].irohEndpoint != endpoint else { return false }
+        pairings[index].irohEndpoint = endpoint
+        return true
+    }
+
     public mutating func remove(_ id: ApprovedPairingID) {
         pairings.removeAll { ApprovedPairingID($0) == id }
         if selectedID == id { selectedID = pairings.first.map(ApprovedPairingID.init) }

@@ -7,6 +7,20 @@ import XCTest
 final class ConnectionMonitorTests: XCTestCase {
     private let request = try! APIRequest(endpoint: Endpoint<Data>.data(.get, path: ["capabilities"]), operationID: "read-1")
 
+    /// 15 Oct, iPhone Settings: «Your Mac didn’t accept this device’s alerts». The monitor hid the
+    /// relay's push registration, so every registration failed before it was sent.
+    func testPushRegistrationGoesThroughTheMonitorToTheRelayAndTheMac() async throws {
+        let inner = PushRecordingOperations()
+        let monitored = MonitoredOperations(inner, monitor: ConnectionMonitor { _ in .unexpected }) { .relay }
+        let api = AlondraAPIClient(serviceURL: URL(string: "https://example.test")!, deviceID: "phone-1", operations: monitored)
+        try await api.registerServicePush(token: "abcd", environment: "sandbox", binding: String(repeating: "A", count: 43),
+                                          preferencesRevision: 1)
+        let registered = await inner.registered
+        let paths = await inner.paths
+        XCTAssertEqual(registered, ["abcd"])
+        XCTAssertEqual(paths, ["/device/push-binding"])
+    }
+
     func testAnyAnswerFromTheMacMeansItIsAnswering() async throws {
         let (monitor, operations) = make(answers: [.success(.completed(status: 404, body: Data()))])
         _ = try await operations.perform(request)
@@ -73,4 +87,18 @@ private actor ScriptedOperations: OperationAPI {
 
     func perform(_ request: APIRequest) async throws -> APIResponse { try answers.removeFirst().get() }
     func recover(_ request: APIRequest) async throws -> APIResponse { try answers.removeFirst().get() }
+}
+
+private actor PushRecordingOperations: OperationAPI, PushRegistrationAPI {
+    private(set) var registered: [String] = []
+    private(set) var paths: [String] = []
+
+    func perform(_ request: APIRequest) async throws -> APIResponse {
+        paths.append(request.path)
+        return .completed(status: 204, body: Data())
+    }
+
+    func registerServicePush(token: String, environment: String, binding: String) async throws {
+        registered.append(token)
+    }
 }

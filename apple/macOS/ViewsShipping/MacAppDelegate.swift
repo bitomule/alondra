@@ -1,4 +1,5 @@
 import AlondraAccount
+import AlondraIroh
 import AlondraNotifications
 import AlondraPairing
 import AppKit
@@ -21,7 +22,8 @@ final class MacAppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationC
         let storage = AppStorageLocation.applicationSupport(bundleID: "com.bitomule.alondra.mac")
         let name = Host.current().localizedName ?? ProcessInfo.processInfo.hostName
         let account = AccountSession(auth: auth, displayName: String(name.prefix(80)), storageDirectory: storage,
-                                     pairingStore: KeychainApprovedPairingStore(service: "com.bitomule.alondra.mac.service-pairing.v1"))
+                                     pairingStore: KeychainApprovedPairingStore(service: "com.bitomule.alondra.mac.service-pairing.v1"),
+                                     irohDialer: { IrohEndpointDialer(identity: $0) }, startsLive: true)
         account.isActive = { NSApplication.shared.isActive }
         account.openLocalNetworkSettings = {
             guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_LocalNetwork") else { return }

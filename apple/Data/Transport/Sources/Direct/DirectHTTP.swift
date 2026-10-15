@@ -11,11 +11,22 @@ public struct DirectHTTP: Sendable {
     public init(transport: any HTTPTransport) { self.transport = transport }
 
     public func hello(at endpoint: DirectEndpoint, timeout: Duration = .seconds(3)) async throws -> DirectMacIdentity {
+        try await greeting(at: endpoint, timeout: timeout).identity
+    }
+
+    /// The hello with the Mac's iroh endpoint ID beside it, kept apart from the pinned identity.
+    public func greeting(at endpoint: DirectEndpoint, timeout: Duration = .seconds(3)) async throws
+        -> (identity: DirectMacIdentity, irohEndpoint: String?) {
+        struct Iroh: Decodable {
+            let irohEndpoint: String?
+            enum CodingKeys: String, CodingKey { case irohEndpoint = "iroh_endpoint" }
+        }
         let reply = try await get(endpoint, path: "/direct/hello", timeout: timeout)
         guard reply.status == 200,
               let identity = try? JSONDecoder().decode(DirectMacIdentity.self, from: reply.body),
               identity.isValid else { throw RelayWireError.invalidResponse }
-        return identity
+        let iroh = (try? JSONDecoder().decode(Iroh.self, from: reply.body))?.irohEndpoint
+        return (identity, iroh.flatMap { IrohIdentity.validEndpointID($0) ? $0 : nil })
     }
 
     public func get(_ endpoint: DirectEndpoint, path: String, timeout: Duration) async throws -> HTTPReply {

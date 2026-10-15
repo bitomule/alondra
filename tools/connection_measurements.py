@@ -40,27 +40,32 @@ def percentile(values, percent):
     return values[max(rank, 1) - 1]
 
 
+# The live-updates wait and the time to open the iroh connection, each apart from requests.
+GROUPS = {"changes": "wait", "connect": "connect"}
+ORDER = {"request": 0, "connect": 1, "wait": 2}
+
+
 def summarize(rows):
     groups = defaultdict(list)
     for row in rows:
         if row.get("outcome") == "cancelled":
             continue
-        key = (row.get("kind") == "changes", row.get("route") or "none", row.get("network", "other"), row.get("radio") or "")
+        key = (GROUPS.get(row.get("kind"), ""), row.get("route") or "none", row.get("network", "other"), row.get("radio") or "")
         groups[key].append(row)
     summary = []
-    for (waits, route, network, radio), group in groups.items():
+    for (kind, route, network, radio), group in groups.items():
         answered = sorted(row["ms"] for row in group if row["outcome"] in ("ok", "mac_error"))
         summary.append({
-            "waits": waits, "route": route, "network": network, "radio": radio,
+            "group": kind or "request", "route": route, "network": network, "radio": radio,
             "count": len(group), "failed": len(group) - len(answered),
             "median_ms": percentile(answered, 50), "p90_ms": percentile(answered, 90),
         })
-    return sorted(summary, key=lambda g: (g["waits"], -g["count"], g["route"], g["network"], g["radio"]))
+    return sorted(summary, key=lambda g: (ORDER[g["group"]], -g["count"], g["route"], g["network"], g["radio"]))
 
 
 def table(summary):
     header = ["", "route", "network", "radio", "requests", "failed", "median ms", "p90 ms"]
-    lines = [[("wait" if g["waits"] else ""), g["route"], g["network"], g["radio"], str(g["count"]), str(g["failed"]),
+    lines = [[("" if g["group"] == "request" else g["group"]), g["route"], g["network"], g["radio"], str(g["count"]), str(g["failed"]),
               "-" if g["median_ms"] is None else str(g["median_ms"]), "-" if g["p90_ms"] is None else str(g["p90_ms"])]
              for g in summary]
     widths = [max(len(row[i]) for row in [header] + lines) for i in range(len(header))]

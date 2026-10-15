@@ -32,14 +32,23 @@ public final class AccountSession {
         let auth = auth
         let storageDirectory = storageDirectory
         let measurements = measurements
+        let irohDialer = irohDialer
         return ApprovedSessionRegistry<Connection>(
-            make: { try await Connection(approved: $0, auth: auth, storageDirectory: storageDirectory, measurements: measurements) },
+            make: { [weak self] approved in
+                let connection = try await Connection(approved: approved, auth: auth, storageDirectory: storageDirectory,
+                                                      measurements: measurements, irohDialer: irohDialer)
+                if await MainActor.run(body: { self?.isLive == true }) { await connection.goLive() }
+                return connection
+            },
             stop: { await $0.deactivate() }, publish: { [weak self] snapshot in
                 guard let self else { throw CancellationError() }
                 return try await self.didReconcile(snapshot)
             }, clearPlatform: { [weak self] in try await self?.willDeactivate() })
     }
     private let pairing: PairingClient
+    @ObservationIgnored private let irohDialer: (@Sendable (IrohIdentity) -> any IrohDialer)?
+    /// Whether the app is in the foreground, where every Mac keeps its live connection open.
+    @ObservationIgnored private var isLive = false
     @ObservationIgnored private let directPairing: DirectPairingClient
     @ObservationIgnored private var discovered: [String: DiscoveredMac] = [:]
     @ObservationIgnored private var directAttempt: UUID?
@@ -95,8 +104,11 @@ public final class AccountSession {
                 willDeactivate: @escaping @MainActor () async throws -> Void = {},
                 pushBinding: @escaping @MainActor (ApprovedServicePairing) -> String? = { _ in nil },
                 pairingStore: any ApprovedPairingStore = KeychainApprovedPairingStore(),
-                browse: @escaping @Sendable () -> AsyncStream<MacBrowser.Update> = { MacBrowser.browse() }) {
+                browse: @escaping @Sendable () -> AsyncStream<MacBrowser.Update> = { MacBrowser.browse() },
+                irohDialer: (@Sendable (IrohIdentity) -> any IrohDialer)? = nil, startsLive: Bool = false) {
         self.auth = auth
+        isLive = startsLive
+        self.irohDialer = irohDialer
         self.pushBinding = pushBinding
         self.browse = browse
         pairing = PairingClient(store: pairingStore)
@@ -321,8 +333,24 @@ public final class AccountSession {
     }
 
     /// Saves only the addresses a sealed answer proved.
+    /// The app came to the foreground: every paired Mac opens its live connection, not only the
+    /// one on screen, so switching Macs never waits for one.
+    public func goLive() async {
+        isLive = true
+        for entry in registry.snapshot.entries { await entry.session.goLive() }
+    }
+
+    /// The app went to the background: the live connections close; push is what reaches it now.
+    public func goIdle() async {
+        isLive = false
+        for entry in registry.snapshot.entries { await entry.session.goIdle() }
+    }
+
     private func keepProvenRoutes() async {
         for entry in registry.snapshot.entries {
+            if let endpoint = entry.session.learnedIrohEndpoint, endpoint != entry.approved.irohEndpoint {
+                try? await pairing.updateIrohEndpoint(entry.id, endpoint: endpoint)
+            }
             let proven = await entry.session.provenEndpoints()
             guard !proven.isEmpty else { continue }
             try? await pairing.updateRoutes(entry.id, routes: proven, name: nil)

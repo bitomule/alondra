@@ -37,6 +37,7 @@ public struct RequestObservation: Equatable, Sendable {
         case let error as DirectRouteError: "DirectRouteError.\(error)"
         case let error as DirectSessionError: "DirectSessionError.\(error)"
         case let error as RelaySessionError: "RelaySessionError.\(error)"
+        case let error as IrohCarrierError: "IrohCarrierError.\(error)"
         case let error as APIError:
             switch error {
             case .unauthorized: "APIError.unauthorized"

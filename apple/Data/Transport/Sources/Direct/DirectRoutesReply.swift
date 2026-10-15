@@ -10,6 +10,15 @@ public struct DirectRoutesReply: Decodable, Sendable {
     let port: UInt16
     let lan: [String]
     let tailscale: Tailnet?
+    let iroh: String?
+
+    enum CodingKeys: String, CodingKey {
+        case port, lan, tailscale
+        case iroh = "iroh_endpoint"
+    }
+
+    /// The Mac's iroh endpoint ID, when it has one.
+    public var irohEndpoint: String? { iroh.flatMap { IrohIdentity.validEndpointID($0) ? $0 : nil } }
 
     public var endpoints: [DirectEndpoint] {
         var all = lan.map { DirectEndpoint(host: $0, port: port, kind: .localNetwork) }

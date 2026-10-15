@@ -1,5 +1,6 @@
 import AlondraDesign
 import AlondraAccount
+import AlondraIroh
 import AVFoundation
 import UIKit
 import VisionKit
@@ -22,7 +23,8 @@ func makeAccountSession(notifications: NotificationRuntime) -> AccountSession {
         return try await notifications.prepare(snapshot)
     }, willDeactivate: {
         try await notifications.deactivate()
-    }, pushBinding: { notifications.pushBinding(for: $0) })
+    }, pushBinding: { notifications.pushBinding(for: $0) }, irohDialer: { IrohEndpointDialer(identity: $0) },
+        startsLive: UIApplication.shared.applicationState != .background)
     account.isActive = { UIApplication.shared.applicationState == .active }
     account.openLocalNetworkSettings = {
         guard let url = URL(string: UIApplication.openSettingsURLString) else { return }

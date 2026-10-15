@@ -14,11 +14,13 @@ public protocol Transport: RelayRequestTransport {
     func changes(since: UInt64, epoch: String?, waitSeconds: UInt64) async throws -> RelayChanges
     func registerPush(_ registration: RelayPushRegistration) async throws
     func pairingRequest(method: String, target: String, body: Data) async throws -> HTTPReply
+    func bindIrohNode(_ binding: Data) async throws
 }
 
 public extension Transport {
     func bootstrapIfNeeded() async throws -> RelayBootstrap { try await bootstrap() }
     func acknowledgeResult(requestID: String, revision: UInt64) async throws {}
+    func bindIrohNode(_ binding: Data) async throws { throw RelayWireError.invalidEndpoint }
 }
 
 public extension AlondraAPIClient {

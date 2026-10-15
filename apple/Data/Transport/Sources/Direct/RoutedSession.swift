@@ -10,8 +10,13 @@ public protocol RelayOperations: OperationAPI, PushRegistrationAPI {
 
 extension RelaySession: RelayOperations {}
 
-/// One paired Mac over the best path it has: directly on the LAN or tailnet, and through the
-/// relay only for a pairing made with an account. Each request goes whole over one carrier.
+/// One paired Mac over the best path it has: its iroh endpoint while that connection is up,
+/// directly on the LAN or tailnet, and through the relay only for a pairing made with an account.
+/// Each request goes whole over one carrier.
+///
+/// iroh goes first when it has a live connection (or one ready within a moment). A request it
+/// could not send, and a read it got no answer to, go on as before; a change that may have
+/// reached the Mac stays unknown and is resent later as the same bytes.
 ///
 /// With a relay, no request waits on the direct path: the relay goes first and the direct path
 /// is probed in the background, at most once a minute or when the network changes. Once a
@@ -20,6 +25,17 @@ extension RelaySession: RelayOperations {}
 /// When the relay itself is out of reach (no internet, relay down) or cannot get the Mac's
 /// answer, the direct path is tried inline.
 public actor RoutedSession: OperationAPI, PushRegistrationAPI {
+    public struct Iroh: Sendable {
+        let session: DirectSession
+        public let carrier: IrohCarrier
+
+        public init(session: DirectSession, carrier: IrohCarrier) {
+            self.session = session
+            self.carrier = carrier
+        }
+    }
+
+    private let iroh: Iroh?
     private let direct: DirectSession?
     private let router: DirectRouter?
     private let relay: (any RelayOperations)?
@@ -35,15 +51,16 @@ public actor RoutedSession: OperationAPI, PushRegistrationAPI {
 
     /// `directAllowed` keeps a relay pairing off the local network until the person has allowed
     /// it, so the system never asks for Local Network access on its own.
-    public init(direct: DirectSession?, router: DirectRouter?, relay: (any RelayOperations)?,
+    public init(iroh: Iroh? = nil, direct: DirectSession?, router: DirectRouter?, relay: (any RelayOperations)?,
                 directAllowed: @escaping @Sendable () -> Bool = { true }, probeInterval: Duration = .seconds(60)) {
-        self.init(direct: direct, router: router, relay: relay, directAllowed: directAllowed,
+        self.init(iroh: iroh, direct: direct, router: router, relay: relay, directAllowed: directAllowed,
             probeInterval: probeInterval, requestClock: .continuous)
     }
 
-    init(direct: DirectSession?, router: DirectRouter?, relay: (any RelayOperations)?,
+    init(iroh: Iroh? = nil, direct: DirectSession?, router: DirectRouter?, relay: (any RelayOperations)?,
          directAllowed: @escaping @Sendable () -> Bool = { true }, probeInterval: Duration = .seconds(60),
          requestClock: RequestClock) {
+        self.iroh = iroh
         self.requestClock = requestClock
         mutations = MutationRunner(clock: requestClock)
         self.direct = direct
@@ -60,17 +77,20 @@ public actor RoutedSession: OperationAPI, PushRegistrationAPI {
     public var route: ConnectionRoute? { lastRoute }
 
     public func retireActions(_ acknowledgment: ActionJournalAcknowledgment) async throws {
+        try await iroh?.session.retireActions(acknowledgment)
         try await direct?.retireActions(acknowledgment)
         try await relay?.retireActions(acknowledgment)
     }
 
     public func recover(_ request: APIRequest) async throws -> APIResponse {
+        if let iroh, let result = try? await iroh.session.recover(request), result != .unknown { return result }
         if let relay, let result = try? await relay.recover(request), result != .unknown { return result }
         if let direct, directAllowed() { return try await direct.recover(request) }
         return .unknown
     }
 
     public func lookup(_ request: APIRequest) async throws -> OperationLookup {
+        if let iroh, let result = try? await iroh.session.lookup(request), result != .unknown { return result }
         if let relay, let result = try? await relay.lookup(request), result != .unknown { return result }
         if let direct, directAllowed() { return try await direct.lookup(request) }
         return .unknown
@@ -87,6 +107,17 @@ public actor RoutedSession: OperationAPI, PushRegistrationAPI {
     /// the relay does not answer or never had them.
     private func resendPrepared(_ request: APIRequest) async throws -> APIResponse {
         try MutationScope.check()
+        if let iroh {
+            do {
+                let response = try await iroh.session.resend(request)
+                if response != .unknown {
+                    lastRoute = await iroh.carrier.route ?? .irohRelay
+                    return response
+                }
+            } catch OperationError.sealExpired {
+                throw OperationError.sealExpired
+            } catch where !(error is CancellationError) {}
+        }
         var relayFailure: (any Error)?
         if let relay {
             do {
@@ -129,6 +160,22 @@ public actor RoutedSession: OperationAPI, PushRegistrationAPI {
 
     private func performPrepared(_ request: APIRequest) async throws -> APIResponse {
         try MutationScope.check()
+        if let iroh, await iroh.carrier.ready() {
+            let read = request.method == "GET"
+            do {
+                let response = read ? try await iroh.session.liveRead(request) : try await iroh.session.perform(request)
+                lastRoute = await iroh.carrier.route ?? .irohRelay
+                return response
+            } catch where Self.irohCanHandOver(error, read: read) {
+                // An action iroh sealed and kept but never sent goes through the relay as those
+                // same bytes, never sealed again.
+                if !read, let relay, await relay.sentEnvelope(for: request.operationID) != nil {
+                    let response = try await relay.resend(request)
+                    if response != .unknown { lastRoute = .relay }
+                    return response
+                }
+            }
+        }
         guard let relay else {
             guard let direct else { throw DirectRouteError.unreachable }
             return try await viaDirect(direct, request)
@@ -186,8 +233,24 @@ public actor RoutedSession: OperationAPI, PushRegistrationAPI {
         await router?.provenEndpoints ?? []
     }
 
+    /// The app came to the foreground: open the iroh connection.
+    public func goLive() async {
+        await iroh?.carrier.start()
+    }
+
+    /// The app went to the background: close the iroh connection; push is the only path left.
+    public func goIdle() async {
+        await iroh?.carrier.stop()
+    }
+
+    /// The device moved to another network: the live connection is made again on it.
+    public func networkMoved() async {
+        await iroh?.carrier.networkMoved()
+    }
+
     /// The network changed or the app came back: start over from the relay, probe direct again.
     public func networkChanged() async {
+        await iroh?.carrier.networkChanged()
         await router?.invalidate()
         probedAt = nil
         relayFirst = relay != nil
@@ -196,6 +259,8 @@ public actor RoutedSession: OperationAPI, PushRegistrationAPI {
 
     public func deactivate() async {
         await mutations.cancelAll()
+        await iroh?.session.deactivate()
+        await iroh?.carrier.shutdown()
         probe?.cancel()
         await direct?.deactivate()
         await relay?.deactivate()
@@ -229,6 +294,15 @@ public actor RoutedSession: OperationAPI, PushRegistrationAPI {
     private func probeFinished(_ answered: Bool) {
         probe = nil
         if answered { relayFirst = false }
+    }
+
+    /// The request never ran on the Mac, or it is a read: the other carriers may take it.
+    private static func irohCanHandOver(_ error: any Error, read: Bool) -> Bool {
+        switch error {
+        case IrohCarrierError.unavailable, IrohCarrierError.refused: return true
+        case IrohCarrierError.noAnswer, is DeadlineExceeded: return read && !Task.isCancelled
+        default: return false
+        }
     }
 
     /// No address proved to be this Mac: the relay's own answer is the one to believe.

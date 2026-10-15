@@ -83,13 +83,13 @@ struct ConnectionMeasurementTests {
             + [sample(ms: 25_000, kind: "changes")]
             + [sample(ms: 1, outcome: .cancelled)]
         let summary = ConnectionMeasurementSummary.groups(measurements)
-        #expect(summary.map(\.waits) == [false, false, true])
-        let relay = try #require(summary.first { $0.route == .relay && !$0.waits })
+        #expect(summary.map(\.group) == [.requests, .requests, .liveUpdates])
+        let relay = try #require(summary.first { $0.route == .relay && $0.group == .requests })
         #expect(relay.count == 5)
         #expect(relay.medianMs == 60)
         #expect(relay.p90Ms == 500)
         #expect(summary.first { $0.route == nil }?.failures == 1)
-        #expect(summary.first { $0.waits }?.medianMs == 25_000)
+        #expect(summary.first { $0.group == .liveUpdates }?.medianMs == 25_000)
     }
 
     private func sample(ms: Int, kind: String = "views", outcome: ConnectionMeasurement.Outcome = .ok,
@@ -120,4 +120,17 @@ private actor ScriptedAnswers: OperationAPI {
 private final class Observed: Sendable {
     private let items = Mutex<[RequestObservation]>([])
     func withLock<T: Sendable>(_ body: (inout [RequestObservation]) -> T) -> T { items.withLock { body(&$0) } }
+
+    @Test func theTimeToOpenTheConnectionIsAGroupOfItsOwn() {
+        let network = ConnectionMeasurement.NetworkSnapshot(interface: "cellular", radio: "NR")
+        let connect = ConnectionMeasurement.connected(after: .milliseconds(740), route: .direct, at: Date(), mac: "a1b2c3",
+                                                      network: network)
+        #expect(connect.ms == 740)
+        #expect(connect.kind == ConnectionMeasurement.connectKind)
+        let request = ConnectionMeasurement(at: Date(), mac: "a1b2c3", operation: "perform", method: "GET", kind: "views",
+                                            route: .direct, ms: 55, network: "cellular", radio: "NR", outcome: .ok)
+        let summary = ConnectionMeasurementSummary.groups([connect, request])
+        #expect(summary.map(\.group) == [.requests, .connecting])
+        #expect(summary.last?.medianMs == 740)
+    }
 }

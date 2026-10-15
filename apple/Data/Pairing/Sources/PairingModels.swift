@@ -58,9 +58,12 @@ public struct PairingInvitation: Decodable, Sendable {
     public let sessionID: String
     public let secret: String
     public let expiresAtMs: UInt64
+    /// The Mac's iroh endpoint ID; a Mac without iroh leaves it out.
+    public let macIrohEndpoint: String?
 
     enum CodingKeys: String, CodingKey {
         case version, url, secret
+        case macIrohEndpoint = "mac_iroh_endpoint"
         case macID = "mac_id"
         case macSigningKey = "mac_signing_key"
         case macAgreementKey = "mac_agreement_key"
@@ -81,7 +84,8 @@ public struct PairingInvitation: Decodable, Sendable {
               let signingData = PairingWire.decode(macSigningKey), signingData.count == 65,
               let agreementData = PairingWire.decode(macAgreementKey), agreementData.count == 65,
               (try? P256.Signing.PublicKey(x963Representation: signingData)) != nil,
-              (try? P256.KeyAgreement.PublicKey(x963Representation: agreementData)) != nil else {
+              (try? P256.KeyAgreement.PublicKey(x963Representation: agreementData)) != nil,
+              macIrohEndpoint.map(IrohIdentity.validEndpointID) ?? true else {
             throw PairingError.invalidInvitation
         }
     }
@@ -115,6 +119,8 @@ public struct ApprovedServicePairing: Codable, Sendable {
     public var name: String? = nil
     /// Direct addresses learned from Bonjour, the pairing itself and the Mac's `/routes`.
     public var routes: [DirectEndpoint]? = nil
+    /// The Mac's iroh endpoint ID, from the pairing or the Mac's `/routes`.
+    public var irohEndpoint: String? = nil
 
     public init(relayURL: URL?, macID: String, deviceID: String, ownerSub: String?, macSigningKey: String,
                 macAgreementKey: String, signingPrivateKey: Data, agreementPrivateKey: Data, approvedAtMs: UInt64) {

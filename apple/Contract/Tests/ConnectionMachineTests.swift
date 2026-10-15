@@ -17,6 +17,22 @@ final class ConnectionMachineTests: XCTestCase {
         XCTAssertEqual(machine.state, .connected(.relay))
     }
 
+    /// iroh moves a live connection from the relay to the direct path without a new answer: the
+    /// label follows it, but a path change never makes a Mac that is not answering look connected.
+    func testTheRouteFollowsTheLiveConnectionOnlyWhileConnected() {
+        var machine = ConnectionMachine()
+        machine.handle(.routeChanged(.direct))
+        XCTAssertEqual(machine.state, .connecting)
+
+        machine.handle(.answered(.irohRelay))
+        machine.handle(.routeChanged(.direct))
+        XCTAssertEqual(machine.state, .connected(.direct))
+
+        machine.handle(.networkLost)
+        machine.handle(.routeChanged(.irohRelay))
+        XCTAssertEqual(machine.state, .unreachable(.noInternet))
+    }
+
     func testAMacThatStopsAnsweringIsUnreachableOnlyOnceItKeepsFailing() {
         var machine = ConnectionMachine()
         machine.handle(.answered(.localNetwork))

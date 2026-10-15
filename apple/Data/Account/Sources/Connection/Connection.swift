@@ -23,15 +23,19 @@ public actor Connection {
     public nonisolated let monitor: ConnectionMonitor
     private let operations: any FeedOperations
     private let macName: String?
+    private let irohEndpoint: IrohEndpointHolder?
+    private var movesTask: Task<Void, Never>?
     /// The paired Mac's ID; nil for the Mac this app runs on.
     public nonisolated let macID: String?
     private var active = true
 
     /// A Mac paired on the local network talks only directly; one paired with an account also
-    /// keeps the relay, and reaches it directly only once Local Network access is allowed.
+    /// keeps the relay, and reaches it directly only once Local Network access is allowed. With
+    /// `irohDialer`, a Mac paired with an account is reached first over its iroh endpoint.
     public init(approved: ApprovedServicePairing, auth: AuthSession, storageDirectory: URL? = nil,
                 measurements: ConnectionMeasurements? = nil,
-                localNetworkAllowed: @escaping @Sendable () -> Bool = { LocalNetworkAccess.allowed }) async throws {
+                localNetworkAllowed: @escaping @Sendable () -> Bool = { LocalNetworkAccess.allowed },
+                irohDialer: (@Sendable (IrohIdentity) -> any IrohDialer)? = nil) async throws {
         let signing = try P256.Signing.PrivateKey(rawRepresentation: approved.signingPrivateKey)
         let agreement = try P256.KeyAgreement.PrivateKey(rawRepresentation: approved.agreementPrivateKey)
         let macSigning = try approved.macSigningPublicKey()
@@ -63,11 +67,31 @@ public actor Connection {
                 signing: signing, agreement: agreement,
                 macSigning: macSigning, macAgreement: macAgreement)
         }
+        var iroh: RoutedSession.Iroh?
+        var irohEndpoint: IrohEndpointHolder?
+        if let relay, let irohDialer {
+            let identity = IrohIdentity(pairingSigning: signing, macID: approved.macID)
+            let endpoint = IrohEndpointHolder(approved.irohEndpoint)
+            let carrier = IrohCarrier(dialer: irohDialer(identity), macID: approved.macID, deviceID: approved.deviceID,
+                signing: signing, address: {
+                    guard let id = endpoint.value, let url = try? await relay.irohRelay() else { return nil }
+                    return IrohMacAddress(endpointID: id, relay: url)
+                }, prepare: { _ in try await relay.bindIrohNode(identity) })
+            iroh = RoutedSession.Iroh(session: DirectSession(macID: approved.macID, deviceID: approved.deviceID,
+                signing: signing, agreement: agreement, macSigning: macSigning, macAgreement: macAgreement,
+                iroh: carrier, journal: journal), carrier: carrier)
+            irohEndpoint = endpoint
+        }
         let hasRelay = relay != nil
         let directAllowed: @Sendable () -> Bool = { !hasRelay || localNetworkAllowed() }
-        let routed = RoutedSession(direct: direct, router: router, relay: relay, directAllowed: directAllowed)
+        let routed = RoutedSession(iroh: iroh, direct: direct, router: router, relay: relay, directAllowed: directAllowed)
         self.init(operations: routed, server: server, deviceID: approved.deviceID, macName: approved.name,
-                  macID: approved.macID, intents: intents, measurements: measurements)
+                  macID: approved.macID, intents: intents, measurements: measurements, irohEndpoint: irohEndpoint)
+        if let carrier = iroh?.carrier {
+            await follow(carrier, measurements: measurements)
+            // Open the live connection before the first request; the background closes it.
+            await carrier.start()
+        }
     }
 
     public static func local(_ session: LoopbackSession, identity: LoopbackIdentityStore,
@@ -77,7 +101,7 @@ public actor Connection {
         let intents = await openIntents(in: storageDirectory, keyMaterial: material,
             scope: ActionIntentScope(service: session.base.absoluteString, device: "this-mac", credentialRevision: revision))
         return Connection(operations: session, server: session.base, deviceID: "mac", macName: nil,
-                          macID: nil, intents: intents, measurements: measurements)
+                          macID: nil, intents: intents, measurements: measurements, irohEndpoint: nil)
     }
 
     /// Saved answers are this device's own business: whatever their store does, the Mac is still reached.
@@ -110,8 +134,26 @@ public actor Connection {
     public func learnRoutes() async throws {
         guard let routed = operations as? RoutedSession else { return }
         try checkActive()
-        let reply = try await api.send(.data(.get, path: ["routes"]))
-        await routed.offer(try JSONDecoder().decode(DirectRoutesReply.self, from: reply).endpoints, from: .mac)
+        let reply = try JSONDecoder().decode(DirectRoutesReply.self, from: try await api.send(.data(.get, path: ["routes"])))
+        if let endpoint = reply.irohEndpoint, let irohEndpoint, irohEndpoint.value != endpoint {
+            irohEndpoint.learn(endpoint)
+            await routed.networkChanged()
+        }
+        await routed.offer(reply.endpoints, from: .mac)
+    }
+
+    /// The Mac's iroh endpoint ID, once known: the pairing keeps it.
+    public nonisolated var learnedIrohEndpoint: String? { irohEndpoint?.value }
+
+    /// The app came to the foreground: open the live connection to this Mac.
+    public func goLive() async {
+        guard active else { return }
+        await (operations as? RoutedSession)?.goLive()
+    }
+
+    /// The app went to the background: close the live connection; push still reaches this device.
+    public func goIdle() async {
+        await (operations as? RoutedSession)?.goIdle()
     }
 
     /// An address Bonjour found for this Mac on the current network: a hint, never saved as is.
@@ -140,9 +182,10 @@ public actor Connection {
     }
 
     private init(operations: any FeedOperations, server: URL, deviceID: String, macName: String?, macID: String?,
-                 intents: OpenedActionIntents?, measurements: ConnectionMeasurements?) {
+                 intents: OpenedActionIntents?, measurements: ConnectionMeasurements?, irohEndpoint: IrohEndpointHolder?) {
         self.operations = operations
         self.macName = macName
+        self.irohEndpoint = irohEndpoint
         self.macID = macID
         let local = operations is LoopbackSession
         let monitor = ConnectionMonitor { error in
@@ -175,8 +218,36 @@ public actor Connection {
         Task { await monitor.follow(network: NetworkReachability.shared.changes()) }
     }
 
+    /// The live connection's path shows as soon as iroh changes it, and how long it took to
+    /// open is measured once per return to the foreground.
+    private func follow(_ carrier: IrohCarrier, measurements: ConnectionMeasurements?) async {
+        let moves = NetworkReachability.shared.moves()
+        movesTask = Task { [weak self] in
+            for await _ in moves {
+                guard let routed = await self?.operations as? RoutedSession else { return }
+                await routed.networkMoved()
+            }
+        }
+        let monitor = monitor
+        let mac = ConnectionMeasurement.macReference(macID)
+        await carrier.observe { event in
+            switch event {
+            case let .connected(route, after):
+                guard let measurements else { return }
+                let network = ConnectionMeasurement.NetworkSnapshot(interface: NetworkReachability.shared.interfaceKind,
+                                                                    radio: RadioAccess.current)
+                Task { await measurements.record(.connected(after: after, route: route, at: Date(), mac: mac, network: network)) }
+            case let .routeChanged(route):
+                Task { await monitor.handle(.routeChanged(route)) }
+            case .lost:
+                break
+            }
+        }
+    }
+
     public func deactivate() async {
         active = false
+        movesTask?.cancel()
         await monitor.stop()
         await viewActionSender.stop()
         await viewsFeed.stop()

@@ -5,7 +5,11 @@ public struct RelayBootstrap: Decodable, Sendable {
     public let epoch: String
     public let requestWait: Bool
     public let resultAcknowledgment: Bool
-    enum CodingKeys: String, CodingKey { case protocolVersion = "protocol", epoch, requestWait = "request_wait", resultAcknowledgment = "result_ack" }
+    /// The iroh relay this relay admits endpoints to; nil while it has none.
+    public let irohRelay: URL?
+    enum CodingKeys: String, CodingKey {
+        case protocolVersion = "protocol", epoch, requestWait = "request_wait", resultAcknowledgment = "result_ack", irohRelay = "iroh_relay"
+    }
 
     public init(from decoder: any Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -13,6 +17,9 @@ public struct RelayBootstrap: Decodable, Sendable {
         epoch = try values.decode(String.self, forKey: .epoch)
         requestWait = try values.decodeIfPresent(Bool.self, forKey: .requestWait) ?? false
         resultAcknowledgment = try values.decodeIfPresent(Bool.self, forKey: .resultAcknowledgment) ?? false
+        let announced: String? = try? values.decodeIfPresent(String.self, forKey: .irohRelay)
+        let url = announced.flatMap { URL(string: $0) }
+        irohRelay = url?.scheme == "https" && url?.host != nil ? url : nil
     }
 }
 

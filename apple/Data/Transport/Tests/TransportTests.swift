@@ -95,6 +95,36 @@ final class TransportTests: XCTestCase {
         XCTAssertEqual(post.value(forHTTPHeaderField: "x-device-nonce"), base64URL(nonce))
     }
 
+    /// The iroh relay admits this device's endpoint only once the Alondra relay has it: a PUT
+    /// signed as this device, carrying the binding in its body.
+    func testBindingTheIrohEndpointIsASignedPutWithTheBindingAsItsBody() async throws {
+        let signer = P256.Signing.PrivateKey()
+        let epoch = base64URL(Data(repeating: 7, count: 16))
+        let transport = RecordingTransport([
+            .init(status: 200, body: Data(#"{"protocol":1,"epoch":"\#(epoch)"}"#.utf8)),
+            .init(status: 204, body: Data()),
+        ])
+        let client = try AlondraAPIClient.makeTransport(base: URL(string: "https://relay.example")!, deviceID: "phone-1",
+                                            signer: { try signer.signature(for: $0).rawRepresentation },
+                                            bearer: { "jwt-token" }, transport: transport)
+        let binding = Data(#"{"iroh_node_id":"ab","proof":"cd"}"#.utf8)
+        try await client.bindIrohNode(binding)
+        let calls = await transport.recorded()
+        let put = try XCTUnwrap(calls.last)
+        XCTAssertEqual(put.httpMethod, "PUT")
+        XCTAssertEqual(put.url?.absoluteString, "https://relay.example/v1/iroh-node")
+        XCTAssertEqual(put.httpBody, binding)
+        XCTAssertEqual(put.value(forHTTPHeaderField: "Authorization"), "Bearer jwt-token")
+        let timestamp = try XCTUnwrap(UInt64(try XCTUnwrap(put.value(forHTTPHeaderField: "x-device-timestamp-ms"))))
+        let nonce = try decodedBase64URL(XCTUnwrap(put.value(forHTTPHeaderField: "x-device-nonce")))
+        let challenge = try RelayHTTPChallenge.message(deviceID: "phone-1", method: "PUT", target: "/v1/iroh-node",
+                                                        epoch: Data(repeating: 7, count: 16), body: binding,
+                                                        timestampMilliseconds: timestamp, nonce: nonce)
+        let signature = try P256.Signing.ECDSASignature(rawRepresentation:
+            decodedBase64URL(try XCTUnwrap(put.value(forHTTPHeaderField: "x-device-signature"))))
+        XCTAssertTrue(signer.publicKey.isValidSignature(signature, for: challenge))
+    }
+
     func testARelay401AsksToRenewTheAccessTokenButAnUnsignedOneDoesNot() async throws {
         let epoch = base64URL(Data(repeating: 7, count: 16))
         let transport = RecordingTransport([

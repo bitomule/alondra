@@ -223,6 +223,28 @@ final class AccountSnapshotTests: XCTestCase {
         assertScreen([.light], language: .spanish, inWindow: true) { ScreenFrame(height: 1000) { SettingsView(store: store) } }
     }
 
+    /// Macs reached over iroh: one straight to the Mac, one through the relay's live connection.
+    private func liveSettings() -> StoreOf<SettingsFeature> {
+        settings {
+            $0.macs = [
+                MacChoice(id: UUID(uuidString: "00000000-0000-0000-0000-000000000001")!, macID: "mac-9c1e44aa", name: "Studio de David"),
+                MacChoice(id: UUID(uuidString: "00000000-0000-0000-0000-000000000002")!, macID: "mac-b27f03d9", name: "MacBook Pro"),
+            ]
+            $0.selectedMacID = $0.macs.first?.id
+            $0.macStatuses = [$0.macs[0].id: .route(.direct), $0.macs[1].id: .route(.irohRelay)]
+        }
+    }
+
+    func test_settings_macsOverTheLiveConnection() {
+        let store = liveSettings()
+        assertScreen([.light, .dark], inWindow: true) { ScreenFrame(height: 1000) { SettingsView(store: store) } }
+    }
+
+    func test_settings_macsOverTheLiveConnection_spanish() {
+        let store = liveSettings()
+        assertScreen([.light], language: .spanish, inWindow: true) { ScreenFrame(height: 1000) { SettingsView(store: store) } }
+    }
+
     func test_settings_failuresStayInTheirRows() {
         let store = settings {
             $0.macError = .macNotAnswering

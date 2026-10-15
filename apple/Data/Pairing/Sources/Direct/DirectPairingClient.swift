@@ -16,6 +16,7 @@ public actor DirectPairingClient {
     private struct Attempt {
         let endpoint: DirectEndpoint
         let hello: DirectMacIdentity
+        let irohEndpoint: String?
         let transcript: DirectPairingProtocol.Transcript
         let signing: P256.Signing.PrivateKey
         let agreement: P256.KeyAgreement.PrivateKey
@@ -67,7 +68,8 @@ public actor DirectPairingClient {
             throw PairingError.invalidIdentity
         }
         let hello: DirectMacIdentity
-        do { hello = try await http.hello(at: endpoint) }
+        let irohEndpoint: String?
+        do { (hello, irohEndpoint) = try await http.greeting(at: endpoint) }
         catch let error as URLError where error.code == .appTransportSecurityRequiresSecureConnection {
             throw PairingError.insecureAddress
         } catch is URLError { throw PairingError.macUnreachable }
@@ -99,7 +101,7 @@ public actor DirectPairingClient {
             macAgreementKey: hello.agreementKey, deviceID: deviceID, clientSigningKey: signingKey,
             clientAgreementKey: agreementKey, clientNonce: clientNonce, macNonce: started.macNonce)
         let id = UUID()
-        attempts[id] = Attempt(endpoint: endpoint, hello: hello, transcript: transcript, signing: signing,
+        attempts[id] = Attempt(endpoint: endpoint, hello: hello, irohEndpoint: irohEndpoint, transcript: transcript, signing: signing,
                                agreement: agreement, expiresAtMs: started.expiresAtMs, replacesExisting: replacesExisting)
         return DirectPairingAttempt(id: id, code: try transcript.code(), macName: hello.name, expiresAtMs: started.expiresAtMs)
     }
@@ -128,6 +130,7 @@ public actor DirectPairingClient {
                     agreementPrivateKey: attempt.agreement.rawRepresentation, approvedAtMs: now())
                 approved.name = attempt.hello.name
                 approved.routes = [attempt.endpoint]
+                approved.irohEndpoint = attempt.irohEndpoint
                 try Task.checkCancellation()
                 if attempt.replacesExisting {
                     try store.modify { try $0.replaceLocalPairing(of: approved.macID, with: approved) }

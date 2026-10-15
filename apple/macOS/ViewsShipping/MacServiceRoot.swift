@@ -14,6 +14,7 @@ struct MacServiceRoot: View {
     let owner: MacWorkspaceOwner
     let notices: MacLocalNotices
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.scenePhase) private var phase
     @State private var connectingRemote = false
     @State private var demoSession: UUID?
     private var account: AccountSession { owner.account }
@@ -57,6 +58,13 @@ struct MacServiceRoot: View {
         }
         .task { await owner.run() }
         .onAppear { notices.openWindow = openWindow }
+        .onChange(of: phase, initial: true) { _, phase in
+            switch phase {
+            case .active: Task { await account.goLive() }
+            case .background: Task { await account.goIdle() }
+            default: break
+            }
+        }
         .sheet(item: Binding(get: { notices.shownPairing }, set: { shown in
             if shown == nil, let id = notices.shownPairing?.id { notices.dismissedPairings.insert(id) }
         })) { request in

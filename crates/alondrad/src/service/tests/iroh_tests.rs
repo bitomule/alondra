@@ -372,6 +372,39 @@ fn the_endpoint_id_is_the_ed25519_public_key_of_the_stored_seed() {
     assert_eq!(from_ring, "ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c");
 }
 
+/// A paired Mac on loopback for the Swift client's process test (`//apple/Data/Iroh`). It prints
+/// where it listens and the body of one action, answers `limit` with the options file, and stops
+/// when stdin closes. Its keys are the fixed seeds above, which the Swift test derives itself.
+#[ignore = "stdin-controlled iroh server for the Swift client process test"]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn iroh_process_fixture_server() {
+    use std::io::BufRead;
+    let f = Fixture::new().await;
+    let state = f.domain.state().unwrap();
+    let action = ActionId::new(Verb::SetLimit, "limit", state.revision, Some("4".into())).unwrap();
+    let ready = json!({
+        "event": "ready",
+        "endpoint": f.service.iroh_key().public().to_string(),
+        "address": f._endpoint.bound_sockets()[0].to_string(),
+        "action": serde_json::to_string(&json!({"protocol": 1, "command_id": "5f0c2d9e-8d0b-4c71-9b0e-2b6f5d8f1a10",
+            "data_epoch": state.data_epoch, "client": "ios", "lang": "en", "action_id": action.to_string(),
+            "option_id": "4", "input": {}})).unwrap(),
+    });
+    println!("ALONDRA_IROH {ready}");
+    let options = alondra_core::options::path_in(&f.home);
+    tokio::task::spawn_blocking(move || {
+        for line in std::io::stdin().lock().lines() {
+            let Ok(line) = line else { return };
+            if line.trim() == "limit" {
+                let text = std::fs::read_to_string(&options).unwrap_or_default();
+                println!("ALONDRA_IROH {}", json!({"event": "limit", "limit": text}));
+            }
+        }
+    })
+    .await
+    .unwrap();
+}
+
 #[tokio::test]
 async fn a_connection_is_counted_by_the_path_it_used_once_it_closes() {
     let f = Fixture::new().await;

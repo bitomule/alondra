@@ -102,9 +102,11 @@ final class MacLocalPairingSnapshotTests: XCTestCase {
     private var connectionMeasurements: some View {
         var state = ConnectionMeasurementsFeature.State()
         state.summary = [
-            ConnectionMeasurementSummary(route: .thisMac, network: "wifi", waits: false, count: 512, failures: 0, medianMs: 4, p90Ms: 11),
-            ConnectionMeasurementSummary(route: .relay, network: "wired", waits: false, count: 37, failures: 2, medianMs: 121, p90Ms: 240),
-            ConnectionMeasurementSummary(route: .thisMac, network: "wifi", waits: true, count: 64, failures: 0, medianMs: 49_880, p90Ms: 50_004),
+            ConnectionMeasurementSummary(route: .thisMac, network: "wifi", count: 512, failures: 0, medianMs: 4, p90Ms: 11),
+            ConnectionMeasurementSummary(route: .direct, network: "wired", count: 88, failures: 0, medianMs: 9, p90Ms: 21),
+            ConnectionMeasurementSummary(route: .relay, network: "wired", count: 37, failures: 2, medianMs: 121, p90Ms: 240),
+            ConnectionMeasurementSummary(route: .direct, network: "wired", group: .connecting, count: 5, failures: 0, medianMs: 310, p90Ms: 620),
+            ConnectionMeasurementSummary(route: .thisMac, network: "wifi", group: .liveUpdates, count: 64, failures: 0, medianMs: 49_880, p90Ms: 50_004),
         ]
         state.file = URL(fileURLWithPath: "/tmp/connection-measurements.jsonl")
         let store = Store(initialState: state) {
@@ -114,11 +116,11 @@ final class MacLocalPairingSnapshotTests: XCTestCase {
     }
 
     func test_connectionMeasurements() {
-        assertWindow(size: CGSize(width: 560, height: 380)) { connectionMeasurements }
+        assertWindow(size: CGSize(width: 560, height: 480)) { connectionMeasurements }
     }
 
     func test_connectionMeasurements_spanish() {
-        assertWindow(size: CGSize(width: 560, height: 380), spanish: true, variants: light) { connectionMeasurements }
+        assertWindow(size: CGSize(width: 560, height: 480), spanish: true, variants: light) { connectionMeasurements }
     }
 
     func test_thisMacSettings() {

@@ -63,6 +63,7 @@ public enum ConnectionClassifier {
             default: return .unexpected
             }
         case OperationError.outcomeUnknown: return .macNotAnswering
+        case is IrohCarrierError: return .macNotAnswering
         case APIError.unauthorized: return .accessNotConfirmed
         default: return .unexpected
         }

@@ -16,15 +16,15 @@ final class DirectSessionLifetime: Sendable {
     }
 }
 
-/// Sealed requests to one paired Mac over its direct port, answered in the same exchange.
+/// Sealed requests to one paired Mac, answered in the same exchange: over its direct port, or
+/// over its iroh endpoint.
 /// A mutation is sealed once per operation ID and only ever resent as the same bytes: the Mac's
 /// receipt journal runs it once and replays the stored answer.
 public actor DirectSession: OperationAPI {
     private let journal: EnvelopeJournal?
     private let codec: EnvelopeCodec
-    private let router: DirectRouter
-    private let http: DirectHTTP
-    private let pause: @Sendable (Duration) async throws -> Void
+    private let carrier: any EnvelopeCarrier
+    private let quickSlack: Duration
     private let requestClock: RequestClock
     let mutations: MutationRunner
     private let mutationEvidence = MutationEvidenceStore()
@@ -53,14 +53,34 @@ public actor DirectSession: OperationAPI {
          now: @escaping @Sendable () -> UInt64 = { UInt64(max(0, Date().timeIntervalSince1970 * 1000)) },
          pause: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
          requestClock: RequestClock) {
+        self.init(macID: macID, deviceID: deviceID, signing: signing, agreement: agreement,
+            macSigning: macSigning, macAgreement: macAgreement,
+            carrier: HTTPDirectCarrier(router: router, http: http, pause: pause),
+            journal: journal, now: now, requestClock: requestClock)
+    }
+
+    /// The same sealed requests over a Mac's iroh endpoint.
+    public init(macID: String, deviceID: String, signing: P256.Signing.PrivateKey,
+                agreement: P256.KeyAgreement.PrivateKey, macSigning: P256.Signing.PublicKey,
+                macAgreement: P256.KeyAgreement.PublicKey, iroh: IrohCarrier, journal: EnvelopeJournal? = nil,
+                now: @escaping @Sendable () -> UInt64 = { UInt64(max(0, Date().timeIntervalSince1970 * 1000)) }) {
+        self.init(macID: macID, deviceID: deviceID, signing: signing, agreement: agreement,
+            macSigning: macSigning, macAgreement: macAgreement, carrier: iroh,
+            journal: journal, now: now, requestClock: .continuous)
+    }
+
+    init(macID: String, deviceID: String, signing: P256.Signing.PrivateKey,
+         agreement: P256.KeyAgreement.PrivateKey, macSigning: P256.Signing.PublicKey,
+         macAgreement: P256.KeyAgreement.PublicKey, carrier: any EnvelopeCarrier,
+         journal: EnvelopeJournal?, now: @escaping @Sendable () -> UInt64, requestClock: RequestClock,
+         quickSlack: Duration = .seconds(DirectSession.quickReadSlack)) {
+        self.quickSlack = quickSlack
         self.journal = journal
         self.requestClock = requestClock
         mutations = MutationRunner(clock: requestClock)
         codec = EnvelopeCodec(macID: macID, deviceID: deviceID, signing: signing, agreement: agreement,
                               macSigning: macSigning, macAgreement: macAgreement, now: now)
-        self.router = router
-        self.http = http
-        self.pause = pause
+        self.carrier = carrier
     }
 
     public func recover(_ request: APIRequest) async throws -> APIResponse {
@@ -121,12 +141,21 @@ public actor DirectSession: OperationAPI {
     /// silent Mac hands the read over in seconds instead of after four full timeouts.
     public func quickRead(_ request: APIRequest) async throws -> APIResponse {
         guard request.method == "GET", !request.isActionJournalControl else { return try await perform(request) }
-        return try await performPrepared(request, quick: true)
+        return try await performPrepared(request, pace: .quick)
+    }
+
+    /// One try at a read with the full time to answer, for a carrier that knows at once when the
+    /// Mac is gone: a Mac that is only slow keeps its answer instead of rendering it twice.
+    public func liveRead(_ request: APIRequest) async throws -> APIResponse {
+        guard request.method == "GET", !request.isActionJournalControl else { return try await perform(request) }
+        return try await performPrepared(request, pace: .live)
     }
 
     static let quickReadSlack = 8
 
-    private func performPrepared(_ request: APIRequest, quick: Bool = false) async throws -> APIResponse {
+    private enum ReadPace { case patient, quick, live }
+
+    private func performPrepared(_ request: APIRequest, pace: ReadPace = .patient) async throws -> APIResponse {
         try MutationScope.check()
         guard active else { throw CancellationError() }
         let wait = EnvelopeRequestPolicy.viewsChangeWait(request.path)
@@ -134,7 +163,7 @@ public actor DirectSession: OperationAPI {
               wait != nil || EnvelopeRequestPolicy.validViewsPath(method: request.method, path: request.path,
                                                                   hasBody: request.body != nil)
         else { throw RelaySessionError.invalidRequest }
-        let timeout = Duration.seconds((wait ?? 0) + (quick ? Self.quickReadSlack : 20))
+        let timeout = .seconds(wait ?? 0) + (pace == .quick ? quickSlack : .seconds(20))
         if request.isActionJournalControl {
             let requestID = "control-" + UUID().uuidString
             let body = try seal(requestID: requestID, method: request.method, path: request.path, body: request.body)
@@ -143,7 +172,7 @@ public actor DirectSession: OperationAPI {
         if request.method == "GET" {
             let requestID = "read-" + UUID().uuidString
             let body = try seal(requestID: requestID, method: "GET", path: request.path, body: nil)
-            return try await deliver(body, requestID: requestID, mutation: false, timeout: timeout, attempts: quick ? 1 : 4)
+            return try await deliver(body, requestID: requestID, mutation: false, timeout: timeout, attempts: pace == .patient ? 4 : 1)
         }
         guard !request.operationID.hasPrefix("read-") else { throw RelaySessionError.invalidRequest }
         let tag = try codec.semanticTag(method: request.method, path: request.path, body: request.body)
@@ -219,72 +248,25 @@ public actor DirectSession: OperationAPI {
         return json["error"] as? String == "device_revoked"
     }
 
-    /// Up to `attempts` tries, re-picking the route after a network failure or an impostor. A mutation that may have
-    /// reached the Mac without an answer is `.unknown`, never silently dropped.
     private func deliver(_ body: Data, requestID: String, mutation: Bool, timeout: Duration, attempts: Int = 4,
                          persistResult: Bool = false) async throws -> APIResponse {
-        var mayHaveArrived = false
-        var routeError = DirectRouteError.unreachable
-        for attempt in 0..<attempts {
-            try MutationScope.check()
-            guard active else { throw CancellationError() }
-            if attempt > 0 { try await pause(.milliseconds(500 * attempt)) }
-            try MutationScope.check()
-            let endpoint: DirectEndpoint
-            do { endpoint = try await router.endpoint() }
-            catch let error as DirectRouteError where mayHaveArrived {
-                routeError = error
-                break
-            }
-            try MutationScope.check()
-            let context = await router.requestContext()
-            try MutationScope.check()
-            let reply: HTTPReply
-            do { reply = try await http.post(endpoint, path: "/direct/request", body: body, timeout: timeout) }
-            catch let error as URLError where error.code == .cancelled { throw CancellationError() }
-            catch let error as URLError {
-                if error.isLocalNetworkDenied { routeError = .localNetworkDenied }
-                mayHaveArrived = true
-                await router.invalidate()
-                continue
-            }
-            try MutationScope.check()
-            guard active else { throw CancellationError() }
-            if reply.status == 200 {
-                // Only an answer that opens with the pinned keys proves the address is this Mac.
-                if let envelope = try? JSONDecoder().decode(Envelope.self, from: reply.body),
-                   let response = try? codec.opened(envelope, requestID: requestID) {
-                    await router.proved(endpoint, in: context, response: response, lifetime: lifetime)
-                    if persistResult, let journal {
-                        _ = try await journal.update(requestID: requestID) { record in
-                            guard record.phase != .retired else { return }
-                            record.phase = .acknowledged
-                            record.lastStatus = "completed"
-                            record.lastResponse = envelope
-                        }
-                    }
-                    if Self.saysRevoked(response) { throw DirectSessionError.deviceRevoked }
-                    return response
+        let codec = codec
+        let answer = try await carrier.deliver(body, open: { try codec.opened($0, requestID: requestID) },
+            mutation: mutation, timeout: timeout, attempts: attempts, lifetime: lifetime)
+        switch answer {
+        case .unknown: return .unknown
+        case let .plain(response): return response
+        case let .sealed(envelope, response):
+            if persistResult, let journal {
+                _ = try await journal.update(requestID: requestID) { record in
+                    guard record.phase != .retired else { return }
+                    record.phase = .acknowledged
+                    record.lastStatus = "completed"
+                    record.lastResponse = envelope
                 }
-                await router.reject(endpoint, in: context)
-                continue
             }
-            // A bare status is not signed, so it never says anything about the Mac or this
-            // device: a refusal rules out only that address, and the Mac stays as not answering.
-            // From an address proved on this network, a conflict or a rejection is believed.
-            guard reply.status != 401, await router.isProven(endpoint, in: context) else {
-                await router.reject(endpoint, in: context)
-                continue
-            }
-            switch reply.status {
-            case 409: throw RelaySessionError.operationIdentityConflict
-            case 421: await router.reject(endpoint, in: context)
-            case 429, 503: continue
-            case 400: return .completed(status: 400, body: reply.body)
-            default: await router.reject(endpoint, in: context)
-            }
+            if Self.saysRevoked(response) { throw DirectSessionError.deviceRevoked }
+            return response
         }
-        if mutation && mayHaveArrived { return .unknown }
-        throw routeError
     }
 }

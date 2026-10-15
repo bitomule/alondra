@@ -215,6 +215,13 @@ actor RelayTransport: Transport {
         guard response.status == 204 else { throw Self.error(response.status) }
     }
 
+    /// Lets this device's iroh endpoint through the iroh relay: the endpoint signs the device ID
+    /// it speaks for, and the request itself is signed as this device.
+    func bindIrohNode(_ binding: Data) async throws {
+        let response = try await send("PUT", target: "/v1/iroh-node", body: binding, signed: true)
+        guard response.status == 204 else { throw Self.error(response.status) }
+    }
+
     func pairingRequest(method: String, target: String, body: Data) async throws -> HTTPReply {
         guard target.hasPrefix("/v1/pairings/"), ["GET", "POST"].contains(method) else { throw RelayWireError.invalidEndpoint }
         return try await send(method, target: target, body: body, signed: true)
@@ -248,7 +255,7 @@ actor RelayTransport: Transport {
         request.cachePolicy = .reloadIgnoringLocalCacheData
         request.timeoutInterval = target.hasPrefix("/v1/changes?") || target.hasPrefix("/v1/requests/") && target.contains("?wait_s=") ? 35 : 15
         request.setValue("application/json", forHTTPHeaderField: "Accept")
-        if method == "POST" {
+        if method == "POST" || method == "PUT" {
             request.httpBody = body
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         }

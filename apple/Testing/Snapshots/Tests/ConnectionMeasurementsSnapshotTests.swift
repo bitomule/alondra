@@ -11,10 +11,13 @@ import XCTest
 @MainActor
 final class ConnectionMeasurementsSnapshotTests: XCTestCase {
     static let summary = [
-        ConnectionMeasurementSummary(route: .relay, network: "cellular", waits: false, count: 184, failures: 3, medianMs: 352, p90Ms: 611),
-        ConnectionMeasurementSummary(route: .localNetwork, network: "wifi", waits: false, count: 92, failures: 0, medianMs: 14, p90Ms: 38),
-        ConnectionMeasurementSummary(route: nil, network: "cellular", waits: false, count: 1, failures: 1, medianMs: nil, p90Ms: nil),
-        ConnectionMeasurementSummary(route: .relay, network: "cellular", waits: true, count: 40, failures: 2, medianMs: 24_870, p90Ms: 50_012),
+        ConnectionMeasurementSummary(route: .direct, network: "cellular", count: 210, failures: 0, medianMs: 56, p90Ms: 81),
+        ConnectionMeasurementSummary(route: .irohRelay, network: "cellular", count: 96, failures: 1, medianMs: 88, p90Ms: 140),
+        ConnectionMeasurementSummary(route: .relay, network: "cellular", count: 184, failures: 3, medianMs: 352, p90Ms: 611),
+        ConnectionMeasurementSummary(route: .localNetwork, network: "wifi", count: 92, failures: 0, medianMs: 14, p90Ms: 38),
+        ConnectionMeasurementSummary(route: nil, network: "cellular", count: 1, failures: 1, medianMs: nil, p90Ms: nil),
+        ConnectionMeasurementSummary(route: .direct, network: "cellular", group: .connecting, count: 12, failures: 0, medianMs: 740, p90Ms: 2_100),
+        ConnectionMeasurementSummary(route: .relay, network: "cellular", group: .liveUpdates, count: 40, failures: 2, medianMs: 24_870, p90Ms: 50_012),
     ]
 
     private func section(_ summary: [ConnectionMeasurementSummary]) -> some View {
@@ -30,11 +33,11 @@ final class ConnectionMeasurementsSnapshotTests: XCTestCase {
     }
 
     func test_connectionMeasurements() {
-        assertScreen([.light, .dark], inWindow: true) { ScreenFrame(height: 560) { section(Self.summary) } }
+        assertScreen([.light, .dark], inWindow: true) { ScreenFrame(height: 760) { section(Self.summary) } }
     }
 
     func test_connectionMeasurements_spanish() {
-        assertScreen([.light], language: .spanish, inWindow: true) { ScreenFrame(height: 560) { section(Self.summary) } }
+        assertScreen([.light], language: .spanish, inWindow: true) { ScreenFrame(height: 760) { section(Self.summary) } }
     }
 
     func test_connectionMeasurements_empty() {

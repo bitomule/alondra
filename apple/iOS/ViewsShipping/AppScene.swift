@@ -15,6 +15,7 @@ import UserNotifications
 struct AppScene: View {
     let owner: AccountSession
     let notifications: NotificationRuntime
+    @Environment(\.scenePhase) private var phase
     @State private var demoSession: UUID?
 
     var body: some View {
@@ -37,6 +38,13 @@ struct AppScene: View {
         }
         }
         .task { await owner.store.send(.appeared).finish() }
+        .onChange(of: phase, initial: true) { _, phase in
+            switch phase {
+            case .active: Task { await owner.goLive() }
+            case .background: Task { await owner.goIdle() }
+            default: break
+            }
+        }
     }
 }
 

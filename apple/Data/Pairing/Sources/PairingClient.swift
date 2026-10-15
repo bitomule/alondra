@@ -64,6 +64,12 @@ public actor PairingClient {
         try store.modify { _ = $0.updateRoutes(id, routes: routes, name: name) }
     }
 
+    public func updateIrohEndpoint(_ id: ApprovedPairingID, endpoint: String) throws {
+        var probe = try store.loadCollection()
+        guard probe.updateIrohEndpoint(id, endpoint: endpoint) else { return }
+        try store.modify { _ = $0.updateIrohEndpoint(id, endpoint: endpoint) }
+    }
+
     /// Submit a candidate. The returned code must remain visible until the Mac owner types it.
     /// `replacing` is a Mac already paired here that the person chose to pair again: its old
     /// pairing stays until the new one is approved and saved.
@@ -159,7 +165,7 @@ public actor PairingClient {
                     agreementKey: attempt.agreementPublicKey, nowMs: currentMs())
                 try Task.checkCancellation()
                 guard attempts[id] != nil else { throw PairingError.missingAttempt }
-                let approved = ApprovedServicePairing(relayURL: attempt.invitation.url,
+                var approved = ApprovedServicePairing(relayURL: attempt.invitation.url,
                     macID: attempt.invitation.macID, deviceID: attempt.deviceID,
                     ownerSub: attempt.authorization.ownerSub,
                     macSigningKey: attempt.invitation.macSigningKey,
@@ -167,6 +173,7 @@ public actor PairingClient {
                     signingPrivateKey: attempt.signingPrivateKey,
                     agreementPrivateKey: attempt.agreementPrivateKey,
                     approvedAtMs: currentMs())
+                approved.irohEndpoint = attempt.invitation.macIrohEndpoint
                 // Linking the account to a Mac already paired on the local network replaces that
                 // pairing: the relay one keeps its direct routes and the Mac appears once.
                 try store.modify { collection in

@@ -13,18 +13,21 @@ public final class NetworkReachability: @unchecked Sendable {
     private var interface = "other"
     private var listeners: [UUID: AsyncStream<Bool>.Continuation] = [:]
     private var hintListeners: [UUID: AsyncStream<Void>.Continuation] = [:]
+    private var moveListeners: [UUID: AsyncStream<Void>.Continuation] = [:]
 
     private init() {
         monitor.pathUpdateHandler = { [weak self] path in
             guard let self else { return }
             let signature = Self.signature(of: path)
             let kind = Self.interface(of: path)
-            let moved = lock.withLock {
+            let (moved, back) = lock.withLock {
                 defer { network = signature; interface = kind }
-                return online && path.status == .satisfied && !network.isEmpty && network != signature
+                let satisfied = path.status == .satisfied
+                return (online && satisfied && !network.isEmpty && network != signature, !online && satisfied)
             }
             update(path.status == .satisfied)
             if moved { hint() }
+            if moved || back { yieldMove() }
         }
         monitor.start(queue: DispatchQueue(label: "alondra.network-reachability"))
     }
@@ -73,6 +76,20 @@ public final class NetworkReachability: @unchecked Sendable {
         lock.withLock { hintListeners[id] = continuation }
         continuation.onTermination = { [weak self] _ in self?.lock.withLock { _ = self?.hintListeners.removeValue(forKey: id) } }
         return stream
+    }
+
+    /// Yields when this device leaves one network for another, or comes back online: a live
+    /// connection made on the old network should be made again on this one.
+    public func moves() -> AsyncStream<Void> {
+        let id = UUID()
+        let (stream, continuation) = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        lock.withLock { moveListeners[id] = continuation }
+        continuation.onTermination = { [weak self] _ in self?.lock.withLock { _ = self?.moveListeners.removeValue(forKey: id) } }
+        return stream
+    }
+
+    private func yieldMove() {
+        for target in lock.withLock({ Array(moveListeners.values) }) { target.yield() }
     }
 
     /// Something reached this device from outside, such as a push.

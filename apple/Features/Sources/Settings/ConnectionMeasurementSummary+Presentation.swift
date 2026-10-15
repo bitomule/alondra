@@ -5,8 +5,20 @@ extension ConnectionMeasurementSummary {
     var title: LocalizedStringResource { "\(path) · \(networkTitle)" }
 
     var path: LocalizedStringResource {
-        if waits { return "Live updates" }
-        return route?.title ?? "No answer"
+        switch group {
+        case .liveUpdates: return "Live updates · \(routeTitle)"
+        case .connecting: return "Opening the connection"
+        case .requests: return routeTitle
+        }
+    }
+
+    private var routeTitle: LocalizedStringResource {
+        switch route {
+        case .relay: return "Relay mailbox"
+        case .irohRelay: return "Live relay"
+        case let route?: return route.title
+        case nil: return "No answer"
+        }
     }
 
     var networkTitle: LocalizedStringResource {
@@ -19,7 +31,10 @@ extension ConnectionMeasurementSummary {
         }
     }
 
-    var requests: LocalizedStringResource { "\(count) requests" }
+    var requests: LocalizedStringResource {
+        if group == .connecting { return "\(count) connections" }
+        return "\(count) requests"
+    }
 
     var failed: LocalizedStringResource? { failures > 0 ? "\(failures) failed" : nil }
 

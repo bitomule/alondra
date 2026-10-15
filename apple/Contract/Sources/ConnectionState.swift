@@ -27,6 +27,8 @@ public struct ConnectionMachine: Equatable, Sendable {
 
     public enum Event: Equatable, Sendable {
         case answered(ConnectionRoute)
+        /// The live connection moved to another path; it says nothing about whether the Mac answers.
+        case routeChanged(ConnectionRoute)
         case failed(ConnectionProblem, ticket: UInt64)
         case networkLost
         case networkBack
@@ -50,6 +52,9 @@ public struct ConnectionMachine: Equatable, Sendable {
         switch event {
         case .answered(let route):
             startFresh()
+            state = .connected(route)
+        case .routeChanged(let route):
+            guard state.isConnected else { return }
             state = .connected(route)
         case .failed(let problem, let ticket):
             guard ticket > freshFrom, problem != .deviceStorage else { return }

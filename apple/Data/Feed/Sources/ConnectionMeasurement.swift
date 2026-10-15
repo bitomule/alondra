@@ -40,6 +40,18 @@ public struct ConnectionMeasurement: Codable, Equatable, Sendable {
         self.outcome = outcome; self.status = status; self.error = error
     }
 
+    /// The `kind` of the time from coming to the foreground to a live iroh connection.
+    public static let connectKind = "connect"
+
+    /// How long the iroh connection took to open after the app came to the foreground.
+    public static func connected(after duration: Duration, route: ConnectionRoute?, at: Date, mac: String,
+                                 network: NetworkSnapshot) -> Self {
+        let (seconds, attoseconds) = duration.components
+        return Self(at: at, mac: mac, operation: connectKind, method: "IROH", kind: connectKind, route: route,
+                    ms: Int(seconds * 1000 + attoseconds / 1_000_000_000_000_000), network: network.interface,
+                    radio: network.radio, outcome: .ok)
+    }
+
     /// The Mac a measurement belongs to, short enough to tell Macs apart and nothing more.
     public static func macReference(_ macID: String?) -> String {
         guard let macID else { return "this-mac" }

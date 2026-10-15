@@ -9,14 +9,15 @@ private let macSigning = try! P256.Signing.PrivateKey(rawRepresentation: Data(re
 private let macAgreement = try! P256.KeyAgreement.PrivateKey(rawRepresentation: Data(repeating: 2, count: 32))
 private let fixedNow: UInt64 = 1_800_000_000_000
 
-private func invitation(expiry: UInt64 = fixedNow + 600_000) throws -> String {
-    let object: [String: Any] = [
+private func invitation(expiry: UInt64 = fixedNow + 600_000, irohEndpoint: String? = nil) throws -> String {
+    var object: [String: Any] = [
         "version": 1, "url": "https://relay.example", "mac_id": "mac-1",
         "mac_signing_key": PairingWire.encode(macSigning.publicKey.x963Representation),
         "mac_agreement_key": PairingWire.encode(macAgreement.publicKey.x963Representation),
         "session_id": "pair-test", "secret": PairingWire.encode(Data(repeating: 9, count: 16)),
         "expires_at_ms": expiry,
     ]
+    if let irohEndpoint { object["mac_iroh_endpoint"] = irohEndpoint }
     return String(decoding: try JSONSerialization.data(withJSONObject: object), as: UTF8.self)
 }
 
@@ -168,6 +169,44 @@ private actor FakeRelay: HTTPTransport {
         $0.value(forHTTPHeaderField: "Authorization") == "Bearer oidc-token" &&
         $0.value(forHTTPHeaderField: "X-Device-Signature") != nil
     })
+}
+
+@Test func thePairingKeepsTheMacsIrohEndpointFromTheQR() async throws {
+    let store = MemoryStore()
+    let client = PairingClient(transport: FakeRelay(), store: store,
+        now: { Date(timeIntervalSince1970: Double(fixedNow) / 1_000) })
+    let auth = try PairingAuthorization(bearerToken: "oidc-token", ownerSub: "owner-1")
+    let endpoint = String(repeating: "ab", count: 32)
+    let pending = try await client.begin(qrPayload: invitation(irohEndpoint: endpoint), authorization: auth,
+        displayName: "iPhone")
+    #expect(try await client.waitForApproval(pending.attemptID).irohEndpoint == endpoint)
+    #expect(try store.load()?.irohEndpoint == endpoint)
+}
+
+@Test func aQRWithAMalformedIrohEndpointIsRefused() throws {
+    #expect(throws: PairingError.invalidInvitation) {
+        try PairingInvitation(qrPayload: invitation(irohEndpoint: "not-a-key"))
+    }
+    #expect(try PairingInvitation(qrPayload: invitation()).macIrohEndpoint == nil)
+}
+
+@Test func theMacsIrohEndpointIsSavedOnceAndOnlyWhenValid() throws {
+    let pairing = ApprovedServicePairing(relayURL: URL(string: "https://relay.example"), macID: "mac-1", deviceID: "phone-1",
+        ownerSub: "owner-1", macSigningKey: "k", macAgreementKey: "a", signingPrivateKey: Data(), agreementPrivateKey: Data(),
+        approvedAtMs: 1)
+    var collection = ApprovedPairingCollection()
+    try collection.upsert(pairing)
+    let id = ApprovedPairingID(pairing)
+    let endpoint = String(repeating: "cd", count: 32)
+    let malformed = collection.updateIrohEndpoint(id, endpoint: "short")
+    let learned = collection.updateIrohEndpoint(id, endpoint: endpoint)
+    let again = collection.updateIrohEndpoint(id, endpoint: endpoint)
+    #expect(!malformed)
+    #expect(learned)
+    #expect(!again)
+    #expect(collection.selected?.irohEndpoint == endpoint)
+    let decoded = try JSONDecoder().decode(ApprovedServicePairing.self, from: JSONEncoder().encode(pairing))
+    #expect(decoded.irohEndpoint == nil, "a pairing saved before iroh still opens")
 }
 
 private func requestsBody(_ requests: [URLRequest]) -> Data {

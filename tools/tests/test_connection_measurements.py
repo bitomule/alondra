@@ -35,16 +35,18 @@ class ConnectionMeasurementsTest(unittest.TestCase):
         path.write_text("".join(json.dumps(r) + "\n" for r in rows) + "not json\n", encoding="utf-8")
         return str(path)
 
-    def test_groups_by_path_network_and_radio_with_waits_apart(self):
+    def test_groups_by_path_network_and_radio_with_waits_and_connecting_apart(self):
         path = self.write([row(ms) for ms in (40, 50, 60, 70, 500)]
                           + [row(9, route="localNetwork", network="wifi", radio=None)]
                           + [row(0, route=None, outcome="failed")]
                           + [row(25000, kind="changes")]
+                          + [row(700, route="direct", kind="connect")]
                           + [row(1, outcome="cancelled")])
         summary = measurements.summarize(measurements.load([path]))
-        self.assertEqual([(g["waits"], g["route"], g["network"]) for g in summary],
-                         [(False, "relay", "cellular"), (False, "localNetwork", "wifi"),
-                          (False, "none", "cellular"), (True, "relay", "cellular")])
+        self.assertEqual([(g["group"], g["route"], g["network"]) for g in summary],
+                         [("request", "relay", "cellular"), ("request", "localNetwork", "wifi"),
+                          ("request", "none", "cellular"), ("connect", "direct", "cellular"),
+                          ("wait", "relay", "cellular")])
         relay = summary[0]
         self.assertEqual((relay["count"], relay["failed"], relay["median_ms"], relay["p90_ms"]), (5, 0, 60, 500))
         self.assertEqual(summary[2]["failed"], 1)
