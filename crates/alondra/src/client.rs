@@ -2,8 +2,7 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use alondra_core::config::Config;
-use alondra_core::domain::reads::{Item, TextChunk};
-use alondra_core::domain::{AttachmentRef, Command, CommandEnvelope, CommandOutcome, DataEpoch, DomainError, Interaction, InteractionId, PROTOCOL_VERSION, Revision};
+use alondra_core::domain::{AttachmentRef, Command, CommandEnvelope, CommandOutcome, DataEpoch, DomainError, PROTOCOL_VERSION, Revision};
 use alondra_core::views::{View as ViewDocument, VIEWS_PROTOCOL};
 use anyhow::{Context, Result, anyhow};
 use serde::de::DeserializeOwned;
@@ -377,25 +376,6 @@ impl Client {
             .body(bytes)?;
         let response = self.agent.run(request)?;
         answer(response)
-    }
-
-    /// The whole interaction, reassembled from chunks when its body did not fit one answer.
-    pub fn interaction(&self, id: &InteractionId) -> Result<Interaction> {
-        let id = crate::mcp::urlencode(&id.0);
-        let detail: Item<Interaction> = self.get(&format!("/interactions/{id}"))?;
-        let mut interaction = detail.item;
-        if detail.truncated {
-            let mut body = String::new();
-            loop {
-                let chunk: TextChunk = self.get(&format!("/interactions/{id}/body?offset={}", body.len()))?;
-                body.push_str(&chunk.data);
-                if !chunk.has_more {
-                    break;
-                }
-            }
-            interaction.body = body;
-        }
-        Ok(interaction)
     }
 
     /// A refusal is the daemon's typed answer; anything else leaves the outcome unknown.
@@ -950,24 +930,6 @@ mod wire_tests {
             }
         });
         (Client::at(base), seen, server)
-    }
-
-    #[test]
-    fn a_truncated_interaction_is_reassembled_from_its_chunks() {
-        let interaction = serde_json::json!({"attachments": [], "id": "i-1", "scope": {"kind": "orchestrator", "request_id": null},
-            "author": {"kind": "system"}, "recipient": {"kind": "user"}, "body": "cut", "blocking": false, "subject": null,
-            "payload": {"kind": "information", "read_by": []}, "revision": 3, "order": 3,
-            "card": {"kind": "know", "need": "Read the update"}});
-        let chunk = |offset: usize, data: &str, more: bool| serde_json::json!({"protocol_version": 2, "data_epoch": "e", "revision": 3,
-            "id": "i-1", "offset": offset, "total_bytes": 10, "data": data, "has_more": more});
-        let (client, _, server) = peer(vec![
-            ("/interactions/i-1", serde_json::json!({"protocol_version": 2, "data_epoch": "e", "revision": 3, "item": interaction, "truncated": true})),
-            ("/interactions/i-1/body?offset=0", chunk(0, "first ", true)),
-            ("/interactions/i-1/body?offset=6", chunk(6, "half", false)),
-        ]);
-        let full = client.interaction(&"i-1".into()).unwrap();
-        assert_eq!(full.body, "first half");
-        server.join().unwrap();
     }
 
     /// A daemon that takes the request and then answers with `reply`, or never answers.

@@ -3026,7 +3026,7 @@ mod tests {
     }
 
     fn waits_for_the_user(domain: &crate::domain_runtime::DomainRuntime) -> bool {
-        domain.state().unwrap().projection().inbox.iter().any(|item| item.pending)
+        !domain.read().index().waiting().is_empty()
     }
 
     #[tokio::test]
@@ -3089,7 +3089,7 @@ mod tests {
         let state = domain.state().unwrap();
         let InteractionPayload::Question { answer: Some(answer), .. } = &state.interactions[&"question".into()].payload else { unreachable!() };
         assert_eq!(answer.inputs["text"], alondra_core::domain::InputValue::Text(context_request("the cost")));
-        assert!(!state.projection().inbox.iter().any(|item| item.id == "interaction:question" && item.pending));
+        assert!(alondra_core::domain::ReadIndex::build(&state).waiting_card(&"question".into()).is_none());
     }
 
     #[test]
@@ -3387,7 +3387,7 @@ mod tests {
             panic!("the reply answered the question: {applied}")
         };
         assert_eq!(answer.inputs["text"], alondra_core::domain::InputValue::Text("Neither: keep the old one".into()));
-        assert!(!state.projection().inbox.iter().any(|item| item.id == "interaction:question" && item.pending));
+        assert!(alondra_core::domain::ReadIndex::build(&state).waiting_card(&"question".into()).is_none());
     }
 
     /// David wrote «Hazlo tú» under the orchestrator's Decide card: it is the answer to that card,

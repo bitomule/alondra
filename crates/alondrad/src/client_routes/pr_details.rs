@@ -377,7 +377,7 @@ mod tests {
         let told = conflicts_told(&domain);
         assert_eq!(told.len(), 1, "once per head: {told:?}");
         assert!(told[0].1.starts_with("Ana asks you to resolve the conflicts of https://github.com/me/app/pull/7 with main"), "{}", told[0].1);
-        assert!(!domain.state().unwrap().projection().inbox.iter().any(|item| item.pending), "no card for the user");
+        assert!(domain.read().index().waiting().is_empty(), "no card for the user");
 
         present(&domain, "again", "head1");
         hand_back_conflicts(&domain, &details, "Ana");

@@ -997,14 +997,14 @@ impl World {
         let header = fleet.status.counts.iter().find(|count| count.id == "working").map(|count| count.value as usize);
         assert_eq!(header, Some(slots.len()), "the header counts the same nodes");
 
-        let projection = self.s.projection();
+        let index = ReadIndex::build(&self.s);
         for task in for_you(&tasks) {
-            assert!(projection.waits_for_user(&TaskId(task.clone())), "«For you» lists {task} only with a card waiting for the user");
+            assert!(index.task(&TaskId(task.clone())).is_some_and(|read| read.waits_for_user), "«For you» lists {task} only with a card waiting for the user");
             let detail = self.render(&format!("task:{task}"));
             assert!(detail.sections.iter().any(|section| section.id == "waiting" && !section.items.is_empty()),
                 "the detail of {task} shows the card it waits on");
         }
-        let asking: BTreeSet<String> = projection.inbox.iter().filter(|item| item.pending && item.kind != "information")
+        let asking: BTreeSet<String> = index.waiting().iter().filter(|item| item.kind != "information")
             .filter_map(|item| item.agent_id.as_ref()).filter(|agent| self.s.agents.contains_key(*agent))
             .map(|agent| agent.0.clone()).collect();
         let claims = badged(&fleet, &["Waiting for your review", "Waiting for an answer", "Your turn"]);

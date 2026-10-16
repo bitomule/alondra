@@ -679,9 +679,9 @@ mod tests {
             nothing_to_review: false,
             card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
         });
-        let projection = domain.state().unwrap().projection();
-        let merge = projection.inbox.iter().find(|item| item.id == "interaction:d2").unwrap()
-            .available_actions.iter().find(|action| action.kind == "authorize_merge").unwrap();
+        let read = domain.read();
+        let item = read.index().item(read.state(), &read.state().interactions[&"d2".into()]);
+        let merge = item.available_actions.iter().find(|action| action.kind == "authorize_merge").unwrap();
         assert!(merge.enabled, "{merge:?}");
         command(&domain, Actor::User { user_id: "u".into() }, "authorize-2", Command::AuthorizeMerge {
             authorization_id: "auth-2".into(), presentation_id: "d2".into(), pr_id: "pr".into(),

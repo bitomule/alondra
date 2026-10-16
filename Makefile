@@ -311,7 +311,7 @@ views-measure:
 
 # Building the read index of a domain the size of the real one; fails over 10 ms.
 read-index-bench:
-	bazelisk run -c opt //crates/core:projection_cost -- --read-index --check-cost
+	bazelisk run -c opt //crates/core:read_index_cost -- --check-cost
 
 # Latency of /v1/health, views and hooks plus alondrad's CPU under N simulated nodes (tools/load_bench.py).
 load-bench:

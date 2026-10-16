@@ -274,7 +274,7 @@ fn every_state_of_the_fixtures_lists_only_cards_with_an_action_to_take() {
     verdict(&mut s, "db2", approved("fine")).unwrap();
     steps.push(s);
     for state in steps {
-        for item in state.projection().inbox.iter().filter(|item| item.pending) {
+        for item in inbox_items(&state).iter().filter(|item| item.pending) {
             assert!(item.blocked_by.is_empty(), "{} is listed while held back", item.id);
             assert!(
                 item.available_actions.iter().any(|action| action.enabled),

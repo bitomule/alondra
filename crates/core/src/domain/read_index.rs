@@ -161,6 +161,10 @@ impl ReadIndex {
         });
         Cow::Owned(state.item_given(card, pending, self.blocked_by(&card.id).to_vec(), self.blocks(&card.id).to_vec(), self))
     }
+    /// Every card of the inbox, in queue order, each with its buttons.
+    pub fn queued<'a>(&'a self, state: &'a DomainState) -> impl Iterator<Item = Cow<'a, InboxItem>> + 'a {
+        self.queue.iter().filter_map(|id| state.interactions.get(id)).map(move |card| self.item(state, card))
+    }
     /// A task's cancel, reopen and archive buttons, by the guards the commands run.
     pub fn task_actions(&self, state: &DomainState, task: &TaskId) -> Option<Vec<AvailableAction>> {
         state.task_actions_given(task, self)
@@ -578,12 +582,17 @@ impl<'a> Builder<'a> {
     }
 }
 
+/// The inbox as the index lists it, each card with its buttons.
+#[cfg(test)]
+pub(crate) fn inbox_items(state: &DomainState) -> Vec<InboxItem> {
+    ReadIndex::build(state).queued(state).map(Cow::into_owned).collect()
+}
+
 /// Every state a core test commits is read both ways: the index must say what the state answers
 /// on demand, card by card and task by task.
 #[cfg(test)]
 pub(super) fn assert_index_matches(state: &DomainState) {
     let index = ReadIndex::build(state);
-    let projection = state.projection();
     let ids = |items: &[InboxItem]| -> Vec<InteractionId> {
         items.iter().map(|item| {
             let InboxSubject::Interaction { interaction_id } = &item.subject;
@@ -594,14 +603,20 @@ pub(super) fn assert_index_matches(state: &DomainState) {
         .map(|(id, _)| id.strip_prefix("interaction:").expect("inbox ids name their card").into())
         .collect();
     assert_eq!(index.queue(), orders.as_slice(), "the queue's order");
-    assert_eq!(ids(&projection.inbox), orders, "the queue lists what the inbox lists");
-    let waiting: Vec<InboxItem> = projection.inbox.iter().filter(|item| item.pending).cloned().collect();
+    let inbox: Vec<InboxItem> = orders.iter().map(|id| state.item(&state.interactions[id])).collect();
+    let waiting: Vec<InboxItem> = inbox.iter().filter(|item| item.pending).cloned().collect();
     assert_eq!(index.waiting(), waiting.as_slice(), "Waiting for You, with its buttons");
     for item in &waiting {
         let InboxSubject::Interaction { interaction_id } = &item.subject;
         assert_eq!(index.waiting_card(interaction_id), Some(item));
     }
-    assert_eq!(index.counts(), &projection.counts, "the counts");
+    let unread_information = state.interactions.values().filter(|i| {
+        i.recipient == Recipient::User
+            && matches!(&i.payload, InteractionPayload::Information { read_by } if read_by.is_empty())
+            && !matches!(&i.scope, Scope::Task { task_id } if state.tasks.get(task_id).is_some_and(|t| t.archived))
+    }).count() as u64;
+    let counts = InboxCounts { roots: inbox.len() as u64, pending: waiting.len() as u64, unread_information };
+    assert_eq!(index.counts(), &counts, "the counts");
     let acting: Vec<(TaskId, CardRef)> = state.acting().into_iter().collect();
     assert_eq!(index.acting(), acting.as_slice(), "the cards that act");
     for i in state.interactions.values() {
@@ -643,9 +658,11 @@ pub(super) fn assert_index_matches(state: &DomainState) {
         assert_eq!(read.activity, state.task_activity(t));
         assert_eq!(read.handed_back, state.task_handed_back(&t.id));
         assert_eq!(read.merge_failure, state.task_merge_failure(&t.id));
-        assert_eq!(read.waiting, ids(&projection.waiting_cards(&t.id).cloned().collect::<Vec<_>>()), "the cards {} waits on", t.id);
-        assert_eq!(read.waits_for_user, projection.waits_for_user(&t.id));
-        assert_eq!(read.waits_for_review, projection.waits_for_review(&t.id));
+        let on_task: Vec<InboxItem> = waiting.iter().filter(|item| item.task_id.as_ref() == Some(&t.id)).cloned().collect();
+        let answers = || on_task.iter().filter(|item| item.kind != "information");
+        assert_eq!(read.waiting, ids(&on_task), "the cards {} waits on", t.id);
+        assert_eq!(read.waits_for_user, answers().next().is_some());
+        assert_eq!(read.waits_for_review, answers().next().is_some() && answers().all(|item| item.kind == "delivery"));
         let open: Vec<TaskId> = t.dependencies.iter().chain(&t.delivered_dependencies)
             .filter(|id| **id != t.id)
             .filter_map(|id| state.tasks.get(id))
@@ -666,7 +683,7 @@ pub(super) fn assert_index_matches(state: &DomainState) {
     }
     assert_eq!(queued, index.queue().len(), "every queued card has its place");
     assert_eq!(index.asks_outside_tasks(),
-        projection.inbox.iter().any(|item| item.pending && item.task_id.is_none() && item.kind != "information"));
+        waiting.iter().any(|item| item.task_id.is_none() && item.kind != "information"));
     for t in state.tasks.values() {
         let by = |keep: &dyn Fn(&Task) -> bool| -> Vec<TaskId> { state.tasks.values().filter(|o| keep(o)).map(|o| o.id.clone()).collect() };
         assert_eq!(index.reviewers(&t.id), by(&|o| o.blocks.contains(&t.id)).as_slice(), "who reviews {}", t.id);
@@ -700,8 +717,8 @@ pub(super) fn assert_index_matches(state: &DomainState) {
             && matches!(a.attempt, MergeAttemptState::Claimed | MergeAttemptState::Uncertain)
             && state.pull_requests.get(&a.pr_id).is_some_and(|pr| pr.state == PrState::Open));
         assert_eq!(read.merging, merging, "whether {} merges", agent.id);
-        let waiting: Vec<InboxItem> = projection.inbox.iter().filter(|item| item.pending && item.agent_id.as_ref() == Some(&agent.id)).cloned().collect();
-        assert_eq!(read.waiting, ids(&waiting));
+        let asking: Vec<InboxItem> = waiting.iter().filter(|item| item.agent_id.as_ref() == Some(&agent.id)).cloned().collect();
+        assert_eq!(read.waiting, ids(&asking));
         let work = state.tasks.values().filter(|t| t.agent_id.as_ref() == Some(&agent.id) && !t.state.terminal())
             .find_map(|t| t.wrap_up.post_merge_work.as_ref().map(|work| work.reason.clone()));
         assert_eq!(read.post_merge_work, work);

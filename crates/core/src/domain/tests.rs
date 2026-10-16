@@ -26,7 +26,7 @@ fn end_node(s: &mut DomainState, task: &str) {
 /// Every card in Waiting for You has something the user can do now and nothing holding it back,
 /// whatever state a test reached (the property of the cards design, checked after every command).
 fn assert_cards_usable(s: &DomainState) {
-    for item in s.projection().inbox.iter().filter(|item| item.pending) {
+    for item in inbox_items(&s).iter().filter(|item| item.pending) {
         assert!(item.blocked_by.is_empty(), "{} is listed while held back", item.id);
         assert!(item.available_actions.iter().any(|action| action.enabled), "{} is listed with nothing the user can do", item.id);
     }
@@ -476,7 +476,7 @@ fn information_read_is_not_a_reply_or_acceptance() {
     .unwrap();
     assert!(out.effects.is_empty());
     assert_eq!(s.tasks[&"t".into()], task);
-    assert_eq!(s.projection().counts.unread_information, 0);
+    assert_eq!(ReadIndex::build(&s).counts().unread_information, 0);
 }
 #[test]
 fn explicit_acceptance_completes_the_task_and_feedback_revokes_it_first() {
@@ -1234,7 +1234,7 @@ fn only_its_author_withdraws_an_open_question_which_then_neither_blocks_nor_take
     exec(&mut s, agent(), Command::Withdraw { interaction_id: "q".into() }).unwrap();
     assert!(s.interactions[&"q".into()].withdrawn);
     assert_ne!(s.tasks[&"t".into()].state, TaskState::NeedsYou, "a withdrawn question no longer blocks");
-    let action = s.projection().inbox.iter()
+    let action = inbox_items(&s).iter()
         .find(|i| matches!(&i.subject, InboxSubject::Interaction { interaction_id } if interaction_id.0 == "q"))
         .map(|i| i.available_actions[0].clone());
     assert_eq!(action.map(|a| (a.enabled, a.disabled_reason)), Some((false, Some("withdrawn".into()))));
@@ -1755,8 +1755,7 @@ fn question_explicitly_linked_to_pr_keeps_identity_and_answer() {
         },
     )
     .unwrap();
-    let p = s.projection();
-    assert_eq!(p.inbox.iter().map(|item| item.id.as_str()).collect::<Vec<_>>(), ["interaction:q"],
+    assert_eq!(inbox_items(&s).iter().map(|item| item.id.as_str()).collect::<Vec<_>>(), ["interaction:q"],
         "a question about a PR is a card of its own, never a group under the PR");
     assert!(matches!(
         s.interactions[&"q".into()].payload,
@@ -1765,122 +1764,6 @@ fn question_explicitly_linked_to_pr_keeps_identity_and_answer() {
             ..
         }
     ));
-}
-
-#[test]
-fn projection_wire_roundtrip_and_optional_fixture_export() {
-    let mut s = fixture();
-    exec(
-        &mut s,
-        orchestrator(),
-        Command::PublishInformation {
-            attachments: vec![AttachmentRef {
-                id: "fixture-file".into(),
-                name: "Report.pdf".into(),
-                content_digest: "c".repeat(64),
-                content_reference: "files/fixture-file".into(),
-                bytes: 321,
-            }],
-            interaction_id: "info".into(),
-            scope: Scope::Task {
-                task_id: "t".into(),
-            },
-            recipient: Recipient::User,
-            body: "Information with Unicode: revisión ✓".into(), card: crate::domain::CardSpec::derived(crate::domain::CardKind::Know, "Read the update"),
-        },
-    )
-    .unwrap();
-    let information = s.projection();
-    exec(
-        &mut s,
-        agent(),
-        Command::AskQuestion {
-            attachments: vec![],
-            interaction_id: "q".into(),
-            scope: Scope::Task {
-                task_id: "t".into(),
-            },
-            recipient: Recipient::User,
-            body: "Choose an option".into(),
-            blocking: true,
-            options: vec![QuestionOption {
-                id: "proceed".into(),
-                label: "Continuar".into(),
-                description: None,
-            }], card: crate::domain::CardSpec::derived(crate::domain::CardKind::Provide, "Answer the question"),
-        },
-    )
-    .unwrap();
-    let question = s.projection();
-    exec(
-        &mut s,
-        user(),
-        Command::AnswerQuestion {
-            attachments: vec![],
-            interaction_id: "q".into(),
-            option_id: "proceed".into(),
-            inputs: BTreeMap::from([("text".into(), InputValue::Text("Reviewed".into()))]),
-        },
-    )
-    .unwrap();
-    present(&mut s, "d", text());
-    exec(
-        &mut s,
-        user(),
-        Command::AcceptDelivery {
-            presentation_id: "d".into(),
-            targets: text(),
-        },
-    )
-    .unwrap();
-    let completed = s.projection();
-    let mut s = fixture();
-    register(&mut s);
-    present(&mut s, "d", pr_targets());
-    exec(
-        &mut s,
-        agent(),
-        Command::AskQuestion {
-            attachments: vec![],
-            interaction_id: "q".into(),
-            scope: Scope::Task {
-                task_id: "t".into(),
-            },
-            recipient: Recipient::User,
-            body: "PR question".into(),
-            blocking: true,
-            options: vec![QuestionOption {
-                id: "proceed".into(),
-                label: "Proceed".into(),
-                description: Some("Merge once the checks pass".into()),
-            }], card: crate::domain::CardSpec::derived(crate::domain::CardKind::Provide, "Answer the question"),
-        },
-    )
-    .unwrap();
-    exec(
-        &mut s,
-        agent(),
-        Command::LinkInteractionSubject {
-            interaction_id: "q".into(),
-            subject: InteractionSubject::PullRequest { pr_id: "pr".into() },
-        },
-    )
-    .unwrap();
-    let pr_question = s.projection();
-    let fixtures = BTreeMap::from([
-        ("information", information),
-        ("question", question),
-        ("completed", completed),
-        ("pr_question", pr_question),
-    ]);
-    for projection in fixtures.values() {
-        let bytes = serde_json::to_vec(projection).unwrap();
-        let decoded: DomainProjection = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(&decoded, projection);
-    }
-    if let Ok(path) = std::env::var("ALONDRA_DOMAIN_FIXTURE_OUTPUT") {
-        std::fs::write(path, serde_json::to_vec_pretty(&fixtures).unwrap()).unwrap();
-    }
 }
 
 #[test]
@@ -2492,7 +2375,7 @@ fn information_read_is_shared_across_authorized_devices() {
     .unwrap();
     assert!(!out.changed);
     assert_eq!(s.revision, revision);
-    let item = &s.projection().inbox[0];
+    let item = &inbox_items(&s)[0];
     assert!(!item.pending);
     assert!(!item.available_actions[0].enabled);
 }
@@ -2801,14 +2684,13 @@ fn unread_count_ignores_archived_tasks_like_the_inbox_does() {
     .unwrap();
     present(&mut s, "d", text());
     exec(&mut s, user(), Command::AcceptDelivery { presentation_id: "d".into(), targets: text() }).unwrap();
-    assert_eq!(s.projection().counts.unread_information, 1);
+    assert_eq!(ReadIndex::build(&s).counts().unread_information, 1);
     end_node(&mut s, "t");
     exec(&mut s, user(), Command::ArchiveTask { task_id: "t".into(), archived: true }).unwrap();
-    let projection = s.projection();
-    assert_eq!(projection.counts.unread_information, 0);
-    assert!(projection.inbox.iter().all(|item| item.id != "info"));
+    assert_eq!(ReadIndex::build(&s).counts().unread_information, 0);
+    assert!(inbox_items(&s).iter().all(|item| item.id != "info"));
     exec(&mut s, user(), Command::ArchiveTask { task_id: "t".into(), archived: false }).unwrap();
-    assert_eq!(s.projection().counts.unread_information, 1);
+    assert_eq!(ReadIndex::build(&s).counts().unread_information, 1);
 }
 
 #[test]
@@ -3291,7 +3173,7 @@ fn a_held_hook_question_reaches_the_user_and_its_answer_never_enters_the_outbox(
     assert_eq!((&interaction.author, &interaction.recipient, interaction.blocking),
         (&Author::Agent { agent_id: "a".into() }, &Recipient::User, true));
     assert_eq!(s.holds[&"h".into()], Hold::Permission);
-    let kinds = |s: &DomainState| s.projection().inbox.iter().map(|item| item.kind.clone()).collect::<Vec<_>>();
+    let kinds = |s: &DomainState| inbox_items(&s).iter().map(|item| item.kind.clone()).collect::<Vec<_>>();
     assert_eq!(kinds(&s), ["permission"]);
     exec(&mut s, Actor::System, held("p", Hold::Plan)).unwrap();
     assert_eq!(kinds(&s), ["permission", "plan"]);
@@ -3372,7 +3254,7 @@ fn a_reply_takes_the_delivery_away_until_its_node_ends_the_turn_and_then_the_sam
 }
 
 fn pending_ids(s: &DomainState) -> Vec<String> {
-    s.inbox_projection().into_iter().filter(|item| item.pending)
+    inbox_items(&s).into_iter().filter(|item| item.pending)
         .map(|item| item.id.trim_start_matches("interaction:").to_owned()).collect()
 }
 
@@ -3894,7 +3776,7 @@ fn answer_aside(s: &mut DomainState, id: &str) {
         option_id: "keep".into(), inputs: BTreeMap::new() }).unwrap();
 }
 fn pending(s: &DomainState, id: &str) -> bool {
-    s.projection().inbox.iter().any(|item| item.id == format!("interaction:{id}") && item.pending)
+    inbox_items(&s).iter().any(|item| item.id == format!("interaction:{id}") && item.pending)
 }
 #[test]
 fn a_final_delivery_is_refused_while_a_question_of_its_task_waits() {
@@ -4040,7 +3922,7 @@ fn a_question_the_node_of_a_cancelled_task_asks_while_it_winds_down_reaches_the_
     exec(&mut s, Actor::System, Command::ReconcileNodes { listed: BTreeMap::new(), at: 0 }).unwrap();
     assert!(!s.interactions[&"stuck".into()].withdrawn);
     assert!(pending(&s, "stuck"), "the user sees what the node asks while it winds down");
-    let item = s.projection().inbox.into_iter().find(|item| item.id == "interaction:stuck").unwrap();
+    let item = inbox_items(&s).into_iter().find(|item| item.id == "interaction:stuck").unwrap();
     assert!(item.available_actions.iter().any(|action| action.kind == "answer_question" && action.enabled), "{:?}", item.available_actions);
     exec(&mut s, user(), Command::AnswerQuestion { attachments: vec![], interaction_id: "stuck".into(),
         option_id: "keep".into(), inputs: BTreeMap::new() }).unwrap();

@@ -3,7 +3,7 @@ use crate::domain::{
     Background, NodePhase, Pause, PauseCleanup, PauseReason,
     Agent, Author, Document, DocumentRevision, DomainState, Interaction, InteractionPayload,
     InteractionSubject, MergeAttemptState, MergeAuthorization, MergeMethod, PrState, PullRequest, QuestionOption, Recipient, Request, Scope, Task,
-    TaskState, ModelChooser, TaskModel,
+    TaskState, ModelChooser, TaskModel, inbox_items,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -1247,7 +1247,7 @@ fn a_question_linked_to_no_document_keeps_its_plain_answer() {
 fn decidable_card(state: &DomainState, lang: Lang, interaction: &str) -> Card {
     let domain = with_cards(state);
     let live = LiveSnapshot::default();
-    let mut item = domain.projection().inbox.into_iter().find(|item| item.id == format!("interaction:{interaction}")).expect("the card exists");
+    let mut item = inbox_items(&domain).into_iter().find(|item| item.id == format!("interaction:{interaction}")).expect("the card exists");
     for action in &mut item.available_actions {
         action.enabled = true;
         action.disabled_reason = None;
@@ -3422,11 +3422,10 @@ fn no_card_of_any_fixture_carries_an_action_the_domain_says_is_not_available() {
         let live = golden_live();
         for client in [Client::Ios, Client::Mac, Client::Tui] {
             for lang in [Lang::En, Lang::Es] {
-                let projection = domain.projection();
                 let index = crate::domain::ReadIndex::build(&domain);
                 let context = RenderContext { domain: &domain, index: &index, live: &live, client, lang, transport: Transport::Loopback,
                     cursor: "cursor-1", rendered_at: "" };
-                for item in projection.inbox.clone() {
+                for item in inbox_items(&domain) {
                     let card = card::from_item(&item, &context, true).unwrap();
                     for action in card.actions.iter().chain(&card.more).chain(&card.reply) {
                         let Ok(id) = ActionId::parse(&action.id) else { continue };
@@ -5516,7 +5515,7 @@ fn every_open_card_with_options_or_input_can_be_answered_and_a_settled_one_is_ne
                                 if let Some(hold) = hold {
                                     state.holds.insert("i-1".into(), hold);
                                 }
-                                let pending = with_cards(&state).projection().inbox.iter()
+                                let pending = inbox_items(&with_cards(&state)).iter()
                                     .find(|item| item.id == "interaction:i-1").expect("the card is in the inbox").pending;
                                 let why = match settle {
                                     "answered" => "Ya respondida",
@@ -5570,7 +5569,7 @@ fn an_open_text_delivery_can_be_accepted_or_sent_back_and_an_accepted_one_is_nev
             acceptance: accepted.then(|| Acceptance { user_id: "device:1".into(), at_revision: 1, valid: true }),
             feedback: vec![],
         };
-        let pending = with_cards(&state).projection().inbox.iter()
+        let pending = inbox_items(&with_cards(&state)).iter()
             .find(|item| item.id == "interaction:i-3").expect("the delivery is in the inbox").pending;
         open += usize::from(pending);
         for client in [Client::Ios, Client::Mac, Client::Tui] {
@@ -6219,7 +6218,7 @@ fn a_node_that_stopped_says_what_it_said_and_only_in_prose() {
 fn a_task_that_needs_you_says_its_question_never_its_own_title() {
     let mut state = with_cards(&fixture());
     state.tasks.get_mut(&"t-1".into()).unwrap().state = TaskState::NeedsYou;
-    let pending = state.projection().inbox.iter().filter(|item| item.pending && item.task_id == Some("t-1".into())).count();
+    let pending = inbox_items(&state).iter().filter(|item| item.pending && item.task_id == Some("t-1".into())).count();
     assert!(pending > 0, "the fixture has cards waiting on its task");
     let live = LiveSnapshot::default();
     let (block, ios) = active_row(&state, &live, Client::Ios, Lang::Es, "t-1");

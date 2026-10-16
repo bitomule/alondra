@@ -8,7 +8,6 @@ use crate::hub::Hub;
 use crate::domain_runtime::DomainRuntime;
 use std::path::Path as FsPath;
 use alondra_core::domain::*;
-use alondra_core::domain::reads;
 use axum::extract::{ConnectInfo, Path, RawQuery, State, rejection::JsonRejection};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -101,30 +100,6 @@ async fn blocking_read<H: DomainHost>(host: Arc<H>, read: impl FnOnce(&H) -> Res
     work.run(move || read(&host)).await.unwrap_or_else(|_| storage_error())
 }
 
-/// Every sectioned read goes through the same grammar as the relay allowlist.
-async fn sectioned_read<H: DomainHost>(
-    State(host): State<Arc<H>>,
-    signed: Option<Extension<Signed>>,
-    uri: axum::http::Uri,
-) -> Response {
-    blocking_read(host, move |host| {
-        if !signed_read(host, &signed) {
-            return unsigned_read();
-        }
-        let path = match uri.query() {
-            Some(query) => format!("{}?{query}", uri.path()),
-            None => uri.path().to_owned(),
-        };
-        let response = match crate::domain_reads::parse(&path) {
-            Some(route) => crate::domain_reads::respond(host.domain(), &route),
-            None => domain_error(DomainError::new("invalid_input", "unsupported read query")),
-        };
-        if !signed_read(host, &signed) {
-            return unsigned_read();
-        }
-        response
-    }).await
-}
 fn schedule_read<H: DomainHost>(host: &H, path: &str) -> Response {
     if !host.cutover_committed() {
         return domain_error(DomainError::new("incompatible_protocol", "Schedules require the domain store's authority"));
@@ -451,48 +426,6 @@ async fn live_head(url: &str) -> Result<String, Response> {
         .map(str::to_owned)
         .ok_or_else(|| domain_error(DomainError::new("external_read_failed", "invalid PR head")))
 }
-pub(crate) fn changes_query(query: &str) -> Option<(String, Revision, u64)> {
-    let (mut epoch, mut after, mut wait) = (None, None, None);
-    for field in query.split('&') {
-        let (key, value) = field.split_once('=')?;
-        match key {
-            "data_epoch"
-                if epoch.is_none()
-                    && !value.is_empty()
-                    && value.len() <= 256
-                    && value.bytes().all(|byte| {
-                        byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_')
-                    }) =>
-            {
-                epoch = Some(value.to_owned())
-            }
-            "after"
-                if after.is_none()
-                    && !value.is_empty()
-                    && value.bytes().all(|byte| byte.is_ascii_digit()) =>
-            {
-                let parsed: u64 = value.parse().ok()?;
-                if parsed > MAX_REVISION {
-                    return None;
-                }
-                after = Some(parsed);
-            }
-            "wait"
-                if wait.is_none()
-                    && !value.is_empty()
-                    && value.bytes().all(|byte| byte.is_ascii_digit()) =>
-            {
-                let parsed: u64 = value.parse().ok()?;
-                if parsed > 50 {
-                    return None;
-                }
-                wait = Some(parsed);
-            }
-            _ => return None,
-        }
-    }
-    Some((epoch?, after?, wait?))
-}
 async fn changes<H: DomainHost>(
     State(host): State<Arc<H>>,
     signed: Option<Extension<Signed>>,
@@ -514,36 +447,6 @@ async fn changes<H: DomainHost>(
     response
 }
 
-async fn changes_inner(domain: &DomainRuntime, query: Option<String>) -> Response {
-    let Some((epoch, after, wait)) = query.as_deref().and_then(changes_query) else {
-        return domain_error(DomainError::new(
-            "invalid_input",
-            "changes requires data_epoch, after and wait (0–50) exactly once",
-        ));
-    };
-    let mut receiver = domain.subscribe();
-    let initial = match domain.state() {
-        Ok(state) => state,
-        Err(_) => return storage_error(),
-    };
-    if initial.data_epoch.0 == epoch && initial.revision == after && wait > 0 {
-        let _ =
-            tokio::time::timeout(std::time::Duration::from_secs(wait), receiver.changed()).await;
-    }
-    let snapshot = match domain.reads.snapshot(domain) {
-        Ok(snapshot) => snapshot,
-        Err(_) => return storage_error(),
-    };
-    let (data_epoch, revision) = snapshot.envelope_ids();
-    Json(reads::Changes {
-        protocol_version: PROTOCOL_VERSION,
-        changed: data_epoch.0 != epoch || revision != after,
-        data_epoch,
-        revision,
-        sections: snapshot.section_tokens(),
-    })
-    .into_response()
-}
 async fn capabilities<H: DomainHost>(
     State(host): State<Arc<H>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
@@ -605,7 +508,7 @@ pub(crate) async fn encrypted_read_runtime(
         capabilities_inner(domain)
     } else if let Some(id) = path.strip_prefix("/pull-requests/")
         .and_then(|suffix| suffix.strip_suffix("/diff")) {
-        let Some(id) = crate::domain_reads::decoded_pull_request_id(id) else {
+        let Some(id) = decoded_pull_request_id(id) else {
             anyhow::bail!("unapproved encrypted domain read path");
         };
         pull_request_diff_inner(domain, id).await
@@ -952,7 +855,7 @@ pub(crate) fn approved_resource_read_path(path: &str) -> bool {
     crate::domain_schedule_api::approved_read_path(path)
         || path == "/capabilities"
         || path.strip_prefix("/delivery-attempts?").is_some_and(|query| delivery_evidence_query(query).is_some())
-        || path.strip_prefix("/pull-requests/").and_then(|s| s.strip_suffix("/diff")).is_some_and(crate::domain_reads::encoded_pull_request_id)
+        || path.strip_prefix("/pull-requests/").and_then(|s| s.strip_suffix("/diff")).is_some_and(encoded_pull_request_id)
         || path.strip_prefix("/document-revisions/").and_then(|s| s.split_once("/content?"))
             .is_some_and(|(id, query)| valid_resource_id(id) && document_content_query(query).is_some())
 }
@@ -962,22 +865,38 @@ fn valid_resource_id(value: &str) -> bool {
 }
 
 fn decode_path_id(value: &str) -> Option<String> {
-    let bytes = value.as_bytes();
+    percent_decoded(value).filter(|decoded| valid_resource_id(decoded))
+}
+
+pub(crate) fn encoded_pull_request_id(raw: &str) -> bool {
+    decoded_pull_request_id(raw).is_some()
+}
+
+/// A PR id is the registered `host/owner/repo#number`, so it travels percent-encoded once.
+pub(crate) fn decoded_pull_request_id(raw: &str) -> Option<String> {
+    let id = percent_decoded(raw)?;
+    (alondra_core::views::id::valid(&id) && alondra_core::views::id::path_segment(&id) == raw).then_some(id)
+}
+
+/// Path segments are percent-encoded (RFC 3986 §2.1); the caller checks the decoded id's grammar.
+fn percent_decoded(raw: &str) -> Option<String> {
+    let bytes = raw.as_bytes();
     let mut decoded = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%' {
-            let hi = u8::from_str_radix(std::str::from_utf8(bytes.get(i + 1..i + 2)?).ok()?, 16).ok()?;
-            let lo = u8::from_str_radix(std::str::from_utf8(bytes.get(i + 2..i + 3)?).ok()?, 16).ok()?;
-            decoded.push((hi << 4) | lo);
-            i += 3;
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            let pair = bytes.get(index + 1..index + 3)?;
+            if !pair.iter().all(u8::is_ascii_hexdigit) {
+                return None;
+            }
+            decoded.push(u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok()?);
+            index += 3;
         } else {
-            decoded.push(bytes[i]);
-            i += 1;
+            decoded.push(bytes[index]);
+            index += 1;
         }
     }
-    let decoded = String::from_utf8(decoded).ok()?;
-    valid_resource_id(&decoded).then_some(decoded)
+    String::from_utf8(decoded).ok()
 }
 
 async fn execute_command<H: DomainHost>(
@@ -1471,12 +1390,12 @@ mod tests {
         assert!(approved_resource_read_path("/delivery-attempts?after=0"));
         assert!(!approved_resource_read_path("/delivery-attempts?after=0&all=1"));
         assert_eq!(
-            crate::domain_reads::decoded_pull_request_id("github.com%2Fowner%2Frepo%23154")
+            decoded_pull_request_id("github.com%2Fowner%2Frepo%23154")
                 .as_deref(),
             Some("github.com/owner/repo#154")
         );
         assert!(
-            crate::domain_reads::decoded_pull_request_id("github.com%252Fowner%252Frepo%2523154")
+            decoded_pull_request_id("github.com%252Fowner%252Frepo%2523154")
                 .is_none()
         );
         assert!(!approved_resource_read_path("/pull-requests/..%2F154/diff"));

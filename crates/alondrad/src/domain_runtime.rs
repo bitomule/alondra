@@ -26,7 +26,6 @@ pub struct DomainRuntime {
     authority: RuntimeMutex<Authority>,
     changed: watch::Sender<Revision>,
     schedule_changed: watch::Sender<Revision>,
-    pub(crate) reads: crate::domain_reads::Cache,
     pub(crate) stored_reads: Arc<crate::service_files::StoredReads>,
     pub(crate) local_actions: crate::views::actions::LocalActions,
     pub(crate) live: crate::client_routes::Live,
@@ -73,7 +72,6 @@ impl DomainRuntime {
             authority: RuntimeMutex::new(authority),
             changed,
             schedule_changed,
-            reads: Default::default(),
             stored_reads: Default::default(),
             local_actions: Default::default(),
             live: crate::client_routes::Live::persisted_in(home),
@@ -846,5 +844,7 @@ mod inbox;
 mod problems;
 mod rejections;
 
+#[cfg(test)]
+mod cost_tests;
 #[cfg(test)]
 mod mcp_flow_tests;

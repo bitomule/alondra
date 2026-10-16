@@ -83,9 +83,9 @@ fn real_size() -> DomainState {
 pub(super) fn profile() {
     let state = real_size();
     let index = ReadIndex::build(&state);
-    assert_eq!(index.waiting().iter().map(|item| item.id.clone()).collect::<Vec<_>>(),
-        state.inbox_projection().into_iter().filter(|item| item.pending).map(|item| item.id).collect::<Vec<_>>(),
-        "the index lists what the projection lists");
+    let orders: Vec<InteractionId> = state.inbox_orders().into_iter()
+        .map(|(id, _)| id.trim_start_matches("interaction:").into()).collect();
+    assert_eq!(index.queue(), orders.as_slice(), "the index queues what the inbox orders");
     let runs = std::env::args().find_map(|argument| argument.strip_prefix("--samples=").and_then(|n| n.parse().ok())).unwrap_or(30);
     let mut samples: Vec<f64> = (0..runs).map(|_| {
         let start = Instant::now();
@@ -93,14 +93,10 @@ pub(super) fn profile() {
         start.elapsed().as_secs_f64() * 1000.0
     }).collect();
     samples.sort_by(f64::total_cmp);
-    let start = Instant::now();
-    std::hint::black_box(state.inbox_projection());
-    let projection_ms = start.elapsed().as_secs_f64() * 1000.0;
     let median = samples[samples.len() / 2];
     println!("{}", serde_json::json!({"scope": "read-index-build", "tasks": state.tasks.len(), "nodes": state.agents.len(),
         "cards": state.interactions.len(), "pull_requests": state.pull_requests.len(), "waiting": index.waiting().len(),
-        "queued": index.queue().len(), "median_ms": median, "max_ms": samples[samples.len() - 1],
-        "inbox_projection_ms": projection_ms}));
+        "queued": index.queue().len(), "median_ms": median, "max_ms": samples[samples.len() - 1]}));
     if std::env::args().any(|argument| argument == "--check-cost") {
         assert!(median <= 10.0, "building the read index of a real-size domain takes {median:.1} ms, over 10 ms");
     }

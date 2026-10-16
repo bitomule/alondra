@@ -76,7 +76,7 @@ fn a_result_that_proposes_a_plan_cannot_be_accepted_without_saying_whether_to_bu
     let accept = Command::AcceptDelivery { presentation_id: "report".into(), targets: text() };
     assert_eq!(refused(&mut s, user(), accept), "plan_choice_required");
     assert!(!accepted(&s, "report"));
-    let kinds: Vec<String> = s.inbox_projection().into_iter().flat_map(|item| item.available_actions)
+    let kinds: Vec<String> = inbox_items(&s).into_iter().flat_map(|item| item.available_actions)
         .filter(|action| action.presentation_id.as_ref() == Some(&InteractionId::from("report")))
         .map(|action| action.kind).collect();
     assert!(kinds.contains(&"implement_plan".to_owned()) && kinds.contains(&"archive_plan".to_owned()), "{kinds:?}");

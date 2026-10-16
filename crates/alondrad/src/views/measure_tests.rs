@@ -36,13 +36,6 @@ async fn measure_real_domain_views() {
     println!("DomainState clone: {:.2} ms", ms(at));
     drop(copy);
 
-    let at = Instant::now();
-    let inbox = state.inbox_projection();
-    println!("inbox_projection: {:.1} ms ({} rows, {} pending)", ms(at), inbox.len(),
-        inbox.iter().filter(|item| item.pending).count());
-    let deliveries = inbox.iter().filter(|item| item.kind == "delivery").count();
-    let actions: usize = inbox.iter().map(|item| item.available_actions.len()).sum();
-    println!("inbox rows: {deliveries} deliveries, {actions} actions");
     if let Some(task) = state.tasks.keys().next() {
         let at = Instant::now();
         state.task_actions(task);
@@ -52,14 +45,10 @@ async fn measure_real_domain_views() {
     let orders = state.inbox_orders();
     println!("inbox_orders: {:.1} ms ({} rows)", ms(at), orders.len());
     let at = Instant::now();
-    let projection = state.projection();
-    println!("projection: {:.1} ms", ms(at));
-
-    let at = Instant::now();
     for task in state.tasks.values() {
-        std::hint::black_box((state.attention(task), state.open_blockers(&task.id), projection.waits_for_user(&task.id)));
+        std::hint::black_box((state.attention(task), state.open_blockers(&task.id)));
     }
-    println!("attention, blockers and waits of every task on demand: {:.1} ms", ms(at));
+    println!("attention and blockers of every task on demand: {:.1} ms", ms(at));
     let mut builds: Vec<f64> = (0..20).map(|_| {
         let at = Instant::now();
         std::hint::black_box(alondra_core::domain::ReadIndex::build(&state));
@@ -100,6 +89,7 @@ async fn measure_real_domain_views() {
     }).unwrap();
     println!("views::build home (index given): {:.1} ms", ms(at));
     let mut card_ids: Vec<String> = built.sections.iter().flat_map(|s| s.card_ids.clone()).collect();
+    let inbox: Vec<_> = read.index().queued(&state).collect();
     card_ids.extend(inbox.iter().rev().filter(|item| item.kind == "delivery" && !item.pending).take(5).map(|item| {
         let alondra_core::domain::InboxSubject::Interaction { interaction_id } = &item.subject;
         interaction_id.0.clone()
@@ -166,7 +156,8 @@ async fn measure_background_per_change() {
     let daemon = crate::domain_bootstrap::DomainDaemon::open(&home).unwrap();
     let client = daemon.client();
     let state = client.domain.state().unwrap();
-    let inbox = state.inbox_projection();
+    let index = alondra_core::domain::ReadIndex::build(&state);
+    let inbox: Vec<_> = index.queued(&state).map(std::borrow::Cow::into_owned).collect();
     let id_of = |item: &alondra_core::domain::InboxItem| {
         let alondra_core::domain::InboxSubject::Interaction { interaction_id } = &item.subject;
         interaction_id.0.clone()

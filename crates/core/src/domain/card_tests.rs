@@ -17,7 +17,7 @@ fn orchestrator() -> Actor {
 /// Every card in Waiting for You has something the user can do now and nothing holding it back,
 /// whatever state a test reached (the property of the cards design, checked after every command).
 fn assert_cards_usable(s: &DomainState) {
-    for item in s.projection().inbox.iter().filter(|item| item.pending) {
+    for item in inbox_items(&s).iter().filter(|item| item.pending) {
         assert!(item.blocked_by.is_empty(), "{} is listed while held back", item.id);
         assert!(item.available_actions.iter().any(|action| action.enabled), "{} is listed with nothing the user can do", item.id);
     }
@@ -468,7 +468,7 @@ fn a_suggestion_goes_to_the_orchestrator_and_never_to_the_users_inbox() {
     let out = ok(&mut s, agent(), suggest("p"));
     assert!(out.effects.iter().any(|e| matches!(e, DomainEffect::NotifyOrchestrator { interaction_id: Some(i), .. } if i.0 == "p")));
     assert!(!out.effects.iter().any(|e| matches!(e, DomainEffect::NotifyUser { .. })), "{:?}", out.effects);
-    assert!(s.projection().inbox.iter().all(|item| item.id != "interaction:p"));
+    assert!(inbox_items(&s).iter().all(|item| item.id != "interaction:p"));
     assert_eq!(crate::views::inbox_badge(&ReadIndex::build(&s)), 0);
 }
 
@@ -545,7 +545,7 @@ fn no_pending_card_is_left_with_nothing_the_user_can_do_once_its_task_ends() {
     });
     ok(&mut s, orchestrator(), inform("know", scope("t"), "Heads up"));
     ok(&mut s, user(), Command::CancelTask { task_id: "t".into() });
-    let items = s.projection().inbox;
+    let items = inbox_items(&s);
     assert!(items.iter().any(|item| item.pending), "the notice remains");
     for item in items.iter().filter(|item| item.pending) {
         assert!(
@@ -566,7 +566,7 @@ fn no_pending_card_is_left_with_nothing_the_user_can_do_once_its_task_ends() {
 // F2: the inbox is one item per interaction, in the order the user should meet them.
 
 fn selected_inbox(s: &DomainState) -> Vec<InboxItem> {
-    s.inbox_projection()
+    inbox_items(s)
 }
 
 #[test]
@@ -600,7 +600,7 @@ fn inbox_selection_keeps_user_cards_current_final_delivery_and_action_guards() {
         && a.presentation_id == Some("final".into()) && a.expected_revision == revision));
     assert!(inbox[1].available_actions.iter().any(|a| a.kind == "mark_read" && a.enabled
         && a.expected_revision == revision));
-    assert_eq!(s, before, "projection is read-only");
+    assert_eq!(s, before, "reading the inbox changes nothing");
     ok(&mut s, user(), Command::AcceptDelivery { presentation_id: "final".into(), targets: text() });
     ok(&mut s, Actor::System, Command::RecordNodeEnd { task_id: "t".into(), end: NodeEnd::Closed, agent_id: Some("a".into()) });
     ok(&mut s, user(), Command::ArchiveTask { task_id: "t".into(), archived: true });
@@ -654,10 +654,11 @@ fn inbox_multiple_blockers_keep_server_order_before_and_after_an_answer() {
     let d = selected_inbox(&s).into_iter().find(|i| i.id == "interaction:d").unwrap();
     assert_eq!(d.blocked_by, vec![InteractionId::from("q1"), InteractionId::from("q2")]);
     assert!(d.available_actions.iter().filter(|a| a.kind == "accept_delivery" || a.kind == "authorize_merge").all(|a| !a.enabled));
-    let projection = s.projection();
-    assert_eq!(s, before, "all order and full-projection reads are immutable");
-    let expected: serde_json::Value = serde_json::from_str(include_str!("../../fixtures/inbox_order_projection.json")).unwrap();
-    assert_eq!(serde_json::to_value(&projection).unwrap(), expected);
+    let index = ReadIndex::build(&s);
+    let inbox = serde_json::json!({"inbox": inbox_items(&s), "counts": index.counts()});
+    assert_eq!(s, before, "reading the order and the inbox changes nothing");
+    let expected: serde_json::Value = serde_json::from_str(include_str!("../../fixtures/inbox_order.json")).unwrap();
+    assert_eq!(inbox, expected);
     ok(&mut s, user(), answer("q1"));
     assert_eq!(ordered_inbox(&s), vec![
         ("interaction:q2".into(), revisions[1]), ("interaction:d".into(), delivery_order),
@@ -692,10 +693,9 @@ fn the_inbox_has_one_item_per_interaction_and_never_groups_by_pr_or_document() {
     blocking.blocks = vec![CardTarget::PullRequest { pr_id: "pr".into() }];
     ok(&mut s, agent(), ask("q", "t", true, blocking));
     ok(&mut s, orchestrator(), inform("n", scope("t"), "Heads up"));
-    let projection = s.projection();
     assert_eq!(inbox_ids(&s), ["q", "d", "n"], "a question, the delivery of the PR, a notice: three cards");
-    assert_eq!(projection.counts.roots, 3);
-    for item in &projection.inbox {
+    assert_eq!(ReadIndex::build(&s).counts().roots, 3);
+    for item in &inbox_items(&s) {
         assert!(item.id.starts_with("interaction:"), "{}: no PR or document root", item.id);
         assert!(matches!(item.subject, InboxSubject::Interaction { .. }));
         assert!(!matches!(item.kind.as_str(), "pull_request" | "document_review"));
@@ -758,12 +758,12 @@ fn a_card_that_blocks_sits_right_above_what_it_blocks() {
     asks.blocks = vec![CardTarget::PullRequest { pr_id: "pr".into() }];
     ok(&mut s, agent(), ask("q", "t", false, asks));
     assert_eq!(inbox_ids(&s), ["elsewhere", "q", "d"], "the question comes out above the PR it holds back, not after it");
-    let projection = s.projection();
-    let item = |id: &str| projection.inbox.iter().find(|i| i.id == format!("interaction:{id}")).unwrap();
+    let inbox = inbox_items(&s);
+    let item = |id: &str| inbox.iter().find(|i| i.id == format!("interaction:{id}")).unwrap();
     assert_eq!(item("d").blocked_by, vec![InteractionId::from("q")]);
     assert_eq!(item("q").blocks, vec![InteractionId::from("d")]);
     ok(&mut s, user(), answer("q"));
-    assert!(s.projection().inbox.iter().all(|i| i.blocked_by.is_empty()), "answered, it holds nothing back");
+    assert!(inbox_items(&s).iter().all(|i| i.blocked_by.is_empty()), "answered, it holds nothing back");
 }
 
 #[test]
@@ -778,8 +778,8 @@ fn a_stacked_pr_is_blocked_by_the_delivery_it_sits_on() {
     s.tasks.get_mut(&TaskId::from("t2")).unwrap().stack = Some(StackDependency {
         upstream_task: "t".into(), presentation_id: "below".into(), pr_id: "pr".into(), head: "head-pr".into(),
     });
-    let projection = s.projection();
-    let item = |id: &str| projection.inbox.iter().find(|i| i.id == format!("interaction:{id}")).unwrap();
+    let inbox = inbox_items(&s);
+    let item = |id: &str| inbox.iter().find(|i| i.id == format!("interaction:{id}")).unwrap();
     assert_eq!(item("above").blocked_by, vec![InteractionId::from("below")]);
     assert!(item("below").blocked_by.is_empty());
     assert_eq!(inbox_ids(&s), ["below", "above"], "the PR below comes first even though the one above is older");
@@ -803,7 +803,7 @@ fn a_correction_replaces_the_earlier_notice() {
 }
 
 fn waiting_ids(s: &DomainState) -> Vec<String> {
-    s.projection().inbox.iter().filter(|item| item.pending).map(|item| item.id.trim_start_matches("interaction:").to_owned()).collect()
+    inbox_items(&s).iter().filter(|item| item.pending).map(|item| item.id.trim_start_matches("interaction:").to_owned()).collect()
 }
 fn gq(need: &str, labels: &[&str]) -> GroupQuestion {
     GroupQuestion {
@@ -959,7 +959,7 @@ fn held_plan(id: &str, agent: &str, title: &str) -> Command {
     }
 }
 fn waiting_for_user(s: &DomainState) -> Vec<String> {
-    s.projection().inbox.iter().filter(|item| item.pending).map(|item| item.id.clone()).collect()
+    inbox_items(&s).iter().filter(|item| item.pending).map(|item| item.id.clone()).collect()
 }
 
 #[test]

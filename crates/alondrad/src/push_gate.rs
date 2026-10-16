@@ -164,7 +164,7 @@ mod tests {
         fixture.github_says("CONFLICTING", "DIRTY");
         assert_eq!(fixture.gate(Some("result"), Duration::ZERO).await, Gate::Drop("pr_conflicts"));
         assert!(fixture.handed_back(), "the node is told to resolve the conflicts");
-        assert!(!fixture.domain.state().unwrap().projection().inbox.iter().any(|item| item.pending), "no card left");
+        assert!(fixture.domain.read().index().waiting().is_empty(), "no card left");
     }
 
     #[tokio::test]

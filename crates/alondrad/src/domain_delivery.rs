@@ -1225,8 +1225,7 @@ mod tests {
         let domain = open();
         assert_eq!(push(domain.clone(), again.clone()).await, ("discarded".to_owned(), Some("already_notified".to_owned())),
             "the same plan again, after a daemon restart: not a new notice");
-        assert!(domain.state().unwrap().projection().inbox.iter().any(|item| item.pending
-            && matches!(&item.subject, InboxSubject::Interaction { interaction_id } if *interaction_id == again)),
+        assert!(domain.read().index().waiting_card(&again).is_some(),
             "the card still waits in the inbox");
 
         crate::domain_holds::release_call(&domain, "agent-a", "call-2").unwrap();

@@ -1,45 +1,6 @@
 use super::*;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DomainProjection {
-    pub protocol_version: u32,
-    pub data_epoch: DataEpoch,
-    pub revision: Revision,
-    pub inbox: Vec<InboxItem>,
-    pub counts: InboxCounts,
-    pub tasks: Vec<Task>,
-    pub agents: Vec<Agent>,
-    pub requests: Vec<Request>,
-    pub interactions: Vec<Interaction>,
-    pub pull_requests: Vec<PullRequest>,
-    pub documents: Vec<Document>,
-    pub document_revisions: Vec<DocumentRevision>,
-    pub document_reviews: Vec<DocumentReview>,
-    pub merge_authorizations: Vec<MergeAuthorization>,
-    pub stack_readiness: Vec<StackReadiness>,
-    /// Per active Task, its latest acceptance when that no longer applies
-    /// and the user did not withdraw it: "your acceptance no longer applies".
-    #[serde(default)]
-    pub superseded_acceptances: Vec<SupersededAcceptance>,
-}
-impl DomainProjection {
-    /// The cards a task waits on the user with: the one source for every view that says a task
-    /// or its node waits for the user, so none says it without a card to show.
-    pub fn waiting_cards<'a>(&'a self, task: &'a TaskId) -> impl Iterator<Item = &'a InboxItem> + 'a {
-        self.inbox.iter().filter(move |item| item.pending && item.task_id.as_ref() == Some(task))
-    }
-    /// Whether the task waits for an answer, an action or a review from the user; a card that is
-    /// only to be read never holds the task.
-    pub fn waits_for_user(&self, task: &TaskId) -> bool {
-        self.waiting_cards(task).any(|item| item.kind != "information")
-    }
-    /// Whether everything the task waits for is the review of its delivery, not an answer.
-    pub fn waits_for_review(&self, task: &TaskId) -> bool {
-        self.waits_for_user(task)
-            && self.waiting_cards(task).filter(|item| item.kind != "information").all(|item| item.kind == "delivery")
-    }
-}
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InboxCounts {
     pub roots: u64,
@@ -213,6 +174,8 @@ impl DomainState {
         let task = self.tasks.get(task_id).filter(|t| !t.state.terminal())?;
         self.handed_back(self.interactions.get(task.final_presentation.as_ref()?)?)
     }
+    /// The card decided from the state alone: what the index must agree with.
+    #[cfg(test)]
     pub(crate) fn item(&self, i: &Interaction) -> InboxItem {
         let pending = self.inbox_pending(i, |t| self.attention(t));
         self.item_given(i, pending, self.inbox_blockers(i), self.blocked_deliveries(i), self)
@@ -520,6 +483,7 @@ impl DomainState {
         }
         sequence.into_iter().map(|at| sorted[at].1).collect()
     }
+    #[cfg(test)]
     fn order_inbox(&self, items: Vec<InboxItem>) -> Vec<InboxItem> {
         let sequence = {
             let facts: Vec<_> = items.iter().map(|item| {
@@ -566,9 +530,6 @@ impl DomainState {
         }
         items
     }
-    pub fn inbox_projection(&self) -> Vec<InboxItem> {
-        self.order_inbox(self.select_inbox(|i| self.item(i)))
-    }
     pub fn inbox_orders(&self) -> Vec<(String, Revision)> {
         let entries = self.select_inbox(|i| (format!("interaction:{}", i.id), i, self.inbox_blockers(i)));
         let sequence = {
@@ -586,68 +547,6 @@ impl DomainState {
         sequence.into_iter().filter_map(|at| slots[at].take()).collect()
     }
 
-    /// Complete coherent projection. IDs, order and action guards are server owned.
-    /// read_by is shared across the single owner domain, irrespective of device identity.
-    pub fn projection(&self) -> DomainProjection {
-        let inbox = self.inbox_projection();
-        let unread_information = self
-            .interactions
-            .values()
-            .filter(|i| {
-                i.recipient == Recipient::User
-                    && matches!(&i.payload, InteractionPayload::Information { read_by } if read_by.is_empty())
-                    && !matches!(&i.scope, Scope::Task { task_id } if self.tasks.get(task_id).is_some_and(|t| t.archived))
-            })
-            .count() as u64;
-        let counts = InboxCounts {
-            roots: inbox.len() as u64,
-            pending: inbox.iter().filter(|item| item.pending).count() as u64,
-            unread_information,
-        };
-        DomainProjection {
-            protocol_version: PROTOCOL_VERSION,
-            data_epoch: self.data_epoch.clone(),
-            revision: self.revision,
-            inbox,
-            counts,
-            tasks: self.tasks.values().cloned().collect(),
-            agents: self.agents.values().cloned().collect(),
-            requests: self.requests.values().cloned().collect(),
-            interactions: self.interactions.values().cloned().collect(),
-            pull_requests: self.pull_requests.values().cloned().collect(),
-            documents: self.documents.values().cloned().collect(),
-            document_revisions: self.document_revisions.values().cloned().collect(),
-            document_reviews: self.document_reviews.clone(),
-            merge_authorizations: self.merge_authorizations.values().cloned().collect(),
-            stack_readiness: self.stack_readiness.values().cloned().collect(),
-            superseded_acceptances: self.superseded_acceptances(),
-        }
-    }
-    fn superseded_acceptances(&self) -> Vec<SupersededAcceptance> {
-        self.tasks
-            .values()
-            .filter(|t| !t.state.terminal())
-            .filter_map(|t| {
-                self.interactions
-                    .values()
-                    .filter(|p| {
-                        p.scope
-                            == (Scope::Task {
-                                task_id: t.id.clone(),
-                            })
-                    })
-                    .filter_map(|p| match &p.payload {
-                        InteractionPayload::Delivery {
-                            acceptance: Some(a),
-                            ..
-                        } => Some((a.at_revision, p)),
-                        _ => None,
-                    })
-                    .max_by_key(|(at, _)| *at)
-                    .and_then(|(_, p)| self.superseded(p))
-            })
-            .collect()
-    }
 }
 
 #[cfg(test)]

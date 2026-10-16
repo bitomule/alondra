@@ -36,7 +36,6 @@ mod domain_orchestrator;
 mod orchestrator_inbox;
 mod domain_orchestrator_reads;
 mod domain_orchestrator_tools;
-mod domain_reads;
 mod domain_runtime;
 mod domain_schedule_api;
 mod domain_schedule_runner;

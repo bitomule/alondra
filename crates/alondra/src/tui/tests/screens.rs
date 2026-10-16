@@ -246,7 +246,7 @@ fn a_task_in_review_without_a_card_is_not_for_you_in_tasks_nor_in_fleet() {
     domain.tasks.get_mut(&"t-3".into()).unwrap().state = TaskState::ForYourReview;
     domain.agents.get_mut(&"a-3".into()).unwrap().phase = alondra_core::domain::NodePhase::Delivered { in_turn: false };
     live.nodes.iter_mut().for_each(|node| node.working = false);
-    assert!(domain.projection().inbox.iter().all(|item| !item.pending), "no card waits");
+    assert!(alondra_core::domain::ReadIndex::build(&domain).waiting().is_empty(), "no card waits");
     let mut tasks = app_on(Screen::Tasks, build(&domain, &live, "tasks"));
     let screen = rendered(&mut tasks, 120, 30);
     dump("tasks (in review, no card)", &screen);

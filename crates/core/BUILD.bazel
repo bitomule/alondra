@@ -23,18 +23,18 @@ rust_test(
 
 # Opt-in profiling driver; ordinary tests do not execute it.
 rust_binary(
-    name = "projection_cost",
+    name = "read_index_cost",
     testonly = True,
-    srcs = ["benches/projection_cost.rs", "benches/inbox_graphs.rs", "benches/read_index.rs"],
+    srcs = ["benches/read_index_cost.rs", "benches/inbox_graphs.rs", "benches/read_index.rs"],
     edition = "2024",
     deps = [":alondra_core"] + all_crate_deps(normal = True),
 )
 
 
 rust_test(
-    name = "projection_cost_test",
-    crate_root = "benches/projection_cost.rs",
-    srcs = ["benches/projection_cost.rs", "benches/inbox_graphs.rs", "benches/read_index.rs"],
+    name = "read_index_cost_test",
+    crate_root = "benches/read_index_cost.rs",
+    srcs = ["benches/read_index_cost.rs", "benches/inbox_graphs.rs", "benches/read_index.rs"],
     edition = "2024",
     deps = [":alondra_core"] + all_crate_deps(normal = True),
 )

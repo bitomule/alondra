@@ -381,15 +381,11 @@ impl Client {
     }
 
     fn runtime(&self) -> Response {
-        let state = match self.domain.state() {
-            Ok(state) => state,
-            Err(_) => return storage(),
-        };
-        let snapshot = match self.domain.reads.snapshot(&self.domain) {
-            Ok(snapshot) => snapshot,
-            Err(_) => return storage(),
-        };
-        let orders = snapshot.inbox_orders();
+        let read = self.domain.read();
+        let state = read.state();
+        let orders: Vec<(String, alondra_core::domain::Revision)> = read.index().queue().iter()
+            .filter_map(|id| state.interactions.get(id).map(|card| (format!("interaction:{}", id.0), card.order)))
+            .collect();
         let (state_times, request_times, revision_times) = {
             let store = self.domain.store.lock().expect("domain store poisoned");
             let revisions: Vec<_> = orders.iter().map(|(_, order)| *order).collect();

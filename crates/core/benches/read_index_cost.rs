@@ -51,11 +51,16 @@ fn cpu_seconds() -> f64 {
     usage.ru_utime.tv_sec as f64 + usage.ru_stime.tv_sec as f64
         + (usage.ru_utime.tv_usec + usage.ru_stime.tv_usec) as f64 / 1_000_000.0
 }
+/// Building the read index of a real-size domain by default; `--task-actions`, `--inbox-orders`
+/// and `--inbox-graphs` measure what the index is built from.
 fn main() {
-    if std::env::args().any(|argument| argument == "--read-index") { read_index::profile(); return; }
+    if std::env::args().any(|argument| argument == "--task-actions") { profile_task_actions(); return; }
     if std::env::args().any(|argument| argument == "--inbox-graphs") { profile_inbox_graphs(); return; }
-    if std::env::args().any(|argument| argument == "--full-inbox") { profile_full_inbox(); return; }
     if std::env::args().any(|argument| argument == "--inbox-orders") { profile_inbox_orders(); return; }
+    read_index::profile();
+}
+
+fn profile_task_actions() {
     let mut state = DomainState::new("synthetic-projection-epoch");
     commit(&mut state, Actor::System, Command::RegisterAgent { agent_id: "agent".into(), name: "Synthetic agent".into(), at: 0 });
     commit(&mut state, user(), Command::CreateRequest { request_id: "request".into(), body: "Synthetic request".into(), auto_merge: false, maintenance: false, message: false });
@@ -184,37 +189,6 @@ fn profile_inbox_orders() {
     }
 }
 
-fn profile_full_inbox() {
-    use sha2::{Digest, Sha256};
-    let state = inbox_fixture(1_000, 8_192, 1_000);
-    let expected = state.inbox_projection();
-    assert_eq!(expected.len(), 1_000);
-    let input_hash = format!("{:x}", Sha256::digest(serde_json::to_vec(&state).unwrap()));
-    let output_hash = format!("{:x}", Sha256::digest(serde_json::to_vec(&expected).unwrap()));
-    std::hint::black_box(state.inbox_projection());
-    let mut samples = vec![];
-    let mut errors = 0;
-    for _ in 0..3 {
-        BYTES.store(0, Ordering::Relaxed); CALLS.store(0, Ordering::Relaxed);
-        LIVE.store(0, Ordering::Relaxed); PEAK.store(0, Ordering::Relaxed);
-        let cpu = cpu_seconds(); let start = Instant::now();
-        COUNTING.store(true, Ordering::Relaxed);
-        let actual = state.inbox_projection();
-        if actual != expected { errors += 1; }
-        std::hint::black_box(&actual); drop(actual);
-        COUNTING.store(false, Ordering::Relaxed);
-        samples.push(serde_json::json!({"wall_ms":start.elapsed().as_secs_f64()*1000.0,
-            "cpu_ms":(cpu_seconds()-cpu)*1000.0,"allocated_bytes":BYTES.load(Ordering::Relaxed),
-            "allocations":CALLS.load(Ordering::Relaxed),"peak_temporary_bytes":PEAK.load(Ordering::Relaxed),
-            "remaining_temporary_bytes":LIVE.load(Ordering::Relaxed)}));
-    }
-    println!("{}", serde_json::json!({"scope":"full-inbox-control", "interactions":1_000,
-        "interaction_body_bytes":8_192_000,"document_revisions":1_000,"outputs":expected.len(),
-        "input_sha256":input_hash,"output_sha256":output_hash,"errors":errors,"samples":samples}));
-    assert_eq!(errors, 0);
-}
-
-
 fn measured_samples<T: PartialEq>(mut read: impl FnMut() -> T, expected: &T) -> (Vec<serde_json::Value>, usize) {
     std::hint::black_box(read());
     let mut samples = vec![];
@@ -269,11 +243,11 @@ fn profile_inbox_graphs() {
                 "outputs": expected_blockers.len(), "output_sha256": digest(&expected_blockers)}))
         };
         let projection = if full {
-            let expected = fixture.state.inbox_projection();
-            let ids: Vec<_> = expected.iter().map(|item| item.id.clone()).collect();
-            assert_eq!(ids, expected_order.iter().map(|(id, _)| id.clone()).collect::<Vec<_>>());
-            let (samples, errors) = measured_samples(|| fixture.state.inbox_projection(), &expected);
-            serde_json::json!({"scope": "full-inbox-graph", "samples": samples, "errors": errors,
+            let expected: Vec<InteractionId> = expected_order.iter()
+                .map(|(id, _)| id.trim_start_matches("interaction:").into()).collect();
+            assert_eq!(ReadIndex::build(&fixture.state).queue(), expected.as_slice());
+            let (samples, errors) = measured_samples(|| ReadIndex::build(&fixture.state).queue().to_vec(), &expected);
+            serde_json::json!({"scope": "read-index-graph", "samples": samples, "errors": errors,
                 "outputs": expected.len(), "output_sha256": digest(&expected)})
         } else {
             let (samples, errors) = measured_samples(|| fixture.state.inbox_orders(), &expected_order);
