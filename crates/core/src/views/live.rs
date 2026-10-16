@@ -160,6 +160,10 @@ pub struct LiveQueued {
     pub position: usize,
     pub of: usize,
     pub hold: LiveHold,
+    /// The user can take it out of the queue: a task waiting to start, not a scheduled run or a
+    /// node coming back.
+    #[serde(default)]
+    pub pausable: bool,
 }
 
 /// What the queue waits for.

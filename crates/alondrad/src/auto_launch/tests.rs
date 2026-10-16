@@ -760,3 +760,88 @@ async fn a_dependent_held_by_the_users_decision_starts_after_its_review_with_the
     assert!(args.windows(2).any(|pair| pair == ["--name", "app/c-512"]), "{args:?}");
     assert!(claude.prompt(0).contains("Group with 512 px prints") && !claude.prompt(0).contains("360 px"), "{}", claude.prompt(0));
 }
+
+fn orchestrator(f: &Fixture) -> Actor {
+    let capability = f.domain.bind_orchestrator("execution-1").unwrap();
+    crate::domain_orchestrator_tools::orchestrator(&f.domain, Some(capability.expose_for_child_environment())).unwrap()
+}
+
+fn queued_ids(f: &Fixture) -> Vec<(String, bool)> {
+    let pacing = f.domain.live.gate.live(&f.domain, alondra_core::now_millis()).unwrap();
+    pacing.queued.into_iter().map(|queued| (queued.task_id, queued.pausable)).collect()
+}
+
+fn paused_ids(f: &Fixture) -> Vec<String> {
+    let pacing = f.domain.live.gate.live(&f.domain, alondra_core::now_millis()).unwrap();
+    pacing.paused.into_iter().map(|paused| paused.task_id).collect()
+}
+
+#[tokio::test]
+async fn pausing_a_task_waiting_for_its_automatic_start_takes_it_out_of_the_queue_until_the_user_resumes_it() {
+    let f = world();
+    let claude = FakeClaude::new(&f);
+    f.domain.live.gate.tune(crate::fleet_gate::Tuning { spacing: 0, limit: Some(crate::fleet_gate::Limit::Fixed(1)) });
+    create(&f, "q1", &[], Some(&plan(&f, "app/q1")));
+    create(&f, "q2", &[], Some(&plan(&f, "app/q2")));
+    pass(&f.domain, &f.home, &claude).await.unwrap();
+    assert_eq!(claude.launches(), 1);
+    assert_eq!(queued_ids(&f), [("q2".to_owned(), true)], "q2 waits for its automatic start, and the user may pause it");
+
+    crate::fleet_gate::hold_queued(&f.domain, &"q2".into(), alondra_core::now_millis()).unwrap();
+    assert!(queued_ids(&f).is_empty());
+    assert_eq!(paused_ids(&f), ["q2"]);
+
+    finish(&f, "q1", "What q1 delivered", false);
+    pass(&f.domain, &f.home, &claude).await.unwrap();
+    pass(&f.domain, &f.home, &claude).await.unwrap();
+    assert_eq!(claude.launches(), 1, "a slot is free, but only the user brings q2 back");
+    assert_eq!(f.domain.live.gate.snapshot(&f.domain, alondra_core::now_millis()).unwrap().working, 0, "q2 takes no slot while paused");
+    let body: LaunchBody = serde_json::from_value(json!({"task": "q2"})).unwrap();
+    let refused = launch(&f.domain, &f.home, &orchestrator(&f), body, |_| None, &claude).await.unwrap_err();
+    assert_eq!(refused.code, "conflict");
+    assert!(refused.message.contains("The user paused"), "{}", refused.message);
+
+    crate::fleet_gate::release_queued(&f.domain, &f.home, &"q2".into(), &claude).await.unwrap();
+    assert_eq!(claude.launches(), 2);
+    assert!(agent_of(&f, "q2").is_some());
+    assert!(paused_ids(&f).is_empty());
+    pass(&f.domain, &f.home, &claude).await.unwrap();
+    assert_eq!(claude.launches(), 2, "the resumed task is not started twice");
+}
+
+#[tokio::test]
+async fn pausing_a_launch_the_orchestrator_queued_takes_it_out_of_the_queue_until_the_user_resumes_it() {
+    let f = world();
+    let claude = FakeClaude::new(&f);
+    f.domain.live.gate.tune(crate::fleet_gate::Tuning { spacing: 0, limit: Some(crate::fleet_gate::Limit::Fixed(1)) });
+    create(&f, "o1", &[], Some(&plan(&f, "app/o1")));
+    create(&f, "o2", &[], Some(&plan(&f, "app/o2")));
+    let body: LaunchBody = serde_json::from_value(json!({"task": "o1"})).unwrap();
+    launch(&f.domain, &f.home, &orchestrator(&f), body, |_| None, &claude).await.unwrap();
+    let body: LaunchBody = serde_json::from_value(json!({"task": "o2"})).unwrap();
+    let queued = launch(&f.domain, &f.home, &orchestrator(&f), body, |_| None, &claude).await.unwrap();
+    assert_eq!(queued["queued"], true);
+    assert_eq!(f.domain.store.lock().unwrap().launch_queue().unwrap().len(), 1);
+
+    crate::fleet_gate::hold_queued(&f.domain, &"o2".into(), alondra_core::now_millis()).unwrap();
+    assert!(f.domain.store.lock().unwrap().launch_queue().unwrap().is_empty());
+    assert_eq!(paused_ids(&f), ["o2"]);
+
+    finish(&f, "o1", "What o1 delivered", false);
+    crate::fleet_gate::pass(&f.domain, &f.home, &claude).await.unwrap();
+    pass(&f.domain, &f.home, &claude).await.unwrap();
+    assert_eq!(claude.launches(), 1, "neither the queue nor the automatic start brings o2 back");
+
+    crate::fleet_gate::release_queued(&f.domain, &f.home, &"o2".into(), &claude).await.unwrap();
+    assert_eq!(claude.launches(), 2);
+    assert!(agent_of(&f, "o2").is_some());
+}
+
+#[tokio::test]
+async fn pausing_a_task_that_waits_for_nothing_says_it_is_not_queued() {
+    let f = world();
+    done_task(&f, "n0");
+    open_task(&f, "n1");
+    assert_eq!(crate::fleet_gate::hold_queued(&f.domain, &"n1".into(), alondra_core::now_millis()), Err("This task is not queued"));
+    assert_eq!(crate::fleet_gate::hold_queued(&f.domain, &"n0".into(), alondra_core::now_millis()), Err("This task is not queued"));
+}

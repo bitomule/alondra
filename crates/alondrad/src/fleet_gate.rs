@@ -425,7 +425,8 @@ impl FleetGate {
         let hold = snapshot.hold.as_ref().map(live_hold);
         let queued = starts.iter().enumerate().filter_map(|(index, waiting)| {
             let task = task_of(&state, &waiting.key)?;
-            Some(LiveQueued { task_id: task.0, position: index + 1, of: total, hold: hold.clone().unwrap_or(LiveHold::Next) })
+            Some(LiveQueued { task_id: task.0, position: index + 1, of: total, hold: hold.clone().unwrap_or(LiveHold::Next),
+                pausable: matches!(waiting.key, Key::Task(_)) })
         }).collect();
         let mut order: Vec<String> = snapshot.queue.iter().filter(|waiting| is_paused(waiting))
             .filter_map(|waiting| match &waiting.key { Key::Resume(session) => Some(session.clone()), _ => None }).collect();
@@ -807,17 +808,45 @@ fn snapshot_locked(domain: &DomainRuntime, state: &DomainState, inner: &Inner, q
     snapshot
 }
 
-/// The user paused a queued task: it leaves the queue, and only the user brings it back.
+/// The user paused a queued task: it leaves the queue, and only the user brings it back. It waits
+/// in the durable `launch_queue`, or at the gate for its automatic start with its launch plan.
 pub(crate) fn hold_queued(domain: &DomainRuntime, task: &TaskId, now: Millis) -> Result<(), &'static str> {
+    const NOT_QUEUED: &str = "This task is not queued";
     let mut store = domain.store.lock().expect("domain store poisoned");
-    let row = store.launch_queue().ok().and_then(|rows| rows.into_iter().find(|row| &row.task_id == task)).ok_or("This task is not queued")?;
-    store.dequeue_launch(task).map_err(|_| "This task is not queued")?;
-    drop(store);
+    let row = store.launch_queue().ok().and_then(|rows| rows.into_iter().find(|row| &row.task_id == task));
+    let (body, origin) = match row {
+        Some(row) => {
+            store.dequeue_launch(task).map_err(|_| NOT_QUEUED)?;
+            (row.body, row.origin)
+        }
+        None => {
+            let plan = store.launch_plan(task).ok().flatten().ok_or(NOT_QUEUED)?;
+            drop(store);
+            let state = domain.state().map_err(|_| NOT_QUEUED)?;
+            let key = Key::Task(task.clone());
+            let waits = domain.live.gate.lock().asking.contains_key(&key)
+                && state.tasks.get(task).is_some_and(|task| crate::auto_launch::candidate(&state, task));
+            if !waits {
+                return Err(NOT_QUEUED);
+            }
+            (LaunchBody::from_plan(task.clone(), &plan).to_queue(), AUTO_ORIGIN.to_owned())
+        }
+    };
     let gate = &domain.live.gate;
     let mut inner = gate.lock();
-    inner.saved.pauses.held.insert(task.clone(), crate::fleet_pause::Held { body: row.body, origin: row.origin, since: now });
+    inner.asking.remove(&Key::Task(task.clone()));
+    inner.saved.pauses.held.insert(task.clone(), crate::fleet_pause::Held { body, origin, since: now });
     gate.save(&inner);
+    drop(inner);
+    gate.poke();
     Ok(())
+}
+
+const AUTO_ORIGIN: &str = "auto";
+
+/// A task the user paused in the queue: nothing starts it until the user resumes it.
+pub(crate) fn held_by_user(domain: &DomainRuntime, task: &TaskId) -> bool {
+    domain.live.gate.lock().saved.pauses.held.contains_key(task)
 }
 
 /// The user resumed a queued task they paused (D3): it starts now, even over the limit.

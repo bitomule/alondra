@@ -315,6 +315,9 @@ async fn launch_guarded(domain: &DomainRuntime, home: &Path, actor: &Actor, body
     if let Some(why) = crate::plan_reviews::held(&current, &task.id) {
         return Err(DomainError::new("plan_review_pending", why));
     }
+    if origin != Origin::Admitted && crate::fleet_gate::held_by_user(domain, &task.id) {
+        return Err(conflict(format!("The user paused “{}” in the queue: only the user resumes it", task.title)));
+    }
     if replaced.is_none() && task.agent_id.as_ref().and_then(|id| current.agents.get(id)).is_some_and(|a| a.phase.live() && !a.phase.coming_back()) {
         return Err(conflict(format!("{} already has a connected agent; send it what to do", body.task)));
     }

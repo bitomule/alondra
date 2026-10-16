@@ -103,7 +103,7 @@ fn cancel_planless(domain: &DomainRuntime, state: &DomainState) -> Result<()> {
     Ok(())
 }
 
-fn candidate(state: &DomainState, task: &Task) -> bool {
+pub(crate) fn candidate(state: &DomainState, task: &Task) -> bool {
     task.state == TaskState::NotStarted
         && !task.started
         && task.agent_id.is_none()
@@ -124,7 +124,7 @@ pub(crate) async fn pass(domain: &DomainRuntime, home: &Path, launcher: &impl La
     let mut ready: Vec<&Task> = state.tasks.values().filter(|task| candidate(&state, task)).collect();
     ready.sort_by_key(|task| (task.priority, planned.get(&task.id).copied().unwrap_or(now), &task.id));
     for task in ready {
-        if domain.live.closed_task(&task.id.0).is_some() || domain.store.lock().expect("domain store poisoned").task_was_launched(&task.id)? {
+        if domain.live.closed_task(&task.id.0).is_some() || crate::fleet_gate::held_by_user(domain, &task.id) || domain.store.lock().expect("domain store poisoned").task_was_launched(&task.id)? {
             continue;
         }
         let (row, plan) = {
