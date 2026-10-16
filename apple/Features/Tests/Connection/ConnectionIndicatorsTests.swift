@@ -6,7 +6,7 @@ import XCTest
 final class ConnectionIndicatorsTests: XCTestCase {
     private static let states: [ConnectionState] = [
         .connecting,
-        .connected(.thisMac), .connected(.localNetwork), .connected(.tailscale), .connected(.relay),
+        .connected(.thisMac), .connected(.localNetwork), .connected(.tailscale), .connected(.irohRelay),
         .unreachable(.noInternet), .unreachable(.serverUnreachable), .unreachable(.macNotAnswering),
         .unreachable(.alondraNotRunning), .unreachable(.sessionExpired), .unreachable(.accessNotConfirmed),
         .unreachable(.deviceRevoked(macName: "Studio")), .unreachable(.macNotOnNetwork),
@@ -40,7 +40,7 @@ final class ConnectionIndicatorsTests: XCTestCase {
     /// 14 Oct, 08:58: a failed reload of Waiting for You while the Mac answered. The header reads
     /// only the connection state, which says the Mac is answering.
     func testSavedDataIsNeverSaidWhileTheMacAnswers() {
-        for route in [ConnectionRoute.thisMac, .localNetwork, .tailscale, .relay] {
+        for route in [ConnectionRoute.thisMac, .localNetwork, .tailscale, .irohRelay] {
             let shown = ConnectionIndicators(.connected(route), hasSavedData: true)
             XCTAssertEqual(shown.light, .live)
             XCTAssertEqual(shown.line, .summary)

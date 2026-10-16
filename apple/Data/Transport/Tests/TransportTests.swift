@@ -65,34 +65,56 @@ final class TransportTests: XCTestCase {
                                                 route: "mac-1", nowMilliseconds: 1_700_000_000_000))
     }
 
-    func testSignedRequestUsesExactRustChallengeAndNeverPostsTwice() async throws {
+    func testSignedRequestUsesExactRustChallengeAndPostsOnce() async throws {
         let signer = try P256.Signing.PrivateKey(rawRepresentation: Data(repeating: 1, count: 32))
         let epoch = base64URL(Data(repeating: 7, count: 16))
         let transport = RecordingTransport([
             .init(status: 200, body: Data(#"{"protocol":1,"epoch":"\#(epoch)"}"#.utf8)),
-            .init(status: 202, body: Data(#"{"request_id":"op-123","status":"queued","revision":1}"#.utf8)),
+            .init(status: 204, body: Data()),
         ])
         let client = try AlondraAPIClient.makeTransport(base: URL(string: "https://relay.example")!, deviceID: "phone-1",
                                             signer: { try signer.signature(for: $0).rawRepresentation },
                                             bearer: { "jwt-token" }, transport: transport)
-        let job = try await client.submit(JSONDecoder().decode(Envelope.self, from: Data(fixture.utf8)))
-        XCTAssertEqual(job.requestID, "op-123")
+        try await client.registerPush(RelayPushRegistration(token: String(repeating: "a", count: 64), environment: "sandbox",
+                                                            pushBinding: base64URL(Data(repeating: 9, count: 32))))
         let calls = await transport.recorded()
         XCTAssertEqual(calls.count, 2)
         let post = calls[1]
-        XCTAssertEqual(post.url?.absoluteString, "https://relay.example/v1/requests")
+        XCTAssertEqual(post.url?.absoluteString, "https://relay.example/v1/push/register")
         XCTAssertEqual(post.value(forHTTPHeaderField: "Authorization"), "Bearer jwt-token")
         XCTAssertEqual(post.value(forHTTPHeaderField: "x-relay-epoch"), epoch)
         let timestamp = try XCTUnwrap(UInt64(try XCTUnwrap(post.value(forHTTPHeaderField: "x-device-timestamp-ms"))))
         let nonce = try decodedBase64URL(XCTUnwrap(post.value(forHTTPHeaderField: "x-device-nonce")))
         XCTAssertEqual(nonce.count, 16)
-        let challenge = try RelayHTTPChallenge.message(deviceID: "phone-1", method: "POST", target: "/v1/requests",
+        let challenge = try RelayHTTPChallenge.message(deviceID: "phone-1", method: "POST", target: "/v1/push/register",
                                                         epoch: Data(repeating: 7, count: 16), body: try XCTUnwrap(post.httpBody),
                                                         timestampMilliseconds: timestamp, nonce: nonce)
         let signature = try P256.Signing.ECDSASignature(rawRepresentation:
             decodedBase64URL(try XCTUnwrap(post.value(forHTTPHeaderField: "x-device-signature"))))
         XCTAssertTrue(signer.publicKey.isValidSignature(signature, for: challenge))
         XCTAssertEqual(post.value(forHTTPHeaderField: "x-device-nonce"), base64URL(nonce))
+    }
+
+    /// A pairing made before its Mac had an iroh endpoint learns it from the owner's Macs, a
+    /// signed GET; a Mac that bound none has no endpoint.
+    func testTheOwnersMacsComeWithTheIrohEndpointEachBound() async throws {
+        let epoch = base64URL(Data(repeating: 7, count: 16))
+        let transport = RecordingTransport([
+            .init(status: 200, body: Data(#"{"protocol":1,"epoch":"\#(epoch)"}"#.utf8)),
+            .init(status: 200, body: Data(#"{"macs":[{"mac_id":"mac-1","iroh_endpoint":"abc"},{"mac_id":"mac-2"}]}"#.utf8)),
+        ])
+        let signer = P256.Signing.PrivateKey()
+        let client = try AlondraAPIClient.makeTransport(base: URL(string: "https://relay.example")!, deviceID: "phone-1",
+                                            signer: { try signer.signature(for: $0).rawRepresentation },
+                                            bearer: { "jwt-token" }, transport: transport)
+        let macs = try await client.macs()
+        XCTAssertEqual(macs, [RelayMac(macID: "mac-1", irohEndpoint: "abc"), RelayMac(macID: "mac-2", irohEndpoint: nil)])
+        let recorded = await transport.recorded()
+        let get = try XCTUnwrap(recorded.last)
+        XCTAssertEqual(get.httpMethod, "GET")
+        XCTAssertEqual(get.url?.path, "/v1/macs")
+        XCTAssertEqual(get.value(forHTTPHeaderField: "Authorization"), "Bearer jwt-token")
+        XCTAssertNotNil(get.value(forHTTPHeaderField: "x-device-signature"))
     }
 
     /// The iroh relay admits this device's endpoint only once the Alondra relay has it: a PUT
@@ -142,7 +164,7 @@ final class TransportTests: XCTestCase {
         catch let error as RelayWireError { XCTAssertEqual(error, .unauthorized) }
         let afterUnsigned = await refusals.total
         XCTAssertEqual(afterUnsigned, 0)
-        do { _ = try await client.status(requestID: "op-123"); XCTFail("Signed 401") }
+        do { _ = try await client.signedRead("op-123"); XCTFail("Signed 401") }
         catch let error as RelayWireError { XCTAssertEqual(error, .unauthorized) }
         let afterSigned = await refusals.total
         XCTAssertEqual(afterSigned, 1)
@@ -168,45 +190,22 @@ final class TransportTests: XCTestCase {
                                             signer: { try signer.signature(for: $0).rawRepresentation },
                                             bearer: { "jwt-token" }, bearerRefused: { await refusals.count() },
                                             transport: transport)
-        _ = try await client.status(requestID: "op-123")
-        do { _ = try await client.status(requestID: "op-123"); XCTFail("Relay restarted") }
+        _ = try await client.signedRead("op-123")
+        do { _ = try await client.signedRead("op-123"); XCTFail("Relay restarted") }
         catch let error as RelayWireError { XCTAssertEqual(error, .unauthorized) }
         let afterRestart = await refusals.total
         XCTAssertEqual(afterRestart, 0, "An epoch that already worked is refreshed, not the token")
-        _ = try await client.status(requestID: "op-123")
+        _ = try await client.signedRead("op-123")
         let afterRecovery = await refusals.total
         XCTAssertEqual(afterRecovery, 0)
-        do { _ = try await client.status(requestID: "op-123"); XCTFail("Token refused") }
+        do { _ = try await client.signedRead("op-123"); XCTFail("Token refused") }
         catch let error as RelayWireError { XCTAssertEqual(error, .unauthorized) }
-        do { _ = try await client.status(requestID: "op-123"); XCTFail("Token refused with a fresh epoch") }
+        do { _ = try await client.signedRead("op-123"); XCTFail("Token refused with a fresh epoch") }
         catch let error as RelayWireError { XCTAssertEqual(error, .unauthorized) }
         let afterFreshEpoch = await refusals.total
         XCTAssertEqual(afterFreshEpoch, 1)
         let paths = await transport.recorded().map { $0.url!.path }
         XCTAssertEqual(paths.filter { $0 == "/v1/bootstrap" }.count, 3)
-    }
-
-    func testRejectsMismatchedRequestIDsFromSubmitAndStatus() async throws {
-        let epoch = base64URL(Data(repeating: 7, count: 16))
-        let wrong = Data(#"{"request_id":"another-operation","status":"completed","revision":1}"#.utf8)
-        let transport = RecordingTransport([
-            .init(status: 200, body: Data(#"{"protocol":1,"epoch":"\#(epoch)"}"#.utf8)),
-            .init(status: 202, body: wrong),
-            .init(status: 200, body: wrong),
-        ])
-        let signer = P256.Signing.PrivateKey()
-        let client = try AlondraAPIClient.makeTransport(base: URL(string: "https://relay.example")!, deviceID: "phone-1",
-                                            signer: { try signer.signature(for: $0).rawRepresentation },
-                                            bearer: { "jwt-token" }, transport: transport)
-        let envelope = try JSONDecoder().decode(Envelope.self, from: Data(fixture.utf8))
-        do {
-            _ = try await client.submit(envelope)
-            XCTFail("A different submitted operation must not enter the journal")
-        } catch let error as RelayWireError { XCTAssertEqual(error, .invalidResponse) }
-        do {
-            _ = try await client.status(requestID: envelope.requestID)
-            XCTFail("A different status operation must not enter the journal")
-        } catch let error as RelayWireError { XCTAssertEqual(error, .invalidResponse) }
     }
 
     func testRejectsPlainHTTPAndUntrustedLoopback() throws {

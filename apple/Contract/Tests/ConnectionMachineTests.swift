@@ -8,13 +8,13 @@ final class ConnectionMachineTests: XCTestCase {
         var machine = ConnectionMachine()
         let slowReload = machine.begin()
         _ = machine.begin()
-        machine.handle(.answered(.relay))
+        machine.handle(.answered(.irohRelay))
         for _ in 0 ..< ConnectionMachine.passingFailuresShown {
             machine.handle(.failed(.macNotAnswering, ticket: slowReload))
         }
         machine.handle(.failed(.unexpected, ticket: slowReload))
 
-        XCTAssertEqual(machine.state, .connected(.relay))
+        XCTAssertEqual(machine.state, .connected(.irohRelay))
     }
 
     /// iroh moves a live connection from the relay to the direct path without a new answer: the
@@ -48,7 +48,7 @@ final class ConnectionMachineTests: XCTestCase {
     func testAProblemOnlyThePersonCanFixShowsAtOnce() {
         for problem in [ConnectionProblem.sessionExpired, .deviceRevoked(macName: "Studio"), .localNetworkDenied, .noInternet] {
             var machine = ConnectionMachine()
-            machine.handle(.answered(.relay))
+            machine.handle(.answered(.irohRelay))
             machine.handle(.failed(problem, ticket: machine.begin()))
             XCTAssertEqual(machine.state, .unreachable(problem))
         }
@@ -106,7 +106,7 @@ final class ConnectionMachineTests: XCTestCase {
         var random = SeededRandom(seed: 0xA10D7A)
         let problems: [ConnectionProblem] = [.noInternet, .serverUnreachable, .macNotAnswering, .sessionExpired,
                                              .accessNotConfirmed, .localNetworkDenied, .deviceStorage, .unexpected]
-        let routes: [ConnectionRoute] = [.thisMac, .localNetwork, .tailscale, .relay]
+        let routes: [ConnectionRoute] = [.thisMac, .localNetwork, .tailscale, .irohRelay]
         for _ in 0 ..< 2_000 {
             var machine = ConnectionMachine()
             var open: [UInt64] = []

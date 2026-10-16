@@ -264,6 +264,10 @@ async fn full_stack_fixture_server() {
         relay_daemon(home, Arc::new(domain), &relay_url, &epoch, &action).await;
         return;
     }
+    if std::env::var_os("ALONDRA_FIXTURE_IROH").is_some() {
+        iroh_daemon(home, Arc::new(domain), &epoch, &action).await;
+        return;
+    }
     drop(domain);
     let state = crate::domain_bootstrap::DomainDaemon::open(&home).unwrap();
     let signing = SigningKey::from_slice(&[41u8; 32]).unwrap();
@@ -378,19 +382,7 @@ async fn relay_daemon(
     while let Some(command) = incoming.recv().await {
         match command["command"].as_str().unwrap() {
             "stats" => {
-                let c = Connection::open(home.join("service-receipts.sqlite")).unwrap();
-                let records: i64 = c
-                    .query_row(
-                        "SELECT count(*) FROM service_receipts WHERE journal_issuer IS NOT NULL",
-                        [],
-                        |row| row.get(0),
-                    )
-                    .unwrap();
-                let intervals: i64 = c
-                    .query_row("SELECT count(*) FROM operation_retired", [], |row| {
-                        row.get(0)
-                    })
-                    .unwrap();
+                let (records, intervals) = service_receipts(&home);
                 emit(
                     json!({"event":"stats","effects":effects(&home),"journal_records":records,"retired_intervals":intervals}),
                 );
@@ -405,5 +397,259 @@ async fn relay_daemon(
     drop(service);
     drop(domain);
     emit(json!({"event":"stopped"}));
+    drop(home);
+}
+
+fn service_receipts(home: &Path) -> (i64, i64) {
+    let c = Connection::open(home.join("service-receipts.sqlite")).unwrap();
+    let records = c
+        .query_row(
+            "SELECT count(*) FROM service_receipts WHERE journal_issuer IS NOT NULL",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let intervals = c
+        .query_row("SELECT count(*) FROM operation_retired", [], |row| row.get(0))
+        .unwrap();
+    (records, intervals)
+}
+
+const PHONE_SIGNING: [u8; 32] = [33u8; 32];
+const PHONE_AGREEMENT: [u8; 32] = [34u8; 32];
+const MAC_SIGNING: [u8; 32] = [1u8; 32];
+const MAC_AGREEMENT: [u8; 32] = [2u8; 32];
+
+/// The Mac paired with one phone, `phone-1`, reached only over its iroh endpoint on loopback. The
+/// keys come from the fixed seeds above, which the ready line hands to the client.
+fn iroh_service(
+    home: &Path,
+    domain: Arc<crate::domain_runtime::DomainRuntime>,
+) -> Arc<crate::service::Service> {
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    let signing = SigningKey::from_slice(&PHONE_SIGNING).unwrap();
+    let agreement = p256::SecretKey::from_slice(&PHONE_AGREEMENT).unwrap();
+    if !home.join("service.toml").exists() {
+        for (name, bytes) in [("signing.key", MAC_SIGNING), ("agreement.key", MAC_AGREEMENT)] {
+            let path = home.join(name);
+            std::fs::write(&path, URL_SAFE_NO_PAD.encode(bytes)).unwrap();
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        let approved = json!([{"id":"phone-1","name":"Fixture iPhone","created_at":0,"last_seen":null,
+            "public_key":STANDARD.encode(signing.verifying_key().to_sec1_bytes())}]);
+        std::fs::write(home.join("devices.json"), serde_json::to_vec(&approved).unwrap()).unwrap();
+        std::fs::write(
+            home.join("service.toml"),
+            format!(
+                "mac_id = \"mac-1\"\nsigning_key_path = \"signing.key\"\nagreement_key_path = \"agreement.key\"\n\
+                 [[devices]]\ndevice_id = \"phone-1\"\nsigning_key = \"{}\"\nagreement_key = \"{}\"\n",
+                URL_SAFE_NO_PAD.encode(signing.verifying_key().to_sec1_bytes()),
+                URL_SAFE_NO_PAD.encode(agreement.public_key().to_sec1_bytes())
+            ),
+        )
+        .unwrap();
+    }
+    let auth = Arc::new(crate::auth::Auth::open(home).unwrap());
+    let client = crate::client_routes::Client::open(domain.clone(), home, Default::default());
+    let service = crate::service::Service::open(home, 0, auth)
+        .unwrap()
+        .expect("fixture service configured")
+        .with_domain(domain)
+        .with_client(client);
+    Arc::new(service)
+}
+
+async fn bind_iroh(service: &crate::service::Service, port: u16) -> iroh::Endpoint {
+    let config = crate::iroh_endpoint::IrohConfig {
+        relay: "off".into(),
+        listen: Some(std::net::Ipv4Addr::LOCALHOST.into()),
+        port,
+        portmapper: false,
+        ..Default::default()
+    };
+    crate::iroh_endpoint::bind(service.iroh_key().clone(), &config)
+        .await
+        .unwrap()
+}
+
+/// The request inside a sealed envelope, or `Null` for anything else, such as the hello.
+fn opened_request(service: &crate::service::Service, bytes: &[u8]) -> Value {
+    let Ok(envelope) = serde_json::from_slice::<alondra_e2e::Envelope>(bytes) else {
+        return Value::Null;
+    };
+    let phone = SigningKey::from_slice(&PHONE_SIGNING).unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    envelope
+        .open(phone.verifying_key(), service.agreement_secret(), &envelope.sender, "mac-1", "mac-1", now)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or(Value::Null)
+}
+
+/// The daemon's iroh endpoint as `iroh_endpoint::serve` runs it: a hello proven with a paired
+/// key, then one envelope per stream answered by `iroh_endpoint::answer`. Around the answer the
+/// fixture counts what arrived and can hold an applied action's answer before it leaves.
+async fn serve_iroh(endpoint: iroh::Endpoint, service: Arc<crate::service::Service>, harness: Arc<Harness>) {
+    while let Some(incoming) = endpoint.accept().await {
+        let (service, harness) = (service.clone(), harness.clone());
+        tokio::spawn(async move {
+            let Ok(connection) = incoming.await else { return };
+            let Some(device_id) = iroh_hello(&service, &connection).await else {
+                return connection.close(
+                    iroh::endpoint::VarInt::from_u32(crate::iroh_endpoint::close::UNAUTHORIZED),
+                    b"unauthorized",
+                );
+            };
+            while let Ok((send, recv)) = connection.accept_bi().await {
+                tokio::spawn(iroh_stream(service.clone(), harness.clone(), device_id.clone(), send, recv));
+            }
+        });
+    }
+}
+
+async fn iroh_hello(service: &crate::service::Service, connection: &iroh::endpoint::Connection) -> Option<String> {
+    let (mut send, mut recv) = connection.accept_bi().await.ok()?;
+    let hello: Value = serde_json::from_slice(&recv.read_to_end(4096).await.ok()?).ok()?;
+    let device_id = hello["device_id"].as_str()?.to_owned();
+    let proven = service.iroh_hello_proven(
+        &device_id,
+        hello["signature"].as_str()?,
+        connection.remote_id().as_bytes(),
+    );
+    let reply = if proven { json!({"ok": true}) } else { json!({"error": "unauthorized"}) };
+    if send.write_all(reply.to_string().as_bytes()).await.is_ok() {
+        let _ = send.finish();
+        let _ = send.stopped().await;
+    }
+    proven.then_some(device_id)
+}
+
+async fn iroh_stream(
+    service: Arc<crate::service::Service>,
+    harness: Arc<Harness>,
+    device_id: String,
+    mut send: iroh::endpoint::SendStream,
+    mut recv: iroh::endpoint::RecvStream,
+) {
+    let Ok(bytes) = recv.read_to_end(crate::iroh_endpoint::MAX_REQUEST).await else { return };
+    let request = opened_request(&service, &bytes);
+    let (method, path) = (request["method"].as_str().unwrap_or_default(), request["path"].as_str().unwrap_or_default());
+    let action = method == "POST" && path == "/actions";
+    if action {
+        harness.posts.fetch_add(1, Ordering::Relaxed);
+    }
+    if path.starts_with("/operation-results/") {
+        harness.results.fetch_add(1, Ordering::Relaxed);
+    }
+    if method == "POST" && path == "/operation-journal/ack" {
+        harness.acknowledgments.fetch_add(1, Ordering::Relaxed);
+    }
+    let reply = crate::iroh_endpoint::answer(&service, &device_id, &bytes).await;
+    if action && harness.hold_action.swap(false, Ordering::Relaxed) {
+        let released = harness.release.notified();
+        tokio::pin!(released);
+        released.as_mut().enable();
+        emit(json!({"event":"applied","command_id":request["body"]["command_id"],"effects":effects(&harness.home)}));
+        released.await;
+    }
+    if send.write_all(&reply).await.is_ok() {
+        let _ = send.finish();
+    }
+}
+
+fn stdin_commands() -> (tokio::sync::mpsc::UnboundedReceiver<Value>, std::thread::JoinHandle<()>) {
+    let (commands, incoming) = tokio::sync::mpsc::unbounded_channel::<Value>();
+    let reader = std::thread::spawn(move || {
+        for line in std::io::stdin().lock().lines() {
+            let value: Value = serde_json::from_str(&line.unwrap()).unwrap();
+            let stopped = value["command"] == "stop";
+            if commands.send(value).is_err() || stopped {
+                break;
+            }
+        }
+    });
+    (incoming, reader)
+}
+
+/// `ALONDRA_FIXTURE_IROH_PORT` binds the endpoint on the port an earlier run of this HOME used, so
+/// a restarted daemon is found where the phone last reached it.
+async fn iroh_daemon(
+    home: Arc<crate::test_support::Directory>,
+    domain: Arc<crate::domain_runtime::DomainRuntime>,
+    epoch: &str,
+    action: &str,
+) {
+    let service = iroh_service(&home, domain.clone());
+    let port = std::env::var("ALONDRA_FIXTURE_IROH_PORT").map_or(0, |port| port.parse().unwrap());
+    let harness = Arc::new(Harness {
+        home: home.clone(),
+        hold_action: AtomicBool::new(false),
+        hold_ack: AtomicBool::new(false),
+        release: Notify::new(),
+        posts: AtomicU64::new(0),
+        results: AtomicU64::new(0),
+        acknowledgments: AtomicU64::new(0),
+    });
+    let bound = bind_iroh(&service, port).await;
+    let address = bound.bound_sockets()[0];
+    let mut serving = tokio::spawn(serve_iroh(bound.clone(), service.clone(), harness.clone()));
+    let mut endpoint = Some(bound);
+    emit(json!({"event":"ready","data_epoch":epoch,"action_id":action,"option_id":"yes",
+        "fixture_home":home.to_str().unwrap(),"mac_id":"mac-1","device_id":"phone-1",
+        "signing_seed_base64":STANDARD.encode(PHONE_SIGNING),"agreement_seed_base64":STANDARD.encode(PHONE_AGREEMENT),
+        "mac_signing_seed_base64":STANDARD.encode(MAC_SIGNING),"mac_agreement_seed_base64":STANDARD.encode(MAC_AGREEMENT),
+        "iroh_endpoint":service.iroh_key().public().to_string(),"iroh_address":address.to_string()}));
+    let (mut incoming, reader) = stdin_commands();
+    while let Some(command) = incoming.recv().await {
+        match command["command"].as_str().unwrap() {
+            "hold_next_action" => {
+                harness.hold_action.store(true, Ordering::Relaxed);
+                emit(json!({"event":"armed","kind":"action"}));
+            }
+            "release" => {
+                harness.release.notify_waiters();
+                emit(json!({"event":"released"}));
+            }
+            "close_endpoint" => {
+                if let Some(closed) = endpoint.take() {
+                    closed.close().await;
+                }
+                serving.abort();
+                let _ = (&mut serving).await;
+                harness.release.notify_waiters();
+                emit(json!({"event":"endpoint_closed"}));
+            }
+            "open_endpoint" => {
+                let opened = bind_iroh(&service, address.port()).await;
+                serving = tokio::spawn(serve_iroh(opened.clone(), service.clone(), harness.clone()));
+                emit(json!({"event":"endpoint_open","iroh_address":opened.bound_sockets()[0].to_string()}));
+                endpoint = Some(opened);
+            }
+            "stats" => {
+                let (records, intervals) = service_receipts(&home);
+                emit(json!({"event":"stats","effects":effects(&home),"action_posts":harness.posts.load(Ordering::Relaxed),
+                    "result_gets":harness.results.load(Ordering::Relaxed),
+                    "acknowledgments":harness.acknowledgments.load(Ordering::Relaxed),
+                    "journal_records":records,"retired_intervals":intervals}));
+            }
+            "stop" => break,
+            other => panic!("unexpected iroh fixture command {other}"),
+        }
+    }
+    harness.release.notify_waiters();
+    if let Some(endpoint) = endpoint.take() {
+        endpoint.close().await;
+    }
+    serving.abort();
+    let _ = serving.await;
+    reader.join().unwrap();
+    drop(service);
+    drop(domain);
+    emit(json!({"event":"stopped"}));
+    drop(harness);
     drop(home);
 }

@@ -131,7 +131,7 @@ struct RelayBootstrapTests {
         #expect(replacement != nil, "the retired physical response must leave a replacement for the current waiter")
         if replacement != nil { _ = await starts.next(); await peer.releaseAll() }
         #expect(try await fresh.value.epoch == Base64URL.encode(Data(repeating: 8, count: 16)))
-        #expect(try await transport.status(requestID: "detail").requestID == "detail")
+        #expect(try await transport.signedRead("detail") == "detail")
         #expect(await peer.bootstrapCalls == 2)
         #expect(await peer.peak == 1)
         await transport.observeBootstrapWaiters(nil)
@@ -141,35 +141,35 @@ struct RelayBootstrapTests {
     func freshSameEpochBootstrapResetsOldProofButPreservesAProofReceivedDuringItsHTTP(provenDuringBootstrap: Bool) async throws {
         let peer = BootstrapPeer(), transport = try transport(peer)
         try await seed(transport, peer)
-        _ = try await transport.status(requestID: "old-proof")
+        _ = try await transport.signedRead("old-proof")
         var starts = peer.starts.makeAsyncIterator()
         let refresh = Task { try await transport.bootstrap() }
         _ = await starts.next()
-        if provenDuringBootstrap { _ = try await transport.status(requestID: "concurrent-proof") }
+        if provenDuringBootstrap { _ = try await transport.signedRead("concurrent-proof") }
         await peer.releaseAll()
         _ = try await refresh.value
         await peer.rejectNextSigned()
-        await #expect(throws: RelayWireError.unauthorized) { try await transport.status(requestID: "refused") }
+        await #expect(throws: RelayWireError.unauthorized) { try await transport.signedRead("refused") }
         #expect(await peer.refusals == (provenDuringBootstrap ? 0 : 1))
     }
 
     @Test func aRefusalInvalidatesAConcurrentOldBootstrapWithoutOverwritingTheNewEpoch() async throws {
         let peer = BootstrapPeer(), transport = try transport(peer)
         try await seed(transport, peer)
-        _ = try await transport.status(requestID: "proven")
+        _ = try await transport.signedRead("proven")
         var starts = peer.starts.makeAsyncIterator()
         let refresh = Task { try await transport.bootstrap() }
         _ = await starts.next()
         let physical = try #require(await transport.bootstrapHTTPTask)
         await peer.restart()
-        await #expect(throws: RelayWireError.unauthorized) { try await transport.status(requestID: "old-epoch") }
+        await #expect(throws: RelayWireError.unauthorized) { try await transport.signedRead("old-epoch") }
         await peer.releaseAll(oldEpoch: true)
         await physical.value
         let replacement = await transport.bootstrapHTTPTask
         #expect(replacement != nil, "invalidation must request a current epoch rather than publish the old HTTP answer")
         if replacement != nil { _ = await starts.next(); await peer.releaseAll() }
         #expect(try await refresh.value.epoch == Base64URL.encode(Data(repeating: 8, count: 16)))
-        #expect(try await transport.status(requestID: "new-epoch").requestID == "new-epoch")
+        #expect(try await transport.signedRead("new-epoch") == "new-epoch")
         #expect(await peer.bootstrapCalls == 3)
         #expect(await peer.peak == 1)
     }

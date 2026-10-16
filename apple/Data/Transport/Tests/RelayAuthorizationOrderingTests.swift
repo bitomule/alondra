@@ -74,8 +74,8 @@ private actor AuthorizationOrderingPeer: HTTPTransport {
             bearerRefusedForToken: refusal, transport: peer, now: { 1_000 })
         return (transport, peer, credentials)
     }
-    private func heldStatus(_ transport: any Transport, peer: AuthorizationOrderingPeer) async -> Task<RelayJob, any Error> {
-        let task = Task { try await transport.status(requestID: "held-A") }
+    private func heldStatus(_ transport: any Transport, peer: AuthorizationOrderingPeer) async -> Task<String, any Error> {
+        let task = Task { try await transport.signedRead("held-A") }
         var arrival = peer.entered.makeAsyncIterator()
         _ = await arrival.next()
         return task
@@ -88,7 +88,7 @@ private actor AuthorizationOrderingPeer: HTTPTransport {
         await peer.release(status: 401)
         await #expect(throws: RelayWireError.unauthorized) { try await old.value }
         #expect(await credentials.refusals == 0)
-        #expect(try await transport.status(requestID: "detail-B").requestID == "detail-B")
+        #expect(try await transport.signedRead("detail-B") == "detail-B")
     }
 
     @Test func lateUnauthorizedCannotDiscardANewerProvenEpoch() async throws {
@@ -97,11 +97,11 @@ private actor AuthorizationOrderingPeer: HTTPTransport {
         let old = await heldStatus(transport, peer: peer)
         await peer.changeEpoch()
         _ = try await transport.bootstrap()
-        #expect(try await transport.status(requestID: "detail-B").requestID == "detail-B")
+        #expect(try await transport.signedRead("detail-B") == "detail-B")
         await peer.prohibitBootstrap()
         await peer.release(status: 401)
         await #expect(throws: RelayWireError.unauthorized) { try await old.value }
-        #expect(try await transport.status(requestID: "detail-B").requestID == "detail-B",
+        #expect(try await transport.signedRead("detail-B") == "detail-B",
             "a late refusal of the old epoch must not require bootstrap again for the already verified new epoch")
         #expect(await credentials.refusals == 0)
     }
@@ -112,25 +112,25 @@ private actor AuthorizationOrderingPeer: HTTPTransport {
         await peer.changeEpoch()
         _ = try await transport.bootstrap()
         await peer.release(status: 200)
-        #expect(try await old.value.requestID == "held-A")
+        #expect(try await old.value == "held-A")
         await peer.rejectNextStatus()
-        await #expect(throws: RelayWireError.unauthorized) { try await transport.status(requestID: "detail-B") }
+        await #expect(throws: RelayWireError.unauthorized) { try await transport.signedRead("detail-B") }
         #expect(await credentials.refusals == 1,
             "success under the old epoch cannot redirect a fresh-epoch bearer refusal into epoch recovery")
         await credentials.replace("fresh-token"); await peer.requireToken("fresh-token")
         await peer.prohibitBootstrap()
-        #expect(try await transport.status(requestID: "detail-B").requestID == "detail-B")
+        #expect(try await transport.signedRead("detail-B") == "detail-B")
     }
     @Test func lateUnauthorizedCannotRefuseANewerBearerOnTheSameEpoch() async throws {
         let (transport, peer, credentials) = try setup()
         _ = try await transport.bootstrap()
         let old = await heldStatus(transport, peer: peer)
         await credentials.replace("fresh-token"); await peer.requireToken("fresh-token")
-        #expect(try await transport.status(requestID: "detail-B").requestID == "detail-B")
+        #expect(try await transport.signedRead("detail-B") == "detail-B")
         _ = try await transport.bootstrap()
         await peer.release(status: 401)
         await #expect(throws: RelayWireError.unauthorized) { try await old.value }
-        #expect(try await transport.status(requestID: "detail-B").requestID == "detail-B")
+        #expect(try await transport.signedRead("detail-B") == "detail-B")
         #expect(await credentials.refusals == 0,
             "the refusal callback invalidates current credentials, so a response for an older bearer must not invoke it")
     }

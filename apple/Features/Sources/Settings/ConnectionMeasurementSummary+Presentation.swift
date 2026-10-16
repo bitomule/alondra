@@ -8,13 +8,13 @@ extension ConnectionMeasurementSummary {
         switch group {
         case .liveUpdates: return "Live updates · \(routeTitle)"
         case .connecting: return "Opening the connection"
+        case .connectingInBackground: return "Opening the connection in the background"
         case .requests: return routeTitle
         }
     }
 
     private var routeTitle: LocalizedStringResource {
         switch route {
-        case .relay: return "Relay mailbox"
         case .irohRelay: return "Live relay"
         case let route?: return route.title
         case nil: return "No answer"
@@ -32,7 +32,7 @@ extension ConnectionMeasurementSummary {
     }
 
     var requests: LocalizedStringResource {
-        if group == .connecting { return "\(count) connections" }
+        if group == .connecting || group == .connectingInBackground { return "\(count) connections" }
         return "\(count) requests"
     }
 

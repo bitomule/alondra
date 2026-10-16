@@ -132,7 +132,7 @@ private func registrationClient(_ n: UInt8, recorder: RegistrationRecorder) -> N
     (URLError(.timedOut) as any Error, PushRegistrationCoordinator.Problem.unreachable),
     (URLError(.notConnectedToInternet) as any Error, .unreachable),
     (RelayWireError.outcomeUnknown as any Error, .unreachable),
-    (RelaySessionError.outcomeUnknown as any Error, .unreachable),
+    (SealedRequestError.outcomeUnknown as any Error, .unreachable),
     (OperationError.outcomeUnknown as any Error, .unreachable),
     (APIError.unavailable as any Error, .unreachable),
     (APIError.unexpected(status: 500) as any Error, .unreachable),

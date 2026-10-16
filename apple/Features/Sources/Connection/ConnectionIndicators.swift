@@ -59,5 +59,5 @@ public struct ConnectionIndicators: Equatable, Sendable {
 
 public extension EnvironmentValues {
     /// Set once, at the root of each scene, from the app's store. Screens read it; none decides it.
-    @Entry var connectionState: ConnectionState = .connected(.relay)
+    @Entry var connectionState: ConnectionState = .connected(.irohRelay)
 }

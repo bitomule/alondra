@@ -11,11 +11,11 @@ public enum EnvelopeJournalError: Error, Sendable, Equatable {
 /// transactions also serialize writers from another app process using this namespace.
 public final class EnvelopeJournal: Sendable {
     private static let schema = 2
-    let scope: RelayOutboxScope
+    let scope: EnvelopeJournalScope
     private let directory: URL
     private let queue = DispatchQueue(label: "alondra.operation-journal")
 
-    public init(scope: RelayOutboxScope, directory: URL) throws {
+    public init(scope: EnvelopeJournalScope, directory: URL) throws {
         guard directory.isFileURL else { throw EnvelopeJournalError.unavailable }
         self.scope = scope
         let encoder = JSONEncoder()
@@ -24,21 +24,21 @@ public final class EnvelopeJournal: Sendable {
         self.directory = directory.appendingPathComponent(digest, isDirectory: true)
     }
 
-    public func entry(requestID: String) async throws -> RelayOutboxEntry? {
+    public func entry(requestID: String) async throws -> EnvelopeJournalEntry? {
         try await perform { database in
             if let entry = try Self.read(database, id: requestID, scope: self.scope) { return entry }
             if try Self.isRetired(database, id: requestID) {
-                return RelayOutboxEntry(requestID: requestID, scope: self.scope, envelope: nil, phase: .retired)
+                return EnvelopeJournalEntry(requestID: requestID, scope: self.scope, envelope: nil, phase: .retired)
             }
             return nil
         }
     }
 
-    public func entries() async throws -> [RelayOutboxEntry] {
+    public func entries() async throws -> [EnvelopeJournalEntry] {
         try await perform { database in
             let statement = try Self.prepare(database, "SELECT entry FROM operations ORDER BY request_id")
             defer { sqlite3_finalize(statement) }
-            var entries: [RelayOutboxEntry] = []
+            var entries: [EnvelopeJournalEntry] = []
             while true {
                 switch sqlite3_step(statement) {
                 case SQLITE_ROW:
@@ -51,7 +51,7 @@ public final class EnvelopeJournal: Sendable {
         }
     }
 
-    func reserve(_ entry: RelayOutboxEntry) async throws {
+    func reserve(_ entry: EnvelopeJournalEntry) async throws {
         try await perform { database in
             guard entry.scope == self.scope else { throw EnvelopeJournalError.wrongScope }
             if try Self.isRetired(database, id: entry.requestID) { throw EnvelopeJournalError.duplicateRequestID }
@@ -62,11 +62,11 @@ public final class EnvelopeJournal: Sendable {
         }
     }
 
-    func update(requestID: String, _ change: @escaping @Sendable (inout RelayOutboxEntry) throws -> Void) async throws -> RelayOutboxEntry {
+    func update(requestID: String, _ change: @escaping @Sendable (inout EnvelopeJournalEntry) throws -> Void) async throws -> EnvelopeJournalEntry {
         try await perform { database in
             guard var entry = try Self.read(database, id: requestID, scope: self.scope) else {
                 if try Self.isRetired(database, id: requestID) {
-                    return RelayOutboxEntry(requestID: requestID, scope: self.scope, envelope: nil, phase: .retired)
+                    return EnvelopeJournalEntry(requestID: requestID, scope: self.scope, envelope: nil, phase: .retired)
                 }
                 throw EnvelopeJournalError.corrupt
             }
@@ -225,7 +225,7 @@ public final class EnvelopeJournal: Sendable {
             let stored = try Self.prepare(database, "SELECT scope FROM journal_scope")
             defer { sqlite3_finalize(stored) }
             guard sqlite3_step(stored) == SQLITE_ROW,
-                  try JSONDecoder().decode(RelayOutboxScope.self, from: Self.bytes(stored)) == scope,
+                  try JSONDecoder().decode(EnvelopeJournalScope.self, from: Self.bytes(stored)) == scope,
                   sqlite3_step(stored) == SQLITE_DONE else { throw EnvelopeJournalError.wrongScope }
             var initialized = false
             if !FileManager.default.fileExists(atPath: marker.path) {
@@ -253,7 +253,7 @@ public final class EnvelopeJournal: Sendable {
         } catch { sqlite3_close(database); throw error }
     }
 
-    private static func read(_ database: OpaquePointer, id: String, scope: RelayOutboxScope) throws -> RelayOutboxEntry? {
+    private static func read(_ database: OpaquePointer, id: String, scope: EnvelopeJournalScope) throws -> EnvelopeJournalEntry? {
         let statement = try prepare(database, "SELECT entry FROM operations WHERE request_id=?")
         defer { sqlite3_finalize(statement) }
         try bind(Data(id.utf8), statement: statement, index: 1, text: true)
@@ -267,13 +267,13 @@ public final class EnvelopeJournal: Sendable {
         }
     }
 
-    private static func decode(_ statement: OpaquePointer, scope: RelayOutboxScope) throws -> RelayOutboxEntry {
-        let entry = try JSONDecoder().decode(RelayOutboxEntry.self, from: bytes(statement))
+    private static func decode(_ statement: OpaquePointer, scope: EnvelopeJournalScope) throws -> EnvelopeJournalEntry {
+        let entry = try JSONDecoder().decode(EnvelopeJournalEntry.self, from: bytes(statement))
         guard entry.scope == scope else { throw EnvelopeJournalError.wrongScope }
         return entry
     }
 
-    private static func write(_ database: OpaquePointer, entry: RelayOutboxEntry) throws {
+    private static func write(_ database: OpaquePointer, entry: EnvelopeJournalEntry) throws {
         let statement = try prepare(database, "INSERT INTO operations(request_id,entry,action_generation,action_epoch,action_sequence) VALUES(?,?,?,?,?) ON CONFLICT(request_id) DO UPDATE SET entry=excluded.entry")
         defer { sqlite3_finalize(statement) }
         try bind(Data(entry.requestID.utf8), statement: statement, index: 1, text: true)

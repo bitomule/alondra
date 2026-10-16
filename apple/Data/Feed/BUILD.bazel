@@ -37,6 +37,7 @@ swift_binary(
     deps = [
         ":AlondraFeed",
         "//apple/Contract:AlondraContract",
+        "//apple/Data/Iroh:AlondraIroh",
         "//apple/Data/Transport:AlondraTransport",
     ],
 )
@@ -45,6 +46,6 @@ swift_test(
     name = "ActionJournalProcessTests",
     copts = STRICT_SWIFT_CONCURRENCY_COPTS,
     srcs = ["ProcessTests/ActionJournalProcessTests.swift", "ProcessFixtures/ProcessProtocol.swift"],
-    data = [":ActionJournalProcessClient", "//crates/alondrad:alondrad_test", "//crates/relay:alondra_relay_test"],
+    data = [":ActionJournalProcessClient", "//crates/alondrad:alondrad_test"],
     deps = ["//apple/Contract:AlondraContract", "//apple/Testing:AlondraTestSupport"],
 )

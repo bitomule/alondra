@@ -1,26 +1,22 @@
 import Foundation
 import CryptoKit
 
-/// Infrastructure capability for durable coordinators and pairing services. It does not
-/// retain requests, retry mutations, or own app state. Its concrete implementation is internal.
-public protocol Transport: RelayRequestTransport {
+/// The relay's account services: bootstrap, pairing, push registration, iroh admission and the
+/// owner's Macs. Requests to a Mac never go through it. Its concrete implementation is internal.
+public protocol Transport: Sendable {
     func bootstrap() async throws -> RelayBootstrap
     func bootstrapIfNeeded() async throws -> RelayBootstrap
     func health() async throws -> Bool
-    func submit(_ envelope: Envelope) async throws -> RelayJob
-    func acknowledgeResult(requestID: String, revision: UInt64) async throws
-    func status(requestID: String) async throws -> RelayJob
-    func waitForRequest(requestID: String, waitSeconds: UInt64) async throws -> RelayReceipt
-    func changes(since: UInt64, epoch: String?, waitSeconds: UInt64) async throws -> RelayChanges
     func registerPush(_ registration: RelayPushRegistration) async throws
     func pairingRequest(method: String, target: String, body: Data) async throws -> HTTPReply
     func bindIrohNode(_ binding: Data) async throws
+    func macs() async throws -> [RelayMac]
 }
 
 public extension Transport {
     func bootstrapIfNeeded() async throws -> RelayBootstrap { try await bootstrap() }
-    func acknowledgeResult(requestID: String, revision: UInt64) async throws {}
     func bindIrohNode(_ binding: Data) async throws { throw RelayWireError.invalidEndpoint }
+    func macs() async throws -> [RelayMac] { throw RelayWireError.invalidEndpoint }
 }
 
 public extension AlondraAPIClient {

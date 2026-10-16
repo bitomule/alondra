@@ -53,7 +53,7 @@ struct ConnectionClassifierTests {
     /// or the read runs out of time. Neither is an unexpected failure.
     @Test func aMacThatStopsTakingItsRelayQueueIsNotAnswering() {
         let hung: [any Error] = [RelayWireError.server(429), RelayWireError.admissionFull, RelayWireError.outcomeUnknown,
-                                 RelaySessionError.outcomeUnknown, OperationError.outcomeUnknown]
+                                 SealedRequestError.outcomeUnknown, OperationError.outcomeUnknown]
         for error in hung {
             #expect(ConnectionClassifier.problem(for: error, local: false, networkOffline: false) == .macNotAnswering, "\(error)")
         }

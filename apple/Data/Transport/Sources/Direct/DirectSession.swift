@@ -91,7 +91,7 @@ public actor DirectSession: OperationAPI {
         guard request.method == "POST", request.path == "/actions", active, let journal, let entry = try await journal.entry(requestID: request.operationID),
               entry.phase != .retired, let envelope = entry.envelope else { return .unknown }
         guard entry.semanticTag == (try codec.semanticTag(method: request.method, path: request.path, body: request.body)) else {
-            throw RelaySessionError.operationIdentityConflict
+            throw SealedRequestError.operationIdentityConflict
         }
         return try await codec.lookup(request, envelope: envelope) { try await self.perform($0) }
     }
@@ -106,7 +106,7 @@ public actor DirectSession: OperationAPI {
         let entry = try await journal.entry(requestID: request.operationID)
         guard entry?.phase != .retired, let original = entry?.envelope ?? envelope else { return .unknown }
         if let entry, entry.semanticTag != (try codec.semanticTag(method: request.method, path: request.path, body: request.body)) {
-            throw RelaySessionError.operationIdentityConflict
+            throw SealedRequestError.operationIdentityConflict
         }
         guard codec.resendable(original) else { throw OperationError.sealExpired }
         try await adopt(original, for: request)
@@ -162,7 +162,7 @@ public actor DirectSession: OperationAPI {
         guard ["GET", "POST", "PUT"].contains(request.method), !request.path.contains("#"),
               wait != nil || EnvelopeRequestPolicy.validViewsPath(method: request.method, path: request.path,
                                                                   hasBody: request.body != nil)
-        else { throw RelaySessionError.invalidRequest }
+        else { throw SealedRequestError.invalidRequest }
         let timeout = .seconds(wait ?? 0) + (pace == .quick ? quickSlack : .seconds(20))
         if request.isActionJournalControl {
             let requestID = "control-" + UUID().uuidString
@@ -174,27 +174,28 @@ public actor DirectSession: OperationAPI {
             let body = try seal(requestID: requestID, method: "GET", path: request.path, body: nil)
             return try await deliver(body, requestID: requestID, mutation: false, timeout: timeout, attempts: pace == .patient ? 4 : 1)
         }
-        guard !request.operationID.hasPrefix("read-") else { throw RelaySessionError.invalidRequest }
+        guard !request.operationID.hasPrefix("read-") else { throw SealedRequestError.invalidRequest }
         let tag = try codec.semanticTag(method: request.method, path: request.path, body: request.body)
         let body: Data
         let durableAction = request.method == "POST" && request.path == "/actions"
         if durableAction, let journal, let existing = try await journal.entry(requestID: request.operationID) {
-            guard existing.semanticTag == tag else { throw RelaySessionError.operationIdentityConflict }
+            guard existing.semanticTag == tag else { throw SealedRequestError.operationIdentityConflict }
             if let live = sealed[request.operationID] {
                 guard let original = existing.envelope,
                       try JSONDecoder().decode(Envelope.self, from: live.body) == original else {
-                    throw RelaySessionError.operationIdentityConflict
+                    throw SealedRequestError.operationIdentityConflict
                 }
             } else { return try await recover(request) }
         }
         if let existing = sealed[request.operationID] {
-            guard existing.tag == tag else { throw RelaySessionError.operationIdentityConflict }
+            guard existing.tag == tag else { throw SealedRequestError.operationIdentityConflict }
             body = existing.body
         } else {
             body = try seal(requestID: request.operationID, method: request.method, path: request.path, body: request.body)
+            guard body.count <= DirectHTTP.maxRequest else { throw SealedRequestError.invalidRequest }
             try MutationScope.check()
             if durableAction, let journal {
-                try await journal.reserve(RelayOutboxEntry(requestID: request.operationID, scope: journal.scope,
+                try await journal.reserve(EnvelopeJournalEntry(requestID: request.operationID, scope: journal.scope,
                     envelope: JSONDecoder().decode(Envelope.self, from: body), phase: .reserved, semanticTag: tag))
             }
             sealed[request.operationID] = (tag, body)
@@ -218,10 +219,10 @@ public actor DirectSession: OperationAPI {
         if request.method == "POST", request.path == "/actions", let journal {
             if let existing = try await journal.entry(requestID: request.operationID) {
                 guard existing.semanticTag == tag, existing.envelope == envelope else {
-                    throw RelaySessionError.operationIdentityConflict
+                    throw SealedRequestError.operationIdentityConflict
                 }
             } else {
-                try await journal.reserve(RelayOutboxEntry(requestID: request.operationID, scope: journal.scope,
+                try await journal.reserve(EnvelopeJournalEntry(requestID: request.operationID, scope: journal.scope,
                     envelope: envelope, phase: .reserved, semanticTag: tag))
             }
         }
@@ -234,11 +235,16 @@ public actor DirectSession: OperationAPI {
             }
     }
 
+    /// The envelope sealed for an operation, so another carrier sends those very bytes.
+    public func sealedEnvelope(for requestID: String) -> Envelope? {
+        sealed[requestID].flatMap { try? JSONDecoder().decode(Envelope.self, from: $0.body) }
+    }
+
     private func seal(requestID: String, method: String, path: String, body: Data?) throws -> Data {
         do {
             let envelope = try codec.sealRequest(requestID: requestID, method: method, path: path, body: body)
             return try JSONEncoder().encode(envelope)
-        } catch EnvelopeError.invalidRequest { throw RelaySessionError.invalidRequest }
+        } catch EnvelopeError.invalidRequest { throw SealedRequestError.invalidRequest }
     }
 
     /// The Mac's sealed answer to a device it revoked.

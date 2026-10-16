@@ -9,6 +9,17 @@ public enum ActionDeliveryError: Error, Equatable, Sendable {
     case answeredBefore
 }
 
+/// The Mac could not be reached now; the answer is kept on this device and goes on its own once
+/// the Mac answers.
+public struct AnswerKeptForLater: Error, Equatable, Sendable {
+    public init() {}
+}
+
+/// The Mac could not be reached and the answer could not be kept either: it was not sent.
+public struct AnswerNotSent: Error, Equatable, Sendable {
+    public init() {}
+}
+
 /// Whether sending an answer again can still change how it ends.
 enum ActionDeliveryDisposition: Equatable {
     case retry
@@ -30,7 +41,7 @@ enum ActionDeliveryDisposition: Equatable {
             self = error == .capacityExceeded ? .retry : .final
         case is ActionDeliveryError, is FeedError, is DirectSessionError:
             self = .final
-        case let error as RelaySessionError:
+        case let error as SealedRequestError:
             self = error == .operationIdentityConflict || error == .invalidRequest ? .final : .retry
         default:
             self = .retry

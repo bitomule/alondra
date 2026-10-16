@@ -11,7 +11,7 @@ final class ConnectionMonitorTests: XCTestCase {
     /// relay's push registration, so every registration failed before it was sent.
     func testPushRegistrationGoesThroughTheMonitorToTheRelayAndTheMac() async throws {
         let inner = PushRecordingOperations()
-        let monitored = MonitoredOperations(inner, monitor: ConnectionMonitor { _ in .unexpected }) { .relay }
+        let monitored = MonitoredOperations(inner, monitor: ConnectionMonitor { _ in .unexpected }) { .irohRelay }
         let api = AlondraAPIClient(serviceURL: URL(string: "https://example.test")!, deviceID: "phone-1", operations: monitored)
         try await api.registerServicePush(token: "abcd", environment: "sandbox", binding: String(repeating: "A", count: 43),
                                           preferencesRevision: 1)

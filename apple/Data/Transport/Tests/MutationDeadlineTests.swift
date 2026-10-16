@@ -133,124 +133,120 @@ private actor DeadlineLoopbackPeer: HTTPTransport {
     }
 }
 
-private actor DeadlineRelayPeer: HTTPTransport {
-    let phoneSigning = P256.Signing.PrivateKey()
-    let phoneAgreement = P256.KeyAgreement.PrivateKey()
+/// A Mac's direct port that runs each request ID once and replays its sealed answer for the same
+/// bytes. It can spend the test clock before answering, lose its answers, or hold them.
+private actor DeadlineDirectMac: HTTPTransport {
     let macSigning = P256.Signing.PrivateKey()
     let macAgreement = P256.KeyAgreement.PrivateKey()
-    let clock: MutationTestClock
-    private var journal: [String: Envelope] = [:]
-    private var commandIDs: Set<String> = []
-    private(set) var postIDs: [String] = []
-    private(set) var effects = 0
-    private(set) var posts = 0
-    private(set) var statusTimeouts: [TimeInterval] = []
-    private(set) var bootstrapTimeouts: [TimeInterval] = []
-    private(set) var submissionTimeouts: [TimeInterval] = []
-    private var completed: Bool
-    private let postDuration: Duration
-    private let postGate: HeldMutationWork?
-    private let statusGate: HeldMutationWork?
+    let device = P256.Signing.PrivateKey()
+    let deviceAgreement = P256.KeyAgreement.PrivateKey()
+    private let clock: MutationTestClock
+    private var journal: [String: (request: Data, response: Data)] = [:]
+    private var runs: [String: Int] = [:]
+    private var received: [String: [Data]] = [:]
+    private(set) var requestTimeouts: [TimeInterval] = []
+    private var answerTakes = Duration.zero
+    private var losesAnswers = false
+    private var helloGate: HeldMutationWork?
+    private var answerGate: HeldMutationWork?
 
-    init(clock: MutationTestClock, postDuration: Duration = .seconds(14), completed: Bool = false, postGate: HeldMutationWork? = nil, statusGate: HeldMutationWork? = nil) {
-        self.clock = clock; self.postDuration = postDuration; self.completed = completed; self.postGate = postGate; self.statusGate = statusGate
+    init(clock: MutationTestClock) { self.clock = clock }
+
+    nonisolated var identity: DirectMacIdentity {
+        DirectMacIdentity(macID: "mac-1", name: "Studio",
+                          signingKey: Base64URL.encode(macSigning.publicKey.x963Representation),
+                          agreementKey: Base64URL.encode(macAgreement.publicKey.x963Representation))
     }
-    func complete() { completed = true }
+
+    func answer(after duration: Duration) { answerTakes = duration }
+    func loseAnswers(_ value: Bool) { losesAnswers = value }
+    func holdHello(_ gate: HeldMutationWork) { helloGate = gate }
+    func holdAnswers(_ gate: HeldMutationWork) { answerGate = gate }
+    func runs(of requestID: String) -> Int { runs[requestID, default: 0] }
+    func sent(_ requestID: String) -> [Data] { received[requestID, default: []] }
 
     func send(_ request: URLRequest) async throws -> HTTPReply {
         let path = try #require(request.url?.path)
-        if path == "/v1/bootstrap" {
-            bootstrapTimeouts.append(request.timeoutInterval)
-            clock.advance(by: .seconds(12))
-            return HTTPReply(status: 200, body: Data("{\"protocol\":1,\"epoch\":\"\(Base64URL.encode(Data(repeating: 3, count: 16)))\"}".utf8))
+        if path == "/direct/hello" {
+            await helloGate?.perform()
+            return HTTPReply(status: 200, body: try JSONEncoder().encode(identity))
         }
-        let id: String
-        if request.httpMethod == "POST" {
-            #expect(path == "/v1/requests")
-            posts += 1
-            submissionTimeouts.append(request.timeoutInterval)
-            let envelope = try JSONDecoder().decode(Envelope.self, from: #require(request.httpBody))
-            id = envelope.requestID
-            postIDs.append(id)
-            let plain = try envelope.open(senderKey: phoneSigning.publicKey, recipientKey: macAgreement,
-                sender: "phone-1", recipient: "mac-1", route: "mac-1", nowMilliseconds: 1_000)
-            let payload = try #require(try JSONSerialization.jsonObject(with: plain) as? [String: Any])
-            #expect(payload["path"] as? String == "/actions")
-            let body = try #require(payload["body"] as? [String: String])
-            #expect(body["command_id"] == "semantic-command")
-            if journal[id] == nil {
-                if commandIDs.insert(try #require(body["command_id"])).inserted { effects += 1 }
-                journal[id] = try Envelope.seal(route: "mac-1", sender: "mac-1", recipient: "phone-1",
-                    requestID: id, kind: "response", expiresAtMilliseconds: 121_000,
-                    plaintext: Data(#"{"status":200,"body":{"ok":true}}"#.utf8),
-                    senderKey: macSigning, recipientKey: phoneAgreement.publicKey)
-            }
-            await postGate?.perform()
-            clock.advance(by: postDuration)
-        } else {
-            #expect(path.hasPrefix("/v1/requests/"))
-            id = String(path.dropFirst("/v1/requests/".count))
-            statusTimeouts.append(request.timeoutInterval)
-            await statusGate?.perform()
-            if !completed { clock.advance(by: .seconds(min(14, request.timeoutInterval))) }
-        }
-        if request.httpMethod == "GET", journal[id] == nil { return HTTPReply(status: 404, body: Data()) }
-        var reply: [String: Any] = ["request_id": id, "status": completed ? "completed" : "received", "revision": completed ? 2 : 1]
-        if completed { reply["response"] = try JSONSerialization.jsonObject(with: JSONEncoder().encode(#require(journal[id]))) }
-        return HTTPReply(status: 200, body: try JSONSerialization.data(withJSONObject: reply, options: [.sortedKeys]))
+        #expect(path == "/direct/request")
+        let body = try #require(request.httpBody)
+        let envelope = try JSONDecoder().decode(Envelope.self, from: body)
+        received[envelope.requestID, default: []].append(body)
+        requestTimeouts.append(request.timeoutInterval)
+        let answer = try run(envelope, bytes: body)
+        await answerGate?.perform()
+        clock.advance(by: answerTakes)
+        if losesAnswers { throw URLError(.networkConnectionLost) }
+        guard let answer else { return HTTPReply(status: 409, body: Data(#"{"error":"idempotency_conflict"}"#.utf8)) }
+        return HTTPReply(status: 200, body: answer)
     }
 
-    func session(bearer: @escaping @Sendable () async throws -> String = { "fixture-token" }) throws -> RelaySession {
-        try RelaySession(scope: RelayOutboxScope(relay: URL(string: "https://relay.example.test")!,
-                macID: "mac-1", deviceID: "phone-1", credentialRevision: "fixture"),
-            bearer: bearer, transport: self, signing: phoneSigning, agreement: phoneAgreement,
-            macSigning: macSigning.publicKey, macAgreement: macAgreement.publicKey, now: { 1_000 },
-            sleep: { _ in self.clock.advance(by: .seconds(1)) },
-            waitForReadDeadline: clock.clock.waitUntil, requestClock: clock.clock)
+    private func run(_ envelope: Envelope, bytes: Data) throws -> Data? {
+        if let stored = journal[envelope.requestID] { return stored.request == bytes ? stored.response : nil }
+        _ = try envelope.open(senderKey: device.publicKey, recipientKey: macAgreement, sender: "phone-1",
+                              recipient: "mac-1", route: "mac-1", nowMilliseconds: nil)
+        runs[envelope.requestID, default: 0] += 1
+        let answer = try JSONEncoder().encode(Envelope.seal(route: "mac-1", sender: "mac-1", recipient: "phone-1",
+            requestID: envelope.requestID, kind: "response",
+            expiresAtMilliseconds: UInt64(Date().timeIntervalSince1970 * 1000) + 60_000,
+            plaintext: Data(#"{"status":200,"body":{"ok":true}}"#.utf8),
+            senderKey: macSigning, recipientKey: deviceAgreement.publicKey))
+        journal[envelope.requestID] = (bytes, answer)
+        return answer
     }
 }
 
-extension MutationDeadlineTests {
-    @Test func relayPollingStopsWithinTheOriginalBudgetAndRecoversByGETInTheSameSession() async throws {
-        let clock = MutationTestClock()
-        let peer = DeadlineRelayPeer(clock: clock)
-        let session = try await peer.session()
-        let result = try await session.execute(requestID: "relay-budget", method: "POST", path: "/actions",
-            body: Data(#"{"command_id":"semantic-command"}"#.utf8))
-        #expect(result == .unknown)
-        let pollingTimeouts = await peer.statusTimeouts
-        #expect(pollingTimeouts == [15, 15, 15, 15, 15, 15, 4])
-        #expect(await peer.bootstrapTimeouts == [15])
-        #expect(await peer.submissionTimeouts == [15])
-        #expect(await peer.effects == 1)
-        #expect(await peer.posts == 1)
-        await peer.complete()
-        #expect(try await session.recoveryStatus(requestID: "relay-budget") == .completed(status: 200, body: Data(#"{"ok":true}"#.utf8)))
-        try await session.retireAppliedResponse(requestID: "relay-budget")
-        await #expect(throws: RelayWireError.invalidResponse) {
-            try await session.execute(requestID: "relay-budget", method: "POST", path: "/actions",
-                body: Data(#"{"command_id":"semantic-command"}"#.utf8))
-        }
-        #expect(await peer.posts == 1)
-        #expect(await peer.effects == 1)
+private struct DeadlineDirectFixture {
+    let clock: MutationTestClock
+    let mac: DeadlineDirectMac
+    let journal: EnvelopeJournal
+    let session: DirectSession
+
+    init(clock: MutationTestClock = MutationTestClock()) throws {
+        self.clock = clock
+        mac = DeadlineDirectMac(clock: clock)
+        let http = DirectHTTP(transport: mac)
+        let router = DirectRouter(pinned: mac.identity, saved: [DirectEndpoint(host: "192.168.1.5", port: 47810, kind: .localNetwork)],
+                                  http: http)
+        journal = try EnvelopeJournal(scope: EnvelopeJournalScope(relay: URL(string: "https://relay.fixture.invalid")!,
+            macID: "mac-1", deviceID: "phone-1", credentialRevision: "fixture"), directory: TestFiles.directory())
+        session = DirectSession(macID: "mac-1", deviceID: "phone-1", signing: mac.device, agreement: mac.deviceAgreement,
+            macSigning: mac.macSigning.publicKey, macAgreement: mac.macAgreement.publicKey, router: router, http: http,
+            journal: journal, pause: { _ in }, requestClock: clock.clock)
+    }
+
+    func action(_ id: String, body: Data = Data(#"{"command_id":"semantic-command"}"#.utf8)) throws -> APIRequest {
+        try APIRequest(endpoint: Endpoint<Data>.data(.post, path: ["actions"], body: body), operationID: id)
+    }
+
+    func close() async {
         await session.deactivate()
         await session.mutations.drain()
     }
+}
 
-    @Test func expirationDuringCredentialsDoesNotSubmitAMutation() async throws {
-        let clock = MutationTestClock()
-        let peer = DeadlineRelayPeer(clock: clock)
-        let session = try await peer.session(bearer: { clock.advance(by: .seconds(121)); return "fixture-token" })
-        var timedOut = false
-        do {
-            _ = try await session.execute(requestID: "expired-credentials", method: "POST", path: "/actions",
-                body: Data(#"{"command_id":"semantic-command"}"#.utf8))
-        } catch let error as URLError { timedOut = error.code == .timedOut }
-        #expect(timedOut)
-        #expect(await peer.posts == 0)
-        #expect(await peer.effects == 0)
-        await session.deactivate()
-        await session.mutations.drain()
+private let macAnswer = APIResponse.completed(status: 200, body: Data(#"{"ok":true}"#.utf8))
+
+extension MutationDeadlineTests {
+    @Test func aSilentMacStopsTheMutationWithinItsOriginalBudgetAndTheSameSessionResendsIt() async throws {
+        let f = try DeadlineDirectFixture()
+        let request = try f.action("direct-budget")
+        await f.mac.answer(after: .seconds(55))
+        await f.mac.loseAnswers(true)
+        #expect(try await f.session.perform(request) == .unknown)
+        await f.session.mutations.drain()
+        #expect(await f.mac.requestTimeouts == [20, 20, 10], "every try spends the same 120-second budget")
+        await f.mac.answer(after: .zero)
+        await f.mac.loseAnswers(false)
+        #expect(try await f.session.resend(request) == macAnswer)
+        let sent = await f.mac.sent(request.operationID)
+        #expect(sent.count == 4)
+        #expect(Set(sent).count == 1, "recovery resends the bytes sealed for the first try")
+        #expect(await f.mac.runs(of: request.operationID) == 1)
+        await f.close()
     }
 }
 
@@ -358,87 +354,6 @@ extension MutationDeadlineTests {
     }
 }
 
-private actor SharedDeadlineCredentials {
-    let held = HeldMutationWork()
-    let states: AsyncStream<Int>
-    private let continuation: AsyncStream<Int>.Continuation
-    private var calls = 0
-    private var task: Task<String, any Error>?
-    private(set) var inheritedBudget = false
-
-    init() {
-        let pair = AsyncStream<Int>.makeStream(bufferingPolicy: .bufferingNewest(1))
-        states = pair.stream; continuation = pair.continuation
-    }
-    func token() async throws -> String {
-        calls += 1
-        continuation.yield(calls)
-        if let task { return try await task.value }
-        inheritedBudget = MutationScope.current != nil
-        let task = Task {
-            await self.held.perform()
-            try MutationScope.check()
-            return "fixture-token"
-        }
-        self.task = task
-        return try await task.value
-    }
-    func releaseAndDrain() async {
-        await held.release()
-        _ = await task?.result
-        task = nil
-    }
-}
-
-extension MutationDeadlineTests {
-    @Test(arguments: [false, true])
-    func oneCredentialWaiterCanFinishWithoutPoisoningTheSharedOwner(cancelled: Bool) async throws {
-        let clock = MutationTestClock()
-        let credentials = SharedDeadlineCredentials()
-        let peer = DeadlineRelayPeer(clock: clock)
-        let session = try await peer.session(bearer: { try await credentials.token() })
-        let firstRunner = MutationRunner(clock: clock.clock)
-        let nextRunner = MutationRunner(clock: clock.clock)
-        var starts = await credentials.states.makeAsyncIterator()
-        let first = Task {
-            try await firstRunner.run(unknown: { RelayOperationResult.unknown }) {
-                try await session.execute(requestID: "expired-auth", method: "POST", path: "/actions",
-                    body: Data(#"{"command_id":"semantic-command"}"#.utf8))
-            }
-        }
-        #expect(await starts.next() == 1)
-        clock.advance(by: .seconds(60))
-        let next = Task {
-            try await nextRunner.run(unknown: { RelayOperationResult.unknown }) {
-                try await session.execute(requestID: "surviving-auth", method: "POST", path: "/actions",
-                    body: Data(#"{"command_id":"semantic-command"}"#.utf8))
-            }
-        }
-        #expect(await starts.next() == 2)
-        if cancelled { first.cancel() } else { clock.advance(by: .seconds(36)) }
-        let early = await first.result
-        if case let .failure(error) = early {
-            #expect(cancelled ? error is CancellationError : (error as? URLError)?.code == .timedOut)
-        } else { Issue.record("the first waiter must finish before any mutation dispatch") }
-        #expect(await firstRunner.runningWorkers.count == 1)
-        #expect(await !credentials.inheritedBudget, "shared refresh belongs to its owner, independent of either caller")
-        await peer.complete()
-        await credentials.releaseAndDrain()
-        let surviving = await next.result
-        #expect((try? surviving.get()) == .completed(status: 200, body: Data(#"{"ok":true}"#.utf8)))
-        await firstRunner.drain()
-        await nextRunner.drain()
-        #expect(await peer.postIDs == ["surviving-auth"])
-        #expect(await peer.effects == 1)
-        #expect(await firstRunner.runningWorkers.isEmpty)
-        #expect(await nextRunner.runningWorkers.isEmpty)
-        #expect(await firstRunner.timerTask == nil)
-        #expect(await nextRunner.timerTask == nil)
-        await session.deactivate()
-        await session.mutations.drain()
-    }
-}
-
 extension MutationDeadlineTests {
     @Test(arguments: [false, true])
     func anAlreadyCancelledCallerKeepsTheExistingDispatchUncertainty(knownDispatched: Bool) async throws {
@@ -507,92 +422,78 @@ extension MutationDeadlineTests {
         await inner.drain()
     }
 
-    @Test func aLateMutationAnswerStaysUnknownAndTheSameSessionCanRecoverWithoutAnotherPOST() async throws {
-        let clock = MutationTestClock()
-        let peer = DeadlineRelayPeer(clock: clock, postDuration: .seconds(120), completed: true)
-        let session = try await peer.session()
-        let body = Data(#"{"command_id":"semantic-command"}"#.utf8)
-        let result = try await session.execute(requestID: "late-mutation", method: "POST", path: "/actions", body: body)
-        #expect(result == .unknown, "the peer ignores cancellation and its advertised HTTP timeout")
-        #expect(try await session.recoveryStatus(requestID: "late-mutation") == .completed(status: 200, body: Data(#"{"ok":true}"#.utf8)))
+    @Test func aLateMutationAnswerStaysUnknownAndTheSameSessionRecoversItWithoutRunningItAgain() async throws {
+        let f = try DeadlineDirectFixture()
+        let request = try f.action("late-mutation")
+        await f.mac.answer(after: .seconds(120))
+        #expect(try await f.session.perform(request) == .unknown, "the Mac ignores the advertised HTTP timeout")
+        await f.session.mutations.drain()
+        await f.mac.answer(after: .zero)
+        #expect(try await f.session.resend(request) == macAnswer)
         let gate = HeldMutationWork()
         var starts = await gate.startStates.makeAsyncIterator()
         let cancelled = Task {
             await gate.perform()
-            return try await session.execute(requestID: "late-mutation", method: "POST", path: "/actions", body: body)
+            return try await f.session.perform(request)
         }
         #expect(await starts.next() == 1)
         cancelled.cancel()
         await gate.release()
         #expect((try? await cancelled.value) == .unknown)
-        #expect(await peer.postIDs == ["late-mutation"])
-        #expect(await peer.effects == 1)
-        try await session.retireAppliedResponse(requestID: "late-mutation")
-        #expect(await session.sentEnvelope(for: "late-mutation") == nil)
-        await session.deactivate()
-        await session.mutations.drain()
+        let sent = await f.mac.sent(request.operationID)
+        #expect(sent.count == 2)
+        #expect(sent.first == sent.last)
+        #expect(await f.mac.runs(of: request.operationID) == 1)
+        let entry = try await f.journal.entry(requestID: request.operationID)
+        #expect(entry?.phase == .acknowledged)
+        #expect(entry?.lastResponse != nil)
+        await f.close()
     }
 }
 
 extension MutationDeadlineTests {
     @Test(arguments: [false, true])
-    func aCancelledDuplicateStaysUnknownWhileTheOriginalCanStillSendOrHasApplied(heldPOST: Bool) async throws {
-        let clock = MutationTestClock()
-        let credentials = SharedDeadlineCredentials()
-        let post = HeldMutationWork()
-        let peer = DeadlineRelayPeer(clock: clock, postGate: heldPOST ? post : nil)
-        let session = try await peer.session(bearer: { try await credentials.token() })
-        let body = Data(#"{"command_id":"semantic-command"}"#.utf8)
-        var credentialStarts = await credentials.states.makeAsyncIterator()
-        var postStarts = await post.startStates.makeAsyncIterator()
-        let original = Task {
-            try await session.execute(requestID: "shared-operation", method: "POST", path: "/actions", body: body, statusPolls: 0)
-        }
-        #expect(await credentialStarts.next() == 1)
-        if heldPOST {
-            await credentials.releaseAndDrain()
-            #expect(await postStarts.next() == 1)
-        }
+    func aCancelledDuplicateStaysUnknownWhileTheOriginalCanStillSendOrHasArrived(heldAnswer: Bool) async throws {
+        let f = try DeadlineDirectFixture()
+        let held = HeldMutationWork()
+        if heldAnswer { await f.mac.holdAnswers(held) } else { await f.mac.holdHello(held) }
+        var heldStarts = await held.startStates.makeAsyncIterator()
+        let request = try f.action("shared-operation")
+        let original = Task { try await f.session.perform(request) }
+        #expect(await heldStarts.next() == 1)
         let gate = HeldMutationWork()
         var starts = await gate.startStates.makeAsyncIterator()
         let duplicate = Task {
             await gate.perform()
-            return try await session.execute(requestID: "shared-operation", method: "POST", path: "/actions", body: body)
+            return try await f.session.perform(request)
         }
         #expect(await starts.next() == 1)
         duplicate.cancel()
         await gate.release()
         #expect((try? await duplicate.value) == .unknown, "another owner may still send this operation ID")
-        #expect(await peer.posts == (heldPOST ? 1 : 0))
-        if heldPOST { await post.release() } else { await credentials.releaseAndDrain() }
-        #expect(try await original.value == .unknown)
-        await peer.complete()
-        #expect(try await session.recoveryStatus(requestID: "shared-operation") == .completed(status: 200, body: Data(#"{"ok":true}"#.utf8)))
-        #expect(await peer.statusTimeouts == [15], "the same session resolves uncertainty by GET")
-        #expect(await peer.posts == 1)
-        #expect(await peer.effects == 1)
-        try await session.retireAppliedResponse(requestID: "shared-operation")
-        #expect(await session.sentEnvelope(for: "shared-operation") == nil)
-        await session.deactivate()
-        await session.mutations.drain()
+        #expect(await f.mac.sent(request.operationID).count == (heldAnswer ? 1 : 0))
+        await held.release()
+        #expect(try await original.value == macAnswer)
+        #expect(await f.mac.sent(request.operationID).count == 1)
+        #expect(await f.mac.runs(of: request.operationID) == 1)
+        await f.close()
     }
 }
 
 extension MutationDeadlineTests {
     @Test func dispatchEvidenceIsSharedWhileTheFirstOwnerCanStillSend() async throws {
-        let clock = MutationTestClock()
+        let f = try DeadlineDirectFixture()
         let evidence = MutationDispatchEvidence()
-        let credentials = SharedDeadlineCredentials()
-        let peer = DeadlineRelayPeer(clock: clock)
-        let session = try await peer.session(bearer: { try await credentials.token() })
-        let firstRunner = MutationRunner(clock: clock.clock)
-        let duplicateRunner = MutationRunner(clock: clock.clock)
-        var starts = await credentials.states.makeAsyncIterator()
-        let body = Data(#"{"command_id":"semantic-command"}"#.utf8)
+        let hello = HeldMutationWork()
+        await f.mac.holdHello(hello)
+        let firstRunner = MutationRunner(clock: f.clock.clock)
+        let duplicateRunner = MutationRunner(clock: f.clock.clock)
+        var starts = await hello.startStates.makeAsyncIterator()
+        let request = try f.action("shared-evidence")
         let original = Task {
-            try await firstRunner.run(dispatchEvidence: evidence, unknown: { RelayOperationResult.unknown }) {
+            try await firstRunner.run(dispatchEvidence: evidence, unknown: { APIResponse.unknown }) {
                 try MutationScope.reserve(evidence)
-                return try await session.execute(requestID: "shared-evidence", method: "POST", path: "/actions", body: body, statusPolls: 0)
+                return try await f.session.perform(request)
             }
         }
         #expect(await starts.next() == 1)
@@ -600,26 +501,23 @@ extension MutationDeadlineTests {
         var gates = await gate.startStates.makeAsyncIterator()
         let duplicate = Task {
             await gate.perform()
-            return try await duplicateRunner.run(dispatchEvidence: evidence, unknown: { RelayOperationResult.unknown }) {
-                Issue.record("a cancelled duplicate cannot begin reconciliation or submission")
-                return try await session.execute(requestID: "shared-evidence", method: "POST", path: "/actions", body: body)
+            return try await duplicateRunner.run(dispatchEvidence: evidence, unknown: { APIResponse.unknown }) {
+                Issue.record("a cancelled duplicate cannot begin sealing or sending")
+                return try await f.session.perform(request)
             }
         }
         #expect(await gates.next() == 1)
         duplicate.cancel()
         await gate.release()
         #expect((try? await duplicate.value) == .unknown)
-        #expect(await peer.posts == 0, "the first reservation is uncertainty, not evidence of a POST")
-        await credentials.releaseAndDrain()
-        #expect(try await original.value == .unknown)
+        #expect(await f.mac.sent(request.operationID).isEmpty, "the first reservation is uncertainty, not evidence of a send")
+        await hello.release()
+        #expect(try await original.value == macAnswer)
         await firstRunner.drain()
         await duplicateRunner.drain()
-        await peer.complete()
-        #expect(try await session.recoveryStatus(requestID: "shared-evidence") == .completed(status: 200, body: Data(#"{"ok":true}"#.utf8)))
-        #expect(await peer.posts == 1)
-        #expect(await peer.effects == 1)
-        await session.deactivate()
-        await session.mutations.drain()
+        #expect(await f.mac.sent(request.operationID).count == 1)
+        #expect(await f.mac.runs(of: request.operationID) == 1)
+        await f.close()
     }
 }
 
@@ -769,40 +667,36 @@ extension MutationDeadlineTests {
     }
 
     @Test(arguments: [false, true])
-    func aLateRelayReceiptIsKeptAfterItsSubmissionOrRecoveryCallerExpires(recovery: Bool) async throws {
-        let clock = MutationTestClock()
-        let held = HeldMutationWork()
-        let peer = DeadlineRelayPeer(clock: clock, postGate: recovery ? nil : held, statusGate: recovery ? held : nil)
-        let session = try await peer.session()
-        let body = Data(#"{"command_id":"semantic-command"}"#.utf8)
-        let runner = MutationRunner(clock: clock.clock)
-        var starts = await held.startStates.makeAsyncIterator()
-        if recovery {
-            #expect(try await session.execute(requestID: "late-receipt", method: "POST", path: "/actions", body: body, statusPolls: 0) == .unknown)
-            await peer.complete()
+    func aLateAnswerAfterItsSendOrResendCallerExpiredIsRecoveredByTheSameBytes(resend: Bool) async throws {
+        let f = try DeadlineDirectFixture()
+        let request = try f.action("late-answer")
+        if resend {
+            await f.mac.loseAnswers(true)
+            #expect(try await f.session.perform(request) == .unknown)
+            await f.session.mutations.drain()
+            await f.mac.loseAnswers(false)
         }
+        let held = HeldMutationWork()
+        await f.mac.holdAnswers(held)
+        var starts = await held.startStates.makeAsyncIterator()
+        let runner = MutationRunner(clock: f.clock.clock)
         let call = Task {
-            try await runner.run(knownDispatched: !recovery, conservativeUnknown: recovery, unknown: { RelayOperationResult.unknown }) {
-                if recovery { return try await session.resume(requestID: "late-receipt") }
-                return try await session.execute(requestID: "late-receipt", method: "POST", path: "/actions", body: body, statusPolls: 0)
+            try await runner.run(unknown: { APIResponse.unknown }) {
+                if resend { return try await f.session.resend(request) }
+                return try await f.session.perform(request)
             }
         }
         #expect(await starts.next() == 1)
-        #expect(await peer.effects == 1)
-        clock.advance(by: .seconds(120))
+        #expect(await f.mac.runs(of: request.operationID) == 1)
+        f.clock.advance(by: .seconds(120))
         #expect(try await call.value == .unknown)
         #expect(await runner.runningWorkers.count == 1)
-        await peer.complete()
         await held.release()
         await runner.drain()
-        #expect(try await session.recoveryStatus(requestID: "late-receipt") == .completed(status: 200, body: Data(#"{"ok":true}"#.utf8)))
-        #expect(await peer.posts == 1)
-        #expect(await peer.effects == 1)
-        #expect(await peer.statusTimeouts == (recovery ? [15] : []))
-        try await session.retireAppliedResponse(requestID: "late-receipt")
-        #expect(await session.sentEnvelope(for: "late-receipt") == nil)
-        await session.deactivate()
-        await session.mutations.drain()
+        #expect(try await f.session.resend(request) == macAnswer)
+        #expect(Set(await f.mac.sent(request.operationID)).count == 1)
+        #expect(await f.mac.runs(of: request.operationID) == 1)
+        await f.close()
     }
 
     @Test func timeSpentBeforeAdmissionIsAlreadyPartOfTheMutationDeadline() async throws {
@@ -827,78 +721,45 @@ extension MutationDeadlineTests {
 extension MutationDeadlineTests {
     @Test(arguments: [false, true])
     func invalidMutationsLeaveNoRecordOrRetainedEvidence(oversized: Bool) async throws {
-        let clock = MutationTestClock()
-        let peer = DeadlineRelayPeer(clock: clock)
-        let session = try await peer.session()
-        let body = oversized
-            ? try JSONSerialization.data(withJSONObject: ["command_id": "semantic-command", "padding": String(repeating: "x", count: 300_000)])
-            : Data("{}".utf8)
-        if oversized {
-            await #expect(throws: RelayOutboxError.invalidEnvelope) {
-                try await session.execute(requestID: "invalid-envelope", method: "POST", path: "/actions", body: body)
-            }
-        } else {
-            await #expect(throws: RelaySessionError.invalidRequest) {
-                try await session.execute(requestID: "invalid-envelope", method: "POST", path: "/actions#invalid", body: body)
-            }
+        let f = try DeadlineDirectFixture()
+        let request = oversized
+            ? try f.action("invalid-envelope", body: JSONSerialization.data(withJSONObject:
+                ["command_id": "semantic-command", "padding": String(repeating: "x", count: 300_000)]))
+            : try f.action("read-invalid-envelope")
+        await #expect(throws: SealedRequestError.invalidRequest) {
+            try await f.session.perform(request)
         }
-        await session.mutations.drain()
-        #expect(await session.mutationEvidence.entryCount == 0)
-        #expect(try await session.recoveryStatus(requestID: "invalid-envelope") == .notDispatched)
-        #expect(await peer.posts == 0)
-        #expect(await peer.effects == 0)
-        await session.deactivate()
-        await session.mutations.drain()
-    }
-
-    @Test(arguments: [false, true])
-    func standaloneRelayStatusUsesANewGETOnlyBudget(recovery: Bool) async throws {
-        let clock = MutationTestClock()
-        let peer = DeadlineRelayPeer(clock: clock)
-        let session = try await peer.session()
-        #expect(try await session.execute(requestID: "standalone-status", method: "POST", path: "/actions",
-            body: Data(#"{"command_id":"semantic-command"}"#.utf8), statusPolls: 0) == .unknown)
-        await session.mutations.drain()
-        let startedAt = clock.clock.now()
-        if recovery { #expect(try await session.recoveryStatus(requestID: "standalone-status") == .unknown) }
-        else { #expect(try await session.resume(requestID: "standalone-status") == .unknown) }
-        await session.mutations.drain()
-        #expect(startedAt.duration(to: clock.clock.now()) == .seconds(120))
-        #expect(await peer.statusTimeouts == [15, 15, 15, 15, 15, 15, 15, 15])
-        #expect(await peer.posts == 1)
-        await peer.complete()
-        #expect(try await session.recoveryStatus(requestID: "standalone-status") == .completed(status: 200, body: Data(#"{"ok":true}"#.utf8)))
-        #expect(await peer.posts == 1)
-        #expect(await peer.effects == 1)
-        await session.deactivate()
-        await session.mutations.drain()
+        await f.session.mutations.drain()
+        #expect(try await f.journal.entry(requestID: request.operationID) == nil)
+        #expect(await f.session.sealedEnvelope(for: request.operationID) == nil)
+        #expect(await f.mac.sent(request.operationID).isEmpty)
+        #expect(await f.mac.runs(of: request.operationID) == 0)
+        await f.close()
     }
 }
 
 extension MutationDeadlineTests {
-    @Test func cancellingStandaloneRecoveryFinishesTheCallerAndKeepsTheHeldGETOwned() async throws {
-        let clock = MutationTestClock()
+    @Test func cancellingAResendFinishesTheCallerAndKeepsTheHeldSendOwned() async throws {
+        let f = try DeadlineDirectFixture()
+        let request = try f.action("cancelled-resend")
+        await f.mac.loseAnswers(true)
+        #expect(try await f.session.perform(request) == .unknown)
+        await f.session.mutations.drain()
+        await f.mac.loseAnswers(false)
         let held = HeldMutationWork()
-        let peer = DeadlineRelayPeer(clock: clock, statusGate: held)
-        let session = try await peer.session()
-        #expect(try await session.execute(requestID: "cancelled-recovery", method: "POST", path: "/actions",
-            body: Data(#"{"command_id":"semantic-command"}"#.utf8), statusPolls: 0) == .unknown)
-        await session.mutations.drain()
-        await peer.complete()
+        await f.mac.holdAnswers(held)
         var starts = await held.startStates.makeAsyncIterator()
-        let call = Task { try await session.resume(requestID: "cancelled-recovery") }
+        let call = Task { try await f.session.resend(request) }
         #expect(await starts.next() == 1)
         call.cancel()
         #expect(try await call.value == .unknown)
-        #expect(await session.mutations.runningWorkers.count == 1)
+        #expect(await f.session.mutations.runningWorkers.count == 1)
         await held.release()
-        await session.mutations.drain()
-        #expect(try await session.recoveryStatus(requestID: "cancelled-recovery") == .completed(status: 200, body: Data(#"{"ok":true}"#.utf8)))
-        #expect(await peer.statusTimeouts == [15])
-        #expect(await peer.posts == 1)
-        #expect(await peer.effects == 1)
-        await session.deactivate()
-        await session.mutations.drain()
+        await f.session.mutations.drain()
+        #expect(try await f.session.resend(request) == macAnswer)
+        #expect(Set(await f.mac.sent(request.operationID)).count == 1)
+        #expect(await f.mac.runs(of: request.operationID) == 1)
+        await f.close()
     }
 }
 
@@ -1016,39 +877,39 @@ extension MutationDeadlineTests {
     @Test func rejectingAStoreBeyondTheTrackedLimitReleasesItsUnusedReservation() async throws {
         let clock = MutationTestClock()
         let root = MutationRunner(clock: clock.clock)
-        var peers: [DeadlineRelayPeer] = []
-        var sessions: [RelaySession] = []
-        for _ in 0..<5 {
-            let peer = DeadlineRelayPeer(clock: clock)
-            peers.append(peer)
-            sessions.append(try await peer.session())
-        }
-        let prepared = sessions
+        var fixtures: [DeadlineDirectFixture] = []
+        for _ in 0..<5 { fixtures.append(try DeadlineDirectFixture(clock: clock)) }
+        let prepared = fixtures
         var rejected = false
         do {
             _ = try await root.run(unknown: { APIResponse.unknown }) {
-                for (index, session) in prepared.enumerated() {
-                    _ = try await session.execute(requestID: "tracked-limit-\(index)", method: "POST", path: "/actions",
-                        body: Data(#"{"command_id":"semantic-command"}"#.utf8), statusPolls: 0)
+                for (index, fixture) in prepared.enumerated() {
+                    _ = try await fixture.session.perform(fixture.action("tracked-limit-\(index)"))
                 }
                 return APIResponse.completed(status: 200, body: Data())
             }
-        } catch RelaySessionError.invalidRequest { rejected = true }
+        } catch SealedRequestError.invalidRequest { rejected = true }
         await root.drain()
-        for session in sessions { await session.mutations.drain() }
         #expect(rejected)
-        for index in 0..<4 {
-            #expect(await peers[index].posts == 1)
-            #expect(await peers[index].effects == 1)
-            #expect(await sessions[index].mutationEvidence.entryCount == 1)
+        for (index, fixture) in fixtures.prefix(4).enumerated() {
+            #expect(await fixture.mac.runs(of: "tracked-limit-\(index)") == 1)
         }
-        #expect(await peers[4].posts == 0)
-        #expect(await peers[4].effects == 0)
-        #expect(await sessions[4].sentEnvelope(for: "tracked-limit-4") == nil)
-        #expect(await sessions[4].mutationEvidence.entryCount == 0)
-        for session in sessions {
-            await session.deactivate()
-            await session.mutations.drain()
+        let last = fixtures[4]
+        let request = try last.action("tracked-limit-4")
+        #expect(await last.mac.sent(request.operationID).isEmpty)
+        #expect(await last.session.sealedEnvelope(for: request.operationID) == nil)
+        #expect(try await last.journal.entry(requestID: request.operationID) == nil)
+        let gate = HeldMutationWork()
+        var starts = await gate.startStates.makeAsyncIterator()
+        let retry = Task {
+            await gate.perform()
+            return try await last.session.perform(request)
         }
+        #expect(await starts.next() == 1)
+        retry.cancel()
+        await gate.release()
+        if case let .failure(error) = await retry.result { #expect(error is CancellationError) }
+        else { Issue.record("a released reservation leaves no owner that could still send the operation") }
+        for fixture in fixtures { await fixture.close() }
     }
 }

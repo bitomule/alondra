@@ -3,6 +3,7 @@ import AlondraContract
 import AlondraTestSupport
 import CryptoKit
 import Foundation
+import Synchronization
 import Testing
 
 /// A Mac's direct port in memory: answers `hello` per address and runs each request ID once.
@@ -67,8 +68,21 @@ private actor FakeDirectMac: HTTPTransport {
         return HTTPReply(status: 200, body: body)
     }
 
-    /// What the relay hands the Mac: the same journal, whichever carrier brought the envelope.
-    func deliverThroughTheRelay(_ envelope: Envelope) throws { _ = try run(envelope) }
+    private(set) var irohReachable = true
+    private(set) var irohLosesAnswers = false
+    private(set) var irohRequests = 0
+    func reachIroh(_ value: Bool) { irohReachable = value }
+    func loseIrohAnswers(_ value: Bool) { irohLosesAnswers = value }
+
+    /// The Mac's iroh endpoint: the same journal as its direct port, whichever carrier brought
+    /// the envelope.
+    func overIroh(_ body: Data) throws -> Data {
+        irohRequests += 1
+        let envelope = try JSONDecoder().decode(Envelope.self, from: body)
+        guard let sealed = try run(envelope) else { return Data(#"{"error":"idempotency_conflict"}"#.utf8) }
+        if irohLosesAnswers { throw IrohLinkError.noAnswer }
+        return Data(#"{"response":"#.utf8) + sealed + Data("}".utf8)
+    }
 
     /// Runs a request ID once; the same bytes again get the stored answer, other bytes nothing.
     private func run(_ envelope: Envelope) throws -> Data? {
@@ -142,7 +156,7 @@ private let answered = APIResponse.completed(status: 200, body: Data(#"{"ok":tru
 @Suite(.temporaryFiles) struct DirectSessionTests {
     @Test func durableActionsDoNotInterceptLiveSettingsRetries() async throws {
         let fixture = try await Fixture()
-        let scope = RelayOutboxScope(relay: URL(string: "https://relay.fixture.invalid")!, macID: "mac-1",
+        let scope = EnvelopeJournalScope(relay: URL(string: "https://relay.fixture.invalid")!, macID: "mac-1",
             deviceID: "phone-1", credentialRevision: "approved")
         let directory = try TestFiles.directory()
         let session = DirectSession(macID: "mac-1", deviceID: "phone-1", signing: fixture.mac.device,
@@ -197,7 +211,7 @@ private let answered = APIResponse.completed(status: 200, body: Data(#"{"ok":tru
     @Test func anOperationIDWithOtherContentIsRefused() async throws {
         let f = try await Fixture()
         _ = try await f.session.perform(f.action("op-1"))
-        await #expect(throws: RelaySessionError.operationIdentityConflict) {
+        await #expect(throws: SealedRequestError.operationIdentityConflict) {
             try await f.session.perform(f.action("op-1", body: #"{"command":"b"}"#))
         }
     }
@@ -220,7 +234,7 @@ private let answered = APIResponse.completed(status: 200, body: Data(#"{"ok":tru
         let f = try await Fixture()
         _ = try await f.session.perform(f.read())
         await f.mac.answer(on: lan.host, with: 409)
-        await #expect(throws: RelaySessionError.operationIdentityConflict) { try await f.session.perform(f.action("op-1")) }
+        await #expect(throws: SealedRequestError.operationIdentityConflict) { try await f.session.perform(f.action("op-1")) }
     }
 
     @Test func anUnsealedStatusNeverBecomesAnExpiredSessionOrALogin() async throws {
@@ -274,11 +288,11 @@ private let answered = APIResponse.completed(status: 200, body: Data(#"{"ok":tru
     @Test func operationsAgeOutOfTheResendBuffer() async throws {
         let f = try await Fixture()
         _ = try await f.session.perform(f.action("op-0"))
-        await #expect(throws: RelaySessionError.operationIdentityConflict) {
+        await #expect(throws: SealedRequestError.operationIdentityConflict) {
             try await f.session.perform(f.action("op-0", body: #"{"command":"later"}"#))
         }
         for index in 1...DirectSession.maxSealed { _ = try await f.session.perform(f.action("op-\(index)")) }
-        await #expect(throws: RelaySessionError.operationIdentityConflict) {
+        await #expect(throws: SealedRequestError.operationIdentityConflict) {
             try await f.session.perform(f.action("op-0", body: #"{"command":"later"}"#))
         }
         #expect(await f.mac.executions(of: "op-0") == 1)
@@ -398,106 +412,139 @@ private let answered = APIResponse.completed(status: 200, body: Data(#"{"ok":tru
     }
 }
 
-/// The relay as `RoutedSession` sees it: answers, or fails before sending anything.
-private actor FakeRelay: RelayOperations {
-    private(set) var calls = 0
-    var failing = false
-    private var sent: [String: Envelope] = [:]
-    private var losesAnswersTo: (FakeDirectMac, EnvelopeCodec)?
+/// A connection to the Mac's iroh endpoint: the first stream is the hello, every later one goes
+/// to the same Mac the direct port reaches.
+private final class MacIrohLink: IrohLink {
+    private let mac: FakeDirectMac
+    private let state = Mutex((hello: false, closed: false))
 
-    func fail(_ value: Bool) { failing = value }
+    init(mac: FakeDirectMac) { self.mac = mac }
 
-    /// Hands every mutation to the Mac and then loses the Mac's answer on the way back.
-    func loseAnswers(from mac: FakeDirectMac, sealingWith codec: EnvelopeCodec) { losesAnswersTo = (mac, codec) }
-
-    func perform(_ request: APIRequest) async throws -> APIResponse {
-        calls += 1
-        if failing { throw URLError(.notConnectedToInternet) }
-        if let (mac, codec) = losesAnswersTo, request.method == "POST" {
-            let envelope = try codec.sealRequest(requestID: request.operationID, method: request.method,
-                                                 path: request.path, body: request.body)
-            sent[request.operationID] = envelope
-            try await mac.deliverThroughTheRelay(envelope)
-            return .unknown
+    func exchange(_ request: Data, answerLimit: Int) async throws -> Data {
+        guard !isClosed else { throw IrohLinkError.notSent }
+        let hello = state.withLock { state in
+            defer { state.hello = true }
+            return !state.hello
         }
-        return .completed(status: 200, body: Data(#"{"relay":true}"#.utf8))
+        if hello { return Data(#"{"ok":true}"#.utf8) }
+        return try await mac.overIroh(request)
     }
-    func sentEnvelope(for requestID: String) async -> Envelope? { sent[requestID] }
-    func registerServicePush(token: String, environment: String, binding: String) async throws {}
-    func deactivate() async {}
+
+    func path() -> IrohPath { .relay }
+    func pathChanges() -> AsyncStream<IrohPath> { AsyncStream { _ in } }
+    var isClosed: Bool { state.withLock { $0.closed } }
+    func close() async { state.withLock { $0.closed = true } }
 }
 
-private let viaRelay = APIResponse.completed(status: 200, body: Data(#"{"relay":true}"#.utf8))
+private struct MacIrohDialer: IrohDialer {
+    let mac: FakeDirectMac
+    let endpointID = IrohIdentity(seed: Data(repeating: 4, count: 32)).endpointID
+    let clock: MutationTestClock?
+    let dialTakes: Duration
 
-@Suite struct RoutedSessionTests {
-    @Test func anImpostorOnTheNetworkNeverBlocksTheRelay() async throws {
-        let f = try await Fixture(saved: [lan])
-        await f.mac.answerHello(on: lan.host, with: await f.mac.impostor)
-        let relay = FakeRelay()
-        await relay.fail(true)
-        let routed = RoutedSession(direct: f.session, router: f.router, relay: relay)
-        await #expect(throws: URLError.self) { try await routed.perform(f.read()) }
-        await relay.fail(false)
-        #expect(try await routed.perform(f.read()) == viaRelay)
-        #expect(try await routed.perform(f.read()) == viaRelay)
+    func dial(_ address: IrohMacAddress) async throws -> any IrohLink {
+        clock?.advance(by: dialTakes)
+        guard await mac.irohReachable else { throw URLError(.cannotConnectToHost) }
+        return MacIrohLink(mac: mac)
     }
 
-    @Test func aChangeTheRelaySentAndTheDirectPathResendsRunsOnceOnTheMac() async throws {
-        let f = try await Fixture()
-        let relay = FakeRelay()
-        let codec = EnvelopeCodec(macID: "mac-1", deviceID: "phone-1", signing: f.mac.device, agreement: f.mac.deviceAgreement,
-                                  macSigning: f.mac.macSigning.publicKey, macAgreement: f.mac.macAgreement.publicKey,
-                                  now: { UInt64(Date().timeIntervalSince1970 * 1000) })
-        await relay.loseAnswers(from: f.mac, sealingWith: codec)
-        let routed = RoutedSession(direct: f.session, router: f.router, relay: relay, probeInterval: .seconds(3600))
+    func networkMoved() async {}
+    func shutdown() async {}
+}
+
+extension Fixture {
+    /// The same Mac over iroh, sharing `journal` with the direct session when given.
+    func iroh(journal: EnvelopeJournal? = nil, clock: MutationTestClock? = nil, dialTakes: Duration = .zero) -> RoutedSession.Iroh {
+        let endpoint = IrohIdentity(seed: Data(repeating: 3, count: 32)).endpointIDHex
+        let carrier = IrohCarrier(dialer: MacIrohDialer(mac: mac, clock: clock, dialTakes: dialTakes), macID: "mac-1",
+            deviceID: "phone-1", signing: mac.device,
+            address: { IrohMacAddress(endpointID: endpoint, relay: URL(string: "https://iroh.example.com")) },
+            connectWait: .seconds(5), retryDelays: [.seconds(60)])
+        let session = DirectSession(macID: "mac-1", deviceID: "phone-1", signing: mac.device, agreement: mac.deviceAgreement,
+            macSigning: mac.macSigning.publicKey, macAgreement: mac.macAgreement.publicKey, carrier: carrier,
+            journal: journal, now: { UInt64(Date().timeIntervalSince1970 * 1000) }, requestClock: clock?.clock ?? .continuous)
+        return RoutedSession.Iroh(session: session, carrier: carrier)
+    }
+}
+
+@Suite(.temporaryFiles) struct RoutedSessionTests {
+    @Test func aLiveIrohConnectionTakesEveryRequestAndTheLocalNetworkNone() async throws {
+        let f = try await Fixture(saved: [lan])
+        let routed = RoutedSession(iroh: f.iroh(), direct: f.session, router: f.router)
+        await routed.goLive()
+        #expect(try await routed.perform(f.read()) == answered)
         #expect(try await routed.perform(f.action("op-1")) == answered)
+        #expect(await routed.route == .irohRelay)
+        #expect(await f.mac.hosts.isEmpty)
+    }
+
+    @Test func anImpostorOnTheNetworkNeverBlocksIroh() async throws {
+        let f = try await Fixture(saved: [lan])
+        await f.mac.answerHello(on: lan.host, with: await f.mac.impostor)
+        let routed = RoutedSession(iroh: f.iroh(), direct: f.session, router: f.router)
+        await routed.goLive()
+        #expect(try await routed.perform(f.read()) == answered)
+        #expect(await routed.route == .irohRelay)
+    }
+
+    @Test func withoutIrohTheMacAnswersDirectly() async throws {
+        let f = try await Fixture(saved: [lan])
+        await f.mac.reachIroh(false)
+        let routed = RoutedSession(iroh: f.iroh(), direct: f.session, router: f.router)
+        await routed.goLive()
+        #expect(try await routed.perform(f.read()) == answered)
+        #expect(try await routed.perform(f.action("op-1")) == answered)
+        #expect(await routed.route == .localNetwork)
+        #expect(await f.mac.executions(of: "op-1") == 1)
+    }
+
+    @Test func anActionIrohSealedButCouldNotSendGoesDirectAsTheSameBytes() async throws {
+        let f = try await Fixture(saved: [lan])
+        await f.mac.reachIroh(false)
+        let iroh = f.iroh()
+        let routed = RoutedSession(iroh: iroh, direct: f.session, router: f.router)
+        await routed.goLive()
+        let action = try f.action("op-1")
+        #expect(try await routed.perform(action) == answered)
+        let sealed = try #require(await iroh.session.sealedEnvelope(for: "op-1"))
+        let sent = try JSONDecoder().decode(Envelope.self, from: try #require(await f.mac.requestBodies.last))
+        #expect(sent == sealed, "never sealed again")
+    }
+
+    @Test func aChangeIrohSentAndTheDirectPathResendsRunsOnceOnTheMac() async throws {
+        let f = try await Fixture()
+        await f.mac.loseIrohAnswers(true)
+        let journal = try EnvelopeJournal(scope: EnvelopeJournalScope(relay: URL(string: "https://relay.example.test")!,
+            macID: "mac-1", deviceID: "phone-1", credentialRevision: "key"), directory: TestFiles.directory())
+        let direct = DirectSession(macID: "mac-1", deviceID: "phone-1", signing: f.mac.device, agreement: f.mac.deviceAgreement,
+            macSigning: f.mac.macSigning.publicKey, macAgreement: f.mac.macAgreement.publicKey, router: f.router,
+            http: DirectHTTP(transport: f.mac), journal: journal, pause: { _ in })
+        let routed = RoutedSession(iroh: f.iroh(journal: journal), direct: direct, router: f.router)
+        await routed.goLive()
+        let action = try f.action("op-1")
+        #expect(try await routed.perform(action) == .unknown, "it may have run: it never goes again on its own")
+        #expect(await f.mac.hosts.isEmpty)
+        #expect(try await routed.resend(action) == answered)
         #expect(await f.mac.executions(of: "op-1") == 1)
         #expect(await routed.route == .localNetwork)
     }
 
-    @Test func withARelayNoRequestWaitsOnTheDirectPath() async throws {
+    @Test func aReadIrohGotNoAnswerToIsAskedDirectly() async throws {
         let f = try await Fixture(saved: [lan])
-        let relay = FakeRelay()
-        let routed = RoutedSession(direct: f.session, router: f.router, relay: relay)
-        #expect(try await routed.perform(f.read()) == viaRelay)
-        #expect(await routed.route == .relay)
-        await routed.drainProbe()
-        #expect(await f.mac.hosts == [lan.host])
+        await f.mac.loseIrohAnswers(true)
+        let routed = RoutedSession(iroh: f.iroh(), direct: f.session, router: f.router)
+        await routed.goLive()
         #expect(try await routed.perform(f.read()) == answered)
         #expect(await routed.route == .localNetwork)
-        #expect(await relay.calls == 1)
     }
 
-    @Test func withoutInternetTheMacAnswersDirectly() async throws {
+    @Test func anAccountPairingStaysOffTheLocalNetworkUntilAllowed() async throws {
         let f = try await Fixture(saved: [lan])
-        let relay = FakeRelay()
-        await relay.fail(true)
-        let routed = RoutedSession(direct: f.session, router: f.router, relay: relay, probeInterval: .seconds(3600))
-        #expect(try await routed.perform(f.read()) == answered)
-    }
-
-    @Test func aRelayPairingStaysOffTheLocalNetworkUntilAllowed() async throws {
-        let f = try await Fixture(saved: [lan])
-        let relay = FakeRelay()
-        await relay.fail(true)
-        let routed = RoutedSession(direct: f.session, router: f.router, relay: relay, directAllowed: { false })
-        await #expect(throws: URLError.self) { try await routed.perform(f.read()) }
-        try await Task.sleep(for: .milliseconds(50))
+        await f.mac.reachIroh(false)
+        let routed = RoutedSession(iroh: f.iroh(), direct: f.session, router: f.router, directAllowed: { false })
+        await routed.goLive()
+        await #expect(throws: IrohCarrierError.unavailable) { try await routed.perform(f.read()) }
         #expect(await f.mac.hosts.isEmpty)
-    }
-
-    @Test func anUnsignedRefusalOnTheDirectPathFallsBackToTheRelay() async throws {
-        let f = try await Fixture(saved: [lan])
-        let relay = FakeRelay()
-        let routed = RoutedSession(direct: f.session, router: f.router, relay: relay)
-        _ = try await routed.perform(f.read())
-        for _ in 0..<100 where await routed.route != .localNetwork {
-            _ = try? await routed.perform(f.read())
-            try await Task.sleep(for: .milliseconds(10))
-        }
-        await f.mac.answer(on: lan.host, with: 401)
-        await f.router.reject(lan)
-        #expect(try await routed.perform(f.read()) == viaRelay)
     }
 }
 
@@ -639,52 +686,27 @@ private actor DeadlineDirectTransport: HTTPTransport {
     }
 }
 
-private actor DeadlineRelayBridge: RelayOperations {
-    private let mac: FakeDirectMac
-    private let codec: EnvelopeCodec
-    private let clock: MutationTestClock
-    private let consumed: Duration
-    private var sent: Envelope?
-
-    init(mac: FakeDirectMac, codec: EnvelopeCodec, clock: MutationTestClock, consumed: Duration) {
-        self.mac = mac; self.codec = codec; self.clock = clock; self.consumed = consumed
-    }
-
-    func perform(_ request: APIRequest) async throws -> APIResponse {
-        let envelope = try codec.sealRequest(requestID: request.operationID, method: request.method,
-            path: request.path, body: request.body)
-        sent = envelope
-        try await mac.deliverThroughTheRelay(envelope)
-        clock.advance(by: consumed)
-        return .unknown
-    }
-    func sentEnvelope(for requestID: String) async -> Envelope? { sent }
-    func registerServicePush(token: String, environment: String, binding: String) async throws {}
-    func deactivate() async {}
-}
-
 extension RoutedSessionTests {
+    /// iroh spends the budget failing to connect; the direct path gets only what is left of it.
     @Test(arguments: [false, true])
-    func aMutationDoesNotRenewItsBudgetWhenTheRelayHandsOffToDirect(expired: Bool) async throws {
+    func aMutationDoesNotRenewItsBudgetWhenIrohHandsOffToDirect(expired: Bool) async throws {
         let f = try await Fixture()
+        await f.mac.reachIroh(false)
         let time = MutationTestClock()
         let recorded = DeadlineDirectTransport(mac: f.mac)
         let direct = DirectSession(macID: "mac-1", deviceID: "phone-1", signing: f.mac.device,
             agreement: f.mac.deviceAgreement, macSigning: f.mac.macSigning.publicKey,
             macAgreement: f.mac.macAgreement.publicKey, router: f.router,
             http: DirectHTTP(transport: recorded), pause: { _ in })
-        let codec = EnvelopeCodec(macID: "mac-1", deviceID: "phone-1", signing: f.mac.device,
-            agreement: f.mac.deviceAgreement, macSigning: f.mac.macSigning.publicKey,
-            macAgreement: f.mac.macAgreement.publicKey, now: { UInt64(Date().timeIntervalSince1970 * 1000) })
-        let relay = DeadlineRelayBridge(mac: f.mac, codec: codec, clock: time,
-            consumed: .seconds(expired ? 121 : 115))
-        let routed = RoutedSession(direct: direct, router: f.router, relay: relay, requestClock: time.clock)
+        let routed = RoutedSession(iroh: f.iroh(clock: time, dialTakes: .seconds(expired ? 121 : 115)), direct: direct,
+                                   router: f.router, requestClock: time.clock)
+        await routed.goLive()
         let request = try f.action("budget-action")
         let response = try await routed.perform(request)
         #expect(response == (expired ? .unknown : answered))
         let timeouts = await recorded.actionTimeouts
         #expect(timeouts == (expired ? [] : [5]), "the same 120-second budget must cover both carriers")
-        #expect(await f.mac.executions(of: request.operationID) == 1)
+        #expect(await f.mac.executions(of: request.operationID) == (expired ? 0 : 1))
         await routed.deactivate()
     }
 }
@@ -783,12 +805,11 @@ extension DirectSessionTests {
     }
 }
 
-/// The Mac's direct port as a slow Mac or a refused local network leaves it.
+/// The Mac's direct port as a refused local network leaves it.
 private actor ImpairedDirectPort: HTTPTransport {
-    enum Impairment { case none, slow, localNetworkDenied }
+    enum Impairment { case none, localNetworkDenied }
     private let mac: FakeDirectMac
     private var impairment = Impairment.none
-    private(set) var requestTimeouts: [TimeInterval] = []
 
     init(mac: FakeDirectMac) { self.mac = mac }
 
@@ -800,19 +821,8 @@ private actor ImpairedDirectPort: HTTPTransport {
         case .localNetworkDenied:
             throw URLError(.notConnectedToInternet,
                            userInfo: ["_NSURLErrorNWPathKey": "unsatisfied (Local network prohibited), interface: en0[802.11]"])
-        case .slow:
-            guard request.url?.path == "/direct/request" else { return try await mac.send(request) }
-            requestTimeouts.append(request.timeoutInterval)
-            throw URLError(.timedOut)
         }
     }
-}
-
-private actor UnknownReadsRelay: RelayOperations {
-    func perform(_ request: APIRequest) async throws -> APIResponse { .unknown }
-    func sentEnvelope(for requestID: String) async -> Envelope? { nil }
-    func registerServicePush(token: String, environment: String, binding: String) async throws {}
-    func deactivate() async {}
 }
 
 extension RoutedSessionTests {
@@ -825,36 +835,11 @@ extension RoutedSessionTests {
             macAgreement: f.mac.macAgreement.publicKey, router: router, http: http, pause: { _ in }))
     }
 
-    /// On the same Wi-Fi as a slow Mac the iPhone waited four 20-second timeouts on the direct
-    /// path before asking the relay, and the screen gave up first.
-    @Test func aSlowMacHandsAReadToTheRelayAfterOneShortTry() async throws {
-        let f = try await Fixture(saved: [lan])
-        let (port, router, direct) = await impaired(f)
-        let relay = FakeRelay()
-        let routed = RoutedSession(direct: direct, router: router, relay: relay)
-        for _ in 0..<200 where await routed.route != .localNetwork {
-            _ = try? await routed.perform(f.read())
-            try await Task.sleep(for: .milliseconds(10))
-        }
-        #expect(await routed.route == .localNetwork)
-        await port.impair(.slow)
-        #expect(try await routed.perform(f.read()) == viaRelay)
-        #expect(await port.requestTimeouts == [TimeInterval(DirectSession.quickReadSlack)])
-        #expect(await routed.route == .relay)
-    }
-
-    @Test func aReadTheRelayCouldNotGetIsAskedDirectly() async throws {
-        let f = try await Fixture(saved: [lan])
-        let routed = RoutedSession(direct: f.session, router: f.router, relay: UnknownReadsRelay(), probeInterval: .seconds(3600))
-        #expect(try await routed.perform(f.read()) == answered)
-        #expect(await routed.route == .localNetwork)
-    }
-
     @Test func aRefusedLocalNetworkIsNamedWhenNothingElseAnswers() async throws {
         let f = try await Fixture(saved: [lan])
         let (port, router, direct) = await impaired(f)
         await port.impair(.localNetworkDenied)
-        let routed = RoutedSession(direct: direct, router: router, relay: nil)
+        let routed = RoutedSession(direct: direct, router: router)
         await #expect(throws: DirectRouteError.localNetworkDenied) { try await routed.perform(f.read()) }
     }
 }

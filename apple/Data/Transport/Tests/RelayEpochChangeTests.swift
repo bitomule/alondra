@@ -67,10 +67,10 @@ private actor AccessToken {
 
     @Test func aRequestSignedBeforeARelayRestartIsSignedAgainInsteadOfFailing() async throws {
         let (transport, relay, refusals, _) = try setup()
-        _ = try await transport.status(requestID: "before")
+        _ = try await transport.signedRead("before")
         await relay.restart()
-        let job = try await transport.status(requestID: "after")
-        #expect(job.requestID == "after")
+        let job = try await transport.signedRead("after")
+        #expect(job == "after")
         #expect(await relay.signedEpochs == [old, old, new])
         #expect(await relay.bootstraps == 2)
         #expect(await refusals.count == 0, "a stale epoch is not a refused access token")
@@ -80,41 +80,41 @@ private actor AccessToken {
         let (transport, relay, refusals, _) = try setup()
         _ = try await transport.bootstrap()
         await relay.restart()
-        let job = try await transport.status(requestID: "first")
-        #expect(job.requestID == "first")
+        let job = try await transport.signedRead("first")
+        #expect(job == "first")
         #expect(await relay.bootstraps == 2)
         #expect(await refusals.count == 0, "a stale epoch is not a refused access token")
     }
 
     @Test func aRequestStillInFlightWhenAnotherRenewedTheTokenIsSignedAgainForTheNewEpoch() async throws {
         let (transport, relay, refusals, token) = try setup()
-        _ = try await transport.status(requestID: "before")
-        await relay.hold("/v1/requests/slow")
-        let slow = Task { try await transport.status(requestID: "slow") }
+        _ = try await transport.signedRead("before")
+        await relay.hold("/v1/pairings/slow")
+        let slow = Task { try await transport.signedRead("slow") }
         await relay.untilHeld()
         await token.renew()
-        _ = try await transport.status(requestID: "renewed")
+        _ = try await transport.signedRead("renewed")
         await relay.restart()
         await relay.release()
-        #expect(try await slow.value.requestID == "slow")
-        #expect(await relay.signedEpochsByPath["/v1/requests/slow"] == [old, new])
+        #expect(try await slow.value == "slow")
+        #expect(await relay.signedEpochsByPath["/v1/pairings/slow"] == [old, new])
         #expect(await relay.bootstraps == 2)
         #expect(await refusals.count == 0, "a stale epoch is not a refused access token")
     }
 
     @Test func aCancelledRequestRefusedForTheEpochLeavesTheNextOneSignedForTheNewEpoch() async throws {
         let (transport, relay, refusals, _) = try setup()
-        _ = try await transport.status(requestID: "before")
-        await relay.hold("/v1/requests/cancelled")
-        let cancelled = Task { try await transport.status(requestID: "cancelled") }
+        _ = try await transport.signedRead("before")
+        await relay.hold("/v1/pairings/cancelled")
+        let cancelled = Task { try await transport.signedRead("cancelled") }
         await relay.untilHeld()
         await relay.restart()
         cancelled.cancel()
         await relay.release()
         _ = await cancelled.result
-        let job = try await transport.status(requestID: "next")
-        #expect(job.requestID == "next")
-        #expect(await relay.signedEpochsByPath["/v1/requests/next"] == [new])
+        let job = try await transport.signedRead("next")
+        #expect(job == "next")
+        #expect(await relay.signedEpochsByPath["/v1/pairings/next"] == [new])
         #expect(await refusals.count == 0, "a stale epoch is not a refused access token")
     }
 
@@ -122,12 +122,12 @@ private actor AccessToken {
         let (transport, relay, refusals, token) = try setup()
         let registration = try RelayPushRegistration(token: String(repeating: "a", count: 64), environment: "production",
                                                      pushBinding: Base64URL.encode(Data(repeating: 1, count: 32)))
-        _ = try await transport.status(requestID: "before")
+        _ = try await transport.signedRead("before")
         await relay.hold("/v1/push/register")
         let register = Task { try await transport.registerPush(registration) }
         await relay.untilHeld()
         await token.renew()
-        _ = try await transport.status(requestID: "renewed")
+        _ = try await transport.signedRead("renewed")
         await relay.restart()
         await relay.release()
         try await register.value

@@ -42,12 +42,16 @@ public struct ConnectionMeasurement: Codable, Equatable, Sendable {
 
     /// The `kind` of the time from coming to the foreground to a live iroh connection.
     public static let connectKind = "connect"
+    /// The `kind` of the time a request made in the background waited for its iroh connection.
+    public static let backgroundConnectKind = "connect_background"
 
-    /// How long the iroh connection took to open after the app came to the foreground.
+    /// How long the iroh connection took to open after the app came to the foreground, or in the
+    /// background after a request asked for it.
     public static func connected(after duration: Duration, route: ConnectionRoute?, at: Date, mac: String,
-                                 network: NetworkSnapshot) -> Self {
+                                 network: NetworkSnapshot, inBackground: Bool = false) -> Self {
         let (seconds, attoseconds) = duration.components
-        return Self(at: at, mac: mac, operation: connectKind, method: "IROH", kind: connectKind, route: route,
+        let kind = inBackground ? backgroundConnectKind : connectKind
+        return Self(at: at, mac: mac, operation: kind, method: "IROH", kind: kind, route: route,
                     ms: Int(seconds * 1000 + attoseconds / 1_000_000_000_000_000), network: network.interface,
                     radio: network.radio, outcome: .ok)
     }

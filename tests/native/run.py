@@ -23,11 +23,11 @@ ROOT = Path(__file__).resolve().parents[2]
 BUNDLE = "com.bitomule.alondra.nativeharness"
 CHECKS = {
     "large-resource-read": {"exact_large_unicode_document", "all_resource_chunks_requested", "resource_reads_only",
-                       "verified_encrypted_requests", "single_token_exchange"},
+                       "verified_encrypted_requests", "no_account_token_for_the_mac"},
     "session-revoked": {"revoked_read_rejected", "first_resource_chunk_reached", "no_token_renewal_after_revocation",
                         "issuer_revocation_executed", "credential_removed", "cached_lease_rejected"},
-    "lost-response": {"receipt_recovered", "durable_result_after_restart", "mutation_submitted_once",
-                      "status_read_after_loss", "verified_encrypted_request"},
+    "lost-response": {"answer_recovered_after_loss", "durable_result_after_restart", "mutation_ran_once",
+                      "same_bytes_resent_after_loss", "result_read_after_restart"},
 }
 
 

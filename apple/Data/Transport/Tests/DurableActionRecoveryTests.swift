@@ -94,7 +94,7 @@ private actor RecoveringDirectPeer: HTTPTransport {
         let http = DirectHTTP(transport: self)
         let router = DirectRouter(pinned: identity,
             saved: [DirectEndpoint(host: "127.0.0.1", port: 47810, kind: .localNetwork)], http: http)
-        let scope = RelayOutboxScope(relay: URL(string: "https://relay.fixture.invalid")!, macID: "mac-fixture",
+        let scope = EnvelopeJournalScope(relay: URL(string: "https://relay.fixture.invalid")!, macID: "mac-fixture",
             deviceID: "phone", credentialRevision: "approved-key")
         return DirectSession(macID: "mac-fixture", deviceID: "phone", signing: deviceSigning, agreement: deviceAgreement,
             macSigning: macSigning.publicKey, macAgreement: macAgreement.publicKey, router: router, http: http,

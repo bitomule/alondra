@@ -7,7 +7,7 @@ public extension ConnectionRoute {
         case .thisMac: "On this Mac"
         case .localNetwork: "On the local network"
         case .tailscale: "Via Tailscale"
-        case .relay, .irohRelay: "Via the relay"
+        case .irohRelay: "Via the relay"
         case .direct: "Direct connection"
         }
     }
@@ -17,7 +17,7 @@ public extension ConnectionRoute {
         case .thisMac: "desktopcomputer"
         case .localNetwork: "wifi"
         case .tailscale: "point.3.connected.trianglepath.dotted"
-        case .relay, .irohRelay: "cloud"
+        case .irohRelay: "cloud"
         case .direct: "bolt.horizontal"
         }
     }

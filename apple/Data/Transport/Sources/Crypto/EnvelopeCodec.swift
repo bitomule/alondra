@@ -51,13 +51,6 @@ public struct EnvelopeCodec: Sendable {
             senderKey: signing, recipientKey: macAgreement)
     }
 
-    public func verified(_ receipt: RelayReceipt, requestID: String) throws -> APIResponse? {
-        guard receipt.requestID == requestID else { throw RelayWireError.invalidResponse }
-        guard receipt.status == "completed" else { return nil }
-        guard let envelope = receipt.response else { throw RelayWireError.invalidResponse }
-        return try opened(envelope, requestID: requestID)
-    }
-
     /// The Mac's sealed answer to `requestID`, whichever carrier brought it.
     public func opened(_ envelope: Envelope, requestID: String) throws -> APIResponse {
         try opened(envelope, requestID: requestID, nowMilliseconds: now())

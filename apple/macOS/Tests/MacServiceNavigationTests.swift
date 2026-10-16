@@ -256,8 +256,8 @@ struct MacServiceNavigationTests {
         store.send(.macPresentation(.viewFailed("sidebar", "offline")))
         store.send(.connectionChanged(.unreachable(.macNotAnswering)))
         #expect(store.macPresentation.viewError == "offline")
-        store.send(.connectionChanged(.connected(.relay)))
-        #expect(store.connection == .connected(.relay))
+        store.send(.connectionChanged(.connected(.irohRelay)))
+        #expect(store.connection == .connected(.irohRelay))
     }
 
     @Test

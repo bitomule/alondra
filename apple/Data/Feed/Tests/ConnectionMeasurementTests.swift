@@ -9,11 +9,11 @@ import Testing
 @Suite(.temporaryFiles)
 struct ConnectionMeasurementTests {
     @Test func anAnsweredRequestRecordsItsRouteAndTime() async throws {
-        let (operations, observed) = make([.success(.completed(status: 200, body: Data()))], route: .relay)
+        let (operations, observed) = make([.success(.completed(status: 200, body: Data()))], route: .irohRelay)
         let request = try APIRequest(endpoint: Endpoint<Data>.data(.get, path: ["capabilities"]), operationID: "read-1")
         _ = try await operations.perform(request)
         #expect(observed.withLock { $0 } == [RequestObservation(operation: "perform", method: "GET", kind: "capabilities",
-            route: .relay, duration: .milliseconds(120), outcome: .ok)])
+            route: .irohRelay, duration: .milliseconds(120), outcome: .ok)])
     }
 
     @Test func theMacsOwnErrorKeepsItsStatus() async throws {
@@ -27,7 +27,7 @@ struct ConnectionMeasurementTests {
     }
 
     @Test func aFailureRecordsItsLabelAndNoRoute() async throws {
-        let (operations, observed) = make([.failure(URLError(.timedOut))], route: .relay)
+        let (operations, observed) = make([.failure(URLError(.timedOut))], route: .irohRelay)
         let request = try APIRequest(endpoint: Endpoint<Data>.data(.get, path: ["capabilities"]), operationID: "read-1")
         _ = try? await operations.perform(request)
         #expect(observed.withLock { $0 }.map(\.route) == [nil])
@@ -36,7 +36,7 @@ struct ConnectionMeasurementTests {
     }
 
     @Test func aRequestTheMacNeverAnsweredIsUnanswered() async throws {
-        let (operations, observed) = make([.success(.unknown)], route: .relay)
+        let (operations, observed) = make([.success(.unknown)], route: .irohRelay)
         let request = try APIRequest(endpoint: Endpoint<Data>.data(.get, path: ["capabilities"]), operationID: "read-1")
         _ = try await operations.perform(request)
         #expect(observed.withLock { $0 }.map(\.outcome) == [.unanswered])
@@ -84,7 +84,7 @@ struct ConnectionMeasurementTests {
             + [sample(ms: 1, outcome: .cancelled)]
         let summary = ConnectionMeasurementSummary.groups(measurements)
         #expect(summary.map(\.group) == [.requests, .requests, .liveUpdates])
-        let relay = try #require(summary.first { $0.route == .relay && $0.group == .requests })
+        let relay = try #require(summary.first { $0.route == .irohRelay && $0.group == .requests })
         #expect(relay.count == 5)
         #expect(relay.medianMs == 60)
         #expect(relay.p90Ms == 500)
@@ -93,7 +93,7 @@ struct ConnectionMeasurementTests {
     }
 
     private func sample(ms: Int, kind: String = "views", outcome: ConnectionMeasurement.Outcome = .ok,
-                        route: ConnectionRoute? = .relay, radio: String? = nil) -> ConnectionMeasurement {
+                        route: ConnectionRoute? = .irohRelay, radio: String? = nil) -> ConnectionMeasurement {
         ConnectionMeasurement(at: Date(timeIntervalSince1970: 1_760_000_000), mac: "a1b2c3", operation: "perform",
             method: "GET", kind: kind, route: route, ms: ms, network: "cellular", radio: radio, outcome: outcome)
     }

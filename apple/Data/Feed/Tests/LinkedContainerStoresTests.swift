@@ -26,7 +26,7 @@ import Testing
 
     @Test func everyAppStoreOpensInsideALinkedContainer() async throws {
         let container = try container()
-        let scope = RelayOutboxScope(relay: URL(string: "https://relay.example")!, macID: "mac", deviceID: "phone", credentialRevision: "credential")
+        let scope = EnvelopeJournalScope(relay: URL(string: "https://relay.example")!, macID: "mac", deviceID: "phone", credentialRevision: "credential")
         let journal = try EnvelopeJournal(scope: scope, directory: container.linked.appending(path: "operations"))
         _ = try await journal.entries()
         try await journal.retire(ActionJournalAcknowledgment(dataEpoch: "epoch", generation: 1, ranges: []))

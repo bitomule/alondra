@@ -57,7 +57,7 @@ public enum ConnectionClassifier {
             case .server(let status) where status >= 500: return .serverUnreachable
             default: return .unexpected
             }
-        case let error as RelaySessionError:
+        case let error as SealedRequestError:
             switch error {
             case .outcomeUnknown: return .macNotAnswering
             default: return .unexpected

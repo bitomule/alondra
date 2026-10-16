@@ -4,15 +4,16 @@ import AlondraFeatures
 import AlondraFeed
 import ComposableArchitecture
 import CryptoKit
+import Synchronization
 import XCTest
 
 /// The iPhone's whole path to one paired Mac, from the screen down to the bytes: the real
-/// RoutedSession, DirectSession and RelaySession contract, FeedSession and ScreenFeature, with
-/// only the Mac's direct port and the relay replaced. Each carrier can be made to answer, be
-/// slow, be refused by Local Network privacy, or lose the Mac.
+/// RoutedSession, IrohCarrier and DirectSession, FeedSession and ScreenFeature, with only the
+/// Mac's iroh endpoint and direct port replaced. Each carrier can be made to answer, be slow, be
+/// refused by Local Network privacy, or lose the Mac.
 @MainActor
 final class ConnectionRecoveryTests: XCTestCase {
-    func testADirectPathThatFailsHandsTheScreenToTheRelayWithoutShowingOffline() async throws {
+    func testWhileIrohAnswersAFailingLocalNetworkNeverReachesTheScreen() async throws {
         for failure in [Carrier.slow, .localNetworkDenied, .down] {
             let world = try await World.make()
             await world.mac.set(direct: failure)
@@ -20,20 +21,30 @@ final class ConnectionRecoveryTests: XCTestCase {
 
             await store.send(.task)
             await store.receive(\.loaded) { $0.document = world.tasks; $0.phase = .loaded }
-            let relayReads = await world.mac.relayViewReads
-            XCTAssertEqual(relayReads, 1, "\(failure): the relay answered the read")
-            if failure == .slow {
-                let timeouts = await world.mac.directTimeouts
-                XCTAssertEqual(timeouts, [8], "a slow Mac gets one short try before the relay")
-            }
+            let irohReads = await world.mac.irohViewReads
+            XCTAssertEqual(irohReads, 1, "\(failure): iroh answered the read")
+            let directRequests = await world.mac.directRequests
+            XCTAssertEqual(directRequests, 0, "\(failure): the local network was never asked")
             await store.send(.stop)
             await world.end()
         }
     }
 
-    func testAReadTheRelayCannotGetAnswersIsAskedDirectly() async throws {
-        let world = try await World.make(provingDirect: false)
-        await world.mac.set(relay: .slow)
+    func testWhenIrohCannotConnectTheLocalNetworkAnswers() async throws {
+        let world = try await World.make()
+        await world.mac.set(iroh: .down)
+        let store = world.screen()
+
+        await store.send(.task)
+        await store.receive(\.loaded) { $0.document = world.tasks; $0.phase = .loaded }
+        await world.connection(becomes: .connected(.localNetwork))
+        await store.send(.stop)
+        await world.end()
+    }
+
+    func testAReadIrohGetsNoAnswerToIsAskedDirectly() async throws {
+        let world = try await World.make()
+        await world.mac.set(iroh: .slow)
         let store = world.screen()
 
         await store.send(.task)
@@ -49,11 +60,11 @@ final class ConnectionRecoveryTests: XCTestCase {
         await store.receive(\.loaded) { $0.document = world.tasks; $0.phase = .loaded }
 
         await world.mac.set(direct: .down)
-        await world.mac.set(relay: .down)
+        await world.mac.set(iroh: .down)
         try await world.mac.waitForFailedPolls(2)
         let newer = try Fixtures.document("tasks-ios", version: "v2")
         try await world.mac.serve(newer, changed: ["tasks"])
-        await world.mac.set(relay: .answers)
+        await world.mac.set(iroh: .answers)
 
         await store.receive(\.loaded, timeout: .seconds(5)) { $0.document = newer }
         await store.send(.stop)
@@ -63,12 +74,12 @@ final class ConnectionRecoveryTests: XCTestCase {
     func testAScreenThatCouldNotLoadRecoversOnItsOwnOnceTheMacAnswers() async throws {
         let world = try await World.make()
         await world.mac.set(direct: .down)
-        await world.mac.set(relay: .down)
+        await world.mac.set(iroh: .down)
         let store = world.screen()
 
         await store.send(.task)
         await store.receive(\.loadFailed, timeout: .seconds(5)) { $0.failures = 1 }
-        await world.mac.set(relay: .answers)
+        await world.mac.set(iroh: .answers)
         await world.clock.advance(by: .seconds(1))
         await store.receive(\.retry)
         await store.receive(\.loaded, timeout: .seconds(5)) { $0.document = world.tasks; $0.phase = .loaded; $0.failures = 0 }
@@ -79,7 +90,7 @@ final class ConnectionRecoveryTests: XCTestCase {
     func testRetryingTheConnectionRetriesAFailedScreenAtOnce() async throws {
         let world = try await World.make()
         await world.mac.set(direct: .down)
-        await world.mac.set(relay: .down)
+        await world.mac.set(iroh: .down)
         let store = world.screen()
 
         await store.send(.task)
@@ -93,21 +104,21 @@ final class ConnectionRecoveryTests: XCTestCase {
         await world.end()
     }
 
-    /// The one connection state follows the Mac with the app open: answering, gone once the
-    /// changes poll keeps failing, and back as soon as the relay answers again.
+    /// The one connection state follows the Mac with the app open: answering over iroh, gone once
+    /// the changes poll keeps failing, and back as soon as any path answers again.
     func testTheConnectionStateFollowsTheMacWithTheAppOpen() async throws {
         let world = try await World.make()
         let store = world.screen()
         await store.send(.task)
         await store.receive(\.loaded) { $0.document = world.tasks; $0.phase = .loaded }
-        await world.connection(becomes: .connected(.localNetwork))
+        await world.connection(becomes: .connected(.irohRelay))
 
         await world.mac.set(direct: .down)
-        await world.mac.set(relay: .down)
+        await world.mac.set(iroh: .down)
         await world.connection(becomes: .unreachable(.macNotAnswering))
 
-        await world.mac.set(relay: .answers)
-        await world.connection(becomes: .connected(.relay))
+        await world.mac.set(iroh: .answers)
+        await world.connection(becomes: .connected(.irohRelay))
         await store.send(.stop)
         await world.end()
     }
@@ -117,7 +128,7 @@ final class ConnectionRecoveryTests: XCTestCase {
     func testAFailedScreenRetriesAtOnceWhenTheMacAnswersAgain() async throws {
         let world = try await World.make()
         await world.mac.set(direct: .down)
-        await world.mac.set(relay: .down)
+        await world.mac.set(iroh: .down)
         await world.monitor.handle(.networkLost)
         await world.monitor.handle(.networkBack)
         let store = world.screen()
@@ -125,7 +136,7 @@ final class ConnectionRecoveryTests: XCTestCase {
         await store.send(.task)
         await store.receive(\.loadFailed, timeout: .seconds(5)) { $0.failures = 1 }
         await world.connection(becomes: .unreachable(.macNotAnswering))
-        await world.mac.set(relay: .answers)
+        await world.mac.set(iroh: .answers)
         let anotherRead = try APIRequest(endpoint: Endpoint<Data>.data(.get, path: ["capabilities"]), operationID: "other")
         _ = try await world.monitored.perform(anotherRead)
         await store.receive(\.retry, timeout: .seconds(5))
@@ -148,9 +159,8 @@ private struct World {
     let clock = TestClock()
     let tasks: ViewDocument
 
-    /// The relay answered first and the background probe proved the direct path, so reads go
-    /// direct: the state the iPhone was in on the same Wi-Fi as the Mac.
-    static func make(provingDirect: Bool = true) async throws -> World {
+    /// A Mac paired with an account, with Local Network access allowed: iroh first, then the LAN.
+    static func make() async throws -> World {
         let tasks = try Fixtures.document("tasks-ios")
         let mac = try SyntheticMac(tasks: tasks)
         let http = DirectHTTP(transport: SyntheticDirectPort(mac: mac))
@@ -158,19 +168,20 @@ private struct World {
         let direct = DirectSession(macID: "mac-1", deviceID: "phone-1", signing: mac.device,
             agreement: mac.deviceAgreement, macSigning: mac.macSigning.publicKey,
             macAgreement: mac.macAgreement.publicKey, router: router, http: http, pause: { _ in })
-        let routed = RoutedSession(direct: direct, router: router, relay: SyntheticRelay(mac: mac))
+        let endpoint = IrohIdentity(seed: Data(repeating: 3, count: 32)).endpointIDHex
+        let carrier = IrohCarrier(dialer: SyntheticIrohDialer(mac: mac), macID: "mac-1", deviceID: "phone-1",
+            signing: mac.device, address: { IrohMacAddress(endpointID: endpoint, relay: URL(string: "https://iroh.test")) },
+            retryDelays: [.milliseconds(20)])
+        let iroh = RoutedSession.Iroh(session: DirectSession(macID: "mac-1", deviceID: "phone-1", signing: mac.device,
+            agreement: mac.deviceAgreement, macSigning: mac.macSigning.publicKey, macAgreement: mac.macAgreement.publicKey,
+            iroh: carrier), carrier: carrier)
+        let routed = RoutedSession(iroh: iroh, direct: direct, router: router)
+        await routed.goLive()
         let monitor = ConnectionMonitor { _ in .macNotAnswering }
-        let monitored = MonitoredOperations(routed, monitor: monitor) { await routed.route ?? .relay }
-        let api = AlondraAPIClient(serviceURL: URL(string: "https://relay.test")!, deviceID: "phone-1", operations: monitored)
-        let probe = try APIRequest(endpoint: Endpoint<Data>.data(.get, path: ["capabilities"]), operationID: "probe")
-        if provingDirect {
-            for _ in 0..<500 where await routed.route != .localNetwork {
-                _ = try? await routed.perform(probe)
-                try await Task.sleep(for: .milliseconds(10))
-            }
-            let route = await routed.route
-            XCTAssertEqual(route, .localNetwork)
+        let monitored = MonitoredOperations(PollCounter(inner: routed, mac: mac), monitor: monitor) {
+            await routed.route ?? .localNetwork
         }
+        let api = AlondraAPIClient(serviceURL: URL(string: "https://relay.test")!, deviceID: "phone-1", operations: monitored)
         let feed = FeedSession(transport: api, client: .ios, lang: "en",
                                retryDelay: { _ in try await Task.sleep(for: .milliseconds(20)) })
         return World(mac: mac, routed: routed, feed: feed, sender: ViewActionSender(transport: api), monitor: monitor,
@@ -212,9 +223,9 @@ private actor SyntheticMac {
     nonisolated let deviceAgreement = P256.KeyAgreement.PrivateKey()
     nonisolated let lan = DirectEndpoint(host: "192.168.1.5", port: 47810, kind: .localNetwork)
     private(set) var direct = Carrier.answers
-    private(set) var relay = Carrier.answers
-    private(set) var directTimeouts: [TimeInterval] = []
-    private(set) var relayViewReads = 0
+    private(set) var iroh = Carrier.answers
+    private(set) var directRequests = 0
+    private(set) var irohViewReads = 0
     private var failedPolls = 0
     private var documents: [String: Data] = [:]
     private var pending: [String] = []
@@ -230,9 +241,9 @@ private actor SyntheticMac {
     }
 
     func set(direct: Carrier) { self.direct = direct }
-    func set(relay: Carrier) { self.relay = relay }
-    func recordTimeout(_ timeout: TimeInterval) { directTimeouts.append(timeout) }
-    func countRelayViewRead() { relayViewReads += 1 }
+    func set(iroh: Carrier) { self.iroh = iroh }
+    func countDirectRequest() { directRequests += 1 }
+    func countIrohViewRead() { irohViewReads += 1 }
     func countFailedPoll() { failedPolls += 1 }
 
     func serve(_ document: ViewDocument, changed keys: [String]) throws {
@@ -254,9 +265,9 @@ private actor SyntheticMac {
             return try XCTUnwrap(documents[key])
         }
         if path.hasPrefix("/changes?") {
-            if path.contains("wait=0"), (viaDirect ? direct : relay) == .down { throw URLError(.networkConnectionLost) }
+            if path.contains("wait=0"), (viaDirect ? direct : iroh) == .down { throw URLError(.networkConnectionLost) }
             while pending.isEmpty, !path.contains("wait=0") {
-                if (viaDirect ? direct : relay) == .down { throw URLError(.networkConnectionLost) }
+                if (viaDirect ? direct : iroh) == .down { throw URLError(.networkConnectionLost) }
                 try await Task.sleep(for: .milliseconds(10))
             }
             let stale = pending
@@ -306,34 +317,81 @@ private struct SyntheticDirectPort: HTTPTransport {
         if request.url?.path == "/direct/hello" {
             return HTTPReply(status: 200, body: try JSONEncoder().encode(mac.identity))
         }
+        await mac.countDirectRequest()
         let (requestID, path) = try await mac.opened(try XCTUnwrap(request.httpBody))
-        if carrier == .slow {
-            await mac.recordTimeout(request.timeoutInterval)
-            throw URLError(.timedOut)
-        }
+        if carrier == .slow { throw URLError(.timedOut) }
         return HTTPReply(status: 200, body: try await mac.sealed(try await mac.answer(path: path, direct: true), requestID: requestID))
     }
 }
 
-/// The relay: when it cannot reach the Mac it answers that the outcome is unknown (a read) or
-/// fails with it, the way RelaySession does once its deadline passes.
-private struct SyntheticRelay: RelayOperations {
+/// The Mac's iroh endpoint: a connection is refused while it is down, and one already open is
+/// lost with it.
+private struct SyntheticIrohDialer: IrohDialer {
     let mac: SyntheticMac
+    let endpointID = IrohIdentity(seed: Data(repeating: 4, count: 32)).endpointID
 
-    func perform(_ request: APIRequest) async throws -> APIResponse {
-        switch await mac.relay {
+    func dial(_ address: IrohMacAddress) async throws -> any IrohLink {
+        guard await mac.iroh != .down else { throw URLError(.cannotConnectToHost) }
+        return SyntheticIrohLink(mac: mac)
+    }
+
+    func networkMoved() async {}
+    func shutdown() async {}
+}
+
+private final class SyntheticIrohLink: IrohLink {
+    private let mac: SyntheticMac
+    private let state = Mutex((hello: false, closed: false))
+
+    init(mac: SyntheticMac) { self.mac = mac }
+
+    func exchange(_ request: Data, answerLimit: Int) async throws -> Data {
+        guard !isClosed else { throw IrohLinkError.notSent }
+        let hello = state.withLock { state in
+            defer { state.hello = true }
+            return !state.hello
+        }
+        if hello { return Data(#"{"ok":true}"#.utf8) }
+        switch await mac.iroh {
         case .down:
-            if request.path.hasPrefix("/changes?") { await mac.countFailedPoll() }
-            throw RelaySessionError.outcomeUnknown
-        case .slow: return .unknown
-        case .answers, .localNetworkDenied:
-            if request.path.hasPrefix("/views/") { await mac.countRelayViewRead() }
-            do { return .completed(status: 200, body: try await mac.answer(path: request.path, direct: false)) }
-            catch is URLError { throw RelaySessionError.outcomeUnknown }
+            await close()
+            throw IrohLinkError.notSent
+        case .slow, .localNetworkDenied:
+            throw IrohLinkError.noAnswer
+        case .answers:
+            break
+        }
+        let (requestID, path) = try await mac.opened(request)
+        if path.hasPrefix("/views/") { await mac.countIrohViewRead() }
+        do {
+            let sealed = try await mac.sealed(try await mac.answer(path: path, direct: false), requestID: requestID)
+            return Data(#"{"response":"#.utf8) + sealed + Data("}".utf8)
+        } catch is URLError {
+            await close()
+            throw IrohLinkError.noAnswer
         }
     }
 
-    func sentEnvelope(for requestID: String) async -> Envelope? { nil }
-    func registerServicePush(token: String, environment: String, binding: String) async throws {}
-    func deactivate() async {}
+    func path() -> IrohPath { .relay }
+    func pathChanges() -> AsyncStream<IrohPath> { AsyncStream { _ in } }
+    var isClosed: Bool { state.withLock { $0.closed } }
+    func close() async { state.withLock { $0.closed = true } }
+}
+
+/// Counts the changes polls that failed, whichever carrier they went through.
+private struct PollCounter: OperationAPI {
+    let inner: RoutedSession
+    let mac: SyntheticMac
+
+    func perform(_ request: APIRequest) async throws -> APIResponse {
+        do { return try await inner.perform(request) }
+        catch {
+            if request.path.hasPrefix("/changes?") { await mac.countFailedPoll() }
+            throw error
+        }
+    }
+    func recover(_ request: APIRequest) async throws -> APIResponse { try await inner.recover(request) }
+    func resend(_ request: APIRequest) async throws -> APIResponse { try await inner.resend(request) }
+    func lookup(_ request: APIRequest) async throws -> OperationLookup { try await inner.lookup(request) }
+    func retireActions(_ acknowledgment: ActionJournalAcknowledgment) async throws { try await inner.retireActions(acknowledgment) }
 }

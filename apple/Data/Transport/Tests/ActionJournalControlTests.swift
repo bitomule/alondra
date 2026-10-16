@@ -21,7 +21,7 @@ private actor JournalControlPeer: OperationAPI {
 }
 
 @Suite(.temporaryFiles) struct ActionJournalControlTests {
-    private let scope = RelayOutboxScope(relay: URL(string: "https://relay.example.test")!,
+    private let scope = EnvelopeJournalScope(relay: URL(string: "https://relay.example.test")!,
         macID: "mac", deviceID: "phone", credentialRevision: "approval")
     private func ticket(_ generation: UInt64, _ sequence: UInt64) throws -> String {
         try #require(ActionOperationID(dataEpoch: "epoch", generation: generation, sequence: sequence,

@@ -72,7 +72,7 @@ final class FeedRecoveryTests: XCTestCase {
     /// The changes loop ended for good on these, so the iPhone never heard of a change again until
     /// it was killed: a relay that could not reach the Mac, a Mac with no direct route.
     func testLosingEveryRouteToTheMacIsRetried() {
-        XCTAssertTrue(FeedSession.isTransient(RelaySessionError.outcomeUnknown))
+        XCTAssertTrue(FeedSession.isTransient(SealedRequestError.outcomeUnknown))
         XCTAssertTrue(FeedSession.isTransient(DirectRouteError.unreachable))
         XCTAssertTrue(FeedSession.isTransient(DirectRouteError.localNetworkDenied))
         XCTAssertTrue(FeedSession.isTransient(URLError(.notConnectedToInternet)))

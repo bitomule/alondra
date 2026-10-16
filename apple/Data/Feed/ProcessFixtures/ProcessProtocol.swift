@@ -8,16 +8,16 @@ struct ProcessClientConfiguration: Codable, Sendable {
     let deviceID: String
     let signingSeed: String
     var optionID: String? = nil
-    var relay: ProcessRelayConfiguration? = nil
+    var iroh: ProcessIrohConfiguration? = nil
 }
-struct ProcessRelayConfiguration: Codable, Sendable {
-    let baseURL: String
-    let bearer: String
+/// A Mac paired with an account, reached over its iroh endpoint at `address` with no relay.
+struct ProcessIrohConfiguration: Codable, Sendable {
+    let endpoint: String
+    let address: String
     let macID: String
     let agreementSeed: String
     let macSigningSeed: String
     let macAgreementSeed: String
-    var expiredBearer: String? = nil
 }
 struct ProcessClientCommand: Codable, Sendable {
     let command: String
@@ -25,15 +25,13 @@ struct ProcessClientCommand: Codable, Sendable {
     var request: ActionRequest? = nil
     var count: Int? = nil
     var network: ProcessNetworkFaults? = nil
-    var key: String? = nil
 }
-/// The office network between the client and the relay: answers cut before they leave, replies
-/// lost after the relay took the answer, status reads and lookups lost on the way back.
+/// The network between the client and the Mac's iroh endpoint: answers cut before they leave,
+/// replies lost after the Mac took the answer, and lost replies to the reads that recover one.
 struct ProcessNetworkFaults: Codable, Sendable {
     var cutAnswers = 0
     var lostReplies = 0
     var lostStatus = 0
-    var lostLookups = 0
 }
 struct ProcessHistorySample: Codable, Sendable {
     let operations: Int
@@ -62,21 +60,10 @@ struct ProcessClientEvent: Codable, Sendable {
     var mutativeEnvelopePosts: Int? = nil
     var otherEnvelopePosts: Int? = nil
     var detailKeys: [String]? = nil
-    var authorizationRefusals: Int? = nil
-    var bootstrapGets: Int? = nil
     var operationResultGets: Int? = nil
     var operationResultIDs: [String]? = nil
     var readAttempts: Int? = nil
     var readErrors: Int? = nil
-    var coldCompletionMicroseconds: Double? = nil
     var undelivered: [String]? = nil
-    var envelopeIDs: [String]? = nil
-    var envelopeBytes: Int? = nil
-    var admissionRejections: Int? = nil
-    var immutableResubmissions: Bool? = nil
-    var transferBytes: Int? = nil
-    var transferDigest: String? = nil
-    var observedMicroseconds: Double? = nil
-    var observedCPUMicroseconds: Double? = nil
-    var peakResidentBytes: Int? = nil
+    var connections: Int? = nil
 }

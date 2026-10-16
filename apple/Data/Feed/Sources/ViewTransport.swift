@@ -416,6 +416,36 @@ public actor ViewActionSender {
         return response
     }
 
+    /// An answer given where nothing can wait for the network, such as a notification button: one
+    /// try. When the Mac cannot be asked, it is numbered from the journal generation this device
+    /// last knew, kept, and throws `AnswerKeptForLater`; it then goes on its own once the Mac answers.
+    /// Without such a generation it throws `AnswerNotSent`.
+    public func sendNow(_ request: ActionRequest) async throws -> ActionResponse {
+        try Task.checkCancellation()
+        guard let intents, ActionOperationID(rawValue: request.commandId) == nil else { return try await send(request) }
+        let generation: UInt64
+        do {
+            guard let descriptor = try await journalState(dataEpoch: request.dataEpoch) else { return try await send(request) }
+            generation = descriptor.generation
+        } catch where ActionDeliveryDisposition(error) == .retry && !(error is CancellationError) {
+            let known = try await intents.acknowledgmentRanges()
+            guard known.generation > 0, known.dataEpoch == request.dataEpoch else { throw AnswerNotSent() }
+            generation = known.generation
+        }
+        let record = try await intents.prepareNew(request, generation: generation)
+        var current = Pending(request: record.restoredRequest, body: record.body)
+        pending[current.request.commandId] = current
+        scheduleRetirement()
+        do {
+            return try await attemptDelivery(&current)
+        } catch where ActionDeliveryDisposition(error) == .final {
+            await discard(current)
+            throw error
+        } catch {
+            throw AnswerKeptForLater()
+        }
+    }
+
     /// Delivers an answer whatever the network does: it goes again on its own, waiting longer each
     /// time and at once on `retryNow`, until the Mac answers it. Throws only when it can never be
     /// delivered. The delivery goes on when the caller stops waiting for it.

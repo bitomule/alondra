@@ -29,9 +29,9 @@ public actor Connection {
     public nonisolated let macID: String?
     private var active = true
 
-    /// A Mac paired on the local network talks only directly; one paired with an account also
-    /// keeps the relay, and reaches it directly only once Local Network access is allowed. With
-    /// `irohDialer`, a Mac paired with an account is reached first over its iroh endpoint.
+    /// A Mac paired on the local network talks only directly. One paired with an account is
+    /// reached over its iroh endpoint (with `irohDialer`), and directly only once Local Network
+    /// access is allowed.
     public init(approved: ApprovedServicePairing, auth: AuthSession, storageDirectory: URL? = nil,
                 measurements: ConnectionMeasurements? = nil,
                 localNetworkAllowed: @escaping @Sendable () -> Bool = { LocalNetworkAccess.standard.allowed },
@@ -48,7 +48,7 @@ public actor Connection {
             signing.publicKey.rawRepresentation.base64EncodedString(), agreement.publicKey.rawRepresentation.base64EncodedString(),
             approved.macSigningKey, approved.macAgreementKey, String(approved.approvedAtMs)])
         let revision = SHA256.hash(data: binding).map { String(format: "%02x", $0) }.joined()
-        let scope = RelayOutboxScope(relay: server, macID: approved.macID,
+        let scope = EnvelopeJournalScope(relay: server, macID: approved.macID,
             deviceID: approved.deviceID, credentialRevision: revision)
         let journal = try storageDirectory.map { try EnvelopeJournal(scope: scope, directory: $0.appending(path: "operations")) }
         let intents = await Self.openIntents(in: storageDirectory, keyMaterial: approved.agreementPrivateKey,
@@ -59,34 +59,33 @@ public actor Connection {
                                   network: { NetworkReachability.shared.signature })
         let direct = DirectSession(macID: approved.macID, deviceID: approved.deviceID, signing: signing,
             agreement: agreement, macSigning: macSigning, macAgreement: macAgreement, router: router, http: http, journal: journal)
-        var relay: RelaySession?
-        if approved.relayURL != nil, approved.ownerSub != nil {
-            relay = try RelaySession(
-                scope: scope,
-                bearer: { try await auth.bearerToken() }, bearerRefusedForToken: { await auth.accessTokenRefused(ifMatches: $0) }, journal: journal,
-                signing: signing, agreement: agreement,
-                macSigning: macSigning, macAgreement: macAgreement)
+        var account: RelayAccount?
+        if let relayURL = approved.relayURL, approved.hasRelay {
+            account = try RelayAccount(relay: relayURL, macID: approved.macID, deviceID: approved.deviceID, signing: signing,
+                bearer: { try await auth.bearerToken() }, bearerRefusedForToken: { await auth.accessTokenRefused(ifMatches: $0) })
         }
         var iroh: RoutedSession.Iroh?
         var irohEndpoint: IrohEndpointHolder?
-        if let relay, let irohDialer {
+        if let account, let irohDialer {
             let identity = IrohIdentity(pairingSigning: signing, macID: approved.macID)
             let endpoint = IrohEndpointHolder(approved.irohEndpoint)
             let carrier = IrohCarrier(dialer: irohDialer(identity), macID: approved.macID, deviceID: approved.deviceID,
                 signing: signing, address: {
-                    guard let id = endpoint.value, let url = try? await relay.irohRelay() else { return nil }
-                    return IrohMacAddress(endpointID: id, relay: url)
-                }, prepare: { _ in try await relay.bindIrohNode(identity) })
+                    guard let address = await account.macAddress(known: endpoint.value) else { return nil }
+                    if endpoint.value == nil { endpoint.learn(address.endpointID) }
+                    return address
+                }, prepare: { _ in try await account.bindIrohNode(identity) })
             iroh = RoutedSession.Iroh(session: DirectSession(macID: approved.macID, deviceID: approved.deviceID,
                 signing: signing, agreement: agreement, macSigning: macSigning, macAgreement: macAgreement,
                 iroh: carrier, journal: journal), carrier: carrier)
             irohEndpoint = endpoint
         }
-        let hasRelay = relay != nil
-        let directAllowed: @Sendable () -> Bool = { !hasRelay || localNetworkAllowed() }
-        let routed = RoutedSession(iroh: iroh, direct: direct, router: router, relay: relay, directAllowed: directAllowed)
+        let pairedWithAccount = approved.hasRelay
+        let directAllowed: @Sendable () -> Bool = { !pairedWithAccount || localNetworkAllowed() }
+        let routed = RoutedSession(iroh: iroh, direct: direct, router: router, account: account, directAllowed: directAllowed)
         self.init(operations: routed, server: server, deviceID: approved.deviceID, macName: approved.name,
-                  macID: approved.macID, intents: intents, measurements: measurements, irohEndpoint: irohEndpoint)
+                  macID: approved.macID, intents: intents, measurements: measurements, irohEndpoint: irohEndpoint,
+                  isDirectOnly: !pairedWithAccount)
         if let carrier = iroh?.carrier {
             await follow(carrier, measurements: measurements)
             // Open the live connection before the first request; the background closes it.
@@ -101,7 +100,7 @@ public actor Connection {
         let intents = await openIntents(in: storageDirectory, keyMaterial: material,
             scope: ActionIntentScope(service: session.base.absoluteString, device: "this-mac", credentialRevision: revision))
         return Connection(operations: session, server: session.base, deviceID: "mac", macName: nil,
-                          macID: nil, intents: intents, measurements: measurements, irohEndpoint: nil)
+                          macID: nil, intents: intents, measurements: measurements, irohEndpoint: nil, isDirectOnly: false)
     }
 
     /// Saved answers are this device's own business: whatever their store does, the Mac is still reached.
@@ -120,10 +119,10 @@ public actor Connection {
         return try await loopback.local(route)
     }
 
-    /// No relay behind it: a Mac paired on the local network.
-    public nonisolated var isDirectOnly: Bool { (operations as? RoutedSession)?.hasRelay == false }
+    /// A Mac paired on the local network, without an account.
+    public nonisolated let isDirectOnly: Bool
 
-    /// The path the last answered request took: this Mac, the LAN, the tailnet or the relay.
+    /// The path the last answered request took: this Mac, the LAN, the tailnet or iroh.
     public func route() async -> ConnectionRoute? {
         if isLocal { return .thisMac }
         return await (operations as? RoutedSession)?.route
@@ -182,8 +181,10 @@ public actor Connection {
     }
 
     private init(operations: any FeedOperations, server: URL, deviceID: String, macName: String?, macID: String?,
-                 intents: OpenedActionIntents?, measurements: ConnectionMeasurements?, irohEndpoint: IrohEndpointHolder?) {
+                 intents: OpenedActionIntents?, measurements: ConnectionMeasurements?, irohEndpoint: IrohEndpointHolder?,
+                 isDirectOnly: Bool) {
         self.operations = operations
+        self.isDirectOnly = isDirectOnly
         self.macName = macName
         self.irohEndpoint = irohEndpoint
         self.macID = macID
@@ -195,7 +196,7 @@ public actor Connection {
         self.monitor = monitor
         let mac = ConnectionMeasurement.macReference(macID)
         let monitored = MonitoredOperations(operations, monitor: monitor, route: {
-            local ? .thisMac : await (operations as? RoutedSession)?.route ?? .relay
+            local ? .thisMac : await (operations as? RoutedSession)?.route ?? .localNetwork
         }, record: { observation in
             let network = ConnectionMeasurement.NetworkSnapshot(interface: NetworkReachability.shared.interfaceKind,
                                                                 radio: RadioAccess.current)
@@ -232,11 +233,13 @@ public actor Connection {
         let mac = ConnectionMeasurement.macReference(macID)
         await carrier.observe { event in
             switch event {
-            case let .connected(route, after):
+            case let .connected(route, after), let .connectedOnDemand(route, after):
                 guard let measurements else { return }
                 let network = ConnectionMeasurement.NetworkSnapshot(interface: NetworkReachability.shared.interfaceKind,
                                                                     radio: RadioAccess.current)
-                Task { await measurements.record(.connected(after: after, route: route, at: Date(), mac: mac, network: network)) }
+                let inBackground = if case .connectedOnDemand = event { true } else { false }
+                Task { await measurements.record(.connected(after: after, route: route, at: Date(), mac: mac, network: network,
+                                                            inBackground: inBackground)) }
             case let .routeChanged(route):
                 Task { await monitor.handle(.routeChanged(route)) }
             case .lost:
@@ -291,10 +294,14 @@ public actor Connection {
         }, submit: { request in
             do {
                 try await self.checkActive()
-                let response = try await self.viewActionSender.send(request)
+                let response = try await self.viewActionSender.sendNow(request)
                 try await self.checkActive()
                 if response.outcome == .noLongerAvailable { return .noLongerPending }
                 return .sent(response)
+            } catch is AnswerKeptForLater {
+                return .kept
+            } catch is AnswerNotSent {
+                return .failed(String(localized: "Couldn’t reach your Mac. Open Alondra to answer."))
             } catch {
                 guard (try? await self.checkActive()) != nil else { return .failed(String(localized: "Service is no longer active")) }
                 return .uncertain

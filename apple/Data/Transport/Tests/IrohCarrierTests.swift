@@ -31,6 +31,7 @@ private actor FakeIrohMac {
     private var runs: [String: Int] = [:]
 
     func refuseHello() { acceptsHello = false }
+    func acceptHello() { acceptsHello = true }
     func then(_ replies: Reply...) { script += replies }
     func executions(of requestID: String) -> Int { runs[requestID, default: 0] }
 
@@ -162,6 +163,7 @@ private final class FakeDialer: IrohDialer {
     /// The path a connection made now gets: direct at home, through the relay on mobile data.
     private let network = Mutex(IrohPath.relay)
     private let moves = Mutex(0)
+    private let delay = Mutex(Duration.zero)
 
     init(mac: FakeIrohMac) { self.mac = mac }
 
@@ -169,8 +171,11 @@ private final class FakeDialer: IrohDialer {
     var last: FakeLink? { links.withLock { $0.last } }
     var rebinds: Int { moves.withLock { $0 } }
     func join(_ path: IrohPath) { network.withLock { $0 = path } }
+    /// Connecting takes this long from now on, as it does on mobile data.
+    func takes(_ duration: Duration) { delay.withLock { $0 = duration } }
 
     func dial(_ address: IrohMacAddress) async throws -> any IrohLink {
+        try await Task.sleep(for: delay.withLock { $0 })
         let link = FakeLink(mac: mac, path: network.withLock { $0 })
         links.withLock { $0.append(link) }
         return link
@@ -203,7 +208,8 @@ private struct Fixture {
 
     let journal: EnvelopeJournal?
 
-    init(address: Bool = true, journal: EnvelopeJournal? = nil, quickSlack: Duration = .seconds(8)) async throws {
+    init(address: Bool = true, journal: EnvelopeJournal? = nil, quickSlack: Duration = .seconds(8),
+         lingerAfterUse: Duration = .seconds(60), retryDelays: [Duration] = [.milliseconds(10)]) async throws {
         self.journal = journal
         dialer = FakeDialer(mac: mac)
         let macEndpoint = await mac.endpoint.endpointIDHex
@@ -212,7 +218,7 @@ private struct Fixture {
         carrier = IrohCarrier(dialer: dialer, macID: "mac-1", deviceID: "phone-1", signing: mac.device,
             address: { address ? IrohMacAddress(endpointID: macEndpoint, relay: relay) : nil },
             prepare: { _ in prepared.increment() },
-            connectWait: .seconds(5), retryDelays: [.milliseconds(10)])
+            connectWait: .seconds(5), lingerAfterUse: lingerAfterUse, retryDelays: retryDelays)
         session = DirectSession(macID: "mac-1", deviceID: "phone-1", signing: mac.device, agreement: mac.deviceAgreement,
             macSigning: mac.macSigning.publicKey, macAgreement: mac.macAgreement.publicKey, carrier: carrier,
             journal: journal, now: { UInt64(Date().timeIntervalSince1970 * 1000) }, requestClock: .continuous,
@@ -313,7 +319,7 @@ struct IrohCarrierTests {
         await f.mac.then(.error("wrong_mac"))
         await #expect(throws: IrohCarrierError.refused("wrong_mac")) { try await f.session.perform(f.read()) }
         await f.mac.then(.error("idempotency_conflict"))
-        await #expect(throws: RelaySessionError.operationIdentityConflict) { try await f.session.perform(f.action("op-1")) }
+        await #expect(throws: SealedRequestError.operationIdentityConflict) { try await f.session.perform(f.action("op-1")) }
         await f.mac.then(.error("rejected"))
         guard case .completed(400, _) = try await f.session.perform(f.action("op-2")) else {
             Issue.record("a rejection is the Mac's answer"); return
@@ -345,8 +351,86 @@ struct IrohCarrierTests {
         let first = try #require(f.dialer.last)
         await f.carrier.stop()
         #expect(first.isClosed)
-        await #expect(throws: IrohCarrierError.unavailable) { try await f.session.perform(f.read()) }
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(f.dialer.dials == 1, "nothing reconnects in the background on its own")
         await f.carrier.start()
+        #expect(try await f.session.perform(f.read()) == answered)
+        #expect(f.dialer.dials == 2)
+    }
+
+    /// 16 Oct: a notification button pressed with the iPhone locked must reach the Mac at once,
+    /// with no mailbox to leave it in. The request opens its own connection.
+    @Test func inTheBackgroundARequestOpensItsOwnConnection() async throws {
+        let f = try await Fixture()
+        #expect(try await f.session.perform(f.action("op-1")) == answered)
+        #expect(f.dialer.dials == 1)
+        #expect(await f.mac.executions(of: "op-1") == 1)
+        guard case .connectedOnDemand(.irohRelay, _)? = f.events.all.first else {
+            Issue.record("no on-demand connection measured: \(f.events.all)"); return
+        }
+    }
+
+    @Test func backgroundRequestsShareTheConnectionOneOfThemOpened() async throws {
+        let f = try await Fixture()
+        f.dialer.takes(.milliseconds(100))
+        let session = f.session
+        let read = try f.read(), action = try f.action("op-1")
+        async let first = session.perform(read)
+        async let second = session.perform(action)
+        #expect(try await first == answered)
+        #expect(try await second == answered)
+        #expect(try await session.perform(read) == answered)
+        #expect(f.dialer.dials == 1)
+    }
+
+    @Test func aConnectionOpenedInTheBackgroundClosesOnceUnused() async throws {
+        let f = try await Fixture(lingerAfterUse: .milliseconds(20))
+        _ = try await f.session.perform(f.read())
+        let link = try #require(f.dialer.last)
+        try await waitUntil { link.isClosed }
+        #expect(await !f.carrier.isConnected)
+    }
+
+    @Test func theForegroundKeepsTheConnectionABackgroundRequestOpened() async throws {
+        let f = try await Fixture(lingerAfterUse: .milliseconds(20))
+        _ = try await f.session.perform(f.read())
+        await f.carrier.start()
+        try await Task.sleep(for: .milliseconds(60))
+        #expect(try await f.session.perform(f.read()) == answered)
+        #expect(f.dialer.dials == 1)
+        #expect(await f.carrier.isConnected)
+    }
+
+    @Test func aBackgroundRequestThatCannotConnectNeverLeavesTheDevice() async throws {
+        let f = try await Fixture()
+        await f.mac.refuseHello()
+        await #expect(throws: IrohCarrierError.unavailable) { try await f.session.perform(f.action("op-1")) }
+        #expect(await f.mac.requests == 0)
+    }
+
+    @Test func aShutDownCarrierOpensNothing() async throws {
+        let f = try await Fixture()
+        await f.carrier.shutdown()
+        await #expect(throws: IrohCarrierError.unavailable) { try await f.session.perform(f.read()) }
+        #expect(f.dialer.dials == 0)
+    }
+
+    /// Measured on mobile data: the connection takes 1 to 2.3 s after coming back. A read made
+    /// meanwhile waits for it instead of failing.
+    @Test func aRequestWaitsForTheConnectionBeingMade() async throws {
+        let f = try await Fixture()
+        f.dialer.takes(.milliseconds(300))
+        await f.carrier.start()
+        #expect(try await f.session.perform(f.read()) == answered)
+        #expect(f.dialer.dials == 1)
+    }
+
+    @Test func aRequestDoesNotWaitOutTheBackoffOfAFailedConnection() async throws {
+        let f = try await Fixture(retryDelays: [.seconds(3600)])
+        await f.mac.refuseHello()
+        await f.carrier.start()
+        try await waitUntil { await f.mac.hellos.count == 1 }
+        await f.mac.acceptHello()
         #expect(try await f.session.perform(f.read()) == answered)
         #expect(f.dialer.dials == 2)
     }
@@ -424,139 +508,90 @@ struct IrohCarrierTests {
     }
 }
 
-/// The relay as `RoutedSession` sees it: it answers everything, and an action it resends goes out
-/// as the bytes the shared journal holds.
-private actor FakeMailbox: RelayOperations {
-    private(set) var performed: [String] = []
-    private(set) var resent: [Envelope] = []
-    let journal: EnvelopeJournal?
-
-    init(journal: EnvelopeJournal? = nil) { self.journal = journal }
-
-    func perform(_ request: APIRequest) async throws -> APIResponse {
-        performed.append(request.path)
-        return mailboxAnswer
-    }
-
-    func resend(_ request: APIRequest) async throws -> APIResponse {
-        guard let envelope = await sentEnvelope(for: request.operationID) else { return .unknown }
-        resent.append(envelope)
-        return mailboxAnswer
-    }
-
-    func sentEnvelope(for requestID: String) async -> Envelope? {
-        try? await journal?.entry(requestID: requestID)?.envelope
-    }
-
-    func registerServicePush(token: String, environment: String, binding: String) async throws {}
-    func deactivate() async {}
-}
-
-private let mailboxAnswer = APIResponse.completed(status: 200, body: Data(#"{"mailbox":true}"#.utf8))
-
 @Suite(.temporaryFiles)
 struct RoutedIrohTests {
-    private func routed(_ f: Fixture, mailbox: FakeMailbox) -> RoutedSession {
-        RoutedSession(iroh: .init(session: f.session, carrier: f.carrier), direct: nil, router: nil, relay: mailbox)
+    private func routed(_ f: Fixture) -> RoutedSession {
+        RoutedSession(iroh: .init(session: f.session, carrier: f.carrier), direct: nil, router: nil)
     }
 
-    @Test func aLiveConnectionTakesEveryRequestAndTheMailboxNone() async throws {
+    @Test func aLiveConnectionTakesEveryRequest() async throws {
         let f = try await Fixture()
-        let mailbox = FakeMailbox()
-        let routed = routed(f, mailbox: mailbox)
+        let routed = routed(f)
         await routed.goLive()
         #expect(try await routed.perform(f.read()) == answered)
         #expect(try await routed.perform(f.action("op-1")) == answered)
         #expect(await routed.route == .irohRelay)
-        #expect(await mailbox.performed.isEmpty)
     }
 
-    @Test func withoutTheMacsEndpointTheMailboxAnswersAtOnce() async throws {
+    @Test func withoutTheMacsEndpointARequestFailsAtOnceWithoutDialing() async throws {
         let f = try await Fixture(address: false)
-        let mailbox = FakeMailbox()
-        let routed = routed(f, mailbox: mailbox)
+        let routed = routed(f)
         await routed.goLive()
-        #expect(try await routed.perform(f.read()) == mailboxAnswer)
-        #expect(await routed.route == .relay)
+        await #expect(throws: IrohCarrierError.unavailable) { try await routed.perform(f.read()) }
         #expect(f.dialer.dials == 0)
     }
 
-    @Test func inTheBackgroundOnlyTheMailboxIsLeft() async throws {
+    @Test func inTheBackgroundARequestStillReachesTheMac() async throws {
         let f = try await Fixture()
-        let mailbox = FakeMailbox()
-        let routed = routed(f, mailbox: mailbox)
+        let routed = routed(f)
         await routed.goLive()
         _ = try await routed.perform(f.read())
         await routed.goIdle()
-        #expect(try await routed.perform(f.read()) == mailboxAnswer)
-        await routed.goLive()
-        #expect(try await routed.perform(f.read()) == answered)
+        #expect(try await routed.perform(f.action("op-1")) == answered)
+        #expect(await f.mac.executions(of: "op-1") == 1)
+        #expect(f.dialer.dials == 2)
     }
 
-    /// 15 Oct, iPhone at the office: a card the Mac took 9 s to render was asked again through
-    /// the mailbox, so the Mac rendered it twice and the card took 13-15 s. While the connection
-    /// lives, a slow Mac keeps the read.
+    /// 15 Oct, iPhone at the office: a card the Mac took 9 s to render was asked again, so the
+    /// Mac rendered it twice. While the connection lives, a slow Mac keeps the read.
     @Test func aSlowMacKeepsTheReadOnTheLiveConnection() async throws {
         let f = try await Fixture(quickSlack: .milliseconds(200))
-        let mailbox = FakeMailbox()
-        let routed = routed(f, mailbox: mailbox)
+        let routed = routed(f)
         await routed.goLive()
         await f.mac.then(.slow(.milliseconds(600)))
         #expect(try await routed.perform(f.read()) == answered)
-        #expect(await mailbox.performed.isEmpty)
+        #expect(await f.mac.requests == 1)
         #expect(await routed.route == .irohRelay)
-    }
-
-    @Test func aReadIrohGotNoAnswerToGoesToTheMailbox() async throws {
-        let f = try await Fixture()
-        let mailbox = FakeMailbox()
-        let routed = routed(f, mailbox: mailbox)
-        await routed.goLive()
-        await f.mac.then(.noAnswer)
-        #expect(try await routed.perform(f.read()) == mailboxAnswer)
     }
 
     @Test func anActionThatMayHaveRunStaysUnknownAndNeverGoesTwice() async throws {
         let f = try await Fixture()
-        let mailbox = FakeMailbox()
-        let routed = routed(f, mailbox: mailbox)
+        let routed = routed(f)
         await routed.goLive()
         await f.mac.then(.noAnswer)
         #expect(try await routed.perform(f.action("op-1")) == .unknown)
-        #expect(await mailbox.performed.isEmpty)
         #expect(await f.mac.executions(of: "op-1") == 1)
     }
 
-    @Test func anActionIrohKeptButNeverSentGoesThroughTheMailboxAsTheSameBytes() async throws {
-        let scope = RelayOutboxScope(relay: URL(string: "https://relay.example.test")!, macID: "mac-1",
-                                     deviceID: "phone-1", credentialRevision: "key")
+    @Test func anActionIrohKeptButCouldNotSendIsResentAsTheSameBytes() async throws {
+        let scope = EnvelopeJournalScope(relay: URL(string: "https://relay.example.test")!, macID: "mac-1",
+                                         deviceID: "phone-1", credentialRevision: "key")
         let journal = try EnvelopeJournal(scope: scope, directory: TestFiles.directory())
         let f = try await Fixture(journal: journal)
-        let mailbox = FakeMailbox(journal: journal)
-        let routed = routed(f, mailbox: mailbox)
+        let routed = routed(f)
         await routed.goLive()
         _ = try await routed.perform(f.read())
         await f.mac.then(.notSent, .notSent)
-        #expect(try await routed.perform(f.action("op-1")) == mailboxAnswer)
+        let action = try f.action("op-1")
+        await #expect(throws: IrohCarrierError.unavailable) { try await routed.perform(action) }
         let kept = try #require(try await journal.entry(requestID: "op-1")?.envelope)
-        #expect(await mailbox.resent == [kept])
-        #expect(await mailbox.performed.isEmpty, "never sealed again")
         #expect(await f.mac.executions(of: "op-1") == 0)
+        #expect(try await routed.resend(action) == answered)
+        #expect(await f.mac.executions(of: "op-1") == 1)
+        #expect(try await journal.entry(requestID: "op-1")?.envelope == kept, "never sealed again")
     }
 
-    @Test func aResentActionGoesOverIrohFirstAsTheSameBytes() async throws {
-        let scope = RelayOutboxScope(relay: URL(string: "https://relay.example.test")!, macID: "mac-1",
-                                     deviceID: "phone-1", credentialRevision: "key")
+    @Test func aResentActionGoesOverIrohAsTheSameBytes() async throws {
+        let scope = EnvelopeJournalScope(relay: URL(string: "https://relay.example.test")!, macID: "mac-1",
+                                         deviceID: "phone-1", credentialRevision: "key")
         let journal = try EnvelopeJournal(scope: scope, directory: TestFiles.directory())
         let f = try await Fixture(journal: journal)
-        let mailbox = FakeMailbox(journal: journal)
-        let routed = routed(f, mailbox: mailbox)
+        let routed = routed(f)
         await routed.goLive()
         await f.mac.then(.noAnswer)
         let action = try f.action("op-1")
         #expect(try await routed.perform(action) == .unknown)
         #expect(try await routed.resend(action) == answered)
         #expect(await f.mac.executions(of: "op-1") == 1)
-        #expect(await mailbox.resent.isEmpty)
     }
 }

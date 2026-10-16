@@ -32,6 +32,8 @@ public struct NotificationAction: Equatable, Sendable {
 
 public enum NotificationActionResult: Equatable, Sendable {
     case sent(ActionResponse)
+    /// The Mac could not be reached; the answer goes once the app is open.
+    case kept
     case uncertain
     case failed(String)
     case noLongerPending

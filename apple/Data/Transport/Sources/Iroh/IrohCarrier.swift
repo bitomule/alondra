@@ -2,13 +2,16 @@ import AlondraContract
 import CryptoKit
 import Foundation
 
-/// One live iroh connection to one paired Mac, kept open while the app is in the foreground.
-/// Each request is one stream on it: the sealed envelope goes out, the Mac's answer comes back.
-/// See docs/iroh-protocol.md.
+/// One live iroh connection to one paired Mac, kept open while the app is in the foreground. In
+/// the background a request opens one for itself, which closes once nothing has used it for
+/// `lingerAfterUse`. Each request is one stream on it: the sealed envelope goes out, the Mac's
+/// answer comes back. See docs/iroh-protocol.md.
 public actor IrohCarrier: EnvelopeCarrier {
     public enum Event: Sendable, Equatable {
         /// Connected for the first time since `start()`, this long after it.
         case connected(ConnectionRoute?, after: Duration)
+        /// Connected in the background for a request, this long after it asked.
+        case connectedOnDemand(ConnectionRoute?, after: Duration)
         case routeChanged(ConnectionRoute)
         case lost
     }
@@ -21,6 +24,7 @@ public actor IrohCarrier: EnvelopeCarrier {
     private let prepare: @Sendable (IrohMacAddress) async throws -> Void
     private let connectWait: Duration
     private let dialTimeout: Duration
+    private let lingerAfterUse: Duration
     private let retryDelays: [Duration]
     private let clock = ContinuousClock()
     private var observer: (@Sendable (Event) -> Void)?
@@ -33,13 +37,18 @@ public actor IrohCarrier: EnvelopeCarrier {
     private var running = false
     private var startedAt: ContinuousClock.Instant?
     private var prepared: IrohMacAddress?
+    private var shut = false
+    private var onDemandDial: Task<(any IrohLink)?, Never>?
+    private var inUse = 0
+    private var linger: Task<Void, Never>?
 
     /// `prepare` runs before dialing an address that goes through the relay: the iroh relay
     /// admits only endpoints the Alondra relay knows.
     public init(dialer: any IrohDialer, macID: String, deviceID: String, signing: P256.Signing.PrivateKey,
                 address: @escaping @Sendable () async -> IrohMacAddress?,
                 prepare: @escaping @Sendable (IrohMacAddress) async throws -> Void = { _ in },
-                connectWait: Duration = .seconds(2), dialTimeout: Duration = .seconds(10),
+                connectWait: Duration = .seconds(5), dialTimeout: Duration = .seconds(10),
+                lingerAfterUse: Duration = .seconds(3),
                 retryDelays: [Duration] = [.seconds(1), .seconds(2), .seconds(5), .seconds(15), .seconds(30)]) {
         self.dialer = dialer
         self.macID = macID
@@ -49,6 +58,7 @@ public actor IrohCarrier: EnvelopeCarrier {
         self.prepare = prepare
         self.connectWait = connectWait
         self.dialTimeout = dialTimeout
+        self.lingerAfterUse = lingerAfterUse
         self.retryDelays = retryDelays
     }
 
@@ -61,14 +71,14 @@ public actor IrohCarrier: EnvelopeCarrier {
 
     public var isConnected: Bool { liveLink != nil }
 
-    /// Whether a request can go now: connected, or connected within `connectWait`.
-    public func ready() async -> Bool { await readyLink() != nil }
-
-    /// The app came to the foreground: connect now and stay connected.
+    /// The app came to the foreground: connect now and stay connected. A connection a request
+    /// opened in the background is kept.
     public func start() {
-        guard !running else { return }
+        guard !running, !shut else { return }
         running = true
-        startedAt = clock.now
+        linger?.cancel()
+        linger = nil
+        startedAt = liveLink == nil ? clock.now : nil
         keepConnected()
     }
 
@@ -77,6 +87,8 @@ public actor IrohCarrier: EnvelopeCarrier {
         running = false
         keeper?.cancel()
         keeper = nil
+        linger?.cancel()
+        linger = nil
         generation += 1
         connectingNow = false
         startedAt = nil
@@ -108,6 +120,7 @@ public actor IrohCarrier: EnvelopeCarrier {
     }
 
     public func shutdown() async {
+        shut = true
         await stop()
         await dialer.shutdown()
     }
@@ -121,7 +134,9 @@ public actor IrohCarrier: EnvelopeCarrier {
             guard let link = await readyLink() else { throw IrohCarrierError.unavailable }
             try MutationScope.check()
             let reply: Data
+            inUse += 1
             do {
+                defer { release() }
                 reply = try await Deadline.run(within: timeout) {
                     try await link.exchange(body, answerLimit: DirectHTTP.maxResponse + 64)
                 }
@@ -170,7 +185,7 @@ public actor IrohCarrier: EnvelopeCarrier {
             return .sealed(envelope, response)
         }
         switch answer.error {
-        case "idempotency_conflict": throw RelaySessionError.operationIdentityConflict
+        case "idempotency_conflict": throw SealedRequestError.operationIdentityConflict
         case "rejected": return .plain(.completed(status: 400, body: reply))
         case let code?: throw IrohCarrierError.refused(code)
         case nil:
@@ -184,10 +199,13 @@ public actor IrohCarrier: EnvelopeCarrier {
         return link
     }
 
-    /// The live connection, or the one being made if it is ready within `connectWait`.
+    /// The live connection, or the one being made if it is ready within `connectWait`; a
+    /// reconnect waiting out a failure goes now. In the background, one opened for this request.
     private func readyLink() async -> (any IrohLink)? {
         if let liveLink { return liveLink }
-        guard running, connectingNow else { return nil }
+        guard !shut else { return nil }
+        guard running else { return await onDemandLink() }
+        if !connectingNow { keepConnected() }
         let id = UUID()
         let wait = connectWait
         return await withCheckedContinuation { continuation in
@@ -197,6 +215,57 @@ public actor IrohCarrier: EnvelopeCarrier {
                 self.expire(id)
             }
         }
+    }
+
+    private func onDemandLink() async -> (any IrohLink)? {
+        let dial: Task<(any IrohLink)?, Never>
+        if let onDemandDial {
+            dial = onDemandDial
+        } else {
+            let current = generation
+            dial = Task { await self.dialOnDemand(current) }
+            onDemandDial = dial
+        }
+        return await dial.value
+    }
+
+    private func dialOnDemand(_ current: Int) async -> (any IrohLink)? {
+        let asked = clock.now
+        let connected = await connectOnce()
+        onDemandDial = nil
+        guard let connected else { return nil }
+        guard !running, generation == current, !shut else {
+            await connected.close()
+            return running ? await readyLink() : nil
+        }
+        linger?.cancel()
+        linger = nil
+        link = connected
+        currentRoute = connected.path().route
+        observer?(.connectedOnDemand(currentRoute, after: asked.duration(to: clock.now)))
+        return connected
+    }
+
+    /// A connection opened in the background closes once nothing has used it for a moment, so
+    /// a request that follows another one reuses it.
+    private func release() {
+        inUse -= 1
+        guard !running, inUse == 0, link != nil else { return }
+        linger?.cancel()
+        let watched = link, wait = lingerAfterUse
+        linger = Task {
+            try? await Task.sleep(for: wait)
+            guard !Task.isCancelled else { return }
+            await self.closeUnused(watched)
+        }
+    }
+
+    private func closeUnused(_ watched: (any IrohLink)?) async {
+        guard !running, inUse == 0, let closing = link, closing === watched else { return }
+        link = nil
+        currentRoute = nil
+        linger = nil
+        await closing.close()
     }
 
     private func expire(_ id: UUID) {

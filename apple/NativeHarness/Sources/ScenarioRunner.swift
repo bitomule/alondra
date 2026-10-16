@@ -1,4 +1,4 @@
-import AlondraTransport
+@testable import AlondraTransport
 import AlondraAccount
 import AlondraContract
 import CryptoKit
@@ -22,24 +22,29 @@ public enum NativeScenarioRunner {
             defer { try? FileManager.default.removeItem(at: directory) }
             let fixture = try ScenarioFixture(directory: directory, scenario: scenario)
             if scenario == "lost-response" {
-                let first = try await fixture.session.execute(requestID: "synthetic-mutation", method: "POST",
-                    path: "/requests", body: Data(#"{"data_epoch":"synthetic","command_id":"synthetic-command","expected_revision":0,"request_id":"synthetic-request","body":"synthetic work"}"#.utf8))
-                report.checks["receipt_recovered"] = completed(first)
+                let action = try APIRequest(endpoint: Endpoint<Data>.data(.post, path: ["actions"],
+                    body: Data(#"{"data_epoch":"synthetic","command_id":"synthetic-command","action_id":"synthetic-action"}"#.utf8)),
+                    operationID: "synthetic-mutation")
+                let first = try await fixture.session.perform(action)
+                report.checks["answer_recovered_after_loss"] = completed(first)
                 await fixture.session.deactivate()
                 let restarted = try fixture.makeSession()
-                let second = try await restarted.execute(requestID: "synthetic-mutation", method: "POST",
-                    path: "/requests", body: Data(#"{"data_epoch":"synthetic","command_id":"synthetic-command","expected_revision":0,"request_id":"synthetic-request","body":"synthetic work"}"#.utf8))
+                let second = try await restarted.perform(action)
                 report.checks["durable_result_after_restart"] = completed(second)
                 let observation = await fixture.peer.observation()
-                report.checks["mutation_submitted_once"] = observation.mutations == 1
-                report.checks["status_read_after_loss"] = observation.statusReads == 1 && observation.losses == 1
-                report.checks["verified_encrypted_request"] = observation.opened == 1
+                report.checks["mutation_ran_once"] = observation.actionRuns == 1
+                report.checks["same_bytes_resent_after_loss"] = observation.losses == 1 && observation.actionPosts.count == 2
+                    && observation.actionPosts.first == observation.actionPosts.last
+                report.checks["result_read_after_restart"] = observation.resultReads == 1
                 await restarted.deactivate()
             } else {
                 let api = AlondraAPIClient(serviceURL: fixture.scope.relay, deviceID: fixture.scope.deviceID, operations: fixture.session)
                 if scenario == "session-revoked" {
-                    let auth = fixture.auth
-                    await fixture.peer.onFirstChunk { try await auth.logout() }
+                    let auth = fixture.auth, session = fixture.session
+                    await fixture.peer.onFirstChunk {
+                        try await auth.logout()
+                        await session.deactivate()
+                    }
                 }
                 var result: Data?
                 var rejected = false
@@ -55,18 +60,18 @@ public enum NativeScenarioRunner {
                 let observation = await fixture.peer.observation()
                 let authCalls = await fixture.authHTTP.observation()
                 if scenario == "large-resource-read" {
-                    let chunks = stride(from: 0, to: fixture.document.count, by: SyntheticRelayHTTP.chunkBytes).map { $0 }
+                    let chunks = stride(from: 0, to: fixture.document.count, by: SyntheticMacHTTP.chunkBytes).map { $0 }
                     report.checks["exact_large_unicode_document"] = result == fixture.document && fixture.document.count > 180 * 1024
                     report.checks["all_resource_chunks_requested"] = observation.offsets == chunks
                     report.checks["resource_reads_only"] = observation.resourcePaths.contains("/summary")
                         && observation.resourcePaths.contains("/documents/document-1")
                         && observation.resourcePaths.allSatisfy { !$0.contains("snapshot") && !$0.contains("/v1/") && !$0.contains("/v2/") }
                     report.checks["verified_encrypted_requests"] = observation.opened == chunks.count + 2
-                    report.checks["single_token_exchange"] = authCalls.tokens == 1
+                    report.checks["no_account_token_for_the_mac"] = authCalls.tokens == 0
                 } else {
                     report.checks["revoked_read_rejected"] = rejected && result == nil
                     report.checks["first_resource_chunk_reached"] = observation.offsets == [0]
-                    report.checks["no_token_renewal_after_revocation"] = authCalls.tokens == 1
+                    report.checks["no_token_renewal_after_revocation"] = authCalls.tokens == 0
                     report.checks["issuer_revocation_executed"] = authCalls.revocations == 1
                     report.checks["credential_removed"] = try fixture.storage.read() == nil
                     var leaseRejected = false
@@ -90,7 +95,7 @@ public enum NativeScenarioRunner {
         return report.status == "passed" ? 0 : 1
     }
 
-    private static func completed(_ result: RelayOperationResult) -> Bool {
+    private static func completed(_ result: APIResponse) -> Bool {
         guard case let .completed(status, body) = result, status == 201,
               let value = try? JSONDecoder().decode(MutationReply.self, from: body) else { return false }
         return value.id == "synthetic-task" && value.accepted
@@ -115,14 +120,14 @@ public enum NativeScenarioRunner {
         repeat {
             let offset = collected.count
             let endpoint = Endpoint<Chunk>(.get,
-                path: ["document-revisions", SyntheticRelayHTTP.revisionID, "content"],
+                path: ["document-revisions", SyntheticMacHTTP.revisionID, "content"],
                 query: [("offset", String(offset))] + (version.map { [("version", $0)] } ?? [])) {
                     let decoder = JSONDecoder()
                     decoder.keyDecodingStrategy = .convertFromSnakeCase
                     return try decoder.decode(Chunk.self, from: $0)
                 }
             let chunk = try await api.send(endpoint)
-            guard chunk.revisionId == SyntheticRelayHTTP.revisionID,
+            guard chunk.revisionId == SyntheticMacHTTP.revisionID,
                   chunk.contentDigest == expectedDigest, chunk.contentDigest.count == 64,
                   !chunk.version.isEmpty, version == nil || version == chunk.version,
                   total == nil || total == chunk.total, chunk.total <= 32 * 1024 * 1024,
@@ -172,12 +177,12 @@ public enum NativeScenarioRunner {
 private struct ScenarioFixture {
     let directory: URL
     let document: Data
-    let scope: RelayOutboxScope
+    let scope: EnvelopeJournalScope
     let storage = SyntheticCredentialStorage()
     let authHTTP = SyntheticAuthHTTP()
     let auth: AuthSession
-    let peer: SyntheticRelayHTTP
-    let session: RelaySession
+    let peer: SyntheticMacHTTP
+    let session: DirectSession
     private let phoneSign = P256.Signing.PrivateKey()
     private let phoneAgreement = P256.KeyAgreement.PrivateKey()
     private let macSign = P256.Signing.PrivateKey()
@@ -190,24 +195,26 @@ private struct ScenarioFixture {
             "reports": [String(repeating: "á🦜", count: 40_000)]], options: [.sortedKeys])
         auth = AuthSession(configuration: SyntheticAuthHTTP.configuration, transport: authHTTP,
             browser: ForbiddenBrowser(), storage: storage, now: { Date(timeIntervalSince1970: 1) })
-        peer = SyntheticRelayHTTP(document: document, loseResponse: scenario == "lost-response",
+        peer = SyntheticMacHTTP(document: document, loseResponse: scenario == "lost-response",
             phoneSign: phoneSign.publicKey, phoneAgreement: phoneAgreement.publicKey,
             macSign: macSign, macAgreement: macAgreement)
-        scope = RelayOutboxScope(relay: URL(string: "https://relay.fixture.invalid")!,
+        scope = EnvelopeJournalScope(relay: URL(string: "alondra-direct://mac-test")!,
             macID: "mac-test", deviceID: "phone-test", credentialRevision: "synthetic-generation")
-        session = try Self.session(directory: directory, scope: scope, auth: auth, peer: peer,
+        session = try Self.session(directory: directory, scope: scope, peer: peer,
             phoneSign: phoneSign, phoneAgreement: phoneAgreement, macSign: macSign, macAgreement: macAgreement)
     }
-    func makeSession() throws -> RelaySession {
-        try Self.session(directory: directory, scope: scope, auth: auth, peer: peer,
+    func makeSession() throws -> DirectSession {
+        try Self.session(directory: directory, scope: scope, peer: peer,
             phoneSign: phoneSign, phoneAgreement: phoneAgreement, macSign: macSign, macAgreement: macAgreement)
     }
-    private static func session(directory: URL, scope: RelayOutboxScope, auth: AuthSession, peer: SyntheticRelayHTTP,
+    private static func session(directory: URL, scope: EnvelopeJournalScope, peer: SyntheticMacHTTP,
         phoneSign: P256.Signing.PrivateKey, phoneAgreement: P256.KeyAgreement.PrivateKey,
-        macSign: P256.Signing.PrivateKey, macAgreement: P256.KeyAgreement.PrivateKey) throws -> RelaySession {
-        try RelaySession(scope: scope,
-            bearer: { try await auth.bearerToken() },
-            transport: peer, signing: phoneSign, agreement: phoneAgreement,
-            macSigning: macSign.publicKey, macAgreement: macAgreement.publicKey, now: { 1000 }, sleep: { _ in })
+        macSign: P256.Signing.PrivateKey, macAgreement: P256.KeyAgreement.PrivateKey) throws -> DirectSession {
+        let http = DirectHTTP(transport: peer)
+        let router = DirectRouter(pinned: peer.identity, saved: [SyntheticMacHTTP.endpoint], http: http, network: { "synthetic" })
+        return DirectSession(macID: "mac-test", deviceID: "phone-test", signing: phoneSign, agreement: phoneAgreement,
+            macSigning: macSign.publicKey, macAgreement: macAgreement.publicKey, router: router, http: http,
+            journal: try EnvelopeJournal(scope: scope, directory: directory.appending(path: "operations")),
+            now: { 1000 }, pause: { _ in })
     }
 }

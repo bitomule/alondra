@@ -16,9 +16,9 @@ always builds with `-c dbg`, never from a TestFlight artifact.
 
 | Scenario | Production components | Independent observations |
 | --- | --- | --- |
-| `large-resource-read` | `AuthSession`, `RelaySession`, request/response envelope codec, resource reads | Exact large Unicode document assembled from verified document revision chunks, only summary/document/content resource paths, encrypted requests opened by the synthetic Mac, one token exchange |
-| `session-revoked` | Same read pipeline and actual `AuthSession.logout()` during the first content chunk | Read rejected, no later chunks, issuer revocation, credential removal, cached lease rejection, no extra token exchange |
-| `lost-response` | Encrypted resource mutation, `RelaySession`, file-backed `RelayOutbox`, receipt verification | Synthetic Mac accepts one request, drops response, client reads receipt and recovers exact result; a replacement session reopens the journal without submitting again |
+| `large-resource-read` | `DirectSession`, `DirectRouter`, request/response envelope codec, resource reads | Exact large Unicode document assembled from verified document revision chunks, only summary/document/content resource paths, encrypted requests opened by the synthetic Mac, no account token needed to reach the Mac |
+| `session-revoked` | Same read pipeline and actual `AuthSession.logout()` during the first content chunk, which closes the Mac's connection as the app does | Read rejected, no later chunks, issuer revocation, credential removal, cached lease rejection, no token exchange |
+| `lost-response` | Encrypted `POST /actions`, `DirectSession`, file-backed `EnvelopeJournal`, sealed result lookup | Synthetic Mac runs the action once and drops its answer; the client resends the same bytes and gets the stored answer; a replacement session reopens the journal and reads the result without posting again |
 
 **Declared doubles:** HTTP peers, OIDC browser (always forbidden), memory credential
 storage, synthetic keys/tokens and fixed service clock. The peers implement

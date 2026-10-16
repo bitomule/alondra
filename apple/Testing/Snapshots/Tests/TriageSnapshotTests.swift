@@ -18,7 +18,7 @@ final class TriageSnapshotTests: XCTestCase {
         let store: StoreOf<TriageFeature>
         var height: CGFloat = 852
         var tabBarHeight: CGFloat = 0
-        var connection = ConnectionState.connected(.relay)
+        var connection = ConnectionState.connected(.irohRelay)
         @Namespace private var zoom
 
         var body: some View {

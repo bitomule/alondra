@@ -234,6 +234,8 @@ final class PushCenter {
             case .changed, .rejected:
                 await reportFailure(response, reason: action.message ?? String(localized: "This action could not be completed."))
             }
+        case .kept:
+            await reportKept(response)
         case .uncertain:
             await reportUncertain(response)
         case .failed(let reason):
@@ -251,6 +253,16 @@ final class PushCenter {
         content.body = response.title.isEmpty
             ? String(localized: "This was already handled or changed. Open Alondra to see where it stands.")
             : String(localized: "\(response.title) was already handled or changed. Open Alondra to see where it stands.")
+        try? await center.add(UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil))
+    }
+
+    /// The Mac could not be reached from the background: the answer waits on this device.
+    private func reportKept(_ response: NotificationResponse) async {
+        let content = UNMutableNotificationContent()
+        content.title = String(localized: "Couldn’t reach your Mac")
+        content.body = response.title.isEmpty
+            ? String(localized: "Your answer will be sent when you open Alondra.")
+            : String(localized: "Your answer to \(response.title) will be sent when you open Alondra.")
         try? await center.add(UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil))
     }
 

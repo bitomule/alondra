@@ -15,7 +15,7 @@ final class MachineBadgeSnapshotTests: XCTestCase {
 
     private struct Harness: View {
         let store: StoreOf<TriageFeature>
-        var connection = ConnectionState.connected(.relay)
+        var connection = ConnectionState.connected(.irohRelay)
         @Namespace private var zoom
 
         var body: some View {
@@ -33,7 +33,7 @@ final class MachineBadgeSnapshotTests: XCTestCase {
         .replacingOccurrences(of: #""value":0.88,"text":"58 GB libres","level":"warm""#, with: #""value":0.96,"text":"16 GB libres","level":"hot""#)
 
     private func navigationBar(width: CGFloat, status raw: String = status,
-                               connection: ConnectionState = .connected(.relay)) throws -> UIImage {
+                               connection: ConnectionState = .connected(.irohRelay)) throws -> UIImage {
         let home = try Fixtures.document("home-ios") { object in
             object["status"] = try JSONSerialization.jsonObject(with: Data(raw.utf8))
             var sections = try XCTUnwrap(object["sections"] as? [[String: Any]])

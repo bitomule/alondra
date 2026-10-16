@@ -3,38 +3,32 @@ import Foundation
 public struct RelayBootstrap: Decodable, Sendable {
     public let protocolVersion: Int
     public let epoch: String
-    public let requestWait: Bool
-    public let resultAcknowledgment: Bool
     /// The iroh relay this relay admits endpoints to; nil while it has none.
     public let irohRelay: URL?
     enum CodingKeys: String, CodingKey {
-        case protocolVersion = "protocol", epoch, requestWait = "request_wait", resultAcknowledgment = "result_ack", irohRelay = "iroh_relay"
+        case protocolVersion = "protocol", epoch, irohRelay = "iroh_relay"
     }
 
     public init(from decoder: any Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         protocolVersion = try values.decode(Int.self, forKey: .protocolVersion)
         epoch = try values.decode(String.self, forKey: .epoch)
-        requestWait = try values.decodeIfPresent(Bool.self, forKey: .requestWait) ?? false
-        resultAcknowledgment = try values.decodeIfPresent(Bool.self, forKey: .resultAcknowledgment) ?? false
         let announced: String? = try? values.decodeIfPresent(String.self, forKey: .irohRelay)
         let url = announced.flatMap { URL(string: $0) }
         irohRelay = url?.scheme == "https" && url?.host != nil ? url : nil
     }
 }
 
-public struct RelayJob: Decodable, Sendable {
-    public let requestID: String
-    public let status: String
-    public let revision: UInt64
-    public let response: Envelope?
-    enum CodingKeys: String, CodingKey { case requestID = "request_id", status, revision, response }
-}
+/// One of the owner's Macs as the relay knows it, with the iroh endpoint it bound, if any.
+public struct RelayMac: Decodable, Sendable, Equatable {
+    public let macID: String
+    public let irohEndpoint: String?
+    enum CodingKeys: String, CodingKey { case macID = "mac_id", irohEndpoint = "iroh_endpoint" }
 
-public struct RelayChanges: Decodable, Sendable {
-    public let epoch: String
-    public let revision: UInt64
-    public let changes: [RelayJob]
+    public init(macID: String, irohEndpoint: String?) {
+        self.macID = macID
+        self.irohEndpoint = irohEndpoint
+    }
 }
 
 public struct RelayPushRegistration: Encodable, Sendable {

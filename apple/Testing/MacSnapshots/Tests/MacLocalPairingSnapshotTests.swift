@@ -104,7 +104,7 @@ final class MacLocalPairingSnapshotTests: XCTestCase {
         state.summary = [
             ConnectionMeasurementSummary(route: .thisMac, network: "wifi", count: 512, failures: 0, medianMs: 4, p90Ms: 11),
             ConnectionMeasurementSummary(route: .direct, network: "wired", count: 88, failures: 0, medianMs: 9, p90Ms: 21),
-            ConnectionMeasurementSummary(route: .relay, network: "wired", count: 37, failures: 2, medianMs: 121, p90Ms: 240),
+            ConnectionMeasurementSummary(route: .irohRelay, network: "wired", count: 37, failures: 2, medianMs: 121, p90Ms: 240),
             ConnectionMeasurementSummary(route: .direct, network: "wired", group: .connecting, count: 5, failures: 0, medianMs: 310, p90Ms: 620),
             ConnectionMeasurementSummary(route: .thisMac, network: "wifi", group: .liveUpdates, count: 64, failures: 0, medianMs: 49_880, p90Ms: 50_004),
         ]

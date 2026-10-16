@@ -2,9 +2,8 @@ import CryptoKit
 import Foundation
 import Security
 
-/// Transport for the opaque relay protocol. Pairing and Keychain ownership belong to the caller.
-/// Persist the encoded envelope before dispatch. An explicit admission refusal permits retrying
-/// those same bytes; an ambiguous network failure permits only GET /v1/requests/{id}.
+/// The relay's account routes, each signed as this device. Pairing and Keychain ownership belong
+/// to the caller.
 actor RelayTransport: Transport {
     private let base: URL
     private let deviceID: String
@@ -162,53 +161,6 @@ actor RelayTransport: Transport {
         return try Self.decoder.decode(Health.self, from: response.body).ok
     }
 
-    public func submit(_ envelope: Envelope) async throws -> RelayJob {
-        guard envelope.kind == "request", envelope.sender == deviceID, envelope.route == envelope.recipient else {
-            throw RelayWireError.invalidField
-        }
-        _ = try envelope.signedBytes()
-        let body = try Self.encoder.encode(envelope)
-        guard body.count <= 256 * 1024 else { throw RelayWireError.invalidField }
-        let response = try await send("POST", target: "/v1/requests", body: body, signed: true)
-        guard response.status == 200 || response.status == 202 else { throw Self.error(response.status) }
-        let job = try Self.decoder.decode(RelayJob.self, from: response.body)
-        guard job.requestID == envelope.requestID else { throw RelayWireError.invalidResponse }
-        return job
-    }
-
-    public func acknowledgeResult(requestID: String, revision: UInt64) async throws {
-        guard Self.validRequestID(requestID) else { throw RelayWireError.invalidField }
-        guard bootstrapValue?.resultAcknowledgment == true else { return }
-        let body = try Self.encoder.encode(["revision": revision])
-        let response = try await send("POST", target: "/v1/requests/\(requestID)/ack", body: body, signed: true)
-        guard response.status == 204 else { throw Self.error(response.status) }
-    }
-
-    public func status(requestID: String) async throws -> RelayJob {
-        guard Self.validRequestID(requestID) else { throw RelayWireError.invalidField }
-        let job: RelayJob = try await get("/v1/requests/\(requestID)", signed: true)
-        guard job.requestID == requestID else { throw RelayWireError.invalidResponse }
-        return job
-    }
-
-    public func waitForRequest(requestID: String, waitSeconds: UInt64) async throws -> RelayReceipt {
-        guard Self.validRequestID(requestID), (1...25).contains(waitSeconds) else { throw RelayWireError.invalidField }
-        let job: RelayJob = try await get("/v1/requests/\(requestID)?wait_s=\(waitSeconds)", signed: true)
-        guard job.requestID == requestID else { throw RelayWireError.invalidResponse }
-        return RelayReceipt(requestID: job.requestID, status: job.status, revision: job.revision, response: job.response)
-    }
-
-    public func changes(since: UInt64, epoch expectedEpoch: String? = nil, waitSeconds: UInt64 = 25) async throws -> RelayChanges {
-        guard waitSeconds <= 25 else { throw RelayWireError.invalidField }
-        var target = "/v1/changes?since=\(since)"
-        if let expectedEpoch {
-            guard try Base64URL.decode(expectedEpoch).count == 16 else { throw RelayWireError.invalidField }
-            target += "&epoch=\(expectedEpoch)"
-        }
-        target += "&wait_s=\(waitSeconds)"
-        return try await get(target, signed: true)
-    }
-
     public func registerPush(_ registration: RelayPushRegistration) async throws {
         let response = try await send("POST", target: "/v1/push/register",
                                       body: Self.encoder.encode(registration), signed: true)
@@ -220,6 +172,12 @@ actor RelayTransport: Transport {
     func bindIrohNode(_ binding: Data) async throws {
         let response = try await send("PUT", target: "/v1/iroh-node", body: binding, signed: true)
         guard response.status == 204 else { throw Self.error(response.status) }
+    }
+
+    func macs() async throws -> [RelayMac] {
+        struct Macs: Decodable { let macs: [RelayMac] }
+        let reply: Macs = try await get("/v1/macs", signed: true)
+        return reply.macs
     }
 
     func pairingRequest(method: String, target: String, body: Data) async throws -> HTTPReply {
@@ -253,7 +211,7 @@ actor RelayTransport: Transport {
         var request = URLRequest(url: url)
         request.httpMethod = method
         request.cachePolicy = .reloadIgnoringLocalCacheData
-        request.timeoutInterval = target.hasPrefix("/v1/changes?") || target.hasPrefix("/v1/requests/") && target.contains("?wait_s=") ? 35 : 15
+        request.timeoutInterval = 15
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         if method == "POST" || method == "PUT" {
             request.httpBody = body
@@ -292,17 +250,12 @@ actor RelayTransport: Transport {
         request.timeoutInterval = try MutationScope.remaining(cap: .seconds(request.timeoutInterval)).requestTimeInterval
         try Task.checkCancellation()
         try MutationScope.check()
-        if method == "POST", target == "/v1/requests" { try MutationScope.possibleDispatch() }
         let reply = try await transport.send(request)
         // The relay named its epoch dead whoever signed, so no request is signed with it again,
         // even when this one was cancelled or its token has been renewed since.
         if signed, signedEpoch == epoch, Self.epochChanged(reply) { invalidateBootstrap() }
         if Task.isCancelled || MutationScope.current?.interruption != nil { return reply }
         guard signed, signedEpoch == epoch, signedBearer == latestBearer else { return reply }
-        let refusal = try? JSONDecoder().decode([String: String].self, from: reply.body)
-        let admissionRefused = method == "POST" && target == "/v1/requests"
-            && (reply.status == 429 && refusal == ["error": "queue_full"]
-                || reply.status == 503 && refusal == ["error": "server_busy"])
         if reply.status == 401 {
             // A relay restart changes its epoch, and an epoch that already worked is the likely
             // cause: bootstrap again first. A 401 with a fresh epoch is about the access token,
@@ -318,7 +271,6 @@ actor RelayTransport: Transport {
             epochProven = true
             proofGeneration &+= 1
         }
-        if admissionRefused { throw RelayWireError.admissionFull }
         return reply
     }
 
@@ -326,12 +278,6 @@ actor RelayTransport: Transport {
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]; return encoder
     }()
     private static let decoder = JSONDecoder()
-
-    private static func validRequestID(_ id: String) -> Bool {
-        !id.isEmpty && id.utf8.count <= 128 && id.utf8.allSatisfy {
-            (65...90).contains($0) || (97...122).contains($0) || (48...57).contains($0) || $0 == 45 || $0 == 95
-        }
-    }
 
     private static func error(_ status: Int) -> RelayWireError {
         switch status {
@@ -348,19 +294,5 @@ actor RelayTransport: Transport {
             throw RelayWireError.invalidEncoding
         }
         return Data(bytes)
-    }
-}
-
-extension RelayTransport {
-    public func submitRequest(_ envelope: Envelope) async throws -> RelayReceipt {
-        let job: RelayJob = try await submit(envelope)
-        return RelayReceipt(requestID: job.requestID, status: job.status,
-                            revision: job.revision, response: job.response)
-    }
-
-    public func requestStatus(requestID: String) async throws -> RelayReceipt {
-        let job: RelayJob = try await status(requestID: requestID)
-        return RelayReceipt(requestID: job.requestID, status: job.status,
-                            revision: job.revision, response: job.response)
     }
 }

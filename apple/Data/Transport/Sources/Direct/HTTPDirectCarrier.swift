@@ -55,7 +55,7 @@ struct HTTPDirectCarrier: EnvelopeCarrier {
                 continue
             }
             switch reply.status {
-            case 409: throw RelaySessionError.operationIdentityConflict
+            case 409: throw SealedRequestError.operationIdentityConflict
             case 421: await router.reject(endpoint, in: context)
             case 429, 503: continue
             case 400: return .plain(.completed(status: 400, body: reply.body))

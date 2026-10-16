@@ -57,7 +57,7 @@ final class MutationBudget: Sendable {
     func track(_ evidence: MutationDispatchEvidence) throws {
         try state.withLock { state in
             guard !state.evidence.contains(where: { $0 === evidence }) else { return }
-            guard state.evidence.count < 4 else { throw RelaySessionError.invalidRequest }
+            guard state.evidence.count < 4 else { throw SealedRequestError.invalidRequest }
             if state.possibleDispatch { evidence.markPossibleDispatch() }
             state.evidence.append(evidence)
             evidence.reserve(by: id)

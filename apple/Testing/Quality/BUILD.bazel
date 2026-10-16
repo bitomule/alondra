@@ -12,6 +12,7 @@ swift_test(
         "//apple/Data/Feed:AlondraFeed",
         "//apple/Data/Transport:AlondraTransport",
         "//apple/Features:AlondraFeatures",
+        "//apple/Testing:AlondraTestSupport",
         "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
         "@swiftpkg_swift_issue_reporting//:IssueReportingTestSupport",
     ],

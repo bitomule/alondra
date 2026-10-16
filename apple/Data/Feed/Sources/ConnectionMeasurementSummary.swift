@@ -8,15 +8,17 @@ public struct ConnectionMeasurementSummary: Equatable, Sendable, Identifiable {
     public enum Group: String, Comparable, Sendable {
         case requests
         case connecting
+        case connectingInBackground
         case liveUpdates
 
         public static func < (lhs: Self, rhs: Self) -> Bool { lhs.order < rhs.order }
-        private var order: Int { [.requests, .connecting, .liveUpdates].firstIndex(of: self)! }
+        private var order: Int { [.requests, .connecting, .connectingInBackground, .liveUpdates].firstIndex(of: self)! }
 
         init(kind: String) {
             switch kind {
             case "changes": self = .liveUpdates
             case ConnectionMeasurement.connectKind: self = .connecting
+            case ConnectionMeasurement.backgroundConnectKind: self = .connectingInBackground
             default: self = .requests
             }
         }

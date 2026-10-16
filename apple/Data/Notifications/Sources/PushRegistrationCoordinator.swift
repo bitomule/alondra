@@ -116,9 +116,9 @@ public final class PushRegistrationCoordinator {
 
     nonisolated static func problem(_ error: any Error) -> Problem {
         switch error {
-        case is URLError, RelayWireError.outcomeUnknown, RelaySessionError.outcomeUnknown, OperationError.outcomeUnknown:
+        case is URLError, RelayWireError.outcomeUnknown, SealedRequestError.outcomeUnknown, OperationError.outcomeUnknown:
             return .unreachable
-        case is RelayWireError, RelaySessionError.invalidResponse:
+        case is RelayWireError, SealedRequestError.invalidResponse:
             return .relay
         case let error as APIError:
             switch error {
