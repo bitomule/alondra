@@ -49,6 +49,8 @@ pub enum Refusal {
     GithubUnreachable,
     /// What the user asked for no longer exists or no longer applies.
     NoLongerAvailable,
+    /// It was already as the user asked, so nothing changed.
+    Unchanged,
 }
 
 /// Every code the domain gives a refusal with no context of its own. The test of this module
@@ -84,6 +86,7 @@ impl Refusal {
             "task_closing" => Self::TaskClosing,
             "forbidden" => Self::NotForYou,
             "storage_unavailable" => Self::StorageUnavailable,
+            "unchanged" => Self::Unchanged,
             _ => Self::NoLongerAvailable,
         }
     }

@@ -105,6 +105,7 @@ pub fn refusal_text(refusal: &Refusal, lang: Lang) -> String {
         Refusal::GithubUnreachable => t!(lang, "Alondra couldn't reach GitHub. Nothing was changed; try again.",
             "Alondra no pudo contactar con GitHub. No cambió nada; inténtalo de nuevo.").into(),
         Refusal::NoLongerAvailable => t!(lang, "This is no longer available.", "Esto ya no está disponible.").into(),
+        Refusal::Unchanged => t!(lang, "It was already like that: nothing changed.", "Ya estaba así: no cambió nada.").into(),
     }
 }
 

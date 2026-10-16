@@ -449,3 +449,54 @@ fn reading_start_facts_hands_pauses_an_older_daemon_saved_without_holding_the_st
     });
     assert_eq!(received.recv_timeout(std::time::Duration::from_secs(5)), Ok(true), "reading the start facts deadlocked");
 }
+
+/// A waiting task raised to High goes ahead of an older Normal one at once, before it asks the
+/// gate again: the queue reads priorities from the domain, not from when each task last asked.
+#[test]
+fn a_waiting_task_raised_to_high_goes_ahead_before_it_asks_again() {
+    let (_home, domain) = world();
+    let gate = &domain.live.gate;
+    gate.tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(1)) });
+    for id in ["busy", "older", "raised"] {
+        create(&domain, id);
+    }
+    let base = alondra_core::now_millis();
+    assert_eq!(ask(&domain, "busy", base), Ok(()));
+    start(&domain, "busy", base);
+    let normal = |id: &str, since| Waiting { key: Key::Task(id.into()), priority: TaskPriority::Normal, resuming: false, since };
+    assert!(gate.ask(&domain, normal("older", base + 1), base).is_err());
+    assert!(gate.ask(&domain, normal("raised", base + 2), base).is_err());
+    assert_eq!(keys(&gate.snapshot(&domain, base).unwrap().queue), ["older", "raised"]);
+
+    run(&domain, Actor::Orchestrator { generation: 0 }, Command::SetPriority { task_id: "raised".into(), priority: TaskPriority::High });
+    let snapshot = gate.snapshot(&domain, base).unwrap();
+    assert_eq!(keys(&snapshot.queue), ["raised", "older"]);
+    assert_eq!(snapshot.queue[0].priority, TaskPriority::High);
+
+    let later = base + 10 * MIN;
+    finish(&domain, "busy", later);
+    assert!(gate.ask(&domain, normal("older", base + 1), later).is_err(), "the High task is first even though it has not asked since");
+    let raised = Waiting { priority: TaskPriority::High, ..normal("raised", base + 2) };
+    assert_eq!(gate.ask(&domain, raised, later), Ok(()));
+    let reopened = DomainRuntime::open(domain.home()).unwrap();
+    assert_eq!(reopened.state().unwrap().tasks[&TaskId::from("raised")].priority, TaskPriority::High, "kept in the store");
+}
+
+/// Setting the priority a task already has changes nothing, so it is refused with why instead of
+/// being acknowledged as if it had been recorded.
+#[test]
+fn setting_the_priority_a_task_already_has_is_refused() {
+    let (_home, domain) = world();
+    create(&domain, "work");
+    run(&domain, Actor::Orchestrator { generation: 0 }, Command::SetPriority { task_id: "work".into(), priority: TaskPriority::High });
+    let state = domain.state().unwrap();
+    let again = domain.execute(&Actor::Orchestrator { generation: 0 }, &CommandEnvelope {
+        protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: crate::auth::random_hex(8).into(),
+        expected_revision: state.revision,
+        command: Command::SetPriority { task_id: "work".into(), priority: TaskPriority::High },
+    }, None, || Ok(()));
+    let Err(crate::domain_store::StoreError::Domain(error)) = again else { panic!("a priority that changes nothing is refused") };
+    assert_eq!(error.code, "unchanged");
+    assert!(error.message.contains("already high"), "{}", error.message);
+    assert_eq!(domain.state().unwrap().revision, state.revision);
+}

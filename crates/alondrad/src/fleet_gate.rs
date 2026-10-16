@@ -776,7 +776,13 @@ fn snapshot_locked(domain: &DomainRuntime, state: &DomainState, inner: &Inner, q
     let admitted = inner.admitted.iter().filter(|(_, at)| now - at < IN_FLIGHT).count();
     let working_tasks = busy.into_iter().chain(in_flight.into_iter().flatten()).collect();
     let mut all: BTreeMap<Key, Waiting> = inner.asking.iter().filter(|(key, _)| still_waits(state, key))
-        .map(|(key, waiting)| (key.clone(), waiting.clone())).collect();
+        .map(|(key, waiting)| {
+            let priority = match key {
+                Key::Task(task) => priority_of(state, Some(task)),
+                _ => waiting.priority,
+            };
+            (key.clone(), Waiting { priority, ..waiting.clone() })
+        }).collect();
     for waiting in queued.into_iter().filter(|waiting| still_waits(state, &waiting.key)) {
         all.insert(waiting.key.clone(), waiting);
     }

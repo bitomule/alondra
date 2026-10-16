@@ -2601,6 +2601,9 @@ impl DomainState {
                 let reviewers: Vec<TaskId> = self.tasks.values()
                     .filter(|other| other.blocks.contains(task_id) && !other.state.terminal())
                     .map(|other| other.id.clone()).collect();
+                if std::iter::once(task_id).chain(&reviewers).all(|id| self.tasks[id].priority == *priority) {
+                    return fail("unchanged", &format!("Task {} is already {} priority: nothing changed", task_id.0, format!("{priority:?}").to_lowercase()));
+                }
                 for id in std::iter::once(task_id).chain(&reviewers) {
                     self.tasks.get_mut(id).unwrap().priority = *priority;
                 }

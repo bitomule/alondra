@@ -98,7 +98,9 @@ impl Fleet {
                 dependencies: Default::default(), stack: None,
                 launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),
             });
-            run(&domain, user(), Command::SetPriority { task_id: (*id).into(), priority: *priority });
+            if !priority.is_normal() {
+                run(&domain, user(), Command::SetPriority { task_id: (*id).into(), priority: *priority });
+            }
             run(&domain, Actor::System, Command::RegisterAgent { agent_id: AgentId(agent.clone()), name: agent.clone(), at: 0 });
             run(&domain, Actor::System, Command::MoveNode { agent_id: AgentId(agent.clone()), event: alondra_core::domain::NodeEvent::TurnStarted, at: 0 });
             run(&domain, user(), Command::AssignTask { task_id: (*id).into(), agent_id: AgentId(agent.clone()), model: None });
