@@ -1,0 +1,46 @@
+load("@aspect_rules_js//js:defs.bzl", "js_run_binary")
+
+js_run_binary(
+    name = "client_bundle",
+    tool = "//agent-host:bundle_tool",
+    srcs = [
+        "client.mjs",
+        "//agent-host:node_modules/@anthropic-ai/claude-agent-sdk",
+        "//agent-host:node_modules/@anthropic-ai/sdk",
+        "//agent-host:node_modules/@modelcontextprotocol/sdk",
+        "//agent-host:node_modules/zod",
+    ],
+    outs = ["client.cjs", "client.meta.json"],
+    args = ["$(location client.mjs)", "$(location client.cjs)", "$(location client.meta.json)"],
+    tags = ["manual"],
+    testonly = True,
+)
+
+sh_test(
+    name = "text_roundtrip_test",
+    srcs = ["run.sh"],
+    args = [
+        "$(rootpath :run.py)",
+        "$(rootpath //agent-host:pinned_node)",
+        "$(rootpath @claude_native_test//:archive)",
+        "$(rootpath :client.cjs)",
+        "$(rootpath :client.meta.json)",
+    ],
+    data = ["run.py", "//agent-host:pinned_node", "@claude_native_test//:archive", ":client_bundle"],
+    tags = ["manual", "local", "no-remote", "requires-darwin", "requires-network"],
+    target_compatible_with = ["@platforms//os:macos", "@platforms//cpu:aarch64"],
+    timeout = "long",
+)
+
+# No native archive, SDK or Node dependency: real owned Python child lifecycle controls.
+# Local: the descendant's Unix socket lives under a short /tmp path and the test lists real process groups.
+sh_test(
+    name = "client_lifecycle_test",
+    srcs = ["run.sh"],
+    args = ["$(rootpath :lifecycle_test.py)"],
+    data = ["lifecycle_test.py", "run.py", "//agent-host:descendant-fake-claude.py"],
+    env = {"DESCENDANT_FAKE_CLAUDE": "$(rootpath //agent-host:descendant-fake-claude.py)"},
+    tags = ["local", "no-remote"],
+    target_compatible_with = ["@platforms//os:macos"],
+    timeout = "moderate",
+)
