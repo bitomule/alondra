@@ -69,8 +69,8 @@ pub(super) fn document(id: &str, context: &RenderContext<'_>) -> Result<View, Bu
             commentable: true,
         })],
     ));
-    if let Some(item) = super::card::item_for_revision(context.projection, &revision.id, context.domain) {
-        let card = super::card::from_item(item, context, true)?;
+    if let Some(item) = super::card::item_for_revision(context, &revision.id) {
+        let card = super::card::from_item(&item, context, true)?;
         let actions: Vec<super::Action> = card.actions.into_iter().chain(card.more.into_iter().filter(|action| action.link.is_none())).map(Into::into).collect();
         if !actions.is_empty() { view.sections.push(common::section("actions", None, vec![Item::Actions(super::ActionBar { actions })])); }
     }
@@ -127,8 +127,8 @@ pub(super) fn pull_request(id: &str, context: &RenderContext<'_>) -> Result<View
         None,
         vec![Item::Facts(Facts { items: facts })],
     ));
-    if let Some(item) = super::card::item_for_pr(context.projection, &pr.id, context.domain) {
-        let card = super::card::from_item(item, context, true)?;
+    if let Some(item) = super::card::item_for_pr(context, &pr.id) {
+        let card = super::card::from_item(&item, context, true)?;
         let (_, checks, _) = super::card::pr_overview(pr, context);
         if let Some(checks) = checks {
             view.sections

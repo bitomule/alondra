@@ -258,11 +258,8 @@ async fn current(
     views: &[(String, String)],
     previous: Option<&Current>,
 ) -> Result<Current, Response> {
-    let state = client
-        .domain
-        .state()
-        .map_err(|_| error("storage_unavailable", "domain state unavailable",
-            "estado de datos no disponible", lang))?;
+    let read = client.domain.read();
+    let state = read.state();
     let wake = *client.feeds.clock.borrow();
     let cache_key = feed_key(kind, lang, transport, views);
     if let Some(current) = client.feeds.cached_current(&cache_key, &state.data_epoch.0, state.revision, wake) {
@@ -284,7 +281,7 @@ async fn current(
         return Ok(current);
     }
     let rendering = client.shared();
-    let render_state = state.clone();
+    let render_state = Arc::clone(&read);
     let versions = views.to_vec();
     let (status_view, stale) = client.read_work.run(move || {
         let status_view = rendering.views.render(status_key, &render_state, &live, kind, lang, transport)?;
@@ -671,7 +668,7 @@ mod tests {
         let fixture = FeedFixture::new();
         let state = fixture.client.domain.state().unwrap();
         let live = super::super::live::gather(&fixture.client, &state, Lang::En, &["home".into()], false, false).await;
-        let rendered = fixture.client.views.render("home", &state, &live, Client::Ios, Lang::En, Transport::Loopback).unwrap();
+        let rendered = fixture.client.views.render("home", &alondra_core::domain::ReadSnapshot::build(state.clone()), &live, Client::Ios, Lang::En, Transport::Loopback).unwrap();
         let open = vec![("home".to_owned(), rendered.version)];
         let first = fixture.initial(&open).await;
         fixture.create_visible_question("visible-change");
@@ -740,7 +737,7 @@ mod tests {
             let mut report_changes = fixture.client.domain.live.mods.changed.subscribe();
             assert!(poll_sample(&mut domain_changes, &mut hook_changes, &mut report_changes).is_pending());
             let live = super::super::live::gather(&fixture.client, &state, Lang::En, &[key.clone()], false, false).await;
-            let rendered = fixture.client.views.render(&key, &state, &live, Client::Ios, Lang::En, Transport::Loopback).unwrap();
+            let rendered = fixture.client.views.render(&key, &alondra_core::domain::ReadSnapshot::build(state.clone()), &live, Client::Ios, Lang::En, Transport::Loopback).unwrap();
             let open = vec![(key.clone(), rendered.version)];
             let first = fixture.initial(&open).await;
             let _ = response_json(handle(&fixture.client, "device-report", &query(&first.cursor, 0, &open), Transport::Loopback).await).await;
@@ -763,7 +760,7 @@ mod tests {
             let reply = response_json(handle(&fixture.client, "device-report", &query(&first.cursor, 0, &open), Transport::Loopback).await).await;
             assert_eq!(reply["stale"], serde_json::json!([key]), "{reply}");
             let live = super::super::live::gather(&fixture.client, &state, Lang::En, &[key.clone()], false, false).await;
-            let rendered = fixture.client.views.render(&key, &state, &live, Client::Ios, Lang::En, Transport::Loopback).unwrap();
+            let rendered = fixture.client.views.render(&key, &alondra_core::domain::ReadSnapshot::build(state.clone()), &live, Client::Ios, Lang::En, Transport::Loopback).unwrap();
             assert!(serde_json::to_string(&rendered).unwrap().contains("echo burst-63"), "the final activity reaches the view");
             fixture.client.domain.report(report("echo burst-63"), 1_700_000_000_064);
             assert_eq!(poll_sample(&mut domain_changes, &mut hook_changes, &mut report_changes), std::task::Poll::Ready(Some(false)));
@@ -869,7 +866,7 @@ mod tests {
         fixture.client.domain.live.observe(&tool("echo first"));
         let state = fixture.client.domain.state().unwrap();
         let live = super::super::live::gather(&fixture.client, &state, Lang::En, &[key.clone()], false, false).await;
-        let rendered = fixture.client.views.render(&key, &state, &live, Client::Ios, Lang::En, Transport::Loopback).unwrap();
+        let rendered = fixture.client.views.render(&key, &alondra_core::domain::ReadSnapshot::build(state.clone()), &live, Client::Ios, Lang::En, Transport::Loopback).unwrap();
         let open = vec![(key.clone(), rendered.version)];
         let first = fixture.initial(&open).await;
         let unchanged = response_json(handle(&fixture.client, "device-activity", &query(&first.cursor, 0, &open), Transport::Loopback).await).await;

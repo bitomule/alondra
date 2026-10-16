@@ -1077,8 +1077,8 @@ mod cache_tests {
         let state = domain.state().unwrap();
         let first = gather_at(&client, &state, Lang::En, &[], false, false, 2_000).await;
         let later = gather_at(&client, &state, Lang::En, &[], false, false, 2_000 + 30 * 60_000).await;
-        let first_view = client.views.render("fleet", &state, &first, Client::Mac, Lang::En, Transport::Loopback).unwrap();
-        let later_view = client.views.render("fleet", &state, &later, Client::Mac, Lang::En, Transport::Loopback).unwrap();
+        let first_view = client.views.render("fleet", &alondra_core::domain::ReadSnapshot::build(state.clone()), &first, Client::Mac, Lang::En, Transport::Loopback).unwrap();
+        let later_view = client.views.render("fleet", &alondra_core::domain::ReadSnapshot::build(state.clone()), &later, Client::Mac, Lang::En, Transport::Loopback).unwrap();
         assert_eq!(client.views.build_count(), 1, "reading an unobserved node again must reuse the view");
         assert_eq!(first.nodes.iter().map(|node| node.agent_id.as_str()).collect::<Vec<_>>(), ["assigned", "connected", "reported"]);
         for node in &first.nodes {
@@ -1104,8 +1104,8 @@ mod cache_tests {
         let later = gather_at(&client, &state, Lang::En, &[], false, false, since + 30 * 60_000).await;
         assert_eq!(before.nodes[0].state_since, Some(timestamp(since)));
         assert_eq!(later.nodes[0].state_since, before.nodes[0].state_since);
-        let before_view = client.views.render("fleet", &state, &before, Client::Mac, Lang::En, Transport::Loopback).unwrap();
-        let later_view = client.views.render("fleet", &state, &later, Client::Mac, Lang::En, Transport::Loopback).unwrap();
+        let before_view = client.views.render("fleet", &alondra_core::domain::ReadSnapshot::build(state.clone()), &before, Client::Mac, Lang::En, Transport::Loopback).unwrap();
+        let later_view = client.views.render("fleet", &alondra_core::domain::ReadSnapshot::build(state.clone()), &later, Client::Mac, Lang::En, Transport::Loopback).unwrap();
         assert_eq!(later_view, before_view, "time alone changes nothing a node shows");
         report(&domain, serde_json::json!({"session_id": "known", "event": "turn.complete", "answer": "New answer"}), since + 1_000);
         let recent_answer = gather_at(&client, &state, Lang::En, &[], false, false, since + 30 * 60_000).await;
@@ -1129,8 +1129,8 @@ mod cache_tests {
         let stalled = gather_at(&client, &state, Lang::En, &[], false, false, limit + 1).await;
         assert_eq!(working.nodes[0].state_key.as_deref(), Some("busy"));
         assert_eq!(stalled.nodes[0].state_key.as_deref(), Some("stalled"));
-        let working_view = client.views.render("fleet", &state, &working, Client::Mac, Lang::En, Transport::Loopback).unwrap();
-        let stalled_view = client.views.render("fleet", &state, &stalled, Client::Mac, Lang::En, Transport::Loopback).unwrap();
+        let working_view = client.views.render("fleet", &alondra_core::domain::ReadSnapshot::build(state.clone()), &working, Client::Mac, Lang::En, Transport::Loopback).unwrap();
+        let stalled_view = client.views.render("fleet", &alondra_core::domain::ReadSnapshot::build(state.clone()), &stalled, Client::Mac, Lang::En, Transport::Loopback).unwrap();
         assert_ne!(stalled_view.cursor, working_view.cursor);
         report(&domain, serde_json::json!({"session_id": "reported", "event": "turn.complete", "answer": "Done", "aborted": true}), limit + 2);
         let answer = gather_at(&client, &state, Lang::En, &[], false, false, limit + 2).await;
@@ -1139,7 +1139,7 @@ mod cache_tests {
         assert_eq!(answer.nodes[0].last_message_at, Some(timestamp(limit + 2)));
         assert!(answer.nodes[0].last_turn_aborted);
         assert_eq!(answer.nodes[0].state_since, None);
-        let answer_view = client.views.render("fleet", &state, &answer, Client::Mac, Lang::En, Transport::Loopback).unwrap();
+        let answer_view = client.views.render("fleet", &alondra_core::domain::ReadSnapshot::build(state.clone()), &answer, Client::Mac, Lang::En, Transport::Loopback).unwrap();
         assert_ne!(answer_view.cursor, stalled_view.cursor);
         assert_eq!(client.views.build_count(), 3);
     }
@@ -1195,7 +1195,7 @@ mod cache_tests {
         let state = domain.state().unwrap();
         let gate = domain.live.gate.snapshot(&domain, now).unwrap();
         let live = gather_at(&client, &state, Lang::En, &[], false, false, now).await;
-        let tasks = client.views.render("tasks", &state, &live, Client::Mac, Lang::En, Transport::Loopback).unwrap();
+        let tasks = client.views.render("tasks", &alondra_core::domain::ReadSnapshot::build(state.clone()), &live, Client::Mac, Lang::En, Transport::Loopback).unwrap();
         let mut listed = vec![];
         rows_with(&serde_json::to_value(&tasks).unwrap(), "Working", &mut listed);
         listed.sort();

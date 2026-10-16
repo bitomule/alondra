@@ -1,7 +1,7 @@
 use super::*;
 use crate::domain::{
     Background, NodePhase, Pause, PauseCleanup, PauseReason,
-    Agent, Author, Document, DocumentRevision, DomainProjection, DomainState, Interaction, InteractionPayload,
+    Agent, Author, Document, DocumentRevision, DomainState, Interaction, InteractionPayload,
     InteractionSubject, MergeAttemptState, MergeAuthorization, MergeMethod, PrState, PullRequest, QuestionOption, Recipient, Request, Scope, Task,
     TaskState, ModelChooser, TaskModel,
 };
@@ -176,7 +176,7 @@ fn render<'a>(
         key,
         RenderContext {
             domain: &domain,
-            projection: &domain.projection(),
+            index: &crate::domain::ReadIndex::build(&domain),
             live,
             client,
             lang,
@@ -1039,7 +1039,7 @@ fn invalid_generated_pr_action_id_is_omitted_while_the_card_renders() {
         "a valid action after the invalid action should still render");
     let result = build(&format!("card:{pr_id}"), RenderContext {
         domain: &state,
-        projection: &state.projection(),
+        index: &crate::domain::ReadIndex::build(&state),
         live: &live,
         client: Client::Ios,
         lang: Lang::En,
@@ -1103,7 +1103,7 @@ fn view_keys_are_addressable_and_bound_to_epoch() {
             "sidebar",
             RenderContext {
                 domain: &state,
-                projection: &state.projection(),
+                index: &crate::domain::ReadIndex::build(&state),
                 live: &live,
                 client: Client::Ios,
                 lang: Lang::En,
@@ -1240,8 +1240,8 @@ fn decidable_card(state: &DomainState, lang: Lang, interaction: &str) -> Card {
         action.enabled = true;
         action.disabled_reason = None;
     }
-    let projection = domain.projection();
-    let context = RenderContext { domain: &domain, projection: &projection, live: &live, client: Client::Ios, lang, transport: Transport::Loopback,
+    let index = crate::domain::ReadIndex::build(&domain);
+    let context = RenderContext { domain: &domain, index: &index, live: &live, client: Client::Ios, lang, transport: Transport::Loopback,
         cursor: "cursor-1", rendered_at: "" };
     card::from_item(&item, &context, true).unwrap()
 }
@@ -1848,13 +1848,13 @@ fn a_fleet_node_shows_the_one_task_it_is_on_not_the_ones_it_finished() {
 }
 
 #[test]
-fn rows_count_cards_from_the_render_projection_without_projecting_again() {
+fn rows_count_cards_from_the_render_index_without_reading_the_inbox_again() {
     let mut state = with_cards(&fixture());
     state.tasks.get_mut(&"t-1".into()).unwrap().agent_id = Some("a-1".into());
     let live = LiveSnapshot::default();
-    let counted = |projection: &DomainProjection, key: &str| {
+    let counted = |index: &crate::domain::ReadIndex, key: &str| {
         let view = build(key, RenderContext {
-            domain: &state, projection, live: &live, client: Client::Ios, lang: Lang::En,
+            domain: &state, index, live: &live, client: Client::Ios, lang: Lang::En,
             transport: Transport::Loopback, cursor: "cursor-1", rendered_at: "",
         }).unwrap();
         fn count(row: &Row) -> u32 {
@@ -1864,8 +1864,8 @@ fn rows_count_cards_from_the_render_projection_without_projecting_again() {
         view.sections.iter().flat_map(|section| &section.items)
             .map(|item| if let Item::Row(row) = item { count(row) } else { 0 }).sum::<u32>()
     };
-    assert!(counted(&state.projection(), "tasks") > 0, "the fixture has a card waiting on its task");
-    let nothing_waiting = DomainState::new("test-epoch").projection();
+    assert!(counted(&crate::domain::ReadIndex::build(&state), "tasks") > 0, "the fixture has a card waiting on its task");
+    let nothing_waiting = crate::domain::ReadIndex::build(&DomainState::new("test-epoch"));
     assert_eq!(counted(&nothing_waiting, "tasks"), 0);
     assert_eq!(counted(&nothing_waiting, "fleet"), 0);
 }
@@ -3409,7 +3409,8 @@ fn no_card_of_any_fixture_carries_an_action_the_domain_says_is_not_available() {
         for client in [Client::Ios, Client::Mac, Client::Tui] {
             for lang in [Lang::En, Lang::Es] {
                 let projection = domain.projection();
-                let context = RenderContext { domain: &domain, projection: &projection, live: &live, client, lang, transport: Transport::Loopback,
+                let index = crate::domain::ReadIndex::build(&domain);
+                let context = RenderContext { domain: &domain, index: &index, live: &live, client, lang, transport: Transport::Loopback,
                     cursor: "cursor-1", rendered_at: "" };
                 for item in projection.inbox.clone() {
                     let card = card::from_item(&item, &context, true).unwrap();
@@ -5673,9 +5674,9 @@ fn the_waiting_header_counts_exactly_the_cards_the_inbox_lists_and_each_one_open
             assert_eq!(home.status.badge as usize, queue.card_ids.len(), "{name}");
             for id in &queue.card_ids {
                 let domain = with_cards(state);
-                let projection = domain.projection();
+                let index = crate::domain::ReadIndex::build(&domain);
                 let card = build(&format!("card:{id}"), RenderContext {
-                    domain: &domain, projection: &projection, live: &live, client: Client::Ios, lang,
+                    domain: &domain, index: &index, live: &live, client: Client::Ios, lang,
                     transport: Transport::Loopback, cursor: "cursor-1", rendered_at: "2026-09-30T10:00:00Z",
                 });
                 assert!(card.is_ok(), "{name}: card {id} is counted but does not open");

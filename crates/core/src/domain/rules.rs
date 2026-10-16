@@ -736,7 +736,7 @@ impl DomainState {
         members.sort_by_key(|other| other.card.group.as_ref().map_or(0, |g| g.index));
         members
     }
-    fn answered_question(i: &Interaction) -> bool {
+    pub(super) fn answered_question(i: &Interaction) -> bool {
         matches!(&i.payload, InteractionPayload::Question { answer: Some(_), .. } | InteractionPayload::ActionRequest { answer: Some(_), .. })
     }
     /// Every question of the group has its answer: the author is given them all together.

@@ -323,7 +323,7 @@ mod tests {
         use alondra_core::views::{build, Client, Lang, LiveSnapshot, RenderContext, Transport};
         let state = domain.state().unwrap();
         let view = build("tasks", RenderContext {
-            domain: &state, projection: &state.projection(), live: &LiveSnapshot::default(), client: Client::Mac, lang: Lang::Es,
+            domain: &state, index: &alondra_core::domain::ReadIndex::build(&state), live: &LiveSnapshot::default(), client: Client::Mac, lang: Lang::Es,
             transport: Transport::Loopback, cursor: "", rendered_at: "",
         }).unwrap();
         serde_json::to_string(&view).unwrap()

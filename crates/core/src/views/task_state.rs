@@ -54,7 +54,7 @@ pub(super) fn present(task: &Task, context: &RenderContext<'_>) -> Presentation 
 }
 
 fn classify(task: &Task, context: &RenderContext<'_>) -> Presentation {
-    let (domain, lang) = (context.domain, context.lang);
+    let lang = context.lang;
     use Block::*;
     match task.state {
         TaskState::Done => return Presentation::new(t!(lang, "Finished", "Terminada"), Tone::Success, Ended, Some(done_fact(task, context))),
@@ -77,19 +77,21 @@ fn classify(task: &Task, context: &RenderContext<'_>) -> Presentation {
         };
         return Presentation::new(t!(lang, "Paused", "Pausada"), Tone::Neutral, Waiting, Some(with_pending(fact, task, context)));
     }
-    if let Some((_, reason)) = domain.task_merge_failure(&task.id) {
+    let read = context.reading(&task.id);
+    if let Some((_, reason)) = read.and_then(|read| read.merge_failure.clone()) {
         return Presentation::new(t!(lang, "Couldn't merge", "No se pudo fusionar"), Tone::Warning, InProgress, Some(reason));
     }
-    let waits = context.projection.waits_for_user(&task.id);
-    if let Attention::Wait(reason @ WaitReason::Answer { .. }) = domain.attention(task) {
-        return if waits { for_you(task, context) } else { waiting_for(task, &reason, context) };
+    let waits = context.waits_for_user(&task.id);
+    let attention = context.attention(task);
+    if let Attention::Wait(reason @ WaitReason::Answer { .. }) = &attention {
+        return if waits { for_you(task, context) } else { waiting_for(task, reason, context) };
     }
     match task.state {
         TaskState::NeedsYou | TaskState::ForYourReview if waits => for_you(task, context),
         TaskState::Running | TaskState::NeedsYou => running(task, context),
-        TaskState::ForYourReview | TaskState::AwaitingBlocker => match domain.attention(task) {
-            Attention::Wait(reason) => waiting_for(task, &reason, context),
-            _ if domain.task_handed_back(&task.id).is_some() => running(task, context),
+        TaskState::ForYourReview | TaskState::AwaitingBlocker => match &attention {
+            Attention::Wait(reason) => waiting_for(task, reason, context),
+            _ if read.is_some_and(|read| read.handed_back.is_some()) => running(task, context),
             _ if task.state == TaskState::ForYourReview =>
                 Presentation::new(t!(lang, "Delivered", "Entregada"), Tone::Info, InProgress, review_fact(task, context)),
             _ => Presentation::new(t!(lang, "Waiting", "Esperando"), Tone::Info, Waiting, None),
@@ -104,7 +106,7 @@ fn classify(task: &Task, context: &RenderContext<'_>) -> Presentation {
 /// never lists a task whose card the inbox and the task's detail do not show.
 fn for_you(task: &Task, context: &RenderContext<'_>) -> Presentation {
     let lang = context.lang;
-    if context.projection.waits_for_review(&task.id) {
+    if context.waits_for_review(&task.id) {
         Presentation::new(t!(lang, "Ready for review", "Para revisar"), Tone::Info, Block::ForYou, review_fact(task, context))
     } else {
         Presentation::new(t!(lang, "Needs you", "Te necesita"), Tone::Warning, Block::ForYou, open_questions(task, context))
@@ -114,9 +116,7 @@ fn for_you(task: &Task, context: &RenderContext<'_>) -> Presentation {
 /// What a task that needs the user asks: its one open question, or how many it has. Never the task's own title.
 fn open_questions(task: &Task, context: &RenderContext<'_>) -> Option<String> {
     let lang = context.lang;
-    let pending: Vec<_> = context.projection.inbox.iter()
-        .filter(|item| item.pending && item.task_id.as_ref() == Some(&task.id))
-        .collect();
+    let pending: Vec<_> = context.waiting_cards_of(&task.id).collect();
     match pending.as_slice() {
         [] => None,
         [one] if !one.card.need.trim().is_empty() && one.card.need.trim() != task.title.trim() => {
@@ -140,7 +140,8 @@ fn open_questions(task: &Task, context: &RenderContext<'_>) -> Option<String> {
 
 fn running(task: &Task, context: &RenderContext<'_>) -> Presentation {
     let lang = context.lang;
-    let activity = context.domain.task_activity(task).unwrap_or(TaskActivity::NodeClosed);
+    let read = context.reading(&task.id);
+    let activity = read.and_then(|read| read.activity.clone()).unwrap_or(TaskActivity::NodeClosed);
     let node = task.agent_id.as_ref().and_then(|id| context.live.nodes.iter().find(|node| node.agent_id == id.0));
     let doing = node.and_then(|node| super::fleet::doing(node, matches!(activity, TaskActivity::Working | TaskActivity::WaitingBackground(_)), lang));
     let (fact, said_at) = doing.map_or((None, None), |(fact, at)| (Some(fact), at));
@@ -148,14 +149,14 @@ fn running(task: &Task, context: &RenderContext<'_>) -> Presentation {
         .or_else(|| context.live.task_since.get(&task.id.0).cloned());
     if !matches!(activity, TaskActivity::Working | TaskActivity::WaitingBackground(_) | TaskActivity::Starting | TaskActivity::Reconnecting
         | TaskActivity::ComingBack | TaskActivity::Paused(_))
-        && context.projection.waits_for_user(&task.id) {
+        && context.waits_for_user(&task.id) {
         return for_you(task, context);
     }
     let warn = |state: &str| Presentation { since: active_at.clone(), ..Presentation::new(state, Tone::Warning, Block::Waiting, fact.clone()) };
     if let Some(halted) = task.agent_id.as_ref().and_then(|agent| common::halted(agent, context)) {
         return Presentation { active_at, ..Presentation::new(halted.text, Tone::Warning, Block::InProgress, fact) };
     }
-    let state = match (&activity, context.domain.task_handed_back(&task.id)) {
+    let state = match (&activity, read.and_then(|read| read.handed_back)) {
         (TaskActivity::ComingBack, _) => return match common::coming_back_queued(task, context) {
             Some(queued) => in_queue(task, queued, lang),
             None => Presentation::new(t!(lang, "Waiting for the machine", "Esperando máquina"), Tone::Neutral, Block::Waiting, None),
@@ -194,7 +195,7 @@ fn running(task: &Task, context: &RenderContext<'_>) -> Presentation {
 /// What a paused task's node still owes the user, when its delivery went back to it.
 fn with_pending(fact: String, task: &Task, context: &RenderContext<'_>) -> String {
     let lang = context.lang;
-    let pending = match context.domain.task_handed_back(&task.id) {
+    let pending = match context.reading(&task.id).and_then(|read| read.handed_back) {
         Some(Instruction::Changes) => t!(lang, "has your changes pending", "tiene pendientes tus cambios"),
         Some(Instruction::Question) => t!(lang, "has your question pending", "tiene pendiente tu pregunta"),
         Some(Instruction::Conflicts) => t!(lang, "has the PR's conflicts pending", "tiene pendientes los conflictos de la PR"),
@@ -285,7 +286,7 @@ fn not_started(task: &Task, context: &RenderContext<'_>) -> Presentation {
             _ => t!(lang, "Its launch failed", "Su lanzamiento falló").into(),
         });
     }
-    if let Some(error) = common::failed_launch(task, context.domain) {
+    if let Some(error) = common::failed_launch(task, context) {
         return didnt_start(if error.is_empty() {
             t!(lang, "The scheduled run could not launch it", "La ejecución programada no pudo lanzarla").into()
         } else {

@@ -131,7 +131,7 @@ pub(super) fn new_request(key: &str, context: &RenderContext<'_>) -> Result<View
         })],
     ));
     if matches!(context.client, Client::Ios | Client::Mac) {
-        let mut requests: Vec<_> = context.domain.requests.values().filter(|request| context.domain.is_defining(request)).collect();
+        let mut requests: Vec<_> = context.domain.requests.values().filter(|request| context.is_defining(request)).collect();
         requests.sort_by(|left, right| {
             context.live.request_times.get(&right.id.0).cmp(&context.live.request_times.get(&left.id.0))
                 .then_with(|| right.id.cmp(&left.id))

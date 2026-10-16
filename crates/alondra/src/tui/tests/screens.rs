@@ -131,7 +131,7 @@ pub(super) fn build(domain: &DomainState, live: &LiveSnapshot, key: &str) -> vie
         key,
         RenderContext {
             domain,
-            projection: &domain.projection(),
+            index: &alondra_core::domain::ReadIndex::build(&domain),
             live,
             client: Client::Tui,
             lang: Lang::Es,

@@ -195,11 +195,12 @@ async fn repeated_card_requests() {
         let mut node_state_since = Vec::new();
         for _ in 0..20 {
             let start = Instant::now();
-            let state = client.domain.state()?;
+            let read = client.domain.read();
+            let state = std::sync::Arc::clone(read.state());
             let state_at = Instant::now();
             let live = crate::views::live::gather(&client, &state, Lang::En, &[key.to_owned()], true, false).await;
             let live_at = Instant::now();
-            let mut view = client.views.render(key, &state, &live, Client::Mac, Lang::En, Transport::Loopback).map_err(|error| anyhow::anyhow!("render: {error:?}"))?;
+            let mut view = client.views.render(key, &read, &live, Client::Mac, Lang::En, Transport::Loopback).map_err(|error| anyhow::anyhow!("render: {error:?}"))?;
             let render_at = Instant::now();
             view.service = Some(crate::views::this_service());
             let body = serde_json::to_vec(&view)?;

@@ -3,10 +3,10 @@ use super::{
     text::{t, tf},
     version,
 };
-use crate::domain::DomainProjection;
-
-pub(super) fn build(projection: &DomainProjection, context: &RenderContext<'_>) -> Status {
-    let roots = super::home::waiting(projection);
+/// What waits for the user is the home queue, its count and the app icon badge. The inbox only
+/// holds what is addressed to the user, the orchestrator's answers and questions included.
+pub(super) fn build(context: &RenderContext<'_>) -> Status {
+    let roots = context.waiting();
     let pending = roots.len() as u32;
     let questions = roots
         .iter()
@@ -55,7 +55,7 @@ pub(super) fn build(projection: &DomainProjection, context: &RenderContext<'_>) 
             Count {
                 id: "tasks".into(),
                 label: t!(context.lang, "Tasks", "Tareas").into(),
-                value: projection.tasks.iter().filter(|task| task.active()).count() as u32,
+                value: context.domain.tasks.values().filter(|task| task.active()).count() as u32,
             },
             Count {
                 id: "agents".into(),
@@ -70,8 +70,9 @@ pub(super) fn build(projection: &DomainProjection, context: &RenderContext<'_>) 
             Count {
                 id: "waiting".into(),
                 label: t!(context.lang, "waiting", "esperando").into(),
-                value: context.domain.agents.values().filter(|agent| roots.iter()
-                    .any(|item| item.agent_id.as_ref() == Some(&agent.id) && item.kind != "information")).count() as u32,
+                value: context.domain.agents.values().filter(|agent| context.index.node(&agent.id).is_some_and(|node| {
+                    node.waiting.iter().filter_map(|id| context.index.waiting_card(id)).any(|item| item.kind != "information")
+                })).count() as u32,
             },
         ],
         gauges: context.live.gauges.clone(),

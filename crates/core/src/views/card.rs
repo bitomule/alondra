@@ -13,7 +13,7 @@ use super::{
 };
 use crate::domain::{
     AvailableAction, Author, CardKind, CardSpec, ClarificationReason, ContentKind as DomainContent,
-    DeliveryTarget, DomainProjection, DomainState, EvidenceKind, Hold, InboxItem, InboxSubject, Instruction, Interaction, InteractionId,
+    DeliveryTarget, DocumentRevisionId, DomainState, EvidenceKind, Hold, InboxItem, InboxSubject, Instruction, Interaction, InteractionId,
     InteractionPayload, InteractionSubject, MergeMethod, PrId, PrState, PullRequest, QuestionGroup, QuestionOption, Recipient, Scope, clip,
 };
 
@@ -61,23 +61,23 @@ fn reviewed_revision<'a>(
             _ => None,
         })
 }
-/// The pending card that stands for a pull request, whichever way it is addressed.
-pub(super) fn item_for_pr<'a>(projection: &'a DomainProjection, pr_id: &PrId, domain: &DomainState) -> Option<&'a InboxItem> {
-    projection.inbox.iter().find(|item| {
-        interaction_of(item, domain).is_some_and(|i| {
-            targets_of(i).iter().any(|target| matches!(target, DeliveryTarget::PullRequest { pr_id: id, .. } if id == pr_id))
-        })
+/// The first card of the inbox, in its order, among `cards` that `about` keeps.
+fn first_queued<'a>(context: &'a RenderContext<'_>, cards: &[InteractionId], about: impl Fn(&Interaction) -> bool)
+    -> Option<std::borrow::Cow<'a, InboxItem>> {
+    let first = cards.iter()
+        .filter_map(|id| Some((context.index.queue_position(id)?, context.domain.interactions.get(id)?)))
+        .filter(|(_, i)| about(i))
+        .min_by_key(|(at, _)| *at)?;
+    Some(context.index.item(context.domain, first.1))
+}
+/// The inbox card that stands for a pull request, whichever way it is addressed.
+pub(super) fn item_for_pr<'a>(context: &'a RenderContext<'_>, pr_id: &PrId) -> Option<std::borrow::Cow<'a, InboxItem>> {
+    first_queued(context, context.index.cards_of_pr(pr_id), |i| {
+        targets_of(i).iter().any(|target| matches!(target, DeliveryTarget::PullRequest { pr_id: id, .. } if id == pr_id))
     })
 }
-pub(super) fn item_for_revision<'a>(
-    projection: &'a DomainProjection,
-    revision_id: &crate::domain::DocumentRevisionId,
-    domain: &DomainState,
-) -> Option<&'a InboxItem> {
-    projection
-        .inbox
-        .iter()
-        .find(|item| interaction_of(item, domain).and_then(reviewed_revision) == Some(revision_id))
+pub(super) fn item_for_revision<'a>(context: &'a RenderContext<'_>, revision_id: &DocumentRevisionId) -> Option<std::borrow::Cow<'a, InboxItem>> {
+    first_queued(context, context.index.cards_of_document_revision(revision_id), |i| reviewed_revision(i) == Some(revision_id))
 }
 
 pub(super) fn build(id: &str, context: &RenderContext<'_>) -> Result<View, BuildError> {
@@ -86,24 +86,12 @@ pub(super) fn build(id: &str, context: &RenderContext<'_>) -> Result<View, Build
     }
     let key = format!("card:{id}");
     let domain = context.domain;
-    let projection = context.projection;
-    let fallback;
-    let item = match projection.inbox.iter().find(|item| public_id(item) == id) {
-        Some(item) => item,
-        None => {
-            let direct = domain.interactions.get(&InteractionId(id.into())).filter(|i| i.recipient == Recipient::User);
-            let found = direct.or_else(|| alias(domain, id)).ok_or(BuildError::NotFound)?;
-            fallback = projection
-                .inbox
-                .iter()
-                .find(|item| public_id(item) == found.id.0)
-                .cloned()
-                .unwrap_or_else(|| domain.item(found));
-            &fallback
-        }
-    };
-    if let Some(settled) = interaction_of(item, domain).and_then(|interaction| settled(item, interaction, domain)) {
-        return Ok(settled_view(key, settled, &projection, context));
+    let direct = domain.interactions.get(&InteractionId(id.into())).filter(|i| i.recipient == Recipient::User);
+    let found = direct.or_else(|| alias(context, id)).ok_or(BuildError::NotFound)?;
+    let item = context.index.item(domain, found);
+    let item = item.as_ref();
+    if let Some(settled) = settled(item, found, domain) {
+        return Ok(settled_view(key, settled, context));
     }
     let card = from_item(item, context, true)?;
     let title = card.title.clone();
@@ -137,7 +125,7 @@ pub(super) fn build(id: &str, context: &RenderContext<'_>) -> Result<View, Build
         version: String::new(),
         cursor: context.cursor.into(),
         title: Some(title),
-        status: super::status::build(&projection, context),
+        status: super::status::build(context),
         sections,
         empty: None,
         notices: vec![],
@@ -147,7 +135,7 @@ pub(super) fn build(id: &str, context: &RenderContext<'_>) -> Result<View, Build
 
 /// A settled card is never shown: its view carries only why it went, for the client to say as it
 /// closes the screen.
-fn settled_view(key: String, settled: Settled, projection: &DomainProjection, context: &RenderContext<'_>) -> View {
+fn settled_view(key: String, settled: Settled, context: &RenderContext<'_>) -> View {
     View {
         protocol: VIEWS_PROTOCOL,
         data_epoch: context.domain.data_epoch.0.clone(),
@@ -157,7 +145,7 @@ fn settled_view(key: String, settled: Settled, projection: &DomainProjection, co
         version: String::new(),
         cursor: context.cursor.into(),
         title: None,
-        status: super::status::build(projection, context),
+        status: super::status::build(context),
         sections: vec![],
         empty: Some(Notice { text: settled.notice(context.lang).into(), tone: Tone::Neutral, action: None }),
         notices: vec![],
@@ -194,13 +182,20 @@ fn settled(item: &InboxItem, interaction: &Interaction, domain: &DomainState) ->
 
 /// The card a pull request or a document revision is about, for old links to them: its
 /// current delivery, else a question its node linked to it.
-fn alias<'a>(domain: &'a DomainState, id: &str) -> Option<&'a Interaction> {
+fn alias<'a>(context: &RenderContext<'a>, id: &str) -> Option<&'a Interaction> {
+    let domain = context.domain;
+    let mut named: Vec<&InteractionId> = context.index.cards_of_pr(&PrId(id.into())).iter()
+        .chain(context.index.cards_of_document_revision(&DocumentRevisionId(id.into())))
+        .collect();
+    named.sort();
+    named.dedup();
+    let cards = || named.iter().filter_map(|card| domain.interactions.get(*card));
     let names = |target: &DeliveryTarget| match target {
         DeliveryTarget::PullRequest { pr_id, .. } => pr_id.0 == id,
         DeliveryTarget::DocumentRevision { revision_id, .. } => revision_id.0 == id,
         _ => false,
     };
-    let delivery = domain.interactions.values().find(|interaction| {
+    let delivery = cards().find(|interaction| {
         let current = match &interaction.scope {
             Scope::Task { task_id } => {
                 domain.tasks.get(task_id).is_some_and(|t| t.final_presentation.as_ref() == Some(&interaction.id))
@@ -210,7 +205,7 @@ fn alias<'a>(domain: &'a DomainState, id: &str) -> Option<&'a Interaction> {
         current && targets_of(interaction).iter().any(names)
     });
     delivery.or_else(|| {
-        domain.interactions.values().find(|interaction| {
+        cards().find(|interaction| {
             interaction.recipient == Recipient::User
                 && domain.open(interaction)
                 && match &interaction.subject {
@@ -385,7 +380,8 @@ fn review_lines(item: &InboxItem, context: &RenderContext<'_>) -> Vec<ContextLin
     let reviewed_after = |reviewer: &crate::domain::Task| {
         reviewer.final_presentation.as_ref().and_then(|id| context.domain.interactions.get(id)).is_some_and(|result| result.order > item.order)
     };
-    for reviewer in context.domain.tasks.values().filter(|b| b.blocks.contains(task) && reviewed_after(b)) {
+    let reviewers = context.index.reviewers(task).iter().filter_map(|id| context.domain.tasks.get(id));
+    for reviewer in reviewers.filter(|b| reviewed_after(b)) {
         match &reviewer.verdict {
             Some(Verdict::Approved { summary, open_issues: false, .. }) => lines.push(line(
                 tf!(lang, "Reviewed by “{title}”: {summary}", "Revisado por «{title}»: {summary}", title = reviewer.title, summary = summary.trim()),
@@ -1188,10 +1184,10 @@ fn change_answers(interaction: &Interaction, context: &RenderContext<'_>) -> Opt
     let lang = context.lang;
     let domain = context.domain;
     interaction.card.group.as_ref()?;
-    if !domain.open(interaction) || domain.group_complete(interaction) {
+    if !domain.open(interaction) || context.index.group_complete(domain, interaction) {
         return None;
     }
-    let answered: Vec<ActionOption> = domain.group_members(interaction).into_iter().filter_map(|member| {
+    let answered: Vec<ActionOption> = context.index.group_members(domain, interaction).into_iter().filter_map(|member| {
         let InteractionPayload::Question { options, answer: Some(answer), .. } = &member.payload else { return None };
         let said = options.iter().find(|option| option.id == answer.option_id).map(|option| option.label.clone())
             .or_else(|| answer.inputs.values().find_map(|value| match value {

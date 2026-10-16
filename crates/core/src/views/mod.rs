@@ -42,15 +42,15 @@ impl Service {
     }
 }
 
-use crate::domain::{DomainProjection, DomainState};
+use crate::domain::{DomainState, InboxItem, ReadIndex, Task, TaskId, TaskReading};
 use sha2::{Digest, Sha256};
 
 #[derive(Clone, Copy, Debug)]
 pub struct RenderContext<'a> {
     pub domain: &'a DomainState,
-    /// `domain.projection()`, computed once per render: it copies every interaction, so the
-    /// rows of a view must never compute it again.
-    pub projection: &'a DomainProjection,
+    /// The read index of `domain`'s revision: everything a row reads of the domain beyond its own
+    /// record, decided once per commit, so no view walks the domain once per row.
+    pub index: &'a ReadIndex,
     pub live: &'a LiveSnapshot,
     pub client: Client,
     pub lang: Lang,
@@ -90,49 +90,119 @@ impl Settled {
         }
     }
 }
+impl RenderContext<'_> {
+    /// Waiting for You, in its order, each card with its buttons.
+    pub(super) fn waiting(&self) -> &[InboxItem] {
+        self.index.waiting()
+    }
+    pub(super) fn reading(&self, task: &TaskId) -> Option<&TaskReading> {
+        self.index.task(task)
+    }
+    pub(super) fn attention(&self, task: &Task) -> crate::domain::Attention {
+        self.reading(&task.id).map_or(crate::domain::Attention::Idle, |read| read.attention.clone())
+    }
+    pub(super) fn waits_for_user(&self, task: &TaskId) -> bool {
+        self.reading(task).is_some_and(|read| read.waits_for_user)
+    }
+    pub(super) fn waits_for_review(&self, task: &TaskId) -> bool {
+        self.reading(task).is_some_and(|read| read.waits_for_review)
+    }
+    /// The cards a task waits on the user with, in the queue's order.
+    pub(super) fn waiting_cards_of(&self, task: &TaskId) -> impl Iterator<Item = &InboxItem> {
+        self.reading(task).into_iter().flat_map(|read| &read.waiting).filter_map(|id| self.index.waiting_card(id))
+    }
+    /// The task a node works for: its latest open one, or else its latest.
+    pub(super) fn node_task(&self, agent: &crate::domain::AgentId) -> Option<&Task> {
+        self.index.task_of_node(agent).and_then(|id| self.domain.tasks.get(id))
+    }
+    /// The orchestrator has neither split the request into tasks nor closed it.
+    pub(super) fn is_defining(&self, request: &crate::domain::Request) -> bool {
+        !request.closed && self.index.tasks_of_request(&request.id).is_empty()
+    }
+}
 /// The app icon badge: the same count as the Waiting for You queue and `Status::badge`.
 pub fn inbox_badge(domain: &crate::domain::DomainState) -> u32 {
-    home::waiting(&domain.projection()).len() as u32
+    ReadIndex::build(domain).waiting().len() as u32
 }
 /// The cards of the Waiting for You queue, by the id a push names them with (`alondra.card`).
 pub fn waiting_cards(domain: &crate::domain::DomainState) -> Vec<String> {
-    home::waiting(&domain.projection()).into_iter().map(|item| card::public_id(item).to_owned()).collect()
+    ReadIndex::build(domain).waiting().iter().map(|item| card::public_id(item).to_owned()).collect()
 }
+
+macro_rules! families {
+    ($($family:ident),* $(,)?) => {
+        /// Every kind of view `build` renders, each named by what its keys start with.
+        #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+        pub enum Family { $($family),* }
+        impl Family {
+            pub const ALL: &[Family] = &[$(Family::$family),*];
+        }
+    };
+}
+families!(Home, Card, Document, PullRequest, Sidebar, Tasks, Task, Request, Fleet, Node, Schedules, Schedule, NewRequest,
+    IssuePicker, Search, Machine);
+
+impl Family {
+    /// The family a key belongs to, or none for a key no view answers.
+    pub fn of(key: &str) -> Option<Family> {
+        let listed = |name: &str| key == name || key.strip_prefix(name).is_some_and(|rest| rest.starts_with('?'));
+        Some(if key == "home" || key.starts_with("home?focus=") {
+            Family::Home
+        } else if key.starts_with("card:") {
+            Family::Card
+        } else if key.starts_with("document:") {
+            Family::Document
+        } else if key.starts_with("pull_request:") {
+            Family::PullRequest
+        } else if key == "sidebar" {
+            Family::Sidebar
+        } else if listed("tasks") {
+            Family::Tasks
+        } else if key.starts_with("task:") {
+            Family::Task
+        } else if key.starts_with("request:") {
+            Family::Request
+        } else if key == "fleet" {
+            Family::Fleet
+        } else if key.starts_with("node:") {
+            Family::Node
+        } else if key == "schedules" {
+            Family::Schedules
+        } else if key.starts_with("schedule:") {
+            Family::Schedule
+        } else if listed("new_request") {
+            Family::NewRequest
+        } else if listed("issue_picker") {
+            Family::IssuePicker
+        } else if listed("search") {
+            Family::Search
+        } else if key == "machine" {
+            Family::Machine
+        } else {
+            return None;
+        })
+    }
+}
+
 pub fn build(key: &str, context: RenderContext<'_>) -> Result<View, BuildError> {
-    let mut view = if key == "home" || key.starts_with("home?focus=") {
-        home::build(key, &context)?
-    } else if let Some(id) = key.strip_prefix("card:") {
-        card::build(id, &context)?
-    } else if let Some(id) = key.strip_prefix("document:") {
-        details::document(id, &context)?
-    } else if let Some(id) = key.strip_prefix("pull_request:") {
-        details::pull_request(id, &context)?
-    } else if key == "sidebar" {
-        sidebar::build(&context)?
-    } else if key == "tasks" || key.starts_with("tasks?") {
-        tasks::list(key, &context)?
-    } else if let Some(id) = key.strip_prefix("task:") {
-        tasks::detail(id, &context)?
-    } else if let Some(id) = key.strip_prefix("request:") {
-        tasks::request(id, &context)?
-    } else if key == "fleet" {
-        fleet::list(&context)
-    } else if let Some(id) = key.strip_prefix("node:") {
-        fleet::detail(id, &context)?
-    } else if key == "schedules" {
-        schedules::list(&context)
-    } else if key.starts_with("schedule:") {
-        schedules::editor(key, &context)?
-    } else if key == "new_request" || key.starts_with("new_request?") {
-        misc::new_request(key, &context)?
-    } else if key == "issue_picker" || key.starts_with("issue_picker?") {
-        misc::issue_picker(key, &context)?
-    } else if key == "search" || key.starts_with("search?") {
-        misc::search(key, &context)?
-    } else if key == "machine" {
-        misc::machine(&context)
-    } else {
-        return Err(BuildError::InvalidKey);
+    let tail = || key.split_once(':').map_or("", |(_, id)| id);
+    let mut view = match Family::of(key).ok_or(BuildError::InvalidKey)? {
+        Family::Home => home::build(key, &context)?,
+        Family::Card => card::build(tail(), &context)?,
+        Family::Document => details::document(tail(), &context)?,
+        Family::PullRequest => details::pull_request(tail(), &context)?,
+        Family::Sidebar => sidebar::build(&context)?,
+        Family::Tasks => tasks::list(key, &context)?,
+        Family::Task => tasks::detail(tail(), &context)?,
+        Family::Request => tasks::request(tail(), &context)?,
+        Family::Fleet => fleet::list(&context),
+        Family::Node => fleet::detail(tail(), &context)?,
+        Family::Schedules => schedules::list(&context),
+        Family::Schedule => schedules::editor(key, &context)?,
+        Family::NewRequest => misc::new_request(key, &context)?,
+        Family::IssuePicker => misc::issue_picker(key, &context)?,
+        Family::Search => misc::search(key, &context)?,
+        Family::Machine => misc::machine(&context),
     };
     view.version = version(&view);
     Ok(view)
@@ -202,7 +272,7 @@ pub fn push_content(
 ) -> Result<PushContent, BuildError> {
     let live = LiveSnapshot::default();
     let view = build(&format!("card:{card_id}"), RenderContext {
-        domain, projection: &domain.projection(), live: &live, client: Client::Ios, lang, transport: Transport::Relay,
+        domain, index: &ReadIndex::build(domain), live: &live, client: Client::Ios, lang, transport: Transport::Relay,
         cursor: "push", rendered_at: "",
     })?;
     let interaction = domain.interactions.get(&crate::domain::InteractionId(card_id.into()));

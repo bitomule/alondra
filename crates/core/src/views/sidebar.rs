@@ -25,7 +25,7 @@ fn task_subtitle(task: &Task, context: &RenderContext<'_>, group: Option<&str>) 
 /// The state a task is listed under: «Needs you» and «In review» only with a card waiting for the
 /// user, the same one the inbox and the task's detail show.
 fn shown_state(task: &Task, context: &RenderContext<'_>) -> TaskState {
-    match (task.state, context.projection.waits_for_user(&task.id)) {
+    match (task.state, context.waits_for_user(&task.id)) {
         (TaskState::NeedsYou, false) => TaskState::Running,
         (TaskState::ForYourReview, false) => TaskState::AwaitingBlocker,
         (state, _) => state,
@@ -55,7 +55,7 @@ fn task_groups(context: &RenderContext<'_>) -> super::Section {
                     icon, task.title.clone(), task_subtitle(task, context, Some(&presented.state)));
                 row.struck = state == TaskState::Cancelled;
                 row.badges.push(Label { text: presented.state, tone: presented.tone });
-                row.badges.extend(common::scheduled_mark(task, context.domain, context.lang));
+                row.badges.extend(common::scheduled_mark(task, context));
                 row.depth = 1;
                 row
             }).collect();
@@ -64,7 +64,7 @@ fn task_groups(context: &RenderContext<'_>) -> super::Section {
         }
     }
     let defining: Vec<_> = context.domain.requests.values()
-        .filter(|request| context.domain.is_defining(request))
+        .filter(|request| context.is_defining(request))
         .map(|request| {
             let title = request.title.clone().unwrap_or_else(|| request.body.lines().next().unwrap_or("").chars().take(80).collect());
             let mut row = common::row(&request.id.0, &format!("request:{}", request.id), Icon::Mission, title, None);
@@ -72,6 +72,7 @@ fn task_groups(context: &RenderContext<'_>) -> super::Section {
             row.badges.push(Label { text: t!(context.lang, "Defining", "Definiendo").into(), tone: common::state_tone("defining") });
             row
         }).collect();
+    let defining_count = defining.len();
     if !defining.is_empty() {
         rows.insert(rows.len().min(6), group_row("defining", t!(context.lang, "Defining", "Definiendo"), defining));
     }
@@ -86,7 +87,7 @@ fn task_groups(context: &RenderContext<'_>) -> super::Section {
         rows.push(group_row("archived", t!(context.lang, "Archived", "Archivadas"), archived));
     }
     let open_count = context.domain.tasks.values().filter(|task| !task.archived && !task.state.terminal()).count()
-        + context.domain.requests.values().filter(|request| context.domain.is_defining(request)).count();
+        + defining_count;
     let mut section = common::section("tasks", Some(t!(context.lang, "Tasks", "Tareas").into()),
         std::iter::once(Item::Row(common::row("schedules", "schedules", Icon::Schedule,
             t!(context.lang, "Scheduled Tasks", "Tareas programadas").into(), None)))
@@ -136,10 +137,9 @@ fn project_sections(context: &RenderContext<'_>) -> Vec<super::Section> {
                 row.badges.push(Label { text: text.clone(), tone: if node.background_suspect { Tone::Warning } else { Tone::Neutral } });
             }
         }
-        let pending = context.projection.inbox.iter()
-            .filter(|item| item.pending && item.agent_id.as_ref() == Some(&agent.id)).count();
+        let pending = context.index.node(&agent.id).map_or(0, |node| node.waiting.len());
         row.trailing = Some(Trailing::Count { value: pending as u32 });
-        row.children = common::current_task(context.domain, &agent.id).into_iter()
+        row.children = common::current_task(context, &agent.id).into_iter()
             .map(|task| {
                 let (icon, _) = common::task_presentation(task.state);
                 let presented = super::task_state::present(task, context);
@@ -163,7 +163,7 @@ pub(super) fn build(context: &RenderContext<'_>) -> Result<View, BuildError> {
         return Err(BuildError::UnsupportedClient);
     }
     let mut view = common::view("sidebar", "sidebar", None, context, vec![]);
-    let pending = super::home::waiting(context.projection);
+    let pending: Vec<_> = context.waiting().iter().collect();
     let mut waiting = common::section(
         "waiting",
         Some(t!(context.lang, "Waiting for You", "Te espera").into()),

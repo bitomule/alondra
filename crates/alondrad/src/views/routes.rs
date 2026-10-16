@@ -146,18 +146,15 @@ pub(super) async fn respond(
     let Some(key) = view_key(&base_key, &options) else {
         return error_lang(language, "invalid_input", "invalid view parameter");
     };
-    let state = match client.domain.state() {
-        Ok(state) => state,
-        Err(_) => return error_lang(language, "storage_unavailable", "domain state unavailable"),
-    };
-    let live = super::live::gather(client, &state, language, std::slice::from_ref(&key), true, false).await;
+    let read = client.domain.read();
+    let live = super::live::gather(client, read.state(), language, std::slice::from_ref(&key), true, false).await;
     if key == "issue_picker?refresh=1" {
         client.feeds.wake();
     }
     let rendering = client.shared();
     let render_key = key.clone();
     let rendered = client.read_work.run(move ||
-        rendering.views.render(&render_key, &state, &live, client_kind, language, transport)
+        rendering.views.render(&render_key, &read, &live, client_kind, language, transport)
     ).await.expect("view render worker failed");
     let mut view = match rendered {
         Ok(view) => view,

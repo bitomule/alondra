@@ -316,9 +316,9 @@ mod tests {
         let q = s.interactions.get_mut(&InteractionId::from("q")).unwrap();
         let InteractionPayload::Question { options, .. } = &q.payload else { unreachable!() };
         q.card = CardSpec::question(&q.body, &options.clone());
-        let d = s.projection();
+        let d = alondra_core::domain::ReadIndex::build(&s);
         let live = alondra_core::views::LiveSnapshot::default();
-        let context = alondra_core::views::RenderContext { domain: &s, projection: &d, live: &live, client: alondra_core::views::Client::Ios, lang: alondra_core::views::Lang::En, transport: alondra_core::views::Transport::Loopback, cursor: "c", rendered_at: "" };
+        let context = alondra_core::views::RenderContext { domain: &s, index: &d, live: &live, client: alondra_core::views::Client::Ios, lang: alondra_core::views::Lang::En, transport: alondra_core::views::Transport::Loopback, cursor: "c", rendered_at: "" };
         let view = alondra_core::views::build("card:q", context).unwrap();
         let (action, option) = answer_choice(&view, Some("yes"), "").unwrap().unwrap();
         assert!(action.id.starts_with("ans:q@"));
@@ -357,13 +357,13 @@ mod tests {
         }
 
         let s = world();
-        let d = s.projection();
+        let d = alondra_core::domain::ReadIndex::build(&s);
         let live = alondra_core::views::LiveSnapshot {
             pacing: Some(alondra_core::views::LivePacing { working: 2, limit: 6, fixed: None, auto: 6, memory_free: Some(40), tight: false,
                 queued: vec![], paused: vec![] }),
             ..Default::default()
         };
-        let context = alondra_core::views::RenderContext { domain: &s, projection: &d, live: &live, client: alondra_core::views::Client::Tui, lang: alondra_core::views::Lang::En, transport: alondra_core::views::Transport::Loopback, cursor: "c", rendered_at: "" };
+        let context = alondra_core::views::RenderContext { domain: &s, index: &d, live: &live, client: alondra_core::views::Client::Tui, lang: alondra_core::views::Lang::En, transport: alondra_core::views::Transport::Loopback, cursor: "c", rendered_at: "" };
         let view = alondra_core::views::build("machine", context).unwrap();
         let action = node_limit_action(&view).expect("the machine view offers the limit");
         assert!(action.id.starts_with("set_limit:limit@"), "{}", action.id);

@@ -99,6 +99,9 @@ pub(super) struct InboxOrderFacts<'a> {
 impl DomainState {
     /// User task controls are computed by the same guards as command execution.
     pub fn task_actions(&self, task_id: &TaskId) -> Option<Vec<AvailableAction>> {
+        self.task_actions_given(task_id, self)
+    }
+    pub(super) fn task_actions_given(&self, task_id: &TaskId, holds: &dyn Holds) -> Option<Vec<AvailableAction>> {
         let task = self.tasks.get(task_id)?;
         let archive = !task.archived;
         Some(vec![
@@ -109,7 +112,7 @@ impl DomainState {
                 },
                 None,
                 None,
-                self,
+                holds,
             ),
             self.action(
                 "reopen_task",
@@ -118,7 +121,7 @@ impl DomainState {
                 },
                 None,
                 None,
-                self,
+                holds,
             ),
             self.action(
                 if archive {
@@ -132,7 +135,7 @@ impl DomainState {
                 },
                 None,
                 None,
-                self,
+                holds,
             ),
         ])
     }

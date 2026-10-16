@@ -3,7 +3,7 @@ use super::{
     card::{from_item, plain_id, public_id},
     text::t,
 };
-use crate::domain::{DomainProjection, InboxItem};
+use crate::domain::InboxItem;
 
 pub(super) fn build(key: &str, context: &RenderContext<'_>) -> Result<View, BuildError> {
     if !matches!(context.client, Client::Ios | Client::Tui) {
@@ -13,8 +13,7 @@ pub(super) fn build(key: &str, context: &RenderContext<'_>) -> Result<View, Buil
     if focus.is_some_and(|id| !plain_id(id)) {
         return Err(BuildError::InvalidKey);
     }
-    let projection = context.projection;
-    let mut roots = waiting(projection);
+    let mut roots: Vec<&InboxItem> = context.waiting().iter().collect();
     if let Some(focus) = focus {
         if let Some(index) = roots.iter().position(|item| public_id(item) == focus) {
             roots.rotate_left(index);
@@ -22,7 +21,7 @@ pub(super) fn build(key: &str, context: &RenderContext<'_>) -> Result<View, Buil
             return Err(BuildError::NotFound);
         }
     }
-    let status = super::status::build(projection, context);
+    let status = super::status::build(context);
     let (sections, empty) = match context.client {
         Client::Ios => {
             let card_ids: Vec<String> = roots.iter().map(|item| public_id(item).to_owned()).collect();
@@ -114,11 +113,6 @@ pub(super) fn build(key: &str, context: &RenderContext<'_>) -> Result<View, Buil
         notices: vec![],
         service: None,
     })
-}
-/// What waits for the user: the home queue, its count and the app icon badge. The inbox only
-/// holds what is addressed to the user, the orchestrator's answers and questions included.
-pub(super) fn waiting(projection: &DomainProjection) -> Vec<&InboxItem> {
-    projection.inbox.iter().filter(|item| item.pending).collect()
 }
 /// What a waiting card asks of the user: an answer ("question") or only to be read ("read").
 pub(super) fn waits_for(item: &InboxItem) -> &'static str {

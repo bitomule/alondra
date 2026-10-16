@@ -912,9 +912,9 @@ impl World {
     }
 
     fn render(&self, key: &str) -> View {
-        let projection = self.s.projection();
+        let index = crate::domain::ReadIndex::build(&self.s);
         crate::views::build(key, RenderContext {
-            domain: &self.s, projection: &projection, live: &LiveSnapshot::default(), client: Client::Mac, lang: Lang::En,
+            domain: &self.s, index: &index, live: &LiveSnapshot::default(), client: Client::Mac, lang: Lang::En,
             transport: Transport::Loopback, cursor: "", rendered_at: "",
         }).unwrap()
     }
@@ -1125,9 +1125,9 @@ fn the_14_october_incident_ends_with_the_node_s_words_on_a_card_for_the_user() {
     assert!(card.card.content.is_none(), "words that fit on the card need no detail");
     w.check();
 
-    let projection = w.s.projection();
+    let index = crate::domain::ReadIndex::build(&w.s);
     let render = |key: &str| serde_json::to_string(&crate::views::build(key, RenderContext {
-        domain: &w.s, projection: &projection, live: &LiveSnapshot::default(), client: Client::Ios, lang: Lang::Es,
+        domain: &w.s, index: &index, live: &LiveSnapshot::default(), client: Client::Ios, lang: Lang::Es,
         transport: Transport::Loopback, cursor: "", rendered_at: "",
     }).unwrap()).unwrap();
     let shown = render(&format!("card:{}", card.id));

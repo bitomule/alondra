@@ -3,7 +3,8 @@
 //! order with the buttons of every card in it. Built with the same rules the state answers on
 //! demand, so a screen reading the index and one asking the state never disagree.
 use super::*;
-use std::collections::{BTreeSet, HashMap};
+use std::borrow::Cow;
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 
 /// What a task shows, from the domain alone: the client's language and the live data of its node
@@ -32,6 +33,8 @@ pub struct NodeReading {
     pub phase: NodePhase,
     /// Its tasks that are not archived, by id.
     pub tasks: Vec<TaskId>,
+    /// Every task it ever had, archived ones too, by id.
+    pub all_tasks: Vec<TaskId>,
     /// The task it works for: its latest open one, or else its latest.
     pub task: Option<TaskId>,
     /// It merges a PR Alondra authorized and that is still open.
@@ -52,12 +55,23 @@ pub struct ReadIndex {
     cards_by_pr: HashMap<PrId, Vec<InteractionId>>,
     cards_by_document_revision: HashMap<DocumentRevisionId, Vec<InteractionId>>,
     blocked_by: HashMap<InteractionId, Vec<InteractionId>>,
+    /// The open cards in front of each delivery, without the upstream delivery of its stack.
+    cards_before: HashMap<InteractionId, Vec<InteractionId>>,
     blocks: HashMap<InteractionId, Vec<InteractionId>>,
+    reviewers: HashMap<TaskId, Vec<TaskId>>,
+    dependents: HashMap<TaskId, Vec<TaskId>>,
+    prs_by_task: HashMap<TaskId, Vec<PrId>>,
+    groups: HashMap<String, Vec<InteractionId>>,
+    scheduled: HashSet<TaskId>,
+    failed_launches: HashMap<TaskId, String>,
+    schedule_titles: ScheduleTitles,
     tasks: HashMap<TaskId, TaskReading>,
     nodes: HashMap<AgentId, NodeReading>,
     acting: Vec<(TaskId, CardRef)>,
     queue: Vec<InteractionId>,
+    queue_at: HashMap<InteractionId, usize>,
     waiting: Vec<InboxItem>,
+    asks_outside_tasks: bool,
     waiting_at: HashMap<InteractionId, usize>,
     counts: InboxCounts,
 }
@@ -132,6 +146,83 @@ impl ReadIndex {
     pub fn counts(&self) -> &InboxCounts {
         &self.counts
     }
+    /// Where a card stands in the queue Waiting for You is drawn from, if it is in it.
+    pub fn queue_position(&self, card: &InteractionId) -> Option<usize> {
+        self.queue_at.get(card).copied()
+    }
+    /// A card with its buttons as the inbox lists it: the one in Waiting for You, or else decided
+    /// now from what the index holds, by the same rules.
+    pub fn item<'a>(&'a self, state: &DomainState, card: &Interaction) -> Cow<'a, InboxItem> {
+        if let Some(item) = self.waiting_card(&card.id) {
+            return Cow::Borrowed(item);
+        }
+        let pending = !self.queue_at.contains_key(&card.id) && state.inbox_pending(card, |t| {
+            self.task(&t.id).map_or_else(|| state.attention(t), |read| read.attention.clone())
+        });
+        Cow::Owned(state.item_given(card, pending, self.blocked_by(&card.id).to_vec(), self.blocks(&card.id).to_vec(), self))
+    }
+    /// A task's cancel, reopen and archive buttons, by the guards the commands run.
+    pub fn task_actions(&self, state: &DomainState, task: &TaskId) -> Option<Vec<AvailableAction>> {
+        state.task_actions_given(task, self)
+    }
+    /// A card that waits for the user's answer belongs to no task: the orchestrator asks it.
+    pub fn asks_outside_tasks(&self) -> bool {
+        self.asks_outside_tasks
+    }
+    /// The tasks that review `task`, open or not, by id.
+    pub fn reviewers(&self, task: &TaskId) -> &[TaskId] {
+        self.reviewers.get(task).map_or(&[], Vec::as_slice)
+    }
+    /// The tasks that depend on `task`, by id.
+    pub fn dependents(&self, task: &TaskId) -> &[TaskId] {
+        self.dependents.get(task).map_or(&[], Vec::as_slice)
+    }
+    /// The PRs a task registered, by id.
+    pub fn prs_of_task(&self, task: &TaskId) -> &[PrId] {
+        self.prs_by_task.get(task).map_or(&[], Vec::as_slice)
+    }
+    /// `DomainState::group_members`: the questions asked together with `card`, in their order.
+    pub fn group_members<'a>(&self, state: &'a DomainState, card: &'a Interaction) -> Vec<&'a Interaction> {
+        let Some(group) = &card.card.group else { return vec![card] };
+        self.groups.get(&group.id).into_iter().flatten()
+            .filter_map(|id| state.interactions.get(id))
+            .filter(|other| other.author == card.author)
+            .collect()
+    }
+    /// `DomainState::group_complete`, from the index.
+    pub fn group_complete(&self, state: &DomainState, card: &Interaction) -> bool {
+        self.group_members(state, card).iter().all(|member| !member.withdrawn && DomainState::answered_question(member))
+    }
+    /// A scheduled run created the task.
+    pub fn scheduled(&self, task: &TaskId) -> bool {
+        self.scheduled.contains(task)
+    }
+    /// The error of the latest scheduled run that failed to launch the task, empty when it gave none.
+    pub fn failed_launch(&self, task: &TaskId) -> Option<&str> {
+        self.failed_launches.get(task).map(String::as_str)
+    }
+    /// The title of the schedule whose run launched a node, by the node or the name it was launched with.
+    pub fn schedule_title(&self, node: &AgentId, name: Option<&str>) -> Option<&str> {
+        let by_node = self.schedule_titles.by_node.get(node);
+        let by_name = name.and_then(|name| self.schedule_titles.by_name.get(name));
+        [by_node, by_name].into_iter().flatten().min_by_key(|(at, _)| *at).and_then(|(_, title)| title.as_deref())
+    }
+}
+
+/// The first run, by its place among the runs, that launched each node, with its schedule's title.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct ScheduleTitles {
+    by_node: HashMap<AgentId, (usize, Option<String>)>,
+    by_name: HashMap<String, (usize, Option<String>)>,
+}
+
+impl Holds for ReadIndex {
+    fn first_blocker(&self, task: &TaskId) -> Option<TaskId> {
+        self.task(task).and_then(|read| read.open_blockers.first()).cloned()
+    }
+    fn first_card(&self, delivery: &InteractionId) -> Option<InteractionId> {
+        self.cards_before.get(delivery).and_then(|cards| cards.first()).cloned()
+    }
 }
 
 /// A committed state and the index built from it: one revision of one epoch, never two.
@@ -196,7 +287,17 @@ impl<'a> Builder<'a> {
         let mut index = ReadIndex { data_epoch: state.data_epoch.clone(), revision: state.revision, ..Default::default() };
         for task in state.tasks.values() {
             index.tasks_by_request.entry(task.request_id.clone()).or_default().push(task.id.clone());
+            for reviewed in &task.blocks {
+                index.reviewers.entry(reviewed.clone()).or_default().push(task.id.clone());
+            }
+            for dependency in &task.dependencies {
+                index.dependents.entry(dependency.clone()).or_default().push(task.id.clone());
+            }
         }
+        for pr in state.pull_requests.values() {
+            index.prs_by_task.entry(pr.task_id.clone()).or_default().push(pr.id.clone());
+        }
+        Self::schedules(state, &mut index);
         self.cards(&mut index);
         self.blockers();
         for d in state.interactions.values().filter(|d| matches!(d.payload, InteractionPayload::Delivery { .. })) {
@@ -246,8 +347,32 @@ impl<'a> Builder<'a> {
             index.tasks.insert(t.id.clone(), facts);
         }
         self.nodes(&mut index, waiting_of_node);
+        index.cards_before = self.cards_before.into_iter().map(|(delivery, cards)| (delivery.clone(), cards)).collect();
         index.blocks = self.blocks;
         index
+    }
+
+    fn schedules(state: &DomainState, index: &mut ReadIndex) {
+        let mut failed: HashMap<&TaskId, &ScheduleRun> = HashMap::new();
+        for (at, run) in state.schedule.runs.values().enumerate() {
+            if let Some(task) = &run.task_id {
+                index.scheduled.insert(task.clone());
+                if run.state == ScheduleRunState::Failed
+                    && failed.get(task).is_none_or(|latest| run.finished_at >= latest.finished_at) {
+                    failed.insert(task, run);
+                }
+            }
+            let Some(launch) = &run.launch else { continue };
+            let title = || run.definition_snapshot.as_ref().map(|snapshot| snapshot.title.clone())
+                .or_else(|| state.schedule.schedules.get(&run.schedule_id).map(|schedule| schedule.title.clone()));
+            if let Some(agent) = &launch.agent_id {
+                index.schedule_titles.by_node.entry(agent.clone()).or_insert_with(|| (at, title()));
+            }
+            index.schedule_titles.by_name.entry(launch.intent.name.clone()).or_insert_with(|| (at, title()));
+        }
+        index.failed_launches = failed.into_iter().map(|(task, run)| {
+            (task.clone(), run.error.as_deref().map(str::trim).filter(|error| !error.is_empty()).unwrap_or("").to_owned())
+        }).collect();
     }
 
     fn cards(&mut self, index: &mut ReadIndex) {
@@ -257,6 +382,9 @@ impl<'a> Builder<'a> {
             }
             if let Author::Agent { agent_id } = &i.author {
                 index.cards_by_node.entry(agent_id.clone()).or_default().push(i.id.clone());
+            }
+            if let Some(group) = &i.card.group {
+                index.groups.entry(group.id.clone()).or_default().push(i.id.clone());
             }
             let mut prs = BTreeSet::new();
             let mut revisions = BTreeSet::new();
@@ -288,6 +416,10 @@ impl<'a> Builder<'a> {
             for revision in revisions {
                 index.cards_by_document_revision.entry(revision.clone()).or_default().push(i.id.clone());
             }
+        }
+        let place = |id: &InteractionId| self.state.interactions.get(id).and_then(|i| i.card.group.as_ref()).map_or(0, |g| g.index);
+        for members in index.groups.values_mut() {
+            members.sort_by_key(place);
         }
     }
 
@@ -394,6 +526,7 @@ impl<'a> Builder<'a> {
         let mut slots: Vec<_> = entries.into_iter().map(Some).collect();
         for at in sequence {
             let Some((i, blocked_by, pending)) = slots[at].take() else { continue };
+            index.queue_at.insert(i.id.clone(), index.queue.len());
             index.queue.push(i.id.clone());
             if pending {
                 let blocks = self.blocks.get(&i.id).cloned().unwrap_or_default();
@@ -401,6 +534,7 @@ impl<'a> Builder<'a> {
                 index.waiting.push(state.item_given(i, true, blocked_by, blocks, self));
             }
         }
+        index.asks_outside_tasks = index.waiting.iter().any(|item| item.task_id.is_none() && item.kind != "information");
         index.counts = InboxCounts {
             roots: index.queue.len() as u64,
             pending: index.waiting.len() as u64,
@@ -433,6 +567,7 @@ impl<'a> Builder<'a> {
             index.nodes.insert(agent.id.clone(), NodeReading {
                 phase: agent.phase.clone(),
                 tasks: mine().map(|t| t.id.clone()).collect(),
+                all_tasks: all.iter().map(|t| t.id.clone()).collect(),
                 task: task.map(|t| t.id.clone()),
                 merging: merging.contains(&agent.id),
                 waiting: waiting.remove(&agent.id).unwrap_or_default(),
@@ -519,8 +654,42 @@ pub(super) fn assert_index_matches(state: &DomainState) {
             .collect();
         assert_eq!(read.open_dependencies, open);
     }
+    let mut queued = 0;
+    for i in state.interactions.values() {
+        assert_eq!(index.item(state, i).as_ref(), &state.item(i), "the card {} with its buttons", i.id);
+        assert_eq!(index.group_members(state, i), state.group_members(i), "the questions asked with {}", i.id);
+        assert_eq!(index.group_complete(state, i), state.group_complete(i));
+        if let Some(at) = index.queue_position(&i.id) {
+            assert_eq!(index.queue()[at], i.id);
+            queued += 1;
+        }
+    }
+    assert_eq!(queued, index.queue().len(), "every queued card has its place");
+    assert_eq!(index.asks_outside_tasks(),
+        projection.inbox.iter().any(|item| item.pending && item.task_id.is_none() && item.kind != "information"));
+    for t in state.tasks.values() {
+        let by = |keep: &dyn Fn(&Task) -> bool| -> Vec<TaskId> { state.tasks.values().filter(|o| keep(o)).map(|o| o.id.clone()).collect() };
+        assert_eq!(index.reviewers(&t.id), by(&|o| o.blocks.contains(&t.id)).as_slice(), "who reviews {}", t.id);
+        assert_eq!(index.dependents(&t.id), by(&|o| o.dependencies.contains(&t.id)).as_slice(), "who depends on {}", t.id);
+        let prs: Vec<PrId> = state.pull_requests.values().filter(|pr| pr.task_id == t.id).map(|pr| pr.id.clone()).collect();
+        assert_eq!(index.prs_of_task(&t.id), prs.as_slice());
+        assert_eq!(index.task_actions(state, &t.id), state.task_actions(&t.id), "the buttons of {}", t.id);
+        let runs = || state.schedule.runs.values().filter(|run| run.task_id.as_ref() == Some(&t.id));
+        assert_eq!(index.scheduled(&t.id), runs().next().is_some());
+        let failed = runs().filter(|run| run.state == ScheduleRunState::Failed).max_by_key(|run| run.finished_at)
+            .map(|run| run.error.as_deref().map(str::trim).filter(|error| !error.is_empty()).unwrap_or(""));
+        assert_eq!(index.failed_launch(&t.id), failed, "the failed launch of {}", t.id);
+    }
     for agent in state.agents.values() {
         let read = index.node(&agent.id).expect("every node is read");
+        let all: Vec<TaskId> = state.tasks.values().filter(|t| t.agent_id.as_ref() == Some(&agent.id)).map(|t| t.id.clone()).collect();
+        assert_eq!(read.all_tasks, all);
+        let name = Some(agent.name.as_str());
+        let title = state.schedule.runs.values().find(|run| run.launch.as_ref().is_some_and(|launch| {
+            launch.agent_id.as_ref() == Some(&agent.id) || Some(launch.intent.name.as_str()) == name
+        })).and_then(|run| run.definition_snapshot.as_ref().map(|snapshot| snapshot.title.clone())
+            .or_else(|| state.schedule.schedules.get(&run.schedule_id).map(|schedule| schedule.title.clone())));
+        assert_eq!(index.schedule_title(&agent.id, name), title.as_deref(), "the schedule that launched {}", agent.id);
         let mine = || state.tasks.values().filter(|t| t.agent_id.as_ref() == Some(&agent.id) && !t.archived);
         let task = mine().filter(|t| !t.state.terminal()).max_by_key(|t| t.revision).or_else(|| mine().max_by_key(|t| t.revision));
         assert_eq!(index.task_of_node(&agent.id), task.map(|t| &t.id), "the task of {}", agent.id);

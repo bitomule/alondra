@@ -83,7 +83,8 @@ async fn measure_real_domain_views() {
     let at = Instant::now();
     client.domain.execute(&alondra_core::domain::Actor::System, &envelope, None, || Ok(())).unwrap();
     println!("commit one command, index included: {:.1} ms", ms(at));
-    let state = client.domain.state().unwrap();
+    let read = client.domain.read();
+    let state = std::sync::Arc::clone(read.state());
 
     let at = Instant::now();
     let live = super::live::gather(&client, &state, Lang::Es, &["home".to_owned()], true, false).await;
@@ -94,10 +95,10 @@ async fn measure_real_domain_views() {
 
     let at = Instant::now();
     let built = views::build("home", RenderContext {
-        domain: &state, projection: &projection, live: &live, client: Client::Ios, lang: Lang::Es,
+        domain: &state, index: read.index(), live: &live, client: Client::Ios, lang: Lang::Es,
         transport: Transport::Loopback, cursor: "", rendered_at: "",
     }).unwrap();
-    println!("views::build home (projection given): {:.1} ms", ms(at));
+    println!("views::build home (index given): {:.1} ms", ms(at));
     let mut card_ids: Vec<String> = built.sections.iter().flat_map(|s| s.card_ids.clone()).collect();
     card_ids.extend(inbox.iter().rev().filter(|item| item.kind == "delivery" && !item.pending).take(5).map(|item| {
         let alondra_core::domain::InboxSubject::Interaction { interaction_id } = &item.subject;
@@ -127,7 +128,7 @@ async fn measure_real_domain_views() {
         let total = ms(at);
         let at = Instant::now();
         views::build(&key, RenderContext {
-            domain: &state, projection: &projection, live: &empty, client: Client::Ios, lang: Lang::Es,
+            domain: &state, index: read.index(), live: &empty, client: Client::Ios, lang: Lang::Es,
             transport: Transport::Loopback, cursor: "", rendered_at: "",
         }).unwrap();
         card_times.push((total, ms(at), id.clone(), response.status()));

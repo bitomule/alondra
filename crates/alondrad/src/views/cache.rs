@@ -1,4 +1,4 @@
-use alondra_core::domain::DomainState;
+use alondra_core::domain::ReadSnapshot;
 use alondra_core::views::{
     self, BuildError, Client, Lang, LiveSnapshot, RenderContext, Transport, View,
 };
@@ -61,12 +61,13 @@ impl Cache {
     pub(crate) fn render(
         &self,
         key: &str,
-        domain: &DomainState,
+        read: &ReadSnapshot,
         live: &LiveSnapshot,
         client: Client,
         lang: Lang,
         transport: Transport,
     ) -> Result<View, BuildError> {
+        let domain = read.state();
         let live_hash =
             Sha256::digest(serde_json::to_vec(live).expect("live snapshot serialization"));
         let clock = serde_json::to_vec(&(
@@ -91,7 +92,7 @@ impl Cache {
             key,
             RenderContext {
                 domain,
-                projection: &domain.projection(),
+                index: read.index(),
                 live,
                 client,
                 lang,
@@ -117,13 +118,18 @@ impl Cache {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alondra_core::domain::DomainState;
     use base64::Engine as _;
+
+    fn read(domain: &DomainState) -> ReadSnapshot {
+        ReadSnapshot::build(std::sync::Arc::new(domain.clone()))
+    }
 
     #[test]
     fn view_cursor_can_start_the_changes_feed() {
         let domain = DomainState::new("epoch");
         let live = LiveSnapshot::default();
-        let view = Cache::default().render("home", &domain, &live,
+        let view = Cache::default().render("home", &read(&domain), &live,
             Client::Ios, Lang::En, Transport::Loopback).unwrap();
         let raw = view.cursor.strip_prefix("c1.").unwrap();
         let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(raw).unwrap();
@@ -140,12 +146,8 @@ mod tests {
         let cache = Cache::default();
         let domain = DomainState::new("epoch");
         let live = LiveSnapshot::default();
-        let first = cache.render(
-            "home", &domain, &live, Client::Ios, Lang::En, Transport::Loopback,
-        ).unwrap();
-        let second = cache.render(
-            "home", &domain, &live, Client::Ios, Lang::En, Transport::Loopback,
-        ).unwrap();
+        let first = cache.render("home", &read(&domain), &live, Client::Ios, Lang::En, Transport::Loopback).unwrap();
+        let second = cache.render("home", &read(&domain), &live, Client::Ios, Lang::En, Transport::Loopback).unwrap();
         assert_eq!(first, second);
         assert_eq!(cache.builds.load(std::sync::atomic::Ordering::Relaxed), 1);
     }
@@ -154,20 +156,20 @@ mod tests {
         let cache = Cache::default();
         let mut domain = DomainState::new("epoch");
         let mut live = LiveSnapshot::default();
-        let first = cache.render("home", &domain, &live, Client::Ios, Lang::En, Transport::Loopback).unwrap();
-        let spanish = cache.render("home", &domain, &live, Client::Ios, Lang::Es, Transport::Loopback).unwrap();
+        let first = cache.render("home", &read(&domain), &live, Client::Ios, Lang::En, Transport::Loopback).unwrap();
+        let spanish = cache.render("home", &read(&domain), &live, Client::Ios, Lang::Es, Transport::Loopback).unwrap();
         assert_ne!(first.status.version, spanish.status.version);
         assert_ne!(first, spanish);
-        assert_eq!(cache.render("home", &domain, &live, Client::Ios, Lang::En, Transport::Loopback).unwrap(), first);
+        assert_eq!(cache.render("home", &read(&domain), &live, Client::Ios, Lang::En, Transport::Loopback).unwrap(), first);
         assert_eq!(cache.builds.load(std::sync::atomic::Ordering::Relaxed), 2);
         domain.revision += 1;
-        let revised = cache.render("home", &domain, &live, Client::Ios, Lang::En, Transport::Loopback).unwrap();
+        let revised = cache.render("home", &read(&domain), &live, Client::Ios, Lang::En, Transport::Loopback).unwrap();
         assert_ne!(revised.cursor, first.cursor);
         domain.data_epoch = "restored-epoch".into();
-        let restored = cache.render("home", &domain, &live, Client::Ios, Lang::En, Transport::Loopback).unwrap();
+        let restored = cache.render("home", &read(&domain), &live, Client::Ios, Lang::En, Transport::Loopback).unwrap();
         assert_ne!(restored.cursor, revised.cursor);
         live.inbox_times.push(views::InboxTime { id: "interaction:notice".into(), at: "2026-09-30T10:00:00Z".into() });
-        let changed = cache.render("home", &domain, &live, Client::Ios, Lang::En, Transport::Loopback).unwrap();
+        let changed = cache.render("home", &read(&domain), &live, Client::Ios, Lang::En, Transport::Loopback).unwrap();
         assert_ne!(changed.cursor, restored.cursor);
         assert_eq!(cache.builds.load(std::sync::atomic::Ordering::Relaxed), 5);
     }

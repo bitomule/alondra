@@ -40,7 +40,7 @@ fn presented_row(task: &Task, presentation: &task_state::Presentation, context: 
         Some(presentation.state.clone()));
     row.struck = task.state == TaskState::Cancelled;
     row.badges.push(super::Label { text: presentation.state.clone(), tone: presentation.tone });
-    row.badges.extend(common::scheduled_mark(task, context.domain, context.lang));
+    row.badges.extend(common::scheduled_mark(task, context));
     row.actions.extend(relaunch_action(task, context));
     row.actions.extend(super::pacing::task_actions(task, context));
     let since = presentation.since.clone().map(|at| Trailing::Time { at, format: super::TimeFormat::Relative });
@@ -60,9 +60,7 @@ fn presented_row(task: &Task, presentation: &task_state::Presentation, context: 
         }
         _ => {
             row.subtitle = presentation.fact.clone();
-            let count = context.projection.inbox.iter()
-                .filter(|item| item.pending && item.task_id.as_ref() == Some(&task.id))
-                .count();
+            let count = waiting_count(task, context);
             row.trailing = (count > 0).then(|| Trailing::Text {
                 text: match count {
                     1 => t!(context.lang, "1 question", "1 pregunta").into(),
@@ -73,11 +71,18 @@ fn presented_row(task: &Task, presentation: &task_state::Presentation, context: 
         }
     }
     row.trailing = Some(Trailing::Count {
-        value: context.projection.inbox.iter()
-            .filter(|item| item.pending && item.task_id.as_ref() == Some(&task.id))
-            .count() as u32,
+        value: waiting_count(task, context) as u32,
     });
     row
+}
+
+fn waiting_count(task: &Task, context: &RenderContext<'_>) -> usize {
+    context.reading(&task.id).map_or(0, |read| read.waiting.len())
+}
+
+/// A request's tasks, by id.
+fn tasks_of<'a>(request: &RequestId, context: &RenderContext<'a>) -> Vec<&'a Task> {
+    context.index.tasks_of_request(request).iter().filter_map(|id| context.domain.tasks.get(id)).collect()
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -274,7 +279,7 @@ fn request_row(request: &Request, forest: &Forest<'_>, context: &RenderContext<'
                 row.struck = task.state == TaskState::Cancelled;
                 row.subtitle = None;
                 row.badges.insert(0, super::Label { text: presented.state, tone: presented.tone });
-                row.badges.extend(common::scheduled_mark(task, context.domain, context.lang));
+                row.badges.extend(common::scheduled_mark(task, context));
                 row.actions.extend(relaunch_action(task, context));
                 row.actions.extend(super::pacing::task_actions(task, context));
                 row.children = match children.as_mut_slice() {
@@ -285,7 +290,7 @@ fn request_row(request: &Request, forest: &Forest<'_>, context: &RenderContext<'
             }
             [] => {}
             _ if context.client == super::Client::Tui => {
-                let all: Vec<_> = context.domain.tasks.values().filter(|task| task.request_id == request.id).collect();
+                let all = tasks_of(&request.id, context);
                 let done = all.iter().filter(|task| task.state.terminal()).count();
                 row.subtitle = None;
                 row.badges.insert(0, super::Label {
@@ -392,7 +397,8 @@ fn task_tree(tasks: &[&Task], forest: &Forest<'_>, context: &RenderContext<'_>) 
     rows
 }
 
-fn merge_order<'a>(domain: &'a DomainState, task: &'a Task) -> Vec<&'a Task> {
+fn merge_order<'a>(context: &RenderContext<'a>, task: &'a Task) -> Vec<&'a Task> {
+    let domain = context.domain;
     let mut seen = BTreeSet::from([task.id.clone()]);
     fn below<'a>(domain: &'a DomainState, task: &'a Task, seen: &mut BTreeSet<TaskId>, out: &mut Vec<&'a Task>) {
         for id in &task.dependencies {
@@ -408,8 +414,10 @@ fn merge_order<'a>(domain: &'a DomainState, task: &'a Task) -> Vec<&'a Task> {
     order.push(task);
     let mut frontier = vec![task];
     while !frontier.is_empty() {
-        let next: Vec<_> = domain.tasks.values()
-            .filter(|candidate| frontier.iter().any(|parent| candidate.dependencies.contains(&parent.id)))
+        let mut dependents: Vec<&TaskId> = frontier.iter().flat_map(|parent| context.index.dependents(&parent.id)).collect();
+        dependents.sort();
+        dependents.dedup();
+        let next: Vec<_> = dependents.into_iter().filter_map(|id| domain.tasks.get(id))
             .filter(|candidate| seen.insert(candidate.id.clone())).collect();
         order.extend(next.iter().copied());
         frontier = next;
@@ -551,7 +559,7 @@ fn active_items(buckets: &BTreeMap<&RequestId, Bucket>, context: &RenderContext<
 /// whether to retry is in the inbox; without that card nothing says it waits for the user.
 fn orchestrator_asks(context: &RenderContext<'_>) -> bool {
     context.live.orchestrator.as_ref().is_some_and(|orchestrator| orchestrator.can_retry)
-        && context.projection.inbox.iter().any(|item| item.pending && item.task_id.is_none() && item.kind != "information")
+        && context.index.asks_outside_tasks()
 }
 
 /// Where a task goes inside its block: what needs the user longest waiting first; what works most recently active
@@ -875,7 +883,7 @@ fn now_line(task: &Task, context: &RenderContext<'_>) -> Option<super::Row> {
         row.link = link;
         row
     };
-    if let crate::domain::Attention::Wait(reason) = context.domain.attention(task)
+    if let crate::domain::Attention::Wait(reason) = context.attention(task)
         && matches!(
             reason,
             crate::domain::WaitReason::BlockedBy { .. } | crate::domain::WaitReason::UpstreamPr { .. }
@@ -885,16 +893,12 @@ fn now_line(task: &Task, context: &RenderContext<'_>) -> Option<super::Row> {
         return Some(line(wait_text(&reason, context), None));
     }
     match task.state {
-        TaskState::NeedsYou => context
-            .projection
-            .inbox
-            .iter()
-            .find(|item| item.pending && item.task_id.as_ref() == Some(&task.id))
+        TaskState::NeedsYou => context.waiting_cards_of(&task.id).next()
             .map(|item| line(
                 tf!(context.lang, "question: {title}", "pregunta: {title}", title = item.title),
                 Some(super::Link::View { key: super::card::card_key(&item) }),
             )),
-        TaskState::AwaitingBlocker => match context.domain.attention(task) {
+        TaskState::AwaitingBlocker => match context.attention(task) {
             crate::domain::Attention::Wait(reason) => Some(line(wait_text(&reason, context), None)),
             _ => None,
         },
@@ -913,7 +917,7 @@ fn now_line(task: &Task, context: &RenderContext<'_>) -> Option<super::Row> {
         } else {
             t!(context.lang, "accepted; Alondra merges its pull request", "aceptada; Alondra fusiona su PR").into()
         }, None)),
-        TaskState::NotStarted => common::failed_launch(task, context.domain).map(|error| line(
+        TaskState::NotStarted => common::failed_launch(task, context).map(|error| line(
             if error.is_empty() {
                 t!(context.lang, "the scheduled run could not launch its node",
                     "la ejecución programada no pudo lanzar su nodo").into()
@@ -966,7 +970,7 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
         label: t!(context.lang, "Request", "Solicitud").into(),
         value: request
             .and_then(|request| request.title.clone())
-            .or_else(|| request.filter(|_| context.domain.tasks.values().filter(|other| other.request_id == task.request_id).count() == 1)
+            .or_else(|| request.filter(|_| context.index.tasks_of_request(&task.request_id).len() == 1)
                 .map(|_| task.title.clone()))
             .unwrap_or_else(|| match request {
                 Some(request) if !request.message => summary(&request.body),
@@ -996,7 +1000,7 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
         view.sections.push(common::section("now", None, vec![Item::Row(now)]));
     }
     if let Some(node) = task.agent_id.as_ref()
-        .filter(|agent| !task.state.terminal() && common::current_task(context.domain, agent).is_some_and(|current| current.id == task.id))
+        .filter(|agent| !task.state.terminal() && common::current_task(context, agent).is_some_and(|current| current.id == task.id))
         .and_then(|agent| context.live.nodes.iter().find(|node| node.agent_id == agent.0)) {
         view.sections.extend(super::fleet::work_sections(node, context.lang));
     }
@@ -1042,11 +1046,7 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
             rows,
         ));
     }
-    let waiting: Vec<_> = context
-        .projection
-        .inbox
-        .iter()
-        .filter(|item| item.pending && item.task_id.as_ref() == Some(&task.id))
+    let waiting: Vec<_> = context.waiting_cards_of(&task.id)
         .map(|item| super::card::from_item(item, context, false).map(Item::Card))
         .collect::<Result<Vec<_>, BuildError>>()?;
     if !waiting.is_empty() {
@@ -1068,8 +1068,8 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
             })],
         ));
     }
-    let prs: Vec<_> = merge_order(context.domain, task).into_iter()
-        .flat_map(|owner| context.domain.pull_requests.values().filter(move |pr| pr.task_id == owner.id)
+    let prs: Vec<_> = merge_order(context, task).into_iter()
+        .flat_map(|owner| context.index.prs_of_task(&owner.id).iter().filter_map(|id| context.domain.pull_requests.get(id))
             .map(move |pr| (owner, pr)))
         .enumerate()
         .map(|(index, (owner, pr))| {
@@ -1224,7 +1224,7 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
     actions.extend(relaunch_action(task, context));
     actions.extend(super::pacing::task_actions(task, context));
     actions.extend(super::pacing::priority_action(task, context));
-    for available in context.domain.task_actions(&task.id).unwrap_or_default() {
+    for available in context.index.task_actions(context.domain, &task.id).unwrap_or_default() {
         if !available.enabled {
             continue;
         }
@@ -1299,7 +1299,7 @@ pub(super) fn request(id: &str, context: &RenderContext<'_>) -> Result<View, Bui
                 label: t!(context.lang, "State", "Estado").into(),
                 value: request_state(
                     request,
-                    &context.domain.tasks.values().filter(|task| task.request_id == request.id).collect::<Vec<_>>(),
+                    &tasks_of(&request.id, context),
                     context,
                 ).into(),
                 tone: None,
@@ -1307,11 +1307,7 @@ pub(super) fn request(id: &str, context: &RenderContext<'_>) -> Result<View, Bui
             }],
         })],
     ));
-    let tasks = context
-        .domain
-        .tasks
-        .values()
-        .filter(|task| task.request_id == request.id)
+    let tasks = tasks_of(&request.id, context).into_iter()
         .map(|task| Item::Row(task_row(task, context)))
         .collect();
     view.sections.push(common::section(

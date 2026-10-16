@@ -122,9 +122,9 @@ fn apply(s: &mut DomainState, step: &Step, at: Millis) {
 }
 
 fn render(s: &DomainState, key: &str) -> String {
-    let projection = s.projection();
+    let index = crate::domain::ReadIndex::build(&s);
     let view = crate::views::build(key, RenderContext {
-        domain: s, projection: &projection, live: &LiveSnapshot::default(), client: Client::Mac, lang: Lang::En,
+        domain: s, index: &index, live: &LiveSnapshot::default(), client: Client::Mac, lang: Lang::En,
         transport: Transport::Loopback, cursor: "", rendered_at: "",
     }).unwrap();
     serde_json::to_string(&view).unwrap()

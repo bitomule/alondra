@@ -2,7 +2,7 @@ use super::{
     BuildError, Confirm, Fact, Facts, Icon, Item, Link, LocalLink, Markdown, RenderContext, StepState, Style, Tone,
     Trailing, View, action_id::Verb, common, text::{t, tf},
 };
-use crate::domain::{AgentId, MergeAttemptState, NodePhase, Pause, PauseReason, PrState, TaskState};
+use crate::domain::{AgentId, NodePhase, Pause, PauseReason, TaskState};
 use std::collections::BTreeMap;
 
 fn close_action(id: &str, context: &RenderContext<'_>) -> Option<super::Action> {
@@ -60,24 +60,25 @@ pub(super) fn in_fleet(agent: &crate::domain::Agent, context: &RenderContext<'_>
         && context.domain.orchestrator_session.as_ref() != Some(&agent.id)
         && agent.phase.live()
         && agent.phase != NodePhase::Lost
-        && context.domain.tasks.values()
-            .any(|task| task.agent_id.as_ref() == Some(&agent.id) && !task.archived && !task.state.terminal())
+        && node_tasks(&agent.id, context).any(|task| !task.state.terminal())
+}
+
+/// A node's tasks that are not archived.
+fn node_tasks<'a>(agent: &AgentId, context: &RenderContext<'a>) -> impl Iterator<Item = &'a crate::domain::Task> {
+    let domain = context.domain;
+    context.index.node(agent).into_iter().flat_map(|node| &node.tasks).filter_map(move |id| domain.tasks.get(id))
+}
+
+/// The cards a node wrote that wait for the user, in the queue's order.
+fn node_waiting<'a>(agent: &AgentId, context: &'a RenderContext<'_>) -> impl Iterator<Item = &'a crate::domain::InboxItem> {
+    context.index.node(agent).into_iter().flat_map(|node| &node.waiting).filter_map(|id| context.index.waiting_card(id))
 }
 
 pub(super) fn node_state(agent: &AgentId, context: &RenderContext<'_>) -> super::Label {
     let lang = context.lang;
-    let inbox = &context.projection.inbox;
-    let waiting = |kinds: &[&str]| inbox.iter()
-        .any(|item| item.pending && item.agent_id.as_ref() == Some(agent) && kinds.contains(&item.kind.as_str()));
-    let tasks: Vec<TaskState> = context.domain.tasks.values()
-        .filter(|task| task.agent_id.as_ref() == Some(agent) && !task.archived)
-        .map(|task| task.state)
-        .collect();
-    let merging = context.domain.merge_authorizations.values().any(|authorization| {
-        authorization.claimed_by.as_ref() == Some(agent)
-            && matches!(authorization.attempt, MergeAttemptState::Claimed | MergeAttemptState::Uncertain)
-            && context.domain.pull_requests.get(&authorization.pr_id).is_some_and(|pr| pr.state == PrState::Open)
-    });
+    let waiting = |kinds: &[&str]| node_waiting(agent, context).any(|item| kinds.contains(&item.kind.as_str()));
+    let tasks: Vec<TaskState> = node_tasks(agent, context).map(|task| task.state).collect();
+    let merging = context.index.node(agent).is_some_and(|node| node.merging);
     let phase = context.domain.node_phase(agent).cloned().unwrap_or(NodePhase::Closed);
     if !merging && let Some(halted) = common::halted(agent, context) {
         return halted;
@@ -116,15 +117,13 @@ pub(super) fn node_state(agent: &AgentId, context: &RenderContext<'_>) -> super:
 }
 
 /// What the node says it still does after its task's PR merged.
-fn post_merge_work<'a>(agent: &AgentId, context: &RenderContext<'a>) -> Option<&'a str> {
-    context.domain.tasks.values()
-        .filter(|task| task.agent_id.as_ref() == Some(agent) && !task.state.terminal())
-        .find_map(|task| task.wrap_up.post_merge_work.as_ref().map(|work| work.reason.as_str()))
+fn post_merge_work<'a>(agent: &AgentId, context: &'a RenderContext<'_>) -> Option<&'a str> {
+    context.index.node(agent)?.post_merge_work.as_deref()
 }
 
 /// The title, clipped, of the task a node's waiting task is held behind.
 fn awaited_title(agent: &AgentId, context: &RenderContext<'_>) -> Option<String> {
-    let task = common::current_task(context.domain, agent).filter(|task| task.state == TaskState::WaitingDependency)?;
+    let task = common::current_task(context, agent).filter(|task| task.state == TaskState::WaitingDependency)?;
     let upstream = task.dependencies.iter().chain(task.stack.iter().map(|stack| &stack.upstream_task))
         .filter_map(|id| context.domain.tasks.get(id))
         .find(|dependency| !dependency.state.terminal())?;
@@ -331,7 +330,7 @@ pub(super) fn work_sections(node: &super::LiveNode, lang: super::Lang) -> Vec<su
 
 /// A node as one Fleet item: the title of its task and its state, nothing else.
 pub(super) fn node_row(agent: &crate::domain::Agent, context: &RenderContext<'_>) -> super::Row {
-    let title = common::current_task(context.domain, &agent.id).map_or_else(|| common::agent_label(&agent.id, context), |task| task.title.clone());
+    let title = common::current_task(context, &agent.id).map_or_else(|| common::agent_label(&agent.id, context), |task| task.title.clone());
     let mut row = common::row(&agent.id.0, &format!("node:{}", agent.id), Icon::Node, title, None);
     row.badges.push(node_state(&agent.id, context));
     if context.client == super::Client::Ios {
@@ -374,8 +373,7 @@ pub(super) fn list(context: &RenderContext<'_>) -> View {
 
 /// Where a node stands in Fleet: 0 when it needs the user, 1 while it works, 2 while it waits.
 fn urgency(agent: &AgentId, context: &RenderContext<'_>) -> u8 {
-    let owes_user = context.projection.inbox.iter()
-        .any(|item| item.pending && item.agent_id.as_ref() == Some(agent));
+    let owes_user = context.index.node(agent).is_some_and(|node| !node.waiting.is_empty());
     match node_state(agent, context).tone {
         Tone::Warning | Tone::Critical | Tone::YourTurn | Tone::Accent => 0,
         Tone::Info => 1,
@@ -390,7 +388,7 @@ fn project_of(agent: &AgentId, context: &RenderContext<'_>) -> String {
     let named = |id: &AgentId| context.live.nodes.iter().find(|node| node.agent_id == id.0)
         .and_then(|node| node.project.as_deref()).filter(|project| *project != "others");
     let from_request = |task: &crate::domain::Task| {
-        context.domain.tasks.values().filter(|sibling| sibling.request_id == task.request_id)
+        context.index.tasks_of_request(&task.request_id).iter().filter_map(|sibling| context.domain.tasks.get(sibling))
             .filter_map(|sibling| sibling.agent_id.as_ref()).find_map(named)
     };
     let from_repository = |task: &crate::domain::Task| {
@@ -399,10 +397,8 @@ fn project_of(agent: &AgentId, context: &RenderContext<'_>) -> String {
         context.live.projects.iter().map(|entry| entry.name.as_str())
             .find(|project| project.eq_ignore_ascii_case(name))
     };
-    let current = common::current_task(context.domain, agent);
-    let latest = context.domain.tasks.values()
-        .filter(|task| task.agent_id.as_ref() == Some(agent) && !task.archived)
-        .max_by_key(|task| task.revision);
+    let current = common::current_task(context, agent);
+    let latest = node_tasks(agent, context).max_by_key(|task| task.revision);
     named(agent)
         .or_else(|| current.and_then(from_request))
         .or_else(|| latest.and_then(from_request))
@@ -491,13 +487,10 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
             link: None,
         });
     }
-    let tasks: Vec<_> = context
-        .domain
-        .tasks
-        .values()
-        .filter(|task| task.agent_id.as_ref() == Some(&agent.id))
+    let tasks: Vec<_> = context.index.node(&agent.id).into_iter().flat_map(|node| &node.all_tasks)
+        .filter_map(|id| context.domain.tasks.get(id))
         .collect();
-    if let Some(task) = common::current_task(context.domain, &agent.id)
+    if let Some(task) = common::current_task(context, &agent.id)
         .filter(|task| !task.state.terminal() && context.client != super::Client::Tui) {
         facts.push(Fact {
             label: t!(context.lang, "Task", "Tarea").into(),
@@ -526,11 +519,7 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
         attach.link = Some(Link::Local { local: LocalLink::Attach { session: short_id.clone() } });
         view.sections.push(common::section("attach", None, vec![Item::Row(attach)]));
     }
-    let waiting = context
-        .projection
-        .inbox
-        .iter()
-        .filter(|item| item.pending && item.agent_id.as_ref() == Some(&agent.id))
+    let waiting = node_waiting(&agent.id, context)
         .map(|item| super::card::from_item(item, context, false).map(Item::Card))
         .collect::<Result<Vec<_>, BuildError>>()?;
     view.sections.push(common::section(
