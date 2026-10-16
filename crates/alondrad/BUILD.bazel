@@ -1,3 +1,4 @@
+load(":build_inputs_test.bzl", "rust_inputs_test")
 load("@crates//:defs.bzl", "all_crate_deps")
 load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_test")
 
@@ -8,7 +9,10 @@ exports_files(
 
 rust_binary(
     name = "alondrad",
-    srcs = glob(["src/**/*.rs"]) + ["//crates:test_support.rs"],
+    srcs = glob(
+        ["src/**/*.rs"],
+        exclude = ["src/**/*_tests.rs", "src/**/tests.rs", "src/**/tests/*.rs"],
+    ),
     compile_data = [
         "Info.plist",
         "src/domain_store/schema.sql",
@@ -69,13 +73,21 @@ rust_test(
         "//fixtures/views:all",
         "//fixtures/views:cards",
         "//fixtures/domain-v2:acceptance.json",
+        "Info.plist",
+        "src/domain_store/schema.sql",
+        "src/domain_store/schedule_launch_transition.sql",
+        "src/domain_store/model_metrics.sql",
     ],
-    crate = ":alondrad",
+    srcs = glob(["src/**/*.rs"]) + ["//crates:test_support.rs"],
+    crate_name = "alondrad",
+    crate_root = "src/main.rs",
     # Bazel test-setup resolves a relative HOME to this test's TEST_TMPDIR.
     env = {"HOME": "."},
-    deps = all_crate_deps(normal_dev = True) + [
+    deps = all_crate_deps(normal = True, normal_dev = True) + [
         "//crates/agent-application:agent_application",
+        "//crates/core:alondra_core",
         "//crates/domain:domain",
+        "//crates/e2e:alondra_e2e",
         "//crates/foundation:foundation",
         "//crates/provider-contract:provider_contract",
         "//crates/store:store",
@@ -83,6 +95,20 @@ rust_test(
     data = ["//crates/alondra:alondra", "//fixtures/client-v2", "//fixtures/views:all"],
     edition = "2024",
     rustc_env = {"CARGO_BIN_EXE_alondra": "$(rootpath //crates/alondra:alondra)"},
+    rustc_flags = ["-Clink-arg=-Wl,-sectcreate,__TEXT,__info_plist,$(execpath Info.plist)"],
+    version = "0.1.0",
+)
+
+rust_inputs_test(
+    name = "production_inputs_test",
+    target_under_test = ":alondrad",
+    test_sources = False,
+)
+
+rust_inputs_test(
+    name = "alondrad_test_inputs_test",
+    target_under_test = ":alondrad_test",
+    test_sources = True,
 )
 
 rust_test(
