@@ -55,7 +55,7 @@ ORCHESTRATOR_ANSWER = "Do it yourself"
 
 
 class Sandbox:
-    def __init__(self, binaries, port):
+    def __init__(self, binaries, port, orchestrator="tools/e2e_fake_orchestrator.py", extra_env=None):
         named = {os.path.basename(p): os.path.abspath(p) for p in binaries if not p.endswith(".ok")}
         daemon, cli, relay, tool = (named[name] for name in ("alondrad", "alondra", "alondra-relay", "alondra-sandbox"))
         # The daemon opens its action journal without following a symlink, and /var is one on macOS;
@@ -64,7 +64,7 @@ class Sandbox:
         self.dir = os.path.join(self.scratch, "sandbox")
         fake = os.path.join(self.scratch, "fake-bin")
         os.makedirs(fake)
-        os.symlink(os.path.join(REPO, "tools/e2e_fake_orchestrator.py"), os.path.join(fake, "claude"))
+        os.symlink(os.path.join(REPO, orchestrator), os.path.join(fake, "claude"))
         self.orchestrator_log = os.path.join(self.scratch, "orchestrator.jsonl")
         card = {"interaction_id": "orchestrator-decide", "scope": {"kind": "orchestrator", "request_id": None},
                 "recipient": {"kind": "user"}, "need": CARDS["orchestrator"], "why": "A node found a loop in the memory rule.",
@@ -72,7 +72,7 @@ class Sandbox:
                                                {"id": "new_task", "label": "Create a task", "description": "A node fixes it"}]}
         env = dict(os.environ, SANDBOX_DIR=self.dir, SANDBOX_PORT=str(port), MACS="1", PATH=f"{fake}:{os.environ['PATH']}", SANDBOX_WAKE="1",
                    E2E_ORCHESTRATOR_LOG=self.orchestrator_log, E2E_ORCHESTRATOR_CARD=json.dumps(card),
-                   E2E_ALONDRA=os.path.join(self.dir, "bin/alondra"))
+                   E2E_ALONDRA=os.path.join(self.dir, "bin/alondra"), **(extra_env or {}))
         try:
             subprocess.run([os.path.join(REPO, "tools/e2e-sandbox.sh"), daemon, cli, relay, tool], env=env, check=True,
                            stdout=subprocess.DEVNULL)

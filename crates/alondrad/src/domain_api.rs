@@ -74,7 +74,7 @@ pub fn routes<H: DomainHost>() -> Router<Arc<H>> {
         ("/tasks/{id}/document-links", "POST"), ("/tasks/{id}/pull-requests", "POST"),
         ("/tasks/{id}/results", "POST"), ("/tasks/{id}/stack-readiness", "POST"),
         ("/tasks/{id}/completion", "POST"), ("/tasks/{id}/cancellation", "POST"),
-        ("/tasks/{id}/reopening", "POST"),
+        ("/tasks/{id}/reopening", "POST"), ("/tasks/{id}/plan-review", "POST"),
         ("/tasks/{id}/archival", "POST"), ("/tasks/{id}/cleanup", "POST"), ("/tasks/{id}/post-merge-work", "PUT"),
         ("/interactions/{id}/answers", "POST"), ("/interactions/{id}/settlement", "POST"),
         ("/interactions/{id}/withdrawal", "POST"), ("/interactions/{id}/clarification", "POST"),
@@ -666,9 +666,11 @@ async fn resource_command<H: DomainHost>(
 pub(crate) fn check_launch_shape(method: &str, path: &str, body: &Value) -> Result<(), DomainError> {
     let creates_task = method == "POST" && path.starts_with("/requests/") && path.ends_with("/tasks");
     let settles_into_task = method == "POST" && path.starts_with("/interactions/") && path.ends_with("/settlement");
-    let launch = match (creates_task, settles_into_task) {
-        (true, _) => body.get("launch"),
-        (_, true) => body.get("decision").and_then(|decision| decision.get("launch")),
+    let replans_task = method == "POST" && path.starts_with("/tasks/") && path.ends_with("/plan-review");
+    let launch = match (creates_task, settles_into_task, replans_task) {
+        (true, _, _) => body.get("launch"),
+        (_, true, _) => body.get("decision").and_then(|decision| decision.get("launch")),
+        (_, _, true) => body.get("outcome").and_then(|outcome| outcome.get("launch")),
         _ => None,
     };
     match launch.filter(|launch| !launch.is_null()) {
@@ -776,6 +778,7 @@ pub(crate) fn resource_envelope(
         ("POST", p) if p.starts_with("/tasks/") && p.ends_with("/completion") => ("complete_task", Some(("task_id", task?))),
         ("POST", p) if p.starts_with("/tasks/") && p.ends_with("/cancellation") => ("cancel_task", Some(("task_id", task?))),
         ("POST", p) if p.starts_with("/tasks/") && p.ends_with("/reopening") => ("reopen_task", Some(("task_id", task?))),
+        ("POST", p) if p.starts_with("/tasks/") && p.ends_with("/plan-review") => ("settle_plan_review", Some(("task_id", task?))),
         ("POST", p) if p.starts_with("/tasks/") && p.ends_with("/archival") => ("archive_task", Some(("task_id", task?))),
         ("POST", p) if p.starts_with("/tasks/") && p.ends_with("/cleanup") => ("confirm_cleanup", Some(("task_id", task?))),
         ("PUT", p) if p.starts_with("/tasks/") && p.ends_with("/post-merge-work") => ("declare_post_merge_work", Some(("task_id", task?))),
@@ -1141,6 +1144,11 @@ pub(crate) fn check_launch_plan(domain: &DomainRuntime, home: &std::path::Path, 
         Command::CreateTask { request_id, launch: Some(plan), .. }
         | Command::SettleSuggestion { decision: SuggestionDecision::NewTask { request_id, launch: plan, .. }, .. } =>
             crate::launch_plans::validate(domain, home, request_id, plan),
+        Command::SettlePlanReview { task_id, outcome: alondra_core::domain::PlanReviewOutcome::PlanChanged { launch: plan, .. }, .. } => {
+            let state = domain.state().map_err(|_| DomainError::new("storage_unavailable", "domain state unavailable"))?;
+            let task = state.tasks.get(task_id).ok_or_else(|| DomainError::new("not_found", "task does not exist"))?;
+            crate::launch_plans::validate(domain, home, &task.request_id, plan)
+        }
         _ => Ok(()),
     }
 }

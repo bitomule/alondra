@@ -502,7 +502,8 @@ fn command_task(state: &DomainState, command: &Command) -> Option<TaskId> {
         | Command::RecordNodeEnd { task_id, .. }
         | Command::ArchiveTask { task_id, .. }
         | Command::ReleaseTask { task_id, .. }
-        | Command::RaiseStartProblem { task_id, .. } => Some(task_id.clone()),
+        | Command::RaiseStartProblem { task_id, .. }
+        | Command::SettlePlanReview { task_id, .. } => Some(task_id.clone()),
         Command::PublishInformation { scope, .. }
         | Command::AskQuestion { scope, .. }
         | Command::AskQuestions { scope, .. }

@@ -1367,6 +1367,68 @@ async fn a_launch_of_the_task_that_implements_an_approved_plan_carries_the_whole
     assert_eq!(prompt.matches("Store feature prints in Core Data").count(), 1, "the plan once, not again as the request: {prompt}");
 }
 
+/// The task the user decided on, «Editor fonts», and «Editor colours» (t), which waits for it.
+fn decided_on(f: &Fixture) {
+    command(&f.domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { task_id: "fonts".into(), request_id: "r".into(),
+        title: "Editor fonts".into(), agent_id: Some("agent-b".into()), review_prs: false, dependencies: Default::default(), stack: None,
+        launch: Some(alondra_core::domain::LaunchPlan::new("fonts", "/tmp")), plan_items: None });
+    command(&f.domain, Actor::Agent { agent_id: "agent-b".into() }, Command::StartTask { task_id: "fonts".into() });
+    command(&f.domain, Actor::Orchestrator { generation: 0 }, Command::SetDependencies { task_id: "t".into(),
+        dependencies: [TaskId::from("fonts")].into(), stack: None });
+    command(&f.domain, Actor::Agent { agent_id: "agent-b".into() }, Command::AskQuestion {
+        attachments: vec![], interaction_id: "font-choice".into(), scope: alondra_core::domain::Scope::Task { task_id: "fonts".into() },
+        recipient: alondra_core::domain::Recipient::User, body: "Which typeface?".into(), blocking: true,
+        options: vec![alondra_core::domain::QuestionOption { id: "mono".into(), label: "Monospaced".into(), description: None },
+            alondra_core::domain::QuestionOption { id: "serif".into(), label: "Serif".into(), description: None }],
+        card: alondra_core::domain::CardSpec::new(alondra_core::domain::CardKind::Decide, "Choose the editor's typeface").why("Its colours come next"),
+    });
+}
+
+fn decide(f: &Fixture) {
+    command(&f.domain, user(), Command::AnswerQuestion { attachments: vec![], interaction_id: "font-choice".into(),
+        option_id: "serif".into(), inputs: Default::default() });
+}
+
+#[tokio::test]
+async fn a_task_held_for_a_plan_review_is_not_launched_until_the_orchestrator_settles_it() {
+    let f = world();
+    let actor = the_orchestrator(&f.domain);
+    decided_on(&f);
+    decide(&f);
+    let claude = FakeClaude::loading(&f.domain);
+    let held = launch(&f.domain, &f.home, &actor, launch_body(&f, json!({"model": "sonnet"})), |_| None, &claude).await.unwrap_err();
+    assert_eq!(held.code, "plan_review_pending");
+    assert!(held.message.contains("Editor fonts"), "{}", held.message);
+    assert!(claude.calls.lock().unwrap().is_empty(), "Claude never runs for a held task");
+    command(&f.domain, actor.clone(), Command::SettlePlanReview { review_id: "font-choice".into(), task_id: "t".into(),
+        outcome: alondra_core::domain::PlanReviewOutcome::Unchanged { reason: "Colours do not depend on the typeface".into() } });
+    command(&f.domain, actor.clone(), Command::SetDependencies { task_id: "t".into(), dependencies: Default::default(), stack: None });
+    launch(&f.domain, &f.home, &actor, launch_body(&f, json!({"model": "sonnet"})), |_| None, &claude).await.unwrap();
+    assert_eq!(f.domain.state().unwrap().tasks[&TaskId::from("t")].agent_id, Some(AgentId::from(SESSION)));
+}
+
+#[tokio::test]
+async fn a_decision_that_arrives_while_its_dependent_starts_stops_that_node() {
+    let f = world();
+    let actor = the_orchestrator(&f.domain);
+    decided_on(&f);
+    command(&f.domain, actor.clone(), Command::SetDependencies { task_id: "t".into(), dependencies: Default::default(), stack: None });
+    command(&f.domain, actor.clone(), Command::SetRelations { task_id: "t".into(), delivered_dependencies: [TaskId::from("fonts")].into(), blocks: Default::default() });
+    let claude = FakeClaude::loading(&f.domain);
+    let domain = f.domain.clone();
+    *claude.during_run.lock().unwrap() = Some(Box::new(move || {
+        let state = domain.state().unwrap();
+        domain.execute(&Actor::User { user_id: "u".into() }, &CommandEnvelope { protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(),
+            command_id: "decide".into(), expected_revision: state.revision, command: Command::AnswerQuestion { attachments: vec![],
+                interaction_id: "font-choice".into(), option_id: "serif".into(), inputs: Default::default() } }, None, || Ok(())).unwrap();
+    }));
+    let refused = launch(&f.domain, &f.home, &actor, launch_body(&f, json!({"model": "sonnet"})), |_| None, &claude).await.unwrap_err();
+    assert_eq!(refused.code, "plan_review_pending");
+    assert!(!claude.stopped.lock().unwrap().is_empty(), "the node that started is stopped");
+    let state = f.domain.state().unwrap();
+    assert!(state.tasks[&TaskId::from("t")].agent_id.is_none() && state.plan_review_pending(&"t".into()));
+}
+
 #[tokio::test]
 async fn a_launch_of_one_phase_of_an_approved_plan_carries_the_whole_plan_and_names_its_points() {
     use alondra_core::domain::{CardKind, CardSpec, ContentKind, Hold, PlanItems};

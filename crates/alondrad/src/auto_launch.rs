@@ -108,6 +108,7 @@ fn candidate(state: &DomainState, task: &Task) -> bool {
         && !task.started
         && task.agent_id.is_none()
         && !task.archived
+        && !state.plan_review_pending(&task.id)
         && state.requests.get(&task.request_id).is_some_and(|request| !request.closed)
         && !state.schedule.runs.values().any(|run| run.task_id.as_ref() == Some(&task.id))
 }
@@ -175,7 +176,7 @@ pub(crate) async fn pass(domain: &DomainRuntime, home: &Path, launcher: &impl La
             Ok(_) => domain.store.lock().expect("domain store poisoned").set_start_retry(&task.id, None)?,
             Err(error) => match error.code.as_str() {
                 "usage_exhausted" => block(AutoLaunchReason::UsageExhausted, None)?,
-                "disk_low" => domain.store.lock().expect("domain store poisoned").forget_auto_launch(&task.id)?,
+                "disk_low" | "plan_review_pending" => domain.store.lock().expect("domain store poisoned").forget_auto_launch(&task.id)?,
                 "conflict" => {
                     let taken = domain.state()?.tasks.get(&task.id).is_some_and(|task| task.agent_id.is_some());
                     let mut store = domain.store.lock().expect("domain store poisoned");

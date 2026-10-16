@@ -498,6 +498,15 @@ fn orchestrator_domain_tools(user: &str) -> Vec<Value> {
             vec!["interaction_id", "decision"],
         ),
         (
+            "settle_plan_review",
+            "Settle the plan review of one task a decision of the user holds: the message about that decision gives its review_id, the tasks it holds and their launch plans. unchanged: the plan still holds after the decision, and reason says why; plan_changed: launch is the whole new launch plan (as in create_task), stored in this same call, and reason says what changed; cancelled: the task no longer applies, reason says why, and it is cancelled in this same call. A held task never starts before this, and set_launch_plan does not change its plan. If it is a product call, ask the user first and settle it once they answer.",
+            json!({"task_id":{"type":"string"},"review_id":{"type":"string"},"outcome":{"type":"object","required":["kind","reason"],"properties":{
+                "kind":{"type":"string","enum":["unchanged","plan_changed","cancelled"]},
+                "launch":launch_plan_schema(),
+                "reason":{"type":"string","description":"required: why the plan holds, what changed in it, or why the task no longer applies"}}}}),
+            vec!["task_id", "review_id", "outcome"],
+        ),
+        (
             "link_task_document",
             "Link a document to a Task with a named role.",
             json!({"task_id":{"type":"string"},"document_id":{"type":"string"},"role":{"type":"string"}}),
@@ -593,6 +602,7 @@ fn call_orchestrator(client: &Client, name: &str, args: &Value) -> Result<String
         | "answer_clarification"
         | "answer_question"
         | "settle_suggestion"
+        | "settle_plan_review"
         | "link_task_document"
         | "cancel_task"
         | "reopen_task"
@@ -634,6 +644,7 @@ fn execute_tool(client: &Client, name: &str, args: &Value) -> Result<String> {
         | "withdraw_question"
         | "answer_question"
         | "settle_suggestion"
+        | "settle_plan_review"
         | "create_request"
         | "close_request"
         | "title_request"
@@ -837,6 +848,7 @@ pub(crate) fn resource_target(name: &str, command: &Value) -> Result<(&'static s
         "request_clarification" => ("POST", format!("/interactions/{}/clarification", id("interaction_id")?)),
         "answer_question" => ("POST", format!("/interactions/{}/answers", id("interaction_id")?)),
         "settle_suggestion" => ("POST", format!("/interactions/{}/settlement", id("interaction_id")?)),
+        "settle_plan_review" => ("POST", format!("/tasks/{}/plan-review", id("task_id")?)),
         "mark_read" => ("PUT", format!("/interactions/{}/read-state", id("interaction_id")?)),
         "submit_feedback" => ("POST", format!("/interactions/{}/feedback", id("presentation_id")?)),
         "accept_delivery" => ("POST", format!("/interactions/{}/acceptance", id("presentation_id")?)),
@@ -880,6 +892,7 @@ fn domain_envelope(name: &str, args: &Value, data_epoch: &str, command_id: &str)
         "withdraw" | "withdraw_question" => "withdraw",
         "answer_question" => "answer_question",
         "settle_suggestion" => "settle_suggestion",
+        "settle_plan_review" => "settle_plan_review",
         "create_request" => "create_request",
         "close_request" => "close_request",
         "title_request" => "title_request",
@@ -2388,6 +2401,24 @@ mod card_tool_tests {
         assert!(domain_envelope("settle_suggestion", &words, "epoch", "id").unwrap_err().to_string().starts_with("invalid_input"));
         let reasonless = json!({"interaction_id":"p-1","decision":{"kind":"discard"}});
         assert!(domain_envelope("settle_suggestion", &reasonless, "epoch", "id").is_err());
+    }
+
+    #[test]
+    fn the_orchestrator_settles_a_held_plan_with_one_typed_outcome() {
+        assert!(tools(Role::Orchestrator, "Ana").as_array().unwrap().iter().any(|t| t["name"] == "settle_plan_review"));
+        assert!(tools(Role::Node, "Ana").as_array().unwrap().iter().all(|t| t["name"] != "settle_plan_review"));
+        let args = json!({"task_id":"t-c","review_id":"q-1","outcome":{"kind":"plan_changed","launch":{"name":"phase-c","cwd":"/tmp","mission":"Use 512 px prints"},
+            "reason":"The user chose 512 px prints"}});
+        let (method, path, body) = command_request("settle_plan_review", &args, "epoch").unwrap();
+        assert_eq!((method, path.as_str()), ("POST", "/tasks/t-c/plan-review"));
+        assert_eq!(body["outcome"]["launch"]["mission"], "Use 512 px prints");
+        let parsed: alondra_core::domain::CommandEnvelope = serde_json::from_value(domain_envelope("settle_plan_review", &args, "epoch", "id").unwrap()).unwrap();
+        assert!(matches!(parsed.command, alondra_core::domain::Command::SettlePlanReview {
+            outcome: alondra_core::domain::PlanReviewOutcome::PlanChanged { .. }, .. }));
+        let reasonless = json!({"task_id":"t-c","review_id":"q-1","outcome":{"kind":"unchanged"}});
+        assert!(domain_envelope("settle_plan_review", &reasonless, "epoch", "id").is_err());
+        let kept = json!({"task_id":"t-c","review_id":"q-1","outcome":{"kind":"later","reason":"Ask the user"}});
+        assert!(domain_envelope("settle_plan_review", &kept, "epoch", "id").unwrap_err().to_string().starts_with("invalid_input"));
     }
 
     #[test]

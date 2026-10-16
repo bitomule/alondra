@@ -66,6 +66,7 @@ pub const INTERNAL_CODES: &[&str] = &[
     "plan_without_checklist", "plan_checklist_too_long", "checklist_not_final", "checklist_without_plan",
     "checklist_unknown_item", "checklist_without_evidence", "evidence_unknown_attachment", "evidence_unknown_pr",
     "checklist_incomplete", "usage_is_not_a_stop", "plan_choice_required", "approved_plan_has_task",
+    "plan_review_pending", "plan_review_not_found", "not_in_plan_review", "plan_review_settled",
     "plan_items_unknown", "plan_items_take_all", "plan_items_unavailable",
 ];
 
@@ -96,7 +97,7 @@ mod tests {
     /// the catalog lists as only reachable by a node; a new code must be put in one of them.
     #[test]
     fn every_code_the_rules_produce_is_known_to_the_refusal_catalog() {
-        let source = [include_str!("rules.rs"), include_str!("checklist.rs")].concat();
+        let source = [include_str!("rules.rs"), include_str!("rules/plan_review.rs"), include_str!("checklist.rs")].concat();
         let mut found = std::collections::BTreeSet::new();
         for marker in ["fail(\"", "refuse(\"", "DomainError::new(\"", "fail(\n", "Some((\""] {
             for part in source.split(marker).skip(1) {

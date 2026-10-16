@@ -10,6 +10,9 @@ impl TaskLifecycle {
                 host,
             } => {
                 valid_id(&node.0)?;
+                if !self.plan_reviews.is_empty() {
+                    return Err(Refusal::PlanReviewPending);
+                }
                 if self
                     .cards()
                     .iter()
@@ -443,6 +446,29 @@ impl TaskLifecycle {
                     input,
                     remaining: VecDeque::new(),
                 });
+            }
+            Event::HoldForPlanReview { review } => {
+                valid_id(&review.0)?;
+                let not_admitted = matches!(self.state, State::Unstarted(_)
+                    | State::InProgress(Progress::Queued { .. } | Progress::Dependency { session: Session::Absent(_), .. }));
+                if !not_admitted {
+                    return Err(Refusal::InvalidState);
+                }
+                if self.plan_reviews.insert(review, self.plan_revision).is_some() {
+                    return Err(Refusal::DuplicateObligation);
+                }
+            }
+            Event::PlanReviewSettled { review, plan_revision, outcome } => {
+                if !self.plan_reviews.contains_key(&review) {
+                    return Err(Refusal::UnknownObligation);
+                }
+                if plan_revision != self.plan_revision {
+                    return Err(Refusal::StaleRevision);
+                }
+                self.plan_reviews.remove(&review);
+                if outcome == PlanReviewOutcome::PlanChanged {
+                    self.plan_revision = self.plan_revision.checked_add(1).ok_or(Refusal::RevisionExhausted)?;
+                }
             }
         }
         Ok(())

@@ -2,19 +2,23 @@
 //! without a task, an answer or a question of its own is settled: a message was acted on and
 //! closes, a request of the user's goes back to it once and then becomes the user's Problem.
 //! A node's question gets its answer the same way: it goes back once, then becomes the user's
-//! Problem; a node's suggestion goes back once.
+//! Problem; a node's suggestion goes back once. A decision of the user that holds tasks for a
+//! plan review goes back once too, then becomes the user's Problem.
 use crate::domain_runtime::DomainRuntime;
 use alondra_core::domain::{
-    Author, CardKind, DomainState, Interaction, InteractionId, InteractionPayload, QuestionOption, Request, RequestId, Scope,
+    Author, CardKind, DomainState, Interaction, InteractionId, InteractionPayload, PLAN_REVIEW_KEEP_PLANS, PLAN_REVIEW_PROBLEM_PREFIX,
+    PLAN_REVIEW_REMIND, PlanReview, PlanReviewProblem, QuestionOption, Request, RequestId, Scope,
 };
 use alondra_core::orchestrator_cards::{
     UNANSWERED_NOTICE_PREFIX, UNANSWERED_PROBLEM_PREFIX, UNANSWERED_REMIND, UNANSWERED_REMIND_LABEL, UNANSWERED_WITHDRAW,
     UNANSWERED_WITHDRAW_LABEL, UNSETTLED_NOTICE_PREFIX, UNSPLIT_CLOSE, UNSPLIT_CLOSE_LABEL, UNSPLIT_NOTICE_PREFIX,
     UNSPLIT_PROBLEM_PREFIX, UNSPLIT_RETRY, UNSPLIT_RETRY_LABEL, UnansweredProblem, UnsplitProblem,
+    PLAN_REVIEW_KEEP_LABEL, PLAN_REVIEW_NOTICE_PREFIX, PLAN_REVIEW_REMIND_LABEL,
 };
 
 const UNSPLIT_CAUSE: &str = "request_unsplit";
 const UNANSWERED_CAUSE: &str = "question_unanswered";
+const PLAN_REVIEW_CAUSE: &str = "plan_review_unsettled";
 const BODY_SHOWN: usize = 2_000;
 
 #[derive(Debug, PartialEq, Eq)]
@@ -26,6 +30,9 @@ pub(crate) enum Step {
     Tell { id: String, text: String },
     RaiseUnanswered { request: Option<RequestId>, id: String, problem: UnansweredProblem },
     Withdraw { question: InteractionId },
+    /// A reminder about a decision of the user whose held plans are not reviewed yet.
+    TellPlanReview { id: String, review: InteractionId, number: u32 },
+    RaisePlanReview { request: Option<RequestId>, id: String, problem: PlanReviewProblem },
 }
 
 /// What is left in the orchestrator's inbox after it handled everything it was handed.
@@ -37,6 +44,9 @@ pub(crate) fn steps(state: &DomainState) -> Vec<Step> {
         } else if task_of(state, interaction).is_some_and(|task| !task.state.terminal()) {
             steps.extend(unanswered(state, interaction));
         }
+    }
+    for (id, review) in &state.plan_reviews {
+        steps.extend(unreviewed(state, id, review));
     }
     for request in state.requests.values().filter(|request| !request.closed) {
         if state.tasks.values().any(|task| task.request_id == request.id) || asked_about(state, &request.id) {
@@ -175,6 +185,26 @@ fn unanswered(state: &DomainState, question: &Interaction) -> Option<Step> {
     })
 }
 
+fn unreviewed(state: &DomainState, id: &InteractionId, review: &PlanReview) -> Option<Step> {
+    state.plan_review_waiting(review).next()?;
+    let reminders = numbered(state, PLAN_REVIEW_NOTICE_PREFIX, &id.0).len() as u32;
+    let problems = numbered(state, PLAN_REVIEW_PROBLEM_PREFIX, &id.0);
+    if problems.iter().any(|(_, problem)| state.open(problem)) {
+        return None;
+    }
+    let raised = problems.len() as u32;
+    let source = state.tasks.get(&review.task_id);
+    if reminders > raised {
+        let dependents = state.plan_review_waiting(review).map(|task| task.title.clone()).collect();
+        return Some(Step::RaisePlanReview {
+            request: source.and_then(|task| state.requests.get(&task.request_id)).filter(|request| !request.closed).map(|request| request.id.clone()),
+            id: format!("{PLAN_REVIEW_PROBLEM_PREFIX}{id}-{}", raised + 1),
+            problem: PlanReviewProblem { review_id: id.clone(), task_title: source.map(|task| task.title.clone()).unwrap_or_default(), dependents },
+        });
+    }
+    Some(Step::TellPlanReview { id: format!("{PLAN_REVIEW_NOTICE_PREFIX}{id}-{}", reminders + 1), review: id.clone(), number: reminders + 1 })
+}
+
 /// Carries the steps out; one that fails is tried again on the next pass.
 pub(crate) fn settle(domain: &DomainRuntime) {
     let Ok(state) = domain.state() else { return };
@@ -204,6 +234,23 @@ pub(crate) fn settle(domain: &DomainRuntime) {
                 ).map(drop)
             }
             Step::Withdraw { question } => domain.withdraw_problem(question).map(drop),
+            Step::TellPlanReview { id, review, number } => {
+                let plan_of = |task: &alondra_core::domain::TaskId| domain.launch_plan(task).ok().flatten();
+                let text = format!("Reminder {number}: these plans are still not reviewed, and nothing else waits for you. {}",
+                    crate::plan_reviews::orchestrator_text(&state, review, &plan_of));
+                domain.tell_orchestrator(id, text).map(drop)
+            }
+            Step::RaisePlanReview { request, id, problem } => {
+                let (need, why) = problem.text(alondra_core::views::Lang::En);
+                let option = |id: &str, label: &str| QuestionOption { id: id.into(), label: label.into(), description: None };
+                domain.raise_worded_problem_in(
+                    Scope::Orchestrator { request_id: request.clone() },
+                    id, &format!("{PLAN_REVIEW_CAUSE}:{}", problem.review_id.0.chars().take(40).collect::<String>()),
+                    need, why, problem.to_body(),
+                    vec![option(PLAN_REVIEW_REMIND, PLAN_REVIEW_REMIND_LABEL), option(PLAN_REVIEW_KEEP_PLANS, PLAN_REVIEW_KEEP_LABEL)],
+                    Some(PLAN_REVIEW_REMIND),
+                ).map(drop)
+            }
         };
         if let Err(error) = done {
             log!("could not settle the orchestrator's inbox ({step:?}): {error:?}");

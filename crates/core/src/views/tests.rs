@@ -6784,3 +6784,38 @@ fn a_task_whose_node_waits_for_the_orchestrator_says_so_and_puts_no_card_in_fron
     assert!(!matches!(state.node_phase(&"a-1".into()), Some(NodePhase::WaitingUser { .. })), "the answer sends the node back to work");
     assert_ne!(task_state_text(&state, &live, Lang::Es), "Esperando al orquestador");
 }
+
+/// 15 October: the user chose 512 px prints on Redraft's phase B while phases C, D and E waited with
+/// plans written for the 360 px copy. A dependent held for the orchestrator's review says so.
+#[test]
+fn a_dependent_held_by_the_users_decision_reads_plan_review_pending_until_it_is_settled() {
+    use crate::domain::{Actor, CardKind, CardSpec, Command, LaunchPlan, PlanReviewOutcome};
+    let mut state = DomainState::new("epoch");
+    execute(&mut state, Actor::System, Command::RegisterAgent { agent_id: "a-b".into(), name: "Node B".into(), at: 0 });
+    execute(&mut state, Actor::User { user_id: "u".into() }, Command::CreateRequest {
+        request_id: "r-1".into(), body: "Redraft index".into(), auto_merge: false, maintenance: false, message: false });
+    execute(&mut state, Actor::Orchestrator { generation: 0 }, Command::TitleRequest { request_id: "r-1".into(), title: "Redraft index".into() });
+    for (task, title, agent, dependencies) in [("t-b", "Phase B", Some("a-b"), vec![]), ("t-1", "Phase C", None, vec!["t-b"])] {
+        execute(&mut state, Actor::Orchestrator { generation: 0 }, Command::CreateTask {
+            task_id: task.into(), request_id: "r-1".into(), title: title.into(), agent_id: agent.map(Into::into), review_prs: false,
+            dependencies: dependencies.into_iter().map(Into::into).collect(), stack: None, launch: Some(LaunchPlan::new("node", "/tmp")),
+            plan_items: None });
+    }
+    execute(&mut state, Actor::Agent { agent_id: "a-b".into() }, Command::StartTask { task_id: "t-b".into() });
+    execute(&mut state, Actor::Agent { agent_id: "a-b".into() }, Command::AskQuestion {
+        attachments: vec![], interaction_id: "q".into(), scope: Scope::Task { task_id: "t-b".into() }, recipient: Recipient::User,
+        body: "11 of 21 groups match".into(), blocking: true,
+        options: vec![QuestionOption { id: "threshold".into(), label: "Adjust the threshold".into(), description: None },
+            QuestionOption { id: "plan-512".into(), label: "512 px prints".into(), description: None }],
+        card: CardSpec::new(CardKind::Decide, "Decide the index's next step").why("Phase C starts after it"),
+    });
+    let live = LiveSnapshot::default();
+    assert_ne!(task_state_text(&state, &live, Lang::Es), "Revisión de plan pendiente");
+    execute(&mut state, Actor::User { user_id: "u".into() }, Command::AnswerQuestion {
+        attachments: vec![], interaction_id: "q".into(), option_id: "plan-512".into(), inputs: BTreeMap::new() });
+    assert!(task_line(&state, &live, Lang::Es).starts_with("Revisión de plan pendiente · Decidiste en «Phase B»; el orquestador revisa su plan"));
+    assert!(task_line(&state, &live, Lang::En).starts_with("Plan review pending · You decided on “Phase B”; the orchestrator reviews its plan"));
+    execute(&mut state, Actor::Orchestrator { generation: 0 }, Command::SettlePlanReview {
+        review_id: "q".into(), task_id: "t-1".into(), outcome: PlanReviewOutcome::Unchanged { reason: "Phase C does not use the prints".into() } });
+    assert_ne!(task_state_text(&state, &live, Lang::Es), "Revisión de plan pendiente");
+}

@@ -1018,6 +1018,59 @@
           "additionalProperties": false,
           "properties": {
             "kind": {
+              "const": "settle_plan_review"
+            },
+            "review_id": {
+              "$ref": "#/$defs/InteractionId"
+            },
+            "task_id": {
+              "$ref": "#/$defs/TaskId"
+            },
+            "outcome": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "kind": { "const": "unchanged" },
+                    "reason": { "type": "string", "minLength": 1 }
+                  },
+                  "required": ["kind", "reason"]
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "kind": { "const": "plan_changed" },
+                    "launch": { "type": "object" },
+                    "reason": { "type": "string", "minLength": 1 }
+                  },
+                  "required": ["kind", "launch", "reason"]
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "kind": { "const": "cancelled" },
+                    "reason": { "type": "string", "minLength": 1 }
+                  },
+                  "required": ["kind", "reason"]
+                }
+              ]
+            }
+          },
+          "required": [
+            "kind",
+            "review_id",
+            "task_id",
+            "outcome"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
               "const": "create_document"
             },
             "task_id": {

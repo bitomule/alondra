@@ -65,6 +65,7 @@ mod mods_check;
 mod mods_wait;
 mod auto_launch;
 mod launch_plans;
+mod plan_reviews;
 mod start_failures;
 mod launch_worktree;
 mod node_close;

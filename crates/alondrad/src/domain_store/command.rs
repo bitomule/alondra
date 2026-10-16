@@ -155,26 +155,15 @@ pub(super) fn stage(
                     )?;
                 }
             }
-            (
-                _,
-                Command::CreateTask {
-                    task_id,
-                    launch: Some(plan),
-                    ..
-                },
-            ) => {
-                repository::exec(
-                    conn,
-                    "INSERT INTO task_launch_plans(task_id,plan,role,at) VALUES(?1,?2,?3,?4)",
-                    params![
-                        task_id.0,
-                        serde_json::to_string(plan)?,
-                        plan.role.map(|role| role.as_str()),
-                        alondra_core::now_millis()
-                    ],
-                )?;
-            }
             _ => {}
+        }
+        if let Some((task_id, plan)) = plan_set_by(&envelope.command) {
+            store_launch_plan(conn, task_id, plan)?;
+        }
+        if let Command::SettlePlanReview { task_id, outcome: PlanReviewOutcome::Cancelled { reason }, .. } = &envelope.command {
+            repository::exec(conn,
+                "INSERT INTO task_cancel_reason(task_id,reason) VALUES(?1,?2) ON CONFLICT(task_id) DO UPDATE SET reason=excluded.reason",
+                params![task_id.0, reason])?;
         }
         for (id, task) in &next.tasks {
             if let Some(before) = state.tasks.get(id).filter(|before| needs_a_node_again(before, task)) {
@@ -290,6 +279,13 @@ pub(super) fn stage(
                         None => "The domain has something for you.".to_owned(),
                     },
                 ),
+                DomainEffect::ReviewDependentPlans { review_id, task_id } => (
+                    "orchestrator",
+                    None,
+                    Some(task_id.0.as_str()),
+                    None,
+                    crate::plan_reviews::orchestrator_text(&next, review_id, &|task| stored_plan(conn, task).ok().flatten()),
+                ),
                 DomainEffect::ScheduleLaunchFailed {
                     task_id,
                     title,
@@ -372,6 +368,32 @@ mod tests;
 fn needs_a_node_again(before: &Task, after: &Task) -> bool {
     (before.state.terminal() || before.started_without_node())
         && after.state == TaskState::NotStarted && after.agent_id.is_none() && !after.archived
+}
+
+/// The launch plan a command gives a task: a new task's, a suggestion that became one, or the new
+/// plan of a reviewed one.
+fn plan_set_by(command: &Command) -> Option<(&TaskId, &LaunchPlan)> {
+    match command {
+        Command::CreateTask { task_id, launch: Some(plan), .. }
+        | Command::SettleSuggestion { decision: SuggestionDecision::NewTask { task_id, launch: plan, .. }, .. }
+        | Command::SettlePlanReview { task_id, outcome: PlanReviewOutcome::PlanChanged { launch: plan, .. }, .. } => Some((task_id, plan)),
+        _ => None,
+    }
+}
+
+/// A new plan keeps the place its first one gave the task; a queued launch starts with it.
+fn store_launch_plan(conn: &Connection, task: &TaskId, plan: &LaunchPlan) -> std::result::Result<(), StoreError> {
+    repository::exec(conn,
+        "INSERT INTO task_launch_plans(task_id,plan,role,at) VALUES(?1,?2,?3,?4) ON CONFLICT(task_id) DO UPDATE SET plan=excluded.plan,role=excluded.role",
+        params![task.0, serde_json::to_string(plan)?, plan.role.map(|role| role.as_str()), alondra_core::now_millis()])?;
+    let body = crate::domain_orchestrator_tools::LaunchBody::from_plan(task.clone(), plan).to_queue();
+    repository::exec(conn, "UPDATE launch_queue SET body=?2 WHERE task_id=?1", params![task.0, serde_json::to_string(&body)?])?;
+    Ok(())
+}
+
+fn stored_plan(conn: &Connection, task: &TaskId) -> Result<Option<LaunchPlan>> {
+    let plan: Option<String> = conn.query_row("SELECT plan FROM task_launch_plans WHERE task_id=?1", [&task.0], |row| row.get(0)).optional()?;
+    Ok(plan.map(|plan| serde_json::from_str(&plan)).transpose()?)
 }
 
 /// Puts the task in the fleet's queue with its launch plan, in the transaction that reopened it,

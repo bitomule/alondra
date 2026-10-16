@@ -312,6 +312,9 @@ async fn launch_guarded(domain: &DomainRuntime, home: &Path, actor: &Actor, body
     if task.state.terminal() {
         return Err(conflict(format!("{} is closed; reopen it first", body.task)));
     }
+    if let Some(why) = crate::plan_reviews::held(&current, &task.id) {
+        return Err(DomainError::new("plan_review_pending", why));
+    }
     if replaced.is_none() && task.agent_id.as_ref().and_then(|id| current.agents.get(id)).is_some_and(|a| a.phase.live() && !a.phase.coming_back()) {
         return Err(conflict(format!("{} already has a connected agent; send it what to do", body.task)));
     }
@@ -770,9 +773,18 @@ pub(crate) fn set_launch_plan(domain: &DomainRuntime, home: &Path, body: LaunchP
     if task.state.terminal() {
         return Err(DomainError::new("task_not_active", format!("{} is closed", task.id)));
     }
+    let under_review = |state: &DomainState| crate::plan_reviews::held(state, &task.id).map(|why| DomainError::new("plan_review_pending", format!(
+        "{why}. Give it its new plan there, with the plan_changed outcome: set_launch_plan does not change a plan under review")));
+    if let Some(refused) = under_review(&current) {
+        return Err(refused);
+    }
     crate::launch_plans::validate(domain, home, &task.request_id, &body.launch)?;
     let stored = |error: anyhow::Error| { log!("could not store the launch plan of {}: {error:#}", task.id); DomainError::new("storage_unavailable", "the launch plan could not be stored") };
     let mut store = domain.store.lock().expect("domain store poisoned");
+    let now = state(domain)?;
+    if let Some(refused) = under_review(&now) {
+        return Err(refused);
+    }
     store.set_launch_plan(&task.id, &body.launch, alondra_core::now_millis()).map_err(stored)?;
     Ok(json!({"task": task.id, "stored": true}))
 }

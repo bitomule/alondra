@@ -1627,3 +1627,107 @@ fn exit_before_input_consumption_cannot_discard_the_initial_input_on_retirement(
         );
     }
 }
+
+fn hold(task: &mut TaskLifecycle, review: &str) {
+    apply(task, Event::HoldForPlanReview { review: review.into() });
+}
+fn settle(task: &mut TaskLifecycle, review: &str, outcome: PlanReviewOutcome) -> Result<(), Refusal> {
+    let plan_revision = task.plan_revision();
+    task.apply(task.revision(), Event::PlanReviewSettled { review: review.into(), plan_revision, outcome })
+}
+fn try_admit(task: &mut TaskLifecycle) -> Result<(), Refusal> {
+    task.apply(task.revision(), Event::Admit {
+        node: AgentId::from("node"), conversation: ConversationId::new("conversation").unwrap(),
+        instance: InstanceId::new("instance").unwrap(), host: HostId::new("host").unwrap(),
+    })
+}
+
+#[test]
+fn a_held_task_is_not_admitted_and_the_end_of_its_wait_does_not_release_it() {
+    let mut task = TaskLifecycle::planned(TaskId::from("phase-c"), input("initial")).unwrap();
+    apply(&mut task, Event::WaitForDependencies { dependencies: vec![TaskId::from("phase-b")] });
+    hold(&mut task, "decision-512");
+    assert_eq!(task.plan_reviews(), [(&InteractionId::from("decision-512"), 0)]);
+    apply(&mut task, Event::DependenciesResolved { input: input("dependencies") });
+    assert_eq!(try_admit(&mut task), Err(Refusal::PlanReviewPending));
+    settle(&mut task, "decision-512", PlanReviewOutcome::PlanChanged).unwrap();
+    assert_eq!(task.plan_revision(), 1, "the new plan is the one it starts with");
+    try_admit(&mut task).unwrap();
+}
+
+#[test]
+fn only_a_settlement_of_that_review_at_the_current_plan_releases_it() {
+    let mut task = TaskLifecycle::planned(TaskId::from("phase-d"), input("initial")).unwrap();
+    hold(&mut task, "first");
+    hold(&mut task, "second");
+    assert_eq!(task.apply(task.revision(), Event::HoldForPlanReview { review: "first".into() }), Err(Refusal::DuplicateObligation));
+    assert_eq!(settle(&mut task, "unknown", PlanReviewOutcome::Unchanged), Err(Refusal::UnknownObligation));
+    settle(&mut task, "first", PlanReviewOutcome::PlanChanged).unwrap();
+    let stale = task.apply(task.revision(), Event::PlanReviewSettled { review: "second".into(), plan_revision: 0, outcome: PlanReviewOutcome::Unchanged });
+    assert_eq!(stale, Err(Refusal::StaleRevision), "a review of the old plan does not release a hold on the new one");
+    assert_eq!(try_admit(&mut task), Err(Refusal::PlanReviewPending));
+    settle(&mut task, "second", PlanReviewOutcome::Unchanged).unwrap();
+    try_admit(&mut task).unwrap();
+    assert_eq!(task.apply(task.revision(), Event::HoldForPlanReview { review: "late".into() }), Err(Refusal::InvalidState),
+        "a task that started is not held: its node already works");
+}
+
+#[test]
+fn a_hold_survives_cancelling_and_reopening_the_task() {
+    let mut task = TaskLifecycle::planned(TaskId::from("phase-e"), input("initial")).unwrap();
+    hold(&mut task, "decision-512");
+    apply(&mut task, Event::Finish { intent: FinishIntent::Cancel, cleanup: operation("cleanup"), post_merge: None });
+    let remaining: Vec<DrainObligation> = task.drain().cloned().collect();
+    for obligation in remaining {
+        apply(&mut task, Event::DrainObserved { obligation });
+    }
+    assert_eq!(task.phase(), TaskPhase::Cancelled);
+    apply(&mut task, Event::Reopen { input: input("again") });
+    assert_eq!(try_admit(&mut task), Err(Refusal::PlanReviewPending), "its plan still predates the decision");
+    settle(&mut task, "decision-512", PlanReviewOutcome::KeptByUser).unwrap();
+    try_admit(&mut task).unwrap();
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig {
+        cases: 256,
+        failure_persistence: None,
+        rng_seed: proptest::test_runner::RngSeed::Fixed(0x91a_4),
+        ..ProptestConfig::default()
+    })]
+    #[test]
+    fn no_history_admits_a_held_task_and_only_its_own_settlement_releases_it(actions in prop::collection::vec(0u8..12, 1..80)) {
+        let mut task = TaskLifecycle::planned(TaskId::from("task"), input("initial")).unwrap();
+        let reviews = ["first", "second"];
+        for action in actions {
+            let plan_revision = task.plan_revision();
+            let event = match action {
+                0 | 1 => Event::HoldForPlanReview { review: reviews[action as usize].into() },
+                2 => Event::PlanReviewSettled { review: "first".into(), plan_revision, outcome: PlanReviewOutcome::Unchanged },
+                3 => Event::PlanReviewSettled { review: "second".into(), plan_revision, outcome: PlanReviewOutcome::PlanChanged },
+                4 => Event::PlanReviewSettled { review: "first".into(), plan_revision: plan_revision.wrapping_sub(1), outcome: PlanReviewOutcome::KeptByUser },
+                5 => Event::Admit { node: "node".into(), conversation: ConversationId::new("conversation").unwrap(), instance: InstanceId::new("instance").unwrap(), host: HostId::new("host").unwrap() },
+                6 => Event::WaitForDependencies { dependencies: vec![TaskId::from("dependency")] },
+                7 => Event::DependenciesResolved { input: input("dependencies") },
+                8 => Event::Finish { intent: FinishIntent::Cancel, cleanup: operation("cleanup"), post_merge: None },
+                9 => match task.drain().next().cloned() { Some(obligation) => Event::DrainObserved { obligation }, None => continue },
+                10 => Event::Reopen { input: input("again") },
+                _ => Event::Pause { card: "pause".into() },
+            };
+            let before = format!("{task:?}");
+            let held: Vec<InteractionId> = task.plan_reviews().into_iter().map(|(review, _)| review.clone()).collect();
+            let admitting = matches!(event, Event::Admit { .. });
+            let settling = match &event { Event::PlanReviewSettled { review, .. } => Some(review.clone()), _ => None };
+            match task.apply(task.revision(), event) {
+                Err(_) => prop_assert_eq!(format!("{task:?}"), before),
+                Ok(()) => {
+                    prop_assert!(!(admitting && !held.is_empty()), "a held task was admitted");
+                    let now: Vec<InteractionId> = task.plan_reviews().into_iter().map(|(review, _)| review.clone()).collect();
+                    for released in held.iter().filter(|review| !now.contains(review)) {
+                        prop_assert_eq!(Some(released), settling.as_ref(), "a hold went without its own settlement");
+                    }
+                }
+            }
+        }
+    }
+}

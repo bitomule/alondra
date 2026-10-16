@@ -257,7 +257,19 @@ fn chained(task: &Task, context: &RenderContext<'_>) -> Presentation {
     Presentation { chained: true, ..Presentation::new(t!(lang, "Waiting", "Esperando"), Tone::Info, Block::Waiting, fact) }
 }
 
+/// A decision of the user on a task this one waits for holds it until the orchestrator reviews its plan.
+fn plan_review(task: &Task, context: &RenderContext<'_>) -> Option<Presentation> {
+    let (_, review) = context.domain.plan_reviews_holding(&task.id).next()?;
+    let lang = context.lang;
+    let fact = context.domain.tasks.get(&review.task_id).map(|source| tf!(lang,
+        "You decided on “{title}”; the orchestrator reviews its plan", "Decidiste en «{title}»; el orquestador revisa su plan", title = source.title));
+    Some(Presentation::new(t!(lang, "Plan review pending", "Revisión de plan pendiente"), Tone::Neutral, Block::Waiting, fact))
+}
+
 fn waiting_dependency(task: &Task, context: &RenderContext<'_>) -> Presentation {
+    if let Some(held) = plan_review(task, context) {
+        return held;
+    }
     if let Some(pr) = task.stack.as_ref().and_then(|stack| context.domain.pull_requests.get(&stack.pr_id))
         .filter(|pr| pr.state == PrState::Open) {
         return waiting_pr(pr.number, context.lang);
@@ -274,6 +286,9 @@ fn not_started(task: &Task, context: &RenderContext<'_>) -> Presentation {
     if task.agent_id.is_some() {
         return Presentation::new(t!(lang, "Starting", "Arrancando"), Tone::Accent, InProgress,
             Some(t!(lang, "Opening its session", "Abriendo su sesión").into()));
+    }
+    if let Some(held) = plan_review(task, context) {
+        return held;
     }
     let didnt_start = |fact: String| Presentation::new(common::launch_failed_label(lang), Tone::Warning, Waiting, Some(fact));
     if let Some(super::LiveStartWait::Retry { at }) = context.live.start_waits.get(&task.id.0) {

@@ -67,6 +67,40 @@ impl From<WaitRecord> for WaitReason {
     rename_all = "snake_case",
     deny_unknown_fields
 )]
+pub(super) enum PlanReviewOutcomeRecord {
+    Unchanged,
+    PlanChanged,
+    Cancelled,
+    KeptByUser,
+}
+impl From<PlanReviewOutcome> for PlanReviewOutcomeRecord {
+    fn from(outcome: PlanReviewOutcome) -> Self {
+        match outcome {
+            PlanReviewOutcome::Unchanged => Self::Unchanged,
+            PlanReviewOutcome::PlanChanged => Self::PlanChanged,
+            PlanReviewOutcome::Cancelled => Self::Cancelled,
+            PlanReviewOutcome::KeptByUser => Self::KeptByUser,
+        }
+    }
+}
+impl From<PlanReviewOutcomeRecord> for PlanReviewOutcome {
+    fn from(record: PlanReviewOutcomeRecord) -> Self {
+        match record {
+            PlanReviewOutcomeRecord::Unchanged => Self::Unchanged,
+            PlanReviewOutcomeRecord::PlanChanged => Self::PlanChanged,
+            PlanReviewOutcomeRecord::Cancelled => Self::Cancelled,
+            PlanReviewOutcomeRecord::KeptByUser => Self::KeptByUser,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    content = "data",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
 pub(super) enum FinishRecord {
     Complete,
     Cancel,
@@ -446,6 +480,14 @@ pub(super) enum EventRecord {
     Reopen {
         input: String,
     },
+    HoldForPlanReview {
+        review: String,
+    },
+    PlanReviewSettled {
+        review: String,
+        plan_revision: u64,
+        outcome: PlanReviewOutcomeRecord,
+    },
 }
 impl From<&Event> for EventRecord {
     fn from(event: &Event) -> Self {
@@ -536,6 +578,18 @@ impl From<&Event> for EventRecord {
             },
             Event::Reopen { input } => Self::Reopen {
                 input: input.as_str().to_owned(),
+            },
+            Event::HoldForPlanReview { review } => Self::HoldForPlanReview {
+                review: review.0.clone(),
+            },
+            Event::PlanReviewSettled {
+                review,
+                plan_revision,
+                outcome,
+            } => Self::PlanReviewSettled {
+                review: review.0.clone(),
+                plan_revision: *plan_revision,
+                outcome: (*outcome).into(),
             },
         }
     }
@@ -633,6 +687,18 @@ impl EventRecord {
             },
             EventRecord::Reopen { input } => Event::Reopen {
                 input: InputId::new(input).map_err(Error::from)?,
+            },
+            EventRecord::HoldForPlanReview { review } => Event::HoldForPlanReview {
+                review: InteractionId(review),
+            },
+            EventRecord::PlanReviewSettled {
+                review,
+                plan_revision,
+                outcome,
+            } => Event::PlanReviewSettled {
+                review: InteractionId(review),
+                plan_revision,
+                outcome: outcome.into(),
             },
         })
     }
@@ -825,6 +891,27 @@ mod tests {
                 input: InputId::new("input").unwrap(),
             },
         );
+        roundtrip(
+            &current,
+            Event::HoldForPlanReview {
+                review: "decision".into(),
+            },
+        );
+        for outcome in [
+            PlanReviewOutcome::Unchanged,
+            PlanReviewOutcome::PlanChanged,
+            PlanReviewOutcome::Cancelled,
+            PlanReviewOutcome::KeptByUser,
+        ] {
+            roundtrip(
+                &current,
+                Event::PlanReviewSettled {
+                    review: "decision".into(),
+                    plan_revision: 3,
+                    outcome,
+                },
+            );
+        }
         roundtrip(
             &current,
             Event::Runtime {

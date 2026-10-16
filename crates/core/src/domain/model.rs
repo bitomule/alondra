@@ -437,6 +437,52 @@ impl SuggestionDecision {
         }
     }
 }
+/// The tasks that wait for one where the user answered a decision, held back until the
+/// orchestrator reviews the launch plan each was given before that decision.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PlanReview {
+    /// Where the user decided.
+    pub task_id: TaskId,
+    /// The decision cards answered: one, or the decisions of a group answered together.
+    pub decisions: Vec<InteractionId>,
+    /// The revision that committed the answer.
+    pub at_revision: Revision,
+    /// Every dependent held, with how its plan review was settled once it is.
+    pub dependents: BTreeMap<TaskId, Option<PlanReviewSettlement>>,
+}
+impl PlanReview {
+    pub fn holds(&self, task: &TaskId) -> bool {
+        matches!(self.dependents.get(task), Some(None))
+    }
+    pub fn open(&self) -> impl Iterator<Item = &TaskId> {
+        self.dependents.iter().filter(|(_, settled)| settled.is_none()).map(|(task, _)| task)
+    }
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PlanReviewSettlement {
+    pub outcome: PlanReviewOutcome,
+    pub at_revision: Revision,
+}
+/// The only ways a held dependent is released: the orchestrator reviewed its plan, or the user kept
+/// the plans as they are. Time, the end of what it waits for and a reopening never release it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum PlanReviewOutcome {
+    Unchanged { reason: String },
+    PlanChanged { launch: super::LaunchPlan, reason: String },
+    Cancelled { reason: String },
+    KeptByUser,
+}
+impl PlanReviewOutcome {
+    pub fn reason(&self) -> Option<&str> {
+        match self {
+            Self::Unchanged { reason } | Self::PlanChanged { reason, .. } | Self::Cancelled { reason } => Some(reason),
+            Self::KeptByUser => None,
+        }
+    }
+}
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Acceptance {
     pub user_id: String,
@@ -956,6 +1002,10 @@ pub struct DomainState {
     /// The Requests created by approving the plan a final result proposed, with where it came from.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub request_plans: BTreeMap<RequestId, ApprovedPlan>,
+    /// The user's decisions that held dependent tasks for the orchestrator to review their plans,
+    /// by the answered card that completed them; settled ones are kept.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub plan_reviews: BTreeMap<InteractionId, PlanReview>,
 }
 impl DomainState {
     pub fn new(epoch: impl Into<DataEpoch>) -> Self {
@@ -980,6 +1030,7 @@ impl DomainState {
             checklist_marks: BTreeMap::new(),
             last_words: BTreeMap::new(),
             request_plans: BTreeMap::new(),
+            plan_reviews: BTreeMap::new(),
         }
     }
     /// The orchestrator has neither defined it into Tasks nor closed it.

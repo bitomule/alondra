@@ -1,5 +1,7 @@
 use super::*;
 use std::collections::{BTreeMap, BTreeSet};
+mod plan_review;
+pub use plan_review::{PLAN_REVIEW_KEEP_PLANS, PLAN_REVIEW_PROBLEM_PREFIX, PLAN_REVIEW_REMIND, PlanReviewProblem};
 #[path = "guards.rs"]
 mod guards;
 type Result<T> = std::result::Result<T, DomainError>;
@@ -1855,6 +1857,12 @@ impl DomainState {
                 touched.insert(review.task_id.clone());
             }
         }
+        for (id, review) in &next.plan_reviews {
+            let before = self.plan_reviews.get(id);
+            touched.extend(review.dependents.iter()
+                .filter(|(task, settled)| before.and_then(|b| b.dependents.get(*task)) != Some(*settled))
+                .map(|(task, _)| task.clone()));
+        }
         for (id, document) in &next.documents {
             if self.documents.get(id) != Some(document) {
                 touched.extend(
@@ -1910,7 +1918,8 @@ impl DomainState {
             | Command::RecordNodeEnd { task_id, .. }
             | Command::ArchiveTask { task_id, .. }
             | Command::HoldHook { task_id, .. }
-            | Command::HoldQuestions { task_id, .. } => task(task_id),
+            | Command::HoldQuestions { task_id, .. }
+            | Command::SettlePlanReview { task_id, .. } => task(task_id),
             Command::PublishInformation { scope, .. }
             | Command::AskQuestion { scope, .. }
             | Command::AskQuestions { scope, .. }
@@ -2487,6 +2496,7 @@ impl DomainState {
                 created.push(task_id.0.clone());
             }
             Command::AssignTask { task_id, agent_id, model } => {
+                self.not_held_for_plan_review(task_id)?;
                 if matches!(actor, Actor::System) {
                     let t = self.task(task_id)?;
                     if t.state != TaskState::NotStarted || t.started || t.agent_id.is_some() {
@@ -2685,6 +2695,8 @@ impl DomainState {
                 if t.agent_id.is_none() {
                     return fail("not_assigned", "Task requires an Agent");
                 };
+                self.not_held_for_plan_review(task_id)?;
+                let t = self.task(task_id)?;
                 self.ready_to_start(t)?;
                 self.tasks.get_mut(task_id).unwrap().started = true;
             }
@@ -3106,6 +3118,10 @@ impl DomainState {
                     self.checklists.insert(task_id.clone(), checklist);
                 }
                 self.settle_start_problem(interaction_id, option_id, effects);
+                self.settle_plan_review_problem(interaction_id, option_id);
+                if matches!(actor, Actor::User { .. }) {
+                    self.hold_for_plan_review(interaction_id, effects);
+                }
                 // D05: the answer reaches whoever holds the Task now, not the
                 // session that asked and may since have been replaced.
                 let complete = self.group_complete(&self.interactions[interaction_id]);
@@ -3124,6 +3140,9 @@ impl DomainState {
             }
             Command::SettleSuggestion { interaction_id, decision } => {
                 self.settle_suggestion(actor, interaction_id, decision, effects, created)?;
+            }
+            Command::SettlePlanReview { review_id, task_id, outcome } => {
+                self.settle_plan_review(actor, review_id, task_id, outcome, effects, created)?;
             }
             Command::CreateDocument {
                 task_id,
@@ -4020,6 +4039,7 @@ impl DomainState {
             return fail("invalid_input", "Unsafe revision or generation");
         };
         self.schedule.validate()?;
+        self.validate_plan_reviews()?;
         for run in self.schedule.runs.values() {
             if let (Some(request_id), Some(task_id)) = (&run.request_id, &run.task_id) {
                 if !self.requests.contains_key(request_id)

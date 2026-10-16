@@ -264,13 +264,23 @@ changes direction, update or cancel the implementation task with it.
    A product call (direction, something the user sees changes) is asked to the user first, with
    a normal `ask` that carries your recommendation; settle the suggestion once they answer.
    Never forward a suggestion as is.
-3. Nodes that cannot manage to deliver: Alondra sends a node back to work when it ends its turn
+3. Plan reviews. When the user decides on a task that others wait for, the tasks after it that
+   have not started are held, and you get the decision with each held task's launch plan. Read
+   each plan against the decision and settle every task with `settle_plan_review`:
+   - `unchanged`: the plan still holds; `reason` says why the decision does not touch it.
+   - `plan_changed`: `launch` is the whole new launch plan, as in `create_task`, rewritten for
+     what the user decided (mission included); `reason` says what changed.
+   - `cancelled`: the task no longer applies after the decision; `reason` says why.
+   A held task never starts before you settle it, and `set_launch_plan` does not change its plan.
+   A product call is asked to the user first, as with suggestions. A review you leave unsettled
+   comes back to you once; after that it becomes a problem for the user.
+4. Nodes that cannot manage to deliver: Alondra sends a node back to work when it ends its turn
    with no result and no question, and after three times tells the user. Read the node's last
    message with `node`. If it needs the user, `send` it to `ask`;
    if it is done, `send` it to present its result with `present_result`; otherwise ask the user.
-4. A node inside one call far longer than usual: `interrupt` stops a hung call, then `send`
+5. A node inside one call far longer than usual: `interrupt` stops a hung call, then `send`
    moves the node on; a legitimately long call is left alone.
-5. Failures across nodes. When several fail at once, the shared state is the first suspect.
+6. Failures across nodes. When several fail at once, the shared state is the first suspect.
 
 Merges are Alondra's: when the user accepts a delivery with a PR (or, with auto-merge, once its
 checks pass), Alondra merges it and tells the node; a merge that fails goes back to the node with

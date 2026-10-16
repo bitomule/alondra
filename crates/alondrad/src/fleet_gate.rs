@@ -705,7 +705,8 @@ fn queued_launches(domain: &DomainRuntime, state: &DomainState, now: Millis) -> 
         .map(|row| row.task_id).collect();
     drop(store);
     rows.into_iter()
-        .filter(|row| !blocked.contains(&row.task_id) && retries.get(&row.task_id).is_none_or(|(_, at)| *at <= now))
+        .filter(|row| !blocked.contains(&row.task_id) && retries.get(&row.task_id).is_none_or(|(_, at)| *at <= now)
+            && !state.plan_review_pending(&row.task_id))
         .map(|row| Waiting {
         priority: priority_of(state, Some(&row.task_id)),
         key: Key::Task(row.task_id),

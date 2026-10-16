@@ -277,6 +277,13 @@ pub enum Command {
         interaction_id: InteractionId,
         decision: SuggestionDecision,
     },
+    /// The orchestrator's review of one dependent's plan after the user's decision held it: it
+    /// stays as it is, gets a new plan, or is cancelled. The user can only keep the plans.
+    SettlePlanReview {
+        review_id: InteractionId,
+        task_id: TaskId,
+        outcome: PlanReviewOutcome,
+    },
     CreateDocument {
         task_id: TaskId,
         document_id: DocumentId,
@@ -488,6 +495,12 @@ pub enum DomainEffect {
         interaction_id: Option<InteractionId>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         request_id: Option<RequestId>,
+    },
+    /// The user decided on a Task that others wait for: the orchestrator reviews the plans of
+    /// the dependents this decision holds.
+    ReviewDependentPlans {
+        review_id: InteractionId,
+        task_id: TaskId,
     },
     /// A scheduled Task whose launch failed: it stays not started with no node and nothing
     /// retries it.

@@ -2878,9 +2878,10 @@ fn variant_index(c: &Command) -> usize {
         Command::RecordLastWords { .. } => 60,
         Command::DecideProposedPlan { .. } => 61,
         Command::SettleSuggestion { .. } => 62,
+        Command::SettlePlanReview { .. } => 63,
     }
 }
-const COMMAND_KINDS: usize = 63;
+const COMMAND_KINDS: usize = 64;
 /// Every command kind naming the given ids. The flag marks commands that only
 /// create a fresh entity and therefore may succeed with an unknown id.
 fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
@@ -2992,6 +2993,7 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
             agent_id: "a".into(), questions: vec![] }, true),
         (Command::ReopenAnswer { interaction_id: ids.interaction.into() }, false),
         (Command::SettleSuggestion { interaction_id: ids.interaction.into(), decision: SuggestionDecision::Discard { reason: "Covered".into() } }, false),
+        (Command::SettlePlanReview { review_id: ids.interaction.into(), task_id: ids.task.into(), outcome: PlanReviewOutcome::Unchanged { reason: "Same plan".into() } }, false),
         (Command::ReleaseTask { task_id: ids.task.into(), reason: "node closed by the user".into() }, false),
         (Command::ConfirmCleanup { task_id: ids.task.into() }, false),
         (Command::RecordNodeEnd { task_id: ids.task.into(), end: NodeEnd::Closed, agent_id: None }, false),

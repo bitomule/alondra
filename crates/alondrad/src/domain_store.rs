@@ -112,6 +112,11 @@ const REQUEST_PLANS: &str = "CREATE TABLE IF NOT EXISTS request_plans(\
  request_id TEXT PRIMARY KEY REFERENCES requests(id),\
  task_id TEXT NOT NULL REFERENCES tasks(id),\
  presentation_id TEXT NOT NULL REFERENCES interactions(id));";
+/// The user's decisions that held dependent tasks until the orchestrator reviewed their plans,
+/// each with its dependents and how each was settled; created on every open like request_plans.
+const PLAN_REVIEWS: &str = "CREATE TABLE IF NOT EXISTS plan_reviews(\
+ interaction_id TEXT PRIMARY KEY REFERENCES interactions(id),\
+ review TEXT NOT NULL CHECK(json_valid(review)));";
 /// Launches waiting at the gate for a free slot (not domain state): what to launch, who asked and
 /// since when. See docs/fleet-pacing.md.
 const LAUNCH_QUEUE: &str = "CREATE TABLE IF NOT EXISTS launch_queue(\
@@ -555,6 +560,7 @@ impl DomainStore {
         tx.execute_batch(TASK_PRIORITIES)?;
         tx.execute_batch(TASK_CHECKLISTS)?;
         tx.execute_batch(REQUEST_PLANS)?;
+        tx.execute_batch(PLAN_REVIEWS)?;
         tx.execute_batch(LAUNCH_QUEUE)?;
         tx.execute_batch(TASK_CLOSINGS)?;
         tx.execute_batch(POST_MERGE_CHECKS)?;

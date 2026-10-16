@@ -108,6 +108,8 @@ pub enum Refusal {
     DuplicateObligation,
     UnknownObligation,
     SelfDependency,
+    /// A decision of the user holds the task until the orchestrator reviews its plan.
+    PlanReviewPending,
 }
 
 impl From<IdentityError> for Refusal {
@@ -134,6 +136,16 @@ pub enum DrainObligation {
     Cleanup(OperationId),
     ExternalEffect(OperationId),
     PostMerge(OperationId),
+}
+
+/// How the plan review of a held task was settled. `Cancelled` only releases the hold: the
+/// cancellation itself is the `Finish` that follows it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PlanReviewOutcome {
+    Unchanged,
+    PlanChanged,
+    Cancelled,
+    KeptByUser,
 }
 
 /// Requests and observations are validated by the aggregate, not assigned as state.
@@ -206,6 +218,16 @@ pub enum Event {
     },
     Reopen {
         input: InputId,
+    },
+    /// The user answered `review`, a decision on a task this one waits for, before it started.
+    HoldForPlanReview {
+        review: InteractionId,
+    },
+    /// The review of the plan at `plan_revision` the hold `review` asked for.
+    PlanReviewSettled {
+        review: InteractionId,
+        plan_revision: u64,
+        outcome: PlanReviewOutcome,
     },
 }
 
@@ -485,6 +507,11 @@ pub struct TaskLifecycle {
     revision: Revision,
     generation: u64,
     state: State,
+    /// Which launch plan the task would start with; a reviewed new plan moves it on.
+    plan_revision: u64,
+    /// Decisions holding the task, each with the plan revision it held. Kept apart from `state`,
+    /// so no phase change, dependency or reopening releases one: only its settlement does.
+    plan_reviews: BTreeMap<InteractionId, u64>,
 }
 
 impl TaskLifecycle {
@@ -495,6 +522,8 @@ impl TaskLifecycle {
             revision: 0,
             generation: 0,
             state: State::Unstarted(input),
+            plan_revision: 0,
+            plan_reviews: BTreeMap::new(),
         })
     }
     pub fn task(&self) -> &TaskId {
@@ -502,6 +531,13 @@ impl TaskLifecycle {
     }
     pub fn revision(&self) -> Revision {
         self.revision
+    }
+    pub fn plan_revision(&self) -> u64 {
+        self.plan_revision
+    }
+    /// The decisions holding the task, with the plan revision each held.
+    pub fn plan_reviews(&self) -> Vec<(&InteractionId, u64)> {
+        self.plan_reviews.iter().map(|(review, revision)| (review, *revision)).collect()
     }
     pub fn phase(&self) -> TaskPhase {
         match self.state {
@@ -649,6 +685,8 @@ impl TaskLifecycle {
             revision: self.revision,
             generation: self.generation,
             state: self.state.clone(),
+            plan_revision: self.plan_revision,
+            plan_reviews: self.plan_reviews.clone(),
         };
         candidate.transition(event)?;
         candidate.revision += 1;

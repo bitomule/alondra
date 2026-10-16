@@ -728,3 +728,35 @@ async fn a_task_with_no_launch_plan_cannot_be_reopened_because_nothing_could_sta
     assert_eq!(f.domain.state().unwrap().tasks[&TaskId::from("f1")].state, TaskState::Cancelled);
     assert!(queued(&f).is_empty());
 }
+
+/// 15 October: the user chose 512 px prints on Redraft's phase B; phase C waited with a plan for
+/// the 360 px copy. It starts only after the orchestrator reviewed it, with the plan it gave.
+#[tokio::test]
+async fn a_dependent_held_by_the_users_decision_starts_after_its_review_with_the_new_plan() {
+    let f = world();
+    let claude = FakeClaude::new(&f);
+    open_task(&f, "b");
+    command(&f.domain, Actor::Agent { agent_id: "seed-b".into() }, Command::StartTask { task_id: "b".into() });
+    create(&f, "c", &["b"], Some(&LaunchPlan { mission: Some("Group with the 360 px copy".into()), ..plan(&f, "app/c") }));
+    command(&f.domain, Actor::Agent { agent_id: "seed-b".into() }, Command::AskQuestion {
+        attachments: vec![], interaction_id: "decision".into(), scope: alondra_core::domain::Scope::Task { task_id: "b".into() },
+        recipient: alondra_core::domain::Recipient::User, body: "11 of 21 groups match".into(), blocking: true,
+        options: vec![alondra_core::domain::QuestionOption { id: "threshold".into(), label: "Adjust the threshold".into(), description: None },
+            alondra_core::domain::QuestionOption { id: "plan-512".into(), label: "512 px prints".into(), description: None }],
+        card: alondra_core::domain::CardSpec::new(alondra_core::domain::CardKind::Decide, "Decide the index's next step").why("Phase C starts after it"),
+    });
+    command(&f.domain, user(), Command::AnswerQuestion { attachments: vec![], interaction_id: "decision".into(),
+        option_id: "plan-512".into(), inputs: Default::default() });
+    finish(&f, "b", "What b delivered", false);
+    pass(&f.domain, &f.home, &claude).await.unwrap();
+    assert_eq!(claude.launches(), 0, "its dependency is done but its plan is not reviewed");
+    assert!(auto(&f, "c").is_none(), "nothing claims it while it is held");
+    command(&f.domain, Actor::Orchestrator { generation: 0 }, Command::SettlePlanReview { review_id: "decision".into(), task_id: "c".into(),
+        outcome: alondra_core::domain::PlanReviewOutcome::PlanChanged {
+            launch: LaunchPlan { mission: Some("Group with 512 px prints".into()), ..plan(&f, "app/c-512") }, reason: "The user chose 512 px".into() } });
+    pass(&f.domain, &f.home, &claude).await.unwrap();
+    assert_eq!(claude.launches(), 1);
+    let args = claude.calls.lock().unwrap()[0].1.clone();
+    assert!(args.windows(2).any(|pair| pair == ["--name", "app/c-512"]), "{args:?}");
+    assert!(claude.prompt(0).contains("Group with 512 px prints") && !claude.prompt(0).contains("360 px"), "{}", claude.prompt(0));
+}

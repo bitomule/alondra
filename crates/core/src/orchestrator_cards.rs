@@ -30,8 +30,15 @@ pub const UNANSWERED_WITHDRAW_LABEL: &str = "Withdraw the question";
 /// Alondra's one reminder to the orchestrator about a node's suggestion it left unsettled.
 pub const UNSETTLED_NOTICE_PREFIX: &str = "suggestion-unsettled-";
 
+/// Alondra's reminder to the orchestrator about a plan review it left unsettled.
+pub const PLAN_REVIEW_NOTICE_PREFIX: &str = "plan-review-unsettled-";
+pub const PLAN_REVIEW_REMIND_LABEL: &str = "Remind the orchestrator again";
+pub const PLAN_REVIEW_KEEP_LABEL: &str = "Keep the plans as they are";
+
 const ERROR_SHOWN: usize = 600;
 const QUESTION_SHOWN: usize = 160;
+/// Held tasks a plan-review problem names before it counts the rest.
+const PLAN_REVIEW_NAMED: usize = 3;
 
 /// Claude could not start the orchestrator several times in a row: new requests wait for it.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -127,6 +134,33 @@ impl UnansweredProblem {
     }
 }
 
+/// The tasks that start after one the user decided on, still held because the orchestrator was
+/// handed the decision twice and reviewed none of their plans.
+impl crate::domain::PlanReviewProblem {
+    pub fn text(&self, lang: Lang) -> (String, String) {
+        let title: String = self.task_title.chars().take(36).collect();
+        let named: Vec<String> = self.dependents.iter().take(PLAN_REVIEW_NAMED).map(|title| {
+            let title: String = title.chars().take(28).collect();
+            match lang {
+                Lang::Es => format!("«{title}»"),
+                Lang::En => format!("“{title}”"),
+            }
+        }).collect();
+        let more = self.dependents.len().saturating_sub(PLAN_REVIEW_NAMED);
+        let tasks = match more {
+            0 => named.join(", "),
+            more => tf!(lang, "{named} and {more} more", "{named} y {more} más", named = named.join(", "), more = more),
+        };
+        (
+            tf!(lang, "Tasks after “{title}” wait for a plan review", "Las tareas tras «{title}» esperan revisión de plan", title = title),
+            tf!(lang,
+                "The orchestrator got your decision twice and has not reviewed whether these plans still hold: {tasks}. They wait until then.",
+                "El orquestador recibió tu decisión dos veces y no ha revisado si estos planes siguen valiendo: {tasks}. Esperan hasta entonces.",
+                tasks = tasks),
+        )
+    }
+}
+
 /// The words of this module's options, by the id and English label they were built with.
 pub fn option_text(id: &str, label: &str, lang: Lang) -> Option<(&'static str, &'static str)> {
     match (id, label) {
@@ -146,6 +180,14 @@ pub fn option_text(id: &str, label: &str, lang: Lang) -> Option<(&'static str, &
             t!(lang, "Withdraw the question", "Retirar la pregunta"),
             t!(lang, "The node goes on without that answer, or asks you", "El nodo sigue sin esa respuesta, o te pregunta a ti"),
         )),
+        (crate::domain::PLAN_REVIEW_REMIND, PLAN_REVIEW_REMIND_LABEL) => Some((
+            t!(lang, "Remind it again", "Recordárselo otra vez"),
+            t!(lang, "Alondra hands your decision to the orchestrator again so it reviews those plans", "Alondra vuelve a pasar tu decisión al orquestador para que revise esos planes"),
+        )),
+        (crate::domain::PLAN_REVIEW_KEEP_PLANS, PLAN_REVIEW_KEEP_LABEL) => Some((
+            t!(lang, "Keep the plans as they are", "Dejar los planes como están"),
+            t!(lang, "The held tasks start with the plans they have, without the orchestrator's review", "Las tareas retenidas arrancan con el plan que tienen, sin la revisión del orquestador"),
+        )),
         (UNSPLIT_CLOSE, UNSPLIT_CLOSE_LABEL) => Some((
             t!(lang, "Close it", "Cerrarla"),
             t!(lang, "The request closes with no tasks; nothing else changes", "La petición se cierra sin tareas; no cambia nada más"),
@@ -157,6 +199,18 @@ pub fn option_text(id: &str, label: &str, lang: Lang) -> Option<(&'static str, &
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_plan_review_problem_fits_its_card_whatever_the_titles() {
+        let long = "An Redraft index phase whose title runs far longer than a card can hold";
+        let problem = crate::domain::PlanReviewProblem { review_id: "q".into(), task_title: long.into(), dependents: vec![long.into(); 5] };
+        for lang in [Lang::En, Lang::Es] {
+            let (need, why) = problem.text(lang);
+            assert!(need.chars().count() <= CardSpec::NEED_MAX, "{need}");
+            assert!(why.chars().count() <= CardSpec::WHY_MAX, "{} {why}", why.chars().count());
+        }
+        assert!(problem.text(Lang::Es).1.contains("y 2 más"));
+    }
     use crate::domain::CardSpec;
 
     #[test]
