@@ -64,7 +64,7 @@ fn profile_task_actions() {
     let mut state = DomainState::new("synthetic-projection-epoch");
     commit(&mut state, Actor::System, Command::RegisterAgent { agent_id: "agent".into(), name: "Synthetic agent".into(), at: 0 });
     commit(&mut state, user(), Command::CreateRequest { request_id: "request".into(), body: "Synthetic request".into(), auto_merge: false, maintenance: false, message: false });
-    commit(&mut state, Actor::Orchestrator { generation: 0 }, Command::CreateTask { task_id: "task".into(), request_id: "request".into(), title: "Synthetic task".into(), agent_id: Some("agent".into()), review_prs: true, dependencies: BTreeSet::new(), stack: None, launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")) });
+    commit(&mut state, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None, task_id: "task".into(), request_id: "request".into(), title: "Synthetic task".into(), agent_id: Some("agent".into()), review_prs: true, dependencies: BTreeSet::new(), stack: None, launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")) });
     for index in 0..500 {
         commit(&mut state, Actor::System, Command::PublishInformation { interaction_id: format!("information-{index}").into(), scope: Scope::Task { task_id: "task".into() }, recipient: Recipient::User,
             body: format!("Synthetic item {index}. {}", "Synthetic measurement content. ".repeat(256)), attachments: vec![], card: CardSpec::derived(CardKind::Know, "Read synthetic update") });
@@ -106,7 +106,7 @@ fn inbox_fixture(count: usize, body_size: usize, history: usize) -> DomainState 
     let mut state = DomainState::new("synthetic-inbox-epoch");
     commit(&mut state, Actor::System, Command::RegisterAgent { agent_id: "agent".into(), name: "Synthetic agent".into(), at: 0 });
     commit(&mut state, user(), Command::CreateRequest { request_id: "request".into(), body: "Synthetic request".into(), auto_merge: false, maintenance: false, message: false });
-    commit(&mut state, Actor::Orchestrator { generation: 0 }, Command::CreateTask {
+    commit(&mut state, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None,
         task_id: "task".into(), request_id: "request".into(), title: "Synthetic task".into(), agent_id: Some("agent".into()),
         review_prs: true, dependencies: BTreeSet::new(), stack: None, launch: Some(alondra_core::domain::LaunchPlan::new("node", "/synthetic")),
     });

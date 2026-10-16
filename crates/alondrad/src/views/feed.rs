@@ -542,7 +542,7 @@ mod tests {
                     data_epoch: state.data_epoch.clone(),
                     command_id: format!("task-{suffix}").into(),
                     expected_revision: state.revision,
-                    command: Command::CreateTask {
+                    command: Command::CreateTask { plan_items: None,
                         task_id: format!("task-{suffix}").into(),
                         request_id: request_id.into(),
                         title: "Visible task".into(),

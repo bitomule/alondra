@@ -68,7 +68,7 @@ fn live_shaped() -> Fixture {
             Command::CreateRequest { request_id: format!("r-{index}").into(), body: format!("Request {index}"), auto_merge: false, maintenance: false, message: false });
         run(&runtime, &Actor::System, &format!("agent-{index}"),
             Command::RegisterAgent { agent_id: format!("node-{index}").into(), name: format!("Node {index}"), at: 0 });
-        run(&runtime, &Actor::Orchestrator { generation: 0 }, &format!("task-{index}"), Command::CreateTask {
+        run(&runtime, &Actor::Orchestrator { generation: 0 }, &format!("task-{index}"), Command::CreateTask { plan_items: None,
             task_id: format!("t-{index}").into(),
             request_id: format!("r-{index}").into(),
             title: format!("Task {index}"),

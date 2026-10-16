@@ -1,0 +1,284 @@
+{
+ "tools": [
+  {
+   "description": "Name a Request with a short user-facing title (a few words, at most 60 characters, in the user's language, saying what it is about; never a copy of the prompt). Do this for every Request you split into Tasks, before creating its second Task: create_task refuses it on an untitled Request.",
+   "inputSchema": {
+    "additionalProperties": false,
+    "properties": {
+     "request_id": {
+      "type": "string"
+     },
+     "title": {
+      "maxLength": 60,
+      "type": "string"
+     }
+    },
+    "required": [
+     "request_id",
+     "title"
+    ],
+    "type": "object"
+   },
+   "name": "title_request"
+  },
+  {
+   "description": "Create a cohesive Task under an open Request, with its launch plan (required), so Alondra starts it by itself when there is room and what it depends on is done. Dependencies are waits: the Task starts, or its node goes on, once they are done, and they never hold back the merge of a PR it presented; a PR built on another Task's open PR uses stack, which merges after it. A phase of an approved plan takes its points with plan_items: their numbers in the plan and the Task of this Request that holds them now; they leave that Task, which keeps the rest.",
+   "inputSchema": {
+    "additionalProperties": false,
+    "properties": {
+     "agent_id": {
+      "type": [
+       "string",
+       "null"
+      ]
+     },
+     "dependencies": {
+      "items": {
+       "type": "string"
+      },
+      "type": "array"
+     },
+     "launch": {
+      "additionalProperties": false,
+      "description": "How Alondra starts this Task by itself once everything it depends on is done: required when dependencies or stack are set",
+      "properties": {
+       "approach": {
+        "enum": [
+         "solo",
+         "subagents",
+         "workflow"
+        ],
+        "type": "string"
+       },
+       "cwd": {
+        "description": "The folder the node starts in",
+        "type": "string"
+       },
+       "effort": {
+        "enum": [
+         "low",
+         "medium",
+         "high",
+         "xhigh",
+         "max"
+        ],
+        "type": "string"
+       },
+       "mission": {
+        "description": "The node's mission; without it, the task title and the request",
+        "type": "string"
+       },
+       "model": {
+        "description": "Required when the request's effort is auto",
+        "type": "string"
+       },
+       "name": {
+        "description": "The new node's name, with its hierarchy (lumo/phase-c)",
+        "type": "string"
+       },
+       "reason": {
+        "description": "Required when the request's effort is auto",
+        "type": "string"
+       },
+       "role": {
+        "description": "For work split into design, implementation and review",
+        "enum": [
+         "design",
+         "implementation",
+         "review"
+        ],
+        "type": "string"
+       }
+      },
+      "required": [
+       "name",
+       "cwd"
+      ],
+      "type": "object"
+     },
+     "plan_items": {
+      "additionalProperties": false,
+      "properties": {
+       "from_task": {
+        "type": "string"
+       },
+       "items": {
+        "items": {
+         "type": "string"
+        },
+        "minItems": 1,
+        "type": "array"
+       }
+      },
+      "required": [
+       "from_task",
+       "items"
+      ],
+      "type": [
+       "object",
+       "null"
+      ]
+     },
+     "request_id": {
+      "type": "string"
+     },
+     "review_prs": {
+      "type": "boolean"
+     },
+     "stack": {
+      "additionalProperties": false,
+      "properties": {
+       "head": {
+        "type": "string"
+       },
+       "pr_id": {
+        "type": "string"
+       },
+       "presentation_id": {
+        "type": "string"
+       },
+       "upstream_task": {
+        "type": "string"
+       }
+      },
+      "required": [
+       "upstream_task",
+       "presentation_id",
+       "pr_id",
+       "head"
+      ],
+      "type": [
+       "object",
+       "null"
+      ]
+     },
+     "task_id": {
+      "type": "string"
+     },
+     "title": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "task_id",
+     "request_id",
+     "title",
+     "review_prs",
+     "launch",
+     "dependencies",
+     "stack"
+    ],
+    "type": "object"
+   },
+   "name": "create_task"
+  },
+  {
+   "description": "Answer a question addressed to the orchestrator: option_id is the option chosen (empty for an answer in your own words), and inputs.text your words, alone or with it. Every question a node asks you gets its answer here: an answer written only in your conversation never reaches the node. A node's suggestion is settled with settle_suggestion instead.",
+   "inputSchema": {
+    "additionalProperties": false,
+    "properties": {
+     "attachments": {
+      "items": {
+       "additionalProperties": false,
+       "properties": {
+        "bytes": {
+         "minimum": 0,
+         "type": "integer"
+        },
+        "content_digest": {
+         "pattern": "^[0-9a-f]{64}$",
+         "type": "string"
+        },
+        "content_reference": {
+         "type": "string"
+        },
+        "id": {
+         "type": "string"
+        },
+        "name": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "id",
+        "name",
+        "content_digest",
+        "content_reference",
+        "bytes"
+       ],
+       "type": "object"
+      },
+      "type": "array"
+     },
+     "inputs": {
+      "additionalProperties": {
+       "oneOf": [
+        {
+         "additionalProperties": false,
+         "properties": {
+          "kind": {
+           "const": "text"
+          },
+          "value": {
+           "type": "string"
+          }
+         },
+         "required": [
+          "kind",
+          "value"
+         ],
+         "type": "object"
+        },
+        {
+         "additionalProperties": false,
+         "properties": {
+          "kind": {
+           "const": "boolean"
+          },
+          "value": {
+           "type": "boolean"
+          }
+         },
+         "required": [
+          "kind",
+          "value"
+         ],
+         "type": "object"
+        },
+        {
+         "additionalProperties": false,
+         "properties": {
+          "kind": {
+           "const": "integer"
+          },
+          "value": {
+           "type": "integer"
+          }
+         },
+         "required": [
+          "kind",
+          "value"
+         ],
+         "type": "object"
+        }
+       ]
+      },
+      "type": "object"
+     },
+     "interaction_id": {
+      "type": "string"
+     },
+     "option_id": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "interaction_id",
+     "option_id"
+    ],
+    "type": "object"
+   },
+   "name": "answer_question"
+  }
+ ]
+}

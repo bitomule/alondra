@@ -702,7 +702,7 @@ impl DomainState {
                     auto_merge: false, maintenance: false, message: true,
                 }, effects, created)?;
                 self.apply(actor, &Command::TitleRequest { request_id: request_id.clone(), title: title.clone() }, effects, created)?;
-                self.apply(actor, &Command::CreateTask {
+                self.apply(actor, &Command::CreateTask { plan_items: None,
                     task_id: new_task.clone(), request_id: request_id.clone(), title: title.clone(), agent_id: None,
                     review_prs: false, dependencies: dependencies.clone(), stack: None, launch: Some(launch.clone()),
                 }, effects, created)?;
@@ -1183,6 +1183,35 @@ impl DomainState {
                 .filter_map(|dep| self.tasks.get(dep).map(|d| d.title.as_str())).collect();
             let _ = self.notify(&t.id, None, &dependencies_done_notice(&titles), effects);
         }
+    }
+    /// Moves one phase of an approved plan to a new Task: the points leave the Task that held
+    /// them, so each point of the plan stays with exactly one Task.
+    fn take_plan_items(&mut self, task_id: &TaskId, request_id: &RequestId, taken: &PlanItems) -> Result<()> {
+        let source = self.tasks.get(&taken.from_task).filter(|t| t.request_id == *request_id);
+        let Some(source) = source else {
+            return refuse("invalid_input", "plan_items.from_task", "plan_items takes points from a task of this same request");
+        };
+        if matches!(source.state, TaskState::AwaitingBlocker | TaskState::ForYourReview | TaskState::Closing | TaskState::Done | TaskState::Cancelled) {
+            return refuse("plan_items_unavailable", "plan_items.from_task",
+                "that task has already delivered or closed, so its points are no longer free to take: create a new request for the work left");
+        }
+        let Some(held) = self.checklists.get(&taken.from_task) else {
+            return refuse("invalid_input", "plan_items.from_task", "that task has no approved plan to take points from");
+        };
+        let wanted: BTreeSet<&str> = taken.items.iter().map(String::as_str).collect();
+        if wanted.is_empty() || wanted.len() != taken.items.len() || wanted.iter().any(|id| !held.items.iter().any(|item| item.id == *id)) {
+            return refuse("plan_items_unknown", "plan_items.items",
+                "name each point once, by its number in the approved plan, among the points that task still holds");
+        }
+        let (moved, kept): (Vec<_>, Vec<_>) = held.items.iter().cloned().partition(|item| wanted.contains(item.id.as_str()));
+        if kept.is_empty() {
+            return refuse("plan_items_take_all", "plan_items.items",
+                "that task would keep no point of its plan: leave it the points of the phase it builds");
+        }
+        let plan = held.plan.clone();
+        self.checklists.insert(taken.from_task.clone(), Checklist { plan: plan.clone(), items: kept });
+        self.checklists.insert(task_id.clone(), Checklist { plan, items: moved });
+        Ok(())
     }
     fn dependency_graph(&self) -> Result<()> {
         fn visit(
@@ -2382,6 +2411,7 @@ impl DomainState {
                 dependencies,
                 stack,
                 launch,
+                plan_items,
             } => {
                 self.fence(actor)?;
                 if !matches!(actor, Actor::Orchestrator { .. }) {
@@ -2442,10 +2472,12 @@ impl DomainState {
                     },
                 );
                 self.dependency_graph()?;
-                if let Some(approved) = self.request_plans.get(request_id) {
+                if let Some(taken) = plan_items {
+                    self.take_plan_items(task_id, request_id, taken)?;
+                } else if let Some(approved) = self.request_plans.get(request_id) {
                     if self.checklists.values().any(|c| c.plan == approved.presentation_id) {
-                        return refuse("approved_plan_has_task", "request_id",
-                            "the plan the user approved is implemented by one task, which this request already has: put more work in that task, or create a new request for it");
+                        return refuse("approved_plan_has_task", "plan_items",
+                            "this request's approved plan already has a task: name with plan_items the points of that plan this task takes from the task that holds them, or create a new request for work the plan does not cover");
                     }
                     let plan = &self.interactions[&approved.presentation_id];
                     let checklist = Checklist { plan: approved.presentation_id.clone(), items: checklist_items(plan.card.plan.as_deref().unwrap_or_default()) };
@@ -4298,11 +4330,18 @@ impl DomainState {
         }
         for (task_id, checklist) in &self.checklists {
             let Some(task) = self.tasks.get(task_id) else { return fail("invalid_input", "Invalid checklist relation") };
-            let held_here = self.holds.get(&checklist.plan) == Some(&Hold::Plan)
-                && self.interactions.get(&checklist.plan).is_some_and(|i| i.scope == (Scope::Task { task_id: task_id.clone() }));
+            let held_in_its_request = self.holds.get(&checklist.plan) == Some(&Hold::Plan)
+                && self.interactions.get(&checklist.plan).is_some_and(|i| matches!(&i.scope,
+                    Scope::Task { task_id: holder } if self.tasks.get(holder).is_some_and(|h| h.request_id == task.request_id)));
             let approved_for_its_request = self.request_plans.get(&task.request_id).is_some_and(|a| a.presentation_id == checklist.plan);
-            if !held_here && !approved_for_its_request {
+            if !held_in_its_request && !approved_for_its_request {
                 return fail("invalid_input", "Invalid checklist relation");
+            }
+        }
+        let mut owned = BTreeSet::new();
+        for checklist in self.checklists.values() {
+            if checklist.items.iter().any(|item| !owned.insert((&checklist.plan, &item.id))) {
+                return fail("invalid_input", "A point of an approved plan belongs to two tasks");
             }
         }
         for (request_id, approved) in &self.request_plans {

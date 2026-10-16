@@ -375,7 +375,7 @@ mod tests {
     fn authorized(domain: &DomainRuntime) {
         command(domain, Actor::System, "agent", Command::RegisterAgent { agent_id: "a".into(), name: "A".into(), at: 0 });
         command(domain, Actor::User { user_id: "u".into() }, "request", Command::CreateRequest { request_id: "r".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
-        command(domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask {
+        command(domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { plan_items: None,
             task_id: "t".into(), request_id: "r".into(), title: "Task".into(), agent_id: Some("a".into()),
             review_prs: true, dependencies: BTreeSet::new(), stack: None,
             launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),
@@ -398,7 +398,7 @@ mod tests {
     fn presented(domain: &DomainRuntime, auto_merge: bool) {
         command(domain, Actor::System, "agent", Command::RegisterAgent { agent_id: "a".into(), name: "A".into(), at: 0 });
         command(domain, Actor::User { user_id: "u".into() }, "request", Command::CreateRequest { request_id: "r".into(), body: "Work".into(), auto_merge, maintenance: false, message: false });
-        command(domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask {
+        command(domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { plan_items: None,
             task_id: "t".into(), request_id: "r".into(), title: "Task".into(), agent_id: Some("a".into()),
             review_prs: true, dependencies: BTreeSet::new(), stack: None,
             launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),
@@ -578,7 +578,7 @@ mod tests {
             &domain,
             Actor::Orchestrator { generation: 0 },
             "task-2",
-            Command::CreateTask {
+            Command::CreateTask { plan_items: None,
                 task_id: "t-2".into(),
                 request_id: "r-2".into(),
                 title: "Second task".into(),

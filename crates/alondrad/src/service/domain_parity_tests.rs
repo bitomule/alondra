@@ -158,7 +158,7 @@ async fn signed_loopback_and_sealed_service_share_reads_errors_and_command_recei
         &hub,
         Actor::Orchestrator { generation: 0 },
         "task",
-        Command::CreateTask {
+        Command::CreateTask { plan_items: None,
             task_id: "task-parity".into(),
             request_id: "request-parity".into(),
             title: "Synthetic task".into(),

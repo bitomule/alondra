@@ -80,7 +80,7 @@ pub(super) fn seeded(store: &mut DomainStore) {
         store,
         &Actor::Orchestrator { generation: 0 },
         "task",
-        Command::CreateTask {
+        Command::CreateTask { plan_items: None,
             task_id: "task-1".into(),
             request_id: "request-1".into(),
             title: "Goal".into(),
@@ -1564,7 +1564,7 @@ fn task_relations_a_verdict_and_the_split_review_states_survive_a_restart() {
     seeded(&mut store);
     execute(&mut store, &Actor::System, "agent-2", Command::RegisterAgent { agent_id: "agent-2".into(), name: "Reviewer".into(), at: 0 });
     execute(&mut store, &user(), "request-title", Command::TitleRequest { request_id: "request-1".into(), title: "Useful work".into() });
-    execute(&mut store, &Actor::Orchestrator { generation: 0 }, "task-2", Command::CreateTask {
+    execute(&mut store, &Actor::Orchestrator { generation: 0 }, "task-2", Command::CreateTask { plan_items: None,
         task_id: "task-2".into(), request_id: "request-1".into(), title: "Review".into(), agent_id: Some("agent-2".into()),
         review_prs: false, dependencies: BTreeSet::new(), stack: None,
         launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),
@@ -1676,7 +1676,7 @@ fn plan() -> crate::launch_plans::LaunchPlan {
 fn planned_task(id: &str, request: &str, epoch: &alondra_core::domain::DataEpoch, plan: crate::launch_plans::LaunchPlan) -> CommandEnvelope {
     CommandEnvelope {
         protocol_version: 2, data_epoch: epoch.clone(), command_id: format!("plan-{id}").into(), expected_revision: 0,
-        command: Command::CreateTask { task_id: id.into(), request_id: request.into(), title: "Next".into(), agent_id: None,
+        command: Command::CreateTask { plan_items: None, task_id: id.into(), request_id: request.into(), title: "Next".into(), agent_id: None,
             review_prs: false, dependencies: Default::default(), stack: None, launch: Some(plan) },
     }
 }
@@ -1870,13 +1870,20 @@ fn an_approved_proposed_plan_its_request_and_the_new_task_s_scope_survive_a_rest
     assert!(message.contains("approved the plan") && message.contains("implement-report") && message.contains("dependencies on task-1"), "{message}");
     let orchestrator = Actor::Orchestrator { generation: 0 };
     execute(&mut store, &orchestrator, "title", Command::TitleRequest { request_id: "implement-report".into(), title: "Index the library".into() });
-    execute(&mut store, &orchestrator, "build", Command::CreateTask {
+    execute(&mut store, &orchestrator, "build", Command::CreateTask { plan_items: None,
         task_id: "build".into(), request_id: "implement-report".into(), title: "Index the library".into(), agent_id: None,
         review_prs: false, dependencies: Default::default(), stack: None, launch: Some(LaunchPlan::new("build", "/tmp/repo")),
+    });
+    execute(&mut store, &orchestrator, "follow", Command::CreateTask {
+        plan_items: Some(PlanItems { from_task: "build".into(), items: vec!["2".into()] }),
+        task_id: "follow".into(), request_id: "implement-report".into(), title: "Follow changes".into(), agent_id: None,
+        review_prs: false, dependencies: ["build".into()].into(), stack: None, launch: Some(LaunchPlan::new("follow", "/tmp/repo")),
     });
     drop(store);
     let mut restarted = DomainStore::open(&fixture.path()).unwrap();
     let state = restarted.load().unwrap();
+    let ids = |task: &str| state.checklists[&TaskId::from(task)].items.iter().map(|item| item.id.clone()).collect::<Vec<_>>();
+    assert_eq!((ids("build"), ids("follow")), (vec!["1".to_owned()], vec!["2".to_owned()]), "a phase's points stay split after a restart");
     assert_eq!(state.request_plans[&RequestId::from("implement-report")], ApprovedPlan { task_id: "task-1".into(), presentation_id: "report".into() });
     assert_eq!(state.requests[&RequestId::from("implement-report")].body, plan);
     assert_eq!(state.checklists[&TaskId::from("build")].plan, InteractionId::from("report"));

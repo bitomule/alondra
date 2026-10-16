@@ -279,7 +279,7 @@ pub(super) fn stage(
                                     .get(&approved.task_id)
                                     .map_or("", |task| task.title.as_str());
                                 format!(
-                                    "The user approved the plan that Task “{source}” ({}) proposed in its final result. Request {request} holds that plan: name it with title_request, then create one implementation Task under it, in the same project folder as that Task, with dependencies on {} and role implementation. It starts with that plan approved as its checklist and the whole plan in its mission: never ask its node for a new plan.",
+                                    "The user approved the plan that Task “{source}” ({}) proposed in its final result. Request {request} holds that plan: name it with title_request, then create one implementation Task under it, or one per phase when the plan is in phases: in the same project folder as that Task, with dependencies on {} and role implementation. The first takes the whole plan as its checklist; each later one takes its phase's points from the first with plan_items, with dependencies only on the phases it truly needs. Each starts with its points approved and the whole plan in its mission: never ask its node for a new plan.",
                                     approved.task_id, approved.task_id
                                 )
                             }

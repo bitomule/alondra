@@ -93,7 +93,7 @@ impl Fleet {
         let mut nodes = vec![];
         for (index, (id, priority)) in tasks.iter().enumerate() {
             let agent = format!("agent-{id}");
-            run(&domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask {
+            run(&domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None,
                 task_id: (*id).into(), request_id: "r".into(), title: format!("Task {id}"), agent_id: None, review_prs: false,
                 dependencies: Default::default(), stack: None,
                 launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),
@@ -196,7 +196,7 @@ fn building(now: Millis, margin_gib: f64, pressure: MemoryPressure) -> Machine {
 /// Asks the gate to start a task without a node yet, created on the first ask.
 fn ask_new(fleet: &Fleet, now: Millis) -> Result<(), Hold> {
     if !fleet.domain.state().unwrap().tasks.contains_key(&TaskId::from("t-new")) {
-        run(&fleet.domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask {
+        run(&fleet.domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None,
             task_id: "t-new".into(), request_id: "r".into(), title: "Task t-new".into(), agent_id: None, review_prs: false,
             dependencies: Default::default(), stack: None, launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),
         });

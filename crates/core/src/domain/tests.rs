@@ -68,7 +68,7 @@ fn fixture() -> DomainState {
     exec(
         &mut s,
         orchestrator(),
-        Command::CreateTask {
+        Command::CreateTask { plan_items: None,
             task_id: "t".into(),
             request_id: "r".into(),
             title: "Result".into(),
@@ -1163,7 +1163,7 @@ fn the_orchestrator_names_a_request_with_a_short_title() {
     assert_eq!(s.requests[&"r".into()].title.as_deref(), Some("Conflicts before push"));
 }
 fn task_in(request: &str, id: &str) -> Command {
-    Command::CreateTask { task_id: id.into(), request_id: request.into(), title: id.into(), agent_id: None,
+    Command::CreateTask { plan_items: None, task_id: id.into(), request_id: request.into(), title: id.into(), agent_id: None,
         review_prs: false, dependencies: Default::default(), stack: None,
         launch: Some(crate::domain::LaunchPlan::new("node", "/tmp")), }
 }
@@ -1335,7 +1335,7 @@ fn only_a_manager_can_link_another_tasks_document() {
     exec(
         &mut s,
         orchestrator(),
-        Command::CreateTask {
+        Command::CreateTask { plan_items: None,
             task_id: "t2".into(),
             request_id: "r".into(),
             title: "Second task".into(),
@@ -1534,7 +1534,7 @@ fn cross_task_delivery_and_dependency_cycle_roll_back() {
     exec(
         &mut s,
         orchestrator(),
-        Command::CreateTask {
+        Command::CreateTask { plan_items: None,
             task_id: "t2".into(),
             request_id: "r".into(),
             title: "Other".into(),
@@ -1575,7 +1575,7 @@ fn cross_task_delivery_and_dependency_cycle_roll_back() {
     );
 }
 fn second(agent_id: Option<&str>) -> Command {
-    Command::CreateTask {
+    Command::CreateTask { plan_items: None,
         task_id: "t2".into(),
         request_id: "r".into(),
         title: "Second".into(),
@@ -1633,7 +1633,7 @@ fn state_saved_with_several_open_tasks_on_one_agent_still_loads() {
     s.tasks.get_mut(&"t2".into()).unwrap().agent_id = Some("a".into());
     s.validate().unwrap();
     exec(&mut s, agent(), Command::StartTask { task_id: "t2".into() }).unwrap();
-    exec(&mut s, orchestrator(), Command::CreateTask { task_id: "t3".into(), request_id: "r".into(), title: "Third".into(),
+    exec(&mut s, orchestrator(), Command::CreateTask { plan_items: None, task_id: "t3".into(), request_id: "r".into(), title: "Third".into(),
         agent_id: None, review_prs: false, dependencies: BTreeSet::new(), stack: None,
         launch: Some(crate::domain::LaunchPlan::new("node", "/tmp")), }).unwrap();
     reject_unchanged(&mut s, user(), Command::AssignTask { task_id: "t3".into(), agent_id: "a".into(), model: None }, "agent_busy");
@@ -2103,7 +2103,7 @@ fn stack_readiness_is_explicit_and_merge_requires_upstream_merge_and_retarget() 
     exec(
         &mut s,
         orchestrator(),
-        Command::CreateTask {
+        Command::CreateTask { plan_items: None,
             task_id: "down".into(),
             request_id: "r".into(),
             title: "Downstream".into(),
@@ -2919,7 +2919,7 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
         (Command::RecordLastWords { agent_id: ids.agent.into(), text: "Done for now".into() }, false),
         (Command::AdvanceOrchestratorGeneration { generation: 1 }, true),
         (Command::BindOrchestratorSession { session_id: ids.agent.into() }, true),
-        (Command::CreateTask { task_id: "fresh-task".into(), request_id: ids.request.into(),
+        (Command::CreateTask { plan_items: None, task_id: "fresh-task".into(), request_id: ids.request.into(),
             title: "Fresh".into(), agent_id: Some(ids.agent.into()), review_prs: false,
             dependencies: BTreeSet::new(), stack: None,
             launch: Some(crate::domain::LaunchPlan::new("node", "/tmp")), }, false),
@@ -3050,7 +3050,7 @@ fn unknown_and_foreign_ids_are_typed_rejections_never_panics() {
     assert_all_rejected(&s, &actors, &unknown);
 
     exec(&mut s, Actor::System, Command::RegisterAgent { agent_id: "b".into(), name: "Instance B".into(), at: 0 }).unwrap();
-    exec(&mut s, orchestrator(), Command::CreateTask { task_id: "t2".into(), request_id: "r".into(),
+    exec(&mut s, orchestrator(), Command::CreateTask { plan_items: None, task_id: "t2".into(), request_id: "r".into(),
         title: "Other".into(), agent_id: Some("b".into()), review_prs: true,
         dependencies: BTreeSet::new(), stack: None,
         launch: Some(crate::domain::LaunchPlan::new("node", "/tmp")), }).unwrap();
@@ -3413,7 +3413,7 @@ fn accept_text(s: &mut DomainState) -> CommandOutcome {
     exec(s, user(), Command::AcceptDelivery { presentation_id: "final".into(), targets: text() }).unwrap()
 }
 fn second_task(s: &mut DomainState, id: &str, agent_id: Option<&str>) {
-    exec(s, orchestrator(), Command::CreateTask { task_id: id.into(), request_id: "r".into(), title: "Second".into(),
+    exec(s, orchestrator(), Command::CreateTask { plan_items: None, task_id: id.into(), request_id: "r".into(), title: "Second".into(),
         agent_id: agent_id.map(Into::into), review_prs: false, dependencies: BTreeSet::new(), stack: None,
         launch: Some(crate::domain::LaunchPlan::new("node", "/tmp")), }).unwrap();
 }
@@ -3700,7 +3700,7 @@ fn the_orchestrator_cannot_give_a_node_a_second_task() {
     end_node(&mut s, "t");
     second_task(&mut s, "u", None);
     reject_unchanged(&mut s, orchestrator(), Command::AssignTask { task_id: "u".into(), agent_id: "a".into(), model: None }, "agent_used");
-    reject_unchanged(&mut s, orchestrator(), Command::CreateTask { task_id: "v".into(), request_id: "r".into(), title: "Third".into(),
+    reject_unchanged(&mut s, orchestrator(), Command::CreateTask { plan_items: None, task_id: "v".into(), request_id: "r".into(), title: "Third".into(),
         agent_id: Some("a".into()), review_prs: false, dependencies: BTreeSet::new(), stack: None,
         launch: Some(crate::domain::LaunchPlan::new("node", "/tmp")), }, "agent_used");
 }
@@ -3764,7 +3764,7 @@ fn a_delivery_stacked_on_an_open_pr_is_no_card_until_that_pr_merges_and_then_one
     register_b(&mut s);
     present(&mut s, "d", pr_targets());
     let stack = StackDependency { upstream_task: "t".into(), presentation_id: "d".into(), pr_id: "pr".into(), head: "head1".into() };
-    exec(&mut s, orchestrator(), Command::CreateTask {
+    exec(&mut s, orchestrator(), Command::CreateTask { plan_items: None,
         task_id: "down".into(), request_id: "r".into(), title: "Downstream".into(), agent_id: Some("b".into()),
         review_prs: true, dependencies: BTreeSet::new(), stack: Some(stack),
         launch: Some(crate::domain::LaunchPlan::new("node", "/tmp")),
@@ -4200,7 +4200,7 @@ fn a_message_closes_when_its_last_task_ends_and_a_users_request_does_not() {
     }).unwrap();
     exec(&mut s, orchestrator(), Command::TitleRequest { request_id: "m".into(), title: "Two more".into() }).unwrap();
     for task in ["m-1", "m-2"] {
-        exec(&mut s, orchestrator(), Command::CreateTask {
+        exec(&mut s, orchestrator(), Command::CreateTask { plan_items: None,
             task_id: task.into(), request_id: "m".into(), title: task.into(), agent_id: None, review_prs: false,
             dependencies: BTreeSet::new(), stack: None, launch: Some(crate::domain::LaunchPlan::new("node", "/tmp")),
         }).unwrap();

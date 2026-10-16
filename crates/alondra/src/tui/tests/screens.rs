@@ -467,7 +467,7 @@ fn held_card(hold: alondra_core::domain::Hold, spec: alondra_core::domain::CardS
     let user = || Actor::User { user_id: "u".into() };
     run(user(), Command::CreateRequest { request_id: "r".into(), body: "Ship the release".into(), auto_merge: false, maintenance: false, message: false });
     run(Actor::System, Command::RegisterAgent { agent_id: "agent-a".into(), name: "release".into(), at: 0 });
-    run(Actor::Orchestrator { generation: 0 }, Command::CreateTask {
+    run(Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None,
         task_id: "t".into(), request_id: "r".into(), title: "Release".into(),
         agent_id: Some("agent-a".into()), review_prs: false, dependencies: Default::default(), stack: None,
         launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),

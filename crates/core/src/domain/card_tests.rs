@@ -47,7 +47,7 @@ fn refused(s: &mut DomainState, a: Actor, c: Command) -> (String, Option<String>
     (error.code, error.subject)
 }
 fn task(s: &mut DomainState, id: &str, agent: &str) {
-    ok(s, Actor::Orchestrator { generation: 0 }, Command::CreateTask {
+    ok(s, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None,
         task_id: id.into(), request_id: "r".into(), title: format!("Task {id}"), agent_id: Some(agent.into()),
         review_prs: true, dependencies: BTreeSet::new(), stack: None,
         launch: Some(crate::domain::LaunchPlan::new("node", "/tmp")),

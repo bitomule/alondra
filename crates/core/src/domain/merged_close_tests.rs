@@ -41,7 +41,7 @@ fn accepted(work_after_merge: bool) -> DomainState {
     let mut s = DomainState::new("epoch");
     must(&mut s, Actor::System, Command::RegisterAgent { agent_id: AGENT.into(), name: "Node".into(), at: 0 });
     must(&mut s, user(), Command::CreateRequest { request_id: "r".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
-    must(&mut s, Actor::Orchestrator { generation: 0 }, Command::CreateTask {
+    must(&mut s, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None,
         task_id: TASK.into(), request_id: "r".into(), title: "Result".into(), agent_id: Some(AGENT.into()), review_prs: false,
         dependencies: BTreeSet::new(), stack: None, launch: Some(LaunchPlan::new("node", "/tmp")),
     });

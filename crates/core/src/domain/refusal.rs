@@ -66,6 +66,7 @@ pub const INTERNAL_CODES: &[&str] = &[
     "plan_without_checklist", "plan_checklist_too_long", "checklist_not_final", "checklist_without_plan",
     "checklist_unknown_item", "checklist_without_evidence", "evidence_unknown_attachment", "evidence_unknown_pr",
     "checklist_incomplete", "usage_is_not_a_stop", "plan_choice_required", "approved_plan_has_task",
+    "plan_items_unknown", "plan_items_take_all", "plan_items_unavailable",
 ];
 
 impl Refusal {

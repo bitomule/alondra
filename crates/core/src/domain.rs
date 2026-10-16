@@ -33,6 +33,8 @@ mod merged_close_tests;
 #[cfg(test)]
 mod proposed_plan_tests;
 #[cfg(test)]
+mod plan_phases_tests;
+#[cfg(test)]
 mod suggestion_tests;
 pub use attention::*;
 pub use checklist::*;

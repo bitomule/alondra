@@ -290,7 +290,7 @@ mod tests {
             ],
             card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Decide, "Pick the app"),
         });
-        run(&domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask {
+        run(&domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { plan_items: None,
             task_id: "t-1".into(), request_id: "split".into(), title: "Task".into(), agent_id: None, review_prs: false,
             dependencies: Default::default(), stack: None, launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),
         });
@@ -301,7 +301,7 @@ mod tests {
     fn node_with_task(domain: &DomainRuntime) {
         run(domain, Actor::System, "agent", Command::RegisterAgent { agent_id: "a".into(), name: "Node".into(), at: 0 });
         request(domain, "r", false);
-        run(domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask {
+        run(domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { plan_items: None,
             task_id: "t".into(), request_id: "r".into(), title: "Resume the migration".into(), agent_id: Some("a".into()),
             review_prs: false, dependencies: Default::default(), stack: None,
             launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),

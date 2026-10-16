@@ -1,6 +1,6 @@
 //! A Task's scope: the points of the plan the user approved, written as Markdown checklist lines
 //! (`- [ ] …`). Its final delivery marks every point done with what proves it.
-use super::InteractionId;
+use super::{InteractionId, TaskId};
 use serde::{Deserialize, Serialize};
 
 pub const CHECKLIST_MAX_ITEMS: usize = 40;
@@ -21,6 +21,15 @@ pub struct Checklist {
 pub struct ChecklistItem {
     pub id: String,
     pub text: String,
+}
+
+/// The points of an approved plan a new Task takes from the Task that holds them: one phase of a
+/// plan that does not fit one PR.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PlanItems {
+    pub from_task: TaskId,
+    pub items: Vec<String>,
 }
 
 /// A point of the approved plan the final delivery says is done, and what proves it.

@@ -642,17 +642,28 @@ fn follow_up_context(state: &DomainState, task: &alondra_core::domain::Task) -> 
     clipped(&format!("## Earlier work this task builds on\n\n{}", entries.join("\n\n")), FOLLOW_UP_LIMIT, "")
 }
 
-/// The plan the user approved on another task's final result, which this task implements: whole,
-/// since its checklist is what the final result of this task must mark done.
+/// The plan the user approved on another task (a report's plan, or a plan it held), which this
+/// task implements: whole, with the points that are this task's when the plan is in phases.
 fn approved_plan(state: &DomainState, task: &alondra_core::domain::Task) -> String {
-    let Some(approved) = state.request_plans.get(&task.request_id) else { return String::new() };
-    if state.checklists.get(&task.id).is_none_or(|checklist| checklist.plan != approved.presentation_id) {
+    use alondra_core::domain::{checklist_items, InteractionPayload, Scope};
+    let Some(checklist) = state.checklists.get(&task.id) else { return String::new() };
+    let Some(source) = state.interactions.get(&checklist.plan) else { return String::new() };
+    if source.scope == (Scope::Task { task_id: task.id.clone() }) {
         return String::new();
     }
-    let Some(plan) = state.interactions.get(&approved.presentation_id).and_then(|result| result.card.plan.as_deref()) else { return String::new() };
+    let plan = match &source.payload {
+        InteractionPayload::Delivery { .. } => source.card.plan.as_deref().unwrap_or_default(),
+        _ => source.body.as_str(),
+    };
+    let part = if checklist.items.len() < checklist_items(plan).len() {
+        let numbers: Vec<&str> = checklist.items.iter().map(|item| item.id.as_str()).collect();
+        format!(" Your part of it is points {}; the other points are other tasks: do not implement them.", numbers.join(", "))
+    } else {
+        String::new()
+    };
     format!("## The plan the user approved
 
-The user approved this plan to be implemented: it is already this task's approved plan, so do not plan again or send it for approval. Implement it, and mark every point done with its evidence in your final result. If a point turns out wrong or impossible, send a revised plan with ExitPlanMode.
+The user approved this plan to be implemented: it is already this task's approved plan, so do not plan again or send it for approval.{part} Implement it, and mark every point of yours done with its evidence in your final result. If a point turns out wrong or impossible, send a revised plan with ExitPlanMode.
 
 {}", plan.trim())
 }

@@ -35,7 +35,7 @@ fn fixture() -> DomainState {
     let mut s = DomainState::new("epoch");
     ok(&mut s, Actor::System, Command::RegisterAgent { agent_id: "a".into(), name: "Node A".into(), at: 0 });
     ok(&mut s, user(), Command::CreateRequest { request_id: "r".into(), body: "Build it".into(), auto_merge: false, maintenance: false, message: false });
-    ok(&mut s, Actor::Orchestrator { generation: 0 }, Command::CreateTask {
+    ok(&mut s, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None,
         task_id: "t".into(), request_id: "r".into(), title: "Build it".into(), agent_id: Some("a".into()),
         review_prs: false, dependencies: BTreeSet::new(), stack: None,
         launch: Some(LaunchPlan::new("node", "/tmp")),

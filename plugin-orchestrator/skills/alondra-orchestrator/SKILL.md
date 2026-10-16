@@ -59,9 +59,10 @@ user follows tasks, not nodes.
   daemon refuses a second task on an untitled request (`request_title_required`), and the list
   never shows the prompt as a name. Then it gets tasks with `create_task`: a short `title` the user reads, under
   its `request_id`. Start with one cohesive task and split only when a part has an independently
-  useful deliverable or must land first. A task owns exactly one PR: work that needs several PRs
-  (several repositories, or changes that land separately) is several tasks, linked with
-  `dependencies` when one builds on another. Keep
+  useful deliverable or must land first, or the work does not fit one PR (see "Plans in
+  phases"). A task owns exactly one PR: work that needs several PRs (several repositories, or
+  changes that land separately) is several tasks, linked with `dependencies` when one builds on
+  another. Keep
   investigation, implementation and validation of the same change together. An ambiguous
   request is a question: one `ask` costs less than a node on the wrong reading.
 - `dependencies` (on `create_task` or `set_dependencies`) say a task builds on another; tasks
@@ -191,6 +192,29 @@ Create the three at once, each with its launch plan on `create_task` and the las
 `dependencies` on the one before, so Alondra starts each as soon as the one before is done. A change whose files, changes and tests are already written down, or a literal
 one, stays one sonnet task.
 
+### Plans in phases
+
+A plan does not fit one PR a person reviews in one sitting when it changes more than one layer
+that ships on its own (stored data or its schema, the service, its API, each client app),
+deletes or renames something others still read (a route, a table, a field, a public command),
+changes a server and its clients at once, or adds a mechanism and also moves every caller onto
+it. Such a plan is one task per phase, whether its node wrote the phases or you split it:
+
+- Each phase task gets only its points of the approved plan: `plan_items` names their numbers
+  and the task that holds them now (the one that planned, or the first task of the plan's
+  request). They leave that task, so no point is lost or done twice.
+- Its `dependencies` are only the phases whose code it needs, never the one before by number.
+  When phases 3, 4 and 7 need only phase 2, each depends on phase 2 alone and they run in
+  parallel. A phase whose PR starts from another phase's open branch uses `stack` on it instead.
+  A phase that needs none depends only on what the plan's task depends on.
+- When a node asks you to create the other phases of its approved plan, create each as it asks
+  (its points, its dependencies, the node's task for the phase it builds), then answer it.
+- An approved plan that reaches you without phases but meets one of the conditions above is
+  split by you: group its points into phases by what ships together, with the dependencies they
+  really have. The user already approved its scope: do not ask again.
+- When the user changes a phase's direction, the tasks that depend on it are the ones to
+  revise; with real dependencies only those are touched.
+
 ### Report or plan
 
 Read what the user asks for before you split it:
@@ -206,12 +230,14 @@ Read what the user asks for before you split it:
   research task that delivers the plan as a report.
 
 When the user approves the plan a result proposed, Alondra creates a Request that holds that plan
-and tells you which task proposed it. Name it with `title_request` and create exactly one
-implementation task under it: same project folder as the task that proposed it, `dependencies` on
-that task (its report reaches the new mission), `role: implementation`, and the model and effort
-this policy picks for implementation. The task starts with the approved plan as its checklist and
-the whole plan in its mission: its node implements it without planning again. A second task under
-that Request is refused; work the plan does not cover is a new Request.
+and tells you which task proposed it. Name it with `title_request` and create its implementation
+tasks under it: one, or one per phase when the plan is in phases or needs them (see "Plans in
+phases"). Each: same project folder as the task that proposed it, `dependencies` on that task
+(its report reaches the new mission) plus the phases it truly needs, `role: implementation`, and
+the model and effort this policy picks for implementation. The first takes the whole approved
+plan as its checklist; each later one takes its phase's points from the first with `plan_items`.
+Every task gets the whole plan in its mission and implements its points without planning again.
+A later task without `plan_items` is refused; work the plan does not cover is a new Request.
 
 Whenever you create a design or document task whose result will end in code (a plan, a spec, a
 proposal the user is expected to approve and then build), create its implementation task in the

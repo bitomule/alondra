@@ -775,7 +775,7 @@ exit 1"#;
         if n == 1 {
             command(domain, Actor::System, "agent", Command::RegisterAgent { agent_id: "a".into(), name: "A".into(), at: 0 });
             command(domain, Actor::Orchestrator { generation: 0 }, "request", Command::CreateRequest { request_id: "r".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
-            command(domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask {
+            command(domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { plan_items: None,
                 task_id: "t".into(), request_id: "r".into(), title: "Task".into(), agent_id: Some("a".into()),
                 review_prs: false, dependencies: BTreeSet::new(), stack: None,
                 launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),

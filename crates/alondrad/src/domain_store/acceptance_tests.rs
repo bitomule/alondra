@@ -245,7 +245,7 @@ fn setup_base(store: &mut DomainStore, base: &Value) {
             store,
             &format!("setup-task-{id}"),
             Actor::Orchestrator { generation: 0 },
-            Command::CreateTask {
+            Command::CreateTask { plan_items: None,
                 task_id: id.into(),
                 request_id: string(field(task, "request_id")).into(),
                 title: id.into(),

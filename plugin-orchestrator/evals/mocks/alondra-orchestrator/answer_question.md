@@ -1,0 +1,5 @@
+---
+type: fixed
+---
+
+{"ok": true}

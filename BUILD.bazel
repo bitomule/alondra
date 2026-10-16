@@ -12,6 +12,12 @@ MOD_TYPES = [
     "plugin/.claude-plugin/types/**",
 ]
 
+# The skill evals (`make skill-evals`) test the plugins from the repository; users never get them.
+SKILL_EVALS = [
+    "plugin/evals/**",
+    "plugin-orchestrator/evals/**",
+]
+
 filegroup(
     name = "plugin_files",
     srcs = glob(
@@ -20,7 +26,7 @@ filegroup(
             "plugin/**",
             "plugin-orchestrator/**",
         ],
-        exclude = ["plugin-orchestrator/bin/**"] + MOD_TYPES,
+        exclude = ["plugin-orchestrator/bin/**"] + MOD_TYPES + SKILL_EVALS,
     ),
     visibility = [
         "//deploy/brew:__pkg__",
@@ -32,7 +38,7 @@ sh_test(
     name = "plugin_mod_test",
     srcs = ["//tools:plugin-mod-test.sh"],
     args = ["$(rootpath plugin/.claude-plugin/plugin.json)"],
-    data = glob(["plugin/**"], exclude = MOD_TYPES),
+    data = glob(["plugin/**"], exclude = MOD_TYPES + SKILL_EVALS),
     env_inherit = ["PATH"],
     size = "small",
     tags = ["local"],

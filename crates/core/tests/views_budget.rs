@@ -99,7 +99,7 @@ fn unit(shape: Shape) -> DomainState {
     }
     seed.run(user(), Command::TitleRequest { request_id: request.as_str().into(), title: format!("Synthetic {} {TOKEN}", shape.name()) });
     seed.run(Actor::System, Command::RegisterAgent { agent_id: agent.as_str().into(), name: format!("{} node {TOKEN}", shape.name()), at: 0 });
-    seed.run(Actor::Orchestrator { generation: 0 }, Command::CreateTask {
+    seed.run(Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None,
         task_id: task.as_str().into(), request_id: request.as_str().into(), title: format!("Synthetic {} task {TOKEN}", shape.name()),
         agent_id: Some(agent.as_str().into()), review_prs: true, dependencies: BTreeSet::new(), stack: None,
         launch: Some(LaunchPlan::new("node", "/synthetic/project")),

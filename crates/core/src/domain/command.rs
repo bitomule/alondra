@@ -133,6 +133,8 @@ pub enum Command {
         /// a new Task without it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         launch: Option<LaunchPlan>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        plan_items: Option<PlanItems>,
     },
     AssignTask {
         task_id: TaskId,

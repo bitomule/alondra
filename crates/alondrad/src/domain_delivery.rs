@@ -437,7 +437,7 @@ mod tests {
             &domain,
             Actor::Orchestrator { generation: 0 },
             "task",
-            Command::CreateTask {
+            Command::CreateTask { plan_items: None,
                 task_id: "task-a".into(),
                 request_id: "request-a".into(),
                 title: "Task".into(),
@@ -645,7 +645,7 @@ mod tests {
             &hub,
             Actor::Orchestrator { generation: 0 },
             "task",
-            Command::CreateTask {
+            Command::CreateTask { plan_items: None,
                 task_id: "task-a".into(),
                 request_id: "request-a".into(),
                 title: "Task".into(),
@@ -1154,7 +1154,7 @@ mod tests {
         apply_command(&domain, Actor::System, "agent", Command::RegisterAgent { agent_id: "agent-a".into(), name: "A".into(), at: 0 });
         apply_command(&domain, Actor::User { user_id: "u".into() }, "request", Command::CreateRequest {
             request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
-        apply_command(&domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask {
+        apply_command(&domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { plan_items: None,
             task_id: "task-a".into(), request_id: "request".into(), title: "Task".into(), agent_id: Some("agent-a".into()),
             review_prs: false, dependencies: Default::default(), stack: None,
             launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")), });
@@ -1190,7 +1190,7 @@ mod tests {
         apply_command(&domain, Actor::System, "agent", Command::RegisterAgent { agent_id: "agent-a".into(), name: "A".into(), at: 0 });
         apply_command(&domain, Actor::User { user_id: "u".into() }, "request", Command::CreateRequest {
             request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
-        apply_command(&domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask {
+        apply_command(&domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { plan_items: None,
             task_id: "task-a".into(), request_id: "request".into(), title: "Task".into(), agent_id: Some("agent-a".into()),
             review_prs: false, dependencies: Default::default(), stack: None,
             launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")), });

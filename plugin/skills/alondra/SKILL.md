@@ -140,9 +140,10 @@ Pick the tool by what you need:
   report. Its card offers "Approve and start implementing", which creates a new task that
   implements exactly that plan, and "Only archive". Alondra keeps every final report (and its
   plan) in its files folder and shows on the card each Markdown file it cites: write the report
-  in `content` and never leave it only in a temporary folder.
+  in `content` and never leave it only in a temporary folder. A plan that does not fit one PR
+  goes in phases, as "A plan in phases" says.
   When the user approved a plan for the task, send `checklist` with the final result: every point
-  of that plan's checklist, by its number from 1, each with at least one piece of evidence
+  of that plan's checklist left to this task, by its number from 1, each with at least one piece of evidence
   (`commit` sha in your branch, `test` or `command` you ran, `screenshot` attachment id, `pr`,
   `file`, `link`). Alondra refuses the result while a point is missing and names it. A point that
   no longer applies goes out with a revised plan the user approves, never by leaving it out.
@@ -195,6 +196,24 @@ Pick the tool by what you need:
   result must mark done. The plan goes whole in the card, never as a path: the user cannot open a
   file from the app, so a Markdown file the plan cites (`docs/plan.md`) is added at its end from
   your worktree, and a plan citing one Alondra cannot read comes back to you.
+- A plan in phases. Split your plan into phases when its change does not fit one PR a person
+  reviews in one sitting. It does not fit when any of these is true: it changes more than one
+  layer that ships on its own (stored data or its schema, the service, its API, each client
+  app); it deletes or renames something others still read (a route, a table, a field, a public
+  command); it changes a server and its clients at once; or it adds a mechanism and also moves
+  every caller onto it. Each phase is one PR, written as a heading with its checklist lines
+  under it, and says three things: what it delivers that works on its own (merged alone,
+  nothing breaks); how it is measured or checked (the test, number or capture that proves it);
+  and what it truly depends on, by phase number: only the phases whose code it needs, "none"
+  when it needs none, never "the one before" by habit. Say when a phase's PR starts from
+  another phase's branch instead of the default branch (it stacks on it). Phases that need the
+  same earlier phase and not each other depend on that phase alone, so they run in parallel.
+  Put first a phase that depends on none: that is the one you build in this task.
+- When the user approves a plan in phases, `ask` the orchestrator (recipient kind
+  `orchestrator`) to create one task per other phase, listing for each its title, the numbers
+  of its checklist points, the phases it depends on and whether it stacks on one; then end your
+  turn. Those points leave your checklist for their tasks: your final result marks only the
+  points left to you, in your one PR.
 - Another document the user approves before you go on (a design, a report, a spec): create (or
   revise) it, `ask` with the decision in `body` and the approval options, then at once
   `link_interaction_subject` with that question and
@@ -239,7 +258,8 @@ Pick the tool by what you need:
   head (the full 40-character commit sha you pushed, `git rev-parse HEAD`, never a branch name)
   and base, and the merge methods allowed. A task owns exactly one PR for its whole life:
   more work for the task goes on that PR, and work that needs another PR is another task, which
-  you ask the orchestrator for (`ask` with recipient kind `orchestrator`). A second `register_pr`
+  you ask the orchestrator for (`ask` with recipient kind `orchestrator`); a plan in phases asks
+  for one per phase but yours. A second `register_pr`
   for the task is refused.
 - Present it with `present_result`, the PR in `targets`, as your final result: leave its `head`
   out and Alondra uses the commit the PR is at, or give that full commit sha. The

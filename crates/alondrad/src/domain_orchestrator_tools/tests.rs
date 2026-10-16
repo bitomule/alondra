@@ -37,7 +37,7 @@ fn world() -> Fixture {
     command(&domain, Actor::System, Command::RegisterAgent { agent_id: "agent-b".into(), name: "Instance B".into(), at: 0 });
     command(&domain, user(), Command::CreateRequest { request_id: "r".into(), body: "Make the editor readable".into(), auto_merge: false, maintenance: false, message: false });
     command(&domain, user(), Command::TitleRequest { request_id: "r".into(), title: "Readable editor".into() });
-    command(&domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { task_id: "t".into(), request_id: "r".into(), title: "Editor colours".into(),
+    command(&domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None, task_id: "t".into(), request_id: "r".into(), title: "Editor colours".into(),
         agent_id: None, review_prs: false, dependencies: Default::default(), stack: None,
         launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")), });
     Fixture { root, home, project, domain }
@@ -324,7 +324,7 @@ async fn a_message_with_a_task_reaches_only_that_tasks_node() {
     let actor = the_orchestrator(&f.domain);
     let node = Node::connect(&f.domain, "agent-b");
     give(&f, "t", "agent-b");
-    command(&f.domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { task_id: "t2".into(), request_id: "r".into(), title: "Editor fonts".into(),
+    command(&f.domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None, task_id: "t2".into(), request_id: "r".into(), title: "Editor fonts".into(),
         agent_id: None, review_prs: false, dependencies: Default::default(), stack: None,
         launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")), });
     let body = |task: &str, text: &str| -> SendBody { serde_json::from_value(json!({"node": "Instance B", "text": text, "task": task})).unwrap() };
@@ -365,7 +365,7 @@ async fn a_node_on_a_task_takes_no_other_but_still_gets_plain_messages() {
     let actor = the_orchestrator(&f.domain);
     let node = Node::connect(&f.domain, "agent-b");
     give(&f, "t", "agent-b");
-    command(&f.domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { task_id: "t2".into(), request_id: "r".into(), title: "Editor fonts".into(),
+    command(&f.domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None, task_id: "t2".into(), request_id: "r".into(), title: "Editor fonts".into(),
         agent_id: None, review_prs: false, dependencies: Default::default(), stack: None,
         launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")), });
     let body = |task: Option<&str>| -> SendBody { serde_json::from_value(json!({"node": "Instance B", "text": "Go", "task": task})).unwrap() };
@@ -670,7 +670,7 @@ async fn a_launch_of_a_follow_up_task_carries_the_earlier_result_and_pull_reques
         state: alondra_core::domain::PrState::Merged, merged_head: Some("head1".into()) });
     command(&f.domain, Actor::System, Command::RecordNodeEnd { task_id: "t".into(), end: alondra_core::domain::NodeEnd::Closed, agent_id: None });
     assert_eq!(f.domain.state().unwrap().tasks[&TaskId::from("t")].state, TaskState::Done);
-    command(&f.domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { task_id: "t2".into(), request_id: "r".into(), title: "Editor fonts".into(),
+    command(&f.domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None, task_id: "t2".into(), request_id: "r".into(), title: "Editor fonts".into(),
         agent_id: None, review_prs: false, dependencies: ["t".into()].into(), stack: None,
         launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")), });
 
@@ -844,7 +844,7 @@ async fn a_replacement_that_cannot_launch_leaves_the_old_node_working() {
     assert_eq!(state.tasks[&TaskId::from("t")].agent_id, Some(AgentId::from("agent-b")));
     assert!(state.agents[&AgentId::from("agent-b")].phase.holds_slot());
 
-    command(&f.domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { task_id: "free".into(), request_id: "r".into(), title: "Free".into(),
+    command(&f.domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None, task_id: "free".into(), request_id: "r".into(), title: "Free".into(),
         agent_id: None, review_prs: false, dependencies: Default::default(), stack: None,
         launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")), });
     let body = serde_json::from_value(json!({"task": "free", "replace": true, "model": "opus", "reason": "Needs opus", "name": "x", "cwd": f.project.to_str().unwrap()})).unwrap();
@@ -1111,11 +1111,11 @@ async fn a_review_that_asks_for_changes_twice_shows_its_rounds_and_serious_findi
     let domain = daemon.domain();
     command(&domain, user(), Command::CreateRequest { request_id: "r".into(), body: "Make the editor readable".into(), auto_merge: false, maintenance: false, message: false });
     command(&domain, user(), Command::TitleRequest { request_id: "r".into(), title: "Readable editor".into() });
-    command(&domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { task_id: "t".into(), request_id: "r".into(), title: "Editor colours".into(),
+    command(&domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None, task_id: "t".into(), request_id: "r".into(), title: "Editor colours".into(),
         agent_id: None, review_prs: false, dependencies: Default::default(), stack: None,
         launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")), });
     command(&domain, Actor::System, Command::RegisterAgent { agent_id: "reviewer".into(), name: "Reviewer".into(), at: 0 });
-    command(&domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { task_id: "review".into(), request_id: "r".into(), title: "Review the editor colours".into(),
+    command(&domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None, task_id: "review".into(), request_id: "r".into(), title: "Review the editor colours".into(),
         agent_id: Some("reviewer".into()), review_prs: false, dependencies: Default::default(), stack: None,
         launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")), });
     command(&domain, user(), Command::SetRelations { task_id: "review".into(), delivered_dependencies: ["t".into()].into(), blocks: ["t".into()].into() });
@@ -1354,7 +1354,7 @@ async fn a_launch_of_the_task_that_implements_an_approved_plan_carries_the_whole
         choice: alondra_core::domain::PlanChoice::Implement });
     let orchestrator = Actor::Orchestrator { generation: 0 };
     command(&f.domain, orchestrator.clone(), Command::TitleRequest { request_id: "implement-report".into(), title: "Index the library".into() });
-    command(&f.domain, orchestrator, Command::CreateTask { task_id: "build".into(), request_id: "implement-report".into(), title: "Index the library".into(),
+    command(&f.domain, orchestrator, Command::CreateTask { plan_items: None, task_id: "build".into(), request_id: "implement-report".into(), title: "Index the library".into(),
         agent_id: None, review_prs: false, dependencies: ["t".into()].into(), stack: None,
         launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")), });
 
@@ -1365,4 +1365,30 @@ async fn a_launch_of_the_task_that_implements_an_approved_plan_carries_the_whole
     assert!(prompt.contains("## The plan the user approved") && prompt.contains("do not plan again"), "{prompt}");
     assert!(prompt.contains("- [ ] Store feature prints in Core Data\n- [ ] Follow changes in the background"), "the whole plan: {prompt}");
     assert_eq!(prompt.matches("Store feature prints in Core Data").count(), 1, "the plan once, not again as the request: {prompt}");
+}
+
+#[tokio::test]
+async fn a_launch_of_one_phase_of_an_approved_plan_carries_the_whole_plan_and_names_its_points() {
+    use alondra_core::domain::{CardKind, CardSpec, ContentKind, Hold, PlanItems};
+    let f = world();
+    let actor = the_orchestrator(&f.domain);
+    give(&f, "t", "agent-b");
+    let plan = "# Fast views\n\n## Phase 1\n- [ ] Guards\n\n## Phase 2\nDepends on: phase 1\n- [ ] Read index\n- [ ] Index matches the state\n";
+    command(&f.domain, Actor::System, Command::HoldHook { interaction_id: "p".into(), task_id: "t".into(), agent_id: "agent-b".into(),
+        hold: Hold::Plan, body: plan.into(), options: Hold::Plan.options(),
+        card: CardSpec::new(CardKind::Review, "Fast views").content(ContentKind::Plan, plan) });
+    command(&f.domain, user(), Command::AnswerQuestion { attachments: vec![], interaction_id: "p".into(), option_id: Hold::APPROVE.into(), inputs: Default::default() });
+    let request = f.domain.state().unwrap().tasks[&TaskId::from("t")].request_id.clone();
+    command(&f.domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { task_id: "index".into(), request_id: request, title: "Read index".into(),
+        agent_id: None, review_prs: false, dependencies: ["t".into()].into(), stack: None,
+        launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),
+        plan_items: Some(PlanItems { from_task: "t".into(), items: vec!["2".into(), "3".into()] }) });
+
+    let claude = FakeClaude::loading(&f.domain);
+    launch(&f.domain, &f.home, &actor, launch_body(&f, json!({"task": "index", "model": "sonnet"})), |_| None, &claude).await.unwrap();
+    let calls = claude.calls.lock().unwrap();
+    let prompt = calls[0].1.last().unwrap();
+    assert!(prompt.contains("## The plan the user approved") && prompt.contains("do not plan again"), "{prompt}");
+    assert!(prompt.contains("Your part of it is points 2, 3; the other points are other tasks"), "{prompt}");
+    assert!(prompt.contains("- [ ] Guards") && prompt.contains("- [ ] Index matches the state"), "the whole plan: {prompt}");
 }

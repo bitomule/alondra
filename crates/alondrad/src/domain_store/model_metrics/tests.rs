@@ -264,7 +264,7 @@ fn the_rounds_and_serious_findings_of_a_review_come_from_the_store() {
     let (user, agent, reviewer) = (Actor::User { user_id: "user-1".into() }, Actor::Agent { agent_id: "agent-1".into() }, Actor::Agent { agent_id: "agent-2".into() });
     run_command(&mut store, &Actor::System, "agent-2", Command::RegisterAgent { agent_id: "agent-2".into(), name: "Reviewer".into(), at: 0 });
     run_command(&mut store, &user, "request-title", Command::TitleRequest { request_id: "request-1".into(), title: "Useful work".into() });
-    run_command(&mut store, &Actor::Orchestrator { generation: 0 }, "task-2", Command::CreateTask {
+    run_command(&mut store, &Actor::Orchestrator { generation: 0 }, "task-2", Command::CreateTask { plan_items: None,
         task_id: "task-2".into(), request_id: "request-1".into(), title: "Review".into(), agent_id: Some("agent-2".into()),
         review_prs: false, dependencies: Default::default(), stack: None,
         launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),

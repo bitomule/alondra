@@ -32,7 +32,7 @@ fn start() -> DomainState {
     must(&mut s, Actor::User { user_id: "u".into() }, Command::CreateRequest {
         request_id: "r".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false,
     });
-    must(&mut s, Actor::Orchestrator { generation: 0 }, Command::CreateTask {
+    must(&mut s, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None,
         task_id: "t".into(), request_id: "r".into(), title: "Work".into(), agent_id: Some("a".into()), review_prs: false,
         dependencies: BTreeSet::new(), stack: None, launch: Some(LaunchPlan::new("node", "/tmp")),
     });

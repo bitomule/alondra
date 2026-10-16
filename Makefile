@@ -14,7 +14,7 @@ BETA_GROUP := Internal Pilot,Private Pilot
 APPLE_VERSION = $(shell sed -n 's/^ *version = "\(.*\)".*/\1/p' tools/shared.bzl)
 APPLE_BUILD = $(shell sed -n 's/^ *build_number = "\(.*\)".*/\1/p' tools/shared.bzl)
 
-.PHONY: connection-measurements version-guard increment-version build-release snapshots-record snapshots-verify tui-shots mac-snapshots-record mac-snapshots-verify no-holds build test install run tui setup launchd unlaunchd restart status doctor cargo-test mac device device-console e2e-sandbox e2e-sandbox-stop e2e-iroh e2e-iroh-cli e2e-wizard e2e-doc-review e2e-sandbox-logs e2e-relay-cards e2e-direct-cards e2e-allow-always e2e-cards-tui e2e-tui-optimistic e2e-ios-cards e2e-plan-card e2e-plan-result e2e-ios-offline soak load-bench views-measure read-index-bench tasks-screen rehearse-cutover upgrade-rehearsal cutover-live clean-xcode-test-results e2e-journeys e2e-explore pi-relay-deploy pi-iroh-relay-deploy
+.PHONY: connection-measurements version-guard increment-version build-release snapshots-record snapshots-verify tui-shots mac-snapshots-record mac-snapshots-verify no-holds build test install run tui setup launchd unlaunchd restart status doctor cargo-test mac device device-console e2e-sandbox e2e-sandbox-stop e2e-iroh e2e-iroh-cli e2e-wizard e2e-doc-review e2e-sandbox-logs e2e-relay-cards e2e-direct-cards e2e-allow-always e2e-cards-tui e2e-tui-optimistic e2e-ios-cards e2e-plan-card e2e-plan-result e2e-ios-offline soak load-bench views-measure read-index-bench tasks-screen rehearse-cutover upgrade-rehearsal cutover-live clean-xcode-test-results e2e-journeys e2e-explore skill-evals pi-relay-deploy pi-iroh-relay-deploy
 
 build:
 	bazelisk build //crates/... //apple:AlondraMac
@@ -266,6 +266,12 @@ e2e-ios-offline:
 
 # Scripted journeys on a fresh sandbox with the fake claude and gh (tools/sandbox/src/journey);
 # JOURNEY=task-cycle|session|local runs one. Evidence: bazel-testlogs/tests/sandbox/journeys/test.outputs.
+# How the node and orchestrator skills behave with a real Claude run (plugin/evals,
+# plugin-orchestrator/evals): opt-in, it costs tokens. RUNS=1 for a quick look.
+skill-evals:
+	tools/skill-evals.sh $(if $(RUNS),--runs $(RUNS))
+
+
 e2e-journeys:
 	bazelisk test //tests/sandbox:journeys --nocache_test_results --zip_undeclared_test_outputs=false \
 		--test_output=streamed $(if $(JOURNEY),--test_env=JOURNEY=$(JOURNEY))

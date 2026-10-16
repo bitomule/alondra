@@ -4613,7 +4613,7 @@ fn presented_pr() -> DomainState {
     for (actor, command) in [
         (Actor::System, Command::RegisterAgent { agent_id: "a".into(), name: "Node A".into(), at: 0 }),
         (user.clone(), Command::CreateRequest { request_id: "r".into(), body: "Fix it".into(), auto_merge: false, maintenance: false, message: false }),
-        (Actor::Orchestrator { generation: 0 }.clone(), Command::CreateTask { task_id: "t".into(), request_id: "r".into(), title: "Fix it".into(),
+        (Actor::Orchestrator { generation: 0 }.clone(), Command::CreateTask { plan_items: None, task_id: "t".into(), request_id: "r".into(), title: "Fix it".into(),
             agent_id: Some("a".into()), review_prs: false, dependencies: BTreeSet::new(), stack: None,
             launch: Some(crate::domain::LaunchPlan::new("node", "/tmp")), }),
         (agent.clone(), Command::RegisterPr { task_id: "t".into(), pr_id: "pr".into(), host: "github.com".into(),
@@ -5830,7 +5830,7 @@ fn the_terminal_shows_only_the_new_plan_after_the_first_was_sent_back() {
     };
     execute(&mut state, Actor::System, Command::RegisterAgent { agent_id: "a".into(), name: "Node A".into(), at: 0 });
     execute(&mut state, user.clone(), Command::CreateRequest { request_id: "r".into(), body: "Weekly cycle".into(), auto_merge: false, maintenance: false, message: false });
-    execute(&mut state, Actor::Orchestrator { generation: 0 }.clone(), Command::CreateTask { task_id: "t".into(), request_id: "r".into(), title: "Weekly cycle".into(),
+    execute(&mut state, Actor::Orchestrator { generation: 0 }.clone(), Command::CreateTask { plan_items: None, task_id: "t".into(), request_id: "r".into(), title: "Weekly cycle".into(),
         agent_id: Some("a".into()), review_prs: false, dependencies: BTreeSet::new(), stack: None,
         launch: Some(crate::domain::LaunchPlan::new("node", "/tmp")), });
     execute(&mut state, Actor::System, plan("p1", "First weekly plan"));
@@ -6625,7 +6625,7 @@ fn proposed_plan_fixture() -> DomainState {
     run(&mut state, Actor::System, Command::RegisterAgent { agent_id: "a-1".into(), name: "redraft/library-index".into(), at: 0 });
     run(&mut state, Actor::User { user_id: "u".into() }, Command::CreateRequest { request_id: "r-1".into(),
         body: "How do other apps analyse the whole library at once?".into(), auto_merge: false, maintenance: false, message: false });
-    run(&mut state, Actor::Orchestrator { generation: 0 }, Command::CreateTask { task_id: "t-1".into(), request_id: "r-1".into(),
+    run(&mut state, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None, task_id: "t-1".into(), request_id: "r-1".into(),
         title: "Redraft: analyse the whole library at once".into(), agent_id: Some("a-1".into()), review_prs: false,
         dependencies: Default::default(), stack: None, launch: Some(LaunchPlan::new("redraft/library-index", "/tmp/redraft")) });
     let targets = vec![DeliveryTarget::Text { text: "Report".into() }];
@@ -6758,7 +6758,7 @@ fn a_task_whose_node_waits_for_the_orchestrator_says_so_and_puts_no_card_in_fron
     execute(&mut state, Actor::System, Command::RegisterAgent { agent_id: "a-1".into(), name: "Node One".into(), at: 0 });
     execute(&mut state, Actor::User { user_id: "u".into() }, Command::CreateRequest {
         request_id: "r-1".into(), body: "Resume the migration".into(), auto_merge: false, maintenance: false, message: false });
-    execute(&mut state, Actor::Orchestrator { generation: 0 }, Command::CreateTask {
+    execute(&mut state, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None,
         task_id: "t-1".into(), request_id: "r-1".into(), title: "Resume the migration".into(), agent_id: Some("a-1".into()),
         review_prs: false, dependencies: BTreeSet::new(), stack: None, launch: Some(LaunchPlan::new("node", "/tmp")) });
     execute(&mut state, node(), Command::StartTask { task_id: "t-1".into() });
