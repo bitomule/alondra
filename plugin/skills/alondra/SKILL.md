@@ -159,8 +159,11 @@ Pick the tool by what you need:
   again; once the answers arrive, present the same result again if nothing changes, or update the
   work and then present it.
 - When the user accepts your final result (for a PR, once Alondra has merged it) the task is
-  closing: Alondra asks you to delete what you generated that git does not track (build outputs,
-  caches, temporary files), with the project's own tools, and to call `cleanup_done`. Change
+  closing: Alondra asks you to clean up and call `cleanup_done`. Cleaning up is only what you
+  generated outside the worktree, removed with the project's own tool (for example
+  `bazel clean --expunge` for the worktree's output base in Bazel's cache). Never delete files or
+  links inside your worktree with `rm`: Alondra deletes the whole worktree right after. If the
+  project left nothing outside the worktree, call `cleanup_done` without deleting anything. Change
   nothing else. Alondra then closes this session and its worktree; if you do not answer, it
   closes it after a while anyway. If it tells you something stops it from closing the session,
   fix it and call `cleanup_done` again.

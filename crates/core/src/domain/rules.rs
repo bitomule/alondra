@@ -263,10 +263,11 @@ pub fn merge_failure(body: &str) -> Option<(u64, &str)> {
 /// What a node is told when its task is finished and Alondra is about to close its session.
 pub fn cleanup_request(title: &str, task: &TaskId) -> String {
     format!("Your task “{title}” is finished and is closing. Before Alondra closes this session and \
-deletes its worktree, delete what you generated for this task that git does not track and that \
-would otherwise stay on this Mac: build outputs, caches and temporary files, including any outside \
-the worktree. Use the project's own tools for it (its clean commands, scripts or build targets). \
-Do not change, commit or push anything else. Then call cleanup_done with task_id {task}. If you do \
+deletes its worktree, remove what you generated for this task outside the worktree that would \
+otherwise stay on this Mac (build caches, temporary files), with the project's own tools (its clean \
+commands, scripts or build targets). Do not delete files or links inside the worktree: Alondra \
+deletes the whole worktree. If nothing was generated outside it, delete nothing. Do not change, \
+commit or push anything else. Then call cleanup_done with task_id {task}. If you do \
 not, Alondra closes the session after a while anyway. If something you started for this task is \
 still running after the merge (a deploy, a release script), call post_merge_work with task_id {task} \
 and what it is first: Alondra keeps the session open until you call it again without reason or call \
@@ -277,9 +278,9 @@ cleanup_done.", task = task.0)
 pub fn post_merge_reminder(title: &str, task: &TaskId, reason: &str) -> String {
     format!("Your task “{title}” has its delivery accepted and merged, and you said work remains after the \
 merge: {reason}. Do it now: the task stays in progress until you say it ended. When it ends, call \
-post_merge_work with task_id {task} without reason, then delete what you generated for this task that git \
-does not track (build outputs, caches, temporary files) with the project's own tools and call cleanup_done \
-with task_id {task}. If it cannot be done, say so with ask.", task = task.0)
+post_merge_work with task_id {task} without reason, then remove what you generated for this task outside \
+the worktree (build caches, temporary files) with the project's own tools, never files or links inside the \
+worktree, and call cleanup_done with task_id {task}. If it cannot be done, say so with ask.", task = task.0)
 }
 /// What a node that waited on other Tasks is told when they are done.
 pub fn dependencies_done_notice(titles: &[&str]) -> String {
