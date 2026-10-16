@@ -2,6 +2,7 @@ import AlondraTestSupport
 import AlondraTransport
 import CryptoKit
 import Foundation
+import SQLite3
 import Testing
 
 private actor LostResponseTransport: RelayRequestTransport {
@@ -270,6 +271,26 @@ private actor DelayedPostTransport: RelayRequestTransport {
         }.count == 1)
         #expect(await transport.postCount == 1)
         #expect(try await first.entry(requestID: id)?.envelope == sealed)
+    }
+
+    /// Under memory pressure a writer from another journal can hold the database lock for seconds;
+    /// the journal waited one second and then refused the operation as unavailable.
+    @Test func aJournalWaitsForAnotherJournalsLongTransaction() async throws {
+        let directory = try TestFiles.directory()
+        let journal = try EnvelopeJournal(scope: scope, directory: directory)
+        _ = try await journal.entries()
+        let namespace = try #require(FileManager.default.contentsOfDirectory(at: directory,
+            includingPropertiesForKeys: nil).first)
+        var holder: OpaquePointer?
+        try #require(sqlite3_open(namespace.appendingPathComponent("operations.sqlite").path, &holder) == SQLITE_OK)
+        defer { sqlite3_close(holder) }
+        try #require(sqlite3_exec(holder, "BEGIN IMMEDIATE", nil, nil, nil) == SQLITE_OK)
+
+        let waiting = Task { try await journal.entry(requestID: "held") }
+        try await Task.sleep(for: .seconds(1.5))
+        try #require(sqlite3_exec(holder, "COMMIT", nil, nil, nil) == SQLITE_OK)
+
+        #expect(try await waiting.value == nil)
     }
 
     /// Every iOS container is reached through /var, a link to /private/var: SQLite's NOFOLLOW refused

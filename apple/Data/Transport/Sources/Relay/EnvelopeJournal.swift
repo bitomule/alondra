@@ -183,17 +183,22 @@ public final class EnvelopeJournal: Sendable {
         do { directory = try SQLiteFile.resolvedFolder(self.directory) } catch { throw EnvelopeJournalError.unavailable }
         let file = directory.appendingPathComponent("operations.sqlite")
         let marker = directory.appendingPathComponent("initialized")
+        // The marker is looked at before the database: another opener creates the database before
+        // its marker, so a marker seen first and a database missing afterwards means it was lost.
+        let initializedBefore = FileManager.default.fileExists(atPath: marker.path)
         var info = stat()
         let exists = lstat(file.path, &info) == 0
         if !exists, errno != ENOENT { throw EnvelopeJournalError.unavailable }
         if exists, (info.st_mode & S_IFMT) != S_IFREG { throw EnvelopeJournalError.corrupt }
-        if !exists, FileManager.default.fileExists(atPath: marker.path) { throw EnvelopeJournalError.corrupt }
+        if !exists, initializedBefore { throw EnvelopeJournalError.corrupt }
         guard let database = SQLiteFile.open(path: file.path, flags: SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX) else {
             throw EnvelopeJournalError.unavailable
         }
         do {
             guard chmod(file.path, 0o600) == 0 else { throw EnvelopeJournalError.unavailable }
-            sqlite3_busy_timeout(database, 1_000)
+            // Every transaction begins IMMEDIATE, so a lock is always released by a short writer
+            // and waiting for it cannot deadlock; a deadline would turn a slow writer into a failure.
+            sqlite3_busy_handler(database, { _, _ in sqlite3_sleep(1); return 1 }, nil)
             try Self.execute(database, "PRAGMA synchronous=FULL")
             try Self.execute(database, "PRAGMA journal_mode=DELETE")
             try Self.execute(database, "BEGIN IMMEDIATE")
