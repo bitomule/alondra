@@ -70,10 +70,12 @@ def sandbox_profile(runtime, port):
         '(allow process-fork)', '(allow signal (target same-sandbox))',
         '(allow process-info* (target self))', '(allow sysctl-read)',
         '(allow process-exec (literal ' + quote(runtime / 'node') + ') (literal ' + quote(runtime / 'claude') + '))',
-        '(allow file-read* (subpath ' + quote(runtime) + ') (subpath "/System/Library") (subpath "/usr/lib") (subpath "/private/var/db/dyld") (literal "/dev/null") (literal "/dev/random") (literal "/dev/urandom"))',
+        '(allow file-read-data (literal "/"))',
+        '(allow file-read-metadata ' + ' '.join('(literal ' + quote(parent) + ')' for parent in runtime.parents) + ')',
+        '(allow file-read* (subpath ' + quote(runtime) + ') (subpath "/System/Library") (subpath "/usr/lib") (subpath "/usr/share/icu") (subpath "/private/var/db/dyld") (literal "/dev/null") (literal "/dev/random") (literal "/dev/urandom"))',
         '(allow file-write* (subpath ' + quote(runtime / 'home') + ') (subpath ' + quote(runtime / 'tmp') + ') (subpath ' + quote(runtime / 'work') + ') (literal ' + quote(runtime / 'report.json') + ') (literal "/dev/null"))',
         '(allow file-write* ' + ' '.join('(literal ' + quote(runtime / name) + ')' for name in ['isolation.stdout', 'isolation.stderr', 'query.stdout', 'query.stderr']) + ')',
-        '(allow network-outbound (remote ip "127.0.0.1:' + str(port) + '"))',
+        '(allow network-outbound (remote ip "localhost:' + str(port) + '"))',
     ])
 
 
@@ -410,7 +412,7 @@ def main(interruptions):
         model = Model(marker, 'NATIVE_LOOPBACK_OK_' + marker)
         server_thread = threading.Thread(target=model.serve_forever)
         server_thread.start()
-        env = {'HOME': str(runtime / 'home'), 'CLAUDE_CONFIG_DIR': str(runtime / 'home/config'), 'TMPDIR': str(runtime / 'tmp'), 'PATH': '/usr/bin:/bin', 'LANG': 'C.UTF-8', 'TZ': 'UTC', 'ANTHROPIC_API_KEY': TOKEN, 'ANTHROPIC_BASE_URL': 'http://127.0.0.1:' + str(model.server_port), 'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC': '1', 'DISABLE_AUTOUPDATER': '1'}
+        env = {'HOME': str(runtime / 'home'), 'CLAUDE_CONFIG_DIR': str(runtime / 'home/config'), 'TMPDIR': str(runtime / 'tmp'), 'CLAUDE_CODE_TMPDIR': str(runtime / 'tmp'), 'PATH': '/usr/bin:/bin', 'LANG': 'C.UTF-8', 'TZ': 'UTC', 'ANTHROPIC_API_KEY': TOKEN, 'ANTHROPIC_BASE_URL': 'http://127.0.0.1:' + str(model.server_port), 'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC': '1', 'DISABLE_AUTOUPDATER': '1'}
         config = {'env': env, 'native': str(runtime / 'claude'), 'work': str(runtime / 'work'), 'baseUrl': env['ANTHROPIC_BASE_URL'], 'marker': marker, 'prompt': 'Reply to this fixture marker: ' + marker, 'response': model.response, 'allowedFile': str(runtime / 'work/allowed-canary'), 'deniedFile': str(denied), 'deniedPort': forbidden.getsockname()[1], 'report': str(runtime / 'report.json')}
         (runtime / 'config.json').write_text(json.dumps(config))
         profile = sandbox_profile(runtime, model.server_port)

@@ -1,8 +1,9 @@
 # Official Claude native loopback test (opt-in)
 
 This target runs official Agent SDK **0.3.300** and the unmodified Darwin arm64
-Claude Code **2.1.300** against one owned HTTP/SSE model fixture. It is source-only
-and unexecuted until its first separately authorized download/build/run.
+Claude Code **2.1.300** against one owned HTTP/SSE model fixture. Its first green
+run (phase 2b of the Agent SDK migration) is recorded in
+`docs/agent-sdk-migration/native-roundtrip.md`.
 
 After source review and reservation of the shared heavy slot:
 
@@ -17,23 +18,32 @@ platform npm archive using the existing lock's exact SHA-512 integrity; it leave
 regular-file `claude` archive member, verifies its 249,556,880 bytes against
 SHA-256 `475517caa611e3318a2f298fa071287ec98955538df78c58f709ecc01e5ae2d3`,
 and copies it without patching, signing or invoking an installed executable.
-Archive layout and native compatibility remain first-run questions.
 
 The pinned Node artifact, native binary and closed SDK client bundle are copied
 and hashed in a fresh fixture outside user homes. `/usr/bin/sandbox-exec` applies
 `deny default` **before** either SDK/native launch: no Mach lookup, reads only
 fixture/system runtime paths, writes only fixture state/diagnostics, process exec
 only the copied Node/native, and outbound TCP only the retained model listener's
-exact loopback port. A sandboxed preflight first proves allowed fixture read/TCP
+exact loopback port (Seatbelt only accepts `localhost:PORT` as a host; it admits
+127.0.0.1 on that port and nothing else). Beyond the runtime, system libraries and
+ICU data, the profile lets Node and Bun list `/` and read the metadata of each
+ancestor of the runtime directory, which their startup and `realpath` need; no
+other directory is listed or read. A sandboxed preflight first proves allowed fixture read/TCP
 and denied read of an independently owned sibling canary plus denied connection
 to a second retained owned listener. No real home, Keychain or credential file is
 probed. Failure stops before query; there is no weaker sandbox/profile fallback.
 
 Both SDK client and native receive an explicit environment: temporary HOME,
-CLAUDE_CONFIG_DIR, TMPDIR and cwd, fixed PATH/TZ/LANG, public synthetic API key and
+CLAUDE_CONFIG_DIR, TMPDIR, CLAUDE_CODE_TMPDIR (Claude otherwise writes under
+`/tmp/claude-UID`) and cwd, fixed PATH/TZ/LANG, public synthetic API key and
 owned loopback BASE_URL. SDK `env` replaces ambient credentials/proxies; custom
 spawn delegates the real SDK command/args to the actual pinned native child and
-asserts the complete environment. Preset native tools/prompt and user/project/local
+asserts the complete environment: the fixture's plus exactly the three variables
+SDK 0.3.300 adds (`CLAUDE_CODE_ENTRYPOINT=sdk-ts`, `CLAUDE_AGENT_SDK_VERSION=0.3.300`,
+`CLAUDE_CODE_SDK_READS_SESSION_STATE=1`). The client checks its own environment
+before loading the SDK, then again after: loading SDK 0.3.300 sets
+`NoDefaultCurrentDirectoryInExePath=1` on `process.env`, and that is the only change
+allowed. Preset native tools/prompt and user/project/local
 sources remain enabled; no `--bare`, simple mode or permission bypass is used.
 The profile explicitly suppresses nonessential traffic and auto-updates; it does
 not represent default-account feature/settings behavior.

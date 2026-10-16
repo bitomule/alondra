@@ -141,7 +141,10 @@ class OwnedClientTeardown(unittest.TestCase):
         profile = harness.sandbox_profile(Path('/fixture/runtime'), 4242).splitlines()
         self.assertEqual(profile[:3], ['(version 1)', '(deny default)', '(deny mach-lookup)'])
         self.assertIn('(allow signal (target same-sandbox))', profile)
-        self.assertEqual([line for line in profile if 'network' in line], ['(allow network-outbound (remote ip "127.0.0.1:4242"))'])
+        self.assertEqual([line for line in profile if 'network' in line], ['(allow network-outbound (remote ip "localhost:4242"))'])
+        self.assertIn('(allow file-read-data (literal "/"))', profile)
+        self.assertIn('(allow file-read-metadata (literal "/fixture") (literal "/"))', profile)
+        self.assertEqual([line for line in profile if line.startswith('(allow file-read') and '(subpath "/")' in line], [])
 
     def test_keyboard_interrupt_keeps_primary_and_reaps_actual_client(self):
         primary = KeyboardInterrupt('fixture interruption')

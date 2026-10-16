@@ -3,7 +3,6 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { connect } from 'node:net';
 import { get } from 'node:http';
-import { query } from '../../../agent-host/node_modules/@anthropic-ai/claude-agent-sdk/core.mjs';
 import sdkPackage from '../../../agent-host/node_modules/@anthropic-ai/claude-agent-sdk/package.json';
 
 const [configPath, mode] = process.argv.slice(2);
@@ -55,8 +54,9 @@ function actualSpawn(options) {
   assert.equal(options.command, config.native);
   assert.equal(options.cwd, config.work);
   assert.ok(!options.args.some((arg) => ['--bare', '--simple'].includes(arg)));
-  assert.deepEqual(options.env, { ...expectedEnvironment, CLAUDE_CODE_ENTRYPOINT: 'sdk-ts' }, 'No inherited credentials, proxy, OAuth or helper environment');
+  assert.deepEqual(options.env, { ...expectedEnvironment, CLAUDE_CODE_ENTRYPOINT: 'sdk-ts', CLAUDE_AGENT_SDK_VERSION: '0.3.300', CLAUDE_CODE_SDK_READS_SESSION_STATE: '1' }, 'No inherited credentials, proxy, OAuth or helper environment');
   const child = spawn(options.command, options.args, { cwd: options.cwd, env: options.env, signal: options.signal, stdio: ['pipe', 'pipe', 'pipe'] });
+  child.stderr.on('data', (data) => process.stderr.write(data));
   const record = { child, started: false, exited: false };
   record.exit = new Promise((resolve) => {
     child.once('spawn', () => { record.started = true; report.actualSpawns.push(child.pid); });
@@ -75,6 +75,8 @@ async function main() {
     assert.equal(process.version, 'v24.19.0');
     assert.equal(sdkPackage.version, '0.3.300');
     assert.deepEqual({ ...process.env }, expectedEnvironment, 'Sandboxed client also receives only the fixture environment');
+    const { query } = await import('../../../agent-host/node_modules/@anthropic-ai/claude-agent-sdk/core.mjs');
+    assert.deepEqual({ ...process.env }, { ...expectedEnvironment, NoDefaultCurrentDirectoryInExePath: '1' }, 'Loading the SDK changes only its PATH lookup guard');
     if (mode === 'isolation') {
       assert.equal(readFileSync(config.allowedFile, 'utf8'), config.marker);
       let readCode;

@@ -26,7 +26,7 @@ sh_test(
         "$(rootpath :client.cjs)",
         "$(rootpath :client.meta.json)",
     ],
-    data = ["run.py", "//agent-host:pinned_node", "@claude_native_test//:archive", ":client_bundle"],
+    data = ["run.py", "//agent-host:pinned_node", "@claude_native_test//:archive", ":client.cjs", ":client.meta.json"],
     tags = ["manual", "local", "no-remote", "requires-darwin", "requires-network"],
     target_compatible_with = ["@platforms//os:macos", "@platforms//cpu:aarch64"],
     timeout = "long",
