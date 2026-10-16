@@ -74,7 +74,7 @@ fn task(id: &str, request: &str, agent: Option<&str>, title: &str, state: TaskSt
         documents: BTreeMap::new(),
         archived: false,
         model: None,
-        delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: Default::default(), priority: Default::default(),
+        delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: Default::default(), priority: Default::default(), ending: None,
     }
 }
 

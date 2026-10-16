@@ -309,7 +309,7 @@ async fn launch_guarded(domain: &DomainRuntime, home: &Path, actor: &Actor, body
     let (Some(name), Some(cwd)) = (body.name.clone(), body.cwd.clone()) else {
         return Err(DomainError::new("invalid_input", "name and cwd are required: this task has no stored launch plan"));
     };
-    if task.state.terminal() {
+    if task.over() {
         return Err(conflict(format!("{} is closed; reopen it first", body.task)));
     }
     if let Some(why) = crate::plan_reviews::held(&current, &task.id) {
@@ -469,7 +469,7 @@ async fn launch_guarded(domain: &DomainRuntime, home: &Path, actor: &Actor, body
         return Err(discard(DomainError::new("storage_unavailable", format!("could not issue the session's capability: {error}"))));
     }
     let short = alondra_core::sessions::launched_short(&output).unwrap_or_else(|| session.chars().take(8).collect());
-    let taken = state(domain).map(|now| now.tasks.get(&task.id).is_none_or(|t| t.state.terminal() || t.agent_id != assigned_before));
+    let taken = state(domain).map(|now| now.tasks.get(&task.id).is_none_or(|t| t.over() || t.agent_id != assigned_before));
     let assigned = match taken {
         Ok(false) => run(domain, actor, Command::AssignTask { task_id: task.id.clone(), agent_id: agent_id.clone(), model: resolved.launch_model() })
             .map_err(discard),
@@ -738,7 +738,7 @@ pub(crate) async fn send(domain: &DomainRuntime, home: &Path, actor: &Actor, bod
         if task.agent_id.as_ref() != Some(&agent_id) {
             return Err(DomainError::new("not_assigned", format!("{task_id} is not {}'s task: a node works only on the task it was launched for. Launch a new node for {task_id} with launch.", body.node)));
         }
-        if task.state.terminal() {
+        if task.over() {
             return Err(DomainError::new("task_closed", format!("{task_id} is closed, and its node closes with it. For more work, create a new task with create_task and dependencies [{task_id}]: its node gets this task's result.")));
         }
     }
@@ -773,7 +773,7 @@ pub(crate) struct LaunchPlanBody {
 pub(crate) fn set_launch_plan(domain: &DomainRuntime, home: &Path, body: LaunchPlanBody) -> Result<Value, DomainError> {
     let current = state(domain)?;
     let task = current.tasks.get(&body.task_id).ok_or_else(|| DomainError::new("not_found", "task does not exist"))?;
-    if task.state.terminal() {
+    if task.over() {
         return Err(DomainError::new("task_not_active", format!("{} is closed", task.id)));
     }
     let under_review = |state: &DomainState| crate::plan_reviews::held(state, &task.id).map(|why| DomainError::new("plan_review_pending", format!(

@@ -18,6 +18,24 @@ fn agent_b() -> Actor {
 fn register_b(s: &mut DomainState) {
     exec(s, Actor::System, Command::RegisterAgent { agent_id: "b".into(), name: "Instance B".into(), at: 0 }).unwrap();
 }
+/// The receipt a cancelled task waits for before it is cancelled: its node's end, or Alondra's
+/// cleanup when it has no node.
+fn receipt(s: &mut DomainState, task: &str) {
+    let t = &s.tasks[&task.into()];
+    if t.state.terminal() {
+        return;
+    }
+    assert!(t.ending(), "{task} is not ending");
+    let command = match t.agent_id.clone() {
+        Some(agent) if t.wrap_up.node.is_none() => Command::RecordNodeEnd { task_id: task.into(), end: NodeEnd::Closed, agent_id: Some(agent) },
+        _ => Command::RecordTaskCleanup { task_id: task.into() },
+    };
+    exec(s, Actor::System, command).unwrap();
+}
+/// A task an older daemon created before the lifecycle journal: the old writers still move it.
+fn legacy(s: &mut DomainState, task: &str) {
+    s.lifecycle_journal.remove(&TaskId::from(task));
+}
 /// The task waits in Closing for its node; Alondra records the node closed and the task is done.
 fn end_node(s: &mut DomainState, task: &str) {
     assert_eq!(s.tasks[&task.into()].state, TaskState::Closing);
@@ -121,7 +139,7 @@ fn scheduled_request_task(request_id: &str, task_id: &str) -> (Request, Task) {
         documents: BTreeMap::new(),
         archived: false,
         model: None,
-        delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: WrapUp::default(), priority: Default::default(),
+        delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: WrapUp::default(), priority: Default::default(), ending: None,
     };
     (request, task)
 }
@@ -304,6 +322,7 @@ fn the_user_cancels_a_task_whose_scheduled_launch_failed() {
         .into_iter().find(|action| action.kind == "cancel_task").unwrap();
     assert!(cancel.enabled, "{cancel:?}");
     exec(&mut state, user(), Command::CancelTask { task_id: "scheduled-task".into() }).unwrap();
+    receipt(&mut state, "scheduled-task");
     assert_eq!(state.tasks[&TaskId::from("scheduled-task")].state, TaskState::Cancelled);
     assert_eq!(state.schedule.runs[&ScheduleRunId::from("run-1")].state, ScheduleRunState::Failed);
     state.validate().unwrap();
@@ -1050,6 +1069,7 @@ fn lifetime_pr_survives_cancel_reopen_and_register_is_noop() {
         },
     )
     .unwrap();
+    exec(&mut s, Actor::System, Command::RecordNodeEnd { task_id: "t".into(), end: NodeEnd::KeptByUser, agent_id: Some("a".into()) }).unwrap();
     exec(
         &mut s,
         user(),
@@ -1085,6 +1105,7 @@ fn closed_request_prevents_reopening_its_terminal_task() {
         },
     )
     .unwrap();
+    receipt(&mut s, "t");
     exec(
         &mut s,
         user(),
@@ -1597,6 +1618,7 @@ fn an_agent_works_on_one_task_until_it_ends() {
     exec(&mut s, user(), Command::CancelTask { task_id: "t".into() }).unwrap();
     exec(&mut s, user(), take).unwrap();
     assert_eq!(s.tasks[&"t2".into()].agent_id, Some("a".into()), "a node whose task ended takes the next one");
+    receipt(&mut s, "t");
     exec(&mut s, user(), Command::ReopenTask { task_id: "t".into() }).unwrap();
     assert_eq!(
         (s.tasks[&"t".into()].state, s.tasks[&"t".into()].agent_id.clone()),
@@ -2268,6 +2290,7 @@ fn cancellation_during_merge_preserves_observation_without_completion() {
         },
     )
     .unwrap();
+    receipt(&mut s, "t");
     exec(
         &mut s,
         Actor::System,
@@ -2878,10 +2901,11 @@ fn variant_index(c: &Command) -> usize {
         Command::RecordLastWords { .. } => 60,
         Command::DecideProposedPlan { .. } => 61,
         Command::SettleSuggestion { .. } => 62,
+        Command::RecordTaskCleanup { .. } => 64,
         Command::SettlePlanReview { .. } => 63,
     }
 }
-const COMMAND_KINDS: usize = 64;
+const COMMAND_KINDS: usize = 65;
 /// Every command kind naming the given ids. The flag marks commands that only
 /// create a fresh entity and therefore may succeed with an unknown id.
 fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
@@ -3002,6 +3026,7 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
         (Command::ObservePrMergeMethods { pr_id: ids.pr.into(), allowed_methods: vec![MergeMethod::Squash] }, false),
         (Command::SetPriority { task_id: ids.task.into(), priority: TaskPriority::High }, false),
         (Command::DeclarePostMergeWork { task_id: ids.task.into(), reason: Some("release.sh".into()) }, false),
+        (Command::RecordTaskCleanup { task_id: ids.task.into() }, false),
     ];
     let mut covered = vec![false; COMMAND_KINDS];
     for (command, _) in &list {
@@ -3621,7 +3646,8 @@ fn cancelling_a_task_tells_its_node_to_stop_and_marks_it_for_closing() {
 fn a_settled_task_without_a_node_is_done_at_once() {
     let mut s = fixture();
     present(&mut s, "final", text());
-    s.tasks.get_mut(&"t".into()).unwrap().agent_id = None;
+    exec(&mut s, Actor::System, Command::RecordNodeEnd { task_id: "t".into(), end: NodeEnd::Gone, agent_id: Some("a".into()) }).unwrap();
+    assert_eq!(s.tasks[&"t".into()].agent_id, None);
     let out = exec(&mut s, user(), Command::AcceptDelivery { presentation_id: "final".into(), targets: text() }).unwrap();
     assert!(sent_to_node(&out).is_empty());
     assert_eq!(s.tasks[&"t".into()].state, TaskState::Done);
@@ -3665,23 +3691,29 @@ fn a_task_reopened_after_its_node_closed_is_not_started_and_the_fleet_can_assign
     exec(&mut s, Actor::System, Command::AssignTask { task_id: "t".into(), agent_id: "b".into(), model: None }).unwrap();
     assert_eq!(s.tasks[&"t".into()].agent_id, Some("b".into()));
 }
-/// Reopened right after it was cancelled, before Alondra recorded how its node ended: the node's
-/// session is already closed, so the task has no node and waits for the fleet.
+/// Cancelled, with its node's session already closed but its end not yet recorded: the task is
+/// still cancelling, so it cannot be reopened until Alondra records that end; then it has no node
+/// and waits for the fleet.
 #[test]
-fn a_task_reopened_after_its_node_session_closed_has_no_node_even_before_the_node_end_is_recorded() {
+fn a_task_whose_node_session_closed_is_reopened_only_once_the_node_end_is_recorded() {
     let mut s = fixture();
     exec(&mut s, agent(), Command::StartTask { task_id: "t".into() }).unwrap();
     exec(&mut s, orchestrator(), Command::CancelTask { task_id: "t".into() }).unwrap();
     exec(&mut s, Actor::System, Command::MoveNode { agent_id: "a".into(), event: NodeEvent::SessionClosed, at: 0 }).unwrap();
+    reject_unchanged(&mut s, orchestrator(), Command::ReopenTask { task_id: "t".into() }, "task_not_active");
+    exec(&mut s, Actor::System, Command::RecordNodeEnd { task_id: "t".into(), end: NodeEnd::Gone, agent_id: Some("a".into()) }).unwrap();
     exec(&mut s, orchestrator(), Command::ReopenTask { task_id: "t".into() }).unwrap();
     let t = &s.tasks[&"t".into()];
     assert_eq!((t.state, t.started, t.agent_id.clone()), (TaskState::NotStarted, false, None));
 }
+/// The user kept the node open when Alondra came to close it: reopened, the task keeps working
+/// with it.
 #[test]
-fn a_task_reopened_with_its_node_alive_keeps_working_with_it() {
+fn a_task_reopened_with_its_node_kept_by_the_user_keeps_working_with_it() {
     let mut s = fixture();
     exec(&mut s, agent(), Command::StartTask { task_id: "t".into() }).unwrap();
     exec(&mut s, orchestrator(), Command::CancelTask { task_id: "t".into() }).unwrap();
+    exec(&mut s, Actor::System, Command::RecordNodeEnd { task_id: "t".into(), end: NodeEnd::KeptByUser, agent_id: Some("a".into()) }).unwrap();
     exec(&mut s, orchestrator(), Command::ReopenTask { task_id: "t".into() }).unwrap();
     let t = &s.tasks[&"t".into()];
     assert_eq!((t.state, t.started, t.agent_id.clone()), (TaskState::Running, true, Some("a".into())));
@@ -3689,6 +3721,7 @@ fn a_task_reopened_with_its_node_alive_keeps_working_with_it() {
 #[test]
 fn a_task_an_older_daemon_left_in_progress_with_no_node_is_released_for_the_fleet() {
     let mut s = fixture();
+    legacy(&mut s, "t");
     let t = s.tasks.get_mut(&"t".into()).unwrap();
     (t.started, t.agent_id, t.state) = (true, None, TaskState::Running);
     exec(&mut s, Actor::System, Command::ReleaseTask { task_id: "t".into(), reason: "in progress with no node".into() }).unwrap();
@@ -3986,6 +4019,7 @@ fn a_question_the_node_of_a_cancelled_task_asks_while_it_winds_down_reaches_the_
 #[test]
 fn a_notice_left_for_a_cancelled_task_is_taken_away() {
     let mut s = fixture();
+    legacy(&mut s, "t");
     ask_aside(&mut s, "q");
     s.tasks.get_mut(&"t".into()).unwrap().state = TaskState::Done;
     exec(&mut s, Actor::System, Command::ReconcileNodes { listed: BTreeMap::new(), at: 0 }).unwrap();
@@ -3999,6 +4033,7 @@ fn a_notice_left_for_a_cancelled_task_is_taken_away() {
 #[test]
 fn a_task_done_with_its_plan_open_says_nothing_about_the_plan() {
     let mut s = fixture();
+    legacy(&mut s, "t");
     hold_plan(&mut s, "plan");
     s.tasks.get_mut(&"t".into()).unwrap().state = TaskState::Done;
     exec(&mut s, Actor::System, Command::ReconcileNodes { listed: BTreeMap::new(), at: 0 }).unwrap();
@@ -4009,6 +4044,7 @@ fn a_task_done_with_its_plan_open_says_nothing_about_the_plan() {
 #[test]
 fn a_task_left_done_with_an_open_question_tells_the_user_once() {
     let mut s = fixture();
+    legacy(&mut s, "t");
     ask_aside(&mut s, "q");
     s.tasks.get_mut(&"t".into()).unwrap().state = TaskState::Done;
     exec(&mut s, Actor::System, Command::ReconcileNodes { listed: BTreeMap::new(), at: 0 }).unwrap();

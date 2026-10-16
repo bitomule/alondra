@@ -1,4 +1,4 @@
-use super::{Checklist, ChecklistMark, ScheduleState};
+use super::{Checklist, ChecklistMark, LifecycleRecord, ScheduleState, TaskEnding};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -138,6 +138,10 @@ pub struct Task {
     /// Where its node stands in the queue of nodes waiting to work.
     #[serde(default, skip_serializing_if = "TaskPriority::is_normal")]
     pub priority: TaskPriority,
+    /// How the task is ending while its state is Closing: read from its lifecycle, which holds
+    /// Done or Cancelled back until every receipt of the ending is in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ending: Option<TaskEnding>,
 }
 /// Higher priorities start before lower ones when nodes wait for a free slot.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -1006,6 +1010,11 @@ pub struct DomainState {
     /// by the answered card that completed them; settled ones are kept.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub plan_reviews: BTreeMap<InteractionId, PlanReview>,
+    /// The decisions that moved each Task's lifecycle, in order, for the Tasks created since the
+    /// journal exists. Replaying them is the only way to its lifecycle; the Task's state, node and
+    /// start are read from that replay.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub lifecycle_journal: BTreeMap<TaskId, Vec<LifecycleRecord>>,
 }
 impl DomainState {
     pub fn new(epoch: impl Into<DataEpoch>) -> Self {
@@ -1031,6 +1040,7 @@ impl DomainState {
             last_words: BTreeMap::new(),
             request_plans: BTreeMap::new(),
             plan_reviews: BTreeMap::new(),
+            lifecycle_journal: BTreeMap::new(),
         }
     }
     /// The orchestrator has neither defined it into Tasks nor closed it.

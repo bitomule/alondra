@@ -391,7 +391,7 @@ fn a_cancelled_reviewed_task_cancels_its_reviewer_and_never_gives_the_user_its_d
     let mut s = pair();
     reviewing(&mut s);
     let outcome = ok(&mut s, user(), Command::CancelTask { task_id: "a".into() });
-    assert_eq!(state_of(&s, "b"), TaskState::Cancelled);
+    assert!(s.tasks[&"b".into()].cancelled() && state_of(&s, "b") == TaskState::Closing, "the reviewer is cancelled with its task");
     assert_eq!(notified_agent(&outcome, "wb"), 1, "the reviewer's node is told");
     assert!(notified_user(&outcome).is_empty());
     assert!(s.acting().is_empty());
@@ -407,7 +407,7 @@ fn a_pr_merged_outside_cancels_the_reviewer_too() {
     ok(&mut s, agent("wb"), Command::StartTask { task_id: "b".into() });
     present(&mut s, "wb", "b", "db");
     let outcome = merged_outside(&mut s);
-    assert_eq!(state_of(&s, "b"), TaskState::Cancelled);
+    assert!(s.tasks[&"b".into()].cancelled() && state_of(&s, "b") == TaskState::Closing);
     assert_eq!(notified_agent(&outcome, "wb"), 1);
     assert!(s.acting().is_empty());
 }
@@ -507,6 +507,7 @@ fn reopening_a_reviewer_whose_task_is_over_is_refused_and_does_not_cancel_it_in_
     let mut s = pair();
     reviewing(&mut s);
     ok(&mut s, user(), Command::CancelTask { task_id: "a".into() });
+    ok(&mut s, Actor::System, Command::RecordNodeEnd { task_id: "b".into(), end: NodeEnd::Closed, agent_id: Some("wb".into()) });
     assert_eq!(state_of(&s, "b"), TaskState::Cancelled);
     assert_eq!(refused(&mut s, user(), Command::ReopenTask { task_id: "b".into() }), "invalid_input");
     assert_eq!(state_of(&s, "b"), TaskState::Cancelled);

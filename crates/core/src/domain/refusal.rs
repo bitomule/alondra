@@ -82,7 +82,7 @@ impl Refusal {
             "question_already_answered" | "already_answered" => Self::AlreadyAnswered,
             "withdrawn" | "already_withdrawn" => Self::Withdrawn,
             "clarification_pending" => Self::ClarificationPending,
-            "task_not_active" | "not_assigned" => Self::TaskNotActive,
+            "task_not_active" | "task_ending" | "not_assigned" => Self::TaskNotActive,
             "task_closing" => Self::TaskClosing,
             "forbidden" => Self::NotForYou,
             "storage_unavailable" => Self::StorageUnavailable,

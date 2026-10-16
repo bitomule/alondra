@@ -134,6 +134,7 @@ fn the_report_reads_the_tasks_history_and_the_changes_asked_on_its_pr_from_the_s
         attachments: vec![], presentation_id: "delivery-1".into(), targets, body: "Rename it".into(), instruction: Instruction::Changes,
     });
     run_command(&mut store, &user, "cancel", Command::CancelTask { task_id: "task-1".into() });
+    run_command(&mut store, &Actor::System, "end", Command::RecordNodeEnd { task_id: "task-1".into(), end: NodeEnd::Closed, agent_id: Some("agent-1".into()) });
 
     let report = store.model_report(None, alondra_core::now_millis()).unwrap();
     let sonnet = find(&report.by_model, "sonnet", Some("medium"));

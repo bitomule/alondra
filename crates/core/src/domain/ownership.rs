@@ -190,7 +190,7 @@ impl DomainState {
         }
         if t.state == TaskState::WaitingDependency {
             return match self.pending_dependency(t) {
-                Some(dependency) if self.tasks.get(&dependency).is_some_and(|d| d.state == TaskState::Cancelled) =>
+                Some(dependency) if self.tasks.get(&dependency).is_some_and(Task::cancelled) =>
                     ownerless("depends on a cancelled task and nobody was asked"),
                 Some(dependency) => Ok(Holder::Task(dependency)),
                 None => ownerless("waits on nothing"),
@@ -229,7 +229,7 @@ impl DomainState {
     pub fn pending_dependency(&self, t: &Task) -> Option<TaskId> {
         let stacked = t.stack.as_ref().map(|stack| &stack.upstream_task);
         t.dependencies.iter().filter(|d| self.tasks.get(*d).is_some_and(|d| d.state != TaskState::Done))
-            .chain(t.delivered_dependencies.iter().filter(|d| self.tasks.get(*d).is_some_and(|d| d.state == TaskState::Cancelled || d.final_presentation.is_none())))
+            .chain(t.delivered_dependencies.iter().filter(|d| self.tasks.get(*d).is_some_and(|d| d.cancelled() || d.final_presentation.is_none())))
             .chain(stacked.filter(|_| self.stack_ready(t).is_err()))
             .next()
             .cloned()
@@ -253,7 +253,7 @@ impl DomainState {
                 continue;
             }
             if t.state == TaskState::WaitingDependency && t.final_presentation.is_none()
-                && let Some(dependency) = self.pending_dependency(t).filter(|d| self.tasks.get(d).is_some_and(|d| d.state == TaskState::Cancelled))
+                && let Some(dependency) = self.pending_dependency(t).filter(|d| self.tasks.get(d).is_some_and(Task::cancelled))
             {
                 out.push(Reaction::Ask(t.id.clone(), StartProblem::DependencyCancelled { dependency }));
                 continue;

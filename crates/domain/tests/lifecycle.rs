@@ -459,6 +459,92 @@ fn reopen_requires_a_terminal_task_and_uses_a_new_execution_generation() {
 }
 
 #[test]
+fn a_released_execution_queues_the_task_again_with_what_it_had_not_consumed() {
+    let mut task = TaskLifecycle::planned(TaskId::from("task"), input("initial")).unwrap();
+    admit(&mut task, "instance");
+    apply(
+        &mut task,
+        Event::ExecutionReleased {
+            input: input("requeue"),
+        },
+    );
+    assert_eq!(task.phase(), TaskPhase::InProgress);
+    assert!(task.execution().is_none());
+    assert_eq!(task.pending_inputs(), vec![&input("initial")], "the launch input was never consumed");
+    assert!(!task.holds_slot());
+
+    let mut task = running();
+    apply(
+        &mut task,
+        Event::ExecutionReleased {
+            input: input("requeue"),
+        },
+    );
+    assert_eq!(task.pending_inputs(), vec![&input("requeue")]);
+    admit(&mut task, "second");
+    assert_eq!(task.execution().unwrap().generation(), 2);
+
+    let mut task = running();
+    apply(&mut task, Event::Present { delivery: "delivery".into() });
+    apply(&mut task, Event::ExecutionReleased { input: input("requeue") });
+    assert_eq!(task.pending_inputs(), vec![&input("requeue")], "a new execution would start with it");
+    apply(&mut task, Event::Accept { delivery: "delivery".into(), merge: None });
+    apply(&mut task, Event::Finish { intent: FinishIntent::Complete, cleanup: operation("cleanup"), post_merge: None });
+    assert_eq!(task.drain().cloned().collect::<Vec<_>>(), vec![DrainObligation::Cleanup(operation("cleanup"))],
+        "with no execution to take it, a continuation input does not hold back completion");
+    let mut task = running();
+    apply(&mut task, Event::Present { delivery: "delivery".into() });
+    apply(&mut task, Event::HandBack { delivery: "delivery".into(), input: input("changes") });
+    apply(&mut task, Event::Present { delivery: "again".into() });
+    apply(&mut task, Event::Accept { delivery: "again".into(), merge: None });
+    assert_eq!(
+        task.apply(task.revision(), Event::Finish { intent: FinishIntent::Complete, cleanup: operation("cleanup"), post_merge: None }),
+        Err(Refusal::InvalidState),
+        "an execution that never took the user's changes cannot complete"
+    );
+
+    let mut task = running();
+    fact(
+        &mut task,
+        RuntimeFact::WorkStarted {
+            turn: turn("root"),
+            work: work("background"),
+        },
+    );
+    assert_eq!(
+        task.apply(
+            task.revision(),
+            Event::ExecutionReleased {
+                input: input("requeue")
+            }
+        ),
+        Err(Refusal::InvalidState),
+        "work it still owns cannot be released in silence"
+    );
+    assert_eq!(task.activity(), ActivityView::Working);
+
+    let mut task = running();
+    apply(
+        &mut task,
+        Event::Finish {
+            intent: FinishIntent::Cancel,
+            cleanup: operation("cleanup"),
+            post_merge: None,
+        },
+    );
+    assert_eq!(
+        task.apply(
+            task.revision(),
+            Event::ExecutionReleased {
+                input: input("requeue")
+            }
+        ),
+        Err(Refusal::InvalidState),
+        "a finishing task drains its execution instead"
+    );
+}
+
+#[test]
 fn empty_or_self_dependencies_and_empty_identities_are_rejected() {
     assert_eq!(InputId::new("  "), Err(IdentityError::EmptyIdentity));
     assert_eq!(

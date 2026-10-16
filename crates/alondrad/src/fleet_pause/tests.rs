@@ -571,7 +571,7 @@ async fn cancelling_on_the_card_closes_the_task_and_an_error_retrying_cannot_fix
     assert!(es.why.contains("inicia sesión"), "{es:?}");
     answer(&fleet, &cards[0], alondra_core::domain::START_CANCEL);
     let state = fleet.domain.state().unwrap();
-    assert_eq!(state.tasks[&TaskId::from("t1")].state, TaskState::Cancelled);
+    assert!(state.tasks[&TaskId::from("t1")].cancelled(), "{:?}", state.tasks[&TaskId::from("t1")].state);
     assert!(matches!(phase(&fleet, "t1"), NodePhase::Closing | NodePhase::Closed));
 }
 

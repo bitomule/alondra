@@ -299,7 +299,7 @@ fn changed<'a, K: Ord, V: PartialEq>(
 }
 fn task_row(t: &Task) -> Result<Map<String, Value>> {
     let mut row = object(t)?;
-    strip(&mut row, &["dependencies", "stack", "documents", "model", "wrap_up", "delivered_dependencies", "blocks", "verdict", "review_rounds", "priority"]);
+    strip(&mut row, &["dependencies", "stack", "documents", "model", "wrap_up", "delivered_dependencies", "blocks", "verdict", "review_rounds", "priority", "ending"]);
     // The column's check predates the two states that split `in_review`; the state is derived
     // from the facts when the store is read, so either of them is kept as the old value.
     if matches!(t.state, TaskState::AwaitingBlocker | TaskState::ForYourReview) {
@@ -666,6 +666,10 @@ fn ensure_nothing_removed(before: &DomainState, after: &DomainState) -> Result<(
     kept("node's last words", &before.last_words, &after.last_words)?;
     kept("approved plan request", &before.request_plans, &after.request_plans)?;
     kept("plan review", &before.plan_reviews, &after.plan_reviews)?;
+    kept("lifecycle journal", &before.lifecycle_journal, &after.lifecycle_journal)?;
+    for (task, journal) in &before.lifecycle_journal {
+        ensure!(after.lifecycle_journal[task].starts_with(journal), "the lifecycle journal of task {task} is append-only");
+    }
     kept("schedule", &before.schedule.schedules, &after.schedule.schedules)?;
     kept("schedule run", &before.schedule.runs, &after.schedule.runs)?;
     for (id, task) in &before.tasks {
@@ -817,6 +821,13 @@ pub(super) fn save_changes(c: &Connection, before: &DomainState, after: &DomainS
     }
     for (id, review) in after.plan_reviews.iter().filter(|(id, r)| before.plan_reviews.get(*id) != Some(*r)) {
         upsert(c, "plan_reviews", &["interaction_id"], object(&json!({"interaction_id": id, "review": review}))?)?;
+    }
+    for (task, journal) in after.lifecycle_journal.iter().filter(|(id, j)| before.lifecycle_journal.get(*id) != Some(*j)) {
+        let known = before.lifecycle_journal.get(task).map_or(0, Vec::len);
+        for (seq, record) in journal.iter().enumerate().skip(known) {
+            exec(c, "INSERT INTO task_lifecycle_journal(task_id,seq,record) VALUES(?1,?2,?3)",
+                params![task.0, seq as i64, serde_json::to_string(record)?])?;
+        }
     }
     for (agent_id, text) in after.last_words.iter().filter(|(id, text)| before.last_words.get(*id) != Some(*text)) {
         upsert(c, "node_last_words", &["agent_id"], object(&json!({"agent_id": agent_id, "text": text}))?)?;
@@ -1152,11 +1163,21 @@ pub(super) fn load(c: &Connection) -> Result<DomainState> {
     for row in rows(c, "plan_reviews", &[], &["review"])? {
         state.plan_reviews.insert(InteractionId::from(s(&row["interaction_id"])?), decode(row["review"].clone())?);
     }
+    let mut journal = c.prepare("SELECT task_id, seq, record FROM task_lifecycle_journal ORDER BY task_id, seq")?;
+    let mut records = journal.query([])?;
+    while let Some(row) = records.next()? {
+        let (task, seq, record): (String, i64, String) = (row.get(0)?, row.get(1)?, row.get(2)?);
+        let entries = state.lifecycle_journal.entry(TaskId::from(task.as_str())).or_default();
+        ensure!(entries.len() as i64 == seq, "the lifecycle journal of task {task} has a gap before record {seq}");
+        entries.push(serde_json::from_str(&record)?);
+    }
+    state.read_endings()?;
     for row in rows(c, "node_last_words", &[], &[])? {
         state.last_words.insert(AgentId::from(s(&row["agent_id"])?), s(&row["text"])?.to_owned());
     }
     state.schedule = load_schedule_state(c)?;
     state.derive_states();
     state.validate()?;
+    state.validate_journal()?;
     Ok(state)
 }

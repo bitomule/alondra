@@ -294,11 +294,12 @@ async fn times_are_the_commits_own_and_survive_a_restart() {
     assert!(appeared >= started, "the inbox row carries the time of the commit that added it");
 
     fixture.user("cancel", Command::CancelTask { task_id: "task-1".into() });
+    fixture.command(Actor::System, "end", Command::RecordNodeEnd { task_id: "task-1".into(), end: alondra_core::domain::NodeEnd::Closed, agent_id: Some("agent-a".into()) });
     let cancelled = fixture.runtime_json().await;
     assert!(cancelled["tasks"]["task-1"]["state_since"].as_i64().unwrap() >= appeared, "a change of state is timed by the commit that made it");
     let history = fixture.domain.store.lock().unwrap().task_history(&"task-1".into()).unwrap();
     assert_eq!(history.last().map(|step| step.state.as_str()), Some("cancelled"));
-    assert_eq!(history.len(), 2, "one step per state the task entered: {history:?}");
+    assert_eq!(history.len(), 3, "one step per state the task entered, closing while its node is closed: {history:?}");
     assert_eq!(history.last().map(|step| step.at), cancelled["tasks"]["task-1"]["state_since"].as_i64());
 
     let reopened = DomainRuntime::open(&fixture.home).unwrap();
@@ -875,6 +876,7 @@ async fn a_tasks_history_lists_the_states_it_entered_with_the_words_that_moved_i
     });
     fixture.user("answer", Command::AnswerQuestion { attachments: vec![], interaction_id: "q-1".into(), option_id: "blue".into(), inputs: Default::default() });
     fixture.user("cancel", Command::CancelTask { task_id: "task-1".into() });
+    fixture.command(Actor::System, "end", Command::RecordNodeEnd { task_id: "task-1".into(), end: alondra_core::domain::NodeEnd::Closed, agent_id: Some("agent-a".into()) });
     let expected = fixture_json("requests.json");
     let request = &expected["history"];
     let history = fixture.get_json(request["path"].as_str().unwrap()).await;
@@ -882,7 +884,7 @@ async fn a_tasks_history_lists_the_states_it_entered_with_the_words_that_moved_i
     assert_eq!(history["brief"], Value::Null, "a v2 task has no brief to give yet, and the key is there for the apps");
     let steps: Vec<(&str, &str)> = history["history"].as_array().unwrap().iter()
         .map(|step| (step["state"].as_str().unwrap(), step["summary"].as_str().unwrap())).collect();
-    assert_eq!(steps, [("not_started", ""), ("running", ""), ("needs_you", "Which colour?"), ("running", ""), ("cancelled", "")]);
+    assert_eq!(steps, [("not_started", ""), ("running", ""), ("needs_you", "Which colour?"), ("running", ""), ("closing", ""), ("cancelled", "")]);
     let times: Vec<i64> = history["history"].as_array().unwrap().iter().map(|step| step["at"].as_i64().unwrap()).collect();
     assert!(times.iter().all(|at| *at > 0) && times.windows(2).all(|pair| pair[0] <= pair[1]), "{times:?}");
     let (status, error) = (fixture.local_get("/tasks/nothing/history").await, ());

@@ -70,21 +70,21 @@ impl DomainState {
     /// The task blocks one that is still open: its delivery is a verdict for that task, never a
     /// card for the user.
     pub fn reviewing(&self, t: &Task) -> bool {
-        t.blocks.iter().any(|b| self.tasks.get(b).is_some_and(|b| !b.state.terminal()))
+        t.blocks.iter().any(|b| self.tasks.get(b).is_some_and(|b| !b.over()))
     }
     /// The task still has a blocked task to review that is not over.
     pub fn reviewing_open(&self, t: &Task) -> bool {
-        t.blocks.iter().any(|a| self.tasks.get(a).is_some_and(|a| !a.state.terminal() && !self.finished(a)))
+        t.blocks.iter().any(|a| self.tasks.get(a).is_some_and(|a| !a.over() && !self.finished(a)))
     }
     /// A blocking task keeps holding back until its own delivery is settled.
     pub(super) fn holds_back(&self, blocker: &Task) -> bool {
-        !blocker.state.terminal() && !self.finished(blocker)
+        !blocker.over() && !self.finished(blocker)
     }
     pub fn attention(&self, t: &Task) -> Attention {
         self.attention_given(t, self)
     }
     pub(super) fn attention_given(&self, t: &Task, holds: &dyn Holds) -> Attention {
-        if t.state.terminal() {
+        if t.over() {
             return Attention::Idle;
         }
         let Some(p) = t.final_presentation.as_ref().and_then(|p| self.interactions.get(p)) else {

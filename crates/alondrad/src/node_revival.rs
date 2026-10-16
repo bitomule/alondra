@@ -170,7 +170,7 @@ pub(crate) fn has_open_task(domain: &DomainRuntime, session: &str) -> bool {
 
 fn open_task(state: &alondra_core::domain::DomainState, session: &str) -> bool {
     let agent = AgentId(session.to_owned());
-    state.agents.contains_key(&agent) && state.tasks.values().any(|task| task.agent_id.as_ref() == Some(&agent) && !task.state.terminal() && !task.archived && task.wrap_up.asked_at.is_none())
+    state.agents.contains_key(&agent) && state.tasks.values().any(|task| task.agent_id.as_ref() == Some(&agent) && !task.over() && !task.archived && task.wrap_up.asked_at.is_none())
 }
 
 /// Restarts a session that holds its connection but stopped processing, and tells it to carry on
@@ -280,7 +280,7 @@ fn needed(domain: &DomainRuntime, session: &str) -> bool {
     let Ok(state) = domain.state() else { return false };
     let agent = AgentId(session.to_owned());
     state.agents.get(&agent).is_some_and(|agent| !matches!(agent.phase, NodePhase::Paused(_)))
-        && state.tasks.values().any(|task| task.agent_id.as_ref() == Some(&agent) && !task.state.terminal() && !task.archived && task.wrap_up.asked_at.is_none())
+        && state.tasks.values().any(|task| task.agent_id.as_ref() == Some(&agent) && !task.over() && !task.archived && task.wrap_up.asked_at.is_none())
         && !domain.live.is_closed(session)
         && !domain.live.mods.connected(session)
 }
@@ -398,7 +398,7 @@ pub(crate) fn take_out(domain: &DomainRuntime, session: &str, reason: &str, cwd:
     let name = state.agents.get(&agent).map_or_else(|| format!("node/{}", &session[..session.len().min(8)]), |known| known.name.clone());
     let node = crate::client_routes::ClosedNode { name, cwd };
     let released: Vec<_> = state.tasks.values()
-        .filter(|task| task.agent_id.as_ref() == Some(&agent) && !task.state.terminal() && !task.archived && task.final_presentation.is_none())
+        .filter(|task| task.agent_id.as_ref() == Some(&agent) && !task.over() && !task.archived && task.final_presentation.is_none())
         .map(|task| task.id.clone())
         .collect();
     let mut freed = vec![];
@@ -463,7 +463,7 @@ async fn ask_to_retry(domain: &DomainRuntime, session: &str, error: &str, launch
 fn releasable_tasks(domain: &DomainRuntime, session: &str) -> Vec<TaskId> {
     let agent = AgentId(session.to_owned());
     domain.state().map(|state| state.tasks.values()
-        .filter(|task| task.agent_id.as_ref() == Some(&agent) && !task.state.terminal() && !task.archived && task.final_presentation.is_none())
+        .filter(|task| task.agent_id.as_ref() == Some(&agent) && !task.over() && !task.archived && task.final_presentation.is_none())
         .map(|task| task.id.clone()).collect()).unwrap_or_default()
 }
 
@@ -495,7 +495,7 @@ const RELAUNCHED: &str = "node replaced after its session could not be restarted
 fn cancel_tasks_of(domain: &DomainRuntime, session: &str, user: &str) {
     let agent = AgentId(session.to_owned());
     let Ok(state) = domain.state() else { return };
-    for task in state.tasks.values().filter(|task| task.agent_id.as_ref() == Some(&agent) && !task.state.terminal()) {
+    for task in state.tasks.values().filter(|task| task.agent_id.as_ref() == Some(&agent) && !task.over()) {
         let Ok(current) = domain.state() else { return };
         let envelope = CommandEnvelope {
             protocol_version: PROTOCOL_VERSION, data_epoch: current.data_epoch.clone(),
@@ -834,7 +834,7 @@ mod tests {
         watching.await.unwrap();
         assert_eq!(claude.calls(), 3, "cancelling stops");
         let state = domain.state().unwrap();
-        assert!(state.tasks.values().all(|task| task.state.terminal()), "no task is left with a node nothing brings back");
+        assert!(state.tasks.values().all(|task| task.over()), "no task is left with a node nothing brings back");
     }
 
     /// The same session cannot be brought back: the card's first way out hands the task to a new

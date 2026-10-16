@@ -1059,7 +1059,7 @@ fn a_plan_from_the_task_s_next_node_replaces_the_one_its_old_node_left_open() {
     let mut s = fixture();
     ok(&mut s, Actor::System, held_plan("p1", "a", "Weekly cycle plan"));
     register_agent(&mut s, "b");
-    s.tasks.get_mut(&"t".into()).unwrap().agent_id = Some("b".into());
+    ok(&mut s, user(), Command::AssignTask { task_id: "t".into(), agent_id: "b".into(), model: None });
     ok(&mut s, Actor::System, held_plan("p2", "b", "Weekly cycle plan"));
     assert!(s.interactions[&"p1".into()].withdrawn);
     assert_eq!(waiting_for_user(&s), vec!["interaction:p2".to_owned()]);

@@ -134,6 +134,7 @@ dependencies = [
 name = "alondra-core"
 version = "0.2.87"
 dependencies = [
+ "alondra-domain",
  "alondra-foundation",
  "libc",
  "proptest",

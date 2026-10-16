@@ -241,7 +241,7 @@ pub(crate) struct Due {
 /// or that an auto-merge Request lets Alondra merge, and that nobody handed back since.
 pub(crate) fn due(state: &DomainState) -> Vec<Due> {
     let mut due = vec![];
-    for task in state.tasks.values().filter(|task| !task.state.terminal()) {
+    for task in state.tasks.values().filter(|task| !task.over()) {
         let Some(p) = task.final_presentation.as_ref().and_then(|p| state.interactions.get(p)) else { continue };
         let InteractionPayload::Delivery { targets, acceptance, feedback, .. } = &p.payload else { continue };
         if state.handed_back(p).is_some() || !state.open_blockers(&task.id).is_empty() {
@@ -269,7 +269,7 @@ pub(crate) fn due(state: &DomainState) -> Vec<Due> {
 
 /// The delivery is still the one to merge, and Alondra's claim on it still stands.
 fn still_due(state: &DomainState, item: &Due, authorization: &AuthorizationId) -> bool {
-    let Some(task) = state.tasks.get(&item.pr.task_id).filter(|task| !task.state.terminal()) else { return false };
+    let Some(task) = state.tasks.get(&item.pr.task_id).filter(|task| !task.over()) else { return false };
     let Some(p) = task.final_presentation.as_ref().filter(|p| **p == item.presentation).and_then(|p| state.interactions.get(p)) else {
         return false;
     };

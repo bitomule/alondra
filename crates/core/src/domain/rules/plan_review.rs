@@ -72,20 +72,24 @@ impl DomainState {
 
     /// The user's answer completed a node's decision on a Task others wait for: every dependent
     /// that has not started is held in the same commit, and the orchestrator is told.
-    pub(super) fn hold_for_plan_review(&mut self, answered: &InteractionId, effects: &mut Vec<DomainEffect>) {
+    pub(super) fn hold_for_plan_review(&mut self, answered: &InteractionId, effects: &mut Vec<DomainEffect>, lifecycles: &mut Lifecycles) -> Result<()> {
         let i = &self.interactions[answered];
-        let (Author::Agent { .. }, Scope::Task { task_id }, Recipient::User) = (&i.author, &i.scope, &i.recipient) else { return };
+        let (Author::Agent { .. }, Scope::Task { task_id }, Recipient::User) = (&i.author, &i.scope, &i.recipient) else { return Ok(()) };
         if !self.group_complete(i) {
-            return;
+            return Ok(());
         }
         let decisions: Vec<InteractionId> = self.group_members(i).into_iter().filter(|m| self.decides(m)).map(|m| m.id.clone()).collect();
         if decisions.is_empty() {
-            return;
+            return Ok(());
         }
         let task_id = task_id.clone();
         let dependents = self.unstarted_dependents(&task_id);
         if dependents.is_empty() {
-            return;
+            return Ok(());
+        }
+        let held: Vec<TaskId> = dependents.iter().filter(|t| self.owned(t)).cloned().collect();
+        for dependent in &held {
+            self.decide(lifecycles, dependent, LifecycleRecord::HeldForPlanReview { review: answered.clone() })?;
         }
         self.plan_reviews.insert(answered.clone(), PlanReview {
             task_id: task_id.clone(),
@@ -94,6 +98,7 @@ impl DomainState {
             dependents: dependents.into_iter().map(|t| (t, None)).collect(),
         });
         effects.push(DomainEffect::ReviewDependentPlans { review_id: answered.clone(), task_id });
+        Ok(())
     }
 
     /// No node is assigned to or starts a Task a decision holds.
@@ -105,7 +110,7 @@ impl DomainState {
     }
 
     pub(super) fn settle_plan_review(&mut self, actor: &Actor, review_id: &InteractionId, task_id: &TaskId, outcome: &PlanReviewOutcome,
-        effects: &mut Vec<DomainEffect>, created: &mut Vec<String>) -> Result<()> {
+        effects: &mut Vec<DomainEffect>, created: &mut Vec<String>, lifecycles: &mut Lifecycles) -> Result<()> {
         self.fence(actor)?;
         if !matches!(actor, Actor::Orchestrator { .. }) {
             return fail("forbidden", "Only the orchestrator settles a plan review");
@@ -132,22 +137,32 @@ impl DomainState {
             PlanReviewOutcome::KeptByUser =>
                 return refuse("invalid_input", "outcome.kind", "Settle it with unchanged, plan_changed (with the new launch plan) or cancelled, each with its reason"),
         }
-        self.settle_held(review_id, task_id, outcome.clone());
+        self.settle_held(review_id, task_id, outcome.clone(), lifecycles)?;
         if matches!(outcome, PlanReviewOutcome::Cancelled { .. }) && !self.task(task_id)?.state.terminal() {
-            self.apply(actor, &Command::CancelTask { task_id: task_id.clone() }, effects, created)?;
+            self.apply(actor, &Command::CancelTask { task_id: task_id.clone() }, effects, created, lifecycles)?;
         }
         Ok(())
     }
 
     /// Once a review holds nothing, the problem raised about it no longer asks anything.
-    fn settle_held(&mut self, review_id: &InteractionId, task_id: &TaskId, outcome: PlanReviewOutcome) {
+    fn settle_held(&mut self, review_id: &InteractionId, task_id: &TaskId, outcome: PlanReviewOutcome, lifecycles: &mut Lifecycles) -> Result<()> {
         let at_revision = self.revision + 1;
-        let Some(review) = self.plan_reviews.get_mut(review_id) else { return };
+        if self.owned(task_id) && self.lifecycle(lifecycles, task_id)?.plan_reviews().iter().any(|(held, _)| *held == review_id) {
+            let settled = match &outcome {
+                PlanReviewOutcome::Unchanged { .. } => ReviewOutcome::Unchanged,
+                PlanReviewOutcome::PlanChanged { .. } => ReviewOutcome::PlanChanged,
+                PlanReviewOutcome::Cancelled { .. } => ReviewOutcome::Cancelled,
+                PlanReviewOutcome::KeptByUser => ReviewOutcome::KeptByUser,
+            };
+            let plan_revision = self.lifecycle(lifecycles, task_id)?.plan_revision();
+            self.decide(lifecycles, task_id, LifecycleRecord::PlanReviewSettled { review: review_id.clone(), plan_revision, outcome: settled })?;
+        }
+        let Some(review) = self.plan_reviews.get_mut(review_id) else { return Ok(()) };
         if let Some(entry) = review.dependents.get_mut(task_id) {
             *entry = Some(PlanReviewSettlement { outcome, at_revision });
         }
         if review.open().next().is_some() {
-            return;
+            return Ok(());
         }
         let lead = format!("{PLAN_REVIEW_PROBLEM_PREFIX}{review_id}-");
         let moot: Vec<InteractionId> = self.interactions.values()
@@ -156,25 +171,27 @@ impl DomainState {
         for problem in moot {
             self.retire(&problem);
         }
+        Ok(())
     }
 
     /// The user answered the problem about a review the orchestrator left unsettled.
-    pub(super) fn settle_plan_review_problem(&mut self, card: &InteractionId, option: &str) {
-        let Some(i) = self.interactions.get(card).filter(|i| i.id.0.starts_with(PLAN_REVIEW_PROBLEM_PREFIX) && i.author == Author::System) else { return };
-        let Some(problem) = PlanReviewProblem::from_body(&i.body) else { return };
+    pub(super) fn settle_plan_review_problem(&mut self, card: &InteractionId, option: &str, lifecycles: &mut Lifecycles) -> Result<()> {
+        let Some(i) = self.interactions.get(card).filter(|i| i.id.0.starts_with(PLAN_REVIEW_PROBLEM_PREFIX) && i.author == Author::System) else { return Ok(()) };
+        let Some(problem) = PlanReviewProblem::from_body(&i.body) else { return Ok(()) };
         if option != PLAN_REVIEW_KEEP_PLANS {
-            return;
+            return Ok(());
         }
         let open: Vec<TaskId> = self.plan_reviews.get(&problem.review_id).map(|r| r.open().cloned().collect()).unwrap_or_default();
         for task in open {
-            self.settle_held(&problem.review_id, &task, PlanReviewOutcome::KeptByUser);
+            self.settle_held(&problem.review_id, &task, PlanReviewOutcome::KeptByUser, lifecycles)?;
         }
+        Ok(())
     }
 
     /// The held Tasks of a review that could still start: a closed one asks for nothing until it
     /// is reopened, and then it is still held.
     pub fn plan_review_waiting<'a>(&'a self, review: &'a PlanReview) -> impl Iterator<Item = &'a Task> + 'a {
-        review.open().filter_map(|task| self.tasks.get(task)).filter(|t| !t.state.terminal() && !t.archived)
+        review.open().filter_map(|task| self.tasks.get(task)).filter(|t| !t.over() && !t.archived)
     }
 
     pub(super) fn validate_plan_reviews(&self) -> Result<()> {

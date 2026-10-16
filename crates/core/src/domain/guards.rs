@@ -264,7 +264,9 @@ impl DomainState {
         if !(matches!(actor, Actor::System) && unstarted) {
             self.manager(actor)?;
         }
-        self.active(task_id)?;
+        if self.active(task_id)?.ending() {
+            return fail("task_not_active", "Task is already ending");
+        }
         Ok(())
     }
 

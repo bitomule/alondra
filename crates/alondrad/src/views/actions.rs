@@ -526,7 +526,7 @@ async fn execute_external(
             };
             let interaction = current_delivery(&state, interaction);
             let Some(pr) = pr_of(&state, interaction) else { return Ok(refused_value(&Refusal::NoLongerAvailable, lang)); };
-            let Some(task) = state.tasks.get(&pr.task_id).filter(|task| !task.state.terminal()) else {
+            let Some(task) = state.tasks.get(&pr.task_id).filter(|task| !task.over()) else {
                 return Ok(refused_value(&Refusal::TaskNotActive, lang));
             };
             let (task_id, number, mut was_open) = (task.id.clone(), pr.number, pr.state == alondra_core::domain::PrState::Open);
@@ -1377,7 +1377,7 @@ fn map_action(
             } else { None }
         }
         Verb::SetPriority => {
-            let task = state.tasks.get(&TaskId(action.subject.clone())).filter(|task| !task.state.terminal())?;
+            let task = state.tasks.get(&TaskId(action.subject.clone())).filter(|task| !task.over())?;
             let priority = match request.option_id.as_deref()? {
                 "high" => alondra_core::domain::TaskPriority::High,
                 "normal" => alondra_core::domain::TaskPriority::Normal,
@@ -2922,7 +2922,7 @@ mod tests {
         let body: Value = serde_json::from_slice(&axum::body::to_bytes(reply.into_body(), 1024 * 1024).await.unwrap()).unwrap();
         assert_eq!(body["outcome"], "no_longer_available");
         assert_eq!(github.calls.load(std::sync::atomic::Ordering::Relaxed), 1);
-        assert_eq!(domain.state().unwrap().tasks[&"task".into()].state, alondra_core::domain::TaskState::Cancelled);
+        assert!(domain.state().unwrap().tasks[&"task".into()].cancelled());
     }
 
     #[tokio::test]
@@ -3360,7 +3360,7 @@ mod tests {
             let close = ActionId::new(Verb::CloseUnmerged, "result", domain.state().unwrap().revision, None).unwrap();
             let reply = act(&home, &domain, &client, FIRST, close, None, None).await;
             let state = domain.state().unwrap();
-            assert_eq!(state.tasks[&"task".into()].state == alondra_core::domain::TaskState::Cancelled, cancelled, "{reply}");
+            assert_eq!(state.tasks[&"task".into()].cancelled(), cancelled, "{reply}");
             let said = if cancelled { reply["result"]["title"].clone() } else { reply["message"].clone() };
             assert_eq!(said, title, "{reply}");
             assert!(!reply.to_string().contains("contactar con GitHub"), "{reply}");
@@ -3441,7 +3441,7 @@ mod tests {
         let reply = act(&home, &domain, &client, FIRST, close, None, None).await;
         assert_eq!(reply["outcome"], "applied", "{reply}");
         assert_eq!(*github.0.lock().unwrap(), [7]);
-        assert_eq!(domain.state().unwrap().tasks[&"task".into()].state, alondra_core::domain::TaskState::Cancelled);
+        assert!(domain.state().unwrap().tasks[&"task".into()].cancelled());
     }
 
     #[tokio::test]
@@ -3454,7 +3454,7 @@ mod tests {
         assert_eq!(reply["result"]["kind"], "failed", "{reply}");
         assert_eq!(reply["message"], "Alondra no pudo contactar con GitHub. No cambió nada; inténtalo de nuevo.");
         assert!(!reply.to_string().contains("raw gh error"), "{reply}");
-        assert_ne!(domain.state().unwrap().tasks[&"task".into()].state, alondra_core::domain::TaskState::Cancelled);
+        assert!(!domain.state().unwrap().tasks[&"task".into()].cancelled());
     }
 
     #[tokio::test]
@@ -3467,7 +3467,7 @@ mod tests {
         let close = ActionId::new(Verb::CloseUnmerged, "result", domain.state().unwrap().revision, None).unwrap();
         let reply = act(&home, &domain, &client, FIRST, close, None, None).await;
         assert_eq!(reply["outcome"], "applied", "the task moved while GitHub answered and is still cancelled: {reply}");
-        assert_eq!(domain.state().unwrap().tasks[&"task".into()].state, alondra_core::domain::TaskState::Cancelled);
+        assert!(domain.state().unwrap().tasks[&"task".into()].cancelled());
     }
 
     #[tokio::test]
@@ -3485,7 +3485,7 @@ mod tests {
         assert_eq!(reply["outcome"], "applied", "{reply}");
         assert_eq!(reply["result"]["title"], "La PR #7 ya estaba cerrada. Tarea cancelada.");
         assert!(github.0.lock().unwrap().is_empty(), "nothing to close on GitHub");
-        assert_eq!(domain.state().unwrap().tasks[&"task".into()].state, alondra_core::domain::TaskState::Cancelled);
+        assert!(domain.state().unwrap().tasks[&"task".into()].cancelled());
     }
 
     #[tokio::test]

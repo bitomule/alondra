@@ -928,7 +928,7 @@ mod tests {
             id: "task-a".into(), request_id: "request-a".into(), agent_id: None,
             title: "Split the parser".into(), state: TaskState::NeedsYou, revision: 1,
             started: true, review_prs: false, final_presentation: None, pr_id: None,
-            dependencies: BTreeSet::new(), stack: None, documents: Default::default(), archived: false, model: None, delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: Default::default(), priority: Default::default(),
+            dependencies: BTreeSet::new(), stack: None, documents: Default::default(), archived: false, model: None, delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: Default::default(), priority: Default::default(), ending: None,
         });
         let options = vec![
             QuestionOption {

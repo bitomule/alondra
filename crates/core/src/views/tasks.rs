@@ -911,7 +911,13 @@ fn now_line(task: &Task, context: &RenderContext<'_>) -> Option<super::Row> {
             .map(|pr| line(
                 tf!(context.lang, "waits for PR #{number} to be merged",
                     "espera a que se fusione el PR #{number}", number = pr.number), None)),
-        TaskState::Closing => Some(line(if task.wrap_up.asked_at.is_some() {
+        TaskState::Closing => Some(line(if task.cancelled() {
+            if task.agent_id.is_some() && task.wrap_up.node.is_none() {
+                t!(context.lang, "cancelled; Alondra closes its node", "cancelada; Alondra cierra su nodo").into()
+            } else {
+                t!(context.lang, "cancelled; Alondra removes what it left", "cancelada; Alondra retira lo que dejó").into()
+            }
+        } else if task.wrap_up.asked_at.is_some() {
             t!(context.lang, "finished; the node cleans up before Alondra closes it",
                 "terminada; el nodo limpia antes de que Alondra lo cierre").into()
         } else {

@@ -82,16 +82,68 @@ pub(crate) async fn run(domain: Arc<DomainRuntime>, sessions: Arc<dyn Sessions>,
 enum Due {
     Cleanup,
     Cancelled,
+    /// The task ends with no node to close: what it owes is its worktree, if it still has one,
+    /// and its place in the launch queue. Alondra removes them and records the receipt.
+    Unattended,
 }
 
 fn due(state: &DomainState, task: &Task) -> Option<Due> {
     if state.in_cleanup(task) && state.wraps_up(task) {
         Some(Due::Cleanup)
-    } else if task.state == TaskState::Cancelled && task.wrap_up.close_cancelled && task.wrap_up.node.is_none() {
+    } else if task.cancelled() && task.wrap_up.close_cancelled && task.wrap_up.node.is_none() {
         Some(Due::Cancelled)
+    } else if task.ending() && !state.wraps_up(task) {
+        Some(Due::Unattended)
     } else {
         None
     }
+}
+
+/// A task cancelled before any node took it owes only its place in the launch queue: that is
+/// removed and its receipt recorded right after the commit that cancelled it, so the user never
+/// waits for the closer's pass to read it as cancelled. One with a worktree left behind waits for
+/// the closer, which releases worktrees.
+pub(crate) fn settle_unattended(domain: &DomainRuntime, state: &DomainState) {
+    for task in state.tasks.values().filter(|task| matches!(due(state, task), Some(Due::Unattended))) {
+        match domain.task_worktree(&task.id) {
+            Ok(None) => {}
+            Ok(Some(_)) => continue,
+            Err(error) => {
+                log!("could not look up the worktree of {}: {error:#}", task.id);
+                continue;
+            }
+        }
+        let dequeued = {
+            let mut store = domain.store.lock().expect("domain store poisoned");
+            store.dequeue_launch(&task.id).and_then(|()| store.forget_auto_launch(&task.id))
+        };
+        if let Err(error) = dequeued {
+            log!("could not take {} out of the launch queue: {error:#}", task.id);
+            continue;
+        }
+        if let Err(error) = execute_system(domain, Command::RecordTaskCleanup { task_id: task.id.clone() }) {
+            log!("could not record the cleanup of {}: {error:?}", task.id);
+        }
+    }
+}
+
+/// Nothing of a task that ends without a node stays behind: not its worktree, not its launch.
+/// The receipt makes the task done or cancelled.
+async fn finish_unattended(domain: &DomainRuntime, task: &Task) -> Result<()> {
+    if let Some(dir) = domain.task_worktree(&task.id)? {
+        match crate::worktree::release_task_worktree(Path::new(&dir), &crate::launch_worktree::slug(&task.id.0), true).await {
+            Ok(TaskWorktree::Unsaved(left)) => anyhow::bail!("the worktree of {} has work that is not saved: {left}", task.id),
+            Ok(_) => {}
+            Err(why) => anyhow::bail!("the worktree of {} could not be released: {why}", task.id),
+        }
+    }
+    {
+        let mut store = domain.store.lock().expect("domain store poisoned");
+        store.dequeue_launch(&task.id)?;
+        store.forget_auto_launch(&task.id)?;
+    }
+    execute_system(domain, Command::RecordTaskCleanup { task_id: task.id.clone() }).map_err(|error| anyhow::anyhow!("{error:?}"))?;
+    Ok(())
 }
 
 fn millis(duration: Duration) -> i64 {
@@ -144,7 +196,7 @@ fn card(state: &DomainState, id: &str) -> Card {
 fn record_end(domain: &DomainRuntime, task_id: &TaskId, end: NodeEnd, agent: Option<&AgentId>) {
     let before = domain.state().ok();
     let back_to_work = matches!(end, NodeEnd::Closed | NodeEnd::Gone)
-        && before.as_ref().and_then(|state| state.tasks.get(task_id)).is_some_and(|task| !task.state.terminal() && task.wrap_up.asked_at.is_none());
+        && before.as_ref().and_then(|state| state.tasks.get(task_id)).is_some_and(|task| !task.over() && task.wrap_up.asked_at.is_none());
     if let Err(error) = execute_system(domain, Command::RecordNodeEnd { task_id: task_id.clone(), end, agent_id: agent.cloned() }) {
         log!("could not record what became of the node of {task_id}: {error:?}");
         return;
@@ -174,6 +226,9 @@ fn finish(domain: &DomainRuntime, row: &TaskClosing, agent: Option<&AgentId>, en
 async fn close_one(domain: &DomainRuntime, sessions: &dyn Sessions, timing: &Timing, now: i64, task_id: &TaskId, kind: Due) -> Result<()> {
     let state = domain.state()?;
     let Some(task) = state.tasks.get(task_id) else { return Ok(()) };
+    if matches!(kind, Due::Unattended) {
+        return finish_unattended(domain, task).await;
+    }
     let mut row = domain.store.lock().expect("domain store poisoned").begin_task_closing(task_id, now)?;
     let Some(agent) = task.agent_id.clone() else {
         return finish(domain, &row, None, NodeEnd::Gone);
@@ -207,7 +262,7 @@ async fn close_one(domain: &DomainRuntime, sessions: &dyn Sessions, timing: &Tim
     let cleaned_at = task.wrap_up.cleaned_at.map(|revision| revision as i64);
     let confirmed = cleaned_at.is_some() && cleaned_at > row.attempted_cleaned_at;
     let ready = match kind {
-        Due::Cancelled => true,
+        Due::Cancelled | Due::Unattended => true,
         Due::Cleanup => confirmed
             || close_now
             || row.last_error.is_some()
@@ -227,7 +282,7 @@ async fn close_one(domain: &DomainRuntime, sessions: &dyn Sessions, timing: &Tim
             domain.store.lock().expect("domain store poisoned").save_task_closing(&row)?;
         }
         let margin = match kind {
-            Due::Cancelled => 0,
+            Due::Cancelled | Due::Unattended => 0,
             Due::Cleanup => millis(timing.wait.unwrap_or(BUSY_FALLBACK)),
         };
         if now - waiting_since < margin {

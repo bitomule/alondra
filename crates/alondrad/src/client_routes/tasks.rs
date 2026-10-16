@@ -1,7 +1,7 @@
 //! What a task's page needs beyond the projection: how it got where it is, and why the user
 //! cancelled it.
 use super::{Client, Reply, storage};
-use alondra_core::domain::{DomainError, TaskId, TaskState};
+use alondra_core::domain::{DomainError, TaskId};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde::Deserialize;
@@ -46,10 +46,10 @@ impl Client {
             return Ok(Reply::error(DomainError::new("invalid_input", "a reason has words and fits in 4 KiB")));
         }
         let task = TaskId(id.to_owned());
-        let Some(state) = self.domain.state()?.tasks.get(&task).map(|task| task.state) else {
+        let Some(cancelled) = self.domain.state()?.tasks.get(&task).map(alondra_core::domain::Task::cancelled) else {
             return Ok(Reply::error(DomainError::new("not_found", "task does not exist")));
         };
-        if state != TaskState::Cancelled {
+        if !cancelled {
             return Ok(Reply::error(DomainError::new("task_not_cancelled", "only a cancelled task has a reason")));
         }
         self.domain.store.lock().expect("domain store poisoned").set_cancel_reason(&task, reason)?;

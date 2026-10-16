@@ -117,6 +117,15 @@ const REQUEST_PLANS: &str = "CREATE TABLE IF NOT EXISTS request_plans(\
 const PLAN_REVIEWS: &str = "CREATE TABLE IF NOT EXISTS plan_reviews(\
  interaction_id TEXT PRIMARY KEY REFERENCES interactions(id),\
  review TEXT NOT NULL CHECK(json_valid(review)));";
+/// The decisions that moved each task's lifecycle, in order, for the tasks created since the
+/// journal exists: the only source of a task's lifecycle; its `tasks` columns are read from the
+/// replay and checked against it. Append-only; created on every open like plan_reviews. Phase 3c
+/// moves it to the store's journal format with a reviewed migration.
+const TASK_LIFECYCLE_JOURNAL: &str = "CREATE TABLE IF NOT EXISTS task_lifecycle_journal(\
+ task_id TEXT NOT NULL REFERENCES tasks(id),\
+ seq INTEGER NOT NULL CHECK(seq>=0),\
+ record TEXT NOT NULL CHECK(json_valid(record)),\
+ PRIMARY KEY(task_id, seq));";
 /// Launches waiting at the gate for a free slot (not domain state): what to launch, who asked and
 /// since when. See docs/fleet-pacing.md.
 const LAUNCH_QUEUE: &str = "CREATE TABLE IF NOT EXISTS launch_queue(\
@@ -561,6 +570,7 @@ impl DomainStore {
         tx.execute_batch(TASK_CHECKLISTS)?;
         tx.execute_batch(REQUEST_PLANS)?;
         tx.execute_batch(PLAN_REVIEWS)?;
+        tx.execute_batch(TASK_LIFECYCLE_JOURNAL)?;
         tx.execute_batch(LAUNCH_QUEUE)?;
         tx.execute_batch(TASK_CLOSINGS)?;
         tx.execute_batch(POST_MERGE_CHECKS)?;

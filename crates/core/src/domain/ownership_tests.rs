@@ -100,7 +100,7 @@ impl World {
             id: "run".into(), request_id: "weekly".into(), agent_id: None, title: "BlurCamera · weekly improvement".into(), state: TaskState::NotStarted,
             revision: 0, started: false, review_prs: false, final_presentation: None, pr_id: None, dependencies: BTreeSet::new(), stack: None,
             documents: BTreeMap::new(), archived: false, model: None, delivered_dependencies: Default::default(), blocks: Default::default(),
-            verdict: None, review_rounds: 0, wrap_up: WrapUp::default(), priority: Default::default(),
+            verdict: None, review_rounds: 0, wrap_up: WrapUp::default(), priority: Default::default(), ending: None,
         };
         let options = crate::options::OptionsFile::default().resolve(Some("BlurCamera"), &BTreeMap::new()).unwrap();
         w.must(Actor::System, Command::RecordScheduleRunSent {
@@ -254,7 +254,12 @@ impl World {
             }
             Step::UserClosesNode(n) => {
                 if let Some(task) = self.pick(n, |t, _| t.agent_id.is_some() && t.final_presentation.is_none() && t.id.0 != "run") {
-                    self.must(Actor::System, Command::ReleaseTask { task_id: task.clone(), reason: "node closed by the user".into() });
+                    if self.s.tasks[&task].over() {
+                        let agent = self.s.tasks[&task].agent_id.clone();
+                        self.must(Actor::System, Command::RecordNodeEnd { task_id: task.clone(), end: NodeEnd::Gone, agent_id: agent });
+                    } else {
+                        self.must(Actor::System, Command::ReleaseTask { task_id: task.clone(), reason: "node closed by the user".into() });
+                    }
                     let fact = self.fact(&task);
                     fact.closed = true;
                     fact.start = Start::Launched;
@@ -289,7 +294,7 @@ impl World {
                 }
             }
             Step::Cancel(n) => {
-                if let Some(task) = self.pick(n, |t, _| t.id.0 != "run") {
+                if let Some(task) = self.pick(n, |t, _| t.id.0 != "run" && !t.over()) {
                     self.must(user(), Command::CancelTask { task_id: task });
                 }
             }
@@ -364,6 +369,7 @@ impl World {
 
     fn check(&self, steps: &[Step]) -> Result<(), String> {
         let none = StartFacts::default();
+        super::lifecycle_tests::assert_aggregate_rules(&self.s);
         for id in self.open() {
             let task = &self.s.tasks[&id];
             if task.started_without_node() {

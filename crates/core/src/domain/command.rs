@@ -436,6 +436,11 @@ pub enum Command {
         task_id: TaskId,
         reason: String,
     },
+    /// Alondra left nothing of a Task that ends without a node: not in the launch queue, no
+    /// worktree. The receipt its ending waited for.
+    RecordTaskCleanup {
+        task_id: TaskId,
+    },
 }
 /// A wire command written before cards existed gets the card its own fields describe; the
 /// optional `need` and `why` fields override what is read from its body.

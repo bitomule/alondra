@@ -823,3 +823,25 @@ async fn a_node_whose_session_ends_during_its_work_after_the_merge_is_closed_and
     rig.assert_done(NodeEnd::Gone);
     assert!(rig.post_merge_cards().is_empty(), "nobody is asked about work that cannot run any more");
 }
+
+/// A task cancelled before any node took it owes nothing but its place in the launch queue:
+/// Alondra takes it out and records the receipt, which is what makes the task cancelled.
+#[tokio::test]
+async fn a_cancelled_task_without_a_node_is_cancelled_by_alondras_cleanup_receipt() {
+    let rig = Rig::undelivered(thirty_minutes());
+    command(&rig.domain, Actor::Orchestrator { generation: 0 }, "title", Command::TitleRequest { request_id: "r".into(), title: "Work".into() });
+    command(&rig.domain, Actor::Orchestrator { generation: 0 }, "task-u", Command::CreateTask { plan_items: None,
+        task_id: "u".into(), request_id: "r".into(), title: "Later".into(), agent_id: None,
+        review_prs: false, dependencies: Default::default(), stack: None,
+        launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),
+    });
+    command(&rig.domain, user(), "cancel-u", Command::CancelTask { task_id: "u".into() });
+    let task = rig.domain.state().unwrap().tasks[&TaskId::from("u")].clone();
+    assert_eq!((task.state, task.ending, task.agent_id), (TaskState::Cancelled, None, None));
+    assert!(rig.sessions.calls.lock().unwrap().is_empty(), "no node to close");
+    assert!(rig.domain.store.lock().unwrap().launch_queue().unwrap().iter().all(|row| row.task_id.0 != "u"));
+    assert_eq!(rig.task().state, TaskState::NotStarted, "the other task is untouched");
+    let journal: i64 = rig.domain.store.lock().unwrap().conn_for_test()
+        .query_row("SELECT count(*) FROM task_lifecycle_journal WHERE task_id='u'", [], |row| row.get(0)).unwrap();
+    assert_eq!(journal, 3, "planned, finished, drained: the receipt came with the commit that cancelled it");
+}

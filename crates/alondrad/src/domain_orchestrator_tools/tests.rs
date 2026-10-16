@@ -355,7 +355,7 @@ async fn a_message_about_a_closed_task_is_refused_as_closed() {
     let refused = send(&f.domain, &f.home, &actor, body).await.unwrap_err();
     assert_eq!(refused.code, "task_closed");
     assert!(refused.message.contains("create_task") && refused.message.contains("dependencies [t]"), "{}", refused.message);
-    assert_eq!(f.domain.state().unwrap().tasks[&TaskId::from("t")].state, TaskState::Cancelled, "a message never reopens");
+    assert!(f.domain.state().unwrap().tasks[&TaskId::from("t")].cancelled(), "a message never reopens");
     assert!(node.texts().is_empty());
 }
 

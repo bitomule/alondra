@@ -171,7 +171,7 @@ impl DomainState {
         Some((number, reason.to_owned()))
     }
     pub fn task_handed_back(&self, task_id: &TaskId) -> Option<Instruction> {
-        let task = self.tasks.get(task_id).filter(|t| !t.state.terminal())?;
+        let task = self.tasks.get(task_id).filter(|t| !t.over())?;
         self.handed_back(self.interactions.get(task.final_presentation.as_ref()?)?)
     }
     /// The card decided from the state alone: what the index must agree with.
@@ -187,7 +187,7 @@ impl DomainState {
         }
     }
     fn inbox_active(task: Option<&Task>) -> bool {
-        task.is_none_or(|t| !t.state.terminal() || Self::winding_down(t))
+        task.is_none_or(|t| !t.over() || Self::winding_down(t))
     }
     /// Whether the card waits for the user now, which is what lists it in Waiting for You; a
     /// delivery only while its task's attention is that card.

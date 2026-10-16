@@ -477,6 +477,9 @@ pub(super) enum EventRecord {
         problem_card: String,
         input: String,
     },
+    ExecutionReleased {
+        input: String,
+    },
     Reopen {
         input: String,
     },
@@ -574,6 +577,9 @@ impl From<&Event> for EventRecord {
                 input,
             } => Self::RetireReleasedExecution {
                 problem_card: problem_card.0.clone(),
+                input: input.as_str().to_owned(),
+            },
+            Event::ExecutionReleased { input } => Self::ExecutionReleased {
                 input: input.as_str().to_owned(),
             },
             Event::Reopen { input } => Self::Reopen {
@@ -683,6 +689,9 @@ impl EventRecord {
                 input,
             } => Event::RetireReleasedExecution {
                 problem_card: InteractionId(problem_card),
+                input: InputId::new(input).map_err(Error::from)?,
+            },
+            EventRecord::ExecutionReleased { input } => Event::ExecutionReleased {
                 input: InputId::new(input).map_err(Error::from)?,
             },
             EventRecord::Reopen { input } => Event::Reopen {
@@ -882,6 +891,12 @@ mod tests {
             &current,
             Event::RetireReleasedExecution {
                 problem_card: "problem_card".into(),
+                input: InputId::new("input").unwrap(),
+            },
+        );
+        roundtrip(
+            &current,
+            Event::ExecutionReleased {
                 input: InputId::new("input").unwrap(),
             },
         );

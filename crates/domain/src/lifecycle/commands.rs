@@ -437,6 +437,55 @@ impl TaskLifecycle {
                     })
                 };
             }
+            Event::ExecutionReleased { input } => {
+                let execution = self.session().ok_or(Refusal::InvalidState)?;
+                if execution.activity.owns_work()
+                    || !execution.callbacks.is_empty()
+                    || !execution.effects.is_empty()
+                {
+                    return Err(Refusal::InvalidState);
+                }
+                let mut pending: VecDeque<InputId> =
+                    execution_pending(execution).into_iter().cloned().collect();
+                if pending.is_empty() {
+                    pending.push_back(input);
+                }
+                self.state = match &self.state {
+                    State::InProgress(Progress::Executing { stage, .. }) => {
+                        let first = pending.pop_front().ok_or(Refusal::EmptyObligation)?;
+                        State::InProgress(Progress::Queued {
+                            stage: *stage,
+                            input: first,
+                            remaining: pending,
+                        })
+                    }
+                    State::InProgress(Progress::Waiting { stage, cards, .. }) => {
+                        State::InProgress(Progress::Waiting {
+                            stage: *stage,
+                            cards: cards.clone(),
+                            session: Session::Absent(pending),
+                        })
+                    }
+                    State::InProgress(Progress::Dependency {
+                        stage,
+                        tasks,
+                        decisions,
+                        ..
+                    }) => State::InProgress(Progress::Dependency {
+                        stage: *stage,
+                        tasks: tasks.clone(),
+                        decisions: decisions.clone(),
+                        session: Session::Absent(pending),
+                    }),
+                    State::Delivered(delivered) => State::Delivered(Delivered {
+                        delivery: delivered.delivery.clone(),
+                        gate: delivered.gate.clone(),
+                        decisions: delivered.decisions.clone(),
+                        session: Session::Absent(pending),
+                    }),
+                    _ => return Err(Refusal::InvalidState),
+                };
+            }
             Event::Reopen { input } => {
                 if !matches!(self.state, State::Completed | State::Cancelled) {
                     return Err(Refusal::InvalidState);
@@ -660,7 +709,10 @@ impl TaskLifecycle {
         {
             return Err(Refusal::InvalidState);
         }
-        if intent == FinishIntent::Complete && !self.pending_inputs().is_empty() {
+        if intent == FinishIntent::Complete
+            && self.session().is_some()
+            && !self.pending_inputs().is_empty()
+        {
             return Err(Refusal::InvalidState);
         }
         let session = self

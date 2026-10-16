@@ -186,6 +186,7 @@ proptest! {
                 prop_assert_eq!(&s, &before, "a refused command changed state");
                 continue;
             };
+            super::lifecycle_tests::assert_aggregate_rules(&s);
             for (id, review) in &before.plan_reviews {
                 for (task, settled) in review.dependents.iter().filter(|(_, settled)| settled.is_some()) {
                     prop_assert_eq!(s.plan_reviews[id].dependents.get(task), Some(settled), "a settled review changed");
@@ -283,8 +284,10 @@ fn cancelling_from_the_review_cancels_the_task_in_the_same_commit() {
     let outcome = exec(&mut s, &orchestrator(), Command::SettlePlanReview {
         review_id: "q".into(), task_id: "e".into(), outcome: PlanReviewOutcome::Cancelled { reason: "Phase E no longer applies".into() },
     }).unwrap();
-    assert_eq!(s.tasks[&TaskId::from("e")].state, TaskState::Cancelled);
+    assert!(s.tasks[&TaskId::from("e")].cancelled() && s.tasks[&TaskId::from("e")].state == TaskState::Closing);
     assert_eq!(s.tasks[&TaskId::from("e")].revision, outcome.revision);
+    must(&mut s, Actor::System, Command::RecordTaskCleanup { task_id: "e".into() });
+    assert_eq!(s.tasks[&TaskId::from("e")].state, TaskState::Cancelled);
     assert!(matches!(s.plan_reviews[&InteractionId::from("q")].dependents[&TaskId::from("e")],
         Some(PlanReviewSettlement { outcome: PlanReviewOutcome::Cancelled { .. }, .. })));
 }
@@ -308,6 +311,7 @@ fn a_held_task_that_is_cancelled_and_reopened_is_still_held() {
     must(&mut s, user(), answer("q"));
     must(&mut s, user(), Command::CancelTask { task_id: "c".into() });
     assert!(s.plan_review_waiting(&s.plan_reviews[&InteractionId::from("q")]).all(|t| t.id.0 != "c"), "a closed task asks for no review");
+    must(&mut s, Actor::System, Command::RecordTaskCleanup { task_id: "c".into() });
     must(&mut s, user(), Command::ReopenTask { task_id: "c".into() });
     assert!(s.plan_review_pending(&"c".into()), "its plan still predates the decision");
     assert_eq!(exec(&mut s, &Actor::System, Command::AssignTask { task_id: "c".into(), agent_id: "z0".into(), model: None }).unwrap_err().code, "plan_review_pending");

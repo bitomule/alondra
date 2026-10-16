@@ -1,5 +1,5 @@
 load("@crates//:defs.bzl", "all_crate_deps")
-load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_doc_test", "rust_library", "rust_test")
 
 rust_library(
     name = "alondra_core",
@@ -8,10 +8,17 @@ rust_library(
     edition = "2024",
     version = "0.1.0",
     visibility = ["//visibility:public"],
-    deps = all_crate_deps(normal = True) + ["//crates/foundation:foundation"],
+    deps = all_crate_deps(normal = True) + ["//crates/foundation:foundation", "//crates/domain:domain"],
 )
 
 exports_files(glob(["fixtures/*.jsonl"]) + ["src/domain/tests.rs"])
+
+# The lifecycle authority cannot be cloned, deserialized or made from the Task DTO.
+rust_doc_test(
+    name = "lifecycle_construction_test",
+    crate = ":alondra_core",
+    deps = ["//crates/domain:domain", "@crates//:serde_json"],
+)
 
 rust_test(
     name = "alondra_core_test",

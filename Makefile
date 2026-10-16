@@ -14,7 +14,7 @@ BETA_GROUP := Internal Pilot,Private Pilot
 APPLE_VERSION = $(shell sed -n 's/^ *version = "\(.*\)".*/\1/p' tools/shared.bzl)
 APPLE_BUILD = $(shell sed -n 's/^ *build_number = "\(.*\)".*/\1/p' tools/shared.bzl)
 
-.PHONY: connection-measurements version-guard increment-version build-release snapshots-record snapshots-verify tui-shots mac-snapshots-record mac-snapshots-verify no-holds build test install run tui setup launchd unlaunchd restart status doctor cargo-test mac device device-console e2e-sandbox e2e-sandbox-stop e2e-iroh e2e-iroh-cli e2e-wizard e2e-doc-review e2e-sandbox-logs e2e-relay-cards e2e-direct-cards e2e-allow-always e2e-cards-tui e2e-tui-optimistic e2e-ios-cards e2e-plan-card e2e-plan-result e2e-plan-review e2e-pause-queued e2e-ios-offline soak load-bench views-measure read-index-bench tasks-screen rehearse-cutover upgrade-rehearsal cutover-live clean-xcode-test-results e2e-journeys e2e-explore skill-evals pi-relay-deploy pi-iroh-relay-deploy
+.PHONY: connection-measurements version-guard increment-version build-release snapshots-record snapshots-verify tui-shots mac-snapshots-record mac-snapshots-verify no-holds build test install run tui setup launchd unlaunchd restart status doctor cargo-test mac device device-console e2e-sandbox e2e-sandbox-stop e2e-iroh e2e-iroh-cli e2e-wizard e2e-doc-review e2e-sandbox-logs e2e-relay-cards e2e-direct-cards e2e-allow-always e2e-cards-tui e2e-tui-optimistic e2e-ios-cards e2e-plan-card e2e-plan-result e2e-plan-review e2e-pause-queued e2e-cancel e2e-ios-offline soak load-bench views-measure read-index-bench tasks-screen rehearse-cutover upgrade-rehearsal cutover-live clean-xcode-test-results e2e-journeys e2e-explore skill-evals pi-relay-deploy pi-iroh-relay-deploy
 
 build:
 	bazelisk build //crates/... //apple:AlondraMac
@@ -218,6 +218,13 @@ e2e-direct-cards:
 
 e2e-cards-tui:
 	$(call E2E_CARDS,tui)
+
+# A cancelled task reads «Cancelando» until Alondra records the end of its node, then «Cancelada»,
+# seen in the real TUI in tmux (tools/e2e_cancel.py). E2E_CAPTURES=<dir> keeps each screen.
+e2e-cancel:
+	bazelisk build //crates/alondrad //crates/alondra //crates/relay:alondra-relay //tools/sandbox:alondra-sandbox
+	tools/e2e_cancel.py $(if $(E2E_CAPTURES),--captures $(E2E_CAPTURES)) \
+		$$(bazelisk cquery --output=files '//crates/alondrad + //crates/alondra + //crates/relay:alondra-relay + //tools/sandbox:alondra-sandbox' 2>/dev/null | grep -v '\.ok$$')
 
 # A decision of the user holds the tasks after it until the orchestrator reviews their plans, seen in
 # the real TUI in tmux (tools/e2e_plan_review.py). E2E_CAPTURES=<dir> keeps each screen.

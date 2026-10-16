@@ -12,7 +12,7 @@ use crate::http::{elicitation_card, elicitation_content, permission_detail, perm
 use alondra_core::domain::{
     clip, without_recommended_suffix, Actor, AgentId, Answer, Author, CardKind, CardSpec, Command, CommandEnvelope,
     ContentKind, DomainState, GroupQuestion, Hold, InputValue, InteractionId, InteractionPayload, QuestionGroup,
-    QuestionOption, TaskState, PROTOCOL_VERSION, plan_checklist_problem, include_cited_files,
+    QuestionOption, PROTOCOL_VERSION, plan_checklist_problem, include_cited_files,
 };
 use alondra_core::allow_always::AllowAlways;
 use anyhow::Result;
@@ -158,10 +158,10 @@ pub(crate) fn denied(kind: Kind, reason: &str) -> Value {
 /// Why a node with no active Task but a cancelled one must stop instead of asking.
 fn cancelled_task(state: &DomainState, session_id: &str) -> Option<String> {
     let mine = || state.tasks.values().filter(|task| task.agent_id.as_ref().is_some_and(|a| a.0 == session_id));
-    if mine().any(|task| !task.state.terminal()) {
+    if mine().any(|task| !task.over()) {
         return None;
     }
-    mine().find(|task| task.state == TaskState::Cancelled)
+    mine().find(|task| task.cancelled())
         .map(|task| format!("Task {} was cancelled: Alondra denies this call without asking. Stop working on it.", task.id))
 }
 
@@ -236,7 +236,7 @@ fn open(domain: &DomainRuntime, session_id: &str, id: InteractionId, hold: Hold,
     let agent_id = AgentId(session_id.to_owned());
     let state = domain.state()?;
     let Some(task) = state.tasks.values()
-        .find(|task| task.agent_id.as_ref() == Some(&agent_id) && !task.state.terminal())
+        .find(|task| task.agent_id.as_ref() == Some(&agent_id) && !task.over())
     else {
         return Ok(None);
     };
@@ -292,7 +292,7 @@ fn open(domain: &DomainRuntime, session_id: &str, id: InteractionId, hold: Hold,
 pub(crate) fn ask(domain: &DomainRuntime, session_id: &str, body: String, options: Vec<QuestionOption>) -> Result<Option<InteractionId>> {
     let agent_id = AgentId(session_id.to_owned());
     let state = domain.state()?;
-    let Some(task) = state.tasks.values().find(|task| task.agent_id.as_ref() == Some(&agent_id) && !task.state.terminal()) else {
+    let Some(task) = state.tasks.values().find(|task| task.agent_id.as_ref() == Some(&agent_id) && !task.over()) else {
         return Ok(None);
     };
     let id = InteractionId(format!("hold-{}", crate::auth::random_hex(16)));

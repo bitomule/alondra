@@ -5,7 +5,7 @@ use super::{
     Icon, LiveHold, LivePauseReason, RenderContext, Tone, common,
     text::{t, tf},
 };
-use crate::domain::{Attention, Instruction, InteractionId, PauseReason, PrState, Task, TaskActivity, TaskPriority, TaskState, WaitReason};
+use crate::domain::{Attention, Instruction, InteractionId, PauseReason, PrState, Task, TaskActivity, TaskEnding, TaskPriority, TaskState, WaitReason};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum Block {
@@ -211,6 +211,14 @@ fn with_pending(fact: String, task: &Task, context: &RenderContext<'_>) -> Strin
 
 fn closing(task: &Task, context: &RenderContext<'_>) -> Presentation {
     let lang = context.lang;
+    if task.ending == Some(TaskEnding::Cancelling) {
+        let fact = if task.agent_id.is_some() && task.wrap_up.node.is_none() {
+            t!(lang, "Alondra closes its node", "Alondra cierra su nodo")
+        } else {
+            t!(lang, "Alondra removes what it left", "Alondra retira lo que dejó")
+        };
+        return Presentation::new(t!(lang, "Cancelling", "Cancelando"), Tone::Neutral, Block::InProgress, Some(fact.into()));
+    }
     let fact = if task.wrap_up.asked_at.is_some() {
         t!(lang, "Cleaning up before closing", "Limpiando antes de cerrar")
     } else {

@@ -389,6 +389,10 @@ impl DomainRuntime {
                 self.schedule_changed.send_replace(commit.state.revision);
             }
         }
+        drop(store);
+        if !commit.replayed && commit.outcome.changed {
+            crate::task_closer::settle_unattended(self, &commit.state);
+        }
         Ok(commit.outcome)
     }
 
@@ -401,6 +405,10 @@ impl DomainRuntime {
         self.publish(&commit.state);
         if !commit.replayed && commit.outcome.changed {
             self.changed.send_replace(commit.state.revision);
+        }
+        drop(store);
+        if !commit.replayed && commit.outcome.changed {
+            crate::task_closer::settle_unattended(self, &commit.state);
         }
         Ok(commit.outcome)
     }
@@ -462,6 +470,10 @@ impl DomainRuntime {
                 self.schedule_changed.send_replace(commit.state.revision);
             }
         }
+        drop(store);
+        if !commit.replayed && commit.outcome.changed {
+            crate::task_closer::settle_unattended(self, &commit.state);
+        }
         Ok(commit.outcome)
     }
 }
@@ -500,6 +512,7 @@ fn command_task(state: &DomainState, command: &Command) -> Option<TaskId> {
         | Command::ConfirmCleanup { task_id }
         | Command::DeclarePostMergeWork { task_id, .. }
         | Command::RecordNodeEnd { task_id, .. }
+        | Command::RecordTaskCleanup { task_id }
         | Command::ArchiveTask { task_id, .. }
         | Command::ReleaseTask { task_id, .. }
         | Command::RaiseStartProblem { task_id, .. }

@@ -52,7 +52,7 @@ fn fixture() -> DomainState {
             documents: BTreeMap::new(),
             archived: false,
             model: None,
-            delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: Default::default(), priority: Default::default(),
+            delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: Default::default(), priority: Default::default(), ending: None,
         },
     );
     for (index, kind) in ["question", "information", "delivery"].iter().enumerate() {
@@ -5450,6 +5450,19 @@ fn now_title(state: &DomainState, lang: Lang) -> Option<String> {
     let section = view.sections.iter().find(|section| section.id == "now")?;
     let Item::Row(row) = &section.items[0] else { panic!("now row") };
     Some(row.title.clone())
+}
+
+#[test]
+fn a_cancelling_task_says_what_alondra_still_removes() {
+    let mut state = fixture();
+    let task = state.tasks.get_mut(&"t-1".into()).unwrap();
+    task.state = TaskState::Closing;
+    task.ending = Some(crate::domain::TaskEnding::Cancelling);
+    task.agent_id = Some("a-1".into());
+    assert_eq!(now_title(&state, Lang::En).unwrap(), "cancelled; Alondra closes its node");
+    assert_eq!(now_title(&state, Lang::Es).unwrap(), "cancelada; Alondra cierra su nodo");
+    state.tasks.get_mut(&"t-1".into()).unwrap().agent_id = None;
+    assert_eq!(now_title(&state, Lang::Es).unwrap(), "cancelada; Alondra retira lo que dejó");
 }
 
 #[test]

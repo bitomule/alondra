@@ -73,7 +73,7 @@ pub(crate) fn facts(domain: &DomainRuntime, state: &DomainState) -> Result<BTree
     let queued: Vec<TaskId> = store.launch_queue()?.into_iter().map(|row| row.task_id).collect();
     let now = alondra_core::now_millis();
     let mut out = BTreeMap::new();
-    for task in state.tasks.values().filter(|task| !task.state.terminal() && !task.archived) {
+    for task in state.tasks.values().filter(|task| !task.over() && !task.archived) {
         let scheduled = state.schedule.runs.values().any(|run| run.task_id.as_ref() == Some(&task.id));
         let auto = autos.iter().find(|row| row.task_id == task.id);
         let start = match (retries.get(&task.id), auto.map(|row| (row.state, row.reason))) {

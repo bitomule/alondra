@@ -891,7 +891,7 @@ impl World {
                 assert!(self.event(&agent, NodeEvent::SessionClosed, self.now));
             }
             Step::Cancel(n) => {
-                let Some(agent) = self.pick(n, |_, t| t.is_some_and(|t| !t.state.terminal())) else { return };
+                let Some(agent) = self.pick(n, |_, t| t.is_some_and(|t| !t.over())) else { return };
                 let task = self.open_task(&agent).unwrap();
                 self.must(user(), Command::CancelTask { task_id: task });
             }

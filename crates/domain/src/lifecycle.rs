@@ -216,6 +216,13 @@ pub enum Event {
         problem_card: InteractionId,
         input: InputId,
     },
+    /// The execution is gone and left nothing behind, and no card tells the user: the task waits
+    /// for its next execution with `input`, or with what it had not consumed. The silent form of
+    /// `RetireReleasedExecution`, for a fleet that queues the task again on its own; an execution
+    /// that still owns work, callbacks or accepted effects cannot be released this way.
+    ExecutionReleased {
+        input: InputId,
+    },
     Reopen {
         input: InputId,
     },
@@ -661,6 +668,17 @@ impl TaskLifecycle {
     pub fn delivery(&self) -> Option<&InteractionId> {
         match &self.state {
             State::Delivered(delivered) => Some(&delivered.delivery),
+            _ => None,
+        }
+    }
+    /// The user accepted the standing delivery and nothing of it waits for a merge.
+    pub fn accepted(&self) -> bool {
+        matches!(&self.state, State::Delivered(delivered) if delivered.gate == DeliveryGate::Accepted)
+    }
+    /// What a finishing task ends as, once what it owes is drained.
+    pub fn finishing_intent(&self) -> Option<FinishIntent> {
+        match &self.state {
+            State::Finishing(finishing) => Some(finishing.intent),
             _ => None,
         }
     }

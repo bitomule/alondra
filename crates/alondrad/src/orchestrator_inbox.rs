@@ -41,7 +41,7 @@ pub(crate) fn steps(state: &DomainState) -> Vec<Step> {
     for interaction in state.interactions.values().filter(|i| waits(i)) {
         if interaction.card.kind == CardKind::Propose {
             steps.extend(unsettled(state, interaction));
-        } else if task_of(state, interaction).is_some_and(|task| !task.state.terminal()) {
+        } else if task_of(state, interaction).is_some_and(|task| !task.over()) {
             steps.extend(unanswered(state, interaction));
         }
     }

@@ -534,7 +534,7 @@ fn pause_cleanup(cleanup: crate::fleet_pause::Cleanup) -> PauseCleanup {
 /// The paused nodes as the node machine holds them, by session, with the task each one keeps.
 fn domain_paused(state: &DomainState) -> BTreeMap<String, Paused> {
     state.paused_nodes().into_iter().filter_map(|(agent, pause)| {
-        let task = state.node_task(agent).filter(|task| !task.state.terminal())?.id.clone();
+        let task = state.node_task(agent).filter(|task| !task.over())?.id.clone();
         Some((agent.0.clone(), Paused {
             task, reason: reason_of(&pause.reason), since: pause.since, cut: pause.cut.clone(), turn_since: pause.turn_since,
             cleanup: cleanup_of(pause.cleanup), released: pause.released,
@@ -688,7 +688,7 @@ fn still_waits(state: &DomainState, key: &Key) -> bool {
 /// back and Alondra is restarting holds one.
 pub(crate) fn working_tasks(state: &DomainState) -> BTreeSet<TaskId> {
     state.slots().into_iter()
-        .filter_map(|agent| state.node_task(&agent.id).filter(|task| !task.state.terminal()).map(|task| task.id.clone()))
+        .filter_map(|agent| state.node_task(&agent.id).filter(|task| !task.over()).map(|task| task.id.clone()))
         .collect()
 }
 
@@ -771,7 +771,7 @@ fn snapshot_locked(domain: &DomainRuntime, state: &DomainState, inner: &Inner, q
         .filter(|(key, at)| now - at < IN_FLIGHT && !waiting_again.contains(key))
         .map(|(key, _)| task_of(state, key))
         .filter(|task| task.as_ref().is_none_or(|task| !busy.contains(task) && !paused(task)
-            && state.tasks.get(task).is_none_or(|task| !task.state.terminal())))
+            && state.tasks.get(task).is_none_or(|task| !task.over())))
         .collect();
     let working = busy.len() + in_flight.len();
     let admitted = inner.admitted.iter().filter(|(_, at)| now - at < IN_FLIGHT).count();

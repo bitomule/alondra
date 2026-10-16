@@ -1148,6 +1148,9 @@ fn closed_request_reopen_rejection_survives_sql_restart() {
             task_id: "task-1".into(),
         },
     );
+    execute(&mut store, &Actor::System, "node-end", Command::RecordNodeEnd {
+        task_id: "task-1".into(), end: NodeEnd::Closed, agent_id: Some("agent-1".into()),
+    });
     execute(
         &mut store,
         &user(),
@@ -1900,6 +1903,7 @@ fn releasing_a_task_left_in_progress_with_no_node_queues_it_with_its_plan() {
     let mut store = DomainStore::open(&fixture.path()).unwrap();
     seeded(&mut store);
     store.conn.execute("UPDATE tasks SET agent_id=NULL, started=1, state='running' WHERE id='task-1'", []).unwrap();
+    store.conn.execute("DELETE FROM task_lifecycle_journal WHERE task_id='task-1'", []).unwrap();
     drop(store);
     let mut store = DomainStore::open(&fixture.path()).unwrap();
     assert!(store.load().unwrap().tasks[&"task-1".into()].started_without_node());
@@ -1909,4 +1913,39 @@ fn releasing_a_task_left_in_progress_with_no_node_queues_it_with_its_plan() {
     let planned = store.planned_tasks().unwrap()[&"task-1".into()];
     let queue = store.launch_queue().unwrap();
     assert_eq!(queue.iter().map(|row| (row.task_id.0.as_str(), row.enqueued_at, row.origin.as_str())).collect::<Vec<_>>(), [("task-1", planned, "reopen")]);
+}
+
+/// The lifecycle journal survives a restart as it was written, append-only, and a store whose
+/// task columns were edited behind the journal refuses to load instead of repairing them.
+#[test]
+fn the_lifecycle_journal_is_persisted_append_only_and_read_back_on_restart() {
+    let fixture = Fixture::new();
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    seeded(&mut store);
+    execute(&mut store, &agent(), "start", Command::StartTask { task_id: "task-1".into() });
+    execute(&mut store, &user(), "cancel", Command::CancelTask { task_id: "task-1".into() });
+    let state = store.load().unwrap();
+    let task = &state.tasks[&TaskId::from("task-1")];
+    assert_eq!((task.state, task.ending), (TaskState::Closing, Some(alondra_core::domain::TaskEnding::Cancelling)));
+    assert_eq!(count(&store, "task_lifecycle_journal"), state.lifecycle_journal[&TaskId::from("task-1")].len() as i64);
+    let expected = store.load().unwrap();
+    drop(store);
+
+    let mut restarted = DomainStore::open(&fixture.path()).unwrap();
+    assert_eq!(restarted.load().unwrap(), expected, "the journal and the ending it yields come back");
+    execute(&mut restarted, &Actor::System, "end", Command::RecordNodeEnd {
+        task_id: "task-1".into(), end: NodeEnd::Closed, agent_id: Some("agent-1".into()),
+    });
+    let state = restarted.load().unwrap();
+    assert_eq!(state.tasks[&TaskId::from("task-1")].state, TaskState::Cancelled);
+    let kept = count(&restarted, "task_lifecycle_journal");
+    assert_eq!(kept, state.lifecycle_journal[&TaskId::from("task-1")].len() as i64);
+    restarted.conn.execute("UPDATE tasks SET state='running' WHERE id='task-1'", []).unwrap();
+    drop(restarted);
+
+    let error = match DomainStore::open(&fixture.path()) {
+        Ok(mut store) => store.load().map(|_| ()).unwrap_err(),
+        Err(error) => error,
+    };
+    assert!(format!("{error:#}").contains("the aggregate rules"), "{error:#}");
 }

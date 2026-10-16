@@ -5,6 +5,7 @@ mod cited_files;
 mod command;
 mod model;
 mod api_failure;
+mod lifecycle;
 mod node_machine;
 mod ownership;
 mod plan;
@@ -38,12 +39,15 @@ mod plan_phases_tests;
 mod suggestion_tests;
 #[cfg(test)]
 mod plan_review_tests;
+#[cfg(test)]
+mod lifecycle_tests;
 pub use attention::*;
 pub use checklist::*;
 pub use cited_files::*;
 pub use command::*;
 pub use model::*;
 pub use api_failure::*;
+pub use lifecycle::*;
 pub use node_machine::*;
 pub use ownership::*;
 pub use plan::*;

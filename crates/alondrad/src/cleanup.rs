@@ -56,7 +56,7 @@ fn kept(candidate: &Candidate, reason: &str, detail: Option<&str>) -> Value {
 
 fn why(state: &DomainState, domain: &DomainRuntime, claude_home: &Path, agent: &AgentId, now: i64) -> Option<(Why, Option<String>)> {
     let tasks: Vec<&Task> = state.tasks.values().filter(|task| task.agent_id.as_ref() == Some(agent)).collect();
-    let ended = |task: &&Task| task.state.terminal();
+    let ended = |task: &&Task| task.over();
     if !tasks.is_empty() {
         if !tasks.iter().all(ended) || tasks.iter().any(|task| task.wrap_up.node == Some(NodeEnd::KeptByUser)) {
             return None;
@@ -77,7 +77,7 @@ fn why(state: &DomainState, domain: &DomainRuntime, claude_home: &Path, agent: &
 /// Whether another node with an open task works in `dir`: the node that replaced this one keeps
 /// its worktree, which `claude rm` of this one would delete.
 fn worked_in(state: &DomainState, domain: &DomainRuntime, agent: &AgentId, dir: &Path) -> bool {
-    state.tasks.values().filter(|task| !task.state.terminal()).filter_map(|task| task.agent_id.as_ref()).filter(|other| *other != agent)
+    state.tasks.values().filter(|task| !task.over()).filter_map(|task| task.agent_id.as_ref()).filter(|other| *other != agent)
         .filter_map(|other| domain.live.mods.session(&other.0)?.cwd)
         .any(|cwd| Path::new(&cwd).starts_with(dir))
 }
@@ -116,7 +116,7 @@ fn free_stopped(domain: &DomainRuntime, state: &DomainState, claude_home: &Path,
         let short: String = node.as_ref().map_or_else(|| session.chars().take(8).collect(), |node| node.short_id.clone());
         let name = node.and_then(|node| node.name).unwrap_or_else(|| known.name.clone());
         let titles: Vec<String> = state.tasks.values()
-            .filter(|task| task.agent_id.as_ref() == Some(&known.id) && !task.state.terminal() && !task.archived)
+            .filter(|task| task.agent_id.as_ref() == Some(&known.id) && !task.over() && !task.archived)
             .map(|task| task.title.clone()).collect();
         if !dry_run && let Err(error) = crate::node_revival::user_closed(domain, session) {
             log!("could not free the tasks of {session}, stopped in Claude agents: {error:#}");
@@ -182,7 +182,7 @@ pub(crate) async fn run(
         domain.live.end_watch(&candidate.agent.0);
         match outcome {
             Ok(CloseOutcome::Closed { .. }) => {
-                for task in state.tasks.values().filter(|task| task.agent_id.as_ref() == Some(&candidate.agent) && task.state.terminal() && task.wrap_up.node.is_none()) {
+                for task in state.tasks.values().filter(|task| task.agent_id.as_ref() == Some(&candidate.agent) && task.over() && task.wrap_up.node.is_none()) {
                     if let Err(error) = execute_system(domain, Command::RecordNodeEnd { task_id: task.id.clone(), end: NodeEnd::Closed, agent_id: Some(candidate.agent.clone()) }) {
                         log!("could not record that the node of {} was closed: {error:?}", task.id);
                     }
@@ -220,7 +220,7 @@ async fn closed_task_worktrees(
     let (mut released, mut kept) = (vec![], vec![]);
     for (task_id, dir) in recorded {
         let Some(task) = state.tasks.get(&task_id) else { continue };
-        if !task.state.terminal() || matches!(task.wrap_up.node, Some(NodeEnd::KeptByUser | NodeEnd::UsersOwn)) {
+        if !task.over() || matches!(task.wrap_up.node, Some(NodeEnd::KeptByUser | NodeEnd::UsersOwn)) {
             continue;
         }
         if let Some(agent) = &task.agent_id {
@@ -244,7 +244,7 @@ async fn closed_task_worktrees(
 }
 
 fn open_task_works_in(state: &DomainState, domain: &DomainRuntime, dir: &Path) -> bool {
-    state.tasks.values().filter(|task| !task.state.terminal()).filter_map(|task| task.agent_id.as_ref())
+    state.tasks.values().filter(|task| !task.over()).filter_map(|task| task.agent_id.as_ref())
         .filter_map(|agent| domain.live.mods.session(&agent.0)?.cwd)
         .any(|cwd| Path::new(&cwd).starts_with(dir))
 }

@@ -358,9 +358,17 @@ impl DomainState {
             Ok(t)
         }
     }
+    /// A task that ends takes no node and starts no work: it closes, and then it can be reopened.
+    fn not_ending(&self, task: &TaskId) -> Result<()> {
+        match self.task(task)?.ending {
+            Some(TaskEnding::Cancelling) => fail("task_ending", &format!("Task {task} is being cancelled: once it is closed, reopen it")),
+            Some(TaskEnding::Completing) => fail("task_ending", &format!("Task {task} is closing as done: once it is closed, reopen it")),
+            None => Ok(()),
+        }
+    }
     /// An Agent works on one Task at a time: the other non-terminal Task it holds, if any.
     pub fn busy_with(&self, agent: &AgentId, except: &TaskId) -> Option<&Task> {
-        self.tasks.values().find(|t| &t.id != except && t.agent_id.as_ref() == Some(agent) && !t.state.terminal())
+        self.tasks.values().find(|t| &t.id != except && t.agent_id.as_ref() == Some(agent) && !t.over())
     }
     /// A node works on one Task for its whole life: the other Task, open or not, it holds or held.
     fn used_by_other(&self, agent: &AgentId, except: &TaskId) -> Result<()> {
@@ -676,7 +684,7 @@ impl DomainState {
     /// The orchestrator settles a node's suggestion with one decision, in one command: a new task
     /// is created here, under a request of its own, or nothing is recorded at all.
     fn settle_suggestion(&mut self, actor: &Actor, interaction_id: &InteractionId, decision: &SuggestionDecision,
-        effects: &mut Vec<DomainEffect>, created: &mut Vec<String>) -> Result<()> {
+        effects: &mut Vec<DomainEffect>, created: &mut Vec<String>, lifecycles: &mut Lifecycles) -> Result<()> {
         self.fence(actor)?;
         if !matches!(actor, Actor::Orchestrator { .. }) {
             return fail("forbidden", "Only the orchestrator settles a suggestion");
@@ -703,16 +711,16 @@ impl DomainState {
                 self.apply(actor, &Command::CreateRequest {
                     request_id: request_id.clone(), body: format!("{}\n\n{}", i.card.need, i.body),
                     auto_merge: false, maintenance: false, message: true,
-                }, effects, created)?;
-                self.apply(actor, &Command::TitleRequest { request_id: request_id.clone(), title: title.clone() }, effects, created)?;
+                }, effects, created, lifecycles)?;
+                self.apply(actor, &Command::TitleRequest { request_id: request_id.clone(), title: title.clone() }, effects, created, lifecycles)?;
                 self.apply(actor, &Command::CreateTask { plan_items: None,
                     task_id: new_task.clone(), request_id: request_id.clone(), title: title.clone(), agent_id: None,
                     review_prs: false, dependencies: dependencies.clone(), stack: None, launch: Some(launch.clone()),
-                }, effects, created)?;
+                }, effects, created, lifecycles)?;
             }
             SuggestionDecision::CurrentTask { note } => {
                 nonempty(note)?;
-                if self.task(task_id)?.state.terminal() {
+                if self.task(task_id)?.over() {
                     return refuse("task_not_active", "decision.kind",
                         "The task that suggested it has ended, so it cannot do it: create a new task or discard it");
                 }
@@ -739,17 +747,17 @@ impl DomainState {
         match actor {
             Actor::Agent { agent_id } => {
                 let holds = |t: &Task| t.agent_id.as_ref() == Some(agent_id);
-                let working = self.tasks.values().any(|t| holds(t) && !t.state.terminal());
+                let working = self.tasks.values().any(|t| holds(t) && !t.over());
                 let owned = match scope {
                     Scope::Task { task_id } => Some(self.task(task_id)?).filter(|t| holds(t)),
                     Scope::Orchestrator { .. } => None,
                 };
                 let winding_down_question = |t: &Task| Self::winding_down(t) && matches!(source, Source::Question | Source::Action | Source::Hold);
                 match owned {
-                    Some(t) if t.state.terminal() && !notice && !winding_down_question(t) => refuse(
+                    Some(t) if t.over() && !notice && !winding_down_question(t) => refuse(
                         "task_not_active",
                         "scope.task_id",
-                        &format!("Task {} is {}: it accepts only a closing notice. Ask the orchestrator for a new Task", t.id, if t.archived { "archived" } else if t.state == TaskState::Cancelled { "cancelled" } else { "done" }),
+                        &format!("Task {} is {}: it accepts only a closing notice. Ask the orchestrator for a new Task", t.id, if t.archived { "archived" } else if t.cancelled() { "cancelled" } else { "done" }),
                     ),
                     Some(_) => Ok(Author::Agent { agent_id: agent_id.clone() }),
                     None if !working && notice && matches!(scope, Scope::Orchestrator { .. }) => {
@@ -1020,7 +1028,7 @@ impl DomainState {
         let mut open: BTreeSet<RequestId> = BTreeSet::new();
         let mut ended: BTreeSet<RequestId> = BTreeSet::new();
         for task in self.tasks.values() {
-            if task.state.terminal() { &mut ended } else { &mut open }.insert(task.request_id.clone());
+            if task.over() { &mut ended } else { &mut open }.insert(task.request_id.clone());
         }
         for request in self.requests.values_mut().filter(|request| request.message && !request.closed) {
             if ended.contains(&request.id) && !open.contains(&request.id) {
@@ -1293,7 +1301,7 @@ impl DomainState {
     /// What a Task waits for before it starts or goes on: its dependencies done and its
     /// delivered dependencies delivered. A wait never holds back the merge of a PR the user
     /// accepted; only `stack` orders merges.
-    fn waits_are_over(&self, t: &Task) -> Result<()> {
+    pub(super) fn waits_are_over(&self, t: &Task) -> Result<()> {
         for dep in &t.dependencies {
             if self.task(dep)?.state != TaskState::Done {
                 return fail("dependency_not_done", "Objective dependency is not done");
@@ -1441,7 +1449,7 @@ impl DomainState {
     /// does with the task, which they would otherwise hold back themselves.
     /// Ends a task the user, the orchestrator or Alondra stopped: its cards leave in silence and a
     /// node it had is told to stop and is closed.
-    fn cancel(&mut self, task_id: &TaskId, effects: &mut Vec<DomainEffect>) {
+    fn cancel(&mut self, task_id: &TaskId, effects: &mut Vec<DomainEffect>, lifecycles: &mut Lifecycles) -> Result<()> {
         self.invalidate(task_id);
         let closing_cards: Vec<InteractionId> = self.interactions.values().filter(|i| {
             i.id.0.starts_with("problem-close-") && i.scope == (Scope::Task { task_id: task_id.clone() })
@@ -1455,8 +1463,17 @@ impl DomainState {
             self.retire(card);
         }
         self.retire_cards_of(task_id);
+        if self.owned(task_id) {
+            let record = LifecycleRecord::Finished {
+                intent: TaskEnding::Cancelling,
+                cleanup: self.next_operation("cleanup", task_id),
+                post_merge: None,
+            };
+            self.decide(lifecycles, task_id, record)?;
+        } else {
+            self.tasks.get_mut(task_id).unwrap().state = TaskState::Cancelled;
+        }
         let t = self.tasks.get_mut(task_id).unwrap();
-        t.state = TaskState::Cancelled;
         if let Some(agent_id) = t.agent_id.clone() {
             t.wrap_up.close_cancelled = true;
             let message = cancelled_notice(&t.title);
@@ -1467,18 +1484,19 @@ impl DomainState {
                 message,
             });
         }
+        Ok(())
     }
     /// What the user chose on a start problem card that the domain does itself: cancel the task, or
     /// let it start without the cancelled task it waited for. "Try again" is the daemon's to do.
-    fn settle_start_problem(&mut self, card: &InteractionId, option: &str, effects: &mut Vec<DomainEffect>) {
-        let Some(i) = self.interactions.get(card).filter(|i| i.id.0.starts_with(START_PROBLEM_PREFIX) && i.author == Author::System) else { return };
-        let Scope::Task { task_id } = i.scope.clone() else { return };
-        let Ok(problem) = serde_json::from_str::<StartProblem>(&i.body) else { return };
-        if self.tasks.get(&task_id).is_none_or(|t| t.state.terminal()) {
-            return;
+    fn settle_start_problem(&mut self, card: &InteractionId, option: &str, effects: &mut Vec<DomainEffect>, lifecycles: &mut Lifecycles) -> Result<()> {
+        let Some(i) = self.interactions.get(card).filter(|i| i.id.0.starts_with(START_PROBLEM_PREFIX) && i.author == Author::System) else { return Ok(()) };
+        let Scope::Task { task_id } = i.scope.clone() else { return Ok(()) };
+        let Ok(problem) = serde_json::from_str::<StartProblem>(&i.body) else { return Ok(()) };
+        if self.tasks.get(&task_id).is_none_or(Task::over) {
+            return Ok(());
         }
         match (option, problem) {
-            (START_CANCEL, _) => self.cancel(&task_id, effects),
+            (START_CANCEL, _) => self.cancel(&task_id, effects, lifecycles)?,
             (START_WITHOUT, StartProblem::DependencyCancelled { dependency }) => {
                 self.invalidate(&task_id);
                 let t = self.tasks.get_mut(&task_id).unwrap();
@@ -1490,12 +1508,13 @@ impl DomainState {
             }
             _ => {}
         }
+        Ok(())
     }
     /// A cancelled task whose node Alondra has not closed yet: its open cards were taken away when
     /// it was cancelled, so any it has now were asked after. Its node can still ask the user what
     /// to do with work it cannot leave as it is.
     pub(crate) fn winding_down(t: &Task) -> bool {
-        t.state == TaskState::Cancelled && t.wrap_up.close_cancelled && t.wrap_up.node.is_none()
+        t.cancelled() && t.wrap_up.close_cancelled && t.wrap_up.node.is_none()
     }
     fn retire_cards_of(&mut self, task_id: &TaskId) {
         let open: Vec<InteractionId> = self.interactions.values().filter(|i| self.unanswered_card(i, task_id)).map(|i| i.id.clone()).collect();
@@ -1549,9 +1568,9 @@ impl DomainState {
     /// A node that asks the user something after its final delivery takes that delivery back: it
     /// leaves the user's queue, the task is in progress again, and the node presents again once it
     /// has the answers. A delivery the user accepted or a PR already merged stays.
-    fn withdraw_deliveries_asked_after(&mut self, effects: &mut Vec<DomainEffect>) {
+    fn withdraw_deliveries_asked_after(&mut self, effects: &mut Vec<DomainEffect>, lifecycles: &mut Lifecycles) -> Result<()> {
         let asked: Vec<(TaskId, InteractionId)> = self.tasks.values()
-            .filter(|t| !t.state.terminal() && self.interactions.values().any(|i| self.asked_aside(i, &t.id)))
+            .filter(|t| !t.over() && self.interactions.values().any(|i| self.asked_aside(i, &t.id)))
             .filter_map(|t| {
                 let p = self.interactions.get(t.final_presentation.as_ref()?)?;
                 (!self.accepted(p) && !self.settled(t, p)).then(|| (t.id.clone(), p.id.clone()))
@@ -1560,22 +1579,22 @@ impl DomainState {
         for (task_id, delivery) in asked {
             self.invalidate(&task_id);
             self.retire(&delivery);
+            self.hand_back(&task_id, &delivery, lifecycles)?;
             let t = self.tasks.get_mut(&task_id).unwrap();
-            t.final_presentation = None;
             if let Some(agent_id) = t.agent_id.clone() {
-                t.started = true;
                 effects.push(DomainEffect::NotifyAgent {
                     agent_id, task_id: Some(task_id), interaction_id: None, message: delivery_withdrawn_for_questions(),
                 });
             }
         }
+        Ok(())
     }
     /// A node that pushes to its PR after its final delivery leaves that delivery behind the PR: it
     /// could no longer be merged as presented, so it leaves the user's queue and the task is in
     /// progress again until the node presents the new head. A merged PR settles the delivery instead.
-    fn withdraw_deliveries_behind_their_pr(&mut self, effects: &mut Vec<DomainEffect>) {
+    fn withdraw_deliveries_behind_their_pr(&mut self, effects: &mut Vec<DomainEffect>, lifecycles: &mut Lifecycles) -> Result<()> {
         let behind: Vec<(TaskId, InteractionId, u64)> = self.tasks.values()
-            .filter(|t| !t.state.terminal())
+            .filter(|t| !t.over())
             .filter_map(|t| {
                 let p = self.interactions.get(t.final_presentation.as_ref()?)?;
                 let InteractionPayload::Delivery { targets, .. } = &p.payload else { return None };
@@ -1593,15 +1612,35 @@ impl DomainState {
         for (task_id, delivery, number) in behind {
             self.invalidate(&task_id);
             self.retire(&delivery);
+            self.hand_back(&task_id, &delivery, lifecycles)?;
             let t = self.tasks.get_mut(&task_id).unwrap();
-            t.final_presentation = None;
             if let Some(agent_id) = t.agent_id.clone() {
-                t.started = true;
                 effects.push(DomainEffect::NotifyAgent {
                     agent_id, task_id: Some(task_id), interaction_id: None, message: delivery_withdrawn_behind_pr(number),
                 });
             }
         }
+        Ok(())
+    }
+    /// A final delivery leaves: the task is in progress again. For an owned task the lifecycle
+    /// takes the delivery back with the input the node goes on with; for one created before the
+    /// journal, the old flags.
+    fn hand_back(&mut self, task_id: &TaskId, delivery: &InteractionId, lifecycles: &mut Lifecycles) -> Result<()> {
+        if self.owned(task_id) {
+            if self.tasks[task_id].wrap_up.node.is_some() {
+                self.tasks.get_mut(task_id).unwrap().wrap_up = WrapUp::default();
+            }
+            self.node_has_run(task_id, lifecycles)?;
+            let record = LifecycleRecord::HandedBack { delivery: delivery.clone(), input: self.next_input(task_id) };
+            self.decide(lifecycles, task_id, record)?;
+        } else {
+            let t = self.tasks.get_mut(task_id).unwrap();
+            if t.agent_id.is_some() {
+                t.started = true;
+            }
+        }
+        self.tasks.get_mut(task_id).unwrap().final_presentation = None;
+        Ok(())
     }
     /// The cards of a task that ended leave the user's queue. A cancelled task takes them away in
     /// silence: the user stopped the work, so nothing it asked matters any more. A task that ended
@@ -1666,13 +1705,13 @@ impl DomainState {
     }
     /// The task waits for its node to clean up and be closed.
     pub fn in_cleanup(&self, t: &Task) -> bool {
-        !t.state.terminal() && t.wrap_up.asked_at.is_some()
+        !t.over() && t.wrap_up.asked_at.is_some()
     }
     /// Asks the node of every task whose delivery just settled to clean up, and forgets the
     /// request of one whose delivery is no longer settled.
     fn wrap_up_step(&mut self, effects: &mut Vec<DomainEffect>) {
         let revision = self.revision + 1;
-        let ids: Vec<TaskId> = self.tasks.values().filter(|t| !t.state.terminal()).map(|t| t.id.clone()).collect();
+        let ids: Vec<TaskId> = self.tasks.values().filter(|t| !t.over()).map(|t| t.id.clone()).collect();
         for id in ids {
             if self.blockers(&id) || self.unanswered(&id) {
                 continue;
@@ -1744,7 +1783,9 @@ impl DomainState {
             .values()
             .filter(|t| !t.state.terminal())
             .map(|t| {
-                let state = if self.stack_ready(t).is_err()
+                let state = if self.owned(&t.id) {
+                    self.owned_state(t)
+                } else if self.stack_ready(t).is_err()
                     || (t.final_presentation.is_none() && self.waits_are_over(t).is_err())
                 {
                     TaskState::WaitingDependency
@@ -1795,26 +1836,18 @@ impl DomainState {
     /// A reviewer whose blocked tasks are all over (cancelled, merged outside, finished) has
     /// nothing left to review: it is cancelled, its node told, and its delivery never reaches the
     /// user.
-    fn cancel_orphan_reviewers(&mut self, effects: &mut Vec<DomainEffect>) -> bool {
+    fn cancel_orphan_reviewers(&mut self, effects: &mut Vec<DomainEffect>, lifecycles: &mut Lifecycles) -> Result<bool> {
         let orphans: Vec<TaskId> = self
             .tasks
             .values()
-            .filter(|b| !b.state.terminal() && !b.blocks.is_empty() && !self.finished(b))
-            .filter(|b| !b.blocks.iter().any(|a| self.tasks.get(a).is_some_and(|a| !a.state.terminal() && !self.finished(a))))
+            .filter(|b| !b.over() && !b.blocks.is_empty() && !self.finished(b))
+            .filter(|b| !b.blocks.iter().any(|a| self.tasks.get(a).is_some_and(|a| !a.over() && !self.finished(a))))
             .map(|b| b.id.clone())
             .collect();
         for id in &orphans {
-            self.invalidate(id);
-            self.retire_cards_of(id);
-            let t = self.tasks.get_mut(id).unwrap();
-            t.state = TaskState::Cancelled;
-            if let Some(agent_id) = t.agent_id.clone() {
-                t.wrap_up.close_cancelled = true;
-                let message = cancelled_notice(&t.title);
-                effects.push(DomainEffect::NotifyAgent { agent_id, task_id: Some(id.clone()), interaction_id: None, message });
-            }
+            self.cancel(id, effects, lifecycles)?;
         }
-        !orphans.is_empty()
+        Ok(!orphans.is_empty())
     }
     /// Tasks whose revision must move: their row, their decisions and
     /// deliveries, PR, authorizations, stack readiness, reviews or linked
@@ -1855,6 +1888,11 @@ impl DomainState {
         for review in &next.document_reviews {
             if !self.document_reviews.contains(review) {
                 touched.insert(review.task_id.clone());
+            }
+        }
+        for (id, journal) in &next.lifecycle_journal {
+            if self.lifecycle_journal.get(id) != Some(journal) {
+                touched.insert(id.clone());
             }
         }
         for (id, review) in &next.plan_reviews {
@@ -1916,6 +1954,7 @@ impl DomainState {
             | Command::ConfirmCleanup { task_id }
             | Command::DeclarePostMergeWork { task_id, .. }
             | Command::RecordNodeEnd { task_id, .. }
+            | Command::RecordTaskCleanup { task_id }
             | Command::ArchiveTask { task_id, .. }
             | Command::HoldHook { task_id, .. }
             | Command::HoldQuestions { task_id, .. }
@@ -2004,11 +2043,13 @@ impl DomainState {
         let mut next = self.clone();
         let mut effects = vec![];
         let mut created = vec![];
-        next.apply(actor, &envelope.command, &mut effects, &mut created)?;
-        next.withdraw_deliveries_asked_after(&mut effects);
-        next.withdraw_deliveries_behind_their_pr(&mut effects);
+        let mut lifecycles = Lifecycles::new();
+        next.apply(actor, &envelope.command, &mut effects, &mut created, &mut lifecycles)?;
+        next.withdraw_deliveries_asked_after(&mut effects, &mut lifecycles)?;
+        next.withdraw_deliveries_behind_their_pr(&mut effects, &mut lifecycles)?;
+        next.finish_settled_deliveries(&mut lifecycles)?;
         next.derive_states();
-        if next.cancel_orphan_reviewers(&mut effects) {
+        if next.cancel_orphan_reviewers(&mut effects, &mut lifecycles)? {
             next.derive_states();
         }
         next.retire_cards_of_ended_tasks(&mut effects);
@@ -2037,6 +2078,7 @@ impl DomainState {
         }
         next.validate()?;
         next.validate_nodes()?;
+        next.validate_lifecycles(self.touched_tasks(&next).iter())?;
         let superseded_acceptances = self
             .interactions
             .values()
@@ -2058,6 +2100,7 @@ impl DomainState {
         c: &Command,
         effects: &mut Vec<DomainEffect>,
         created: &mut Vec<String>,
+        lifecycles: &mut Lifecycles,
     ) -> Result<()> {
         match c {
             Command::CreateSchedule { schedule } => {
@@ -2234,7 +2277,7 @@ impl DomainState {
                         return fail("conflict", "Scheduled Task is already assigned");
                     }
                     self.schedule.record_launch_handed(run_id, session_id.clone(), Some(agent_id.clone()), *finished_at)?;
-                    self.tasks.get_mut(&task_id).unwrap().agent_id = Some(agent_id.clone());
+                    self.admit_node(&task_id, agent_id, lifecycles)?;
                 } else {
                     self.schedule.record_launch_handed(run_id, session_id.clone(), None, *finished_at)?;
                 }
@@ -2242,7 +2285,7 @@ impl DomainState {
             Command::RaiseStartProblem { task_id, problem } => {
                 system(actor)?;
                 let task = self.task(task_id)?;
-                if task.state.terminal() {
+                if task.over() {
                     return fail("task_not_active", "A closed Task has nothing to start");
                 }
                 if self.open_start_problem(task_id).is_some() {
@@ -2281,7 +2324,7 @@ impl DomainState {
                 self.schedule
                     .record_failed(run_id, reason.clone(), *finished_at)?;
                 let open_task = self.schedule.runs[run_id].task_id.as_ref().and_then(|id| self.tasks.get(id))
-                    .filter(|task| !task.state.terminal() && !task.archived).cloned();
+                    .filter(|task| !task.over() && !task.archived).cloned();
                 if let Some(task) = open_task {
                     effects.push(DomainEffect::ScheduleLaunchFailed {
                         task_id: task.id.clone(),
@@ -2342,7 +2385,7 @@ impl DomainState {
                 if self
                     .tasks
                     .values()
-                    .any(|t| &t.request_id == request_id && !t.state.terminal())
+                    .any(|t| &t.request_id == request_id && !t.over())
                 {
                     return fail("task_not_active", "Request still has unfinished Tasks");
                 };
@@ -2386,6 +2429,12 @@ impl DomainState {
             Command::MoveNode { agent_id, event, at } => {
                 system(actor)?;
                 self.move_node(agent_id, event, *at)?;
+                if *event == NodeEvent::TurnStarted {
+                    let task = self.node_task(agent_id).filter(|t| !t.state.terminal() && t.agent_id.as_ref() == Some(agent_id)).map(|t| t.id.clone());
+                    if let Some(task) = task.filter(|task| self.owned(task)) {
+                        self.node_has_run(&task, lifecycles)?;
+                    }
+                }
             }
             Command::RecordLastWords { agent_id, text } => {
                 system(actor)?;
@@ -2478,7 +2527,7 @@ impl DomainState {
                         documents: BTreeMap::new(),
                         archived: false,
                         model: None,
-                        delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: WrapUp::default(), priority: Default::default(),
+                        delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: WrapUp::default(), priority: Default::default(), ending: None,
                     },
                 );
                 self.dependency_graph()?;
@@ -2493,10 +2542,15 @@ impl DomainState {
                     let checklist = Checklist { plan: approved.presentation_id.clone(), items: checklist_items(plan.card.plan.as_deref().unwrap_or_default()) };
                     self.checklists.insert(task_id.clone(), checklist);
                 }
+                self.plan_lifecycle(lifecycles, task_id)?;
+                if let Some(agent) = agent_id {
+                    self.decide(lifecycles, task_id, LifecycleRecord::Admitted { node: agent.clone() })?;
+                }
                 created.push(task_id.0.clone());
             }
             Command::AssignTask { task_id, agent_id, model } => {
                 self.not_held_for_plan_review(task_id)?;
+                self.not_ending(task_id)?;
                 if matches!(actor, Actor::System) {
                     let t = self.task(task_id)?;
                     if t.state != TaskState::NotStarted || t.started || t.agent_id.is_some() {
@@ -2520,7 +2574,7 @@ impl DomainState {
                     }
                     self.free(agent_id, task_id)?;
                     self.invalidate(task_id);
-                    self.tasks.get_mut(task_id).unwrap().agent_id = Some(agent_id.clone());
+                    self.admit_node(task_id, agent_id, lifecycles)?;
                 }
                 if model.is_some() {
                     self.tasks.get_mut(task_id).unwrap().model = model.clone();
@@ -2571,7 +2625,7 @@ impl DomainState {
                 }
                 for blocked in blocks {
                     let over = self.task(blocked)?;
-                    if over.state.terminal() || self.finished(over) {
+                    if over.over() || self.finished(over) {
                         return refuse(
                             "invalid_input",
                             "blocks",
@@ -2599,7 +2653,7 @@ impl DomainState {
                 self.manager(actor)?;
                 self.active(task_id)?;
                 let reviewers: Vec<TaskId> = self.tasks.values()
-                    .filter(|other| other.blocks.contains(task_id) && !other.state.terminal())
+                    .filter(|other| other.blocks.contains(task_id) && !other.over())
                     .map(|other| other.id.clone()).collect();
                 if std::iter::once(task_id).chain(&reviewers).all(|id| self.tasks[id].priority == *priority) {
                     return fail("unchanged", &format!("Task {} is already {} priority: nothing changed", task_id.0, format!("{priority:?}").to_lowercase()));
@@ -2629,7 +2683,7 @@ impl DomainState {
                     return refuse("invalid_input", "verdict", "A verdict is already recorded for this result: present your result again to change it");
                 }
                 let reviewed_at = self.interaction(presentation_id)?.order;
-                let blocked: Vec<TaskId> = t.blocks.iter().filter(|b| self.tasks.get(*b).is_some_and(|b| !b.state.terminal())).cloned().collect();
+                let blocked: Vec<TaskId> = t.blocks.iter().filter(|b| self.tasks.get(*b).is_some_and(|b| !b.over())).cloned().collect();
                 for blocked_id in &blocked {
                     let delivered = self.task(blocked_id)?.final_presentation.as_ref().and_then(|id| self.interactions.get(id));
                     if delivered.is_some_and(|delivery| delivery.order > reviewed_at) {
@@ -2694,6 +2748,7 @@ impl DomainState {
             }
             Command::StartTask { task_id } => {
                 self.task_editor(actor, task_id)?;
+                self.not_ending(task_id)?;
                 let t = self.task(task_id)?;
                 if t.agent_id.is_none() {
                     return fail("not_assigned", "Task requires an Agent");
@@ -2701,7 +2756,11 @@ impl DomainState {
                 self.not_held_for_plan_review(task_id)?;
                 let t = self.task(task_id)?;
                 self.ready_to_start(t)?;
-                self.tasks.get_mut(task_id).unwrap().started = true;
+                if self.owned(task_id) {
+                    self.node_has_run(task_id, lifecycles)?;
+                } else {
+                    self.tasks.get_mut(task_id).unwrap().started = true;
+                }
             }
             Command::PublishInformation {
                 attachments,
@@ -2965,7 +3024,7 @@ impl DomainState {
                     }
                     if let Some(task) = presented {
                         self.invalidate(&task);
-                        self.tasks.get_mut(&task).unwrap().final_presentation = None;
+                        self.hand_back(&task, interaction_id, lifecycles)?;
                     }
                 }
                 if let Some((agent_id, task_id, message)) = unanswered {
@@ -3120,10 +3179,10 @@ impl DomainState {
                     let checklist = Checklist { plan: interaction_id.clone(), items: checklist_items(&i.body) };
                     self.checklists.insert(task_id.clone(), checklist);
                 }
-                self.settle_start_problem(interaction_id, option_id, effects);
-                self.settle_plan_review_problem(interaction_id, option_id);
+                self.settle_start_problem(interaction_id, option_id, effects, lifecycles)?;
+                self.settle_plan_review_problem(interaction_id, option_id, lifecycles)?;
                 if matches!(actor, Actor::User { .. }) {
-                    self.hold_for_plan_review(interaction_id, effects);
+                    self.hold_for_plan_review(interaction_id, effects, lifecycles)?;
                 }
                 // D05: the answer reaches whoever holds the Task now, not the
                 // session that asked and may since have been replaced.
@@ -3142,10 +3201,10 @@ impl DomainState {
                 }
             }
             Command::SettleSuggestion { interaction_id, decision } => {
-                self.settle_suggestion(actor, interaction_id, decision, effects, created)?;
+                self.settle_suggestion(actor, interaction_id, decision, effects, created, lifecycles)?;
             }
             Command::SettlePlanReview { review_id, task_id, outcome } => {
-                self.settle_plan_review(actor, review_id, task_id, outcome, effects, created)?;
+                self.settle_plan_review(actor, review_id, task_id, outcome, effects, created, lifecycles)?;
             }
             Command::CreateDocument {
                 task_id,
@@ -3520,6 +3579,14 @@ impl DomainState {
                 }
                 if *is_final {
                     self.invalidate(task_id);
+                    if self.owned(task_id) {
+                        let standing = self.lifecycle(lifecycles, task_id)?.delivery().cloned();
+                        if let Some(previous) = standing.filter(|previous| previous != interaction_id) {
+                            self.hand_back(task_id, &previous, lifecycles)?;
+                        }
+                        self.node_has_run(task_id, lifecycles)?;
+                        self.decide(lifecycles, task_id, LifecycleRecord::Presented { delivery: interaction_id.clone() })?;
+                    }
                     let t = self.tasks.get_mut(task_id).unwrap();
                     t.final_presentation = Some(interaction_id.clone());
                     t.verdict = None;
@@ -3816,13 +3883,17 @@ impl DomainState {
                     );
                 };
                 self.completable(t, targets, self.accepted(p))?;
-                if !self.wraps_up(t) && !self.unanswered(task_id) {
+                if self.owned(task_id) {
+                    if !self.wraps_up(t) && !self.unanswered(task_id) {
+                        self.finish_task(task_id, lifecycles)?;
+                    }
+                } else if !self.wraps_up(t) && !self.unanswered(task_id) {
                     self.tasks.get_mut(task_id).unwrap().state = TaskState::Done;
                 }
             }
             Command::CancelTask { task_id } => {
                 self.cancel_guard(actor, task_id)?;
-                self.cancel(task_id, effects);
+                self.cancel(task_id, effects, lifecycles)?;
             }
             Command::ReopenTask { task_id } => {
                 self.reopen_guard(actor, task_id)?;
@@ -3830,15 +3901,29 @@ impl DomainState {
                 let released = task.agent_id.as_ref().is_some_and(|a| self.busy_with(a, task_id).is_some()
                     || self.agents.get(a).is_none_or(|agent| !agent.phase.live()));
                 self.invalidate(task_id);
+                let owned = self.owned(task_id);
                 let t = self.tasks.get_mut(task_id).unwrap();
                 t.archived = false;
                 let node_gone = matches!(t.wrap_up.node, Some(NodeEnd::Closed | NodeEnd::Gone));
                 t.wrap_up = WrapUp::default();
-                if released || node_gone {
-                    t.agent_id = None;
+                if owned {
+                    let kept = self.tasks[task_id].agent_id.clone().filter(|_| !released && !node_gone);
+                    let record = LifecycleRecord::Reopened { input: self.next_input(task_id) };
+                    self.decide(lifecycles, task_id, record)?;
+                    self.tasks.get_mut(task_id).unwrap().final_presentation = None;
+                    if let Some(node) = kept {
+                        self.decide(lifecycles, task_id, LifecycleRecord::Admitted { node })?;
+                        self.decide(lifecycles, task_id, LifecycleRecord::ResourceAvailable)?;
+                    } else {
+                        self.tasks.get_mut(task_id).unwrap().agent_id = None;
+                    }
+                } else {
+                    if released || node_gone {
+                        t.agent_id = None;
+                    }
+                    t.started = t.agent_id.is_some();
+                    t.state = if t.started { TaskState::Running } else { TaskState::NotStarted };
                 }
-                t.started = t.agent_id.is_some();
-                t.state = if t.started { TaskState::Running } else { TaskState::NotStarted };
             }
             Command::ConfirmCleanup { task_id } => {
                 let t = self.assigned(actor, task_id)?;
@@ -3850,13 +3935,18 @@ impl DomainState {
                 let wrap_up = &mut self.tasks.get_mut(task_id).unwrap().wrap_up;
                 wrap_up.cleaned_at = Some(revision);
                 wrap_up.post_merge_work = None;
+                self.drain(task_id, lifecycles, |owed| matches!(owed, Drained::Cleanup { .. } | Drained::PostMerge { .. }))?;
             }
             Command::DeclarePostMergeWork { task_id, reason } => {
                 self.assigned(actor, task_id)?;
                 let declared_at = self.revision + 1;
                 let work = reason.as_deref().map(str::trim).filter(|reason| !reason.is_empty())
                     .map(|reason| PostMergeWork { reason: clip(reason, POST_MERGE_WORK_MAX), declared_at });
+                let over = work.is_none();
                 self.tasks.get_mut(task_id).unwrap().wrap_up.post_merge_work = work;
+                if over {
+                    self.drain(task_id, lifecycles, |owed| matches!(owed, Drained::PostMerge { .. }))?;
+                }
             }
             Command::RecordNodeEnd { task_id, end, agent_id } => {
                 system(actor)?;
@@ -3869,13 +3959,14 @@ impl DomainState {
                     Some(_) => return fail("conflict", "node end already recorded"),
                     None => {}
                 }
+                if t.ending() && t.agent_id.is_none() {
+                    return fail("not_closing", &format!("Task {} has no node: its cleanup is the receipt", task_id.0));
+                }
                 let closing = self.in_cleanup(t) && self.wraps_up(t);
-                if !closing && !t.state.terminal() {
+                if !closing && !t.state.terminal() && !t.ending() {
                     if matches!(end, NodeEnd::Closed | NodeEnd::Gone) && t.agent_id.is_some() {
-                        let t = self.tasks.get_mut(task_id).unwrap();
-                        t.agent_id = None;
-                        t.started = false;
-                        t.wrap_up = WrapUp::default();
+                        self.release(task_id, lifecycles)?;
+                        self.tasks.get_mut(task_id).unwrap().wrap_up = WrapUp::default();
                         return Ok(());
                     }
                     return fail("not_closing", &format!("Task {} is not closing", task_id.0));
@@ -3883,11 +3974,19 @@ impl DomainState {
                 let wrap_up = &mut self.tasks.get_mut(task_id).unwrap().wrap_up;
                 wrap_up.node = Some(*end);
                 wrap_up.post_merge_work = None;
+                if self.tasks[task_id].ending() {
+                    self.drain(task_id, lifecycles, |_| true)?;
+                } else if self.owned(task_id) && self.lifecycle(lifecycles, task_id)?.execution().is_some() {
+                    self.release(task_id, lifecycles)?;
+                }
             }
             Command::ReleaseTask { task_id, reason } => {
                 system(actor)?;
                 nonempty(reason)?;
                 let task = self.active(task_id)?;
+                if task.ending() {
+                    return fail("task_not_active", "Task is ending: its node is drained by its receipts");
+                }
                 if task.agent_id.is_none() && task.started {
                     self.tasks.get_mut(task_id).unwrap().started = false;
                     return Ok(());
@@ -3895,9 +3994,18 @@ impl DomainState {
                 if task.agent_id.is_none() || task.final_presentation.is_some() {
                     return fail("conflict", "Task has no working Agent to release");
                 }
-                let t = self.tasks.get_mut(task_id).unwrap();
-                t.agent_id = None;
-                t.started = false;
+                self.release(task_id, lifecycles)?;
+            }
+            Command::RecordTaskCleanup { task_id } => {
+                system(actor)?;
+                let t = self.task(task_id)?;
+                if !t.ending() {
+                    return fail("not_closing", &format!("Task {} is not ending", task_id.0));
+                }
+                if self.wraps_up(t) {
+                    return fail("conflict", "The task still has its node: its end is the receipt");
+                }
+                self.drain(task_id, lifecycles, |_| true)?;
             }
             Command::ArchiveTask { task_id, archived } => {
                 self.archive_guard(actor, task_id, *archived)?;
