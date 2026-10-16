@@ -1,0 +1,7 @@
+
+# A test runner's `pre_action`: the target's `TEST_HOST_BUNDLE_ID` env names the host to remove.
+sh_binary(
+    name = "uninstall_test_host",
+    srcs = ["uninstall_test_host.sh"],
+    visibility = ["//apple/Testing:__subpackages__"],
+)

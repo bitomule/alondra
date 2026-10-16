@@ -23,6 +23,7 @@ simpool_ios_test_runner(
     create_xcresult_bundle = True,
     device_type = "iPhone 17 Pro",
     os_version = "26.3",
+    pre_action = "//apple/Testing/Simulator:uninstall_test_host",
     xcodebuild_args = [
         "-collect-test-diagnostics",
         "never",
@@ -82,12 +83,14 @@ ios_unit_test(
     bundle_id = "com.bitomule.alondra.snapshottests",
     data = glob(["Tests/__Snapshots__/**"], allow_empty = True) + [
         "Fixtures/pairing-native-label.png",
+        "//apple:iOS/Resources/Localizable.xcstrings",
         "//apple/Testing/Samples:all",
         "//fixtures/views:all",
         "//fixtures/views:cards",
     ],
     env = {
         "KEEP_XCRESULT_ON_SUCCESS": "0",
+        "TEST_HOST_BUNDLE_ID": "com.bitomule.alondra.snapshottesthost",
         "SNAPSHOT_ROOT": "apple/Testing/Snapshots/Tests/__Snapshots__",
     },
     minimum_os_version = "26.0",
