@@ -4,7 +4,7 @@
   "view": "home",
   "key": "home",
   "client": "ios",
-  "version": "v61462a462eb53ddd",
+  "version": "v04244133f89724ca",
   "cursor": "cursor-1",
   "status": {
     "version": "ve1fd29addaecad00",
@@ -78,6 +78,703 @@
         "read",
         "read",
         "read"
+      ]
+    }
+  ],
+  "first_cards": [
+    {
+      "protocol": 1,
+      "data_epoch": "test-epoch",
+      "view": "card",
+      "key": "card:a98d034b-249e-4487-a89b-57de38c26372",
+      "client": "ios",
+      "version": "v79924e14e3f24075",
+      "cursor": "cursor-1",
+      "title": "Choose the welcome copy",
+      "status": {
+        "version": "ve1fd29addaecad00",
+        "summary": "2 preguntas · 3 por leer · 0 nodos trabajando",
+        "badge": 5,
+        "counts": [
+          {
+            "id": "inbox",
+            "label": "Bandeja",
+            "value": 5
+          },
+          {
+            "id": "tasks",
+            "label": "Tareas",
+            "value": 1
+          },
+          {
+            "id": "agents",
+            "label": "Flota",
+            "value": 0
+          },
+          {
+            "id": "working",
+            "label": "trabajando",
+            "value": 0
+          },
+          {
+            "id": "waiting",
+            "label": "esperando",
+            "value": 1
+          }
+        ],
+        "gauges": [
+          {
+            "id": "memory",
+            "label": "Memory",
+            "value": 0.38,
+            "text": "6.1 GB of 16 GB",
+            "level": "calm"
+          },
+          {
+            "id": "disk",
+            "label": "Disk available",
+            "value": 0.72,
+            "text": "120 GB",
+            "level": "calm"
+          }
+        ],
+        "orchestrator": {
+          "text": "inactivo",
+          "tone": "neutral"
+        }
+      },
+      "sections": [
+        {
+          "id": "card",
+          "collapsed": false,
+          "items": [
+            {
+              "type": "card",
+              "id": "a98d034b-249e-4487-a89b-57de38c26372",
+              "kind": "decide",
+              "need": "Choose the welcome copy",
+              "why": "The new empty state is ready; the beta ships with the copy you pick.",
+              "meta": "Alondra · iOS · Demo Garden",
+              "content_row": {
+                "kind": "options",
+                "icon": "notice",
+                "label": "Por qué cada opción",
+                "summary": "2 opciones"
+              },
+              "reply": {
+                "id": "reply:a98d034b-249e-4487-a89b-57de38c26372@1",
+                "label": "Responder",
+                "style": "secondary",
+                "role": "neutral",
+                "presentation": "button",
+                "input": {
+                  "kind": "text",
+                  "placeholder": "Responder a Alondra · iOS…",
+                  "required": true,
+                  "multiline": true
+                },
+                "attachments": true,
+                "enabled": true,
+                "stamp": "Respondiste",
+                "resolves_card": true
+              },
+              "more": [
+                {
+                  "id": "clarify:a98d034b-249e-4487-a89b-57de38c26372@1",
+                  "label": "Pedir aclaración",
+                  "style": "secondary",
+                  "role": "neutral",
+                  "presentation": "options",
+                  "options": [
+                    {
+                      "id": "unclear",
+                      "label": "No se entiende",
+                      "style": "secondary",
+                      "input": {
+                        "kind": "none"
+                      }
+                    },
+                    {
+                      "id": "contradicts",
+                      "label": "Se contradice",
+                      "style": "secondary",
+                      "input": {
+                        "kind": "none"
+                      }
+                    },
+                    {
+                      "id": "missing_context",
+                      "label": "Le falta contexto",
+                      "style": "secondary",
+                      "input": {
+                        "kind": "none"
+                      }
+                    }
+                  ],
+                  "input": {
+                    "kind": "text",
+                    "placeholder": "¿Qué debe aclarar?",
+                    "required": false,
+                    "multiline": true
+                  },
+                  "attachments": false,
+                  "enabled": true,
+                  "stamp": "Aclaración solicitada",
+                  "resolves_card": false
+                }
+              ],
+              "link": {
+                "kind": "view",
+                "key": "card:a98d034b-249e-4487-a89b-57de38c26372"
+              },
+              "icon": "question",
+              "eyebrow": {
+                "text": "Decidir",
+                "tone": "accent"
+              },
+              "title": "Choose the welcome copy",
+              "subtitle": "The new empty state is ready; the beta ships with the copy you pick.",
+              "context": [
+                {
+                  "icon": "node",
+                  "text": "Alondra · iOS",
+                  "link": {
+                    "kind": "view",
+                    "key": "node:d887a34b-249e-4487-a89b-57de38c26372"
+                  },
+                  "chip": {
+                    "text": "Demo Garden",
+                    "tone": "neutral"
+                  },
+                  "state": {
+                    "text": "Esperando respuesta",
+                    "tone": "warning"
+                  }
+                }
+              ],
+              "state": {
+                "text": "Bloquea a Alondra · iOS",
+                "tone": "warning"
+              },
+              "detail": "included",
+              "actions": [
+                {
+                  "id": "ans:a98d034b-249e-4487-a89b-57de38c26372@1",
+                  "label": "★ Ship the concise copy",
+                  "style": "primary",
+                  "role": "advance",
+                  "option_id": "clear",
+                  "presentation": "button",
+                  "input": {
+                    "kind": "none"
+                  },
+                  "attachments": false,
+                  "enabled": true,
+                  "stamp": "Respondida",
+                  "resolves_card": true
+                },
+                {
+                  "id": "ans:a98d034b-249e-4487-a89b-57de38c26372@1",
+                  "label": "Keep the warmer copy",
+                  "style": "secondary",
+                  "role": "neutral",
+                  "option_id": "warm",
+                  "presentation": "button",
+                  "input": {
+                    "kind": "none"
+                  },
+                  "attachments": false,
+                  "enabled": true,
+                  "stamp": "Respondida",
+                  "resolves_card": true
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "content",
+          "title": "Contenido",
+          "collapsed": false,
+          "items": [
+            {
+              "type": "markdown",
+              "text": "Concise: a short title and one explanatory sentence.\nWarm: the more conversational explanation.",
+              "truncated": false,
+              "commentable": false
+            }
+          ]
+        },
+        {
+          "id": "context",
+          "title": "Contexto",
+          "collapsed": false,
+          "items": [
+            {
+              "type": "facts",
+              "items": [
+                {
+                  "label": "Tarea",
+                  "value": "Restore the native review experience · Alondra · iOS",
+                  "link": {
+                    "kind": "view",
+                    "key": "task:t-651c38484cd2f34e74d5107ba05f7f15"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "protocol": 1,
+      "data_epoch": "test-epoch",
+      "view": "card",
+      "key": "card:8fa4034b-249e-4487-a89b-57de38c26372",
+      "client": "ios",
+      "version": "v5dfd814ca097fb24",
+      "cursor": "cursor-1",
+      "title": "Ship the compact schedule editor with this beta?",
+      "status": {
+        "version": "ve1fd29addaecad00",
+        "summary": "2 preguntas · 3 por leer · 0 nodos trabajando",
+        "badge": 5,
+        "counts": [
+          {
+            "id": "inbox",
+            "label": "Bandeja",
+            "value": 5
+          },
+          {
+            "id": "tasks",
+            "label": "Tareas",
+            "value": 1
+          },
+          {
+            "id": "agents",
+            "label": "Flota",
+            "value": 0
+          },
+          {
+            "id": "working",
+            "label": "trabajando",
+            "value": 0
+          },
+          {
+            "id": "waiting",
+            "label": "esperando",
+            "value": 1
+          }
+        ],
+        "gauges": [
+          {
+            "id": "memory",
+            "label": "Memory",
+            "value": 0.38,
+            "text": "6.1 GB of 16 GB",
+            "level": "calm"
+          },
+          {
+            "id": "disk",
+            "label": "Disk available",
+            "value": 0.72,
+            "text": "120 GB",
+            "level": "calm"
+          }
+        ],
+        "orchestrator": {
+          "text": "inactivo",
+          "tone": "neutral"
+        }
+      },
+      "sections": [
+        {
+          "id": "card",
+          "collapsed": false,
+          "items": [
+            {
+              "type": "card",
+              "id": "8fa4034b-249e-4487-a89b-57de38c26372",
+              "kind": "decide",
+              "need": "Ship the compact schedule editor with this beta?",
+              "why": "The review of the pull request waits for your answer.",
+              "meta": "Alondra",
+              "reply": {
+                "id": "reply:8fa4034b-249e-4487-a89b-57de38c26372@1",
+                "label": "Responder",
+                "style": "secondary",
+                "role": "neutral",
+                "presentation": "button",
+                "input": {
+                  "kind": "text",
+                  "placeholder": "Responder a este nodo…",
+                  "required": true,
+                  "multiline": true
+                },
+                "attachments": true,
+                "enabled": true,
+                "stamp": "Respondiste",
+                "resolves_card": true
+              },
+              "link": {
+                "kind": "view",
+                "key": "card:8fa4034b-249e-4487-a89b-57de38c26372"
+              },
+              "icon": "question",
+              "eyebrow": {
+                "text": "Decidir",
+                "tone": "accent"
+              },
+              "title": "Ship the compact schedule editor with this beta?",
+              "subtitle": "The review of the pull request waits for your answer.",
+              "state": {
+                "text": "Bloquea a este nodo",
+                "tone": "warning"
+              },
+              "detail": "included",
+              "actions": [
+                {
+                  "id": "ans:8fa4034b-249e-4487-a89b-57de38c26372@1",
+                  "label": "Ship it",
+                  "style": "secondary",
+                  "role": "neutral",
+                  "option_id": "ship",
+                  "presentation": "button",
+                  "input": {
+                    "kind": "none"
+                  },
+                  "attachments": false,
+                  "enabled": true,
+                  "stamp": "Respondida",
+                  "resolves_card": true
+                },
+                {
+                  "id": "ans:8fa4034b-249e-4487-a89b-57de38c26372@1",
+                  "label": "Hold it back",
+                  "style": "secondary",
+                  "role": "neutral",
+                  "option_id": "hold",
+                  "presentation": "button",
+                  "input": {
+                    "kind": "none"
+                  },
+                  "attachments": false,
+                  "enabled": true,
+                  "stamp": "Respondida",
+                  "resolves_card": true
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "context",
+          "title": "Contexto",
+          "collapsed": false,
+          "items": [
+            {
+              "type": "facts",
+              "items": [
+                {
+                  "label": "Tarea",
+                  "value": "Restore the native review experience",
+                  "link": {
+                    "kind": "view",
+                    "key": "task:t-651c38484cd2f34e74d5107ba05f7f15"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "protocol": 1,
+      "data_epoch": "test-epoch",
+      "view": "card",
+      "key": "card:hf-weekly-2026-09-30",
+      "client": "ios",
+      "version": "vf9c099a12eabc702",
+      "cursor": "cursor-1",
+      "title": "Add the compact schedule editor",
+      "status": {
+        "version": "ve1fd29addaecad00",
+        "summary": "2 preguntas · 3 por leer · 0 nodos trabajando",
+        "badge": 5,
+        "counts": [
+          {
+            "id": "inbox",
+            "label": "Bandeja",
+            "value": 5
+          },
+          {
+            "id": "tasks",
+            "label": "Tareas",
+            "value": 1
+          },
+          {
+            "id": "agents",
+            "label": "Flota",
+            "value": 0
+          },
+          {
+            "id": "working",
+            "label": "trabajando",
+            "value": 0
+          },
+          {
+            "id": "waiting",
+            "label": "esperando",
+            "value": 1
+          }
+        ],
+        "gauges": [
+          {
+            "id": "memory",
+            "label": "Memory",
+            "value": 0.38,
+            "text": "6.1 GB of 16 GB",
+            "level": "calm"
+          },
+          {
+            "id": "disk",
+            "label": "Disk available",
+            "value": 0.72,
+            "text": "120 GB",
+            "level": "calm"
+          }
+        ],
+        "orchestrator": {
+          "text": "inactivo",
+          "tone": "neutral"
+        }
+      },
+      "sections": [
+        {
+          "id": "card",
+          "collapsed": false,
+          "items": [
+            {
+              "type": "card",
+              "id": "hf-weekly-2026-09-30",
+              "kind": "review",
+              "need": "Review the beta candidate",
+              "why": "All required checks passed and the branch is up to date with main.",
+              "meta": "example/repo · feature/compact-schedule-editor → main · 4 archivos · +120 −30 · Comprobaciones superadas",
+              "content_row": {
+                "kind": "diff",
+                "icon": "pull_request",
+                "label": "Cambios",
+                "summary": "4 archivos · +120 −30"
+              },
+              "reply": {
+                "id": "reply:hf-weekly-2026-09-30@1",
+                "label": "Responder",
+                "style": "secondary",
+                "role": "neutral",
+                "presentation": "button",
+                "input": {
+                  "kind": "text",
+                  "placeholder": "Responder a este nodo…",
+                  "required": true,
+                  "multiline": true
+                },
+                "attachments": true,
+                "enabled": true,
+                "stamp": "Enviado",
+                "resolves_card": false
+              },
+              "more": [
+                {
+                  "id": "close_unmerged:hf-weekly-2026-09-30@1",
+                  "label": "Cerrar sin fusionar",
+                  "style": "destructive",
+                  "role": "risk",
+                  "presentation": "button",
+                  "input": {
+                    "kind": "none"
+                  },
+                  "attachments": false,
+                  "confirm": {
+                    "title": "¿Cerrar la PR #12 sin fusionar?",
+                    "message": "Alondra cierra la PR en GitHub y cancela esta tarea. No se fusiona nada.",
+                    "button": "Cerrar la PR"
+                  },
+                  "enabled": true,
+                  "stamp": "Cerrando…",
+                  "resolves_card": true
+                },
+                {
+                  "id": "",
+                  "label": "Abrir en GitHub",
+                  "style": "plain",
+                  "role": "neutral",
+                  "presentation": "button",
+                  "input": {
+                    "kind": "none"
+                  },
+                  "attachments": false,
+                  "enabled": true,
+                  "link": {
+                    "kind": "url",
+                    "url": "https://github.com/example/repo/pull/12"
+                  },
+                  "resolves_card": false
+                }
+              ],
+              "link": {
+                "kind": "view",
+                "key": "card:hf-weekly-2026-09-30"
+              },
+              "icon": "pull_request",
+              "eyebrow": {
+                "text": "Revisar · PR #12",
+                "tone": "accent"
+              },
+              "title": "Add the compact schedule editor",
+              "subtitle": "All required checks passed and the branch is up to date with main.",
+              "state": {
+                "text": "+120 −30 · ✓",
+                "tone": "success"
+              },
+              "detail": "included",
+              "actions": [
+                {
+                  "id": "merge:hf-weekly-2026-09-30@1~abcdef12-hf-weekly-2026-09-30",
+                  "label": "Fusionar",
+                  "style": "primary",
+                  "role": "advance",
+                  "presentation": "menu",
+                  "options": [
+                    {
+                      "id": "squash",
+                      "label": "Fusionar con squash",
+                      "description": "Un solo commit en main",
+                      "style": "secondary",
+                      "input": {
+                        "kind": "none"
+                      }
+                    },
+                    {
+                      "id": "merge",
+                      "label": "Commit de fusión",
+                      "description": "Conserva todos los commits",
+                      "style": "secondary",
+                      "input": {
+                        "kind": "none"
+                      }
+                    }
+                  ],
+                  "input": {
+                    "kind": "none"
+                  },
+                  "attachments": false,
+                  "enabled": true,
+                  "stamp": "Fusionando…",
+                  "resolves_card": true
+                },
+                {
+                  "id": "changes:github.com/example/repo#12@6~abcdef12",
+                  "label": "Pedir cambios",
+                  "style": "secondary",
+                  "role": "neutral",
+                  "presentation": "button",
+                  "input": {
+                    "kind": "text",
+                    "placeholder": "Describe los cambios",
+                    "required": true,
+                    "multiline": true
+                  },
+                  "attachments": true,
+                  "comments": {
+                    "kind": "diff_lines"
+                  },
+                  "enabled": true,
+                  "stamp": "Cambios solicitados",
+                  "link": {
+                    "kind": "view",
+                    "key": "pull_request:github.com/example/repo#12"
+                  },
+                  "resolves_card": true
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "checks",
+          "collapsed": false,
+          "items": [
+            {
+              "type": "checks",
+              "items": [
+                {
+                  "name": "Build",
+                  "state": "pass"
+                },
+                {
+                  "name": "Unit tests",
+                  "state": "pass"
+                },
+                {
+                  "name": "Lint",
+                  "state": "pending"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "diff",
+          "title": "Diferencias",
+          "collapsed": false,
+          "items": [
+            {
+              "type": "content_ref",
+              "kind": "diff",
+              "title": "Diferencias",
+              "size": 0,
+              "digest": "abcdef12",
+              "fetch": "/pull-requests/github.com%2Fexample%2Frepo%2312/diff",
+              "commentable": true
+            }
+          ]
+        },
+        {
+          "id": "description",
+          "title": "Descripción",
+          "collapsed": false,
+          "items": [
+            {
+              "type": "markdown",
+              "text": "Replaces the long schedule form with a compact editor.\n\n- Repeat and time on one row\n- Launch options in a sheet",
+              "truncated": false,
+              "commentable": false
+            }
+          ]
+        },
+        {
+          "id": "context",
+          "title": "Contexto",
+          "collapsed": false,
+          "items": [
+            {
+              "type": "facts",
+              "items": [
+                {
+                  "label": "Tarea",
+                  "value": "Restore the native review experience",
+                  "link": {
+                    "kind": "view",
+                    "key": "task:t-651c38484cd2f34e74d5107ba05f7f15"
+                  }
+                }
+              ]
+            }
+          ]
+        }
       ]
     }
   ]

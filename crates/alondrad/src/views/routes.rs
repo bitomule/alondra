@@ -178,9 +178,8 @@ pub(super) async fn respond(
         return unchanged(&view.cursor, &view.data_epoch, service);
     }
     view.service = Some(service);
-    let bytes = match serde_json::to_vec(&view) {
-        Ok(bytes) => bytes,
-        Err(_) => return error_lang(language, "storage_unavailable", "view serialization failed"),
+    let Ok(bytes) = within_budget(&mut view, super::VIEW_BUDGET_BYTES) else {
+        return error_lang(language, "storage_unavailable", "view serialization failed");
     };
     if bytes.len() > super::VIEW_BUDGET_BYTES {
         return error_lang(
@@ -195,6 +194,17 @@ pub(super) async fn respond(
         bytes,
     )
         .into_response()
+}
+
+/// The view's bytes, leaving out the cards it carries from the last while it does not fit: the
+/// app asks for those on its own.
+fn within_budget(view: &mut alondra_core::views::View, budget: usize) -> serde_json::Result<Vec<u8>> {
+    loop {
+        let bytes = serde_json::to_vec(view)?;
+        if bytes.len() <= budget || view.first_cards.pop().is_none() {
+            return Ok(bytes);
+        }
+    }
 }
 
 fn unchanged(cursor: &str, data_epoch: &str, service: alondra_core::views::Service) -> Response {
@@ -485,6 +495,30 @@ fn error_lang(lang: Lang, code: &str, message: &'static str) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_view_over_budget_leaves_out_its_last_cards_first() {
+        let golden: alondra_core::views::View =
+            serde_json::from_str(include_str!("../../../../fixtures/views/cards/home-ios.json")).unwrap();
+        assert_eq!(golden.first_cards.len(), 3);
+        let size = |cards: usize| {
+            let mut view = golden.clone();
+            view.first_cards.truncate(cards);
+            serde_json::to_vec(&view).unwrap().len()
+        };
+        let mut view = golden.clone();
+        assert_eq!(within_budget(&mut view, size(3)).unwrap().len(), size(3));
+        assert_eq!(view.first_cards.len(), 3, "a view that fits keeps every card");
+        let mut view = golden.clone();
+        let bytes = within_budget(&mut view, size(3) - 1).unwrap();
+        assert_eq!((view.first_cards.len(), bytes.len()), (2, size(2)));
+        assert_eq!(view.first_cards.iter().map(|card| &card.key).collect::<Vec<_>>(),
+            golden.first_cards[..2].iter().map(|card| &card.key).collect::<Vec<_>>(), "the front cards stay");
+        let mut view = golden.clone();
+        let bytes = within_budget(&mut view, size(0) - 1).unwrap();
+        assert!(view.first_cards.is_empty());
+        assert_eq!(bytes.len(), size(0), "what does not fit even without cards is the caller's to refuse");
+    }
 
     fn fixture() -> (crate::test_support::Directory, Arc<DomainDaemon>) {
         let home = crate::test_support::Directory::new();

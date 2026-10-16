@@ -362,3 +362,53 @@ fn every_view_renders_a_real_size_domain_cold_within_the_budget() {
     }
     assert!(over.is_empty(), "views over {BUDGET_MS} ms: {over:#?}");
 }
+
+/// What each app waits for before it can draw its first card, right after a commit: the iPhone's
+/// `home` and the Mac's `sidebar`, then the first card they list unless it came inside them.
+#[test]
+fn the_first_card_comes_with_the_first_answer() {
+    let mut state = real_size();
+    let envelope = CommandEnvelope {
+        protocol_version: PROTOCOL_VERSION,
+        data_epoch: state.data_epoch.clone(),
+        command_id: "first-card-commit".into(),
+        expected_revision: state.revision,
+        command: Command::RegisterAgent { agent_id: "first-card-agent".into(), name: "First card".into(), at: 2 },
+    };
+    state.execute(&Actor::System, &envelope).expect("one more commit");
+    let committed = ReadSnapshot::build(Arc::new(state));
+    let (state, index) = (committed.state(), committed.index());
+    let live = live(state);
+    let render = |key: &str, client: Client| {
+        let mut samples: Vec<(f64, usize, serde_json::Value)> = (0..SAMPLES).map(|_| {
+            let start = Instant::now();
+            let view = build(key, RenderContext {
+                domain: state, index, live: &live, client, lang: Lang::Es, transport: Transport::Loopback,
+                cursor: "budget", rendered_at: "",
+            }).unwrap_or_else(|error| panic!("{key} ({client:?}) does not render: {error:?}"));
+            let bytes = serde_json::to_vec(&view).unwrap();
+            (start.elapsed().as_secs_f64() * 1000.0, bytes.len(), serde_json::from_slice(&bytes).unwrap())
+        }).collect();
+        samples.sort_by(|a, b| a.0.total_cmp(&b.0));
+        samples.swap_remove(SAMPLES / 2)
+    };
+    for (root, client) in [("home", Client::Ios), ("sidebar", Client::Mac)] {
+        let (root_ms, root_bytes, view) = render(root, client);
+        let first = match client {
+            Client::Ios => view["sections"][0]["card_ids"][0].as_str().map(str::to_owned),
+            _ => view["sections"][0]["items"][0]["link"]["key"].as_str().map(str::to_owned),
+        }
+        .map(|id| if id.starts_with("card:") { id } else { format!("card:{id}") })
+        .expect("cards wait for the user");
+        let embedded: Vec<&str> = view["first_cards"].as_array().into_iter().flatten()
+            .filter_map(|card| card["key"].as_str()).collect();
+        let (card_ms, card_bytes, _) = render(&first, client);
+        let trips = if embedded.first() == Some(&first.as_str()) { 1 } else { 2 };
+        println!("{}", serde_json::json!({"app": format!("{client:?}"), "root": root, "root_ms": root_ms,
+            "root_bytes": root_bytes, "embedded": embedded.len(), "first_card": first, "card_ms": card_ms,
+            "card_bytes": card_bytes, "trips_to_first_card": trips,
+            "daemon_ms_to_first_card": if trips == 1 { root_ms } else { root_ms + card_ms }}));
+        assert_eq!(trips, 1, "{root} ({client:?}) brings its first card: {embedded:?}");
+        assert_eq!(embedded.len(), 3, "{root} ({client:?}) brings the front card and the two behind it");
+    }
+}

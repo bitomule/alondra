@@ -83,6 +83,16 @@ final class TriageSnapshotTests: XCTestCase {
         assertVariants(language: .spanish) { Harness(store: store) }
     }
 
+    /// The daemon's own Spanish home, its front cards drawn from the cards it carries: nothing
+    /// else was asked of the Mac.
+    func test_theFrontCardsComeWithTheQueue_es() throws {
+        let home = try Fixtures.document("home-ios-es")
+        let queue = home.sections.first?.cardIds ?? []
+        XCTAssertEqual(home.firstCards.map(\.key), queue.prefix(3).map { "card:\($0)" })
+        let store = try ScreenStores.triage(queue: queue, cards: try home.firstCards.map(Fixtures.spanish), home: home)
+        assertScreen([.light], language: .spanish, inWindow: true) { Harness(store: store) }
+    }
+
     func test_offlineWithTheSavedQueue() throws {
         let store = try single(try Fixtures.card(Fixtures.questionID)) {
             $0.screen.phase = .failed("offline")

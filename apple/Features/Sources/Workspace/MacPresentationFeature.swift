@@ -343,7 +343,7 @@ public struct MacPresentationFeature: Sendable {
                 state.detailDocument = nil
                 state.openSections = []
                 state.sectionPages = [:]
-                return loadAndOpenView(key, visibleKeys: visibleViewKeys(state))
+                return loadAndOpenView(key, visibleKeys: visibleViewKeys(state), carried: Self.carried(key, in: state.sidebarDocument))
             case .sectionToggled(let section):
                 guard state.openSections.insert(section.id).inserted else {
                     state.openSections.remove(section.id)
@@ -410,12 +410,14 @@ public struct MacPresentationFeature: Sendable {
                             state.selection = next.map(Selection.viewKey)
                             state.selectedViewKey = next
                             state.detailDocument = nil
-                            if let next { return loadAndOpenView(next, visibleKeys: visibleViewKeys(state)) }
+                            if let next {
+                                return loadAndOpenView(next, visibleKeys: visibleViewKeys(state), carried: Self.carried(next, in: document))
+                            }
                             return openVisibleViews(&state)
                         } else if state.selection == nil, let first = links.first {
                             state.selection = .viewKey(first)
                             state.selectedViewKey = first
-                            return loadAndOpenView(first, visibleKeys: visibleViewKeys(state))
+                            return loadAndOpenView(first, visibleKeys: visibleViewKeys(state), carried: Self.carried(first, in: document))
                         }
                     }
                     if key == state.selectedViewKey, let why = document.settledNotice {
@@ -607,8 +609,17 @@ public struct MacPresentationFeature: Sendable {
         }.cancellable(id: CancelID.picker, cancelInFlight: true)
     }
 
-    private func loadAndOpenView(_ key: String, visibleKeys: Set<ViewKey>) -> Effect<Action> {
-        .run { [viewsClient] send in
+    /// The card the sidebar brought inside it, so selecting it draws it without asking the Mac again.
+    static func carried(_ key: String, in sidebar: ViewDocument?) -> ViewDocument? {
+        sidebar?.firstCards.first { $0.key == key && $0.dataEpoch == sidebar?.dataEpoch }
+    }
+
+    private func loadAndOpenView(_ key: String, visibleKeys: Set<ViewKey>, carried: ViewDocument? = nil) -> Effect<Action> {
+        if let carried {
+            return .merge(.send(.viewLoaded(key, .document(carried))),
+                          .run { [viewsClient] _ in await viewsClient.openScreen("mac-presentation", visibleKeys) })
+        }
+        return .run { [viewsClient] send in
             do {
                 let result = try await viewsClient.load(ViewKey(rawValue: key), nil)
                 await viewsClient.openScreen("mac-presentation", visibleKeys)

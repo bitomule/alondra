@@ -2541,6 +2541,8 @@ fn mac_views_match_goldens() {
         let actual = render(&state, &live, Client::Mac, Lang::En, key, "2026-09-30T10:00:00Z");
         assert_golden(filename, &actual, expected);
     }
+    let spanish = render(&state, &live, Client::Mac, Lang::Es, "sidebar", "2026-09-30T10:00:00Z");
+    assert_golden("sidebar-mac-es.json", &spanish, include_str!("../../../../fixtures/views/cards/sidebar-mac-es.json"));
 }
 
 /// The golden fixture with the node of its task stopped after writing to the user in its
@@ -3759,7 +3761,7 @@ fn every_builder_string_has_spanish() {
     const NAMES_AND_DATA: &[&str] = &[
         "Alondra", "Alondra · iOS", "Alondra · iOS · Demo Garden", "Demo Garden", "PRs", "squash", "rebase", "Polish the Alondra beta", "Restore the native review experience", "PR #12", "1 · PR #12", "example/repo #12", "Base",
         "Memory", "Disk available", "6.1 GB of 16 GB", "120 GB", "Waiting for you",
-        "Keep the warmer copy", "Ship the concise copy", "Normal",
+        "Keep the warmer copy", "Ship the concise copy", "Ship it", "Hold it back", "Normal",
         "A decision on the welcome copy", "Reviewing the native beta experience",
         "The simulator pass completed successfully.", "Started", "Waiting for a decision",
         "Reading the localization catalog",
@@ -6636,4 +6638,89 @@ fn a_result_that_proposes_a_plan_shows_it_and_offers_to_build_it_or_only_archive
     let text = serde_json::to_string(&view).unwrap();
     assert!(text.contains("## Plan propuesto") && text.contains("Show indexing progress on the home screen"), "{text}");
     assert!(text.contains("Guardado en `/Users/me/.alondra/files/results/t-1/result-1.md`"), "{text}");
+}
+
+fn first_card_keys(view: &View) -> Vec<&str> {
+    view.first_cards.iter().map(|card| card.key.as_str()).collect()
+}
+
+#[test]
+fn home_and_sidebar_bring_the_first_three_cards_whole() {
+    let state = golden_fixture();
+    let live = golden_live();
+    let at = "2026-09-30T10:00:00Z";
+    for (root, client) in [("home", Client::Ios), ("sidebar", Client::Mac)] {
+        for lang in [Lang::En, Lang::Es] {
+            let view = render(&state, &live, client, lang, root, at);
+            assert_eq!(first_card_keys(&view), [
+                "card:a98d034b-249e-4487-a89b-57de38c26372",
+                "card:8fa4034b-249e-4487-a89b-57de38c26372",
+                "card:hf-weekly-2026-09-30",
+            ], "{root} lists them in the queue's order");
+            for card in &view.first_cards {
+                assert_eq!(card, &render(&state, &live, client, lang, &card.key, at),
+                    "{root}: {} is the view its own key answers", card.key);
+            }
+        }
+    }
+    let tui = render(&state, &live, Client::Tui, Lang::Es, "home", at);
+    assert!(tui.first_cards.is_empty(), "the terminal's home already carries its detail");
+}
+
+#[test]
+fn a_focused_home_brings_the_focused_card_first() {
+    let state = golden_fixture();
+    let view = render(&state, &golden_live(), Client::Ios, Lang::Es, "home?focus=f12d034b-249e-4487-a89b-57de38c26372", "");
+    assert_eq!(first_card_keys(&view), [
+        "card:f12d034b-249e-4487-a89b-57de38c26372",
+        "card:cc2d034b-249e-4487-a89b-57de38c26372",
+        "card:a98d034b-249e-4487-a89b-57de38c26372",
+    ]);
+}
+
+#[test]
+fn a_short_queue_brings_the_cards_it_has() {
+    let mut state = golden_fixture();
+    let live = golden_live();
+    for id in ["8fa4034b-249e-4487-a89b-57de38c26372", "hf-weekly-2026-09-30", "f12d034b-249e-4487-a89b-57de38c26372",
+        "cc2d034b-249e-4487-a89b-57de38c26372"] {
+        state.interactions.remove(&id.into());
+    }
+    let one = render(&state, &live, Client::Ios, Lang::Es, "home", "");
+    assert_eq!(first_card_keys(&one), ["card:a98d034b-249e-4487-a89b-57de38c26372"]);
+    state.interactions.remove(&"a98d034b-249e-4487-a89b-57de38c26372".into());
+    for (root, client) in [("home", Client::Ios), ("sidebar", Client::Mac)] {
+        let none = render(&state, &live, client, Lang::Es, root, "");
+        assert!(none.first_cards.is_empty(), "{root}");
+        assert!(!serde_json::to_string(&none).unwrap().contains("first_cards"), "{root} leaves the field out");
+    }
+}
+
+#[test]
+fn home_changes_version_with_its_first_cards_only() {
+    let state = golden_fixture();
+    let live = golden_live();
+    let home = |state: &DomainState| render(state, &live, Client::Ios, Lang::Es, "home", "").version;
+    let before = home(&state);
+    let mut third = state.clone();
+    third.interactions.get_mut(&"hf-weekly-2026-09-30".into()).unwrap().card.need = "Review another candidate".into();
+    assert_ne!(home(&third), before, "the third card changed, so the home that carries it did");
+    let mut fourth = state.clone();
+    fourth.interactions.get_mut(&"f12d034b-249e-4487-a89b-57de38c26372".into()).unwrap().card.need = "Read another notice".into();
+    assert_ne!(render(&fourth, &live, Client::Ios, Lang::Es, "card:f12d034b-249e-4487-a89b-57de38c26372", "").version,
+        render(&state, &live, Client::Ios, Lang::Es, "card:f12d034b-249e-4487-a89b-57de38c26372", "").version);
+    assert_eq!(home(&fourth), before, "a card past the first three leaves home as it was");
+}
+
+#[test]
+fn a_new_cursor_alone_leaves_home_unchanged() {
+    let state = golden_fixture();
+    let live = golden_live();
+    let at = |cursor: &str| build("home", RenderContext {
+        domain: &state, index: &crate::domain::ReadIndex::build(&state), live: &live, client: Client::Ios,
+        lang: Lang::Es, transport: Transport::Loopback, cursor, rendered_at: "",
+    }).unwrap();
+    let (first, second) = (at("cursor-1"), at("cursor-2"));
+    assert_eq!(first.first_cards[0].cursor, "cursor-1");
+    assert_eq!(first.version, second.version, "the cursors inside the cards are not part of the version either");
 }

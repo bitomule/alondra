@@ -31,6 +31,9 @@ public actor FeedSession {
     private var leases: [UUID: String] = [:]
     private var versions: [String: String] = [:]
     private var documents: [String: ViewDocument] = [:]
+    /// The cards a view brought inside it, by that view's key, kept so a screen opening one draws it
+    /// at once; a card a screen holds open is that screen's to keep current.
+    private var embedded: [String: Set<String>] = [:]
     private enum LoadError: Error, Sendable { case epochMismatch }
     struct LoadKey: Hashable, Sendable {
         let key: String
@@ -318,7 +321,7 @@ public actor FeedSession {
                     status = document.status
                     feedOwnsCursor = false
                     epochGeneration &+= 1
-                    versions.removeAll(); documents.removeAll()
+                    versions.removeAll(); documents.removeAll(); embedded.removeAll()
                     resetLoads(preserving: request)
                     if changedEpoch { emit(.reset) }
                 } else {
@@ -334,6 +337,7 @@ public actor FeedSession {
                 } else {
                     documents[request.key] = document
                     versions[request.key] = document.version
+                    keepEmbedded(document.firstCards.filter { $0.dataEpoch == document.dataEpoch }, from: request.key)
                 }
                 if !feedOwnsCursor, cursorLoadOwner == id || cursor == nil {
                     cursor = document.cursor
@@ -495,11 +499,25 @@ public actor FeedSession {
         }
     }
 
+    private func keepEmbedded(_ cards: [ViewDocument], from key: String) {
+        let cards = cards.filter { Self.validViewKey($0.key) && $0.key != key && !openKeys.contains($0.key) }
+        let kept = Set(cards.map(\.key))
+        let elsewhere = embedded.filter { $0.key != key }.values.reduce(into: Set<String>()) { $0.formUnion($1) }
+        for gone in (embedded[key] ?? []).subtracting(kept).subtracting(elsewhere) where !openKeys.contains(gone) {
+            documents[gone] = nil; versions[gone] = nil
+        }
+        for card in cards {
+            documents[card.key] = card; versions[card.key] = card.version
+        }
+        embedded[key] = kept.isEmpty ? nil : kept
+    }
+
     public func close(_ lease: ViewLease) {
         guard leases.removeValue(forKey: lease.id) != nil else { return }
         guard !openKeys.contains(lease.key) else { return }
         cancelLoads(lease.key)
         versions.removeValue(forKey: lease.key); documents.removeValue(forKey: lease.key)
+        keepEmbedded([], from: lease.key)
         publish(reset: false)
         restartFeed()
     }
@@ -508,7 +526,7 @@ public actor FeedSession {
         active = false
         recoveryWanted = nil; recoveryTask?.cancel()
         for key in Set(inFlightLoads.keys.map(\.key)) { cancelLoads(key) }
-        leases.removeAll(); versions.removeAll(); documents.removeAll()
+        leases.removeAll(); versions.removeAll(); documents.removeAll(); embedded.removeAll()
         loadOwners.removeAll(); loadLifetimes.removeAll()
         cursor = nil; dataEpoch = nil; status = nil
         generation &+= 1; feedTask?.cancel(); feedTask = nil
@@ -608,7 +626,7 @@ public actor FeedSession {
                 cursor = reply.cursor; dataEpoch = reply.dataEpoch; status = reply.status
                 if reply.reset || priorEpoch != reply.dataEpoch {
                     epochGeneration &+= 1
-                    versions.removeAll(); documents.removeAll()
+                    versions.removeAll(); documents.removeAll(); embedded.removeAll()
                     resetLoads()
                     emit(.reset)
                     publish(reset: true)

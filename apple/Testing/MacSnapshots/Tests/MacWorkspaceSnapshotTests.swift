@@ -131,6 +131,19 @@ final class MacWorkspaceSnapshotTests: XCTestCase {
         assertWindow(size: CGSize(width: 900, height: 700)) { MacServiceDetail(presentation: store) }
     }
 
+    /// The daemon's own Spanish sidebar, its first card drawn from the cards it carries: nothing
+    /// else was asked of the Mac.
+    func test_card_theFirstCardComesWithTheSidebar_spanish() throws {
+        let store = try presentation(sidebar: "sidebar-mac-es") { state in
+            let first = state.sidebarDocument?.firstCards.first
+            XCTAssertEqual(first?.key, "card:a98d034b-249e-4487-a89b-57de38c26372")
+            state.detailDocument = try? first.map(SpanishTestData.document)
+            state.selection = first.map { .viewKey($0.key) }
+            state.selectedViewKey = first?.key
+        }
+        assertWindow(size: CGSize(width: 900, height: 700), spanish: true, variants: [.light]) { MacServiceDetail(presentation: store) }
+    }
+
     func test_card_pullRequestWithItsShortcuts_spanish() throws {
         let store = try presentation(detail: "card-pr-es-mac", spanish: true)
         assertWindow(size: CGSize(width: 900, height: 700), spanish: true) { MacServiceDetail(presentation: store) }

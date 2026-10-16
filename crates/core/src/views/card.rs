@@ -130,7 +130,20 @@ pub(super) fn build(id: &str, context: &RenderContext<'_>) -> Result<View, Build
         empty: None,
         notices: vec![],
         service: None,
+        first_cards: vec![],
     })
+}
+
+/// How many cards of the queue travel inside it: the one in front and the two behind it.
+pub(super) const FIRST_CARDS: usize = 3;
+
+/// The first cards of a queue, each the view its `card:<id>` key answers.
+pub(super) fn first_cards<'a>(ids: impl IntoIterator<Item = &'a str>, context: &RenderContext<'_>) -> Result<Vec<View>, BuildError> {
+    ids.into_iter().take(FIRST_CARDS).map(|id| {
+        let mut view = build(id, context)?;
+        view.version = super::version(&view);
+        Ok(view)
+    }).collect()
 }
 
 /// A settled card is never shown: its view carries only why it went, for the client to say as it
@@ -150,6 +163,7 @@ fn settled_view(key: String, settled: Settled, context: &RenderContext<'_>) -> V
         empty: Some(Notice { text: settled.notice(context.lang).into(), tone: Tone::Neutral, action: None }),
         notices: vec![],
         service: None,
+        first_cards: vec![],
     }
 }
 

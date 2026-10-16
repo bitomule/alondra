@@ -186,6 +186,7 @@ pub(super) fn build(context: &RenderContext<'_>) -> Result<View, BuildError> {
     );
     waiting.count = Some(waiting.items.len() as u32);
     view.sections.push(waiting);
+    view.first_cards = super::card::first_cards(pending.iter().map(|item| super::card::public_id(item)), context)?;
     view.sections.push(task_groups(context));
     view.sections.extend(project_sections(context));
     let (message, action) = if pending.is_empty() {

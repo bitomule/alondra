@@ -19,6 +19,24 @@ final class ViewModelsTests: XCTestCase {
         }
     }
 
+    func testDecodesTheFirstCardsAQueueCarries() throws {
+        let env = ProcessInfo.processInfo.environment
+        let root = URL(fileURLWithPath: try XCTUnwrap(env["TEST_SRCDIR"]))
+            .appendingPathComponent(env["TEST_WORKSPACE"] ?? "_main")
+            .appendingPathComponent("fixtures/views/cards")
+        for name in ["home-ios", "home-ios-es", "sidebar-mac"] {
+            let view = try ContractCodec.decode(ViewDocument.self, from: Data(contentsOf: root.appendingPathComponent("\(name).json")))
+            XCTAssertEqual(view.firstCards.map(\.key), ["card:a98d034b-249e-4487-a89b-57de38c26372",
+                "card:8fa4034b-249e-4487-a89b-57de38c26372", "card:hf-weekly-2026-09-30"], name)
+            XCTAssertTrue(view.firstCards.allSatisfy { $0.view == "card" && !$0.sections.isEmpty }, name)
+            let again = try ContractCodec.decode(ViewDocument.self, from: try JSONEncoder().encode(view))
+            XCTAssertEqual(again, view, name)
+        }
+        let tui = try ContractCodec.decode(ViewDocument.self, from: Data(contentsOf: root.appendingPathComponent("home-tui.json")))
+        XCTAssertEqual(tui.firstCards, [], "a daemon that leaves the field out decodes as no cards")
+        XCTAssertFalse(String(decoding: try JSONEncoder().encode(tui), as: UTF8.self).contains("first_cards"))
+    }
+
     func testDecodesTheCardAnatomyOfTheRedesignedGoldens() throws {
         let env = ProcessInfo.processInfo.environment
         let root = URL(fileURLWithPath: try XCTUnwrap(env["TEST_SRCDIR"]))

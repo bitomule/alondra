@@ -354,6 +354,9 @@ pub fn version<T: serde::Serialize>(value: &T) -> String {
     if let Some(object) = json.as_object_mut() {
         object.remove("version");
         object.remove("cursor");
+        for card in object.get_mut("first_cards").and_then(|cards| cards.as_array_mut()).into_iter().flatten() {
+            card.as_object_mut().map(|card| card.remove("cursor"));
+        }
     }
     let bytes = serde_json::to_vec(&json).expect("canonical JSON");
     let digest = Sha256::digest(bytes);

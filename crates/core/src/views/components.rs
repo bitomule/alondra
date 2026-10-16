@@ -135,6 +135,10 @@ pub struct View {
     /// The daemon that served this view; the renderers leave it out and the route fills it in.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub service: Option<Service>,
+    /// The first cards of the queue, each the whole `card:<id>` view, so the app draws the front
+    /// one from this answer instead of asking for it next.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub first_cards: Vec<View>,
 }
 /// Which daemon answered and which views protocols it serves, so a client can tell it is behind.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

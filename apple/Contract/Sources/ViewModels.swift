@@ -73,8 +73,12 @@ public struct ViewDocument: Codable, Equatable, Sendable {
     public let sections: [ViewSection]
     public let empty: Notice?
     public let notices: [Notice]
+    /// The first cards of the queue, each the whole view its `card:<id>` key answers; empty from a
+    /// daemon that does not send them.
+    public let firstCards: [ViewDocument]
     enum CodingKeys: String, CodingKey {
         case protocolVersion = "protocol", view, key, client, version, cursor, dataEpoch = "data_epoch", title, status, sections, empty, notices
+        case firstCards = "first_cards"
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -84,6 +88,7 @@ public struct ViewDocument: Codable, Equatable, Sendable {
         cursor = try c.decode(String.self, forKey: .cursor); dataEpoch = try c.decode(String.self, forKey: .dataEpoch); title = try c.decodeIfPresent(String.self, forKey: .title)
         status = try c.decode(ViewStatus.self, forKey: .status); sections = try c.decode([ViewSection].self, forKey: .sections)
         empty = try c.decodeIfPresent(Notice.self, forKey: .empty); notices = try c.decodeIfPresent([Notice].self, forKey: .notices) ?? []
+        firstCards = try c.decodeIfPresent([ViewDocument].self, forKey: .firstCards) ?? []
     }
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
@@ -91,6 +96,7 @@ public struct ViewDocument: Codable, Equatable, Sendable {
         try c.encode(client, forKey: .client); try c.encode(version, forKey: .version); try c.encode(cursor, forKey: .cursor); try c.encode(dataEpoch, forKey: .dataEpoch)
         try c.encodeIfPresent(title, forKey: .title); try c.encode(status, forKey: .status); try c.encode(sections, forKey: .sections)
         try c.encodeIfPresent(empty, forKey: .empty); if !notices.isEmpty { try c.encode(notices, forKey: .notices) }
+        if !firstCards.isEmpty { try c.encode(firstCards, forKey: .firstCards) }
     }
 }
 

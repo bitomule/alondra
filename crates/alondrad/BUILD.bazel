@@ -59,6 +59,7 @@ rust_test(
         "//fixtures/push",
         "//fixtures/workflow",
         "//fixtures/views:all",
+        "//fixtures/views:cards",
         "//fixtures/domain-v2:acceptance.json",
     ],
     crate = ":alondrad",

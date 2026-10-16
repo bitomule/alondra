@@ -1,6 +1,6 @@
 use super::{
     BuildError, Client, Item, Notice, RenderContext, Section, Tone, VIEWS_PROTOCOL, View,
-    card::{from_item, plain_id, public_id},
+    card::{self, from_item, plain_id, public_id},
     text::t,
 };
 use crate::domain::InboxItem;
@@ -22,6 +22,10 @@ pub(super) fn build(key: &str, context: &RenderContext<'_>) -> Result<View, Buil
         }
     }
     let status = super::status::build(context);
+    let first_cards = match context.client {
+        Client::Ios => card::first_cards(roots.iter().map(|item| public_id(item)), context)?,
+        _ => vec![],
+    };
     let (sections, empty) = match context.client {
         Client::Ios => {
             let card_ids: Vec<String> = roots.iter().map(|item| public_id(item).to_owned()).collect();
@@ -112,6 +116,7 @@ pub(super) fn build(key: &str, context: &RenderContext<'_>) -> Result<View, Buil
         empty,
         notices: vec![],
         service: None,
+        first_cards,
     })
 }
 /// What a waiting card asks of the user: an answer ("question") or only to be read ("read").
