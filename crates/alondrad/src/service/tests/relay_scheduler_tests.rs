@@ -1276,8 +1276,12 @@ async fn a_refused_work_poll_is_signed_again_instead_of_replayed_into_a_401() {
     let polls: Vec<&String> = seen.iter().filter(|(path, _)| path == "/v1/work").map(|(_, nonce)| nonce).collect();
     assert!(polls.windows(2).all(|pair| pair[0] != pair[1]),
         "every work poll that reaches the relay carries a fresh nonce: {polls:?}");
-    let refusal = format!("{:#}", refused.expect_err("the refused stream fails this poll"));
-    assert!(!refusal.contains("401"), "the refused poll must not come back as a relay 401: {refusal}");
+    let refusal = refused.expect_err("the refused stream fails this poll");
+    let relay_status = refusal.chain()
+        .filter_map(|cause| cause.downcast_ref::<reqwest::Error>())
+        .find_map(reqwest::Error::status);
+    assert_ne!(relay_status, Some(StatusCode::UNAUTHORIZED),
+        "the refused poll must not come back as a relay 401: {refusal:#}");
     next.expect("the next poll, signed again, reaches the relay");
     assert_eq!(polls.len(), 2, "one refused copy and one freshly signed poll: {seen:?}");
 }
