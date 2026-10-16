@@ -183,7 +183,8 @@ impl Fixture {
                 "lifecycle_tasks",
                 "lifecycle_events",
                 "lifecycle_dispatches",
-                "lifecycle_current_execution"
+                "lifecycle_current_execution",
+                "provider_execution_owners"
             ]
             .contains(&table)
         );
@@ -334,15 +335,19 @@ fn duplicate_command_uses_exact_receipt_identity_and_rejects_conflicting_payload
             replayed: true
         }
     );
+    tx.commit().unwrap();
+    let mut tx = fixture.transaction();
     assert!(matches!(
         tx.apply(&"task".into(), 1, "admit", admit("node", "instance")),
         Err(Error::CommandConflict)
     ));
+    assert!(matches!(tx.commit(), Err(Error::Poisoned)));
+    let mut tx = fixture.transaction();
     assert!(matches!(
         tx.apply(&"task".into(), 0, "admit", admit("node", "other")),
         Err(Error::CommandConflict)
     ));
-    tx.commit().unwrap();
+    assert!(matches!(tx.commit(), Err(Error::Poisoned)));
     assert_eq!(fixture.count("lifecycle_events"), 1);
     assert_eq!(fixture.count("lifecycle_dispatches"), 1);
 }
@@ -355,6 +360,8 @@ fn revision_fences_stale_permit_but_recovery_preserves_accepted_input() {
     fixture.runtime("task", RuntimeFact::ResourceAvailable);
     let mut tx = fixture.transaction();
     assert!(matches!(tx.claim(stale), Err(Error::StalePermit)));
+    assert!(matches!(tx.commit(), Err(Error::Poisoned)));
+    let mut tx = fixture.transaction();
     tx.recover_prepared(&"task".into()).unwrap();
     let fresh = tx.commit().unwrap().permits.pop().unwrap();
     assert_eq!(fresh.revision(), 2);
@@ -406,9 +413,13 @@ fn wrong_domain_epoch_refuses_restore_and_old_permit_claim() {
         Err(Error::WrongScope)
     ));
     let tx = fixture.connection.transaction().unwrap();
-    let mut tx =
+    let tx =
         LifecycleTransaction::attach(tx, AuthorityScope::new("new-epoch".into()).unwrap()).unwrap();
     assert!(matches!(tx.load(&"task".into()), Err(Error::WrongScope)));
+    drop(tx);
+    let tx = fixture.connection.transaction().unwrap();
+    let mut tx =
+        LifecycleTransaction::attach(tx, AuthorityScope::new("new-epoch".into()).unwrap()).unwrap();
     assert!(matches!(tx.claim(permit), Err(Error::StalePermit)));
 }
 
@@ -426,15 +437,18 @@ fn required_cards_use_actual_task_ownership_and_actionability_and_rollback_rejec
             [],
         )
         .unwrap();
-    let mut tx = fixture.transaction();
     for card in ["missing", "wrong-owner", "answered"] {
+        let mut tx = fixture.transaction();
         assert!(matches!(
             tx.apply(&"task".into(), 0, card, Event::Ask { card: card.into() }),
             Err(Error::InvalidCard)
         ));
-        assert_eq!(tx.load(&"task".into()).unwrap().revision(), 0);
+        assert!(matches!(tx.commit(), Err(Error::Poisoned)));
+        assert_eq!(
+            fixture.transaction().load(&"task".into()).unwrap().revision(),
+            0
+        );
     }
-    tx.commit().unwrap();
     assert_eq!(fixture.count("lifecycle_events"), 0);
     fixture.card("task", "question");
     let mut tx = fixture.transaction();
@@ -494,7 +508,12 @@ fn duplicate_node_and_unknown_task_dependency_fail_atomically() {
         ),
         Err(Error::Database(_))
     ));
-    assert_eq!(tx.load(&"other".into()).unwrap().revision(), 0);
+    assert!(matches!(tx.commit(), Err(Error::Poisoned)));
+    assert_eq!(
+        fixture.transaction().load(&"other".into()).unwrap().revision(),
+        0
+    );
+    let mut tx = fixture.transaction();
     assert!(matches!(
         tx.apply(
             &"other".into(),
@@ -506,8 +525,11 @@ fn duplicate_node_and_unknown_task_dependency_fail_atomically() {
         ),
         Err(Error::Database(_))
     ));
-    assert_eq!(tx.load(&"other".into()).unwrap().revision(), 0);
-    tx.commit().unwrap();
+    assert!(matches!(tx.commit(), Err(Error::Poisoned)));
+    assert_eq!(
+        fixture.transaction().load(&"other".into()).unwrap().revision(),
+        0
+    );
     assert_eq!(fixture.count("lifecycle_events"), 1);
 }
 
@@ -524,6 +546,8 @@ fn input_payload_conflict_and_missing_payload_cannot_accept_a_continuation() {
         ),
         Err(Error::InputConflict)
     ));
+    assert!(matches!(tx.commit(), Err(Error::Poisoned)));
+    let mut tx = fixture.transaction();
     tx.apply(
         &"task".into(),
         0,
@@ -533,6 +557,8 @@ fn input_payload_conflict_and_missing_payload_cannot_accept_a_continuation() {
         },
     )
     .unwrap();
+    tx.commit().unwrap();
+    let mut tx = fixture.transaction();
     assert!(matches!(
         tx.apply(
             &"task".into(),
@@ -545,8 +571,11 @@ fn input_payload_conflict_and_missing_payload_cannot_accept_a_continuation() {
         ),
         Err(Error::MissingInput)
     ));
-    assert_eq!(tx.load(&"task".into()).unwrap().revision(), 1);
-    tx.commit().unwrap();
+    assert!(matches!(tx.commit(), Err(Error::Poisoned)));
+    assert_eq!(
+        fixture.transaction().load(&"task".into()).unwrap().revision(),
+        1
+    );
 }
 
 #[test]
@@ -720,6 +749,8 @@ fn generation_replacement_rejects_old_permit_and_preserves_new_input() {
     assert_eq!(fresh.execution().generation(), 2);
     let mut tx = fixture.transaction();
     assert!(matches!(tx.claim(old), Err(Error::StalePermit)));
+    assert!(matches!(tx.commit(), Err(Error::Poisoned)));
+    let mut tx = fixture.transaction();
     tx.claim(fresh).unwrap();
     let attempt = tx.commit().unwrap().attempts.pop().unwrap();
     assert_eq!(attempt.input().id(), &id("continuation"));
@@ -803,8 +834,11 @@ fn uncertain_dispatch_prevents_retiring_a_binding_even_after_exit_observation() 
         ),
         Err(Error::UnresolvedDispatch)
     ));
+    assert!(matches!(tx.commit(), Err(Error::Poisoned)));
     assert_eq!(
-        tx.load(&"task".into())
+        fixture
+            .transaction()
+            .load(&"task".into())
             .unwrap()
             .execution()
             .unwrap()
@@ -1228,7 +1262,7 @@ fn caught_conflicting_binding_cannot_commit_orphan_identity_or_conversation() {
         tx.bind_provider(&"task".into(), &alternate),
         Err(Error::BindingConflict)
     ));
-    tx.commit().unwrap();
+    assert!(matches!(tx.commit(), Err(Error::Poisoned)));
     let database = fixture.directory.join("domain.db");
     drop(fixture.connection);
     let reopened = Connection::open(database).unwrap();
@@ -1288,7 +1322,7 @@ fn caught_observation_head_failure_does_not_commit_receipt_without_cursor() {
     assert!(
         matches!(&error, Error::Database(rusqlite::Error::SqliteFailure(_, Some(message))) if message == "fixture head write rejected")
     );
-    tx.commit().unwrap();
+    assert!(matches!(tx.commit(), Err(Error::Poisoned)));
     let database = fixture.directory.join("domain.db");
     drop(fixture.connection);
     let reopened = Connection::open(database).unwrap();
@@ -1306,7 +1340,7 @@ fn caught_observation_head_failure_does_not_commit_receipt_without_cursor() {
         .unwrap();
     assert_eq!(
         receipts, 0,
-        "failed cursor write must roll back its receipt even when the outer transaction commits"
+        "failed cursor write must roll back its receipt even when the caller catches the error"
     );
     assert_eq!(heads, 0);
     let revision: i64 = reopened
@@ -1331,6 +1365,10 @@ fn owner_grants_are_postcommit_strict_cas_and_old_grants_never_reconnect() {
         tx.reserve_owner(&stamp, 0),
         Err(Error::StaleOwner)
     ));
+    assert!(matches!(tx.commit(), Err(Error::Poisoned)));
+    assert_eq!(fixture.count("provider_execution_owners"), 0);
+    let mut tx = fixture.transaction();
+    tx.reserve_owner(&stamp, 0).unwrap();
     let first = tx.commit().unwrap().owners.pop().unwrap();
     assert_eq!(first.generation(), 1);
     assert_eq!(first.execution(), &stamp);
@@ -1341,11 +1379,16 @@ fn owner_grants_are_postcommit_strict_cas_and_old_grants_never_reconnect() {
         tx.reserve_owner(&stamp, 0),
         Err(Error::StaleOwner)
     ));
+    assert!(matches!(tx.commit(), Err(Error::Poisoned)));
+    let mut tx = fixture.transaction();
+    tx.fence_owner(&first).unwrap();
     tx.reserve_owner(&stamp, 1).unwrap();
     let second = tx.commit().unwrap().owners.pop().unwrap();
     assert_eq!(second.generation(), 2);
     let tx = fixture.transaction();
     assert!(matches!(tx.fence_owner(&first), Err(Error::StaleOwner)));
+    assert!(matches!(tx.commit(), Err(Error::Poisoned)));
+    let tx = fixture.transaction();
     tx.fence_owner(&second).unwrap();
     tx.commit().unwrap();
 }
@@ -1370,7 +1413,7 @@ fn ownership_after_revocation_allows_control_but_never_new_work() {
     let mut tx = fixture.transaction();
     tx.fence_owner(&grant).unwrap();
     assert!(matches!(tx.claim(permit), Err(Error::BindingRevoked)));
-    assert!(tx.commit().unwrap().attempts.is_empty());
+    assert!(matches!(tx.commit(), Err(Error::Poisoned)));
     let pending = fixture
         .transaction()
         .load(&"task".into())
@@ -1432,16 +1475,18 @@ fn missing_execution_binding_after_reopen_never_selects_another_provider() {
     drop(fixture.connection);
     let mut reopened = Connection::open(database).unwrap();
     reopened.execute_batch("PRAGMA foreign_keys=ON").unwrap();
-    let mut tx = LifecycleTransaction::attach(reopened.transaction().unwrap(), scope()).unwrap();
+    let tx = LifecycleTransaction::attach(reopened.transaction().unwrap(), scope()).unwrap();
     assert!(matches!(
         tx.execution_binding(&stamp),
         Err(Error::MissingBinding)
     ));
+    assert!(matches!(tx.commit(), Err(Error::Poisoned)));
+    let mut tx = LifecycleTransaction::attach(reopened.transaction().unwrap(), scope()).unwrap();
     assert!(matches!(
         tx.reserve_owner(&stamp, 0),
         Err(Error::MissingBinding)
     ));
-    tx.commit().unwrap();
+    assert!(matches!(tx.commit(), Err(Error::Poisoned)));
     let retained: i64 = reopened
         .query_row("SELECT count(*) FROM provider_bindings", [], |row| {
             row.get(0)
@@ -1477,6 +1522,8 @@ fn normalization_checkpoint_cursor_identity_capacity_and_digest_fail_closed() {
         tx.put_normalization_checkpoint(&stamp, 1, None, b"no raw evidence".to_vec()),
         Err(Error::CheckpointConflict)
     ));
+    assert!(matches!(tx.commit(), Err(Error::Poisoned)));
+    let mut tx = fixture.transaction();
     tx.accept_observation(
         &stamp,
         1,
@@ -1489,19 +1536,25 @@ fn normalization_checkpoint_cursor_identity_capacity_and_digest_fail_closed() {
     let mut tx = fixture.transaction();
     tx.put_normalization_checkpoint(&stamp, 1, None, b"causal pending input map".to_vec())
         .unwrap();
+    tx.commit().unwrap();
+    let mut tx = fixture.transaction();
     assert!(matches!(
         tx.put_normalization_checkpoint(&stamp, 1, Some(1), b"different snapshot".to_vec()),
         Err(Error::CheckpointConflict)
     ));
+    assert!(matches!(tx.commit(), Err(Error::Poisoned)));
+    let mut tx = fixture.transaction();
     assert!(matches!(
         tx.put_normalization_checkpoint(&stamp, 0, Some(1), b"old cursor".to_vec()),
         Err(Error::MetadataCapacity)
     ));
+    assert!(matches!(tx.commit(), Err(Error::Poisoned)));
+    let mut tx = fixture.transaction();
     assert!(matches!(
         tx.put_normalization_checkpoint(&stamp, 2, Some(1), vec![0; 65537]),
         Err(Error::MetadataCapacity)
     ));
-    tx.commit().unwrap();
+    assert!(matches!(tx.commit(), Err(Error::Poisoned)));
     let database = fixture.directory.join("domain.db");
     drop(fixture.connection);
     let mut reopened = Connection::open(database).unwrap();
@@ -1562,7 +1615,7 @@ fn caught_checkpoint_cas_rejection_cannot_change_durable_snapshot() {
         tx.put_normalization_checkpoint(&stamp, 3, Some(1), b"stale writer".to_vec()),
         Err(Error::CheckpointConflict)
     ));
-    tx.commit().unwrap();
+    assert!(matches!(tx.commit(), Err(Error::Poisoned)));
     let database = fixture.directory.join("domain.db");
     drop(fixture.connection);
     let mut reopened = Connection::open(database).unwrap();
@@ -1590,6 +1643,9 @@ fn historical_input_bindings_remain_immutable_and_do_not_limit_scoped_state_load
         AdapterInputMetadata::new(b"immutable initial native key".to_vec()).unwrap(),
     )
     .unwrap();
+    tx.reserve_owner(&stamp, 0).unwrap();
+    let grant = tx.commit().unwrap().owners.pop().unwrap();
+    let mut tx = fixture.transaction();
     assert!(matches!(
         tx.put_adapter_input(
             &stamp,
@@ -1598,6 +1654,8 @@ fn historical_input_bindings_remain_immutable_and_do_not_limit_scoped_state_load
         ),
         Err(Error::InputConflict)
     ));
+    assert!(matches!(tx.commit(), Err(Error::Poisoned)));
+    let mut tx = fixture.transaction();
     assert!(matches!(
         tx.put_adapter_conversation(
             &stamp,
@@ -1605,8 +1663,7 @@ fn historical_input_bindings_remain_immutable_and_do_not_limit_scoped_state_load
         ),
         Err(Error::InputConflict)
     ));
-    tx.reserve_owner(&stamp, 0).unwrap();
-    let grant = tx.commit().unwrap().owners.pop().unwrap();
+    assert!(matches!(tx.commit(), Err(Error::Poisoned)));
     let mut tx = fixture.transaction();
     for index in 1..256 {
         let input = format!("extra-{index}");
@@ -1641,11 +1698,13 @@ fn historical_input_bindings_remain_immutable_and_do_not_limit_scoped_state_load
         .unwrap();
     assert_eq!(historical[0].input(), &id("extra-1"));
     assert_eq!(historical[1].input(), &id("overflow"));
+    tx.commit().unwrap();
+    let tx = fixture.transaction();
     assert!(matches!(
         tx.lookup_adapter_inputs(&stamp, &vec![b"native-1".to_vec(); 65]),
         Err(Error::MetadataCapacity)
     ));
-    tx.commit().unwrap();
+    assert!(matches!(tx.commit(), Err(Error::Poisoned)));
     let count: i64 = fixture
         .connection
         .query_row("SELECT count(*) FROM provider_input_metadata", [], |row| {
@@ -1658,11 +1717,11 @@ fn historical_input_bindings_remain_immutable_and_do_not_limit_scoped_state_load
     );
     let tx = fixture.transaction();
     assert_eq!(
-        tx.adapter_input(&stamp, &id("initial")).unwrap().bytes(),
+        tx.adapter_input(&stamp, &id("initial")).unwrap().unwrap().bytes(),
         b"immutable initial native key"
     );
     assert_eq!(
-        tx.adapter_conversation(&stamp).unwrap().bytes(),
+        tx.adapter_conversation(&stamp).unwrap().unwrap().bytes(),
         b"native session reference"
     );
     assert_eq!(
@@ -1840,7 +1899,7 @@ fn caught_stale_owner_admission_cannot_emit_observation_commit_value() {
         ),
         Err(Error::StaleOwner)
     ));
-    assert!(tx.commit().unwrap().observations.is_empty());
+    assert!(matches!(tx.commit(), Err(Error::Poisoned)));
     let count: i64 = fixture
         .connection
         .query_row("SELECT count(*) FROM provider_observations", [], |row| {
@@ -1998,7 +2057,7 @@ fn owned_observation_commit_can_finish_cancel_drain_without_reopening_admission(
             "failed owner CAS is rolled back too"
         );
         let raw = Transaction::new_unchecked(&reopened, TransactionBehavior::Immediate).unwrap();
-        let mut tx = LifecycleTransaction::attach(raw, scope()).unwrap();
+        let tx = LifecycleTransaction::attach(raw, scope()).unwrap();
         let aggregate = tx.load(&"task".into()).unwrap();
         if stale_owner {
             assert_eq!(rows, 0);
@@ -2008,6 +2067,7 @@ fn owned_observation_commit_can_finish_cancel_drain_without_reopening_admission(
             tx.fence_owner(&owner).unwrap();
             assert!(tx.normalization_checkpoint(&stamp).unwrap().is_none());
             assert_eq!(aggregate.phase(), TaskPhase::Finishing);
+            assert!(tx.commit().unwrap().observations.is_empty());
         } else {
             assert_eq!(rows, 1);
             assert_eq!(checkpoints, 1);
@@ -2022,6 +2082,10 @@ fn owned_observation_commit_can_finish_cancel_drain_without_reopening_admission(
             assert_eq!(value.cursor(), 1);
             assert!(value.matches_evidence(b"retirement observation"));
             assert!(!value.matches_evidence(b"different bytes"));
+            assert!(tx.commit().unwrap().observations.is_empty());
+            let raw =
+                Transaction::new_unchecked(&reopened, TransactionBehavior::Immediate).unwrap();
+            let mut tx = LifecycleTransaction::attach(raw, scope()).unwrap();
             assert!(
                 matches!(
                     tx.accept_owned_observation(
@@ -2034,10 +2098,18 @@ fn owned_observation_commit_can_finish_cancel_drain_without_reopening_admission(
                 ),
                 "new observation admission still requires the current execution"
             );
+            assert!(matches!(tx.commit(), Err(Error::Poisoned)));
+            let raw =
+                Transaction::new_unchecked(&reopened, TransactionBehavior::Immediate).unwrap();
+            let tx = LifecycleTransaction::attach(raw, scope()).unwrap();
             assert!(
                 matches!(tx.normalization_checkpoint(&stamp), Err(Error::StalePermit)),
                 "the public metadata read does not become a historical admission API"
             );
+            assert!(matches!(tx.commit(), Err(Error::Poisoned)));
+            let raw =
+                Transaction::new_unchecked(&reopened, TransactionBehavior::Immediate).unwrap();
+            let mut tx = LifecycleTransaction::attach(raw, scope()).unwrap();
             assert!(
                 matches!(
                     tx.put_normalization_checkpoint(
@@ -2050,8 +2122,8 @@ fn owned_observation_commit_can_finish_cancel_drain_without_reopening_admission(
                 ),
                 "a later transaction has no pending owned observation for a historical checkpoint"
             );
+            assert!(matches!(tx.commit(), Err(Error::Poisoned)));
         }
-        assert!(tx.commit().unwrap().observations.is_empty());
         drop(reopened);
     }
 }
@@ -2087,30 +2159,33 @@ fn owned_observation_commit_can_retire_released_execution_with_card_settlement()
             .load(&"task".into())
             .unwrap()
             .revision();
+        let retire = |tx: &mut FixtureTransaction<'_>| {
+            assert!(tx.unresolved(&"task".into()).unwrap().is_empty());
+            assert!(tx.load(&"task".into()).unwrap().pending_inputs().is_empty());
+            tx.accept_owned_observation(
+                &stamp,
+                owner.generation(),
+                1,
+                CommandEvidence::new(b"retirement observation".to_vec()).unwrap(),
+            )
+            .unwrap();
+            tx.put_input(&"task".into(), payload("continuation"))
+                .unwrap();
+            tx.apply(
+                &"task".into(),
+                before_retirement_revision,
+                "retire-released",
+                Event::RetireReleasedExecution {
+                    problem_card: "recovery".into(),
+                    input: id("continuation"),
+                },
+            )
+            .unwrap();
+            tx.settle_card(&"task".into(), &"recovery".into(), CardSettlement::Withdraw)
+                .unwrap();
+        };
         let mut tx = fixture.transaction();
-        assert!(tx.unresolved(&"task".into()).unwrap().is_empty());
-        assert!(tx.load(&"task".into()).unwrap().pending_inputs().is_empty());
-        tx.accept_owned_observation(
-            &stamp,
-            owner.generation(),
-            1,
-            CommandEvidence::new(b"retirement observation".to_vec()).unwrap(),
-        )
-        .unwrap();
-        tx.put_input(&"task".into(), payload("continuation"))
-            .unwrap();
-        tx.apply(
-            &"task".into(),
-            before_retirement_revision,
-            "retire-released",
-            Event::RetireReleasedExecution {
-                problem_card: "recovery".into(),
-                input: id("continuation"),
-            },
-        )
-        .unwrap();
-        tx.settle_card(&"task".into(), &"recovery".into(), CardSettlement::Withdraw)
-            .unwrap();
+        retire(&mut tx);
         assert!(
             matches!(
                 tx.put_normalization_checkpoint(&stamp, 2, None, b"wrong cursor".to_vec()),
@@ -2118,6 +2193,16 @@ fn owned_observation_commit_can_retire_released_execution_with_card_settlement()
             ),
             "retirement cannot authorize a checkpoint for an unaccepted cursor"
         );
+        assert!(
+            matches!(
+                tx.put_normalization_checkpoint(&stamp, 1, None, b"normalized retirement".to_vec()),
+                Err(Error::Poisoned)
+            ),
+            "the accepted cursor's own StalePermit fallback cannot clear a caught StalePermit"
+        );
+        assert!(matches!(tx.commit(), Err(Error::Poisoned)));
+        let mut tx = fixture.transaction();
+        retire(&mut tx);
         let checkpoint =
             tx.put_normalization_checkpoint(&stamp, 1, None, b"normalized retirement".to_vec());
         assert!(
@@ -2182,7 +2267,7 @@ fn owned_observation_commit_can_retire_released_execution_with_card_settlement()
             "failed owner CAS is rolled back too"
         );
         let raw = Transaction::new_unchecked(&reopened, TransactionBehavior::Immediate).unwrap();
-        let mut tx = LifecycleTransaction::attach(raw, scope()).unwrap();
+        let tx = LifecycleTransaction::attach(raw, scope()).unwrap();
         let aggregate = tx.load(&"task".into()).unwrap();
         if stale_owner {
             assert_eq!(rows, 0);
@@ -2204,6 +2289,7 @@ fn owned_observation_commit_can_retire_released_execution_with_card_settlement()
                 "owner failure rolls back recovery card settlement"
             );
             assert_eq!(aggregate.cards().len(), 1);
+            assert!(tx.commit().unwrap().observations.is_empty());
         } else {
             assert_eq!(rows, 1);
             assert_eq!(checkpoints, 1);
@@ -2229,6 +2315,10 @@ fn owned_observation_commit_can_retire_released_execution_with_card_settlement()
             assert_eq!(value.cursor(), 1);
             assert!(value.matches_evidence(b"retirement observation"));
             assert!(!value.matches_evidence(b"different bytes"));
+            assert!(tx.commit().unwrap().observations.is_empty());
+            let raw =
+                Transaction::new_unchecked(&reopened, TransactionBehavior::Immediate).unwrap();
+            let mut tx = LifecycleTransaction::attach(raw, scope()).unwrap();
             assert!(
                 matches!(
                     tx.accept_owned_observation(
@@ -2241,10 +2331,18 @@ fn owned_observation_commit_can_retire_released_execution_with_card_settlement()
                 ),
                 "new observation admission still requires the current execution"
             );
+            assert!(matches!(tx.commit(), Err(Error::Poisoned)));
+            let raw =
+                Transaction::new_unchecked(&reopened, TransactionBehavior::Immediate).unwrap();
+            let tx = LifecycleTransaction::attach(raw, scope()).unwrap();
             assert!(
                 matches!(tx.normalization_checkpoint(&stamp), Err(Error::StalePermit)),
                 "the public metadata read does not become a historical admission API"
             );
+            assert!(matches!(tx.commit(), Err(Error::Poisoned)));
+            let raw =
+                Transaction::new_unchecked(&reopened, TransactionBehavior::Immediate).unwrap();
+            let mut tx = LifecycleTransaction::attach(raw, scope()).unwrap();
             assert!(
                 matches!(
                     tx.put_normalization_checkpoint(
@@ -2257,8 +2355,116 @@ fn owned_observation_commit_can_retire_released_execution_with_card_settlement()
                 ),
                 "a later transaction has no pending owned observation for a historical checkpoint"
             );
+            assert!(matches!(tx.commit(), Err(Error::Poisoned)));
         }
-        assert!(tx.commit().unwrap().observations.is_empty());
         drop(reopened);
     }
+}
+
+#[test]
+fn caught_error_after_valid_writes_poisons_commit_and_leaves_no_row() {
+    let mut fixture = Fixture::new();
+    fixture.add_task("task");
+    let mut tx = fixture.transaction();
+    tx.create(&"task".into(), payload("initial")).unwrap();
+    tx.apply(&"task".into(), 0, "admit", admit("node", "instance"))
+        .unwrap();
+    assert!(matches!(
+        tx.apply(&"task".into(), 0, "admit-again", admit("node", "other")),
+        Err(Error::Domain(_))
+    ));
+    assert!(
+        matches!(tx.load(&"task".into()), Err(Error::Poisoned)),
+        "every later operation reports the earlier failure"
+    );
+    assert!(matches!(tx.commit(), Err(Error::Poisoned)));
+    let independent = Connection::open(fixture.directory.join("domain.db")).unwrap();
+    for table in ["lifecycle_tasks", "lifecycle_inputs", "lifecycle_events"] {
+        let rows: i64 = independent
+            .query_row(
+                &format!("SELECT count(*) FROM {table} WHERE task_id='task'"),
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(rows, 0, "{table} keeps no row of the poisoned transaction");
+    }
+}
+
+#[test]
+fn caught_error_after_a_valid_write_that_touches_no_task_poisons_commit() {
+    let mut fixture = Fixture::new();
+    fixture.create("task");
+    let stamp = fixture.launch("task").execution().clone();
+    let mut tx = fixture.transaction();
+    tx.put_adapter_conversation(
+        &stamp,
+        AdapterInputMetadata::new(b"native session reference".to_vec()).unwrap(),
+    )
+    .unwrap();
+    assert!(matches!(
+        tx.lookup_adapter_inputs(&stamp, &vec![b"native".to_vec(); 65]),
+        Err(Error::MetadataCapacity)
+    ));
+    assert!(matches!(tx.commit(), Err(Error::Poisoned)));
+    let independent = Connection::open(fixture.directory.join("domain.db")).unwrap();
+    let rows: i64 = independent
+        .query_row("SELECT count(*) FROM provider_conversation_metadata", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(rows, 0, "the valid metadata write of the poisoned transaction is not visible");
+}
+
+#[test]
+fn missing_adapter_metadata_is_a_normal_absence_that_still_commits() {
+    let mut fixture = Fixture::new();
+    fixture.create("task");
+    let stamp = fixture.launch("task").execution().clone();
+    let mut tx = fixture.transaction();
+    assert!(tx.adapter_input(&stamp, &id("initial")).unwrap().is_none());
+    assert!(tx.adapter_conversation(&stamp).unwrap().is_none());
+    tx.put_adapter_input(
+        &stamp,
+        &id("initial"),
+        AdapterInputMetadata::new(b"first native key".to_vec()).unwrap(),
+    )
+    .unwrap();
+    tx.commit().unwrap();
+    assert_eq!(
+        fixture
+            .transaction()
+            .adapter_input(&stamp, &id("initial"))
+            .unwrap()
+            .unwrap()
+            .bytes(),
+        b"first native key"
+    );
+}
+
+
+#[test]
+fn poisoned_journal_rolls_back_even_when_the_caller_asked_to_commit_on_drop() {
+    let mut fixture = Fixture::new();
+    fixture.add_task("task");
+    let mut raw = fixture
+        .connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .unwrap();
+    raw.set_drop_behavior(rusqlite::DropBehavior::Commit);
+    let mut tx = LifecycleTransaction::attach(raw, scope()).unwrap();
+    tx.create(&"task".into(), payload("initial")).unwrap();
+    assert!(matches!(
+        tx.put_input(
+            &"task".into(),
+            InputPayload::new(id("initial"), "Different bytes").unwrap()
+        ),
+        Err(Error::InputConflict)
+    ));
+    assert!(matches!(tx.commit(), Err(Error::Poisoned)));
+    let independent = Connection::open(fixture.directory.join("domain.db")).unwrap();
+    let rows: i64 = independent
+        .query_row("SELECT count(*) FROM lifecycle_tasks", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(rows, 0, "the caller's commit-on-drop cannot persist a poisoned journal");
 }

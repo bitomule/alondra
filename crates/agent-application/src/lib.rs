@@ -5,6 +5,19 @@
 //! Observations needing that application boundary remain unacknowledged.
 //! ```
 //! use alondra_agent_application::InputMetadata;
+//! fn stage(
+//!     transaction: &mut alondra_store::LifecycleTransaction<'_>,
+//!     execution: &alondra_foundation::ExecutionStamp,
+//!     input: &alondra_foundation::InputId,
+//! ) {
+//!     let _ = InputMetadata::with_execution(transaction, execution, input, |metadata| {
+//!         Ok(metadata.execution().clone())
+//!     });
+//! }
+//! ```
+//! Adapter metadata is never handed out outside its poisoning guard:
+//! ```compile_fail,E0599
+//! use alondra_agent_application::InputMetadata;
 //! let _ = InputMetadata::for_execution;
 //! ```
 //! ```compile_fail,E0432
@@ -47,32 +60,39 @@ pub struct InputMetadata<'borrow, 'connection> {
     execution: &'borrow ExecutionStamp,
     input: &'borrow InputId,
 }
-impl<'borrow, 'connection> InputMetadata<'borrow, 'connection> {
-    pub fn for_execution(
-        transaction: &'borrow mut LifecycleTransaction<'connection>,
-        execution: &'borrow ExecutionStamp,
-        input: &'borrow InputId,
-    ) -> Result<Self> {
-        let aggregate = transaction.load(execution.task())?;
-        if aggregate.execution() != Some(execution) || !aggregate.pending_inputs().contains(&input)
-        {
-            return Err(Error::BindingMismatch);
-        }
-        transaction.execution_binding(execution)?;
-        Ok(Self {
-            transaction,
-            execution,
-            input,
+impl<'connection> InputMetadata<'_, 'connection> {
+    /// The handle exists only inside this guard: adapter errors or panics, including its own
+    /// decoding, poison the transaction even when the caller catches them.
+    pub fn with_execution<T>(
+        transaction: &mut LifecycleTransaction<'connection>,
+        execution: &ExecutionStamp,
+        input: &InputId,
+        work: impl FnOnce(InputMetadata<'_, 'connection>) -> std::result::Result<T, AdapterError>,
+    ) -> Result<T> {
+        transaction.inspect_mut(|transaction| {
+            let aggregate = transaction.load(execution.task())?;
+            if aggregate.execution() != Some(execution) || !aggregate.pending_inputs().contains(&input)
+            {
+                return Err(Error::BindingMismatch);
+            }
+            transaction.execution_binding(execution)?;
+            Ok(work(InputMetadata {
+                transaction,
+                execution,
+                input,
+            })?)
         })
     }
-    pub fn for_attempt(
-        transaction: &'borrow mut LifecycleTransaction<'connection>,
-        attempt: &'borrow DispatchAttempt,
-    ) -> Result<Self> {
+    pub fn with_attempt<T>(
+        transaction: &mut LifecycleTransaction<'connection>,
+        attempt: &DispatchAttempt,
+        work: impl FnOnce(InputMetadata<'_, 'connection>) -> std::result::Result<T, AdapterError>,
+    ) -> Result<T> {
         transaction.fence_attempt(attempt)?;
-        Self::for_execution(transaction, attempt.execution(), attempt.input().id())
+        Self::with_execution(transaction, attempt.execution(), attempt.input().id(), work)
     }
-
+}
+impl<'connection> InputMetadata<'_, 'connection> {
     pub fn scope(&self) -> &alondra_store::AuthorityScope {
         self.transaction.scope()
     }
@@ -86,29 +106,24 @@ impl<'borrow, 'connection> InputMetadata<'borrow, 'connection> {
         self.input
     }
     pub fn put_input(&mut self, bytes: Vec<u8>) -> alondra_store::Result<()> {
-        self.transaction.put_adapter_input(
-            self.execution,
-            self.input,
-            AdapterInputMetadata::new(bytes)?,
-        )
+        let metadata = self.transaction.inspect(|| AdapterInputMetadata::new(bytes))?;
+        self.transaction.put_adapter_input(self.execution, self.input, metadata)
     }
-    pub fn input(&self) -> alondra_store::Result<Vec<u8>> {
+    pub fn input(&self) -> alondra_store::Result<Option<Vec<u8>>> {
         Ok(self
             .transaction
             .adapter_input(self.execution, self.input)?
-            .bytes()
-            .to_vec())
+            .map(|value| value.bytes().to_vec()))
     }
     pub fn put_conversation(&mut self, bytes: Vec<u8>) -> alondra_store::Result<()> {
-        self.transaction
-            .put_adapter_conversation(self.execution, AdapterInputMetadata::new(bytes)?)
+        let metadata = self.transaction.inspect(|| AdapterInputMetadata::new(bytes))?;
+        self.transaction.put_adapter_conversation(self.execution, metadata)
     }
-    pub fn conversation(&self) -> alondra_store::Result<Vec<u8>> {
+    pub fn conversation(&self) -> alondra_store::Result<Option<Vec<u8>>> {
         Ok(self
             .transaction
             .adapter_conversation(self.execution)?
-            .bytes()
-            .to_vec())
+            .map(|value| value.bytes().to_vec()))
     }
 }
 
@@ -228,43 +243,52 @@ pub fn stage_observation<N: ObservationNormalizer>(
     batch: &OrderedObservation,
     normalizer: &N,
 ) -> Result<ObservationAcceptance> {
-    if batch.evidence.is_empty() || batch.evidence.len() > 1_048_576 {
-        return Err(Error::ObservationCapacity);
-    }
-    if owner_generation != batch.owner_generation {
-        return Err(alondra_store::Error::StaleOwner.into());
-    }
-    if transaction.execution_binding(&batch.execution)? != *binding {
-        return Err(Error::BindingMismatch);
-    }
+    transaction.inspect(|| {
+        if batch.evidence.is_empty() || batch.evidence.len() > 1_048_576 {
+            return Err(Error::ObservationCapacity);
+        }
+        if owner_generation != batch.owner_generation {
+            return Err(alondra_store::Error::StaleOwner.into());
+        }
+        if transaction.execution_binding(&batch.execution)? != *binding {
+            return Err(Error::BindingMismatch);
+        }
+        Ok::<_, Error>(())
+    })?;
     let acceptance = transaction.accept_owned_observation(
         &batch.execution,
         batch.owner_generation,
         batch.cursor,
-        CommandEvidence::new(batch.evidence.clone())?,
+        transaction.inspect(|| CommandEvidence::new(batch.evidence.clone()))?,
     )?;
     if acceptance == ObservationAcceptance::Accepted {
-        let metadata = ObservationMetadata {
-            transaction,
-            execution: &batch.execution,
-            cursor: batch.cursor,
-        };
-        let previous = metadata.checkpoint()?.map(|checkpoint| checkpoint.cursor());
-        let normalized = normalizer.normalize(batch, &metadata)?;
-        let facts = normalized
-            .facts
-            .iter()
-            .map(domain_fact)
-            .collect::<Result<Vec<_>>>()?;
+        let (previous, facts, checkpoint) = transaction.inspect(|| {
+            let metadata = ObservationMetadata {
+                transaction,
+                execution: &batch.execution,
+                cursor: batch.cursor,
+            };
+            let previous = metadata.checkpoint()?.map(|checkpoint| checkpoint.cursor());
+            let normalized = normalizer.normalize(batch, &metadata)?;
+            let facts = normalized
+                .facts
+                .iter()
+                .map(domain_fact)
+                .collect::<Result<Vec<_>>>()?;
+            Ok::<_, Error>((previous, facts, normalized.checkpoint))
+        })?;
         for (index, fact) in facts.into_iter().enumerate() {
-            let aggregate = transaction.load(batch.execution.task())?;
-            let cursor = aggregate
-                .cursor()
-                .and_then(|cursor| cursor.checked_add(1))
-                .ok_or(alondra_store::Error::InvalidInput)?;
+            let (revision, cursor) = transaction.inspect(|| {
+                let aggregate = transaction.load(batch.execution.task())?;
+                let cursor = aggregate
+                    .cursor()
+                    .and_then(|cursor| cursor.checked_add(1))
+                    .ok_or(alondra_store::Error::InvalidInput)?;
+                Ok::<_, Error>((aggregate.revision(), cursor))
+            })?;
             transaction.apply(
                 batch.execution.task(),
-                aggregate.revision(),
+                revision,
                 &format!(
                     "adapter-{}-{}-{index}",
                     batch.execution.generation(),
@@ -281,14 +305,16 @@ pub fn stage_observation<N: ObservationNormalizer>(
             &batch.execution,
             batch.cursor,
             previous,
-            normalized.checkpoint,
+            checkpoint,
         )?;
     }
-    if transaction
-        .normalization_checkpoint(&batch.execution)?
-        .is_none_or(|checkpoint| checkpoint.cursor() < batch.cursor)
-    {
-        return Err(alondra_store::Error::CheckpointConflict.into());
-    }
-    Ok(acceptance)
+    transaction.inspect(|| {
+        if transaction
+            .normalization_checkpoint(&batch.execution)?
+            .is_none_or(|checkpoint| checkpoint.cursor() < batch.cursor)
+        {
+            return Err(alondra_store::Error::CheckpointConflict.into());
+        }
+        Ok(acceptance)
+    })
 }

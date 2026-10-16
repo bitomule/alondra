@@ -85,24 +85,28 @@ impl LifecycleTransaction<'_> {
         owner_generation: u64,
         evidence: CommandEvidence,
     ) -> Result<()> {
-        self.fence_attempt(&attempt)?;
-        self.fence_observation_owner(attempt.execution(), owner_generation)?;
-        let retained = CommandEvidence::new(evidence.bytes().to_vec())?;
-        self.record_command(&attempt, evidence)?;
-        self.commands.push(CommittedCommand {
-            attempt,
-            owner_generation,
-            evidence: retained,
-        });
-        Ok(())
+        staging!(self, {
+            self.fence_attempt(&attempt)?;
+            self.fence_observation_owner(attempt.execution(), owner_generation)?;
+            let retained = CommandEvidence::new(evidence.bytes().to_vec())?;
+            self.record_command(&attempt, evidence)?;
+            self.commands.push(CommittedCommand {
+                attempt,
+                owner_generation,
+                evidence: retained,
+            });
+            Ok(())
+        })
     }
     pub fn fence_committed_command(&self, command: &CommittedCommand) -> Result<()> {
-        self.fence_attempt(&command.attempt)?;
-        self.fence_observation_owner(command.attempt.execution(), command.owner_generation)?;
-        if self.command_evidence(&command.attempt)?.bytes() != command.bytes() {
-            return Err(Error::CommandConflict);
-        }
-        Ok(())
+        staging!(self, {
+            self.fence_attempt(&command.attempt)?;
+            self.fence_observation_owner(command.attempt.execution(), command.owner_generation)?;
+            if self.command_evidence(&command.attempt)?.bytes() != command.bytes() {
+                return Err(Error::CommandConflict);
+            }
+            Ok(())
+        })
     }
     /// Receipt recording must still work after a possible offer whose authority was revoked.
     pub fn record_committed_receipt(
@@ -110,7 +114,9 @@ impl LifecycleTransaction<'_> {
         command: CommittedCommand,
         receipt: DispatchReceipt,
     ) -> Result<()> {
-        self.record_receipt(command.attempt, receipt)
+        staging!(self, {
+            self.record_receipt(command.attempt, receipt)
+        })
     }
     /// The commit also requires the durable normalization checkpoint to cover this raw cursor.
     pub fn accept_owned_observation(
@@ -120,25 +126,27 @@ impl LifecycleTransaction<'_> {
         cursor: u64,
         evidence: CommandEvidence,
     ) -> Result<ObservationAcceptance> {
-        self.fence_observation_owner(execution, owner_generation)?;
-        let binding = self.execution_binding(execution)?;
-        let digest = evidence_digest(evidence.bytes());
-        let acceptance = self.accept_observation(execution, cursor, evidence)?;
-        if !self
-            .observations
-            .iter()
-            .any(|prior| prior.execution == *execution && prior.cursor == cursor)
-        {
-            self.observations.push(CommittedObservation {
-                scope: self.scope.clone(),
-                execution: execution.clone(),
-                binding,
-                owner_generation,
-                cursor,
-                digest,
-            });
-        }
-        Ok(acceptance)
+        staging!(self, {
+            self.fence_observation_owner(execution, owner_generation)?;
+            let binding = self.execution_binding(execution)?;
+            let digest = evidence_digest(evidence.bytes());
+            let acceptance = self.accept_observation(execution, cursor, evidence)?;
+            if !self
+                .observations
+                .iter()
+                .any(|prior| prior.execution == *execution && prior.cursor == cursor)
+            {
+                self.observations.push(CommittedObservation {
+                    scope: self.scope.clone(),
+                    execution: execution.clone(),
+                    binding,
+                    owner_generation,
+                    cursor,
+                    digest,
+                });
+            }
+            Ok(acceptance)
+        })
     }
     pub(super) fn checkpoint_binding_for_accepted_observation(
         &self,

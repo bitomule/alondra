@@ -2,7 +2,8 @@
 mod fixture_controller;
 use fixture_controller::WorkerController;
 use alondra_agent_application::{
-    DurableAdapter, InputMetadata, Normalization, ObservationMetadata, ObservationNormalizer,
+    DurableAdapter, InputMetadata, Normalization, ObservationMetadata,
+    ObservationNormalizer, stage_observation,
 };
 use alondra_domain::{ActivityView, Event};
 use alondra_foundation::{ConversationId, HostId, InputId, InstanceId, TaskId, TurnId, WorkId};
@@ -10,8 +11,11 @@ use alondra_provider_contract::{
     Adapter, AdapterError, Capability, Handoff, Invocation, Observation, OrderedObservation,
     Placement, PreparedCommand, ProviderBinding,
 };
-use alondra_store::{AdapterState, AuthorityScope, InputPayload, OwnerGrant};
-use rusqlite::Connection;
+use alondra_store::{
+    AdapterState, AuthorityScope, InputPayload, LifecycleTransaction, ObservationAcceptance,
+    OwnerGrant,
+};
+use rusqlite::{Connection, TransactionBehavior};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::{Arc, Mutex};
 #[path = "../../test_support.rs"]
@@ -136,10 +140,10 @@ impl DurableAdapter for RemoteAdapter {
             metadata.execution().conversation().as_str()
         ]))
         .unwrap();
-        if metadata.conversation().map_err(metadata_error)? != expected {
+        if metadata.conversation().map_err(metadata_error)?.as_deref() != Some(expected.as_slice()) {
             return Err(AdapterError::InvalidObservation);
         }
-        metadata.input().map_err(metadata_error)
+        metadata.input().map_err(metadata_error)?.ok_or(AdapterError::InvalidObservation)
     }
     fn install_owner(
         &mut self,
@@ -462,4 +466,194 @@ fn shared_business_input_ids_stay_task_scoped_through_remote_service_and_store()
     drop(connection);
     drop(first);
     drop(second);
+}
+
+enum Probe {
+    Real,
+    CatchesMetadataError,
+    Refuses,
+    Panics,
+}
+struct ProbeNormalizer(Probe);
+impl ObservationNormalizer for ProbeNormalizer {
+    fn normalize(
+        &self,
+        batch: &OrderedObservation,
+        metadata: &ObservationMetadata<'_, '_>,
+    ) -> Result<Normalization, AdapterError> {
+        match self.0 {
+            Probe::Real => RemoteNormalizer.normalize(batch, metadata),
+            Probe::CatchesMetadataError => {
+                assert!(matches!(
+                    metadata.lookup_inputs(&vec![b"native".to_vec(); 65]),
+                    Err(alondra_store::Error::MetadataCapacity)
+                ));
+                Normalization::new(vec![Observation::Available], b"checkpoint".to_vec())
+            }
+            Probe::Refuses => Err(AdapterError::InvalidObservation),
+            Probe::Panics => panic!("normalizer panicked after the raw write"),
+        }
+    }
+}
+fn scope() -> AuthorityScope {
+    AuthorityScope::new("remote-epoch".into()).unwrap()
+}
+fn raw_observations(directory: &test_support::Directory) -> i64 {
+    Connection::open(directory.join("domain.db"))
+        .unwrap()
+        .query_row(
+            "SELECT (SELECT count(*) FROM provider_observations)+(SELECT count(*) FROM provider_observation_heads)",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap()
+}
+/// Stages one valid raw observation through the probe, catching whatever it does, then commits.
+fn stage_and_commit(probe: Probe) -> (bool, alondra_store::Result<()>, i64) {
+    let directory = test_support::Directory::new();
+    let mut controller = WorkerController::open(
+        database(&directory),
+        scope(),
+        RemoteAdapter::new(Arc::new(Mutex::new(RemoteService::default()))),
+    )
+    .unwrap();
+    launch(&mut controller);
+    let mut connection = Connection::open(directory.join("domain.db")).unwrap();
+    connection.execute_batch("PRAGMA foreign_keys=ON").unwrap();
+    let raw = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .unwrap();
+    let mut transaction = LifecycleTransaction::attach(raw, scope()).unwrap();
+    let execution = transaction
+        .load(&"task".into())
+        .unwrap()
+        .execution()
+        .unwrap()
+        .clone();
+    let binding = transaction.execution_binding(&execution).unwrap();
+    let batch = OrderedObservation {
+        owner_generation: 1,
+        execution,
+        cursor: 1,
+        evidence: br#"{"event":{"status":"workspace_ready"}}"#.to_vec(),
+    };
+    let staged = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        stage_observation(&mut transaction, &binding, 1, &batch, &ProbeNormalizer(probe))
+    }));
+    let accepted = matches!(staged, Ok(Ok(ObservationAcceptance::Accepted)));
+    let committed = transaction.commit().map(drop);
+    drop(connection);
+    let rows = raw_observations(&directory);
+    drop(controller);
+    (accepted, committed, rows)
+}
+#[test]
+fn real_normalizer_commits_the_staged_observation() {
+    let (accepted, committed, rows) = stage_and_commit(Probe::Real);
+    assert!(accepted);
+    assert!(committed.is_ok(), "{committed:?}");
+    assert_eq!(rows, 2, "raw observation and its head are durable");
+}
+#[test]
+fn normalizer_that_catches_a_metadata_error_and_returns_ok_poisons_the_commit() {
+    let (accepted, committed, rows) = stage_and_commit(Probe::CatchesMetadataError);
+    assert!(!accepted, "a swallowed metadata failure cannot be accepted");
+    assert!(matches!(committed, Err(alondra_store::Error::Poisoned)), "{committed:?}");
+    assert_eq!(rows, 0, "an independent connection sees no raw row");
+}
+#[test]
+fn normalizer_error_caught_by_the_caller_poisons_the_commit() {
+    let (accepted, committed, rows) = stage_and_commit(Probe::Refuses);
+    assert!(!accepted);
+    assert!(matches!(committed, Err(alondra_store::Error::Poisoned)), "{committed:?}");
+    assert_eq!(rows, 0, "an independent connection sees no raw row");
+}
+#[test]
+fn normalizer_panic_caught_by_the_caller_poisons_the_commit() {
+    let (accepted, committed, rows) = stage_and_commit(Probe::Panics);
+    assert!(!accepted);
+    assert!(matches!(committed, Err(alondra_store::Error::Poisoned)), "{committed:?}");
+    assert_eq!(rows, 0, "an independent connection sees no raw row");
+}
+/// Admits the task and stages its first input through the adapter, catching the adapter's result.
+fn guarded_adapter_input(
+    load_before_staging: bool,
+) -> (
+    Result<(), alondra_agent_application::Error>,
+    alondra_store::Result<()>,
+    i64,
+) {
+    let directory = test_support::Directory::new();
+    let mut adapter = RemoteAdapter::new(Arc::new(Mutex::new(RemoteService::default())));
+    let mut connection = database(&directory);
+    let mut install = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .unwrap();
+    LifecycleTransaction::install(&mut install).unwrap();
+    install.commit().unwrap();
+    let raw = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .unwrap();
+    let mut transaction = LifecycleTransaction::attach(raw, scope()).unwrap();
+    let task = TaskId("task".into());
+    let input = InputId::new("opaque/input-business").unwrap();
+    transaction
+        .create(&task, InputPayload::new(input.clone(), "Actual service prompt").unwrap())
+        .unwrap();
+    transaction
+        .apply(
+            &task,
+            0,
+            "worker-admission",
+            Event::Admit {
+                node: "node".into(),
+                conversation: ConversationId::new("opaque/conversation").unwrap(),
+                instance: InstanceId::new("remote/resource").unwrap(),
+                host: HostId::new("remote-service-endpoint").unwrap(),
+            },
+        )
+        .unwrap();
+    transaction.bind_provider(&task, adapter.binding()).unwrap();
+    transaction
+        .stage_launch(
+            &task,
+            &Placement::RemoteWorkspace("service/workspace".into()),
+            adapter.binding(),
+        )
+        .unwrap();
+    let execution = transaction.load(&task).unwrap().execution().unwrap().clone();
+    let adapted = InputMetadata::with_execution(&mut transaction, &execution, &input, |metadata| {
+        if load_before_staging {
+            adapter.load_input(metadata).map(drop)
+        } else {
+            adapter.stage_input(metadata)
+        }
+    });
+    let committed = transaction.commit().map(drop);
+    let tasks: i64 = Connection::open(directory.join("domain.db"))
+        .unwrap()
+        .query_row("SELECT count(*) FROM lifecycle_tasks", [], |row| row.get(0))
+        .unwrap();
+    drop(connection);
+    (adapted, committed, tasks)
+}
+#[test]
+fn guarded_adapter_success_commits_its_metadata() {
+    let (adapted, committed, tasks) = guarded_adapter_input(false);
+    assert!(adapted.is_ok(), "{adapted:?}");
+    assert!(committed.is_ok(), "{committed:?}");
+    assert_eq!(tasks, 1);
+}
+#[test]
+fn adapter_refusal_caught_by_the_caller_poisons_the_commit() {
+    let (adapted, committed, tasks) = guarded_adapter_input(true);
+    assert!(
+        matches!(
+            adapted,
+            Err(alondra_agent_application::Error::Adapter(AdapterError::InvalidObservation))
+        ),
+        "{adapted:?}"
+    );
+    assert!(matches!(committed, Err(alondra_store::Error::Poisoned)), "{committed:?}");
+    assert_eq!(tasks, 0, "an independent connection sees none of the earlier valid writes");
 }

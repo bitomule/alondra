@@ -128,8 +128,15 @@ fn fresh_lifecycle_journal_is_valid_inside_an_existing_domain_database() {
         .unwrap();
     let tx =
         LifecycleTransaction::attach(tx, AuthorityScope::new("epoch".into()).unwrap()).unwrap();
-    assert!(matches!(tx.load(&"task".into()), Err(Error::MissingTask)));
     tx.commit().unwrap();
+    let tx = database
+        .connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .unwrap();
+    let tx =
+        LifecycleTransaction::attach(tx, AuthorityScope::new("epoch".into()).unwrap()).unwrap();
+    assert!(matches!(tx.load(&"task".into()), Err(Error::MissingTask)));
+    assert!(matches!(tx.commit(), Err(Error::Poisoned)));
 }
 #[test]
 fn unsupported_marker_is_refused_without_rewriting_its_value_or_schema() {

@@ -63,11 +63,9 @@ impl<A: DurableAdapter> WorkerController<A> {
             .execution()
             .cloned()
             .ok_or(alondra_store::Error::MissingIntent)?;
-        self.adapter.stage_input(InputMetadata::for_execution(
-            &mut transaction,
-            &execution,
-            &input_id,
-        )?)?;
+        InputMetadata::with_execution(&mut transaction, &execution, &input_id, |metadata| {
+            self.adapter.stage_input(metadata)
+        })?;
         transaction.stage_launch(task, &placement, self.adapter.binding())?;
         transaction.reserve_owner(&execution, 0)?;
         let mut committed = transaction.commit()?;
@@ -115,9 +113,9 @@ impl<A: DurableAdapter> WorkerController<A> {
         let mut transaction = LifecycleTransaction::attach(raw, self.scope.clone())?;
         transaction.fence_attempt(&attempt)?;
         transaction.fence_observation_owner(attempt.execution(), owner_generation)?;
-        let native = self
-            .adapter
-            .load_input(InputMetadata::for_attempt(&mut transaction, &attempt)?)?;
+        let native = InputMetadata::with_attempt(&mut transaction, &attempt, |metadata| {
+            self.adapter.load_input(metadata)
+        })?;
         let command = self.adapter.prepare(invocation(&attempt), native)?;
         transaction.record_command(&attempt, CommandEvidence::new(command.bytes().to_vec())?)?;
         transaction.commit()?;

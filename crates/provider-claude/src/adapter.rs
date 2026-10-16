@@ -380,11 +380,11 @@ impl DurableAdapter for ClaudeAdapter {
     }
     fn stage_input(&mut self, mut metadata: InputMetadata<'_, '_>) -> Result<(), AdapterError> {
         match metadata.conversation() {
-            Ok(bytes) => {
+            Ok(Some(bytes)) => {
                 let _: SessionRecord =
                     serde_json::from_slice(&bytes).map_err(|_| AdapterError::InvalidObservation)?;
             }
-            Err(alondra_store::Error::MissingAdapterInput) => metadata
+            Ok(None) => metadata
                 .put_conversation(
                     serde_json::to_vec(&SessionRecord {
                         session_id: random_uuid()?,
@@ -395,11 +395,11 @@ impl DurableAdapter for ClaudeAdapter {
             Err(error) => return Err(storage(error)),
         }
         match metadata.input() {
-            Ok(bytes) => {
+            Ok(Some(bytes)) => {
                 let _: InputRecord =
                     serde_json::from_slice(&bytes).map_err(|_| AdapterError::InvalidObservation)?;
             }
-            Err(alondra_store::Error::MissingAdapterInput) => metadata
+            Ok(None) => metadata
                 .put_input(
                     serde_json::to_vec(&InputRecord {
                         message_id: random_uuid()?,
@@ -412,8 +412,8 @@ impl DurableAdapter for ClaudeAdapter {
         Ok(())
     }
     fn load_input(&mut self, metadata: InputMetadata<'_, '_>) -> Result<InputRecord, AdapterError> {
-        serde_json::from_slice(&metadata.input().map_err(storage)?)
-            .map_err(|_| AdapterError::InvalidObservation)
+        let bytes = metadata.input().map_err(storage)?.ok_or(AdapterError::InvalidObservation)?;
+        serde_json::from_slice(&bytes).map_err(|_| AdapterError::InvalidObservation)
     }
     fn install_owner(
         &mut self,

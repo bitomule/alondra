@@ -609,10 +609,10 @@ impl FacadeFixture {
             .execution()
             .unwrap()
             .clone();
-        fixture
-            .worker
-            .stage_input(InputMetadata::for_execution(&mut tx, &stamp, &input).unwrap())
-            .unwrap();
+        InputMetadata::with_execution(&mut tx, &stamp, &input, |metadata| {
+            fixture.worker.stage_input(metadata)
+        })
+        .unwrap();
         tx.stage_launch(
             &"sdk-task".into(),
             &Placement::LocalDirectory(cwd.to_str().unwrap().into()),
@@ -661,13 +661,10 @@ impl FacadeFixture {
         )
         .unwrap();
         let mut tx = alondra_store::LifecycleTransaction::attach(raw, self.scope.clone()).unwrap();
-        let command = self
-            .worker
-            .prepare(
-                attempt,
-                InputMetadata::for_attempt(&mut tx, attempt).unwrap(),
-            )
-            .unwrap();
+        let command = InputMetadata::with_attempt(&mut tx, attempt, |metadata| {
+            self.worker.prepare(attempt, metadata)
+        })
+        .unwrap();
         tx.commit().unwrap();
         command
     }
@@ -923,14 +920,19 @@ fn actual_facade_rejects_foreign_epoch_input_metadata_with_equal_execution_and_i
     )
     .unwrap();
     let mut tx = alondra_store::LifecycleTransaction::attach(raw, second.scope.clone()).unwrap();
-    let metadata =
-        InputMetadata::for_execution(&mut tx, attempt.execution(), attempt.input().id()).unwrap();
-    assert_eq!(metadata.execution(), attempt.execution());
-    assert_eq!(metadata.input_id(), attempt.input().id());
-    let result = first.worker.prepare(&attempt, metadata);
-    tx.commit().unwrap();
+    let result = InputMetadata::with_execution(
+        &mut tx,
+        attempt.execution(),
+        attempt.input().id(),
+        |metadata| {
+            assert_eq!(metadata.execution(), attempt.execution());
+            assert_eq!(metadata.input_id(), attempt.input().id());
+            first.worker.prepare(&attempt, metadata)
+        },
+    );
+    assert!(matches!(tx.commit(), Err(alondra_store::Error::Poisoned)), "the caught preparation failure cannot commit");
     assert!(
-        matches!(result, Err(AdapterError::InvalidObservation)),
+        matches!(result, Err(alondra_agent_application::Error::Adapter(AdapterError::InvalidObservation))),
         "preparation must reject same-stamp metadata loaded from another genuine data epoch"
     );
     assert!(first.worker.prepared.is_none());
@@ -1085,15 +1087,20 @@ fn actual_facade_rejects_foreign_metadata_binding_with_equal_epoch_execution_and
     )
     .unwrap();
     let mut tx = alondra_store::LifecycleTransaction::attach(raw, second.scope.clone()).unwrap();
-    let metadata =
-        InputMetadata::for_execution(&mut tx, attempt.execution(), attempt.input().id()).unwrap();
-    assert_eq!(metadata.execution(), attempt.execution());
-    assert_eq!(metadata.input_id(), attempt.input().id());
-    assert_eq!(metadata.binding().unwrap(), *foreign_owner.binding());
-    let result = first.worker.prepare(&attempt, metadata);
-    tx.commit().unwrap();
+    let result = InputMetadata::with_execution(
+        &mut tx,
+        attempt.execution(),
+        attempt.input().id(),
+        |metadata| {
+            assert_eq!(metadata.execution(), attempt.execution());
+            assert_eq!(metadata.input_id(), attempt.input().id());
+            assert_eq!(metadata.binding().unwrap(), *foreign_owner.binding());
+            first.worker.prepare(&attempt, metadata)
+        },
+    );
+    assert!(matches!(tx.commit(), Err(alondra_store::Error::Poisoned)), "the caught preparation failure cannot commit");
     assert!(
-        matches!(result, Err(AdapterError::InvalidObservation)),
+        matches!(result, Err(alondra_agent_application::Error::Adapter(AdapterError::InvalidObservation))),
         "same epoch and input identifiers cannot prepare native metadata from another binding revision"
     );
     assert!(first.worker.prepared.is_none());
@@ -1135,11 +1142,12 @@ fn actual_facade_refuses_configured_workspace_different_from_the_claimed_owned_d
     )
     .unwrap();
     let mut tx = alondra_store::LifecycleTransaction::attach(raw, fixture.scope.clone()).unwrap();
-    let metadata = InputMetadata::for_attempt(&mut tx, &attempt).unwrap();
-    let result = fixture.worker.prepare(&attempt, metadata);
-    tx.commit().unwrap();
+    let result = InputMetadata::with_attempt(&mut tx, &attempt, |metadata| {
+        fixture.worker.prepare(&attempt, metadata)
+    });
+    assert!(matches!(tx.commit(), Err(alondra_store::Error::Poisoned)), "the caught preparation failure cannot commit");
     assert!(
-        matches!(result, Err(AdapterError::Unsupported)),
+        matches!(result, Err(alondra_agent_application::Error::Adapter(AdapterError::Unsupported))),
         "the native query must not use a configured directory different from its genuine claimed workspace"
     );
     assert!(fixture.worker.prepared.is_none());

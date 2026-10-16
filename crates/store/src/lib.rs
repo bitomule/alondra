@@ -1,5 +1,13 @@
 #![forbid(unsafe_code)]
 //! Transactional TaskLifecycle journal port. No production daemon binding is installed here.
+macro_rules! staging {
+    ($transaction:ident, $body:block) => {{
+        let operation = $transaction.failure.begin()?;
+        operation.finish((|| $body)())
+    }};
+}
+
+mod failure;
 mod codec;
 mod commit_seals;
 pub use commit_seals::{CommittedCommand, CommittedObservation};
@@ -12,7 +20,7 @@ use alondra_domain::{
 };
 use alondra_foundation::{DataEpoch, Revision, TaskId};
 use alondra_provider_contract::{Capability, Placement, ProviderBinding};
-use rusqlite::{Connection, OptionalExtension, Transaction, params};
+use rusqlite::{Connection, DropBehavior, OptionalExtension, Transaction, params};
 use std::collections::BTreeSet;
 use std::path::Path;
 
@@ -25,6 +33,7 @@ pub enum Error {
     Codec(serde_json::Error),
     Domain(Refusal),
     InvalidInput,
+    Poisoned,
     WrongScope,
     MissingTask,
     CorruptJournal,
@@ -358,9 +367,18 @@ pub struct UnresolvedDispatch {
 /// use alondra_store::LifecycleTransaction;
 /// let _ = LifecycleTransaction::settle_card;
 /// ```
+///
+/// A failed operation poisons the transaction for good; nothing outside the crate can reach the latch:
+/// ```compile_fail,E0603
+/// use alondra_store::failure::Failure;
+/// ```
+/// ```compile_fail,E0616
+/// fn disarm(transaction: alondra_store::LifecycleTransaction<'_>) { let _ = transaction.failure; }
+/// ```
 /// The caller must install this port instead of independent legacy task/node writes at cutover.
 pub struct LifecycleTransaction<'connection> {
     transaction: Transaction<'connection>,
+    failure: failure::Failure,
     scope: AuthorityScope,
     touched: BTreeSet<TaskId>,
     claimed: Vec<DispatchAttempt>,
@@ -377,12 +395,15 @@ impl<'connection> LifecycleTransaction<'connection> {
         savepoint.commit()?;
         Ok(())
     }
-    pub fn attach(transaction: Transaction<'connection>, scope: AuthorityScope) -> Result<Self> {
+    /// Dropping the journal always rolls back, whatever drop behaviour the caller chose.
+    pub fn attach(mut transaction: Transaction<'connection>, scope: AuthorityScope) -> Result<Self> {
+        transaction.set_drop_behavior(DropBehavior::Rollback);
         require_foreign_keys(&transaction)?;
         journal_format::verify(&transaction)?;
         check_epoch(&transaction, &scope)?;
         Ok(Self {
             transaction,
+            failure: Default::default(),
             scope,
             touched: BTreeSet::new(),
             claimed: vec![],
@@ -392,50 +413,74 @@ impl<'connection> LifecycleTransaction<'connection> {
             observations: vec![],
         })
     }
+    /// Records errors or unwinding in read-only application validation without exposing SQL.
+    pub fn inspect<T, E>(&self, operation: impl FnOnce() -> std::result::Result<T, E>) -> std::result::Result<T, E>
+    where
+        E: From<Error>,
+    {
+        staging!(self, { operation() })
+    }
+    /// Records errors or unwinding in adapter work that writes through this transaction.
+    pub fn inspect_mut<T, E>(
+        &mut self,
+        operation: impl FnOnce(&mut Self) -> std::result::Result<T, E>,
+    ) -> std::result::Result<T, E>
+    where
+        E: From<Error>,
+    {
+        let guard = self.failure.begin()?;
+        guard.finish(operation(self))
+    }
     pub fn scope(&self) -> &AuthorityScope {
         &self.scope
     }
     pub fn load(&self, task: &TaskId) -> Result<TaskLifecycle> {
-        persistence::load(&self.transaction, &self.scope, task)
+        staging!(self, {
+            persistence::load(&self.transaction, &self.scope, task)
+        })
     }
     pub fn create(&mut self, task: &TaskId, initial: InputPayload) -> Result<()> {
-        identity(&task.0)?;
-        let _ = TaskLifecycle::planned(task.clone(), initial.id.clone())?;
-        let savepoint = self.transaction.savepoint()?;
-        savepoint.execute(
-            "INSERT INTO lifecycle_tasks(task_id,epoch,initial_input,revision) VALUES(?1,?2,?3,0)",
-            params![task.0, self.scope.epoch.0, initial.id.as_str()],
-        )?;
-        savepoint.execute(
-            "INSERT INTO lifecycle_inputs(task_id,input_id,body) VALUES(?1,?2,?3)",
-            params![task.0, initial.id.as_str(), initial.text],
-        )?;
-        savepoint.commit()?;
-        self.touched.insert(task.clone());
-        Ok(())
+        staging!(self, {
+            identity(&task.0)?;
+            let _ = TaskLifecycle::planned(task.clone(), initial.id.clone())?;
+            let savepoint = self.transaction.savepoint()?;
+            savepoint.execute(
+                "INSERT INTO lifecycle_tasks(task_id,epoch,initial_input,revision) VALUES(?1,?2,?3,0)",
+                params![task.0, self.scope.epoch.0, initial.id.as_str()],
+            )?;
+            savepoint.execute(
+                "INSERT INTO lifecycle_inputs(task_id,input_id,body) VALUES(?1,?2,?3)",
+                params![task.0, initial.id.as_str(), initial.text],
+            )?;
+            savepoint.commit()?;
+            self.touched.insert(task.clone());
+            Ok(())
+        })
     }
     pub fn put_input(&mut self, task: &TaskId, input: InputPayload) -> Result<()> {
-        self.load(task)?;
-        let existing: Option<String> = self
-            .transaction
-            .query_row(
-                "SELECT body FROM lifecycle_inputs WHERE task_id=?1 AND input_id=?2",
-                params![task.0, input.id.as_str()],
-                |row| row.get(0),
-            )
-            .optional()?;
-        if let Some(existing) = existing {
-            if existing != input.text {
-                return Err(Error::InputConflict);
+        staging!(self, {
+            self.load(task)?;
+            let existing: Option<String> = self
+                .transaction
+                .query_row(
+                    "SELECT body FROM lifecycle_inputs WHERE task_id=?1 AND input_id=?2",
+                    params![task.0, input.id.as_str()],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if let Some(existing) = existing {
+                if existing != input.text {
+                    return Err(Error::InputConflict);
+                }
+            } else {
+                self.transaction.execute(
+                    "INSERT INTO lifecycle_inputs(task_id,input_id,body) VALUES(?1,?2,?3)",
+                    params![task.0, input.id.as_str(), input.text],
+                )?;
             }
-        } else {
-            self.transaction.execute(
-                "INSERT INTO lifecycle_inputs(task_id,input_id,body) VALUES(?1,?2,?3)",
-                params![task.0, input.id.as_str(), input.text],
-            )?;
-        }
-        self.touched.insert(task.clone());
-        Ok(())
+            self.touched.insert(task.clone());
+            Ok(())
+        })
     }
     pub fn apply(
         &mut self,
@@ -444,135 +489,150 @@ impl<'connection> LifecycleTransaction<'connection> {
         command_id: &str,
         event: Event,
     ) -> Result<Applied> {
-        identity(command_id)?;
-        check_epoch(&self.transaction, &self.scope)?;
-        let encoded = codec::encode(&event)?;
-        let mut aggregate = self.load(task)?;
-        let prior: Option<(Revision, String)> = self
-            .transaction
-            .query_row(
-                "SELECT revision,event FROM lifecycle_events WHERE task_id=?1 AND command_id=?2",
-                params![task.0, command_id],
-                |row| Ok((read_number(row, 0)?, row.get(1)?)),
-            )
-            .optional()?;
-        if let Some((revision, prior)) = prior {
-            if revision.checked_sub(1) != Some(expected_revision) || prior != encoded {
-                return Err(Error::CommandConflict);
+        staging!(self, {
+            identity(command_id)?;
+            check_epoch(&self.transaction, &self.scope)?;
+            let encoded = codec::encode(&event)?;
+            let mut aggregate = self.load(task)?;
+            let prior: Option<(Revision, String)> = self
+                .transaction
+                .query_row(
+                    "SELECT revision,event FROM lifecycle_events WHERE task_id=?1 AND command_id=?2",
+                    params![task.0, command_id],
+                    |row| Ok((read_number(row, 0)?, row.get(1)?)),
+                )
+                .optional()?;
+            if let Some((revision, prior)) = prior {
+                if revision.checked_sub(1) != Some(expected_revision) || prior != encoded {
+                    return Err(Error::CommandConflict);
+                }
+                self.touched.insert(task.clone());
+                return Ok(Applied {
+                    revision,
+                    replayed: true,
+                });
+            }
+            let old_execution = aggregate.execution().cloned();
+            let old_cards: Vec<_> = aggregate
+                .cards()
+                .into_iter()
+                .map(|(card, _)| card.clone())
+                .collect();
+            aggregate.apply(expected_revision, event)?;
+            if old_execution.as_ref() != aggregate.execution() {
+                let unresolved: bool = self.transaction.query_row("SELECT EXISTS(SELECT 1 FROM lifecycle_dispatches WHERE task_id=?1 AND status IN('claimed','uncertain'))", params![task.0], |row| row.get(0))?;
+                if unresolved {
+                    return Err(Error::UnresolvedDispatch);
+                }
+            }
+            let cleared: Vec<_> = old_cards
+                .into_iter()
+                .filter(|card| {
+                    !aggregate
+                        .cards()
+                        .iter()
+                        .any(|(current, _)| *current == card)
+                })
+                .collect();
+            let savepoint = self.transaction.savepoint()?;
+            persistence::require_inputs(&savepoint, &aggregate)?;
+            persistence::save_relations(&savepoint, &aggregate)?;
+            savepoint.execute(
+                "INSERT INTO lifecycle_events(task_id,revision,command_id,event) VALUES(?1,?2,?3,?4)",
+                params![
+                    task.0,
+                    crate::sql_number(aggregate.revision())?,
+                    command_id,
+                    encoded
+                ],
+            )?;
+            savepoint.execute(
+                "UPDATE lifecycle_tasks SET revision=?2 WHERE task_id=?1",
+                params![task.0, crate::sql_number(aggregate.revision())?],
+            )?;
+            // A prepared intent has not crossed the host boundary; obsolete bindings can revoke it.
+            savepoint.execute("UPDATE lifecycle_dispatches SET status='revoked' WHERE task_id=?1 AND status='prepared' AND generation IS NOT ?2",
+                params![task.0, aggregate.execution().map(|stamp| crate::sql_number(stamp.generation())).transpose()?])?;
+            savepoint.commit()?;
+            for card in cleared {
+                self.cleared_cards.insert((task.clone(), card));
             }
             self.touched.insert(task.clone());
-            return Ok(Applied {
-                revision,
-                replayed: true,
-            });
-        }
-        let old_execution = aggregate.execution().cloned();
-        let old_cards: Vec<_> = aggregate
-            .cards()
-            .into_iter()
-            .map(|(card, _)| card.clone())
-            .collect();
-        aggregate.apply(expected_revision, event)?;
-        if old_execution.as_ref() != aggregate.execution() {
-            let unresolved: bool = self.transaction.query_row("SELECT EXISTS(SELECT 1 FROM lifecycle_dispatches WHERE task_id=?1 AND status IN('claimed','uncertain'))", params![task.0], |row| row.get(0))?;
-            if unresolved {
-                return Err(Error::UnresolvedDispatch);
-            }
-        }
-        let cleared: Vec<_> = old_cards
-            .into_iter()
-            .filter(|card| {
-                !aggregate
-                    .cards()
-                    .iter()
-                    .any(|(current, _)| *current == card)
+            Ok(Applied {
+                revision: aggregate.revision(),
+                replayed: false,
             })
-            .collect();
-        let savepoint = self.transaction.savepoint()?;
-        persistence::require_inputs(&savepoint, &aggregate)?;
-        persistence::save_relations(&savepoint, &aggregate)?;
-        savepoint.execute(
-            "INSERT INTO lifecycle_events(task_id,revision,command_id,event) VALUES(?1,?2,?3,?4)",
-            params![
-                task.0,
-                crate::sql_number(aggregate.revision())?,
-                command_id,
-                encoded
-            ],
-        )?;
-        savepoint.execute(
-            "UPDATE lifecycle_tasks SET revision=?2 WHERE task_id=?1",
-            params![task.0, crate::sql_number(aggregate.revision())?],
-        )?;
-        // A prepared intent has not crossed the host boundary; obsolete bindings can revoke it.
-        savepoint.execute("UPDATE lifecycle_dispatches SET status='revoked' WHERE task_id=?1 AND status='prepared' AND generation IS NOT ?2",
-            params![task.0, aggregate.execution().map(|stamp| crate::sql_number(stamp.generation())).transpose()?])?;
-        savepoint.commit()?;
-        for card in cleared {
-            self.cleared_cards.insert((task.clone(), card));
-        }
-        self.touched.insert(task.clone());
-        Ok(Applied {
-            revision: aggregate.revision(),
-            replayed: false,
         })
     }
     pub fn bind_provider(&mut self, task: &TaskId, binding: &ProviderBinding) -> Result<()> {
-        let aggregate = self.load(task)?;
-        let stamp = aggregate.execution().ok_or(Error::MissingIntent)?;
-        let savepoint = self.transaction.savepoint()?;
-        provider_binding::activate_initial(&savepoint, binding)?;
-        provider_binding::bind(&savepoint, stamp, binding)?;
-        savepoint.commit()?;
-        self.touched.insert(task.clone());
-        Ok(())
+        staging!(self, {
+            let aggregate = self.load(task)?;
+            let stamp = aggregate.execution().ok_or(Error::MissingIntent)?;
+            let savepoint = self.transaction.savepoint()?;
+            provider_binding::activate_initial(&savepoint, binding)?;
+            provider_binding::bind(&savepoint, stamp, binding)?;
+            savepoint.commit()?;
+            self.touched.insert(task.clone());
+            Ok(())
+        })
     }
     pub fn execution_binding(&self, stamp: &ExecutionStamp) -> Result<ProviderBinding> {
+        staging!(self, {
+            self.current_execution_binding(stamp)
+        })
+    }
+    fn current_execution_binding(&self, stamp: &ExecutionStamp) -> Result<ProviderBinding> {
         if self.load(stamp.task())?.execution() != Some(stamp) {
             return Err(Error::StalePermit);
         }
         provider_binding::for_execution(&self.transaction, stamp)
     }
     pub fn reserve_owner(&mut self, stamp: &ExecutionStamp, expected_previous: u64) -> Result<()> {
-        if self.owners.iter().any(|owner| owner.execution == *stamp) {
-            return Err(Error::StaleOwner);
-        }
-        let binding = self.execution_binding(stamp)?;
-        let next = expected_previous.checked_add(1).ok_or(Error::StaleOwner)?;
-        let next_sql = sql_number(next)?;
-        let changed = if expected_previous == 0 {
-            self.transaction.execute("INSERT INTO provider_execution_owners(task_id,generation,binding_id,owner_generation) VALUES(?1,?2,?3,?4) ON CONFLICT(task_id,generation) DO NOTHING",params![stamp.task().0,sql_number(stamp.generation())?,binding.id(),next_sql])?
-        } else {
-            self.transaction.execute("UPDATE provider_execution_owners SET owner_generation=?4 WHERE task_id=?1 AND generation=?2 AND binding_id=?3 AND owner_generation=?5",params![stamp.task().0,sql_number(stamp.generation())?,binding.id(),next_sql,sql_number(expected_previous)?])?
-        };
-        if changed != 1 {
-            return Err(Error::StaleOwner);
-        }
-        self.owners.push(OwnerGrant {
-            scope: self.scope.clone(),
-            execution: stamp.clone(),
-            binding,
-            generation: next,
-        });
-        Ok(())
+        staging!(self, {
+            if self.owners.iter().any(|owner| owner.execution == *stamp) {
+                return Err(Error::StaleOwner);
+            }
+            let binding = self.execution_binding(stamp)?;
+            let next = expected_previous.checked_add(1).ok_or(Error::StaleOwner)?;
+            let next_sql = sql_number(next)?;
+            let changed = if expected_previous == 0 {
+                self.transaction.execute("INSERT INTO provider_execution_owners(task_id,generation,binding_id,owner_generation) VALUES(?1,?2,?3,?4) ON CONFLICT(task_id,generation) DO NOTHING",params![stamp.task().0,sql_number(stamp.generation())?,binding.id(),next_sql])?
+            } else {
+                self.transaction.execute("UPDATE provider_execution_owners SET owner_generation=?4 WHERE task_id=?1 AND generation=?2 AND binding_id=?3 AND owner_generation=?5",params![stamp.task().0,sql_number(stamp.generation())?,binding.id(),next_sql,sql_number(expected_previous)?])?
+            };
+            if changed != 1 {
+                return Err(Error::StaleOwner);
+            }
+            self.owners.push(OwnerGrant {
+                scope: self.scope.clone(),
+                execution: stamp.clone(),
+                binding,
+                generation: next,
+            });
+            Ok(())
+        })
     }
     pub fn fence_owner(&self, grant: &OwnerGrant) -> Result<()> {
-        if grant.scope != self.scope || self.execution_binding(&grant.execution)? != grant.binding {
-            return Err(Error::StaleOwner);
-        }
-        let current:Option<u64>=self.transaction.query_row("SELECT owner_generation FROM provider_execution_owners WHERE task_id=?1 AND generation=?2 AND binding_id=?3",params![grant.execution.task().0,sql_number(grant.execution.generation())?,grant.binding.id()],|row|read_number(row,0)).optional()?;
-        if current != Some(grant.generation) {
-            return Err(Error::StaleOwner);
-        }
-        Ok(())
+        staging!(self, {
+            if grant.scope != self.scope || self.execution_binding(&grant.execution)? != grant.binding {
+                return Err(Error::StaleOwner);
+            }
+            let current:Option<u64>=self.transaction.query_row("SELECT owner_generation FROM provider_execution_owners WHERE task_id=?1 AND generation=?2 AND binding_id=?3",params![grant.execution.task().0,sql_number(grant.execution.generation())?,grant.binding.id()],|row|read_number(row,0)).optional()?;
+            if current != Some(grant.generation) {
+                return Err(Error::StaleOwner);
+            }
+            Ok(())
+        })
     }
     pub fn fence_observation_owner(
         &self,
         stamp: &ExecutionStamp,
         owner_generation: u64,
     ) -> Result<()> {
-        let binding = self.execution_binding(stamp)?;
-        self.fence_retained_observation_owner(stamp, &binding, owner_generation)
+        staging!(self, {
+            let binding = self.execution_binding(stamp)?;
+            self.fence_retained_observation_owner(stamp, &binding, owner_generation)
+        })
     }
     fn fence_retained_observation_owner(
         &self,
@@ -587,7 +647,9 @@ impl<'connection> LifecycleTransaction<'connection> {
         Ok(())
     }
     pub fn revoke_provider(&mut self, binding: &ProviderBinding) -> Result<()> {
-        provider_binding::revoke(&self.transaction, binding)
+        staging!(self, {
+            provider_binding::revoke(&self.transaction, binding)
+        })
     }
     pub fn stage_launch(
         &mut self,
@@ -595,50 +657,54 @@ impl<'connection> LifecycleTransaction<'connection> {
         placement: &Placement,
         binding: &ProviderBinding,
     ) -> Result<()> {
-        let value = match placement {
-            Placement::LocalDirectory(value) | Placement::RemoteWorkspace(value) => value,
-        };
-        if value.trim().is_empty() || value.len() > 4096 || value.contains('\0') {
-            return Err(Error::InvalidInput);
-        }
-        if let Placement::LocalDirectory(directory) = placement {
-            if !Path::new(directory).is_absolute() {
+        staging!(self, {
+            let value = match placement {
+                Placement::LocalDirectory(value) | Placement::RemoteWorkspace(value) => value,
+            };
+            if value.trim().is_empty() || value.len() > 4096 || value.contains('\0') {
                 return Err(Error::InvalidInput);
             }
-            require_directory(&self.transaction, task, directory)?;
-        }
-        let aggregate = self.load(task)?;
-        if aggregate.resource() != Some(ResourceEvidence::Reserved) {
-            return Err(Error::MissingIntent);
-        }
-        let input = aggregate
-            .pending_inputs()
-            .first()
-            .copied()
-            .ok_or(Error::MissingInput)?;
-        let stamp = aggregate.execution().ok_or(Error::MissingIntent)?;
-        let savepoint = self.transaction.savepoint()?;
-        provider_binding::activate_initial(&savepoint, binding)?;
-        provider_binding::bind(&savepoint, stamp, binding)?;
-        Self::stage(&savepoint, &aggregate, input, Some(placement))?;
-        savepoint.commit()?;
-        self.touched.insert(task.clone());
-        Ok(())
+            if let Placement::LocalDirectory(directory) = placement {
+                if !Path::new(directory).is_absolute() {
+                    return Err(Error::InvalidInput);
+                }
+                require_directory(&self.transaction, task, directory)?;
+            }
+            let aggregate = self.load(task)?;
+            if aggregate.resource() != Some(ResourceEvidence::Reserved) {
+                return Err(Error::MissingIntent);
+            }
+            let input = aggregate
+                .pending_inputs()
+                .first()
+                .copied()
+                .ok_or(Error::MissingInput)?;
+            let stamp = aggregate.execution().ok_or(Error::MissingIntent)?;
+            let savepoint = self.transaction.savepoint()?;
+            provider_binding::activate_initial(&savepoint, binding)?;
+            provider_binding::bind(&savepoint, stamp, binding)?;
+            Self::stage(&savepoint, &aggregate, input, Some(placement))?;
+            savepoint.commit()?;
+            self.touched.insert(task.clone());
+            Ok(())
+        })
     }
     pub fn stage_input(&mut self, task: &TaskId, input: &InputId) -> Result<()> {
-        let aggregate = self.load(task)?;
-        if !aggregate.pending_inputs().contains(&input) {
-            return Err(Error::MissingInput);
-        }
-        let stamp = aggregate.execution().ok_or(Error::MissingIntent)?;
-        let binding = provider_binding::for_execution(&self.transaction, stamp)?;
-        provider_binding::require_active(&self.transaction, &binding)?;
-        if !binding.permits(Capability::OfferInput) {
-            return Err(Error::UnsupportedCapability);
-        }
-        Self::stage(&self.transaction, &aggregate, input, None)?;
-        self.touched.insert(task.clone());
-        Ok(())
+        staging!(self, {
+            let aggregate = self.load(task)?;
+            if !aggregate.pending_inputs().contains(&input) {
+                return Err(Error::MissingInput);
+            }
+            let stamp = aggregate.execution().ok_or(Error::MissingIntent)?;
+            let binding = provider_binding::for_execution(&self.transaction, stamp)?;
+            provider_binding::require_active(&self.transaction, &binding)?;
+            if !binding.permits(Capability::OfferInput) {
+                return Err(Error::UnsupportedCapability);
+            }
+            Self::stage(&self.transaction, &aggregate, input, None)?;
+            self.touched.insert(task.clone());
+            Ok(())
+        })
     }
     fn stage(
         connection: &Connection,
@@ -675,75 +741,85 @@ impl<'connection> LifecycleTransaction<'connection> {
         input: &InputId,
         metadata: AdapterInputMetadata,
     ) -> Result<()> {
-        let aggregate = self.load(stamp.task())?;
-        if aggregate.execution() != Some(stamp) {
-            return Err(Error::StalePermit);
-        }
-        let binding = provider_binding::for_execution(&self.transaction, stamp)?;
-        let savepoint = self.transaction.savepoint()?;
-        savepoint.execute("INSERT INTO provider_input_metadata(task_id,binding_id,conversation_id,input_id,metadata) VALUES(?1,?2,?3,?4,?5) ON CONFLICT(task_id,binding_id,conversation_id,input_id) DO NOTHING",params![stamp.task().0,binding.id(),stamp.conversation().as_str(),input.as_str(),metadata.bytes()])?;
-        let stored:Vec<u8>=savepoint.query_row("SELECT metadata FROM provider_input_metadata WHERE task_id=?1 AND binding_id=?2 AND conversation_id=?3 AND input_id=?4",params![stamp.task().0,binding.id(),stamp.conversation().as_str(),input.as_str()],|row|row.get(0))?;
-        if stored != metadata.bytes() {
-            return Err(Error::InputConflict);
-        }
-        savepoint.commit()?;
-        Ok(())
+        staging!(self, {
+            let aggregate = self.load(stamp.task())?;
+            if aggregate.execution() != Some(stamp) {
+                return Err(Error::StalePermit);
+            }
+            let binding = provider_binding::for_execution(&self.transaction, stamp)?;
+            let savepoint = self.transaction.savepoint()?;
+            savepoint.execute("INSERT INTO provider_input_metadata(task_id,binding_id,conversation_id,input_id,metadata) VALUES(?1,?2,?3,?4,?5) ON CONFLICT(task_id,binding_id,conversation_id,input_id) DO NOTHING",params![stamp.task().0,binding.id(),stamp.conversation().as_str(),input.as_str(),metadata.bytes()])?;
+            let stored:Vec<u8>=savepoint.query_row("SELECT metadata FROM provider_input_metadata WHERE task_id=?1 AND binding_id=?2 AND conversation_id=?3 AND input_id=?4",params![stamp.task().0,binding.id(),stamp.conversation().as_str(),input.as_str()],|row|row.get(0))?;
+            if stored != metadata.bytes() {
+                return Err(Error::InputConflict);
+            }
+            savepoint.commit()?;
+            Ok(())
+        })
     }
     pub fn adapter_input(
         &self,
         stamp: &ExecutionStamp,
         input: &InputId,
-    ) -> Result<AdapterInputMetadata> {
-        let binding = provider_binding::for_execution(&self.transaction, stamp)?;
-        let bytes:Option<Vec<u8>>=self.transaction.query_row("SELECT metadata FROM provider_input_metadata WHERE task_id=?1 AND binding_id=?2 AND conversation_id=?3 AND input_id=?4",params![stamp.task().0,binding.id(),stamp.conversation().as_str(),input.as_str()],|row|row.get(0)).optional()?;
-        AdapterInputMetadata::new(bytes.ok_or(Error::MissingAdapterInput)?)
+    ) -> Result<Option<AdapterInputMetadata>> {
+        staging!(self, {
+            let binding = provider_binding::for_execution(&self.transaction, stamp)?;
+            let bytes:Option<Vec<u8>>=self.transaction.query_row("SELECT metadata FROM provider_input_metadata WHERE task_id=?1 AND binding_id=?2 AND conversation_id=?3 AND input_id=?4",params![stamp.task().0,binding.id(),stamp.conversation().as_str(),input.as_str()],|row|row.get(0)).optional()?;
+            bytes.map(AdapterInputMetadata::new).transpose()
+        })
     }
     pub fn fence_attempt(&self, attempt: &DispatchAttempt) -> Result<()> {
-        if attempt.scope != self.scope {
-            return Err(Error::StalePermit);
-        }
-        let aggregate = self.load(attempt.execution().task())?;
-        if aggregate.revision() != attempt.revision()
-            || aggregate.execution() != Some(attempt.execution())
-            || !dispatchable(&aggregate)
-            || !aggregate.pending_inputs().contains(&&attempt.input().id)
-        {
-            return Err(Error::StalePermit);
-        }
-        if provider_binding::for_execution(&self.transaction, attempt.execution())?
-            != attempt.binding
-        {
-            return Err(Error::BindingConflict);
-        }
-        provider_binding::require_active(&self.transaction, &attempt.binding)
+        staging!(self, {
+            if attempt.scope != self.scope {
+                return Err(Error::StalePermit);
+            }
+            let aggregate = self.load(attempt.execution().task())?;
+            if aggregate.revision() != attempt.revision()
+                || aggregate.execution() != Some(attempt.execution())
+                || !dispatchable(&aggregate)
+                || !aggregate.pending_inputs().contains(&&attempt.input().id)
+            {
+                return Err(Error::StalePermit);
+            }
+            if provider_binding::for_execution(&self.transaction, attempt.execution())?
+                != attempt.binding
+            {
+                return Err(Error::BindingConflict);
+            }
+            provider_binding::require_active(&self.transaction, &attempt.binding)
+        })
     }
     pub fn record_command(
         &mut self,
         attempt: &DispatchAttempt,
         command: CommandEvidence,
     ) -> Result<()> {
-        self.fence_attempt(attempt)?;
-        let digest = evidence_digest(command.bytes());
-        let savepoint = self.transaction.savepoint()?;
-        savepoint.execute("INSERT INTO provider_commands(intent_id,task_id,generation,binding_id,digest,bytes) VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(intent_id) DO NOTHING",params![attempt.id,attempt.stamp.task().0,sql_number(attempt.stamp.generation())?,attempt.binding.id(),digest,command.bytes()])?;
-        let (stored,stored_digest):(Vec<u8>,Vec<u8>)=savepoint.query_row("SELECT bytes,digest FROM provider_commands WHERE intent_id=?1 AND task_id=?2 AND generation=?3 AND binding_id=?4",params![attempt.id,attempt.stamp.task().0,sql_number(attempt.stamp.generation())?,attempt.binding.id()],|row|Ok((row.get(0)?,row.get(1)?)))?;
-        if evidence_digest(&stored) != stored_digest {
-            return Err(Error::CorruptJournal);
-        }
-        if stored != command.bytes() {
-            return Err(Error::CommandConflict);
-        }
-        savepoint.commit()?;
-        self.touched.insert(attempt.stamp.task().clone());
-        Ok(())
+        staging!(self, {
+            self.fence_attempt(attempt)?;
+            let digest = evidence_digest(command.bytes());
+            let savepoint = self.transaction.savepoint()?;
+            savepoint.execute("INSERT INTO provider_commands(intent_id,task_id,generation,binding_id,digest,bytes) VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(intent_id) DO NOTHING",params![attempt.id,attempt.stamp.task().0,sql_number(attempt.stamp.generation())?,attempt.binding.id(),digest,command.bytes()])?;
+            let (stored,stored_digest):(Vec<u8>,Vec<u8>)=savepoint.query_row("SELECT bytes,digest FROM provider_commands WHERE intent_id=?1 AND task_id=?2 AND generation=?3 AND binding_id=?4",params![attempt.id,attempt.stamp.task().0,sql_number(attempt.stamp.generation())?,attempt.binding.id()],|row|Ok((row.get(0)?,row.get(1)?)))?;
+            if evidence_digest(&stored) != stored_digest {
+                return Err(Error::CorruptJournal);
+            }
+            if stored != command.bytes() {
+                return Err(Error::CommandConflict);
+            }
+            savepoint.commit()?;
+            self.touched.insert(attempt.stamp.task().clone());
+            Ok(())
+        })
     }
     pub fn command_evidence(&self, attempt: &DispatchAttempt) -> Result<CommandEvidence> {
-        let row:Option<(Vec<u8>,Vec<u8>)>=self.transaction.query_row("SELECT bytes,digest FROM provider_commands WHERE intent_id=?1 AND task_id=?2 AND generation=?3 AND binding_id=?4",params![attempt.id,attempt.stamp.task().0,sql_number(attempt.stamp.generation())?,attempt.binding.id()],|row|Ok((row.get(0)?,row.get(1)?))).optional()?;
-        let (bytes, digest) = row.ok_or(Error::MissingCommand)?;
-        if evidence_digest(&bytes) != digest {
-            return Err(Error::CorruptJournal);
-        }
-        CommandEvidence::new(bytes)
+        staging!(self, {
+            let row:Option<(Vec<u8>,Vec<u8>)>=self.transaction.query_row("SELECT bytes,digest FROM provider_commands WHERE intent_id=?1 AND task_id=?2 AND generation=?3 AND binding_id=?4",params![attempt.id,attempt.stamp.task().0,sql_number(attempt.stamp.generation())?,attempt.binding.id()],|row|Ok((row.get(0)?,row.get(1)?))).optional()?;
+            let (bytes, digest) = row.ok_or(Error::MissingCommand)?;
+            if evidence_digest(&bytes) != digest {
+                return Err(Error::CorruptJournal);
+            }
+            CommandEvidence::new(bytes)
+        })
     }
     pub fn accept_observation(
         &mut self,
@@ -751,72 +827,80 @@ impl<'connection> LifecycleTransaction<'connection> {
         cursor: u64,
         evidence: CommandEvidence,
     ) -> Result<ObservationAcceptance> {
-        let aggregate = self.load(stamp.task())?;
-        if aggregate.execution() != Some(stamp) {
-            return Err(Error::StalePermit);
-        }
-        let binding = provider_binding::for_execution(&self.transaction, stamp)?;
-        let prior:Option<(Vec<u8>,Vec<u8>)>=self.transaction.query_row("SELECT bytes,digest FROM provider_observations WHERE task_id=?1 AND generation=?2 AND cursor=?3 AND binding_id=?4",params![stamp.task().0,sql_number(stamp.generation())?,sql_number(cursor)?,binding.id()],|row|Ok((row.get(0)?,row.get(1)?))).optional()?;
-        if let Some((bytes, digest)) = prior {
-            if bytes != evidence.bytes() || evidence_digest(&bytes) != digest {
-                return Err(Error::ObservationConflict);
+        staging!(self, {
+            let aggregate = self.load(stamp.task())?;
+            if aggregate.execution() != Some(stamp) {
+                return Err(Error::StalePermit);
             }
-            return Ok(ObservationAcceptance::Duplicate);
-        }
-        let head: Option<u64> = self
-            .transaction
-            .query_row(
-                "SELECT cursor FROM provider_observation_heads WHERE task_id=?1 AND generation=?2",
-                params![stamp.task().0, sql_number(stamp.generation())?],
-                |row| read_number(row, 0),
-            )
-            .optional()?;
-        if head.unwrap_or(0).checked_add(1) != Some(cursor) {
-            return Err(Error::ObservationGap);
-        }
-        let savepoint = self.transaction.savepoint()?;
-        savepoint.execute("INSERT INTO provider_observations(task_id,generation,binding_id,cursor,digest,bytes) VALUES(?1,?2,?3,?4,?5,?6)",params![stamp.task().0,sql_number(stamp.generation())?,binding.id(),sql_number(cursor)?,evidence_digest(evidence.bytes()),evidence.bytes()])?;
-        savepoint.execute("INSERT INTO provider_observation_heads(task_id,generation,cursor) VALUES(?1,?2,?3) ON CONFLICT(task_id,generation) DO UPDATE SET cursor=excluded.cursor",params![stamp.task().0,sql_number(stamp.generation())?,sql_number(cursor)?])?;
-        savepoint.commit()?;
-        self.touched.insert(stamp.task().clone());
-        Ok(ObservationAcceptance::Accepted)
+            let binding = provider_binding::for_execution(&self.transaction, stamp)?;
+            let prior:Option<(Vec<u8>,Vec<u8>)>=self.transaction.query_row("SELECT bytes,digest FROM provider_observations WHERE task_id=?1 AND generation=?2 AND cursor=?3 AND binding_id=?4",params![stamp.task().0,sql_number(stamp.generation())?,sql_number(cursor)?,binding.id()],|row|Ok((row.get(0)?,row.get(1)?))).optional()?;
+            if let Some((bytes, digest)) = prior {
+                if bytes != evidence.bytes() || evidence_digest(&bytes) != digest {
+                    return Err(Error::ObservationConflict);
+                }
+                return Ok(ObservationAcceptance::Duplicate);
+            }
+            let head: Option<u64> = self
+                .transaction
+                .query_row(
+                    "SELECT cursor FROM provider_observation_heads WHERE task_id=?1 AND generation=?2",
+                    params![stamp.task().0, sql_number(stamp.generation())?],
+                    |row| read_number(row, 0),
+                )
+                .optional()?;
+            if head.unwrap_or(0).checked_add(1) != Some(cursor) {
+                return Err(Error::ObservationGap);
+            }
+            let savepoint = self.transaction.savepoint()?;
+            savepoint.execute("INSERT INTO provider_observations(task_id,generation,binding_id,cursor,digest,bytes) VALUES(?1,?2,?3,?4,?5,?6)",params![stamp.task().0,sql_number(stamp.generation())?,binding.id(),sql_number(cursor)?,evidence_digest(evidence.bytes()),evidence.bytes()])?;
+            savepoint.execute("INSERT INTO provider_observation_heads(task_id,generation,cursor) VALUES(?1,?2,?3) ON CONFLICT(task_id,generation) DO UPDATE SET cursor=excluded.cursor",params![stamp.task().0,sql_number(stamp.generation())?,sql_number(cursor)?])?;
+            savepoint.commit()?;
+            self.touched.insert(stamp.task().clone());
+            Ok(ObservationAcceptance::Accepted)
+        })
     }
     pub fn put_adapter_conversation(
         &mut self,
         stamp: &ExecutionStamp,
         metadata: AdapterInputMetadata,
     ) -> Result<()> {
-        let aggregate = self.load(stamp.task())?;
-        if aggregate.execution() != Some(stamp) {
-            return Err(Error::StalePermit);
-        }
-        let binding = provider_binding::for_execution(&self.transaction, stamp)?;
-        let savepoint = self.transaction.savepoint()?;
-        savepoint.execute("INSERT INTO provider_conversation_metadata(task_id,binding_id,conversation_id,metadata) VALUES(?1,?2,?3,?4) ON CONFLICT(task_id,binding_id,conversation_id) DO NOTHING",params![stamp.task().0,binding.id(),stamp.conversation().as_str(),metadata.bytes()])?;
-        let stored:Vec<u8>=savepoint.query_row("SELECT metadata FROM provider_conversation_metadata WHERE task_id=?1 AND binding_id=?2 AND conversation_id=?3",params![stamp.task().0,binding.id(),stamp.conversation().as_str()],|row|row.get(0))?;
-        if stored != metadata.bytes() {
-            return Err(Error::InputConflict);
-        }
-        savepoint.commit()?;
-        Ok(())
+        staging!(self, {
+            let aggregate = self.load(stamp.task())?;
+            if aggregate.execution() != Some(stamp) {
+                return Err(Error::StalePermit);
+            }
+            let binding = provider_binding::for_execution(&self.transaction, stamp)?;
+            let savepoint = self.transaction.savepoint()?;
+            savepoint.execute("INSERT INTO provider_conversation_metadata(task_id,binding_id,conversation_id,metadata) VALUES(?1,?2,?3,?4) ON CONFLICT(task_id,binding_id,conversation_id) DO NOTHING",params![stamp.task().0,binding.id(),stamp.conversation().as_str(),metadata.bytes()])?;
+            let stored:Vec<u8>=savepoint.query_row("SELECT metadata FROM provider_conversation_metadata WHERE task_id=?1 AND binding_id=?2 AND conversation_id=?3",params![stamp.task().0,binding.id(),stamp.conversation().as_str()],|row|row.get(0))?;
+            if stored != metadata.bytes() {
+                return Err(Error::InputConflict);
+            }
+            savepoint.commit()?;
+            Ok(())
+        })
     }
-    pub fn adapter_conversation(&self, stamp: &ExecutionStamp) -> Result<AdapterInputMetadata> {
-        let binding = provider_binding::for_execution(&self.transaction, stamp)?;
-        let bytes:Option<Vec<u8>>=self.transaction.query_row("SELECT metadata FROM provider_conversation_metadata WHERE task_id=?1 AND binding_id=?2 AND conversation_id=?3",params![stamp.task().0,binding.id(),stamp.conversation().as_str()],|row|row.get(0)).optional()?;
-        AdapterInputMetadata::new(bytes.ok_or(Error::MissingAdapterInput)?)
+    pub fn adapter_conversation(&self, stamp: &ExecutionStamp) -> Result<Option<AdapterInputMetadata>> {
+        staging!(self, {
+            let binding = provider_binding::for_execution(&self.transaction, stamp)?;
+            let bytes:Option<Vec<u8>>=self.transaction.query_row("SELECT metadata FROM provider_conversation_metadata WHERE task_id=?1 AND binding_id=?2 AND conversation_id=?3",params![stamp.task().0,binding.id(),stamp.conversation().as_str()],|row|row.get(0)).optional()?;
+            bytes.map(AdapterInputMetadata::new).transpose()
+        })
     }
     /// Reissues only unclaimed intents against current facts; claimed/uncertain work needs receipts.
     pub fn adapter_state(&self, grant: &OwnerGrant) -> Result<AdapterState> {
-        self.fence_owner(grant)?;
-        let stamp = grant.execution();
-        let conversation = self.adapter_conversation(stamp)?;
-        Ok(AdapterState {
-            scope: grant.scope().clone(),
-            execution: grant.execution().clone(),
-            binding: grant.binding().clone(),
-            owner_generation: grant.generation(),
-            conversation,
-            checkpoint: self.normalization_checkpoint(stamp)?,
+        staging!(self, {
+            self.fence_owner(grant)?;
+            let stamp = grant.execution();
+            let conversation = self.adapter_conversation(stamp)?.ok_or(Error::MissingAdapterInput)?;
+            Ok(AdapterState {
+                scope: grant.scope().clone(),
+                execution: grant.execution().clone(),
+                binding: grant.binding().clone(),
+                owner_generation: grant.generation(),
+                conversation,
+                checkpoint: self.normalization_checkpoint(stamp)?,
+            })
         })
     }
     pub fn lookup_adapter_inputs(
@@ -824,38 +908,42 @@ impl<'connection> LifecycleTransaction<'connection> {
         stamp: &ExecutionStamp,
         keys: &[Vec<u8>],
     ) -> Result<Vec<AdapterInputBinding>> {
-        if keys.len() > 64 || keys.iter().any(|key| key.is_empty() || key.len() > 4096) {
-            return Err(Error::MetadataCapacity);
-        }
-        let binding = self.execution_binding(stamp)?;
-        let mut statement=self.transaction.prepare("SELECT input_id,metadata FROM provider_input_metadata WHERE task_id=?1 AND binding_id=?2 AND conversation_id=?3 AND metadata=?4")?;
-        let mut inputs = Vec::with_capacity(keys.len());
-        for key in keys {
-            let row: Option<(String, Vec<u8>)> = statement
-                .query_row(
-                    params![
-                        stamp.task().0,
-                        binding.id(),
-                        stamp.conversation().as_str(),
-                        key
-                    ],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
-                )
-                .optional()?;
-            let (input, bytes) = row.ok_or(Error::MissingAdapterInput)?;
-            inputs.push(AdapterInputBinding {
-                input: InputId::new(input)?,
-                metadata: AdapterInputMetadata::new(bytes)?,
-            });
-        }
-        Ok(inputs)
+        staging!(self, {
+            if keys.len() > 64 || keys.iter().any(|key| key.is_empty() || key.len() > 4096) {
+                return Err(Error::MetadataCapacity);
+            }
+            let binding = self.execution_binding(stamp)?;
+            let mut statement=self.transaction.prepare("SELECT input_id,metadata FROM provider_input_metadata WHERE task_id=?1 AND binding_id=?2 AND conversation_id=?3 AND metadata=?4")?;
+            let mut inputs = Vec::with_capacity(keys.len());
+            for key in keys {
+                let row: Option<(String, Vec<u8>)> = statement
+                    .query_row(
+                        params![
+                            stamp.task().0,
+                            binding.id(),
+                            stamp.conversation().as_str(),
+                            key
+                        ],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )
+                    .optional()?;
+                let (input, bytes) = row.ok_or(Error::MissingAdapterInput)?;
+                inputs.push(AdapterInputBinding {
+                    input: InputId::new(input)?,
+                    metadata: AdapterInputMetadata::new(bytes)?,
+                });
+            }
+            Ok(inputs)
+        })
     }
     pub fn normalization_checkpoint(
         &self,
         stamp: &ExecutionStamp,
     ) -> Result<Option<NormalizationCheckpoint>> {
-        let binding = self.execution_binding(stamp)?;
-        self.retained_normalization_checkpoint(stamp, &binding)
+        staging!(self, {
+            let binding = self.execution_binding(stamp)?;
+            self.retained_normalization_checkpoint(stamp, &binding)
+        })
     }
     fn retained_normalization_checkpoint(
         &self,
@@ -877,226 +965,238 @@ impl<'connection> LifecycleTransaction<'connection> {
         expected_previous: Option<u64>,
         bytes: Vec<u8>,
     ) -> Result<()> {
-        if cursor == 0 || bytes.is_empty() || bytes.len() > 65536 {
-            return Err(Error::MetadataCapacity);
-        }
-        let binding = match self.execution_binding(stamp) {
-            Ok(binding) => binding,
-            Err(Error::StalePermit) => {
-                self.checkpoint_binding_for_accepted_observation(stamp, cursor)?
+        staging!(self, {
+            if cursor == 0 || bytes.is_empty() || bytes.len() > 65536 {
+                return Err(Error::MetadataCapacity);
             }
-            Err(error) => return Err(error),
-        };
-        let previous = self.retained_normalization_checkpoint(stamp, &binding)?;
-        if let Some(previous) = &previous {
-            if previous.cursor == cursor {
-                return if previous.bytes == bytes {
-                    Ok(())
-                } else {
-                    Err(Error::CheckpointConflict)
-                };
-            }
-            if previous.cursor > cursor {
-                return Err(Error::CheckpointConflict);
-            }
-        }
-        if previous.as_ref().map(|previous| previous.cursor) != expected_previous {
-            return Err(Error::CheckpointConflict);
-        }
-        let head: Option<u64> = self
-            .transaction
-            .query_row(
-                "SELECT cursor FROM provider_observation_heads WHERE task_id=?1 AND generation=?2",
-                params![stamp.task().0, sql_number(stamp.generation())?],
-                |row| read_number(row, 0),
-            )
-            .optional()?;
-        if head != Some(cursor) {
-            return Err(Error::CheckpointConflict);
-        }
-        let changed = if let Some(previous) = expected_previous {
-            self.transaction.execute("UPDATE provider_normalization_checkpoints SET cursor=?4,digest=?5,bytes=?6 WHERE task_id=?1 AND generation=?2 AND binding_id=?3 AND cursor=?7",params![stamp.task().0,sql_number(stamp.generation())?,binding.id(),sql_number(cursor)?,evidence_digest(&bytes),bytes,sql_number(previous)?])?
-        } else {
-            self.transaction.execute("INSERT INTO provider_normalization_checkpoints(task_id,generation,binding_id,cursor,digest,bytes) VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(task_id,generation) DO NOTHING",params![stamp.task().0,sql_number(stamp.generation())?,binding.id(),sql_number(cursor)?,evidence_digest(&bytes),bytes])?
-        };
-        if changed != 1 {
-            return Err(Error::CheckpointConflict);
-        }
-        Ok(())
-    }
-    pub fn recover_prepared(&mut self, task: &TaskId) -> Result<()> {
-        self.load(task)?;
-        self.touched.insert(task.clone());
-        Ok(())
-    }
-    pub fn unresolved(&self, task: &TaskId) -> Result<Vec<UnresolvedDispatch>> {
-        self.load(task)?;
-        let mut statement = self.transaction.prepare("SELECT id,generation,input_id,status FROM lifecycle_dispatches WHERE task_id=?1 AND status IN('claimed','uncertain') ORDER BY id")?;
-        let rows = statement.query_map(params![task.0], |row| {
-            Ok((
-                row.get(0)?,
-                read_number(row, 1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, String>(3)?,
-            ))
-        })?;
-        rows.map(|row| {
-            let (intent_id, generation, input, status) = row?;
-            Ok(UnresolvedDispatch {
-                intent_id,
-                generation,
-                input: InputId::new(input)?,
-                uncertain_receipt: status == "uncertain",
-            })
-        })
-        .collect()
-    }
-    pub fn claim(&mut self, permit: DispatchPermit) -> Result<()> {
-        if permit.scope != self.scope {
-            return Err(Error::StalePermit);
-        }
-        let aggregate = self.load(permit.stamp.task())?;
-        if aggregate.revision() != permit.revision
-            || aggregate.execution() != Some(&permit.stamp)
-            || !dispatchable(&aggregate)
-            || !aggregate.pending_inputs().contains(&&permit.input)
-        {
-            return Err(Error::StalePermit);
-        }
-        if next_offer(&self.transaction, &aggregate)?.map(|(id, _)| id) != Some(permit.id) {
-            return Err(Error::OfferOrder);
-        }
-        let record: Option<(String, Option<String>, Option<String>, String, String)> = self.transaction.query_row(
-            "SELECT d.kind,d.placement_kind,d.placement,i.body,d.status FROM lifecycle_dispatches d JOIN lifecycle_inputs i USING(task_id,input_id) WHERE d.id=?1 AND d.task_id=?2 AND d.generation=?3 AND d.input_id=?4",
-            params![permit.id, permit.stamp.task().0, crate::sql_number(permit.stamp.generation())?, permit.input.as_str()], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?))).optional()?;
-        let (kind, placement_kind, placement_value, text, status) =
-            record.ok_or(Error::StalePermit)?;
-        let binding = provider_binding::for_execution(&self.transaction, &permit.stamp)?;
-        provider_binding::require_active(&self.transaction, &binding)?;
-        if kind == "input" && !binding.permits(Capability::OfferInput) {
-            return Err(Error::UnsupportedCapability);
-        }
-        if status != "prepared"
-            || (kind == "input" && aggregate.resource() != Some(ResourceEvidence::Available))
-        {
-            return Err(Error::StalePermit);
-        }
-        let input = InputPayload::new(permit.input, text)?;
-        let payload = match (kind.as_str(), placement_kind.as_deref(), placement_value) {
-            ("launch", Some("local"), Some(directory)) => {
-                require_directory(&self.transaction, permit.stamp.task(), &directory)?;
-                DispatchPayload::Launch {
-                    input,
-                    placement: Placement::LocalDirectory(directory),
+            let binding = match self.current_execution_binding(stamp) {
+                Ok(binding) => binding,
+                Err(Error::StalePermit) => {
+                    self.checkpoint_binding_for_accepted_observation(stamp, cursor)?
+                }
+                Err(error) => return Err(error),
+            };
+            let previous = self.retained_normalization_checkpoint(stamp, &binding)?;
+            if let Some(previous) = &previous {
+                if previous.cursor == cursor {
+                    return if previous.bytes == bytes {
+                        Ok(())
+                    } else {
+                        Err(Error::CheckpointConflict)
+                    };
+                }
+                if previous.cursor > cursor {
+                    return Err(Error::CheckpointConflict);
                 }
             }
-            ("launch", Some("remote"), Some(workspace)) => DispatchPayload::Launch {
-                input,
-                placement: Placement::RemoteWorkspace(workspace),
-            },
-            ("input", None, None) => DispatchPayload::Input(input),
-            _ => return Err(Error::CorruptJournal),
-        };
-        let changed = self.transaction.execute("UPDATE lifecycle_dispatches SET status='claimed',claimed_revision=?2 WHERE id=?1 AND status='prepared'", params![permit.id, crate::sql_number(permit.revision)?])?;
-        if changed != 1 {
-            return Err(Error::StalePermit);
-        }
-        self.touched.insert(permit.stamp.task().clone());
-        self.claimed.push(DispatchAttempt {
-            id: permit.id,
-            scope: self.scope.clone(),
-            revision: permit.revision,
-            stamp: permit.stamp,
-            payload,
-            binding,
-        });
-        Ok(())
+            if previous.as_ref().map(|previous| previous.cursor) != expected_previous {
+                return Err(Error::CheckpointConflict);
+            }
+            let head: Option<u64> = self
+                .transaction
+                .query_row(
+                    "SELECT cursor FROM provider_observation_heads WHERE task_id=?1 AND generation=?2",
+                    params![stamp.task().0, sql_number(stamp.generation())?],
+                    |row| read_number(row, 0),
+                )
+                .optional()?;
+            if head != Some(cursor) {
+                return Err(Error::CheckpointConflict);
+            }
+            let changed = if let Some(previous) = expected_previous {
+                self.transaction.execute("UPDATE provider_normalization_checkpoints SET cursor=?4,digest=?5,bytes=?6 WHERE task_id=?1 AND generation=?2 AND binding_id=?3 AND cursor=?7",params![stamp.task().0,sql_number(stamp.generation())?,binding.id(),sql_number(cursor)?,evidence_digest(&bytes),bytes,sql_number(previous)?])?
+            } else {
+                self.transaction.execute("INSERT INTO provider_normalization_checkpoints(task_id,generation,binding_id,cursor,digest,bytes) VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(task_id,generation) DO NOTHING",params![stamp.task().0,sql_number(stamp.generation())?,binding.id(),sql_number(cursor)?,evidence_digest(&bytes),bytes])?
+            };
+            if changed != 1 {
+                return Err(Error::CheckpointConflict);
+            }
+            Ok(())
+        })
+    }
+    pub fn recover_prepared(&mut self, task: &TaskId) -> Result<()> {
+        staging!(self, {
+            self.load(task)?;
+            self.touched.insert(task.clone());
+            Ok(())
+        })
+    }
+    pub fn unresolved(&self, task: &TaskId) -> Result<Vec<UnresolvedDispatch>> {
+        staging!(self, {
+            self.load(task)?;
+            let mut statement = self.transaction.prepare("SELECT id,generation,input_id,status FROM lifecycle_dispatches WHERE task_id=?1 AND status IN('claimed','uncertain') ORDER BY id")?;
+            let rows = statement.query_map(params![task.0], |row| {
+                Ok((
+                    row.get(0)?,
+                    read_number(row, 1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            })?;
+            rows.map(|row| {
+                let (intent_id, generation, input, status) = row?;
+                Ok(UnresolvedDispatch {
+                    intent_id,
+                    generation,
+                    input: InputId::new(input)?,
+                    uncertain_receipt: status == "uncertain",
+                })
+            })
+            .collect()
+        })
+    }
+    pub fn claim(&mut self, permit: DispatchPermit) -> Result<()> {
+        staging!(self, {
+            if permit.scope != self.scope {
+                return Err(Error::StalePermit);
+            }
+            let aggregate = self.load(permit.stamp.task())?;
+            if aggregate.revision() != permit.revision
+                || aggregate.execution() != Some(&permit.stamp)
+                || !dispatchable(&aggregate)
+                || !aggregate.pending_inputs().contains(&&permit.input)
+            {
+                return Err(Error::StalePermit);
+            }
+            if next_offer(&self.transaction, &aggregate)?.map(|(id, _)| id) != Some(permit.id) {
+                return Err(Error::OfferOrder);
+            }
+            let record: Option<(String, Option<String>, Option<String>, String, String)> = self.transaction.query_row(
+                "SELECT d.kind,d.placement_kind,d.placement,i.body,d.status FROM lifecycle_dispatches d JOIN lifecycle_inputs i USING(task_id,input_id) WHERE d.id=?1 AND d.task_id=?2 AND d.generation=?3 AND d.input_id=?4",
+                params![permit.id, permit.stamp.task().0, crate::sql_number(permit.stamp.generation())?, permit.input.as_str()], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?))).optional()?;
+            let (kind, placement_kind, placement_value, text, status) =
+                record.ok_or(Error::StalePermit)?;
+            let binding = provider_binding::for_execution(&self.transaction, &permit.stamp)?;
+            provider_binding::require_active(&self.transaction, &binding)?;
+            if kind == "input" && !binding.permits(Capability::OfferInput) {
+                return Err(Error::UnsupportedCapability);
+            }
+            if status != "prepared"
+                || (kind == "input" && aggregate.resource() != Some(ResourceEvidence::Available))
+            {
+                return Err(Error::StalePermit);
+            }
+            let input = InputPayload::new(permit.input, text)?;
+            let payload = match (kind.as_str(), placement_kind.as_deref(), placement_value) {
+                ("launch", Some("local"), Some(directory)) => {
+                    require_directory(&self.transaction, permit.stamp.task(), &directory)?;
+                    DispatchPayload::Launch {
+                        input,
+                        placement: Placement::LocalDirectory(directory),
+                    }
+                }
+                ("launch", Some("remote"), Some(workspace)) => DispatchPayload::Launch {
+                    input,
+                    placement: Placement::RemoteWorkspace(workspace),
+                },
+                ("input", None, None) => DispatchPayload::Input(input),
+                _ => return Err(Error::CorruptJournal),
+            };
+            let changed = self.transaction.execute("UPDATE lifecycle_dispatches SET status='claimed',claimed_revision=?2 WHERE id=?1 AND status='prepared'", params![permit.id, crate::sql_number(permit.revision)?])?;
+            if changed != 1 {
+                return Err(Error::StalePermit);
+            }
+            self.touched.insert(permit.stamp.task().clone());
+            self.claimed.push(DispatchAttempt {
+                id: permit.id,
+                scope: self.scope.clone(),
+                revision: permit.revision,
+                stamp: permit.stamp,
+                payload,
+                binding,
+            });
+            Ok(())
+        })
     }
     pub fn record_receipt(
         &mut self,
         attempt: DispatchAttempt,
         receipt: DispatchReceipt,
     ) -> Result<()> {
-        if attempt.scope != self.scope {
-            return Err(Error::StalePermit);
-        }
-        check_epoch(&self.transaction, &self.scope)?;
-        let changed = self.transaction.execute("UPDATE lifecycle_dispatches SET status=?2 WHERE id=?1 AND task_id=?3 AND generation=?4 AND input_id=?5 AND claimed_revision=?6 AND status='claimed'",
-            params![attempt.id, match receipt { DispatchReceipt::Handed => "handed", DispatchReceipt::Rejected => "rejected", DispatchReceipt::Uncertain => "uncertain" },
-            attempt.stamp.task().0, crate::sql_number(attempt.stamp.generation())?, attempt.input().id.as_str(), crate::sql_number(attempt.revision)?])?;
-        if changed != 1 {
-            return Err(Error::StalePermit);
-        }
-        self.touched.insert(attempt.stamp.task().clone());
-        Ok(())
+        staging!(self, {
+            if attempt.scope != self.scope {
+                return Err(Error::StalePermit);
+            }
+            check_epoch(&self.transaction, &self.scope)?;
+            let changed = self.transaction.execute("UPDATE lifecycle_dispatches SET status=?2 WHERE id=?1 AND task_id=?3 AND generation=?4 AND input_id=?5 AND claimed_revision=?6 AND status='claimed'",
+                params![attempt.id, match receipt { DispatchReceipt::Handed => "handed", DispatchReceipt::Rejected => "rejected", DispatchReceipt::Uncertain => "uncertain" },
+                attempt.stamp.task().0, crate::sql_number(attempt.stamp.generation())?, attempt.input().id.as_str(), crate::sql_number(attempt.revision)?])?;
+            if changed != 1 {
+                return Err(Error::StalePermit);
+            }
+            self.touched.insert(attempt.stamp.task().clone());
+            Ok(())
+        })
     }
     pub fn commit(self) -> Result<Committed> {
-        check_epoch(&self.transaction, &self.scope)?;
-        for attempt in &self.claimed {
-            self.fence_attempt(attempt)?;
-        }
-        for owner in &self.owners {
-            self.fence_owner(owner)?;
-        }
-        for command in &self.commands {
-            self.fence_committed_command(command)?;
-        }
-        for observation in &self.observations {
-            self.verify_observation_commit(observation)?;
-        }
-        for (task, card) in &self.cleared_cards {
-            let aggregate = self.load(task)?;
-            if aggregate
-                .cards()
-                .iter()
-                .any(|(current, _)| *current == card)
-            {
-                continue;
+        staging!(self, {
+            check_epoch(&self.transaction, &self.scope)?;
+            for attempt in &self.claimed {
+                self.fence_attempt(attempt)?;
             }
-            let settled: bool = self.transaction.query_row("SELECT EXISTS(SELECT 1 FROM interactions WHERE task_id=?1 AND id=?2 AND (answer IS NOT NULL OR withdrawn<>0))", params![task.0, card.0], |row| row.get(0))?;
-            if !settled {
-                return Err(Error::InvalidCard);
+            for owner in &self.owners {
+                self.fence_owner(owner)?;
             }
-        }
-        let mut permits = vec![];
-        for task in &self.touched {
-            let aggregate = self.load(task)?;
-            persistence::require_inputs(&self.transaction, &aggregate)?;
-            persistence::require_intents(&self.transaction, &aggregate)?;
-            if matches!(
-                aggregate.phase(),
-                TaskPhase::Completed | TaskPhase::Cancelled
-            ) && !self.unresolved(task)?.is_empty()
-            {
-                return Err(Error::UnresolvedDispatch);
+            for command in &self.commands {
+                self.fence_committed_command(command)?;
             }
-            if !dispatchable(&aggregate) {
-                continue;
+            for observation in &self.observations {
+                self.verify_observation_commit(observation)?;
             }
-            let stamp = aggregate.execution().ok_or(Error::MissingIntent)?;
-            let binding = provider_binding::for_execution(&self.transaction, stamp)?;
-            if let Some((id, input)) = next_offer(&self.transaction, &aggregate)? {
-                match provider_binding::require_active(&self.transaction, &binding) {
-                    Ok(()) => {}
-                    Err(Error::BindingRevoked) => continue,
-                    Err(error) => return Err(error),
+            for (task, card) in &self.cleared_cards {
+                let aggregate = self.load(task)?;
+                if aggregate
+                    .cards()
+                    .iter()
+                    .any(|(current, _)| *current == card)
+                {
+                    continue;
                 }
-                permits.push(DispatchPermit {
-                    id,
-                    scope: self.scope.clone(),
-                    revision: aggregate.revision(),
-                    stamp: stamp.clone(),
-                    input,
-                });
+                let settled: bool = self.transaction.query_row("SELECT EXISTS(SELECT 1 FROM interactions WHERE task_id=?1 AND id=?2 AND (answer IS NOT NULL OR withdrawn<>0))", params![task.0, card.0], |row| row.get(0))?;
+                if !settled {
+                    return Err(Error::InvalidCard);
+                }
             }
-        }
-        self.transaction.commit()?;
-        Ok(Committed {
-            permits,
-            attempts: self.claimed,
-            owners: self.owners,
-            commands: self.commands,
-            observations: self.observations,
+            let mut permits = vec![];
+            for task in &self.touched {
+                let aggregate = self.load(task)?;
+                persistence::require_inputs(&self.transaction, &aggregate)?;
+                persistence::require_intents(&self.transaction, &aggregate)?;
+                if matches!(
+                    aggregate.phase(),
+                    TaskPhase::Completed | TaskPhase::Cancelled
+                ) && !self.unresolved(task)?.is_empty()
+                {
+                    return Err(Error::UnresolvedDispatch);
+                }
+                if !dispatchable(&aggregate) {
+                    continue;
+                }
+                let stamp = aggregate.execution().ok_or(Error::MissingIntent)?;
+                let binding = provider_binding::for_execution(&self.transaction, stamp)?;
+                if let Some((id, input)) = next_offer(&self.transaction, &aggregate)? {
+                    match provider_binding::require_active(&self.transaction, &binding) {
+                        Ok(()) => {}
+                        Err(Error::BindingRevoked) => continue,
+                        Err(error) => return Err(error),
+                    }
+                    permits.push(DispatchPermit {
+                        id,
+                        scope: self.scope.clone(),
+                        revision: aggregate.revision(),
+                        stamp: stamp.clone(),
+                        input,
+                    });
+                }
+            }
+            self.transaction.commit()?;
+            Ok(Committed {
+                permits,
+                attempts: self.claimed,
+                owners: self.owners,
+                commands: self.commands,
+                observations: self.observations,
+            })
         })
     }
 }

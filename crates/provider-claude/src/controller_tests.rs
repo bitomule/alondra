@@ -96,7 +96,7 @@ impl DurableAdapter for FixtureAdapter {
         metadata.put_input(input_record(FIRST)).map_err(storage)
     }
     fn load_input(&mut self, metadata: InputMetadata<'_, '_>) -> Result<Vec<u8>, AdapterError> {
-        metadata.input().map_err(storage)
+        metadata.input().map_err(storage)?.ok_or(AdapterError::InvalidObservation)
     }
     fn install_owner(
         &mut self,
