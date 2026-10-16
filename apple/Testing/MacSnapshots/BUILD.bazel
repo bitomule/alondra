@@ -2,13 +2,16 @@ load("@build_bazel_rules_swift//swift:swift.bzl", "swift_test")
 load("//apple:swift.bzl", "STRICT_SWIFT_CONCURRENCY_COPTS")
 
 # The strings the Mac app ships, as the `.lproj` folders the test bundle finds. `en` stays empty so
-# English remains the preferred language and a key renders as itself; `es` is what a Spanish capture reads.
+# English remains the preferred language and a key renders as itself; `es` is what a Spanish capture reads. Plural
+# variations go to `.stringsdict`, as the app's compiled catalog has them, so a Spanish count reads in Spanish.
 genrule(
     name = "localizations",
     srcs = ["//apple:macOS/Resources/Localizable.xcstrings", "//apple/Design:Resources/AlondraDesign.xcstrings"],
     outs = [
         "AlondraMacSnapshotTests.xctest/Contents/Resources/en.lproj/Localizable.strings",
         "AlondraMacSnapshotTests.xctest/Contents/Resources/es.lproj/Localizable.strings",
+        "AlondraMacSnapshotTests.xctest/Contents/Resources/en.lproj/Localizable.stringsdict",
+        "AlondraMacSnapshotTests.xctest/Contents/Resources/es.lproj/Localizable.stringsdict",
     ],
     cmd = "python3 $(location xcstrings_to_strings.py) en $(RULEDIR)/AlondraMacSnapshotTests.xctest/Contents/Resources/en.lproj/Localizable.strings $(SRCS) && " +
           "python3 $(location xcstrings_to_strings.py) es $(RULEDIR)/AlondraMacSnapshotTests.xctest/Contents/Resources/es.lproj/Localizable.strings $(SRCS)",
@@ -25,7 +28,12 @@ swift_test(
         "//apple/Testing/Snapshots:Support/AssertAppSnapshot.swift",
         "//apple/Testing/Fixtures:SpanishTestData.swift",
     ],
-    data = glob(["Tests/__Snapshots__/**"], allow_empty = True) + ["//fixtures/views:cards", ":localizations"],
+    data = glob(["Tests/__Snapshots__/**"], allow_empty = True) + [
+        "//apple:macOS/Resources/Localizable.xcstrings",
+        "//apple/Design:Resources/AlondraDesign.xcstrings",
+        "//fixtures/views:cards",
+        ":localizations",
+    ],
     env = {
         "SNAPSHOT_ROOT": "apple/Testing/MacSnapshots/Tests/__Snapshots__",
         "TZ": "UTC",
