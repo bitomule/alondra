@@ -121,12 +121,12 @@ impl RenderContext<'_> {
     }
 }
 /// The app icon badge: the same count as the Waiting for You queue and `Status::badge`.
-pub fn inbox_badge(domain: &crate::domain::DomainState) -> u32 {
-    ReadIndex::build(domain).waiting().len() as u32
+pub fn inbox_badge(index: &crate::domain::ReadIndex) -> u32 {
+    index.waiting().len() as u32
 }
 /// The cards of the Waiting for You queue, by the id a push names them with (`alondra.card`).
-pub fn waiting_cards(domain: &crate::domain::DomainState) -> Vec<String> {
-    ReadIndex::build(domain).waiting().iter().map(|item| card::public_id(item).to_owned()).collect()
+pub fn waiting_cards(index: &crate::domain::ReadIndex) -> Vec<String> {
+    index.waiting().iter().map(|item| card::public_id(item).to_owned()).collect()
 }
 
 macro_rules! families {
@@ -246,11 +246,11 @@ pub const PUSH_TITLE_CHARS: usize = 80;
 pub const PUSH_BODY_CHARS: usize = 180;
 
 pub fn push_actions(
-    domain: &DomainState,
+    read: &crate::domain::ReadSnapshot,
     card_id: &str,
     lang: Lang,
 ) -> Result<Vec<PushAction>, BuildError> {
-    Ok(push_content(domain, card_id, lang)?.actions)
+    Ok(push_content(read, card_id, lang)?.actions)
 }
 
 /// How loudly a card interrupts: a problem, or a blocking permission or manual step, now; a
@@ -266,13 +266,14 @@ fn push_level(kind: crate::domain::CardKind, blocking: bool) -> &'static str {
 }
 
 pub fn push_content(
-    domain: &DomainState,
+    read: &crate::domain::ReadSnapshot,
     card_id: &str,
     lang: Lang,
 ) -> Result<PushContent, BuildError> {
+    let domain = read.state().as_ref();
     let live = LiveSnapshot::default();
     let view = build(&format!("card:{card_id}"), RenderContext {
-        domain, index: &ReadIndex::build(domain), live: &live, client: Client::Ios, lang, transport: Transport::Relay,
+        domain, index: read.index(), live: &live, client: Client::Ios, lang, transport: Transport::Relay,
         cursor: "push", rendered_at: "",
     })?;
     let interaction = domain.interactions.get(&crate::domain::InteractionId(card_id.into()));

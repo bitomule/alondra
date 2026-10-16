@@ -56,14 +56,14 @@ async fn local(
 /// The cards that wait for the user, each with the notice a phone got for it. A card no phone
 /// was told about (the gate dropped it, or it repeats one already told) has no notice.
 pub(crate) fn notices(domain: &DomainRuntime, lang: Lang) -> anyhow::Result<Value> {
-    let state = domain.state()?;
-    let open = views::waiting_cards(&state);
+    let read = domain.read();
+    let open = views::waiting_cards(read.index());
     let ids: Vec<InteractionId> = open.iter().map(|id| InteractionId::from(id.as_str())).collect();
     let handed = domain.store.lock().expect("domain store poisoned").handed_user_notices(&ids)?;
     let notices: Vec<Value> = handed
         .into_iter()
         .map(|(message, card)| {
-            let content = views::push_content(&state, &card.0, lang).unwrap_or_else(|error| {
+            let content = views::push_content(&read, &card.0, lang).unwrap_or_else(|error| {
                 log!("could not render notice for card {}: {error:?}", card.0);
                 views::PushContent { alert: None, actions: vec![], interruption_level: "active", thread: None }
             });
@@ -72,7 +72,7 @@ pub(crate) fn notices(domain: &DomainRuntime, lang: Lang) -> anyhow::Result<Valu
                 "thread": content.thread, "level": content.interruption_level})
         })
         .collect();
-    Ok(json!({"data_epoch": state.data_epoch, "notices": notices, "open": open}))
+    Ok(json!({"data_epoch": read.state().data_epoch, "notices": notices, "open": open}))
 }
 
 #[cfg(test)]

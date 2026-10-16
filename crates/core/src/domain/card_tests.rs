@@ -469,7 +469,7 @@ fn a_suggestion_goes_to_the_orchestrator_and_never_to_the_users_inbox() {
     assert!(out.effects.iter().any(|e| matches!(e, DomainEffect::NotifyOrchestrator { interaction_id: Some(i), .. } if i.0 == "p")));
     assert!(!out.effects.iter().any(|e| matches!(e, DomainEffect::NotifyUser { .. })), "{:?}", out.effects);
     assert!(s.projection().inbox.iter().all(|item| item.id != "interaction:p"));
-    assert_eq!(crate::views::inbox_badge(&s), 0);
+    assert_eq!(crate::views::inbox_badge(&ReadIndex::build(&s)), 0);
 }
 
 #[test]

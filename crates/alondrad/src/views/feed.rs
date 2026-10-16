@@ -273,39 +273,42 @@ async fn current(
     keys.push(status_key.to_owned());
     keys.extend(views.iter().filter(|(key, _)| super::routes::valid_open_key(key)).map(|(key, _)| key.clone()));
     let live = super::live::gather(client, &state, lang, &keys, false, false).await;
-    let clock = (state.data_epoch.0.clone(), state.revision, live_revision(&live));
+    let input = super::cache::Input::of(state, &live);
+    let clock = (state.data_epoch.0.clone(), state.revision, input.live_revision().to_owned());
     if let Some(previous) = previous.filter(|previous| previous.clock == clock) {
         let mut current = previous.clone();
         current.wake = wake;
         cache_current(client, cache_key, &current);
         return Ok(current);
     }
-    let rendering = client.shared();
-    let render_state = Arc::clone(&read);
-    let versions = views.to_vec();
-    let (status_view, stale) = client.read_work.run(move || {
-        let status_view = rendering.views.render(status_key, &render_state, &live, kind, lang, transport)?;
-        let stale = versions.iter().filter_map(|(key, version)| {
-            let changed = if super::routes::valid_open_key(key) {
-                rendering.views.render(key, &render_state, &live, kind, lang, transport)
-                    .map_or(true, |view| &view.version != version)
-            } else { true };
-            changed.then(|| key.clone())
-        }).collect();
-        Ok::<_, alondra_core::views::BuildError>((status_view, stale))
-    }).await.expect("feed render worker failed")
-        .map_err(|_| error("storage_unavailable", "view status unavailable",
-            "estado de la vista no disponible", lang))?;
+    let mut versions: HashMap<String, Result<super::cache::Version, alondra_core::views::BuildError>> = keys.iter()
+        .filter_map(|key| Some((key.clone(), Ok(client.views.version(key, &input, kind, lang, transport)?))))
+        .collect();
+    if keys.iter().any(|key| !versions.contains_key(key)) {
+        let rendering = client.shared();
+        let render_read = Arc::clone(&read);
+        let render_keys = keys.clone();
+        versions = client.read_work.run(move ||
+            rendering.views.versions(&render_keys, &render_read, &live, &input, kind, lang, transport)
+        ).await.expect("feed render worker failed");
+    }
+    let status = versions.get(status_key).and_then(|v| v.as_ref().ok())
+        .ok_or_else(|| error("storage_unavailable", "view status unavailable",
+            "estado de la vista no disponible", lang))?.status.clone();
+    let stale = views.iter().filter(|(key, version)| {
+        !super::routes::valid_open_key(key)
+            || versions.get(key).and_then(|v| v.as_ref().ok()).is_none_or(|v| &v.version != version)
+    }).map(|(key, _)| key.clone()).collect();
     let tuple = (
         clock.0.clone(),
         clock.1,
         clock.2.clone(),
-        status_view.status.version.clone(),
+        status.version.clone(),
     );
     let bytes = serde_json::to_vec(&tuple).expect("feed cursor serialization");
     let cursor = format!("c1.{}", URL_SAFE_NO_PAD.encode(bytes));
     let current = Current {
-        cursor, status: status_view.status, stale, epoch: clock.0.clone(), clock, wake,
+        cursor, status, stale, epoch: clock.0.clone(), clock, wake,
         live_keys: keys.into_iter().filter(|key| super::routes::valid_open_key(key)).collect(),
     };
     cache_current(client, cache_key, &current);
@@ -674,6 +677,27 @@ mod tests {
         fixture.create_visible_question("visible-change");
         let reply = response_json(handle(&fixture.client, "device-stale", &query(&first.cursor, 0, &open), Transport::Loopback).await).await;
         assert_eq!(reply["stale"], serde_json::json!(["home"]));
+    }
+
+    #[tokio::test]
+    async fn another_device_on_the_same_views_compares_versions_without_mounting_any() {
+        let fixture = FeedFixture::new();
+        fixture.create_visible_question("shown");
+        let open = vec![("home".to_owned(), "v0000000000000000".to_owned())];
+        let first = response_json(handle(&fixture.client, "phone", &query_without_cursor(&open), Transport::Loopback).await).await;
+        fixture.client.views.forget_bodies();
+        let built = fixture.client.views.build_count();
+        let other = vec![("home".to_owned(), "v1111111111111111".to_owned())];
+        let second = response_json(handle(&fixture.client, "tablet", &query_without_cursor(&other), Transport::Loopback).await).await;
+        assert_eq!(fixture.client.views.build_count(), built, "the status and the open view come from their versions");
+        assert_eq!(second["stale"], serde_json::json!(["home"]));
+        assert_eq!(second["status"], first["status"]);
+        assert_eq!(second["cursor"], first["cursor"]);
+    }
+
+    fn query_without_cursor(views: &[(String, String)]) -> String {
+        let views = views.iter().map(|(key, version)| format!("{key}@{version}")).collect::<Vec<_>>().join(",");
+        format!("protocol={VIEWS_PROTOCOL}&client=ios&lang=en&wait=0&views={views}")
     }
 
     #[tokio::test]

@@ -723,15 +723,15 @@ mod tests {
         let alondra_core::domain::InteractionPayload::Question { options, .. } = &card.payload else { panic!("a question") };
         assert_eq!(options.iter().map(|option| option.id.as_str()).collect::<Vec<_>>(), ["pause_until_tomorrow", "keep_going"]);
 
-        let state = domain.state().unwrap();
-        let english = push_content(&state, &card.id.0, Lang::En).unwrap();
-        let spanish = push_content(&state, &card.id.0, Lang::Es).unwrap();
+        let read = domain.read();
+        let english = push_content(&read, &card.id.0, Lang::En).unwrap();
+        let spanish = push_content(&read, &card.id.0, Lang::Es).unwrap();
         assert_eq!(english.interruption_level, "passive");
         assert_eq!(english.alert.as_ref().unwrap().title, "Today is over its share of the weekly Claude usage");
         assert_eq!(english.alert.unwrap().body.as_deref(), Some("41% used today against a 18% share · 53% of the week used"));
         assert_eq!(spanish.alert.as_ref().unwrap().title, "Hoy vas por encima de tu parte del uso semanal");
         assert_eq!(spanish.alert.unwrap().body.as_deref(), Some("41% usado hoy frente a una parte del 18% · 53% de la semana usado"));
-        let labels = |lang| push_content(&state, &card.id.0, lang).unwrap().actions.into_iter().map(|action| action.label).collect::<Vec<_>>();
+        let labels = |lang| push_content(&read, &card.id.0, lang).unwrap().actions.into_iter().map(|action| action.label).collect::<Vec<_>>();
         let english_labels = labels(Lang::En);
         let spanish_labels = labels(Lang::Es);
         assert!(english_labels.iter().any(|label| label == "Pause until tomorrow") && english_labels.iter().any(|label| label.ends_with("Keep going")), "{english_labels:?}");

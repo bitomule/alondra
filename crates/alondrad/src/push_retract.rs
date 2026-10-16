@@ -12,7 +12,7 @@
 //! without the notification service extension, so the count travels in the clear.
 use crate::domain_runtime::DomainRuntime;
 use crate::service::Service;
-use alondra_core::domain::DomainState;
+use alondra_core::domain::ReadIndex;
 use alondra_core::views;
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
@@ -29,25 +29,20 @@ const PAYLOAD_BUDGET: usize = 1_200;
 
 pub async fn run(domain: Arc<DomainRuntime>, service: Arc<Service>) {
     let mut changed = domain.subscribe();
-    let mut pending = match domain.state() {
-        Ok(state) => Pending::new(waiting(&state)),
-        Err(error) => {
-            log!("card retraction is off, the domain could not be read: {error:#}");
-            return;
-        }
-    };
+    let mut pending = Pending::new(waiting(domain.read().index()));
     loop {
         let wait = pending.next().map_or(Duration::from_secs(3600), |at| at.saturating_duration_since(Instant::now()));
         tokio::select! {
             result = changed.changed() => if result.is_err() { return },
             _ = tokio::time::sleep(wait) => {},
         }
-        let Ok(state) = domain.state() else { continue };
+        let read = domain.read();
+        let index = read.index();
         let now = Instant::now();
-        pending.observe(waiting(&state), now);
+        pending.observe(waiting(index), now);
         if pending.badge_due().is_some_and(|at| at <= now) {
             pending.take_badge();
-            let badge = views::inbox_badge(&state);
+            let badge = views::inbox_badge(index);
             match service.broadcast_badge_push(badge).await {
                 Ok((attempted, accepted)) if attempted != accepted => {
                     log!("{} of {attempted} phones did not get the icon badge {badge}", attempted - accepted);
@@ -60,7 +55,7 @@ pub async fn run(domain: Arc<DomainRuntime>, service: Arc<Service>) {
             continue;
         }
         let left = pending.take(now);
-        let push = payload(&state, &left);
+        let push = payload(index, &left);
         match service.broadcast_background_push(|_| push.clone()).await {
             Ok((attempted, accepted)) if attempted != accepted => {
                 log!("{} of {attempted} phones were not told that {} cards left the queue", attempted - accepted, left.len());
@@ -71,8 +66,8 @@ pub async fn run(domain: Arc<DomainRuntime>, service: Arc<Service>) {
     }
 }
 
-fn waiting(state: &DomainState) -> BTreeSet<String> {
-    views::waiting_cards(state).into_iter().collect()
+fn waiting(index: &ReadIndex) -> BTreeSet<String> {
+    views::waiting_cards(index).into_iter().collect()
 }
 
 /// Which cards left the queue since the phones were last told, and when to tell them: the
@@ -128,11 +123,11 @@ impl Pending {
 /// The badge and the whole queue: the app removes every notification of this Mac whose card is
 /// not in `open`. A queue too long to fit names only the cards that left (`retracted`), as many
 /// as fit; the app's own reconcile on opening catches the rest.
-fn payload(state: &DomainState, left: &BTreeSet<String>) -> Value {
-    let open = views::waiting_cards(state);
+fn payload(index: &ReadIndex, left: &BTreeSet<String>) -> Value {
+    let open = views::waiting_cards(index);
     let base = |key: &str, cards: &[&String]| json!({
         "aps": {"badge": open.len()},
-        "alondra": {"protocol": views::VIEWS_PROTOCOL, "kind": "retract", "data_epoch": state.data_epoch, key: cards},
+        "alondra": {"protocol": views::VIEWS_PROTOCOL, "kind": "retract", "data_epoch": index.data_epoch(), key: cards},
     });
     let fits = |value: &Value| serde_json::to_vec(value).map_or(false, |bytes| bytes.len() <= PAYLOAD_BUDGET);
     let whole = base("open", &open.iter().collect::<Vec<_>>());
@@ -205,7 +200,7 @@ mod tests {
         assert!(pending.take(start + SETTLE).is_empty(), "an answer the daemon refused puts the card back");
     }
 
-    fn state_waiting(ids: &[String]) -> DomainState {
+    fn index_waiting(ids: &[String]) -> ReadIndex {
         use alondra_core::domain::*;
         let mut state = DomainState::new("epoch-1");
         for (order, id) in ids.iter().enumerate() {
@@ -218,25 +213,25 @@ mod tests {
                 card: CardSpec::new(CardKind::Know, "Read this"), clarification: None,
             });
         }
-        state
+        ReadIndex::build(&state)
     }
 
     #[test]
     fn the_push_carries_the_whole_queue_and_the_badge_or_what_left_when_the_queue_is_long() {
         let open: Vec<String> = vec!["t-1-info-1".into(), "t-2-info-1".into()];
-        let state = state_waiting(&open);
-        assert_eq!(views::waiting_cards(&state), open, "the fixture's cards wait for the user");
-        let push = payload(&state, &cards(&["t-1-question-1"]));
+        let index = index_waiting(&open);
+        assert_eq!(views::waiting_cards(&index), open, "the fixture's cards wait for the user");
+        let push = payload(&index, &cards(&["t-1-question-1"]));
         assert_eq!(push, json!({
             "aps": {"badge": 2},
             "alondra": {"protocol": views::VIEWS_PROTOCOL, "kind": "retract", "data_epoch": "epoch-1", "open": open},
         }));
-        assert_eq!(push["aps"]["badge"], views::inbox_badge(&state), "the same count as the alerts' badge");
+        assert_eq!(push["aps"]["badge"], views::inbox_badge(&index), "the same count as the alerts' badge");
 
         let long: Vec<String> = (0..60).map(|n| format!("t-push-group-retract-information-{n}")).collect();
-        let state = state_waiting(&long);
+        let index = index_waiting(&long);
         let left: BTreeSet<String> = (0..80).map(|n| format!("t-push-group-retract-question-{n}")).collect();
-        let push = payload(&state, &left);
+        let push = payload(&index, &left);
         assert!(push["alondra"].get("open").is_none());
         let named = push["alondra"]["retracted"].as_array().unwrap();
         assert!(!named.is_empty() && named.len() < left.len(), "as many as fit");
@@ -258,7 +253,7 @@ mod tests {
         let phone_agreement = SecretKey::from_slice(&[0x52; 32]).unwrap();
         let (mac_id, device_id) = ("mac-fixture", "phone-fixture");
         let binding = URL_SAFE_NO_PAD.encode([7u8; 32]);
-        let push = payload(&state_waiting(&["t-1-info-1".into()]), &cards(&["t-1-question-1"]));
+        let push = payload(&index_waiting(&["t-1-info-1".into()]), &cards(&["t-1-question-1"]));
         let body: Value = serde_json::from_slice(&crate::service::seal_push(mac_id, &mac_signing, device_id,
             &phone_agreement.public_key(), &binding, &push, false, crate::service::PushDelivery::Background).unwrap()).unwrap();
         assert_eq!(body["push_type"], "background");

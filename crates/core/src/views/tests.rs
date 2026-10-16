@@ -7,6 +7,18 @@ use crate::domain::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 
+fn inbox_badge(state: &DomainState) -> u32 {
+    super::inbox_badge(&crate::domain::ReadIndex::build(state))
+}
+
+fn push_content(state: &DomainState, card_id: &str, lang: Lang) -> Result<PushContent, BuildError> {
+    super::push_content(&crate::domain::ReadSnapshot::build(std::sync::Arc::new(state.clone())), card_id, lang)
+}
+
+fn push_actions(state: &DomainState, card_id: &str, lang: Lang) -> Result<Vec<PushAction>, BuildError> {
+    Ok(push_content(state, card_id, lang)?.actions)
+}
+
 fn fixture() -> DomainState {
     let mut state = DomainState::new("test-epoch");
     state.requests.insert(
@@ -326,10 +338,10 @@ fn orchestrator_questions_to_the_user_wait_in_home() {
 fn icon_badge_counts_what_waits_in_home() {
     let state = fixture();
     let home = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::En, "home", "2026-09-30T10:00:00Z");
-    assert_eq!(super::inbox_badge(&state), 4, "the orchestrator's question to the user is the user's");
-    assert_eq!(super::inbox_badge(&state), home.status.badge);
-    assert_eq!(super::inbox_badge(&state), home.sections[0].card_ids.len() as u32);
-    assert_eq!(super::inbox_badge(&DomainState::new("empty")), 0);
+    assert_eq!(inbox_badge(&state), 4, "the orchestrator's question to the user is the user's");
+    assert_eq!(inbox_badge(&state), home.status.badge);
+    assert_eq!(inbox_badge(&state), home.sections[0].card_ids.len() as u32);
+    assert_eq!(inbox_badge(&DomainState::new("empty")), 0);
 }
 #[test]
 fn a_question_about_a_pr_is_its_own_card_and_no_card_holds_another() {

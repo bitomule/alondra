@@ -9,7 +9,7 @@ use alondra_core::Event;
 use alondra_core::delivery::State;
 use alondra_core::views::{self, Lang};
 use anyhow::Result;
-use alondra_core::domain::{DomainState, InteractionId, InteractionPayload};
+use alondra_core::domain::{InteractionId, InteractionPayload, ReadSnapshot};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::path::Path;
@@ -195,34 +195,34 @@ async fn deliver_user_runtime(
     message: &OutboxMessage,
     waited: Duration,
 ) -> std::result::Result<(), (State, &'static str)> {
-    // DomainProjection is the durable user inbox. APNs is only a generic wake hint;
-    // the receipt never means a person read or accepted this interaction.
-    let state = domain
-        .state()
-        .map_err(|_| (State::Retryable, "domain_read_failed"))?;
-    match crate::push_gate::check(&state, client, message.interaction_id.as_deref(), waited).await {
+    // The read index's Waiting for You is the durable user inbox. APNs is only a generic wake
+    // hint; the receipt never means a person read or accepted this interaction.
+    let read = domain.read();
+    match crate::push_gate::check(&read, client, message.interaction_id.as_deref(), waited).await {
         crate::push_gate::Gate::Send => {}
         crate::push_gate::Gate::Wait(reason) => return Err((State::Retryable, reason)),
         crate::push_gate::Gate::Drop(reason) => return Err((State::Discarded, reason)),
     }
     if let Some(id) = message.interaction_id.as_deref() {
-        let copies = crate::push_gate::earlier_copies(&state, &InteractionId::from(id));
+        let copies = crate::push_gate::earlier_copies(read.state(), &InteractionId::from(id));
         let told = !copies.is_empty() && domain.store.lock().expect("domain store poisoned").user_push_handed(&copies)
             .map_err(|_| (State::Retryable, "domain_read_failed"))?;
         if told {
             return Err((State::Discarded, "already_notified"));
         }
     }
-    let state = domain
-        .state()
-        .map_err(|_| (State::Retryable, "domain_read_failed"))?;
-    let payload = user_push_payload(&state, message.interaction_id.as_deref(), Lang::En);
+    let read = domain.read();
+    let interaction_id = message.interaction_id.as_deref();
+    let english = std::sync::OnceLock::new();
+    let spanish = std::sync::OnceLock::new();
+    let payload = |lang| match lang {
+        Lang::En => &english,
+        Lang::Es => &spanish,
+    }.get_or_init(|| user_push_payload(&read, interaction_id, lang)).clone();
     if let Some(service) = service {
-        let interaction_id = message.interaction_id.clone();
         let (attempted, accepted) = service
             .broadcast_push_report_for_device(true, |device| {
-                user_push_payload(&state, interaction_id.as_deref(), client
-                    .map_or(Lang::En, |client| client.language_for_device(device)))
+                payload(client.map_or(Lang::En, |client| client.language_for_device(device)))
             })
             .await
             .map_err(|_| (State::Uncertain, "encrypted_push_unknown"))?;
@@ -232,7 +232,7 @@ async fn deliver_user_runtime(
     } else if home.join("service.toml").exists() {
         return Err((State::Retryable, "encrypted_service_unavailable"));
     } else if push.enabled() {
-        let (attempted, accepted) = push.broadcast_report(&payload, true).await;
+        let (attempted, accepted) = push.broadcast_report(&payload(Lang::En), true).await;
         if attempted != accepted {
             return Err((State::Uncertain, "push_partial_or_unknown"));
         }
@@ -240,11 +240,12 @@ async fn deliver_user_runtime(
     Ok(())
 }
 
-fn user_push_payload(state: &DomainState, interaction_id: Option<&str>, lang: Lang) -> Value {
+pub(crate) fn user_push_payload(read: &ReadSnapshot, interaction_id: Option<&str>, lang: Lang) -> Value {
+    let state = read.state();
     let mut alondra = json!({"protocol": views::VIEWS_PROTOCOL, "data_epoch": state.data_epoch,
         "actions": []});
     let mut aps = json!({"alert": {"title": "Alondra"}, "sound": "default",
-        "badge": views::inbox_badge(state), "mutable-content": 1});
+        "badge": views::inbox_badge(read.index()), "mutable-content": 1});
     if let Some(id) = interaction_id {
         alondra["card"] = json!(id);
         if let Some(interaction) = state.interactions.get(&InteractionId::from(id)) {
@@ -255,7 +256,7 @@ fn user_push_payload(state: &DomainState, interaction_id: Option<&str>, lang: La
                 InteractionPayload::Delivery { .. } => "delivery",
             };
             alondra["kind"] = json!(kind);
-            let content = views::push_content(state, id, lang).unwrap_or_else(|error| {
+            let content = views::push_content(read, id, lang).unwrap_or_else(|error| {
                 log!("could not render push content for card {id}: {error:?}");
                 views::PushContent { alert: None, actions: vec![], interruption_level: "active", thread: None }
             });
@@ -289,6 +290,10 @@ mod tests {
     use super::*;
     use alondra_core::domain::*;
     use std::collections::BTreeSet;
+
+    fn user_push_payload(state: &DomainState, interaction_id: Option<&str>, lang: Lang) -> Value {
+        super::user_push_payload(&ReadSnapshot::build(Arc::new(state.clone())), interaction_id, lang)
+    }
 
     #[test]
     fn unavailable_old_recipients_do_not_starve_new_messages() {
@@ -1091,7 +1096,7 @@ mod tests {
         read_by.insert("mac".into());
         assert_eq!(user_push_payload(&state, Some("info-2"), Lang::En)["aps"]["badge"], 2,
             "an item resolved elsewhere leaves the badge");
-        assert_eq!(user_push_payload(&state, None, Lang::En)["aps"]["badge"], views::inbox_badge(&state));
+        assert_eq!(user_push_payload(&state, None, Lang::En)["aps"]["badge"], views::inbox_badge(&ReadIndex::build(&state)));
     }
 
     #[tokio::test]

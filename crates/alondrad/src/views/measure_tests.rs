@@ -145,3 +145,118 @@ async fn measure_real_domain_views() {
     drop(client);
     drop(daemon);
 }
+
+fn median(mut samples: Vec<(f64, f64)>) -> (f64, f64) {
+    samples.sort_by(|a, b| a.0.total_cmp(&b.0));
+    samples[samples.len() / 2]
+}
+
+/// What one domain change costs the readers that run in the background: the badge and the
+/// retraction, the push gate and payload, the Mac's notices, the changes feed of an iPhone (home
+/// and three cards), a Mac (sidebar) and a terminal (home), and a `known` view that did not change.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "measures a copy of a real domain named by ALONDRA_VIEWS_MEASURE_DB"]
+async fn measure_background_per_change() {
+    const ROUNDS: usize = 9;
+    let source = std::env::var("ALONDRA_VIEWS_MEASURE_DB").expect("ALONDRA_VIEWS_MEASURE_DB");
+    let home = crate::test_support::Directory::new();
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::copy(&source, home.join("domain.db")).unwrap();
+    std::fs::set_permissions(home.join("domain.db"), std::os::unix::fs::PermissionsExt::from_mode(0o600)).unwrap();
+    let daemon = crate::domain_bootstrap::DomainDaemon::open(&home).unwrap();
+    let client = daemon.client();
+    let state = client.domain.state().unwrap();
+    let inbox = state.inbox_projection();
+    let id_of = |item: &alondra_core::domain::InboxItem| {
+        let alondra_core::domain::InboxSubject::Interaction { interaction_id } = &item.subject;
+        interaction_id.0.clone()
+    };
+    let mut cards: Vec<String> = inbox.iter().filter(|item| item.pending).map(id_of).collect();
+    cards.extend(inbox.iter().rev().filter(|item| !item.pending && item.kind != "information").map(id_of));
+    cards.truncate(3);
+    println!("domain: {} tasks, {} agents, {} interactions, {} waiting; cards measured: {cards:?}",
+        state.tasks.len(), state.agents.len(), state.interactions.len(), inbox.iter().filter(|item| item.pending).count());
+    let unknown = "v0000000000000000";
+    let phone_views = std::iter::once("home".to_owned()).chain(cards.iter().map(|id| format!("card:{id}")))
+        .map(|key| format!("{key}@{unknown}")).collect::<Vec<_>>().join(",");
+    let feeds = [
+        ("phone", format!("protocol=1&client=ios&lang=es&wait=0&views={phone_views}")),
+        ("mac", format!("protocol=1&client=mac&lang=es&wait=0&views=sidebar@{unknown}")),
+        ("tui", format!("protocol=1&client=tui&lang=es&wait=0&views=home@{unknown}")),
+    ];
+    let card = cards.first().cloned();
+    let mut samples: std::collections::BTreeMap<&str, Vec<(f64, f64)>> = Default::default();
+    let mut measure = |name: &'static str, cpu: f64, at: Instant| samples.entry(name).or_default().push((ms(at), cpu_ms() - cpu));
+    for round in 0..ROUNDS {
+        let state = client.domain.state().unwrap();
+        let envelope = alondra_core::domain::CommandEnvelope {
+            protocol_version: alondra_core::domain::PROTOCOL_VERSION,
+            data_epoch: state.data_epoch.clone(),
+            command_id: format!("measure-change-{round}").into(),
+            expected_revision: state.revision,
+            command: alondra_core::domain::Command::RegisterAgent {
+                agent_id: format!("measure-agent-{round}").into(), name: "Measure".into(), at: 0,
+            },
+        };
+        client.domain.execute(&alondra_core::domain::Actor::System, &envelope, None, || Ok(())).unwrap();
+        // The live sampler answers the commit on its own thread, and the readers this measures used
+        // to walk the whole domain: settle and walk it once, untimed, so each reader starts alike.
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        std::hint::black_box(alondra_core::domain::ReadIndex::build(&client.domain.state().unwrap()));
+
+        let (cpu, at) = (cpu_ms(), Instant::now());
+        let read = client.domain.read();
+        std::hint::black_box((views::waiting_cards(read.index()), views::inbox_badge(read.index())));
+        measure("badge and retraction", cpu, at);
+
+        if let Some(card) = card.as_deref() {
+            let (cpu, at) = (cpu_ms(), Instant::now());
+            let read = client.domain.read();
+            std::hint::black_box(crate::push_gate::check(&read, None, Some(card), std::time::Duration::ZERO).await);
+            measure("push gate (one push)", cpu, at);
+            let (cpu, at) = (cpu_ms(), Instant::now());
+            let read = client.domain.read();
+            std::hint::black_box(crate::domain_delivery::user_push_payload(&read, Some(card), Lang::Es));
+            measure("push payload (one phone)", cpu, at);
+        }
+
+        let (cpu, at) = (cpu_ms(), Instant::now());
+        std::hint::black_box(crate::notices::notices(&client.domain, Lang::Es).unwrap());
+        measure("Mac notices", cpu, at);
+
+        let (cpu, at) = (cpu_ms(), Instant::now());
+        let state = client.domain.state().unwrap();
+        let keys = feeds.iter().flat_map(|(_, query)| query.split("views=").nth(1).unwrap().split(','))
+            .map(|view| view.rsplit_once('@').unwrap().0.to_owned()).collect::<Vec<_>>();
+        std::hint::black_box(super::live::gather(&client, &state, Lang::Es, &keys, false, false).await);
+        measure("live::gather, first read after the change (out of scope)", cpu, at);
+
+        let (cpu, at) = (cpu_ms(), Instant::now());
+        for (device, query) in &feeds {
+            let response = super::feed::handle(&client, device, query, Transport::Loopback).await;
+            assert_eq!(response.status(), axum::http::StatusCode::OK);
+        }
+        measure("changes feed (phone, Mac and terminal)", cpu, at);
+
+        let (cpu, at) = (cpu_ms(), Instant::now());
+        let second_phone = feeds[0].1.replace(unknown, "v1111111111111111");
+        let response = super::feed::handle(&client, "second-phone", &second_phone, Transport::Loopback).await;
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        measure("changes feed of a second phone on the same views", cpu, at);
+
+        let first = respond(&client, "home", "protocol=1&client=ios&lang=es", Transport::Loopback, None).await;
+        let body = axum::body::to_bytes(first.into_body(), usize::MAX).await.unwrap();
+        let version = serde_json::from_slice::<serde_json::Value>(&body).unwrap()["version"].as_str().unwrap().to_owned();
+        let (cpu, at) = (cpu_ms(), Instant::now());
+        let known = respond(&client, "home", &format!("protocol=1&client=ios&lang=es&known={version}"), Transport::Loopback, None).await;
+        measure("home with known version", cpu, at);
+        let body = axum::body::to_bytes(known.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(serde_json::from_slice::<serde_json::Value>(&body).unwrap()["unchanged"], true);
+    }
+    for (name, values) in samples {
+        let (wall, cpu) = median(values);
+        println!("{name}: median {wall:.2} ms, cpu {cpu:.2} ms");
+    }
+    drop(client);
+    drop(daemon);
+}

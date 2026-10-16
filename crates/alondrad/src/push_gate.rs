@@ -2,7 +2,7 @@
 //! on when it arrives.
 use crate::client_routes::{Client, Merge};
 use alondra_core::domain::{
-    DeliveryTarget, DomainState, InboxItem, InboxSubject, InteractionId, InteractionPayload, PrState,
+    DeliveryTarget, DomainState, InteractionId, InteractionPayload, PrState, ReadSnapshot,
 };
 use std::time::Duration;
 
@@ -19,16 +19,17 @@ pub(crate) enum Gate {
 }
 
 pub(crate) async fn check(
-    state: &DomainState,
+    read: &ReadSnapshot,
     client: Option<&Client>,
     interaction_id: Option<&str>,
     waited: Duration,
 ) -> Gate {
     let Some(id) = interaction_id else { return Gate::Send };
     let id = InteractionId::from(id);
-    if !card_pending(&state.projection().inbox, &id) {
+    if read.index().waiting_card(&id).is_none() {
         return Gate::Drop("card_not_pending");
     }
+    let state = read.state();
     let (Some(client), Some(interaction)) = (client, state.interactions.get(&id)) else { return Gate::Send };
     let InteractionPayload::Delivery { targets, .. } = &interaction.payload else { return Gate::Send };
     for target in targets {
@@ -73,13 +74,6 @@ fn same_kind(earlier: &InteractionPayload, card: &InteractionPayload) -> bool {
         (InteractionPayload::Information { .. }, InteractionPayload::Information { .. }) => true,
         _ => false,
     }
-}
-
-fn card_pending(items: &[InboxItem], id: &InteractionId) -> bool {
-    items.iter().any(|item| {
-        let InboxSubject::Interaction { interaction_id } = &item.subject;
-        item.pending && interaction_id == id
-    })
 }
 
 #[cfg(test)]
@@ -147,7 +141,7 @@ mod tests {
         }
 
         async fn gate(&self, interaction_id: Option<&str>, waited: Duration) -> Gate {
-            check(&self.domain.state().unwrap(), Some(&self.client), interaction_id, waited).await
+            check(&self.domain.read(), Some(&self.client), interaction_id, waited).await
         }
 
         fn handed_back(&self) -> bool {

@@ -151,10 +151,17 @@ pub(super) async fn respond(
     if key == "issue_picker?refresh=1" {
         client.feeds.wake();
     }
+    let service = crate::views::this_service();
+    let input = super::cache::Input::of(read.state(), &live);
+    if let Some(version) = known.as_deref()
+        .and_then(|known| client.views.version(&key, &input, client_kind, language, transport).filter(|v| v.version == known))
+    {
+        return unchanged(&version.cursor, &version.data_epoch, service);
+    }
     let rendering = client.shared();
     let render_key = key.clone();
     let rendered = client.read_work.run(move ||
-        rendering.views.render(&render_key, &read, &live, client_kind, language, transport)
+        rendering.views.render_from(&render_key, &read, &live, &input, client_kind, language, transport)
     ).await.expect("view render worker failed");
     let mut view = match rendered {
         Ok(view) => view,
@@ -167,13 +174,8 @@ pub(super) async fn respond(
             return error_lang(language, "invalid_input", "invalid view key");
         }
     };
-    let service = crate::views::this_service();
     if known.as_deref() == Some(view.version.as_str()) {
-        return Json(
-            json!({"protocol":VIEWS_PROTOCOL,"unchanged":true,"cursor":view.cursor,
-            "data_epoch":view.data_epoch,"service":service}),
-        )
-        .into_response();
+        return unchanged(&view.cursor, &view.data_epoch, service);
     }
     view.service = Some(service);
     let bytes = match serde_json::to_vec(&view) {
@@ -193,6 +195,11 @@ pub(super) async fn respond(
         bytes,
     )
         .into_response()
+}
+
+fn unchanged(cursor: &str, data_epoch: &str, service: alondra_core::views::Service) -> Response {
+    Json(json!({"protocol":VIEWS_PROTOCOL,"unchanged":true,"cursor":cursor,
+        "data_epoch":data_epoch,"service":service})).into_response()
 }
 
 pub(crate) fn approved_read_path(path_and_query: &str) -> bool {
@@ -602,7 +609,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn known_version_answers_unchanged() {
+    async fn known_version_answers_unchanged_without_mounting_the_view() {
         let (home, state) = fixture();
         let client = state.client();
         let full = respond(
@@ -619,6 +626,8 @@ mod tests {
             .unwrap();
         let view: serde_json::Value = serde_json::from_slice(&body).unwrap();
         let known = view["version"].as_str().unwrap();
+        client.views.forget_bodies();
+        let built = client.views.build_count();
         let conditional = respond(
             &client,
             "home",
@@ -633,6 +642,7 @@ mod tests {
             .unwrap();
         let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(value["unchanged"], true);
+        assert_eq!(client.views.build_count(), built, "answered from the version, the view was not mounted");
         assert_eq!(value["cursor"], view["cursor"]);
         assert_eq!(value["data_epoch"], view["data_epoch"]);
         drop(client);
